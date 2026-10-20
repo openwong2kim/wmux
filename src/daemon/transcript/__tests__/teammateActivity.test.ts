@@ -140,6 +140,28 @@ describe('TeammateScanner', () => {
     expect(scanner.anyWorking(now)).toBe(true);
   });
 
+  it('an unchanged folder is listed once more after it settles, then served from cache', () => {
+    const now = Date.now();
+    agent('mate', 'in_process_teammate', [toolUse('a', now)]);
+    let clock = 1_000;
+    const mono = vi.spyOn(performance, 'now').mockImplementation(() => clock);
+    const scanner = new TeammateScanner(sub);
+    const listing = vi.spyOn(fs, 'readdirSync');
+    try {
+      scanner.anyWorking(now);
+      scanner.anyWorking(now);
+      clock += 2_001;
+      scanner.anyWorking(now);
+      const settled = listing.mock.calls.length;
+      scanner.anyWorking(now);
+      expect(settled).toBe(3);
+      expect(listing.mock.calls.length).toBe(3);
+    } finally {
+      listing.mockRestore();
+      mono.mockRestore();
+    }
+  });
+
   it('a meta file caught mid-write is asked again, not taken as no teammate', () => {
     const now = Date.now();
     const file = agent('mate', 'in_process_teammate', [toolUse('a', now)]);
