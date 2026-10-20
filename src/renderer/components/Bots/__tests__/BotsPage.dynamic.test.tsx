@@ -2012,7 +2012,7 @@ describe('Bots page', () => {
     await render(<BotsPage settings={settings} />);
     const dialog = () => document.querySelector('[data-testid="bots-plan-consent"]');
     expect(dialog()?.textContent).toContain('Bots run on your Claude account');
-    expect(dialog()?.textContent).toContain('Their usage counts toward your Claude plan\'s limits.');
+    expect(dialog()?.textContent).toContain('Their usage counts toward your Claude plan\'s limits, or is billed to your API key.');
     expect(document.querySelector('[data-testid="bots-plan-consent-cancel"]')?.textContent).toBe('Turn bots off');
     await act(async () => { document.querySelector<HTMLButtonElement>('[data-testid="bots-plan-consent-confirm"]')!.click(); });
     expect(settings.set).toHaveBeenCalledWith({ planConsent: expect.objectContaining({ version: 1 }) });
