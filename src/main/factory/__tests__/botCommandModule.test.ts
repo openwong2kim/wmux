@@ -119,6 +119,10 @@ describe('the Commands IPC', () => {
     expect(run('sudo ls')).toMatchObject({ ok: false, layer: 'floor' });
     expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: 'Only a command refused as not on the list can be always allowed.' });
     expect(await h.allow(OWNER, { botId: BOT, entryId: 'gone' })).toEqual({ ok: false, error: 'That decision is no longer in the log.' });
+    // A command kept masked (an inline credential) never becomes a rule.
+    expect(run("make 'http://x?token=abc123'")).toMatchObject({ ok: false, layer: 'unlisted' });
+    expect(newest().target).toContain('[redacted]');
+    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: 'This command held a secret and was kept masked, so it cannot become a rule.' });
     expect(changed).not.toHaveBeenCalled();
   });
 

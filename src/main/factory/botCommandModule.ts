@@ -143,10 +143,10 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
         if (entry.tool !== 'Bash' || entry.decision !== 'deny' || !RULE_ALLOWABLE_LAYERS.includes(entry.layer) || !entry.target) {
           return { ok: false, error: 'Only a command refused as not on the list can be always allowed.' };
         }
-        // A command that held a stored secret was kept masked: no rule can
-        // name it, and none is made from the marker.
-        if (/\[secret:/.test(entry.target) || mask(entry.target) !== entry.target) {
-          return { ok: false, error: 'This command holds a stored secret, so it cannot become a rule.' };
+        // A command that held a stored secret or an inline credential was
+        // kept masked: no rule can name it, and none is made from the marker.
+        if (/\[secret:|\[redacted\]|%5Bredacted%5D/i.test(entry.target) || mask(entry.target) !== entry.target) {
+          return { ok: false, error: 'This command held a secret and was kept masked, so it cannot become a rule.' };
         }
         // A command cut to fit the log is not the command that ran.
         if (entry.target.length >= BOT_COMMAND_LOG_TEXT_MAX) return { ok: false, error: 'This command is too long to become a rule.' };
