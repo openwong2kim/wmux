@@ -8,8 +8,9 @@
 // tools). Under it main's recent decisions, newest first, a few at a time:
 // when, the command or path, allowed or refused (a refusal's word red) and
 // why; a command refused as not on the list has Always allow, which adds an
-// owner rule for exactly that command (main checks it as any rule, and says
-// why when it refuses). Last, the owner's rules, each with Remove. Every
+// owner rule for exactly that command — offered only where main says the
+// rule would be saved (never for a built-in command, whose option checks
+// stay), and main checks it again and says why when it refuses. Last, the owner's rules, each with Remove. Every
 // text is masked by main before it gets here.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Switch from '../ui/Switch';
@@ -93,10 +94,11 @@ export function commandLayerText(layer: string, t: T): string {
   return KNOWN_LAYERS.has(layer) ? t(`bots.commands.layer.${layer}`) : layer;
 }
 
-/** Whether a decision can become a rule: a Bash command refused as not on
- *  the list (main checks again). Pure. */
+/** Whether a decision offers Always allow: main said its rule would be
+ *  saved (a command refused as not on the list, its head not a built-in
+ *  command) and it is a Bash refusal. Main checks again. Pure. */
 export function canAlwaysAllow(e: BotCommandLogEntry): boolean {
-  return e.tool === 'Bash' && e.decision === 'deny' && !!e.target && RULE_ALLOWABLE_LAYERS.includes(e.layer);
+  return e.canAllow === true && e.tool === 'Bash' && e.decision === 'deny' && !!e.target && RULE_ALLOWABLE_LAYERS.includes(e.layer);
 }
 
 export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: FactoryBotRow; t: T; port?: BotCommandPort }): React.ReactElement | null {

@@ -136,6 +136,12 @@ export const BUILTIN_COMMANDS: ReadonlyMap<string, ArgCheck> = new Map<string, A
   ['git', gitCheck],
 ]);
 
+/** Whether `name` is on the built-in list (its checks stay; no owner rule
+ *  may name it, botCommandRules.ts). Pure. */
+export function isBuiltinCommandName(name: string): boolean {
+  return BUILTIN_COMMANDS.has(name);
+}
+
 /** Commands that may read a pipe's output (`... | sort | head -5`). */
 export const STDIN_FILTERS: ReadonlySet<string> = new Set(['cat', 'head', 'tail', 'wc', 'sort', 'uniq', 'cut', 'tr', 'grep', 'egrep', 'fgrep', 'rg']);
 

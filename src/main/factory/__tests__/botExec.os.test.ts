@@ -447,6 +447,24 @@ describe('the owner\'s command rules file', () => {
     await expect(store.setRules('bot-1', [rule])).rejects.toThrow(/must name the script it runs/);
   });
 
+  it.each([
+    [{ argv: ['rg', '--pre=x', 'foo'] }, 'rg'],
+    [{ argv: ['git', 'commit'], anyArgs: true }, 'git'],
+    [{ argv: ['/usr/bin/sort', '-o', 'out'] }, 'sort'],
+    [{ argv: ['find'], anyArgs: true }, 'find'],
+  ])('no rule names a built-in command, whose blocked options stay blocked: %j', async (rule, name) => {
+    const file = botCommandRulesPath(botDir);
+    const store = new BotCommandRulesStore(file);
+    await expect(store.setRules('bot-1', [rule])).rejects.toThrow(`${name} is a built-in command; its blocked options stay blocked`);
+    expect(store.rulesFor('bot-1')).toEqual([]);
+    // One already in the file is dropped when it loads.
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ version: BOT_COMMAND_RULES_VERSION, bots: { 'bot-1': [rule, { argv: ['make'] }] } }));
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    expect(new BotCommandRulesStore(file).rulesFor('bot-1')).toEqual([{ argv: ['make'] }]);
+    vi.restoreAllMocks();
+  });
+
   it('an interpreter rule naming its script is kept; an unsafe one in the file is dropped on load', async () => {
     const file = botCommandRulesPath(botDir);
     const store = new BotCommandRulesStore(file);

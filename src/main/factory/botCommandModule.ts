@@ -19,13 +19,13 @@
 
 import { ipcMain, type BrowserWindow } from 'electron';
 import { BOT_EVENT, BOT_ID_RE, type BotEventPayload, type BotProfile } from '../../shared/bot';
-import { BOT_COMMAND_IPC, RULE_ALLOWABLE_LAYERS, type BotCommandReadResult, type BotCommandSimpleResult } from '../../shared/botCommand';
+import { BOT_COMMAND_IPC, RULE_ALLOWABLE_LAYERS, type BotCommandLogEntry, type BotCommandReadResult, type BotCommandSimpleResult } from '../../shared/botCommand';
 import { maskInlineCredentials } from '../../shared/redactSecrets';
 import { resolveClaudeExecutable } from '../claude/resolveClaudeExecutable';
 import { isMainWindowSender } from '../ipc/mainWindowSender';
 import { wrapHandler } from '../ipc/wrapHandler';
 import { onBotRemoved } from './BotRuntime';
-import { unlistedHeads } from './botCommandAllow';
+import { unlistedHeads, type BotCommandRule } from './botCommandAllow';
 import { parseCommandLine } from './botCommandFloor';
 import { BOT_COMMAND_LOG_TEXT_MAX, BotCommandLog } from './botCommandLog';
 import { botCommandRuleRefusal, botCommandRuleText, getBotCommandRulesStore, type BotCommandRulesStore } from './botCommandRules';
@@ -60,6 +60,36 @@ function mask(text: string): string {
 function errorText(err: unknown, fallback: string): string {
   const m = err instanceof Error ? err.message : '';
   return m ? mask(m) : fallback;
+}
+
+/**
+ * The rules "Always allow" would add for a logged decision: one for exactly
+ * each pipeline head the list refused, or why there are none. None for a
+ * decision a rule cannot change, a command kept masked or cut, or a head
+ * the store refuses (a built-in command keeps its checks; an interpreter
+ * names its script). Pure but for the masking.
+ */
+export function rulesForEntry(entry: BotCommandLogEntry, current: readonly BotCommandRule[]): { ok: true; rules: BotCommandRule[] } | { ok: false; error: string } {
+  if (entry.tool !== 'Bash' || entry.decision !== 'deny' || !RULE_ALLOWABLE_LAYERS.includes(entry.layer) || !entry.target) {
+    return { ok: false, error: 'Only a command refused as not on the list can be always allowed.' };
+  }
+  // A command that held a stored secret or an inline credential was kept
+  // masked: no rule can name it, and none is made from the marker.
+  if (/\[secret:|\[redacted\]|%5Bredacted%5D/i.test(entry.target) || mask(entry.target) !== entry.target) {
+    return { ok: false, error: 'This command held a secret and was kept masked, so it cannot become a rule.' };
+  }
+  // A command cut to fit the log is not the command that ran.
+  if (entry.target.length >= BOT_COMMAND_LOG_TEXT_MAX) return { ok: false, error: 'This command is too long to become a rule.' };
+  const parsed = parseCommandLine(entry.target);
+  if (!parsed.ok) return { ok: false, error: `This command cannot become a rule: ${parsed.reason}` };
+  const heads = unlistedHeads(parsed.pipelines, current);
+  if (heads.length === 0) return { ok: false, error: 'Nothing in this command is left for a rule to allow: it is on the list now, or the part refused reads a pipe.' };
+  const added = heads.map((argv) => ({ argv }));
+  for (const r of added) {
+    const refusal = botCommandRuleRefusal(r);
+    if (refusal) return { ok: false, error: refusal };
+  }
+  return { ok: true, rules: added };
 }
 
 const DENIED = { ok: false as const, error: 'only the wmux window may do this' };
@@ -102,11 +132,13 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
           }
         }
         const store = rules();
+        const current = store.rulesFor(botId);
         return {
           ok: true,
           available,
           enabled: store.commandsEnabled(botId),
-          entries: log.entries(botId),
+          // Always allow is offered only where main would save its rule.
+          entries: log.entries(botId).map((entry) => (rulesForEntry(entry, current).ok ? { ...entry, canAllow: true } : entry)),
           rules: store.rulesFor(botId).map((r) => ({ text: mask(botCommandRuleText(r)), anyArgs: r.anyArgs === true })),
         };
       } catch {
@@ -140,27 +172,11 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
       try {
         const entry = log.entry(botId, entryId);
         if (!entry) return { ok: false, error: 'That decision is no longer in the log.' };
-        if (entry.tool !== 'Bash' || entry.decision !== 'deny' || !RULE_ALLOWABLE_LAYERS.includes(entry.layer) || !entry.target) {
-          return { ok: false, error: 'Only a command refused as not on the list can be always allowed.' };
-        }
-        // A command that held a stored secret or an inline credential was
-        // kept masked: no rule can name it, and none is made from the marker.
-        if (/\[secret:|\[redacted\]|%5Bredacted%5D/i.test(entry.target) || mask(entry.target) !== entry.target) {
-          return { ok: false, error: 'This command held a secret and was kept masked, so it cannot become a rule.' };
-        }
-        // A command cut to fit the log is not the command that ran.
-        if (entry.target.length >= BOT_COMMAND_LOG_TEXT_MAX) return { ok: false, error: 'This command is too long to become a rule.' };
-        const parsed = parseCommandLine(entry.target);
-        if (!parsed.ok) return { ok: false, error: `This command cannot become a rule: ${parsed.reason}` };
         const store = rules();
         const current = store.rulesFor(botId);
-        const heads = unlistedHeads(parsed.pipelines, current);
-        if (heads.length === 0) return { ok: false, error: 'Nothing in this command is left for a rule to allow: it is on the list now, or the part refused reads a pipe.' };
-        const added = heads.map((argv) => ({ argv }));
-        for (const r of added) {
-          const refusal = botCommandRuleRefusal(r);
-          if (refusal) return { ok: false, error: refusal };
-        }
+        const plan = rulesForEntry(entry, current);
+        if (!plan.ok) return { ok: false, error: plan.error };
+        const added = plan.rules;
         await store.setRules(botId, [...current, ...added]);
         changed(botId);
         return { ok: true };

@@ -61,8 +61,10 @@ describe('BotCommands', () => {
 
   it('lists decisions a page at a time, with Always allow on a refused unlisted command only', async () => {
     const entries = [
-      entry('d1', { decision: 'deny', layer: 'unlisted', target: 'make build', reason: 'make is not on the built-in list' }),
+      entry('d1', { decision: 'deny', layer: 'unlisted', target: 'make build', reason: 'make is not on the built-in list', canAllow: true }),
       entry('d2', { decision: 'deny', layer: 'floor', target: 'sudo ls' }),
+      // A built-in refused for a blocked option: main does not offer it.
+      entry('d3', { decision: 'deny', layer: 'unlisted', target: 'rg --pre=x foo' }),
       ...Array.from({ length: COMMANDS_PAGE + 3 }, (_, k) => entry(`a${k}`)),
     ];
     const port = fakePort({ entries });
@@ -73,6 +75,7 @@ describe('BotCommands', () => {
     expect($('[data-bot-command-entry="d1"]')?.textContent).toContain('make is not on the built-in list');
     expect($('[data-testid="bot-command-allow-d1"]')).not.toBeNull();
     expect($('[data-testid="bot-command-allow-d2"]')).toBeNull();
+    expect($('[data-testid="bot-command-allow-d3"]')).toBeNull();
     expect($('[data-testid="bot-command-allow-a0"]')).toBeNull();
     await act(async () => ($('[data-testid="bot-commands-more"]') as HTMLButtonElement).click());
     expect(host.querySelectorAll('[data-bot-command-entry]')).toHaveLength(entries.length);
@@ -82,7 +85,7 @@ describe('BotCommands', () => {
   });
 
   it('shows main\'s refusal of Always allow', async () => {
-    const port = fakePort({ entries: [entry('d1', { decision: 'deny', layer: 'unlisted', target: 'make' })] });
+    const port = fakePort({ entries: [entry('d1', { decision: 'deny', layer: 'unlisted', target: 'make', canAllow: true })] });
     port.allow.mockResolvedValueOnce({ ok: false, error: 'a command rule has more than 16 words' });
     await act(async () => root.render(<BotCommands row={row} t={t} port={port} />));
     await act(async () => ($('[data-testid="bot-command-allow-d1"]') as HTMLButtonElement).click());

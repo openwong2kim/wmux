@@ -126,6 +126,20 @@ describe('the Commands IPC', () => {
     expect(changed).not.toHaveBeenCalled();
   });
 
+  it('a built-in command refused for a blocked option is never offered Always allow, and main refuses its rule', async () => {
+    expect(run('rg --pre=x foo')).toMatchObject({ ok: false, layer: 'unlisted' });
+    const rgId = newest().id;
+    run('make build');
+    const h = handlers();
+    const r = await h.read(OWNER, { botId: BOT });
+    if (!r.ok) throw new Error('read failed');
+    expect(r.entries.find((e) => e.id === rgId)?.canAllow).toBeUndefined();
+    expect(r.entries.find((e) => e.target === 'make build')?.canAllow).toBe(true);
+    expect(await h.allow(OWNER, { botId: BOT, entryId: rgId })).toEqual({ ok: false, error: 'rg is a built-in command; its blocked options stay blocked' });
+    expect(rules.rulesFor(BOT)).toEqual([]);
+    expect(run('rg --pre=x foo')).toMatchObject({ ok: false, layer: 'unlisted' });
+  });
+
   it('Remove takes out the rule it names, and nothing when the text no longer matches', async () => {
     await rules.setRules(BOT, [{ argv: ['make'] }, { argv: ['npm', 'test'] }]);
     const h = handlers();

@@ -42,7 +42,8 @@ export type BotCommandTool = 'Bash' | 'Write' | 'Edit' | 'Read';
  */
 export type BotCommandLayer = string;
 
-/** The layers whose refusal an owner rule can turn into an allow. */
+/** The layers whose refusal an owner rule can turn into an allow (main
+ *  checks each entry, BotCommandLogEntry.canAllow). */
 export const RULE_ALLOWABLE_LAYERS: readonly string[] = ['unlisted', 'reviewer'];
 
 export interface BotCommandLogEntry {
@@ -57,6 +58,9 @@ export interface BotCommandLogEntry {
   layer: BotCommandLayer;
   /** Why it was refused, short and masked. */
   reason?: string;
+  /** In a read only: main would save "Always allow"'s rule for it (a
+   *  command refused as not on the list whose head is not a built-in). */
+  canAllow?: boolean;
 }
 
 /** One owner rule as the profile shows it. */

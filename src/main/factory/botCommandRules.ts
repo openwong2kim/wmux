@@ -5,7 +5,8 @@
 // (botCommandAllow.ts). Main reads it when a bot's command is decided; only
 // the owner's own path writes it (`setRules`, called from main for the
 // owner's settings — no bot RPC reaches this module, and no bot tool names
-// it). The floor applies whatever a rule says, and a rule for a shell or an
+// it). The floor applies whatever a rule says, a rule never names a
+// built-in command (its option checks stay), and a rule for a shell or an
 // interpreter must name its script and may not take any arguments.
 //
 // It also holds the owner's per-bot switch: a bot listed in `off` runs no
@@ -17,7 +18,7 @@
 
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import type { BotCommandRule } from './botCommandAllow';
+import { isBuiltinCommandName, type BotCommandRule } from './botCommandAllow';
 import { commandName, isShellOrInterpreter, normalizeCommand } from './botCommandFloor';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 
@@ -39,9 +40,12 @@ export function botCommandRuleRefusal(value: unknown): string | null {
     if (typeof w !== 'string' || w.length === 0 || w.length > BOT_COMMAND_RULES_LIMITS.WORD_MAX || /[\0\r\n]/.test(w)) return 'a command rule has an empty, overlong or multi-line word';
   }
   if (v.anyArgs !== undefined && typeof v.anyArgs !== 'boolean') return 'a command rule is malformed';
+  const argv = v.argv as string[];
+  // A built-in command keeps its checks: a rule would let the options they
+  // refuse (an output file, a program to run) through.
+  if (isBuiltinCommandName(commandName(argv[0]))) return `${commandName(argv[0])} is a built-in command; its blocked options stay blocked`;
   // A shell or interpreter rule names its script and takes nothing else:
   // with any arguments it would run whatever code follows.
-  const argv = v.argv as string[];
   if (isShellOrInterpreter(commandName(argv[0])) && (v.anyArgs === true || !argv.slice(1).some((w) => !w.startsWith('-')))) {
     return `a rule for ${commandName(argv[0])} must name the script it runs, and takes no other arguments`;
   }
