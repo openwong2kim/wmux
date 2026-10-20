@@ -135,8 +135,10 @@ describe('ClaudeSdkAdapter: a bot\'s Claude sign-in', () => {
       const c = botAdapter(launched.queryFn, () => ({ mode: 'apiKey', apiKey: KEY }));
       const build = (c as unknown as { buildEnv(l: { kind: 'run'; env: Record<string, string>; accountId: string | null }): Record<string, string | undefined> });
       (c as unknown as { _turnAuth: BotClaudeAuth })._turnAuth = { mode: 'apiKey', apiKey: KEY };
+      (c as unknown as { _turnConfigDir: string })._turnConfigDir = '/wmux/factory/claude-api-config';
       const own = build.buildEnv({ kind: 'run', env: { CLAUDE_CONFIG_DIR: '/accounts/work', CLAUDE_CODE_OWN: 'wmux' }, accountId: 'acc-1' });
-      expect(own.CLAUDE_CONFIG_DIR).toBe('/accounts/work');
+      // wmux's own config folder replaces an account's.
+      expect(own.CLAUDE_CONFIG_DIR).toBe('/wmux/factory/claude-api-config');
       expect(own.CLAUDE_CODE_OWN).toBe('wmux');
       expect(own.ANTHROPIC_API_KEY).toBe(KEY);
       expect(own.CLAUDE_CODE_HOST_CREDS_FILE).toBeUndefined();
@@ -166,6 +168,52 @@ describe('ClaudeSdkAdapter: a bot\'s Claude sign-in', () => {
     expect(envOf(calls[0]).ANTHROPIC_BASE_URL).toBeUndefined();
     expect(envOf(calls[0]).ANTHROPIC_AUTH_TOKEN).toBeUndefined();
     expect(envOf(calls[0]).ANTHROPIC_API_KEY).toBe(KEY);
+    a.dispose();
+  });
+
+  it('a bot on the API key runs on wmux\'s own 0700 config folder; the subscription and the workspace brain keep the owner\'s', async () => {
+    process.env.CLAUDE_CONFIG_DIR = '/owner/claude-config';
+    try {
+      const api = recorder();
+      const a = botAdapter(api.queryFn, () => ({ mode: 'apiKey', apiKey: KEY }));
+      await collect(a.send('hi'));
+      const isolated = path.join(dir, 'factory', 'claude-api-config');
+      expect(envOf(api.calls[0]).CLAUDE_CONFIG_DIR).toBe(isolated);
+      expect(fs.statSync(isolated).isDirectory()).toBe(true);
+      if (process.platform !== 'win32') expect(fs.statSync(isolated).mode & 0o777).toBe(0o700);
+      // Nothing of the owner's is copied into it.
+      expect(fs.readdirSync(isolated)).toEqual([]);
+      a.dispose();
+
+      const sub = recorder();
+      const b = botAdapter(sub.queryFn, () => ({ mode: 'subscription' }));
+      await collect(b.send('hi'));
+      expect(envOf(sub.calls[0]).CLAUDE_CONFIG_DIR).toBe('/owner/claude-config');
+      b.dispose();
+
+      const deckCalls = recorder();
+      const deck = new ClaudeSdkAdapter({ queryFn: deckCalls.queryFn, mcpBundlePath: '/fake/mcp.js', loadMemory: () => '' });
+      deck.start({ systemPrompt: 'SYS' });
+      await collect(deck.send('hi'));
+      expect(envOf(deckCalls.calls[0]).CLAUDE_CONFIG_DIR).toBe('/owner/claude-config');
+      deck.dispose();
+    } finally {
+      delete process.env.CLAUDE_CONFIG_DIR;
+    }
+  });
+
+  it('a switch of sign-in starts a new conversation instead of resuming one claude cannot find', async () => {
+    const { calls, queryFn } = recorder();
+    let auth: BotClaudeAuth = { mode: 'subscription' };
+    const a = botAdapter(queryFn, () => auth);
+    await collect(a.send('first'));
+    await collect(a.send('second'));
+    expect(calls[1].options.resume).toBe('s-1');
+    auth = { mode: 'apiKey', apiKey: KEY };
+    await collect(a.send('third'));
+    expect(calls[2].options.resume).toBeUndefined();
+    await collect(a.send('fourth'));
+    expect(calls[3].options.resume).toBe('s-1');
     a.dispose();
   });
 

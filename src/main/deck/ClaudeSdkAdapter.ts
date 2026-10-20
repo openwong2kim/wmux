@@ -66,6 +66,25 @@ export function clearedForBotApiKey(name: string): boolean {
   return BOT_API_KEY_CLEARED_NAMES.includes(upper) || BOT_API_KEY_CLEARED_PREFIXES.some((p) => upper.startsWith(p));
 }
 
+/** The claude config folder a bot on an API key runs on: wmux's own, empty
+ *  of the owner's config. claude reads its global config (and its `env`
+ *  block, applied after ours) from `<CLAUDE_CONFIG_DIR>/.claude.json` when
+ *  that variable is set, never `~/.claude.json`, so nothing the owner (or a
+ *  tool) wrote there can send the key elsewhere. */
+export function botApiKeyConfigDir(wmuxDir: string): string {
+  return path.join(wmuxDir, 'factory', 'claude-api-config');
+}
+
+/** Create it (0700) and return it. Throws when it cannot be. */
+export function ensureBotApiKeyConfigDir(wmuxDir: string): string {
+  const dir = botApiKeyConfigDir(wmuxDir);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch { /* Windows: ACLs, not modes */ }
+  return dir;
+}
+
 // ─── Injectable SDK seam ─────────────────────────────────────────────────────
 
 /** The shape the adapter needs from an SDK `query()` result: an async iterable
@@ -819,6 +838,12 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private readonly bot?: BotDeps;
   /** Bot mode: how this turn signs in (resolved at its start). */
   private _turnAuth: BotClaudeAuth = { mode: 'subscription' };
+  /** Bot mode on an API key: this turn's own claude config folder. */
+  private _turnConfigDir: string | null = null;
+  /** Bot mode: the sign-in this conversation runs on. Its transcript lives
+   *  in that sign-in's config folder, so a turn on the other one starts a
+   *  new conversation. Undefined: not known yet (a saved one). */
+  private _conversationAuthMode: 'subscription' | 'apiKey' | undefined = undefined;
   /** Bot mode: the current turn's token hand-off file, removed when the turn ends. */
   private _handoff: BotTokenHandoff | null = null;
 
@@ -909,6 +934,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // events (M3 §1a).
     this._launchAccountId = launch.accountId;
     if (apiKeyBot && this._turnAuth.mode === 'apiKey') {
+      // wmux's own config folder, over any account's: accounts are
+      // subscription sign-ins.
+      if (this._turnConfigDir) env.CLAUDE_CONFIG_DIR = this._turnConfigDir;
       env.ANTHROPIC_API_KEY = this._turnAuth.apiKey;
       return env;
     }
@@ -1230,6 +1258,39 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // fleet-context injection must not double up).
     const prompt = this.composePrompt(text);
 
+    // A bot signs in as the owner chose for bots, read now so a change in
+    // Settings applies from this turn; an API key that is not usable here
+    // ends the turn before anything spawns (never the subscription instead).
+    if (this.bot) {
+      try {
+        this._turnAuth = this.bot.auth?.() ?? { mode: 'subscription' };
+      } catch (err) {
+        this._turnAuth = { mode: 'refused', message: err instanceof Error ? err.message : String(err) };
+      }
+      if (this._turnAuth.mode === 'refused') {
+        yield { type: 'error', message: this._turnAuth.message };
+        return;
+      }
+      this._turnConfigDir = null;
+      if (this._turnAuth.mode === 'apiKey') {
+        try {
+          this._turnConfigDir = ensureBotApiKeyConfigDir(this.bot.wmuxDir ?? getWmuxDir());
+        } catch (err) {
+          yield { type: 'error', message: `the bots' Claude config folder could not be created: ${err instanceof Error ? err.message : String(err)}` };
+          return;
+        }
+      }
+      // A conversation begun on the other sign-in lives in the other config
+      // folder: start a new one rather than resume what claude cannot find.
+      // (A saved one of unknown sign-in is tried, and falls back to a fresh
+      // one the same way any dead saved id does.)
+      if (this._sessionId && this._conversationAuthMode !== undefined && this._conversationAuthMode !== this._turnAuth.mode) {
+        this._sessionId = null;
+        this._resumeUnvalidated = false;
+        this._conversationAccountId = undefined;
+      }
+    }
+
     // At most two attempts: the first may run against a DISK-SEEDED session id
     // (P3a) that the claude side no longer knows (transcript GC'd, moved
     // machine, corrupt store). When that turn dies before producing ANY event,
@@ -1250,30 +1311,16 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // account under "Switch accounts by quota"; a resumed one stays where
       // its transcript is. Out of quota → a clear error instead of a spawn
       // that dies on a quota error. A profile with its own auth token does not
-      // sign in with the account, so its quota is not checked; nor does a bot
-      // on an API key.
-      // A bot signs in as the owner chose for bots, read now so a change in
-      // Settings applies from this turn; an API key that is not usable here
-      // ends the turn before anything spawns (never the subscription instead).
-      if (this.bot) {
-        try {
-          this._turnAuth = this.bot.auth?.() ?? { mode: 'subscription' };
-        } catch (err) {
-          this._turnAuth = { mode: 'refused', message: err instanceof Error ? err.message : String(err) };
-        }
-        if (this._turnAuth.mode === 'refused') {
-          yield { type: 'error', message: this._turnAuth.message };
-          return;
-        }
-      }
+      // sign in with the account, so its quota is not checked. A bot on an
+      // API key uses no account (its own config folder, buildEnv).
       this._launching = true;
       this._interruptedWhileLaunching = false;
       let launch: BackgroundLaunch;
       try {
-        launch = await resolveBackgroundLaunch(this._workspaceId, 'claude', {
+        launch = this.bot && this._turnAuth.mode === 'apiKey' ? { kind: 'run', env: {}, accountId: null } : await resolveBackgroundLaunch(this._workspaceId, 'claude', {
           resuming: !!this._sessionId,
           conversationAccountId: this._conversationAccountId,
-          checkQuota: !this.profile?.authToken && this._turnAuth.mode !== 'apiKey',
+          checkQuota: !this.profile?.authToken,
           onMissing: (acc) => console.warn(
             `[account] orchestrator ws ${this._workspaceId}: bound account "${acc.name}" configDir missing ` +
             `(${acc.configDir}) — falling back to the default credential.`,
@@ -1288,6 +1335,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         return;
       }
       if (!this._sessionId) this._conversationAccountId = launch.accountId;
+      if (this.bot && this._turnAuth.mode !== 'refused' && (!this._sessionId || this._conversationAuthMode === undefined)) this._conversationAuthMode = this._turnAuth.mode;
       try {
         const options = this.buildOptions(launch);
         turnLaunchAccountId = this._launchAccountId;
