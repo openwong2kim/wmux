@@ -44,6 +44,7 @@ export const WORKER_FRESH_MAIN =
 export const COMMON_POWERS: Readonly<Record<string, string>> = {
   room_post: 'post one typed card into your workspace\'s room; the card kind is the output it carries. To speak to other bots, put their bot ids in mentions: each one is woken once. To hand the owner files you or your workers made (a report, a spec, a diff), list their paths in files; the owner opens them from the card.',
   room_read: 'read your room or one thread of it, oldest first, paging with since_seq.',
+  room_search: 'search your room\'s earlier cards by words, newest first, before asking the owner to repeat something; read around a hit with room_read.',
   handoff_send: 'hand work to another bot or report back on work handed to you; to_bot_id names one bot in any workspace, and wmux wakes it.',
   ask_person: 'put a question to the owner as a question card (and on their phone), with options when the answer is a choice; their answer wakes you.',
   question_close: 'close one of your own open questions once it needs no answer (the owner answered in chat, its subject is done); a new question of yours in the same thread replaces the open one by itself.',

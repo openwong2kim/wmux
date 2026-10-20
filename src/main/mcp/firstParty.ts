@@ -346,6 +346,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'fact.poll',
   'room.post',
   'room.read',
+  'room.search',
   'handoff.send',
   'ask.person',
   'pr.read',

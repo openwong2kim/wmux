@@ -59,7 +59,7 @@ export const FACTORY_RPC_METHODS: readonly RpcMethod[] = [
   FACT_RPC.poll, FACT_RPC.emit,
   BOT_RPC.list, BOT_RPC.create, BOT_RPC.update, BOT_RPC.remove, BOT_RPC.status,
   BOT_RPC.wake, BOT_RPC.park, BOT_RPC.resume, BOT_RPC.interrupt,
-  ROOM_RPC.post, ROOM_RPC.read, ROOM_RPC.threads, ROOM_RPC.resolve,
+  ROOM_RPC.post, ROOM_RPC.read, ROOM_RPC.search, ROOM_RPC.threads, ROOM_RPC.resolve,
   HANDOFF_RPC.send, HANDOFF_RPC.answer, HANDOFF_RPC.list,
   ASK_PERSON_RPC,
   FACTORY_READ_RPC.prRead, FACTORY_READ_RPC.issueRead, FACTORY_READ_RPC.ciRead,
@@ -96,6 +96,7 @@ export const BOT_TOOL_RPC = {
   fact_poll: [FACT_RPC.poll],
   room_post: [ROOM_RPC.post],
   room_read: [ROOM_RPC.read],
+  room_search: [ROOM_RPC.search],
   handoff_send: [HANDOFF_RPC.send],
   ask_person: [ASK_PERSON_RPC],
   pr_read: [FACTORY_READ_RPC.prRead],
@@ -184,7 +185,7 @@ export type RoleSurface = BotSurface;
 /** Every bot's tools, in the order the system prompt lists them. */
 export const SHARED_SURFACE_TOOLS: readonly BotToolName[] = [
   // talk
-  'room_post', 'room_read', 'handoff_send', 'ask_person', 'question_close', 'bot_list',
+  'room_post', 'room_read', 'room_search', 'handoff_send', 'ask_person', 'question_close', 'bot_list',
   // own profile and work
   'job_set', 'routine_set', 'routine_list', 'routine_pause', 'stop_my_work',
   'workflow_create', 'workflow_read', 'workflow_advance',

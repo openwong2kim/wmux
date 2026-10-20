@@ -42,6 +42,8 @@ const CLEAN_ONLY_TOOLS: readonly BotToolName[] = [
   'workflow_create', 'workflow_advance', 'approval_request', 'skill_propose',
   // The bot's own saved work and skills: a guest's reply does not need them.
   'routine_list', 'workflow_read', 'skill_read',
+  // Searching the room's history: a guest's reply does not need it.
+  'room_search',
   'secret_request', 'secret_list', 'login_request',
 ];
 

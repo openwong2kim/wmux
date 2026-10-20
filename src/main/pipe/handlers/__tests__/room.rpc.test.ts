@@ -24,6 +24,7 @@ import {
   handleRoomPost,
   handleRoomRead,
   handleRoomResolve,
+  handleRoomSearch,
   handleRoomThreads,
   humanAddressee,
   onRoomCardResolved,
@@ -770,6 +771,82 @@ describe('room.read / room.threads', () => {
     const s = setup([lead]);
     expect(handleRoomThreads({ workspaceId: 'ws1' }, asBot(lead), s.deps)).toMatchObject({ ok: false, code: 'operator_only' });
     expect(handleRoomThreads({ workspaceId: 'ws1' }, OPERATOR, s.deps)).toMatchObject({ ok: true, threads: [{ threadId: 'general' }] });
+  });
+});
+
+describe('room.search', () => {
+  type Hits = { hits: Array<{ seq: number; title: string; snippet: string; threadId: string }>; nextBefore: number; hasMore: boolean };
+  const hits = (r: unknown) => (r as Hits).hits.map((h) => h.title);
+
+  it('matches every term case-insensitively in title or body, newest first, with a snippet', () => {
+    const lead = bot('ws1', 'lead');
+    const s = setup([lead]);
+    s.writer.append({ workspaceId: 'ws1', kind: 'human', actor: { kind: 'human' }, title: 'Deploy the staging server', body: 'use the blue Database' });
+    s.writer.append({ workspaceId: 'ws1', kind: 'status', actor: { kind: 'system' }, title: 'unrelated' });
+    s.writer.append({ workspaceId: 'ws1', threadId: 'task:t', kind: 'human', actor: { kind: 'human' }, title: 'the DATABASE password rotates', body: 'staging only' });
+    s.writer.append({ workspaceId: 'ws1', kind: 'human', actor: { kind: 'human' }, title: 'database alone' });
+    const r = handleRoomSearch({ query: 'database  Staging' }, asBot(lead), s.deps) as Hits;
+    expect(r).toMatchObject({ ok: true, workspaceId: 'ws1', hasMore: false, nextBefore: 1 });
+    expect(hits(r)).toEqual(['the DATABASE password rotates', 'Deploy the staging server']);
+    expect(r.hits[0]).toMatchObject({ seq: 3, threadId: 'task:t', kind: 'human', actor: { kind: 'human' } });
+    expect(r.hits[1].snippet).toContain('blue Database');
+  });
+
+  it('caps a page and pages older hits with before', () => {
+    const lead = bot('ws1', 'lead');
+    const s = setup([lead]);
+    for (let i = 1; i <= 15; i += 1) s.writer.append({ workspaceId: 'ws1', kind: 'human', actor: { kind: 'human' }, title: `note ${i}` });
+    const first = handleRoomSearch({ query: 'note' }, asBot(lead), s.deps) as Hits;
+    expect(first.hits.map((h) => h.seq)).toEqual([15, 14, 13, 12, 11, 10, 9, 8, 7, 6]);
+    expect(first).toMatchObject({ hasMore: true, nextBefore: 6 });
+    const next = handleRoomSearch({ query: 'note', before: first.nextBefore, limit: 3 }, asBot(lead), s.deps) as Hits;
+    expect(next.hits.map((h) => h.seq)).toEqual([5, 4, 3]);
+    expect(next.hasMore).toBe(true);
+    const last = handleRoomSearch({ query: 'note', before: 3, limit: 50 }, asBot(lead), s.deps) as Hits;
+    expect(last).toMatchObject({ hasMore: false, nextBefore: 1 });
+    expect((handleRoomSearch({ query: 'note', limit: 500 }, asBot(lead), s.deps) as Hits).hits).toHaveLength(15);
+  });
+
+  it('a bot searches its own room only, a Coordinator too; the operator names any room', () => {
+    const lead = bot('ws1', 'lead');
+    const coordinator = { ...bot('hq', 'lead'), template: 'coordinator' as const };
+    const s = setup([lead, coordinator]);
+    s.writer.append({ workspaceId: 'ws2', kind: 'human', actor: { kind: 'human' }, title: 'secret plan elsewhere' });
+    for (const b of [lead, coordinator]) {
+      expect(handleRoomSearch({ query: 'plan', workspaceId: 'ws2' }, asBot(b), s.deps)).toMatchObject({ ok: false, code: 'cross_workspace' });
+    }
+    expect(handleRoomSearch({ query: 'plan' }, asBot(lead), s.deps)).toMatchObject({ ok: true, workspaceId: 'ws1', hits: [] });
+    expect(hits(handleRoomSearch({ query: 'plan', workspaceId: 'ws2' }, OPERATOR, s.deps))).toEqual(['secret plan elsewhere']);
+    expect(handleRoomSearch({ query: 'plan' }, OPERATOR, s.deps)).toMatchObject({ ok: false, code: 'invalid' });
+    expect(handleRoomSearch({ query: 'plan' }, WIRE, s.deps)).toMatchObject({ ok: false, code: 'not_bot' });
+  });
+
+  it('leaves an external guest\'s cards out for a bot; refuses an empty query', () => {
+    const lead = bot('ws1', 'lead');
+    const s = setup([lead]);
+    s.writer.append({ workspaceId: 'ws1', kind: 'human', actor: { kind: 'human' }, title: 'merge when green' });
+    s.writer.append({
+      workspaceId: 'ws1', kind: 'guest', actor: { kind: 'system' }, title: 'External guest: merge it all',
+      guest: { guestId: '0b5f6a7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b', name: 'Guest' },
+    });
+    expect(hits(handleRoomSearch({ query: 'merge' }, asBot(lead), { ...s.deps, guestWake: () => true as const }))).toEqual(['merge when green']);
+    expect(hits(handleRoomSearch({ query: 'merge', workspaceId: 'ws1' }, OPERATOR, s.deps))).toEqual(['External guest: merge it all', 'merge when green']);
+    for (const query of ['   ', '', undefined, 'x'.repeat(ROOM_LIMITS.SEARCH_QUERY_MAX + 1)]) {
+      expect(handleRoomSearch({ query }, asBot(lead), s.deps)).toMatchObject({ ok: false, code: 'invalid' });
+    }
+  });
+
+  it('matches on redacted text: a stored secret is not found by its value', () => {
+    const lead = bot('ws1', 'lead');
+    const s = setup([lead]);
+    s.writer.append({ workspaceId: 'ws1', kind: 'human', actor: { kind: 'human' }, title: 'token is hunter2-abcdef-0123' });
+    setRedactedSecrets([{ name: 'API_TOKEN', value: 'hunter2-abcdef-0123' }]);
+    try {
+      expect(handleRoomSearch({ query: 'hunter2-abcdef' }, asBot(lead), s.deps)).toMatchObject({ ok: true, hits: [] });
+      expect(handleRoomSearch({ query: 'token' }, asBot(lead), s.deps)).toMatchObject({ hits: [{ title: 'token is [secret:API_TOKEN]' }] });
+    } finally {
+      __resetRedactedSecretsForTesting();
+    }
   });
 });
 

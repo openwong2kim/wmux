@@ -170,6 +170,7 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       'fact.poll',
       'room.post',
       'room.read',
+      'room.search',
           'handoff.send',
       'ask.person',
       'pr.read',

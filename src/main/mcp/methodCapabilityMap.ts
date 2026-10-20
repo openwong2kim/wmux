@@ -606,6 +606,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'bot.interrupt':     { capability: 'wmux.internal' },
   'room.post':         { capability: 'wmux.internal' },
   'room.read':         { capability: 'wmux.internal' },
+  'room.search':       { capability: 'wmux.internal' },
   'room.threads':      { capability: 'wmux.internal' },
   'room.resolve':      { capability: 'wmux.internal' },
   'handoff.send':      { capability: 'wmux.internal' },

@@ -47,6 +47,7 @@ import {
   type CardKind,
   type CardNotice,
   type RoomCard,
+  type RoomSearchHit,
   type ThreadId,
   type ThreadSummary,
 } from '../../shared/room';
@@ -406,6 +407,32 @@ export function capBody(value: unknown, max: number = ROOM_LIMITS.CARD_BODY_MAX)
   if (typeof value !== 'string') return '';
   // eslint-disable-next-line no-control-regex
   return value.replace(/\u0000/g, '').slice(0, max);
+}
+
+/** A room.search query as its terms: lowercased, split on whitespace,
+ *  repeats dropped, at most SEARCH_TERMS_MAX. Empty for no words. Pure. */
+export function searchTerms(query: unknown): string[] {
+  if (typeof query !== 'string') return [];
+  const terms = new Set(query.toLowerCase().split(/\s+/).filter(Boolean));
+  return [...terms].slice(0, ROOM_LIMITS.SEARCH_TERMS_MAX);
+}
+
+const SNIPPET_LEAD = 60;
+const SNIPPET_CHARS = 160;
+
+/** A one-line excerpt of `text` around its first match when every term
+ *  (lowercase) appears in it, else null. Pure. */
+export function matchSnippet(text: string, terms: readonly string[]): string | null {
+  const lower = text.toLowerCase();
+  let first = Infinity;
+  for (const term of terms) {
+    const at = lower.indexOf(term);
+    if (at < 0) return null;
+    first = Math.min(first, at);
+  }
+  const start = Math.max(0, first - SNIPPET_LEAD);
+  const end = Math.min(text.length, start + SNIPPET_CHARS);
+  return `${start > 0 ? '…' : ''}${oneLine(text.slice(start, end), SNIPPET_CHARS)}${end < text.length ? '…' : ''}`;
 }
 
 function shortString(v: unknown): string | undefined {
@@ -982,6 +1009,35 @@ export class RoomWriter {
     const after = scoped.filter((c) => c.seq > since);
     const cards = after.slice(0, limit);
     return { cards: redactStoredSecretsDeep(cards), nextSinceSeq: cards[cards.length - 1]?.seq ?? since, hasMore: after.length > limit };
+  }
+
+  /** The cards whose title or body holds every term (searchTerms), newest
+   *  first, at most `limit` (≤ SEARCH_MAX), only those with seq < `before`
+   *  when given. Matched on the redacted text, so a stored bot secret is
+   *  never found by its value. Guest cards are left out unless `guests` is
+   *  set, as in `read`. */
+  search(workspaceId: string, terms: readonly string[], opts: { before?: number; limit?: number; guests?: boolean } = {}): { hits: RoomSearchHit[]; nextBefore: number; hasMore: boolean } {
+    const state = this.room(workspaceId);
+    const before = typeof opts.before === 'number' && Number.isFinite(opts.before) ? opts.before : Infinity;
+    if (!state || terms.length === 0) return { hits: [], nextBefore: 0, hasMore: false };
+    const limit = Math.max(1, Math.min(ROOM_LIMITS.SEARCH_MAX, Math.floor(opts.limit ?? ROOM_LIMITS.SEARCH_DEFAULT)));
+    const hits: RoomSearchHit[] = [];
+    let hasMore = false;
+    for (let i = state.cards.length - 1; i >= 0; i -= 1) {
+      const c = state.cards[i];
+      if (c.seq >= before) continue;
+      if (isGuestSourcedCard(c) && opts.guests !== true) continue;
+      const title = redactStoredSecrets(c.title);
+      const text = c.body ? `${title}\n${redactStoredSecrets(c.body)}` : title;
+      const snippet = matchSnippet(text, terms);
+      if (snippet === null) continue;
+      if (hits.length === limit) {
+        hasMore = true;
+        break;
+      }
+      hits.push({ seq: c.seq, cardId: c.id, threadId: c.threadId, kind: c.kind, at: c.at, actor: c.actor, title, snippet });
+    }
+    return { hits, nextBefore: hits[hits.length - 1]?.seq ?? 0, hasMore };
   }
 
   summary(workspaceId: string, threadId: ThreadId): ThreadSummary {

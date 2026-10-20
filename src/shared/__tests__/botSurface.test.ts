@@ -19,7 +19,7 @@ import { FIRST_PARTY_METHODS } from '../../main/mcp/firstParty';
 import { METHOD_CAPABILITY, resolveRequiredCapability } from '../../main/mcp/methodCapabilityMap';
 import type { RpcMethod } from '../rpc';
 
-const COMMON = ['ask_person', 'room_post', 'room_read', 'handoff_send', 'fact_poll'];
+const COMMON = ['ask_person', 'room_post', 'room_read', 'room_search', 'handoff_send', 'fact_poll'];
 
 describe('ROLE_SURFACES', () => {
   it('defines every role', () => {
@@ -66,6 +66,13 @@ describe('ROLE_SURFACES', () => {
     expect('bot_park' in BOT_TOOL_RPC).toBe(true);
     expect(SHARED_SURFACE.tools.has('bot_park')).toBe(false);
     expect(SHARED_SURFACE.rpc.has('bot.park')).toBe(false);
+  });
+
+  it('room.search is every bot\'s, in its own room only: no Coordinator extension covers it', () => {
+    expect(BOT_TOOL_RPC.room_search).toEqual(['room.search']);
+    expect(SHARED_SURFACE.rpc.has('room.search')).toBe(true);
+    expect(FACTORY_RPC_METHODS).toContain('room.search');
+    expect('room.search' in COORDINATOR_READ_EXTENSION).toBe(false);
   });
 
   it('the Coordinator extension names only read methods already on the surface (and plan.propose)', () => {

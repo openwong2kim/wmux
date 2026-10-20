@@ -692,6 +692,7 @@ export type RpcMethod =
   | 'bot.interrupt'
   | 'room.post'
   | 'room.read'
+  | 'room.search'
   | 'room.threads'
   | 'room.resolve'
   | 'handoff.send'
@@ -994,6 +995,7 @@ export const ALL_RPC_METHODS = [
   'bot.interrupt',
   'room.post',
   'room.read',
+  'room.search',
   'room.threads',
   'room.resolve',
   'handoff.send',

@@ -18,6 +18,8 @@
 //   room.read     a bot: its own room (a Coordinator-template bot, by its live
 //                 profile: any room); the operator: any room, and may record
 //                 its read position (markThroughSeq).
+//   room.search   a bot: its own room only (no Coordinator extension), never
+//                 a guest's cards; the operator: any room.
 //   room.threads  the operator.
 //   room.resolve  the operator: answers a question card (through its
 //                 decision, which the handoff router turns into the answer)
@@ -45,6 +47,8 @@ import {
   type RoomReadParams,
   type RoomReadResult,
   type RoomResolveParams,
+  type RoomSearchParams,
+  type RoomSearchResult,
   type RoomThreadsParams,
 } from '../../../shared/room';
 import type { RpcContext } from '../../../shared/rpc';
@@ -69,6 +73,7 @@ import {
   runningWake,
   runningWakeThread,
   sanitizeRefs,
+  searchTerms,
   setRoomWriter,
   wakeReplyTo,
   writeFactCards,
@@ -538,6 +543,34 @@ export function handleRoomRead(raw: unknown, ctx: RpcContext | undefined, deps: 
   return result;
 }
 
+export function handleRoomSearch(raw: unknown, ctx: RpcContext | undefined, deps: RoomHandlerDeps): unknown {
+  const caller = factoryCaller(ctx);
+  if ('ok' in caller) return caller;
+  const writer = deps.writer();
+  if (!writer) return notStarted();
+  const p = params(raw) as Partial<RoomSearchParams>;
+  // A bot searches its own room only: unlike room.read, a Coordinator's
+  // reach into other rooms does not extend to search.
+  if (caller.kind === 'bot' && p.workspaceId !== undefined && p.workspaceId !== caller.bot.workspaceId) {
+    return refusal('cross_workspace', 'a bot searches its own workspace\'s room only');
+  }
+  const ws = readableWorkspace(caller, p.workspaceId, 'room_search', deps.ports());
+  if (typeof ws !== 'string') return ws;
+  if (typeof p.query !== 'string' || p.query.length > ROOM_LIMITS.SEARCH_QUERY_MAX) {
+    return refusal('invalid', `query is required, at most ${ROOM_LIMITS.SEARCH_QUERY_MAX} characters`);
+  }
+  const terms = searchTerms(p.query);
+  if (terms.length === 0) return refusal('invalid', 'query has no words');
+  const page = writer.search(ws, terms, {
+    ...(typeof p.before === 'number' ? { before: p.before } : {}),
+    ...(typeof p.limit === 'number' ? { limit: p.limit } : {}),
+    // An external guest's cards: the owner's views only (see handleRoomRead).
+    guests: caller.kind === 'operator',
+  });
+  const result: RoomSearchResult = { ok: true, workspaceId: ws, ...page };
+  return result;
+}
+
 export function handleRoomThreads(raw: unknown, ctx: RpcContext | undefined, deps: RoomHandlerDeps): unknown {
   const caller = factoryCaller(ctx);
   if ('ok' in caller) return caller;
@@ -631,6 +664,7 @@ export async function handleRoomResolve(raw: unknown, ctx: RpcContext | undefine
 export function registerRoomHandlers(router: Pick<FactoryRouter, 'register'>, deps: RoomHandlerDeps): void {
   router.register(ROOM_RPC.post, (raw, ctx) => handleRoomPost(raw, ctx, deps));
   router.register(ROOM_RPC.read, async (raw, ctx) => handleRoomRead(raw, ctx, deps));
+  router.register(ROOM_RPC.search, async (raw, ctx) => handleRoomSearch(raw, ctx, deps));
   router.register(ROOM_RPC.threads, async (raw, ctx) => handleRoomThreads(raw, ctx, deps));
   router.register(ROOM_RPC.resolve, (raw, ctx) => handleRoomResolve(raw, ctx, deps));
 }
