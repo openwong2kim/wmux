@@ -306,16 +306,14 @@ const GIT_FLOOR_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'credential', 'credential-store', 'credential-cache', 'daemon', 'submodule', 'hook',
 ]);
 
-/** Whether `dir` (relative to the bot folder) is the bot folder or the
- *  bot's repository, or inside one of them, by text and with symlinks
- *  followed. A missing folder, or one named with `..`, is not. */
+/** Whether `dir` (relative to the bot folder) is the bot folder itself or
+ *  the bot's repository itself, by text and with symlinks followed — never
+ *  a folder inside them, where the bot could have built a repository with
+ *  its own config. A missing folder, or one named with `..`, is not. */
 function gitDirAllowed(dir: string, ctx: FloorContext): boolean {
   if (dir.split(/[\\/]+/).includes('..')) return false;
   const realpath = ctx.fs?.realpath ?? ((p: string) => fs.realpathSync.native(p));
-  const within = (root: string, target: string): boolean => {
-    const rel = path.relative(root, target);
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
-  };
+  const same = (root: string, target: string): boolean => path.relative(root, target) === '';
   const target = path.resolve(ctx.botDir, dir);
   let real: string;
   try {
@@ -324,9 +322,9 @@ function gitDirAllowed(dir: string, ctx: FloorContext): boolean {
     return false;
   }
   return [ctx.botDir, ctx.repoRoot].some((root) => {
-    if (!root || !within(root, target)) return false;
+    if (!root || !same(root, target)) return false;
     try {
-      return within(realpath(root), real);
+      return same(realpath(root), real);
     } catch {
       return false;
     }
@@ -341,7 +339,7 @@ function gitRefusal(args: readonly string[], ctx: FloorContext): string | null {
     if (a.startsWith('--git-dir') || a.startsWith('--work-tree')) return `git ${a} names another repository; use -C with the bot folder or its repository`;
     if (a === '-C') {
       const dir = args[k + 1];
-      if (dir === undefined || !gitDirAllowed(dir, ctx)) return `git -C ${dir ?? ''} is outside the bot folder and its repository`.trim();
+      if (dir === undefined || !gitDirAllowed(dir, ctx)) return `git -C ${dir ?? ''} is neither the bot folder nor its repository`.trim();
       k++;
     } else if (a === '--namespace') {
       k++;
@@ -438,8 +436,10 @@ export function normalizeCommand(pipelines: readonly Pipeline[], joins: readonly
     .reduce((line, part, k) => (k === 0 ? part : `${line} ${joins[k - 1] ?? ';'} ${part}`), '');
 }
 
-/** Set for every git a bot runs: no system or global git config is read. */
-const GIT_RUN_ENV: readonly string[] = ['GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null'];
+/** Set for every git a bot runs: no system or global git config is read,
+ *  and no missing object is fetched (a partial clone's lazy fetch runs the
+ *  repository's upload-pack; git 2.45 and later, older ones ignore it). */
+const GIT_RUN_ENV: readonly string[] = ['GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null', 'GIT_NO_LAZY_FETCH=1'];
 
 /** Config main sets on every git a bot runs, over the repository's own:
  *  nothing it reads may start a program. An empty core.fsmonitor is off in
@@ -447,6 +447,9 @@ const GIT_RUN_ENV: readonly string[] = ['GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLO
  *  programs are `false`, so a signature format or log.showSignature checks
  *  nothing. */
 const GIT_RUN_CONFIG: readonly string[] = [
+  // A bare repository the bot wrote into its folder (its own config, filter
+  // drivers and all) is not used unless named with --git-dir, which is refused.
+  'safe.bareRepository=explicit',
   'core.fsmonitor=',
   'core.hooksPath=/dev/null',
   'core.pager=cat',

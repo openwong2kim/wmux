@@ -481,7 +481,7 @@ const BOT_GRANTABLE_TOOLS: readonly string[] = ['Read', 'Grep', 'Glob', ...BOT_E
 
 /** What a bot that may run commands is told (the rest is decided by main). */
 export const BOT_EXEC_PROMPT =
-  'Commands: in a turn the owner started (their message or the run button) you may run small read-only shell commands with Bash, and write or edit files with Write and Edit, in your own folder only. Commands run sandboxed, with no network, no credentials and nothing of the home folder but your own folder; wmux refuses anything not on your command list. Words are taken literally: globs, braces and ~ do not expand (name files plainly, quote odd characters). Changing the repository, builds and tests stay a worker\'s (fan-out).';
+  'Commands: in a turn the owner started (their message or the run button) you may run small read-only shell commands with Bash, and write or edit files with Write and Edit, in your own folder only. Commands run sandboxed, with no network, no credentials and nothing of the home folder but your own folder; wmux refuses anything not on your command list. Words are taken literally: globs, braces and ~ do not expand (name files plainly, quote odd characters). Commands cannot read a repository under the home folder: read yours with Read, Grep and Glob, not git. Changing the repository, builds and tests stay a worker\'s (fan-out).';
 
 /** A bot's disallowed list: BOT_DISALLOWED_TOOLS plus every grantable tool
  *  it was not given. Pure. */

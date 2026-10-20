@@ -187,13 +187,13 @@ describe('git as it runs', () => {
   const OVERRIDES = [
     '--no-pager', '--no-optional-locks',
     "'-c' 'core.fsmonitor='", "'-c' 'core.hooksPath=/dev/null'", "'-c' 'core.pager=cat'", "'-c' 'core.editor=false'",
-    "'-c' 'log.showSignature=false'", "'-c' 'gpg.program=false'",
+    "'-c' 'log.showSignature=false'", "'-c' 'gpg.program=false'", "'-c' 'safe.bareRepository=explicit'",
   ];
   it.each(['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git branch -a'])('%s runs with no system or global config and every program off', (line) => {
     const d = decide(line);
     expect(d.ok).toBe(true);
     const run = d.ok ? d.run : '';
-    expect(run.startsWith("GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \\command 'git' ")).toBe(true);
+    expect(run.startsWith("GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_NO_LAZY_FETCH=1 \\command 'git' ")).toBe(true);
     for (const o of OVERRIDES) expect(run, o).toContain(o);
   });
 
@@ -205,15 +205,17 @@ describe('git as it runs', () => {
     expect(decide('git commit -m x', [{ argv: ['git', 'commit'], anyArgs: true }])).toMatchObject({ ok: true, run: expect.stringContaining("'gpg.x509.program=false' 'commit'") });
   });
 
-  it('git -C names only the bot folder or its repository', () => {
+  it('git -C names only the bot folder itself or its repository itself', () => {
     const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'botexec-repo-')));
     try {
       fs.mkdirSync(path.join(botDir, 'sub'));
       const withRepo = (line: string) => decideBotCommand(line, { botDir, repoRoot: repo, rules: [] });
       expect(withRepo(`git -C ${repo} status`)).toMatchObject({ ok: true });
-      expect(withRepo('git -C sub status')).toMatchObject({ ok: true });
       expect(withRepo(`git -C ${botDir} log`)).toMatchObject({ ok: true });
-      for (const line of [`git -C ${outside} status`, 'git -C /etc status', 'git -C ../ status', 'git -C sub/../.. status', `git -C ${repo}/missing status`]) {
+      expect(withRepo('git -C . log')).toMatchObject({ ok: true });
+      // A folder inside either could be a repository the bot built itself.
+      fs.mkdirSync(path.join(repo, 'src'));
+      for (const line of ['git -C sub status', `git -C ${path.join(botDir, 'sub')} status`, `git -C ${path.join(repo, 'src')} status`, `git -C ${outside} status`, 'git -C /etc status', 'git -C ../ status', 'git -C sub/../.. status', `git -C ${repo}/missing status`]) {
         expect(withRepo(line), line).toMatchObject({ ok: false, layer: 'floor' });
       }
       // Without a repository only the bot folder.
