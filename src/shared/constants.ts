@@ -487,6 +487,13 @@ export const IPC = {
   // (main/factory/taskFolderCleanup.ts); main window only.
   FACTORY_TASK_FOLDERS_USAGE: 'factory:taskFolders:usage',
   FACTORY_TASK_FOLDERS_CLEAN: 'factory:taskFolders:clean',
+  // How bots sign in to Claude (main/factory/claudeApiKey.ts): the saved API
+  // key's status (never the key), saving and removing it, and the connection
+  // check; main window only.
+  FACTORY_CLAUDE_AUTH_STATUS: 'factory:claudeAuth:status',
+  FACTORY_CLAUDE_KEY_SET: 'factory:claudeAuth:setKey',
+  FACTORY_CLAUDE_KEY_REMOVE: 'factory:claudeAuth:removeKey',
+  FACTORY_CLAUDE_KEY_CHECK: 'factory:claudeAuth:check',
   TRACK_RECORD_CHANGED: 'trackRecord:changed',
   // The Fleet approvals tab's Plan card (shared/planApproval.ts): Claude's
   // ExitPlanMode dialogs, answered from the main window only.

@@ -47,11 +47,28 @@ export function secretForms(value: string): string[] {
   return [...forms].filter((f) => f.length >= BOT_SECRET_LIMITS.VALUE_MIN);
 }
 
+type RedactedEntries = ReadonlyArray<{ name: string; value: string }>;
+
+/** Each source's values: the secret store's, and the bots' Claude API key
+ *  (claudeApiKey.ts), so neither replaces the other's. */
+const sources = new Map<'store' | 'claudeApiKey', RedactedEntries>();
+
 /** Replace the set of values matched (the secret store calls this on load,
  *  set and delete). */
-export function setRedactedSecrets(entries: ReadonlyArray<{ name: string; value: string }>): void {
+export function setRedactedSecrets(entries: RedactedEntries): void {
+  sources.set('store', entries);
+  rebuildNeedles();
+}
+
+/** Replace the bots' Claude API key matched (claudeApiKey.ts). */
+export function setRedactedClaudeApiKey(entries: RedactedEntries): void {
+  sources.set('claudeApiKey', entries);
+  rebuildNeedles();
+}
+
+function rebuildNeedles(): void {
   const next: Needle[] = [];
-  for (const e of entries) {
+  for (const e of [...sources.values()].flat()) {
     if (typeof e.value !== 'string' || e.value.length < BOT_SECRET_LIMITS.VALUE_MIN) continue;
     for (const text of secretForms(e.value)) next.push({ text, marker: `[secret:${e.name}]` });
   }

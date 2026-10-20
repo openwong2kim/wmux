@@ -55,7 +55,7 @@
 import type { BotEngine, BotProfile, BotStatus, BotWorkerAgent } from '../../../shared/bot';
 import type { BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
 import type { BotTaskView, FactoryTaskFolderCleanResult, FactoryTaskFolderUsage } from '../../../shared/botTask';
-import type { BotsPlanConsent } from '../../../shared/factorySettings';
+import type { BotsPlanConsent, ClaudeAuthMode } from '../../../shared/factorySettings';
 import type { OwnerWorkflowCancelRequest, OwnerWorkflowCancelResult, OwnerWorkflowReadResult, OwnerWorkflowRequest } from '../../../shared/botWorkflow';
 import type {
   FactoryBotAvatarPickResult,
@@ -173,6 +173,8 @@ export interface FactorySettingsView {
   /** The owner's consent that bots run on their own Claude plan
    *  (Bots/BotsPlanConsent.tsx); turning bots on needs it. */
   planConsent?: BotsPlanConsent;
+  /** How Claude (SDK) bots sign in (absent: the subscription). */
+  claudeAuth?: ClaudeAuthMode;
 }
 
 export interface FactorySettingsPort {

@@ -54,7 +54,8 @@ import type { BrainAdapter, BrainEvent, BrainImage } from '../deck/BrainAdapter'
 import { USAGE_LIMIT_UNKNOWN_HOLD_MS, findClaudeUsageLimitNotice, parseUsageLimitReset, usageLimitHoldEndsAt } from '../../shared/usageLimit';
 import { emitBotHook } from './botHooks';
 import type { BotEngineFactory } from './botEngines';
-import { classifyEngineError, type EngineErrorCode } from './engineError';
+import { SUBSCRIPTION_REFUSED_GUIDANCE, classifyEngineError, isSubscriptionRefusal, type EngineErrorCode } from './engineError';
+import { botClaudeAuthMode } from '../../shared/factorySettings';
 import type { BotStore } from './botStore';
 import {
   budgetLeft, checkTurn, costUsdDay, hourlyCap, nextTurnAllowedAt, recordCost, recordTurn, runningWorkers, turnsUsedDay, turnsUsedHour, unrecordTurn,
@@ -1253,8 +1254,16 @@ export class BotRuntime {
     // interrupted (R8) instead of replaying it.
     if (this.disposed) return;
     const limitNotice = outcome === 'failed' || outcome === 'engine' ? usageLimitNoticeOf(message) : null;
-    const retryIn = outcome === 'failed' && limitNotice === null ? this.transientRetryDelay(item.id, message) : null;
-    const finalAttempt = outcome !== 'failed' || item.attempts >= WAKE_LIMITS.MAX_ATTEMPTS;
+    // The subscription refused a Claude bot's request: no retry changes
+    // that. The bot parks and the owner is told to switch Bots to an API key
+    // (said in its lastError and the room's error card).
+    const subscriptionRefused = limitNotice === null && (outcome === 'failed' || outcome === 'engine')
+      && profile.engine.kind === 'claude-sdk' && botClaudeAuthMode(this.deps.settings()) === 'subscription'
+      && isSubscriptionRefusal(message);
+    // Neither does a missing API key.
+    const noRetry = subscriptionRefused || classifyEngineError(message) === 'api_key_missing';
+    const retryIn = outcome === 'failed' && limitNotice === null && !noRetry ? this.transientRetryDelay(item.id, message) : null;
+    const finalAttempt = outcome !== 'failed' || noRetry || item.attempts >= WAKE_LIMITS.MAX_ATTEMPTS;
     // Spent network retries stay counted until the wake ends, so the
     // ordinary retry after them does not earn a fresh set.
     if (retryIn === null && finalAttempt) {
@@ -1306,19 +1315,20 @@ export class BotRuntime {
       // logged in · Please run /login") gets the same code as the engine's
       // own refusal, so the parked bot shows its Fix card; any other failed
       // turn keeps no code.
-      const classified = classifyEngineError(message);
+      const classified: EngineErrorCode = subscriptionRefused ? 'subscription_refused' : classifyEngineError(message);
       const code = outcome === 'engine' || classified !== 'other' ? classified : undefined;
+      const shown = subscriptionRefused ? `${SUBSCRIPTION_REFUSED_GUIDANCE} Claude said: ${message}` : message;
       // Signed out on a registered account: the card names it (main's own
       // sign-in may be fine).
       const account = code === 'not_logged_in' ? this.accountName(profile) : null;
-      this.lastError.set(botId, { message: message.slice(0, 500), at, ...(code ? { code } : {}), ...(account ? { account } : {}) });
-      const giveUp = outcome === 'engine' || item.attempts >= WAKE_LIMITS.MAX_ATTEMPTS;
+      this.lastError.set(botId, { message: shown.slice(0, 500), at, ...(code ? { code } : {}), ...(account ? { account } : {}) });
+      const giveUp = outcome === 'engine' || noRetry || item.attempts >= WAKE_LIMITS.MAX_ATTEMPTS;
       if (!giveUp) {
         this.deps.queue.retry(item.id);
       } else {
         this.deps.queue.park(item.id);
         if (this.deps.store.get(botId)) this.deps.store.setParked(botId, { reason: 'error', at });
-        emitBotHook({ type: 'bot.error', botId, workspaceId: profile.workspaceId, message: message.slice(0, 500), wakeId: item.id, at });
+        emitBotHook({ type: 'bot.error', botId, workspaceId: profile.workspaceId, message: shown.slice(0, 500), wakeId: item.id, at });
       }
     }
     this.pushStatus(botId);

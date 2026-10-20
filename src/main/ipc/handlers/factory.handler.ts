@@ -48,6 +48,7 @@ import { resolveClaudeExecutable } from '../../claude/resolveClaudeExecutable';
 import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { ShellDetector } from '../../../shared/ShellDetector';
+import { checkClaudeApiKey, getClaudeApiKeyStore, type ClaudeApiKeyCheck, type ClaudeApiKeySetResult, type ClaudeApiKeyStatus, type ClaudeApiKeyStore } from '../../factory/claudeApiKey';
 
 export interface FactoryBotRow {
   bot: BotProfile;
@@ -420,6 +421,49 @@ export function factorySettingsSetHandler(
   };
 }
 
+/** The bots' Claude API key handlers (claudeApiKey.ts): main window only,
+ *  and none throws, so the key never reaches the IPC error log. What comes
+ *  back is the key's status, never the key. */
+export function factoryClaudeAuthHandlers(
+  getWindow: () => BrowserWindow | null,
+  store: () => ClaudeApiKeyStore = getClaudeApiKeyStore,
+  check: (key: string | null) => Promise<ClaudeApiKeyCheck> = (key) => checkClaudeApiKey(key),
+) {
+  const denied = { ok: false as const, code: 'operator_only' as const, message: 'only the main window may do this' };
+  const failed = { ok: false as const, code: 'error' as const, message: 'The request failed.' };
+  type E = { sender?: unknown; senderFrame?: unknown };
+  return {
+    status: (e: E): ClaudeApiKeyStatus | null => {
+      if (!isMainWindowSender(e, getWindow())) return null;
+      try { return store().status(); } catch { return null; }
+    },
+    setKey: (e: E, req: unknown): ClaudeApiKeySetResult | typeof denied | typeof failed => {
+      if (!isMainWindowSender(e, getWindow())) return denied;
+      try {
+        const key = req && typeof req === 'object' ? (req as { key?: unknown }).key : undefined;
+        return store().set(key);
+      } catch {
+        return failed;
+      }
+    },
+    removeKey: (e: E): { ok: boolean; status?: ClaudeApiKeyStatus } => {
+      if (!isMainWindowSender(e, getWindow())) return { ok: false };
+      try {
+        const s = store();
+        return s.remove() ? { ok: true, status: s.status() } : { ok: false };
+      } catch {
+        return { ok: false };
+      }
+    },
+    check: async (e: E): Promise<ClaudeApiKeyCheck | typeof denied> => {
+      if (!isMainWindowSender(e, getWindow())) return denied;
+      let key: string | null = null;
+      try { key = store().key(); } catch { key = null; }
+      return check(key);
+    },
+  };
+}
+
 export function registerFactoryHandlers(
   getWindow: () => BrowserWindow | null,
   suggestDeps: Pick<BotRepoSuggestDeps, 'cwdOf'> = {},
@@ -443,6 +487,10 @@ export function registerFactoryHandlers(
     IPC.FACTORY_WORKER_AGENTS,
     IPC.FACTORY_TASK_FOLDERS_USAGE,
     IPC.FACTORY_TASK_FOLDERS_CLEAN,
+    IPC.FACTORY_CLAUDE_AUTH_STATUS,
+    IPC.FACTORY_CLAUDE_KEY_SET,
+    IPC.FACTORY_CLAUDE_KEY_REMOVE,
+    IPC.FACTORY_CLAUDE_KEY_CHECK,
   ];
   for (const c of channels) ipcMain.removeHandler(c);
 
@@ -495,6 +543,13 @@ export function registerFactoryHandlers(
   ipcMain.handle(IPC.FACTORY_TASK_FOLDERS_USAGE, wrapHandler(IPC.FACTORY_TASK_FOLDERS_USAGE, factoryTaskFoldersUsageHandler(getWindow)));
 
   ipcMain.handle(IPC.FACTORY_TASK_FOLDERS_CLEAN, wrapHandler(IPC.FACTORY_TASK_FOLDERS_CLEAN, factoryTaskFoldersCleanHandler(getWindow)));
+
+  // Never through wrapHandler: these never throw, and the key never reaches its log.
+  const claudeAuth = factoryClaudeAuthHandlers(getWindow);
+  ipcMain.handle(IPC.FACTORY_CLAUDE_AUTH_STATUS, (e) => claudeAuth.status(e));
+  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_SET, (e, req: unknown) => claudeAuth.setKey(e, req));
+  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_REMOVE, (e) => claudeAuth.removeKey(e));
+  ipcMain.handle(IPC.FACTORY_CLAUDE_KEY_CHECK, (e) => claudeAuth.check(e));
 
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);

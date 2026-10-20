@@ -29,6 +29,17 @@ export function hasBotsPlanConsent(s: { planConsent?: BotsPlanConsent | null } |
   return s?.planConsent?.version === BOTS_PLAN_CONSENT_VERSION;
 }
 
+/** How a Claude (SDK) bot's brain signs in: the owner's Claude
+ *  subscription (the Claude Code sign-in here) or a Claude API key the
+ *  owner saved in Settings › Bots (main/factory/claudeApiKey.ts). Bots only:
+ *  the workspace brain always runs on the subscription. */
+export type ClaudeAuthMode = 'subscription' | 'apiKey';
+
+/** The mode `s` asks for (absent: the subscription). Pure. */
+export function botClaudeAuthMode(s: { claudeAuth?: ClaudeAuthMode } | null | undefined): ClaudeAuthMode {
+  return s?.claudeAuth === 'apiKey' ? 'apiKey' : 'subscription';
+}
+
 export interface FactorySettings {
   version: typeof FACTORY_SETTINGS_VERSION;
   enabled: boolean;
@@ -63,6 +74,9 @@ export interface FactorySettings {
    *  a file from before the consent existed (bots that were on stay on; the
    *  Bots page asks once). */
   planConsent?: BotsPlanConsent;
+  /** Bots run on a Claude API key instead of the subscription. Absent: the
+   *  subscription (every file from before this setting). */
+  claudeAuth?: ClaudeAuthMode;
 }
 
 export const FACTORY_CONCURRENT_BOTS_MIN = 1;

@@ -51,6 +51,7 @@ import Input from '../ui/Input';
 import { FOCUS_RING } from '../focusRing';
 import { BotSecretsSection, PhoneBotSelect } from './BotSecretsSection';
 import { BotConnectionsSection } from './BotConnectionsSection';
+import { ClaudeAuthSection, bridgeClaudeAuthPort, type ClaudeAuthPort } from './ClaudeAuthSection';
 import { InlineConfirm } from '../Bots/InlineConfirm';
 import { selectBotTaskOwners, withoutBotTasks } from '../Sidebar/botTasks';
 import { listedWorkspaces } from '../../stores/slices/moaSlice';
@@ -814,12 +815,15 @@ export interface FactoryTabProps {
   botPort?: FactoryBotPort;
   /** Tests: the folder picker for "Add bot" (default: the app's dialog). */
   pickFolder?: () => Promise<string | null>;
+  /** Tests: the bots' Claude sign-in port (default: the preload's). */
+  claudeAuthPort?: ClaudeAuthPort;
 }
 
-export function FactoryTab({ settingsPort, botPort, pickFolder }: FactoryTabProps): React.ReactElement {
+export function FactoryTab({ settingsPort, botPort, pickFolder, claudeAuthPort }: FactoryTabProps): React.ReactElement {
   const t = useT();
   const sPort = settingsPort ?? getFactorySettingsPort();
   const bPort = botPort ?? getFactoryBotPort();
+  const aPort = useMemo(() => claudeAuthPort ?? bridgeClaudeAuthPort(), [claudeAuthPort]);
   const [settings, setSettings] = useState<FactorySettingsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [authorsDraft, setAuthorsDraft] = useState<string | null>(null);
@@ -982,6 +986,7 @@ export function FactoryTab({ settingsPort, botPort, pickFolder }: FactoryTabProp
         <TaskFoldersRow port={sPort} t={t} disabled={off} />
         {error && <SettingNote tone="danger" role="alert">{error}</SettingNote>}
       </SettingsSection>
+      <ClaudeAuthSection t={t} mode={settings?.claudeAuth === 'apiKey' ? 'apiKey' : 'subscription'} disabled={off} onModeChange={(m) => void patch({ claudeAuth: m })} port={aPort} />
       <SettingsSection id="factorybots" title={t('settings.factory.bots')} description={t('settings.factory.botsDesc')}>
         <BotsList
           t={t}

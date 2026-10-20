@@ -169,6 +169,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'factorymorning', tab: 'factory', labelKey: 'settings.factory.morning', descKey: 'settings.factory.morningDesc', synonyms: 'morning report time schedule weekday wake 아침 보고' },
   { id: 'factoryverifierownprs', tab: 'factory', labelKey: 'settings.factory.verifierOwnPrs', descKey: 'settings.factory.verifierOwnPrsDesc', synonyms: 'verifier own pull request owner verify' },
   { id: 'factoryengine', tab: 'factory', labelKey: 'settings.factory.engine', descKey: 'settings.factory.engineDesc', synonyms: 'engine claude sdk pty acp hermes command bot runtime' },
+  { id: 'factoryclaudeauth', tab: 'factory', labelKey: 'settings.factory.claudeAuth.mode', descKey: 'settings.factory.claudeAuth.modeDesc', synonyms: 'api key anthropic claude subscription sign in login billing connection check 연결 키 구독 로그인' },
   { id: 'factoryconcurrency', tab: 'factory', labelKey: 'settings.factory.concurrency', descKey: 'settings.factory.concurrencyDesc', synonyms: 'concurrent bots limit cap parallel turn' },
   { id: 'factorymaxagents', tab: 'factory', labelKey: 'settings.factory.maxAgents', descKey: 'settings.factory.maxAgentsDesc', synonyms: 'agents workers memory budget slots limit cap queue' },
   { id: 'factorylaneautomerge', tab: 'factory', labelKey: 'settings.factory.laneAutoMerge', descKey: 'settings.factory.laneAutoMergeDesc', synonyms: 'merge lane auto merge automatic pull request verifier ci 자동 머지' },

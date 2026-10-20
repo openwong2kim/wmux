@@ -349,7 +349,7 @@ export interface BotStatus {
     message: string;
     at: number;
     /** A stable cause when the park came from engine_unavailable (engineError.ts). */
-    code?: 'not_installed' | 'not_logged_in' | 'mcp_missing' | 'acp_test_only' | 'unusable' | 'other';
+    code?: 'not_installed' | 'not_logged_in' | 'mcp_missing' | 'acp_test_only' | 'unusable' | 'api_key_missing' | 'subscription_refused' | 'other';
     /** `not_logged_in` on a registered account (not the default sign-in):
      *  that account's name. */
     account?: string;

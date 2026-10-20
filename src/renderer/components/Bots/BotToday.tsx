@@ -15,10 +15,11 @@ import { botBudgetView, type BotBlocker, type BotTodayLine } from './botBudgetVi
 import { bridgeEnginePort } from './botsEngine';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { CLAUDE_CODE_INSTALL_URL } from '../../../shared/factoryEngine';
+import { openFactorySettings } from './botsAddBot';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
-type EngineErrorCode = 'not_installed' | 'not_logged_in' | 'mcp_missing' | 'acp_test_only' | 'unusable' | 'other';
+type EngineErrorCode = 'not_installed' | 'not_logged_in' | 'mcp_missing' | 'acp_test_only' | 'unusable' | 'api_key_missing' | 'subscription_refused' | 'other';
 
 /** "2h 10m", "6h", "45m", "0m". */
 export function workerTimeText(min: number, t: T): string {
@@ -82,6 +83,8 @@ const ENGINE_ERROR_KEYS: Record<EngineErrorCode, string> = {
   mcp_missing: 'botsPage.engineError.mcpMissing',
   acp_test_only: 'botsPage.engineError.acpTestOnly',
   unusable: 'botsPage.engineError.unusable',
+  api_key_missing: 'settings.factory.claudeAuth.engineError.apiKeyMissing',
+  subscription_refused: 'settings.factory.claudeAuth.engineError.subscriptionRefused',
   other: 'botsPage.engineError.other',
 };
 
@@ -130,6 +133,11 @@ function EngineErrorCard({
         showWorkspaces(st);
         return;
       }
+      // Bots' Claude sign-in is chosen in Settings › Bots.
+      if (code === 'api_key_missing' || code === 'subscription_refused') {
+        openFactorySettings();
+        return;
+      }
       // mcp_missing / unusable / other / acp: resume after the owner fixed it,
       // or just open details — Resume is the recovery once the cause is gone.
       if (canResume) onResume();
@@ -146,9 +154,10 @@ function EngineErrorCard({
   const fixLabel =
     code === 'not_installed' ? t('botsPage.onboarding.install')
       : code === 'not_logged_in' ? t('botsPage.onboarding.login')
-        : t('botsPage.engineError.fix');
+        : code === 'api_key_missing' || code === 'subscription_refused' ? t('botsPage.openSettings')
+          : t('botsPage.engineError.fix');
 
-  const showFix = code === 'not_installed' || (code === 'not_logged_in' && !!engine.login) || canResume;
+  const showFix = code === 'not_installed' || (code === 'not_logged_in' && !!engine.login) || code === 'api_key_missing' || code === 'subscription_refused' || canResume;
 
   return (
     <div className="flex flex-col gap-1 pb-1" data-bots-engine-error={code} role="status">

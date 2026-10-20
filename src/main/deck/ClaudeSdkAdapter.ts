@@ -35,6 +35,7 @@ import { BOT_REPO_READ_TOOLS, botRepoReadDenyRules, evaluateBotRepoRead, grepOut
 import { redactStoredSecretsDeep } from '../factory/secretRedaction';
 import { guestGateProvenance } from '../factory/wakeTaint';
 import { claudeNotFoundMessage } from '../factory/engineError';
+import type { BotClaudeAuth } from '../factory/claudeApiKey';
 import type { BotBinding } from '../../shared/bot';
 import { GUEST_SAFE_BUILTIN_TOOLS, GUEST_TURN_SURFACE_REFUSAL, SHARED_SURFACE } from '../../shared/botSurface';
 import { evaluateCommanderToolPermission } from './commanderToolSandbox';
@@ -276,8 +277,21 @@ export interface ClaudeSdkAdapterDeps {
    *  directory (the bot's own empty folder). `allowedTools` should be the
    *  role's MCP tools; `fullPower` is ignored. With `repoRoot` the session
    *  also holds Read, Grep and Glob, each call decided by main inside that
-   *  repository (factory/botRepoRead.ts). */
-  bot?: { binding: BotBinding; cwd: string; wmuxDir?: string; repoRoot?: string };
+   *  repository (factory/botRepoRead.ts). `auth` says how the bot signs in
+   *  to Claude, read on every turn (absent: the subscription), and
+   *  `onAuthSeen` is told the sign-in the session reported (factory/
+   *  claudeApiKey.ts). */
+  bot?: BotDeps;
+}
+
+/** Bot mode's deps (ClaudeSdkAdapterDeps.bot). */
+export interface BotDeps {
+  binding: BotBinding;
+  cwd: string;
+  wmuxDir?: string;
+  repoRoot?: string;
+  auth?: () => BotClaudeAuth;
+  onAuthSeen?: (apiKeySource: string) => void;
 }
 
 // ─── Permission defaults (D2) ────────────────────────────────────────────────
@@ -788,7 +802,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    *  workspace (M1.5 confinement). */
   private readonly _commanderToken: string;
   /** Bot mode (see ClaudeSdkAdapterDeps.bot). */
-  private readonly bot?: { binding: BotBinding; cwd: string; wmuxDir?: string; repoRoot?: string };
+  private readonly bot?: BotDeps;
+  /** Bot mode: how this turn signs in (resolved at its start). */
+  private _turnAuth: BotClaudeAuth = { mode: 'subscription' };
   /** Bot mode: the current turn's token hand-off file, removed when the turn ends. */
   private _handoff: BotTokenHandoff | null = null;
 
@@ -853,7 +869,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    * Build the spawn environment. Forces subscription auth by DROPPING
    * ANTHROPIC_API_KEY (Options.env replaces the child env, so we spread
    * process.env then unset the key). A GLM/Z.ai profile injects the compatible
-   * base-url / auth-token overrides.
+   * base-url / auth-token overrides. A bot the owner set to a Claude API key
+   * gets the saved key instead (this turn's `_turnAuth`); nothing else does.
    */
   private buildEnv(launch: Extract<BackgroundLaunch, { kind: 'run' }>): Record<string, string | undefined> {
     const env: Record<string, string | undefined> = { ...process.env };
@@ -868,6 +885,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // when no account env was applied (default credential). Used to stamp limit
     // events (M3 §1a).
     this._launchAccountId = launch.accountId;
+    if (this.bot && this._turnAuth.mode === 'apiKey') env.ANTHROPIC_API_KEY = this._turnAuth.apiKey;
     if (this.profile?.baseUrl) env.ANTHROPIC_BASE_URL = this.profile.baseUrl;
     if (this.profile?.authToken) env.ANTHROPIC_AUTH_TOKEN = this.profile.authToken;
     return env;
@@ -1031,6 +1049,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         env: {
           ELECTRON_RUN_AS_NODE: '1',
           ...(process.env.WMUX_DATA_SUFFIX ? { WMUX_DATA_SUFFIX: process.env.WMUX_DATA_SUFFIX } : {}),
+          // The session's API key stays in the session: the MCP child would
+          // otherwise inherit it from claude.
+          ...(this._turnAuth.mode === 'apiKey' ? { ANTHROPIC_API_KEY: '' } : {}),
         },
       },
     };
@@ -1203,7 +1224,22 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // account under "Switch accounts by quota"; a resumed one stays where
       // its transcript is. Out of quota → a clear error instead of a spawn
       // that dies on a quota error. A profile with its own auth token does not
-      // sign in with the account, so its quota is not checked.
+      // sign in with the account, so its quota is not checked; nor does a bot
+      // on an API key.
+      // A bot signs in as the owner chose for bots, read now so a change in
+      // Settings applies from this turn; an API key that is not usable here
+      // ends the turn before anything spawns (never the subscription instead).
+      if (this.bot) {
+        try {
+          this._turnAuth = this.bot.auth?.() ?? { mode: 'subscription' };
+        } catch (err) {
+          this._turnAuth = { mode: 'refused', message: err instanceof Error ? err.message : String(err) };
+        }
+        if (this._turnAuth.mode === 'refused') {
+          yield { type: 'error', message: this._turnAuth.message };
+          return;
+        }
+      }
       this._launching = true;
       this._interruptedWhileLaunching = false;
       let launch: BackgroundLaunch;
@@ -1211,7 +1247,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         launch = await resolveBackgroundLaunch(this._workspaceId, 'claude', {
           resuming: !!this._sessionId,
           conversationAccountId: this._conversationAccountId,
-          checkQuota: !this.profile?.authToken,
+          checkQuota: !this.profile?.authToken && this._turnAuth.mode !== 'apiKey',
           onMissing: (acc) => console.warn(
             `[account] orchestrator ws ${this._workspaceId}: bound account "${acc.name}" configDir missing ` +
             `(${acc.configDir}) — falling back to the default credential.`,
@@ -1267,6 +1303,12 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       let stopForTools = false;
       try {
         outer: for await (const msg of handle) {
+          if (this.bot?.onAuthSeen && (msg as RawSdkMessage).type === 'system' && (msg as RawSdkMessage).subtype === 'init') {
+            const source = (msg as RawSdkMessage).apiKeySource;
+            if (typeof source === 'string') {
+              try { this.bot.onAuthSeen(source); } catch { /* status only */ }
+            }
+          }
           let events = normalizeSdkMessage(msg as RawSdkMessage, state);
           const noTools = guard?.observe(msg as RawSdkMessage) ?? null;
           if (noTools) {

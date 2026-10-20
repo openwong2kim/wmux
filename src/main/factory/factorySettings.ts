@@ -5,7 +5,8 @@
 // time, whether the Verifier runs on the owner's own PRs, the default engine
 // for new bots, the factory-wide cap on bots running a turn at once, the cap
 // on agents (bots and workers) running together, and the merge lane's
-// auto-merge switch (off by default) with its daily cap.
+// auto-merge switch (off by default) with its daily cap, and whether bots
+// sign in to Claude with the subscription (default) or an API key.
 // Fields are sanitised one by one on read and on update: a malformed field
 // falls back to its default instead of failing the whole file. A file of
 // another version is refused (the factory does not start on it).
@@ -98,6 +99,9 @@ export function mergeFactorySettings(base: FactorySettings, raw: unknown): Facto
   if (Number.isInteger(r.laneDailyCap) && (r.laneDailyCap as number) >= 0 && (r.laneDailyCap as number) <= FACTORY_LANE_DAILY_CAP_MAX) {
     out.laneDailyCap = r.laneDailyCap as number;
   }
+  // Only the API key is written; the subscription is the default.
+  if (r.claudeAuth === 'apiKey') out.claudeAuth = 'apiKey';
+  else if (r.claudeAuth === 'subscription') delete out.claudeAuth;
   if (r.acpStub === true) out.acpStub = true;
   else if (r.acpStub === false) delete out.acpStub;
   // null clears the pin (automatic); an id is kept only in a bot id's shape.

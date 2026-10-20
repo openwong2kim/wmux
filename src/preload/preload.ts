@@ -1287,6 +1287,16 @@ const electronAPI = {
     getSettings: () => ipcRenderer.invoke(IPC.FACTORY_SETTINGS_GET) as Promise<import('../shared/factorySettings').FactorySettings>,
     setSettings: (patch: Partial<import('../shared/factorySettings').FactorySettings>) =>
       ipcRenderer.invoke(IPC.FACTORY_SETTINGS_SET, patch) as Promise<import('../shared/factorySettings').FactorySettings | null>,
+    // How bots sign in to Claude (Settings › Bots): the saved API key's
+    // status (set, last four characters), never the key; the key goes out
+    // once, in setKey.
+    claudeAuth: {
+      status: () => ipcRenderer.invoke(IPC.FACTORY_CLAUDE_AUTH_STATUS) as Promise<import('../main/factory/claudeApiKey').ClaudeApiKeyStatus | null>,
+      setKey: (key: string) =>
+        ipcRenderer.invoke(IPC.FACTORY_CLAUDE_KEY_SET, { key }) as Promise<import('../main/factory/claudeApiKey').ClaudeApiKeySetResult | { ok: false; code: string; message: string }>,
+      removeKey: () => ipcRenderer.invoke(IPC.FACTORY_CLAUDE_KEY_REMOVE) as Promise<{ ok: boolean; status?: import('../main/factory/claudeApiKey').ClaudeApiKeyStatus }>,
+      check: () => ipcRenderer.invoke(IPC.FACTORY_CLAUDE_KEY_CHECK) as Promise<import('../main/factory/claudeApiKey').ClaudeApiKeyCheck | { ok: false; code: string; message: string }>,
+    },
     // The owner's stop of running bot work: every bot, or one bot.
     stopAll: () => ipcRenderer.invoke(IPC.FACTORY_STOP_ALL) as Promise<import('../main/factory/factoryStop').FactoryStopResult>,
     stopBot: (botId: string) =>
