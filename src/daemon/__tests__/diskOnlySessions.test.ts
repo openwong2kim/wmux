@@ -36,7 +36,8 @@ describe('withDiskOnlySessions', () => {
 // buildState and recoverSessions live in index.ts closures that need main();
 // their contract is locked at the source, as resumeContinueTurn.test.ts does.
 describe('disk-only wiring', () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
+  // A Windows checkout has CRLF line endings; the anchors below are written with \n.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8').replace(/\r\n/g, '\n');
 
   it('every save writes the disk-only records back, shutdown saves included', () => {
     const at = src.indexOf('function buildState(sessionManager: DaemonSessionManager): DaemonState {');

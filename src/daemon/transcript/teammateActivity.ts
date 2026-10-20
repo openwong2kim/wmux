@@ -161,9 +161,17 @@ function readSince(file: string, offset: number, size: number, pending: Set<stri
   return { tail: classifyTeammateTail(raw.subarray(0, end).toString('utf8').split('\n'), pending, previous), offset: offset + end + 1 };
 }
 
+/**
+ * A folder mtime this close to the listing that read it does not prove the
+ * listing current: filesystems stamp mtimes at a coarse tick (Linux kernel
+ * jiffies, 2 s on FAT), so a file added in the same tick leaves it unchanged.
+ */
+const DIR_MTIME_SLACK_MS = 2000;
+
 /** Scans one session's `subagents/` folder; keep one per watched transcript. */
 export class TeammateScanner {
   private dirMtimeMs = -1;
+  private listedAtMs = -1;
   private names: string[] = [];
   private readonly files = new Map<string, FileState>();
 
@@ -192,7 +200,8 @@ export class TeammateScanner {
       this.files.clear();
       return;
     }
-    if (mtimeMs === this.dirMtimeMs) return;
+    if (mtimeMs === this.dirMtimeMs && this.listedAtMs - mtimeMs > DIR_MTIME_SLACK_MS) return;
+    const listedAtMs = Date.now();
     try {
       this.names = fs.readdirSync(this.dir).filter((n) => n.endsWith('.jsonl'));
     } catch {
@@ -201,6 +210,7 @@ export class TeammateScanner {
       return;
     }
     this.dirMtimeMs = mtimeMs;
+    this.listedAtMs = listedAtMs;
     const keep = new Set(this.names.map((n) => path.join(this.dir, n)));
     for (const file of [...this.files.keys()]) if (!keep.has(file)) this.files.delete(file);
   }

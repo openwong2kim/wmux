@@ -127,6 +127,19 @@ describe('TeammateScanner', () => {
     expect(scanner.anyWorking(now)).toBe(true);
   });
 
+  it('a teammate added within the folder mtime tick of the last listing is still found', () => {
+    const now = Date.now();
+    agent('plain', undefined, [toolUse('x', now)]);
+    const scanner = new TeammateScanner(sub);
+    // A coarse-tick filesystem leaves the folder mtime where the listing saw it.
+    const tick = new Date(Math.floor(now / 1000) * 1000);
+    fs.utimesSync(sub, tick, tick);
+    expect(scanner.anyWorking(now)).toBe(false);
+    agent('mate', 'in_process_teammate', [toolUse('a', now)]);
+    fs.utimesSync(sub, tick, tick);
+    expect(scanner.anyWorking(now)).toBe(true);
+  });
+
   it('a meta file caught mid-write is asked again, not taken as no teammate', () => {
     const now = Date.now();
     const file = agent('mate', 'in_process_teammate', [toolUse('a', now)]);
