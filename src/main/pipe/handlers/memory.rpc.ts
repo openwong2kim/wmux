@@ -13,7 +13,14 @@
 //                  message, their button, or their answer to the bot's
 //                  question (not one closed without an answer). A wake
 //                  that cannot be told is refused.
+//                  The conversation counts too (factory/conversationMarks.ts):
+//                  the runtime resumes one conversation across wakes, so
+//                  nothing is saved from one that ran a tainted or guest
+//                  wake, and the owner's profile is not written from one
+//                  that read outside text (OUTSIDE_TEXT_RPC), until a fresh
+//                  conversation starts. No live conversation: refused.
 //   IPC read / remove / clear   the main window only.
+// A removed bot's notes are deleted with it (BotRuntime onBotRemoved).
 // Anyone else is refused. Before the module started every method answers
 // `not_started`.
 
@@ -26,7 +33,8 @@ import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandl
 import { clearMemory, forgetMemoryOfRemovedBots, readMemoryView, removeMemoryEntry, updateMemory } from '../../factory/botMemory';
 import { guestOfRunningWake, runningWakeTainted, type GuestProvenance } from '../../factory/wakeTaint';
 import { currentWakeItem } from '../../factory/wakeQueue';
-import { getBotRuntime } from '../../factory/BotRuntime';
+import { getBotRuntime, onBotRemoved } from '../../factory/BotRuntime';
+import { conversationMarks, type ConversationMarks } from '../../factory/conversationMarks';
 import { summarizeHandoff } from '../../factory/handoffRouter';
 import { isMainWindowSender } from '../../ipc/mainWindowSender';
 
@@ -46,6 +54,8 @@ function isTarget(v: unknown): v is MemoryTarget {
 
 export const MEMORY_GUEST_REFUSAL = 'this turn comes from an external guest\'s message (or wmux cannot tell where it came from), and such a turn saves no memory; tell the owner what you would remember';
 export const MEMORY_TAINT_REFUSAL = 'this turn started from outside text (a pull request, an issue, CI, or work that read them), or wmux cannot tell where it started, and such a turn saves no memory; save it in a turn the owner starts';
+export const MEMORY_CONVERSATION_REFUSAL = 'this conversation has run a turn started from outside text or by a guest (or wmux cannot tell), and such a conversation saves no memory until a fresh one starts; tell the owner what you would remember';
+export const MEMORY_OUTSIDE_READ_REFUSAL = 'this conversation has read outside text (pull requests, issues, CI, worker panes or reports, facts), so it does not write the owner\'s profile; keep it in your own notes (target memory), or tell the owner';
 export const MEMORY_USER_REFUSAL = 'the owner\'s profile is written only in a turn on the owner\'s words (their message, their button, or their answer to your question); save it then, or keep it in your own notes (target memory)';
 
 /** The reason of the wake `botId` is running now, when the queue and the
@@ -84,15 +94,20 @@ export interface MemoryHandlerDeps {
   wakeReason?: (botId: string) => WakeReason | null;
   /** Whether a handoff is the owner's answer with words. Default: ownerAnswered. */
   ownerAnswer?: (handoffId: string) => boolean;
+  /** The bot's live conversation's marks, or null. Default: conversationMarks.ts. */
+  conversation?: (botId: string) => ConversationMarks | null;
 }
 
 /** Why the bot's running wake may not write `target`, or null. Fails
  *  closed: anything the gate cannot tell refuses. */
-export function memoryWriteRefusal(botId: string, target: MemoryTarget, deps: Pick<MemoryHandlerDeps, 'guestWake' | 'tainted' | 'wakeReason' | 'ownerAnswer'>): Refusal | null {
+export function memoryWriteRefusal(botId: string, target: MemoryTarget, deps: Pick<MemoryHandlerDeps, 'guestWake' | 'tainted' | 'wakeReason' | 'ownerAnswer' | 'conversation'>): Refusal | null {
   try {
     if ((deps.guestWake ?? guestOfRunningWake)(botId) !== false) return refuse('not_authorized', MEMORY_GUEST_REFUSAL);
     if ((deps.tainted ?? runningWakeTainted)(botId) !== false) return refuse('not_authorized', MEMORY_TAINT_REFUSAL);
+    const marks = (deps.conversation ?? conversationMarks)(botId);
+    if (!marks || marks.tainted) return refuse('not_authorized', MEMORY_CONVERSATION_REFUSAL);
     if (target === 'user') {
+      if (marks.readOutside) return refuse('not_authorized', MEMORY_OUTSIDE_READ_REFUSAL);
       const reason = (deps.wakeReason ?? runningWakeReason)(botId);
       const owners = reason?.kind === 'human' || reason?.kind === 'manual'
         || (reason?.kind === 'handoff' && (deps.ownerAnswer ?? ownerAnswered)(reason.handoffId));
@@ -188,10 +203,20 @@ export function registerMemoryIpc(getWindow: () => BrowserWindow | null, deps: P
 
 export function createMemoryModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'getMainWindow'>, state: { dir: string | null }, emit: (payload: BotEventPayload) => void): FactoryModuleHandle {
   let offIpc: (() => void) | null = null;
+  let offRemoved: (() => void) | null = null;
   return {
     start() {
       state.dir = deps.wmuxDir();
       offIpc = registerMemoryIpc(deps.getMainWindow, { wmuxDir: () => state.dir, emit });
+      offRemoved = onBotRemoved((botId) => {
+        const dir = state.dir;
+        if (!dir) return;
+        try {
+          clearMemory(dir, 'memory', botId);
+        } catch (err) {
+          console.warn(`[factory] memory: the notes of removed bot ${botId} not deleted: ${String(err)}`);
+        }
+      });
       // The notes of a bot deleted since: they go now.
       void import('../../factory/botStore').then(({ getBotDirectory }) => {
         const bots = getBotDirectory();
@@ -204,6 +229,8 @@ export function createMemoryModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'getM
     dispose() {
       offIpc?.();
       offIpc = null;
+      offRemoved?.();
+      offRemoved = null;
       state.dir = null;
     },
   };

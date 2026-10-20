@@ -18,7 +18,7 @@ registerFactoryRpcModule('wakeTaint', (_router, deps) => {
   let off: (() => void) | null = null;
   return {
     async start() {
-      const [{ getFactLog }, { getHandoffRouter }, { getTaskLedger }, { currentWakeItem, wakeItemById }, { getBotRuntime }, { resolveFactsFrom }, { getBotDirectory }] = await Promise.all([
+      const [{ getFactLog }, { getHandoffRouter }, { getTaskLedger }, { currentWakeItem, wakeItemById }, { getBotRuntime, setBotRuntimePorts }, { resolveFactsFrom }, { getBotDirectory }] = await Promise.all([
         import('./factLog'),
         import('./handoffRouter'),
         import('../deck/taskLedgerHost'),
@@ -44,6 +44,9 @@ registerFactoryRpcModule('wakeTaint', (_router, deps) => {
         file: path.join(deps.wmuxDir(), 'factory', TAINT_FILENAME),
       });
       setWakeTaint(taint, runningWake, wakeItemById);
+      // The runtime marks a bot's conversation by the wakes run in it
+      // (conversationMarks.ts).
+      setBotRuntimePorts({ wakeTainted: (item) => taint.wakeTainted(item) });
       // A bot's card written in its running wake is stamped (RoomCard.origin)
       // unless that wake is known clean; a write outside a wake passes its
       // origin itself.

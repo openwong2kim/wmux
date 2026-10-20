@@ -167,6 +167,24 @@ export const GUEST_SAFE_RPC: ReadonlySet<string> = new Set<string>([
   BOT_APPROVAL_RPC.list,
 ]);
 
+/** The bot calls that return text written outside wmux and the owner
+ *  (GitHub's pull requests, issues, checks and the verdicts that read them,
+ *  worker panes, worker and workflow reports, the fact log's GitHub-authored
+ *  facts). A conversation that made one is marked (main/factory/
+ *  conversationMarks.ts) and no longer writes the owner's profile. Room reads
+ *  are not here: a bot sees guest cards only in a guest wake, which runs in a
+ *  conversation of its own. */
+export const OUTSIDE_TEXT_RPC: ReadonlySet<string> = new Set<string>([
+  FACTORY_READ_RPC.prRead,
+  FACTORY_READ_RPC.issueRead,
+  FACTORY_READ_RPC.ciRead,
+  FACTORY_READ_RPC.verdictRead,
+  FACTORY_READ_RPC.trustMetricsRead,
+  FACT_RPC.poll,
+  WORKFLOW_RPC.read,
+  'input.readScreen',
+]);
+
 /** The engine's built-in tools a bot may use in a wake not known clean
  *  (ClaudeSdkAdapter's per-call gate): none. A guest's reply needs only the
  *  wmux tools (room.post). */

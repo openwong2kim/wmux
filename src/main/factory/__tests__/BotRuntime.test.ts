@@ -7,13 +7,14 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrainAdapter, BrainEvent, BrainSendOptions, BrainStartOptions } from '../../deck/BrainAdapter';
-import { BotRuntime, BotSessionStore, type BotRuntimeDeps, CONTEXT_WAIT_MS, isImageApiError, ROOM_RUN_STAGGER_MS, TRANSIENT_RETRY_BASE_MS, TRANSIENT_RETRY_MAX, botSessionsPath, isTransientEngineError, roomRunOf, setBotRuntimePorts, usageLimitNoticeOf, usageLimitParkUntil, USAGE_LIMIT_MIN_PARK_MS, __resetBotRuntimePortsForTesting } from '../BotRuntime';
+import { BotRuntime, BotSessionStore, type BotRuntimeDeps, CONTEXT_WAIT_MS, onBotRemoved, isImageApiError, ROOM_RUN_STAGGER_MS, TRANSIENT_RETRY_BASE_MS, TRANSIENT_RETRY_MAX, botSessionsPath, isTransientEngineError, roomRunOf, setBotRuntimePorts, usageLimitNoticeOf, usageLimitParkUntil, USAGE_LIMIT_MIN_PARK_MS, __resetBotRuntimePortsForTesting } from '../BotRuntime';
 import type { BotEngineFactory, BotEngineSpawnInput } from '../botEngines';
 import { BotStore, botsFilePath } from '../botStore';
 import { WakeQueue, wakeQueuePath } from '../wakeQueue';
 import { DEFAULT_FACTORY_SETTINGS, type FactorySettings } from '../factorySettings';
 import { __resetBotHooksForTesting, onBotHook, type BotHookEvent } from '../botHooks';
 import { HOUR_MS } from '../budget';
+import { __resetConversationMarksForTesting, conversationMarks, markConversation } from '../conversationMarks';
 import { USAGE_LIMIT_RESUME_GRACE_MS, USAGE_LIMIT_UNKNOWN_HOLD_MS, parseUsageLimitReset } from '../../../shared/usageLimit';
 
 /** A scripted engine session: each send waits for the test to end the turn. */
@@ -1358,5 +1359,72 @@ describe('external guests and the bot\'s conversation', () => {
     await settle();
     expect(r.sessions.get(id)).toBeNull();
     expect(tails).toEqual([false]);
+  });
+});
+
+describe('conversation marks and removal', () => {
+  beforeEach(() => __resetConversationMarksForTesting());
+
+  it('a tainted wake marks the conversation, the marks are saved and a resume carries them; a fresh one starts clean', async () => {
+    setBotRuntimePorts({ wakeTainted: (item) => item.reason.kind === 'routine' });
+    const r = rig({ mode: 'ok' });
+    const id = createBot(r);
+    must(r.runtime.wake(id, { text: 'one' }));
+    await settle(10);
+    expect(conversationMarks(id)).toEqual({ tainted: false, readOutside: false });
+    expect(r.sessions.get(id)).toMatchObject({ sessionId: 'sess-1', tainted: false, readOutside: false });
+    r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: { kind: 'routine', routineId: 'r-abcdefgh', dueAt: clock }, priority: 2 });
+    await settle(10);
+    expect(conversationMarks(id)).toEqual({ tainted: true, readOutside: false });
+    expect(r.sessions.get(id)).toMatchObject({ tainted: true, readOutside: false });
+    // A mark set mid-turn (RpcRouter) is saved at once.
+    markConversation(id, 'readOutside');
+    expect(r.sessions.get(id)).toMatchObject({ tainted: true, readOutside: true });
+
+    r.runtime.dispose();
+    await r.sessions.flush();
+    expect(conversationMarks(id)).toBeNull();
+    const again = rig({ mode: 'ok', load: true });
+    must(again.runtime.wake(id, { text: 'two' }));
+    await settle(10);
+    expect(again.adapters[0].started?.resumeSessionId).toBe('sess-1');
+    expect(conversationMarks(id)).toEqual({ tainted: true, readOutside: true });
+
+    // No saved conversation: the next one is fresh and clean.
+    again.sessions.delete(id);
+    again.store.update(id, { enabled: false });
+    again.runtime.profileChanged(id);
+    expect(conversationMarks(id)).toBeNull();
+    again.store.update(id, { enabled: true });
+    again.runtime.profileChanged(id);
+    must(again.runtime.wake(id, { text: 'three' }));
+    await settle(10);
+    expect(again.adapters[1].started?.resumeSessionId).toBeUndefined();
+    expect(conversationMarks(id)).toEqual({ tainted: false, readOutside: false });
+  });
+
+  it('a saved conversation with no marks resumes as unknown; every wake is tainted without the taint port', async () => {
+    const r = rig({ mode: 'ok' });
+    const id = createBot(r);
+    r.sessions.set(id, { sessionId: 'sess-old', updatedAt: 1 });
+    must(r.runtime.wake(id, { text: 'one' }));
+    await settle(10);
+    expect(r.adapters[0].started?.resumeSessionId).toBe('sess-old');
+    expect(conversationMarks(id)).toEqual({ tainted: true, readOutside: true });
+    const fresh = createBot(r);
+    must(r.runtime.wake(fresh, { text: 'one' }));
+    await settle(10);
+    expect(conversationMarks(fresh)).toEqual({ tainted: true, readOutside: false });
+  });
+
+  it('tells the removal listeners once a bot is removed', () => {
+    const seen: string[] = [];
+    const off = onBotRemoved((botId) => seen.push(botId));
+    const r = rig();
+    const id = createBot(r);
+    expect(r.runtime.remove('bot-ffffffff')).toBe(false);
+    expect(r.runtime.remove(id)).toBe(true);
+    off();
+    expect(seen).toEqual([id]);
   });
 });

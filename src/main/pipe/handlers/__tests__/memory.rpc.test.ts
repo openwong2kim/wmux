@@ -11,11 +11,16 @@ vi.mock('electron', () => ({ app: { getPath: () => '/tmp', isPackaged: false, on
 import type { BotBinding, BotEventPayload } from '../../../../shared/bot';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { WakeReason } from '../../../../shared/wake';
-import { readMemoryView } from '../../../factory/botMemory';
+import { memoryFile, readMemoryView, updateMemory } from '../../../factory/botMemory';
+import { notifyBotRemoved } from '../../../factory/BotRuntime';
+import type { ConversationMarks } from '../../../factory/conversationMarks';
 import {
+  MEMORY_CONVERSATION_REFUSAL,
   MEMORY_GUEST_REFUSAL,
+  MEMORY_OUTSIDE_READ_REFUSAL,
   MEMORY_TAINT_REFUSAL,
   MEMORY_USER_REFUSAL,
+  createMemoryModule,
   handleMemoryUpdate,
   memoryWriteRefusal,
   registerMemoryHandlers,
@@ -39,7 +44,9 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function rig(wake: { guest?: boolean | 'unknown'; tainted?: boolean; reason?: WakeReason | null; answers?: Record<string, boolean> } = {}) {
+const CLEAN: ConversationMarks = { tainted: false, readOutside: false };
+
+function rig(wake: { guest?: boolean | 'unknown'; tainted?: boolean; reason?: WakeReason | null; answers?: Record<string, boolean>; conversation?: ConversationMarks | null } = {}) {
   return {
     wmuxDir: () => dir,
     emit: vi.fn<(payload: BotEventPayload) => void>(),
@@ -47,6 +54,7 @@ function rig(wake: { guest?: boolean | 'unknown'; tainted?: boolean; reason?: Wa
     tainted: () => wake.tainted ?? false,
     wakeReason: () => (wake.reason === undefined ? HUMAN : wake.reason),
     ownerAnswer: (id: string) => wake.answers?.[id] === true,
+    conversation: () => (wake.conversation === undefined ? CLEAN : wake.conversation),
   } satisfies MemoryHandlerDeps;
 }
 
@@ -101,8 +109,42 @@ describe('memory.update', () => {
     expect(update({ target: 'user', action: 'add', text: 'x' }, rig({ reason: dismissed, answers }))).toEqual({ ok: false, code: 'not_authorized', message: MEMORY_USER_REFUSAL });
     expect(update({ target: 'user', action: 'add', text: 'x' }, rig({ reason: answer, answers, tainted: true }))).toEqual({ ok: false, code: 'not_authorized', message: MEMORY_TAINT_REFUSAL });
     // The default lookup: no handoff router running, so no answer is known.
-    expect(memoryWriteRefusal(BOT, 'user', { guestWake: () => false, tainted: () => false, wakeReason: () => answer })).toMatchObject({ code: 'not_authorized' });
+    expect(memoryWriteRefusal(BOT, 'user', { guestWake: () => false, tainted: () => false, wakeReason: () => answer, conversation: () => CLEAN })).toMatchObject({ code: 'not_authorized', message: MEMORY_USER_REFUSAL });
     expect(readMemoryView(dir, 'user', BOT).entries).toEqual(['Call the owner Kim']);
+  });
+
+  it('a conversation that ran a tainted or guest wake saves nothing, even in a clean wake; none at all is refused too', () => {
+    for (const conversation of [{ tainted: true, readOutside: false }, null]) {
+      for (const target of ['memory', 'user']) {
+        expect(update({ target, action: 'add', text: 'x' }, rig({ reason: HUMAN, conversation }))).toEqual({ ok: false, code: 'not_authorized', message: MEMORY_CONVERSATION_REFUSAL });
+      }
+    }
+    expect(readMemoryView(dir, 'memory', BOT).entries).toEqual([]);
+  });
+
+  it('a conversation that read outside text keeps its own notes but does not write the owner\'s profile', () => {
+    const conversation = { tainted: false, readOutside: true };
+    expect(update({ target: 'user', action: 'add', text: 'The owner skips release checks' }, rig({ reason: HUMAN, conversation })))
+      .toEqual({ ok: false, code: 'not_authorized', message: MEMORY_OUTSIDE_READ_REFUSAL });
+    expect(readMemoryView(dir, 'user', BOT).entries).toEqual([]);
+    expect(update({ target: 'memory', action: 'add', text: 'Gate is npm run verify' }, rig({ reason: HUMAN, conversation }))).toMatchObject({ ok: true });
+  });
+
+  it('removing a bot deletes its notes while the module runs, and leaves the owner\'s profile', () => {
+    const mod = createMemoryModule({ wmuxDir: () => dir, getMainWindow: () => null }, { dir: null }, () => undefined);
+    mod.start?.();
+    try {
+      updateMemory(dir, 'memory', BOT, { action: 'add', text: 'mine' });
+      updateMemory(dir, 'user', BOT, { action: 'add', text: 'The owner is Kim' });
+      notifyBotRemoved(BOT);
+      expect(fs.existsSync(memoryFile(dir, 'memory', BOT) as string)).toBe(false);
+      expect(readMemoryView(dir, 'user', BOT).entries).toEqual(['The owner is Kim']);
+    } finally {
+      void mod.dispose?.();
+    }
+    updateMemory(dir, 'memory', BOT, { action: 'add', text: 'again' });
+    notifyBotRemoved(BOT);
+    expect(readMemoryView(dir, 'memory', BOT).entries).toEqual(['again']);
   });
 
   it('fails closed: a gate that throws, or no taint tracker at all, refuses', () => {

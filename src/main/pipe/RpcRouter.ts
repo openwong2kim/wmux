@@ -13,8 +13,9 @@ import { METHOD_CAPABILITY, isAlwaysEnforcedMethod, type RequiredCapability } fr
 import { isLocalExternalWireContext } from '../mcp/rpcProvenance';
 import { resolveCommanderToken } from '../deck/commanderTrust';
 import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
-import { GUEST_SAFE_RPC, GUEST_TURN_SURFACE_REFUSAL, botSurfaceRefusal, type BotRefusal } from '../../shared/botSurface';
+import { GUEST_SAFE_RPC, GUEST_TURN_SURFACE_REFUSAL, OUTSIDE_TEXT_RPC, botSurfaceRefusal, type BotRefusal } from '../../shared/botSurface';
 import { guestGateProvenance } from '../factory/wakeTaint';
+import { markConversation } from '../factory/conversationMarks';
 import type { EnforcementMode } from '../mcp/enforcementMode';
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
 import {
@@ -425,6 +426,9 @@ export class RpcRouter {
             error: `method ${request.method}: ${GUEST_TURN_SURFACE_REFUSAL}`,
           };
         }
+        // What the call returns stays in the bot's conversation: marked
+        // before the handler runs, whatever it answers.
+        if (OUTSIDE_TEXT_RPC.has(request.method)) markConversation(binding.bot.botId, 'readOutside');
       }
       if (COMMANDER_TEARDOWN_DENY.has(request.method)) {
         return {
