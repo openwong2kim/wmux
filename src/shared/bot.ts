@@ -5,8 +5,9 @@
 // part of its system prompt). Every bot holds the same powers
 // (shared/botSurface.ts SHARED_SURFACE); a bot made from the Coordinator
 // template may also read other workspaces' rooms and facts. Any number of
-// bots, of any template, may share a workspace. It never holds a shell. Its
-// identity on the pipe is a main-minted token bound to a BotBinding
+// bots, of any template, may share a workspace. Bots may run sandboxed
+// commands in their own folder (main/factory/botExec.ts), never a terminal
+// pane or the repository. Its identity on the pipe is a main-minted token bound to a BotBinding
 // (main/deck/commanderTrust.ts `mintBotToken`), carried in the existing
 // `commanderToken` envelope field; RpcRouter resolves it onto
 // `RpcContext.bot`.

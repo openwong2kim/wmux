@@ -18,9 +18,11 @@
 // and only a Coordinator-template bot may name another workspace on the
 // reads listed in COORDINATOR_READ_EXTENSION.
 //
-// No bot holds a shell, terminal input, pane/surface/workspace teardown, the
-// browser or computer use: code is written only by fan-out workers in their
-// own worktrees. No bot parks another bot (`bot_park` is on no surface). The
+// Bots may run sandboxed commands in their own folder (the engine's Bash,
+// Write and Edit, each call decided by main: main/factory/botExec.ts), and
+// nowhere else. No bot holds terminal input, pane/surface/workspace teardown,
+// the browser or computer use: repository code is written only by fan-out
+// workers in their own worktrees. No bot parks another bot (`bot_park` is on no surface). The
 // fleet-wide pane and event reads (pane_list, fleet_triage, wmux_events_poll,
 // a2a_task_query) are on no surface either: every read a bot holds is scoped
 // to its binding, and a bot sees its workers through their ledger rows and

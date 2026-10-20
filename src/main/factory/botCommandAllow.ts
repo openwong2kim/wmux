@@ -1,0 +1,179 @@
+// ─── Bot commands — the deterministic allowlist ────────────────────────────
+//
+// After the floor (botCommandFloor.ts), a command line runs only when every
+// command in it is on the bot's list: the built-in read-only set below, or
+// a rule the owner saved for this bot (botCommandRules.ts). The list is
+// matched on parsed words, never on the raw text:
+//   - a built-in command is named bare (`ls`, never `./ls` or `/bin/ls`, which
+//     could be a file the bot wrote) and its arguments pass that command's
+//     check (no option that writes a file, runs a program or changes state);
+//   - an owner rule matches when the command's words start with the rule's
+//     words, and either match them exactly or the rule takes any arguments;
+//   - in a pipeline, each command after the first is a stdin filter from
+//     STDIN_FILTERS, named bare, with no input redirection.
+// Anything else is not on the list (`decideBotCommand` answers `unlisted`).
+
+import { commandFloor, normalizeCommand, parseCommandLine, type FloorContext, type SimpleCommand } from './botCommandFloor';
+
+/** One owner rule: the command's leading words, and whether more may follow. */
+export interface BotCommandRule {
+  argv: string[];
+  anyArgs?: boolean;
+}
+
+type ArgCheck = (args: readonly string[]) => string | null;
+
+const anyArgs: ArgCheck = () => null;
+
+/** The operands of `args`: words that are not options (`valued` options
+ *  take the next word as their value). */
+function operands(args: readonly string[], valued: ReadonlySet<string> = new Set()): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (a === '--') return [...out, ...args.slice(k + 1)];
+    if (a.startsWith('-') && a !== '-') {
+      if (valued.has(a)) k++;
+      continue;
+    }
+    out.push(a);
+  }
+  return out;
+}
+
+function refuseOptions(name: string, pred: (a: string) => boolean): ArgCheck {
+  return (args) => {
+    for (const a of args) {
+      if (a === '--') return null;
+      if (a.startsWith('-') && pred(a)) return `${name} ${a} is not on the built-in list`;
+    }
+    return null;
+  };
+}
+
+const GIT_READ_SUBCOMMANDS: ReadonlySet<string> = new Set(['status', 'diff', 'log', 'show', 'branch']);
+
+/** `git branch` that only lists: listing options, and names only after --list. */
+const GIT_BRANCH_LIST_OPTIONS = /^(-a|-r|-v|-vv|-l|--all|--remotes|--verbose|--list|--show-current|--no-color|--color(=.*)?|--column(=.*)?|--no-column|--sort=.*|--format=.*|--contains(=.*)?|--no-contains(=.*)?|--merged(=.*)?|--no-merged(=.*)?|--points-at=.*|--abbrev=.*|--no-abbrev|-i|--ignore-case|--omit-empty)$/;
+
+function gitCheck(args: readonly string[]): string | null {
+  let k = 0;
+  while (k < args.length && args[k].startsWith('-')) {
+    const a = args[k];
+    if (a === '-C') {
+      if (args[k + 1] === undefined) return 'git -C needs a folder';
+      k += 2;
+      continue;
+    }
+    if (a === '--no-pager') {
+      k++;
+      continue;
+    }
+    return `git ${a} is not on the built-in list`;
+  }
+  const sub = args[k];
+  if (!sub || !GIT_READ_SUBCOMMANDS.has(sub)) return `git ${sub ?? ''} is not on the built-in list`.trim();
+  const rest = args.slice(k + 1);
+  for (const a of rest) {
+    if (/^--output(=|$)/.test(a) || a === '--ext-diff' || a === '-o') return `git ${sub} ${a} is not on the built-in list`;
+  }
+  if (sub === 'branch') {
+    const listing = rest.some((a) => a === '--list' || a === '-l');
+    for (const a of rest) {
+      if (a.startsWith('-')) {
+        if (!GIT_BRANCH_LIST_OPTIONS.test(a)) return `git branch ${a} is not on the built-in list`;
+      } else if (!listing) {
+        return 'git branch with a name creates a branch';
+      }
+    }
+  }
+  return null;
+}
+
+/** The built-in read-only commands and their argument checks. */
+export const BUILTIN_COMMANDS: ReadonlyMap<string, ArgCheck> = new Map<string, ArgCheck>([
+  ['ls', anyArgs],
+  ['cat', anyArgs],
+  ['head', anyArgs],
+  ['tail', anyArgs],
+  ['wc', anyArgs],
+  ['cut', anyArgs],
+  ['tr', anyArgs],
+  ['stat', anyArgs],
+  ['du', anyArgs],
+  ['df', anyArgs],
+  ['pwd', anyArgs],
+  ['echo', anyArgs],
+  ['which', anyArgs],
+  ['grep', anyArgs],
+  ['egrep', anyArgs],
+  ['fgrep', anyArgs],
+  // The floor already refuses -exec, -execdir, -ok, -delete and -fprint*.
+  ['find', anyArgs],
+  ['file', refuseOptions('file', (a) => a === '-C' || a === '--compile')],
+  ['date', refuseOptions('date', (a) => a === '--set' || a.startsWith('--set=') || (/^-[A-Za-z]+$/.test(a) && a.includes('s')))],
+  ['sort', refuseOptions('sort', (a) => /^--(output|compress-program)(=|$)/.test(a) || (/^-[A-Za-z]+$/.test(a) && a.includes('o')))],
+  ['uniq', (args) => (operands(args, new Set(['-f', '-s', '-w'])).length > 1 ? 'uniq with an output file is not on the built-in list' : null)],
+  ['rg', refuseOptions('rg', (a) => /^--(pre|pre-glob|hostname-bin)(=|$)/.test(a))],
+  ['git', gitCheck],
+]);
+
+/** Commands that may read a pipe's output (`... | sort | head -5`). */
+export const STDIN_FILTERS: ReadonlySet<string> = new Set(['cat', 'head', 'tail', 'wc', 'sort', 'uniq', 'cut', 'tr', 'grep', 'egrep', 'fgrep', 'rg']);
+
+function builtinRefusal(cmd: SimpleCommand): string | null {
+  const name = cmd.argv[0];
+  const check = BUILTIN_COMMANDS.get(name);
+  if (!check) return `${name} is not on the built-in list`;
+  return check(cmd.argv.slice(1));
+}
+
+/** Whether an owner rule matches the command's words. Pure. */
+export function ruleMatches(rule: BotCommandRule, argv: readonly string[]): boolean {
+  if (rule.argv.length === 0 || argv.length < rule.argv.length) return false;
+  if (!rule.argv.every((w, k) => argv[k] === w)) return false;
+  return rule.anyArgs === true || argv.length === rule.argv.length;
+}
+
+function filterRefusal(cmd: SimpleCommand): string | null {
+  const name = cmd.argv[0];
+  if (!STDIN_FILTERS.has(name)) return `${name} cannot read a pipe here (only ${[...STDIN_FILTERS].join(', ')})`;
+  if (cmd.redirects.some((r) => r.op === '<' || r.op === '<&')) return `${name} after a pipe reads the pipe, not a file`;
+  return builtinRefusal(cmd);
+}
+
+export type CommandDecision =
+  | { ok: true; layer: 'allowlist'; command: string; matched: 'builtin' | 'rule' }
+  | { ok: false; layer: 'parse' | 'floor' | 'unlisted'; command: string; reason: string };
+
+/**
+ * Main's decision on one Bash command line of a bot: parse, the floor, then
+ * the list. Pure apart from the floor's path checks. `unlisted` is the one
+ * branch a later review step may take up; today it is a refusal.
+ */
+export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: readonly BotCommandRule[] }): CommandDecision {
+  const parsed = parseCommandLine(line);
+  const raw = typeof line === 'string' ? line.slice(0, 200) : '';
+  if (!parsed.ok) return { ok: false, layer: 'parse', command: raw, reason: parsed.reason };
+  const command = normalizeCommand(parsed.pipelines, parsed.joins);
+  const floor = commandFloor(parsed.pipelines, ctx);
+  if (floor) return { ok: false, layer: 'floor', command, reason: floor };
+  let viaRule = false;
+  for (const p of parsed.pipelines) {
+    for (let k = 0; k < p.length; k++) {
+      const cmd = p[k];
+      if (k > 0) {
+        const r = filterRefusal(cmd);
+        if (r) return { ok: false, layer: 'unlisted', command, reason: r };
+        continue;
+      }
+      if (ctx.rules.some((rule) => ruleMatches(rule, cmd.argv))) {
+        viaRule = true;
+        continue;
+      }
+      const r = builtinRefusal(cmd);
+      if (r) return { ok: false, layer: 'unlisted', command, reason: r };
+    }
+  }
+  return { ok: true, layer: 'allowlist', command, matched: viaRule ? 'rule' : 'builtin' };
+}

@@ -3,7 +3,9 @@
 // in its environment, the token file holds a live bot token bound to the
 // bot, the session runs in the bot's own folder, and (Claude SDK) no
 // built-in tool exists in the session — except, for a bot with a repository,
-// Read / Grep / Glob, every call decided by main inside that repository.
+// Read / Grep / Glob, every call decided by main inside that repository, and,
+// where the OS sandbox runs, the command tools (ClaudeSdkAdapter.botExec.os.test.ts).
+// The bots here get no sandbox probe, so they hold no command tool.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';

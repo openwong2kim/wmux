@@ -4,7 +4,8 @@
 // the owner wrote none), and its powers: the wmux tools on the shared
 // surface (shared/botSurface.ts SHARED_SURFACE) and the outputs it produces.
 // Whatever a bot cannot do is already out of its reach: the surface lists
-// only its tools, it has no shell, fan-out takes only the bot presets,
+// only its tools, its own commands run sandboxed in its own folder,
+// fan-out takes only the bot presets,
 // irreversible acts go through the owner's approval, and budgets and the
 // merge lane's predicates are code. So a prompt says who the bot is, what
 // its job is, what each tool is for, what it produces, how rooms and

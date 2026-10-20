@@ -695,3 +695,23 @@ export function runningWakeTainted(botId: string): boolean {
     return true;
   }
 }
+
+/** The wake reasons a person is present for: the owner's own message and
+ *  the owner's run button. Everything else (timers, facts, other bots,
+ *  guests) runs unattended. */
+export const ATTENDED_WAKE_KINDS: ReadonlySet<WakeReason['kind']> = new Set<WakeReason['kind']>(['human', 'manual']);
+
+/** Whether the wake `botId` is running now is attended: its reason is one
+ *  of ATTENDED_WAKE_KINDS and it is known clean. False when it cannot be
+ *  told (no tracker, no running wake, an error). */
+export function runningWakeAttended(botId: string): boolean {
+  const c = current;
+  if (!c) return false;
+  try {
+    const item = c.runningWake(botId)?.item;
+    if (!item || !ATTENDED_WAKE_KINDS.has(item.reason.kind)) return false;
+    return c.taint.wakeTainted(item) === false;
+  } catch {
+    return false;
+  }
+}

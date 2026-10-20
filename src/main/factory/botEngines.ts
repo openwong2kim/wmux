@@ -35,6 +35,7 @@ import { dataSuffix } from '../../shared/constants';
 import { isExecutableFile, resolveClaudeExecutable } from '../claude/resolveClaudeExecutable';
 import { botRepoReadRoot } from './botRepoRead';
 import { recordBotAuthSource, resolveBotClaudeAuth, type BotClaudeAuth } from './claudeApiKey';
+import { probeBotExecSupport, type BotExecSupport } from './botExecSandbox';
 
 export interface BotEngineSpawnInput {
   profile: BotProfile;
@@ -117,6 +118,9 @@ export interface DefaultBotEngineDeps {
   claudeAuth?: () => BotClaudeAuth;
   /** Told the sign-in a session reported (default `recordBotAuthSource`). */
   onAuthSeen?: (apiKeySource: string) => void;
+  /** Whether a Claude (SDK) bot's commands can run in the OS sandbox, for
+   *  the claude it runs on (default `probeBotExecSupport`). */
+  execSupport?: (exe: string | null) => Promise<BotExecSupport>;
 }
 
 /** ACP bots may start: an unpackaged build on isolated data (a test
@@ -150,6 +154,7 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
   const acpAllowed = deps.acpAllowed ?? acpEnginesAllowed;
   const claudeAuth = deps.claudeAuth ?? (() => resolveBotClaudeAuth());
   const onAuthSeen = deps.onAuthSeen ?? recordBotAuthSource;
+  const execSupport = deps.execSupport ?? ((exe: string | null) => probeBotExecSupport(exe));
   const refuse = (message: string): BotEngineSpawn => ({ ok: false, code: 'engine_unavailable', message });
 
   return (input) => {
@@ -181,8 +186,10 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
         return {
           ok: true,
           adapter: new ClaudeSdkAdapter({
-            // A bot with a repository reads it (Read / Grep / Glob, decided by main).
-            bot: { ...bot, repoRoot: botRepoReadRoot(input.profile), auth: claudeAuth, onAuthSeen },
+            // A bot with a repository reads it (Read / Grep / Glob, decided by
+            // main); where the OS sandbox runs, it also runs commands in its
+            // own folder (botExec.ts), checked again on every turn.
+            bot: { ...bot, repoRoot: botRepoReadRoot(input.profile), auth: claudeAuth, onAuthSeen, exec: () => execSupport(claudeExecutable()) },
             mcpBundlePath: bundle,
             // No model set (or 'default', or a stored id that fails the brain
             // model rule): pass none, so claude picks its own default and an

@@ -34,7 +34,10 @@ import { mintBotToken, mintCommanderToken, revokeCommanderToken } from './comman
 import { writeBotTokenHandoff, type BotTokenHandoff } from '../factory/botTokenHandoff';
 import { BOT_REPO_READ_TOOLS, botRepoReadDenyRules, evaluateBotRepoRead, grepOutputNamesProtected } from '../factory/botRepoRead';
 import { redactStoredSecretsDeep } from '../factory/secretRedaction';
-import { guestGateProvenance } from '../factory/wakeTaint';
+import { guestGateProvenance, runningWakeAttended } from '../factory/wakeTaint';
+import { BOT_EXEC_TOOLS, evaluateBotExecTool, logBotExecDecision, type BotExecDecision } from '../factory/botExec';
+import { UNSETTABLE_ENV_NAME, botSandboxSettings, type BotExecSupport } from '../factory/botExecSandbox';
+import { botCommandRulesFor } from '../factory/botCommandRules';
 import { claudeNotFoundMessage } from '../factory/engineError';
 import type { BotClaudeAuth } from '../factory/claudeApiKey';
 import type { BotBinding } from '../../shared/bot';
@@ -314,7 +317,9 @@ export interface ClaudeSdkAdapterDeps {
    *  repository (factory/botRepoRead.ts). `auth` says how the bot signs in
    *  to Claude, read on every turn (absent: the subscription), and
    *  `onAuthSeen` is told the sign-in the session reported (factory/
-   *  claudeApiKey.ts). */
+   *  claudeApiKey.ts). With `exec` reporting the OS sandbox available, the
+   *  session also holds Bash, Write and Edit, sandboxed to `cwd` and decided
+   *  by main on every call (factory/botExec.ts). */
   bot?: BotDeps;
 }
 
@@ -326,6 +331,13 @@ export interface BotDeps {
   repoRoot?: string;
   auth?: () => BotClaudeAuth;
   onAuthSeen?: (apiKeySource: string) => void;
+  /** Whether this bot's commands can run in the OS sandbox, asked once per
+   *  turn (factory/botExecSandbox.ts probeBotExecSupport). Absent, or not
+   *  ok: no Bash, Write or Edit. */
+  exec?: () => Promise<BotExecSupport> | BotExecSupport;
+  /** Claude config folders of the owner's accounts (kept out of commands'
+   *  reach). Default: the account store's. */
+  accountConfigDirs?: () => string[];
 }
 
 // ─── Permission defaults (D2) ────────────────────────────────────────────────
@@ -456,6 +468,23 @@ export const DISALLOWED_TOOLS: string[] = [
   'MultiEdit',
   'NotebookEdit',
 ];
+
+/** Built-in tools no bot ever holds, whatever else it is given. */
+export const BOT_DISALLOWED_TOOLS: readonly string[] = ['Agent', 'Task', 'MultiEdit', 'NotebookEdit', 'WebFetch', 'WebSearch'];
+
+/** The built-in tools a bot may be given (repository reads, its own
+ *  folder's Read, and the command tools). */
+const BOT_GRANTABLE_TOOLS: readonly string[] = ['Read', 'Grep', 'Glob', ...BOT_EXEC_TOOLS];
+
+/** What a bot that may run commands is told (the rest is decided by main). */
+export const BOT_EXEC_PROMPT =
+  'Commands: in a turn the owner started (their message or the run button) you may run small read-only shell commands with Bash, and write or edit files with Write and Edit, in your own folder only. Commands run sandboxed, with no network and no credentials; wmux refuses anything not on your command list. Changing the repository, builds and tests stay a worker\'s (fan-out).';
+
+/** A bot's disallowed list: BOT_DISALLOWED_TOOLS plus every grantable tool
+ *  it was not given. Pure. */
+export function botDisallowedTools(granted: readonly string[]): string[] {
+  return [...BOT_DISALLOWED_TOOLS, ...BOT_GRANTABLE_TOOLS.filter((t) => !granted.includes(t))];
+}
 
 /** Spawn ceiling the system prompt instructs the brain to respect (D2 = 8).
  *  Phase 2 states it as an instruction; a HARD cap (counting pane_split calls
@@ -847,6 +876,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private _conversationAuthMode: 'subscription' | 'apiKey' | undefined = undefined;
   /** Bot mode: the current turn's token hand-off file, removed when the turn ends. */
   private _handoff: BotTokenHandoff | null = null;
+  /** Bot mode: this turn may run commands (the sandbox is available). */
+  private _turnExec = false;
 
   constructor(deps: ClaudeSdkAdapterDeps = {}) {
     this.queryFn = deps.queryFn ?? null;
@@ -1082,7 +1113,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // list stays as a second lock.
     options.tools = [];
     options.allowedTools = [...this.allowedTools];
-    options.disallowedTools = [...DISALLOWED_TOOLS, 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch'];
+    options.disallowedTools = botDisallowedTools([]);
     options.canUseTool = async () => ({ behavior: 'deny' as const, message: 'bots act only through their wmux tools' });
     options.settingSources = [];
     options.cwd = bot.cwd;
@@ -1090,7 +1121,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // names, or a model that copies a bare name reaches none of them.
     const naming = botToolNamingRule(this.allowedTools);
     if (naming && typeof options.systemPrompt === 'string') options.systemPrompt = `${options.systemPrompt}\n\n${naming}`;
-    if (bot.repoRoot) this.applyRepoRead(options, bot.repoRoot);
+    if (this._turnExec && typeof options.systemPrompt === 'string') options.systemPrompt = `${options.systemPrompt}\n\n${BOT_EXEC_PROMPT}`;
+    if (bot.repoRoot || this._turnExec) this.applyBuiltinTools(options, bot.repoRoot, this._turnExec);
+    if (this._turnExec) this.applySandbox(options);
     this.applyGuestToolGate(options);
     if (!this.mcpBundlePath) {
       delete options.mcpServers;
@@ -1114,26 +1147,64 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     };
   }
 
-  /** Bot mode with a repository: Read, Grep and Glob, decided by main.
+  /** Bot mode with a repository and/or commands: the built-in tools it
+   *  holds, every call decided by main.
    *
-   *  The session's cwd stays the bot's empty folder: claude keys transcripts
-   *  (resume) by cwd, and the repository's own claude project (the owner's
-   *  sessions and memory there) stays out of the bot's. Relative paths and
-   *  path-less searches still land in the repository, because main's
-   *  PreToolUse decision rewrites every allowed call to absolute paths under
-   *  the root. The three tools are deliberately NOT in allowedTools (an
-   *  allowed tool skips the permission path); the PreToolUse hook fires for
-   *  every call, canUseTool repeats the same decision, and the Read deny
-   *  rules keep protected files out of Grep / Glob results. */
-  private applyRepoRead(options: Record<string, unknown>, root: string): void {
-    const botId = this.bot?.binding.botId ?? '';
-    const decide = (toolName: string, input: unknown) =>
-      evaluateBotRepoRead(toolName, input && typeof input === 'object' ? (input as Record<string, unknown>) : {}, root);
-    const logDenied = (toolName: string, reason: string) =>
+   *  With a repository: Read, Grep and Glob inside it. The session's cwd
+   *  stays the bot's empty folder: claude keys transcripts (resume) by cwd,
+   *  and the repository's own claude project (the owner's sessions and
+   *  memory there) stays out of the bot's. Relative paths and path-less
+   *  searches still land in the repository, because main's PreToolUse
+   *  decision rewrites every allowed call to absolute paths under the root.
+   *  The Read deny rules keep protected files out of Grep / Glob results.
+   *
+   *  With commands (`exec`, the OS sandbox available): Bash, Write and Edit,
+   *  and Read for the bot's own folder (Edit needs a Read first), decided by
+   *  factory/botExec.ts; a Read the repository refuses is tried there.
+   *
+   *  None of these tools is in allowedTools (an allowed tool skips the
+   *  permission path): the PreToolUse hook fires for every call, and
+   *  canUseTool repeats the same decision. */
+  private applyBuiltinTools(options: Record<string, unknown>, root: string | undefined, exec: boolean): void {
+    const bot = this.bot;
+    if (!bot) return;
+    const botId = bot.binding.botId;
+    const execCtx = {
+      botId,
+      botDir: bot.cwd,
+      attended: () => runningWakeAttended(botId),
+      rules: () => botCommandRulesFor(botId),
+    };
+    type Decision = { ok: true; input: Record<string, unknown> } | { ok: false; reason: string };
+    const decide = (toolName: string, raw: unknown): Decision => {
+      const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      if (exec && BOT_EXEC_TOOLS.includes(toolName)) {
+        let d: BotExecDecision;
+        try {
+          d = evaluateBotExecTool(toolName, input, execCtx);
+        } catch {
+          d = { ok: false, layer: 'input', reason: 'the command check failed' };
+        }
+        logBotExecDecision(botId, toolName, d);
+        return d.ok ? { ok: true, input: d.input } : { ok: false, reason: d.reason };
+      }
+      const repo = root ? evaluateBotRepoRead(toolName, input, root) : null;
+      if (repo?.ok) return repo;
+      if (exec && toolName === 'Read') {
+        const own = evaluateBotExecTool('Read', input, execCtx);
+        if (own.ok) return { ok: true, input: own.input };
+        return { ok: false, reason: repo ? `${repo.reason}; ${own.reason}` : own.reason };
+      }
+      return repo ?? { ok: false, reason: `${toolName} is not available to bots` };
+    };
+    const logDenied = (toolName: string, reason: string) => {
+      if (exec && BOT_EXEC_TOOLS.includes(toolName)) return; // logged by the decision
       console.warn('[factory] bot repository read denied:', JSON.stringify({ botId, tool: toolName, reason }));
-    options.tools = [...BOT_REPO_READ_TOOLS];
-    options.disallowedTools = [...DISALLOWED_TOOLS, 'Write', 'WebFetch', 'WebSearch'];
-    options.settings = { permissions: { deny: botRepoReadDenyRules(root) } };
+    };
+    const granted = [...(root ? BOT_REPO_READ_TOOLS : []), ...(exec ? ['Read', ...BOT_EXEC_TOOLS] : [])];
+    options.tools = [...new Set(granted)];
+    options.disallowedTools = botDisallowedTools(options.tools as string[]);
+    if (root) options.settings = { permissions: { deny: botRepoReadDenyRules(root) } };
     options.canUseTool = async (toolName: string, input: Record<string, unknown>) => {
       try {
         const d = decide(toolName, input);
@@ -1141,18 +1212,18 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         logDenied(toolName, d.reason);
         return { behavior: 'deny' as const, message: `wmux: ${d.reason}` };
       } catch {
-        return { behavior: 'deny' as const, message: 'wmux: the read check failed' };
+        return { behavior: 'deny' as const, message: 'wmux: the tool check failed' };
       }
     };
     const preToolUse = async (hookInput: { tool_name?: string; tool_input?: unknown }) => {
       const toolName = hookInput.tool_name ?? '';
       // wmux MCP tools keep their own gates (allowedTools, the role surface).
       if (toolName.startsWith('mcp__wmux__')) return {};
-      let d: ReturnType<typeof decide>;
+      let d: Decision;
       try {
         d = decide(toolName, hookInput.tool_input);
       } catch {
-        d = { ok: false, reason: 'the read check failed' };
+        d = { ok: false, reason: 'the tool check failed' };
       }
       if (!d.ok) logDenied(toolName, d.reason);
       return {
@@ -1165,7 +1236,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       const toolName = hookInput.tool_name ?? '';
       // wmux MCP results are redacted where main answers them (RpcRouter).
       if (toolName.startsWith('mcp__wmux__')) return {};
-      // A stored bot secret never reaches the model in a read's result: the
+      // A stored bot secret never reaches the model in a tool's result: the
       // result goes on with each value replaced by its marker.
       const redacted = (): Record<string, unknown> => {
         let out: unknown;
@@ -1179,7 +1250,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         if (out === hookInput.tool_response) return {};
         return { hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: out ?? 'wmux: this result was withheld because it could not be checked for stored secrets.' } };
       };
-      if (toolName !== 'Grep') return redacted();
+      if (toolName !== 'Grep' || !root) return redacted();
       let withhold = true;
       try {
         withhold = grepOutputNamesProtected(hookInput.tool_response, root, fs.realpathSync.native(root));
@@ -1196,6 +1267,22 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       };
     };
     options.hooks = { PreToolUse: [{ hooks: [preToolUse] }], PostToolUse: [{ hooks: [postToolUse] }] };
+  }
+
+  /** Bot mode with commands: the OS sandbox (factory/botExecSandbox.ts).
+   *  A variable the sandbox cannot unset by name is not passed to claude. */
+  private applySandbox(options: Record<string, unknown>): void {
+    const bot = this.bot;
+    if (!bot) return;
+    const env = (options.env ?? {}) as Record<string, string | undefined>;
+    for (const name of Object.keys(env)) if (!UNSETTABLE_ENV_NAME.test(name)) delete env[name];
+    let accountConfigDirs: string[] = [];
+    try {
+      accountConfigDirs = bot.accountConfigDirs?.() ?? getAccountStore().listAccounts().map((a) => a.configDir);
+    } catch {
+      accountConfigDirs = [];
+    }
+    options.sandbox = botSandboxSettings({ botDir: bot.cwd, wmuxDir: bot.wmuxDir ?? getWmuxDir(), env, accountConfigDirs });
   }
 
   /** Bot mode, every session: in a wake not known clean (wakeTaint.ts), every
@@ -1283,6 +1370,15 @@ export class ClaudeSdkAdapter implements BrainAdapter {
           return;
         }
       }
+      // Commands only where the OS sandbox runs; a failed check is no commands.
+      this._turnExec = false;
+      try {
+        const support = this.bot.exec ? await this.bot.exec() : null;
+        this._turnExec = support?.ok === true;
+      } catch {
+        this._turnExec = false;
+      }
+      if (this._disposed) return;
       // A conversation begun on the other sign-in lives in the other config
       // folder: start a new one rather than resume what claude cannot find.
       // (A saved one of unknown sign-in is tried, and falls back to a fresh

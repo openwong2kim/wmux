@@ -31,7 +31,9 @@ describe('ROLE_SURFACES', () => {
     for (const tool of COMMON) expect(ROLE_SURFACES[role].tools.has(tool), `${role} lacks ${tool}`).toBe(true);
   });
 
-  it.each(BOT_ROLES)('%s holds no shell, terminal input, teardown, browser or computer tool', (role) => {
+  // A bot's own commands are the engine's sandboxed Bash in its folder
+  // (main/factory/botExec.ts), never a wmux terminal: no pane input here.
+  it.each(BOT_ROLES)('%s holds no terminal input, teardown, browser or computer tool', (role) => {
     for (const tool of ROLE_SURFACES[role].tools) {
       expect(tool).not.toMatch(/^(terminal_send|terminal_send_key|send_message|pane_close|surface_close|workspace_close|pane_split|surface_new|computer|approval_press|task_close|task_pr|task_adopt)$/);
       expect(tool).not.toMatch(/^(browser_|repl_|company_)/);
