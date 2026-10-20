@@ -183,6 +183,53 @@ describe('the line as it runs', () => {
   });
 });
 
+describe('git as it runs', () => {
+  const OVERRIDES = [
+    '--no-pager', '--no-optional-locks',
+    "'-c' 'core.fsmonitor='", "'-c' 'core.hooksPath=/dev/null'", "'-c' 'core.pager=cat'", "'-c' 'core.editor=false'",
+    "'-c' 'log.showSignature=false'", "'-c' 'gpg.program=false'",
+  ];
+  it.each(['git status', 'git diff', 'git log --oneline -5', 'git show HEAD', 'git branch -a'])('%s runs with no system or global config and every program off', (line) => {
+    const d = decide(line);
+    expect(d.ok).toBe(true);
+    const run = d.ok ? d.run : '';
+    expect(run.startsWith("GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \\command 'git' ")).toBe(true);
+    for (const o of OVERRIDES) expect(run, o).toContain(o);
+  });
+
+  it('a diffing subcommand gets the external diff and textconv drivers off, after its own options and before --', () => {
+    expect(decide('git diff HEAD -- notes.md')).toMatchObject({ ok: true, run: expect.stringMatching(/'diff' 'HEAD' '--no-ext-diff' '--no-textconv' '--' 'notes\.md'$/) });
+    expect(decide('git log --oneline')).toMatchObject({ ok: true, run: expect.stringMatching(/'log' '--oneline' '--no-ext-diff' '--no-textconv'$/) });
+    expect(decide('git status')).toMatchObject({ ok: true, run: expect.not.stringMatching(/no-ext-diff/) });
+    // An owner rule's git is hardened the same way.
+    expect(decide('git commit -m x', [{ argv: ['git', 'commit'], anyArgs: true }])).toMatchObject({ ok: true, run: expect.stringContaining("'gpg.x509.program=false' 'commit'") });
+  });
+
+  it('git -C names only the bot folder or its repository', () => {
+    const repo = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'botexec-repo-')));
+    try {
+      fs.mkdirSync(path.join(botDir, 'sub'));
+      const withRepo = (line: string) => decideBotCommand(line, { botDir, repoRoot: repo, rules: [] });
+      expect(withRepo(`git -C ${repo} status`)).toMatchObject({ ok: true });
+      expect(withRepo('git -C sub status')).toMatchObject({ ok: true });
+      expect(withRepo(`git -C ${botDir} log`)).toMatchObject({ ok: true });
+      for (const line of [`git -C ${outside} status`, 'git -C /etc status', 'git -C ../ status', 'git -C sub/../.. status', `git -C ${repo}/missing status`]) {
+        expect(withRepo(line), line).toMatchObject({ ok: false, layer: 'floor' });
+      }
+      // Without a repository only the bot folder.
+      expect(decide(`git -C ${repo} status`)).toMatchObject({ ok: false, layer: 'floor' });
+      // A symlink out of the folder is followed.
+      fs.symlinkSync(outside, path.join(botDir, 'out-link'));
+      expect(withRepo('git -C out-link status')).toMatchObject({ ok: false, layer: 'floor' });
+      // Other ways to name a repository are refused outright.
+      expect(decide('git --git-dir=/etc status', [{ argv: ['git'], anyArgs: true }])).toMatchObject({ ok: false, layer: 'floor' });
+      expect(decide('git --work-tree=/etc status', [{ argv: ['git'], anyArgs: true }])).toMatchObject({ ok: false, layer: 'floor' });
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('the list', () => {
   it.each([
     'ls -la',
@@ -192,7 +239,7 @@ describe('the list', () => {
     'find . -name "*.ts"',
     'wc -l notes.md',
     'git status',
-    'git -C /some/repo log --oneline -5',
+    'git -C . log --oneline -5',
     'git diff \'HEAD~1\'',
     'git show HEAD',
     'git branch -a',
@@ -425,7 +472,8 @@ describe('the sandbox settings', () => {
       wmuxDir, path.join(home, '.claude'), path.join(home, '.ssh'), path.join(home, '.aws'), path.join(home, '.config', 'gh'),
       path.join(home, 'Library', 'Keychains'), '/Users/someone/claude-work', path.join(wmuxDir, 'factory', 'claude-api-config'),
     ]));
-    expect(s.filesystem.allowRead).toContain(bot);
+    expect(s.filesystem.allowRead).toEqual([bot]);
+    expect(s.filesystem.denyRead).toContain(path.join(wmuxDir, 'factory', 'claude-api-config', 'shell-snapshots'));
     // Every domain is denied by the proxy itself, never asked of the session.
     expect(s.network).toMatchObject({ allowedDomains: [], deniedDomains: ['*'], allowAllUnixSockets: false, allowLocalBinding: false });
     const unset = s.credentials.envVars;
@@ -468,7 +516,9 @@ describe('home is denied by default', () => {
     ]));
     expect(s.filesystem.denyRead).not.toContain(path.join(home, '.config', 'other'));
     // `.pypirc` and `projects` sit under the denied home: no list needed.
-    expect(s.filesystem.allowRead).toEqual([bot, path.join(home, '.claude', 'shell-snapshots')]);
+    // Claude's shell snapshots (every session's) stay denied too.
+    expect(s.filesystem.allowRead).toEqual([bot]);
+    expect(s.filesystem.denyRead).toContain(path.join(home, '.claude', 'shell-snapshots'));
     expect(s.filesystem.allowWrite).toEqual([bot]);
     // System folders are never denied.
     for (const sys of ['/usr', '/bin', '/opt/homebrew', '/etc']) expect(s.filesystem.denyRead.some((p) => sys === p || sys.startsWith(`${p}/`))).toBe(false);

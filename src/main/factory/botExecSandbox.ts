@@ -10,8 +10,13 @@
 //     itself (`autoAllowBashIfSandboxed: false`: main still decides each
 //     command, botExec.ts);
 //   - files: writes only in the bot's own folder; no reads anywhere in the
-//     home folder (deny by default) except the bot's own folder and claude's
-//     shell snapshots, which every command sources. System folders (/usr,
+//     home folder (deny by default) except the bot's own folder. That
+//     includes claude's shell snapshots: the folder holds one per session of
+//     every project, the file name is chosen at random when claude starts,
+//     and no setting moves or turns them off (only CLAUDE_CONFIG_DIR, which
+//     also holds the sign-in). Claude sources the snapshot with
+//     `source … 2>/dev/null || true`, so a command runs without the owner's
+//     aliases, functions and login PATH. System folders (/usr,
 //     /bin, /opt/homebrew, ...) stay readable; tools installed under home do
 //     not run. Named denies stay on top as a second layer: every wmux
 //     instance's data folder and tokens (`~/.wmux*`, the app's own folders),
@@ -145,7 +150,11 @@ export function botSandboxDenyRead(input: BotSandboxInput): string[] {
   }
   for (const p of wmuxInstancePaths(home, platform, input.env, input.listDir ?? listDirDefault)) out.add(p);
   const configDir = input.env.CLAUDE_CONFIG_DIR;
-  if (configDir && path.isAbsolute(configDir)) out.add(configDir);
+  if (configDir && path.isAbsolute(configDir)) {
+    out.add(configDir);
+    out.add(path.join(configDir, 'shell-snapshots'));
+  }
+  out.add(path.join(home, '.claude', 'shell-snapshots'));
   for (const dir of input.accountConfigDirs ?? []) if (dir && path.isAbsolute(dir)) out.add(dir);
   return [...out].filter(Boolean);
 }
@@ -153,8 +162,6 @@ export function botSandboxDenyRead(input: BotSandboxInput): string[] {
 /** The SDK `sandbox` option of a bot session that runs commands. Pure apart
  *  from the token path helpers. */
 export function botSandboxSettings(input: BotSandboxInput): Record<string, unknown> {
-  const home = input.home ?? os.homedir();
-  const configDir = input.env.CLAUDE_CONFIG_DIR && path.isAbsolute(input.env.CLAUDE_CONFIG_DIR) ? input.env.CLAUDE_CONFIG_DIR : path.join(home, '.claude');
   return {
     enabled: true,
     failIfUnavailable: true,
@@ -167,10 +174,8 @@ export function botSandboxSettings(input: BotSandboxInput): Record<string, unkno
     filesystem: {
       allowWrite: [input.botDir],
       denyRead: botSandboxDenyRead(input),
-      // Re-opened inside the denied home: the bot's folder, and claude's
-      // shell snapshot (the owner's shell functions and aliases, no
-      // variables), which every command sources before it runs.
-      allowRead: [input.botDir, path.join(configDir, 'shell-snapshots')],
+      // Re-opened inside the denied home: the bot's folder only.
+      allowRead: [input.botDir],
     },
     network: { allowedDomains: [], deniedDomains: ['*'], allowUnixSockets: [], allowAllUnixSockets: false, allowLocalBinding: false },
     credentials: { envVars: botExecUnsetEnv(input.env).map((name) => ({ name, mode: 'deny' })) },

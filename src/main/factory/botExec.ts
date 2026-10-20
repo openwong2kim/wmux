@@ -39,6 +39,8 @@ export interface BotExecContext {
   botId: string;
   /** The bot's own folder (the session's cwd). */
   botDir: string;
+  /** The repository the bot reads, if any (`git -C` may name it). */
+  repoRoot?: string;
   /** Whether the wake running now is attended (runningWakeAttended). */
   attended: () => boolean;
   /** The owner's command rules for this bot. */
@@ -85,7 +87,7 @@ export function evaluateBotExecTool(toolName: string, input: Record<string, unkn
     } catch {
       rules = [];
     }
-    const d = decideBotCommand(input.command, { botDir: ctx.botDir, fs: ctx.fs, rules });
+    const d = decideBotCommand(input.command, { botDir: ctx.botDir, repoRoot: ctx.repoRoot, fs: ctx.fs, rules });
     if (!d.ok) {
       // `unlisted` is where a later review step decides; today it refuses.
       return { ok: false, layer: d.layer, reason: d.reason, command: d.command };

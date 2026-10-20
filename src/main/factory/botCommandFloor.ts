@@ -26,6 +26,7 @@
 // permission changes; remote shells; the wmux CLI; and output redirected to
 // a path outside the bot's folder (botFolderPath.ts).
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { checkBotFolderPath, type BotFolderDeps } from './botFolderPath';
 
@@ -305,12 +306,46 @@ const GIT_FLOOR_SUBCOMMANDS: ReadonlySet<string> = new Set([
   'credential', 'credential-store', 'credential-cache', 'daemon', 'submodule', 'hook',
 ]);
 
-function gitRefusal(args: readonly string[]): string | null {
+/** Whether `dir` (relative to the bot folder) is the bot folder or the
+ *  bot's repository, or inside one of them, by text and with symlinks
+ *  followed. A missing folder, or one named with `..`, is not. */
+function gitDirAllowed(dir: string, ctx: FloorContext): boolean {
+  if (dir.split(/[\\/]+/).includes('..')) return false;
+  const realpath = ctx.fs?.realpath ?? ((p: string) => fs.realpathSync.native(p));
+  const within = (root: string, target: string): boolean => {
+    const rel = path.relative(root, target);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  const target = path.resolve(ctx.botDir, dir);
+  let real: string;
+  try {
+    real = realpath(target);
+  } catch {
+    return false;
+  }
+  return [ctx.botDir, ctx.repoRoot].some((root) => {
+    if (!root || !within(root, target)) return false;
+    try {
+      return within(realpath(root), real);
+    } catch {
+      return false;
+    }
+  });
+}
+
+function gitRefusal(args: readonly string[], ctx: FloorContext): string | null {
   let k = 0;
   while (k < args.length && args[k].startsWith('-')) {
     const a = args[k];
     if (a === '-c' || a.startsWith('-c') || a.startsWith('--config-env') || a.startsWith('--exec-path')) return `git ${a} changes git's configuration for the command`;
-    if (a === '-C' || a === '--git-dir' || a === '--work-tree' || a === '--namespace') k++;
+    if (a.startsWith('--git-dir') || a.startsWith('--work-tree')) return `git ${a} names another repository; use -C with the bot folder or its repository`;
+    if (a === '-C') {
+      const dir = args[k + 1];
+      if (dir === undefined || !gitDirAllowed(dir, ctx)) return `git -C ${dir ?? ''} is outside the bot folder and its repository`.trim();
+      k++;
+    } else if (a === '--namespace') {
+      k++;
+    }
     k++;
   }
   const sub = args[k];
@@ -337,6 +372,8 @@ function rmRefusal(args: readonly string[]): string | null {
 export interface FloorContext {
   /** The bot's own folder (its session cwd): every relative path resolves here. */
   botDir: string;
+  /** The repository the bot reads, if any (`git -C` may name it). */
+  repoRoot?: string;
   fs?: BotFolderDeps;
 }
 
@@ -356,7 +393,7 @@ function simpleCommandRefusal(cmd: SimpleCommand, ctx: FloorContext): string | n
     if (hit) return `find ${hit} is not run`;
   }
   if (name === 'git') {
-    const g = gitRefusal(args);
+    const g = gitRefusal(args, ctx);
     if (g) return g;
   }
   if (name === 'rm') {
@@ -401,6 +438,47 @@ export function normalizeCommand(pipelines: readonly Pipeline[], joins: readonly
     .reduce((line, part, k) => (k === 0 ? part : `${line} ${joins[k - 1] ?? ';'} ${part}`), '');
 }
 
+/** Set for every git a bot runs: no system or global git config is read. */
+const GIT_RUN_ENV: readonly string[] = ['GIT_CONFIG_NOSYSTEM=1', 'GIT_CONFIG_GLOBAL=/dev/null'];
+
+/** Config main sets on every git a bot runs, over the repository's own:
+ *  nothing it reads may start a program. An empty core.fsmonitor is off in
+ *  every git (a boolean false since 2.36, an unset hook before); the gpg
+ *  programs are `false`, so a signature format or log.showSignature checks
+ *  nothing. */
+const GIT_RUN_CONFIG: readonly string[] = [
+  'core.fsmonitor=',
+  'core.hooksPath=/dev/null',
+  'core.pager=cat',
+  'core.editor=false',
+  'core.sshCommand=false',
+  'log.showSignature=false',
+  'gpg.program=false',
+  'gpg.ssh.program=false',
+  'gpg.x509.program=false',
+];
+
+/** Subcommands that diff, and so take --no-ext-diff and --no-textconv. */
+const GIT_DIFFING: ReadonlySet<string> = new Set(['diff', 'log', 'show']);
+
+/** `git <globals> <sub> <args>` as it runs: main's globals first, and for
+ *  a diffing subcommand the external diff and textconv drivers off, placed
+ *  after the bot's own options (before any `--`), so they win. Pure. */
+export function hardenedGitArgv(argv: readonly string[]): string[] {
+  const globals = ['--no-pager', '--no-optional-locks', ...GIT_RUN_CONFIG.flatMap((c) => ['-c', c])];
+  let k = 1;
+  while (k < argv.length && argv[k].startsWith('-')) k += argv[k] === '-C' ? 2 : 1;
+  const own = argv.slice(1, k);
+  const sub = argv[k];
+  if (sub === undefined) return [argv[0], ...globals, ...own];
+  const rest = argv.slice(k + 1);
+  if (!GIT_DIFFING.has(sub)) return [argv[0], ...globals, ...own, sub, ...rest];
+  const dash = rest.indexOf('--');
+  const off = ['--no-ext-diff', '--no-textconv'];
+  const after = dash < 0 ? [...rest, ...off] : [...rest.slice(0, dash), ...off, ...rest.slice(dash)];
+  return [argv[0], ...globals, ...own, sub, ...after];
+}
+
 /** A word as the shell reads it literally: single-quoted. Pure. */
 function shellQuote(w: string): string {
   return `'${w.replace(/'/g, `'\\''`)}'`;
@@ -412,13 +490,17 @@ function shellQuote(w: string): string {
  * every command run as `\command <name>`, which skips the owner's aliases
  * and shell functions that claude's shell snapshot restores (bash and zsh
  * alike), so the program that runs is the one the list approved. A shell
- * function the owner named `command` itself would still run. Built only
- * from a line that passed the floor and the list. Pure.
+ * function the owner named `command` itself would still run. Every git
+ * runs with no system or global config and main's overrides
+ * (hardenedGitArgv). Built only from a line that passed the floor and the
+ * list. Pure.
  */
 export function commandLineToRun(pipelines: readonly Pipeline[], joins: readonly string[]): string {
   const simple = (c: SimpleCommand): string => {
+    const git = commandName(c.argv[0] ?? '') === 'git';
+    const argv = git ? hardenedGitArgv(c.argv) : c.argv;
     // `\command`: the backslash skips an alias named `command` too.
-    const words = ['\\command', ...c.argv.map(shellQuote)];
+    const words = [...(git ? GIT_RUN_ENV : []), '\\command', ...argv.map(shellQuote)];
     for (const r of c.redirects) {
       const target = (r.op === '>&' || r.op === '<&') && /^(\d|-)$/.test(r.target) ? r.target : shellQuote(r.target);
       words.push(`${r.fd ?? ''}${r.op}${target}`);

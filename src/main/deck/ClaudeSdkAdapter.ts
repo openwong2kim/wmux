@@ -1177,6 +1177,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     const execCtx = {
       botId,
       botDir: bot.cwd,
+      repoRoot: root,
       attended: () => runningWakeAttended(botId),
       rules: () => botCommandRulesFor(botId),
     };
