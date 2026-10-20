@@ -46,6 +46,12 @@ describe('disk-only wiring', () => {
     expect(src).not.toMatch(/sessions: sessionManager\.listSessions\(\),/);
   });
 
+  it('closing a pane recovery left on disk only retires its record (no session:destroyed fires for it)', () => {
+    const at = src.indexOf('const destroySessionNow = async (p: DaemonDestroySessionParams): Promise<unknown> => {');
+    expect(at).toBeGreaterThan(-1);
+    expect(src.slice(at, at + 1800)).toMatch(/diskOnlySessions = diskOnlySessions\.filter\(\(s\) => s\.id !== p\.id\);/);
+  });
+
   it('a destroyed session\'s disk-only record is retired', () => {
     const at = src.indexOf("sessionManager.on('session:destroyed', (payload: { id: string }) => {\n    recoveredAgentShellIds.delete(payload.id);");
     expect(at).toBeGreaterThan(-1);

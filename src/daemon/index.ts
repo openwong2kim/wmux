@@ -2676,6 +2676,10 @@ function registerRpcHandlers(
       }
     }
 
+    // #2493: closing a pane whose session recovery left on disk only (the
+    // manager emits no session:destroyed for it) ends that record too.
+    diskOnlySessions = diskOnlySessions.filter((s) => s.id !== p.id);
+
     // Remove data listener to prevent leak
     const tracked = sessionDataListeners.get(p.id);
     if (tracked) {
