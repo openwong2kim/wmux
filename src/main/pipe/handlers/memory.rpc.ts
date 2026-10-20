@@ -9,9 +9,10 @@
 //                  message started or derived from (RpcRouter refuses
 //                  those first), nor one started from outside text (a PR,
 //                  an issue, CI, a tainted handoff). The owner's profile
-//                  (`user`) only in a wake the owner started: their
-//                  message or their button. A wake that cannot be told is
-//                  refused.
+//                  (`user`) only in a wake on the owner's words: their
+//                  message, their button, or their answer to the bot's
+//                  question (not one closed without an answer). A wake
+//                  that cannot be told is refused.
 //   IPC read / remove / clear   the main window only.
 // Anyone else is refused. Before the module started every method answers
 // `not_started`.
@@ -26,6 +27,7 @@ import { clearMemory, forgetMemoryOfRemovedBots, readMemoryView, removeMemoryEnt
 import { guestOfRunningWake, runningWakeTainted, type GuestProvenance } from '../../factory/wakeTaint';
 import { currentWakeItem } from '../../factory/wakeQueue';
 import { getBotRuntime } from '../../factory/BotRuntime';
+import { summarizeHandoff } from '../../factory/handoffRouter';
 import { isMainWindowSender } from '../../ipc/mainWindowSender';
 
 type Refusal = Extract<MemoryUpdateResult, { ok: false }>;
@@ -44,7 +46,7 @@ function isTarget(v: unknown): v is MemoryTarget {
 
 export const MEMORY_GUEST_REFUSAL = 'this turn comes from an external guest\'s message (or wmux cannot tell where it came from), and such a turn saves no memory; tell the owner what you would remember';
 export const MEMORY_TAINT_REFUSAL = 'this turn started from outside text (a pull request, an issue, CI, or work that read them), or wmux cannot tell where it started, and such a turn saves no memory; save it in a turn the owner starts';
-export const MEMORY_USER_REFUSAL = 'the owner\'s profile is written only in a turn the owner started (their message or their button); save it then, or keep it in your own notes (target memory)';
+export const MEMORY_USER_REFUSAL = 'the owner\'s profile is written only in a turn on the owner\'s words (their message, their button, or their answer to your question); save it then, or keep it in your own notes (target memory)';
 
 /** The reason of the wake `botId` is running now, when the queue and the
  *  runtime agree on which wake that is; null otherwise. Never throws. */
@@ -58,6 +60,18 @@ export function runningWakeReason(botId: string): WakeReason | null {
   }
 }
 
+/** Whether handoff `handoffId` is the owner's answer to the bot's question
+ *  with words of their own (an answer handoff is only ever the owner's; one
+ *  closed without an answer carries none). Never throws. */
+export function ownerAnswered(handoffId: string): boolean {
+  try {
+    const h = summarizeHandoff(handoffId);
+    return h?.ownerWords === true && h.dismissed !== true;
+  } catch {
+    return false;
+  }
+}
+
 export interface MemoryHandlerDeps {
   /** The wmux data dir, or null before the module started. */
   wmuxDir: () => string | null;
@@ -68,17 +82,21 @@ export interface MemoryHandlerDeps {
   tainted?: (botId: string) => boolean;
   /** The bot's running wake's reason, or null. Default: runningWakeReason. */
   wakeReason?: (botId: string) => WakeReason | null;
+  /** Whether a handoff is the owner's answer with words. Default: ownerAnswered. */
+  ownerAnswer?: (handoffId: string) => boolean;
 }
 
 /** Why the bot's running wake may not write `target`, or null. Fails
  *  closed: anything the gate cannot tell refuses. */
-export function memoryWriteRefusal(botId: string, target: MemoryTarget, deps: Pick<MemoryHandlerDeps, 'guestWake' | 'tainted' | 'wakeReason'>): Refusal | null {
+export function memoryWriteRefusal(botId: string, target: MemoryTarget, deps: Pick<MemoryHandlerDeps, 'guestWake' | 'tainted' | 'wakeReason' | 'ownerAnswer'>): Refusal | null {
   try {
     if ((deps.guestWake ?? guestOfRunningWake)(botId) !== false) return refuse('not_authorized', MEMORY_GUEST_REFUSAL);
     if ((deps.tainted ?? runningWakeTainted)(botId) !== false) return refuse('not_authorized', MEMORY_TAINT_REFUSAL);
     if (target === 'user') {
-      const kind = (deps.wakeReason ?? runningWakeReason)(botId)?.kind;
-      if (kind !== 'human' && kind !== 'manual') return refuse('not_authorized', MEMORY_USER_REFUSAL);
+      const reason = (deps.wakeReason ?? runningWakeReason)(botId);
+      const owners = reason?.kind === 'human' || reason?.kind === 'manual'
+        || (reason?.kind === 'handoff' && (deps.ownerAnswer ?? ownerAnswered)(reason.handoffId));
+      if (!owners) return refuse('not_authorized', MEMORY_USER_REFUSAL);
     }
     return null;
   } catch {

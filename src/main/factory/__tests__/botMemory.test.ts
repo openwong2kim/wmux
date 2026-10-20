@@ -110,7 +110,7 @@ describe('updateMemory', () => {
     expect(r.ok ? '' : r.message).toContain(`of at most ${MEMORY_LIMITS.MEMORY_CHARS}`);
     expect(readMemoryView(dir, 'memory', BOT).entries).toHaveLength(2);
     // A shorter replacement that fits is taken.
-    expect(updateMemory(dir, 'memory', BOT, { action: 'replace', match: `${entry}b`, text: 'short' })).toMatchObject({ ok: true });
+    expect(updateMemory(dir, 'memory', BOT, { action: 'replace', match: 'xb', text: 'short' })).toMatchObject({ ok: true });
   });
 
   it('the owner\'s profile has its own, smaller limit', () => {

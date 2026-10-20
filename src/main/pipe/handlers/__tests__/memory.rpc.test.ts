@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({ app: { getPath: () => '/tmp', isPackaged: false, on: vi.fn() }, ipcMain: { handle: vi.fn(), removeHandler: vi.fn(), on: vi.fn() }, BrowserWindow: class {} }));
 
-import type { BotBinding } from '../../../../shared/bot';
+import type { BotBinding, BotEventPayload } from '../../../../shared/bot';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { WakeReason } from '../../../../shared/wake';
 import { readMemoryView } from '../../../factory/botMemory';
@@ -39,14 +39,15 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function rig(wake: { guest?: boolean | 'unknown'; tainted?: boolean; reason?: WakeReason | null } = {}): MemoryHandlerDeps & { emit: ReturnType<typeof vi.fn> } {
+function rig(wake: { guest?: boolean | 'unknown'; tainted?: boolean; reason?: WakeReason | null; answers?: Record<string, boolean> } = {}) {
   return {
     wmuxDir: () => dir,
-    emit: vi.fn(),
+    emit: vi.fn<(payload: BotEventPayload) => void>(),
     guestWake: () => wake.guest ?? false,
     tainted: () => wake.tainted ?? false,
     wakeReason: () => (wake.reason === undefined ? HUMAN : wake.reason),
-  };
+    ownerAnswer: (id: string) => wake.answers?.[id] === true,
+  } satisfies MemoryHandlerDeps;
 }
 
 const update = (params: Record<string, unknown>, deps: MemoryHandlerDeps, ctx: RpcContext = asBot) => handleMemoryUpdate(params, ctx, deps);
@@ -90,6 +91,18 @@ describe('memory.update', () => {
     expect(readMemoryView(dir, 'user', BOT).entries).toEqual([]);
     expect(update({ target: 'user', action: 'add', text: 'The owner is Kim' }, rig({ reason: HUMAN }))).toMatchObject({ ok: true, entries: ['The owner is Kim'] });
     expect(update({ target: 'user', action: 'add', text: 'Prefers Korean' }, rig({ reason: MANUAL }))).toMatchObject({ ok: true, entries: ['The owner is Kim', 'Prefers Korean'] });
+  });
+
+  it('the owner\'s answer to the bot\'s question counts as their words; another handoff, or a tainted answer, does not', () => {
+    const answer: WakeReason = { kind: 'handoff', handoffId: 'h-answer' };
+    const dismissed: WakeReason = { kind: 'handoff', handoffId: 'h-dismissed' };
+    const answers = { 'h-answer': true, 'h-dismissed': false };
+    expect(update({ target: 'user', action: 'add', text: 'Call the owner Kim' }, rig({ reason: answer, answers }))).toMatchObject({ ok: true, entries: ['Call the owner Kim'] });
+    expect(update({ target: 'user', action: 'add', text: 'x' }, rig({ reason: dismissed, answers }))).toEqual({ ok: false, code: 'not_authorized', message: MEMORY_USER_REFUSAL });
+    expect(update({ target: 'user', action: 'add', text: 'x' }, rig({ reason: answer, answers, tainted: true }))).toEqual({ ok: false, code: 'not_authorized', message: MEMORY_TAINT_REFUSAL });
+    // The default lookup: no handoff router running, so no answer is known.
+    expect(memoryWriteRefusal(BOT, 'user', { guestWake: () => false, tainted: () => false, wakeReason: () => answer })).toMatchObject({ code: 'not_authorized' });
+    expect(readMemoryView(dir, 'user', BOT).entries).toEqual(['Call the owner Kim']);
   });
 
   it('fails closed: a gate that throws, or no taint tracker at all, refuses', () => {
