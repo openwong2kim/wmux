@@ -304,8 +304,16 @@ describe('the list', () => {
     ['ls | make', 'unlisted filter'],
     ['ls | sort < notes.md', 'filter reading a file'],
     ['cp a b', 'cp'],
+    ['git init', 'git init'],
+    ['git commit -m x', 'git commit'],
+    ['git apply p.diff', 'git apply'],
+    ['tree && rg --pre=x foo', 'a refused built-in after an unlisted command'],
+    ['tree | sort --compress-program=x', 'a refused filter after an unlisted command'],
   ])('refuses %s (%s)', (line) => {
-    expect(decide(line)).toMatchObject({ ok: false, layer: 'unlisted' });
+    // Only a command that is not a built-in at all is `unlisted` (the
+    // reviewer may take it up); a built-in its own check refuses is `floor`.
+    const unlisted = ['make', './ls', '/bin/ls', 'tee x', 'ls | tee x', 'ls | make', 'cp a b'];
+    expect(decide(line)).toMatchObject({ ok: false, layer: unlisted.includes(line) ? 'unlisted' : 'floor' });
   });
 
   it('an owner rule allows its exact words, or any arguments when it says so', () => {

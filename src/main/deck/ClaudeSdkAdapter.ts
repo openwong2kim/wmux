@@ -36,7 +36,7 @@ import { BOT_REPO_READ_TOOLS, botRepoReadDenyRules, evaluateBotRepoRead, grepOut
 import { redactStoredSecretsDeep } from '../factory/secretRedaction';
 import { guestGateProvenance, runningWakeAttended } from '../factory/wakeTaint';
 import { BOT_EXEC_TOOLS, evaluateBotExecTool, logBotExecDecision, reviewUnlistedCommand, type BotExecDecision } from '../factory/botExec';
-import { BotCommandReviewer, sdkReviewerAsk } from '../factory/botCommandReviewer';
+import { BOT_COMMAND_REVIEWER_LIMITS, BotCommandReviewer, sdkReviewerAsk } from '../factory/botCommandReviewer';
 import { UNSETTABLE_ENV_NAME, botSandboxSettings, type BotExecSupport } from '../factory/botExecSandbox';
 import { botCommandRulesFor } from '../factory/botCommandRules';
 import { claudeNotFoundMessage } from '../factory/engineError';
@@ -1306,7 +1306,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         },
       };
     };
-    options.hooks = { PreToolUse: [{ hooks: [preToolUse] }], PostToolUse: [{ hooks: [postToolUse] }] };
+    // An explicit timeout above the reviewer's own: a review in flight never
+    // outlasts the hook. (Should claude ever give up on the hook, canUseTool
+    // decides the call the same way, the review's answer included.)
+    options.hooks = { PreToolUse: [{ hooks: [preToolUse], timeout: BOT_COMMAND_REVIEWER_LIMITS.HOOK_TIMEOUT_S }], PostToolUse: [{ hooks: [postToolUse] }] };
   }
 
   /** Bot mode with commands: the OS sandbox (factory/botExecSandbox.ts).

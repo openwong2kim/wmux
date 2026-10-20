@@ -11,9 +11,11 @@
 //     words, and either match them exactly or the rule takes any arguments;
 //   - in a pipeline, each command after the first is a stdin filter from
 //     STDIN_FILTERS, named bare, with no input redirection.
-// Anything else is not on the list (`decideBotCommand` answers `unlisted`,
-// with the line as it would run and its words, for the reviewer:
-// botCommandReviewer.ts).
+// A built-in command (or a pipe filter) whose own check refuses its
+// arguments is refused as `floor`: the reviewer never overturns a check.
+// Only a line whose every command is listed, or not a built-in at all, gets
+// further: a command not on the list makes it `unlisted`, with the line as
+// it would run and its words, for the reviewer (botCommandReviewer.ts).
 
 import { commandFloor, commandLineToRun, normalizeCommand, parseCommandLine, type FloorContext, type SimpleCommand } from './botCommandFloor';
 
@@ -151,9 +153,9 @@ export function ruleMatches(rule: BotCommandRule, argv: readonly string[]): bool
   return rule.anyArgs === true || argv.length === rule.argv.length;
 }
 
+/** A known pipe filter's refusal of its arguments or input, or null. */
 function filterRefusal(cmd: SimpleCommand): string | null {
   const name = cmd.argv[0];
-  if (!STDIN_FILTERS.has(name)) return `${name} cannot read a pipe here (only ${[...STDIN_FILTERS].join(', ')})`;
   if (cmd.redirects.some((r) => r.op === '<' || r.op === '<&')) return `${name} after a pipe reads the pipe, not a file`;
   return builtinRefusal(cmd);
 }
@@ -184,22 +186,39 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
     run: commandLineToRun(parsed.pipelines, parsed.joins),
     argv: parsed.pipelines.flatMap((p) => p.map((c) => [...c.argv])),
   });
+  // The whole line is read first: a refused built-in anywhere in it is the
+  // floor's, even after a command that is merely not on the list.
   let viaRule = false;
+  let offList: string | null = null;
   for (const p of parsed.pipelines) {
     for (let k = 0; k < p.length; k++) {
       const cmd = p[k];
+      const name = cmd.argv[0];
       if (k > 0) {
-        const r = filterRefusal(cmd);
-        if (r) return unlisted(r);
+        if (STDIN_FILTERS.has(name)) {
+          const r = filterRefusal(cmd);
+          if (r) return { ok: false, layer: 'floor', command, reason: r };
+          continue;
+        }
+        if (BUILTIN_COMMANDS.has(name)) {
+          const r = builtinRefusal(cmd);
+          if (r) return { ok: false, layer: 'floor', command, reason: r };
+        }
+        offList ??= `${name} cannot read a pipe here (only ${[...STDIN_FILTERS].join(', ')})`;
         continue;
       }
       if (ctx.rules.some((rule) => ruleMatches(rule, cmd.argv))) {
         viaRule = true;
         continue;
       }
+      if (!BUILTIN_COMMANDS.has(name)) {
+        offList ??= `${name} is not on the built-in list`;
+        continue;
+      }
       const r = builtinRefusal(cmd);
-      if (r) return unlisted(r);
+      if (r) return { ok: false, layer: 'floor', command, reason: r };
     }
   }
+  if (offList) return unlisted(offList);
   return { ok: true, layer: 'allowlist', command, run: commandLineToRun(parsed.pipelines, parsed.joins), matched: viaRule ? 'rule' : 'builtin' };
 }

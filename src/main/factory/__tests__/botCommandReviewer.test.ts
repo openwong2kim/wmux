@@ -7,8 +7,10 @@ import {
   BOT_COMMAND_REVIEWER_LIMITS,
   BOT_COMMAND_REVIEWER_SYSTEM_PROMPT,
   BotCommandReviewer,
+  FILE_RUNNERS,
   __resetBotCommandReviewerBudgetForTesting,
   parseReviewerVerdict,
+  reviewerRefusal,
   reviewerUserMessage,
   runReview,
   sdkReviewerAsk,
@@ -184,5 +186,25 @@ describe('BotCommandReviewer', () => {
     expect(await new BotCommandReviewer('bot-b', ask, () => now).review(REQ)).toMatchObject({ allow: true });
     now = new Date(2026, 9, 22, 9).getTime();
     expect(await new BotCommandReviewer('bot-a', ask, () => now).review(REQ)).toMatchObject({ allow: true });
+  });
+});
+
+describe('reviewerRefusal', () => {
+  it.each([
+    [[['python3', 'script.py']]],
+    [[['bash', 'x.sh']]],
+    [[['./x.sh']]],
+    [[['/abs/x']]],
+    [[['bin\\x']]],
+    [[['make', 'test']]],
+    [[['NPM', 'test']]],
+    [[['tree'], ['cargo', 'run']]],
+  ])('refuses %j before any call', (argv) => {
+    expect(reviewerRefusal(argv)).toMatch(/owner rule/);
+  });
+
+  it('lets a plain command through', () => {
+    expect(reviewerRefusal([['tree', '-L', '2'], ['jq', '.name', 'package.json']])).toBeNull();
+    expect(FILE_RUNNERS.has('make')).toBe(true);
   });
 });
