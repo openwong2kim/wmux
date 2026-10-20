@@ -113,7 +113,15 @@ export function registerSkillHandlers(router: Pick<FactoryRouter, 'register'>, d
     // A skill's body read is its use (the profile's last used and stale); a
     // reference or the list is not. A worker's copy is not either: every
     // approved skill is copied into every worker, used or not.
-    if (res.ok && typeof p.name === 'string' && p.reference === undefined) store.recordUse(ctx.bot.botId, p.name);
+    // The profile re-reads on the event, so its last used and Stale follow.
+    // One event per recorded read: a bot reads a skill before work it covers.
+    if (res.ok && typeof p.name === 'string' && p.reference === undefined && store.recordUse(ctx.bot.botId, p.name)) {
+      try {
+        deps.emit({ type: 'skills-changed', botId: ctx.bot.botId });
+      } catch {
+        /* the profile re-reads on its next event */
+      }
+    }
     return res;
   });
 }

@@ -45,10 +45,10 @@ function approve(s: BotSkillStore, name: string, content = skillMd(name), refere
   if (!r.ok) throw new Error(`not approved: ${r.code} ${r.message}`);
 }
 
-function readRpc(s: BotSkillStore) {
+function readRpc(s: BotSkillStore, events: string[] = []) {
   const handlers = new Map<string, (raw: unknown, ctx?: RpcContext) => Promise<unknown>>();
   registerSkillHandlers({ register: (m: string, h: (raw: unknown, ctx?: RpcContext) => Promise<unknown>) => { handlers.set(m, h); } } as never, {
-    store: () => s, approvals: () => null, emit: () => undefined,
+    store: () => s, approvals: () => null, emit: (e) => events.push(`${e.type}:${'botId' in e ? e.botId : ''}`),
   });
   const ctx = { bot: { workspaceId: 'ws-1', botId: A, role: 'lead' } } as RpcContext;
   return (raw: unknown) => (handlers.get('skill.read') as (raw: unknown, ctx?: RpcContext) => Promise<Record<string, unknown>>)(raw, ctx);
@@ -78,6 +78,24 @@ describe('skill use', () => {
     expect(rec.bots[A][0]).toMatchObject({ name: 'report', useCount: 2, lastUsedAt: T0 + 9_000, updatedAt: T0 });
     expect(fs.readdirSync(path.join(botSkillsRoot(wmuxDir, A), 'report')).sort()).toEqual(['SKILL.md', 'references']);
     expect(store().list(A)[0]).toMatchObject({ useCount: 2, lastUsedAt: T0 + 9_000 });
+  });
+
+  it('a recorded use tells the profile to re-read; a read that records nothing does not', async () => {
+    const s = store();
+    approve(s, 'report', skillMd('report'), [{ name: 'notes.md', content: 'Gate tails.\n' }]);
+    const events: string[] = [];
+    const read = readRpc(s, events);
+    await read({});
+    await read({ name: 'report', reference: 'notes.md' });
+    await read({ name: 'missing' });
+    expect(events).toEqual([]);
+    await read({ name: 'report' });
+    expect(events).toEqual([`skills-changed:${A}`]);
+    // A use that cannot be recorded: no event, and the read still answers.
+    const failing = new BotSkillStore({ wmuxDir, now: () => clock, writeRecord: () => { throw new Error('disk full'); } });
+    const quiet: string[] = [];
+    expect(await readRpc(failing, quiet)({ name: 'report' })).toMatchObject({ ok: true, name: 'report' });
+    expect(quiet).toEqual([]);
   });
 
   it('a proposal waiting for the owner is never used: nothing is recorded', async () => {
