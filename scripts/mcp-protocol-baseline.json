@@ -201,7 +201,7 @@
   "botProfiles": {
     "lead": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c5408d4754d97fffbec61acf39cbc04746ab26996b6e113bed22e715523e37f4",
+      "wireResultSha256": "803e97c6d9ba474daa307a6c99ba3976f147e5533fb21b8679e308615662bcd8",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -211,6 +211,7 @@
         "fact_poll",
         "room_post",
         "room_read",
+        "room_search",
         "handoff_send",
         "ask_person",
         "question_close",
@@ -243,7 +244,7 @@
     },
     "triage": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c5408d4754d97fffbec61acf39cbc04746ab26996b6e113bed22e715523e37f4",
+      "wireResultSha256": "803e97c6d9ba474daa307a6c99ba3976f147e5533fb21b8679e308615662bcd8",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -253,6 +254,7 @@
         "fact_poll",
         "room_post",
         "room_read",
+        "room_search",
         "handoff_send",
         "ask_person",
         "question_close",
@@ -285,7 +287,7 @@
     },
     "verifier": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c5408d4754d97fffbec61acf39cbc04746ab26996b6e113bed22e715523e37f4",
+      "wireResultSha256": "803e97c6d9ba474daa307a6c99ba3976f147e5533fb21b8679e308615662bcd8",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -295,6 +297,7 @@
         "fact_poll",
         "room_post",
         "room_read",
+        "room_search",
         "handoff_send",
         "ask_person",
         "question_close",
@@ -327,7 +330,7 @@
     },
     "maintainer": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c5408d4754d97fffbec61acf39cbc04746ab26996b6e113bed22e715523e37f4",
+      "wireResultSha256": "803e97c6d9ba474daa307a6c99ba3976f147e5533fb21b8679e308615662bcd8",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -337,6 +340,7 @@
         "fact_poll",
         "room_post",
         "room_read",
+        "room_search",
         "handoff_send",
         "ask_person",
         "question_close",
@@ -369,7 +373,7 @@
     },
     "moa": {
       "maxListBytes": 40000,
-      "wireResultSha256": "c5408d4754d97fffbec61acf39cbc04746ab26996b6e113bed22e715523e37f4",
+      "wireResultSha256": "803e97c6d9ba474daa307a6c99ba3976f147e5533fb21b8679e308615662bcd8",
       "instructionSha256": "7c1100716407e8c1dbe49aba89adc91ed5719827564d1b63eb285d0520430ce4",
       "toolNames": [
         "terminal_read",
@@ -379,6 +383,7 @@
         "fact_poll",
         "room_post",
         "room_read",
+        "room_search",
         "handoff_send",
         "ask_person",
         "question_close",
