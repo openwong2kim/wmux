@@ -21,7 +21,9 @@
 //     an API key, an account token or a wmux token never reaches it.
 //
 // Where the sandbox cannot run, a bot gets no command or file-writing tools
-// at all (`probeBotExecSupport`): never on Windows; on macOS only with
+// at all (`probeBotExecSupport`; a claude that then does not start with the
+// sandbox runs that turn again without them, and is marked so,
+// `markBotExecFailed`): never on Windows; on macOS only with
 // /usr/bin/sandbox-exec; on Linux only with bwrap and socat on PATH; and
 // only with a claude at or above BOT_EXEC_MIN_CLAUDE_VERSION. That version is
 // the lowest one checked to honour every option above (the CLI the SDK in
@@ -217,6 +219,13 @@ export async function probeBotExecSupport(exe: string | null, deps: BotExecProbe
   const result: BotExecSupport = refusal ? { ok: false, reason: refusal } : { ok: true, version: probed.version };
   supportCache.set(key, result);
   return result;
+}
+
+/** claude `exe` at `version` did not start with the sandbox on: its bots
+ *  run without commands until wmux restarts or claude changes. */
+export function markBotExecFailed(exe: string | null, version: string): void {
+  if (!exe || !version) return;
+  supportCache.set(`${exe}\0${version}`, { ok: false, reason: 'claude did not start with the sandbox' });
 }
 
 /** Test-only. */

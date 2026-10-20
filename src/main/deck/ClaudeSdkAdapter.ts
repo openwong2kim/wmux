@@ -335,6 +335,9 @@ export interface BotDeps {
    *  turn (factory/botExecSandbox.ts probeBotExecSupport). Absent, or not
    *  ok: no Bash, Write or Edit. */
   exec?: () => Promise<BotExecSupport> | BotExecSupport;
+  /** Told that claude did not start with the sandbox on (the turn is then
+   *  run again without the command tools), with the version `exec` gave. */
+  onExecFailed?: (version: string) => void;
   /** Claude config folders of the owner's accounts (kept out of commands'
    *  reach). Default: the account store's. */
   accountConfigDirs?: () => string[];
@@ -878,6 +881,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private _handoff: BotTokenHandoff | null = null;
   /** Bot mode: this turn may run commands (the sandbox is available). */
   private _turnExec = false;
+  /** The claude version `exec` reported for this turn. */
+  private _turnExecVersion = '';
 
   constructor(deps: ClaudeSdkAdapterDeps = {}) {
     this.queryFn = deps.queryFn ?? null;
@@ -1375,6 +1380,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       try {
         const support = this.bot.exec ? await this.bot.exec() : null;
         this._turnExec = support?.ok === true;
+        this._turnExecVersion = support?.ok ? support.version : '';
       } catch {
         this._turnExec = false;
       }
@@ -1395,6 +1401,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     // machine, corrupt store). When that turn dies before producing ANY event,
     // drop the dead id and retry once fresh instead of surfacing an opaque
     // error for every send.
+    // A bot whose claude does not start with the sandbox on (it refuses to,
+    // `failIfUnavailable`) runs the turn once more without the command
+    // tools; that retry does not count as an attempt.
+    let execFellBack = false;
     for (let attempt = 0; attempt < 2; attempt++) {
       const resumingUnvalidated = this._resumeUnvalidated && !!this._sessionId;
       const state = createNormalizeState();
@@ -1470,12 +1480,16 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       this._active = handle;
       let yielded = false;
       let retryFresh = false;
+      let sawInit = false;
+      let retryWithoutExec = false;
+      const execStartFailed = (): boolean => this._turnExec && !execFellBack && !sawInit && !yielded;
       // A bot turn that cannot reach its wmux tools ends in an error, never
       // a silent success (botToolGuard.ts).
       const guard = this.bot ? new BotToolGuard(this.allowedTools) : null;
       let stopForTools = false;
       try {
         outer: for await (const msg of handle) {
+          if ((msg as RawSdkMessage).type === 'system' && (msg as RawSdkMessage).subtype === 'init') sawInit = true;
           if (this.bot?.onAuthSeen && (msg as RawSdkMessage).type === 'system' && (msg as RawSdkMessage).subtype === 'init') {
             const source = (msg as RawSdkMessage).apiKeySource;
             if (typeof source === 'string') {
@@ -1492,6 +1506,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
             if (unreached) events = events.map((e): BrainEvent => (e.type === 'turn-end' ? { type: 'error', message: unreached, botTools: 'unreached', ...(e.usage ? { usage: e.usage } : {}) } : e));
           }
           for (const ev of events) {
+            if (ev.type === 'error' && execStartFailed() && !noTools) {
+              retryWithoutExec = true;
+              break outer;
+            }
             // A turn that errors before ANYTHING reached the renderer, on the
             // first attempt against an unvalidated disk id → treat the id as
             // dead and swallow the error in favor of a fresh retry.
@@ -1539,7 +1557,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         // sure the session id captured mid-stream survives for resume.
         if (!retryFresh && state.sessionId) this._sessionId = state.sessionId;
       } catch (err) {
-        if (resumingUnvalidated && attempt === 0 && !yielded) {
+        if (execStartFailed()) {
+          retryWithoutExec = true;
+        } else if (resumingUnvalidated && attempt === 0 && !yielded) {
           retryFresh = true;
           this.dropSeededResume('stream threw', err);
         } else {
@@ -1555,6 +1575,25 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         } catch {
           /* already ending */
         }
+      }
+      if (retryWithoutExec) {
+        if (handle.interrupt) {
+          try {
+            void Promise.resolve(handle.interrupt()).catch(() => undefined);
+          } catch {
+            /* already dead */
+          }
+        }
+        console.warn('[factory] claude did not start with the command sandbox; this bot runs without commands', JSON.stringify({ botId: this.bot?.binding.botId ?? '', version: this._turnExecVersion }));
+        try {
+          this.bot?.onExecFailed?.(this._turnExecVersion);
+        } catch {
+          /* status only */
+        }
+        this._turnExec = false;
+        execFellBack = true;
+        attempt--;
+        continue;
       }
       if (!retryFresh) return;
       // Best-effort teardown of the dead attempt's subprocess before retrying.

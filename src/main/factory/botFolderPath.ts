@@ -3,6 +3,7 @@
 // A bot that runs commands writes only inside its own folder (the session's
 // cwd, `<wmuxDir>/factory/bots/<botId>`), never the repository it reads.
 // Main checks every Write, Edit and output redirection before it runs:
+//   - the path names no `..` segment;
 //   - the path resolves (relative to the folder) lexically inside it;
 //   - its nearest existing parent, symlinks followed, is inside the folder's
 //     own real path;
@@ -78,6 +79,9 @@ export type BotFolderCheck = { ok: true; real: string } | { ok: false; reason: s
 export function checkBotFolderPath(requested: unknown, botDir: string, deps: BotFolderDeps = defaultDeps): BotFolderCheck {
   if (typeof requested !== 'string' || requested.length === 0) return { ok: false, reason: 'a file path is required' };
   if (requested.includes('\0')) return { ok: false, reason: 'the path is malformed' };
+  // `..` is refused outright: resolved by text it would skip a symlink the
+  // shell or the file tool follows (`link/../x` lands beside the link's target).
+  if (requested.split(/[\\/]+/).includes('..')) return { ok: false, reason: 'a path with ".." is not used; name it from the bot folder' };
   let realDir: string;
   try {
     realDir = deps.realpath(botDir);

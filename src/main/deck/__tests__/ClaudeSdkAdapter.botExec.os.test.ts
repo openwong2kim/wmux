@@ -218,6 +218,61 @@ describe('bot options with commands', () => {
   });
 });
 
+describe('a claude that does not start with the sandbox', () => {
+  function adapterWith(first: 'throws' | 'errors' | 'init-then-error', onExecFailed: (v: string) => void) {
+    const seen: Array<Record<string, unknown>> = [];
+    const adapter = new ClaudeSdkAdapter({
+      bot: { binding: BINDING, cwd: botDir, wmuxDir: dir, exec: async () => ({ ok: true as const, version: '2.1.305 (Claude Code)' }), onExecFailed },
+      workspaceId: BINDING.workspaceId,
+      mcpBundlePath: '/b.js',
+      queryFn: ({ options = {} }) => {
+        seen.push(options);
+        const n = seen.length;
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (n === 1 && first === 'throws') throw new Error('Claude Code process exited with code 1');
+            if (n === 1 && first === 'errors') {
+              yield { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['sandbox unavailable'], session_id: '' };
+              return;
+            }
+            yield { type: 'system', subtype: 'init', session_id: 's', tools: ['mcp__wmux__room_post'], mcp_servers: [{ name: 'wmux', status: 'connected' }] };
+            if (n === 1) {
+              yield { type: 'result', subtype: 'error_during_execution', is_error: true, errors: ['model error'], session_id: 's' };
+              return;
+            }
+            yield { type: 'result', subtype: 'success', session_id: 's' };
+          },
+        };
+      },
+    });
+    adapter.start({ systemPrompt: 'BOT' });
+    return { adapter, seen };
+  }
+
+  it.each(['throws', 'errors'] as const)('runs the turn again without the command tools (%s before init)', async (first) => {
+    const failed: string[] = [];
+    const { adapter, seen } = adapterWith(first, (v) => failed.push(v));
+    const events = await drain(adapter.send('wake'));
+    adapter.dispose();
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(seen).toHaveLength(2);
+    expect(seen[0].sandbox).toBeDefined();
+    expect(seen[1].sandbox).toBeUndefined();
+    expect(seen[1].tools).toEqual([]);
+    expect(failed).toEqual(['2.1.305 (Claude Code)']);
+  });
+
+  it('an error after claude started is the turn\'s own error, not the sandbox', async () => {
+    const failed: string[] = [];
+    const { adapter, seen } = adapterWith('init-then-error', (v) => failed.push(v));
+    const events = await drain(adapter.send('wake'));
+    adapter.dispose();
+    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(seen).toHaveLength(1);
+    expect(failed).toEqual([]);
+  });
+});
+
 describe('the workspace brain is unchanged', () => {
   it('Deck options: no sandbox, no built-in tools list, the same disallow list', async () => {
     let seen: Record<string, unknown> = {};

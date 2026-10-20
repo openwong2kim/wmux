@@ -14,6 +14,7 @@ import { BotCommandRulesStore, botCommandRulesPath, BOT_COMMAND_RULES_VERSION } 
 import {
   __clearBotExecSupportCacheForTesting,
   botExecUnsetEnv,
+  markBotExecFailed,
   botSandboxSettings,
   probeBotExecSupport,
 } from '../botExecSandbox';
@@ -133,6 +134,8 @@ describe('the floor', () => {
     expect(decide('echo x > link/target.txt')).toMatchObject({ ok: false, layer: 'floor' });
     fs.symlinkSync(path.join(outside, 'target.txt'), path.join(botDir, 'file-link'));
     expect(decide('echo x > file-link')).toMatchObject({ ok: false, layer: 'floor' });
+    // `link/..` is the link target's parent to the shell, not the bot folder.
+    expect(decide('echo x > link/../escape.txt')).toMatchObject({ ok: false, layer: 'floor' });
   });
 
   it('parses quotes, escapes and descriptor copies into words', () => {
@@ -226,6 +229,8 @@ describe('the bot folder write check', () => {
     expect(checkBotFolderPath('dir-link/new.txt', botDir)).toMatchObject({ ok: false, reason: expect.stringMatching(/outside/) });
     // A target that does not exist yet behind the escaping link is refused too.
     expect(checkBotFolderPath('dir-link/a/b/c.txt', botDir)).toMatchObject({ ok: false });
+    expect(checkBotFolderPath('dir-link/../x.txt', botDir)).toMatchObject({ ok: false, reason: expect.stringMatching(/\.\./) });
+    expect(checkBotFolderPath(`${botDir}/sub/../x.txt`, botDir)).toMatchObject({ ok: false });
   });
 });
 
@@ -375,5 +380,13 @@ describe('the capability check', () => {
     expect(await probeBotExecSupport('/old', { platform: 'darwin', isFile: () => true, version: version('2.1.205 (Claude Code)') })).toMatchObject({ ok: false, reason: expect.stringMatching(/older/) });
     expect(await probeBotExecSupport('/c', { platform: 'darwin', isFile: () => true, version: async () => ({ ok: false as const, detail: 'boom' }) })).toMatchObject({ ok: false });
     expect(await probeBotExecSupport(null, { platform: 'darwin', isFile: () => true })).toMatchObject({ ok: false });
+  });
+
+  it('a claude that did not start with the sandbox is off until its version changes', async () => {
+    const deps = { platform: 'darwin' as const, isFile: () => true, version: version('2.1.305 (Claude Code)') };
+    expect(await probeBotExecSupport('/c', deps)).toMatchObject({ ok: true });
+    markBotExecFailed('/c', '2.1.305 (Claude Code)');
+    expect(await probeBotExecSupport('/c', deps)).toMatchObject({ ok: false, reason: expect.stringMatching(/did not start/) });
+    expect(await probeBotExecSupport('/c', { ...deps, version: version('2.1.306 (Claude Code)') })).toMatchObject({ ok: true });
   });
 });
