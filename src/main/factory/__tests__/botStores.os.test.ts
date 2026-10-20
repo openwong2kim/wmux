@@ -996,4 +996,14 @@ describe('factory settings', () => {
     expect(legacy.get().planConsent).toBeUndefined();
     await expect(legacy.update({ laneDailyCap: 3 })).resolves.toMatchObject({ enabled: true, laneDailyCap: 3 });
   });
+
+  it('the command reviewer is on by default (a file from before it too) and takes a boolean only', async () => {
+    fs.mkdirSync(path.dirname(factorySettingsPath(dir)), { recursive: true });
+    fs.writeFileSync(factorySettingsPath(dir), JSON.stringify({ version: 1, enabled: true }));
+    const s = new FactorySettingsStore(factorySettingsPath(dir));
+    expect(s.load().botCommandReviewer).toBe(true);
+    expect((await s.update({ botCommandReviewer: 'no' })).botCommandReviewer).toBe(true);
+    expect((await s.update({ botCommandReviewer: false })).botCommandReviewer).toBe(false);
+    expect(new FactorySettingsStore(factorySettingsPath(dir)).load().botCommandReviewer).toBe(false);
+  });
 });

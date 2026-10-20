@@ -13,7 +13,9 @@
 //   2. the floor (botCommandFloor.ts) — refused whatever the owner allowed;
 //   3. the list (botCommandAllow.ts) — the built-in read-only commands and
 //      the owner's rules for this bot (botCommandRules.ts) are allowed;
-//   4. anything else is refused (`unlisted`).
+//   4. anything else is `unlisted`: refused, unless the reviewer
+//      (botCommandReviewer.ts, factory setting `botCommandReviewer`) judges
+//      it a small task in the bot's folder (`reviewUnlistedCommand`).
 // An allowed call runs as main rebuilt it (every word quoted, every command
 // as `\command <name>`, past the owner's aliases and functions), with
 // `dangerouslyDisableSandbox` and `run_in_background` removed and its
@@ -26,6 +28,7 @@
 // with stored secrets masked.
 
 import { decideBotCommand, type BotCommandRule } from './botCommandAllow';
+import { BOT_COMMAND_REVIEWER_LIMITS, type BotCommandReviewer, type ReviewCode, type ReviewOutcome } from './botCommandReviewer';
 import { checkBotFolderPath, type BotFolderDeps } from './botFolderPath';
 import { redactStoredSecrets } from './secretRedaction';
 
@@ -48,11 +51,17 @@ export interface BotExecContext {
   fs?: BotFolderDeps;
 }
 
-export type BotExecLayer = 'attended' | 'parse' | 'floor' | 'allowlist' | 'unlisted' | 'path' | 'input';
+export type BotExecLayer = 'attended' | 'parse' | 'floor' | 'allowlist' | 'unlisted' | 'reviewer' | 'path' | 'input';
+
+/** An `unlisted` line as the reviewer sees it and as it would run. */
+export interface UnlistedCommand {
+  run: string;
+  argv: string[][];
+}
 
 export type BotExecDecision =
-  | { ok: true; layer: BotExecLayer; input: Record<string, unknown>; command?: string }
-  | { ok: false; layer: BotExecLayer; reason: string; command?: string };
+  | { ok: true; layer: BotExecLayer; input: Record<string, unknown>; command?: string; review?: ReviewOutcome }
+  | { ok: false; layer: BotExecLayer; reason: string; command?: string; unlisted?: UnlistedCommand; review?: ReviewOutcome };
 
 /** An allowed Bash call's input as it runs. Pure. */
 export function sanitizeBashInput(input: Record<string, unknown>): Record<string, unknown> {
@@ -89,7 +98,8 @@ export function evaluateBotExecTool(toolName: string, input: Record<string, unkn
     }
     const d = decideBotCommand(input.command, { botDir: ctx.botDir, repoRoot: ctx.repoRoot, fs: ctx.fs, rules });
     if (!d.ok) {
-      // `unlisted` is where a later review step decides; today it refuses.
+      // `unlisted` is refused here; reviewUnlistedCommand may take it up.
+      if (d.layer === 'unlisted') return { ok: false, layer: d.layer, reason: d.reason, command: d.command, unlisted: { run: d.run, argv: d.argv } };
       return { ok: false, layer: d.layer, reason: d.reason, command: d.command };
     }
     // It runs as main rebuilt it from the approved words (botCommandFloor.ts
@@ -102,6 +112,51 @@ export function evaluateBotExecTool(toolName: string, input: Record<string, unkn
   return { ok: true, layer: 'path', input: { ...input, file_path: r.real } };
 }
 
+export interface ReviewGate {
+  /** The factory setting is on and the turn may be reviewed (not a guest's). */
+  enabled: () => boolean;
+  /** Whether the wake running now is attended (asked again here). */
+  attended: () => boolean;
+  /** This turn's reviewer; null: none could be built. */
+  reviewer: BotCommandReviewer | null;
+}
+
+const REVIEW_REFUSALS: Record<Exclude<ReviewCode, 'reviewer_allow'>, string> = {
+  reviewer_deny: 'reviewer_deny: the command reviewer did not judge this a small task in your own folder; the owner can add it to your command list',
+  reviewer_invalid: 'reviewer_invalid: the command reviewer gave no usable answer, so the command is refused',
+  reviewer_unavailable: 'reviewer_unavailable: the command reviewer could not answer, so the command is refused',
+  reviewer_budget: 'reviewer_budget: the command reviewer has reached its limit for this turn or today, so the command is refused',
+};
+
+/**
+ * The reviewer step for an `unlisted` Bash line (and only that): with the
+ * setting on, in an attended turn, the reviewer's verdict decides. Allowed,
+ * the line runs as main rebuilt it (commandLineToRun, from the words the
+ * floor passed), never as the bot wrote it. Every other decision, and an
+ * `unlisted` line with the setting off, is returned unchanged.
+ */
+export async function reviewUnlistedCommand(d: BotExecDecision, input: Record<string, unknown>, gate: ReviewGate): Promise<BotExecDecision> {
+  if (d.ok || d.layer !== 'unlisted' || !d.unlisted) return d;
+  let open = false;
+  try {
+    open = gate.enabled() && gate.attended();
+  } catch {
+    open = false;
+  }
+  if (!open) return d;
+  const { run, argv } = d.unlisted;
+  const command = d.command ?? '';
+  let review: ReviewOutcome;
+  try {
+    review = gate.reviewer ? await gate.reviewer.review({ command, argv }) : { allow: false, code: 'reviewer_unavailable', latencyMs: 0 };
+  } catch {
+    review = { allow: false, code: 'reviewer_unavailable', latencyMs: 0 };
+  }
+  if (review.allow && review.code === 'reviewer_allow') return { ok: true, layer: 'reviewer', input: { ...sanitizeBashInput(input), command: run }, command, review };
+  const code = review.code === 'reviewer_allow' ? 'reviewer_deny' : review.code;
+  return { ok: false, layer: 'reviewer', reason: REVIEW_REFUSALS[code], command, review };
+}
+
 /** One log line per decision on Bash, Write or Edit (never a secret). */
 export function logBotExecDecision(botId: string, toolName: string, d: BotExecDecision, log: (line: string) => void = console.warn): void {
   const target = toolName === 'Bash' ? d.command : d.ok ? (d.input.file_path as string | undefined) : undefined;
@@ -112,6 +167,17 @@ export function logBotExecDecision(botId: string, toolName: string, d: BotExecDe
     layer: d.layer,
     ...(d.ok ? {} : { reason: d.reason }),
     ...(target ? { target } : {}),
+    ...(d.review
+      ? {
+          review: {
+            code: d.review.code,
+            ...(d.review.risk ? { risk: d.review.risk } : {}),
+            ...(d.review.rationale ? { rationale: d.review.rationale.slice(0, BOT_COMMAND_REVIEWER_LIMITS.RATIONALE_MAX) } : {}),
+            latencyMs: d.review.latencyMs,
+            ...(d.review.cached ? { cached: true } : {}),
+          },
+        }
+      : {}),
   };
   let line: string;
   try {

@@ -35,7 +35,8 @@ import { writeBotTokenHandoff, type BotTokenHandoff } from '../factory/botTokenH
 import { BOT_REPO_READ_TOOLS, botRepoReadDenyRules, evaluateBotRepoRead, grepOutputNamesProtected } from '../factory/botRepoRead';
 import { redactStoredSecretsDeep } from '../factory/secretRedaction';
 import { guestGateProvenance, runningWakeAttended } from '../factory/wakeTaint';
-import { BOT_EXEC_TOOLS, evaluateBotExecTool, logBotExecDecision, type BotExecDecision } from '../factory/botExec';
+import { BOT_EXEC_TOOLS, evaluateBotExecTool, logBotExecDecision, reviewUnlistedCommand, type BotExecDecision } from '../factory/botExec';
+import { BotCommandReviewer, sdkReviewerAsk } from '../factory/botCommandReviewer';
 import { UNSETTABLE_ENV_NAME, botSandboxSettings, type BotExecSupport } from '../factory/botExecSandbox';
 import { botCommandRulesFor } from '../factory/botCommandRules';
 import { claudeNotFoundMessage } from '../factory/engineError';
@@ -341,6 +342,10 @@ export interface BotDeps {
   /** Claude config folders of the owner's accounts (kept out of commands'
    *  reach). Default: the account store's. */
   accountConfigDirs?: () => string[];
+  /** Whether a command past the floor but off the bot's list goes to the
+   *  command reviewer (factory/botCommandReviewer.ts), read on every such
+   *  command. Absent: never (it is refused). */
+  commandReviewer?: () => boolean;
 }
 
 // ─── Permission defaults (D2) ────────────────────────────────────────────────
@@ -481,7 +486,7 @@ const BOT_GRANTABLE_TOOLS: readonly string[] = ['Read', 'Grep', 'Glob', ...BOT_E
 
 /** What a bot that may run commands is told (the rest is decided by main). */
 export const BOT_EXEC_PROMPT =
-  'Commands: in a turn the owner started (their message or the run button) you may run small read-only shell commands with Bash, and write or edit files with Write and Edit, in your own folder only. Commands run sandboxed, with no network, no credentials and nothing of the home folder but your own folder; wmux refuses anything not on your command list. Words are taken literally: globs, braces and ~ do not expand (name files plainly, quote odd characters). Commands cannot read a repository under the home folder: read yours with Read, Grep and Glob, not git. Changing the repository, builds and tests stay a worker\'s (fan-out).';
+  'Commands: in a turn the owner started (their message or the run button) you may run small read-only shell commands with Bash, and write or edit files with Write and Edit, in your own folder only. Commands run sandboxed, with no network, no credentials and nothing of the home folder but your own folder; wmux refuses anything not on your command list unless its command reviewer judges it a small task in your own folder. Words are taken literally: globs, braces and ~ do not expand (name files plainly, quote odd characters). Commands cannot read a repository under the home folder: read yours with Read, Grep and Glob, not git. Changing the repository, builds and tests stay a worker\'s (fan-out).';
 
 /** A bot's disallowed list: BOT_DISALLOWED_TOOLS plus every grantable tool
  *  it was not given. Pure. */
@@ -1165,7 +1170,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
    *
    *  With commands (`exec`, the OS sandbox available): Bash, Write and Edit,
    *  and Read for the bot's own folder (Edit needs a Read first), decided by
-   *  factory/botExec.ts; a Read the repository refuses is tried there.
+   *  factory/botExec.ts; a Read the repository refuses is tried there. A
+   *  command off the bot's list may go to the command reviewer (one per
+   *  attempt, so its answers last one turn: factory/botCommandReviewer.ts).
    *
    *  None of these tools is in allowedTools (an allowed tool skips the
    *  permission path): the PreToolUse hook fires for every call, and
@@ -1181,9 +1188,30 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       attended: () => runningWakeAttended(botId),
       rules: () => botCommandRulesFor(botId),
     };
+    // This turn's command reviewer, on the turn's own sign-in: the env (as
+    // the sandbox left it) and claude of these options, read when it is
+    // asked, after send() and applySandbox have finished them. It runs in
+    // the factory folder, above the bot's: nothing the bot wrote is there.
+    const reviewer = exec
+      ? new BotCommandReviewer(botId, sdkReviewerAsk({
+          query: () => this.queryFn ?? loadSdkQueryFn(),
+          base: () => ({
+            env: options.env as Record<string, string | undefined> | undefined,
+            pathToClaudeCodeExecutable: typeof options.pathToClaudeCodeExecutable === 'string' ? options.pathToClaudeCodeExecutable : undefined,
+            cwd: path.join(bot.wmuxDir ?? getWmuxDir(), 'factory'),
+            disallowedTools: botDisallowedTools([]),
+          }),
+        }))
+      : null;
+    const reviewGate = {
+      // Never in a guest's wake (its own gate refuses first; this is a second lock).
+      enabled: () => bot.commandReviewer?.() === true && guestGateProvenance(botId) === false,
+      attended: execCtx.attended,
+      reviewer,
+    };
     type Decision = { ok: true; input: Record<string, unknown> } | { ok: false; reason: string };
     const granted = [...new Set([...(root ? BOT_REPO_READ_TOOLS : []), ...(exec ? ['Read', ...BOT_EXEC_TOOLS] : [])])];
-    const decide = (toolName: string, raw: unknown): Decision => {
+    const decide = async (toolName: string, raw: unknown): Promise<Decision> => {
       const input = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
       // The sandbox's own request to let a command reach a host. Its deny
       // list already refuses every domain; this answer is the second lock.
@@ -1193,6 +1221,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         let d: BotExecDecision;
         try {
           d = evaluateBotExecTool(toolName, input, execCtx);
+          if (toolName === 'Bash') d = await reviewUnlistedCommand(d, input, reviewGate);
         } catch {
           d = { ok: false, layer: 'input', reason: 'the command check failed' };
         }
@@ -1218,7 +1247,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     if (root) options.settings = { permissions: { deny: botRepoReadDenyRules(root) } };
     options.canUseTool = async (toolName: string, input: Record<string, unknown>) => {
       try {
-        const d = decide(toolName, input);
+        const d = await decide(toolName, input);
         if (d.ok) return { behavior: 'allow' as const, updatedInput: d.input };
         logDenied(toolName, d.reason);
         return { behavior: 'deny' as const, message: `wmux: ${d.reason}` };
@@ -1232,7 +1261,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       if (toolName.startsWith('mcp__wmux__')) return {};
       let d: Decision;
       try {
-        d = decide(toolName, hookInput.tool_input);
+        d = await decide(toolName, hookInput.tool_input);
       } catch {
         d = { ok: false, reason: 'the tool check failed' };
       }

@@ -11,7 +11,9 @@
 //     words, and either match them exactly or the rule takes any arguments;
 //   - in a pipeline, each command after the first is a stdin filter from
 //     STDIN_FILTERS, named bare, with no input redirection.
-// Anything else is not on the list (`decideBotCommand` answers `unlisted`).
+// Anything else is not on the list (`decideBotCommand` answers `unlisted`,
+// with the line as it would run and its words, for the reviewer:
+// botCommandReviewer.ts).
 
 import { commandFloor, commandLineToRun, normalizeCommand, parseCommandLine, type FloorContext, type SimpleCommand } from './botCommandFloor';
 
@@ -159,12 +161,16 @@ function filterRefusal(cmd: SimpleCommand): string | null {
 export type CommandDecision =
   /** `run`: the line as it runs (commandLineToRun). */
   | { ok: true; layer: 'allowlist'; command: string; run: string; matched: 'builtin' | 'rule' }
-  | { ok: false; layer: 'parse' | 'floor' | 'unlisted'; command: string; reason: string };
+  | { ok: false; layer: 'parse' | 'floor'; command: string; reason: string }
+  /** Past the floor but not on the list: `run` is the line as it would run
+   *  and `argv` each command's words, for the reviewer to judge. */
+  | { ok: false; layer: 'unlisted'; command: string; reason: string; run: string; argv: string[][] };
 
 /**
  * Main's decision on one Bash command line of a bot: parse, the floor, then
  * the list. Pure apart from the floor's path checks. `unlisted` is the one
- * branch a later review step may take up; today it is a refusal.
+ * branch the reviewer may take up (botExec.ts reviewUnlistedCommand); on
+ * its own it is a refusal.
  */
 export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: readonly BotCommandRule[] }): CommandDecision {
   const parsed = parseCommandLine(line);
@@ -173,13 +179,18 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
   const command = normalizeCommand(parsed.pipelines, parsed.joins);
   const floor = commandFloor(parsed.pipelines, ctx);
   if (floor) return { ok: false, layer: 'floor', command, reason: floor };
+  const unlisted = (reason: string): CommandDecision => ({
+    ok: false, layer: 'unlisted', command, reason,
+    run: commandLineToRun(parsed.pipelines, parsed.joins),
+    argv: parsed.pipelines.flatMap((p) => p.map((c) => [...c.argv])),
+  });
   let viaRule = false;
   for (const p of parsed.pipelines) {
     for (let k = 0; k < p.length; k++) {
       const cmd = p[k];
       if (k > 0) {
         const r = filterRefusal(cmd);
-        if (r) return { ok: false, layer: 'unlisted', command, reason: r };
+        if (r) return unlisted(r);
         continue;
       }
       if (ctx.rules.some((rule) => ruleMatches(rule, cmd.argv))) {
@@ -187,7 +198,7 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
         continue;
       }
       const r = builtinRefusal(cmd);
-      if (r) return { ok: false, layer: 'unlisted', command, reason: r };
+      if (r) return unlisted(r);
     }
   }
   return { ok: true, layer: 'allowlist', command, run: commandLineToRun(parsed.pipelines, parsed.joins), matched: viaRule ? 'rule' : 'builtin' };

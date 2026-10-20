@@ -71,6 +71,22 @@ describe('bot engines', () => {
     expect(repoRootOf('lead', { kind: 'acp', command: 'hermes', args: [] }, repo)).toEqual({ adapter: 'AcpBrainAdapter', repoRoot: undefined });
   });
 
+  it('a claude-sdk bot asks the factory setting whether its command reviewer is on, on every command', () => {
+    let on = true;
+    const r = factory({ commandReviewer: () => on })(input({ kind: 'claude-sdk' }));
+    if (!r.ok) throw new Error(r.message);
+    const bot = (r.adapter as unknown as { bot?: { commandReviewer?: () => boolean } }).bot;
+    r.adapter.dispose();
+    expect(bot?.commandReviewer?.()).toBe(true);
+    on = false;
+    expect(bot?.commandReviewer?.()).toBe(false);
+    // The default: the live settings (the defaults, reviewer on, before the factory starts).
+    const d = factory()(input({ kind: 'claude-sdk' }));
+    if (!d.ok) throw new Error(d.message);
+    expect((d.adapter as unknown as { bot?: { commandReviewer?: () => boolean } }).bot?.commandReviewer?.()).toBe(true);
+    d.adapter.dispose();
+  });
+
   it('acp builds an AcpBrainAdapter when its command resolves', () => {
     const r = factory()(input({ kind: 'acp', command: 'hermes', args: ['acp'] }));
     expect(r.ok && r.adapter).toBeInstanceOf(AcpBrainAdapter);

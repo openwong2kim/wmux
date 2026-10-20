@@ -36,6 +36,7 @@ import { isExecutableFile, resolveClaudeExecutable } from '../claude/resolveClau
 import { botRepoReadRoot } from './botRepoRead';
 import { recordBotAuthSource, resolveBotClaudeAuth, type BotClaudeAuth } from './claudeApiKey';
 import { markBotExecFailed, probeBotExecSupport, type BotExecSupport } from './botExecSandbox';
+import { getFactorySettings } from './factorySettings';
 
 export interface BotEngineSpawnInput {
   profile: BotProfile;
@@ -121,6 +122,9 @@ export interface DefaultBotEngineDeps {
   /** Whether a Claude (SDK) bot's commands can run in the OS sandbox, for
    *  the claude it runs on (default `probeBotExecSupport`). */
   execSupport?: (exe: string | null) => Promise<BotExecSupport>;
+  /** Whether the command reviewer judges unlisted commands (default the
+   *  factory setting `botCommandReviewer`, read on every command). */
+  commandReviewer?: () => boolean;
 }
 
 /** ACP bots may start: an unpackaged build on isolated data (a test
@@ -155,6 +159,7 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
   const claudeAuth = deps.claudeAuth ?? (() => resolveBotClaudeAuth());
   const onAuthSeen = deps.onAuthSeen ?? recordBotAuthSource;
   const execSupport = deps.execSupport ?? ((exe: string | null) => probeBotExecSupport(exe));
+  const commandReviewer = deps.commandReviewer ?? (() => getFactorySettings().botCommandReviewer);
   const refuse = (message: string): BotEngineSpawn => ({ ok: false, code: 'engine_unavailable', message });
 
   return (input) => {
@@ -189,7 +194,7 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
             // A bot with a repository reads it (Read / Grep / Glob, decided by
             // main); where the OS sandbox runs, it also runs commands in its
             // own folder (botExec.ts), checked again on every turn.
-            bot: { ...bot, repoRoot: botRepoReadRoot(input.profile), auth: claudeAuth, onAuthSeen, exec: () => execSupport(claudeExecutable()), onExecFailed: (version) => markBotExecFailed(claudeExecutable(), version) },
+            bot: { ...bot, repoRoot: botRepoReadRoot(input.profile), auth: claudeAuth, onAuthSeen, exec: () => execSupport(claudeExecutable()), onExecFailed: (version) => markBotExecFailed(claudeExecutable(), version), commandReviewer },
             mcpBundlePath: bundle,
             // No model set (or 'default', or a stored id that fails the brain
             // model rule): pass none, so claude picks its own default and an

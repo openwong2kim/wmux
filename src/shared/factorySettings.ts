@@ -64,6 +64,11 @@ export interface FactorySettings {
   laneAutoMerge: boolean;
   /** Most lane merges per local day (0-50). */
   laneDailyCap: number;
+  /** A bot's command that passed the floor but is not on its list is judged
+   *  by the command reviewer (a small model, main/factory/
+   *  botCommandReviewer.ts) and runs when it allows it. Off: such a command
+   *  is refused. On by default. */
+  botCommandReviewer: boolean;
   /** Isolated-instance smoke only: every bot runs on the scripted ACP stub. */
   acpStub?: boolean;
   /** The bot the phone talks to (`/api/moa/messages`), pinned in Settings ›
@@ -101,4 +106,5 @@ export const DEFAULT_FACTORY_SETTINGS: Readonly<FactorySettings> = Object.freeze
   maxConcurrentAgents: DEFAULT_MAX_CONCURRENT_AGENTS,
   laneAutoMerge: false,
   laneDailyCap: 5,
+  botCommandReviewer: true,
 });

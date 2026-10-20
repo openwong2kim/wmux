@@ -495,8 +495,8 @@ function shellQuote(w: string): string {
  * alike), so the program that runs is the one the list approved. A shell
  * function the owner named `command` itself would still run. Every git
  * runs with no system or global config and main's overrides
- * (hardenedGitArgv). Built only from a line that passed the floor and the
- * list. Pure.
+ * (hardenedGitArgv). Built only from a line that passed the floor, and runs
+ * only once the list or the reviewer allowed it. Pure.
  */
 export function commandLineToRun(pipelines: readonly Pipeline[], joins: readonly string[]): string {
   const simple = (c: SimpleCommand): string => {
