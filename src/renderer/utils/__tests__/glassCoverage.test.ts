@@ -7,8 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { THEME_STYLES, UI_THEME_TOKENS, deriveBuiltinPalette, type BuiltinThemeId } from '../../themes';
-import { isLight, mixHex } from '../../tailwindPalette';
+import { THEME_STYLES, UI_THEME_TOKENS, WINDOWS_GLASS_MUTED, deriveBuiltinPalette, windowsGlassMuted, type BuiltinThemeId } from '../../themes';
+import { getContrastRatio, isLight, mixHex, shiftLightness } from '../../tailwindPalette';
 import {
   GLASS_MAX_COVERAGE,
   GLASS_MIN_CONTRAST,
@@ -28,9 +28,10 @@ function frameOf(id: BuiltinThemeId): string {
   return THEME_STYLES[id]?.frame ?? mixHex('#000000', bgBase, isLight(bgBase) ? 0.97 : 0.84);
 }
 
+/** The tokens the renderer's gate reads: the look's glass-only muted text where it has one. */
 function tokensOf(id: BuiltinThemeId): GlassTokens {
   const p = deriveBuiltinPalette(id);
-  return { frameBg: frameOf(id), mantle: p.bgMantle, textMain: p.textMain, textSub: p.textSub, textMuted: p.textMuted };
+  return { frameBg: frameOf(id), mantle: p.bgMantle, textMain: p.textMain, textSub: p.textSub, textMuted: windowsGlassMuted(id) ?? p.textMuted };
 }
 
 function appearanceOf(id: BuiltinThemeId): 'dark' | 'light' {
@@ -129,6 +130,68 @@ describe('macOS glass numbers stay in globals.css', () => {
   });
 
   it('has no fixed Windows numbers left: the renderer derives them', () => {
-    expect(css).not.toMatch(/html\[data-glass[^\]]*\]\[data-platform="win32"\]/);
+    // Any rule gated on win32, whatever its attribute order, that sets a coverage.
+    expect(css).not.toMatch(/\[data-platform="win32"\][^{}]*\{[^}]*--glass-(frame|sheet)\s*:/);
+  });
+});
+
+describe('Windows glass muted text', () => {
+  const css = fs.readFileSync(path.join(__dirname, '..', '..', 'styles', 'globals.css'), 'utf8');
+  const WIN32_GLASS = 'html[data-glass][data-platform="win32"]';
+  const entries = Object.entries(WINDOWS_GLASS_MUTED) as Array<[BuiltinThemeId, string]>;
+  const levels = ['soft', 'clear'] as const;
+  const opaqueTokens = (id: BuiltinThemeId): GlassTokens => ({ ...tokensOf(id), textMuted: deriveBuiltinPalette(id).textMuted });
+
+  it.each(entries)('%s: the glass-only muted lets the gate show glass, where the opaque one kept it Off', (id, muted) => {
+    const appearance = appearanceOf(id);
+    for (const level of levels) {
+      expect(windowsGlassCoverage(opaqueTokens(id), appearance, level), `${id} ${level} opaque`).toBeNull();
+      expect(windowsGlassCoverage({ ...opaqueTokens(id), textMuted: muted }, appearance, level), `${id} ${level} glass`).not.toBeNull();
+    }
+  });
+
+  it.each(entries)('%s: the glass-only muted is the opaque one moved by lightness only, the least step that passes', (id, muted) => {
+    const { textMuted } = deriveBuiltinPalette(id);
+    const appearance = appearanceOf(id);
+    const dir = appearance === 'light' ? -1 : 1;
+    const step = (k: number) => shiftLightness(textMuted, dir * k * 0.0025);
+    let k = 1;
+    while (k <= 400 && step(k).toUpperCase() !== muted.toUpperCase()) k++;
+    expect(k, `${muted} is not a lightness step from ${textMuted}`).toBeLessThanOrEqual(400);
+    const passes = (m: string) => levels.every((level) => windowsGlassCoverage({ ...opaqueTokens(id), textMuted: m }, appearance, level));
+    expect(passes(step(k - 1)), `one step less (${step(k - 1)}) already passes`).toBe(false);
+  });
+
+  it.each(entries)('%s: under glass the tiers stay a ladder, muted clearly below sub', (id, muted) => {
+    const p = deriveBuiltinPalette(id);
+    const on = (c: string) => getContrastRatio(c, p.bgBase);
+    expect(on(p.textSubtle), `${id} subtle vs glass muted`).toBeGreaterThan(on(muted));
+    expect(on(p.textSub), `${id} sub vs subtle`).toBeGreaterThan(on(p.textSubtle));
+    expect(on(p.textSub) / on(muted), `${id} sub over glass muted`).toBeGreaterThanOrEqual(1.5);
+  });
+
+  it('globals.css carries exactly these values, each only under Windows glass', () => {
+    const rules = [...css.matchAll(/html\[data-glass\]\[data-platform="win32"\]:is\(\[data-theme="([^"]+)"\]\)\s*\{\s*--text-muted:\s*([^;]+);\s*\}/g)];
+    expect(Object.fromEntries(rules.map((m) => [m[1], m[2].trim().toUpperCase()]))).toEqual(
+      Object.fromEntries(entries.map(([id, v]) => [id, v.toUpperCase()])),
+    );
+  });
+
+  // macOS and glass Off render byte-identically to before: outside the theme
+  // token blocks, no rule may restate a text tier unless Windows glass gates it.
+  it('no rule outside the theme blocks restates a text colour tier, except a look\'s muted under Windows glass', () => {
+    const themeBlock = /^(:root,\s*)?(:root)?\[data-theme="[^"]+"\]$/;
+    // A Windows glass rule may only be one look's muted text, in the exact shape the table generates.
+    const glassMutedRule = /^html\[data-glass\]\[data-platform="win32"\]:is\(\[data-theme="[^"]+"\]\)$/;
+    const offenders: string[] = [];
+    for (const m of css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = m[1].trim();
+      // The text colour tiers (not the --text-<size> type scale).
+      const declares = [...m[2].matchAll(/(--text-(?:main|sub2|sub|subtle|muted))\s*:/g)].map((d) => d[1]);
+      if (declares.length === 0 || themeBlock.test(selector)) continue;
+      if (selector.startsWith(WIN32_GLASS) && glassMutedRule.test(selector) && declares.every((d) => d === '--text-muted')) continue;
+      offenders.push(selector);
+    }
+    expect(offenders).toEqual([]);
   });
 });

@@ -15,6 +15,7 @@
 // text stays legible over any backdrop (glassCoverage.ts), and a look that
 // cannot be legible is opaque there, as if glass were Off.
 import { isLight } from '../tailwindPalette';
+import { windowsGlassMuted } from '../themes';
 import {
   DEFAULT_WINDOW_GLASS,
   isWindowGlassSupported,
@@ -96,7 +97,10 @@ function readGlassTokens(root: HTMLElement, style: CSSStyleDeclaration): GlassTo
   const mantle = readColor(root, style, '--bg-mantle');
   const textMain = readColor(root, style, '--text-main');
   const textSub = readColor(root, style, '--text-sub');
-  const textMuted = readColor(root, style, '--text-muted');
+  // The look's glass-only muted text (WINDOWS_GLASS_MUTED), which globals.css
+  // paints only once Windows glass shows: the gate must judge the text glass
+  // will draw, not the opaque value it replaces.
+  const textMuted = windowsGlassMuted(root.getAttribute('data-theme')) ?? readColor(root, style, '--text-muted');
   return frameBg && mantle && textMain && textSub && textMuted
     ? { frameBg, mantle, textMain, textSub, textMuted }
     : null;

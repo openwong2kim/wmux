@@ -1239,6 +1239,18 @@ html[data-glass="light"][data-glass-level="clear"] {
  * backdrop, and sets `--glass-frame` and `--glass-sheet` inline on <html> in
  * the same pass that sets `data-glass` (utils/windowGlass.ts and
  * glassCoverage.ts). Inline, they outrank the macOS rules above. */
+/* Windows glass muted text (WINDOWS_GLASS_MUTED in themes.ts): the looks
+ * whose opaque --text-muted misses 3:1 over the worst backdrop at the 90%
+ * cap draw this glass-only value while Windows glass shows. The gate judges
+ * the same value. macOS and glass Off never match these rules. */
+html[data-glass][data-platform="win32"]:is([data-theme="paper"]) { --text-muted: #767684; }
+html[data-glass][data-platform="win32"]:is([data-theme="amber"]) { --text-muted: #75736C; }
+html[data-glass][data-platform="win32"]:is([data-theme="catppuccin-mocha"]) { --text-muted: #757993; }
+html[data-glass][data-platform="win32"]:is([data-theme="monochrome"]) { --text-muted: #6A6A6A; }
+html[data-glass][data-platform="win32"]:is([data-theme="stars-and-stripes"]) { --text-muted: #5473A1; }
+html[data-glass][data-platform="win32"]:is([data-theme="red-dynasty"]) { --text-muted: #956050; }
+html[data-glass][data-platform="win32"]:is([data-theme="gruvbox-dark-hard"]) { --text-muted: #86786C; }
+html[data-glass][data-platform="win32"]:is([data-theme="void"]) { --text-muted: #666666; }
 html[data-glass],
 html[data-glass] body,
 html[data-glass] #root {

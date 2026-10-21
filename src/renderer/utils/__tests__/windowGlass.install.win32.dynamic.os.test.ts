@@ -18,6 +18,13 @@ const TAEGEUK = {
   '--bg-base': '#FFFFFF', '--frame-bg': '#F1F1F3', '--bg-mantle': '#EEEEF2',
   '--text-main': '#1A1A2E', '--text-sub': '#3a3a50', '--text-muted': '#6A6A7A',
 };
+// Paper's opaque tokens: its opaque muted misses 3:1 over a black window at
+// the 90% cap, so only its glass-only muted (WINDOWS_GLASS_MUTED) lets it
+// show glass.
+const PAPER = {
+  '--bg-base': '#FFFFFF', '--frame-bg': '#ECECEF', '--bg-mantle': '#F3F3F5',
+  '--text-main': '#17171C', '--text-sub': '#3F3F48', '--text-muted': '#848491',
+};
 // Mid-grey tertiary text no coverage keeps at 3:1 over a white window.
 const MURKY = {
   '--bg-base': '#171717', '--frame-bg': '#101010', '--bg-mantle': '#101010',
@@ -61,6 +68,7 @@ afterEach(() => {
   const root = document.documentElement;
   root.removeAttribute('data-glass');
   root.removeAttribute('data-glass-level');
+  root.removeAttribute('data-theme');
   root.removeAttribute('style');
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 });
@@ -134,6 +142,22 @@ describe('installWindowGlass coverage on Windows', () => {
     expect(document.documentElement.getAttribute('data-glass')).toBe('dark');
     expect(inline('--glass-frame')).toBe('82%');
     expect(inline('--glass-sheet')).toBe('6%');
+    stop();
+  });
+
+  it('judges a look by its glass-only muted text, so Paper shows glass', () => {
+    document.documentElement.setAttribute('data-theme', 'paper');
+    const stop = mount('soft', PAPER, 26200, false);
+    expect(document.documentElement.getAttribute('data-glass')).toBe('light');
+    expect(inline('--glass-frame')).toBe('90%');
+    expect(setGlass).toHaveBeenLastCalledWith(expect.objectContaining({ level: 'soft' }));
+    stop();
+  });
+
+  it('keeps the same tokens opaque for a look with no glass-only muted', () => {
+    const stop = mount('soft', PAPER, 26200, false);
+    expect(document.documentElement.hasAttribute('data-glass')).toBe(false);
+    expect(setGlass).toHaveBeenLastCalledWith(expect.objectContaining({ level: 'off' }));
     stop();
   });
 

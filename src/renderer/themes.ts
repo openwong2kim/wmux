@@ -352,6 +352,35 @@ export const PRE_CONTRAST_LIFT_TEXT: Partial<Record<BuiltinThemeId, Pick<UITheme
   void: { textSub: '#909090', textMuted: '#333333' },
 };
 
+// ─── Windows glass muted text ───────────────────────────────────────────────
+//
+// Windows glass sizes its coverage from the look's text over the worst
+// backdrop (glassCoverage.ts), capped at 90%. On these looks the opaque
+// textMuted, which reads at 3:1 on the opaque surfaces, still misses 3:1 at
+// the cap, so the look stayed opaque on Windows. While Windows glass shows,
+// muted text takes this glass-only value instead: textMuted moved by HSL
+// lightness only, the least step that lets the gate find a coverage on Soft
+// and on Clear. The gate evaluates it (windowGlass.ts), and globals.css
+// carries it only under html[data-glass][data-platform="win32"], so macOS and
+// glass Off keep textMuted (locked by glassCoverage.test.ts).
+export const WINDOWS_GLASS_MUTED: Partial<Record<BuiltinThemeId, string>> = {
+  paper: '#767684',
+  amber: '#75736C',
+  'catppuccin-mocha': '#757993',
+  monochrome: '#6A6A6A',
+  'stars-and-stripes': '#5473A1',
+  'red-dynasty': '#956050',
+  'gruvbox-dark-hard': '#86786C',
+  void: '#666666',
+};
+
+/** The muted text a look draws under Windows glass, or undefined when it keeps textMuted. */
+export function windowsGlassMuted(themeId: string | null): string | undefined {
+  return themeId && Object.prototype.hasOwnProperty.call(WINDOWS_GLASS_MUTED, themeId)
+    ? WINDOWS_GLASS_MUTED[themeId as BuiltinThemeId]
+    : undefined;
+}
+
 // ─── Attention orange (needs you) ───────────────────────────────────────────
 //
 // The one colour that means "an agent is waiting on you" (owner decision
