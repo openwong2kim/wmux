@@ -22,6 +22,20 @@ import { WakeTaint, runningWakeAttended, setWakeTaint } from '../wakeTaint';
 import type { WakeItem, WakeReason } from '../../../shared/wake';
 import { ALL_RPC_METHODS } from '../../../shared/rpc';
 
+// Creating a symlink needs a privilege some Windows machines lack; those cases skip there.
+const canSymlink = ((): boolean => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'botexec-symlink-probe-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'target'), '');
+    fs.symlinkSync(path.join(dir, 'target'), path.join(dir, 'link'), 'file');
+    return true;
+  } catch {
+    return false;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+})();
+
 let botDir = '';
 let outside = '';
 beforeEach(() => {
@@ -79,7 +93,8 @@ describe('the floor', () => {
     ['cat <<EOF', 'here-doc'],
     ['cat <<<x', 'here-string'],
     ['cat < <(ls)', 'process substitution'],
-    [`echo x > ${path.join(os.tmpdir(), 'escape.txt')}`, 'redirect outside'],
+    // A POSIX absolute path: the floor parses POSIX shell words on every platform.
+    ['echo x > /tmp/escape.txt', 'redirect outside'],
     ['echo x > ../escape.txt', 'redirect up'],
     ['echo x >> ~/x', 'redirect to home'],
     ['echo x > *.txt', 'redirect glob'],
@@ -147,7 +162,7 @@ describe('the floor', () => {
     expect(decide('bash -c ls', [{ argv: ['bash', '-c', 'ls'] }])).toMatchObject({ ok: false, layer: 'floor' });
   });
 
-  it('a redirection through a symlink out of the folder is refused', () => {
+  it.skipIf(!canSymlink)('a redirection through a symlink out of the folder is refused', () => {
     fs.symlinkSync(outside, path.join(botDir, 'link'));
     expect(decide('echo x > link/target.txt')).toMatchObject({ ok: false, layer: 'floor' });
     fs.symlinkSync(path.join(outside, 'target.txt'), path.join(botDir, 'file-link'));
@@ -325,7 +340,7 @@ describe('the bot folder write check', () => {
     expect(checkBotFolderPath(p, botDir).ok).toBe(false);
   });
 
-  it('refuses a symlink, and a path through a symlink out of the folder', () => {
+  it.skipIf(!canSymlink)('refuses a symlink, and a path through a symlink out of the folder', () => {
     fs.symlinkSync(path.join(outside, 'target.txt'), path.join(botDir, 'link.txt'));
     expect(checkBotFolderPath('link.txt', botDir)).toMatchObject({ ok: false });
     fs.symlinkSync(outside, path.join(botDir, 'dir-link'));
