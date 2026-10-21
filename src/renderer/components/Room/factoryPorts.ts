@@ -168,6 +168,9 @@ export interface FactorySettingsView {
   laneAutoMerge: boolean;
   /** Most lane merges per local day. */
   laneDailyCap: number;
+  /** A bot's unlisted command is judged by the command reviewer (absent:
+   *  on; shared/factorySettings.ts). */
+  botCommandReviewer?: boolean;
   /** The bot the phone talks to (absent: automatic); null in a patch clears it. */
   phoneBotId?: string | null;
   /** The owner's consent that bots run on their own Claude plan

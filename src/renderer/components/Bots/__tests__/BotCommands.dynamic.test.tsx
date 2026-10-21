@@ -84,6 +84,16 @@ describe('BotCommands', () => {
     expect(port.allow).toHaveBeenCalledWith({ botId: BOT, entryId: 'd1' });
   });
 
+  it('a reviewer decision shows its risk and rationale', async () => {
+    const port = fakePort({ entries: [entry('r1', { decision: 'deny', layer: 'reviewer', target: 'touch a', review: { code: 'reviewer_deny', risk: 'high', rationale: 'writes outside the task' }, canAllow: true })] });
+    await act(async () => root.render(<BotCommands row={row} t={t} port={port} />));
+    const text = $('[data-bot-command-entry="r1"]')?.textContent ?? '';
+    expect(text).toContain('bots.commands.layer.reviewer');
+    expect(text).toContain('bots.commands.risk.high');
+    expect(text).toContain('writes outside the task');
+    expect($('[data-testid="bot-command-allow-r1"]')).not.toBeNull();
+  });
+
   it('shows main\'s refusal of Always allow', async () => {
     const port = fakePort({ entries: [entry('d1', { decision: 'deny', layer: 'unlisted', target: 'make', canAllow: true })] });
     port.allow.mockResolvedValueOnce({ ok: false, error: 'a command rule has more than 16 words' });

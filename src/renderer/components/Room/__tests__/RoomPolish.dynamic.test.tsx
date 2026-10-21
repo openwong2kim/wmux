@@ -229,6 +229,15 @@ describe('Settings › Factory merge lane rows', () => {
     expect(port.set).toHaveBeenLastCalledWith({ laneAutoMerge: true });
   });
 
+  it('the command reviewer switch is on by default and saves the owner\'s choice', async () => {
+    const port = settingsPort();
+    await render(createElement(FactoryTab, { settingsPort: port, botPort: NO_BOTS }));
+    const sw = container.querySelector<HTMLButtonElement>('[data-testid="factory-command-reviewer"]')!;
+    expect(sw.getAttribute('aria-checked')).toBe('true');
+    await act(async () => sw.click());
+    expect(port.set).toHaveBeenLastCalledWith({ botCommandReviewer: false });
+  });
+
   it('lists bot names as the bot port reports them', async () => {
     const rows: FactoryBotRow[] = [{ bot: bot('bot-lead', { name: 'Ada' }), status: null }];
     const port: FactoryBotPort = { ...NO_BOTS, list: async () => rows };

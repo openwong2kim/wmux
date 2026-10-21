@@ -36,15 +36,28 @@ export type BotCommandTool = 'Bash' | 'Write' | 'Edit' | 'Read';
 /**
  * Where a decision was made: `attended` (not a turn the owner started),
  * `parse`, `floor` (never allowed), `allowlist` (the built-in list), `rule`
- * (the owner's rule), `unlisted` (not on the list), `reviewer` (a review
- * step at the unlisted seam), `path`, `input`, `off` (the owner switched the
+ * (the owner's rule), `unlisted` (needs an owner rule), `script` (runs code
+ * from a file; needs an owner rule), `reviewer` (the command reviewer's
+ * verdict), `path`, `input`, `off` (the owner switched the
  * bot's commands off). Any other value is shown as it is.
  */
 export type BotCommandLayer = string;
 
-/** The layers whose refusal an owner rule can turn into an allow (main
- *  checks each entry, BotCommandLogEntry.canAllow). */
-export const RULE_ALLOWABLE_LAYERS: readonly string[] = ['unlisted', 'reviewer'];
+/** The layers whose refusal an owner rule can turn into an allow: a
+ *  program that needs an owner rule (`unlisted`), one that runs code from a
+ *  file (`script`), and one the reviewer refused. Never a built-in command
+ *  or the floor (main checks each entry, BotCommandLogEntry.canAllow). */
+export const RULE_ALLOWABLE_LAYERS: readonly string[] = ['unlisted', 'script', 'reviewer'];
+
+/** The command reviewer's verdict on a decision it made. */
+export interface BotCommandReview {
+  /** `reviewer_allow`, `reviewer_deny`, `reviewer_invalid`, … */
+  code: string;
+  risk?: 'low' | 'medium' | 'high';
+  /** One short sentence, masked. */
+  rationale?: string;
+  latencyMs?: number;
+}
 
 export interface BotCommandLogEntry {
   /** Unique within the bot's log. */
@@ -58,6 +71,8 @@ export interface BotCommandLogEntry {
   layer: BotCommandLayer;
   /** Why it was refused, short and masked. */
   reason?: string;
+  /** The reviewer's verdict, for a `reviewer` decision. */
+  review?: BotCommandReview;
   /** In a read only: main would save "Always allow"'s rule for it (a
    *  command refused as not on the list whose head is not a built-in). */
   canAllow?: boolean;

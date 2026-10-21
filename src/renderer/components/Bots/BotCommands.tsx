@@ -7,7 +7,7 @@
 // One switch lets the bot run them (on by default; off, it holds none of the
 // tools). Under it main's recent decisions, newest first, a few at a time:
 // when, the command or path, allowed or refused (a refusal's word red) and
-// why; a command refused as not on the list has Always allow, which adds an
+// why (a reviewer verdict with its risk and rationale); a command refused as not on the list has Always allow, which adds an
 // owner rule for exactly that command — offered only where main says the
 // rule would be saved (never for a built-in command, whose option checks
 // stay), and main checks it again and says why when it refuses. Last, the owner's rules, each with Remove. Every
@@ -101,6 +101,14 @@ export function canAlwaysAllow(e: BotCommandLogEntry): boolean {
   return e.canAllow === true && e.tool === 'Bash' && e.decision === 'deny' && !!e.target && RULE_ALLOWABLE_LAYERS.includes(e.layer);
 }
 
+/** A reviewer decision's risk and rationale (` · Low risk · …`), or ''. Pure but for `t`. */
+export function reviewText(e: BotCommandLogEntry, t: T): string {
+  const r = e.review;
+  if (!r) return '';
+  const risk = r.risk === 'low' || r.risk === 'medium' || r.risk === 'high' ? ` · ${t(`bots.commands.risk.${r.risk}`)}` : '';
+  return `${risk}${r.rationale ? ` · ${r.rationale}` : ''}`;
+}
+
 export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: FactoryBotRow; t: T; port?: BotCommandPort }): React.ReactElement | null {
   const botId = row.bot.id;
   const view = useBotCommands(botId, p);
@@ -154,7 +162,7 @@ export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: Fa
                 </div>
                 <p className="text-[11px] text-[var(--text-muted)]">
                   <span className={e.decision === 'deny' ? 'text-[var(--accent-red)]' : undefined}>{t(e.decision === 'deny' ? 'bots.commands.refused' : 'bots.commands.allowed')}</span>
-                  {` · ${timeAgo(e.at)} · ${e.tool} · ${commandLayerText(e.layer, t)}${e.reason ? ` · ${e.reason}` : ''}`}
+                  {` · ${timeAgo(e.at)} · ${e.tool} · ${commandLayerText(e.layer, t)}${reviewText(e, t)}${e.reason ? ` · ${e.reason}` : ''}`}
                 </p>
               </li>
             ))}

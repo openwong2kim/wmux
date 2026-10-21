@@ -6,7 +6,9 @@
 // oldest first), the newest BOT_COMMAND_LOG_LIMIT of them: each new one
 // drops the oldest past the limit and the file is written whole again
 // (versionedFile.ts: atomic, one serial chain per file, a burst coalesced
-// into few writes). A command, path or reason is masked before it is kept
+// into few writes). A reviewer decision keeps the reviewer's code, risk,
+// rationale and latency. A command, path, reason or rationale is masked
+// before it is kept
 // (stored secrets and inline credentials), and again when it is read, so a
 // value stored since never reaches the profile either.
 //
@@ -17,7 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { BOT_ID_RE } from '../../shared/bot';
-import { BOT_COMMAND_LOG_LIMIT, type BotCommandLogEntry, type BotCommandTool } from '../../shared/botCommand';
+import { BOT_COMMAND_LOG_LIMIT, type BotCommandLogEntry, type BotCommandReview, type BotCommandTool } from '../../shared/botCommand';
 import { assertNotLiveWmuxPath } from '../../shared/constants';
 import { maskInlineCredentials } from '../../shared/redactSecrets';
 import type { BotExecDecisionRecord } from './botExec';
@@ -51,6 +53,22 @@ function short(text: unknown): string | undefined {
   return masked.length > TEXT_MAX ? `${masked.slice(0, TEXT_MAX - 1)}…` : masked;
 }
 
+const RISKS: readonly string[] = ['low', 'medium', 'high'];
+
+/** A reviewer verdict as kept (rationale masked), or undefined. Pure but for the masking. */
+function parseReview(value: unknown): BotCommandReview | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const v = value as Record<string, unknown>;
+  if (typeof v.code !== 'string' || v.code.length === 0) return undefined;
+  const rationale = short(v.rationale);
+  return {
+    code: v.code.slice(0, 40),
+    ...(typeof v.risk === 'string' && RISKS.includes(v.risk) ? { risk: v.risk as BotCommandReview['risk'] } : {}),
+    ...(rationale ? { rationale } : {}),
+    ...(typeof v.latencyMs === 'number' && Number.isFinite(v.latencyMs) ? { latencyMs: v.latencyMs } : {}),
+  };
+}
+
 /** One entry from the file, or null when malformed. Pure. */
 function parseEntry(value: unknown): BotCommandLogEntry | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -66,6 +84,7 @@ function parseEntry(value: unknown): BotCommandLogEntry | null {
     layer: v.layer,
     ...(typeof v.target === 'string' ? { target: v.target } : {}),
     ...(typeof v.reason === 'string' ? { reason: v.reason } : {}),
+    ...(parseReview(v.review) ? { review: parseReview(v.review) } : {}),
   };
 }
 
@@ -111,6 +130,7 @@ export class BotCommandLog {
     const at = this.now();
     const target = short(rec.target);
     const reason = short(rec.reason);
+    const review = parseReview(rec.review);
     const entry: BotCommandLogEntry = {
       id: `${at.toString(36)}-${(this.seq++).toString(36)}`,
       at,
@@ -119,6 +139,7 @@ export class BotCommandLog {
       layer: typeof rec.layer === 'string' && rec.layer.length > 0 ? rec.layer.slice(0, 40) : 'input',
       ...(target ? { target } : {}),
       ...(reason ? { reason } : {}),
+      ...(review ? { review } : {}),
     };
     log.entries.push(entry);
     if (log.entries.length > BOT_COMMAND_LOG_LIMIT) log.entries.splice(0, log.entries.length - BOT_COMMAND_LOG_LIMIT);
@@ -133,7 +154,12 @@ export class BotCommandLog {
     return log.entries
       .slice()
       .reverse()
-      .map((e) => ({ ...e, ...(e.target ? { target: mask(e.target) } : {}), ...(e.reason ? { reason: mask(e.reason) } : {}) }));
+      .map((e) => ({
+        ...e,
+        ...(e.target ? { target: mask(e.target) } : {}),
+        ...(e.reason ? { reason: mask(e.reason) } : {}),
+        ...(e.review?.rationale ? { review: { ...e.review, rationale: mask(e.review.rationale) } } : {}),
+      }));
   }
 
   /** One entry as kept (masked when it was written), or null. */

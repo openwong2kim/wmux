@@ -79,6 +79,14 @@ describe('the decision log', () => {
     expect(shown).toContain('[secret:LATE]');
   });
 
+  it('keeps a reviewer\'s verdict with its risk and rationale, the rationale masked', async () => {
+    setRedactedSecrets([{ name: 'GH', value: 'ghp_first_secret_value_1' }]);
+    const log = newLog();
+    log.record(A, { tool: 'Bash', decision: 'deny', layer: 'reviewer', target: 'touch a', reason: 'reviewer_deny: …', review: { code: 'reviewer_deny', risk: 'medium', rationale: 'mentions ghp_first_secret_value_1', latencyMs: 40 } });
+    await log.settled();
+    expect(newLog().entries(A)[0].review).toEqual({ code: 'reviewer_deny', risk: 'medium', rationale: 'mentions [secret:GH]', latencyMs: 40 });
+  });
+
   it('reads a file of another version as empty and never writes over it', async () => {
     const file = botCommandLogFile(dir, A) as string;
     fs.mkdirSync(path.dirname(file), { recursive: true });

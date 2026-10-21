@@ -936,6 +936,9 @@ export function FactoryTab({ settingsPort, botPort, pickFolder, claudeAuthPort }
         <SettingRow id="factoryverifierownprs" label={t('settings.factory.verifierOwnPrs')} description={t('settings.factory.verifierOwnPrsDesc')}>
           <Switch checked={settings?.verifierOnOwnerPrs === true} disabled={off} onCheckedChange={(v) => void patch({ verifierOnOwnerPrs: v })} />
         </SettingRow>
+        <SettingRow id="factorycommandreviewer" label={t('bots.commands.reviewerSetting')}>
+          <Switch checked={settings?.botCommandReviewer !== false} disabled={off} onCheckedChange={(v) => void patch({ botCommandReviewer: v })} data-testid="factory-command-reviewer" aria-label={t('bots.commands.reviewerSetting')} />
+        </SettingRow>
         <SettingRow id="factoryengine" label={t('settings.factory.engine')} description={t('settings.factory.engineDesc')}>
           <span data-testid="factory-engine" className="text-[13px] text-[var(--text-main)]">{t('settings.factory.engineSdk')}</span>
         </SettingRow>

@@ -196,6 +196,7 @@ export interface BotExecDecisionRecord {
   layer: string;
   reason?: string;
   target?: string;
+  review?: { code: string; risk?: 'low' | 'medium' | 'high'; rationale?: string; latencyMs?: number };
 }
 
 type BotExecDecisionSink = (botId: string, record: BotExecDecisionRecord) => void;
@@ -238,7 +239,14 @@ export function logBotExecDecision(botId: string, toolName: string, d: BotExecDe
   }
   log(`[factory] bot command ${line}`);
   try {
-    decisionSink?.(botId, { tool: toolName, decision: d.ok ? 'allow' : 'deny', layer: d.layer, ...(d.ok ? {} : { reason: d.reason }), ...(target ? { target } : {}) });
+    decisionSink?.(botId, {
+      tool: toolName,
+      decision: d.ok ? 'allow' : 'deny',
+      layer: d.layer,
+      ...(d.ok ? {} : { reason: d.reason }),
+      ...(target ? { target } : {}),
+      ...(d.review ? { review: { code: d.review.code, ...(d.review.risk ? { risk: d.review.risk } : {}), ...(d.review.rationale ? { rationale: d.review.rationale } : {}), latencyMs: d.review.latencyMs } } : {}),
+    });
   } catch {
     /* the owner's log is best effort; the console line is kept */
   }
