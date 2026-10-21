@@ -242,6 +242,20 @@ function storedStartPolarity(): string | null {
 const startPolarity = resolveStartPolarity(storedStartPolarity(), process.argv);
 if (startPolarity) void webFrame.insertCSS(startPaintCss(startPolarity));
 
+// Every Bots view subscribes to BOT_EVENT. One ipcRenderer listener fans the
+// push out to them, so a page with many views does not trip Node's
+// eleven-listener warning on the channel.
+const botEventSubscribers = new Set<() => void>();
+const onBotEventPush = (): void => {
+  for (const notify of [...botEventSubscribers]) {
+    try {
+      notify();
+    } catch (err) {
+      console.error('[preload] a bot event subscriber failed', err);
+    }
+  }
+};
+
 const electronAPI = {
   chat,
   chatv2,
@@ -1268,9 +1282,13 @@ const electronAPI = {
     listBots: (req?: { workspaceId?: string }) =>
       ipcRenderer.invoke(IPC.FACTORY_BOT_LIST, req ?? {}) as Promise<{ bots: import('../main/ipc/handlers/factory.handler').FactoryBotRow[] }>,
     onBotEvent: (callback: () => void) => {
-      const listener = () => callback();
-      ipcRenderer.on(BOT_EVENT, listener);
-      return () => { ipcRenderer.removeListener(BOT_EVENT, listener); };
+      const notify = () => callback();
+      if (botEventSubscribers.size === 0) ipcRenderer.on(BOT_EVENT, onBotEventPush);
+      botEventSubscribers.add(notify);
+      return () => {
+        if (!botEventSubscribers.delete(notify)) return;
+        if (botEventSubscribers.size === 0) ipcRenderer.removeListener(BOT_EVENT, onBotEventPush);
+      };
     },
     botAction: (action: 'wake' | 'park' | 'resume' | 'interrupt', botId: string) =>
       factoryBotCall(`bot.${action}`, { botId }),

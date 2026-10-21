@@ -61,4 +61,28 @@ describe('preload factory bridge', () => {
     off();
     expect(removeListener).toHaveBeenCalledWith('bot.event', listener);
   });
+
+  it('fans one bot.event listener out to every subscriber', async () => {
+    await import('../preload');
+    const f = (exposed.electronAPI as { factory: Factory }).factory;
+    on.mockClear();
+    removeListener.mockClear();
+    const views = Array.from({ length: 12 }, () => vi.fn());
+    const offs = views.map((cb) => f.onBotEvent(cb));
+    // Twelve views, one channel listener: under Node's eleven-listener warning.
+    expect(on.mock.calls.filter(([c]) => c === 'bot.event')).toHaveLength(1);
+    const listener = on.mock.calls[0][1] as () => void;
+    // One failing view does not stop the rest.
+    views[0].mockImplementation(() => { throw new Error('view failed'); });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    listener();
+    for (const cb of views) expect(cb).toHaveBeenCalledTimes(1);
+    err.mockRestore();
+    offs[0]();
+    offs[0]();
+    expect(removeListener).not.toHaveBeenCalled();
+    for (const off of offs.slice(1)) off();
+    expect(removeListener).toHaveBeenCalledTimes(1);
+    expect(removeListener).toHaveBeenCalledWith('bot.event', listener);
+  });
 });
