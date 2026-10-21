@@ -222,16 +222,16 @@ describe('the command reviewer at the unlisted seam', () => {
     const r = rig({ reviewer: true });
     const o = await r.turn();
     const pre = preHook(o);
-    for (const command of ['jq .a f.json', 'sed s/a/b/ f.txt', 'tar xf a.tar', 'ln -s a b', 'tree | jq .']) {
+    for (const command of ['jq .a f.json', 'sed s/a/b/ f.txt', 'tar xf a.tar', 'ln -s a b', 'tree | jq .', 'split --filter=sh f.txt']) {
       expect(await pre({ tool_name: 'Bash', tool_input: { command } }), command).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('needs an owner rule') } });
     }
-    for (const command of ['split --filter=sh f.txt', 'tree -o out.txt', 'tree -R', 'diff -l a b']) {
+    for (const command of ['tree -o out.txt', 'tree -R', 'diff -l a b']) {
       expect(await pre({ tool_name: 'Bash', tool_input: { command } }), command).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('is not run') } });
     }
     expect(r.reviews).toHaveLength(0);
     const lines = logLines();
     expect(lines.some((l) => l.includes('"layer":"unlisted"') && l.includes('jq .a f.json'))).toBe(true);
-    expect(lines.some((l) => l.includes('"layer":"floor"') && l.includes('split --filter=sh f.txt'))).toBe(true);
+    expect(lines.some((l) => l.includes('"layer":"floor"') && l.includes('tree -o out.txt'))).toBe(true);
     // A listed utility reaches it.
     expect(await pre({ tool_name: 'Bash', tool_input: { command: 'cp a.txt b.txt' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow', updatedInput: { command: "\\command 'cp' 'a.txt' 'b.txt'" } } });
     expect(r.reviews).toHaveLength(1);
@@ -239,6 +239,22 @@ describe('the command reviewer at the unlisted seam', () => {
     const { getBotCommandRulesStore } = await import('../../factory/botCommandRules');
     await getBotCommandRulesStore().setRules(BINDING.botId, [{ argv: ['jq'], anyArgs: true }]);
     expect(await pre({ tool_name: 'Bash', tool_input: { command: 'jq .a f.json' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow' } });
+    expect(r.reviews).toHaveLength(1);
+    r.adapter.dispose();
+  });
+
+  it('a reviewable utility\'s operands follow the Write rules: protected names, links and option-named places are floor, with no call', async () => {
+    const r = rig({ reviewer: true });
+    const o = await r.turn();
+    const pre = preHook(o);
+    for (const command of ['mkdir .git', 'mv x .git/config', 'cp a .claude/settings.json', 'touch Makefile', 'cp -t .git a', 'cp -s a b', 'cp --link a b', 'mv a ../a']) {
+      expect(await pre({ tool_name: 'Bash', tool_input: { command } }), command).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny' } });
+      expect(logLines().some((l) => l.includes('"layer":"floor"') && l.includes(`"target":"${command}"`)), command).toBe(true);
+    }
+    // split names its pieces with a generated suffix: it needs an owner rule.
+    expect(await pre({ tool_name: 'Bash', tool_input: { command: 'split -b 1 a .git/x' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('needs an owner rule') } });
+    expect(r.reviews).toHaveLength(0);
+    expect(await pre({ tool_name: 'Bash', tool_input: { command: 'cp a.txt b.txt' } })).toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow' } });
     expect(r.reviews).toHaveLength(1);
     r.adapter.dispose();
   });

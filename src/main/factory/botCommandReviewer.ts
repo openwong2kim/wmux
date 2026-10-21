@@ -40,6 +40,7 @@
 
 import { hitsOption } from './botCommandAllow';
 import { commandName, isShellOrInterpreter } from './botCommandFloor';
+import { checkBotFolderPath, type BotFolderDeps } from './botFolderPath';
 import { localDay } from './morningSchedule';
 
 /** Build, task, test and package runners, and tools that load code from a
@@ -75,35 +76,62 @@ function refusing(name: string, refused: { short?: string; long?: readonly strin
  * The programs the reviewer may judge: plain file utilities named bare,
  * each checked to load no config, plugin or helper from the folder and to
  * run no program through an option (GNU coreutils and the macOS tools).
- *   - cp, mv, mkdir, rmdir, touch: copy, move and create; no option runs a
- *     program. Writes land in the sandbox's folder or fail.
+ * Every operand of one (an option's value too) is a path the Write tool's
+ * rules allow, an existing folder included (reviewerRefusal): inside the
+ * bot folder, no `..`, no symlink, no protected name such as `.git`,
+ * `.claude` or `Makefile`.
+ *   - cp, mv: copy and move; no option runs a program. -t/--target-
+ *     directory and -S/--suffix are refused (a destination or a name the
+ *     operand check would not see), and cp's -s/--symbolic-link and
+ *     -l/--link (links, like ln).
+ *   - mkdir, rmdir, touch: create and remove; no option runs a program.
  *   - rm: one file at a time (the floor refuses -r, -R and -f).
  *   - cmp, comm, join, paste, nl, fold, column, expand, unexpand, rev,
  *     basename, dirname, realpath: read their operands and print.
  *   - diff: likewise, but -l / --paginate pipes through `pr`, so it is
  *     refused.
  *   - md5, md5sum, shasum, sha1sum, sha256sum, sha512sum: print digests.
- *   - csplit: writes pieces named by its own prefix; runs nothing.
- *   - split: GNU --filter runs a shell command, so it is refused.
  *   - tree: -o writes its listing to a file and -R runs tree again with
  *     one in every folder, so both are refused.
  * Left out on purpose: ln (a symlink is what the folder checks refuse
- * elsewhere), sed (GNU `e` and `w`), awk, jq, less and more, editors, tar,
+ * elsewhere), split and csplit (the names they write add a generated
+ * suffix to the prefix, which can spell a protected name: `Makefi` + `le`),
+ * sed (GNU `e` and `w`), awk, jq, less and more, editors, tar,
  * zip and unzip, rsync, xargs, find, install (--strip-program), patch.
  */
 export const REVIEWABLE_COMMANDS: ReadonlyMap<string, OptionCheck> = new Map<string, OptionCheck>([
-  ...['cp', 'mv', 'mkdir', 'rmdir', 'touch', 'rm'].map((n): [string, OptionCheck] => [n, plain]),
+  ['cp', refusing('cp', { short: 'tSsl', long: ['target-directory', 'suffix', 'symbolic-link', 'link'] })],
+  ['mv', refusing('mv', { short: 'tS', long: ['target-directory', 'suffix'] })],
+  ...['mkdir', 'rmdir', 'touch', 'rm'].map((n): [string, OptionCheck] => [n, plain]),
   ['diff', refusing('diff', { short: 'l', long: ['paginate'] })],
   ...['cmp', 'comm', 'join', 'paste', 'nl', 'fold', 'column', 'expand', 'unexpand', 'rev', 'basename', 'dirname', 'realpath'].map((n): [string, OptionCheck] => [n, plain]),
-  ...['md5', 'md5sum', 'shasum', 'sha1sum', 'sha256sum', 'sha512sum', 'csplit'].map((n): [string, OptionCheck] => [n, plain]),
-  ['split', refusing('split', { long: ['filter'] })],
+  ...['md5', 'md5sum', 'shasum', 'sha1sum', 'sha256sum', 'sha512sum'].map((n): [string, OptionCheck] => [n, plain]),
   ['tree', refusing('tree', { short: 'oR' })],
 ]);
 
+/** The words of `args` that are not options (all of them after `--`;
+ *  `-` is stdin). An option's separate value counts as an operand. */
+function operandWords(args: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let k = 0; k < args.length; k++) {
+    const a = args[k];
+    if (a === '--') return [...out, ...args.slice(k + 1)];
+    if (a !== '-' && !a.startsWith('-')) out.push(a);
+  }
+  return out;
+}
+
+/** The bot folder the operands of a reviewable utility must stay in. */
+export interface ReviewFolder {
+  botDir: string;
+  fs?: BotFolderDeps;
+}
+
 /** Why the reviewer may not judge this line, or null. `argv` is every
  *  command's words; `offList` those of the commands neither built-in nor
- *  an owner rule allowed (the ones the reviewer would judge). Pure. */
-export function reviewerRefusal(argv: readonly (readonly string[])[], offList: readonly (readonly string[])[] = argv): { layer: 'script' | 'unlisted' | 'floor'; reason: string } | null {
+ *  an owner rule allowed (the ones the reviewer would judge). Pure apart
+ *  from the operands' path checks. */
+export function reviewerRefusal(argv: readonly (readonly string[])[], offList: readonly (readonly string[])[], folder: ReviewFolder): { layer: 'script' | 'unlisted' | 'floor'; reason: string } | null {
   for (const words of argv) {
     const first = words[0] ?? '';
     if (/[\\/]/.test(first)) return { layer: 'script', reason: `${first} is a file named by its path; running it needs an owner rule for it` };
@@ -117,6 +145,10 @@ export function reviewerRefusal(argv: readonly (readonly string[])[], offList: r
     if (!check) return { layer: 'unlisted', reason: `${first} needs an owner rule (only plain file utilities go to the command reviewer)` };
     const refused = check(words.slice(1));
     if (refused) return { layer: 'floor', reason: refused };
+    for (const operand of operandWords(words.slice(1))) {
+      const at = checkBotFolderPath(operand, folder.botDir, folder.fs, { directory: true });
+      if (!at.ok) return { layer: 'floor', reason: `${first} ${operand}: ${at.reason}` };
+    }
   }
   return null;
 }
@@ -141,7 +173,7 @@ export const BOT_COMMAND_REVIEWER_LIMITS = Object.freeze({
 export const BOT_COMMAND_REVIEWER_SYSTEM_PROMPT = [
   'You review one shell command for wmux before it runs. A bot (an AI agent) wants to run it in its own folder. The command is not on the bot\'s list of known commands, so your judgment decides whether it runs.',
   '',
-  'What reaches you: only plain file utilities (cp, mv, mkdir, rmdir, touch, rm of single files, diff, cmp, comm, join, paste, nl, fold, column, expand, unexpand, rev, basename, dirname, realpath, digest tools, split, csplit, tree), possibly piped with the bot\'s read-only commands. Anything else needs the owner and never reaches you.',
+  'What reaches you: only plain file utilities (cp, mv, mkdir, rmdir, touch, rm of single files, diff, cmp, comm, join, paste, nl, fold, column, expand, unexpand, rev, basename, dirname, realpath, digest tools, tree), each naming paths inside the bot\'s folder only, possibly piped with the bot\'s read-only commands. Anything else needs the owner and never reaches you.',
   '',
   'Where it runs:',
   '- The working directory is the bot\'s own folder; relative paths resolve there.',

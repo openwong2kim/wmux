@@ -13,7 +13,10 @@
 //     `.claude`, `.vscode`, `.envrc`, `.github/workflows`, `package.json`,
 //     `Makefile`).
 // The OS sandbox's write grant (botExecSandbox.ts) is the backstop for
-// commands; this check is the gate for the file tools.
+// commands; this check is the gate for the file tools, and for the operands
+// of the file utilities the command reviewer judges (botCommandReviewer.ts),
+// where an existing folder, the bot folder itself included, may be named
+// (`directory`).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -75,9 +78,10 @@ export type BotFolderCheck = { ok: true; real: string } | { ok: false; reason: s
  * Whether `requested` (absolute, or relative to `botDir`) may be written by
  * the bot. Allowed paths come back as the real path to write (the nearest
  * existing parent resolved, the rest appended). Fails closed: an unreadable
- * folder or an unexpected error is a refusal.
+ * folder or an unexpected error is a refusal. With `directory`, an existing
+ * folder (never a symlink) passes too.
  */
-export function checkBotFolderPath(requested: unknown, botDir: string, deps: BotFolderDeps = defaultDeps): BotFolderCheck {
+export function checkBotFolderPath(requested: unknown, botDir: string, deps: BotFolderDeps = defaultDeps, opts: { directory?: boolean } = {}): BotFolderCheck {
   if (typeof requested !== 'string' || requested.length === 0) return { ok: false, reason: 'a file path is required' };
   if (requested.includes('\0')) return { ok: false, reason: 'the path is malformed' };
   // `..` is refused outright: resolved by text it would skip a symlink the
@@ -91,7 +95,7 @@ export function checkBotFolderPath(requested: unknown, botDir: string, deps: Bot
   }
   const lexical = path.resolve(botDir, requested);
   const rel = inside(botDir, lexical) ?? inside(realDir, lexical);
-  if (rel === null || rel === '') return { ok: false, reason: 'it is outside the bot folder' };
+  if (rel === null || (rel === '' && !opts.directory)) return { ok: false, reason: 'it is outside the bot folder' };
   const hit = botFolderProtectedName(rel);
   if (hit) return { ok: false, reason: `it is a protected file (${hit})` };
   // The nearest existing parent, with symlinks followed, stays inside.
@@ -112,7 +116,7 @@ export function checkBotFolderPath(requested: unknown, botDir: string, deps: Bot
   }
   const real = missing.length > 0 ? path.join(realParent, ...missing) : realParent;
   const realRel = inside(realDir, real);
-  if (realRel === null || realRel === '') return { ok: false, reason: 'it resolves outside the bot folder' };
+  if (realRel === null || (realRel === '' && !opts.directory)) return { ok: false, reason: 'it resolves outside the bot folder' };
   const realHit = botFolderProtectedName(realRel);
   if (realHit) return { ok: false, reason: `it is a protected file (${realHit})` };
   if (missing.length === 0) {
@@ -120,7 +124,7 @@ export function checkBotFolderPath(requested: unknown, botDir: string, deps: Bot
     const st = deps.lstat(lexical);
     if (!st) return { ok: false, reason: 'the path could not be resolved' };
     if (st.isSymbolicLink()) return { ok: false, reason: 'it is a symbolic link' };
-    if (!st.isFile()) return { ok: false, reason: 'it is not a regular file' };
+    if (!st.isFile() && !(opts.directory && st.isDirectory())) return { ok: false, reason: 'it is not a regular file' };
   }
   return { ok: true, real };
 }

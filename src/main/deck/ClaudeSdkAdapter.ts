@@ -1208,6 +1208,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       enabled: () => bot.commandReviewer?.() === true && guestGateProvenance(botId) === false,
       attended: execCtx.attended,
       reviewer,
+      folder: { botDir: bot.cwd },
     };
     type Decision = { ok: true; input: Record<string, unknown> } | { ok: false; reason: string };
     const granted = [...new Set([...(root ? BOT_REPO_READ_TOOLS : []), ...(exec ? ['Read', ...BOT_EXEC_TOOLS] : [])])];

@@ -31,7 +31,7 @@
 // with stored secrets masked.
 
 import { decideBotCommand, type BotCommandRule } from './botCommandAllow';
-import { BOT_COMMAND_REVIEWER_LIMITS, reviewerRefusal, type BotCommandReviewer, type ReviewCode, type ReviewOutcome } from './botCommandReviewer';
+import { BOT_COMMAND_REVIEWER_LIMITS, reviewerRefusal, type BotCommandReviewer, type ReviewCode, type ReviewFolder, type ReviewOutcome } from './botCommandReviewer';
 import { checkBotFolderPath, type BotFolderDeps } from './botFolderPath';
 import { redactStoredSecrets } from './secretRedaction';
 
@@ -124,6 +124,8 @@ export interface ReviewGate {
   attended: () => boolean;
   /** This turn's reviewer; null: none could be built. */
   reviewer: BotCommandReviewer | null;
+  /** The bot folder a reviewable utility's operands must stay in. */
+  folder: ReviewFolder;
 }
 
 const REVIEW_REFUSALS: Record<Exclude<ReviewCode, 'reviewer_allow'>, string> = {
@@ -146,7 +148,12 @@ const REVIEW_REFUSALS: Record<Exclude<ReviewCode, 'reviewer_allow'>, string> = {
  */
 export async function reviewUnlistedCommand(d: BotExecDecision, input: Record<string, unknown>, gate: ReviewGate): Promise<BotExecDecision> {
   if (d.ok || d.layer !== 'unlisted' || !d.unlisted) return d;
-  const refused = reviewerRefusal(d.unlisted.argv, d.unlisted.offList);
+  let refused: ReturnType<typeof reviewerRefusal>;
+  try {
+    refused = reviewerRefusal(d.unlisted.argv, d.unlisted.offList, gate.folder);
+  } catch {
+    refused = { layer: 'floor', reason: 'the command check failed' };
+  }
   if (refused) return { ok: false, layer: refused.layer, reason: refused.reason, command: d.command };
   let open = false;
   try {

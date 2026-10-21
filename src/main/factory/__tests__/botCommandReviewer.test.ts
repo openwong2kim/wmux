@@ -2,7 +2,10 @@
 // a high risk refusing whatever the decision says, the command as the only
 // data it is shown, and answers and calls bounded to one turn and one day.
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   BOT_COMMAND_REVIEWER_LIMITS,
   BOT_COMMAND_REVIEWER_SYSTEM_PROMPT,
@@ -15,6 +18,7 @@ import {
   reviewerUserMessage,
   runReview,
   sdkReviewerAsk,
+  type ReviewFolder,
   type ReviewRequest,
   type ReviewerAsk,
   type ReviewerQueryFn,
@@ -191,6 +195,18 @@ describe('BotCommandReviewer', () => {
 });
 
 describe('reviewerRefusal', () => {
+  let botDir = '';
+  let folder: ReviewFolder = { botDir: '' };
+  beforeEach(() => {
+    botDir = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'botreview-folder-')));
+    fs.writeFileSync(path.join(botDir, 'a.txt'), 'a');
+    fs.mkdirSync(path.join(botDir, 'sub'));
+    fs.symlinkSync(os.tmpdir(), path.join(botDir, 'out-link'));
+    folder = { botDir };
+  });
+  afterEach(() => fs.rmSync(botDir, { recursive: true, force: true }));
+  const refusal = (...argv: string[][]) => reviewerRefusal(argv, argv, folder);
+
   it.each([
     [[['python3', 'script.py']]],
     [[['bash', 'x.sh']]],
@@ -201,34 +217,62 @@ describe('reviewerRefusal', () => {
     [[['NPM', 'test']]],
     [[['tree'], ['cargo', 'run']]],
   ])('refuses %j as script before any call', (argv) => {
-    expect(reviewerRefusal(argv)).toEqual({ layer: 'script', reason: expect.stringMatching(/owner rule/) });
+    expect(reviewerRefusal(argv, argv, folder)).toEqual({ layer: 'script', reason: expect.stringMatching(/owner rule/) });
   });
 
   it('refuses a program that is not a plain file utility as unlisted: it needs an owner rule', () => {
-    for (const words of [['jq', '.a', 'f.json'], ['sed', 's/a/b/', 'f'], ['tar', 'xf', 'a.tar'], ['ln', '-s', 'a', 'b'], ['CP', 'a', 'b'], ['git', 'status']]) {
-      expect(reviewerRefusal([words]), words[0]).toEqual({ layer: 'unlisted', reason: expect.stringMatching(/needs an owner rule/) });
+    for (const words of [['jq', '.a', 'f.json'], ['sed', 's/a/b/', 'f'], ['tar', 'xf', 'a.tar'], ['ln', '-s', 'a', 'b'], ['CP', 'a', 'b'], ['git', 'status'], ['split', '-b', '1', 'a.txt', '.git/x'], ['csplit', 'a.txt', '1']]) {
+      expect(refusal(words), words[0]).toEqual({ layer: 'unlisted', reason: expect.stringMatching(/needs an owner rule/) });
     }
   });
 
   it.each([
-    [['split', '--filter=sh', 'f']],
-    [['split', '--fil', 'sh', 'f']],
     [['tree', '-o', 'out.txt']],
     [['tree', '-aR']],
-    [['diff', '-l', 'a', 'b']],
-    [['diff', '--paginate', 'a', 'b']],
-  ])('refuses %j as floor: an option that runs a program or writes a file', (words) => {
-    expect(reviewerRefusal([words])).toEqual({ layer: 'floor', reason: expect.stringMatching(/is not run/) });
+    [['diff', '-l', 'a.txt', 'a.txt']],
+    [['diff', '--paginate', 'a.txt', 'a.txt']],
+    [['cp', '-s', 'a.txt', 'b.txt']],
+    [['cp', '-as', 'a.txt', 'b.txt']],
+    [['cp', '--symbolic-link', 'a.txt', 'b.txt']],
+    [['cp', '-l', 'a.txt', 'b.txt']],
+    [['cp', '--link', 'a.txt', 'b.txt']],
+    [['cp', '-t', 'sub', 'a.txt']],
+    [['cp', '--target-directory=sub', 'a.txt']],
+    [['mv', '-tsub', 'a.txt']],
+    [['mv', '--suffix=x', 'a.txt', 'b.txt']],
+  ])('refuses %j as floor: an option that runs a program, links, or names a place the check would not see', (words) => {
+    expect(refusal(words)).toEqual({ layer: 'floor', reason: expect.stringMatching(/is not run/) });
+  });
+
+  it.each([
+    [['mkdir', '.git']],
+    [['mkdir', '-p', 'sub/.git/hooks']],
+    [['mv', 'a.txt', '.git/config']],
+    [['cp', 'a.txt', '.claude/settings.json']],
+    [['touch', 'Makefile']],
+    [['touch', 'package.json']],
+    [['cp', 'a.txt', '.envrc']],
+    [['mv', 'a.txt', '../a.txt']],
+    [['cp', '/etc/hosts', 'h.txt']],
+    [['cp', 'a.txt', 'out-link']],
+    [['rm', 'out-link']],
+    [['diff', 'a.txt', '--', '.env']],
+  ])('refuses %j as floor: an operand outside the folder\'s write rules', (words) => {
+    expect(refusal(words)).toEqual({ layer: 'floor', reason: expect.stringMatching(/protected|outside|\.\.|symbolic link/) });
   });
 
   it('lets plain file utilities through, with the read-only built-ins beside them', () => {
-    expect(reviewerRefusal([['tree', '-L', '2']])).toBeNull();
-    expect(reviewerRefusal([['ls'], ['cp', 'a', 'b']], [['cp', 'a', 'b']])).toBeNull();
-    expect(reviewerRefusal([['split', '-l', '10', 'f'], ['diff', '-u', 'a', 'b']])).toBeNull();
+    expect(refusal(['tree', '-L', '2'])).toBeNull();
+    expect(refusal(['tree', '.'])).toBeNull();
+    expect(refusal(['cp', 'a.txt', 'b.txt'])).toBeNull();
+    expect(refusal(['cp', 'a.txt', 'sub'])).toBeNull();
+    expect(refusal(['mkdir', '-p', 'notes/2026'])).toBeNull();
+    expect(refusal(['diff', '-u', 'a.txt', 'sub/a.txt'])).toBeNull();
+    expect(reviewerRefusal([['ls'], ['cp', 'a.txt', 'b.txt']], [['cp', 'a.txt', 'b.txt']], folder)).toBeNull();
     // Only the off-list commands are matched against the utilities.
-    expect(reviewerRefusal([['git', 'status'], ['tree']], [['tree']])).toBeNull();
-    for (const name of ['cp', 'mv', 'rm', 'diff', 'tree', 'split']) expect(REVIEWABLE_COMMANDS.has(name)).toBe(true);
-    for (const name of ['ln', 'sed', 'awk', 'jq', 'tar', 'find', 'xargs']) expect(REVIEWABLE_COMMANDS.has(name)).toBe(false);
+    expect(reviewerRefusal([['git', 'status'], ['tree']], [['tree']], folder)).toBeNull();
+    for (const name of ['cp', 'mv', 'rm', 'diff', 'tree']) expect(REVIEWABLE_COMMANDS.has(name)).toBe(true);
+    for (const name of ['ln', 'sed', 'awk', 'jq', 'tar', 'find', 'xargs', 'split', 'csplit']) expect(REVIEWABLE_COMMANDS.has(name)).toBe(false);
     expect(FILE_RUNNERS.has('make')).toBe(true);
   });
 });
