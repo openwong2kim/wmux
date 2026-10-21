@@ -5266,22 +5266,29 @@ function TabAbout() {
 function StarWmuxRow() {
   const t = useT();
   const [busy, setBusy] = useState(false);
-  const [starred, setStarred] = useState(false);
+  const [result, setResult] = useState<'starred' | 'failed' | null>(null);
   const star = async () => {
     if (busy) return;
     setBusy(true);
-    const result = await runStarAction();
+    setResult(null);
+    const outcome = await runStarAction();
     setBusy(false);
-    if (result === 'starred') setStarred(true);
+    if (outcome === 'starred' || outcome === 'failed') setResult(outcome);
   };
   return (
     <SettingRow id="stargithub" label={t('starPrompt.settingsLabel')} description={t('starPrompt.settingsDescription')}>
-      {starred ? (
+      {result === 'starred' ? (
         <span role="status" className="text-[12px] text-[color:var(--text-sub)]">{t('starPrompt.thanks')}</span>
       ) : (
-        <Button onClick={() => { void star(); }} disabled={busy} data-testid="settings-star-github">
-          {t('starPrompt.starShort')}
-        </Button>
+        <span className="flex items-center gap-2">
+          {/* Neither gh nor the browser worked: a muted reason, never a colour. */}
+          {result === 'failed' && (
+            <span role="status" className="text-[12px] text-[color:var(--text-sub)]">{t('starPrompt.failed')}</span>
+          )}
+          <Button onClick={() => { void star(); }} disabled={busy} data-testid="settings-star-github">
+            {t('starPrompt.starShort')}
+          </Button>
+        </span>
       )}
     </SettingRow>
   );

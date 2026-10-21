@@ -3662,6 +3662,7 @@ export const pl = {
   'starPrompt.thanks': "Gwiazdka dodana — dziękujemy",
   'starPrompt.settingsLabel': "Daj wmux gwiazdkę na GitHubie",
   'starPrompt.settingsDescription': "Pomaga innym programistom znaleźć wmux",
+  'starPrompt.failed': "Nie udało się otworzyć GitHuba",
   'firstRunWizard.agent.groupTitle': "Agent gotowy",
   'firstRunWizard.agent.groupHint': "Wystarczy jeden zalogowany agent, aby kontynuować. Drugiego możesz skonfigurować później.",
   'firstRunWizard.agent.checking': "Sprawdzanie…",

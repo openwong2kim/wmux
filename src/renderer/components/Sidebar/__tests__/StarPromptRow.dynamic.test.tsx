@@ -169,18 +169,20 @@ describe('StarPromptRow', () => {
 });
 
 describe('useStarPromptSessionBridge', () => {
-  it('takes sessions counted before it subscribed on mount, then drains on every poke', async () => {
+  it('waits for the restored session, takes what main held, then drains on every poke', async () => {
     let poke: () => void = () => undefined;
     const drainSessions = vi.fn().mockResolvedValueOnce(3).mockResolvedValueOnce(2);
+    const onAgentSession = vi.fn((cb: () => void) => { poke = cb; return () => undefined; });
     (window as unknown as { electronAPI: unknown }).electronAPI = {
-      starPrompt: {
-        drainSessions,
-        onAgentSession: vi.fn((cb: () => void) => { poke = cb; return () => undefined; }),
-      },
+      starPrompt: { drainSessions, onAgentSession },
     };
     useStore.setState({ starPrompt: { ...eligible(), agentSessionsSinceBaseline: 0 } });
-    function Bridge() { useStarPromptSessionBridge(); return null; }
-    await act(async () => { root.render(createElement(Bridge)); });
+    function Bridge({ loaded }: { loaded: boolean }) { useStarPromptSessionBridge(loaded); return null; }
+    // Before loadSession: nothing is taken, so the restored state cannot overwrite it.
+    await act(async () => { root.render(createElement(Bridge, { loaded: false })); });
+    expect(drainSessions).not.toHaveBeenCalled();
+    expect(onAgentSession).not.toHaveBeenCalled();
+    await act(async () => { root.render(createElement(Bridge, { loaded: true })); });
     expect(drainSessions).toHaveBeenCalledTimes(1);
     expect(useStore.getState().starPrompt.agentSessionsSinceBaseline).toBe(3);
     await act(async () => { poke(); });

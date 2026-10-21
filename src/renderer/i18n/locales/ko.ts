@@ -3082,6 +3082,7 @@ export const ko = {
   'starPrompt.thanks': "스타 완료 — 고마워요",
   'starPrompt.settingsLabel': "GitHub에서 wmux에 스타 주기",
   'starPrompt.settingsDescription': "다른 개발자가 wmux를 찾는 데 도움이 돼요",
+  'starPrompt.failed': "GitHub를 열지 못했어요",
   'firstRunWizard.agent.groupTitle': "에이전트 준비",
   'firstRunWizard.agent.groupHint': "로그인된 에이전트 하나면 계속할 수 있습니다. 다른 하나는 나중에 설정해도 됩니다.",
   'firstRunWizard.agent.checking': "확인 중…",

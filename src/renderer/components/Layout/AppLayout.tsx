@@ -947,8 +947,6 @@ export default function AppLayout() {
   // Workspace settle / snooze — main owns the state; this mirrors it and
   // raises the Undo toasts.
   useWorkspaceSettleBridge();
-  // New agent sessions counted by main, toward the sidebar's star row.
-  useStarPromptSessionBridge();
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
@@ -1088,6 +1086,9 @@ export default function AppLayout() {
   // (the ref intentionally stays false then — see the save guards below).
   const [sessionLoaded, setSessionLoaded] = useState(false);
   const [sessionLoadFailed, setSessionLoadFailed] = useState(false);
+  // New agent sessions counted by main, toward the sidebar's star row. Taken
+  // only once the saved session is restored, so loadSession cannot drop them.
+  useStarPromptSessionBridge(sessionLoaded);
   // Fix 0: monotonic startup generation counter. Each mount-effect run
   // bumps it; the startup catch only applies its fallback if its own
   // gen still matches the current ref. Prevents a stale startup from

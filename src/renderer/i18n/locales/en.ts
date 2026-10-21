@@ -3688,6 +3688,7 @@ export const en = {
   'starPrompt.thanks': "Starred — thank you",
   'starPrompt.settingsLabel': "Star wmux on GitHub",
   'starPrompt.settingsDescription': "Helps other developers find wmux",
+  'starPrompt.failed': "Couldn't open GitHub",
   'firstRunWizard.agent.groupTitle': "Agent ready",
   'firstRunWizard.agent.groupHint': "One signed-in agent is enough to go on. You can set up the other one later.",
   'firstRunWizard.agent.checking': "Checking…",

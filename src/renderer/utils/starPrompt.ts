@@ -54,17 +54,20 @@ export async function drainStarPromptSessions(): Promise<void> {
 
 /**
  * Mounted once in AppLayout. Main's push is only a poke; the count is pulled,
- * once on mount (sessions counted before this subscribed, e.g. at startup or
- * across a reload) and again on every poke.
+ * once the saved session has been restored (sessions counted before that,
+ * e.g. at startup or across a reload, wait in main) and again on every poke.
+ * Draining earlier would add to the default state that loadSession then
+ * replaces, losing those sessions.
  */
-export function useStarPromptSessionBridge(): void {
+export function useStarPromptSessionBridge(sessionLoaded: boolean): void {
   useEffect(() => {
+    if (!sessionLoaded) return;
     const subscribe = starApi()?.onAgentSession;
     if (!subscribe) return;
     const off = subscribe(() => { void drainStarPromptSessions(); });
     void drainStarPromptSessions();
     return off;
-  }, []);
+  }, [sessionLoaded]);
 }
 
 export function resetStarPromptForTests(): void {

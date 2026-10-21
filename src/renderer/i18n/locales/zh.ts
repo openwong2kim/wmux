@@ -3272,6 +3272,7 @@ export const zh = {
   'starPrompt.thanks': "已加星 — 谢谢",
   'starPrompt.settingsLabel': "在 GitHub 上为 wmux 加星",
   'starPrompt.settingsDescription': "帮助其他开发者发现 wmux",
+  'starPrompt.failed': "无法打开 GitHub",
   'firstRunWizard.agent.groupTitle': "代理就绪",
   'firstRunWizard.agent.groupHint': "有一个已登录的代理即可继续。另一个可以稍后再设置。",
   'firstRunWizard.agent.checking': "正在检查…",
