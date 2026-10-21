@@ -124,12 +124,15 @@ const logLines = (): string[] => (console.warn as unknown as { mock: { calls: un
 describe('the command reviewer at the unlisted seam', () => {
   it('a bot the owner switches off while the reviewer decides does not run the command', async () => {
     const { getBotCommandRulesStore } = await import('../../factory/botCommandRules');
-    const r = rig({ reviewer: true, onReview: () => void getBotCommandRulesStore().setCommandsEnabled(BINDING.botId, false) });
+    // The switch's write is awaited before the test's folder goes.
+    let saving: Promise<void> = Promise.resolve();
+    const r = rig({ reviewer: true, onReview: () => { saving = getBotCommandRulesStore().setCommandsEnabled(BINDING.botId, false); } });
     const o = await r.turn();
     const out = await preHook(o)({ tool_name: 'Bash', tool_input: { command: 'tree -L 2' } });
     expect(r.reviews).toHaveLength(1);
     expect(out).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('switched this bot\'s commands off') } });
     expect(logLines().some((l) => l.includes('[factory] bot command') && l.includes('"layer":"off"'))).toBe(true);
+    await saving;
     r.adapter.dispose();
   });
 

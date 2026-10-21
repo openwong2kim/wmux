@@ -103,6 +103,19 @@ describe('the decision log', () => {
     }
   });
 
+  it('a write scheduled for a folder that is gone settles quietly (logged, never an unhandled rejection)', async () => {
+    const gone = path.join(dir, 'gone');
+    const log = new BotCommandLog(gone);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // A file where the folder would be: every write under it fails.
+    fs.writeFileSync(gone, 'not a folder');
+    expect(log.record(A, deny('ls'))).not.toBeNull();
+    await log.settled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(warn.mock.calls.some((c) => String(c[0]).includes('bot command log of bot-0000000a not written'))).toBe(true);
+    expect(log.entries(A)).toHaveLength(1);
+  });
+
   it('reads a file of another version as empty and never writes over it', async () => {
     const file = botCommandLogFile(dir, A) as string;
     fs.mkdirSync(path.dirname(file), { recursive: true });
