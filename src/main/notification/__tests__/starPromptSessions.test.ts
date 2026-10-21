@@ -67,6 +67,18 @@ describe('StarPromptSessionCounter', () => {
     expect(counter.note(PTY, signal({ agentSessionId: undefined, ts: 6 }))).toBe(true);
   });
 
+  it('keeps sessions counted before anyone subscribed until they are drained', () => {
+    const counter = new StarPromptSessionCounter(human);
+    counter.note(PTY, signal());
+    counter.note(PTY, signal({ agentSessionId: 'sess-b' }));
+    counter.note(PTY, signal({ agentSessionId: 'sess-b' }));
+    counter.note(PTY, signal({}, 'resume'));
+    expect(counter.drain()).toBe(2);
+    expect(counter.drain()).toBe(0);
+    counter.note(PTY, signal({ agentSessionId: 'sess-c' }));
+    expect(counter.drain()).toBe(1);
+  });
+
   it('does not tell sinks about a resume', () => {
     const counter = new StarPromptSessionCounter(human);
     const sink = vi.fn();

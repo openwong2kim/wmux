@@ -6,7 +6,7 @@ import StarPromptRow, { STAR_THANKS_MS } from '../StarPromptRow';
 import AgentNotReadyRow from '../AgentNotReadyRow';
 import { useStore } from '../../../stores';
 import { refreshAgentStatus, resetAgentSetupForTests } from '../../../utils/agentSetupRuns';
-import { resetStarPromptForTests } from '../../../utils/starPrompt';
+import { resetStarPromptForTests, useStarPromptSessionBridge } from '../../../utils/starPrompt';
 import type { AgentSetupStatus } from '../../../../shared/agentSetup';
 import {
   STAR_PROMPT_COOLDOWN_MS,
@@ -165,5 +165,26 @@ describe('StarPromptRow', () => {
     });
     expect(row()).not.toBeNull();
     expect(useStore.getState().starPrompt.completed).toBe(false);
+  });
+});
+
+describe('useStarPromptSessionBridge', () => {
+  it('takes sessions counted before it subscribed on mount, then drains on every poke', async () => {
+    let poke: () => void = () => undefined;
+    const drainSessions = vi.fn().mockResolvedValueOnce(3).mockResolvedValueOnce(2);
+    (window as unknown as { electronAPI: unknown }).electronAPI = {
+      starPrompt: {
+        drainSessions,
+        onAgentSession: vi.fn((cb: () => void) => { poke = cb; return () => undefined; }),
+      },
+    };
+    useStore.setState({ starPrompt: { ...eligible(), agentSessionsSinceBaseline: 0 } });
+    function Bridge() { useStarPromptSessionBridge(); return null; }
+    await act(async () => { root.render(createElement(Bridge)); });
+    expect(drainSessions).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().starPrompt.agentSessionsSinceBaseline).toBe(3);
+    await act(async () => { poke(); });
+    expect(drainSessions).toHaveBeenCalledTimes(2);
+    expect(useStore.getState().starPrompt.agentSessionsSinceBaseline).toBe(5);
   });
 });

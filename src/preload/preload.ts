@@ -1253,6 +1253,7 @@ const electronAPI = {
   starPrompt: {
     checkStarred: () => ipcRenderer.invoke(IPC.STAR_PROMPT_CHECK_STARRED) as Promise<import('../shared/starPrompt').StarredCheck>,
     star: () => ipcRenderer.invoke(IPC.STAR_PROMPT_STAR) as Promise<import('../shared/starPrompt').StarActionResult>,
+    drainSessions: () => ipcRenderer.invoke(IPC.STAR_PROMPT_DRAIN_SESSIONS) as Promise<number>,
     onAgentSession: (callback: () => void) => {
       const listener = () => callback();
       ipcRenderer.on(IPC.STAR_PROMPT_AGENT_SESSION, listener);

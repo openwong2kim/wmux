@@ -43,12 +43,27 @@ export async function runStarAction(): Promise<StarActionResult> {
   return result;
 }
 
-/** Mounted once in AppLayout: each new agent session main counted moves the prompt's count. */
+/** Takes the sessions main counted since the last drain into the prompt's count. */
+export async function drainStarPromptSessions(): Promise<void> {
+  const drain = starApi()?.drainSessions;
+  if (!drain) return;
+  const n = await drain().catch(() => 0);
+  const { recordStarPromptAgentSession } = useStore.getState();
+  for (let i = 0; i < n; i++) recordStarPromptAgentSession();
+}
+
+/**
+ * Mounted once in AppLayout. Main's push is only a poke; the count is pulled,
+ * once on mount (sessions counted before this subscribed, e.g. at startup or
+ * across a reload) and again on every poke.
+ */
 export function useStarPromptSessionBridge(): void {
   useEffect(() => {
     const subscribe = starApi()?.onAgentSession;
     if (!subscribe) return;
-    return subscribe(() => useStore.getState().recordStarPromptAgentSession());
+    const off = subscribe(() => { void drainStarPromptSessions(); });
+    void drainStarPromptSessions();
+    return off;
   }, []);
 }
 

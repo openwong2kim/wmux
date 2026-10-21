@@ -48,6 +48,11 @@ export function isCountableAgentStart(
 export class StarPromptSessionCounter {
   private seen = new Set<string>();
   private sinks = new Set<() => void>();
+  // Counted sessions the renderer has not taken yet. The push to the window is
+  // only a poke: a session counted before the renderer subscribed (startup, a
+  // reload) would otherwise be lost, and `seen` keeps a re-delivery from
+  // recovering it. The renderer drains this on mount and on every poke.
+  private pending = 0;
 
   constructor(private deps: StarPromptSessionDeps = defaultDeps) {}
 
@@ -71,10 +76,18 @@ export class StarPromptSessionCounter {
       const oldest = this.seen.values().next().value;
       if (oldest !== undefined) this.seen.delete(oldest);
     }
+    this.pending += 1;
     for (const sink of this.sinks) {
       try { sink(); } catch { /* a broken sink must not break the hook path */ }
     }
     return true;
+  }
+
+  /** Counted sessions since the last drain; resets to zero. */
+  drain(): number {
+    const n = this.pending;
+    this.pending = 0;
+    return n;
   }
 }
 

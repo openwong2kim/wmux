@@ -31,9 +31,18 @@ export function registerStarPromptHandlers(
     wrapHandler(IPC.STAR_PROMPT_STAR, (): Promise<StarActionResult> => starRepo()),
   );
 
+  // The push above only pokes; the count itself is pulled here, so a session
+  // counted before the renderer subscribed is still taken on mount.
+  ipcMain.removeHandler(IPC.STAR_PROMPT_DRAIN_SESSIONS);
+  ipcMain.handle(
+    IPC.STAR_PROMPT_DRAIN_SESSIONS,
+    wrapHandler(IPC.STAR_PROMPT_DRAIN_SESSIONS, (): number => sessions.drain()),
+  );
+
   return () => {
     off();
     ipcMain.removeHandler(IPC.STAR_PROMPT_CHECK_STARRED);
     ipcMain.removeHandler(IPC.STAR_PROMPT_STAR);
+    ipcMain.removeHandler(IPC.STAR_PROMPT_DRAIN_SESSIONS);
   };
 }
