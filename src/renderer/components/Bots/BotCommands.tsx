@@ -88,7 +88,7 @@ export function useBotCommands(botId: string, p: BotCommandPort = getBotCommandP
   return state;
 }
 
-const KNOWN_LAYERS = new Set(['attended', 'parse', 'floor', 'allowlist', 'rule', 'unlisted', 'reviewer', 'path', 'input', 'off']);
+const KNOWN_LAYERS = new Set(['attended', 'parse', 'floor', 'allowlist', 'rule', 'unlisted', 'script', 'reviewer', 'path', 'input', 'off']);
 
 /** Where a decision was made, in the owner's words (an unknown layer as it
  *  is). Pure but for `t`. */

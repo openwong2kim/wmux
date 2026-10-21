@@ -152,7 +152,7 @@ describe('the decision log', () => {
     expect(fs.readdirSync(botCommandLogDir(dir)).filter((n) => n.endsWith('.json'))).toEqual([]);
   });
 
-  it('gets every decision logBotExecDecision makes, through the sink', () => {
+  it('gets every decision logBotExecDecision makes, through the sink', async () => {
     const log = newLog();
     setBotExecDecisionSink((botId, rec) => {
       log.record(botId, rec);
@@ -163,5 +163,6 @@ describe('the decision log', () => {
       expect.objectContaining({ tool: 'Edit', decision: 'allow', layer: 'path', target: '/bot/a.md' }),
       expect.objectContaining({ tool: 'Bash', decision: 'deny', layer: 'unlisted', target: 'make', reason: 'make is not on the built-in list' }),
     ]);
+    await log.settled();
   });
 });

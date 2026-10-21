@@ -2518,6 +2518,7 @@ export const en = {
   'bots.commands.layer.allowlist': "built-in list",
   'bots.commands.layer.rule': "your rule",
   'bots.commands.layer.unlisted': "not on the list",
+  'bots.commands.layer.script': "runs code from a file",
   'bots.commands.layer.reviewer': "review",
   'bots.commands.layer.path': "its folder",
   'bots.commands.layer.input': "malformed call",

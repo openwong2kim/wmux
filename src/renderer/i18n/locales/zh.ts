@@ -2543,6 +2543,7 @@ export const zh = {
   'bots.commands.layer.allowlist': "内置列表",
   'bots.commands.layer.rule': "你的规则",
   'bots.commands.layer.unlisted': "不在列表中",
+  'bots.commands.layer.script': "运行文件中的代码",
   'bots.commands.layer.reviewer': "审查",
   'bots.commands.layer.path': "它的文件夹",
   'bots.commands.layer.input': "调用格式错误",

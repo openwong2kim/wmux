@@ -2495,6 +2495,7 @@ export const pl = {
   'bots.commands.layer.allowlist': "wbudowana lista",
   'bots.commands.layer.rule': "twoja reguła",
   'bots.commands.layer.unlisted': "spoza listy",
+  'bots.commands.layer.script': "uruchamia kod z pliku",
   'bots.commands.layer.reviewer': "przegląd",
   'bots.commands.layer.path': "jego folder",
   'bots.commands.layer.input': "błędne wywołanie",

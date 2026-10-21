@@ -2017,6 +2017,7 @@ export const ko = {
   'bots.commands.layer.allowlist': "기본 목록",
   'bots.commands.layer.rule': "내 규칙",
   'bots.commands.layer.unlisted': "목록에 없음",
+  'bots.commands.layer.script': "파일의 코드를 실행",
   'bots.commands.layer.reviewer': "검토",
   'bots.commands.layer.path': "자기 폴더",
   'bots.commands.layer.input': "잘못된 호출",
