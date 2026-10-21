@@ -87,6 +87,11 @@ export function sanitizeBashInput(input: Record<string, unknown>): Record<string
 const UNATTENDED = 'commands and file edits run only in a turn the owner started (their message or the run button)';
 const SWITCHED_OFF = 'the owner switched this bot\'s commands off';
 
+/** The refusal of a call made while the owner's switch is off. */
+export function botExecSwitchedOff(command?: string): BotExecDecision {
+  return { ok: false, layer: 'off', reason: SWITCHED_OFF, ...(command !== undefined ? { command } : {}) };
+}
+
 /** Main's decision on one Bash, Write, Edit or Read call of a bot. */
 export function evaluateBotExecTool(toolName: string, input: Record<string, unknown>, ctx: BotExecContext): BotExecDecision {
   let enabled = true;
@@ -95,7 +100,7 @@ export function evaluateBotExecTool(toolName: string, input: Record<string, unkn
   } catch {
     enabled = false;
   }
-  if (!enabled) return { ok: false, layer: 'off', reason: SWITCHED_OFF, command: toolName === 'Bash' && typeof input.command === 'string' ? input.command.slice(0, 200) : undefined };
+  if (!enabled) return botExecSwitchedOff(toolName === 'Bash' && typeof input.command === 'string' ? input.command.slice(0, 200) : undefined);
   if (toolName === 'Read') {
     const r = checkBotFolderPath(input.file_path, ctx.botDir, ctx.fs);
     return r.ok ? { ok: true, layer: 'path', input: { ...input, file_path: r.real } } : { ok: false, layer: 'path', reason: `${String(input.file_path)}: ${r.reason}` };

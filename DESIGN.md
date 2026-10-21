@@ -564,9 +564,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   word only), the time, the tool, where it was decided (a reviewer
   verdict with its risk and rationale) and main's reason. A command that
   needs an owner rule (not on the list, a script, or refused by the
-  reviewer; never a built-in or the floor) carries a muted Always allow
-  that adds a rule for exactly that command; main's refusal shows as one
-  red line. The reviewer itself is one factory-wide switch in Settings ›
+  reviewer; never a built-in or the floor, never a line holding two such
+  commands) carries a muted Always allow that adds a rule for exactly that
+  command; a runner's (make, npm, …) first shows one caution-yellow line,
+  "This runs files in the bot's folder that the bot can change.", with
+  Allow anyway and Cancel. A rule that runs a file pins that version of it
+  (a muted note on the rule). Main's refusal shows as one red line. The reviewer itself is one factory-wide switch in Settings ›
   Bots, "Review unlisted bot commands" (on by default).
   Last, Your rules, one mono line each with a muted Remove that acts at
   once; empty lists are one muted line. No fills, no chips.

@@ -7,7 +7,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { commandFloor, parseCommandLine } from '../botCommandFloor';
-import { decideBotCommand, type BotCommandRule } from '../botCommandAllow';
+import { createHash } from 'crypto';
+import { decideBotCommand, ruleMatches, type BotCommandRule } from '../botCommandAllow';
 import { checkBotFolderPath } from '../botFolderPath';
 import { BOT_EXEC_TIMEOUT_MS, evaluateBotExecTool, sanitizeBashInput, type BotExecContext } from '../botExec';
 import { BotCommandRulesStore, botCommandRulesPath, BOT_COMMAND_RULES_VERSION } from '../botCommandRules';
@@ -423,6 +424,28 @@ describe('the attended rule and the decision on each tool', () => {
   });
 });
 
+describe('an owner rule that pins a file', () => {
+  const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+
+  it('matches while the file is unchanged, and refuses with a clear reason once it changes or goes', () => {
+    fs.writeFileSync(path.join(botDir, 'tool.py'), 'print(1)\n');
+    fs.writeFileSync(path.join(botDir, 'run.sh'), 'echo hi\n');
+    const rules: BotCommandRule[] = [{ argv: ['python3', 'tool.py'], sha256: sha('print(1)\n') }, { argv: ['./run.sh'], sha256: sha('echo hi\n') }];
+    expect(decide('python3 tool.py', rules)).toMatchObject({ ok: true, matched: 'rule' });
+    expect(decide('./run.sh', rules)).toMatchObject({ ok: true, matched: 'rule' });
+    fs.writeFileSync(path.join(botDir, 'tool.py'), 'import os\n');
+    expect(decide('python3 tool.py', rules)).toMatchObject({ ok: false, layer: 'script', reason: expect.stringContaining('tool.py changed since the owner allowed it') });
+    fs.rmSync(path.join(botDir, 'run.sh'));
+    expect(decide('./run.sh', rules)).toMatchObject({ ok: false, layer: 'script', reason: expect.stringContaining('./run.sh changed since the owner allowed it') });
+    // A symlink in its place never matches.
+    fs.symlinkSync(path.join(outside, 'target.txt'), path.join(botDir, 'run.sh'));
+    expect(decide('./run.sh', [{ argv: ['./run.sh'], sha256: sha('x\n') }])).toMatchObject({ ok: false, layer: 'script' });
+    // Without the bot's folder a pinned rule matches nothing.
+    expect(ruleMatches({ argv: ['python3', 'tool.py'], sha256: sha('import os\n') }, ['python3', 'tool.py'])).toBe(false);
+    expect(ruleMatches({ argv: ['python3', 'tool.py'], sha256: sha('import os\n') }, ['python3', 'tool.py'], { botDir })).toBe(true);
+  });
+});
+
 describe('the owner\'s command rules file', () => {
   it('is empty when missing, versioned when written, and refuses malformed rules', async () => {
     const file = botCommandRulesPath(botDir);
@@ -468,12 +491,31 @@ describe('the owner\'s command rules file', () => {
   it('an interpreter rule naming its script is kept; an unsafe one in the file is dropped on load', async () => {
     const file = botCommandRulesPath(botDir);
     const store = new BotCommandRulesStore(file);
-    await store.setRules('bot-1', [{ argv: ['python3', 'tool.py'] }]);
-    expect(store.rulesFor('bot-1')).toEqual([{ argv: ['python3', 'tool.py'] }]);
+    const sha256 = 'a'.repeat(64);
+    await store.setRules('bot-1', [{ argv: ['python3', 'tool.py'], sha256 }]);
+    expect(store.rulesFor('bot-1')).toEqual([{ argv: ['python3', 'tool.py'], sha256 }]);
+    // A rule that runs a file must pin it; a rule that runs none pins nothing.
+    await expect(store.setRules('bot-1', [{ argv: ['python3', 'tool.py'] }])).rejects.toThrow("a rule that runs tool.py must pin the file's hash");
+    await expect(store.setRules('bot-1', [{ argv: ['./run.sh'] }])).rejects.toThrow("a rule that runs ./run.sh must pin the file's hash");
+    await expect(store.setRules('bot-1', [{ argv: ['make'], sha256 }])).rejects.toThrow('pins a hash but runs no file');
+    await expect(store.setRules('bot-1', [{ argv: ['./run.sh'], sha256: 'nothex' }])).rejects.toThrow('malformed file hash');
     fs.writeFileSync(file, JSON.stringify({ version: BOT_COMMAND_RULES_VERSION, bots: { 'bot-1': [{ argv: ['python3'], anyArgs: true }, { argv: ['make'] }] } }));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(new BotCommandRulesStore(file).rulesFor('bot-1')).toEqual([{ argv: ['make'] }]);
     vi.restoreAllMocks();
+  });
+
+  it('a removed bot\'s rules and switch are forgotten', async () => {
+    const file = botCommandRulesPath(botDir);
+    const store = new BotCommandRulesStore(file);
+    await store.setRules('bot-1', [{ argv: ['make'] }]);
+    await store.setCommandsEnabled('bot-1', false);
+    await store.setRules('bot-2', [{ argv: ['make'] }]);
+    await store.forgetBot('bot-1');
+    const again = new BotCommandRulesStore(file);
+    expect(again.rulesFor('bot-1')).toEqual([]);
+    expect(again.commandsEnabled('bot-1')).toBe(true);
+    expect(again.rulesFor('bot-2')).toEqual([{ argv: ['make'] }]);
   });
 
   it('a file of another version gives no rules and is never overwritten', async () => {

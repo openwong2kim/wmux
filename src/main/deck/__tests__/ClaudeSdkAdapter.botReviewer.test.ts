@@ -79,7 +79,7 @@ const isReviewerCall = (o: Record<string, unknown>): boolean => o.persistSession
 
 /** A bot with commands whose reviewer answers `answer`. Turns and reviewer
  *  calls are recorded; the adapter stays alive until the test ends it. */
-function rig(opts: { reviewer?: boolean | (() => boolean); auth?: () => BotClaudeAuth; answer?: string } = {}) {
+function rig(opts: { reviewer?: boolean | (() => boolean); auth?: () => BotClaudeAuth; answer?: string; onReview?: () => void } = {}) {
   const turns: Call[] = [];
   const reviews: Call[] = [];
   const answer = opts.answer ?? JSON.stringify({ decision: 'allow', risk: 'low', rationale: 'lists the folder' });
@@ -98,6 +98,7 @@ function rig(opts: { reviewer?: boolean | (() => boolean); auth?: () => BotClaud
     queryFn: ({ prompt, options = {} }) => {
       if (isReviewerCall(options)) {
         reviews.push({ prompt, options });
+        opts.onReview?.();
         return { async *[Symbol.asyncIterator]() { yield { type: 'result', subtype: 'success', is_error: false, result: answer, session_id: 'r' }; } };
       }
       turns.push({ prompt, options });
@@ -121,6 +122,17 @@ const canUse = (o: Record<string, unknown>) => o.canUseTool as (n: string, i: Re
 const logLines = (): string[] => (console.warn as unknown as { mock: { calls: unknown[][] } }).mock.calls.map((c) => String(c[0]));
 
 describe('the command reviewer at the unlisted seam', () => {
+  it('a bot the owner switches off while the reviewer decides does not run the command', async () => {
+    const { getBotCommandRulesStore } = await import('../../factory/botCommandRules');
+    const r = rig({ reviewer: true, onReview: () => void getBotCommandRulesStore().setCommandsEnabled(BINDING.botId, false) });
+    const o = await r.turn();
+    const out = await preHook(o)({ tool_name: 'Bash', tool_input: { command: 'tree -L 2' } });
+    expect(r.reviews).toHaveLength(1);
+    expect(out).toMatchObject({ hookSpecificOutput: { permissionDecision: 'deny', permissionDecisionReason: expect.stringContaining('switched this bot\'s commands off') } });
+    expect(logLines().some((l) => l.includes('[factory] bot command') && l.includes('"layer":"off"'))).toBe(true);
+    r.adapter.dispose();
+  });
+
   it('an allowed unlisted line runs as main rebuilt it, and the decision is logged with its layer', async () => {
     const r = rig({ reviewer: true });
     const o = await r.turn();

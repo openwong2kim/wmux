@@ -20,13 +20,14 @@
 import { ipcMain, type BrowserWindow } from 'electron';
 import { BOT_EVENT, BOT_ID_RE, type BotEventPayload, type BotProfile } from '../../shared/bot';
 import { BOT_COMMAND_IPC, RULE_ALLOWABLE_LAYERS, type BotCommandLogEntry, type BotCommandReadResult, type BotCommandSimpleResult } from '../../shared/botCommand';
-import { maskInlineCredentials } from '../../shared/redactSecrets';
+import { redactSecrets } from '../../shared/redactSecrets';
 import { resolveClaudeExecutable } from '../claude/resolveClaudeExecutable';
 import { isMainWindowSender } from '../ipc/mainWindowSender';
 import { wrapHandler } from '../ipc/wrapHandler';
-import { onBotRemoved } from './BotRuntime';
-import { unlistedHeads, type BotCommandRule } from './botCommandAllow';
-import { parseCommandLine } from './botCommandFloor';
+import { botCwd, onBotRemoved } from './BotRuntime';
+import { botFolderFileSha256, ruleFileOperand, ruleWordsMatch, unlistedHeads, type BotCommandRule } from './botCommandAllow';
+import { commandName, parseCommandLine } from './botCommandFloor';
+import { FILE_RUNNERS } from './botCommandReviewer';
 import { BOT_COMMAND_LOG_TEXT_MAX, BotCommandLog } from './botCommandLog';
 import { botCommandRuleRefusal, botCommandRuleText, getBotCommandRulesStore, type BotCommandRulesStore } from './botCommandRules';
 import { setBotExecDecisionSink } from './botExec';
@@ -44,6 +45,8 @@ export interface BotCommandIpcDeps {
   bot?: (botId: string) => BotProfile | null;
   /** Whether a Claude SDK bot's commands run on this machine. */
   support?: () => Promise<BotExecSupport>;
+  /** A bot's own folder (its session cwd). */
+  botDir: (botId: string) => string;
   changed: (botId: string) => void;
 }
 
@@ -54,7 +57,7 @@ function obj(raw: unknown): Record<string, unknown> {
 }
 
 function mask(text: string): string {
-  return redactStoredSecrets(maskInlineCredentials(text));
+  return redactSecrets(redactStoredSecrets(text));
 }
 
 function errorText(err: unknown, fallback: string): string {
@@ -62,19 +65,32 @@ function errorText(err: unknown, fallback: string): string {
   return m ? mask(m) : fallback;
 }
 
+/** What "Always allow" on one logged decision would save. */
+export type RuleForEntry =
+  | {
+      ok: true;
+      rule: BotCommandRule;
+      /** A build, task, test or package runner: it runs files in the bot's
+       *  folder that no hash covers, so the owner confirms it. */
+      runner: boolean;
+    }
+  | { ok: false; error: string };
+
 /**
- * The rules "Always allow" would add for a logged decision: one for exactly
- * each pipeline head the list refused, or why there are none. None for a
- * decision a rule cannot change, a command kept masked or cut, or a head
- * the store refuses (a built-in command keeps its checks; an interpreter
- * names its script). Pure but for the masking.
+ * The one rule "Always allow" would add for a logged decision: exactly the
+ * pipeline head the list refused, or why there is none. None for a decision
+ * a rule cannot change, a command kept masked or cut, a line with more than
+ * one command needing a rule (each needs its own approval), or a head the
+ * store refuses (a built-in command keeps its checks; an interpreter names
+ * its script). A rule that runs a file from the bot's folder pins its
+ * sha256, taken now; `hash: false` only checks that it could be.
  */
-export function rulesForEntry(entry: BotCommandLogEntry, current: readonly BotCommandRule[]): { ok: true; rules: BotCommandRule[] } | { ok: false; error: string } {
+export function ruleForEntry(entry: BotCommandLogEntry, current: readonly BotCommandRule[], botDir: string, opts: { hash?: boolean } = {}): RuleForEntry {
   if (entry.tool !== 'Bash' || entry.decision !== 'deny' || !RULE_ALLOWABLE_LAYERS.includes(entry.layer) || !entry.target) {
     return { ok: false, error: 'Only a command refused as not on the list can be always allowed.' };
   }
-  // A command that held a stored secret or an inline credential was kept
-  // masked: no rule can name it, and none is made from the marker.
+  // A command that held a secret was kept masked: no rule can name it, and
+  // none is made from the marker.
   if (/\[secret:|\[redacted\]|%5Bredacted%5D/i.test(entry.target) || mask(entry.target) !== entry.target) {
     return { ok: false, error: 'This command held a secret and was kept masked, so it cannot become a rule.' };
   }
@@ -82,19 +98,30 @@ export function rulesForEntry(entry: BotCommandLogEntry, current: readonly BotCo
   if (entry.target.length >= BOT_COMMAND_LOG_TEXT_MAX) return { ok: false, error: 'This command is too long to become a rule.' };
   const parsed = parseCommandLine(entry.target);
   if (!parsed.ok) return { ok: false, error: `This command cannot become a rule: ${parsed.reason}` };
-  const heads = unlistedHeads(parsed.pipelines, current);
+  const folder = { botDir };
+  const heads = unlistedHeads(parsed.pipelines, current, folder);
   if (heads.length === 0) return { ok: false, error: 'Nothing in this command is left for a rule to allow: it is on the list now, or the part refused reads a pipe.' };
-  const added = heads.map((argv) => ({ argv }));
-  for (const r of added) {
-    const refusal = botCommandRuleRefusal(r);
-    if (refusal) return { ok: false, error: refusal };
+  if (heads.length > 1) return { ok: false, error: 'This line runs more than one command that needs a rule; each one is allowed on its own, when the bot runs it alone.' };
+  const argv = heads[0];
+  const file = ruleFileOperand(argv);
+  let rule: BotCommandRule = { argv };
+  if (file !== null) {
+    const pinned = botFolderFileSha256(file, botDir, undefined, { hash: opts.hash !== false });
+    if (!pinned.ok) return { ok: false, error: `${file} cannot be allowed by a rule: ${pinned.reason}` };
+    // Checked as a pinned rule; the hash itself is taken only when saving.
+    rule = { argv, sha256: pinned.sha256 || '0'.repeat(64) };
   }
-  return { ok: true, rules: added };
+  const refusal = botCommandRuleRefusal(rule);
+  if (refusal) return { ok: false, error: refusal };
+  return { ok: true, rule, runner: FILE_RUNNERS.has(commandName(argv[0])) };
 }
 
 const DENIED = { ok: false as const, error: 'only the wmux window may do this' };
 const NOT_RUNNING = { ok: false as const, error: 'bot commands are not running yet' };
 const NO_BOT = { ok: false as const, error: 'botId must be a bot id' };
+const NO_SUCH_BOT = { ok: false as const, error: 'no such bot' };
+/** Why a runner's rule needs the owner's confirm. */
+export const RUNNER_WARNING = 'This runs files in the bot\'s folder that the bot can change; confirm to allow it.';
 
 /** The four handlers' bodies (registerBotCommandIpc wraps them). */
 export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, deps: BotCommandIpcDeps) {
@@ -112,6 +139,13 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
     const id = obj(req).botId;
     return typeof id === 'string' && BOT_ID_RE.test(id) ? id : null;
   };
+  const known = (botId: string): boolean => {
+    try {
+      return bot(botId) !== null;
+    } catch {
+      return false;
+    }
+  };
 
   return {
     read: async (e: Sender, req: unknown): Promise<BotCommandReadResult> => {
@@ -122,7 +156,7 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
       if (!botId) return NO_BOT;
       try {
         const profile = bot(botId);
-        if (!profile) return { ok: false, error: 'no such bot' };
+        if (!profile) return NO_SUCH_BOT;
         let available = false;
         if (profile.engine.kind === 'claude-sdk') {
           try {
@@ -133,13 +167,19 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
         }
         const store = rules();
         const current = store.rulesFor(botId);
+        const dir = deps.botDir(botId);
+        // Always allow is offered only where main would save its rule (a
+        // runner's with its warning); no file is read here.
+        const offer = (entry: BotCommandLogEntry): BotCommandLogEntry => {
+          const plan = ruleForEntry(entry, current, dir, { hash: false });
+          return plan.ok ? { ...entry, canAllow: true, ...(plan.runner ? { runner: true } : {}) } : entry;
+        };
         return {
           ok: true,
           available,
           enabled: store.commandsEnabled(botId),
-          // Always allow is offered only where main would save its rule.
-          entries: log.entries(botId).map((entry) => (rulesForEntry(entry, current).ok ? { ...entry, canAllow: true } : entry)),
-          rules: store.rulesFor(botId).map((r) => ({ text: mask(botCommandRuleText(r)), anyArgs: r.anyArgs === true })),
+          entries: log.entries(botId).map(offer),
+          rules: current.map((r) => ({ text: mask(botCommandRuleText(r)), anyArgs: r.anyArgs === true, ...(r.sha256 ? { pinned: true } : {}) })),
         };
       } catch {
         return { ok: false, error: 'The bot\'s commands could not be read.' };
@@ -152,6 +192,7 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
       if (!botId) return NO_BOT;
       const enabled = obj(req).enabled;
       if (typeof enabled !== 'boolean') return { ok: false, error: 'enabled must be true or false' };
+      if (!known(botId)) return NO_SUCH_BOT;
       try {
         await rules().setCommandsEnabled(botId, enabled);
         changed(botId);
@@ -169,15 +210,18 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
       if (!botId) return NO_BOT;
       const entryId = obj(req).entryId;
       if (typeof entryId !== 'string') return { ok: false, error: 'entryId is required' };
+      if (!known(botId)) return NO_SUCH_BOT;
       try {
         const entry = log.entry(botId, entryId);
         if (!entry) return { ok: false, error: 'That decision is no longer in the log.' };
         const store = rules();
         const current = store.rulesFor(botId);
-        const plan = rulesForEntry(entry, current);
+        const plan = ruleForEntry(entry, current, deps.botDir(botId));
         if (!plan.ok) return { ok: false, error: plan.error };
-        const added = plan.rules;
-        await store.setRules(botId, [...current, ...added]);
+        if (plan.runner && obj(req).confirm !== true) return { ok: false, error: RUNNER_WARNING };
+        // A rule for the same words (its file changed since) is replaced.
+        const kept = current.filter((r) => !(r.anyArgs !== true && ruleWordsMatch(r, plan.rule.argv) && r.argv.length === plan.rule.argv.length));
+        await store.setRules(botId, [...kept, plan.rule]);
         changed(botId);
         return { ok: true };
       } catch (err) {
@@ -191,6 +235,7 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
       if (!botId) return NO_BOT;
       const { index, text } = obj(req);
       if (typeof index !== 'number' || !Number.isInteger(index) || typeof text !== 'string') return { ok: false, error: 'index and text are required' };
+      if (!known(botId)) return NO_SUCH_BOT;
       try {
         const store = rules();
         const current = store.rulesFor(botId);
@@ -250,9 +295,10 @@ registerFactoryRpcModule('bot-commands', (_router, deps: FactoryHostDeps) => {
       setBotExecDecisionSink((botId, rec) => {
         if (current.record(botId, rec)) soon(botId);
       });
-      offIpc = registerBotCommandIpc(deps.getMainWindow, { log: () => log, changed });
+      offIpc = registerBotCommandIpc(deps.getMainWindow, { log: () => log, changed, botDir: (botId) => botCwd(deps.wmuxDir(), botId) });
       offRemoved = onBotRemoved((botId) => {
         current.remove(botId).catch((err) => console.warn(`[factory] bot command log of removed bot ${botId} not deleted: ${String(err)}`));
+        getBotCommandRulesStore().forgetBot(botId).catch((err) => console.warn(`[factory] bot command rules of removed bot ${botId} not deleted: ${String(err)}`));
       });
       // The logs of bots deleted while wmux was not running go now.
       const bots = getBotDirectory();

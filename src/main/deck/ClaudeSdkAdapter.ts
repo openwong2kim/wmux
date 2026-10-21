@@ -35,7 +35,7 @@ import { writeBotTokenHandoff, type BotTokenHandoff } from '../factory/botTokenH
 import { BOT_REPO_READ_TOOLS, botRepoReadDenyRules, evaluateBotRepoRead, grepOutputNamesProtected } from '../factory/botRepoRead';
 import { redactStoredSecretsDeep } from '../factory/secretRedaction';
 import { guestGateProvenance, runningWakeAttended } from '../factory/wakeTaint';
-import { BOT_EXEC_TOOLS, evaluateBotExecTool, logBotExecDecision, reviewUnlistedCommand, type BotExecDecision } from '../factory/botExec';
+import { BOT_EXEC_TOOLS, botExecSwitchedOff, evaluateBotExecTool, logBotExecDecision, reviewUnlistedCommand, type BotExecDecision } from '../factory/botExec';
 import { BOT_COMMAND_REVIEWER_LIMITS, BotCommandReviewer, sdkReviewerAsk } from '../factory/botCommandReviewer';
 import { UNSETTABLE_ENV_NAME, botSandboxSettings, type BotExecSupport } from '../factory/botExecSandbox';
 import { botCommandRulesFor, botCommandsEnabled } from '../factory/botCommandRules';
@@ -1190,6 +1190,13 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       rules: () => botCommandRulesFor(botId),
       enabled: () => botCommandsEnabled(botId),
     };
+    const execEnabled = (): boolean => {
+      try {
+        return execCtx.enabled();
+      } catch {
+        return false;
+      }
+    };
     // This turn's command reviewer, on the turn's own sign-in: the env (as
     // the sandbox left it) and claude of these options, read when it is
     // asked, after send() and applySandbox have finished them. It runs in
@@ -1225,6 +1232,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         try {
           d = evaluateBotExecTool(toolName, input, execCtx);
           if (toolName === 'Bash') d = await reviewUnlistedCommand(d, input, reviewGate);
+          // The owner may switch the bot off while the reviewer decides.
+          if (d.ok && !execEnabled()) d = botExecSwitchedOff(d.command);
         } catch {
           d = { ok: false, layer: 'input', reason: 'the command check failed' };
         }

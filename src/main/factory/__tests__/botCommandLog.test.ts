@@ -87,6 +87,22 @@ describe('the decision log', () => {
     expect(newLog().entries(A)[0].review).toEqual({ code: 'reviewer_deny', risk: 'medium', rationale: 'mentions [secret:GH]', latencyMs: 40 });
   });
 
+  it('masks anything shaped like a credential, not only stored secrets', async () => {
+    const log = newLog();
+    const bearer = 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJib3QifQ.c2lnbmF0dXJlX3Rlc3Q';
+    const key = 'sk-ant-api03-AbCdEf0123456789GhIjKl0123456789MnOpQr';
+    log.record(A, deny(`curl -H 'Authorization: ${bearer}' x`, 'floor'));
+    log.record(A, deny(`tool --api-key ${key}`, 'unlisted', `refused ${key}`));
+    await log.settled();
+    const disk = fs.readFileSync(botCommandLogFile(dir, A) as string, 'utf8');
+    const shown = JSON.stringify(log.entries(A));
+    for (const text of [disk, shown, JSON.stringify(newLog().entries(A))]) {
+      expect(text).not.toContain('eyJhbGciOiJIUzI1NiJ9');
+      expect(text).not.toContain(key);
+      expect(text).toContain('[redacted]');
+    }
+  });
+
   it('reads a file of another version as empty and never writes over it', async () => {
     const file = botCommandLogFile(dir, A) as string;
     fs.mkdirSync(path.dirname(file), { recursive: true });

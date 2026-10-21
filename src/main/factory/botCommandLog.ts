@@ -9,7 +9,8 @@
 // into few writes). A reviewer decision keeps the reviewer's code, risk,
 // rationale and latency. A command, path, reason or rationale is masked
 // before it is kept
-// (stored secrets and inline credentials), and again when it is read, so a
+// (stored secrets and anything shaped like a credential: shared/
+// redactSecrets.ts), and again when it is read, so a
 // value stored since never reaches the profile either.
 //
 // A missing file is an empty log; an unreadable one, or one of another
@@ -21,7 +22,7 @@ import path from 'node:path';
 import { BOT_ID_RE } from '../../shared/bot';
 import { BOT_COMMAND_LOG_LIMIT, type BotCommandLogEntry, type BotCommandReview, type BotCommandTool } from '../../shared/botCommand';
 import { assertNotLiveWmuxPath } from '../../shared/constants';
-import { maskInlineCredentials } from '../../shared/redactSecrets';
+import { redactSecrets } from '../../shared/redactSecrets';
 import type { BotExecDecisionRecord } from './botExec';
 import { redactStoredSecrets } from './secretRedaction';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
@@ -44,7 +45,7 @@ export function botCommandLogFile(wmuxDir: string, botId: string): string | null
 }
 
 function mask(text: string): string {
-  return redactStoredSecrets(maskInlineCredentials(text));
+  return redactSecrets(redactStoredSecrets(text));
 }
 
 function short(text: unknown): string | undefined {

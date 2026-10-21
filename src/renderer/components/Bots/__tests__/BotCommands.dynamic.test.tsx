@@ -94,6 +94,19 @@ describe('BotCommands', () => {
     expect($('[data-testid="bot-command-allow-r1"]')).not.toBeNull();
   });
 
+  it('a runner\'s Always allow warns first and needs a second click to confirm', async () => {
+    const port = fakePort({ entries: [entry('m1', { decision: 'deny', layer: 'script', target: 'make build', canAllow: true, runner: true })] });
+    await act(async () => root.render(<BotCommands row={row} t={t} port={port} />));
+    await act(async () => ($('[data-testid="bot-command-allow-m1"]') as HTMLButtonElement).click());
+    expect(port.allow).not.toHaveBeenCalled();
+    expect($('[data-bot-command-confirm="m1"]')?.textContent).toContain('bots.commands.runnerWarning');
+    await act(async () => ($('[data-testid="bot-command-allow-cancel-m1"]') as HTMLButtonElement).click());
+    expect($('[data-bot-command-confirm="m1"]')).toBeNull();
+    await act(async () => ($('[data-testid="bot-command-allow-m1"]') as HTMLButtonElement).click());
+    await act(async () => ($('[data-testid="bot-command-allow-confirm-m1"]') as HTMLButtonElement).click());
+    expect(port.allow).toHaveBeenCalledWith({ botId: BOT, entryId: 'm1', confirm: true });
+  });
+
   it('shows main\'s refusal of Always allow', async () => {
     const port = fakePort({ entries: [entry('d1', { decision: 'deny', layer: 'unlisted', target: 'make', canAllow: true })] });
     port.allow.mockResolvedValueOnce({ ok: false, error: 'a command rule has more than 16 words' });
