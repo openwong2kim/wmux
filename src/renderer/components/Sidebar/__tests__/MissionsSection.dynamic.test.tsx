@@ -26,7 +26,6 @@ beforeEach(() => {
     workspaces: [],
     activeWorkspaceId: undefined,
     channelDockVisible: false,
-    moa: null,
   });
 });
 afterEach(() => {
@@ -188,7 +187,6 @@ describe('MissionsSection summary', () => {
       workspaces: [workspace('parent'), workspace('other')],
       activeWorkspaceId: 'other',
       channelDockVisible: false,
-      moa: null,
       missionsByWorkspace: {
         parent: [mission({ id: 't1', title: 'one', createdAt: 5 })],
       },

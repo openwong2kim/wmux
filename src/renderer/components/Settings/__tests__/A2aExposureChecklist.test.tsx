@@ -19,7 +19,6 @@ const base: A2aExposureChecklistViewProps = {
   ],
   exposure: { workspaceIds: [], paneIds: {} },
   busy: false,
-  moaAvailable: true,
   onToggleBrain: () => undefined,
   onToggleWorkspace: () => undefined,
   onTogglePane: () => undefined,
@@ -45,20 +44,15 @@ describe('A2aExposureChecklistView', () => {
 });
 
 describe('A2aExposureChecklistView Moa row', () => {
-  it('is unticked by default and ticks from the exposure', () => {
-    expect(render()).toContain('settings.a2aExposureMoa');
-    const on = render({ exposure: { workspaceIds: [], paneIds: {}, brain: true } });
-    expect((on.match(/aria-checked="true"/g) ?? []).length).toBe(1);
-  });
-
-  it('is hidden while this PC has no Moa and none is shown', () => {
-    const html = render({ moaAvailable: false });
+  it('is hidden while no Moa is shown', () => {
+    const html = render();
     expect(html).not.toContain('a2a-exposure-moa');
     expect(html).not.toContain('settings.a2aExposureMoa');
   });
 
   it('stays, so it can be unticked, for an exposure an earlier version saved', () => {
-    const html = render({ moaAvailable: false, exposure: { workspaceIds: [], paneIds: {}, brain: true } });
+    const html = render({ exposure: { workspaceIds: [], paneIds: {}, brain: true } });
+    expect((html.match(/aria-checked="true"/g) ?? []).length).toBe(1);
     expect(html).toContain('settings.a2aExposureMoaOff');
     expect(html).not.toMatch(/data-testid="a2a-exposure-moa"[\s\S]*?disabled=""/);
   });

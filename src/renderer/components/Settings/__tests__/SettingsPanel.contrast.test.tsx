@@ -10,7 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ContrastBadge, detectBasePreset } from '../SettingsPanel';
+import { ContrastBadge, baseColorsFor, detectBasePreset } from '../SettingsPanel';
 import { evaluateToken } from '../../../contrastSafety';
 import { builtinToCustom } from '../../../themes';
 
@@ -96,6 +96,22 @@ describe('detectBasePreset', () => {
     for (const id of ['catppuccin-mocha', 'hinomaru', 'taegeuk', 'void'] as const) {
       expect(detectBasePreset(builtinToCustom(id))).toBe(id);
     }
+  });
+
+  it('still matches a copy saved before the preset\'s text was lifted for contrast', () => {
+    // The old DEFAULT_CUSTOM_THEME was Catppuccin with muted #585B70.
+    expect(detectBasePreset({ ...builtinToCustom('catppuccin-mocha'), textMuted: '#585B70' })).toBe('catppuccin-mocha');
+    expect(detectBasePreset({ ...builtinToCustom('mono-light'), textSub: '#7E7E7E', textMuted: '#9C9C9C' })).toBe('mono-light');
+    // Mixing an old value with a current one is a hand-tuned theme.
+    expect(detectBasePreset({ ...builtinToCustom('mono-light'), textMuted: '#9C9C9C' })).toBeNull();
+  });
+
+  it('diffs an untouched legacy copy against the variant it matched, so no token reads as overridden', () => {
+    const copy = { ...builtinToCustom('catppuccin-mocha'), textMuted: '#585B70' };
+    const base = baseColorsFor(copy, 'catppuccin-mocha');
+    expect(base.textMuted).toBe('#585B70');
+    // Hand-tuned colours fall back to the chosen preset.
+    expect(baseColorsFor({ ...copy, accent: '#123456' }, 'void')).toEqual(builtinToCustom('void'));
   });
 
   it('returns null for hand-tuned colors that match no built-in', () => {

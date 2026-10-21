@@ -3,8 +3,10 @@
 // One box (the shared composer shell: a hairline, no fill, 14px input, a
 // solid 26px send) and one row of bot chips under it. A message is a `human`
 // card in the shown thread (`general` when the whole room is shown). With no
-// chip picked it is for the room: main wakes every bot of the workspace, and
-// they may answer each other. A picked chip addresses that bot only (several
+// chip picked it is for the room: main wakes its coordinator when it has one
+// that takes turns (with any bot waiting on the owner in that thread), else
+// every bot of the workspace, and they may answer each other. A picked chip
+// addresses that bot only (several
 // may be picked): the chips become the post's `mentions` (bot ids) and main
 // wakes those bots. Starting the message with `@` and a bot's name picks its
 // chip (any bot, a room elsewhere included; this room's bot wins a shared
@@ -18,7 +20,7 @@
 // names who the message went to, as main answered. With no enabled bot in
 // this workspace, the row says so and points to Settings › Factory.
 import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
-import { isCoordinatorBot, type BotRole } from '../../../shared/bot';
+import { botTakesTurns, isCoordinatorBot, type BotRole } from '../../../shared/bot';
 import type { ThreadId } from '../../../shared/room';
 import { photoPlaceholderTitle } from '../../../shared/roomAttachments';
 import { FOCUS_RING } from '../focusRing';
@@ -218,10 +220,11 @@ export function useMentionPicks(bots: readonly FactoryBotRow[], workspaceId: str
 }
 
 /** The bot a room message with no bot picked goes to when the room has a
- *  coordinator (its oldest enabled one; main's rule, humanMessage.ts), or
- *  null when it goes to every bot. Pure. */
+ *  coordinator (its oldest one that takes turns — enabled, not parked by the
+ *  owner or for an error; main's rule, humanMessage.ts), or null when it
+ *  goes to every bot. Pure. */
 export function roomLead(candidates: readonly FactoryBotRow[]): FactoryBotRow | null {
-  return [...candidates].filter((r) => r.bot.enabled && isCoordinatorBot(r.bot)).sort((a, b) => a.bot.createdAt - b.bot.createdAt)[0] ?? null;
+  return [...candidates].filter((r) => botTakesTurns(r.bot) && isCoordinatorBot(r.bot)).sort((a, b) => a.bot.createdAt - b.bot.createdAt)[0] ?? null;
 }
 
 /** The chip row: one chip per bot of the room (and any bot picked from

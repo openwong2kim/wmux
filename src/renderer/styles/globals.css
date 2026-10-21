@@ -163,10 +163,10 @@
   --bg-mantle: #171419;
   --bg-surface: #2A272C;
   --bg-overlay: #39353c;
-  --text-muted: #626167;
-  --text-subtle: #747479;
-  --text-sub: #85868B;
-  --text-sub2: #b7b8bc;
+  --text-muted: #6D6C72;
+  --text-subtle: #7b7b80;
+  --text-sub: #88898D;
+  --text-sub2: #b8b9bd;
   --text-main: #E8E9ED;
   --accent: #459BF7;
   --accent-cursor: #459BF7;
@@ -190,10 +190,10 @@
   --bg-mantle: #F7F7F7;
   --bg-surface: #EBEBEB;
   --bg-overlay: #dcdcdc;
-  --text-muted: #9C9C9C;
-  --text-subtle: #8d8d8d;
-  --text-sub: #7E7E7E;
-  --text-sub2: #565656;
+  --text-muted: #888888;
+  --text-subtle: #7a7a7a;
+  --text-sub: #6B6B6B;
+  --text-sub2: #4d4d4d;
   --text-main: #2E2E2E;
   --accent: #459BF7;
   --accent-cursor: #459BF7;
@@ -221,10 +221,10 @@
   --bg-mantle: #19191C;
   --bg-surface: #202024;
   --bg-overlay: #28282D;
-  --text-muted: #66645F;
+  --text-muted: #706E68;
   --text-subtle: #85827B;
   --text-sub: #A5A29C;
-  --text-sub2: #CAC8C4;
+  --text-sub2: #cac8c4;
   --text-main: #EFEEEC;
   --accent: #E8A33D;
   --accent-cursor: #E8A33D;
@@ -281,8 +281,8 @@
   --bg-mantle: #181825;
   --bg-surface: #313244;
   --bg-overlay: #45475A;
-  --text-muted: #585B70;
-  --text-subtle: #6C7086;
+  --text-muted: #6C708A;
+  --text-subtle: #9399B2;
   --text-sub: #BAC2DE;
   --text-sub2: #A6ADC8;
   --text-main: #CDD6F4;
@@ -309,10 +309,10 @@
   --bg-mantle: #050505;
   --bg-surface: #1A1A1A;
   --bg-overlay: #2A2A2A;
-  --text-muted: #404040;
-  --text-subtle: #606060;
+  --text-muted: #616161;
+  --text-subtle: #898989;
   --text-sub: #B0B0B0;
-  --text-sub2: #888888;
+  --text-sub2: #909090;
   --text-main: #E0E0E0;
   --accent: #A0A0A0;
   --accent-cursor: #FFFFFF;
@@ -337,8 +337,8 @@
   --bg-mantle: #091020;
   --bg-surface: #1E2E4A;
   --bg-overlay: #2A3E5A;
-  --text-muted: #3A5070;
-  --text-subtle: #4A6080;
+  --text-muted: #4D6A94;
+  --text-subtle: #778dae;
   --text-sub: #A0B0C8;
   --text-sub2: #8090A8;
   --text-main: #C8D6E8;
@@ -365,8 +365,8 @@
   --bg-mantle: #140808;
   --bg-surface: #3A1A1A;
   --bg-overlay: #4A2A2A;
-  --text-muted: #5A3A30;
-  --text-subtle: #6A4A3E;
+  --text-muted: #895849;
+  --text-subtle: #a58071;
   --text-sub: #C0A898;
   --text-sub2: #A08878;
   --text-main: #E8D0C0;
@@ -421,10 +421,10 @@
   --bg-mantle: #161310;
   --bg-surface: #2E2A22;
   --bg-overlay: #38332A;
-  --text-muted: #5A5340;
-  --text-subtle: #6B6350;
+  --text-muted: #766C54;
+  --text-subtle: #887e6a;
   --text-sub: #9A9080;
-  --text-sub2: #847A68;
+  --text-sub2: #938976;
   --text-main: #C8BFA8;
   --accent: #C4A055;
   --accent-cursor: #C4A055;
@@ -449,10 +449,10 @@
   --bg-mantle: #000000;
   --bg-surface: #0A0A0A;
   --bg-overlay: #141414;
-  --text-muted: #333333;
-  --text-subtle: #505050;
+  --text-muted: #5D5D5D;
+  --text-subtle: #777777;
   --text-sub: #909090;
-  --text-sub2: #707070;
+  --text-sub2: #808080;
   --text-main: #C0C0C0;
   --accent: #C0C0C0;
   --accent-cursor: #FFFFFF;
@@ -1204,7 +1204,7 @@ select option {
  * through `color-mix(… 0%, transparent)` rather than the `transparent`
  * keyword, which interpolates through black. */
 /* The sheet's tint stacks on the frame's, so the sidebar's coverage is
- * 1 - (1 - frame)(1 - sheet): about 29% on Soft and 14% on Clear. Keep the
+ * 1 - (1 - frame)(1 - sheet): on macOS about 29% on Soft and 14% on Clear. Keep the
  * sheet step small, or the sidebar turns opaque long before the frame does. */
 html[data-glass] {
   --glass-frame: 25%;
@@ -1234,38 +1234,11 @@ html[data-glass="light"][data-glass-level="clear"] {
   --glass-frame: 0%;
   --glass-sheet: 3%;
 }
-/* Windows 11 acrylic is a different material from the macOS one, so it has
- * its own numbers. Each rule carries `data-platform`, so it outranks the
- * macOS rule of the same case above. Dark acrylic is already deep, so a dark
- * look paints a little more than on macOS to keep its own tone: about 34%
- * Soft and 16% Clear over the sidebar. Strongly hued looks keep the macOS
- * numbers. Light acrylic reads grey, the opposite of the milky macOS
- * material, so a light look paints much more of its own colour to stay
- * clean: about 60% Soft and 40% Clear. */
-html[data-glass][data-platform="win32"] {
-  --glass-frame: 30%;
-  --glass-sheet: 6%;
-}
-html[data-glass][data-platform="win32"][data-glass-level="clear"] {
-  --glass-frame: 12%;
-  --glass-sheet: 5%;
-}
-html[data-glass][data-platform="win32"]:is([data-theme="stars-and-stripes"], [data-theme="red-dynasty"], [data-theme="catppuccin-mocha"]) {
-  --glass-frame: 55%;
-  --glass-sheet: 20%;
-}
-html[data-glass][data-platform="win32"]:is([data-theme="stars-and-stripes"], [data-theme="red-dynasty"], [data-theme="catppuccin-mocha"])[data-glass-level="clear"] {
-  --glass-frame: 35%;
-  --glass-sheet: 12%;
-}
-html[data-glass="light"][data-platform="win32"] {
-  --glass-frame: 55%;
-  --glass-sheet: 10%;
-}
-html[data-glass="light"][data-platform="win32"][data-glass-level="clear"] {
-  --glass-frame: 35%;
-  --glass-sheet: 8%;
-}
+/* Windows 11 acrylic has no fixed numbers here: the renderer derives the
+ * coverage from the look's tokens so its text stays legible over any
+ * backdrop, and sets `--glass-frame` and `--glass-sheet` inline on <html> in
+ * the same pass that sets `data-glass` (utils/windowGlass.ts and
+ * glassCoverage.ts). Inline, they outrank the macOS rules above. */
 html[data-glass],
 html[data-glass] body,
 html[data-glass] #root {
@@ -1454,8 +1427,8 @@ html[data-glass] .wmux-sidebar {
   --bg-mantle: #F3F3F5;
   --bg-surface: #ECECF0;
   --bg-overlay: #dbdbe2;
-  --text-muted: #8A8A96;
-  --text-subtle: #65656f;
+  --text-muted: #848491;
+  --text-subtle: #62626d;
   --text-sub: #3F3F48;
   --text-sub2: #2b2b32;
   --text-main: #17171C;

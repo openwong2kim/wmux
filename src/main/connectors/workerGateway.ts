@@ -42,7 +42,7 @@ import path from 'node:path';
 import type { Connector } from '../../shared/botConnector';
 import type { LedgerEntry } from '../../shared/ledger';
 import { botSandboxSettings } from '../factory/botExecSandbox';
-import { CONNECTOR_SERVICES } from '../../shared/connectorServices';
+import { isSignInService } from '../../shared/connectorServices';
 import type { ConnectorCheckResult } from '../../shared/connectorCheck';
 import { taskThreadOf } from '../../shared/room';
 import type { BotNoticeInput } from '../factory/botNotices';
@@ -81,14 +81,9 @@ export type GatewayCloseReason = 'session' | 'task' | 'rollback' | 'unused' | 'd
 
 const NOTICE_REASONS: ReadonlySet<GatewayCloseReason> = new Set(['expired', 'signed_out', 'changed']);
 
-/** Whether a connection is a sign-in service of the catalog (its endpoint is
- *  a CONNECTOR_SERVICES one, and it holds no key of its own): such a
- *  connection reaches a worker only through the gateway, never directly. */
-export function isSignInService(c: Pick<Connector, 'transport' | 'remote' | 'secrets'>): boolean {
-  if (c.transport !== 'http' || !c.remote || c.secrets.length > 0) return false;
-  if (Object.keys(c.remote.headers).some((h) => /authorization|cookie/i.test(h))) return false;
-  return CONNECTOR_SERVICES.some((s) => s.url === c.remote!.url);
-}
+// The sign-in service test lives in shared/connectorServices.ts, so the
+// profile's recipe checklist reads connections exactly as this gateway does.
+export { isSignInService };
 
 /** Which of a bot task's connections go through the gateway: the HTTP ones
  *  with a stored sign-in. A connection whose sign-in cannot be read now, and

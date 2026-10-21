@@ -929,7 +929,6 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 
 /* Needs you: one bordered block, a hairline over the subtle fill (no wash). */
 .wmux-remote-needs { display: flex; flex-direction: column; gap: 4px; padding: 8px 8px 8px 12px; border: 1px solid var(--attention-hairline); border-radius: 10px; background: var(--selection-subtle); }
-.wmux-remote-quiet { margin: 0; padding: 0 12px; font-size: 12px; color: var(--text-muted); }
 .wmux-remote-needs-title { margin: 0; font-size: 13px; font-weight: 500; color: var(--text-main); }
 .wmux-remote-needs-list { margin: 0; padding: 0; list-style: none; }
 .wmux-remote-needs-list > li + li { border-top: 1px solid var(--stroke); }
@@ -2504,16 +2503,36 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 html[data-window-corners="round"] .wmux-frame-row > .wmux-shell-body {
   margin: 0;
 }
-/* A maximized Windows window has square corners, and native fullscreen fills
- * the screen on any platform: the sheet fills the window with no margin and
- * no radius. Keyed on .wmux-frame-row so it outranks the sidebar-side margin
- * rules above. */
-html[data-fullscreen] .wmux-frame-row > .wmux-shell-body,
-html[data-platform="win32"][data-maximized] .wmux-frame-row > .wmux-shell-body {
+/* Native fullscreen fills the screen on any platform: the sheet fills the
+ * window with no margin and no radius. Keyed on .wmux-frame-row so it
+ * outranks the sidebar-side margin rules above. */
+html[data-fullscreen] .wmux-frame-row > .wmux-shell-body {
   margin: 0;
   border-width: 1px 0 0;
   border-radius: 0;
   box-shadow: none;
+}
+/* A maximized Windows window has square corners: the sheet fills it with no
+ * margin, and the corners on the screen's edges are square. The one corner
+ * beside the rail and the titlebar meets the frame, not the screen, so it
+ * keeps its radius, and the hairline and the faint shadow run along the top
+ * and the rail side, as in a windowed window. Mirrored when the sidebar is docked right. */
+html[data-platform="win32"][data-maximized]:not([data-fullscreen]) .wmux-frame-row > .wmux-shell-body {
+  margin: 0;
+  border-width: 1px 0 0 1px;
+  border-radius: var(--sheet-radius) 0 0 0;
+}
+html[data-platform="win32"][data-maximized]:not([data-fullscreen]) .wmux-frame-row.flex-row-reverse > .wmux-shell-body {
+  border-width: 1px 1px 0 0;
+  border-radius: 0 var(--sheet-radius) 0 0;
+}
+/* Over window glass the frame is translucent, so an opaque hairline reads
+ * lighter than the frame over a dark or tinted backdrop and vanishes over a
+ * light one. The sheet's edge is then an ink of the text colour, which
+ * darkens (or, in a dark look, lightens) whatever the material shows by the
+ * same step. */
+html[data-glass] .wmux-frame-row > .wmux-shell-body {
+  border-color: color-mix(in srgb, var(--text-main) 10%, transparent);
 }
 /* Inside the sheet the panes round off where they meet the sidebar, with a
  * hairline that follows the curve. */

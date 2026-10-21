@@ -4,8 +4,7 @@ import { useStore } from '../../stores';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { activeAgentSlug, leafDisplayName } from '../../utils/paneNaming';
 import Checkbox from '../ui/Checkbox';
-import { moaBrainEnd } from '../../hooks/useA2aRemoteSnapshot';
-import { listedWorkspaces } from '../../stores/slices/moaSlice';
+import { listedWorkspaces } from '../../../shared/pcRail';
 import type { A2aExposureV1 } from '../../../shared/a2aRemote';
 import { togglePaneExposure, toggleWorkspaceExposure, type ExposureLists } from '../Remote/a2aLinkModel';
 
@@ -28,8 +27,6 @@ export interface A2aExposureChecklistViewProps {
   workspaces: ChecklistWorkspace[];
   exposure: ExposureLists;
   busy: boolean;
-  /** This PC has a Moa that is on; when false the Moa row is disabled. */
-  moaAvailable: boolean;
   onToggleBrain: (on: boolean) => void;
   onToggleWorkspace: (workspaceId: string, on: boolean) => void;
   onTogglePane: (workspaceId: string, paneId: string, on: boolean) => void;
@@ -45,20 +42,20 @@ export function A2aExposureChecklistView(p: A2aExposureChecklistViewProps) {
       <p className="wmux-a2a-note" data-testid="a2a-exposure-share-hint">{t('a2aShare.checklistHint')}</p>
       {/* Moa was removed, so this PC has none to show: the row stays only so
           an exposure an earlier version saved can still be unticked. */}
-      {(p.moaAvailable || p.exposure.brain === true) && (
+      {p.exposure.brain === true && (
         <ul className="wmux-a2a-list">
           <li className="wmux-a2a-row" data-testid="a2a-exposure-moa">
             <label className="wmux-a2a-row-line">
               <Checkbox
                 checked={p.exposure.brain === true}
-                disabled={p.busy || (!p.moaAvailable && p.exposure.brain !== true)}
+                disabled={p.busy}
                 onCheckedChange={p.onToggleBrain}
                 aria-label={t('settings.a2aExposureMoa')}
               />
               <span className="truncate" style={{ fontWeight: 500 }}>{t('settings.a2aExposureMoa')}</span>
             </label>
             <span className="wmux-a2a-meta" style={{ paddingLeft: 24 }}>
-              {t(p.moaAvailable ? 'settings.a2aExposureMoaDesc' : 'settings.a2aExposureMoaOff')}
+              {t('settings.a2aExposureMoaOff')}
             </span>
           </li>
         </ul>
@@ -113,7 +110,6 @@ export function A2aExposureChecklist({ hostId, pcName, t }: { hostId: string; pc
   // Writes run one at a time, each applied to the latest saved exposure.
   const latest = useRef<ExposureLists>({ workspaceIds: [], paneIds: {} });
   const queue = useRef<Promise<void>>(Promise.resolve());
-  const moaAvailable = useStore((s) => moaBrainEnd(s) !== null);
   const shape = useStore(useShallow((s) => listedWorkspaces(s.workspaces).map((ws) =>
     JSON.stringify({
       id: ws.id,
@@ -180,7 +176,6 @@ export function A2aExposureChecklist({ hostId, pcName, t }: { hostId: string; pc
         workspaces={workspaces}
         exposure={exposure}
         busy={busy || !loaded}
-        moaAvailable={moaAvailable}
         onToggleBrain={(on) => write((cur) => ({ ...cur, brain: on }))}
         onToggleWorkspace={(ws, on) => {
           const ids = workspaces.find((w) => w.id === ws)?.panes.map((x) => x.id) ?? [];

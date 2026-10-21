@@ -304,6 +304,24 @@ export class SessionManager {
   }
 
   /**
+   * The glass level the renderer last applied to the window on Windows
+   * (`windowGlassEffective`), read before the window exists like
+   * readWindowGlass: 'off' while the theme blocks glass even though the
+   * user's level is Soft or Clear. Raw value; the caller checks it. Null when
+   * nothing is persisted.
+   */
+  readWindowGlassEffective(): unknown {
+    try {
+      const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
+        validate: SessionManager.isSessionData,
+      });
+      return loaded?.windowGlassEffective ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * The theme polarity the renderer last saved ('dark' | 'light'), read before
    * the window exists so a glass window starts in its theme's tone (see
    * initialWindowsAppearance). Raw value; the caller whitelists it.

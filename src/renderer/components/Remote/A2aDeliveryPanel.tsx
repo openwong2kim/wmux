@@ -1,5 +1,6 @@
-import { heldNeedsPerson, heldReason } from '../../stores/slices/a2aRemoteSlice';
+import { heldReason } from '../../stores/slices/a2aRemoteSlice';
 import type { Task } from '../../../shared/types';
+import { localSideOf } from '../../../shared/a2aRemoteDelivery';
 import UiButton from '../ui/Button';
 import { timeAgo } from '../../utils/timeAgo';
 
@@ -32,8 +33,6 @@ export interface A2aHeldRowProps {
 
 export function A2aHeldRow({ task, now, busy, onRetry, onReject, t }: A2aHeldRowProps) {
   const reason = heldReason(task) ?? 'pane-missing';
-  // Work for Moa is never handed to a pane; a brain-unavailable hold goes by itself once Moa can take it.
-  const brain = !heldNeedsPerson(task);
   const at = Date.parse(task.status?.timestamp ?? '');
   return (
     <li className="wmux-remote-req" data-task-id={task.id} data-testid="a2a-held">
@@ -49,7 +48,8 @@ export function A2aHeldRow({ task, now, busy, onRetry, onReject, t }: A2aHeldRow
         <UiButton variant="ghost" size="md" disabled={busy} onClick={onReject} data-testid="a2a-delivery-reject">
           {t('remotePage.needs.sendBack')}
         </UiButton>
-        {!brain && (
+        {/* A task that names no local pane (an old brain-link hold) can only be sent back. */}
+        {task.metadata[localSideOf(task)]?.paneId && (
           <UiButton variant="secondary" size="md" disabled={busy} onClick={onRetry} data-testid="a2a-delivery-retry">
             {t('remotePage.needs.deliver')}
           </UiButton>

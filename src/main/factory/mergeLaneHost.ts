@@ -45,7 +45,7 @@ import type { FactorySettings } from '../../shared/factorySettings';
 import type { LedgerEntry } from '../../shared/ledger';
 import type { MergeEffect } from '../../shared/moaDecision';
 import { laneEffectId } from '../../shared/moaDecision';
-import type { PrLaneFacts, PrWriteResult } from '../../shared/prReview';
+import type { PrLaneFacts } from '../../shared/prReview';
 import type { PrVerdictRecord } from '../../shared/prVerdict';
 import { prThreadId } from '../../shared/room';
 import { LANE_PREDICATES, evaluateMergeLane, type LaneEvidenceRow, type MergeLaneContext } from '../deck/moaMergeLane';
@@ -638,7 +638,7 @@ export function laneMergesToday(rows: readonly MergeEffect[], now: number): numb
 
 /** The production ports (imported lazily: main-only singletons). */
 async function productionHost(deps: FactoryHostDeps): Promise<{ host: MergeLaneHost; executor: MoaMergeExecutor; subscribe: (fn: (f: Fact) => void) => () => void; recent: () => Fact[] } | null> {
-  const [{ getFactLog }, { getBotDirectory }, { getFactorySettings }, { getRoomWriter }, { getTaskLedger }, { getPrVerdictStore }, laneGh, { ghPrReviewService }, { ghIssueService }, { getApprovalService }, { getBotRuntime }] = await Promise.all([
+  const [{ getFactLog }, { getBotDirectory }, { getFactorySettings }, { getRoomWriter }, { getTaskLedger }, { getPrVerdictStore }, laneGh, hostLane, { getApprovalService }, { getBotRuntime }] = await Promise.all([
     import('./factLog'),
     import('./botStore'),
     import('./factorySettings'),
@@ -646,8 +646,7 @@ async function productionHost(deps: FactoryHostDeps): Promise<{ host: MergeLaneH
     import('../deck/taskLedgerHost'),
     import('../github/prVerdictStore'),
     import('./laneGh'),
-    import('../github/GhPrReviewService'),
-    import('../github/GhIssueService'),
+    import('../github/hostLane'),
     import('./approvals'),
     import('./BotRuntime'),
   ]);
@@ -701,7 +700,7 @@ async function productionHost(deps: FactoryHostDeps): Promise<{ host: MergeLaneH
         return approvals ? approvals.identityEffect(e) : 'approval-not-running';
       },
     },
-    updateBranch: (e): Promise<PrWriteResult> => ghPrReviewService.updateBranch(e.repoPath, e.repoKey, e.prNumber, e.expectHead),
+    updateBranch: laneGh.updateBranchEffect,
     identity: (e) => (laneHost as MergeLaneHost).identity(e),
     emit: (e) => {
       laneHost?.onEffect(e);
@@ -731,9 +730,9 @@ async function productionHost(deps: FactoryHostDeps): Promise<{ host: MergeLaneH
     laneMergesToday: () => laneMergesToday(effects.list(), Date.now()),
     ledgerRow: (id) => ledger.get(id),
     authorWorkspaces: (repoPath, headRefName, tasks) => laneGh.prAuthorWorkspaces(deps.getDaemonClient, { workspaceId: tasks[0]?.taskWorkspaceId ?? '' }, repoPath, headRefName),
-    // Read per evaluation (GhIssueService keeps it per host), so a bot
-    // added after start, or a gh login that changed, is seen.
-    ownerLogin: (h, cwd) => ghIssueService.signedInLogin(h, cwd),
+    // Read per evaluation, by host (gh or glab), so a bot added after start,
+    // or a login that changed, is seen.
+    ownerLogin: (h, cwd) => hostLane.signedInLogin(h, cwd),
     currentLogin: laneGh.currentGhLogin,
     effects,
     logins: fileLaneLogins(path.join(wmuxDir, 'factory', LANE_LOGINS_FILENAME)),

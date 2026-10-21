@@ -140,7 +140,7 @@ export async function createBotFromFolder(
     }
     repo = current ?? resolved.repo;
   }
-  // The name, job, template, role and picture are checked by the store
+  // The name, job, template, role, recipe and picture are checked by the store
   // (shared/bot.ts normalizeBotName / normalizeBotJob, botAvatar.ts), as on
   // every other write.
   const created = store.create({
@@ -150,6 +150,7 @@ export async function createBotFromFolder(
     ...(repo ? { repo } : {}),
     ...(r.name !== undefined ? { name: r.name } : {}),
     ...(r.job !== undefined ? { job: r.job } : {}),
+    ...(r.recipe !== undefined ? { recipe: r.recipe } : {}),
     ...(r.avatar !== undefined ? { avatar: r.avatar } : {}),
   });
   return created.ok ? { ok: true, bot: created.bot } : created;

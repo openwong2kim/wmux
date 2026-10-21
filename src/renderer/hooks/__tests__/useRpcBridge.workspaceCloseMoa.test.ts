@@ -24,7 +24,7 @@ beforeEach(() => {
 
 describe('workspace.close and the last workspace', () => {
   it('[A]: closing A is refused with an error and nothing is disposed', async () => {
-    useStore.setState({ workspaces: [ws('a')], activeWorkspaceId: 'a', moa: null });
+    useStore.setState({ workspaces: [ws('a')], activeWorkspaceId: 'a' });
     const res = await handleRpcMethod('workspace.close', { id: 'a' }) as { error?: string; ok?: boolean };
     expect(res.error).toMatch(/only workspace/);
     expect(dispose).not.toHaveBeenCalled();
@@ -34,7 +34,7 @@ describe('workspace.close and the last workspace', () => {
   it('an earlier version\'s HQ workspace closes like any other, whatever localStorage remembers', async () => {
     localStorage.setItem('wmux.moa.hqWorkspaceId', 'hq');
     try {
-      useStore.setState({ workspaces: [ws('hq'), ws('a')], activeWorkspaceId: 'a', moa: null });
+      useStore.setState({ workspaces: [ws('hq'), ws('a')], activeWorkspaceId: 'a' });
       const res = await handleRpcMethod('workspace.close', { id: 'hq' }) as { ok?: boolean };
       expect(res.ok).toBe(true);
       expect(dispose).toHaveBeenCalledWith('pty-hq');
@@ -48,7 +48,7 @@ describe('workspace.close and the last workspace', () => {
 describe('workspace.close and live agent panes', () => {
   it('a workspace with a running agent is refused without force and nothing is disposed', async () => {
     useStore.setState({
-      workspaces: [ws('a'), ws('b')], activeWorkspaceId: 'a', moa: null,
+      workspaces: [ws('a'), ws('b')], activeWorkspaceId: 'a',
       surfaceAgent: { 'pty-b': { name: 'Claude Code', status: 'idle' } },
     });
     const res = await handleRpcMethod('workspace.close', { id: 'b' }) as { error?: string };
@@ -59,7 +59,7 @@ describe('workspace.close and live agent panes', () => {
 
   it('with force it closes', async () => {
     useStore.setState({
-      workspaces: [ws('a'), ws('b')], activeWorkspaceId: 'a', moa: null,
+      workspaces: [ws('a'), ws('b')], activeWorkspaceId: 'a',
       surfaceAgent: { 'pty-b': { name: 'Claude Code', status: 'idle' } },
     });
     const res = await handleRpcMethod('workspace.close', { id: 'b', force: true }) as { ok?: boolean };
@@ -73,7 +73,7 @@ describe('workspace.close and live agent panes', () => {
       id: 'r-s', ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'remote-terminal',
       remoteOwned: true, remoteHostId: 'host-1', remoteSessionId: 'sess-1',
     } as never];
-    useStore.setState({ workspaces: [ws('a'), remote], activeWorkspaceId: 'a', moa: null });
+    useStore.setState({ workspaces: [ws('a'), remote], activeWorkspaceId: 'a' });
     const res = await handleRpcMethod('workspace.close', { id: 'r' }) as { error?: string };
     expect(res.error).toMatch(/1 remote session\(s\).*--force/);
     expect(useStore.getState().workspaces.map((w) => w.id)).toEqual(['a', 'r']);

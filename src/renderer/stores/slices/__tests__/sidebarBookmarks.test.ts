@@ -10,7 +10,7 @@ import { createUISlice, type UISlice } from '../uiSlice';
 import { createWorkspace, type SessionData, type Workspace } from '../../../../shared/types';
 import { readSourceText } from '../../../../test-utils/sourceText';
 
-type TestState = WorkspaceSlice & UISlice & { multiviewIds: string[]; moa: unknown };
+type TestState = WorkspaceSlice & UISlice & { multiviewIds: string[] };
 
 function createTestStore(initialWorkspaces: Workspace[], activeId: string) {
   return create<TestState>()(
@@ -22,7 +22,6 @@ function createTestStore(initialWorkspaces: Workspace[], activeId: string) {
       workspaces: initialWorkspaces,
       activeWorkspaceId: activeId,
       multiviewIds: [],
-      moa: null,
     })),
   );
 }

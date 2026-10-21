@@ -7,7 +7,7 @@ import { useT } from '../../hooks/useT';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 
-export default function ServiceCatalog({ canConfigure, onConfigure, embedded = false, port = getBotConnectorPort() }: { port?: BotConnectorPort; embedded?: boolean; canConfigure: boolean; onConfigure: (draft: ConnectorDraft) => void }) {
+export default function ServiceCatalog({ canConfigure, onConfigure, port = getBotConnectorPort() }: { port?: BotConnectorPort; canConfigure: boolean; onConfigure: (draft: ConnectorDraft) => void }) {
   const t = useT();
   const [query, setQuery] = useState('');
   const [category, setCategory] = useState('all');
@@ -16,7 +16,7 @@ export default function ServiceCatalog({ canConfigure, onConfigure, embedded = f
   const entries = CONNECTOR_SERVICES.filter((entry) => (advanced || entry.setup === 'oauth') && (category === 'all' || entry.category === category)
     && `${entry.name} ${entry.id}`.toLowerCase().includes(query.trim().toLowerCase()));
   return <section className="flex flex-col gap-3" aria-label={t('connectors.services.title')}>
-    <h2 className={embedded ? "text-[13px] font-normal text-[var(--text-sub)]" : "text-[14px] font-semibold"}>{t('connectors.services.title')} ({entries.length})</h2>
+    <h2 className="text-[14px] font-semibold">{t('connectors.services.title')} ({entries.length})</h2>
     <p className="text-[12px] text-[var(--text-sub)]">{t('connectors.quick.hint')}</p>
     <div className="flex flex-wrap gap-2">
       <Input aria-label={t('connectors.services.search')} placeholder={t('connectors.services.search')} value={query} onChange={(e) => setQuery(e.target.value)} />
@@ -27,8 +27,8 @@ export default function ServiceCatalog({ canConfigure, onConfigure, embedded = f
     <label className="flex items-center gap-2 text-[12px] text-[var(--text-sub)]"><input type="checkbox" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} />{t('connectors.quick.advanced')}</label>
     {error && <p role="alert">{t('connectors.services.openFailed')}</p>}
     {!entries.length && <p>{t('connectors.registryEmpty')}</p>}
-    <ul className={embedded ? "divide-y divide-[var(--stroke)] rounded-xl border border-[var(--line)]" : "grid grid-cols-1 gap-3 lg:grid-cols-2"}>
-      {entries.map((entry) => <li key={entry.id} className={embedded ? "px-3.5 py-3" : "rounded-[var(--chip-radius)] bg-[var(--hover-fill)] p-4"}>
+    <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      {entries.map((entry) => <li key={entry.id} className="rounded-[var(--chip-radius)] bg-[var(--hover-fill)] p-4">
         <h3 className="text-[14px] font-medium">{entry.name}</h3>
         <p className="my-2 text-[12px] text-[var(--text-sub)]">{t(entry.setup === 'oauth' ? 'connectors.quick.browser' : `connectors.services.setup.${entry.setup}`)}</p>
 

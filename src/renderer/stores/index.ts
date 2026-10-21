@@ -24,13 +24,12 @@ import { createOrphanSessionsSlice, type OrphanSessionsSlice } from './slices/or
 import { createSchedulesSlice, type SchedulesSlice } from './slices/schedulesSlice';
 import { createUsageLimitSlice, type UsageLimitSlice } from './slices/usageLimitSlice';
 import { createWorkspaceSettleSlice, type WorkspaceSettleSlice } from './slices/workspaceSettleSlice';
-import { createMoaSlice, type MoaSlice } from './slices/moaSlice';
 import { createA2aRemoteSlice, type A2aRemoteSlice } from './slices/a2aRemoteSlice';
 import { createPcRailSlice, type PcRailSlice } from './slices/pcRailSlice';
 import { createRoomSlice, type RoomSlice } from './slices/roomSlice';
 import { createPtyLifecycleSlice, type PtyLifecycleSlice } from './slices/ptyLifecycleSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & RemoteWorkspacesSlice & OrphanSessionsSlice & SchedulesSlice & UsageLimitSlice & WorkspaceSettleSlice & MoaSlice & A2aRemoteSlice & PcRailSlice & RoomSlice & PtyLifecycleSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & RemoteWorkspacesSlice & OrphanSessionsSlice & SchedulesSlice & UsageLimitSlice & WorkspaceSettleSlice & A2aRemoteSlice & PcRailSlice & RoomSlice & PtyLifecycleSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -58,7 +57,6 @@ export const useStore = create<StoreState>()(
     ...createSchedulesSlice(...args),
     ...createUsageLimitSlice(...args),
     ...createWorkspaceSettleSlice(...args),
-    ...createMoaSlice(...args),
     ...createA2aRemoteSlice(...args),
     ...createPcRailSlice(...args),
     ...createRoomSlice(...args),

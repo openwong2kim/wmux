@@ -1,13 +1,14 @@
 // The real ports of verify.recordVerdict (pipe/handlers/verify.rpc.ts): the
 // repo key from the cwd's remote (the same detectRemote Moa's merge lane keys
-// its decisions by, so the two compare equal), the merge lane's fresh PR read,
-// git in the verifier's cwd, and the app's verdict store.
+// its decisions by, so the two compare equal), the merge lane's fresh PR read
+// (gh, or glab for a GitLab remote: hostLane.ts), git in the verifier's cwd,
+// and the app's verdict store.
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { VerifyRpcDeps } from '../pipe/handlers/verify.rpc';
 import { detectRemote } from './PrProvider';
-import { ghPrReviewService } from './GhPrReviewService';
+import { readLaneFacts } from './hostLane';
 import { getPrVerdictStore } from './prVerdictStore';
 
 const execFileAsync = promisify(execFile);
@@ -17,7 +18,7 @@ export function prVerdictHostPorts(): Pick<VerifyRpcDeps, 'repoKeyOf' | 'readPr'
   return {
     repoKeyOf: async (cwd) => (await detectRemote(cwd))?.key ?? null,
     readPr: async (repoPath, key, n) => {
-      const r = await ghPrReviewService.laneFacts(repoPath, key, n);
+      const r = await readLaneFacts(repoPath, key, n);
       if (!r.ok) throw new Error(r.message);
       return r.value;
     },

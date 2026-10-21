@@ -484,6 +484,15 @@ describe('Add team', () => {
     const team = [row('bot-00000002', { createdAt: 1 }), row('bot-00000003', { template: 'coordinator', role: 'moa', name: 'Lead', createdAt: 2 })];
     expect(roomLead(team)?.bot.id).toBe('bot-00000003');
     expect(roomLead([team[0]])).toBeNull();
+    // A coordinator that is off or parked by the owner or for an error takes
+    // no turn: the message goes to every bot (main's rule). A budget park
+    // still runs the owner's messages.
+    const lead = team[1];
+    for (const parked of [{ reason: 'human' as const, at: 1 }, { reason: 'error' as const, at: 1 }]) {
+      expect(roomLead([team[0], { ...lead, bot: { ...lead.bot, parked } }])).toBeNull();
+    }
+    expect(roomLead([team[0], { ...lead, bot: { ...lead.bot, enabled: false } }])).toBeNull();
+    expect(roomLead([team[0], { ...lead, bot: { ...lead.bot, parked: { reason: 'budget', at: 1 } } }])?.bot.id).toBe('bot-00000003');
     await render(createElement(MentionChips, { candidates: team, bots: team, picked: [], onToggle: () => undefined, t, testId: 'chips' }));
     expect(q('chips-to-room')!.textContent).toBe('room.composer.toLead(name=Lead)');
   });

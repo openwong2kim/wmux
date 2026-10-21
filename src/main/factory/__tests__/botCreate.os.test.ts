@@ -151,6 +151,35 @@ describe('createBotFromFolder', () => {
     expect(r).toMatchObject({ ok: true, bot: { name: '대장', template: 'coordinator', role: 'moa', job: 'Coordinate the team.' } });
   });
 
+  it('keeps a known recipe across a reload, and refuses an unknown one or one of another template', async () => {
+    const r = await createBotFromFolder(store, { workspaceId: 'ws-1', name: 'Notes', template: 'custom', recipe: 'notionMeetingDigest' }, deps);
+    expect(r).toMatchObject({ ok: true, bot: { template: 'custom', recipe: 'notionMeetingDigest' } });
+    await store.flush();
+    const reread = new BotStore(botsFilePath(dir));
+    reread.load();
+    expect(reread.list()[0]).toMatchObject({ recipe: 'notionMeetingDigest' });
+    expect(await createBotFromFolder(store, { workspaceId: 'ws-1', name: 'X', template: 'custom', recipe: 'sendAllMail' }, deps)).toMatchObject({ ok: false, code: 'invalid_argument' });
+    expect(await createBotFromFolder(store, { workspaceId: 'ws-1', name: 'Y', template: 'researcher', recipe: 'notionMeetingDigest' }, deps)).toMatchObject({ ok: false, code: 'invalid_argument' });
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it('keeps a well-formed recipe id it does not know (a newer build wrote it), and drops a malformed one', async () => {
+    await createBotFromFolder(store, { workspaceId: 'ws-1', name: 'Notes', template: 'custom', recipe: 'notionMeetingDigest' }, deps);
+    await store.flush();
+    const file = botsFilePath(dir);
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    raw.bots[0].recipe = 'recipeFromANewerBuild';
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const newer = new BotStore(file);
+    newer.load();
+    expect(newer.list()[0].recipe).toBe('recipeFromANewerBuild');
+    raw.bots[0].recipe = '../not an id';
+    fs.writeFileSync(file, JSON.stringify(raw));
+    const broken = new BotStore(file);
+    broken.load();
+    expect(broken.list()[0]).not.toHaveProperty('recipe');
+  });
+
   it('refuses a folder that is not a checkout, a bad template and a bad job', async () => {
     expect(await createBotFromFolder(store, { workspaceId: 'ws-1', role: 'verifier', repoFolder: '/tmp/x' }, { git: fakeGit(fail, fail) }))
       .toMatchObject({ ok: false, code: 'not_a_repo' });

@@ -52,7 +52,6 @@ describe('titlebar fleet vitals', () => {
   it("count an earlier version's HQ workspace like any other", () => {
     act(() => useStore.setState({
       workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
-      moa: null,
       surfaceAgent: { 'pty-a': { name: 'Claude Code', status: 'running' }, 'pty-hq': { name: 'Claude Code', status: 'awaiting_input' } },
       surfaceAgentStatus: { 'pty-a': 'running', 'pty-hq': 'awaiting_input' },
     }));

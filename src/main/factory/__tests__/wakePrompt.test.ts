@@ -53,9 +53,28 @@ describe('buildWakePrompt — group rooms and routines', () => {
     expect(text).toContain('Other bots in this room (mention them by id): Wmux Dev = bot-00000002; Wmux Issue x = bot-00000003');
     // A message to this bot alone says nothing of the others.
     expect(buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop' }), profile, roster })).not.toMatch(/more than one bot/);
-    // A stored wake from before (the coordinator-only room) reads as a message to this bot.
+    // The room's message its coordinator alone got: it decides who works.
     const lead = buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop', lead: true }), profile, roster });
-    expect(lead).not.toMatch(/coordinator, so you alone|more than one bot/);
+    expect(lead).toContain('It has you as its coordinator, so the message came to you: answer it yourself, or hand the work');
+    expect(lead).toContain('their results come back to you to report');
+    expect(lead).not.toMatch(/more than one bot|closing text is not posted|waiting on the owner/);
+    // With a bot waiting on the owner in the thread, that bot got it too.
+    const withWaiting = buildWakePrompt({ item: item({ kind: 'human', text: 'Yes', source: 'desktop', lead: true, room: true }), profile, roster });
+    expect(withWaiting).toContain('so the message came to you (and to the bots waiting on the owner in this thread, which may be getting their answer)');
+  });
+
+  it('a room-wide message (no coordinator) says the closing text is not posted: only room_post answers', () => {
+    const text = buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop', runId: 'run-c-1', room: true, roomWide: true }), profile, roster });
+    expect(text).toContain('The owner wrote to the room without naming a bot, and every bot in it got this message. Your closing text is not posted on this wake: to answer, post your own part with room_post.');
+    expect(text).toContain('Post only when the message asks for your work or you know something the others lack');
+    // Not the explicit several-bots wording, whose closing text is posted.
+    expect(text).not.toMatch(/more than one bot|words you end a turn with are posted/);
+    // The room's first bot answers a greeting nobody else's job covers.
+    const first = buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop', room: true, roomWide: true, roomAnswerer: profile.id }), profile, roster });
+    expect(first).toContain('you are the first bot here, so when no other bot\'s job covers it, you answer it with room_post');
+    const other = buildWakePrompt({ item: item({ kind: 'human', text: 'Hi', source: 'desktop', room: true, roomWide: true, roomAnswerer: 'bot-00000002' }), profile, roster });
+    expect(other).toContain('Wmux Dev (bot-00000002), the first bot here, answers it when no other bot\'s job covers it');
+    expect(other).not.toContain('you are the first bot here');
   });
 
   it('a group chat wake names the group, lists its members only, and asks a bot new to it to introduce itself (no canned card)', () => {

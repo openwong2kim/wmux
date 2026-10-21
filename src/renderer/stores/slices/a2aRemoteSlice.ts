@@ -3,7 +3,7 @@ import type { StoreState } from '../index';
 import type { A2aLinkOfferRecordV1, A2aLinkRecordV1, A2aPeerRecordV1, A2aRemoteHostRecordV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteHostStatus } from '../../../shared/rpc';
 import type { Task } from '../../../shared/types';
-import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
+import { readHeldReason, type A2aRemoteHeldReason, type A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 
 // ─── Cross-PC A2A, as the Remote page and the rail read it ────────────────────
 //
@@ -47,19 +47,12 @@ export const createA2aRemoteSlice: StateCreator<
   }),
 });
 
-/** Held for Moa: it goes by itself once Moa can take it, so nobody has to act. */
-const MOA_HOLDS = new Set(['brain-delivery-pending', 'brain-unavailable']);
-
-/** Why a task (or its newest held reply) is held. */
-export function heldReason(task: Task): string | undefined {
+/** Why a task (or its newest held reply) is held. A Moa hold an older daemon
+ *  still reports reads as `link-not-active` (readHeldReason). */
+export function heldReason(task: Task): A2aRemoteHeldReason | undefined {
   const marker = task.metadata.remote as A2aRemoteTaskState | undefined;
-  if (!marker) return undefined;
-  return marker.held ?? marker.inbox?.find((i) => i.held)?.held;
-}
-
-/** Held work a person must deliver or send back (not a hold that clears by itself). */
-export function heldNeedsPerson(task: Task): boolean {
-  return !MOA_HOLDS.has(heldReason(task) ?? '');
+  const held = marker?.held ?? marker?.inbox?.find((i) => i.held)?.held;
+  return held ? readHeldReason(held) : undefined;
 }
 
 /**
@@ -81,6 +74,6 @@ export function selectRemoteNeedsYou(s: Pick<StoreState, 'a2aRemote'>): number {
   const { links, offers, held, hosts } = s.a2aRemote;
   return links.filter((l) => l.state === 'proposed-in').length
     + offers.filter((o) => offerWaitsOnYou(o)).length
-    + held.filter(heldNeedsPerson).length
+    + held.length
     + hosts.filter((h) => h.state === 'identity-changed').length;
 }

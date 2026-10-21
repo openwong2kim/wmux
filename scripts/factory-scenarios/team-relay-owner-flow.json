@@ -3,7 +3,7 @@
   "layer": "regression",
   "runs": 1,
   "model": "stub",
-  "description": "The owner asks the coordinator by name (an untagged room message wakes every bot); it dispatches the researcher with the developer and the issue bot to follow (next). The researcher and the developer work through fan-out workers and each sends one result from its task's wake; wmux sends the work on to the next bot in the coordinator's name, and the coordinator is woken once, with the last result, and reports in the flow's thread. One run, depths 0,1,1,2,2,3, one thread, a pointer card in General, the research taint carried to the developer's task.",
+  "description": "The owner asks the coordinator by name (an untagged room message would reach it alone too); it dispatches the researcher with the developer and the issue bot to follow (next). The researcher and the developer work through fan-out workers and each sends one result from its task's wake; wmux sends the work on to the next bot in the coordinator's name, and the coordinator is woken once, with the last result, and reports in the flow's thread. One run, depths 0,1,1,2,2,3, one thread, a pointer card in General, the research taint carried to the developer's task.",
   "setup": {
     "repo": true,
     "worker": {

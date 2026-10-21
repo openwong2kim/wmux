@@ -137,7 +137,9 @@ const subscribeMaximized = (api: WindowApi, cb: (on: boolean) => void) => api.on
 export default function Titlebar() {
   // <html data-fullscreen> in native fullscreen on any platform, and
   // <html data-maximized> while maximized: the sheet drops its frame margins
-  // and radius in both (Windows only for maximized; see ui.css).
+  // in both. Fullscreen also squares every corner; a maximized Windows window
+  // squares only the corners on the screen's edges and keeps the one beside
+  // the rail and the titlebar round (see ui.css).
   useWindowStateAttribute('data-fullscreen', pullFullscreen, subscribeFullscreen);
   useWindowStateAttribute('data-maximized', pullMaximized, subscribeMaximized);
   const sidebarVisible = useStore((s) => s.sidebarVisible);

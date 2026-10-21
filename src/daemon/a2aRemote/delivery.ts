@@ -9,7 +9,7 @@ import {
   type HostId,
   type PeerCredential,
 } from '../../shared/a2aRemote';
-import { A2A_REMOTE_RPC, type A2aRemoteHeldReason } from '../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_RPC, isLegacyHeldReason, readHeldReason, type A2aRemoteHeldReason } from '../../shared/a2aRemoteDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
@@ -74,7 +74,7 @@ export interface A2aRemoteDeliveryDeps {
 const SYNC_MS = 5_000;
 const MAINTENANCE_MS = 60_000;
 const HELD_REASONS: ReadonlySet<string> = new Set<A2aRemoteHeldReason>([
-  'occupant-changed', 'pane-missing', 'link-not-active', 'brain-delivery-pending', 'brain-unavailable', 'delivery-unconfirmed', 'no-agent',
+  'occupant-changed', 'pane-missing', 'link-not-active', 'delivery-unconfirmed', 'no-agent',
 ]);
 /** What the sender's ledger shows while our pane has no agent to take its task. */
 export const NO_AGENT_SUMMARY = 'The linked pane on the receiving PC has no agent running; the task is held until someone there acts.';
@@ -269,13 +269,15 @@ export class A2aRemoteDelivery {
       const taskId = str(p, 'taskId');
       if (!taskId) return { ok: false, error: 'bad-request: taskId is required' };
       const held = p['held'];
-      if (held !== undefined && (typeof held !== 'string' || !HELD_REASONS.has(held))) return { ok: false, error: 'bad-request: unknown held reason' };
+      if (held !== undefined && (typeof held !== 'string' || !(HELD_REASONS.has(held) || isLegacyHeldReason(held)))) {
+        return { ok: false, error: 'bad-request: unknown held reason' };
+      }
       const messageId = typeof p['messageId'] === 'string' ? p['messageId'] : undefined;
       const res = await svc.markRemote({
         taskId,
         ...(messageId !== undefined ? { messageId } : {}),
         ...(p['delivered'] === true ? { delivered: true } : {}),
-        ...(typeof held === 'string' ? { held: held as A2aRemoteHeldReason } : {}),
+        ...(typeof held === 'string' ? { held: readHeldReason(held) } : {}),
         ...(typeof p['attempted'] === 'boolean' && p['delivered'] !== true && held === undefined ? { attempted: p['attempted'] } : {}),
         ...(p['note'] === 'pasted-not-submitted' ? { note: 'pasted-not-submitted' as const } : {}),
         ...(typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? { ptyId: p['ptyId'] } : {}),

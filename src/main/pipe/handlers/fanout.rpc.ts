@@ -148,7 +148,7 @@ import { getHandoffRouter } from '../../factory/handoffRouter';
 import { emitBotHook } from '../../factory/botHooks';
 import { checkWorkerHours, recordWorkerStart, workerSlotsFull, type BotUsage, type WorkerSlotsFull } from '../../factory/budget';
 import { getHeldFanouts, heldFanoutReserved, heldFanoutStarted, heldWakeIsFor } from '../../factory/heldFanouts';
-import { botFanoutPreset, botFanoutPresetList, botPresetCheckoutRefusal, composeBotWorkerPrompt } from '../../worktask/botFanoutPresets';
+import { botFanoutPreset, botFanoutPresetList, botPresetCheckoutRefusal, botReviewHost, composeBotWorkerPrompt } from '../../worktask/botFanoutPresets';
 import { getFactLog } from '../../factory/factLog';
 import { currentWakeItem, dropQueuedHeldFanoutWakes, getWakeQueue } from '../../factory/wakeQueue';
 import { isWakeStoppedByOwner } from '../../factory/factoryStop';
@@ -923,13 +923,17 @@ function defaultBotPort(): FanOutBotPort | null {
   };
 }
 
-/** `checkout` from the wire, validated (40-hex sha; fetchRef only `pull/<n>/head`). */
-function parseCheckout(raw: unknown): { sha: string; detached: true; fetchRef?: string } | { error: string } {
+/** `checkout` from the wire, validated: a 40-hex sha, and a fetchRef only
+ *  the review head ref of the bot's repository host — `pull/<n>/head` on
+ *  GitHub (or no known host), `merge-requests/<n>/head` on GitLab. */
+export function parseCheckout(raw: unknown, repoKey?: string): { sha: string; detached: true; fetchRef?: string } | { error: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { error: 'checkout must be {sha, fetchRef?}' };
   const r = raw as Record<string, unknown>;
   if (typeof r['sha'] !== 'string' || !/^[0-9a-f]{40}$/.test(r['sha'])) return { error: 'checkout.sha must be a 40-hex commit id' };
-  if (r['fetchRef'] !== undefined && (typeof r['fetchRef'] !== 'string' || !/^pull\/[1-9][0-9]{0,8}\/head$/.test(r['fetchRef']))) {
-    return { error: 'checkout.fetchRef must be pull/<number>/head' };
+  const gitlab = botReviewHost(repoKey) === 'gitlab';
+  const headRef = gitlab ? /^merge-requests\/[1-9][0-9]{0,8}\/head$/ : /^pull\/[1-9][0-9]{0,8}\/head$/;
+  if (r['fetchRef'] !== undefined && (typeof r['fetchRef'] !== 'string' || !headRef.test(r['fetchRef']))) {
+    return { error: gitlab ? 'checkout.fetchRef must be merge-requests/<number>/head on this GitLab repository' : 'checkout.fetchRef must be pull/<number>/head' };
   }
   return { sha: r['sha'], detached: true, ...(typeof r['fetchRef'] === 'string' ? { fetchRef: r['fetchRef'] } : {}) };
 }
@@ -1339,7 +1343,7 @@ export function registerFanOutRpc(
     let checkout: { sha: string; detached: true; fetchRef?: string } | undefined;
     if (params['checkout'] !== undefined) {
       if (!bot) return deny('INVALID_ARGUMENT', 'task.fanout.start accepts checkout only from a factory bot');
-      const c = parseCheckout(params['checkout']);
+      const c = parseCheckout(params['checkout'], botProfile?.repo?.repoKey);
       if ('error' in c) return deny('INVALID_ARGUMENT', c.error);
       checkout = c;
     }
@@ -1348,7 +1352,7 @@ export function registerFanOutRpc(
       // The PR a task checks out is its subject, unless the wake is a
       // conversation (a handoff's, a 1:1, a group chat) the flow stays in.
       const inConversation = /^(handoff|dm|group):/.test(botWakeThread ?? '');
-      const checkoutPr = /^pull\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
+      const checkoutPr = /^(?:pull|merge-requests)\/([1-9][0-9]*)\/head$/.exec(checkout?.fetchRef ?? '')?.[1];
       const pr = inConversation ? undefined : checkoutPr;
       const repoKey = botProfile?.repo?.repoKey;
       const prThread = pr && repoKey ? parseThreadId(prThreadId(repoKey, Number(pr))) ?? undefined : undefined;

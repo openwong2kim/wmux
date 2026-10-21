@@ -1,0 +1,177 @@
+{
+  "name": "group-chat-coordinator-takes-it",
+  "layer": "regression",
+  "runs": 1,
+  "model": "stub",
+  "description": "The owner makes a group chat of the coordinator, the developer and the issue bot. An untagged message in the group's thread wakes the coordinator alone (the lead flag, no room flag, one directed fact marked lead, the card naming it), pinned to the group's thread, and it answers there; the developer and the issue bot sleep. Then a message that picks the developer and the issue bot wakes exactly those two, as bots named (the room flag, no roomWide), and not the coordinator.",
+  "setup": {
+    "bots": [
+      {
+        "key": "lead",
+        "template": "coordinator",
+        "triggers": [],
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "tool": "room_post",
+                  "args": {
+                    "kind": "opinion",
+                    "title": "On it",
+                    "body": "I will pick who works on this."
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "key": "developer",
+        "template": "developer",
+        "triggers": [],
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "tool": "room_post",
+                  "args": {
+                    "kind": "opinion",
+                    "title": "Hi from developer",
+                    "body": "developer here."
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "key": "issue",
+        "template": "issue",
+        "triggers": [],
+        "script": {
+          "turns": [
+            {
+              "steps": [
+                {
+                  "tool": "room_post",
+                  "args": {
+                    "kind": "opinion",
+                    "title": "Hi from issue",
+                    "body": "issue here."
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "actions": [
+    {
+      "do": "api",
+      "label": "make the group",
+      "fn": "factory.groups.create",
+      "args": [
+        {
+          "workspaceId": "{{ws}}",
+          "name": "Ship it",
+          "memberIds": [
+            "{{bot.lead}}",
+            "{{bot.developer}}",
+            "{{bot.issue}}"
+          ]
+        }
+      ],
+      "record": true,
+      "save": {
+        "groupThread": "group.threadId"
+      }
+    },
+    {
+      "do": "post",
+      "label": "hi",
+      "post": {
+        "threadId": "{{saved.groupThread}}",
+        "title": "Hi team",
+        "body": "Can someone look at the login bug?"
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "lead answered",
+      "cond": {
+        "wakes": {
+          "bot": "lead",
+          "reason": "human",
+          "state": "done"
+        }
+      },
+      "timeoutMs": 60000,
+      "required": true
+    },
+    {
+      "do": "waitFor",
+      "label": "quiet after hi",
+      "cond": {
+        "idle": true,
+        "quietMs": 5000
+      },
+      "timeoutMs": 30000
+    },
+    {
+      "do": "post",
+      "label": "two picked",
+      "post": {
+        "threadId": "{{saved.groupThread}}",
+        "title": "Developer and issue",
+        "body": "You two, please.",
+        "mentions": [
+          "{{bot.developer}}",
+          "{{bot.issue}}"
+        ]
+      }
+    },
+    {
+      "do": "waitFor",
+      "label": "picked answered",
+      "cond": {
+        "wakes": {
+          "bot": "issue",
+          "reason": "human",
+          "state": "done"
+        }
+      },
+      "timeoutMs": 60000,
+      "required": true
+    },
+    {
+      "do": "waitFor",
+      "label": "quiet",
+      "cond": {
+        "idle": true,
+        "quietMs": 5000
+      },
+      "timeoutMs": 30000
+    }
+  ],
+  "expect": {
+    "requires": [
+      "facts",
+      "cards",
+      "bots",
+      "wakes"
+    ],
+    "message": "hi",
+    "picked": "two picked",
+    "lead": "lead",
+    "pickedBots": [
+      "developer",
+      "issue"
+    ]
+  }
+}

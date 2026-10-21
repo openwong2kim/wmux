@@ -58,7 +58,7 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  useStore.setState({ workspaces: [], moa: null });
+  useStore.setState({ workspaces: [] });
   onClose.mockReset();
   onLinkPane.mockReset();
 });

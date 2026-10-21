@@ -18,12 +18,52 @@ const css = fs.readdirSync(stylesDir).filter((name) => name.endsWith('.css'))
 
 type Specificity = [number, number, number];
 
+/** Split a selector list on its top-level commas. */
+function splitList(list: string): string[] {
+  const out: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < list.length; i += 1) {
+    if (list[i] === '(') depth += 1;
+    else if (list[i] === ')') depth -= 1;
+    else if (list[i] === ',' && depth === 0) { out.push(list.slice(start, i)); start = i + 1; }
+  }
+  out.push(list.slice(start));
+  return out;
+}
+
+/**
+ * Selectors Level 4 specificity: `:is()`, `:not()` and `:has()` count as their
+ * most specific argument, `:where()` counts nothing, any other functional
+ * pseudo-class counts as one class.
+ */
 function specificity(selector: string): Specificity {
-  const s = selector.replace(/::?[\w-]+\([^)]*\)/g, ' ');
+  const total: Specificity = [0, 0, 0];
+  let s = '';
+  for (let i = 0; i < selector.length; i += 1) {
+    const fn = /^:(is|not|has|where|[\w-]+)\(/.exec(selector.slice(i));
+    if (!fn || selector[i - 1] === ':') { s += selector[i]; continue; }
+    let depth = 0;
+    let j = i + fn[0].length - 1;
+    for (; j < selector.length; j += 1) {
+      if (selector[j] === '(') depth += 1;
+      else if (selector[j] === ')' && --depth === 0) break;
+    }
+    const arg = selector.slice(i + fn[0].length, j);
+    if (['is', 'not', 'has'].includes(fn[1])) {
+      const max = splitList(arg).map(specificity).sort((a, b) => compare(b, a))[0];
+      max.forEach((n, k) => { total[k] += n; });
+    } else if (fn[1] !== 'where') {
+      total[1] += 1;
+    }
+    s += ' ';
+    i = j;
+  }
   const ids = (s.match(/#[\w-]+/g) ?? []).length;
-  const classes = (s.match(/\.[\w-]+|\[[^\]]+\]|:[\w-]+/g) ?? []).length;
-  const types = (s.replace(/\[[^\]]+\]/g, ' ').match(/(?:^|[\s>+~])[a-z][\w-]*/gi) ?? []).length;
-  return [ids, classes, types];
+  const classes = (s.match(/\.[\w-]+|\[[^\]]+\]|(?<!:):[\w-]+/g) ?? []).length;
+  const types = (s.replace(/\[[^\]]+\]/g, ' ').match(/(?:^|[\s>+~])[a-z][\w-]*/gi) ?? []).length
+    + (s.match(/::[\w-]+/g) ?? []).length;
+  return [total[0] + ids, total[1] + classes, total[2] + types];
 }
 
 const SIDES = ['top', 'right', 'bottom', 'left'] as const;
@@ -34,16 +74,17 @@ function expandMargin(value: string): string[] {
   return [t, r, b, l];
 }
 
-interface Sheet { margin: Record<(typeof SIDES)[number], string>; radius: string; shadow: string }
+interface Sheet { margin: Record<(typeof SIDES)[number], string>; radius: string; shadow: string; borderWidth: string; borderColor: string }
 
 /** The resolved margin, radius and shadow of the sheet for one window shape. */
-function resolveSheet(opts: { platform: string; corners?: 'round' | 'square'; maximized?: boolean; fullscreen?: boolean; sidebarRight?: boolean }): Sheet {
+function resolveSheet(opts: { platform: string; corners?: 'round' | 'square'; maximized?: boolean; fullscreen?: boolean; sidebarRight?: boolean; glass?: boolean }): Sheet {
   const html = document.documentElement;
   for (const a of [...html.attributes]) html.removeAttribute(a.name);
   html.setAttribute('data-platform', opts.platform);
   if (opts.corners) html.setAttribute('data-window-corners', opts.corners);
   if (opts.maximized) html.setAttribute('data-maximized', '');
   if (opts.fullscreen) html.setAttribute('data-fullscreen', '');
+  if (opts.glass) html.setAttribute('data-glass', 'light');
   document.body.innerHTML = `<div class="wmux-frame-row flex ${opts.sidebarRight ? 'flex-row-reverse' : ''}">`
     + `<div class="wmux-shell-body relative flex ${opts.sidebarRight ? 'flex-row-reverse' : ''}"></div></div>`;
   const sheet = document.querySelector('.wmux-shell-body') as HTMLElement;
@@ -64,7 +105,7 @@ function resolveSheet(opts: { platform: string; corners?: 'round' | 'square'; ma
   });
   hits.sort((a, b) => compare(a.spec, b.spec) || a.order - b.order);
 
-  const out: Sheet = { margin: { top: '0', right: '0', bottom: '0', left: '0' }, radius: '0', shadow: 'none' };
+  const out: Sheet = { margin: { top: '0', right: '0', bottom: '0', left: '0' }, radius: '0', shadow: 'none', borderWidth: '0', borderColor: '' };
   for (const hit of hits) {
     for (const d of hit.decls) {
       if (d.prop === 'margin') expandMargin(d.value).forEach((v, i) => { out.margin[SIDES[i]] = v; });
@@ -72,6 +113,12 @@ function resolveSheet(opts: { platform: string; corners?: 'round' | 'square'; ma
       if (side) out.margin[side] = d.value.trim();
       if (d.prop === 'border-radius') out.radius = d.value.trim();
       if (d.prop === 'box-shadow') out.shadow = d.value.trim();
+      if (d.prop === 'border') {
+        out.borderWidth = d.value.trim().split(/\s+/)[0];
+        out.borderColor = d.value.trim().split(/\s+(?![^(]*\))/).slice(2).join(' ');
+      }
+      if (d.prop === 'border-width') out.borderWidth = d.value.trim();
+      if (d.prop === 'border-color') out.borderColor = d.value.trim();
     }
   }
   return out;
@@ -104,13 +151,36 @@ describe('sheet frame per window shape', () => {
     }
   });
 
-  it('fills a maximized Windows window with no radius, whatever its corners', () => {
+  it('fills a maximized Windows window, keeping the corner beside the rail and the titlebar round', () => {
     for (const corners of ['round', 'square'] as const) {
-      for (const sidebarRight of [false, true]) {
-        const s = resolveSheet({ platform: 'win32', corners, maximized: true, sidebarRight });
-        expect(s.margin, `${corners} right=${sidebarRight}`).toEqual(FLUSH);
-        expect(s.radius).toBe('0');
-        expect(s.shadow).toBe('none');
+      const left = resolveSheet({ platform: 'win32', corners, maximized: true });
+      expect(left.margin, corners).toEqual(FLUSH);
+      expect(left.radius).toBe(`${RADIUS} 0 0 0`);
+      // The hairline runs along the top and the rail side, never the screen's edges.
+      expect(left.borderWidth).toBe('1px 0 0 1px');
+      expect(left.shadow).toBe('var(--sheet-shadow)');
+      const right = resolveSheet({ platform: 'win32', corners, maximized: true, sidebarRight: true });
+      expect(right.margin, `${corners} right`).toEqual(FLUSH);
+      expect(right.radius).toBe(`0 ${RADIUS} 0 0`);
+      expect(right.borderWidth).toBe('1px 1px 0 0');
+    }
+  });
+
+  it('fills the window in fullscreen even while a Windows window is also maximized', () => {
+    for (const sidebarRight of [false, true]) {
+      const s = resolveSheet({ platform: 'win32', corners: 'round', maximized: true, fullscreen: true, sidebarRight });
+      expect(s.margin).toEqual(FLUSH);
+      expect(s.radius).toBe('0');
+      expect(s.borderWidth).toBe('1px 0 0');
+    }
+  });
+
+  it('draws the sheet edge as an ink over the frame under window glass, an opaque token without it', () => {
+    expect(resolveSheet({ platform: 'win32', corners: 'round' }).borderColor).toBe('var(--sheet-edge)');
+    for (const platform of ['win32', 'darwin']) {
+      for (const maximized of [false, true]) {
+        expect(resolveSheet({ platform, corners: 'round', maximized, glass: true }).borderColor, `${platform} max=${maximized}`)
+          .toBe('color-mix(in srgb, var(--text-main) 10%, transparent)');
       }
     }
   });
@@ -129,6 +199,12 @@ describe('sheet frame per window shape', () => {
         expect(s.radius).toBe('0');
       }
     }
+  });
+
+  it('counts :not() and :is() as their most specific argument', () => {
+    expect(specificity('html[data-platform="win32"][data-maximized]:not([data-fullscreen]) .wmux-frame-row > .wmux-shell-body')).toEqual([0, 5, 1]);
+    expect(specificity(':root:is([data-theme="a"], #b)')).toEqual([1, 1, 0]);
+    expect(specificity('html:where(.a) .b')).toEqual([0, 1, 1]);
   });
 
   it('keys the flush rule on the corners attribute, not on the platform', () => {

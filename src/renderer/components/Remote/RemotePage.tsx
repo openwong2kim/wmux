@@ -18,11 +18,11 @@ import type { A2aLinkOfferRecordV1, A2aLinkRecordV1 } from '../../../shared/a2aR
 import type { A2aRemoteHostStatus, A2aRemoteStatus } from '../../../shared/rpc';
 import { buildRemoteEntries, paneNamesByPty, serverReach, type RemoteEntry, type ServerReach } from './remoteEntries';
 import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
-import { heldNeedsPerson, heldReason, offerWaitsOnYou, selectRemoteNeedsYou } from '../../stores/slices/a2aRemoteSlice';
+import { offerWaitsOnYou, selectRemoteNeedsYou } from '../../stores/slices/a2aRemoteSlice';
 import { refreshA2aRemote } from '../../hooks/useA2aRemoteBridge';
 import { buildPaneSnapshot } from '../../hooks/useA2aRemoteSnapshot';
 import { A2aLinkRequestRow, A2aLinkRow, A2aOfferRow, A2aShareRow, type LocalNames } from './A2aLinksPanel';
-import { A2aHeldRow, A2aIdentityRow, heldPeer } from './A2aDeliveryPanel';
+import { A2aHeldRow, A2aIdentityRow } from './A2aDeliveryPanel';
 import A2aLinkDialog from './A2aLinkDialog';
 import RemoteConnectDialog, { type ConnectTab } from './RemoteConnectDialog';
 import AddSshPcDialog from './AddSshPcDialog';
@@ -225,9 +225,6 @@ export default function RemotePage() {
   const pcName = useCallback((hostId: string) => pcs.find((p) => p.hostId === hostId)?.name ?? hostId.slice(0, 6), [pcs]);
   const requests = feed.links.filter((l) => l.state === 'proposed-in');
   const offers = feed.offers.filter((o) => offerWaitsOnYou(o, now));
-  // Holds for Moa clear by themselves: a quiet line, not a Needs you row.
-  const personHeld = feed.held.filter(heldNeedsPerson);
-  const moaHeld = feed.held.filter((x) => !heldNeedsPerson(x));
   const changedPcs = pcs.filter((p) => p.identityChanged);
 
   // This PC's repo for each pane a request names (the same-repo evidence).
@@ -761,7 +758,7 @@ export default function RemotePage() {
                   t={t}
                 />
               ))}
-              {personHeld.map((task) => (
+              {feed.held.map((task) => (
                 <A2aHeldRow
                   key={task.id}
                   task={task}
@@ -795,11 +792,6 @@ export default function RemotePage() {
           </section>
         )}
       </div>
-      {moaHeld.map((task) => (
-        <p key={task.id} className="wmux-remote-quiet" data-remote-moa-hold={task.id}>
-          {`${t('remotePage.needs.heldTitle', { pc: heldPeer(task) })} · ${t(`a2aDelivery.reason.${heldReason(task)}`)}`}
-        </p>
-      ))}
 
       {nothing ? (
         <div className="wmux-remote-empty" data-remote-empty>

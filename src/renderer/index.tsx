@@ -46,7 +46,7 @@ const saveWindowAppearance = (appearance: 'dark' | 'light') => {
 };
 const onSessionSettingsLoaded = () => {
   settleStartTheme(document.documentElement, shownStartTheme, useStore.getState().theme);
-  installWindowGlass(document.documentElement, saveWindowAppearance);
+  installWindowGlass(document.documentElement, saveWindowAppearance, (level) => useStore.getState().setWindowGlassEffective(level));
 };
 if (useStore.getState().sessionSettingsLoaded) onSessionSettingsLoaded();
 else {

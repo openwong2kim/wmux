@@ -98,6 +98,22 @@ describe('A2aTaskService — remote marker', () => {
 });
 
 describe('A2aTaskService — remote.mark and listRemotePending', () => {
+  it('a Moa hold an older version logged reads as link-not-active: held for a person, never pending', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await inbound(svc, 'rt-moa');
+    // What an older main wrote for work it held for this PC's Moa.
+    expect((await svc.markRemote({ taskId: 'rt-moa', held: 'brain-unavailable' as never })).ok).toBe(true);
+    expect(svc.getTask('rt-moa')?.metadata.remote).toMatchObject({ held: 'link-not-active' });
+    expect(svc.listRemotePending()).toEqual([]);
+    expect(svc.listRemoteHeld().map((t) => t.id)).toEqual(['rt-moa']);
+
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(restored.getTask('rt-moa')?.metadata.remote).toMatchObject({ held: 'link-not-active', heldAt: expect.any(String) });
+    expect(restored.listRemotePending()).toEqual([]);
+  });
+
   it('lists undelivered, unheld inbound tasks; a hold moves to the held list; marks survive replay', async () => {
     const log = newLog();
     const svc = newService(log);

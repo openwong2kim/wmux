@@ -20,9 +20,6 @@ export const HANDOFF_OPTIONS = {
   cancel: 'Cancel',
 } as const;
 
-/** The one option of the card that says a hand-off could not be delivered. */
-export const HANDOFF_NOTICE_OPTION = 'OK';
-
 /** Largest body main stores, in UTF-8 bytes. */
 export const HANDOFF_BODY_MAX_BYTES = 16 * 1024;
 

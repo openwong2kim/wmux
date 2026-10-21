@@ -66,9 +66,8 @@ export interface WorkspaceDecision {
   dismissed?: true;
   raisedAt: number;
   resolvedAt?: number;
-  /** Who raised it, when not the workspace's brain. `issue-proposal`: Moa's
-   *  issue and PR proposals lane (moaIssueProposals.ts), whose answers main
-   *  handles. Such a card is never shown to a brain (loadBrainDecision). */
+  /** Who raised it, when not the workspace's brain. A main-owned card is
+   *  never shown to a brain (loadBrainDecision). */
   origin?: DecisionOrigin;
   /** The raiser's own key for the card (the proposal's item key), stored with
    *  it so the owner can be recovered after a crash. */
@@ -81,17 +80,19 @@ export interface WorkspaceDecision {
   handoffId?: string;
 }
 
-/** `issue-proposal`: Moa's issue and PR proposals lane. `moa-handoff`: a
- *  hand-off Moa proposed (moaHandoff.ts). `moa-goal`: the approval card of a
- *  goal contract Moa proposed (moaGoalContract.ts). `ask_person`: a bot's
- *  question to the owner (shared/handoff.ts), answered back to the bot through
- *  its handoff. All main-owned: main acts on the answer, no brain ever sees or
- *  resolves the card. */
-export type DecisionOrigin = 'issue-proposal' | 'moa-handoff' | 'moa-goal' | 'ask_person';
+/** `ask_person`: a bot's question to the owner (shared/handoff.ts), answered
+ *  back to the bot through its handoff. Main-owned: main acts on the answer,
+ *  no brain ever sees or resolves the card. */
+export type DecisionOrigin = 'ask_person';
 
 /** Origins whose cards main answers. Never set from the wire (deck.requestDecision
  *  takes no origin), never shown to a brain, never resolvable by one. */
-export const MAIN_OWNED_ORIGINS: readonly DecisionOrigin[] = ['issue-proposal', 'moa-handoff', 'moa-goal', 'ask_person'];
+export const MAIN_OWNED_ORIGINS: readonly DecisionOrigin[] = ['ask_person'];
+
+/** Origins of cards Moa raised (its issue proposals, hand-offs and goal
+ *  approvals). Moa is gone and nothing can answer them: a stored one is
+ *  dropped on load, so it no longer holds its workspace's decision slot. */
+const REMOVED_MOA_ORIGINS: ReadonlySet<string> = new Set(['issue-proposal', 'moa-handoff', 'moa-goal']);
 
 export type DecisionResolvedBy = 'human' | 'brain';
 
@@ -105,9 +106,6 @@ export const DECISION_LIMITS = {
   MAX_OPTIONS: 6,
   MAX_OPTION_CHARS: 200,
   MAX_CONTEXT_CHARS: 800,
-  /** A Moa goal card carries the whole contract (up to 8 criteria, 8 evidence
-   *  items and 8 constraints of 200 chars each), so it gets its own cap. */
-  MAX_GOAL_CONTEXT_CHARS: 8000,
   MAX_RESOLUTION_CHARS: 1000,
 } as const;
 
@@ -131,6 +129,7 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
   const o = raw as Record<string, unknown>;
   const question = typeof o.question === 'string' ? o.question.trim() : '';
   if (!question) return null; // a decision with no question is not a decision
+  if (typeof o.origin === 'string' && REMOVED_MOA_ORIGINS.has(o.origin)) return null;
   // v1 records carry no thread: they are the workspace's `general` thread. A
   // v2 record whose thread does not parse is dropped rather than moved into
   // a thread it never belonged to.
@@ -148,7 +147,7 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
     question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
     options: sanitizeOptions(o.options),
     context:
-      typeof o.context === 'string' ? o.context.slice(0, decisionContextCap(o.origin)) : '',
+      typeof o.context === 'string' ? o.context.slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS) : '',
     status,
     ...(status === 'resolved' && resolution ? { resolution } : {}),
     ...(status === 'resolved' && (o.resolvedBy === 'human' || o.resolvedBy === 'brain')
@@ -268,12 +267,7 @@ export function loadThreadDecision(workspaceId: string, threadId: ThreadId, dir?
   return loadWorkspaceDecisions(workspaceId, dir).find((d) => decisionThread(d) === thread) ?? null;
 }
 
-/** A card raised by Moa's issue proposals lane. */
-export function isIssueProposalDecision(d: Pick<WorkspaceDecision, 'origin'> | null | undefined): boolean {
-  return d?.origin === 'issue-proposal';
-}
-
-/** A card main answers (issue proposals, Moa's hand-offs): never shown to a
+/** A card main answers (a bot's ask_person question): never shown to a
  *  brain, never re-examined, never resolvable through deck.resolveDecision. */
 export function isMainOwnedDecision(d: Pick<WorkspaceDecision, 'origin'> | null | undefined): boolean {
   return !!d?.origin && MAIN_OWNED_ORIGINS.includes(d.origin);
@@ -288,7 +282,7 @@ export function hasPendingDecision(workspaceId: string, dir?: string): boolean {
 }
 
 /** The wake-suppression predicate: a pending decision the workspace's BRAIN is
- *  waiting on. A main-owned card (an issue proposal, a Moa hand-off) waits on
+ *  waiting on. A main-owned card (a bot's ask_person question) waits on
  *  the operator, not on this workspace's brain, so it blocks no wake, loop,
  *  schedule or heartbeat. (hasPendingDecision still counts it, so nothing
  *  raises over it.) Never throws. */
@@ -378,11 +372,6 @@ function mutate(
  *  stack decisions; this store itself is last-writer-wins. */
 /** The ledger prefix may take at most this share of the context budget, so a
  *  long open-task list can never evict the brain's own context. */
-/** The context cap for a card of this origin. */
-export function decisionContextCap(origin: unknown): number {
-  return origin === 'moa-goal' ? DECISION_LIMITS.MAX_GOAL_CONTEXT_CHARS : DECISION_LIMITS.MAX_CONTEXT_CHARS;
-}
-
 export const DECISION_LEDGER_PREFIX_MAX_CHARS = Math.floor(DECISION_LIMITS.MAX_CONTEXT_CHARS / 4);
 
 /** Prefix first, within ITS budget; then the brain's context in what is left.
@@ -445,7 +434,7 @@ export async function raiseDecisionIfFree(
         id: randomUUID(),
         question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
         options: sanitizeOptions(args.options),
-        context: typeof args.context === 'string' ? args.context.trim().slice(0, decisionContextCap(args.origin)) : '',
+        context: typeof args.context === 'string' ? args.context.trim().slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS) : '',
         status: 'pending',
         raisedAt: Date.now(),
         ...(args.origin ? { origin: args.origin } : {}),
@@ -649,7 +638,7 @@ export async function raiseThreadDecisionIfFree(
         id: randomUUID(),
         question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
         options: sanitizeOptions(args.options),
-        context: typeof args.context === 'string' ? args.context.trim().slice(0, decisionContextCap(args.origin)) : '',
+        context: typeof args.context === 'string' ? args.context.trim().slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS) : '',
         status: 'pending',
         raisedAt: Date.now(),
         ...(args.origin ? { origin: args.origin } : {}),

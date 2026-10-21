@@ -130,11 +130,11 @@ const FANOUT_START_SHAPE = {
   checkout: z
     .object({
       sha: z.string().regex(/^[0-9a-f]{40}$/),
-      fetch_ref: z.string().regex(/^pull\/[1-9][0-9]{0,8}\/head$/).optional(),
+      fetch_ref: z.string().regex(/^(?:pull|merge-requests)\/[1-9][0-9]{0,8}\/head$/).optional(),
     })
     .strict()
     .optional()
-    .describe('Verifier bot, preset "verify": the PR head to check out detached (fetch_ref pull/<n>/head fetches it first).'),
+    .describe('Verifier bot, preset "verify": the PR head to check out detached (fetch_ref fetches it first: pull/<n>/head on GitHub, merge-requests/<n>/head on GitLab).'),
   secret_names: z
     .array(z.string().regex(/^[A-Z][A-Z0-9_]{1,63}$/))
     .min(1)

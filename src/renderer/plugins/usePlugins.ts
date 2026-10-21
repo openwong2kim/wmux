@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react';
 import type { PluginHostPluginSummary } from '../../shared/pluginHost';
 
+/** A loaded bundle; `managed` when the catalog installed it (main's install ledger). */
+export type ListedPlugin = PluginHostPluginSummary & { managed?: boolean };
+
 interface PluginListState {
-  plugins: PluginHostPluginSummary[];
+  plugins: ListedPlugin[];
   failures: Array<{ name: string; errors: string[] }>;
   loaded: boolean;
 }
@@ -21,7 +24,7 @@ async function fetchPlugins(): Promise<PluginListState> {
     const epoch = generation;
     inflight = window.electronAPI.plugins.list().then((res) => {
       if (epoch !== generation) return listeners.size ? fetchPlugins() : EMPTY;
-      cache = { plugins: (res.plugins as PluginHostPluginSummary[]) ?? [], failures: res.failures ?? [], loaded: true };
+      cache = { plugins: (res.plugins as ListedPlugin[]) ?? [], failures: res.failures ?? [], loaded: true };
       return cache;
     }).catch(() => {
       if (epoch !== generation) return listeners.size ? fetchPlugins() : EMPTY;

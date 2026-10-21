@@ -753,16 +753,14 @@ export interface A2aRemoteTaskMarkerV1 {
   /** Inbound only: false until main confirms the gated delivery. */
   delivered?: boolean;
   /**
-   * Why delivery is held. `brain-unavailable`: the work is for this PC's Moa,
-   * which cannot take it right now (Moa off, no HQ, or not started); it is
-   * delivered as soon as Moa can.
+   * Why delivery is held. Earlier versions also wrote `brain-unavailable` and
+   * `brain-delivery-pending` (work for this PC's Moa, removed since); they
+   * are read as `link-not-active` (readHeldReason).
    */
   held?:
     | 'occupant-changed'
     | 'pane-missing'
     | 'link-not-active'
-    | 'brain-delivery-pending'
-    | 'brain-unavailable'
     /** A paste was attempted but never confirmed (main restarted mid-delivery): a person decides. */
     | 'delivery-unconfirmed'
     /** The pane kept having no agent to deliver to. */

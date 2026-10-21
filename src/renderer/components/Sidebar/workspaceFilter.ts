@@ -12,7 +12,7 @@ import type { AgentStatus } from '../../../shared/types';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
 import { workspaceHasUsageLimitWaiting } from '../../stores/slices/usageLimitSlice';
-import { listedWorkspaces } from '../../stores/slices/moaSlice';
+import { listedWorkspaces } from '../../../shared/pcRail';
 import { selectBotTaskOwners, withoutBotTasks } from './botTasks';
 
 export type StatusFacet = 'needsYou' | 'running' | 'usageWaiting' | 'idle';

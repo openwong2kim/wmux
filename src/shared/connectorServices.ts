@@ -1,4 +1,4 @@
-import type { ConnectorDraft } from './botConnector';
+import type { Connector, ConnectorDraft } from './botConnector';
 
 /** Endpoint configuration authored from vendor documentation, checked 2026-10-20.
  * No vendor server code is bundled. Hosted services retain their own terms.
@@ -38,6 +38,16 @@ export const CONNECTOR_SERVICES: readonly ConnectorService[] = [
   {"id": "paypal", "name": "PayPal Sandbox", "category": "business", "url": "https://mcp.sandbox.paypal.com/http", "documentation": "https://developer.paypal.com/ai-tools/mcp-server", "setup": "paypal"},
   {"id": "dropbox", "name": "Dropbox", "category": "files", "url": "https://mcp.dropbox.com/mcp", "documentation": "https://help.dropbox.com/integrations/connect-dropbox-mcp-server", "setup": "oauth"},
  ];
+
+/** Whether a connection is a sign-in service of the catalog (its endpoint is
+ *  a CONNECTOR_SERVICES one, and it holds no key of its own): such a
+ *  connection reaches a worker only through the gateway
+ *  (main/connectors/workerGateway.ts), never directly. Pure. */
+export function isSignInService(c: Pick<Connector, 'transport' | 'remote' | 'secrets'>): boolean {
+  if (c.transport !== 'http' || !c.remote || c.secrets.length > 0) return false;
+  if (Object.keys(c.remote.headers).some((h) => /authorization|cookie/i.test(h))) return false;
+  return CONNECTOR_SERVICES.some((s) => s.url === c.remote!.url);
+}
 
 /** A recipe grants no tools or bot access and never installs a server. */
 export function serviceConnectorDraft(service: ConnectorService): ConnectorDraft {

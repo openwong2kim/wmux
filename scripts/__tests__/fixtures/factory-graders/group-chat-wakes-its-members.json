@@ -3,12 +3,12 @@
   "schemaVersion": 1,
   "scenario": "group-chat-wakes-its-members",
   "run": 1,
-  "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+  "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
   "bots": [
    {
     "version": 1,
-    "id": "bot-553f6303",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "id": "bot-378d2ec4",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "role": "moa",
     "template": "coordinator",
     "name": "Coordinator",
@@ -16,7 +16,7 @@
      "kind": "acp",
      "command": "/home/owner/.local/node/bin/node",
      "args": [
-      "/home/owner/Desktop/coding/wmux/wmux-team/scripts/acp-stub.mjs",
+      "/home/owner/Desktop/coding/wmux/wmux/scripts/acp-stub.mjs",
       "--script",
       "/tmp/x",
       "--log",
@@ -30,14 +30,15 @@
      "maxWorkerHoursPerDay": 4,
      "turnTimeoutMs": 600000
     },
+    "hue": 5,
     "enabled": true,
-    "createdAt": 1792057630274,
-    "updatedAt": 1792057630274
+    "createdAt": 1792568925673,
+    "updatedAt": 1792568925673
    },
    {
     "version": 1,
-    "id": "bot-c3cecdd2",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "id": "bot-6ae6b640",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "role": "lead",
     "template": "developer",
     "name": "Developer",
@@ -45,12 +46,16 @@
      "kind": "acp",
      "command": "/home/owner/.local/node/bin/node",
      "args": [
-      "/home/owner/Desktop/coding/wmux/wmux-team/scripts/acp-stub.mjs",
+      "/home/owner/Desktop/coding/wmux/wmux/scripts/acp-stub.mjs",
       "--script",
       "/tmp/x",
       "--log",
       "/tmp/x"
      ]
+    },
+    "workerAgent": {
+     "agent": "claude",
+     "model": "opus"
     },
     "triggers": [],
     "budget": {
@@ -59,14 +64,15 @@
      "maxWorkerHoursPerDay": 6,
      "turnTimeoutMs": 600000
     },
+    "hue": 2,
     "enabled": true,
-    "createdAt": 1792057630275,
-    "updatedAt": 1792057630275
+    "createdAt": 1792568925678,
+    "updatedAt": 1792568925678
    },
    {
     "version": 1,
-    "id": "bot-14661957",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "id": "bot-0d8c30cd",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "role": "triage",
     "template": "issue",
     "name": "Issue",
@@ -74,7 +80,7 @@
      "kind": "acp",
      "command": "/home/owner/.local/node/bin/node",
      "args": [
-      "/home/owner/Desktop/coding/wmux/wmux-team/scripts/acp-stub.mjs",
+      "/home/owner/Desktop/coding/wmux/wmux/scripts/acp-stub.mjs",
       "--script",
       "/tmp/x",
       "--log",
@@ -88,67 +94,68 @@
      "maxWorkerHoursPerDay": 4,
      "turnTimeoutMs": 600000
     },
+    "hue": 4,
     "enabled": true,
-    "createdAt": 1792057630276,
-    "updatedAt": 1792057630276
+    "createdAt": 1792568925682,
+    "updatedAt": 1792568925682
    }
   ],
   "botKeys": {
-   "lead": "bot-553f6303",
-   "developer": "bot-c3cecdd2",
-   "issue": "bot-14661957"
+   "lead": "bot-378d2ec4",
+   "developer": "bot-6ae6b640",
+   "issue": "bot-0d8c30cd"
   },
   "injected": [
    {
     "label": "hi",
     "kind": "card",
-    "id": "c-mv9cud6v05f2520eca",
-    "threadId": "group:grp-18ef819e",
-    "at": 1792057630278
+    "id": "c-mvht979371ee0bab5d",
+    "threadId": "group:grp-d5f76d3e",
+    "at": 1792568925685
    },
    {
     "label": "dev only",
     "kind": "card",
-    "id": "c-mv9culcq9ef5d59e52",
-    "threadId": "group:grp-18ef819e",
-    "at": 1792057640856
+    "id": "c-mvht9fec41d1a10282",
+    "threadId": "group:grp-d5f76d3e",
+    "at": 1792568936242
    }
   ],
   "actions": [
    {
-    "at": 1792057630277,
+    "at": 1792568925684,
     "do": "api",
     "label": "make the group",
     "result": {
      "ok": true,
      "group": {
-      "id": "grp-18ef819e",
-      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "id": "grp-d5f76d3e",
+      "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
       "name": "Ship it",
       "memberIds": [
-       "bot-553f6303",
-       "bot-c3cecdd2"
+       "bot-6ae6b640",
+       "bot-0d8c30cd"
       ],
-      "threadId": "group:grp-18ef819e",
-      "createdAt": 1792057630277,
-      "updatedAt": 1792057630277
+      "threadId": "group:grp-d5f76d3e",
+      "createdAt": 1792568925684,
+      "updatedAt": 1792568925684
      }
     }
    },
    {
-    "at": 1792057630278,
+    "at": 1792568925685,
     "do": "post",
     "label": "hi",
     "result": {
      "ok": true,
      "card": {
       "version": 1,
-      "id": "c-mv9cud6v05f2520eca",
+      "id": "c-mvht979371ee0bab5d",
       "seq": 1,
-      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-      "threadId": "group:grp-18ef819e",
+      "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+      "threadId": "group:grp-d5f76d3e",
       "kind": "human",
-      "at": 1792057630279,
+      "at": 1792568925687,
       "actor": {
        "kind": "human"
       },
@@ -156,209 +163,211 @@
       "body": "Can someone look at the login bug?",
       "refs": {
        "botIds": [
-        "bot-553f6303",
-        "bot-c3cecdd2"
+        "bot-6ae6b640",
+        "bot-0d8c30cd"
        ]
       }
      },
      "addressee": {
-      "botId": "bot-553f6303",
-      "role": "moa"
+      "botId": "bot-6ae6b640",
+      "role": "lead"
      },
-     "wakeId": "w-mv9cud6w-600e3f9c",
+     "wakeId": "w-mvht9794-605fef3a",
      "addressees": [
       {
-       "botId": "bot-553f6303",
-       "role": "moa",
-       "wakeId": "w-mv9cud6w-600e3f9c"
+       "botId": "bot-6ae6b640",
+       "role": "lead",
+       "wakeId": "w-mvht9794-605fef3a"
       },
       {
-       "botId": "bot-c3cecdd2",
-       "role": "lead",
-       "wakeId": "w-mv9cud6w-f0a43764"
+       "botId": "bot-0d8c30cd",
+       "role": "triage",
+       "wakeId": "w-mvht9794-8f342e77"
       }
      ]
     }
    },
    {
-    "at": 1792057630284,
+    "at": 1792568925694,
     "do": "waitFor",
     "label": "both members answered",
     "ok": true,
-    "doneAt": 1792057640854
+    "doneAt": 1792568931216
    },
    {
-    "at": 1792057640854,
+    "at": 1792568931216,
     "do": "waitFor",
-    "label": "lead answered",
+    "label": "issue answered",
     "ok": true,
-    "doneAt": 1792057640856
+    "doneAt": 1792568936242
    },
    {
-    "at": 1792057640856,
+    "at": 1792568936242,
     "do": "post",
     "label": "dev only",
     "result": {
      "ok": true,
      "card": {
       "version": 1,
-      "id": "c-mv9culcq9ef5d59e52",
+      "id": "c-mvht9fec41d1a10282",
       "seq": 4,
-      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-      "threadId": "group:grp-18ef819e",
+      "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+      "threadId": "group:grp-d5f76d3e",
       "kind": "human",
-      "at": 1792057640858,
+      "at": 1792568936244,
       "actor": {
        "kind": "human"
       },
       "title": "Developer only",
       "body": "Just the developer, please.",
       "refs": {
-       "botId": "bot-c3cecdd2",
+       "botId": "bot-6ae6b640",
        "botIds": [
-        "bot-c3cecdd2"
+        "bot-6ae6b640"
        ]
       }
      },
      "addressee": {
-      "botId": "bot-c3cecdd2",
+      "botId": "bot-6ae6b640",
       "role": "lead"
      },
-     "wakeId": "w-mv9culcr-3ef33490",
+     "wakeId": "w-mvht9fed-707bacc6",
      "addressees": [
       {
-       "botId": "bot-c3cecdd2",
+       "botId": "bot-6ae6b640",
        "role": "lead",
-       "wakeId": "w-mv9culcr-3ef33490"
+       "wakeId": "w-mvht9fed-707bacc6"
       }
      ]
     }
    },
    {
-    "at": 1792057640863,
+    "at": 1792568936249,
     "do": "waitFor",
     "label": "quiet",
     "ok": true,
-    "doneAt": 1792057646407
+    "doneAt": 1792568941773
    }
   ],
   "harnessErrors": [],
   "facts": [
    {
-    "id": "f-0mv9cud6v-1875c19e40c9",
+    "id": "f-0mvht9793-26fe33fbf85b",
     "seq": 1,
     "kind": "human.message",
-    "at": 1792057630279,
-    "dedupeKey": "human.message:c-mv9cud6v05f2520eca:bot-553f6303",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "at": 1792568925687,
+    "dedupeKey": "human.message:c-mvht979371ee0bab5d:bot-6ae6b640",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "ref": {
-     "botId": "bot-553f6303",
-     "messageId": "c-mv9cud6v05f2520eca:bot-553f6303"
+     "botId": "bot-6ae6b640",
+     "messageId": "c-mvht979371ee0bab5d:bot-6ae6b640"
     },
     "actor": {
      "kind": "human"
     },
     "payload": {
      "text": "Can someone look at the login bug?",
-     "cardId": "c-mv9cud6v05f2520eca",
-     "threadId": "group:grp-18ef819e",
+     "cardId": "c-mvht979371ee0bab5d",
+     "threadId": "group:grp-d5f76d3e",
      "source": "desktop"
     }
    },
    {
-    "id": "f-0mv9cud6v-1597fa082d3d",
+    "id": "f-0mvht9793-9fab0aa30671",
     "seq": 2,
     "kind": "human.message",
-    "at": 1792057630279,
-    "dedupeKey": "human.message:c-mv9cud6v05f2520eca:bot-c3cecdd2",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "at": 1792568925687,
+    "dedupeKey": "human.message:c-mvht979371ee0bab5d:bot-0d8c30cd",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "ref": {
-     "botId": "bot-c3cecdd2",
-     "messageId": "c-mv9cud6v05f2520eca:bot-c3cecdd2"
+     "botId": "bot-0d8c30cd",
+     "messageId": "c-mvht979371ee0bab5d:bot-0d8c30cd"
     },
     "actor": {
      "kind": "human"
     },
     "payload": {
      "text": "Can someone look at the login bug?",
-     "cardId": "c-mv9cud6v05f2520eca",
-     "threadId": "group:grp-18ef819e",
+     "cardId": "c-mvht979371ee0bab5d",
+     "threadId": "group:grp-d5f76d3e",
      "source": "desktop"
     }
    },
    {
-    "id": "f-0mv9culcq-a6947e8d3bc3",
+    "id": "f-0mvht9fec-3ddd55ffddf8",
     "seq": 3,
     "kind": "human.message",
-    "at": 1792057640858,
-    "dedupeKey": "human.message:c-mv9culcq9ef5d59e52:bot-c3cecdd2",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "at": 1792568936244,
+    "dedupeKey": "human.message:c-mvht9fec41d1a10282:bot-6ae6b640",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "ref": {
-     "botId": "bot-c3cecdd2",
-     "messageId": "c-mv9culcq9ef5d59e52:bot-c3cecdd2"
+     "botId": "bot-6ae6b640",
+     "messageId": "c-mvht9fec41d1a10282:bot-6ae6b640"
     },
     "actor": {
      "kind": "human"
     },
     "payload": {
      "text": "Just the developer, please.",
-     "cardId": "c-mv9culcq9ef5d59e52",
-     "threadId": "group:grp-18ef819e",
+     "cardId": "c-mvht9fec41d1a10282",
+     "threadId": "group:grp-d5f76d3e",
      "source": "desktop"
     }
    }
   ],
   "wakes": [
    {
-    "id": "w-mv9cud6w-600e3f9c",
-    "botId": "bot-553f6303",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "id": "w-mvht9794-605fef3a",
+    "botId": "bot-6ae6b640",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "reason": {
      "kind": "human",
      "text": "Can someone look at the login bug?",
      "source": "desktop",
-     "clientMessageId": "c-mv9cud6v05f2520eca",
-     "runId": "run-c-mv9cud6v05f2520eca",
-     "room": true
+     "clientMessageId": "c-mvht979371ee0bab5d",
+     "runId": "run-c-mvht979371ee0bab5d",
+     "room": true,
+     "roomWide": true
     },
-    "threadId": "group:grp-18ef819e",
+    "threadId": "group:grp-d5f76d3e",
     "priority": 0,
-    "enqueuedAt": 1792057630280,
+    "enqueuedAt": 1792568925688,
     "attempts": 1,
     "state": "done"
    },
    {
-    "id": "w-mv9cud6w-f0a43764",
-    "botId": "bot-c3cecdd2",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "id": "w-mvht9794-8f342e77",
+    "botId": "bot-0d8c30cd",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "reason": {
      "kind": "human",
      "text": "Can someone look at the login bug?",
      "source": "desktop",
-     "clientMessageId": "c-mv9cud6v05f2520eca",
-     "runId": "run-c-mv9cud6v05f2520eca",
-     "room": true
+     "clientMessageId": "c-mvht979371ee0bab5d",
+     "runId": "run-c-mvht979371ee0bab5d",
+     "room": true,
+     "roomWide": true
     },
-    "threadId": "group:grp-18ef819e",
+    "threadId": "group:grp-d5f76d3e",
     "priority": 0,
-    "enqueuedAt": 1792057630280,
+    "enqueuedAt": 1792568925688,
     "attempts": 1,
     "state": "done"
    },
    {
-    "id": "w-mv9culcr-3ef33490",
-    "botId": "bot-c3cecdd2",
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+    "id": "w-mvht9fed-707bacc6",
+    "botId": "bot-6ae6b640",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
     "reason": {
      "kind": "human",
      "text": "Just the developer, please.",
      "source": "desktop",
-     "clientMessageId": "c-mv9culcq9ef5d59e52",
-     "runId": "run-c-mv9culcq9ef5d59e52"
+     "clientMessageId": "c-mvht9fec41d1a10282",
+     "runId": "run-c-mvht9fec41d1a10282"
     },
-    "threadId": "group:grp-18ef819e",
+    "threadId": "group:grp-d5f76d3e",
     "priority": 0,
-    "enqueuedAt": 1792057640859,
+    "enqueuedAt": 1792568936245,
     "attempts": 1,
     "state": "done"
    }
@@ -373,12 +382,12 @@
   "cards": [
    {
     "version": 1,
-    "id": "c-mv9cud6v05f2520eca",
+    "id": "c-mvht979371ee0bab5d",
     "seq": 1,
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-    "threadId": "group:grp-18ef819e",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+    "threadId": "group:grp-d5f76d3e",
     "kind": "human",
-    "at": 1792057630279,
+    "at": 1792568925687,
     "actor": {
      "kind": "human"
     },
@@ -386,121 +395,119 @@
     "body": "Can someone look at the login bug?",
     "refs": {
      "botIds": [
-      "bot-553f6303",
-      "bot-c3cecdd2"
+      "bot-6ae6b640",
+      "bot-0d8c30cd"
      ]
     }
    },
    {
     "version": 1,
-    "id": "c-mv9cuh6338edbd9a2c",
+    "id": "c-mvht9b945bf122e23d",
     "seq": 2,
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-    "threadId": "group:grp-18ef819e",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+    "threadId": "group:grp-d5f76d3e",
     "kind": "opinion",
-    "at": 1792057635435,
+    "at": 1792568930872,
     "actor": {
      "kind": "bot",
-     "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-     "botId": "bot-553f6303"
-    },
-    "title": "On it",
-    "body": "I will pick who works on this.",
-    "replyTo": "c-mv9cud6v05f2520eca",
-    "clientPostId": "wake:w-mv9cud6w-600e3f9c:1"
-   },
-   {
-    "version": 1,
-    "id": "c-mv9cul632bf639fd20",
-    "seq": 3,
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-    "threadId": "group:grp-18ef819e",
-    "kind": "opinion",
-    "at": 1792057640619,
-    "actor": {
-     "kind": "bot",
-     "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-     "botId": "bot-c3cecdd2"
+     "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+     "botId": "bot-6ae6b640"
     },
     "title": "Hi from developer",
     "body": "developer here.",
-    "replyTo": "c-mv9cud6v05f2520eca",
-    "clientPostId": "wake:w-mv9cud6w-f0a43764:1"
+    "replyTo": "c-mvht979371ee0bab5d",
+    "clientPostId": "wake:w-mvht9794-605fef3a:1"
    },
    {
     "version": 1,
-    "id": "c-mv9culcq9ef5d59e52",
+    "id": "c-mvht9f8q35f036bfd6",
+    "seq": 3,
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+    "threadId": "group:grp-d5f76d3e",
+    "kind": "opinion",
+    "at": 1792568936042,
+    "actor": {
+     "kind": "bot",
+     "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+     "botId": "bot-0d8c30cd"
+    },
+    "title": "Hi from issue",
+    "body": "issue here.",
+    "replyTo": "c-mvht979371ee0bab5d",
+    "clientPostId": "wake:w-mvht9794-8f342e77:1"
+   },
+   {
+    "version": 1,
+    "id": "c-mvht9fec41d1a10282",
     "seq": 4,
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-    "threadId": "group:grp-18ef819e",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+    "threadId": "group:grp-d5f76d3e",
     "kind": "human",
-    "at": 1792057640858,
+    "at": 1792568936244,
     "actor": {
      "kind": "human"
     },
     "title": "Developer only",
     "body": "Just the developer, please.",
     "refs": {
-     "botId": "bot-c3cecdd2",
+     "botId": "bot-6ae6b640",
      "botIds": [
-      "bot-c3cecdd2"
+      "bot-6ae6b640"
      ]
     }
    },
    {
     "version": 1,
-    "id": "c-mv9culcvacb80b73bb",
+    "id": "c-mvht9fehceba5bfa10",
     "seq": 5,
-    "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-    "threadId": "group:grp-18ef819e",
+    "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+    "threadId": "group:grp-d5f76d3e",
     "kind": "opinion",
-    "at": 1792057640863,
+    "at": 1792568936249,
     "actor": {
      "kind": "bot",
-     "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
-     "botId": "bot-c3cecdd2"
+     "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
+     "botId": "bot-6ae6b640"
     },
     "title": "Hi from developer",
     "body": "developer here.",
-    "replyTo": "c-mv9culcq9ef5d59e52",
-    "clientPostId": "wake:w-mv9culcr-3ef33490:1"
+    "replyTo": "c-mvht9fec41d1a10282",
+    "clientPostId": "wake:w-mvht9fed-707bacc6:1"
    }
   ],
   "stub": {
-   "lead": [
-    {
-     "at": 1792057635436,
-     "event": "tool",
-     "sessionId": "stub-fe580188bb6a",
-     "name": "room_post",
-     "ok": true,
-     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mv9cuh6338edbd9a2c\",\n    \"seq\": 2,\n    \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n    \"threadId\": \"group:grp-18ef819e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792057635435,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n      \"botId\": \"bot-553f6303\"\n    },\n    \"title\": \"On it\",\n    \"body\": \"I will pick who works on this.\",\n    \"replyTo\": \"c-mv9cud6v05f2520eca\",\n    \"clientPostId\": \"wake:w-mv9cud6w-600e3f9c:1\"\n  }\n}"
-    }
-   ],
+   "lead": [],
    "developer": [
     {
-     "at": 1792057640620,
+     "at": 1792568930874,
      "event": "tool",
-     "sessionId": "stub-4a8a78b985c6",
+     "sessionId": "stub-c19f9734aeb0",
      "name": "room_post",
      "ok": true,
-     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mv9cul632bf639fd20\",\n    \"seq\": 3,\n    \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n    \"threadId\": \"group:grp-18ef819e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792057640619,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n      \"botId\": \"bot-c3cecdd2\"\n    },\n    \"title\": \"Hi from developer\",\n    \"body\": \"developer here.\",\n    \"replyTo\": \"c-mv9cud6v05f2520eca\",\n    \"clientPostId\": \"wake:w-mv9cud6w-f0a43764:1\"\n  }\n}"
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mvht9b945bf122e23d\",\n    \"seq\": 2,\n    \"workspaceId\": \"ws-53d53050-49e8-4583-81f9-406b5c7bd1b9\",\n    \"threadId\": \"group:grp-d5f76d3e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792568930872,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-53d53050-49e8-4583-81f9-406b5c7bd1b9\",\n      \"botId\": \"bot-6ae6b640\"\n    },\n    \"title\": \"Hi from developer\",\n    \"body\": \"developer here.\",\n    \"replyTo\": \"c-mvht979371ee0bab5d\",\n    \"clientPostId\": \"wake:w-mvht9794-605fef3a:1\"\n  }\n}"
     },
     {
-     "at": 1792057640864,
+     "at": 1792568936249,
      "event": "tool",
-     "sessionId": "stub-4a8a78b985c6",
+     "sessionId": "stub-c19f9734aeb0",
      "name": "room_post",
      "ok": true,
-     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mv9culcvacb80b73bb\",\n    \"seq\": 5,\n    \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n    \"threadId\": \"group:grp-18ef819e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792057640863,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6\",\n      \"botId\": \"bot-c3cecdd2\"\n    },\n    \"title\": \"Hi from developer\",\n    \"body\": \"developer here.\",\n    \"replyTo\": \"c-mv9culcq9ef5d59e52\",\n    \"clientPostId\": \"wake:w-mv9culcr-3ef33490:1\"\n  }\n}"
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mvht9fehceba5bfa10\",\n    \"seq\": 5,\n    \"workspaceId\": \"ws-53d53050-49e8-4583-81f9-406b5c7bd1b9\",\n    \"threadId\": \"group:grp-d5f76d3e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792568936249,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-53d53050-49e8-4583-81f9-406b5c7bd1b9\",\n      \"botId\": \"bot-6ae6b640\"\n    },\n    \"title\": \"Hi from developer\",\n    \"body\": \"developer here.\",\n    \"replyTo\": \"c-mvht9fec41d1a10282\",\n    \"clientPostId\": \"wake:w-mvht9fed-707bacc6:1\"\n  }\n}"
     }
    ],
-   "issue": []
+   "issue": [
+    {
+     "at": 1792568936043,
+     "event": "tool",
+     "sessionId": "stub-0dbd2fee419e",
+     "name": "room_post",
+     "ok": true,
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mvht9f8q35f036bfd6\",\n    \"seq\": 3,\n    \"workspaceId\": \"ws-53d53050-49e8-4583-81f9-406b5c7bd1b9\",\n    \"threadId\": \"group:grp-d5f76d3e\",\n    \"kind\": \"opinion\",\n    \"at\": 1792568936042,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-53d53050-49e8-4583-81f9-406b5c7bd1b9\",\n      \"botId\": \"bot-0d8c30cd\"\n    },\n    \"title\": \"Hi from issue\",\n    \"body\": \"issue here.\",\n    \"replyTo\": \"c-mvht979371ee0bab5d\",\n    \"clientPostId\": \"wake:w-mvht9794-8f342e77:1\"\n  }\n}"
+    }
+   ]
   },
   "workers": [],
-  "gh": {
-   "calls": []
-  },
+  "gh": [],
   "sources": {
    "facts": {
     "present": true,
@@ -573,8 +580,8 @@
     "errors": 0
    },
    "workers": {
-    "present": false,
-    "ok": false,
+    "present": true,
+    "ok": true,
     "errors": 0
    },
    "ghCalls": {
@@ -589,56 +596,59 @@
     "result": {
      "ok": true,
      "group": {
-      "id": "grp-18ef819e",
-      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "id": "grp-d5f76d3e",
+      "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
       "name": "Ship it",
       "memberIds": [
-       "bot-553f6303",
-       "bot-c3cecdd2"
+       "bot-6ae6b640",
+       "bot-0d8c30cd"
       ],
-      "threadId": "group:grp-18ef819e",
-      "createdAt": 1792057630277,
-      "updatedAt": 1792057630277
+      "threadId": "group:grp-d5f76d3e",
+      "createdAt": 1792568925684,
+      "updatedAt": 1792568925684
      }
     }
    }
   ],
   "timeouts": [],
   "saved": {
-   "groupThread": "group:grp-18ef819e"
+   "groupThread": "group:grp-d5f76d3e"
   },
   "launches": [
    {
-    "ok": true
+    "ok": true,
+    "runId": "2026-10-21T07-48-43-verify-f9133f33",
+    "evidenceDir": "/home/owner/Desktop/coding/wmux/wmux/.claude/skills/verify-wmux/evidence/2026-10-21T07-48-43-verify-f9133f33"
    }
   ]
  },
  "fail": [
   {
-   "why": "the issue bot, outside the group, woke on the group message",
+   "why": "the coordinator, outside the group, woke on the group message",
    "failing": [
     "one_wake_per_member",
-    "issue_not_woken"
+    "lead_not_woken"
    ],
    "mutate": [
     {
      "op": "push",
      "path": "wakes",
      "value": {
-      "id": "w-issue",
-      "botId": "bot-14661957",
-      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "id": "w-lead",
+      "botId": "bot-378d2ec4",
+      "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
       "reason": {
        "kind": "human",
        "text": "Can someone look at the login bug?",
        "source": "desktop",
-       "clientMessageId": "c-mv9cud6v05f2520eca",
-       "runId": "run-c-mv9cud6v05f2520eca",
-       "room": true
+       "clientMessageId": "c-mvht979371ee0bab5d",
+       "runId": "run-c-mvht979371ee0bab5d",
+       "room": true,
+       "roomWide": true
       },
-      "threadId": "group:grp-18ef819e",
+      "threadId": "group:grp-d5f76d3e",
       "priority": 0,
-      "enqueuedAt": 1792057630280,
+      "enqueuedAt": 1792568925688,
       "attempts": 1,
       "state": "done"
      }
@@ -646,7 +656,7 @@
    ]
   },
   {
-   "why": "the lead's wake was not pinned to the group",
+   "why": "the developer's wake was not pinned to the group",
    "failing": [
     "wakes_pinned_to_group"
    ],
@@ -659,7 +669,7 @@
    ]
   },
   {
-   "why": "the lead was woken as the room's coordinator alone",
+   "why": "the developer was woken as the coordinator",
    "failing": [
     "wakes_pinned_to_group"
    ],
@@ -668,6 +678,18 @@
      "op": "set",
      "path": "wakes.0.reason.lead",
      "value": true
+    }
+   ]
+  },
+  {
+   "why": "the developer's wake is not marked room-wide (its closing text would be posted)",
+   "failing": [
+    "wakes_pinned_to_group"
+   ],
+   "mutate": [
+    {
+     "op": "remove",
+     "path": "wakes.0.reason.roomWide"
     }
    ]
   },
@@ -681,15 +703,15 @@
      "op": "set",
      "path": "cards.0.refs.botIds",
      "value": [
-      "bot-553f6303",
-      "bot-c3cecdd2",
-      "bot-14661957"
+      "bot-378d2ec4",
+      "bot-6ae6b640",
+      "bot-0d8c30cd"
      ]
     }
    ]
   },
   {
-   "why": "the picked message woke the lead too",
+   "why": "the picked message woke the issue bot too",
    "failing": [
     "picked_wakes_one"
    ],
@@ -698,19 +720,19 @@
      "op": "push",
      "path": "wakes",
      "value": {
-      "id": "w-lead-2",
-      "botId": "bot-553f6303",
-      "workspaceId": "ws-8e90e7fd-082b-4b57-a86a-4d9a78bea1f6",
+      "id": "w-issue-2",
+      "botId": "bot-0d8c30cd",
+      "workspaceId": "ws-53d53050-49e8-4583-81f9-406b5c7bd1b9",
       "reason": {
        "kind": "human",
        "text": "Just the developer, please.",
        "source": "desktop",
-       "clientMessageId": "c-mv9culcq9ef5d59e52",
-       "runId": "run-c-mv9culcq9ef5d59e52"
+       "clientMessageId": "c-mvht9fec41d1a10282",
+       "runId": "run-c-mvht9fec41d1a10282"
       },
-      "threadId": "group:grp-18ef819e",
+      "threadId": "group:grp-d5f76d3e",
       "priority": 0,
-      "enqueuedAt": 1792057640859,
+      "enqueuedAt": 1792568936245,
       "attempts": 1,
       "state": "done"
      }
@@ -718,7 +740,7 @@
    ]
   },
   {
-   "why": "no directed fact for the lead",
+   "why": "no directed fact for the developer",
    "failing": [
     "one_directed_fact_each"
    ],

@@ -9,8 +9,8 @@
 // them, each with its avatar and template), with a
 // small profile editor when the bot port can update them (name, job,
 // picture, switch and budget; the repository is shown, not changed), and
-// "Add bot" (workspace and name; optionally a picture, a template chip that
-// prefills the job, the job and a repository) when the bot port can create
+// "Add bot" (workspace and name; optionally a picture, a recipe or a
+// template chip that prefills the job, the job and a repository) when the bot port can create
 // them. A workspace works on one repository: once a bot there has one, a new
 // bot takes it; before that, main suggests the workspace's own folder, shown
 // as "Works on <repo>" with Change and None (nothing is attached unseen).
@@ -54,11 +54,13 @@ import { BotConnectionsSection } from './BotConnectionsSection';
 import { ClaudeAuthSection, bridgeClaudeAuthPort, type ClaudeAuthPort } from './ClaudeAuthSection';
 import { InlineConfirm } from '../Bots/InlineConfirm';
 import { selectBotTaskOwners, withoutBotTasks } from '../Sidebar/botTasks';
-import { listedWorkspaces } from '../../stores/slices/moaSlice';
+import { listedWorkspaces } from '../../../shared/pcRail';
 import { createBot, turnBotsOn, type TurnBotsOnResult } from '../Bots/botsAddBot';
 import { botsOnPatch, useBotsPlanConsent } from '../Bots/BotsPlanConsent';
 import { botsStopPort, toastStoppedWork } from '../Bots/botsStop';
 import { botModelSummary } from '../Bots/botsProfile';
+import { RecipePicker, recipeJob } from '../Bots/BotRecipes';
+import type { BotRecipe } from '../../../shared/botRecipes';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -484,6 +486,8 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
   const onDone = props.onDone;
   const [workspaceId, setWorkspaceId] = useState(defaultWorkspaceId);
   const [template, setTemplate] = useState<BotTemplate | null>(null);
+  // A recipe sets the template and prefills the job; it grants nothing.
+  const [recipe, setRecipe] = useState<BotRecipe | null>(null);
   const [job, setJob] = useState('');
   // The text the last chip put in the job field: a chip replaces the job
   // only while the owner has not written their own.
@@ -506,14 +510,22 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
   const plan = teamPlan(rows, workspaceId, t);
   const canTeam = !!port.createTeam && !!workspaceId && plan.missing.length > 0;
 
-  const pickTemplate = (next: BotTemplate) => {
-    const picked = template === next ? null : next;
-    setTemplate(picked);
+  const prefill = (fill: string) => {
     if (job.trim() === '' || job === prefilled.current) {
-      const fill = templateJob(picked, t);
       setJob(fill);
       prefilled.current = fill;
     }
+  };
+  const pickTemplate = (next: BotTemplate) => {
+    const picked = template === next ? null : next;
+    setTemplate(picked);
+    setRecipe(null);
+    prefill(templateJob(picked, t));
+  };
+  const pickRecipe = (next: BotRecipe | null) => {
+    setRecipe(next);
+    setTemplate(null);
+    prefill(next ? recipeJob(next, t) : '');
   };
 
   // An edit that makes the form invalid closes the turn-on confirm.
@@ -533,7 +545,7 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
       const r = await createBot(port, {
         workspaceId,
         name: typedName,
-        ...(template ? { template } : {}),
+        ...(recipe ? { template: recipe.template, recipe: recipe.id } : template ? { template } : {}),
         ...(typedJob ? { job: typedJob } : {}),
         ...(repo.repoFolder ? { repoFolder: repo.repoFolder } : {}),
         ...(avatar ? { avatar } : {}),
@@ -632,6 +644,7 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
           removeLabel={t('settings.factory.removePicture')}
         />
       )}
+      <RecipePicker value={recipe?.id ?? null} onChange={pickRecipe} t={t} platform={window.electronAPI?.platform} />
       <div className="flex items-start gap-2 text-[12px] text-[var(--text-sub)]">
         <span className="w-[120px] shrink-0 pt-[3px]">{t('settings.factory.addBotTemplate')}</span>
         <div role="group" aria-label={t('settings.factory.addBotTemplate')} className="flex flex-1 flex-wrap items-center gap-1">

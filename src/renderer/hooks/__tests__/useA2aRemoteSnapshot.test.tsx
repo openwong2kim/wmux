@@ -9,7 +9,6 @@ import { act, createElement } from 'react';
 import { useStore } from '../../stores';
 import { createWorkspace, type Workspace } from '../../../shared/types';
 import type { A2aRemotePaneSnapshot } from '../../../shared/rpc';
-import type { MoaState } from '../../../shared/moa';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { A2A_SNAPSHOT_DEBOUNCE_MS, buildPaneSnapshot, useA2aRemoteSnapshot } from '../useA2aRemoteSnapshot';
 
@@ -29,7 +28,7 @@ beforeEach(() => {
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     a2aRemote: { snapshot: vi.fn(async (s: A2aRemotePaneSnapshot) => { sent.push(s); return { ok: true }; }) },
   };
-  useStore.setState({ sessionRestored: false, sessionLoadSettled: false, workspaces: [], paneLabel: {}, moa: null });
+  useStore.setState({ sessionRestored: false, sessionLoadSettled: false, workspaces: [], paneLabel: {} });
 });
 afterEach(() => {
   if (root) act(() => root!.unmount());
@@ -43,14 +42,11 @@ function mount(): void {
   act(() => root!.render(createElement(Probe)));
 }
 
-const moaOn = (hqId: string): MoaState =>
-  ({ config: { enabled: true }, hq: { workspaceId: hqId, state: 'ok' }, archive: { unacked: 0, total: 0 } }) as unknown as MoaState;
-
 describe('exposure snapshot on a first run', () => {
-  it('nothing is published before the load settles; a first run (no saved session) publishes panes and Moa', async () => {
+  it('nothing is published before the load settles; a first run (no saved session) publishes panes, and no Moa', async () => {
     mount();
     const ws: Workspace = createWorkspace('Fresh');
-    act(() => useStore.setState({ workspaces: [ws], moa: moaOn(ws.id) }));
+    act(() => useStore.setState({ workspaces: [ws] }));
     await act(async () => { await vi.advanceTimersByTimeAsync(A2A_SNAPSHOT_DEBOUNCE_MS * 2); });
     expect(sent).toEqual([]);
 
@@ -60,7 +56,9 @@ describe('exposure snapshot on a first run', () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].workspaces.map((w) => w.id)).toEqual([ws.id]);
     expect(sent[0].workspaces[0].panes).toHaveLength(1);
-    expect(sent[0].brain).toEqual({ workspaceId: ws.id, name: 'Fresh' });
+    // This PC has no Moa: a brain link an earlier version left is ended, not waited on.
+    expect(sent[0].brain).toBeUndefined();
+    expect(sent[0].brainState).toBe('off');
     expect(sent[0].sessionRestored).toBe(true);
   });
 });

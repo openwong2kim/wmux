@@ -26,6 +26,5 @@ describe('Fleet board and a legacy HQ workspace', () => {
     expect(selectFleetSectionCounts(useStore.getState()).needsYou).toBeGreaterThan(0);
     const triage = buildFleetTriage(useStore.getState(), { includeIdle: true }, now);
     expect([...triage.needsYou, ...triage.running, ...(triage.idle.rows ?? [])].map((r) => r.workspaceId)).toContain('ws-1');
-    expect(useStore.getState().moa).toBeNull();
   });
 });

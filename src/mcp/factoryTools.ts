@@ -13,7 +13,7 @@ import { PR_VERDICT_RPC, PR_VERDICT_SUMMARY_MAX } from '../shared/prVerdict';
 import { ROOM_LIMITS } from '../shared/room';
 import { registerToolModule } from './toolModules';
 
-/** pr_verdict reads the PR from GitHub before recording. */
+/** pr_verdict reads the PR from its host before recording. */
 const PR_VERDICT_TIMEOUT_MS = 30_000;
 /** Trust metrics read the git log of the repository. */
 const TRUST_TIMEOUT_MS = 30_000;
@@ -36,7 +36,7 @@ registerToolModule({
 
     host.tool(
       'pr_read',
-      'Read one pull request of your workspace\'s repository, fresh from GitHub: state, head SHA and branch, base, author, labels, changed files (first 100) and checks with which are required.',
+      'Read one pull request of your workspace\'s repository, fresh from its host (on GitLab a merge request: pr_number is its iid, checks are its head pipeline\'s jobs): state, head SHA and branch, base, author, labels, changed files (first 100) and checks with which are required.',
       { pr_number: PR_NUMBER, workspace_id: WORKSPACE },
       async ({ pr_number, workspace_id }) => call(FACTORY_READ_RPC.prRead, { prNumber: pr_number, workspaceId: workspace_id }),
     );

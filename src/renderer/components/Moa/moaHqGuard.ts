@@ -7,9 +7,8 @@
  */
 import { useStore } from '../../stores';
 import type { StoreState } from '../../stores';
-import { listedWorkspaces } from '../../stores/slices/moaSlice';
 import { t } from '../../i18n';
-import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { isShadowWorkspaceId, listedWorkspaces } from '../../../shared/pcRail';
 
 export { listedWorkspaces };
 

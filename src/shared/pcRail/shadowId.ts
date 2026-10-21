@@ -56,3 +56,11 @@ export function parseShadowWorkspaceId(id: unknown): ShadowWorkspaceRef | null {
 export function isShadowWorkspaceId(id: unknown): boolean {
   return typeof id === 'string' && id.startsWith(SHADOW_WORKSPACE_PREFIX);
 }
+
+/**
+ * The workspaces the operator sees (and Ctrl+N counts): all but the PC rail's
+ * shadow workspaces, which belong to another computer.
+ */
+export function listedWorkspaces<T extends { id: string }>(list: readonly T[]): T[] {
+  return list.filter((w) => !isShadowWorkspaceId(w.id));
+}

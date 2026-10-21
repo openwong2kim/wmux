@@ -57,7 +57,7 @@ import { selectBotTaskOwners, withoutBotTasks } from '../Sidebar/botTasks';
 import { blocksStart, bridgeEnginePort, useEngineReadiness, type EnginePort } from './botsEngine'
 import { CLAUDE_CODE_INSTALL_URL } from '../../../shared/factoryEngine';
 import { BOT_NAME_MAX, isCoordinatorBot, normalizeBotName, type BotProfile } from '../../../shared/bot';
-import { listedWorkspaces } from '../../stores/slices/moaSlice';
+import { listedWorkspaces } from '../../../shared/pcRail';
 import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, type Conversation } from './botsModel';
 import BotsGroupDialog, { type GroupDialogStart } from './BotsGroupDialog';
 import { getBotGroupPort, type BotGroupPort } from '../Room/botGroups';
@@ -227,7 +227,7 @@ function openClaudeInstallPage(): void {
  *  Bots › First run). The page is reached with the bots on; Start adds the
  *  bot to the current workspace (turning the bots on first only if they went
  *  off meanwhile). */
-function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine, onStarted, onTeam, rows = [] }: {
+function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine, onStarted, onTeam, onRecipe, rows = [] }: {
   t: T;
   workspace: { id: string; name: string } | null;
   botPort: FactoryBotPort;
@@ -241,6 +241,8 @@ function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine,
   onStarted: (bot: BotProfile) => void;
   /** A team was added: the page offers a group chat with it. */
   onTeam: (team: readonly BotProfile[]) => void;
+  /** Opens the full Add bot form, where a recipe is picked. */
+  onRecipe: () => void;
 }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -361,6 +363,17 @@ function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine,
         </form>
         {workspace && (
           <AddBotRepoRow view={repo.view} t={t} busy={busy} onChoose={() => void repo.choose()} onNone={repo.chooseNone} />
+        )}
+        {workspace && (
+          <button
+            type="button"
+            data-bots-first-recipe
+            disabled={busy}
+            onClick={onRecipe}
+            className={`self-start text-[12px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+          >
+            {t('botsPage.onboarding.fromRecipe')}
+          </button>
         )}
         {blocked && name.trim() !== '' && <p data-bots-first-blocked className="text-[11px] text-[var(--text-muted)]">{t(blocked, { max: BOT_NAME_MAX })}</p>}
         {!workspace && <p data-bots-first-blocked className="text-[11px] text-[var(--text-muted)]">{t('settings.factory.addBotNeedWorkspace')}</p>}
@@ -819,6 +832,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
         engine={enginePort}
         onStarted={started}
         onTeam={onTeam}
+        onRecipe={() => openAdd(currentWorkspace?.id ?? null)}
         rows={bots}
       />
     );

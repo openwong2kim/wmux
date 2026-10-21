@@ -3,7 +3,7 @@
   "layer": "regression",
   "runs": 1,
   "model": "stub",
-  "description": "The owner makes a group chat of the coordinator and the developer (owner decision 2026-10-15: groups are the owner's, a coordinator is a bot like any other). An untagged message in the group's thread wakes every member once (one directed fact each, one shared run, the room flag on each wake, pinned to the group's thread), never a bot outside the group; each member answers in the group's thread; the card records both members. Then a message that picks the developer alone wakes only it.",
+  "description": "The owner makes a group chat of the developer and the issue bot; the workspace's coordinator is not in it. An untagged message in the group's thread wakes every member once (one directed fact each, one shared run, the room and roomWide flags on each wake, pinned to the group's thread), never a bot outside the group (the coordinator included: a group without one keeps the room-wide wake); each member answers in the group's thread with room_post; the card records both members. Then a message that picks the developer alone wakes only it.",
   "setup": {
     "bots": [
       {
@@ -93,8 +93,8 @@
           "workspaceId": "{{ws}}",
           "name": "Ship it",
           "memberIds": [
-            "{{bot.lead}}",
-            "{{bot.developer}}"
+            "{{bot.developer}}",
+            "{{bot.issue}}"
           ]
         }
       ],
@@ -127,10 +127,10 @@
     },
     {
       "do": "waitFor",
-      "label": "lead answered",
+      "label": "issue answered",
       "cond": {
         "wakes": {
-          "bot": "lead",
+          "bot": "issue",
           "reason": "human",
           "state": "done"
         }
@@ -170,12 +170,12 @@
     "message": "hi",
     "picked": "dev only",
     "members": [
-      "lead",
-      "developer"
+      "developer",
+      "issue"
     ],
     "pickedBot": "developer",
     "silent": [
-      "issue"
+      "lead"
     ]
   }
 }

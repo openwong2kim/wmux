@@ -62,8 +62,17 @@ describe('A2aHeldRow', () => {
     // Nothing on this row is the page's primary.
     expect(el.querySelector('.ui-btn-primary')).toBeNull();
 
-    const brain = render(createElement(A2aHeldRow, heldProps(heldTask('brain-delivery-pending'))));
+    // A Moa hold an older version wrote reads as an ended link, and waits on a person like any hold.
+    const legacy = render(createElement(A2aHeldRow, heldProps(heldTask('brain-delivery-pending'))));
+    expect(legacy.querySelector('[data-testid="a2a-delivery-reason"]')?.textContent).toBe('a2aDelivery.reason.link-not-active');
+    expect(legacy.querySelector('[data-testid="a2a-delivery-retry"]')).not.toBeNull();
+
+    // A brain-link hold names no local pane, so it can only be sent back.
+    const paneless = heldTask('brain-unavailable');
+    delete (paneless.metadata.to as { paneId?: string }).paneId;
+    const brain = render(createElement(A2aHeldRow, heldProps(paneless)));
     expect(brain.querySelector('[data-testid="a2a-delivery-retry"]')).toBeNull();
+    expect(brain.querySelector('[data-testid="a2a-delivery-reject"]')).not.toBeNull();
   });
 });
 

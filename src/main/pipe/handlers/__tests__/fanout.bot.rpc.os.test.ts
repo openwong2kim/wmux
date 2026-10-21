@@ -22,7 +22,7 @@ vi.mock('../../../deck/deckDecisionStore', async (actual) => ({
 
 import { sendToRenderer } from '../_bridge';
 import { git } from '../../../git/git';
-import { BOT_FANOUT_STARTING_NOTE, botLaunchRefusal, countOpenBotWorkers, registerFanOutRpc, verdictedTaskIds, workersHeldNote, type FanOutBotPort, type HeldFanoutRequest } from '../fanout.rpc';
+import { BOT_FANOUT_STARTING_NOTE, botLaunchRefusal, countOpenBotWorkers, parseCheckout, registerFanOutRpc, verdictedTaskIds, workersHeldNote, type FanOutBotPort, type HeldFanoutRequest } from '../fanout.rpc';
 import type { FanOutRequest, FanOutResult, FanOutService, FanOutStatus } from '../../../worktask/FanOutService';
 import type { RpcRouter } from '../../RpcRouter';
 import { FANOUT_LIVE_TASK_CAP, FanOutGuards } from '../../../worktask/fanoutGuards';
@@ -800,6 +800,20 @@ describe('task.fanout.start — bot origin', () => {
     // A pane caller may not name a checkout at all.
     const pane = await v.call({ idempotencyKey: 'k', senderPtyId: 'pty-1', titles: ['x'], checkout: { sha: SHA } }, { origin: 'local' });
     expect(pane.ok).toBe(false);
+  });
+
+  it('checkout.fetchRef is the review head ref of the bot\'s host: pull/<n>/head on GitHub, merge-requests/<n>/head on GitLab', () => {
+    const GL = 'gitlab.example.com/group/proj';
+    expect(parseCheckout({ sha: SHA, fetchRef: 'merge-requests/12/head' }, GL)).toEqual({ sha: SHA, detached: true, fetchRef: 'merge-requests/12/head' });
+    expect(parseCheckout({ sha: SHA, fetchRef: 'pull/12/head' }, 'github.com/o/r')).toEqual({ sha: SHA, detached: true, fetchRef: 'pull/12/head' });
+    // The other host's ref style, and an unknown host, are refused.
+    expect(parseCheckout({ sha: SHA, fetchRef: 'pull/12/head' }, GL)).toEqual({ error: expect.stringMatching(/merge-requests\/<number>\/head/) });
+    expect(parseCheckout({ sha: SHA, fetchRef: 'merge-requests/12/head' }, 'github.com/o/r')).toEqual({ error: expect.stringMatching(/pull\/<number>\/head/) });
+    expect(parseCheckout({ sha: SHA, fetchRef: 'merge-requests/12/head' })).toHaveProperty('error');
+    for (const bad of ['merge-requests/0/head', 'merge-requests/12/merge', 'merge-requests/12/head:x', 'refs/merge-requests/12/head', 'merge-requests/1234567890/head', '+merge-requests/12/head']) {
+      expect(parseCheckout({ sha: SHA, fetchRef: bad }, GL)).toHaveProperty('error');
+    }
+    expect(parseCheckout({ sha: SHA }, GL)).toEqual({ sha: SHA, detached: true });
   });
 
   it('a full worker slot (the bot\'s or the factory\'s) is reported as workers_full and held, not as an exhausted budget', async () => {

@@ -80,7 +80,7 @@ import { postGuestMessage, setGuestPostHandler } from './guestMessage';
 import { humanCardIdOfRun, postHumanMessage } from './humanMessage';
 import { phoneBot } from './phoneBot';
 import { redactStoredSecrets } from './secretRedaction';
-import { ghIssueService, splitRepoKey } from '../github/GhIssueService';
+import { splitRepoKey } from '../github/GhIssueService';
 import { MORNING_SCHEDULE_FILENAME, MORNING_SCHEDULE_ID, MorningSchedule, localDay } from './morningSchedule';
 import { fireMorningReport } from './morningReport';
 import { VERDICTED_TASKS_FILENAME, VerdictedTasks, installVerifyTaskClose, setVerdictedTasks } from './verdictedTasks';
@@ -763,7 +763,8 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
       bots = [];
     }
     const { host, cwd } = ownerLoginTarget(bots);
-    const login = await ghIssueService.signedInLogin(host, cwd).catch(() => null);
+    const { signedInLogin } = await import('../github/hostLane');
+    const login = await signedInLogin(host, cwd).catch(() => null);
     if (login) ownerLogin = login;
   };
 
@@ -947,19 +948,20 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
           },
           complete: (taskId) => completeCheckedTask(ledger, taskId),
           completeResearch: (taskId) => completeResearchTask(ledger, taskId),
-          // A merged PR from a reported task's branch ends that task: GitHub's
-          // list is the evidence (the repo watch's gh runner and breaker); a
-          // pr.merged fact only checks again sooner.
+          // A merged PR from a reported task's branch ends that task: the
+          // host's list is the evidence (gh's runner and breaker on GitHub,
+          // glab on GitLab: hostLane.ts); a pr.merged fact only checks again
+          // sooner.
           onFact: (fn) => getFactLog()?.subscribe(fn) ?? (() => undefined),
           prsOfBranch: async (repoKey, branch, base) => {
-            const { ghPrReviewService } = await import('../github/GhPrReviewService');
-            const r = await ghPrReviewService.mergedOfBranch(deps.wmuxDir(), repoKey, branch, base);
+            const { mergedOfBranch } = await import('../github/hostLane');
+            const r = await mergedOfBranch(deps.wmuxDir(), repoKey, branch, base);
             if (!r.ok) throw new Error(`${r.code}: ${r.message}`);
             return r.value;
           },
           defaultBranchOf: async (repoKey) => {
-            const { ghPrReviewService } = await import('../github/GhPrReviewService');
-            const r = await ghPrReviewService.defaultBranch(deps.wmuxDir(), repoKey);
+            const { defaultBranch } = await import('../github/hostLane');
+            const r = await defaultBranch(deps.wmuxDir(), repoKey);
             if (!r.ok) throw new Error(`${r.code}: ${r.message}`);
             return r.value;
           },

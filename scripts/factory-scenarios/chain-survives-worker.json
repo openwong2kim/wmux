@@ -3,7 +3,7 @@
   "layer": "regression",
   "runs": 1,
   "model": "stub",
-  "description": "The owner asks the coordinator by name (an untagged room message wakes every bot); it dispatches the developer by id. The developer does the work through a fan-out worker and, from the task's wake, sends one result with no reply_to. The router answers the dispatch with it: same run, depth +1, back to the coordinator, which is woken once and reports.",
+  "description": "The owner asks the coordinator by name (an untagged room message would reach it alone too); it dispatches the developer by id. The developer does the work through a fan-out worker and, from the task's wake, sends one result with no reply_to. The router answers the dispatch with it: same run, depth +1, back to the coordinator, which is woken once and reports.",
   "setup": {
     "repo": true,
     "worker": {

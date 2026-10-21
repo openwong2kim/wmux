@@ -26,7 +26,7 @@ import {
 import type { Pane, PaneLeaf, SessionData, Workspace } from '../../../shared/types';
 import type { PcRailWorkspaceRow } from '../../../shared/pcRail';
 import { getWorkspaceRemoteSessions } from '../../../shared/paneUtils';
-import { listedWorkspaces } from '../slices/moaSlice';
+import { listedWorkspaces } from '../../../shared/pcRail';
 import { buildWorkspaceMirrorPayload } from '../../hooks/workspaceMirrorSnapshot';
 import { createTerminalSurface } from '../../utils/createTerminalSurface';
 import { workspaceCloseRefusal } from '../../components/Moa/moaHqGuard';

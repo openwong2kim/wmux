@@ -9,7 +9,7 @@
 // NO_COLOR — TaskPrService.GH_ENV와 동일), 버전≠인증 2단 게이트
 // (TaskPrService G3), ENOENT → 프로세스 수명 동안 조용히 미가용
 // (PrStatusCache.ghAvailable 패턴), never-throw.
-import { hasReviewGuideMarker, type ReviewGuide } from '../../shared/prReviewGuide';
+import { hasReviewGuideMarker } from '../../shared/prReviewGuide';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -272,49 +272,10 @@ export class GhPrService implements PrProvider {
   /** The auth probe running per host, shared by every caller meanwhile. */
   private authPending = new Map<string, Promise<boolean>>();
 
-  /** The review guide of a PR Moa delivered from this computer, by URL
-   *  (wired to the Moa goal records in main; absent ⇒ none is trusted). */
-  private moaReviewGuide: ((url: string) => ReviewGuide | null) | null = null;
-  /** This computer's gh login per repo (the account Moa delivers as). */
-  private viewerLogins = new Map<string, Promise<string | null>>();
-
   constructor(
     private now: () => number = Date.now,
     private exec: Exec = execFileAsync,
   ) {}
-
-  setMoaReviewGuideLookup(lookup: ((url: string) => ReviewGuide | null) | null): void {
-    this.moaReviewGuide = lookup;
-  }
-
-  private viewerLogin(repoPath: string): Promise<string | null> {
-    const key = cacheKey(repoPath);
-    let hit = this.viewerLogins.get(key);
-    if (!hit) {
-      hit = this.gh(['api', 'user', '--jq', '.login'], repoPath).then(({ stdout }) => stdout.trim() || null, () => null);
-      this.viewerLogins.set(key, hit);
-      void hit.then((v) => { if (v === null) this.viewerLogins.delete(key); });
-    }
-    return hit;
-  }
-
-  /**
-   * The review guide, only for a PR Moa opened: a local delivery record for
-   * this URL, a PR from this repository (not a fork), and authored by this
-   * computer's gh account. The PR body is never read for it — a body or a
-   * label is anyone's to write.
-   */
-  private async trustedReviewGuide(
-    repoPath: string,
-    json: { url?: string; author?: { login?: string }; isCrossRepository?: boolean },
-  ): Promise<ReviewGuide | null> {
-    if (!this.moaReviewGuide || !json.url || json.isCrossRepository !== false) return null;
-    const guide = this.moaReviewGuide(json.url);
-    if (!guide) return null;
-    const author = json.author?.login?.toLowerCase();
-    const viewer = (await this.viewerLogin(repoPath))?.toLowerCase();
-    return author && viewer && author === viewer ? guide : null;
-  }
 
   private gh(args: string[], cwd: string): Promise<{ stdout: string }> {
     return this.exec(process.platform === 'win32' ? 'gh.exe' : 'gh', args, {
@@ -440,12 +401,13 @@ export class GhPrService implements PrProvider {
     ) return cached.value;
     try {
       const { stdout } = await this.gh(
-        ['pr', 'view', String(number), '--json', 'number,url,body,author,isCrossRepository,comments,reviews'],
+        ['pr', 'view', String(number), '--json', 'number,url,body,comments,reviews'],
         repoPath,
       );
-      const json = JSON.parse(stdout) as GhDetailJson & { url?: string; body?: string; author?: { login?: string }; isCrossRepository?: boolean };
-      const reviewGuide = await this.trustedReviewGuide(repoPath, json);
-      const reviewGuideUnverified = !reviewGuide && hasReviewGuideMarker(json.body);
+      const json = JSON.parse(stdout) as GhDetailJson & { url?: string; body?: string };
+      // Only a PR Moa delivered from this computer had a trusted guide, and
+      // Moa is gone: a guide marker in a body is anyone's to write.
+      const reviewGuideUnverified = hasReviewGuideMarker(json.body);
       // 인라인 리뷰 코멘트는 gh pr view가 누락 → gh api로 별도 조회(Codex P2).
       // {owner}/{repo}는 gh가 cwd repo로 치환. 실패는 무시(핵심 코멘트는 위에서 확보).
       let reviewComments: GhReviewComment[] = [];
@@ -474,7 +436,6 @@ export class GhPrService implements PrProvider {
         detail: {
           number,
           comments: mapGhDetail(json, json.url ?? '', reviewComments, authorTypes ?? new Map()),
-          ...(reviewGuide ? { reviewGuide } : {}),
           ...(reviewGuideUnverified ? { reviewGuideUnverified } : {}),
         },
       };

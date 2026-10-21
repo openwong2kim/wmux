@@ -7,7 +7,7 @@ import type { ConnectorDraft } from '../../../shared/botConnector';
 
 type Load = (search: string, cursor?: string) => Promise<ConnectorCatalogResult>;
 const defaultLoad: Load = (search, cursor) => window.electronAPI?.connectorCatalog?.list(search, cursor) ?? Promise.resolve({ ok: false });
-export default function RegistryCatalog({ onConfigure, canConfigure, load = defaultLoad, embedded = false }: { embedded?: boolean; onConfigure: (draft: ConnectorDraft) => void; canConfigure: boolean; load?: Load }) {
+export default function RegistryCatalog({ onConfigure, canConfigure, load = defaultLoad }: { onConfigure: (draft: ConnectorDraft) => void; canConfigure: boolean; load?: Load }) {
   const t = useT();
   const [query, setQuery] = useState('');
   const [searched, setSearched] = useState('');
@@ -32,7 +32,7 @@ export default function RegistryCatalog({ onConfigure, canConfigure, load = defa
   // Discovery starts only when this component is mounted by the Discover view.
   useEffect(() => { void request(''); return () => { generation.current++; }; }, [load]);
   return <section className="flex flex-col gap-4" aria-label={t('connectors.registry')}>
-    <h2 className={embedded ? "text-[13px] font-normal text-[var(--text-sub)]" : "text-[14px] font-semibold"}>{t('connectors.registry')}</h2>
+    <h2 className="text-[14px] font-semibold">{t('connectors.registry')}</h2>
     <p className="text-[13px] text-[var(--text-sub)]">{t('connectors.registryHint')}</p>
     <form className="flex gap-2" onSubmit={(e) => { e.preventDefault(); void request(query.trim()); }}>
       <Input value={query} maxLength={128} aria-label={t('connectors.registrySearch')} placeholder={t('connectors.registrySearch')} onChange={(e) => setQuery(e.target.value)} />
@@ -41,8 +41,8 @@ export default function RegistryCatalog({ onConfigure, canConfigure, load = defa
     {error && <div role="alert" className="flex items-center gap-2"><span>{t('connectors.registryError')}</span><Button onClick={() => void request(searched, cursor)}>{t('connectors.retry')}</Button></div>}
     {loading && <p role="status">{t('connectors.loading')}</p>}
     {!loading && !error && entries.length === 0 && <p>{t('connectors.registryEmpty')}</p>}
-    <ul className={embedded ? "divide-y divide-[var(--stroke)] rounded-xl border border-[var(--line)]" : "grid grid-cols-1 gap-3 lg:grid-cols-2"}>
-      {entries.map((entry) => <li key={entry.id} className={embedded ? "min-w-0 px-3.5 py-3" : "min-w-0 rounded-[var(--chip-radius)] bg-[var(--hover-fill)] p-4"}>
+    <ul className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      {entries.map((entry) => <li key={entry.id} className="min-w-0 rounded-[var(--chip-radius)] bg-[var(--hover-fill)] p-4">
         <h3 className="text-[14px] font-medium">{entry.title}</h3>
         <p className="break-all text-[11px] text-[var(--text-muted)]">{entry.id} · {entry.version}</p>
         <p className="my-3 text-[13px] text-[var(--text-sub)]">{entry.description}</p>

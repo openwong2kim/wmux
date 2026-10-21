@@ -39,7 +39,6 @@ function seed(active = 'a') {
     missionByPaneGroup: {},
     fanoutLineage: {},
     fanoutSpawnOwner: {},
-    moa: null,
   } as never));
 }
 const rows = () => [...document.querySelectorAll('.sidebar-row')].map((r) => r.textContent?.match(/^[a-z]+/)?.[0]);

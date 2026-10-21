@@ -574,17 +574,17 @@ describe('main-owned cards — no brain resolves or raises one', () => {
     __resetCommanderTrustForTesting();
   });
 
-  it('deck.resolveDecision refuses a Moa hand-off card even in danger mode with a lease', async () => {
+  it('deck.resolveDecision refuses a bot\'s ask_person card even in danger mode with a lease', async () => {
     decisionRef.current = {
-      id: 'dec-h', question: 'Moa proposes…', options: ['Hand off', 'Edit', 'Cancel'], context: '',
-      status: 'pending', raisedAt: Date.now() - 3 * 60 * 60_000, origin: 'moa-handoff', ref: 'h1',
+      id: 'dec-h', question: 'Which branch?', options: ['main', 'dev'], context: '',
+      status: 'pending', raisedAt: Date.now() - 3 * 60 * 60_000, origin: 'ask_person', ref: 'h1', handoffId: 'h1',
     };
     modeMock.mockReturnValue('danger');
     const token = mintCommanderToken('ws-1');
     grantReExamineLease('ws-1', 'dec-h');
     const res = (await setup().dispatch({
       id: '1', method: 'deck.resolveDecision',
-      params: { token, id: 'dec-h', resolution: 'Hand off — a binding rule settles this hand-off.' },
+      params: { token, id: 'dec-h', resolution: 'main — a binding rule settles this.' },
     })) as { result?: { ok: boolean; error?: string } };
     expect(res.result).toEqual({ ok: false, error: 'main_owned' });
     expect(resolveDecisionMock).not.toHaveBeenCalled();
@@ -596,7 +596,7 @@ describe('main-owned cards — no brain resolves or raises one', () => {
     const token = mintCommanderToken('ws-1');
     await setup().dispatch({
       id: '1', method: 'deck.requestDecision',
-      params: { token, question: 'q', origin: 'moa-handoff', ref: 'x' },
+      params: { token, question: 'q', origin: 'ask_person', ref: 'x' },
     });
     const args = raiseDecisionMock.mock.calls[0][1] as Record<string, unknown>;
     expect(args).not.toHaveProperty('origin');
@@ -610,10 +610,10 @@ describe('main-owned cards — a stale one is never replaced by a brain question
     __resetCommanderTrustForTesting();
   });
 
-  it('deck.requestDecision refuses to replace a TTL-expired moa-handoff card', async () => {
+  it('deck.requestDecision refuses to replace a TTL-expired ask_person card', async () => {
     decisionRef.current = {
-      id: 'dec-h', question: 'Moa proposes…', options: ['Hand off', 'Edit', 'Cancel'], context: '',
-      status: 'pending', raisedAt: Date.now() - 24 * 60 * 60_000, origin: 'moa-handoff', ref: 'h1',
+      id: 'dec-h', question: 'Which branch?', options: ['main', 'dev'], context: '',
+      status: 'pending', raisedAt: Date.now() - 24 * 60 * 60_000, origin: 'ask_person', ref: 'h1', handoffId: 'h1',
     };
     ttlMock.mockReturnValue(60_000);
     const token = mintCommanderToken('ws-1');

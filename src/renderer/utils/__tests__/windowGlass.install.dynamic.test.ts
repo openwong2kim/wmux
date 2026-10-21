@@ -25,6 +25,9 @@ describe('installWindowGlass', () => {
     const stop = mount('soft', '#FFFFFF');
     expect(setAppearance).toHaveBeenCalledWith('light');
     expect(document.documentElement.getAttribute('data-glass')).toBe('light');
+    // macOS keeps the fixed globals.css numbers: nothing is set inline.
+    expect(document.documentElement.style.getPropertyValue('--glass-frame')).toBe('');
+    expect(document.documentElement.style.getPropertyValue('--glass-sheet')).toBe('');
     stop();
   });
 

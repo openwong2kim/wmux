@@ -12,9 +12,12 @@
 //   - the operator, naming the workspace;
 //   - nobody else.
 // The repository is never a path or key from params: it is the `repo` of a
-// bot profile in the scoped workspace, and the GitHub key is derived from
+// bot profile in the scoped workspace, and the remote key is derived from
 // that checkout's own remote (the key the verdict store and the merge lane
 // use). Every answer is bounded: lists are capped and long text is cut.
+// A GitLab remote is read with glab; while glab is missing or signed out for
+// its host, pr/issue/ci reads refuse `host_not_connected` and the owner is
+// asked once per host to connect it (createHostSetupGate).
 //
 // plan.propose: one `plan` card, open, in a `plan:<id>` thread of the
 // proposing bot's room, each item naming a workspace that has an enabled
@@ -37,6 +40,7 @@ import type { RoomWriter } from '../../factory/roomWriter';
 import { DAY_MS, type TrustReadResult } from '../../factory/trustMetrics';
 import { GUEST_TURN_STARTS_NO_WORKERS, guestOfRunningWake, type GuestProvenance } from '../../factory/wakeTaint';
 import { crossesGuestBoundary } from '../../factory/guestWorkspaces';
+import { isGithubHost, type PrGate } from '../../github/PrProvider';
 
 // ── Limits ─────────────────────────────────────────────────────────────────
 
@@ -64,7 +68,8 @@ export interface CiRollup {
   branch: string;
   headSha: string;
   committedAt: string | null;
-  /** The rollup state GitHub reports (SUCCESS, FAILURE, PENDING, ...), or null. */
+  /** The rollup state in GitHub's words (SUCCESS, FAILURE, PENDING, ...; a
+   *  GitLab pipeline's status is mapped to them), or null. */
   state: string | null;
   checks: Array<{ name: string; state: string }>;
   checksTotal: number;
@@ -72,7 +77,8 @@ export interface CiRollup {
 
 export interface FactoryReadDeps {
   bots: () => BotDirectoryApi | null;
-  /** The GitHub key (`host/owner/repo`) of a checkout's origin, or null. */
+  /** The remote key (`host/owner/repo`, `host/group/…/project`) of a
+   *  checkout's origin, or null. */
   repoKeyOf: (repoPath: string) => Promise<string | null>;
   readPr: (repoPath: string, repoKey: string, prNumber: number) => Promise<PrReviewRead<PrLaneFacts>>;
   listIssues: (repoPath: string, filter: IssueFilter, repoKey: string) => Promise<{ ok: true; issues: IssueSummary[] } | { ok: false; message: string }>;
@@ -87,6 +93,11 @@ export interface FactoryReadDeps {
   /** The guest provenance of a bot's running wake (wakeTaint.ts); default
    *  the running tracker. */
   guestWake?: (botId: string) => GuestProvenance;
+  /** Why the scope's host cannot be read now (a GitLab host without a
+   *  usable glab: `host_not_connected`, or `read_failed` when it could not
+   *  be reached just now), or null; createHostSetupGate. Absent: always
+   *  readable. */
+  hostReady?: (scope: RepoScope) => Promise<HostNotReady | null>;
 }
 
 // ── Caller and repo scope ──────────────────────────────────────────────────
@@ -171,7 +182,7 @@ export async function repoScope(
   }
   if (!repoPath) return refusal('no_repo', `workspace ${workspaceId} has no bot with a repository`);
   const repoKey = await deps.repoKeyOf(repoPath).catch(() => null);
-  if (!repoKey) return refusal('no_repo', 'the repository has no GitHub remote wmux can read');
+  if (!repoKey) return refusal('no_repo', 'the repository has no GitHub or GitLab remote wmux can read');
   return { repoPath, repoKey, workspaceId };
 }
 
@@ -187,6 +198,66 @@ function readFailed(r: { message: string; code?: string }): FactoryRefusal<'read
   return refusal(r.code === 'rate-limited' ? 'rate_limited' : 'read_failed', r.message.slice(0, 300));
 }
 
+export interface HostNotReady { code: 'host_not_connected' | 'read_failed'; message: string }
+
+/** The one refusal of a read whose host cannot be read now, or null. */
+async function hostNotConnected(scope: RepoScope, deps: Pick<FactoryReadDeps, 'hostReady'>): Promise<FactoryRefusal<HostNotReady['code']> | null> {
+  const why = deps.hostReady ? await deps.hostReady(scope).catch(() => null) : null;
+  return why ? refusal(why.code, why.message) : null;
+}
+
+/** A host's gate: PrGate, or a host that could not be reached just now. */
+export type HostGate = PrGate | { ok: false; reason: 'unreachable'; message: string };
+
+export interface HostSetupGatePorts {
+  /** glab's connection to a host (GlabPrService.connection, which caches
+   *  only definite answers). */
+  gate: (repoPath: string, host: string) => Promise<HostGate>;
+  /** Ask the owner, in a workspace's room, to connect GitLab on `host`;
+   *  `why` is the gate's message. */
+  ask: (workspaceId: string, host: string, why: string) => void;
+}
+
+/**
+ * FactoryReadDeps.hostReady for GitLab remotes: null for a GitHub host or a
+ * GitLab host glab can read. A definite missing glab or sign-out is the
+ * bot's `host_not_connected` refusal, and the owner is asked to connect that
+ * host once — not per read, bot or workspace — until the gate passes again
+ * (a later failure asks again). A host not reached just now (or a gate that
+ * threw) is a transient `read_failed`: nobody is asked, nothing is kept.
+ */
+export function createHostSetupGate(ports: HostSetupGatePorts): (scope: RepoScope) => Promise<HostNotReady | null> {
+  const asked = new Set<string>();
+  return async (scope) => {
+    const host = scope.repoKey.split('/')[0] ?? '';
+    if (!host || isGithubHost(host)) return null;
+    let gate: HostGate;
+    try {
+      gate = await ports.gate(scope.repoPath, host);
+    } catch {
+      gate = { ok: false, reason: 'unreachable', message: 'the GitLab CLI (glab) could not be run just now' };
+    }
+    if (gate.ok) {
+      asked.delete(host);
+      return null;
+    }
+    if (gate.reason === 'unreachable') return { code: 'read_failed', message: `${gate.message}; try again later.` };
+    if (!asked.has(host)) {
+      asked.add(host);
+      try {
+        ports.ask(scope.workspaceId, host, gate.message);
+      } catch {
+        /* the refusal still tells the bot */
+      }
+    }
+    return {
+      code: 'host_not_connected',
+      message: `GitLab on ${host} is not connected in wmux (${gate.message}). The owner has been asked to connect it; `
+        + 'merge requests, issues and CI can be read once they have. Do not retry this read or ask the owner about it again.',
+    };
+  };
+}
+
 // ── Handlers ───────────────────────────────────────────────────────────────
 
 export async function handlePrRead(raw: unknown, ctx: RpcContext | undefined, deps: FactoryReadDeps): Promise<unknown> {
@@ -197,6 +268,8 @@ export async function handlePrRead(raw: unknown, ctx: RpcContext | undefined, de
   if (n === null) return refusal('invalid', 'prNumber must be a positive integer');
   const scope = await repoScope(caller, p, deps);
   if ('ok' in scope) return scope;
+  const notConnected = await hostNotConnected(scope, deps);
+  if (notConnected) return notConnected;
   const r = await deps.readPr(scope.repoPath, scope.repoKey, n);
   if (!r.ok) return readFailed(r);
   const f = r.value;
@@ -237,6 +310,8 @@ export async function handleIssueRead(raw: unknown, ctx: RpcContext | undefined,
   if (p.label !== undefined && (typeof p.label !== 'string' || !p.label.trim() || p.label.length > 100)) return refusal('invalid', 'label must be a label name');
   const scope = await repoScope(caller, p, deps);
   if ('ok' in scope) return scope;
+  const notConnected = await hostNotConnected(scope, deps);
+  if (notConnected) return notConnected;
   const L = FACTORY_READ_LIMITS;
   if (typeof p.issueNumber === 'number') {
     const r = await deps.issueDetail(scope.repoPath, p.issueNumber, scope.repoKey);
@@ -278,6 +353,8 @@ export async function handleCiRead(raw: unknown, ctx: RpcContext | undefined, de
   if ('ok' in caller) return caller;
   const scope = await repoScope(caller, params(raw), deps);
   if ('ok' in scope) return scope;
+  const notConnected = await hostNotConnected(scope, deps);
+  if (notConnected) return notConnected;
   const r = await deps.ciRollup(scope.repoPath, scope.repoKey);
   if ('error' in r) return refusal('read_failed', r.error.slice(0, 300));
   const failing = r.checks.filter((c) => /^(FAILURE|ERROR|TIMED_OUT|CANCELLED|ACTION_REQUIRED|STARTUP_FAILURE)$/.test(c.state));

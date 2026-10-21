@@ -338,7 +338,20 @@ export function buildWakePrompt(input: WakePromptInput): string {
   switch (r.kind) {
     case 'human':
       lines.push('', `Message from the owner (${r.source}):`, r.text);
-      if (r.room) {
+      if (r.lead) {
+        lines.push('', `The owner wrote to the ${group ? 'group' : 'room'} without naming a bot. It has you as its coordinator, so the message came to you`
+          + (r.room ? ' (and to the bots waiting on the owner in this thread, which may be getting their answer)' : '')
+          + ': answer it yourself, or hand the work to the bots that should do it with handoff_send — their results come back to you to report.');
+      }
+      if (r.roomWide) {
+        const answerer = r.roomAnswerer === profile.id ? null : (input.roster ?? []).find((b) => b.botId === r.roomAnswerer) ?? null;
+        lines.push('', `The owner wrote to the ${group ? 'group' : 'room'} without naming a bot, and every bot in it got this message. Your closing text is not posted on this wake: to answer, post your own part with room_post. Post only when the message asks for your work or you know something the others lack; otherwise end the turn without posting. When your post speaks to another bot (answers it, asks it, offers it work), put its id in room_post mentions: a name in the text reaches nobody.`);
+        if (r.roomAnswerer === profile.id) {
+          lines.push('A greeting or a question to everyone always gets an answer: you are the first bot here, so when no other bot\'s job covers it, you answer it with room_post.');
+        } else if (answerer) {
+          lines.push(`A greeting or a question to everyone always gets an answer: ${oneLineName(answerer.name)} (${answerer.botId}), the first bot here, answers it when no other bot's job covers it, so leave that to it.`);
+        }
+      } else if (r.room) {
         lines.push('', `The owner wrote to more than one bot${group ? ' in the group' : ''}: each of them got this message and may answer too. Say your own part. When your post speaks to another bot (answers it, asks it, offers it work), put its id in room_post mentions: a name in the text reaches nobody. When the message is for another bot (it names that bot, or asks for that bot's work) and you have nothing of your own to add, end the turn with no post and no closing text: words you end a turn with are posted as your message, so silence is an empty ending, not a line saying you will not post.`);
       }
       if (group && !group.spoke) {

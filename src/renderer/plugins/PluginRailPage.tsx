@@ -12,13 +12,13 @@ export function PluginRailNavigation({ compact }: { compact: boolean }) {
   const pages = plugins.filter((p) => p.contributes.railPage && p.trustStatus !== 'denied');
   if (pages.length === 0) return null;
   // Under the built-in pages, set apart by one short hairline; each carries
-  // its catalog glyph (a package for a bundle outside the catalog).
+  // its catalog glyph (a package for a bundle the catalog did not install).
   return <><span className="wmux-nav-plugin-divider" aria-hidden="true" />{pages.map((p) => (
     <button key={p.name} type="button" className={`wmux-nav-button ${FOCUS_RING}`}
       data-sidebar-nav={`plugin:${p.name}`} title={p.contributes.railPage?.title}
       aria-label={p.contributes.railPage?.title} aria-current={route === `plugin:${p.name}` ? 'page' : undefined}
       onClick={() => useStore.getState().setAppRoute(`plugin:${p.name}`)}>
-      <span className="wmux-nav-icon" aria-hidden="true"><PluginGlyph glyph={catalogGlyph(p.name)} size={16} /></span>
+      <span className="wmux-nav-icon" aria-hidden="true"><PluginGlyph glyph={catalogGlyph(p)} size={16} /></span>
       {!compact && <span className="wmux-nav-label min-w-0 flex-1 truncate text-left">{p.contributes.railPage?.title}</span>}
     </button>
   ))}</>;

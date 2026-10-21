@@ -181,7 +181,7 @@ describe('room.post', () => {
     const runId = `run-${r.card.id}`;
     expect(s.wakes).toEqual([lead, verifier].map((b) => ({
       botId: b.id, workspaceId: 'ws1',
-      reason: { kind: 'human', text: 'Please look at #5', source: 'desktop', clientMessageId: r.card.id, runId, room: true },
+      reason: { kind: 'human', text: 'Please look at #5', source: 'desktop', clientMessageId: r.card.id, runId, room: true, roomWide: true, roomAnswerer: lead.id },
       priority: 0, threadId: 'general', overCap: true,
     })));
     // Same client id: the same card, no second fact or wake.
@@ -254,7 +254,7 @@ describe('room.post', () => {
     expect(s.writer.read('ws1').cards).toHaveLength(1);
   });
 
-  it('a room message keeps its addressees on a retry, whatever the room has become; a coordinator is no special addressee', async () => {
+  it('a room message keeps its addressees and mode on a retry, whatever the room has become; a room with a coordinator talks to it alone', async () => {
     const dev = bot('ws1', 'lead');
     const issue = bot('ws1', 'triage');
     const bots = [dev, issue];
@@ -263,18 +263,35 @@ describe('room.post', () => {
     const enqueue = s.ports.wakes!.enqueue;
     s.ports.wakes = { enqueue: (i) => (full.has(i.botId) ? null : enqueue(i)) };
     expect(await handleRoomPost({ workspaceId: 'ws1', title: 'Hi', clientPostId: 'cm-mode' }, OPERATOR, s.deps)).toMatchObject({ ok: false, code: 'queue_full' });
-    // A bot joins before the retry: the first card still names its two.
+    // A bot joins before the retry: the first card still names its two, and
+    // the retry wakes them as the room's bots whatever it names itself.
     bots.push(bot('ws1', 'moa', { template: 'coordinator' }));
     full.clear();
-    expect(await handleRoomPost({ workspaceId: 'ws1', title: 'Hi', clientPostId: 'cm-mode' }, OPERATOR, s.deps)).toMatchObject({ ok: true, duplicate: true });
-    expect(s.wakes.map((w) => [w.botId, w.reason.kind === 'human' && w.reason.room, w.reason.kind === 'human' && w.reason.lead])).toEqual([[dev.id, true, undefined], [issue.id, true, undefined]]);
-    // An untagged message wakes every bot of the room, the coordinator too
-    // (owner decision 2026-10-15: no hidden coordinator-only routing).
-    const next = await handleRoomPost({ workspaceId: 'ws1', title: 'Next task', clientPostId: 'cm-lead' }, OPERATOR, s.deps);
-    expect(next).toMatchObject({ ok: true, addressees: [{ botId: dev.id }, { botId: issue.id }, { botId: bots[2].id }] });
-    expect(s.wakes.slice(2).map((w) => w.reason)).toEqual([0, 1, 2].map(() => expect.objectContaining({ kind: 'human', room: true })));
-    expect(s.wakes.slice(2).some((w) => w.reason.kind === 'human' && w.reason.lead)).toBe(false);
-    expect(s.facts.at(-1)?.payload).not.toHaveProperty('lead');
+    expect(await handleRoomPost({ workspaceId: 'ws1', title: 'Hi', clientPostId: 'cm-mode', mentions: [issue.id] }, OPERATOR, s.deps)).toMatchObject({ ok: true, duplicate: true, card: { routed: {} } });
+    const flags = (w: (typeof s.wakes)[number]) => (w.reason.kind === 'human' ? [w.reason.room, w.reason.roomWide, w.reason.lead] : null);
+    expect(s.wakes.map((w) => [w.botId, flags(w)])).toEqual([[dev.id, [true, true, undefined]], [issue.id, [true, true, undefined]]]);
+    // An untagged message in a room with a coordinator wakes the coordinator
+    // alone, as the room's lead; the fact says the words were the room's.
+    const coordinator = bots[2];
+    const next = await handleRoomPost({ workspaceId: 'ws1', title: 'Next task', clientPostId: 'cm-lead' }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(next).toMatchObject({ ok: true, addressees: [{ botId: coordinator.id }], card: { refs: { botIds: [coordinator.id], botId: coordinator.id } } });
+    expect(s.wakes.slice(2).map((w) => [w.botId, flags(w)])).toEqual([[coordinator.id, [undefined, undefined, true]]]);
+    expect(s.facts.at(-1)).toMatchObject({ ref: { botId: coordinator.id }, payload: { lead: true } });
+    expect(next.card.routed).toEqual({ lead: coordinator.id });
+    // Its retry is the coordinator's again, as its card recorded, even with
+    // other fields and a template changed since.
+    full.add(coordinator.id);
+    expect(await handleRoomPost({ workspaceId: 'ws1', title: 'Again', clientPostId: 'cm-lead-2' }, OPERATOR, s.deps)).toMatchObject({ ok: false, code: 'queue_full' });
+    full.clear();
+    coordinator.template = 'developer';
+    expect(await handleRoomPost({ workspaceId: 'ws1', title: 'Again', clientPostId: 'cm-lead-2', mentions: [dev.id] }, OPERATOR, s.deps)).toMatchObject({ ok: true, duplicate: true });
+    coordinator.template = 'coordinator';
+    expect(s.wakes.slice(3).map((w) => [w.botId, flags(w)])).toEqual([[coordinator.id, [undefined, undefined, true]]]);
+    // Mentions still wake exactly the bots named, the coordinator left out;
+    // the card records no routing.
+    const named = await handleRoomPost({ workspaceId: 'ws1', title: 'You two', mentions: [dev.id, issue.id] }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(named.card.routed).toBeUndefined();
+    expect(s.wakes.slice(4).map((w) => [w.botId, flags(w)])).toEqual([[dev.id, [true, undefined, undefined]], [issue.id, [true, undefined, undefined]]]);
   });
 
   it('humanAddressees: mentions win, then the phone\'s toBotId (enabled only), then the role, else the whole room', () => {
@@ -294,18 +311,128 @@ describe('room.post', () => {
     expect(room.bots.map((b) => b.id)).toEqual(many.slice(0, 16).map((b) => b.id));
   });
 
-  it('humanAddressees: a coordinator is a bot like any other; members bound an unnamed message, at most MENTIONS_MAX', () => {
+  it('humanAddressees: an unnamed message goes to the room\'s (the group\'s) oldest coordinator; members bound it, at most MENTIONS_MAX', () => {
     const dev = bot('ws1', 'lead', { createdAt: 1 });
     const lead = bot('ws1', 'lead', { template: 'coordinator', createdAt: 2 });
     const younger = bot('ws1', 'moa', { createdAt: 3 });
     const far = bot('ws2', 'moa', { createdAt: 0 });
-    const ports = { listEnabled: () => [far, younger, dev, lead] } as unknown as FactoryRoomPorts['bots'];
-    expect(humanAddressees(ports, 'ws1', {})).toEqual({ bots: [dev, lead, younger], room: true });
-    expect(humanAddressees(ports, 'ws1', { members: [younger.id, lead.id, far.id] })).toEqual({ bots: [lead, younger], room: true });
+    const issue = bot('ws1', 'triage', { createdAt: 4 });
+    const ports = { listEnabled: () => [far, younger, dev, lead, issue] } as unknown as FactoryRoomPorts['bots'];
+    expect(humanAddressees(ports, 'ws1', {})).toEqual({ bots: [lead], room: false, lead: true });
+    expect(humanAddressees(ports, 'ws1', { members: [younger.id, issue.id, far.id] })).toEqual({ bots: [younger], room: false, lead: true });
+    // A group without a coordinator: every member.
+    expect(humanAddressees(ports, 'ws1', { members: [dev.id, issue.id, far.id] })).toEqual({ bots: [dev, issue], room: true });
+    // Mentions win over the coordinator.
+    expect(humanAddressees(ports, 'ws1', { mentions: [dev.id, issue.id] })).toEqual({ bots: [dev, issue], room: false });
     expect(humanAddressees(ports, 'ws1', { mentions: [dev.id], members: [lead.id] })).toEqual({ bots: [dev], room: false });
     const many = Array.from({ length: 17 }, () => bot('ws3', 'lead'));
     const group = humanAddressees({ listEnabled: () => [...many].reverse() } as unknown as FactoryRoomPorts['bots'], 'ws3', { members: many.map((b) => b.id) });
     expect(group.bots.map((b) => b.id)).toEqual(many.slice(0, 16).map((b) => b.id));
+  });
+
+  it('humanAddressees: a coordinator that is off or parked (by the owner, or for an error) is no lead; a budget park still is; a lone coordinator is its room\'s lead', () => {
+    const dev = bot('ws1', 'lead', { createdAt: 1 });
+    const issue = bot('ws1', 'triage', { createdAt: 2 });
+    const lead = bot('ws1', 'moa', { template: 'coordinator', createdAt: 3 });
+    const ports = { listEnabled: () => [dev, issue, lead] } as unknown as FactoryRoomPorts['bots'];
+    expect(humanAddressees(ports, 'ws1', {})).toEqual({ bots: [lead], room: false, lead: true });
+    for (const reason of ['human', 'error'] as const) {
+      lead.parked = { reason, at: 1 };
+      expect(humanAddressees(ports, 'ws1', {}), reason).toEqual({ bots: [dev, issue, lead], room: true });
+    }
+    lead.parked = { reason: 'budget', at: 1 };
+    expect(humanAddressees(ports, 'ws1', {})).toEqual({ bots: [lead], room: false, lead: true });
+    delete lead.parked;
+    lead.enabled = false;
+    expect(humanAddressees(ports, 'ws1', {})).toEqual({ bots: [dev, issue], room: true });
+    lead.enabled = true;
+    // Its room holds only it.
+    const alone = { listEnabled: () => [lead] } as unknown as FactoryRoomPorts['bots'];
+    expect(humanAddressees(alone, 'ws1', {})).toEqual({ bots: [lead], room: false, lead: true });
+    // The bots waiting on the owner follow the lead, oldest first.
+    expect(humanAddressees(ports, 'ws1', { waiting: [issue.id, dev.id] })).toEqual({ bots: [lead, dev, issue], room: false, lead: true });
+  });
+
+  it('an unpicked message reaches a bot waiting on the owner in its thread as addressed; the room\'s first bot answers a room-wide one', async () => {
+    const dev = bot('ws1', 'lead', { createdAt: 1 });
+    const issue = bot('ws1', 'triage', { createdAt: 2 });
+    const lead = bot('ws1', 'moa', { template: 'coordinator', createdAt: 3 });
+    const bots = [dev, issue, lead];
+    const s = setup(bots);
+    const flags = (w: (typeof s.wakes)[number]) => (w.reason.kind === 'human' ? [w.reason.room, w.reason.lead, w.reason.roomWide, w.reason.roomAnswerer] : null);
+    // The issue bot asked the owner something in General.
+    s.writer.post({ workspaceId: 'ws1', kind: 'question', actor: { kind: 'bot', workspaceId: 'ws1', botId: issue.id }, title: 'Which label?', state: 'open' });
+    const r = await handleRoomPost({ workspaceId: 'ws1', title: 'bug' }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(r.card.routed).toEqual({ lead: lead.id, waiting: [issue.id] });
+    expect(s.wakes.map((w) => [w.botId, flags(w)])).toEqual([[lead.id, [true, true, undefined, undefined]], [issue.id, [true, undefined, undefined, undefined]]]);
+    // A parked coordinator: every bot, the waiting one (asked again since
+    // the owner last spoke) first and as addressed, the others room-wide
+    // with the first one not waiting that takes turns as the answerer.
+    lead.parked = { reason: 'human', at: 1 };
+    s.writer.post({ workspaceId: 'ws1', kind: 'question', actor: { kind: 'bot', workspaceId: 'ws1', botId: issue.id }, title: 'And the milestone?', state: 'open' });
+    const wide = await handleRoomPost({ workspaceId: 'ws1', title: 'anyone?' }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(wide.card.refs?.botIds).toEqual([issue.id, dev.id, lead.id]);
+    expect(wide.card.routed).toEqual({ waiting: [issue.id], answerer: dev.id });
+    expect(s.wakes.slice(2).map((w) => [w.botId, flags(w)])).toEqual([
+      [issue.id, [true, undefined, undefined, undefined]],
+      [dev.id, [true, undefined, true, dev.id]],
+      [lead.id, [true, undefined, true, dev.id]],
+    ]);
+    // Words since then answered it: a wait older than the owner's previous
+    // message in the thread keeps nobody waiting.
+    const later = await handleRoomPost({ workspaceId: 'ws1', title: 'ok, thanks' }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(later.card.routed).toEqual({ answerer: dev.id });
+    // An open approval card waits only until the owner next speaks there.
+    s.writer.post({ workspaceId: 'ws1', kind: 'approval', actor: { kind: 'bot', workspaceId: 'ws1', botId: issue.id }, title: 'Close issue #3', state: 'open' });
+    expect((await handleRoomPost({ workspaceId: 'ws1', title: 'approve' }, OPERATOR, s.deps) as { card: RoomCard }).card.routed).toEqual({ waiting: [issue.id], answerer: dev.id });
+    expect((await handleRoomPost({ workspaceId: 'ws1', title: 'next thing' }, OPERATOR, s.deps) as { card: RoomCard }).card.routed).toEqual({ answerer: dev.id });
+  });
+
+  it('a parked coordinator that is the room\'s oldest bot is not its answerer, also on a retry', async () => {
+    const lead = bot('ws1', 'moa', { template: 'coordinator', createdAt: 1, parked: { reason: 'human', at: 1 } });
+    const dev = bot('ws1', 'lead', { createdAt: 2 });
+    const issue = bot('ws1', 'triage', { createdAt: 3 });
+    const s = setup([lead, dev, issue]);
+    const full = new Set([issue.id]);
+    const enqueue = s.ports.wakes!.enqueue;
+    s.ports.wakes = { enqueue: (i) => (full.has(i.botId) ? null : enqueue(i)) };
+    const r = await handleRoomPost({ workspaceId: 'ws1', title: 'Hi', clientPostId: 'cm-ans' }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(r.card.refs?.botIds).toEqual([lead.id, dev.id, issue.id]);
+    expect(r.card.routed).toEqual({ answerer: dev.id });
+    full.clear();
+    // The developer is parked before the retry: the answerer stays as recorded.
+    dev.parked = { reason: 'human', at: 2 };
+    await handleRoomPost({ workspaceId: 'ws1', title: 'Hi', clientPostId: 'cm-ans' }, OPERATOR, s.deps);
+    expect(s.wakes.map((w) => [w.botId, w.reason.kind === 'human' && w.reason.roomAnswerer])).toEqual([[lead.id, dev.id], [dev.id, dev.id], [issue.id, dev.id]]);
+  });
+
+  it('a bot outside General\'s group that asked the owner in a PR thread hears the unpicked reply there', async () => {
+    const lead = bot('ws1', 'moa', { template: 'coordinator', createdAt: 1 });
+    const dev = bot('ws1', 'lead', { createdAt: 2 });
+    const rev = bot('ws1', 'verifier', { createdAt: 3 });
+    const s = setup([lead, dev, rev]);
+    s.ports.groups = { byThread: (ws, t) => (ws === 'ws1' && t === 'general' ? { id: 'grp-0000beef', workspaceId: 'ws1', name: '', memberIds: [lead.id, dev.id], threadId: 'general', createdAt: 1, updatedAt: 1 } : null) };
+    const PR = 'pr:github.com/acme/app#42' as ThreadId;
+    s.writer.post({ workspaceId: 'ws1', threadId: PR, kind: 'question', actor: { kind: 'bot', workspaceId: 'ws1', botId: rev.id }, title: 'Verify at the new head too?', state: 'open' });
+    const r = await handleRoomPost({ workspaceId: 'ws1', threadId: PR, title: 'Yes, the new head' }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(r.card.routed).toEqual({ lead: lead.id, waiting: [rev.id] });
+    expect(s.wakes.map((w) => [w.botId, w.threadId])).toEqual([[lead.id, PR], [rev.id, PR]]);
+    // Without a coordinator in the group, the waiting bot comes first, as
+    // addressed, then the group's bots.
+    lead.enabled = false;
+    s.writer.post({ workspaceId: 'ws1', threadId: PR, kind: 'question', actor: { kind: 'bot', workspaceId: 'ws1', botId: rev.id }, title: 'And the old one?', state: 'open' });
+    const wide = await handleRoomPost({ workspaceId: 'ws1', threadId: PR, title: 'No' }, OPERATOR, s.deps) as { card: RoomCard };
+    expect(wide.card.refs?.botIds).toEqual([rev.id, dev.id]);
+    expect(wide.card.routed).toEqual({ waiting: [rev.id], answerer: dev.id });
+  });
+
+  it('humanAddressees: waiting bots come first, before the mention cap cuts the room', () => {
+    const many = Array.from({ length: 17 }, (_, i) => bot('ws4', 'lead', { createdAt: i }));
+    const late = many[16];
+    const ports = { listEnabled: () => many } as unknown as FactoryRoomPorts['bots'];
+    const room = humanAddressees(ports, 'ws4', { waiting: [late.id] });
+    expect(room.bots).toHaveLength(ROOM_LIMITS.MENTIONS_MAX);
+    expect(room.bots[0]).toBe(late);
   });
 
   describe('a group chat\'s thread (owner decision 2026-10-15)', () => {
@@ -323,15 +450,28 @@ describe('room.post', () => {
 
     it('an untagged message goes to every enabled member, pinned to the group; others in the workspace sleep', async () => {
       const a = bot('ws1', 'lead', { createdAt: 1 });
-      const b = bot('ws1', 'verifier', { template: 'coordinator', createdAt: 2 });
-      const c = bot('ws1', 'triage', { createdAt: 3 });
+      const b = bot('ws1', 'verifier', { createdAt: 2 });
+      const c = bot('ws1', 'triage', { template: 'coordinator', createdAt: 3 });
       const off = bot('ws1', 'maintainer', { enabled: false, createdAt: 4 });
       const s = withGroup([a, b, c, off], [b.id, a.id, off.id]);
       const r = await handleRoomPost({ workspaceId: 'ws1', threadId: GROUP, title: 'Hi all' }, OPERATOR, s.deps) as { ok: boolean; card: RoomCard };
       expect(r).toMatchObject({ ok: true, card: { threadId: GROUP, refs: { botIds: [a.id, b.id] } } });
       expect(r.card.refs?.botId).toBeUndefined();
-      expect(s.wakes.map((w) => [w.botId, w.threadId, w.reason.kind === 'human' && w.reason.room])).toEqual([[a.id, GROUP, true], [b.id, GROUP, true]]);
+      expect(s.wakes.map((w) => [w.botId, w.threadId, w.reason.kind === 'human' && w.reason.room, w.reason.kind === 'human' && w.reason.roomWide])).toEqual([[a.id, GROUP, true, true], [b.id, GROUP, true, true]]);
       expect(s.facts.map((f) => f.ref?.botId)).toEqual([a.id, b.id]);
+    });
+
+    it('in a group with a coordinator, an untagged message goes to it alone; picked bots get exactly theirs', async () => {
+      const a = bot('ws1', 'lead', { createdAt: 1 });
+      const b = bot('ws1', 'verifier', { template: 'coordinator', createdAt: 2 });
+      const c = bot('ws1', 'triage', { createdAt: 3 });
+      const s = withGroup([a, b, c], [a.id, b.id, c.id]);
+      const r = await handleRoomPost({ workspaceId: 'ws1', threadId: GROUP, title: 'Review PR 5' }, OPERATOR, s.deps) as { ok: boolean; card: RoomCard };
+      expect(r).toMatchObject({ ok: true, card: { threadId: GROUP, refs: { botIds: [b.id], botId: b.id } } });
+      expect(s.wakes.map((w) => [w.botId, w.threadId, w.reason.kind === 'human' && w.reason.lead, w.reason.kind === 'human' && w.reason.roomWide])).toEqual([[b.id, GROUP, true, undefined]]);
+      expect(s.facts.map((f) => f.ref?.botId)).toEqual([b.id]);
+      await handleRoomPost({ workspaceId: 'ws1', threadId: GROUP, title: 'You two', mentions: [a.id, c.id] }, OPERATOR, s.deps);
+      expect(s.wakes.slice(1).map((w) => [w.botId, w.reason.kind === 'human' && w.reason.lead])).toEqual([[a.id, undefined], [c.id, undefined]]);
     });
 
     it('picked (or typed @) bots only; a bot outside the group is refused; a deleted group takes no post', async () => {

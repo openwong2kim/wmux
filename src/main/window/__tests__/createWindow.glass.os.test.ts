@@ -71,7 +71,13 @@ vi.mock('../windowState', () => ({
 
 const realPlatform = process.platform;
 
-async function optionsFor(platform: NodeJS.Platform, release: string, windowGlass: unknown, windowAppearance?: unknown) {
+async function optionsFor(
+  platform: NodeJS.Platform,
+  release: string,
+  windowGlass: unknown,
+  windowAppearance?: unknown,
+  windowGlassEffective?: unknown,
+) {
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
   h.release = release;
   h.options.length = 0;
@@ -81,7 +87,7 @@ async function optionsFor(platform: NodeJS.Platform, release: string, windowGlas
   vi.resetModules();
   const { createWindow } = await import('../createWindow');
   const { isWindowGlassOn } = await import('../windowGlass');
-  const win = createWindow({ deferLoad: true, windowGlass, windowAppearance });
+  const win = createWindow({ deferLoad: true, windowGlass, windowGlassEffective, windowAppearance });
   // The appearance as the window was built: what DWM tints the first frames with.
   return { opts: h.options[0], glassOn: isWindowGlassOn(win), themeSource: h.themeAtConstruction[0], win: h.windows[0] };
 }
@@ -146,6 +152,35 @@ describe('createWindow window glass options', () => {
   it('Linux with a light theme saved starts in the light start colour (#2512)', async () => {
     const { opts } = await optionsFor('linux', '6.8.0', 'soft', 'light');
     expect(opts.backgroundColor).toBe('#ECECEF');
+  });
+});
+
+describe('createWindow for a theme that blocked glass at the last save', () => {
+  // The renderer turns Windows glass off for a theme whose text cannot stay
+  // legible over it and saves that as `windowGlassEffective`, keeping the
+  // user's Soft or Clear. The next launch must start the way the window will
+  // stay: the opaque path, not acrylic until the renderer loads.
+  it.each(['soft', 'clear'])('level %s with the window last shown Off: the same opaque start as glass Off', async (level) => {
+    const blocked = await optionsFor('win32', '10.0.26200', level, 'dark', 'off');
+    const off = await optionsFor('win32', '10.0.26200', 'off', 'dark');
+    expect(blocked.opts).toEqual(off.opts);
+    expect(blocked.opts.show).toBe(false);
+    expect(blocked.opts.backgroundMaterial).toBeUndefined();
+    expect(blocked.glassOn).toBe(false);
+    // No appearance override either: the renderer hands it to the system.
+    expect(blocked.themeSource).toBe('system');
+  });
+
+  it('a light theme that blocked glass starts in the light frame colour, hidden until painted', async () => {
+    const { opts } = await optionsFor('win32', '10.0.26200', 'soft', 'light', 'off');
+    expect(opts.backgroundColor).toBe('#ECECEF');
+    expect(opts.show).toBe(false);
+  });
+
+  it.each(['soft', 'clear', null, undefined])('the window last shown %s starts with acrylic at Soft', async (effective) => {
+    const { opts, glassOn } = await optionsFor('win32', '10.0.26200', 'soft', 'dark', effective);
+    expect(opts.backgroundMaterial).toBe('acrylic');
+    expect(glassOn).toBe(true);
   });
 });
 

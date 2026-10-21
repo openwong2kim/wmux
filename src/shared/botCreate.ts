@@ -29,6 +29,9 @@ export interface FactoryBotCreateRequest {
   template?: BotTemplate;
   /** The job text (shared/bot.ts normalizeBotJob); absent = none yet. */
   job?: string;
+  /** The recipe that prefilled the job (shared/botRecipes.ts); `template`
+   *  must then be the recipe's. Display only, it grants nothing. */
+  recipe?: string;
   /** @deprecated legacy tag; derived from the template when absent. */
   role?: BotRole;
   /** The folder the owner picked (or main's suggestion); ignored when a bot

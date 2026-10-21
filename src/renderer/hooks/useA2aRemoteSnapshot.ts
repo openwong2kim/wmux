@@ -3,7 +3,6 @@ import { useStore } from '../stores';
 import type { Workspace } from '../../shared/types';
 import type { AgentSlug } from '../../shared/events';
 import type { A2aRemotePaneSnapshot } from '../../shared/rpc';
-import type { MoaState } from '../../shared/moa';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { leafDisplayName } from '../utils/paneNaming';
 
@@ -15,45 +14,18 @@ interface SnapshotSource {
   surfaceAgent: Record<string, { name: string; slug?: AgentSlug }>;
   /** User pane labels (the header's source); absent in callers that have none. */
   paneLabel?: Record<string, string>;
-  /** Main's Moa state; null/absent = no Moa. */
-  moa?: Pick<MoaState, 'hq'> & { config: { enabled: boolean } } | null;
-}
-
-/** This PC's Moa as a link end: on, with a live HQ workspace. Otherwise null. */
-export function moaBrainEnd(s: SnapshotSource): { workspaceId: string; name: string } | null {
-  const hq = s.moa?.hq;
-  if (!s.moa?.config.enabled || hq?.state !== 'ok' || !hq.workspaceId) return null;
-  const ws = s.workspaces.find((w) => w.id === hq.workspaceId);
-  return ws ? { workspaceId: ws.id, name: ws.name } : null;
 }
 
 /**
  * Every workspace and pane of this window as cross-host A2A needs them: the
- * names a human picks a pane by, the pane's agent, cwd and branch, plus this
- * PC's Moa while it is on. Pure, so
- * the shape is testable without a store.
+ * names a human picks a pane by, the pane's agent, cwd and branch. Pure, so
+ * the shape is testable without a store. This PC has no Moa any more, so
+ * its brain end always reads as 'off' (main then ends a brain link left
+ * from an earlier version instead of waiting on it).
  */
-/**
- * How sure we are about this PC's Moa. Moa's brain no longer runs, so no Moa
- * state reads as 'off' (main then stops waiting on a brain link). With a
- * state: 'off' when Moa is off or has no HQ; an unreadable HQ store or an HQ
- * not in the tree right now is 'unknown', which main rides out on the last
- * known Moa instead of breaking its links.
- */
-export function moaBrainState(s: SnapshotSource): 'present' | 'off' | 'unknown' {
-  if (moaBrainEnd(s)) return 'present';
-  if (!s.moa) return 'off';
-  if (!s.moa.config.enabled) return 'off';
-  const hq = s.moa.hq;
-  if (hq.state === 'unset' || hq.state === 'hq-missing') return 'off';
-  return 'unknown';
-}
-
 export function buildPaneSnapshot(s: SnapshotSource): A2aRemotePaneSnapshot {
-  const brain = moaBrainEnd(s);
   return {
-    ...(brain ? { brain } : {}),
-    brainState: moaBrainState(s),
+    brainState: 'off',
     workspaces: s.workspaces.map((ws) => ({
       id: ws.id,
       name: ws.name,
@@ -110,7 +82,6 @@ export function useA2aRemoteSnapshot(): void {
         s.workspaces !== prev.workspaces ||
         s.surfaceAgent !== prev.surfaceAgent ||
         s.paneLabel !== prev.paneLabel ||
-        s.moa !== prev.moa ||
         s.sessionRestored !== prev.sessionRestored ||
         s.sessionLoadSettled !== prev.sessionLoadSettled
       ) schedule();

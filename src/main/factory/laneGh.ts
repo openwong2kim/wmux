@@ -3,7 +3,9 @@
 // What mergeLaneHost hands its executor and host: the effect store (one
 // instance per data dir), the fresh lane read (GhPrReviewService's
 // LANE_PR_QUERY, never the TTL cache), the squash merge of an effect, the
-// login gh signs in as now, and a PR's author workspaces.
+// login gh signs in as now, and a PR's author workspaces. A GitLab remote
+// (hostLane.ts) is read, merged and signed in to with glab instead
+// (GlabPrService), under the same head and gate checks.
 
 import { execFile } from 'node:child_process';
 import * as fs from 'node:fs';
@@ -14,6 +16,8 @@ import type { MergeEffect } from '../../shared/moaDecision';
 import type { PrWriteResult } from '../../shared/prReview';
 import { ghPrReviewService } from '../github/GhPrReviewService';
 import { ghIssueEnv, splitRepoKey } from '../github/GhIssueService';
+import { glabPrService } from '../github/GlabPrService';
+import { isGitlabRepoKey, readLaneFacts } from '../github/hostLane';
 import { getTaskLedger } from '../deck/taskLedgerHost';
 import { authorWorkspaces, parseWorktreeList } from '../deck/authorWorkspaces';
 import { MoaEffectStore } from '../deck/moaEffectStore';
@@ -33,9 +37,10 @@ export function laneEffectStore(dir: string = getWmuxDir()): MoaEffectStore {
   return effectStore.effects;
 }
 
-/** The login gh signs in as on the repo's host now: never cached, so an
- *  account switch stops the next merge. */
+/** The login gh (glab, on GitLab) signs in as on the repo's host now: never
+ *  cached, so an account switch stops the next merge. */
 export async function currentGhLogin(repo: { key: string; path: string }): Promise<string | null> {
+  if (isGitlabRepoKey(repo.key)) return glabPrService.currentLogin(repo.path, repo.key);
   const parts = splitRepoKey(repo.key);
   if (!parts) return null;
   try {
@@ -73,10 +78,11 @@ export function prAuthorWorkspaces(getDaemonClient: () => DaemonClient | null, a
   }, { askerWorkspaceId: asker.workspaceId, repoPath, headRefName });
 }
 
-/** The lane read: GhPrReviewService's LANE_PR_QUERY, never the TTL cache. */
+/** The lane read: GhPrReviewService's LANE_PR_QUERY (GlabPrService's
+ *  GLAB_LANE_MR_QUERY on GitLab), never the TTL cache. */
 export const freshLaneFacts = {
   readFresh: async (repoPath: string, key: string, n: number) => {
-    const r = await ghPrReviewService.laneFacts(repoPath, key, n);
+    const r = await readLaneFacts(repoPath, key, n);
     if (!r.ok) throw new Error(r.message);
     return r.value;
   },
@@ -86,9 +92,23 @@ export const freshLaneFacts = {
  *  `authorize` is the executor's gate, asked by the merge right before it
  *  writes. */
 export async function squashMergeEffect(e: MergeEffect, authorize: () => string | null): Promise<PrWriteResult> {
+  // GitLab: the merge reads the MR fresh and takes its subject from that
+  // read's title (`!n`), sending the expected head as `sha`.
+  if (isGitlabRepoKey(e.repoKey)) return glabPrService.merge(e.repoPath, e.repoKey, e.prNumber, { expectHead: e.expectHead, subject: '', body: '' }, authorize);
   // The subject GitHub would give a squash: the title and the number.
   const head = await ghPrReviewService.checks(e.repoPath, e.repoKey, e.prNumber, true);
   return ghPrReviewService.merge(e.repoPath, e.repoKey, e.prNumber, {
     expectHead: e.expectHead, subject: moaMergeSubject(head.ok ? head.value.head.title : '', e.prNumber), body: '',
   }, authorize);
+}
+
+/** Bring a lane PR's branch up to date with its base (only while its head is
+ *  still the effect's). A GitLab MR is not: a rebase there takes no expected
+ *  head, so the lane refuses it (`behind-update-invalid`) and it waits for
+ *  its author. */
+export function updateBranchEffect(e: MergeEffect): Promise<PrWriteResult> {
+  if (isGitlabRepoKey(e.repoKey)) {
+    return Promise.resolve({ ok: false, code: 'invalid', message: 'the lane does not update a GitLab merge request\'s branch' });
+  }
+  return ghPrReviewService.updateBranch(e.repoPath, e.repoKey, e.prNumber, e.expectHead);
 }

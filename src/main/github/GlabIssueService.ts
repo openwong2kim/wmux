@@ -17,7 +17,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { IssueComment, IssueDetail, IssueDetailResult, IssueFilter, IssueSummary } from '../../shared/issueSurface';
 import { capBody } from './GhPrService';
-import { GLAB_ENV } from './GlabPrService';
+import { GLAB_ENV, glabProjectOfKey } from './GlabPrService';
 import { ISSUE_LIST_LIMIT } from './GhIssueService';
 
 const execFileAsync = promisify(execFile);
@@ -34,12 +34,7 @@ type Exec = (
   opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean; maxBuffer: number },
 ) => Promise<{ stdout: string }>;
 
-/** host and project path (group/…/project) of a GitLab remote key, or null. */
-export function glabProjectOfKey(key: string): { host: string; path: string } | null {
-  const parts = key.split('/');
-  if (parts.length < 3 || parts.some((p) => !/^[\w.-]+$/.test(p) || p === '.' || p === '..')) return null;
-  return { host: parts[0], path: parts.slice(1).join('/') };
-}
+export { glabProjectOfKey };
 
 /** The REST list path for a filter. GitLab's scope covers assigned/created,
  *  so no login is read. A label name cannot hold a comma on GitLab, which is

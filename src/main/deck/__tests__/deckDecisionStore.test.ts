@@ -5,13 +5,14 @@ import path from 'node:path';
 import {
   raiseDecision,
   raiseDecisionIfFree,
-  isIssueProposalDecision,
   replaceStaleDecision,
   hasBrainBlockingDecision,
   resolveDecision,
   clearDecision,
   clearResolvedDecision,
   loadWorkspaceDecision,
+  loadWorkspaceDecisions,
+  isMainOwnedDecision,
   hasPendingDecision,
   renderDecisionBlock,
   renderStaleDecisionBlock,
@@ -44,12 +45,12 @@ describe('deckDecisionStore', () => {
     expect(await raiseDecisionIfFree('ws-1', { question: 'Now?' }, dir)).toMatchObject({ question: 'Now?' });
   });
 
-  it('keeps an issue-proposal card\'s origin and key through a resolve and a reload', async () => {
-    const d = await raiseDecisionIfFree('ws-1', { question: 'Hand it off?', origin: 'issue-proposal', ref: 'issue:github.com/a/b#1' }, dir);
-    expect(isIssueProposalDecision(d)).toBe(true);
+  it('keeps an ask_person card\'s origin and key through a resolve and a reload', async () => {
+    const d = await raiseDecisionIfFree('ws-1', { question: 'Ship it?', origin: 'ask_person', ref: 'h-1' }, dir);
+    expect(isMainOwnedDecision(d)).toBe(true);
     await resolveDecision('ws-1', d!.id, 'Not now', dir);
-    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ origin: 'issue-proposal', ref: 'issue:github.com/a/b#1', status: 'resolved' });
-    expect(isIssueProposalDecision(await raiseDecision('ws-2', { question: 'Brain?' }, dir))).toBe(false);
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ origin: 'ask_person', ref: 'h-1', status: 'resolved' });
+    expect(isMainOwnedDecision(await raiseDecision('ws-2', { question: 'Brain?' }, dir))).toBe(false);
   });
 
   it('tells change listeners after every write, and a throwing listener breaks nothing', async () => {
@@ -387,18 +388,38 @@ describe('renderDecisionBlock provenance (round 3)', () => {
 });
 
 describe('main-owned cards in the store', () => {
-  it('replaceStaleDecision never swaps out a stale moa-handoff card, and the origin survives a reload', async () => {
+  it('replaceStaleDecision never swaps out a stale ask_person card, and the origin survives a reload', async () => {
     writeFileSync(
       getDeckDecisionPath(dir),
       JSON.stringify({
         'ws-1': {
-          id: 'dec-h', question: 'Moa proposes…', options: ['Hand off', 'Edit', 'Cancel'], context: '',
-          status: 'pending', raisedAt: 1, origin: 'moa-handoff', ref: 'h1',
+          id: 'dec-h', question: 'Which branch?', options: ['main', 'dev'], context: '',
+          status: 'pending', raisedAt: 1, origin: 'ask_person', ref: 'h1', handoffId: 'h1',
         },
       }),
     );
     expect(await replaceStaleDecision('ws-1', 'dec-h', 60_000, { question: 'Mine now?' }, dir)).toBeNull();
-    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ id: 'dec-h', origin: 'moa-handoff' });
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ id: 'dec-h', origin: 'ask_person' });
+  });
+
+  it('drops a card Moa raised in an earlier version on load: nothing can answer it, so it frees its slot', async () => {
+    writeFileSync(
+      getDeckDecisionPath(dir),
+      JSON.stringify({
+        'ws-h': { id: 'h', question: 'Moa proposes…', options: ['Hand off', 'Edit', 'Cancel'], context: '', status: 'pending', raisedAt: 1, origin: 'moa-handoff', ref: 'h1' },
+        'ws-g': { id: 'g', question: 'Approve the goal?', options: ['Approve'], context: 'x'.repeat(5000), status: 'pending', raisedAt: 1, origin: 'moa-goal' },
+        'ws-i': [
+          { id: 'i', question: 'Hand it off?', options: [], context: '', status: 'pending', raisedAt: 1, origin: 'issue-proposal', ref: 'issue:github.com/a/b#1' },
+          { id: 'b', question: 'Brain asks?', options: [], context: '', status: 'pending', raisedAt: 1, threadId: 'task:t1' },
+        ],
+      }),
+    );
+    expect(loadWorkspaceDecision('ws-h', dir)).toBeNull();
+    expect(loadWorkspaceDecision('ws-g', dir)).toBeNull();
+    expect(loadWorkspaceDecisions('ws-i', dir).map((d) => d.id)).toEqual(['b']);
+    expect(hasPendingDecision('ws-h', dir)).toBe(false);
+    // The slot is free again: a new card goes up where the old one sat.
+    expect(await raiseDecisionIfFree('ws-h', { question: 'Now?' }, dir)).toMatchObject({ question: 'Now?' });
   });
 });
 
@@ -407,7 +428,7 @@ describe('hasBrainBlockingDecision', () => {
     writeFileSync(
       getDeckDecisionPath(dir),
       JSON.stringify({
-        'ws-1': { id: 'h', question: 'Moa proposes…', options: [], context: '', status: 'pending', raisedAt: 1, origin: 'moa-handoff' },
+        'ws-1': { id: 'h', question: 'A bot asks?', options: [], context: '', status: 'pending', raisedAt: 1, origin: 'ask_person' },
         'ws-2': { id: 'q', question: 'Brain asks?', options: [], context: '', status: 'pending', raisedAt: 1 },
       }),
     );

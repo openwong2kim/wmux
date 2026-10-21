@@ -51,6 +51,18 @@ describe('initialWindowsGlass', () => {
     expect(initialWindowsGlass(true, null)).toBe(true);
   });
 
+  it('starts opaque when the window was last shown Off for its theme, whatever the level', () => {
+    expect(initialWindowsGlass(true, 'soft', 'off')).toBe(false);
+    expect(initialWindowsGlass(true, 'clear', 'off')).toBe(false);
+  });
+
+  it('follows the level when the window last showed glass or the session predates the field', () => {
+    expect(initialWindowsGlass(true, 'soft', 'soft')).toBe(true);
+    expect(initialWindowsGlass(true, 'clear', 'clear')).toBe(true);
+    expect(initialWindowsGlass(true, 'soft', null)).toBe(true);
+    expect(initialWindowsGlass(true, 'off', 'soft')).toBe(false);
+  });
+
   it('starts opaque when the saved level is Off or the build has no glass', () => {
     expect(initialWindowsGlass(true, 'off')).toBe(false);
     expect(initialWindowsGlass(false, 'soft')).toBe(false);

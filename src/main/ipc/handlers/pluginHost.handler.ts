@@ -29,13 +29,17 @@ export function registerPluginHostHandlers(
   rpcRouter: RpcRouter,
   getLoader: () => PluginHostLoader | null,
   getApprovalQueue?: () => ApprovalQueue | null,
+  /** The catalog installed this bundle (UiPluginManager's install ledger). */
+  isManaged?: (name: string) => boolean,
 ): () => void {
   ipcMain.removeHandler(IPC.PLUGINS_LIST);
   ipcMain.handle(IPC.PLUGINS_LIST, wrapHandler(IPC.PLUGINS_LIST, async () => {
     const loader = getLoader();
     if (!loader) return { plugins: [], failures: [] };
     return {
-      plugins: await loader.summaries(),
+      // `managed`: a bundle sharing a catalog id is the catalog's only when the
+      // catalog installed it; one placed by hand keeps its own identity.
+      plugins: (await loader.summaries()).map((plugin) => ({ ...plugin, managed: isManaged?.(plugin.name) === true })),
       failures: loader.listFailures(),
     };
   }));

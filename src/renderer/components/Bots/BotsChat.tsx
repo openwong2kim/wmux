@@ -46,8 +46,10 @@
 // Sending: a 1:1 message is a post in the bot's 1:1 thread (`dm:<botId>`) of
 // its workspace's room that mentions that one bot (main wakes it alone, in
 // that thread). A group chat's message is a post in its thread that goes to
-// every bot of the group — main wakes each — unless bots are picked: the
-// recipients control above the box ("To: everyone ▾", a checkbox per bot),
+// every bot of the group — main wakes each — or, in a group with a
+// coordinator, to that coordinator alone, unless bots are picked: the
+// recipients control above the box ("To: everyone ▾" or "To: <lead> ▾", a
+// checkbox per bot),
 // or an `@Name` of a group bot anywhere in the text (resolved here at send;
 // main reads only the field). The picks reset after each send. Typing `@`
 // in a group suggests its bots.
@@ -73,7 +75,7 @@ import { CardAnswers, useWorkspaceNames } from '../Room/CardAnswers';
 import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
 import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
-import { deliveryLine, deliveryTaken, photoPostParams, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
+import { deliveryLine, deliveryTaken, photoPostParams, roomLead, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
 import { actorLabel, botKindLabel, cardResumeTaskId, cardTone, isRefThread, kindLabel, onceText, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
 import { BOT_JOB_MAX, botTemplate, delegatesFromConversation, normalizeBotJob, type BotPresence, type BotProfile as BotProfileData } from '../../../shared/bot';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
@@ -88,6 +90,7 @@ import { useShallow } from 'zustand/react/shallow';
 import type { BotTaskView } from '../../../shared/botTask';
 import { botCanDo } from './botsProfile';
 import { BotConnections } from './BotConnections';
+import { BotRecipeChecklist } from './BotRecipes';
 import { BotSkills } from './BotSkills';
 import { BotMemory } from './BotMemory';
 import { BotCommands } from './BotCommands';
@@ -1240,6 +1243,9 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
   const picks = useMentionPicks(bots, workspaceId);
   // A group's bots that can take a message (oldest first).
   const roomCandidates = useMemo(() => (conversation.kind === 'room' ? conversation.bots.filter((r) => r.bot.enabled) : []), [conversation]);
+  // The group's coordinator, which an unpicked message goes to alone (main's
+  // rule, humanMessage.ts).
+  const lead = useMemo(() => roomLead(roomCandidates), [roomCandidates]);
   // A group message goes to the bots picked and every group bot named by an
   // `@Name` anywhere in the text (main reads the field, never the text).
   const typed = useMemo(() => textMentions(text, roomCandidates, bots.filter((r) => r.bot.enabled)), [text, roomCandidates, bots]);
@@ -1247,13 +1253,11 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
     () => (conversation.kind === 'bot' ? [conversation.row.bot.id] : [...new Set([...picks.picked, ...typed])].filter((id) => roomCandidates.some((r) => r.bot.id === id))),
     [conversation, picks.picked, typed, roomCandidates],
   );
-  // Nobody picked: the group's own thread goes to every bot of it (main's
-  // rule); a thread it started names them all, since main reads a thread
-  // other than the group's as the workspace's.
-  const mentions: string[] = useMemo(
-    () => (conversation.kind === 'room' && picked.length === 0 && threadId !== conversation.threadId ? roomCandidates.map((r) => r.bot.id) : picked),
-    [conversation, picked, threadId, roomCandidates],
-  );
+  // Nobody picked: no mentions, in the group's own thread or one it
+  // started. Main settles who gets it (humanMessage.ts): the group's
+  // coordinator with any bot waiting on the owner in that thread, else
+  // every bot of the group.
+  const mentions: string[] = picked;
   // A group with no bot on takes no message (main would read a thread's
   // unaddressed reply as the whole workspace's).
   const refusal = readOnly ? t('botsPage.pausedComposer')
@@ -1509,7 +1513,7 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
         </Popover>
       )}
       {conversation.kind === 'room' && !refusal && (
-        <RecipientsControl candidates={roomCandidates} picked={picked} onToggle={picks.toggle} t={t} />
+        <RecipientsControl candidates={roomCandidates} lead={lead} picked={picked} onToggle={picks.toggle} t={t} />
       )}
       {photos.length > 0 && (
         <div data-bots-composer-photos>
@@ -1599,11 +1603,13 @@ function BotsComposer({ conversation, threadId, workspaceId: workspaceOverride, 
   );
 }
 
-/** Whom a group message goes to, above the box: "To: everyone ▾", or the
- *  bots picked; it opens a checkbox per bot of the group. A typed `@Name`
- *  shows checked too. The picks reset after each send. */
-function RecipientsControl({ candidates, picked, onToggle, t }: {
+/** Whom a group message goes to, above the box: "To: everyone ▾" ("To:
+ *  <lead> ▾" in a group with a coordinator), or the bots picked; it opens a
+ *  checkbox per bot of the group. A typed `@Name` shows checked too. The
+ *  picks reset after each send. */
+function RecipientsControl({ candidates, lead, picked, onToggle, t }: {
   candidates: readonly FactoryBotRow[];
+  lead: FactoryBotRow | null;
   picked: readonly string[];
   onToggle: (botId: string) => void;
   t: T;
@@ -1618,7 +1624,8 @@ function RecipientsControl({ candidates, picked, onToggle, t }: {
     return () => document.removeEventListener('mousedown', onDown);
   }, [open]);
   const names = candidates.filter((r) => picked.includes(r.bot.id)).map((r) => r.bot.name);
-  const label = names.length === 0 ? t('botsPage.group.toEveryone') : t('botsPage.group.toSome', { names: names.join(', ') });
+  const label = names.length > 0 ? t('botsPage.group.toSome', { names: names.join(', ') })
+    : lead ? t('botsPage.group.toSome', { names: lead.bot.name }) : t('botsPage.group.toEveryone');
   return (
     <div ref={wrapRef} className="relative flex min-w-0 items-center">
       <button
@@ -1647,7 +1654,7 @@ function RecipientsControl({ candidates, picked, onToggle, t }: {
             buttonRef.current?.focus();
           }}
         >
-          <p className="px-3 pb-1 pt-2 text-[11px] text-[var(--text-muted)]">{t('botsPage.group.recipientsHint')}</p>
+          <p className="px-3 pb-1 pt-2 text-[11px] text-[var(--text-muted)]">{lead ? t('botsPage.group.recipientsHintLead', { name: lead.bot.name }) : t('botsPage.group.recipientsHint')}</p>
           {candidates.map((r, i) => (
             <label key={r.bot.id} className="ui-section-row w-full cursor-pointer text-left text-[13px]">
               <input
@@ -1666,6 +1673,12 @@ function RecipientsControl({ candidates, picked, onToggle, t }: {
       )}
     </div>
   );
+}
+
+/** What an empty group chat says: who its first message goes to. */
+function emptyGroupLine(bots: readonly FactoryBotRow[], t: T): string {
+  const lead = roomLead(bots);
+  return lead ? t('botsPage.group.emptyLead', { name: lead.bot.name }) : t('botsPage.group.empty');
 }
 
 function ProfileLine({ label, value }: { label: string; value: React.ReactNode }) {
@@ -2064,7 +2077,8 @@ function ProfileState({ row, t }: { row: FactoryBotRow; t: T }) {
  *  workspace, repo, the model it thinks on, what its workers run on and
  *  their model, on/off, what it used today of each limit (and what stops
  *  it, with Resume when parked), its routines
- *  (read-only), its connections, then what it can do (the shared powers,
+ *  (read-only), the recipe it was added from and what its connections still
+ *  need, its connections, then what it can do (the shared powers,
  *  read-only), whom it reports to, its workers now, and Pause and Stop. */
 function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPort }: { row: FactoryBotRow; workers: readonly BotWorker[]; workspaceName: string; t: T; stopPort: BotsStopPort; jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'>; adminPort?: BotAdminPort }) {
   const routines = (useBotRoutines()?.routines ?? []).filter((r) => r.botId === row.bot.id);
@@ -2094,6 +2108,7 @@ function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPo
           </ul>
         </div>
       )}
+      <BotRecipeChecklist bot={row.bot} t={t} />
       <BotConnections row={row} t={t} />
       <BotSkills row={row} t={t} />
       <BotMemory row={row} t={t} />
@@ -2587,7 +2602,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
               <ChatIntro row={conversation.row} t={t} readOnly={readOnly} onPick={(text) => setPrefill({ text, nonce: Date.now() })} />
             )}
             {empty && conversation.kind === 'room' && (
-              <p data-bots-empty-chat className="py-8 text-center text-[12px] text-[var(--text-muted)]">{t('botsPage.group.empty')}</p>
+              <p data-bots-empty-chat className="py-8 text-center text-[12px] text-[var(--text-muted)]">{emptyGroupLine(conversation.bots, t)}</p>
             )}
             <TimelineView items={shownItems} ctx={ctx} group={group} onCancelWorkflow={flows.cancel} />
           </div>

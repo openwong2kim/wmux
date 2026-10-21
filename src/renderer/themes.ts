@@ -242,7 +242,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   },
   paper: {
     bgBase: '#FFFFFF', bgSurface: '#ECECF0', bgMantle: '#F3F3F5',
-    textMain: '#17171C', textSub: '#3F3F48', textMuted: '#8A8A96',
+    textMain: '#17171C', textSub: '#3F3F48', textMuted: '#848491',
     accent: '#5B5BD6', accentSecondary: '#5B5BD6', success: '#16A34A', danger: '#DC2626', warning: '#C2700A',
   },
   'amber-line': {
@@ -254,7 +254,8 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   // (hardbeat920/monocode@6bd432ca, src/styles/index.css), MIT License,
   // Copyright (c) 2026 Nick. Zero-saturation greys from one lightness pair
   // (base 9% / content 92%, light 97% / 18%); surface = content 7% over the
-  // base, sub = content 60%, muted = content 40% (45% in light). One accent,
+  // base, sub = content 60%, muted = content 40% (45% in light), each then
+  // lifted to 4.5:1 / 3:1 on the look's own surfaces (owner, 2026-10-21). One accent,
   // hsl(211 92% 62%), for selection, focus, primary actions and "needs you";
   // done emerald-400 and error red-400 (Tailwind palette, as the source uses)
   // stay for diffs and failures. Running is muted (agentStatusIcon.ts).
@@ -262,12 +263,12 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   // text levels: bright primary, mid-grey secondary, dim tertiary.
   mono: {
     bgBase: '#1A171B', bgSurface: '#2A272C', bgMantle: '#171419',
-    textMain: '#E8E9ED', textSub: '#85868B', textMuted: '#626167',
+    textMain: '#E8E9ED', textSub: '#88898D', textMuted: '#6D6C72',
     accent: '#459BF7', accentSecondary: '#459BF7', success: '#34D399', danger: '#F87171', warning: '#FBBF24',
   },
   'mono-light': {
     bgBase: '#F7F7F7', bgSurface: '#EBEBEB', bgMantle: '#F7F7F7',
-    textMain: '#2E2E2E', textSub: '#7E7E7E', textMuted: '#9C9C9C',
+    textMain: '#2E2E2E', textSub: '#6B6B6B', textMuted: '#888888',
     accent: '#459BF7', accentSecondary: '#459BF7', success: '#059669', danger: '#DC2626', warning: '#B45309',
   },
   // The redesign default (designs/design-system-20260711/wmux-FINAL-amber.html).
@@ -281,32 +282,32 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   // makes the three regions read as one piece of chrome.
   amber: {
     bgBase: '#151517', bgSurface: '#202024', bgMantle: '#19191C',
-    textMain: '#EFEEEC', textSub: '#A5A29C', textMuted: '#66645F',
+    textMain: '#EFEEEC', textSub: '#A5A29C', textMuted: '#706E68',
     accent: '#E8A33D', accentSecondary: '#6E9BC4', success: '#8FBF7F', danger: '#D96C6C', warning: '#E8A33D', // 2-accent (owner 2026-07-15): amber = alive/attention, steel-blue --accent-blue = navigation/interactive
   },
   'catppuccin-mocha': {
     bgBase: '#1E1E2E', bgSurface: '#313244', bgMantle: '#181825',
-    textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#585B70', // SSOT: authentic Catppuccin Surface2 (matches shipped globals.css)
+    textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#6C708A', // Catppuccin Overlay0 lifted to 3:1 on the theme's own surfaces
     accent: '#89B4FA', accentSecondary: '#89B4FA', success: '#A6E3A1', danger: '#F38BA8', warning: '#F9E2AF',
   },
   monochrome: {
     bgBase: '#080808', bgSurface: '#1A1A1A', bgMantle: '#050505',
-    textMain: '#E0E0E0', textSub: '#B0B0B0', textMuted: '#404040', // SSOT: matches shipped globals.css
+    textMain: '#E0E0E0', textSub: '#B0B0B0', textMuted: '#616161', // SSOT: matches shipped globals.css
     accent: '#A0A0A0', accentSecondary: '#A0A0A0', success: '#909090', danger: '#FF5555', warning: '#C0C0C0',
   },
   'stars-and-stripes': {
     bgBase: '#0C1428', bgSurface: '#1E2E4A', bgMantle: '#091020',
-    textMain: '#C8D6E8', textSub: '#A0B0C8', textMuted: '#3A5070', // SSOT: matches shipped globals.css
+    textMain: '#C8D6E8', textSub: '#A0B0C8', textMuted: '#4D6A94', // SSOT: matches shipped globals.css
     accent: '#5B8DEF', accentSecondary: '#5B8DEF', success: '#4EBF8B', danger: '#E8554E', warning: '#F2C85B',
   },
   'red-dynasty': {
     bgBase: '#1A0A0A', bgSurface: '#3A1A1A', bgMantle: '#140808',
-    textMain: '#E8D0C0', textSub: '#C0A898', textMuted: '#5A3A30', // SSOT: matches shipped globals.css
+    textMain: '#E8D0C0', textSub: '#C0A898', textMuted: '#895849', // SSOT: matches shipped globals.css
     accent: '#E84040', accentSecondary: '#6AA0CC', success: '#5AAE6A', danger: '#E84040', warning: '#F2C744', // accentSecondary (--accent-blue) is a distinct blue for links, per shipped globals.css
   },
   nightowl: {
     bgBase: '#1E1B16', bgSurface: '#2E2A22', bgMantle: '#161310',
-    textMain: '#C8BFA8', textSub: '#9A9080', textMuted: '#5A5340', // SSOT: matches shipped globals.css
+    textMain: '#C8BFA8', textSub: '#9A9080', textMuted: '#766C54', // SSOT: matches shipped globals.css
     accent: '#C4A055', accentSecondary: '#7FA6C9', success: '#8AAA70', danger: '#CC6B5A', warning: '#C89060', // 2-accent: gold alive / cool-blue nav (--accent-blue)
   },
   'gruvbox-dark-hard': {
@@ -318,7 +319,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
   },
   void: {
     bgBase: '#000000', bgSurface: '#0A0A0A', bgMantle: '#000000',
-    textMain: '#C0C0C0', textSub: '#909090', textMuted: '#333333', // SSOT: matches shipped globals.css
+    textMain: '#C0C0C0', textSub: '#909090', textMuted: '#5D5D5D', // SSOT: matches shipped globals.css
     accent: '#C0C0C0', accentSecondary: '#C0C0C0', success: '#909090', danger: '#FF4444', warning: '#A0A0A0',
   },
   hinomaru: {
@@ -333,6 +334,22 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
     textMain: '#1A1A2E', textSub: '#3A3A50', textMuted: '#6A6A7A',
     accent: '#003478', accentSecondary: '#003478', success: '#1F6940', danger: '#C60C30', warning: '#9B6A07',
   },
+};
+
+// The text tokens these themes shipped with before the 2026-10-21 contrast
+// lift. A custom theme saved as an unmodified copy of one of them (including
+// the old DEFAULT_CUSTOM_THEME, Catppuccin) still reads as based on it.
+export const PRE_CONTRAST_LIFT_TEXT: Partial<Record<BuiltinThemeId, Pick<UIThemeTokens, 'textSub' | 'textMuted'>>> = {
+  paper: { textSub: '#3F3F48', textMuted: '#8A8A96' },
+  mono: { textSub: '#85868B', textMuted: '#626167' },
+  'mono-light': { textSub: '#7E7E7E', textMuted: '#9C9C9C' },
+  amber: { textSub: '#A5A29C', textMuted: '#66645F' },
+  'catppuccin-mocha': { textSub: '#BAC2DE', textMuted: '#585B70' },
+  monochrome: { textSub: '#B0B0B0', textMuted: '#404040' },
+  'stars-and-stripes': { textSub: '#A0B0C8', textMuted: '#3A5070' },
+  'red-dynasty': { textSub: '#C0A898', textMuted: '#5A3A30' },
+  nightowl: { textSub: '#9A9080', textMuted: '#5A5340' },
+  void: { textSub: '#909090', textMuted: '#333333' },
 };
 
 // ─── Attention orange (needs you) ───────────────────────────────────────────
@@ -619,21 +636,22 @@ export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
 // drifted silently (a built-in theme rendered differently from "custom based on
 // that built-in"). Capturing them here makes themes.ts the single source of
 // truth: deriveBuiltinPalette() reproduces every shipped [data-theme] block
-// EXACTLY (locked by themeParity.test.ts). The values are byte-identical to what
-// already ships — this changes NO built-in's on-screen appearance.
+// EXACTLY (locked by themeParity.test.ts). The values were captured
+// byte-identical to what shipped; textSubtle/textSub2 have since been lifted or
+// dropped where text contrast required it (themeTextContrast.test.ts).
 //
 // These apply to BUILT-IN rendering only. Custom themes intentionally derive
 // purely from their 11 editable tokens (deriveFullPalette) so a user's live
 // edits are never pinned to a stale override.
 export const BUILTIN_CSS_OVERRIDES: Partial<Record<BuiltinThemeId, Partial<FullCssPalette>>> = {
   amber: { bgOverlay: '#28282D', textSubtle: '#85827B' },
-  'catppuccin-mocha': { bgOverlay: '#45475A', textSubtle: '#6C7086', textSub2: '#A6ADC8', accentCursor: '#F5E0DC' },
-  monochrome: { bgOverlay: '#2A2A2A', textSubtle: '#606060', textSub2: '#888888', accentCursor: '#FFFFFF' },
-  'stars-and-stripes': { bgOverlay: '#2A3E5A', textSubtle: '#4A6080', textSub2: '#8090A8', accentCursor: '#E89B4A' }, // 2-accent: orange-gold alive, distinct from pale-gold warning (accent stays blue = nav)
-  'red-dynasty': { bgOverlay: '#4A2A2A', textSubtle: '#6A4A3E', textSub2: '#A08878' },
-  nightowl: { bgOverlay: '#38332A', textSubtle: '#6B6350', textSub2: '#847A68' },
+  'catppuccin-mocha': { bgOverlay: '#45475A', textSubtle: '#9399B2', textSub2: '#A6ADC8', accentCursor: '#F5E0DC' },
+  monochrome: { bgOverlay: '#2A2A2A', textSub2: '#909090', accentCursor: '#FFFFFF' },
+  'stars-and-stripes': { bgOverlay: '#2A3E5A', textSub2: '#8090A8', accentCursor: '#E89B4A' }, // 2-accent: orange-gold alive, distinct from pale-gold warning (accent stays blue = nav)
+  'red-dynasty': { bgOverlay: '#4A2A2A', textSub2: '#A08878' },
+  nightowl: { bgOverlay: '#38332A', textSub2: '#938976' },
   'gruvbox-dark-hard': { bgOverlay: '#504945', textSubtle: '#928374', textSub2: '#A89984' },
-  void: { bgOverlay: '#141414', textSubtle: '#505050', textSub2: '#707070', accentCursor: '#FFFFFF' },
+  void: { bgOverlay: '#141414', textSub2: '#808080', accentCursor: '#FFFFFF' },
   hinomaru: { bgOverlay: '#D4CFC6', textSubtle: '#5C5651' },
   taegeuk: { textSubtle: '#4F4F62', textSub2: '#2A2A40', accentCursor: '#B87500' }, // 2-accent: rich gold alive, distinct from dark-gold warning (accent stays navy = nav)
 };

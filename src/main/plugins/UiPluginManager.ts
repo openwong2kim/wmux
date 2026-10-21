@@ -47,6 +47,11 @@ export class UiPluginManager {
     return result;
   }
 
+  /** The catalog installed `name` (its install ledger, not the name, says so). */
+  isManaged(name: string): boolean {
+    return this.state.managed.includes(name);
+  }
+
   async inventory(): Promise<UiPluginInventory> {
     await this.chain;
     const plugins = (await this.options.loader.summaries(true)).map((plugin) => ({

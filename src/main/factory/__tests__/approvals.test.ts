@@ -538,6 +538,18 @@ describe('typed approval (the owner\'s own words in the thread)', () => {
     expect(r.svc.get(b.requestId)?.state).toBe('approved');
   });
 
+  it('in a thread a group\'s work opened, an unpicked "approve" (the coordinator and the waiting bot, routed as lead) approves the waiting bot\'s request', async () => {
+    const dev = bot('bot-0000aaa1');
+    const lead = bot('bot-0000ccc3', { role: 'moa', template: 'coordinator' });
+    const r = rig({ bots: () => ({ listEnabled: () => [dev, lead], get: (id) => [dev, lead].find((b) => b.id === id) ?? null }) });
+    const WORK = 'handoff:h-00000000001';
+    r.state.wakes.set(dev.id, { wakeId: 'w-d', attempt: 1, threadId: WORK as never, tainted: false, ownerWords: true });
+    const a = await r.ask(dev, { action: 'merge', prNumber: 1, reason: 'x' });
+    expect(r.svc.get(a.requestId)?.threadId).toBe(WORK);
+    r.ownerSays('approve', WORK, [lead.id, dev.id], undefined, true);
+    expect(r.svc.get(a.requestId)?.state).toBe('approved');
+  });
+
   it('another owner message between the cards and the words leaves the requests above it pending', async () => {
     const r = rig();
     const a = await r.ask(DEV, { action: 'merge', prNumber: 1, reason: 'x' });

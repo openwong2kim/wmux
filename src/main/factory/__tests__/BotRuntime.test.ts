@@ -1211,10 +1211,10 @@ describe('room-wide owner messages, wake context and turn ends', () => {
     expect(posted).toHaveLength(1);
   });
 
-  it('only a wake answering an owner message posts its plain text; a routine, fact, handoff, intro or manual wake stays silent', async () => {
+  it('only a wake answering an owner message posts its plain text; a routine, fact, handoff, intro, manual or room-wide wake stays silent', async () => {
     const r = rig();
     const posted: string[] = [];
-    setBotRuntimePorts({ postTurnText: (_p, item) => { posted.push(item.reason.kind); } });
+    setBotRuntimePorts({ postTurnText: (_p, item) => { posted.push(item.reason.kind === 'human' ? item.reason.clientMessageId ?? 'human' : item.reason.kind); } });
     const id = createBot(r, 'lead');
     const reasons = [
       { kind: 'routine', routineId: 'rt-1', dueAt: clock },
@@ -1223,6 +1223,10 @@ describe('room-wide owner messages, wake context and turn ends', () => {
       { kind: 'intro' },
       { kind: 'manual', by: 'human' },
       { kind: 'human', text: 'Hi all', source: 'desktop', runId: 'run-c-9', room: true, clientMessageId: 'cp-room' },
+      // Every bot of a room without a coordinator got it: only room_post speaks.
+      { kind: 'human', text: 'Hi room', source: 'desktop', runId: 'run-c-10', room: true, roomWide: true, clientMessageId: 'cp-wide' },
+      // The room's coordinator is its addressee: its answer is posted.
+      { kind: 'human', text: 'Hi team', source: 'desktop', runId: 'run-c-11', lead: true, clientMessageId: 'cp-lead' },
     ] as const;
     for (const reason of reasons) {
       must(r.queue.enqueue({ botId: id, workspaceId: 'ws-1', reason: reason as never, priority: 0, threadId: 'general' }));
@@ -1231,8 +1235,9 @@ describe('room-wide owner messages, wake context and turn ends', () => {
       r.adapters[0].end([{ type: 'text-delta', text: 'Nothing to add.' }, { type: 'turn-end', sessionId: 'sess-1' }]);
       await settle();
     }
-    // The room-wide owner message is the only one.
-    expect(posted).toEqual(['human']);
+    // The owner messages this bot was addressed by (several named, or as the
+    // room's coordinator) are the only ones.
+    expect(posted).toEqual(['cp-room', 'cp-lead']);
   });
 
   it('an interrupted turn posts nothing, nor does a post that throws fail the turn', async () => {

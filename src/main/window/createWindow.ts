@@ -185,10 +185,17 @@ function attachWindowStatePersistence(win: BrowserWindow): void {
   win.on('closed', stop);
 }
 
-export function createWindow(opts: { deferLoad?: boolean; windowGlass?: unknown; windowAppearance?: unknown } = {}): BrowserWindow {
+export function createWindow(
+  opts: { deferLoad?: boolean; windowGlass?: unknown; windowGlassEffective?: unknown; windowAppearance?: unknown } = {},
+): BrowserWindow {
   // Windows window glass (windowGlass.ts): acrylic on Windows 11 22H2+ unless
-  // the persisted level is Off; the renderer switches it at runtime after.
-  const winGlass = initialWindowsGlass(windowsGlassSupported(process.platform, os.release()), opts.windowGlass);
+  // the persisted level is Off or the window was last shown opaque for its
+  // theme; the renderer switches it at runtime after.
+  const winGlass = initialWindowsGlass(
+    windowsGlassSupported(process.platform, os.release()),
+    opts.windowGlass,
+    opts.windowGlassEffective,
+  );
   // The acrylic's tone follows the app appearance; set it before the window
   // exists, not when the renderer loads, so the first frames match the theme.
   const bootAppearance = process.platform === 'win32' ? initialWindowsAppearance(winGlass, opts.windowAppearance) : null;

@@ -940,7 +940,17 @@ describe('Bots page', () => {
     expect(shown('[data-bots-thread-panel]')).toEqual(['c4', 'c5']);
     expect(shown('[data-bots-messages]')).toHaveLength(5);
     // Its composer posts into the thread.
-    expect(q<HTMLTextAreaElement>('[data-bots-thread-panel] [data-testid="bots-composer-input"]')?.placeholder).toBe('Reply in thread');
+    const reply = q<HTMLTextAreaElement>('[data-bots-thread-panel] [data-testid="bots-composer-input"]')!;
+    expect(reply.placeholder).toBe('Reply in thread');
+    // With no bot picked the reply names none: main settles who gets it (the
+    // coordinator as lead, any bot waiting there, else every bot).
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(reply, 'Looks good');
+      reply.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { q('[data-bots-thread-panel] [data-testid="bots-composer-send"]')!.click(); });
+    expect(posted.at(-1)).toMatchObject({ workspaceId: 'w1', threadId: 'pr:github.com/acme/api#1', title: 'Looks good' });
+    expect(posted.at(-1)?.mentions).toBeUndefined();
     act(() => q('[data-bots-thread-close]')!.click());
     expect(q('[data-bots-thread-panel]')).toBeNull();
   });
@@ -1132,6 +1142,28 @@ describe('Bots page', () => {
     await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
     expect(posted[2]).toMatchObject({ workspaceId: 'w1', mentions: [VERIFIER] });
     expect(to()).toBe('To: everyone');
+  });
+
+  it('in a group with a coordinator an unpicked message goes to it alone: "To: <lead>", and the hint says so', async () => {
+    bots = bots.map((r) => (r.bot.id === LEAD ? { ...r, bot: { ...r.bot, template: 'coordinator' as const } } : r));
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    const button = q('[data-bots-recipients]')!;
+    expect(button.textContent).toBe('To: Lead');
+    // The default, not a pick: no selection fill.
+    expect(button.className).not.toContain('selection-emphasis');
+    act(() => button.click());
+    expect(q('[data-bots-recipients-list]')!.textContent).toContain('None ticked: it goes to Lead, who leads and hands the work on.');
+    // Main routes the unaddressed message to the coordinator.
+    const input = q<HTMLTextAreaElement>('[data-testid="bots-composer-input"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, 'Status?');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => { q('[data-testid="bots-composer-send"]')!.click(); });
+    expect(posted[0]).toMatchObject({ workspaceId: 'w1', threadId: 'general', title: 'Status?' });
+    expect(posted[0].mentions).toBeUndefined();
   });
 
   it('a group chat the owner made shows only its thread and the work started there; its messages post to that thread', async () => {

@@ -474,6 +474,9 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     // The theme's polarity, so main can give a glass window the theme's tone
     // before this renderer loads (main/window/windowGlass.ts).
     windowAppearance: state.windowAppearance ?? undefined,
+    // The level the window last showed on Windows, so main starts a theme
+    // that blocks glass opaque rather than flipping it after this loads.
+    windowGlassEffective: state.windowGlassEffective ?? undefined,
     sidebarSortMode: state.sidebarSortMode,
     sidebarSortModeChosen: state.sidebarSortModeChosen,
     sidebarPinnedIds: state.sidebarPinnedIds,

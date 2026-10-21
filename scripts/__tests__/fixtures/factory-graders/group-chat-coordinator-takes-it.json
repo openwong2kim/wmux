@@ -1,0 +1,766 @@
+{
+ "pass": {
+  "schemaVersion": 1,
+  "scenario": "group-chat-coordinator-takes-it",
+  "run": 1,
+  "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+  "bots": [
+   {
+    "version": 1,
+    "id": "bot-b039c1f4",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "role": "moa",
+    "template": "coordinator",
+    "name": "Coordinator",
+    "engine": {
+     "kind": "acp",
+     "command": "/home/owner/.local/node/bin/node",
+     "args": [
+      "/home/owner/Desktop/coding/wmux/wmux/scripts/acp-stub.mjs",
+      "--script",
+      "/tmp/x",
+      "--log",
+      "/tmp/x"
+     ]
+    },
+    "triggers": [],
+    "budget": {
+     "maxTurnsPerDay": 200,
+     "maxConcurrentWorkers": 1,
+     "maxWorkerHoursPerDay": 4,
+     "turnTimeoutMs": 600000
+    },
+    "hue": 5,
+    "enabled": true,
+    "createdAt": 1792568896301,
+    "updatedAt": 1792568896301
+   },
+   {
+    "version": 1,
+    "id": "bot-e698020f",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "role": "lead",
+    "template": "developer",
+    "name": "Developer",
+    "engine": {
+     "kind": "acp",
+     "command": "/home/owner/.local/node/bin/node",
+     "args": [
+      "/home/owner/Desktop/coding/wmux/wmux/scripts/acp-stub.mjs",
+      "--script",
+      "/tmp/x",
+      "--log",
+      "/tmp/x"
+     ]
+    },
+    "workerAgent": {
+     "agent": "claude",
+     "model": "opus"
+    },
+    "triggers": [],
+    "budget": {
+     "maxTurnsPerDay": 200,
+     "maxConcurrentWorkers": 3,
+     "maxWorkerHoursPerDay": 6,
+     "turnTimeoutMs": 600000
+    },
+    "hue": 2,
+    "enabled": true,
+    "createdAt": 1792568896305,
+    "updatedAt": 1792568896305
+   },
+   {
+    "version": 1,
+    "id": "bot-6ee88d1a",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "role": "triage",
+    "template": "issue",
+    "name": "Issue",
+    "engine": {
+     "kind": "acp",
+     "command": "/home/owner/.local/node/bin/node",
+     "args": [
+      "/home/owner/Desktop/coding/wmux/wmux/scripts/acp-stub.mjs",
+      "--script",
+      "/tmp/x",
+      "--log",
+      "/tmp/x"
+     ]
+    },
+    "triggers": [],
+    "budget": {
+     "maxTurnsPerDay": 200,
+     "maxConcurrentWorkers": 1,
+     "maxWorkerHoursPerDay": 4,
+     "turnTimeoutMs": 600000
+    },
+    "hue": 4,
+    "enabled": true,
+    "createdAt": 1792568896307,
+    "updatedAt": 1792568896307
+   }
+  ],
+  "botKeys": {
+   "lead": "bot-b039c1f4",
+   "developer": "bot-e698020f",
+   "issue": "bot-6ee88d1a"
+  },
+  "injected": [
+   {
+    "label": "hi",
+    "kind": "card",
+    "id": "c-mvht8kl384b452ba0b",
+    "threadId": "group:grp-11cef1a8",
+    "at": 1792568896310
+   },
+   {
+    "label": "two picked",
+    "kind": "card",
+    "id": "c-mvht8sqe71bc37e148",
+    "threadId": "group:grp-11cef1a8",
+    "at": 1792568906867
+   }
+  ],
+  "actions": [
+   {
+    "at": 1792568896308,
+    "do": "api",
+    "label": "make the group",
+    "result": {
+     "ok": true,
+     "group": {
+      "id": "grp-11cef1a8",
+      "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+      "name": "Ship it",
+      "memberIds": [
+       "bot-b039c1f4",
+       "bot-e698020f",
+       "bot-6ee88d1a"
+      ],
+      "threadId": "group:grp-11cef1a8",
+      "createdAt": 1792568896309,
+      "updatedAt": 1792568896309
+     }
+    }
+   },
+   {
+    "at": 1792568896310,
+    "do": "post",
+    "label": "hi",
+    "result": {
+     "ok": true,
+     "card": {
+      "version": 1,
+      "id": "c-mvht8kl384b452ba0b",
+      "seq": 1,
+      "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+      "threadId": "group:grp-11cef1a8",
+      "kind": "human",
+      "at": 1792568896311,
+      "actor": {
+       "kind": "human"
+      },
+      "title": "Hi team",
+      "body": "Can someone look at the login bug?",
+      "refs": {
+       "botId": "bot-b039c1f4",
+       "botIds": [
+        "bot-b039c1f4"
+       ]
+      }
+     },
+     "addressee": {
+      "botId": "bot-b039c1f4",
+      "role": "moa"
+     },
+     "wakeId": "w-mvht8kl4-cee7f8f7",
+     "addressees": [
+      {
+       "botId": "bot-b039c1f4",
+       "role": "moa",
+       "wakeId": "w-mvht8kl4-cee7f8f7"
+      }
+     ]
+    }
+   },
+   {
+    "at": 1792568896318,
+    "do": "waitFor",
+    "label": "lead answered",
+    "ok": true,
+    "doneAt": 1792568901846
+   },
+   {
+    "at": 1792568901846,
+    "do": "waitFor",
+    "label": "quiet after hi",
+    "ok": true,
+    "doneAt": 1792568906867
+   },
+   {
+    "at": 1792568906867,
+    "do": "post",
+    "label": "two picked",
+    "result": {
+     "ok": true,
+     "card": {
+      "version": 1,
+      "id": "c-mvht8sqe71bc37e148",
+      "seq": 3,
+      "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+      "threadId": "group:grp-11cef1a8",
+      "kind": "human",
+      "at": 1792568906870,
+      "actor": {
+       "kind": "human"
+      },
+      "title": "Developer and issue",
+      "body": "You two, please.",
+      "refs": {
+       "botIds": [
+        "bot-e698020f",
+        "bot-6ee88d1a"
+       ]
+      }
+     },
+     "addressee": {
+      "botId": "bot-e698020f",
+      "role": "lead"
+     },
+     "wakeId": "w-mvht8sqe-81108abe",
+     "addressees": [
+      {
+       "botId": "bot-e698020f",
+       "role": "lead",
+       "wakeId": "w-mvht8sqe-81108abe"
+      },
+      {
+       "botId": "bot-6ee88d1a",
+       "role": "triage",
+       "wakeId": "w-mvht8sqe-645872a6"
+      }
+     ]
+    }
+   },
+   {
+    "at": 1792568906874,
+    "do": "waitFor",
+    "label": "picked answered",
+    "ok": true,
+    "doneAt": 1792568917418
+   },
+   {
+    "at": 1792568917418,
+    "do": "waitFor",
+    "label": "quiet",
+    "ok": true,
+    "doneAt": 1792568922440
+   }
+  ],
+  "harnessErrors": [],
+  "facts": [
+   {
+    "id": "f-0mvht8kl3-e2f7d4afbbe0",
+    "seq": 1,
+    "kind": "human.message",
+    "at": 1792568896311,
+    "dedupeKey": "human.message:c-mvht8kl384b452ba0b:bot-b039c1f4",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "ref": {
+     "botId": "bot-b039c1f4",
+     "messageId": "c-mvht8kl384b452ba0b:bot-b039c1f4"
+    },
+    "actor": {
+     "kind": "human"
+    },
+    "payload": {
+     "text": "Can someone look at the login bug?",
+     "cardId": "c-mvht8kl384b452ba0b",
+     "threadId": "group:grp-11cef1a8",
+     "source": "desktop",
+     "lead": true
+    }
+   },
+   {
+    "id": "f-0mvht8sqe-f1237ad6cb76",
+    "seq": 2,
+    "kind": "human.message",
+    "at": 1792568906870,
+    "dedupeKey": "human.message:c-mvht8sqe71bc37e148:bot-e698020f",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "ref": {
+     "botId": "bot-e698020f",
+     "messageId": "c-mvht8sqe71bc37e148:bot-e698020f"
+    },
+    "actor": {
+     "kind": "human"
+    },
+    "payload": {
+     "text": "You two, please.",
+     "cardId": "c-mvht8sqe71bc37e148",
+     "threadId": "group:grp-11cef1a8",
+     "source": "desktop"
+    }
+   },
+   {
+    "id": "f-0mvht8sqe-0e51169b8001",
+    "seq": 3,
+    "kind": "human.message",
+    "at": 1792568906870,
+    "dedupeKey": "human.message:c-mvht8sqe71bc37e148:bot-6ee88d1a",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "ref": {
+     "botId": "bot-6ee88d1a",
+     "messageId": "c-mvht8sqe71bc37e148:bot-6ee88d1a"
+    },
+    "actor": {
+     "kind": "human"
+    },
+    "payload": {
+     "text": "You two, please.",
+     "cardId": "c-mvht8sqe71bc37e148",
+     "threadId": "group:grp-11cef1a8",
+     "source": "desktop"
+    }
+   }
+  ],
+  "wakes": [
+   {
+    "id": "w-mvht8kl4-cee7f8f7",
+    "botId": "bot-b039c1f4",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "reason": {
+     "kind": "human",
+     "text": "Can someone look at the login bug?",
+     "source": "desktop",
+     "clientMessageId": "c-mvht8kl384b452ba0b",
+     "runId": "run-c-mvht8kl384b452ba0b",
+     "lead": true
+    },
+    "threadId": "group:grp-11cef1a8",
+    "priority": 0,
+    "enqueuedAt": 1792568896312,
+    "attempts": 1,
+    "state": "done"
+   },
+   {
+    "id": "w-mvht8sqe-81108abe",
+    "botId": "bot-e698020f",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "reason": {
+     "kind": "human",
+     "text": "You two, please.",
+     "source": "desktop",
+     "clientMessageId": "c-mvht8sqe71bc37e148",
+     "runId": "run-c-mvht8sqe71bc37e148",
+     "room": true
+    },
+    "threadId": "group:grp-11cef1a8",
+    "priority": 0,
+    "enqueuedAt": 1792568906870,
+    "attempts": 1,
+    "state": "done"
+   },
+   {
+    "id": "w-mvht8sqe-645872a6",
+    "botId": "bot-6ee88d1a",
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "reason": {
+     "kind": "human",
+     "text": "You two, please.",
+     "source": "desktop",
+     "clientMessageId": "c-mvht8sqe71bc37e148",
+     "runId": "run-c-mvht8sqe71bc37e148",
+     "room": true
+    },
+    "threadId": "group:grp-11cef1a8",
+    "priority": 0,
+    "enqueuedAt": 1792568906870,
+    "attempts": 1,
+    "state": "done"
+   }
+  ],
+  "handoffs": null,
+  "repoWatch": null,
+  "ledger": null,
+  "verdicts": null,
+  "effects": null,
+  "decisions": null,
+  "routines": null,
+  "cards": [
+   {
+    "version": 1,
+    "id": "c-mvht8kl384b452ba0b",
+    "seq": 1,
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "threadId": "group:grp-11cef1a8",
+    "kind": "human",
+    "at": 1792568896311,
+    "actor": {
+     "kind": "human"
+    },
+    "title": "Hi team",
+    "body": "Can someone look at the login bug?",
+    "refs": {
+     "botId": "bot-b039c1f4",
+     "botIds": [
+      "bot-b039c1f4"
+     ]
+    }
+   },
+   {
+    "version": 1,
+    "id": "c-mvht8okrc0a41e2cb9",
+    "seq": 2,
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "threadId": "group:grp-11cef1a8",
+    "kind": "opinion",
+    "at": 1792568901483,
+    "actor": {
+     "kind": "bot",
+     "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+     "botId": "bot-b039c1f4"
+    },
+    "title": "On it",
+    "body": "I will pick who works on this.",
+    "replyTo": "c-mvht8kl384b452ba0b",
+    "clientPostId": "wake:w-mvht8kl4-cee7f8f7:1"
+   },
+   {
+    "version": 1,
+    "id": "c-mvht8sqe71bc37e148",
+    "seq": 3,
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "threadId": "group:grp-11cef1a8",
+    "kind": "human",
+    "at": 1792568906870,
+    "actor": {
+     "kind": "human"
+    },
+    "title": "Developer and issue",
+    "body": "You two, please.",
+    "refs": {
+     "botIds": [
+      "bot-e698020f",
+      "bot-6ee88d1a"
+     ]
+    }
+   },
+   {
+    "version": 1,
+    "id": "c-mvht8wq0dc415f807c",
+    "seq": 4,
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "threadId": "group:grp-11cef1a8",
+    "kind": "opinion",
+    "at": 1792568912040,
+    "actor": {
+     "kind": "bot",
+     "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+     "botId": "bot-e698020f"
+    },
+    "title": "Hi from developer",
+    "body": "developer here.",
+    "replyTo": "c-mvht8sqe71bc37e148",
+    "clientPostId": "wake:w-mvht8sqe-81108abe:1"
+   },
+   {
+    "version": 1,
+    "id": "c-mvht90ps45c5193e8a",
+    "seq": 5,
+    "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+    "threadId": "group:grp-11cef1a8",
+    "kind": "opinion",
+    "at": 1792568917216,
+    "actor": {
+     "kind": "bot",
+     "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+     "botId": "bot-6ee88d1a"
+    },
+    "title": "Hi from issue",
+    "body": "issue here.",
+    "replyTo": "c-mvht8sqe71bc37e148",
+    "clientPostId": "wake:w-mvht8sqe-645872a6:1"
+   }
+  ],
+  "stub": {
+   "lead": [
+    {
+     "at": 1792568901484,
+     "event": "tool",
+     "sessionId": "stub-541f6ea2423a",
+     "name": "room_post",
+     "ok": true,
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mvht8okrc0a41e2cb9\",\n    \"seq\": 2,\n    \"workspaceId\": \"ws-32eea21f-a402-4471-bbc6-4d6b021a868b\",\n    \"threadId\": \"group:grp-11cef1a8\",\n    \"kind\": \"opinion\",\n    \"at\": 1792568901483,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-32eea21f-a402-4471-bbc6-4d6b021a868b\",\n      \"botId\": \"bot-b039c1f4\"\n    },\n    \"title\": \"On it\",\n    \"body\": \"I will pick who works on this.\",\n    \"replyTo\": \"c-mvht8kl384b452ba0b\",\n    \"clientPostId\": \"wake:w-mvht8kl4-cee7f8f7:1\"\n  }\n}"
+    }
+   ],
+   "developer": [
+    {
+     "at": 1792568912041,
+     "event": "tool",
+     "sessionId": "stub-af1fe4b23c8d",
+     "name": "room_post",
+     "ok": true,
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mvht8wq0dc415f807c\",\n    \"seq\": 4,\n    \"workspaceId\": \"ws-32eea21f-a402-4471-bbc6-4d6b021a868b\",\n    \"threadId\": \"group:grp-11cef1a8\",\n    \"kind\": \"opinion\",\n    \"at\": 1792568912040,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-32eea21f-a402-4471-bbc6-4d6b021a868b\",\n      \"botId\": \"bot-e698020f\"\n    },\n    \"title\": \"Hi from developer\",\n    \"body\": \"developer here.\",\n    \"replyTo\": \"c-mvht8sqe71bc37e148\",\n    \"clientPostId\": \"wake:w-mvht8sqe-81108abe:1\"\n  }\n}"
+    }
+   ],
+   "issue": [
+    {
+     "at": 1792568917217,
+     "event": "tool",
+     "sessionId": "stub-8eea610b1680",
+     "name": "room_post",
+     "ok": true,
+     "text": "{\n  \"ok\": true,\n  \"card\": {\n    \"version\": 1,\n    \"id\": \"c-mvht90ps45c5193e8a\",\n    \"seq\": 5,\n    \"workspaceId\": \"ws-32eea21f-a402-4471-bbc6-4d6b021a868b\",\n    \"threadId\": \"group:grp-11cef1a8\",\n    \"kind\": \"opinion\",\n    \"at\": 1792568917216,\n    \"actor\": {\n      \"kind\": \"bot\",\n      \"workspaceId\": \"ws-32eea21f-a402-4471-bbc6-4d6b021a868b\",\n      \"botId\": \"bot-6ee88d1a\"\n    },\n    \"title\": \"Hi from issue\",\n    \"body\": \"issue here.\",\n    \"replyTo\": \"c-mvht8sqe71bc37e148\",\n    \"clientPostId\": \"wake:w-mvht8sqe-645872a6:1\"\n  }\n}"
+    }
+   ]
+  },
+  "workers": [],
+  "gh": [],
+  "sources": {
+   "facts": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "wakes": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "handoffs": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "bots": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "settings": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "repoWatch": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "ledger": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "verdicts": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "effects": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "approvals": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "approvalRules": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "decisions": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "routines": {
+    "present": false,
+    "ok": false,
+    "errors": 0
+   },
+   "cards": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "workers": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   },
+   "ghCalls": {
+    "present": true,
+    "ok": true,
+    "errors": 0
+   }
+  },
+  "records": [
+   {
+    "label": "make the group",
+    "result": {
+     "ok": true,
+     "group": {
+      "id": "grp-11cef1a8",
+      "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+      "name": "Ship it",
+      "memberIds": [
+       "bot-b039c1f4",
+       "bot-e698020f",
+       "bot-6ee88d1a"
+      ],
+      "threadId": "group:grp-11cef1a8",
+      "createdAt": 1792568896309,
+      "updatedAt": 1792568896309
+     }
+    }
+   }
+  ],
+  "timeouts": [],
+  "saved": {
+   "groupThread": "group:grp-11cef1a8"
+  },
+  "launches": [
+   {
+    "ok": true,
+    "runId": "2026-10-21T07-48-11-verify-f95fc609",
+    "evidenceDir": "/home/owner/Desktop/coding/wmux/wmux/.claude/skills/verify-wmux/evidence/2026-10-21T07-48-11-verify-f95fc609"
+   }
+  ]
+ },
+ "fail": [
+  {
+   "why": "the developer woke on the untagged message too",
+   "failing": [
+    "only_the_lead_woken",
+    "woken_as_lead_not_room_wide"
+   ],
+   "mutate": [
+    {
+     "op": "push",
+     "path": "wakes",
+     "value": {
+      "id": "w-dev-extra",
+      "botId": "bot-e698020f",
+      "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+      "reason": {
+       "kind": "human",
+       "text": "Can someone look at the login bug?",
+       "source": "desktop",
+       "clientMessageId": "c-mvht8kl384b452ba0b",
+       "runId": "run-c-mvht8kl384b452ba0b",
+       "lead": true
+      },
+      "threadId": "group:grp-11cef1a8",
+      "priority": 0,
+      "enqueuedAt": 1792568896312,
+      "attempts": 1,
+      "state": "done"
+     }
+    }
+   ]
+  },
+  {
+   "why": "the lead was woken as one of every bot of the room",
+   "failing": [
+    "woken_as_lead_not_room_wide"
+   ],
+   "mutate": [
+    {
+     "op": "remove",
+     "path": "wakes.0.reason.lead"
+    },
+    {
+     "op": "set",
+     "path": "wakes.0.reason.room",
+     "value": true
+    },
+    {
+     "op": "set",
+     "path": "wakes.0.reason.roomWide",
+     "value": true
+    }
+   ]
+  },
+  {
+   "why": "the lead's wake was not pinned to the group",
+   "failing": [
+    "only_the_lead_woken"
+   ],
+   "mutate": [
+    {
+     "op": "set",
+     "path": "wakes.0.threadId",
+     "value": "general"
+    }
+   ]
+  },
+  {
+   "why": "the card names the whole group",
+   "failing": [
+    "card_names_the_lead"
+   ],
+   "mutate": [
+    {
+     "op": "set",
+     "path": "cards.0.refs.botIds",
+     "value": [
+      "bot-b039c1f4",
+      "bot-e698020f",
+      "bot-6ee88d1a"
+     ]
+    },
+    {
+     "op": "remove",
+     "path": "cards.0.refs.botId"
+    }
+   ]
+  },
+  {
+   "why": "the fact does not say the words were the room's",
+   "failing": [
+    "one_directed_fact_marked_lead"
+   ],
+   "mutate": [
+    {
+     "op": "remove",
+     "path": "facts.0.payload.lead"
+    }
+   ]
+  },
+  {
+   "why": "the picked message woke the coordinator too",
+   "failing": [
+    "picked_wake_exactly_theirs"
+   ],
+   "mutate": [
+    {
+     "op": "push",
+     "path": "wakes",
+     "value": {
+      "id": "w-lead-extra",
+      "botId": "bot-b039c1f4",
+      "workspaceId": "ws-32eea21f-a402-4471-bbc6-4d6b021a868b",
+      "reason": {
+       "kind": "human",
+       "text": "You two, please.",
+       "source": "desktop",
+       "clientMessageId": "c-mvht8sqe71bc37e148",
+       "runId": "run-c-mvht8sqe71bc37e148",
+       "room": true
+      },
+      "threadId": "group:grp-11cef1a8",
+      "priority": 0,
+      "enqueuedAt": 1792568906870,
+      "attempts": 1,
+      "state": "done"
+     }
+    }
+   ]
+  }
+ ]
+}

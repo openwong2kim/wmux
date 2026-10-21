@@ -175,7 +175,6 @@ beforeEach(() => {
     remoteWorkspaces: s.remoteWorkspaces,
     activeRemoteKey: s.activeRemoteKey,
     paneGate: s.paneGate,
-    moa: s.moa,
   };
   first = createWorkspace('Workspace 1', 1);
   target = createWorkspace('Target', 2);
@@ -194,7 +193,6 @@ beforeEach(() => {
     remoteWorkspaces: [MIRROR],
     activeRemoteKey: MIRROR.key,
     paneGate: 'ready',
-    moa: null,
   }));
   container = document.createElement('div');
   document.body.appendChild(container);

@@ -79,6 +79,13 @@ export function isCoordinatorBot(profile: { template?: BotTemplate; role: BotRol
   return !!profile && botTemplate(profile) === 'coordinator';
 }
 
+/** Whether the bot takes a turn on what it is sent now: enabled, and not
+ *  parked by the owner or for an error (BotRuntime skips such a bot until it
+ *  is resumed; a budget park still runs the owner's messages). Pure. */
+export function botTakesTurns(profile: Pick<BotProfile, 'enabled' | 'parked'> | null | undefined): boolean {
+  return !!profile && profile.enabled && (!profile.parked || profile.parked.reason === 'budget');
+}
+
 /** The bot's new piece of work handed off from its own 1:1 or a group chat
  *  opens a request thread there (main/factory/handoffRouter.ts), which the
  *  conversation shows folded into one work card (shared/botsWork.ts): the
@@ -187,6 +194,11 @@ export interface BotProfile {
   /** The template the bot was made from. Absent only on a profile written
    *  before templates; the store fills it from `role` on read (botTemplate). */
   template?: BotTemplate;
+  /** The recipe "Add bot" started it from (shared/botRecipes.ts). Display
+   *  only: its profile lists what the recipe's connections still need. It
+   *  grants nothing and is never updated. An id this build does not know is
+   *  kept and not shown. */
+  recipe?: string;
   /** Display name, e.g. "Wmux Dev". */
   name: string;
   /** What the bot does, in the owner's words (normalizeBotJob). Part of its

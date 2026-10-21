@@ -61,7 +61,7 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   useStore.setState({
-    appRoute: 'workspaces', readOnly: false, sidebarVisible: true, schedulesAvailable: false, moa: null,
+    appRoute: 'workspaces', readOnly: false, sidebarVisible: true, schedulesAvailable: false,
     a2aRemote: { links: [], offers: [], hosts: [], held: [], joined: [], peers: [], loaded: false },
   });
 });
@@ -80,13 +80,13 @@ describe('Remote rail badge', () => {
     expect(selectRemoteNeedsYou({
       a2aRemote: {
         links: [link('a', 'proposed-in'), link('b', 'proposed-out'), link('c', 'active')],
-        // Holds for Moa clear by themselves: not counted.
-        held: [task(), task('occupant-changed'), task('brain-delivery-pending'), task('brain-unavailable')],
+        // A Moa hold an older version wrote waits on a person too.
+        held: [task(), task('occupant-changed'), task('brain-unavailable')],
         hosts: [host('identity-changed'), host('disconnected')],
         offers: [],
         joined: [], peers: [], loaded: true,
       },
-    })).toBe(4);
+    })).toBe(5);
   });
 
   it('counts a pane another PC shared while it waits here, not this PC’s own shares or ended ones', () => {

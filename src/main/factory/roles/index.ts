@@ -18,7 +18,7 @@
 
 import path from 'node:path';
 import type { BotProfile } from '../../../shared/bot';
-import type { CardNotice, ThreadId } from '../../../shared/room';
+import { GENERAL_THREAD, type CardNotice, type ThreadId } from '../../../shared/room';
 import { registerFactoryRpcModule, type FactoryHostDeps } from '../factoryHost';
 import { setBotRuntimePorts } from '../BotRuntime';
 import { getBotDirectory } from '../botStore';
@@ -30,11 +30,14 @@ import { installVerifyGate, originDefaultRef, worktreeFromMissions } from '../ve
 import { Gardener, getGardener, setGardener } from '../gardener';
 import { routePlanAnswer, type MorningPorts } from '../morningReport';
 import { onRoomCardResolved } from '../../pipe/handlers/room.rpc';
-import { CI_ROLLUP_QUERY, mapCiRollup, registerFactoryReadHandlers, type FactoryReadDeps } from '../../pipe/handlers/factoryRead.rpc';
+import { CI_ROLLUP_QUERY, createHostSetupGate, mapCiRollup, registerFactoryReadHandlers, type FactoryReadDeps } from '../../pipe/handlers/factoryRead.rpc';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { getSharedTaskGateRunner } from '../../worktask/TaskGateRunner';
 import { ghPrReviewService } from '../../github/GhPrReviewService';
 import { ghIssueService } from '../../github/GhIssueService';
+import { glabIssueService } from '../../github/GlabIssueService';
+import { glabPrService } from '../../github/GlabPrService';
+import { isGitlabRepoKey, readLaneFacts } from '../../github/hostLane';
 import { getPrVerdictStore } from '../../github/prVerdictStore';
 import { detectRemote } from '../../github/PrProvider';
 import { git } from '../../git/git';
@@ -72,17 +75,35 @@ function systemNote(workspaceId: string, threadId: ThreadId, title: string, body
   getRoomWriter()?.append({ workspaceId, threadId, kind: 'fact', actor: { kind: 'system' }, title, body, ...(notice ? { notice } : {}) });
 }
 
+/** The owner's one card asking to connect GitLab on a host (the read gate's
+ *  `ask`), in the general thread of the workspace whose bot read first. */
+function askGitlabSetup(workspaceId: string, host: string, why: string): void {
+  systemNote(
+    workspaceId,
+    GENERAL_THREAD,
+    `Connect GitLab (${host}) for the bots`,
+    `${why}.\n\nThe bots here work on a GitLab repository on ${host}. To connect it, install the GitLab CLI (glab) and run \`glab auth login --hostname ${host}\` in a terminal. Until then they cannot read its merge requests, issues or CI.`,
+  );
+}
+
+// The repo key's host picks the CLI: gh for GitHub, glab for any other host
+// (GitLab, self-managed included), as the Git page does.
 export function factoryReadDeps(): FactoryReadDeps {
   return {
     bots: getBotDirectory,
     repoKeyOf,
-    readPr: (repoPath, key, n) => ghPrReviewService.laneFacts(repoPath, key, n),
+    readPr: readLaneFacts,
     listIssues: async (repoPath, filter, key) => {
-      const r = await ghIssueService.listIssues(repoPath, filter, key);
+      const r = isGitlabRepoKey(key)
+        ? await glabIssueService.listIssues(repoPath, filter, key)
+        : await ghIssueService.listIssues(repoPath, filter, key);
       return r.ok ? { ok: true, issues: r.issues } : { ok: false, message: r.message };
     },
-    issueDetail: (repoPath, n, key) => ghIssueService.issueDetail(repoPath, n, '', key),
+    issueDetail: (repoPath, n, key) => (isGitlabRepoKey(key)
+      ? glabIssueService.issueDetail(repoPath, n, '', key)
+      : ghIssueService.issueDetail(repoPath, n, '', key)),
     ciRollup: async (repoPath, key) => {
+      if (isGitlabRepoKey(key)) return glabPrService.defaultBranchCi(repoPath, key);
       const [owner, repo] = key.split('/').slice(-2);
       const r = await ghPrReviewService.watchGraphql(repoPath, key, CI_ROLLUP_QUERY, { owner, repo });
       if (!r.ok) return { error: r.message };
@@ -92,6 +113,7 @@ export function factoryReadDeps(): FactoryReadDeps {
     trust: trustOf,
     rooms: getRoomWriter,
     postKey: (botId) => wakeOrdinals.next(runningWake(resolveRoomPorts(), botId), 'post'),
+    hostReady: createHostSetupGate({ gate: (repoPath, host) => glabPrService.connection(repoPath, host), ask: askGitlabSetup }),
   };
 }
 

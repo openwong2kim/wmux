@@ -31,9 +31,10 @@ export function groupHiReplies(snap, expect) {
 }
 
 /** group-chat-wakes-its-members: an untagged message in the owner's group
- *  chat wakes every member (a coordinator is a bot like any other), in the
- *  group's thread, never a bot outside it; a message that picks one member
- *  wakes that one alone. */
+ *  chat with no coordinator in it wakes every member as one of the room's
+ *  bots (roomWide), in the group's thread, never a bot outside it (the
+ *  workspace's coordinator included); a message that picks one member wakes
+ *  that one alone. */
 export function groupChatWakesItsMembers(snap, expect) {
   const made = arr(snap.records).find((r) => r.label === 'make the group')?.result ?? null;
   const thread = made?.ok ? made.group?.threadId : null;
@@ -52,8 +53,8 @@ export function groupChatWakesItsMembers(snap, expect) {
       JSON.stringify(card ? { threadId: card.threadId, refs: card.refs ?? null } : null)),
     criterion('one_wake_per_member', human.length === ids.length && ids.every((id) => human.filter((w) => w.botId === id).length === 1),
       human.map((w) => w.botId).join(', ') || 'no wake'),
-    criterion('wakes_pinned_to_group', human.length > 0 && human.every((w) => w.threadId === thread && w.reason.room === true && w.reason.lead === undefined && w.priority === 0),
-      human.map((w) => `${w.threadId}/${w.reason.room}/${w.reason.lead}`).join(', ') || 'no wake'),
+    criterion('wakes_pinned_to_group', human.length > 0 && human.every((w) => w.threadId === thread && w.reason.room === true && w.reason.roomWide === true && w.reason.lead === undefined && w.priority === 0),
+      human.map((w) => `${w.threadId}/${w.reason.room}/${w.reason.roomWide}/${w.reason.lead}`).join(', ') || 'no wake'),
     criterion('one_directed_fact_each', facts.length === ids.length && ids.every((id) => facts.some((f) => f.ref?.botId === id)), `${facts.length} fact(s)`),
     criterion('picked_wakes_one', pickedWakes.length === 1 && pickedWakes[0].botId === pickedId && pickedWakes[0].reason.room === undefined && pickedWakes[0].threadId === thread,
       pickedWakes.map((w) => `${w.botId}/${w.reason.room}`).join(', ') || 'no wake'),
@@ -66,6 +67,39 @@ export function groupChatWakesItsMembers(snap, expect) {
     out.push(criterion(`${key}_not_woken`, wakesOf(snap, key).length === 0 && botCards(snap, key).length === 0, `${wakesOf(snap, key).length} wake(s)`));
   }
   return out;
+}
+
+/** group-chat-coordinator-takes-it: in the owner's group chat with a
+ *  coordinator, an untagged message wakes the coordinator alone (lead, not
+ *  room-wide), in the group's thread, and it answers there; a message that
+ *  picks bots wakes exactly those, as bots named. */
+export function groupChatCoordinatorTakesIt(snap, expect) {
+  const made = arr(snap.records).find((r) => r.label === 'make the group')?.result ?? null;
+  const thread = made?.ok ? made.group?.threadId : null;
+  const msg = injected(snap, expect.message);
+  const card = arr(snap.cards).find((c) => c.id === msg?.id) ?? null;
+  const lead = botId(snap, expect.lead);
+  const human = arr(snap.wakes).filter((w) => w.reason?.kind === 'human' && w.reason.runId === runOf(msg?.id));
+  const facts = factsOfKind(snap, 'human.message').filter((f) => f.payload?.cardId === msg?.id);
+  const picked = injected(snap, expect.picked);
+  const pickedIds = (expect.pickedBots ?? []).map((k) => botId(snap, k));
+  const pickedWakes = arr(snap.wakes).filter((w) => w.reason?.kind === 'human' && w.reason.runId === runOf(picked?.id));
+  const leadCards = botCards(snap, expect.lead);
+  return [
+    criterion('group_made', !!thread && /^group:grp-[0-9a-f]{8}$/.test(thread) && arr(made.group.memberIds).includes(lead),
+      JSON.stringify(made ?? null).slice(0, 200)),
+    criterion('card_names_the_lead', !!card && card.threadId === thread && JSON.stringify(card.refs?.botIds ?? null) === JSON.stringify([lead]) && card.refs?.botId === lead,
+      JSON.stringify(card ? { threadId: card.threadId, refs: card.refs ?? null } : null)),
+    criterion('only_the_lead_woken', human.length === 1 && human[0].botId === lead && human[0].state === 'done' && human[0].priority === 0 && human[0].threadId === thread,
+      human.map((w) => `${w.botId}:${w.state}@${w.threadId}`).join(', ') || 'no wake'),
+    criterion('woken_as_lead_not_room_wide', human.length === 1 && human[0].reason.lead === true && human[0].reason.room === undefined && human[0].reason.roomWide === undefined,
+      human.map((w) => `${w.reason.room}/${w.reason.roomWide}/${w.reason.lead}`).join(', ') || 'no wake'),
+    criterion('one_directed_fact_marked_lead', facts.length === 1 && facts[0].ref?.botId === lead && facts[0].payload?.lead === true, `${facts.length} fact(s)`),
+    criterion('lead_answered_in_group', leadCards.length === 1 && leadCards[0].threadId === thread, leadCards.map((c) => c.threadId).join(', ') || 'no card'),
+    criterion('picked_wake_exactly_theirs', pickedWakes.length === pickedIds.length && pickedIds.every((id) => pickedWakes.some((w) => w.botId === id))
+      && pickedWakes.every((w) => w.reason.room === true && w.reason.roomWide === undefined && w.reason.lead === undefined && w.threadId === thread),
+      pickedWakes.map((w) => `${w.botId}/${w.reason.room}/${w.reason.roomWide}/${w.reason.lead}`).join(', ') || 'no wake'),
+  ];
 }
 
 /** structured-mention-wakes-target: the owner's mention wakes its bot; that

@@ -14,6 +14,7 @@ import { RoomWriter } from '../../../factory/roomWriter';
 import { __resetGuestWorkspacesForTesting, expectGuestWorkspaces } from '../../../factory/guestWorkspaces';
 import {
   FACTORY_READ_LIMITS,
+  createHostSetupGate,
   handleCiRead,
   handleIssueRead,
   handlePlanPropose,
@@ -208,6 +209,71 @@ describe('role reads — bounded answers', () => {
     ] } } } } } } };
     expect(mapCiRollup(raw)).toEqual({ branch: 'main', headSha: SHA, committedAt: 'd', state: 'FAILURE', checks: [{ name: 'validate', state: 'FAILURE' }, { name: 'ci/legacy', state: 'SUCCESS' }], checksTotal: 2 });
     expect(mapCiRollup({ data: {} })).toBeNull();
+  });
+});
+
+describe('GitLab host gate', () => {
+  const GL = 'gitlab.example.com/group/sub/proj';
+  const glDeps = (over: Partial<FactoryReadDeps> = {}) => deps({ repoKeyOf: async (p) => (p === '/repo/a' ? GL : 'github.com/o/b'), ...over });
+
+  it('asks the owner once per host while glab cannot read it, and every read gets one clear refusal', async () => {
+    const gate = vi.fn(async () => ({ ok: false as const, reason: 'unauthenticated' as const, message: 'GitLab CLI is not authenticated for gitlab.example.com' }));
+    const ask = vi.fn();
+    const d = glDeps({ hostReady: createHostSetupGate({ gate, ask }) });
+    const answers = [
+      await handlePrRead({ prNumber: 7 }, ctxOf(VERIFIER), d),
+      await handleIssueRead({}, ctxOf(TRIAGE), d),
+      await handleCiRead({}, ctxOf(MAINTAINER), d),
+      await handlePrRead({ prNumber: 8 }, ctxOf(VERIFIER), d),
+    ];
+    for (const a of answers) {
+      expect(a).toMatchObject({ ok: false, code: 'host_not_connected' });
+      expect((a as { message: string }).message).toContain('gitlab.example.com');
+    }
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith('ws-a', 'gitlab.example.com', 'GitLab CLI is not authenticated for gitlab.example.com');
+    expect(d.readPr).not.toHaveBeenCalled();
+    // A GitHub repository never asks glab.
+    expect(await handlePrRead({ prNumber: 7, workspaceId: 'ws-b' }, ctxOf(MOA), d)).toMatchObject({ ok: true, repoKey: 'github.com/o/b' });
+    expect(gate).toHaveBeenCalledTimes(4);
+  });
+
+  it('reads once glab is connected, and asks again only after it breaks again', async () => {
+    let ok = false;
+    const gate = vi.fn(async () => (ok ? { ok: true as const } : { ok: false as const, reason: 'cli-missing' as const, message: 'GitLab CLI (glab) is not installed' }));
+    const ask = vi.fn();
+    const ready = createHostSetupGate({ gate, ask });
+    const scope = { repoPath: '/repo/a', repoKey: GL, workspaceId: 'ws-a' };
+    expect((await ready(scope))?.message).toContain('not connected');
+    expect(await ready({ ...scope, workspaceId: 'ws-b' })).toMatchObject({ code: 'host_not_connected' });
+    expect(ask).toHaveBeenCalledTimes(1);
+    ok = true;
+    expect(await ready(scope)).toBeNull();
+    const d = glDeps({ hostReady: ready });
+    expect(await handlePrRead({ prNumber: 7 }, ctxOf(VERIFIER), d)).toMatchObject({ ok: true, repoKey: GL });
+    expect(d.readPr).toHaveBeenCalledWith('/repo/a', GL, 7);
+    ok = false;
+    expect((await ready(scope))?.message).toContain('not connected');
+    expect(ask).toHaveBeenCalledTimes(2);
+  });
+
+  it('a host not reached just now (or a gate that throws) is a transient read_failed: no card, nothing kept', async () => {
+    const ask = vi.fn();
+    let blip = true;
+    const ready = createHostSetupGate({
+      gate: async () => (blip ? { ok: false as const, reason: 'unreachable' as const, message: 'GitLab on gitlab.example.com could not be reached just now' } : { ok: false as const, reason: 'unauthenticated' as const, message: 'signed out' }),
+      ask,
+    });
+    const scope = { repoPath: '/repo/a', repoKey: GL, workspaceId: 'ws-a' };
+    expect(await ready(scope)).toMatchObject({ code: 'read_failed', message: expect.stringContaining('could not be reached') });
+    expect(await handlePrRead({ prNumber: 7 }, ctxOf(VERIFIER), glDeps({ hostReady: ready }))).toMatchObject({ ok: false, code: 'read_failed' });
+    expect(ask).not.toHaveBeenCalled();
+    blip = false;
+    expect(await ready(scope)).toMatchObject({ code: 'host_not_connected' });
+    expect(ask).toHaveBeenCalledTimes(1);
+    const thrown = createHostSetupGate({ gate: async () => { throw new Error('spawn failed'); }, ask });
+    expect(await thrown(scope)).toMatchObject({ code: 'read_failed' });
+    expect(ask).toHaveBeenCalledTimes(1);
   });
 });
 

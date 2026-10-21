@@ -2,10 +2,12 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
-import PluginRailPage from '../PluginRailPage';
+import { renderToStaticMarkup } from 'react-dom/server';
+import PluginRailPage, { PluginRailNavigation } from '../PluginRailPage';
+import { IconOffice, IconPackage } from '../../components/icons';
 import { useStore } from '../../stores';
 import type { PluginHostPluginSummary } from '../../../shared/pluginHost';
-const mock = vi.hoisted(() => ({ plugins: [] as PluginHostPluginSummary[] }));
+const mock = vi.hoisted(() => ({ plugins: [] as Array<PluginHostPluginSummary & { managed?: boolean }> }));
 vi.mock('../usePlugins', () => ({ usePlugins: () => ({ plugins: mock.plugins, loaded: true }), refreshPlugins: vi.fn() }));
 vi.mock('../../hooks/useT', () => ({ useT: () => (key: string) => key }));
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -43,5 +45,23 @@ describe('plugin rail page mount gate', () => {
     act(() => root?.render(<PluginRailPage name="agents" />));
     expect(host?.querySelector('iframe')).toBeNull();
     expect(useStore.getState().appRoute).toBe('workspaces');
+  });
+});
+
+describe('plugin rail item glyph', () => {
+  function railGlyph(managed: boolean): string | undefined {
+    mock.plugins = [{ name: 'office', version: '1', capabilities: ['ui.rail-page'], activationEvents: [], trustStatus: 'trusted', managed, contributes: { railPage: { title: 'My office', entry: 'index.html' } } }];
+    useStore.setState({ appRoute: 'workspaces' });
+    host = document.createElement('div'); document.body.append(host); root = createRoot(host);
+    act(() => root?.render(<PluginRailNavigation compact={false} />));
+    return host.querySelector('[data-sidebar-nav="plugin:office"] .wmux-nav-icon')?.innerHTML;
+  }
+
+  it('gives a bundle installed by hand under a catalog id the package glyph, not the entry it shares a name with', () => {
+    expect(railGlyph(false)).toBe(renderToStaticMarkup(<IconPackage size={16} />));
+  });
+
+  it("gives the catalog's own install the entry's glyph", () => {
+    expect(railGlyph(true)).toBe(renderToStaticMarkup(<IconOffice size={16} />));
   });
 });

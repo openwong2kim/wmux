@@ -1188,8 +1188,11 @@ export class BotRuntime {
         // A reply to the owner the bot wrote as plain text instead of a
         // room_post would reach nobody: it becomes the bot's card, while the
         // wake still runs (room.post pins its thread and the owner message it
-        // answers). Any other wake stays silent without a room_post.
-        if (item.reason.kind === 'human' && result.text.trim() && ports.postTurnText) {
+        // answers). A room-wide wake (the message named no bot and the room
+        // has no coordinator) is not addressed to this bot: its closing text
+        // was a note to itself ("nothing to add"), so only a room_post
+        // speaks. Any other wake stays silent without a room_post.
+        if (item.reason.kind === 'human' && item.reason.roomWide !== true && result.text.trim() && ports.postTurnText) {
           try {
             await ports.postTurnText(profile, item, result.text, turnStartedAt);
           } catch (err) {

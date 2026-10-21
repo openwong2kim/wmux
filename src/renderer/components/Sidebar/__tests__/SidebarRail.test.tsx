@@ -22,7 +22,7 @@ beforeEach(() => {
   useStore.setState({
     commandPaletteVisible: false, fleetViewVisible: false, settingsPanelVisible: false,
     schedulesViewOpen: false, appRoute: 'workspaces', schedulesAvailable: true, readOnly: false, sidebarVisible: true,
-    moa: null, roomStatus: { running: true, enabled: true, hqWorkspaceId: null },
+    roomStatus: { running: true, enabled: true, hqWorkspaceId: null },
   });
 });
 afterEach(() => {
@@ -271,23 +271,18 @@ describe('sidebar icon rail', () => {
 });
 
 describe('Moa and the rail', () => {
-  const moa = (enabled: boolean, state: 'ok' | 'hq-missing' | 'unset' = 'ok') => ({
-    config: { enabled, onboarded: true, level: 1 as const, maxTurnsPerHour: 20, bubbles: true, reduceMotion: false, defaultReason: null },
-    hq: { workspaceId: state === 'unset' ? null : 'hq', state },
-    archive: { unacked: 0, total: 0 },
-  });
   const ws = (id: string) => ({ id, name: id, rootPane: { id: `${id}-p`, type: 'leaf' as const, surfaces: [], activeSurfaceId: '' }, activePaneId: `${id}-p` });
   const current = () => [...container.querySelectorAll('[data-sidebar-nav][aria-current="page"]')].map((el) => el.getAttribute('data-sidebar-nav'));
 
   it('has no Moa entry: the panel is its home', async () => {
-    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null, moa: moa(true) } as never);
+    useStore.setState({ workspaces: [ws('a'), ws('hq')], activeWorkspaceId: 'a', activeRemoteKey: null } as never);
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
     expect(navIds()).toEqual(['home', 'bots', 'fleet', 'schedules', 'remote', 'git', 'plugins']);
     expect(container.querySelector('[data-sidebar-nav="moa"]')).toBeNull();
   });
 
   it('Workspaces keeps an earlier version\'s HQ workspace active: it is an ordinary one', async () => {
-    useStore.setState({ workspaces: [ws('hq'), ws('a')], activeWorkspaceId: 'hq', activeRemoteKey: null, appRoute: 'workspaces', moa: null } as never);
+    useStore.setState({ workspaces: [ws('hq'), ws('a')], activeWorkspaceId: 'hq', activeRemoteKey: null, appRoute: 'workspaces' } as never);
     await act(async () => root.render(<MiniSidebar rail collapsed={false} />));
     act(() => container.querySelector<HTMLButtonElement>('[data-sidebar-nav="home"]')!.click());
     expect(useStore.getState().activeWorkspaceId).toBe('hq');

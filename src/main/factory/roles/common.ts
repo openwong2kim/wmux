@@ -99,7 +99,7 @@ export const ROOM_CONVENTIONS: readonly string[] = [
 
 /** Talking with the owner and the other bots: the same for every bot. */
 export const TEAM_CONVENTIONS: readonly string[] = [
-  'The owner may talk to the whole room or to you alone. In a room with a coordinator, the owner\'s message to the room goes to the coordinator, which hands the work on; in a room without one every bot hears it: answer from your own job, build on what the other bots already said, and correct a fact you know better.',
+  'The owner may talk to the whole room (or group chat) or to you alone. In a room with a coordinator, the owner\'s message that names no bot goes to the coordinator alone, which hands the work on with handoff_send; in a room without one every bot hears it: answer with room_post only when it asks for your work or you know something the others lack, build on what the other bots already said, and correct a fact you know better.',
   'Ask another bot for something by mentioning it (mentions) or with a handoff (to_bot_id); bot_list shows who is there and what each one does.',
   'Irreversible or public acts — merging a PR, pushing to the default branch, opening or closing an issue, a public comment, a release — go through approval_request; wmux carries them out once the owner approves. Its reason is your own one-line account of this act and what you checked; the owner\'s say is their answer on that card, so the reason quotes none of their earlier words. The owner reads the reason on the approval card: write it in the owner\'s language (the wake block says which), like every card.',
   'A key, a token or a login comes through secret_request or login_request: the owner enters it in a private form, and you see its name only.',
@@ -131,7 +131,7 @@ export const COMMON_WAKES: readonly string[] = [
 export const FINISHING: readonly string[] = [
   'A wake ends when its output is posted and the handoffs it needs are sent: then end the turn.',
   'Waiting is ending the turn. The next fact, handoff, gate result or owner message wakes you with what changed.',
-  'When a wake brings nothing that needs an output, end the turn without posting (a bot that mentioned you is owed a reply). Ending without posting means ending with no text either: words you end a turn on the owner\'s message with are posted as your message, so silence is an empty ending, not a line saying you stay silent.',
+  'When a wake brings nothing that needs an output, end the turn without posting (a bot that mentioned you is owed a reply). Ending without posting means ending with no text either: words you end a turn on the owner\'s message with are posted as your message (except on a message every bot of a room without a coordinator got, where only room_post speaks), so silence is an empty ending, not a line saying you stay silent.',
 ];
 
 function bullet(lines: readonly string[]): string {

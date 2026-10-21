@@ -55,7 +55,7 @@ import type {
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
 import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
-import { localSideOf, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
@@ -372,8 +372,9 @@ export class A2aTaskService {
       } else if (r.held) {
         target.delivered = false;
         delete target.attempted;
-        if (target.held !== r.held || !target.heldAt) target.heldAt = r.timestamp;
-        target.held = r.held;
+        const held = readHeldReason(r.held);
+        if (target.held !== held || !target.heldAt) target.heldAt = r.timestamp;
+        target.held = held;
       }
       return;
     }
@@ -809,8 +810,7 @@ export class A2aTaskService {
    * Remote tasks with delivery work main can do now: an inbound task neither
    * delivered nor held (and not ended), or any reply/state item the peer sent
    * that is neither delivered nor held. Held work is NOT here: it waits for a
-   * person (`listRemoteHeld`) or the hold TTL, never for the backstop — except
-   * a `brain-unavailable` hold, which waits only for Moa.
+   * person (`listRemoteHeld`) or the hold TTL, never for the backstop.
    */
   listRemotePending(): Task[] {
     const out: Task[] = [];
@@ -818,11 +818,8 @@ export class A2aTaskService {
       const marker = remoteMarkerOf(task);
       if (!marker) continue;
       const ended = (TERMINAL_STATES as readonly string[]).includes(task.status.state);
-      // `brain-unavailable` waits for Moa, not for a person: main retries it
-      // as soon as Moa can take it, so it stays listed here.
-      const open = (held: string | undefined): boolean => !held || held === 'brain-unavailable';
-      const taskWork = marker.direction === 'inbound' && marker.delivered !== true && open(marker.held) && !ended;
-      const itemWork = (marker.inbox ?? []).some((i) => i.delivered !== true && open(i.held));
+      const taskWork = marker.direction === 'inbound' && marker.delivered !== true && !marker.held && !ended;
+      const itemWork = (marker.inbox ?? []).some((i) => i.delivered !== true && !i.held);
       if (taskWork || itemWork) out.push(task);
     }
     return out;

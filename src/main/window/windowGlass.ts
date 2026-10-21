@@ -40,9 +40,17 @@ export function windowsGlassSupported(platform: string, release: string): boolea
   return platform === 'win32' && isWindowGlassSupported(platform, parseWindowsBuildNumber(release));
 }
 
-/** Whether a new window starts with glass: supported and the persisted level is not Off. */
-export function initialWindowsGlass(supported: boolean, persistedLevel: unknown): boolean {
-  return supported && resolveWindowGlass(persistedLevel) !== 'off';
+/**
+ * Whether a new window starts with glass: supported, the persisted level is
+ * not Off, and the window was not last shown opaque for its theme. The
+ * renderer turns glass off on Windows for a theme whose text cannot stay
+ * legible over it and saves that as `windowGlassEffective`; starting such a
+ * launch with acrylic would show it until the renderer loads and then flip to
+ * opaque. A session without the field (saved before it existed) follows the
+ * level.
+ */
+export function initialWindowsGlass(supported: boolean, persistedLevel: unknown, persistedEffective?: unknown): boolean {
+  return supported && resolveWindowGlass(persistedLevel) !== 'off' && persistedEffective !== 'off';
 }
 
 /**
