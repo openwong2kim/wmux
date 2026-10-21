@@ -28,6 +28,7 @@ export const BOT_FOLDER_PROTECTED_NAMES: readonly string[] = [
   '.envrc',
   'package.json',
   'Makefile',
+  'GNUmakefile',
 ];
 
 export interface BotFolderDeps {

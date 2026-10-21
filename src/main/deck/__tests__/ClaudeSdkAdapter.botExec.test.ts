@@ -230,7 +230,7 @@ describe('bot options with commands', () => {
 });
 
 describe('a claude that does not start with the sandbox', () => {
-  function adapterWith(first: 'throws' | 'errors' | 'init-then-error', onExecFailed: (v: string) => void) {
+  function adapterWith(first: 'throws' | 'errors' | 'init-then-error', onExecFailed: (v: string) => void, resumeSessionId?: string) {
     const seen: Array<Record<string, unknown>> = [];
     const adapter = new ClaudeSdkAdapter({
       bot: { binding: BINDING, cwd: botDir, wmuxDir: dir, exec: async () => ({ ok: true as const, version: '2.1.305 (Claude Code)' }), onExecFailed },
@@ -256,7 +256,7 @@ describe('a claude that does not start with the sandbox', () => {
         };
       },
     });
-    adapter.start({ systemPrompt: 'BOT' });
+    adapter.start({ systemPrompt: 'BOT', ...(resumeSessionId ? { resumeSessionId } : {}) });
     return { adapter, seen };
   }
 
@@ -271,6 +271,19 @@ describe('a claude that does not start with the sandbox', () => {
     expect(seen[1].sandbox).toBeUndefined();
     expect(seen[1].tools).toEqual([]);
     expect(failed).toEqual(['2.1.305 (Claude Code)']);
+  });
+
+  it('a dead saved session is retried fresh first and is not put down to the sandbox', async () => {
+    const failed: string[] = [];
+    const { adapter, seen } = adapterWith('throws', (v) => failed.push(v), 'dead-session');
+    const events = await drain(adapter.send('wake'));
+    adapter.dispose();
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(seen).toHaveLength(2);
+    expect(seen[0].resume).toBe('dead-session');
+    expect(seen[1].resume).toBeUndefined();
+    expect(seen[1].sandbox).toBeDefined();
+    expect(failed).toEqual([]);
   });
 
   it('an error after claude started is the turn\'s own error, not the sandbox', async () => {

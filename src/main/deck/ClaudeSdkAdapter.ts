@@ -1488,7 +1488,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       let retryFresh = false;
       let sawInit = false;
       let retryWithoutExec = false;
-      const execStartFailed = (): boolean => this._turnExec && !execFellBack && !sawInit && !yielded;
+      // A dead saved session is retried fresh first: only a fresh start that
+      // still fails before init is put down to the sandbox.
+      const execStartFailed = (): boolean => this._turnExec && !execFellBack && !sawInit && !yielded && !(resumingUnvalidated && attempt === 0);
       // A bot turn that cannot reach its wmux tools ends in an error, never
       // a silent success (botToolGuard.ts).
       const guard = this.bot ? new BotToolGuard(this.allowedTools) : null;
