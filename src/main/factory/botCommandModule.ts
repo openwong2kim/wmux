@@ -10,6 +10,7 @@
 //               turn and the gate on every call);
 //   allow       "Always allow": a rule for exactly the command a logged
 //               decision refused as not on the list, checked as any rule;
+//               one that runs code from files needs `confirm`;
 //   removeRule  one rule, named by index and its text as read.
 // Every handler answers only the main window's top frame and never throws.
 // No bot RPC is registered here: nothing a bot holds reaches the log, the
@@ -24,8 +25,8 @@ import { redactSecrets } from '../../shared/redactSecrets';
 import { resolveClaudeExecutable } from '../claude/resolveClaudeExecutable';
 import { isMainWindowSender } from '../ipc/mainWindowSender';
 import { wrapHandler } from '../ipc/wrapHandler';
-import { botCwd, onBotRemoved } from './BotRuntime';
-import { botFolderFileSha256, ruleFileOperand, ruleWordsMatch, unlistedHeads, type BotCommandRule } from './botCommandAllow';
+import { onBotRemoved } from './BotRuntime';
+import { ruleRunsFile, unlistedHeads, type BotCommandRule } from './botCommandAllow';
 import { commandName, parseCommandLine } from './botCommandFloor';
 import { FILE_RUNNERS } from './botCommandReviewer';
 import { BOT_COMMAND_LOG_TEXT_MAX, BotCommandLog } from './botCommandLog';
@@ -45,8 +46,6 @@ export interface BotCommandIpcDeps {
   bot?: (botId: string) => BotProfile | null;
   /** Whether a Claude SDK bot's commands run on this machine. */
   support?: () => Promise<BotExecSupport>;
-  /** A bot's own folder (its session cwd). */
-  botDir: (botId: string) => string;
   changed: (botId: string) => void;
 }
 
@@ -70,9 +69,10 @@ export type RuleForEntry =
   | {
       ok: true;
       rule: BotCommandRule;
-      /** A build, task, test or package runner: it runs files in the bot's
-       *  folder that no hash covers, so the owner confirms it. */
-      runner: boolean;
+      /** It runs code from files in the bot's folder (a program named by its
+       *  path, an interpreter's script, a build/task/test/package runner),
+       *  which the bot can change: the owner confirms it. */
+      runsCode: boolean;
     }
   | { ok: false; error: string };
 
@@ -81,11 +81,10 @@ export type RuleForEntry =
  * pipeline head the list refused, or why there is none. None for a decision
  * a rule cannot change, a command kept masked or cut, a line with more than
  * one command needing a rule (each needs its own approval), or a head the
- * store refuses (a built-in command keeps its checks; an interpreter names
- * its script). A rule that runs a file from the bot's folder pins its
- * sha256, taken now; `hash: false` only checks that it could be.
+ * store refuses (a built-in command keeps its checks; an interpreter rule is
+ * exactly the interpreter and its script).
  */
-export function ruleForEntry(entry: BotCommandLogEntry, current: readonly BotCommandRule[], botDir: string, opts: { hash?: boolean } = {}): RuleForEntry {
+export function ruleForEntry(entry: BotCommandLogEntry, current: readonly BotCommandRule[]): RuleForEntry {
   if (entry.tool !== 'Bash' || entry.decision !== 'deny' || !RULE_ALLOWABLE_LAYERS.includes(entry.layer) || !entry.target) {
     return { ok: false, error: 'Only a command refused as not on the list can be always allowed.' };
   }
@@ -98,30 +97,21 @@ export function ruleForEntry(entry: BotCommandLogEntry, current: readonly BotCom
   if (entry.target.length >= BOT_COMMAND_LOG_TEXT_MAX) return { ok: false, error: 'This command is too long to become a rule.' };
   const parsed = parseCommandLine(entry.target);
   if (!parsed.ok) return { ok: false, error: `This command cannot become a rule: ${parsed.reason}` };
-  const folder = { botDir };
-  const heads = unlistedHeads(parsed.pipelines, current, folder);
+  const heads = unlistedHeads(parsed.pipelines, current);
   if (heads.length === 0) return { ok: false, error: 'Nothing in this command is left for a rule to allow: it is on the list now, or the part refused reads a pipe.' };
   if (heads.length > 1) return { ok: false, error: 'This line runs more than one command that needs a rule; each one is allowed on its own, when the bot runs it alone.' };
-  const argv = heads[0];
-  const file = ruleFileOperand(argv);
-  let rule: BotCommandRule = { argv };
-  if (file !== null) {
-    const pinned = botFolderFileSha256(file, botDir, undefined, { hash: opts.hash !== false });
-    if (!pinned.ok) return { ok: false, error: `${file} cannot be allowed by a rule: ${pinned.reason}` };
-    // Checked as a pinned rule; the hash itself is taken only when saving.
-    rule = { argv, sha256: pinned.sha256 || '0'.repeat(64) };
-  }
+  const rule: BotCommandRule = { argv: heads[0] };
   const refusal = botCommandRuleRefusal(rule);
   if (refusal) return { ok: false, error: refusal };
-  return { ok: true, rule, runner: FILE_RUNNERS.has(commandName(argv[0])) };
+  return { ok: true, rule, runsCode: ruleRunsFile(rule.argv) || FILE_RUNNERS.has(commandName(rule.argv[0])) };
 }
 
 const DENIED = { ok: false as const, error: 'only the wmux window may do this' };
 const NOT_RUNNING = { ok: false as const, error: 'bot commands are not running yet' };
 const NO_BOT = { ok: false as const, error: 'botId must be a bot id' };
 const NO_SUCH_BOT = { ok: false as const, error: 'no such bot' };
-/** Why a runner's rule needs the owner's confirm. */
-export const RUNNER_WARNING = 'This runs files in the bot\'s folder that the bot can change; confirm to allow it.';
+/** Why a rule that runs code from files needs the owner's confirm. */
+export const RUNS_CODE_WARNING = 'This lets the bot run code from files in its folder, which the bot can change. Commands still run in the sandbox (no network, no access to your home folder). Confirm to allow it.';
 
 /** The four handlers' bodies (registerBotCommandIpc wraps them). */
 export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, deps: BotCommandIpcDeps) {
@@ -167,19 +157,18 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
         }
         const store = rules();
         const current = store.rulesFor(botId);
-        const dir = deps.botDir(botId);
-        // Always allow is offered only where main would save its rule (a
-        // runner's with its warning); no file is read here.
+        // Always allow is offered only where main would save its rule (one
+        // that runs code from files with its warning).
         const offer = (entry: BotCommandLogEntry): BotCommandLogEntry => {
-          const plan = ruleForEntry(entry, current, dir, { hash: false });
-          return plan.ok ? { ...entry, canAllow: true, ...(plan.runner ? { runner: true } : {}) } : entry;
+          const plan = ruleForEntry(entry, current);
+          return plan.ok ? { ...entry, canAllow: true, ...(plan.runsCode ? { runsCode: true } : {}) } : entry;
         };
         return {
           ok: true,
           available,
           enabled: store.commandsEnabled(botId),
           entries: log.entries(botId).map(offer),
-          rules: current.map((r) => ({ text: mask(botCommandRuleText(r)), anyArgs: r.anyArgs === true, ...(r.sha256 ? { pinned: true } : {}) })),
+          rules: current.map((r) => ({ text: mask(botCommandRuleText(r)), anyArgs: r.anyArgs === true })),
         };
       } catch {
         return { ok: false, error: 'The bot\'s commands could not be read.' };
@@ -216,12 +205,10 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
         if (!entry) return { ok: false, error: 'That decision is no longer in the log.' };
         const store = rules();
         const current = store.rulesFor(botId);
-        const plan = ruleForEntry(entry, current, deps.botDir(botId));
+        const plan = ruleForEntry(entry, current);
         if (!plan.ok) return { ok: false, error: plan.error };
-        if (plan.runner && obj(req).confirm !== true) return { ok: false, error: RUNNER_WARNING };
-        // A rule for the same words (its file changed since) is replaced.
-        const kept = current.filter((r) => !(r.anyArgs !== true && ruleWordsMatch(r, plan.rule.argv) && r.argv.length === plan.rule.argv.length));
-        await store.setRules(botId, [...kept, plan.rule]);
+        if (plan.runsCode && obj(req).confirm !== true) return { ok: false, error: RUNS_CODE_WARNING };
+        await store.setRules(botId, [...current, plan.rule]);
         changed(botId);
         return { ok: true };
       } catch (err) {
@@ -295,7 +282,7 @@ registerFactoryRpcModule('bot-commands', (_router, deps: FactoryHostDeps) => {
       setBotExecDecisionSink((botId, rec) => {
         if (current.record(botId, rec)) soon(botId);
       });
-      offIpc = registerBotCommandIpc(deps.getMainWindow, { log: () => log, changed, botDir: (botId) => botCwd(deps.wmuxDir(), botId) });
+      offIpc = registerBotCommandIpc(deps.getMainWindow, { log: () => log, changed });
       offRemoved = onBotRemoved((botId) => {
         current.remove(botId).catch((err) => console.warn(`[factory] bot command log of removed bot ${botId} not deleted: ${String(err)}`));
         getBotCommandRulesStore().forgetBot(botId).catch((err) => console.warn(`[factory] bot command rules of removed bot ${botId} not deleted: ${String(err)}`));

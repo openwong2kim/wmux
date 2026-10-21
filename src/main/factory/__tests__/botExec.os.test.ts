@@ -7,8 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { commandFloor, parseCommandLine } from '../botCommandFloor';
-import { createHash } from 'crypto';
-import { decideBotCommand, ruleMatches, type BotCommandRule } from '../botCommandAllow';
+import { decideBotCommand, type BotCommandRule } from '../botCommandAllow';
 import { checkBotFolderPath } from '../botFolderPath';
 import { BOT_EXEC_TIMEOUT_MS, evaluateBotExecTool, sanitizeBashInput, type BotExecContext } from '../botExec';
 import { BotCommandRulesStore, botCommandRulesPath, BOT_COMMAND_RULES_VERSION } from '../botCommandRules';
@@ -424,25 +423,31 @@ describe('the attended rule and the decision on each tool', () => {
   });
 });
 
-describe('an owner rule that pins a file', () => {
-  const sha = (text: string) => createHash('sha256').update(text).digest('hex');
+describe('an owner rule covers its command alone on its line', () => {
+  const rules: BotCommandRule[] = [{ argv: ['./run.sh'] }, { argv: ['python3', 'tool.py'] }];
 
-  it('matches while the file is unchanged, and refuses with a clear reason once it changes or goes', () => {
-    fs.writeFileSync(path.join(botDir, 'tool.py'), 'print(1)\n');
-    fs.writeFileSync(path.join(botDir, 'run.sh'), 'echo hi\n');
-    const rules: BotCommandRule[] = [{ argv: ['python3', 'tool.py'], sha256: sha('print(1)\n') }, { argv: ['./run.sh'], sha256: sha('echo hi\n') }];
-    expect(decide('python3 tool.py', rules)).toMatchObject({ ok: true, matched: 'rule' });
+  it('a single command still matches, with nothing pinned', () => {
     expect(decide('./run.sh', rules)).toMatchObject({ ok: true, matched: 'rule' });
-    fs.writeFileSync(path.join(botDir, 'tool.py'), 'import os\n');
-    expect(decide('python3 tool.py', rules)).toMatchObject({ ok: false, layer: 'script', reason: expect.stringContaining('tool.py changed since the owner allowed it') });
-    fs.rmSync(path.join(botDir, 'run.sh'));
-    expect(decide('./run.sh', rules)).toMatchObject({ ok: false, layer: 'script', reason: expect.stringContaining('./run.sh changed since the owner allowed it') });
-    // A symlink in its place never matches.
-    fs.symlinkSync(path.join(outside, 'target.txt'), path.join(botDir, 'run.sh'));
-    expect(decide('./run.sh', [{ argv: ['./run.sh'], sha256: sha('x\n') }])).toMatchObject({ ok: false, layer: 'script' });
-    // Without the bot's folder a pinned rule matches nothing.
-    expect(ruleMatches({ argv: ['python3', 'tool.py'], sha256: sha('import os\n') }, ['python3', 'tool.py'])).toBe(false);
-    expect(ruleMatches({ argv: ['python3', 'tool.py'], sha256: sha('import os\n') }, ['python3', 'tool.py'], { botDir })).toBe(true);
+    // The file may change; the rule is the owner's grant for whatever it holds.
+    fs.writeFileSync(path.join(botDir, 'run.sh'), 'echo changed\n');
+    expect(decide('./run.sh', rules)).toMatchObject({ ok: true, matched: 'rule' });
+    expect(JSON.stringify(rules)).not.toContain('sha256');
+  });
+
+  it.each([
+    ['echo x > run.sh ; ./run.sh'],
+    ['echo x > run.sh && ./run.sh'],
+    ['ls || ./run.sh'],
+    ['./run.sh | cat'],
+    ['./run.sh > out.txt'],
+    ['./run.sh 2> err.txt'],
+  ])('does not match %s', (line) => {
+    expect(decide(line, rules)).toMatchObject({ ok: false });
+    expect(decide(line, rules)).not.toMatchObject({ layer: 'allowlist' });
+  });
+
+  it('runs python from a rule isolated (-I)', () => {
+    expect(decide('python3 tool.py', rules)).toMatchObject({ ok: true, matched: 'rule', run: "\\command 'python3' '-I' 'tool.py'" });
   });
 });
 
@@ -464,6 +469,11 @@ describe('the owner\'s command rules file', () => {
     [{ argv: ['python3'] }],
     [{ argv: ['/usr/bin/python3', '-u'] }],
     [{ argv: ['bash', 'x.sh'], anyArgs: true }],
+    [{ argv: ['python3', '-m', 'mod'] }],
+    [{ argv: ['python3', '-W', 'x', 'a.py'] }],
+    [{ argv: ['bash', '-o', 'posix', 'x.sh'] }],
+    [{ argv: ['node', '-r', './a.js', 'b.js'] }],
+    [{ argv: ['python3', 'a.py', 'arg'] }],
     [{ argv: ['node'], anyArgs: true }],
   ])('a shell or interpreter rule must name its script and take nothing else: %j', async (rule) => {
     const store = new BotCommandRulesStore(botCommandRulesPath(botDir));
@@ -491,14 +501,11 @@ describe('the owner\'s command rules file', () => {
   it('an interpreter rule naming its script is kept; an unsafe one in the file is dropped on load', async () => {
     const file = botCommandRulesPath(botDir);
     const store = new BotCommandRulesStore(file);
-    const sha256 = 'a'.repeat(64);
-    await store.setRules('bot-1', [{ argv: ['python3', 'tool.py'], sha256 }]);
-    expect(store.rulesFor('bot-1')).toEqual([{ argv: ['python3', 'tool.py'], sha256 }]);
-    // A rule that runs a file must pin it; a rule that runs none pins nothing.
-    await expect(store.setRules('bot-1', [{ argv: ['python3', 'tool.py'] }])).rejects.toThrow("a rule that runs tool.py must pin the file's hash");
-    await expect(store.setRules('bot-1', [{ argv: ['./run.sh'] }])).rejects.toThrow("a rule that runs ./run.sh must pin the file's hash");
-    await expect(store.setRules('bot-1', [{ argv: ['make'], sha256 }])).rejects.toThrow('pins a hash but runs no file');
-    await expect(store.setRules('bot-1', [{ argv: ['./run.sh'], sha256: 'nothex' }])).rejects.toThrow('malformed file hash');
+    await store.setRules('bot-1', [{ argv: ['python3', 'tool.py'] }, { argv: ['./run.sh'] }]);
+    expect(store.rulesFor('bot-1')).toEqual([{ argv: ['python3', 'tool.py'] }, { argv: ['./run.sh'] }]);
+    // Nothing is pinned: a stored hash is no part of a rule.
+    await store.setRules('bot-1', [{ argv: ['./run.sh'], sha256: 'a'.repeat(64) } as BotCommandRule]);
+    expect(store.rulesFor('bot-1')).toEqual([{ argv: ['./run.sh'] }]);
     fs.writeFileSync(file, JSON.stringify({ version: BOT_COMMAND_RULES_VERSION, bots: { 'bot-1': [{ argv: ['python3'], anyArgs: true }, { argv: ['make'] }] } }));
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     expect(new BotCommandRulesStore(file).rulesFor('bot-1')).toEqual([{ argv: ['make'] }]);

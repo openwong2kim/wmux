@@ -6,11 +6,10 @@
 // the owner's own path writes it (`setRules`, called from main for the
 // owner's settings — no bot RPC reaches this module, and no bot tool names
 // it). The floor applies whatever a rule says, a rule never names a
-// built-in command (its option checks stay), a rule for a shell or an
-// interpreter must name its script and may not take any arguments, and a
-// rule that runs a file (a program named by its path, an interpreter's
-// script) pins that file's sha256: it matches only while the file in the
-// bot's folder is unchanged (botCommandAllow.ts ruleMatches).
+// built-in command (its option checks stay), and a rule for a shell or an
+// interpreter is exactly the interpreter and its script: no option, no other
+// argument. A rule covers a line only when it is that one command, with no
+// output redirect (botCommandAllow.ts decideBotCommand).
 //
 // It also holds the owner's per-bot switch: a bot listed in `off` runs no
 // commands at all (no Bash, Write or Edit, and no Read of its own folder).
@@ -21,7 +20,7 @@
 
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import { isBuiltinCommandName, ruleFileOperand, type BotCommandRule } from './botCommandAllow';
+import { isBuiltinCommandName, type BotCommandRule } from './botCommandAllow';
 import { commandName, isShellOrInterpreter, normalizeCommand } from './botCommandFloor';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 
@@ -36,7 +35,7 @@ export function botCommandRulesPath(wmuxDir: string): string {
 /** Why `value` is not a rule, or null when it is one. Pure. */
 export function botCommandRuleRefusal(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return 'a command rule is malformed';
-  const v = value as { argv?: unknown; anyArgs?: unknown; sha256?: unknown };
+  const v = value as { argv?: unknown; anyArgs?: unknown };
   if (!Array.isArray(v.argv) || v.argv.length === 0) return 'a command rule names no command';
   if (v.argv.length > BOT_COMMAND_RULES_LIMITS.WORDS) return `a command rule has more than ${BOT_COMMAND_RULES_LIMITS.WORDS} words`;
   for (const w of v.argv) {
@@ -47,26 +46,20 @@ export function botCommandRuleRefusal(value: unknown): string | null {
   // A built-in command keeps its checks: a rule would let the options they
   // refuse (an output file, a program to run) through.
   if (isBuiltinCommandName(commandName(argv[0]))) return `${commandName(argv[0])} is a built-in command; its blocked options stay blocked`;
-  // A shell or interpreter rule names its script and takes nothing else:
-  // with any arguments it would run whatever code follows.
-  if (isShellOrInterpreter(commandName(argv[0])) && (v.anyArgs === true || !argv.slice(1).some((w) => !w.startsWith('-')))) {
-    return `a rule for ${commandName(argv[0])} must name the script it runs, and takes no other arguments`;
+  // A shell or interpreter rule is exactly `[interpreter, script]`: any
+  // option (`-m`, `-c`, `-r`, `-o`) or other word could run other code.
+  if (isShellOrInterpreter(commandName(argv[0])) && (v.anyArgs === true || argv.length !== 2 || argv[1].startsWith('-'))) {
+    return `a rule for ${commandName(argv[0])} must name the script it runs and nothing else (no options, no other arguments)`;
   }
-  // A rule that runs a file pins it by its hash: the bot can rewrite a file
-  // in its folder, and the owner allowed the one they saw.
-  const file = ruleFileOperand(argv);
-  if (v.sha256 !== undefined && (typeof v.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(v.sha256))) return 'a command rule has a malformed file hash';
-  if (file !== null && v.sha256 === undefined) return `a rule that runs ${file} must pin the file's hash`;
-  if (file === null && v.sha256 !== undefined) return 'a command rule pins a hash but runs no file';
   return null;
 }
 
 /** One rule from the file or the owner, or null when malformed. Pure. */
 export function parseBotCommandRule(value: unknown): BotCommandRule | null {
   if (botCommandRuleRefusal(value) !== null) return null;
-  const v = value as { argv: string[]; anyArgs?: boolean; sha256?: string };
+  const v = value as { argv: string[]; anyArgs?: boolean };
   const argv = [...v.argv];
-  return { argv, ...(v.anyArgs ? { anyArgs: true } : {}), ...(v.sha256 ? { sha256: v.sha256 } : {}) };
+  return v.anyArgs ? { argv, anyArgs: true } : { argv };
 }
 
 /** A rule as one command line (its words quoted as main runs them). Pure. */

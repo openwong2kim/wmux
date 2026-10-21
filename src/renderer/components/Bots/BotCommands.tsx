@@ -8,8 +8,9 @@
 // tools). Under it main's recent decisions, newest first, a few at a time:
 // when, the command or path, allowed or refused (a refusal's word red) and
 // why (a reviewer verdict with its risk and rationale);
-// a runner's (make, npm, …) asks to confirm first, since it runs files the
-// bot can change; a command refused as not on the list has Always allow, which adds an
+// one whose rule runs code from files in the bot's folder (a script, an
+// interpreter's script, make or npm …) warns and asks to confirm first,
+// since the bot can change those files; a command refused as not on the list has Always allow, which adds an
 // owner rule for exactly that command — offered only where main says the
 // rule would be saved (never for a built-in command, whose option checks
 // stay), and main checks it again and says why when it refuses. Last, the owner's rules, each with Remove. Every
@@ -117,7 +118,7 @@ export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: Fa
   const [shown, setShown] = useState(COMMANDS_PAGE);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // The runner entry whose Always allow waits for the owner's confirm.
+  // The entry whose Always allow waits for the owner's confirm.
   const [confirming, setConfirming] = useState<string | null>(null);
   // One request at a time (the ref holds it between a click and the next render).
   const inFlight = useRef(false);
@@ -163,7 +164,7 @@ export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: Fa
                       type="button"
                       data-testid={`bot-command-allow-${e.id}`}
                       disabled={busy}
-                      onClick={() => (e.runner ? setConfirming(e.id) : act(() => p.allow({ botId, entryId: e.id }), t('bots.commands.allowFailed')))}
+                      onClick={() => (e.runsCode ? setConfirming(e.id) : act(() => p.allow({ botId, entryId: e.id }), t('bots.commands.allowFailed')))}
                       className={`shrink-0 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}
                     >
                       {t('bots.commands.alwaysAllow')}
@@ -172,7 +173,7 @@ export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: Fa
                 </div>
                 {confirming === e.id && (
                   <div className="flex items-center gap-2 text-[11px]" data-bot-command-confirm={e.id}>
-                    <span className="min-w-0 flex-1 text-[var(--accent-yellow)]">{t('bots.commands.runnerWarning')}</span>
+                    <span className="min-w-0 flex-1 text-[var(--accent-yellow)]">{t('bots.commands.runsCodeWarning')}</span>
                     <button type="button" data-testid={`bot-command-allow-confirm-${e.id}`} disabled={busy} onClick={() => { setConfirming(null); act(() => p.allow({ botId, entryId: e.id, confirm: true }), t('bots.commands.allowFailed')); }} className={`shrink-0 text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}>
                       {t('bots.commands.allowAnyway')}
                     </button>
@@ -200,7 +201,7 @@ export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: Fa
           <ul className="space-y-0.5">
             {view.rules.map((r, i) => (
               <li key={`${i}:${r.text}`} data-bot-command-rule={i} className="flex items-center gap-2">
-                <span className="min-w-0 flex-1 truncate font-mono text-[var(--text-main)]">{r.anyArgs ? t('bots.commands.ruleAnyArgs', { rule: r.text }) : r.text}{r.pinned ? <span className="font-sans text-[var(--text-muted)]">{` · ${t('bots.commands.rulePinned')}`}</span> : null}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[var(--text-main)]">{r.anyArgs ? t('bots.commands.ruleAnyArgs', { rule: r.text }) : r.text}</span>
                 <button type="button" data-testid={`bot-command-rule-remove-${i}`} disabled={busy} onClick={() => act(() => p.removeRule({ botId, index: i, text: r.text }), t('bots.commands.removeFailed'))} className={`shrink-0 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}>
                   {t('bots.commands.remove')}
                 </button>

@@ -73,10 +73,12 @@ export interface BotCommandLogEntry {
   reason?: string;
   /** The reviewer's verdict, for a `reviewer` decision. */
   review?: BotCommandReview;
-  /** In a read only, with canAllow: a build, task, test or package
-   *  runner, which runs files the bot can change; Always allow asks the
-   *  owner to confirm (BotCommandAllowRequest.confirm). */
-  runner?: boolean;
+  /** In a read only, with canAllow: its rule would let the bot run code
+   *  from files in its folder (a program named by its path, an
+   *  interpreter's script, a build/task/test/package runner), which the bot
+   *  can change; Always allow asks the owner to confirm
+   *  (BotCommandAllowRequest.confirm). */
+  runsCode?: boolean;
   /** In a read only: main would save "Always allow"'s rule for it (a
    *  command refused as not on the list whose head is not a built-in). */
   canAllow?: boolean;
@@ -87,8 +89,6 @@ export interface BotCommandRuleView {
   /** The rule's words as one command line, masked. */
   text: string;
   anyArgs: boolean;
-  /** It runs a file pinned by its hash: this version of the file only. */
-  pinned?: boolean;
 }
 
 export interface BotCommandReadRequest {
@@ -120,7 +120,7 @@ export interface BotCommandAllowRequest {
   botId: string;
   /** The log entry of the refused command. */
   entryId: string;
-  /** The owner confirmed a runner's rule (BotCommandLogEntry.runner). */
+  /** The owner confirmed a rule that runs code (BotCommandLogEntry.runsCode). */
   confirm?: boolean;
 }
 

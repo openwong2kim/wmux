@@ -17,49 +17,31 @@
 // further: a command not on the list makes it `unlisted`, with the line as
 // it would run and its words, for the reviewer (botCommandReviewer.ts).
 
-import crypto from 'node:crypto';
-import fs from 'node:fs';
 import { commandFloor, commandLineToRun, commandName, isShellOrInterpreter, normalizeCommand, parseCommandLine, type FloorContext, type Pipeline, type SimpleCommand } from './botCommandFloor';
-import { checkBotFolderPath, type BotFolderDeps } from './botFolderPath';
 
-/** One owner rule: the command's leading words, and whether more may follow. */
+/** One owner rule: the command's leading words, and whether more may follow.
+ *  A rule applies only to a line that is that one command, with no other
+ *  command and no output redirect (decideBotCommand). */
 export interface BotCommandRule {
   argv: string[];
   anyArgs?: boolean;
-  /** A rule that runs a file (ruleFileOperand): the file's sha256 when the
-   *  owner allowed it. The rule matches only while the file still hashes
-   *  to it, so a bot that rewrites the file loses the rule. */
-  sha256?: string;
 }
 
-/** The file a command with these words runs from the bot's folder: a
- *  program named by its path, or an interpreter's script (its first word
- *  that is not an option); null for any other command. Pure. */
-export function ruleFileOperand(argv: readonly string[]): string | null {
+/** Whether a command with these words runs code from a file: a program
+ *  named by its path, or a shell or interpreter. Such a file lives in the
+ *  bot's folder, where the bot can change it, so a rule for it is the
+ *  owner's informed choice (botCommandModule.ts asks to confirm). Pure. */
+export function ruleRunsFile(argv: readonly string[]): boolean {
   const first = argv[0] ?? '';
-  if (/[\\/]/.test(first)) return first;
-  if (isShellOrInterpreter(commandName(first))) return argv.slice(1).find((w) => !w.startsWith('-')) ?? null;
-  return null;
+  return /[\\/]/.test(first) || isShellOrInterpreter(commandName(first));
 }
 
-/** The largest file a rule pins by its hash. */
-const RULE_FILE_MAX_BYTES = 32 * 1024 * 1024;
+/** Python started by an owner rule runs isolated (`-I`): no PYTHON*
+ *  variables, no user site, and the script's folder not on the import path. */
+const PYTHON_RE = /^python(\d+(\.\d+)*)?$/;
 
-/** The sha256 of `file`, a regular file inside the bot's folder (the path
- *  checks of botFolderPath.ts: no `..`, no symlink, nothing protected), or
- *  why it has none. `hash: false` checks the file without reading it. */
-export function botFolderFileSha256(file: string, botDir: string, deps?: BotFolderDeps, opts: { hash?: boolean } = {}): { ok: true; sha256: string } | { ok: false; reason: string } {
-  const at = checkBotFolderPath(file, botDir, deps);
-  if (!at.ok) return at;
-  try {
-    const st = fs.lstatSync(at.real);
-    if (!st.isFile()) return { ok: false, reason: 'it is not a regular file' };
-    if (st.size > RULE_FILE_MAX_BYTES) return { ok: false, reason: 'it is too large to pin' };
-    if (opts.hash === false) return { ok: true, sha256: '' };
-    return { ok: true, sha256: crypto.createHash('sha256').update(fs.readFileSync(at.real)).digest('hex') };
-  } catch {
-    return { ok: false, reason: 'it does not exist or cannot be read' };
-  }
+function isolatePython(pipelines: readonly Pipeline[]): Pipeline[] {
+  return pipelines.map((p) => p.map((c) => (PYTHON_RE.test(commandName(c.argv[0] ?? '')) && c.argv[1] !== '-I' ? { ...c, argv: [c.argv[0], '-I', ...c.argv.slice(1)] } : c)));
 }
 
 type ArgCheck = (args: readonly string[]) => string | null;
@@ -189,34 +171,21 @@ function builtinRefusal(cmd: SimpleCommand): string | null {
   return check(cmd.argv.slice(1));
 }
 
-/** Whether an owner rule's words match the command's. Pure. */
-export function ruleWordsMatch(rule: BotCommandRule, argv: readonly string[]): boolean {
+/** Whether an owner rule matches the command's words. Pure. */
+export function ruleMatches(rule: BotCommandRule, argv: readonly string[]): boolean {
   if (rule.argv.length === 0 || argv.length < rule.argv.length) return false;
   if (!rule.argv.every((w, k) => argv[k] === w)) return false;
   return rule.anyArgs === true || argv.length === rule.argv.length;
 }
 
-/** Whether an owner rule matches the command: its words, and for a rule
- *  that pins a file, the file in the bot's folder (`folder`) still hashing
- *  to it. A pinned rule without a folder, or a file that is missing,
- *  unreadable or changed, never matches. */
-export function ruleMatches(rule: BotCommandRule, argv: readonly string[], folder?: { botDir: string; fs?: BotFolderDeps }): boolean {
-  if (!ruleWordsMatch(rule, argv)) return false;
-  if (rule.sha256 === undefined) return true;
-  const file = ruleFileOperand(argv);
-  if (!folder || !file) return false;
-  const now = botFolderFileSha256(file, folder.botDir, folder.fs);
-  return now.ok && now.sha256 === rule.sha256;
-}
-
 /** The words of each pipeline head that neither the built-in list nor
  *  `rules` allow: what an owner rule would have to name for the line to be
  *  on the list (a command after a pipe is never allowed by a rule). Pure. */
-export function unlistedHeads(pipelines: readonly Pipeline[], rules: readonly BotCommandRule[], folder?: { botDir: string; fs?: BotFolderDeps }): string[][] {
+export function unlistedHeads(pipelines: readonly Pipeline[], rules: readonly BotCommandRule[]): string[][] {
   const out: string[][] = [];
   for (const p of pipelines) {
     const head = p[0];
-    if (!head || rules.some((rule) => ruleMatches(rule, head.argv, folder)) || builtinRefusal(head) === null) continue;
+    if (!head || rules.some((rule) => ruleMatches(rule, head.argv)) || builtinRefusal(head) === null) continue;
     if (!out.some((argv) => argv.length === head.argv.length && argv.every((w, k) => w === head.argv[k]))) out.push([...head.argv]);
   }
   return out;
@@ -232,8 +201,8 @@ function filterRefusal(cmd: SimpleCommand): string | null {
 export type CommandDecision =
   /** `run`: the line as it runs (commandLineToRun). */
   | { ok: true; layer: 'allowlist'; command: string; run: string; matched: 'builtin' | 'rule' }
-  /** `script`: an owner rule names the command, but the file it pinned
-   *  changed (or is gone) since. */
+  /** `script`: an owner rule names the command, but the line holds other
+   *  commands or an output redirect, which a rule never covers. */
   | { ok: false; layer: 'parse' | 'floor' | 'script'; command: string; reason: string }
   /** Past the floor but not on the list: `run` is the line as it would run,
    *  `argv` each command's words, and `offList` the words of the commands
@@ -264,7 +233,10 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
   // floor's, even after a command that is merely not on the list.
   let viaRule = false;
   let offList: string | null = null;
-  let stale: string | null = null;
+  let alone: string | null = null;
+  // A rule covers a line that is its one command and writes nothing:
+  // otherwise one line could rewrite a file and then run it.
+  const single = parsed.pipelines.length === 1 && parsed.pipelines[0].length === 1 && !parsed.pipelines[0][0].redirects.some((r) => r.op.includes('>'));
   for (const p of parsed.pipelines) {
     for (let k = 0; k < p.length; k++) {
       const cmd = p[k];
@@ -283,12 +255,13 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
         offListCommands.push([...cmd.argv]);
         continue;
       }
-      const named = ctx.rules.filter((rule) => ruleWordsMatch(rule, cmd.argv));
-      if (named.some((rule) => ruleMatches(rule, cmd.argv, ctx))) {
-        viaRule = true;
-        continue;
+      if (ctx.rules.some((rule) => ruleMatches(rule, cmd.argv))) {
+        if (single) {
+          viaRule = true;
+          continue;
+        }
+        alone ??= `the owner's rule for ${name} covers it only alone on its line, with no other command and no output redirect`;
       }
-      if (named.length > 0) stale ??= `${ruleFileOperand(cmd.argv) ?? name} changed since the owner allowed it (or is gone), so the owner's rule no longer applies; the owner can allow it again`;
       if (!BUILTIN_COMMANDS.has(name)) {
         offList ??= `${name} is not on the built-in list`;
         offListCommands.push([...cmd.argv]);
@@ -298,7 +271,7 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
       if (r) return { ok: false, layer: 'floor', command, reason: r };
     }
   }
-  if (stale) return { ok: false, layer: 'script', command, reason: stale };
+  if (alone) return { ok: false, layer: 'script', command, reason: alone };
   if (offList) return unlisted(offList);
-  return { ok: true, layer: 'allowlist', command, run: commandLineToRun(parsed.pipelines, parsed.joins), matched: viaRule ? 'rule' : 'builtin' };
+  return { ok: true, layer: 'allowlist', command, run: commandLineToRun(viaRule ? isolatePython(parsed.pipelines) : parsed.pipelines, parsed.joins), matched: viaRule ? 'rule' : 'builtin' };
 }

@@ -566,10 +566,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   needs an owner rule (not on the list, a script, or refused by the
   reviewer; never a built-in or the floor, never a line holding two such
   commands) carries a muted Always allow that adds a rule for exactly that
-  command; a runner's (make, npm, …) first shows one caution-yellow line,
-  "This runs files in the bot's folder that the bot can change.", with
-  Allow anyway and Cancel. A rule that runs a file pins that version of it
-  (a muted note on the rule). Main's refusal shows as one red line. The reviewer itself is one factory-wide switch in Settings ›
+  command; one whose rule runs code from files in the bot's folder (a
+  program named by its path, an interpreter and its script, a runner such
+  as make or npm) first shows one caution-yellow line, "This lets the bot
+  run code from files in its folder, which the bot can change. Commands
+  still run in the sandbox (no network, no access to your home folder).",
+  with Allow anyway and Cancel. Main's refusal shows as one red line. The reviewer itself is one factory-wide switch in Settings ›
   Bots, "Review unlisted bot commands" (on by default).
   Last, Your rules, one mono line each with a muted Remove that acts at
   once; empty lists are one muted line. No fills, no chips.

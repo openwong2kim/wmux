@@ -13,8 +13,7 @@ vi.mock('electron', () => ({ app: { getPath: () => '/tmp', isPackaged: false, on
 
 import type { BotProfile } from '../../../shared/bot';
 import { BotCommandLog } from '../botCommandLog';
-import { RUNNER_WARNING, botCommandIpcHandlers } from '../botCommandModule';
-import { createHash } from 'node:crypto';
+import { RUNS_CODE_WARNING, botCommandIpcHandlers } from '../botCommandModule';
 import { BotCommandRulesStore, botCommandRulesPath } from '../botCommandRules';
 import { evaluateBotExecTool, logBotExecDecision, reviewUnlistedCommand, setBotExecDecisionSink } from '../botExec';
 import type { BotCommandReviewer, ReviewOutcome } from '../botCommandReviewer';
@@ -57,7 +56,6 @@ const handlers = (opts: { engine?: BotProfile['engine']; supported?: boolean } =
     rules: () => rules,
     bot: (id) => (id === BOT ? ({ id: BOT, engine: opts.engine ?? { kind: 'claude-sdk' } } as BotProfile) : null),
     support: async () => (opts.supported === false ? { ok: false, reason: 'no sandbox' } : { ok: true, version: '2.1.305' }),
-    botDir: () => botDir,
     changed,
   });
 
@@ -87,7 +85,7 @@ describe('the Commands IPC', () => {
       expect(await h.allow(e, { botId: BOT, entryId: id })).toMatchObject({ ok: false });
       expect(await h.removeRule(e, { botId: BOT, index: 0, text: 'x' })).toMatchObject({ ok: false });
     }
-    expect(await botCommandIpcHandlers(() => null, { log: () => log, rules: () => rules, botDir: () => botDir, changed }).read(OWNER, { botId: BOT })).toMatchObject({ ok: false });
+    expect(await botCommandIpcHandlers(() => null, { log: () => log, rules: () => rules, changed }).read(OWNER, { botId: BOT })).toMatchObject({ ok: false });
     expect(rules.commandsEnabled(BOT)).toBe(true);
     expect(rules.rulesFor(BOT)).toEqual([]);
     expect(changed).not.toHaveBeenCalled();
@@ -105,12 +103,12 @@ describe('the Commands IPC', () => {
     expect(await handlers().read(OWNER, { botId: '../x' })).toMatchObject({ ok: false });
   });
 
-  it('Always allow saves a rule for exactly the refused command, which the gate then allows; a runner\'s needs the owner\'s confirm', async () => {
+  it('Always allow saves a rule for exactly the refused command, which the gate then allows; one that runs code needs the owner\'s confirm', async () => {
     expect(await run("make 'a b'")).toMatchObject({ ok: false, layer: 'script' });
     const h = handlers();
     const r0 = await h.read(OWNER, { botId: BOT });
-    expect(r0.ok && r0.entries[0]).toMatchObject({ canAllow: true, runner: true });
-    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: RUNNER_WARNING });
+    expect(r0.ok && r0.entries[0]).toMatchObject({ canAllow: true, runsCode: true });
+    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: RUNS_CODE_WARNING });
     expect(rules.rulesFor(BOT)).toEqual([]);
     expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id, confirm: true })).toEqual({ ok: true });
     expect(rules.rulesFor(BOT)).toEqual([{ argv: ['make', 'a b'] }]);
@@ -153,39 +151,35 @@ describe('the Commands IPC', () => {
     expect(rules.rulesFor(BOT)).toEqual([]);
   });
 
-  it('Always allow covers a program that needs a rule, a script and a reviewer refusal, and keeps the reviewer\'s verdict in the log', async () => {
+  it('Always allow covers a program that needs a rule, a script and a reviewer refusal; every rule that runs code from a file needs confirm', async () => {
     const h = handlers();
     fs.writeFileSync(path.join(botDir, 'build.sh'), 'echo build\n');
     fs.writeFileSync(path.join(botDir, 'tool.py'), 'print(1)\n');
     expect(await run('jq . data.json')).toMatchObject({ ok: false, layer: 'unlisted' });
     expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: true });
-    expect(await run('./build.sh')).toMatchObject({ ok: false, layer: 'script' });
-    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: true });
-    expect(await run('python3 tool.py')).toMatchObject({ ok: false, layer: 'script' });
-    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: true });
+    for (const line of ['./build.sh', 'python3 tool.py']) {
+      expect(await run(line), line).toMatchObject({ ok: false, layer: 'script' });
+      const r = await h.read(OWNER, { botId: BOT });
+      expect(r.ok && r.entries[0], line).toMatchObject({ canAllow: true, runsCode: true });
+      expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id }), line).toEqual({ ok: false, error: RUNS_CODE_WARNING });
+      expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id, confirm: true }), line).toEqual({ ok: true });
+    }
     verdict = { allow: false, code: 'reviewer_deny', risk: 'high', rationale: 'creates a file', latencyMs: 12 };
     expect(await run('touch new.md')).toMatchObject({ ok: false, layer: 'reviewer' });
     expect(newest()).toMatchObject({ layer: 'reviewer', review: { code: 'reviewer_deny', risk: 'high', rationale: 'creates a file', latencyMs: 12 } });
     const r = await h.read(OWNER, { botId: BOT });
     expect(r.ok && r.entries[0]).toMatchObject({ canAllow: true, review: { risk: 'high', rationale: 'creates a file' } });
+    expect(r.ok && r.entries[0].runsCode).toBeUndefined();
     expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: true });
-    const sha = (text: string) => createHash('sha256').update(text).digest('hex');
-    expect(rules.rulesFor(BOT)).toEqual([
-      { argv: ['jq', '.', 'data.json'] },
-      { argv: ['./build.sh'], sha256: sha('echo build\n') },
-      { argv: ['python3', 'tool.py'], sha256: sha('print(1)\n') },
-      { argv: ['touch', 'new.md'] },
-    ]);
+    // No file is pinned: nothing but the words is stored.
+    expect(rules.rulesFor(BOT)).toEqual([{ argv: ['jq', '.', 'data.json'] }, { argv: ['./build.sh'] }, { argv: ['python3', 'tool.py'] }, { argv: ['touch', 'new.md'] }]);
     for (const line of ['jq . data.json', './build.sh', 'python3 tool.py', 'touch new.md']) expect(await run(line), line).toMatchObject({ ok: true, layer: 'rule' });
-    const pinned = await h.read(OWNER, { botId: BOT });
-    expect(pinned.ok && pinned.rules.map((x) => x.pinned === true)).toEqual([false, true, true, false]);
-    // The bot rewrites its script: the rule stops matching, and allowing it
-    // again replaces the old pin.
-    fs.writeFileSync(path.join(botDir, 'tool.py'), 'import os\n');
-    expect(await run('python3 tool.py')).toMatchObject({ ok: false, layer: 'script', reason: expect.stringContaining('changed since the owner allowed it') });
-    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: true });
-    expect(rules.rulesFor(BOT).filter((x) => x.argv[0] === 'python3')).toEqual([{ argv: ['python3', 'tool.py'], sha256: sha('import os\n') }]);
-    expect(await run('python3 tool.py')).toMatchObject({ ok: true, layer: 'rule' });
+    // The bot changing the file does not change the grant; a line that writes
+    // and runs it is not covered.
+    fs.writeFileSync(path.join(botDir, 'build.sh'), 'echo other\n');
+    expect(await run('./build.sh')).toMatchObject({ ok: true, layer: 'rule' });
+    expect(await run('echo x > build.sh ; ./build.sh')).toMatchObject({ ok: false, layer: 'script', reason: expect.stringContaining('alone on its line') });
+    expect(await run('./build.sh | cat')).toMatchObject({ ok: false });
   });
 
   it('a line with more than one command needing a rule gets no Always allow: each needs its own approval', async () => {
@@ -198,21 +192,6 @@ describe('the Commands IPC', () => {
       expect(r.ok && r.entries[0].canAllow, line).toBeUndefined();
       expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id }), line).toEqual({ ok: false, error: 'This line runs more than one command that needs a rule; each one is allowed on its own, when the bot runs it alone.' });
     }
-    expect(rules.rulesFor(BOT)).toEqual([]);
-  });
-
-  it('a script that is a symlink or not in the bot\'s folder cannot be allowed', async () => {
-    fs.symlinkSync(path.join(dir, 'elsewhere.sh'), path.join(botDir, 'link.sh'));
-    fs.writeFileSync(path.join(dir, 'elsewhere.sh'), 'x\n');
-    expect(await run('./link.sh')).toMatchObject({ ok: false, layer: 'script' });
-    const r = await handlers().read(OWNER, { botId: BOT });
-    expect(r.ok && r.entries[0].canAllow).toBeUndefined();
-    expect(await handlers().allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: './link.sh cannot be allowed by a rule: it resolves outside the bot folder' });
-    // A symlink to a file in the folder is refused too.
-    fs.writeFileSync(path.join(botDir, 'real.sh'), 'x\n');
-    fs.symlinkSync(path.join(botDir, 'real.sh'), path.join(botDir, 'inner.sh'));
-    expect(await run('./inner.sh')).toMatchObject({ ok: false, layer: 'script' });
-    expect(await handlers().allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: './inner.sh cannot be allowed by a rule: it is a symbolic link' });
     expect(rules.rulesFor(BOT)).toEqual([]);
   });
 
