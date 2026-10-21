@@ -39,6 +39,7 @@ import { registerWorkflowHandlers } from './handlers/workflow.handler';
 import { registerFactoryHandlers } from './handlers/factory.handler';
 import { registerGitShipHandlers } from './handlers/gitShip.handler';
 import { registerGhLoginHandlers } from './handlers/ghLogin.handler';
+import { registerStarPromptHandlers } from './handlers/starPrompt.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerTokenUsageQuotaHandlers } from './handlers/tokenUsageQuota.handler';
 import { registerTokenUsageSurfaceHandlers } from './handlers/tokenUsageSurface.handler';
@@ -231,6 +232,7 @@ export function registerAllHandlers(
   const cleanupFactory = registerFactoryHandlers(getWindow, { cwdOf: getCwd });
   const cleanupGitShip = registerGitShipHandlers();
   const cleanupGhLogin = registerGhLoginHandlers(getWindow);
+  const cleanupStarPrompt = registerStarPromptHandlers(getWindow);
   // Agent factory rooms: the room dock reads, posts and answers as the owner.
   const cleanupRooms = registerRoomIpcHandlers(getWindow, { invoke: options.invokeRendererRpc, factoryState: liveFactoryState });
   // Owner approvals of bots' requests: decided only from the main window.
@@ -597,6 +599,7 @@ export function registerAllHandlers(
     cleanupFactory();
     cleanupGitShip();
     cleanupGhLogin();
+    cleanupStarPrompt();
     cleanupRooms();
     cleanupApprovals();
     if (cleanupMcp) cleanupMcp();

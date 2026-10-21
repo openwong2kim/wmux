@@ -208,4 +208,5 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'lanpair', tab: 'lanlink', labelKey: 'settings.lanlinkPair', synonyms: 'pin pair join revoke peer' },
 
   { id: 'version', tab: 'about', labelKey: 'settings.aboutTagline', synonyms: 'version about changelog release 버전' },
+  { id: 'stargithub', tab: 'about', labelKey: 'starPrompt.settingsLabel', descKey: 'starPrompt.settingsDescription', synonyms: 'star github support repository 스타 깃허브' },
 ];

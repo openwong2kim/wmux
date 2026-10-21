@@ -3,6 +3,7 @@ import type { StateCreator } from 'zustand';
 import { sanitizeClaudeEffort } from '../../../shared/claudeModels';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { normalizeStarPromptState } from '../../../shared/starPrompt';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { overridesFromDisabledCombos, sanitizeShortcutOverrides } from '../../../shared/keymap';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
@@ -1753,6 +1754,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // payload.
       if (data.firstRunCompleted != null) state.firstRunCompleted = data.firstRunCompleted;
       if (data.cheatSheetDismissed != null) state.cheatSheetDismissed = data.cheatSheetDismissed;
+      // Always set: a session from before the star row starts its wait at this load.
+      state.starPrompt = normalizeStarPromptState(data.starPrompt, Date.now());
       if (data.floatingPanePtyId !== undefined) state.floatingPanePtyId = data.floatingPanePtyId ?? null;
       if (data.layoutTemplates) {
         // Restore user-saved templates merged with current builtins

@@ -25,6 +25,7 @@ import type { WorkspaceColorId } from './workspaceColors';
 import type { AgentSlug } from './events';
 import type { OrchestratorRoleBindings } from './orchestratorRole';
 import type { PcRailPersisted } from './pcRail';
+import type { StarPromptState } from './starPrompt';
 import type { AgentSignalKind } from './hooks/signal-types';
 import type { DeadPaneRecovery } from './ptyRecovery';
 
@@ -1082,6 +1083,9 @@ export interface SessionData {
   firstRunCompleted?: boolean;
   // Cheat sheet "Don't show again" toggle (Plan 1.18, D11). Persisted via uiSlice.
   cheatSheetDismissed?: boolean;
+  /** The sidebar's "Star on GitHub" row (shared/starPrompt.ts). Local only;
+   *  absent in a session from before it, which starts the wait afresh. */
+  starPrompt?: StarPromptState;
   floatingPanePtyId?: string | null;
   layoutTemplates?: LayoutTemplate[];
   recentCommands?: string[];

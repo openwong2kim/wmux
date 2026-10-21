@@ -1248,6 +1248,17 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.GH_LOGIN_EVENT, listener); };
     },
   },
+  // "Star on GitHub" (sidebar foot row, Settings › About). checkStarred asks
+  // gh only when it is signed in; star uses gh or opens the repository page.
+  starPrompt: {
+    checkStarred: () => ipcRenderer.invoke(IPC.STAR_PROMPT_CHECK_STARRED) as Promise<import('../shared/starPrompt').StarredCheck>,
+    star: () => ipcRenderer.invoke(IPC.STAR_PROMPT_STAR) as Promise<import('../shared/starPrompt').StarActionResult>,
+    onAgentSession: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.STAR_PROMPT_AGENT_SESSION, listener);
+      return () => { ipcRenderer.removeListener(IPC.STAR_PROMPT_AGENT_SESSION, listener); };
+    },
+  },
   // Agent factory rooms (main/ipc/handlers/room.handler.ts): the owner's
   // reads, posts and answers; onEvent carries every card main writes.
   rooms: {

@@ -523,6 +523,11 @@ export const IPC = {
   GH_LOGIN_START: 'ghLogin:start',
   GH_LOGIN_CANCEL: 'ghLogin:cancel',
   GH_LOGIN_EVENT: 'ghLogin:event',
+  // "Star on GitHub" (sidebar foot row, Settings › About): gh's star check and
+  // action, and the push of each new agent session counted toward the row
+  STAR_PROMPT_CHECK_STARRED: 'starPrompt:checkStarred',
+  STAR_PROMPT_STAR: 'starPrompt:star',
+  STAR_PROMPT_AGENT_SESSION: 'starPrompt:agentSession',
   // Agent factory rooms (main/ipc/handlers/room.handler.ts), the operator's
   // side of room.* (shared/room.ts); card pushes ride ROOM_EVENT.
   ROOM_STATUS: 'room:status',

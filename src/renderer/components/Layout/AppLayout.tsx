@@ -68,6 +68,7 @@ import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useBrowserHelpBridge } from '../../hooks/useBrowserHelpBridge';
 import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
 import { useWorkspaceSettleBridge } from '../../hooks/useWorkspaceSettleBridge';
+import { useStarPromptSessionBridge } from '../../utils/starPrompt';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import PcRailFeeds from '../PcRail/PcRailFeeds';
@@ -510,6 +511,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     // workspaceSlice.loadSession (T5) reads these back, defaulting to false.
     firstRunCompleted: state.firstRunCompleted,
     cheatSheetDismissed: state.cheatSheetDismissed,
+    starPrompt: state.starPrompt,
     floatingPanePtyId: state.floatingPanePtyId ?? undefined,
     prefixConfig: state.prefixConfig,
     // Persist user-created layout templates + recent commands so they survive
@@ -942,6 +944,8 @@ export default function AppLayout() {
   // Workspace settle / snooze — main owns the state; this mirrors it and
   // raises the Undo toasts.
   useWorkspaceSettleBridge();
+  // New agent sessions counted by main, toward the sidebar's star row.
+  useStarPromptSessionBridge();
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();

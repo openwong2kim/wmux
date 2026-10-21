@@ -22,6 +22,7 @@ import {
 import { noteBootSettled } from './turnEvidence';
 import { settleHookTurnToIdle, broadcastSettledIdle, holdsUnreadResult, holdsUnsettledRunningClaim } from './turnSettle';
 import { eventBus } from '../events/EventBus';
+import { starPromptSessions } from './starPromptSessions';
 import {
   findWorkspaceIdForPty,
   isUnambiguousPromptTarget,
@@ -773,6 +774,9 @@ export class DaemonNotificationRouter {
             // `/clear` (Claude) or `/new` (Codex): both bridges reach the daemon
             // and are replayed here. Exact pane only; the engine filters sources.
             if (ev.signal) this.getHookRouter?.()?.noteSessionStart(payload.sessionId, ev.signal, receivedAt);
+            // A new agent session a person started counts toward the sidebar's
+            // star row (starPromptSessions.ts filters resume, bots and the brain).
+            starPromptSessions.note(payload.sessionId, ev.signal);
             // #1463 — a fresh session (startup, resume, `/clear`) means the
             // turn before it is over. `/clear` typed mid-turn runs right after
             // the Stop, and its SessionStart cancels the Stop still held in the

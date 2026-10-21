@@ -50,6 +50,7 @@ import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import { DEFAULT_DEDUP_WINDOW_MS, type HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
+import { starPromptSessions } from '../../notification/starPromptSessions';
 import { IPC, dataSuffix } from '../../../shared/constants';
 import { summarizeActivity } from '../../../shared/activitySummary';
 import { assistantPreview, flattenAgentText } from '../../../shared/assistantPreview';
@@ -881,7 +882,10 @@ export function registerHooksRpc(
       if (!isInternalForkPayload(signal.payload)) alarm?.observe(ptyId, signal.agent, normalizeHookCue(signal));
       // #1680 — fresh-context evidence, the daemon-unreachable twin of
       // DaemonNotificationRouter's session_start replay.
-      if (signal.kind === 'agent.session_start') hookRouter.noteSessionStart(ptyId, signal, receivedAt);
+      if (signal.kind === 'agent.session_start') {
+        hookRouter.noteSessionStart(ptyId, signal, receivedAt);
+        starPromptSessions.note(ptyId, signal);
+      }
       // Turn START. The daemon-unreachable twin of HookIngest's metadata-kind
       // broadcast: a prompt submitted means this pane is working RIGHT NOW, so
       // the status dot lights immediately instead of waiting for the byte-rate

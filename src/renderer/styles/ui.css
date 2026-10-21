@@ -1889,6 +1889,39 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-agent-not-ready:hover { background: var(--hover-fill); color: var(--text-main); }
 .wmux-agent-not-ready-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wmux-agent-not-ready-action { color: var(--text-main); white-space: nowrap; }
+/* Sidebar foot: "Enjoying wmux? · Star on GitHub ×" (owner-approved slot,
+ * 2026-10-21), below "Agent not set up" in priority. The same muted row with
+ * no fill and no colour at all: the star glyph is an outline in the text's
+ * own tone. Only its two buttons take the hover fill. */
+.wmux-star-prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 8px;
+  padding: 0 0 0 8px;
+  min-height: 24px;
+  color: var(--text-sub);
+  font-size: 12px;
+}
+.wmux-star-prompt-glyph { display: inline-flex; flex-shrink: 0; }
+.wmux-star-prompt-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wmux-star-prompt-action {
+  padding: 2px 4px;
+  margin-left: -4px;
+  border-radius: 6px;
+  color: var(--text-main);
+  white-space: nowrap;
+}
+.wmux-star-prompt-dismiss {
+  margin-left: auto;
+  flex-shrink: 0;
+  border-radius: 6px;
+  color: var(--text-sub);
+}
+.wmux-star-prompt-action:hover:not(:disabled),
+.wmux-star-prompt-dismiss:hover:not(:disabled) { background: var(--hover-fill); color: var(--text-main); }
+.wmux-star-prompt-action:disabled,
+.wmux-star-prompt-dismiss:disabled { opacity: 0.6; }
 /* The wizard while a setup pane is in use: non-modal, in the window's corner
  * like the keyboard cheat sheet, so the terminal keeps the keyboard. */
 .wmux-agent-setup-corner {

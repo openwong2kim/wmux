@@ -1277,6 +1277,26 @@ leaves the page.
   wizard. Neutral text with no fill and no attention orange (nothing waits on
   an answer); the caution yellow is on its small glyph only. It is checked
   once after startup and whenever the wizard checks again, never on a timer.
+- **Star on GitHub** (owner-approved 2026-10-21): the one place wmux asks for
+  a star, in the same slot at the sidebar's foot (bottom left) and the same
+  muted row: a small outline star in the text's tone, "Enjoying wmux?", a
+  text button **Star on GitHub** and a trailing ghost × ("Not now"). Neutral
+  text, no fill, no attention orange, no accent; only its two buttons take
+  the hover fill and the focus ring. Below "Agent not set up" in priority:
+  it waits until the agent check has run and found an agent ready, so the
+  two never show together, and like that row it has no form in the
+  collapsed rail. It shows only after real use, all of it local state (no
+  telemetry): three days after wmux first ran it, and once 20 new agent
+  sessions have started in panes since (counted from the agents' own
+  session-start hook: a resume, a restored pane or a bot's worker does not
+  count). × doubles the number, counts from zero again and keeps the row
+  away for three days. Star uses the user's own signed-in gh (one PUT;
+  then "Starred — thank you" for a moment and the row is gone for good);
+  without gh, or if that fails, it opens the repository page and is gone
+  for good too. Right before its first showing in an app session, a
+  signed-in gh is asked once whether wmux is already starred; yes ends it
+  unseen. **Settings › About › Links** keeps a permanent "Star wmux on
+  GitHub" row with the same action.
 - **Bot workers are not listed:** a fan-out task a factory bot dispatched
   (lineage origin `{kind:'bot'}`) is the bot's worker, shown on the Bots
   page only; the sidebar's task groups, the collapsed rail and the Ctrl+N
@@ -1773,6 +1793,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-21 | Owner decision: Plugins is a rail page (after Git) with a puzzle-piece glyph — a mantle catalog list (Signature, Catalog, Installed, Connectors) beside one detail with the permission list and one primary per state; Signature is a catalog data flag (Office today). Connectors lose their rail item and become the page's Connectors row; the `connectors` route redirects there. Settings › Plugins keeps only a link. Plugin rail items get their catalog glyph instead of the Workspaces one | One home for everything that extends wmux; the signature plugin is seen first; the rail drops an item |
 | 2026-10-21 | Owner decision: a muted "Agent not set up · Set up" row at the sidebar's foot while no agent is ready (built by #2535) | The user who chose Later in the setup wizard keeps one quiet way back to it |
 | 2026-10-21 | A bot's HTML file and an `html` block in the Bots chat get **Preview / Code** (a compact segmented control), not the preview tab's View source | The preview tab is a page opened to be read, so the source is a detour behind one button. Here the two views are peers in one place: a page opens as Preview, a chat block as Code, and one control switches either way |
+| 2026-10-21 | Owner decision: a muted "Enjoying wmux? · Star on GitHub ×" row at the sidebar's foot, below "Agent not set up" in priority, plus a permanent Star row in Settings › About. It shows three days after first run and after 20 new agent sessions; each "Not now" doubles that number, restarts the count and adds a three-day cooldown (modelled on Orca and Superset). The star is one click through the user's own gh, else the repository page; no telemetry | Stars are how other developers find wmux, but a prompt that nags costs more than it earns. Asking only after real use, backing off on every no, and never asking again once starred keeps it to a few asks per user; gh makes the yes a single click without a new sign-in, and the counting stays on the machine |
 
 ### Desktop conversation view
 

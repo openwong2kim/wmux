@@ -1,6 +1,13 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { sanitizeClaudeEffort } from '../../../shared/claudeModels';
+import {
+  completeStarPrompt,
+  dismissStarPrompt,
+  initialStarPromptState,
+  recordStarPromptAgentSession,
+  type StarPromptState,
+} from '../../../shared/starPrompt';
 import { setLocale as i18nSetLocale, t, type Locale } from '../../i18n';
 import { collectLeafIds, findPane, getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { canStashPaneSurfaces } from '../../../shared/paneStash';
@@ -994,6 +1001,16 @@ export interface UISlice {
   setFirstRunCompleted: (value: boolean) => void;
   setCheatSheetDismissed: (value: boolean) => void;
   setCheatSheetForceShown: (value: boolean) => void;
+
+  // ─── "Star on GitHub" prompt (shared/starPrompt.ts) ───────────────
+  /** Persisted via SessionData; local only, never reported anywhere. */
+  starPrompt: StarPromptState;
+  /** One new agent session a person started (counted by main from the hook path). */
+  recordStarPromptAgentSession: () => void;
+  /** "Not now" on the sidebar row. */
+  dismissStarPrompt: (now: number) => void;
+  /** Starred, or the repository page was opened: never ask again. */
+  completeStarPrompt: () => void;
 
   // ─── Prefix mode (tmux-style) ─────────────────────────────────────
   prefixMode: boolean;
@@ -2351,6 +2368,26 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setCheatSheetForceShown: (value) => set((state) => {
     state.cheatSheetForceShown = value;
+  }),
+
+  // ─── "Star on GitHub" prompt ──────────────────────────────────────
+  // The default stamps firstSeenAt at store creation, which is right for a
+  // first launch; loadSession replaces it with the saved state (or a fresh one
+  // at load time for a session from before this feature).
+  starPrompt: initialStarPromptState(Date.now()),
+
+  recordStarPromptAgentSession: () => set((state) => {
+    const next = recordStarPromptAgentSession(state.starPrompt);
+    if (next !== state.starPrompt) state.starPrompt = next;
+  }),
+
+  dismissStarPrompt: (now) => set((state) => {
+    state.starPrompt = dismissStarPrompt(state.starPrompt, now);
+  }),
+
+  completeStarPrompt: () => set((state) => {
+    const next = completeStarPrompt(state.starPrompt);
+    if (next !== state.starPrompt) state.starPrompt = next;
   }),
 
   // ─── Prefix mode (tmux-style) ─────────────────────────────────────
