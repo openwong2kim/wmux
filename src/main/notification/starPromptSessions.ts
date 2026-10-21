@@ -17,9 +17,6 @@ import type { AgentSignal } from '../../shared/hooks/signal-types';
 import { isBrainPtyId } from '../../shared/constants';
 import { isBotWorkerSession } from '../agents/botWorkerMergeGuard';
 
-/** Session-start receipts remembered for de-duplication (a bridge may deliver one twice). */
-const SEEN_CAP = 512;
-
 export interface StarPromptSessionDeps {
   isBotWorker: (ptyId: string) => boolean;
   isBrain: (ptyId: string) => boolean;
@@ -71,11 +68,9 @@ export class StarPromptSessionCounter {
     }
     const key = `${ptyId}\u0000${signal?.agentSessionId ?? signal?.ts ?? ''}`;
     if (this.seen.has(key)) return false;
+    // Never evicted: an evicted key would let a late re-delivery count twice.
+    // It holds one short key per agent session started while this app runs.
     this.seen.add(key);
-    if (this.seen.size > SEEN_CAP) {
-      const oldest = this.seen.values().next().value;
-      if (oldest !== undefined) this.seen.delete(oldest);
-    }
     this.pending += 1;
     for (const sink of this.sinks) {
       try { sink(); } catch { /* a broken sink must not break the hook path */ }

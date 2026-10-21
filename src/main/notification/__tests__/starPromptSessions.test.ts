@@ -79,6 +79,14 @@ describe('StarPromptSessionCounter', () => {
     expect(counter.drain()).toBe(1);
   });
 
+  it('still drops a re-delivered session after many other sessions', () => {
+    const counter = new StarPromptSessionCounter(human);
+    expect(counter.note(PTY, signal({ agentSessionId: 'first' }))).toBe(true);
+    for (let i = 0; i < 1000; i++) counter.note(PTY, signal({ agentSessionId: `s${i}` }));
+    expect(counter.note(PTY, signal({ agentSessionId: 'first' }))).toBe(false);
+    expect(counter.drain()).toBe(1001);
+  });
+
   it('does not tell sinks about a resume', () => {
     const counter = new StarPromptSessionCounter(human);
     const sink = vi.fn();
