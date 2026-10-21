@@ -2025,7 +2025,7 @@ export const ko = {
   'bots.commands.risk.low': "위험 낮음",
   'bots.commands.risk.medium': "위험 보통",
   'bots.commands.risk.high': "위험 높음",
-  'bots.commands.runsCodeWarning': "봇이 자기 폴더의 파일에 든 코드를 실행하게 돼요. 그 파일은 봇이 바꿀 수 있어요. 명령은 여전히 샌드박스에서 실행돼요(네트워크 없음, 홈 폴더 접근 없음).",
+  'bots.commands.runsCodeWarning': "봇이 자기 폴더의 파일에 든 코드를 실행하게 돼요. 그 파일은 봇이 바꿀 수 있어요. 여전히 샌드박스에서 실행돼요: 네트워크 없음, 봇 폴더 밖의 파일 접근 없음.",
   'bots.commands.allowAnyway': "그래도 허용",
   'settings.factory.keyDeleteConfirm': "{name}을(를) 삭제할까요? 이미 실행 중인 워커는 멈출 때까지 갖고 있습니다.",
   'settings.factory.bots': "봇",

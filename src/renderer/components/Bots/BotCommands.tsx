@@ -8,9 +8,8 @@
 // tools). Under it main's recent decisions, newest first, a few at a time:
 // when, the command or path, allowed or refused (a refusal's word red) and
 // why (a reviewer verdict with its risk and rationale);
-// one whose rule runs code from files in the bot's folder (a script, an
-// interpreter's script, make or npm …) warns and asks to confirm first,
-// since the bot can change those files; a command refused as not on the list has Always allow, which adds an
+// every one warns and asks to confirm first, since a program not on the
+// list may run code from files in the bot's folder, which the bot can change; a command refused as not on the list has Always allow, which adds an
 // owner rule for exactly that command — offered only where main says the
 // rule would be saved (never for a built-in command, whose option checks
 // stay), and main checks it again and says why when it refuses. Last, the owner's rules, each with Remove. Every

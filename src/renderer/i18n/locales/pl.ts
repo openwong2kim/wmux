@@ -2503,7 +2503,7 @@ export const pl = {
   'bots.commands.risk.low': "niskie ryzyko",
   'bots.commands.risk.medium': "średnie ryzyko",
   'bots.commands.risk.high': "wysokie ryzyko",
-  'bots.commands.runsCodeWarning': "Bot będzie mógł uruchamiać kod z plików w swoim folderze, które sam może zmieniać. Polecenia nadal działają w piaskownicy (bez sieci, bez dostępu do Twojego folderu domowego).",
+  'bots.commands.runsCodeWarning': "Bot będzie mógł uruchamiać kod z plików w swoim folderze, które sam może zmieniać. Nadal działa w piaskownicy: bez sieci i bez plików spoza folderu bota.",
   'bots.commands.allowAnyway': "Zezwól mimo to",
   'settings.factory.keyDeleteConfirm': "Usunąć {name}? Działające workery zachowają go do zatrzymania.",
   'settings.factory.bots': "Boty",

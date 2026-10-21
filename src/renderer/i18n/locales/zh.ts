@@ -2551,7 +2551,7 @@ export const zh = {
   'bots.commands.risk.low': "低风险",
   'bots.commands.risk.medium': "中风险",
   'bots.commands.risk.high': "高风险",
-  'bots.commands.runsCodeWarning': "这会让机器人运行其文件夹中文件里的代码，而这些文件机器人可以修改。命令仍在沙箱中运行（无网络，无法访问你的主文件夹）。",
+  'bots.commands.runsCodeWarning': "这会让机器人运行其文件夹中文件里的代码，而这些文件机器人可以修改。它仍在沙箱中运行：无网络，也无法访问机器人文件夹之外的文件。",
   'bots.commands.allowAnyway': "仍然允许",
   'settings.factory.keyDeleteConfirm': "删除 {name}？已在运行的工作进程在停止前仍会保留它。",
   'settings.factory.bots': "机器人",

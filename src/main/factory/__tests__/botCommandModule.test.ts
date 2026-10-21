@@ -151,12 +151,14 @@ describe('the Commands IPC', () => {
     expect(rules.rulesFor(BOT)).toEqual([]);
   });
 
-  it('Always allow covers a program that needs a rule, a script and a reviewer refusal; every rule that runs code from a file needs confirm', async () => {
+  it('Always allow covers a program that needs a rule, a script and a reviewer refusal; every rule needs confirm', async () => {
     const h = handlers();
     fs.writeFileSync(path.join(botDir, 'build.sh'), 'echo build\n');
     fs.writeFileSync(path.join(botDir, 'tool.py'), 'print(1)\n');
+    // A plain unlisted program needs the confirm too.
     expect(await run('jq . data.json')).toMatchObject({ ok: false, layer: 'unlisted' });
-    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: true });
+    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: RUNS_CODE_WARNING });
+    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id, confirm: true })).toEqual({ ok: true });
     for (const line of ['./build.sh', 'python3 tool.py']) {
       expect(await run(line), line).toMatchObject({ ok: false, layer: 'script' });
       const r = await h.read(OWNER, { botId: BOT });
@@ -169,8 +171,9 @@ describe('the Commands IPC', () => {
     expect(newest()).toMatchObject({ layer: 'reviewer', review: { code: 'reviewer_deny', risk: 'high', rationale: 'creates a file', latencyMs: 12 } });
     const r = await h.read(OWNER, { botId: BOT });
     expect(r.ok && r.entries[0]).toMatchObject({ canAllow: true, review: { risk: 'high', rationale: 'creates a file' } });
-    expect(r.ok && r.entries[0].runsCode).toBeUndefined();
-    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: true });
+    expect(r.ok && r.entries[0].runsCode).toBe(true);
+    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id })).toEqual({ ok: false, error: RUNS_CODE_WARNING });
+    expect(await h.allow(OWNER, { botId: BOT, entryId: newest().id, confirm: true })).toEqual({ ok: true });
     // No file is pinned: nothing but the words is stored.
     expect(rules.rulesFor(BOT)).toEqual([{ argv: ['jq', '.', 'data.json'] }, { argv: ['./build.sh'] }, { argv: ['python3', 'tool.py'] }, { argv: ['touch', 'new.md'] }]);
     for (const line of ['jq . data.json', './build.sh', 'python3 tool.py', 'touch new.md']) expect(await run(line), line).toMatchObject({ ok: true, layer: 'rule' });

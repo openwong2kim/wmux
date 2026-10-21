@@ -2526,7 +2526,7 @@ export const en = {
   'bots.commands.risk.low': "low risk",
   'bots.commands.risk.medium': "medium risk",
   'bots.commands.risk.high': "high risk",
-  'bots.commands.runsCodeWarning': "This lets the bot run code from files in its folder, which the bot can change. Commands still run in the sandbox (no network, no access to your home folder).",
+  'bots.commands.runsCodeWarning': "This lets the bot run code from files in its folder, which the bot can change. It still runs in the sandbox: no network, and no files outside the bot's folder.",
   'bots.commands.allowAnyway': "Allow anyway",
   'settings.factory.keyDeleteConfirm': "Delete {name}? Workers already running keep it until they stop.",
   'settings.factory.bots': "Bots",

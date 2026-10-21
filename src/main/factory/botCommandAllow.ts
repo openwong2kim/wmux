@@ -17,23 +17,14 @@
 // further: a command not on the list makes it `unlisted`, with the line as
 // it would run and its words, for the reviewer (botCommandReviewer.ts).
 
-import { commandFloor, commandLineToRun, commandName, isShellOrInterpreter, normalizeCommand, parseCommandLine, type FloorContext, type Pipeline, type SimpleCommand } from './botCommandFloor';
+import { commandFloor, commandLineToRun, commandName, normalizeCommand, parseCommandLine, type FloorContext, type Pipeline, type SimpleCommand } from './botCommandFloor';
 
 /** One owner rule: the command's leading words, and whether more may follow.
  *  A rule applies only to a line that is that one command, with no other
- *  command and no output redirect (decideBotCommand). */
+ *  command and no redirect (decideBotCommand). */
 export interface BotCommandRule {
   argv: string[];
   anyArgs?: boolean;
-}
-
-/** Whether a command with these words runs code from a file: a program
- *  named by its path, or a shell or interpreter. Such a file lives in the
- *  bot's folder, where the bot can change it, so a rule for it is the
- *  owner's informed choice (botCommandModule.ts asks to confirm). Pure. */
-export function ruleRunsFile(argv: readonly string[]): boolean {
-  const first = argv[0] ?? '';
-  return /[\\/]/.test(first) || isShellOrInterpreter(commandName(first));
 }
 
 /** Python started by an owner rule runs isolated (`-I`): no PYTHON*
@@ -202,7 +193,7 @@ export type CommandDecision =
   /** `run`: the line as it runs (commandLineToRun). */
   | { ok: true; layer: 'allowlist'; command: string; run: string; matched: 'builtin' | 'rule' }
   /** `script`: an owner rule names the command, but the line holds other
-   *  commands or an output redirect, which a rule never covers. */
+   *  commands or a redirect, which a rule never covers. */
   | { ok: false; layer: 'parse' | 'floor' | 'script'; command: string; reason: string }
   /** Past the floor but not on the list: `run` is the line as it would run,
    *  `argv` each command's words, and `offList` the words of the commands
@@ -234,9 +225,10 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
   let viaRule = false;
   let offList: string | null = null;
   let alone: string | null = null;
-  // A rule covers a line that is its one command and writes nothing:
-  // otherwise one line could rewrite a file and then run it.
-  const single = parsed.pipelines.length === 1 && parsed.pipelines[0].length === 1 && !parsed.pipelines[0][0].redirects.some((r) => r.op.includes('>'));
+  // A rule covers a line that is its one command with no redirect at all:
+  // otherwise one line could rewrite a file and then run it, or feed the
+  // program a file of commands (`sqlite3 db < q.sql`).
+  const single = parsed.pipelines.length === 1 && parsed.pipelines[0].length === 1 && parsed.pipelines[0][0].redirects.length === 0;
   for (const p of parsed.pipelines) {
     for (let k = 0; k < p.length; k++) {
       const cmd = p[k];
@@ -260,7 +252,7 @@ export function decideBotCommand(line: unknown, ctx: FloorContext & { rules: rea
           viaRule = true;
           continue;
         }
-        alone ??= `the owner's rule for ${name} covers it only alone on its line, with no other command and no output redirect`;
+        alone ??= `the owner's rule for ${name} covers it only alone on its line, with no other command and no redirect`;
       }
       if (!BUILTIN_COMMANDS.has(name)) {
         offList ??= `${name} is not on the built-in list`;

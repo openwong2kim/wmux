@@ -9,7 +9,7 @@
 // built-in command (its option checks stay), and a rule for a shell or an
 // interpreter is exactly the interpreter and its script: no option, no other
 // argument. A rule covers a line only when it is that one command, with no
-// output redirect (botCommandAllow.ts decideBotCommand).
+// redirect (botCommandAllow.ts decideBotCommand).
 //
 // It also holds the owner's per-bot switch: a bot listed in `off` runs no
 // commands at all (no Bash, Write or Edit, and no Read of its own folder).

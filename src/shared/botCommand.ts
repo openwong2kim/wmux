@@ -73,11 +73,9 @@ export interface BotCommandLogEntry {
   reason?: string;
   /** The reviewer's verdict, for a `reviewer` decision. */
   review?: BotCommandReview;
-  /** In a read only, with canAllow: its rule would let the bot run code
-   *  from files in its folder (a program named by its path, an
-   *  interpreter's script, a build/task/test/package runner), which the bot
-   *  can change; Always allow asks the owner to confirm
-   *  (BotCommandAllowRequest.confirm). */
+  /** In a read only, with canAllow (always, today): its rule may let the
+   *  bot run code from files in its folder, which the bot can change, so
+   *  Always allow asks the owner to confirm (BotCommandAllowRequest.confirm). */
   runsCode?: boolean;
   /** In a read only: main would save "Always allow"'s rule for it (a
    *  command refused as not on the list whose head is not a built-in). */

@@ -441,9 +441,17 @@ describe('an owner rule covers its command alone on its line', () => {
     ['./run.sh | cat'],
     ['./run.sh > out.txt'],
     ['./run.sh 2> err.txt'],
+    ['./run.sh < in.txt'],
   ])('does not match %s', (line) => {
     expect(decide(line, rules)).toMatchObject({ ok: false });
     expect(decide(line, rules)).not.toMatchObject({ layer: 'allowlist' });
+  });
+
+  it('a rule never covers a line with a redirect, input included', () => {
+    fs.writeFileSync(path.join(botDir, 'q.sql'), '.shell id\n');
+    const sqlite: BotCommandRule[] = [{ argv: ['sqlite3', 'notes.db'] }];
+    expect(decide('sqlite3 notes.db', sqlite)).toMatchObject({ ok: true, matched: 'rule' });
+    expect(decide('sqlite3 notes.db < q.sql', sqlite)).toMatchObject({ ok: false, layer: 'script', reason: expect.stringContaining('alone on its line, with no other command and no redirect') });
   });
 
   it('runs python from a rule isolated (-I)', () => {

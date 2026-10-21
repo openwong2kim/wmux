@@ -10,7 +10,7 @@
 //               turn and the gate on every call);
 //   allow       "Always allow": a rule for exactly the command a logged
 //               decision refused as not on the list, checked as any rule;
-//               one that runs code from files needs `confirm`;
+//               every one needs `confirm`, after the warning;
 //   removeRule  one rule, named by index and its text as read.
 // Every handler answers only the main window's top frame and never throws.
 // No bot RPC is registered here: nothing a bot holds reaches the log, the
@@ -26,9 +26,8 @@ import { resolveClaudeExecutable } from '../claude/resolveClaudeExecutable';
 import { isMainWindowSender } from '../ipc/mainWindowSender';
 import { wrapHandler } from '../ipc/wrapHandler';
 import { onBotRemoved } from './BotRuntime';
-import { ruleRunsFile, unlistedHeads, type BotCommandRule } from './botCommandAllow';
-import { commandName, parseCommandLine } from './botCommandFloor';
-import { FILE_RUNNERS } from './botCommandReviewer';
+import { unlistedHeads, type BotCommandRule } from './botCommandAllow';
+import { parseCommandLine } from './botCommandFloor';
 import { BOT_COMMAND_LOG_TEXT_MAX, BotCommandLog } from './botCommandLog';
 import { botCommandRuleRefusal, botCommandRuleText, getBotCommandRulesStore, type BotCommandRulesStore } from './botCommandRules';
 import { setBotExecDecisionSink } from './botExec';
@@ -69,10 +68,10 @@ export type RuleForEntry =
   | {
       ok: true;
       rule: BotCommandRule;
-      /** It runs code from files in the bot's folder (a program named by its
-       *  path, an interpreter's script, a build/task/test/package runner),
-       *  which the bot can change: the owner confirms it. */
-      runsCode: boolean;
+      /** Always true: a program that is not on the list may run code from
+       *  files in the bot's folder (a script, a file of commands, its config
+       *  or plugins), which the bot can change; the owner confirms it. */
+      runsCode: true;
     }
   | { ok: false; error: string };
 
@@ -103,15 +102,15 @@ export function ruleForEntry(entry: BotCommandLogEntry, current: readonly BotCom
   const rule: BotCommandRule = { argv: heads[0] };
   const refusal = botCommandRuleRefusal(rule);
   if (refusal) return { ok: false, error: refusal };
-  return { ok: true, rule, runsCode: ruleRunsFile(rule.argv) || FILE_RUNNERS.has(commandName(rule.argv[0])) };
+  return { ok: true, rule, runsCode: true };
 }
 
 const DENIED = { ok: false as const, error: 'only the wmux window may do this' };
 const NOT_RUNNING = { ok: false as const, error: 'bot commands are not running yet' };
 const NO_BOT = { ok: false as const, error: 'botId must be a bot id' };
 const NO_SUCH_BOT = { ok: false as const, error: 'no such bot' };
-/** Why a rule that runs code from files needs the owner's confirm. */
-export const RUNS_CODE_WARNING = 'This lets the bot run code from files in its folder, which the bot can change. Commands still run in the sandbox (no network, no access to your home folder). Confirm to allow it.';
+/** Why every rule needs the owner's confirm. */
+export const RUNS_CODE_WARNING = 'This lets the bot run code from files in its folder, which the bot can change. It still runs in the sandbox: no network, and no files outside the bot\'s folder. Confirm to allow it.';
 
 /** The four handlers' bodies (registerBotCommandIpc wraps them). */
 export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, deps: BotCommandIpcDeps) {
@@ -157,8 +156,8 @@ export function botCommandIpcHandlers(getWindow: () => BrowserWindow | null, dep
         }
         const store = rules();
         const current = store.rulesFor(botId);
-        // Always allow is offered only where main would save its rule (one
-        // that runs code from files with its warning).
+        // Always allow is offered only where main would save its rule, each
+        // with its warning.
         const offer = (entry: BotCommandLogEntry): BotCommandLogEntry => {
           const plan = ruleForEntry(entry, current);
           return plan.ok ? { ...entry, canAllow: true, ...(plan.runsCode ? { runsCode: true } : {}) } : entry;
