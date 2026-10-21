@@ -424,7 +424,9 @@ const BORROWED_SOURCES = [
       '  turn the owner did not start (src/infra/exec-safe-bin-*.ts,\n' +
       '  docs/tools/permission-modes.md); one-time scheduled runs and a local\n' +
       '  HH:MM quiet window for repeating ones (src/cron,\n' +
-      '  src/infra/heartbeat-active-hours.ts).',
+      '  src/infra/heartbeat-active-hours.ts); an owner "always allow" that turns\n' +
+      '  a refused command from the decision log into a standing rule\n' +
+      '  (src/infra/exec-approvals-allow-always.ts).',
   },
   {
     name: 'skill-forge',

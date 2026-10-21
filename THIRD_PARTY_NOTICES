@@ -12197,7 +12197,9 @@ Bots, from its source at commit f12a8dee2397d059ae58a1a68d97b5a9c8091842:
   turn the owner did not start (src/infra/exec-safe-bin-*.ts,
   docs/tools/permission-modes.md); one-time scheduled runs and a local
   HH:MM quiet window for repeating ones (src/cron,
-  src/infra/heartbeat-active-hours.ts).
+  src/infra/heartbeat-active-hours.ts); an owner "always allow" that turns
+  a refused command from the decision log into a standing rule
+  (src/infra/exec-approvals-allow-always.ts).
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
