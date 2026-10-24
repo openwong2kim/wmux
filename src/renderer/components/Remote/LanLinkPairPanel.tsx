@@ -4,7 +4,8 @@ import { useIpc } from '../../hooks/useIpc';
 import { useStore } from '../../stores';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import type { LanLinkNic, NicInfo } from '../../../shared/lanlink';
+import type { LanLinkNic, LanLinkStopReason, NicInfo } from '../../../shared/lanlink';
+import { lanLinkStopReasonKey } from './lanLinkStopReason';
 
 // ─── Connect a PC › LAN (a PIN pairing for message links) ────────────────────
 //
@@ -22,6 +23,10 @@ export interface LanLinkPairPanelViewProps {
   available: boolean | null;
   /** LanLink is on and a network interface is picked. */
   ready: boolean;
+  /** A listener is open, so another PC can join this one. */
+  listening: boolean;
+  /** Why LanLink is on but not listening (null while that is still being checked). */
+  stopReason: LanLinkStopReason | null;
   /** This PC's host:port for the other PC's Join form. */
   selfAddress: string | null;
   pin: string | null;
@@ -81,7 +86,16 @@ export function LanLinkPairPanelView(p: LanLinkPairPanelViewProps) {
     <div className="wmux-remote-connect" data-testid="remote-connect-lan">
       <p className="wmux-remote-connect-note">{t('remotePage.connect.lanDesc')}</p>
       <span className="wmux-remote-connect-label">{t('settings.lanlinkPairStart')}</span>
-      {p.pin ? (
+      {!p.listening ? (
+        // Joining another PC goes out from here and still works; being joined needs the listener.
+        p.stopReason ? (
+          <p className="wmux-a2a-note" data-tone="warning" role="status" data-testid="remote-connect-lan-stop-reason">
+            {t(lanLinkStopReasonKey(p.stopReason))}
+          </p>
+        ) : (
+          <p className="wmux-remote-connect-note">{t('settings.lanlinkLoading')}</p>
+        )
+      ) : p.pin ? (
         <>
           <div className="wmux-remote-code">
             <code className="ui-code wmux-remote-pin" data-testid="remote-connect-lan-pin">{groupPin(p.pin)}</code>
@@ -186,6 +200,8 @@ export default function LanLinkPairPanel({ onPaired }: LanLinkPairPanelProps) {
   const [enabled, setEnabled] = useState(false);
   const [nic, setNic] = useState<LanLinkNic | null>(null);
   const [effectivePort, setEffectivePort] = useState<number | null>(null);
+  const [listening, setListening] = useState(false);
+  const [stopReason, setStopReason] = useState<LanLinkStopReason | null>(null);
   const [nics, setNics] = useState<NicInfo[]>([]);
   const [pin, setPin] = useState<string | null>(null);
   const [deadline, setDeadline] = useState<number | null>(null);
@@ -215,6 +231,8 @@ export default function LanLinkPairPanel({ onPaired }: LanLinkPairPanelProps) {
     setEnabled(r.data.enabled);
     setNic(r.data.nic);
     setEffectivePort(r.data.effectivePort);
+    setListening(r.data.listening);
+    setStopReason(r.data.stopReason);
     setNics(r.data.nics);
   }, [api, ipcInvoke]);
 
@@ -326,6 +344,8 @@ export default function LanLinkPairPanel({ onPaired }: LanLinkPairPanelProps) {
     <LanLinkPairPanelView
       available={available}
       ready={enabled && nic !== null}
+      listening={listening}
+      stopReason={stopReason}
       selfAddress={selfAddress}
       pin={pin}
       countdownSec={countdownSec}

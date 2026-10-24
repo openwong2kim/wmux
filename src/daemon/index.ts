@@ -6021,11 +6021,16 @@ function registerRpcHandlers(
   // these). `lanlink.status` reads persisted state + live NICs; `lanlink.configure`
   // validates the renderer-supplied patch (coerceLanLinkPatch — throws on garbage),
   // persists, and fires the 'changed' seam. Network-0: no listener is started here.
+  // Both answer the persisted state merged with the listener's live state;
+  // configure waits for the reconcile it triggered (which reads the network
+  // category), so the caller sees whether LanLink is listening and why not.
   pipeServer.onRpc('lanlink.status', async () => {
-    return lanLinkController.getStatus();
+    return { ...lanLinkController.getStatus(), ...lanLinkServer.runtimeStatus() };
   });
   pipeServer.onRpc('lanlink.configure', async (params) => {
-    return lanLinkController.configure(coerceLanLinkPatch(params));
+    const status = lanLinkController.configure(coerceLanLinkPatch(params));
+    await lanLinkServer.settled();
+    return { ...status, ...lanLinkServer.runtimeStatus() };
   });
 
   // LanLink PR-4 — pairing + peer control plane. Machine-local control-pipe RPCs
@@ -8026,7 +8031,7 @@ let paneSupervisorRef: PaneSupervisor | null = null;
 // (startupRecovery.ts); `daemon.listSessions` says it when asked.
 const startupRecovery = createStartupRecovery({ log: (line) => log('info', line) });
 // Module-level so the standalone shutdown() can dispose the LanLink listener
-// (close the net.Server, drop live connections, remove the firewall rules).
+// (close the net.Server, drop live connections).
 let lanLinkServerRef: LanLinkServer | null = null;
 // Same for the cross-host A2A listener.
 let a2aServerRef: A2aServer | null = null;
@@ -8246,8 +8251,8 @@ async function shutdown(
   // re-arms them on the next boot.
   try { paneSupervisorRef?.dispose(); } catch { /* best effort */ }
 
-  // LanLink PR-4: close the listener, drop live AEAD connections, remove firewall
-  // rules. Best-effort — must never block the shutdown path.
+  // LanLink PR-4: close the listener and drop live AEAD connections.
+  // Best-effort — must never block the shutdown path.
   try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }
   try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }

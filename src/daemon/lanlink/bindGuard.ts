@@ -80,8 +80,8 @@ export function enumerateNics(ifaces: IfaceSnapshot = os.networkInterfaces()): N
  *     vanished NIC, an IPv6-only address, or an internal address)
  *
  * Scope: this guard deliberately does NOT enforce RFC1918 private ranges —
- * LAN-locality is enforced by the Windows Private firewall profile (PR-4), not a
- * range check here. The guard's contract is purely "a real external IPv4 on a
+ * on Windows LAN-locality comes from the network category gate in
+ * LanLinkServer (it listens only on a Private network), not a range check here. The guard's contract is purely "a real external IPv4 on a
  * live interface, never a wildcard/loopback".
  */
 export function assertLanBindAddress(

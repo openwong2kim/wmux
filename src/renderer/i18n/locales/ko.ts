@@ -2483,6 +2483,12 @@ export const ko = {
     '켜면 선택한 인터페이스에서 LAN 포트를 엽니다 — Windows가 허용을 물을 수 있습니다. Private(개인) 네트워크 프로필에서만 동작하며, 공용 네트워크에는 절대 노출되지 않습니다.',
   'settings.lanlinkLoading': 'LanLink 상태 확인 중…',
   'settings.lanlinkApplying': '적용 중…',
+  'settings.lanlinkStopPublic': '수신 안 함: 이 네트워크는 공용(Public)입니다. Windows 설정 › 네트워크 및 인터넷에서 개인(Private)으로 바꾼 뒤 LanLink를 껐다 켜세요.',
+  'settings.lanlinkStopDomain': '수신 안 함: 도메인 네트워크입니다. LanLink는 개인(Private)으로 설정된 네트워크에서만 수신합니다.',
+  'settings.lanlinkStopUnknown': '수신 안 함: Windows에 이 어댑터의 네트워크 프로필이 없습니다. LanLink는 개인(Private)으로 설정된 네트워크에서만 수신합니다.',
+  'settings.lanlinkStopCheckFailed': '수신 안 함: Windows에서 네트워크 유형을 읽지 못했습니다. LanLink는 개인(Private)으로 설정된 네트워크에서만 수신합니다. 다시 확인하려면 껐다 켜세요.',
+  'settings.lanlinkStopNoAddress': '수신 안 함: 이 어댑터에 지금 IPv4 주소가 없습니다.',
+  'settings.lanlinkStopListenFailed': '수신 안 함: 포트를 열지 못했습니다. 다른 프로그램이 사용 중일 수 있습니다.',
   'settings.lanlinkUnavailable': 'LanLink는 wmux 데몬이 필요합니다 — 로컬 전용 모드에서는 사용할 수 없습니다. 데몬이 연결되면 표시됩니다.',
   // LanLink 페어링 (PR-5)
   'settings.lanlinkPair': '페어링',

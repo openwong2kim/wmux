@@ -5,8 +5,8 @@ import {
   defaultLanLinkConfig,
   LANLINK_DEFAULT_PORT,
   type LanLinkConfig,
+  type LanLinkConfigStatus,
   type LanLinkConfigurePatch,
-  type LanLinkStatus,
 } from '../../shared/lanlink';
 import { enumerateNics } from './bindGuard';
 
@@ -62,8 +62,11 @@ export class LanLinkController extends EventEmitter {
     return this.config.lanlink ?? defaultLanLinkConfig();
   }
 
-  /** Read the live status: persisted enable/NIC/port + freshly enumerated NICs. */
-  getStatus(): LanLinkStatus {
+  /**
+   * Read the persisted enable/NIC/port + freshly enumerated NICs. Whether a
+   * listener is open is LanLinkServer's; the RPC handlers merge the two.
+   */
+  getStatus(): LanLinkConfigStatus {
     const cur = this.current();
     return {
       enabled: cur.enabled,
@@ -82,7 +85,7 @@ export class LanLinkController extends EventEmitter {
    *
    * NOTE: `patch` MUST already be validated (coerceLanLinkPatch at the RPC edge).
    */
-  configure(patch: LanLinkConfigurePatch): LanLinkStatus {
+  configure(patch: LanLinkConfigurePatch): LanLinkConfigStatus {
     const cur = this.current();
     const next: LanLinkConfig = { enabled: cur.enabled, nic: cur.nic };
     if (cur.port !== undefined) next.port = cur.port;

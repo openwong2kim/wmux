@@ -78,7 +78,8 @@ import {
 import { freshContextGrammarFor, launchGrammarFor } from '../../../shared/agentLaunchOptions';
 import { ModelCombobox } from './ModelCombobox';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
-import type { NicInfo, LanLinkNic, LanLinkStatus } from '../../../shared/lanlink';
+import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkStopReason } from '../../../shared/lanlink';
+import { lanLinkStopReasonKey } from '../Remote/lanLinkStopReason';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
@@ -1091,6 +1092,8 @@ export interface LanLinkViewProps {
   selectedValue: string;
   onChangeNic: (value: string) => void;
   busy: boolean;
+  /** Why LanLink is on but not listening; null while it listens, is off, or has no NIC. */
+  stopReason: LanLinkStopReason | null;
   t: (key: string) => string;
 }
 
@@ -1105,6 +1108,7 @@ export function LanLinkView({
   selectedValue,
   onChangeNic,
   busy,
+  stopReason,
   t,
 }: LanLinkViewProps) {
   return (
@@ -1120,6 +1124,11 @@ export function LanLinkView({
           label={t('settings.lanlinkNic')}
         />
       </SettingRow>
+      {enabled && stopReason && (
+        <SettingNote tone="warning" role="status" data-testid="lanlink-stop-reason">
+          {t(lanLinkStopReasonKey(stopReason))}
+        </SettingNote>
+      )}
       <SettingNote data-testid="lanlink-warning">
         {t('settings.lanlinkWarning')}
       </SettingNote>
@@ -1226,6 +1235,7 @@ function LanLinkSection() {
         void apply({ nic: picked?.nic ?? null });
       }}
       busy={busy}
+      stopReason={status.stopReason}
       t={t}
     />
   );

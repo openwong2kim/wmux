@@ -15,12 +15,13 @@ let root: Root;
 let lanlink: Record<string, ReturnType<typeof vi.fn>>;
 let pairActive = false;
 
-function stub(opts: { enabled?: boolean; nic?: boolean } = {}) {
-  const { enabled = true, nic = true } = opts;
+function stub(opts: { enabled?: boolean; nic?: boolean; listening?: boolean; stopReason?: string | null } = {}) {
+  const { enabled = true, nic = true, listening = true, stopReason = null } = opts;
   pairActive = false;
   lanlink = {
     status: vi.fn(async () => ({
       enabled, nic: nic ? { name: 'en0', mac: 'aa:bb' } : null, port: null, effectivePort: 45651,
+      listening, stopReason,
       nics: [{ name: 'en0', mac: 'aa:bb', addresses: ['192.168.1.5'] }],
     })),
     pairBegin: vi.fn(async () => { pairActive = true; return { pin: '482913', expiresInMs: 120_000 }; }),
@@ -101,6 +102,14 @@ describe('Connect a PC › LAN', () => {
     expect(q('remote-connect-lan-begin')).toBeNull();
     await act(async () => { q<HTMLButtonElement>('remote-connect-lan-settings')!.click(); });
     expect(useStore.getState().appRoute).toBe('settings');
+  });
+
+  it('on a network LanLink does not listen on, says why instead of offering a PIN; joining still works', async () => {
+    stub({ listening: false, stopReason: 'network-public' });
+    await render('lan');
+    expect(q('remote-connect-lan-stop-reason')?.textContent).toContain('this network is Public');
+    expect(q('remote-connect-lan-begin')).toBeNull();
+    expect(q('remote-connect-lan-join')).not.toBeNull();
   });
 
   it('shows the PIN, its countdown and this PC\'s address; switching tabs keeps it', async () => {

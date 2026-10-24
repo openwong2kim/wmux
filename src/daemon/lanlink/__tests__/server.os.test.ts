@@ -126,17 +126,9 @@ async function makeServer(onPeerPersist?: () => void): Promise<Harness> {
     peers: serverPeers,
     selfName: 'A-host',
     ifaces: MOCK_IFACES,
-    netCategory: () => 'Private',
+    netCategory: async () => 'Private',
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     createServer: (cb: (s: any) => void) => { onConn = cb as (s: FakeSocket) => void; return fakeNetServer as any; },
-    firewall: {
-      apply: async () => {
-        /* no-op */
-      },
-      remove: async () => {
-        /* no-op */
-      },
-    },
   });
   await vi.waitFor(() => expect(onConn).not.toBeNull(), { timeout: 5_000 }); // the reconcile chain creates the server + captures onConn
   return { server, onConn: (s) => onConn!(s), serverPeers, appended, nudges };

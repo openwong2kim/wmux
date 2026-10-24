@@ -2952,6 +2952,12 @@ export const pl = {
     'Włączenie otwiera port LAN na wybranym interfejsie — Windows może poprosić o zgodę. Używany jest tylko profil sieci prywatnej; sieci publiczne nigdy nie są udostępniane.',
   'settings.lanlinkLoading': 'Sprawdzanie statusu LanLink…',
   'settings.lanlinkApplying': 'Stosowanie…',
+  'settings.lanlinkStopPublic': 'Nie nasłuchuje: ta sieć jest publiczna. Ustaw ją jako prywatną w Ustawieniach systemu Windows › Sieć i Internet, a potem wyłącz i włącz LanLink.',
+  'settings.lanlinkStopDomain': 'Nie nasłuchuje: to sieć domenowa. LanLink nasłuchuje tylko w sieciach ustawionych jako prywatne.',
+  'settings.lanlinkStopUnknown': 'Nie nasłuchuje: Windows nie ma profilu sieci dla tej karty. LanLink nasłuchuje tylko w sieciach ustawionych jako prywatne.',
+  'settings.lanlinkStopCheckFailed': 'Nie nasłuchuje: nie udało się odczytać typu sieci z systemu Windows. LanLink nasłuchuje tylko w sieciach ustawionych jako prywatne; wyłącz go i włącz, aby sprawdzić ponownie.',
+  'settings.lanlinkStopNoAddress': 'Nie nasłuchuje: ta karta nie ma teraz adresu IPv4.',
+  'settings.lanlinkStopListenFailed': 'Nie nasłuchuje: nie udało się otworzyć portu. Może go używać inny program.',
   'settings.lanlinkUnavailable': 'LanLink wymaga demona wmux — niedostępny w trybie tylko lokalnym. Pojawi się, gdy demon się połączy.',
   // LanLink pairing (PR-5)
   'settings.lanlinkPair': 'Parowanie',

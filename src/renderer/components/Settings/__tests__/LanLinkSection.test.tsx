@@ -30,6 +30,7 @@ function makeProps(overrides: Partial<LanLinkViewProps> = {}): LanLinkViewProps 
     selectedValue: LANLINK_NIC_NONE,
     onChangeNic: () => undefined,
     busy: false,
+    stopReason: null,
     t: tStub,
     ...overrides,
   };
@@ -80,6 +81,20 @@ describe('LanLinkView — markup', () => {
   it('reflects an enabled toggle as aria-checked=true', () => {
     const html = renderToStaticMarkup(createElement(LanLinkView, makeProps({ enabled: true })));
     expect(html).toContain('aria-checked="true"');
+  });
+
+  it('says in one line why an enabled LanLink is not listening', () => {
+    const html = renderToStaticMarkup(createElement(LanLinkView, makeProps({ enabled: true, stopReason: 'network-public' })));
+    expect(html).toContain('lanlink-stop-reason');
+    expect(html).toContain('settings.lanlinkStopPublic');
+    expect(html).toContain('data-tone="warning"');
+  });
+
+  it('shows no reason line while listening, or when LanLink is off', () => {
+    const listening = renderToStaticMarkup(createElement(LanLinkView, makeProps({ enabled: true, stopReason: null })));
+    expect(listening).not.toContain('lanlink-stop-reason');
+    const off = renderToStaticMarkup(createElement(LanLinkView, makeProps({ enabled: false, stopReason: 'network-public' })));
+    expect(off).not.toContain('lanlink-stop-reason');
   });
 
   it('shows the applying hint only when busy', () => {

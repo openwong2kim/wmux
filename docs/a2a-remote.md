@@ -16,7 +16,11 @@ accept a link.
 This is not LanLink. LanLink (Settings > LAN > LanLink) lets agents on other
 machines post read-only messages to this one. Cross-PC A2A is a separate
 feature with its own listener, its own credentials and its own settings
-section; turning one on does not turn on the other.
+section; turning one on does not turn on the other. On Windows, LanLink listens
+only while the selected adapter's network is set to **Private**; on a Public or
+Domain network, or when wmux cannot read the network type, it stays closed and
+Settings > LAN says why. macOS and Linux have no such network type, so there
+LanLink listens on the adapter you select. Neither feature adds firewall rules.
 
 ## How it works
 

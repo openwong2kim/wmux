@@ -68,8 +68,7 @@ suite('LanLink LIVE real-net dogfood (1-machine, LAN IP)', () => {
       peers: hostPeers,
       selfName: 'host-A',
       nudge: (s) => nudges.push(s),
-      netCategory: () => 'Private',
-      firewall: { apply: async () => undefined, remove: async () => undefined },
+      netCategory: async () => 'Private',
     });
     await deliberateSleep(80, 'not yet converted (#2363): lets the reconcile chain listen on LAN_IP:PORT; nothing to poll'); // reconcile -> real listen on LAN_IP:PORT
   });
