@@ -41,12 +41,17 @@ export function isSecretFileName(path: string): boolean {
 const isAbsolute = (p: string): boolean => /^(?:[\\/]|[A-Za-z]:[\\/])/.test(p);
 const slashes = (p: string): string => p.replace(/\\/g, '/');
 
-/** `path` below `cwd`, relative; null for an absolute path elsewhere (or with no folder to judge it by). */
+/**
+ * `path` below `cwd`, relative; null for an absolute path elsewhere (or with
+ * no folder to judge it by) and for any path with a `..` segment, which could
+ * climb out of the folder whatever its prefix.
+ */
 export function folderRelative(path: string, cwd: string | undefined): string | null {
-  if (!isAbsolute(path)) return slashes(path).replace(/^\.\//, '');
+  const p = slashes(path);
+  if (p.split('/').includes('..')) return null;
+  if (!isAbsolute(path)) return p.replace(/^\.\//, '');
   if (!cwd) return null;
   const base = slashes(cwd).replace(/\/+$/, '');
-  const p = slashes(path);
   // A Windows drive letter is case-insensitive; a POSIX path is not.
   const same = /^[A-Za-z]:/.test(base) ? p.toLowerCase().startsWith(`${base.toLowerCase()}/`) : p.startsWith(`${base}/`);
   return same ? p.slice(base.length + 1) : null;

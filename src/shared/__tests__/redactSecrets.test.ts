@@ -74,6 +74,9 @@ describe('redactSecrets — URL passwords and the key-shapes-only variant', () =
     expect(redactSecrets(url('app', REDACTED, 'h'))).toBe(url('app', REDACTED, 'h'));
     expect(redactSecrets('https://example.com:8443/a@b')).toBe('https://example.com:8443/a@b');
     expect(redactSecrets('ssh://git@github.com/o/r.git')).toBe('ssh://git@github.com/o/r.git');
+    // A raw `@` in the password: all of it goes, up to the last `@` before the host.
+    expect(redactSecrets(`db ${url('app', 'p@ss', 'db.local/x')} ok`)).toBe(`db ${url('app', REDACTED, 'db.local/x')} ok`);
+    expect(redactSecrets(url('app', 'a@b@c', 'h'))).toBe(url('app', REDACTED, 'h'));
   });
 
   it('keyShapesOnly keeps branch names and paths with digits that the long-token rule takes', () => {

@@ -105,6 +105,11 @@ describe('folderRelative / isSecretFileName / remoteHandoffHours', () => {
     expect(folderRelative('./plans/x.md', '/repo')).toBe('plans/x.md');
     expect(folderRelative('C:\\Code\\App\\src\\a.ts', 'c:\\code\\app')).toBe('src/a.ts');
     expect(folderRelative('/repo/a.ts', undefined)).toBeNull();
+    // A `..` segment can climb out whatever the prefix.
+    expect(folderRelative('../other-repo/notes.md', '/repo')).toBeNull();
+    expect(folderRelative('/repo/../etc/passwd', '/repo')).toBeNull();
+    expect(folderRelative('C:\\Code\\App\\..\\x.md', 'C:\\Code\\App')).toBeNull();
+    expect(folderRelative('src/..hidden/a.ts', '/repo')).toBe('src/..hidden/a.ts');
   });
 
   it.each(['.env', '.env.production', 'id_ed25519', 'id_rsa.pub', 'credentials.json', 'aws/credentials', 'tls/server.key', 'a.p12', '.npmrc'])('reads %s as a secret file name', (p) => {

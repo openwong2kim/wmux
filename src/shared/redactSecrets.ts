@@ -17,8 +17,12 @@ export const REDACTED = '[redacted]';
  * computer pairing link's `#wmux-desktop-code=` fragment.
  */
 const INLINE_CREDENTIAL = /([?&#](?:token|code|wmux-desktop-code)=)(?!%5Bredacted%5D|\[redacted\])[^&#\s"'\\]+/gi;
-/** The password of a URL's userinfo (`scheme://user:password@host`); the user name stays. */
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)(?!\[redacted\]@)[^\s/?#@]+(?=@)/gi;
+/**
+ * The password of a URL's userinfo (`scheme://user:password@host`); the user
+ * name stays. The userinfo ends at the LAST `@` before the host, so a raw `@`
+ * inside the password is masked with the rest of it.
+ */
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)(?!\[redacted\]@)[^\s/?#]+(?=@[^\s/?#@]*(?:[\s/?#]|$))/gi;
 
 export function maskInlineCredentials(s: string): string {
   return s.replace(INLINE_CREDENTIAL, '$1[redacted]').replace(URL_PASSWORD, '$1[redacted]');
