@@ -78,7 +78,8 @@ function looksRandom(s: string): boolean {
 /**
  * A bare run of 32+ hex digits in one case, with both digits and letters, not
  * inside a word. Entropy alone lets some random hex through (hex tops out at
- * four bits a character), so hex has a rule of its own.
+ * four bits a character), so hex has a rule of its own. A 40-digit run is a
+ * git commit unless a key word sits right before it.
  */
 const HEX_RUN = /(?<![A-Za-z0-9_])(?:[0-9a-f]{32,}|[0-9A-F]{32,})(?![A-Za-z0-9_])/g;
 /**
@@ -124,20 +125,22 @@ const markers = (s: string): number => s.split(REDACTED).length - 1;
 
 /**
  * `redactSecrets`, also saying how many values it masked: the markers it added,
- * so a value two rules both take counts once. `readableNames` keeps branch
- * names, paths and git commits readable (`feat/p1-7-remote-handoff-v2`, a
- * 40-hex SHA with no key word before it) while a bare key, a split token, a
- * base64 line or any other hex key does not pass (longRandomReadable, HEX_RUN).
+ * so a value two rules both take counts once. A 40-hex git commit with no key
+ * word right before it stays readable in both modes; any other hex run of 32+
+ * is masked (HEX_RUN). `readableNames` also keeps branch names and paths
+ * readable (`feat/p1-7-remote-handoff-v2`) while a bare key, a split token or
+ * a base64 line does not pass (longRandomReadable).
  */
 export function redactSecretsCounted(s: string, opts: { readableNames?: boolean } = {}): { text: string; masked: number } {
-  const longRandom = opts.readableNames ? longRandomReadable : looksRandom;
+  // A 40-hex run (a git commit) is left to HEX_RUN in both modes.
+  const longRandom = opts.readableNames ? longRandomReadable : (m: string) => !isHex40(m) && looksRandom(m);
   let out = maskInlineCredentials(s);
   for (const re of KEY_SHAPES) out = out.replace(re, REDACTED);
   out = out.replace(ASSIGNED, (m, name: string, value: string) => (value === REDACTED ? m : `${name}${REDACTED}`));
   out = out.replace(HEX_RUN, (m: string, at: number, whole: string) => {
     if (!/[0-9]/.test(m) || !/[a-fA-F]/.test(m)) return m;
-    // readableNames: a commit SHA stays unless a key word sits just before it.
-    if (opts.readableNames && m.length === 40 && !KEY_WORD_BEFORE.test(whole.slice(Math.max(0, at - 16), at))) return m;
+    // A commit SHA stays readable unless a key word sits right before it.
+    if (m.length === 40 && !KEY_WORD_BEFORE.test(whole.slice(Math.max(0, at - 16), at))) return m;
     return REDACTED;
   });
   out = out.replace(LONG_TOKEN, (m) => (m.includes(REDACTED) || !longRandom(m) ? m : REDACTED));

@@ -109,8 +109,9 @@ describe('redactSecrets — URLs, readable names and the masked count', () => {
     expect(redactSecretsCounted(`commit ${sha} landed`, { readableNames: true }).text).toBe(`commit ${sha} landed`);
     expect(redactSecretsCounted(`api token: ${sha}`, { readableNames: true }).text).toBe(`api token: ${REDACTED}`);
     expect(redactSecretsCounted(`Bearer ${sha}`, { readableNames: true }).text).toBe(`Bearer ${REDACTED}`);
-    // Logs and other outbound text mask every hex run of 32+.
-    expect(redactSecrets(`commit ${sha} landed`)).toBe(`commit ${REDACTED} landed`);
+    // The default path too: a report naming a commit keeps it; a token named as one does not.
+    expect(redactSecrets(`merged as ${sha}`)).toBe(`merged as ${sha}`);
+    expect(redactSecrets(`token: ${sha}`)).toBe(`token: ${REDACTED}`);
     // All digits, all letters or mixed case: not a hex key.
     for (const s of ['1'.repeat(40), 'a'.repeat(40), `${hex(20)}${hex(20).toUpperCase()}`]) {
       expect(redactSecretsCounted(s, { readableNames: true }).text).toBe(s);
