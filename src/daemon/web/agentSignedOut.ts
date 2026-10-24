@@ -25,16 +25,21 @@ export type BoundedLoginCheck = (agent: AuthLostAgent, env: NodeJS.ProcessEnv, o
  * signed-out answer refuses; "cannot tell", including a status that has not
  * answered within `waitMs`, lets the create go on. An agent whose sign-in
  * wmux cannot check is never asked.
+ *
+ * `beforeRefusing` runs the refusals that the create would otherwise make
+ * only at the spawn (the grant re-check, the account folder), so each of them
+ * still answers ahead of this 409; whatever it throws is the answer instead.
  */
 export async function refuseSignedOutAgent(
   check: BoundedLoginCheck,
   agent: string,
   env: NodeJS.ProcessEnv,
   onSignedOut: (agent: AuthLostAgent) => void,
-  waitMs: number = SESSION_LOGIN_WAIT_MS,
+  opts: { waitMs?: number; beforeRefusing?: () => Promise<void> } = {},
 ): Promise<void> {
   if (!isAuthLostAgent(agent)) return;
-  if ((await check(agent, env, { waitMs })) !== false) return;
+  if ((await check(agent, env, { waitMs: opts.waitMs ?? SESSION_LOGIN_WAIT_MS })) !== false) return;
+  await opts.beforeRefusing?.();
   onSignedOut(agent);
   throw new AgentSignedOutError(agent);
 }

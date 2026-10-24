@@ -156,11 +156,14 @@ export interface AgentSetupSpec {
    * store), so wmux does not check it; the card says so. `accountEnv` names the
    * variable that points the agent (and its status command) at one account's
    * folder; an agent with both is one whose lost sign-in wmux reports per
-   * account (shared/agentAuthLost).
+   * account (shared/agentAuthLost). `unseenCredentials` are ways the agent
+   * runs that its status command does not report (an API key in the
+   * environment, another model provider in its config): while one is present a
+   * "signed out" answer is read as "cannot tell".
    */
   readonly loginStatus:
-    | { readonly args: readonly string[]; readonly read: 'json-logged-in'; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME' }
-    | { readonly args: readonly string[]; readonly read: 'exit-code'; readonly signedOutText: string; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME' }
+    | { readonly args: readonly string[]; readonly read: 'json-logged-in'; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; readonly unseenCredentials?: UnseenCredentials }
+    | { readonly args: readonly string[]; readonly read: 'exit-code'; readonly signedOutText: string; readonly accountEnv?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; readonly unseenCredentials?: UnseenCredentials }
     | { readonly read: 'none' };
   /** Below this version the card says "update recommended" (never forced). */
   readonly updateFloor: string;
@@ -354,7 +357,13 @@ export const AGENT_IDENTITIES = [
       npm: { package: ['@openai', 'codex'], winEntries: [['bin', 'codex.js']], besideShim: true },
       // `codex login --help`: "status  Show login status". Measured on
       // codex-cli 0.163.0: exit 0 signed in, exit 1 + "Not logged in".
-      loginStatus: { args: ['login', 'status'], read: 'exit-code', signedOutText: 'not logged in', accountEnv: 'CODEX_HOME' },
+      // `codex login status` says "Not logged in" (exit 1) with only an API key
+      // in the environment or another model_provider configured (checked on
+      // codex-cli 0.142.5, 2026-10-24), and Codex runs with either.
+      loginStatus: {
+        args: ['login', 'status'], read: 'exit-code', signedOutText: 'not logged in', accountEnv: 'CODEX_HOME',
+        unseenCredentials: { env: ['OPENAI_API_KEY', 'CODEX_API_KEY'], configKey: { dir: '.codex', file: 'config.toml', key: 'model_provider' } },
+      },
       // One background server per account, which pane identity relies on
       // (src/mcp/codexThreadIdentity.ts).
       updateFloor: '0.157.0',
@@ -614,6 +623,12 @@ export const AGENT_IDENTITIES = [
 
 /** SLUG-form agent identifier. Derived, so it can never drift from the table. */
 export type AgentSlug = (typeof AGENT_IDENTITIES)[number]['slug'];
+
+/** See `loginStatus.unseenCredentials`. `configKey.dir` is the account folder's default under the home folder. */
+export interface UnseenCredentials {
+  readonly env: readonly string[];
+  readonly configKey?: { readonly dir: string; readonly file: string; readonly key: string };
+}
 
 /** Human-facing agent name. */
 export type AgentDisplayName = (typeof AGENT_IDENTITIES)[number]['display'];

@@ -3440,11 +3440,16 @@ signed out. The account is the workspace binding or the body's `accountId`.
   pane is created and nothing is reserved. The body carries no account id,
   folder or provider text; `agent` echoes the request.
 - It is checked last, inside the create, just before the spawn: after every
-  refusal above, the account checks and `cwd-not-found`.
+  refusal above, the account checks and `cwd-not-found`. The refusals the
+  create otherwise makes only at the spawn (`401 authorization-expired`, the
+  ceiling's `403`, `409 account-directory-missing`) still answer first.
 - Only a definite "signed out" refuses. A status that cannot tell, fails, or
   has not answered within **3 s** creates the pane as before. The daemon keeps
   waiting for that answer in the background and caches it for the next create.
   A plain shell create (no `agentLaunch`) is never refused this way.
+- A Codex account that runs on an API key in the pane's environment
+  (`OPENAI_API_KEY`, `CODEX_API_KEY`) or on another `model_provider` in its
+  `config.toml` is never refused: `codex login status` does not report either.
 - The host shows its signed-out notice (one per agent and account, with Sign
   in again). Offer "sign in on the computer" rather than a retry loop. A retry
   after signing in goes through at once: a signed-out answer is never cached.

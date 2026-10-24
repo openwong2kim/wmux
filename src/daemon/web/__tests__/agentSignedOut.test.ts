@@ -38,4 +38,22 @@ describe('refuseSignedOutAgent (POST /api/sessions agentLaunch)', () => {
     await expect(refuseSignedOutAgent(bounded(gate), 'grok', {}, vi.fn())).resolves.toBeUndefined();
     expect(probe).toHaveBeenCalledTimes(1);
   });
+
+  it('lets the spawn-time refusals answer first: they run before the 409, and theirs wins', async () => {
+    const gate = new AgentLoginGate(async () => false);
+    const order: string[] = [];
+    const onSignedOut = vi.fn(() => { order.push('notice'); });
+    await expect(refuseSignedOutAgent(bounded(gate), 'claude', {}, onSignedOut, {
+      beforeRefusing: async () => { order.push('spawn-checks'); },
+    })).rejects.toBeInstanceOf(AgentSignedOutError);
+    expect(order).toEqual(['spawn-checks', 'notice']);
+    const expired = new Error('authorization-expired');
+    await expect(refuseSignedOutAgent(bounded(gate), 'claude', {}, vi.fn(), { beforeRefusing: async () => { throw expired; } }))
+      .rejects.toBe(expired);
+    // Not signed out: the create goes on to the spawn, where those checks run as before.
+    const before = vi.fn(async () => undefined);
+    await refuseSignedOutAgent(bounded(new AgentLoginGate(async () => true)), 'claude', {}, vi.fn(), { beforeRefusing: before });
+    expect(before).not.toHaveBeenCalled();
+  });
 });
+

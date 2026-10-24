@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -10,7 +11,7 @@ import {
   type AgentId,
   type AgentSetupStatus,
 } from '../../shared/agentSetup';
-import { agentRow } from '../../shared/agentIdentity';
+import { agentRow, type UnseenCredentials } from '../../shared/agentIdentity';
 import { isInternalEnvKey } from '../../shared/envFilter';
 import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 import { killProcessTree } from '../../daemon/automation/treeKill';
@@ -70,6 +71,8 @@ export interface AgentSetupDetectorDeps {
   platform?: NodeJS.Platform;
   homedir?: () => string;
   timeoutMs?: number;
+  /** A small config file's text, or null when it cannot be read (unseen-credential check). */
+  readFile?: (p: string) => string | null;
 }
 
 const PROBE_TIMEOUT_MS = 8_000;
@@ -162,6 +165,27 @@ export const execProbe: ProbeRunner = (command, args, opts) =>
   });
 
 /**
+ * Does the agent have a way to run that its status command does not report?
+ * A non-empty listed environment variable, or the listed key set in its config
+ * file (in the account folder, or the default one under the home folder).
+ */
+export function hasUnseenCredential(
+  unseen: UnseenCredentials | undefined,
+  accountEnv: string | undefined,
+  env: NodeJS.ProcessEnv,
+  home: string,
+  readFile: (p: string) => string | null,
+): boolean {
+  if (!unseen) return false;
+  if (unseen.env.some((name) => (env[name] ?? '').trim() !== '')) return true;
+  const config = unseen.configKey;
+  if (!config) return false;
+  const folder = (accountEnv && env[accountEnv]?.trim()) || path.join(home, config.dir);
+  const text = readFile(path.join(folder, config.file));
+  return text !== null && new RegExp(`^\\s*${config.key}\\s*=`, 'm').test(text);
+}
+
+/**
  * Sign-in from a status probe: true / false, or null when it cannot be told.
  * How to read it is the row's `setup.loginStatus`. Only the exit code and a
  * single boolean (or the fixed signed-out line) are read; the rest of the
@@ -197,6 +221,7 @@ export class AgentSetupDetector {
   private readonly platform: NodeJS.Platform;
   private readonly homedir: () => string;
   private readonly timeoutMs: number;
+  private readonly readFile: (p: string) => string | null;
   /** Concurrent callers share one probe round instead of spawning twice. */
   private inflight: Promise<AgentSetupStatus[]> | null = null;
 
@@ -212,6 +237,7 @@ export class AgentSetupDetector {
     this.platform = deps.platform ?? process.platform;
     this.homedir = deps.homedir ?? os.homedir;
     this.timeoutMs = deps.timeoutMs ?? PROBE_TIMEOUT_MS;
+    this.readFile = deps.readFile ?? ((p) => { try { return fs.readFileSync(p, 'utf8'); } catch { return null; } });
   }
 
   detectAll(): Promise<AgentSetupStatus[]> {
@@ -259,7 +285,10 @@ export class AgentSetupDetector {
     if (!loginStatus || loginStatus.read === 'none') return null;
     const executable = this.resolveExecutable(agent, env);
     if (!executable) return null;
-    return readLoginState(agent, await this.probe(executable, buildProbeEnv(env, executable, this.platform), loginStatus.args));
+    const signedIn = readLoginState(agent, await this.probe(executable, buildProbeEnv(env, executable, this.platform), loginStatus.args));
+    // The agent may run on a credential its status command does not report.
+    if (signedIn === false && hasUnseenCredential(loginStatus.unseenCredentials, loginStatus.accountEnv, env, this.homedir(), this.readFile)) return null;
+    return signedIn;
   }
 
   private probe(executable: string, probeEnv: NodeJS.ProcessEnv, args: readonly string[]): Promise<ProbeResult> {

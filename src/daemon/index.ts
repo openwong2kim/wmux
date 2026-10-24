@@ -2859,7 +2859,13 @@ function registerRpcHandlers(
       // at most; past that the pane is created as before.
       if (agentLaunch) {
         await refuseSignedOutAgent((agent, probeEnv, opts) => agentLoginGate.check(agent, probeEnv, opts), agentLaunch.agent, env,
-          (agent) => noteAuthLost?.('', agent, env, 'start'));
+          (agent) => noteAuthLost?.('', agent, env, 'start'), {
+            // The spawn-time refusals below keep their place ahead of this 409.
+            beforeRefusing: async () => {
+              if (authorized && !await authorized()) throw new SessionAuthorizationExpiredError();
+              if (account) assertPaneAccountUsable(desktopPhoneBridge, account);
+            },
+          });
       }
       let relay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
       if (agentLaunch?.agent === 'codex' && process.platform !== 'win32') {
