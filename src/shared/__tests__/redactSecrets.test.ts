@@ -74,6 +74,10 @@ describe('redactSecrets — URLs, readable names and the masked count', () => {
     expect(redactSecrets(url('app', REDACTED, 'h'))).toBe(url('app', REDACTED, 'h'));
     expect(redactSecrets('https://example.com:8443/a@b')).toBe('https://example.com:8443/a@b');
     expect(redactSecrets('ssh://git@github.com/o/r.git')).toBe('ssh://git@github.com/o/r.git');
+    // RFC 3986 sub-delims in the password are part of it, never a reason to leave it whole.
+    for (const pw of ['pa;ss', 'pa,ss', 'pa(ss)', 'pa;ss(1),x']) {
+      expect(redactSecrets(`db ${url('app', pw, 'h/x')} ok`)).toBe(`db ${url('app', REDACTED, 'h/x')} ok`);
+    }
     // A raw `@` in the password: all of it goes, up to the last `@` before the host.
     expect(redactSecrets(`db ${url('app', 'p@ss', 'db.local/x')} ok`)).toBe(`db ${url('app', REDACTED, 'db.local/x')} ok`);
     expect(redactSecrets(url('app', 'a@b@c', 'h'))).toBe(url('app', REDACTED, 'h'));

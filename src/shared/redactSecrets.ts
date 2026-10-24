@@ -21,13 +21,15 @@ export const REDACTED = '[redacted]';
 const INLINE_CREDENTIAL = /([?&#](?:token|code|wmux-desktop-code|access_token|refresh_token|id_token|api[_-]?key|apikey|password|passwd|pwd|secret|client_secret|sig|signature|auth|x-amz-signature|x-amz-credential|x-amz-security-token)=)(?!%5Bredacted%5D|\[redacted\])[^&#\s"'\\]+/gi;
 /**
  * The userinfo of a URL (`scheme://user:password@host`). None of the parts
- * crosses a quote, bracket, comma or semicolon, so a URL inside JSON or a log
- * line never runs into the text after it. The userinfo ends at the LAST `@`
+ * crosses a quote or bracket, and the user and host also stop at a comma,
+ * semicolon or parenthesis, so a URL inside JSON or a log line does not run
+ * into the text after it. A password may hold `,` `;` `(` `)` (RFC 3986
+ * sub-delims), so those never cut it short. The userinfo ends at the LAST `@`
  * before the host, so a raw `@` inside the password is masked with the rest;
  * a raw `/`, `?` or `#` ends the authority (RFC 3986) and cannot be told from
  * a path, so it is not read as part of a password.
  */
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:"'<>[\]{}(),;]*:)(?!\[redacted\]@)[^\s/?#"'<>[\]{}(),;]+(?=@[^\s/?#@"'<>[\]{}(),;]*(?:[\s/?#"'<>[\]{}(),;]|$))/gi;
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:"'<>[\]{}(),;]*:)(?!\[redacted\]@)[^\s/?#"'<>[\]{}]+(?=@[^\s/?#@"'<>[\]{}(),;]*(?:[\s/?#"'<>[\]{}(),;]|$))/gi;
 /** A userinfo with no password (`https://<token>@host`): masked when it looks like a key, so `git@` stays. */
 const URL_USER_TOKEN = /(\b[a-z][a-z0-9+.-]*:\/\/)(?!\[redacted\]@)([^\s/?#@:"'<>[\]{}(),;]{16,})(?=@)/gi;
 
