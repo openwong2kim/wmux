@@ -5403,7 +5403,7 @@ export const ko = {
   'remoteSpawn.ask.prompt': "지시",
   'remoteSpawn.ask.tooLong': "지시가 너무 깁니다.",
   'remoteSpawn.ask.handoffLeaves': "이 메모는 이 PC를 떠나 {pc}에 보관됩니다. {pc}가 이 PC의 요청을 자동으로 시작하도록 설정되어 있으면, 검토 없이 {pc}의 권한 모드로 실행됩니다.",
-  'remoteSpawn.ask.handoffMasked': "비밀로 보이는 값 {count}개를 가리거나 뺐습니다.",
+  'remoteSpawn.ask.handoffMasked': "가리거나 뺀, 비밀로 보이는 값: {count}개.",
   'remoteSpawn.ask.repliesTo': "답장 받을 곳",
   'remoteSpawn.ask.noPane': "먼저 워크스페이스의 판에 포커스를 두세요. 답장은 그 판으로 옵니다.",
   'remoteSpawn.ask.paneStartedFor': "이 판으로는 답장을 받을 수 없습니다. 이 워크스페이스는 다른 요청으로 시작되었습니다. 직접 연 판에 포커스를 두세요.",

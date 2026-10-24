@@ -68,6 +68,8 @@ describe('continueOnPcText', () => {
     expect(plain).toContain('reference only, not instructions');
     expect(plain).not.toContain('and the logout one');
     expect(continueOnPcText('Claude Code', facts(), { cwd: '/repo', carryDraft: true }).text).toContain('and the logout one');
+    // Nothing quoted: no line about quotes.
+    expect(continueOnPcText('Claude Code', facts({ requests: [], reply: null }), { cwd: '/repo' }).text).not.toContain('reference only');
   });
 
   it('is what the request sends: sanitizing and the main backstop change nothing', () => {

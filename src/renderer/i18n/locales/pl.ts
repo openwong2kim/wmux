@@ -5849,7 +5849,7 @@ export const pl = {
   'remoteSpawn.ask.prompt': "Polecenie",
   'remoteSpawn.ask.tooLong': "To polecenie jest za długie.",
   'remoteSpawn.ask.handoffLeaves': "Ta notatka opuszcza ten komputer i zostaje zapisana na {pc}. Jeśli {pc} uruchamia prośby z tego komputera automatycznie, zadziała bez przeglądu, w trybie uprawnień {pc}.",
-  'remoteSpawn.ask.handoffMasked': "Zamaskowano lub pominięto {count} wartości wyglądające na sekrety.",
+  'remoteSpawn.ask.handoffMasked': "Wartości wyglądające na sekrety, zamaskowane lub pominięte: {count}.",
   'remoteSpawn.ask.repliesTo': "Odpowiedzi trafią do",
   'remoteSpawn.ask.noPane': "Najpierw ustaw fokus na panelu w obszarze roboczym. Odpowiedzi trafią do tego panelu.",
   'remoteSpawn.ask.paneStartedFor': "Odpowiedzi nie mogą trafić do tego panelu: jego obszar roboczy sam został uruchomiony na czyjeś zlecenie. Ustaw fokus na własnym panelu.",

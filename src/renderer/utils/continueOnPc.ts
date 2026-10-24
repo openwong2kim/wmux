@@ -134,7 +134,8 @@ export function continueOnPcText(
 
   const build = (s: Shape): string => {
     const quote = (r: string) => firstBytes(r, s.requestBytes);
-    const parts = [t('usageLimit.remoteHandoffNote', { agent: fromAgent }), t('usageLimit.remoteHandoffReference')];
+    const parts = [t('usageLimit.remoteHandoffNote', { agent: fromAgent })];
+    if (requests.length || reply) parts.push(t('usageLimit.remoteHandoffReference'));
     if (requests.length === 1) parts.push(`${t('usageLimit.handoffLastRequest')}\n${quote(requests[0])}`);
     if (requests.length > 1) {
       parts.push(`${t('usageLimit.handoffFirstRequest')}\n${quote(requests[0])}`);

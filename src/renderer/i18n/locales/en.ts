@@ -5889,7 +5889,7 @@ export const en = {
   'remoteSpawn.ask.prompt': "Instruction",
   'remoteSpawn.ask.tooLong': "This instruction is too long.",
   'remoteSpawn.ask.handoffLeaves': "This note leaves this PC and is kept on {pc}. If {pc} starts requests from this PC automatically, it runs without review, in {pc}'s permission mode.",
-  'remoteSpawn.ask.handoffMasked': "{count} values that looked like secrets were masked or left out.",
+  'remoteSpawn.ask.handoffMasked': "Values that looked like secrets, masked or left out: {count}.",
   'remoteSpawn.ask.repliesTo': "Replies go to",
   'remoteSpawn.ask.noPane': "Focus a pane in a workspace first. Replies go to that pane.",
   'remoteSpawn.ask.paneStartedFor': "Replies cannot go to this pane: its workspace was itself started for someone. Focus a pane of your own.",

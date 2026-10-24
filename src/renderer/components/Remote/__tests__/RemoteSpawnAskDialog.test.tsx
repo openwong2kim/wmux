@@ -166,7 +166,7 @@ describe('RemoteSpawnAskDialog', () => {
     expect(q('remote-spawn-ask-end')?.textContent).toBe('Held');
     expect(q<HTMLSelectElement>('remote-spawn-ask-hours')?.value).toBe('2');
     expect(q('remote-spawn-ask-handoff')?.textContent).toBe(
-      "This note leaves this PC and is kept on DESK. If DESK starts requests from this PC automatically, it runs without review, in DESK's permission mode. 2 values that looked like secrets were masked or left out.",
+      "This note leaves this PC and is kept on DESK. If DESK starts requests from this PC automatically, it runs without review, in DESK's permission mode. Values that looked like secrets, masked or left out: 2.",
     );
     await act(async () => { send()!.click(); });
     expect(spawnAsk).toHaveBeenCalledWith({
