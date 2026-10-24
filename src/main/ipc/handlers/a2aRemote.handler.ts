@@ -18,6 +18,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import { detectRemote } from '../../github/PrProvider';
 import { A2aExposurePublisher, coercePaneSnapshot } from '../../a2aRemote/exposurePublisher';
 import type { RemoteA2aBridge } from '../../a2a/RemoteA2aBridge';
+import { redactSecretsCounted } from '../../../shared/redactSecrets';
 
 // Module scope: the handlers are re-registered on every daemon (re)connect,
 // but the last pane snapshot (the gone-pane baseline) must outlive that.
@@ -192,7 +193,9 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
           pc: str(p.hostId),
           agent: p.agent,
           folder: { root: p.folder.root, ...(typeof p.folder.sub === 'string' && p.folder.sub ? { sub: p.folder.sub } : {}) },
-          text: p.text,
+          // A backstop for what a person typed or pasted: key shapes never leave
+          // this PC. Not the long-token rule, which also takes branch names and paths.
+          text: redactSecretsCounted(p.text, { keyShapesOnly: true }).text,
           ...(typeof p.expiresInHours === 'number' ? { expiresInHours: p.expiresInHours } : {}),
           from: { kind: 'pane', workspaceId, paneId },
           // Per pane, as for an agent: the pane that gets the replies.

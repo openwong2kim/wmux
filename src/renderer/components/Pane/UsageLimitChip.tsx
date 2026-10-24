@@ -9,7 +9,7 @@
 // because it means the system will act on its own. The card opens by itself
 // once per limit when the pane is the one in front, for a limit hit since the
 // app started (a restart does not reopen it).
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { getLocale } from '../../i18n';
@@ -18,7 +18,8 @@ import { IconClock, IconX } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { usageLimitStatusText, usageLimitView } from './usageLimitPresentation';
 import { usePaneContinueOnAccount } from './usePaneContinueOnAccount';
-import UsageLimitCard from './UsageLimitCard';
+import UsageLimitCard, { type UsageLimitPcHandoff } from './UsageLimitCard';
+import RemoteSpawnAskDialog from '../Remote/RemoteSpawnAskDialog';
 
 /** Re-render every 30s while `active`, so countdowns stay current. */
 export function useUsageLimitNow(active: boolean): number {
@@ -59,6 +60,10 @@ export default function UsageLimitChip({ ptyId, compact, readOnly = false, works
   const cardBtnRef = useRef<HTMLButtonElement>(null);
   const [cardAnchor, setCardAnchor] = useState<{ top: number; left: number; right: number; bottom: number } | null>(null);
   const canOpenCard = !readOnly && !!workspaceId && !!paneId;
+  // "Continue on another PC": the ask dialog outlives the card that opened it.
+  const [pcHandoff, setPcHandoff] = useState<UsageLimitPcHandoff | null>(null);
+  const workspaceName = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.name ?? '');
+  const onContinueOnPc = useCallback((h: UsageLimitPcHandoff) => { setCardAnchor(null); setPcHandoff(h); }, []);
   const inFront = useStore((s) => !!paneId && s.activeWorkspaceId === workspaceId
     && s.workspaces.find((w) => w.id === workspaceId)?.activePaneId === paneId);
   const limitKey = limit && ptyId && limit.detectedAt >= STARTED_AT ? `${ptyId}:${limit.detectedAt}` : null;
@@ -135,6 +140,15 @@ export default function UsageLimitChip({ ptyId, compact, readOnly = false, works
           anchor={cardAnchor}
           triggerRef={cardBtnRef}
           onClose={() => setCardAnchor(null)}
+          onContinueOnPc={onContinueOnPc}
+        />
+      )}
+      {pcHandoff && workspaceId && paneId && (
+        <RemoteSpawnAskDialog
+          place={pcHandoff.place}
+          pcName={pcHandoff.pcName}
+          onClose={() => setPcHandoff(null)}
+          handoff={{ text: pcHandoff.text, masked: pcHandoff.masked, hours: pcHandoff.hours, end: { workspaceId, paneId, name: workspaceName } }}
         />
       )}
       {!compact && (

@@ -9,6 +9,10 @@
 //     with the handoff typed in, not sent (utils/continueInAgent.ts), the
 //     note previewed here with its length, an unsent draft carried only when
 //     the owner ticks it;
+//   - Continue on another PC that lets this one start an agent there: the
+//     Remote page's ask dialog, opened by the chip with a note for that PC
+//     (utils/continueOnPc.ts); not from a pane that was itself started for
+//     someone, since its replies could not come back to it;
 //   - when every account is out, the earliest time one reopens.
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
@@ -18,6 +22,11 @@ import { getLocale } from '../../i18n';
 import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { getAgentSetupState, refreshAgentStatus, useAgentSetup } from '../../utils/agentSetupRuns';
 import { continueInAgent, continueInAgentText, handoffFacts, type HandoffFacts } from '../../utils/continueInAgent';
+import { continueOnPcText, remoteHandoffHours } from '../../utils/continueOnPc';
+import { spawnAskBlock } from '../Remote/RemoteSpawnAskDialog';
+import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
+import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import type { A2aSpawnPlace } from '../../../shared/a2aSpawn';
 import { agentRow } from '../../../shared/agentIdentity';
 import { formatResetClock } from '../../../shared/usageLimit';
 import { placePopover } from '../AgentToolbar/placePopover';
@@ -31,7 +40,16 @@ import type { PaneActionItem } from './PaneActionsMenu';
 
 export const USAGE_LIMIT_CARD_WIDTH = 300;
 
-export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, accountItems, anchor, triggerRef, onClose }: {
+/** What the chip needs to open the ask dialog for a handoff to another PC. */
+export interface UsageLimitPcHandoff {
+  place: A2aSpawnPlace;
+  pcName: string;
+  text: string;
+  masked: number;
+  hours: number;
+}
+
+export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, accountItems, anchor, triggerRef, onClose, onContinueOnPc }: {
   ptyId: string;
   workspaceId: string;
   paneId: string;
@@ -42,6 +60,8 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
   anchor: { top: number; left: number; right: number; bottom: number };
   triggerRef?: RefObject<HTMLElement | null>;
   onClose: () => void;
+  /** Absent: no handoff to another PC from here. */
+  onContinueOnPc?: (handoff: UsageLimitPcHandoff) => void;
 }) {
   const t = useT();
   const limit = useStore((s) => s.usageLimits[ptyId]);
@@ -52,16 +72,29 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
   const [facts, setFacts] = useState<HandoffFacts | null>(null);
   const [carryDraft, setCarryDraft] = useState(false);
   const canHandOff = !!limit && (setup.statuses ?? []).some((s) => s.readiness === 'ready' && s.agent !== limit.provider);
+  // Main refuses a reply pane whose workspace was itself started for someone (depth 1).
+  const startedFor = useStore((s) => isShadowWorkspaceId(workspaceId) || !!(s.fanoutLineage[workspaceId] || s.fanoutSpawnOwner[workspaceId] || s.missionByPaneGroup[workspaceId]));
+  const [places, setPlaces] = useState<A2aSpawnPlace[]>([]);
+  const pcs = !!limit && onContinueOnPc && !startedFor ? places.filter((p) => spawnAskBlock(p) === null) : [];
 
   // Probed once; later opens reuse what that found.
   useEffect(() => { if (!getAgentSetupState().statuses) void refreshAgentStatus(); }, []);
-  // Gathered once another agent can take over, so the note previewed is the one typed in.
+  // The paired PCs that let this one start an agent there, read once per open.
   useEffect(() => {
-    if (!canHandOff) return;
+    const read = window.electronAPI?.a2aRemote?.spawnOutgoing;
+    if (!REMOTE_SPAWN_UI_ENABLED || !onContinueOnPc || !read) return;
+    let live = true;
+    void read().then((v) => { if (live && Array.isArray(v?.places)) setPlaces(v.places); }, () => undefined);
+    return () => { live = false; };
+  }, [onContinueOnPc]);
+  // Gathered once another agent or PC can take over, so the note previewed is the one sent.
+  const canHandOffAnywhere = canHandOff || pcs.length > 0;
+  useEffect(() => {
+    if (!canHandOffAnywhere) return;
     let live = true;
     void handoffFacts(ptyId, cwd).then((f) => { if (live) setFacts(f); }, () => undefined);
     return () => { live = false; };
-  }, [canHandOff, ptyId, cwd]);
+  }, [canHandOffAnywhere, ptyId, cwd]);
   // Measured after each render, so placePopover can flip it above the chip.
   useLayoutEffect(() => {
     const h = cardRef.current?.offsetHeight;
@@ -211,6 +244,33 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
               </p>
             </>
           )}
+        </PopoverSection>
+      )}
+      {pcs.length > 0 && onContinueOnPc && (
+        <PopoverSection title={t('usageLimit.continueOnPcTitle')} data-testid="usage-limit-card-pcs">
+          <div className="flex flex-col gap-1">
+            {pcs.map((place) => {
+              const pcName = place.name ?? place.hostId.slice(0, 8);
+              return (
+                <Button
+                  key={place.hostId}
+                  size="sm"
+                  variant="ghost"
+                  className="justify-start"
+                  disabled={!facts}
+                  title={t('usageLimit.continueOnPcHint', { pc: pcName })}
+                  onClick={() => {
+                    if (!facts) return;
+                    const { text, masked } = continueOnPcText(fromAgent, facts, { carryDraft, ...(cwd ? { cwd } : {}) });
+                    onContinueOnPc({ place, pcName, text, masked, hours: remoteHandoffHours(limit.resetsAt, Date.now()) });
+                  }}
+                  data-usage-limit-card-pc={place.hostId}
+                >
+                  {t('usageLimit.continueOnPc', { pc: pcName })}
+                </Button>
+              );
+            })}
+          </div>
         </PopoverSection>
       )}
     </Popover>,

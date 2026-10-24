@@ -129,6 +129,20 @@ describe('a2aRemote spawn ask', () => {
     expect(client.a2aSpawnAsk).toHaveBeenCalledWith({ pc: 'h', agent: 'claude', folder: { root: 'web' }, text: 'go', from: { kind: 'pane', workspaceId: 'w1', paneId: 'p1' }, callerKey: 'p1' });
     lineage.clear();
   });
+
+  it('masks key shapes in the prompt before it leaves, and keeps branch names and paths', async () => {
+    const client = { ...fakeClient(), a2aSpawnAsk: vi.fn(async () => ({ ok: true })) } as unknown as DaemonClient;
+    cleanups.push(registerA2aRemoteHandlers(client));
+    await invoke(IPC.A2A_REMOTE_SNAPSHOT, { workspaces: [{ id: 'w1', name: 'API', panes: [{ paneId: 'p1' }] }] });
+    // Built at run time: no credential-shaped literal in the source.
+    const key = ['sk-ant-api03', 'x9Y8'.repeat(6)].join('-');
+    const url = ['postgres://app', 'hunter2pw@db.internal/x'].join(':');
+    const text = `Branch: feat/p1-7-remote-handoff-v2\nsrc/daemon/a2aRemote/spawnRequester.ts\nkey ${key}, db ${url}`;
+    await invoke(IPC.A2A_REMOTE_SPAWN_ASK, { hostId: 'h', agent: 'claude', folder: { root: 'web' }, text, end: { workspaceId: 'w1', paneId: 'p1' } });
+    expect(client.a2aSpawnAsk).toHaveBeenCalledWith(expect.objectContaining({
+      text: 'Branch: feat/p1-7-remote-handoff-v2\nsrc/daemon/a2aRemote/spawnRequester.ts\nkey [redacted], db postgres://app:[redacted]@db.internal/x',
+    }));
+  });
 });
 
 describe('a2aRemote spawn policy', () => {

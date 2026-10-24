@@ -71,6 +71,8 @@ export interface RemoteSpawnAskDialogViewProps {
   onSend: () => void;
   onClose: () => void;
   t: T;
+  /** A usage-limit handoff: the note leaves this PC; this many values were masked or left out of it. */
+  handoffMasked?: number;
 }
 
 export function RemoteSpawnAskDialogView(p: RemoteSpawnAskDialogViewProps) {
@@ -84,6 +86,7 @@ export function RemoteSpawnAskDialogView(p: RemoteSpawnAskDialogViewProps) {
   // A pick that PC no longer offers (its list changed while this was open) is not sent.
   const picked = !!targets && targets.agents.some((a) => a === p.agent) && targets.roots.some((r) => r.id === p.root);
   const canSend = block === null && !!p.end && picked && !subBad && !!p.text.trim() && !textBad && !p.busy;
+  const hourOptions = SPAWN_ASK_HOURS.includes(p.hours as (typeof SPAWN_ASK_HOURS)[number]) ? SPAWN_ASK_HOURS : [...SPAWN_ASK_HOURS, p.hours].sort((a, b) => a - b);
   return (
     <Dialog onClose={p.onClose} width={520} data-testid="remote-spawn-ask">
       <DialogHeader
@@ -96,6 +99,12 @@ export function RemoteSpawnAskDialogView(p: RemoteSpawnAskDialogViewProps) {
           <p className="wmux-a2a-note" data-testid="remote-spawn-ask-block" data-block={block}>{t(`remoteSpawn.ask.block.${block}`, { pc })}</p>
         ) : (
           <>
+            {p.handoffMasked !== undefined && (
+              <p className="wmux-a2a-note" data-testid="remote-spawn-ask-handoff">
+                {t('remoteSpawn.ask.handoffLeaves', { pc })}
+                {p.handoffMasked > 0 && <> {t('remoteSpawn.ask.handoffMasked', { count: p.handoffMasked })}</>}
+              </p>
+            )}
             {!place.online && (
               <p className="wmux-a2a-note" data-testid="remote-spawn-ask-offline">
                 {t('remoteSpawn.ask.offline', { pc, time: spawnUntil(p.now + p.hours * 3_600_000) })}
@@ -143,7 +152,7 @@ export function RemoteSpawnAskDialogView(p: RemoteSpawnAskDialogViewProps) {
             </Field>
             <Field label={t('remoteSpawn.ask.expires')} layout="stacked">
               <Select value={String(p.hours)} disabled={p.busy} onChange={(e) => p.onHours(Number(e.target.value))} data-testid="remote-spawn-ask-hours">
-                {SPAWN_ASK_HOURS.map((h) => <option key={h} value={h}>{t(h === 1 ? 'remoteSpawn.ask.hour' : 'remoteSpawn.ask.hours', { n: h })}</option>)}
+                {hourOptions.map((h) => <option key={h} value={h}>{t(h === 1 ? 'remoteSpawn.ask.hour' : 'remoteSpawn.ask.hours', { n: h })}</option>)}
               </Select>
             </Field>
             {p.error && (
@@ -169,6 +178,16 @@ export interface RemoteSpawnAskDialogProps {
   /** This PC's name for that PC. */
   pcName: string;
   onClose: () => void;
+  /**
+   * A usage-limit handoff (utils/continueOnPc.ts): the note as the first
+   * prompt, the held pane as the reply pane, and how long it may wait.
+   */
+  handoff?: {
+    text: string;
+    masked: number;
+    hours: number;
+    end: { workspaceId: string; paneId: string; name: string };
+  };
 }
 
 /**
@@ -191,14 +210,17 @@ function useReplyPane(): { end: RemoteSpawnAskDialogViewProps['end']; startedFor
   return { end, startedFor };
 }
 
-export default function RemoteSpawnAskDialog({ place, pcName, onClose }: RemoteSpawnAskDialogProps) {
+export default function RemoteSpawnAskDialog({ place, pcName, onClose, handoff }: RemoteSpawnAskDialogProps) {
   const t = useT();
-  const { end, startedFor } = useReplyPane();
+  const focused = useReplyPane();
+  // A handoff's replies go to the held pane; the card offers one only where main takes it.
+  const end = handoff ? handoff.end : focused.end;
+  const startedFor = handoff ? false : focused.startedFor;
   const [agent, setAgent] = useState<string>(() => place.targets?.agents[0] ?? '');
   const [root, setRoot] = useState<string>(() => place.targets?.roots[0]?.id ?? '');
   const [sub, setSub] = useState('');
-  const [text, setText] = useState('');
-  const [hours, setHours] = useState<number>(DEFAULT_HOURS);
+  const [text, setText] = useState(() => handoff?.text ?? '');
+  const [hours, setHours] = useState<number>(() => handoff?.hours ?? DEFAULT_HOURS);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<A2aSpawnAskError | null>(null);
   const [now] = useState(() => Date.now());
@@ -255,6 +277,7 @@ export default function RemoteSpawnAskDialog({ place, pcName, onClose }: RemoteS
       onSend={() => void onSend()}
       onClose={onClose}
       t={t}
+      {...(handoff ? { handoffMasked: handoff.masked } : {})}
     />
   );
 }

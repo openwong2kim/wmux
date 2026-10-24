@@ -27,8 +27,17 @@ let detectedAt = Date.now();
 const update = vi.fn(async () => ({ ok: true }));
 const rotationSet = vi.fn(async () => ({ ok: true }));
 const agentStatus = vi.fn();
+const spawnAsk = vi.fn(async () => ({ ok: true, online: true, spawn: {} }));
 
-function stubApi(opts: { accounts?: number; codex?: 'ready' | 'login-needed'; rotation?: { claude: boolean; rows?: unknown[] } } = {}) {
+const HOST = '6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b';
+const OLD_HOST = '7a2b3c4d-5e6f-4a70-8b9c-0d1e2f3a4b5c';
+/** A paired PC that lets this one start agents there, and one whose wmux cannot. */
+const PLACES = [
+  { hostId: HOST, name: 'DESK', online: true, supported: true, targets: { v: 1, version: 1, roots: [{ id: 'web', label: 'Web app' }], agents: ['claude'] } },
+  { hostId: OLD_HOST, name: 'OLD', online: true, supported: false },
+];
+
+function stubApi(opts: { accounts?: number; codex?: 'ready' | 'login-needed'; rotation?: { claude: boolean; rows?: unknown[] }; places?: unknown[] } = {}) {
   const accounts = Array.from({ length: opts.accounts ?? 2 }, (_, i) => ({ id: `acc-${i}`, name: `Account ${i}`, vendor: 'claude', status: { loggedIn: true } }));
   vi.stubGlobal('electronAPI', {
     usageLimit: { update },
@@ -38,6 +47,7 @@ function stubApi(opts: { accounts?: number; codex?: 'ready' | 'login-needed'; ro
       set: rotationSet,
     },
     firstRun: { agentStatus: agentStatus.mockImplementation(async () => [{ agent: 'claude', readiness: 'ready' }, { agent: 'codex', readiness: opts.codex ?? 'ready' }]) },
+    a2aRemote: { spawnOutgoing: vi.fn(async () => ({ requests: [], places: opts.places ?? [] })), spawnAsk },
   });
 }
 
@@ -201,6 +211,44 @@ describe('usage-limit card', () => {
     await act(async () => { await Promise.resolve(); });
     expect(warn).toHaveBeenCalledWith('[usageLimit] continue in agent failed', expect.any(Error));
     warn.mockRestore();
+  });
+
+  it('another PC: offered for each PC that lets this one start an agent, and opens the ask with the note', async () => {
+    stubApi({ codex: 'login-needed', places: PLACES });
+    hold({ resetsAt: Date.now() + 90 * 60_000 });
+    await render();
+    expect(q('[data-usage-limit-card-pc="' + OLD_HOST + '"]')).toBeNull();
+    const button = q<HTMLButtonElement>('[data-usage-limit-card-pc="' + HOST + '"]')!;
+    expect(button.textContent).toBe('Continue on DESK');
+    // Focus moves on: the replies still go to the held pane.
+    useStore.setState({ activeWorkspaceId: 'elsewhere' } as never);
+    await act(async () => button.click());
+    expect(card()).toBeNull();
+    const text = q<HTMLTextAreaElement>('[data-testid="remote-spawn-ask-text"]')!.value;
+    expect(text).toContain('A conversation with Claude Code on another PC stopped at its usage limit.');
+    expect(text).toContain('fix the login bug');
+    expect(text).not.toContain('and the logout one');
+    // The limit resets in 90 minutes: the request waits two hours at most.
+    expect(q<HTMLSelectElement>('[data-testid="remote-spawn-ask-hours"]')!.value).toBe('2');
+    expect(q('[data-testid="remote-spawn-ask-end"]')!.textContent).toBe('W');
+    await act(async () => q<HTMLButtonElement>('[data-testid="remote-spawn-ask-send"]')!.click());
+    expect(spawnAsk).toHaveBeenCalledWith({ hostId: HOST, agent: 'claude', folder: { root: 'web' }, text, expiresInHours: 2, end: { workspaceId: 'ws-1', paneId: 'pane-1' } });
+  });
+
+  it('another PC: not from a pane whose workspace was itself started for someone, nor with no such PC', async () => {
+    stubApi({ places: PLACES });
+    useStore.setState({ fanoutLineage: { 'ws-1': 'remote-spawn:22222222-2222-4222-8222-222222222222' } } as never);
+    hold();
+    await render();
+    expect(card()).not.toBeNull();
+    expect(q('[data-testid="usage-limit-card-pcs"]')).toBeNull();
+    useStore.setState({ fanoutLineage: {} } as never);
+    act(() => root.unmount());
+    root = createRoot(container);
+    stubApi({ places: [PLACES[1]] });
+    hold();
+    await render();
+    expect(q('[data-testid="usage-limit-card-pcs"]')).toBeNull();
   });
 
   it('every account out: says when the first one reopens', async () => {

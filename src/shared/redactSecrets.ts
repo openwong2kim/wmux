@@ -17,9 +17,11 @@ export const REDACTED = '[redacted]';
  * computer pairing link's `#wmux-desktop-code=` fragment.
  */
 const INLINE_CREDENTIAL = /([?&#](?:token|code|wmux-desktop-code)=)(?!%5Bredacted%5D|\[redacted\])[^&#\s"'\\]+/gi;
+/** The password of a URL's userinfo (`scheme://user:password@host`); the user name stays. */
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)(?!\[redacted\]@)[^\s/?#@]+(?=@)/gi;
 
 export function maskInlineCredentials(s: string): string {
-  return s.replace(INLINE_CREDENTIAL, '$1[redacted]');
+  return s.replace(INLINE_CREDENTIAL, '$1[redacted]').replace(URL_PASSWORD, '$1[redacted]');
 }
 
 const KEY_SHAPES: readonly RegExp[] = [
@@ -61,10 +63,27 @@ function looksRandom(s: string): boolean {
 
 /** `s` with every credential it carries replaced by [redacted]. */
 export function redactSecrets(s: string): string {
-  let out = maskInlineCredentials(s);
-  for (const re of KEY_SHAPES) out = out.replace(re, REDACTED);
-  out = out.replace(ASSIGNED, (m, name: string, value: string) => (value === REDACTED ? m : `${name}${REDACTED}`));
-  out = out.replace(LONG_TOKEN, (m) => (m.includes(REDACTED) || !looksRandom(m) ? m : REDACTED));
-  for (const re of MORE_SHAPES) out = out.replace(re, REDACTED);
-  return out;
+  return redactSecretsCounted(s).text;
+}
+
+/**
+ * `redactSecrets`, also saying how many values it masked. `keyShapesOnly`
+ * leaves out the long-random-token rule, which also takes branch names and
+ * paths with digits in them (`feat/p1-7-remote-handoff-v2`): for text whose
+ * long runs are names, not prose that may hide a bare key.
+ */
+export function redactSecretsCounted(s: string, opts: { keyShapesOnly?: boolean } = {}): { text: string; masked: number } {
+  let masked = 0;
+  const mask = (m: string, keep = ''): string => {
+    masked++;
+    return `${keep}${REDACTED}`;
+  };
+  let out = s
+    .replace(INLINE_CREDENTIAL, (_m, keep: string) => mask(_m, keep))
+    .replace(URL_PASSWORD, (_m, keep: string) => mask(_m, keep));
+  for (const re of KEY_SHAPES) out = out.replace(re, (m) => mask(m));
+  out = out.replace(ASSIGNED, (m, name: string, value: string) => (value === REDACTED ? m : mask(m, name)));
+  if (!opts.keyShapesOnly) out = out.replace(LONG_TOKEN, (m) => (m.includes(REDACTED) || !looksRandom(m) ? m : mask(m)));
+  for (const re of MORE_SHAPES) out = out.replace(re, (m) => mask(m));
+  return { text: out, masked };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { REDACTED, maskInlineCredentials, redactSecrets } from '../redactSecrets';
+import { REDACTED, maskInlineCredentials, redactSecrets, redactSecretsCounted } from '../redactSecrets';
 
 const KEYS = [
   `sk-proj-${'A1b2'.repeat(8)}`,
@@ -61,4 +61,36 @@ describe('redactSecrets', () => {
     'src/renderer/components/Git/GitDetail.tsx',
     'Esc to interrupt · 12s · ↑ 3.4k tokens',
   ])('leaves ordinary screen text alone: %s', (s) => expect(redactSecrets(s)).toBe(s));
+});
+
+describe('redactSecrets — URL passwords and the key-shapes-only variant', () => {
+  // Built at run time: no credential-shaped literal in the source.
+  const url = (user: string, pw: string, rest: string) => `postgres://${user}:${pw}@${rest}`;
+
+  it('masks the password of a URL\'s userinfo and keeps the user, the host and the rest', () => {
+    expect(redactSecrets(`db ${url('app', 'hunter2pw', 'db.local:5432/x')} ok`)).toBe(`db ${url('app', REDACTED, 'db.local:5432/x')} ok`);
+    expect(maskInlineCredentials(url('u', 'p', 'h'))).toBe(url('u', REDACTED, 'h'));
+    // Already masked, a port, a user with no password: unchanged.
+    expect(redactSecrets(url('app', REDACTED, 'h'))).toBe(url('app', REDACTED, 'h'));
+    expect(redactSecrets('https://example.com:8443/a@b')).toBe('https://example.com:8443/a@b');
+    expect(redactSecrets('ssh://git@github.com/o/r.git')).toBe('ssh://git@github.com/o/r.git');
+  });
+
+  it('keyShapesOnly keeps branch names and paths with digits that the long-token rule takes', () => {
+    for (const s of ['feat/p1-7-remote-handoff-v2', 'src/daemon/a2aRemote/spawnRequester.ts']) {
+      expect(redactSecrets(s)).toBe(REDACTED);
+      expect(redactSecretsCounted(s, { keyShapesOnly: true })).toEqual({ text: s, masked: 0 });
+    }
+  });
+
+  it('keyShapesOnly still masks key shapes, assigned secrets and URL passwords, and counts them', () => {
+    const r = redactSecretsCounted(`branch ${KEYS[1]} token=${'q'.repeat(12)} ${url('a', 'b', 'c')}`, { keyShapesOnly: true });
+    expect(r.text).toBe(`branch ${REDACTED} token=${REDACTED} ${url('a', REDACTED, 'c')}`);
+    expect(r.masked).toBe(3);
+  });
+
+  it('counts what the full rules mask and nothing for clean text', () => {
+    expect(redactSecretsCounted(`a ${KEYS[0]} b ${KEYS[2]}`).masked).toBe(2);
+    expect(redactSecretsCounted('nothing here').masked).toBe(0);
+  });
 });

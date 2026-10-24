@@ -156,6 +156,34 @@ describe('RemoteSpawnAskDialog', () => {
     expect(q<HTMLTextAreaElement>('remote-spawn-ask-text')?.value).toBe('Fix the login test');
   });
 
+  it('a usage-limit handoff: the note prefilled, the held pane for replies, its expiry, and what leaves this PC', async () => {
+    spawnAsk.mockResolvedValue({ ok: true, online: true, spawn: {} as never });
+    // Another pane is focused: the replies still go to the held one.
+    act(() => useStore.setState({ activeWorkspaceId: 'gone' } as never));
+    const handoff = { text: 'Carry on with the login fix.', masked: 2, hours: 2, end: { workspaceId: 'ws-held', paneId: 'pane-held', name: 'Held' } };
+    act(() => root.render(createElement(RemoteSpawnAskDialog, { place: PLACE, pcName: 'DESK', onClose, handoff })));
+    expect(q<HTMLTextAreaElement>('remote-spawn-ask-text')?.value).toBe('Carry on with the login fix.');
+    expect(q('remote-spawn-ask-end')?.textContent).toBe('Held');
+    expect(q<HTMLSelectElement>('remote-spawn-ask-hours')?.value).toBe('2');
+    expect(q('remote-spawn-ask-handoff')?.textContent).toBe(
+      "This note leaves this PC and is kept on DESK. If DESK starts requests from this PC automatically, it runs without review, in DESK's permission mode. 2 values that looked like secrets were masked or left out.",
+    );
+    await act(async () => { send()!.click(); });
+    expect(spawnAsk).toHaveBeenCalledWith({
+      hostId: HOST,
+      agent: 'claude',
+      folder: { root: 'web' },
+      text: 'Carry on with the login fix.',
+      expiresInHours: 2,
+      end: { workspaceId: 'ws-held', paneId: 'pane-held' },
+    });
+  });
+
+  it('an ordinary ask says nothing about a handoff', () => {
+    render();
+    expect(q('remote-spawn-ask-handoff')).toBeNull();
+  });
+
   it('cannot send without a focused pane here', () => {
     act(() => useStore.setState({ activeWorkspaceId: 'gone' } as never));
     render();
