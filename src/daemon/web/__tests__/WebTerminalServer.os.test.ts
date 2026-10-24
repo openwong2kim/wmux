@@ -12,6 +12,7 @@ import { AnswerReceiptStore } from '../../approvals/AnswerReceiptStore';
 import { EventEmitter } from 'node:events';
 import { request as httpReq } from 'node:http';
 import { WebTerminalServer, SessionAuthorizationExpiredError, type WebDeviceResolver } from '../WebTerminalServer';
+import { AgentSignedOutError } from '../agentSignedOut';
 import { StreamResponseLimits } from '../StreamResponseLimits';
 import * as heartbeat from '../sseHeartbeat';
 import type { TranscriptProjector } from '../../transcript/TranscriptProjector';
@@ -193,7 +194,7 @@ function makeDeps() {
   // re-authorized before create is called, so the window this fake opens is
   // exactly the one the daemon's pre-spawn check has to cover.
   const lifecycleBox = {
-    createThrows: '', destroyThrows: '', createGoesMissing: false,
+    createThrows: '', destroyThrows: '', createGoesMissing: false, createError: null as Error | null,
     createGate: null as Promise<void> | null, gatePassed: false,
     authorizedAfterGate: null as boolean | null, spawned: false,
   };
@@ -206,6 +207,7 @@ function makeDeps() {
         lifecycleBox.authorizedAfterGate = lifecycleBox.gatePassed;
         throw new SessionAuthorizationExpiredError();
       }
+      if (lifecycleBox.createError) throw lifecycleBox.createError;
       lifecycleBox.spawned = true;
       if (lifecycleBox.createThrows) throw new Error(lifecycleBox.createThrows);
       created += 1;
@@ -501,7 +503,7 @@ describe('WebTerminalServer', () => {
   let resizeCalls: Array<{ id: string; cols: number; rows: number }>;
   let resizeBox: ReturnType<typeof makeDeps>['resizeBox'];
   let lifecycleCalls: Array<{ op: 'create' | 'destroy'; arg: unknown }>;
-  let lifecycleBox: { createThrows: string; destroyThrows: string; createGoesMissing: boolean;
+  let lifecycleBox: { createThrows: string; destroyThrows: string; createGoesMissing: boolean; createError: Error | null;
     createGate: Promise<void> | null; gatePassed: boolean; authorizedAfterGate: boolean | null; spawned: boolean };
   let gitCalls: Array<{ args: readonly string[]; cwd: string }>;
   let gitScript: Record<string, { ok: boolean; stdout: string; stderr: string; ran?: boolean }>;
@@ -6650,6 +6652,15 @@ describe('WebTerminalServer', () => {
       error: 'create-failed',
       detail: expect.stringContaining('200 active sessions'),
     });
+  });
+
+  it('409s agent-signed-out with the agent and no pane when its account is signed out', async () => {
+    const info = await startRW();
+    lifecycleBox.createError = new AgentSignedOutError('codex');
+    const res = await postSession(info.token as string, {});
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'agent-signed-out', agent: 'codex', effect: 'none' });
+    expect(lifecycleBox.spawned).toBe(false);
   });
 
   it('500s rather than faking a row when the created session is not live', async () => {

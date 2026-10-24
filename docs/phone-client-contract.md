@@ -3430,6 +3430,26 @@ the pane, not authentication or acceptance of the model by the provider.
   `chat/launch {resume:true, mode, confirm}`.
 - A pane started in a dangerous mode raises a notification on the host once its
   process exists; the start and every refusal are written to the daemon log.
+
+**Signed-out agent.** A create whose `agentLaunch.agent` is `claude` or `codex`
+(any `mode`) is refused when that agent's own status command
+(`claude auth status --json` / `codex login status`) says the pane's account is
+signed out. The account is the workspace binding or the body's `accountId`.
+
+- `409 {error:"agent-signed-out", agent:"claude"|"codex", effect:"none"}`. No
+  pane is created and nothing is reserved. The body carries no account id,
+  folder or provider text; `agent` echoes the request.
+- It is checked last, inside the create, just before the spawn: after every
+  refusal above, the account checks and `cwd-not-found`.
+- Only a definite "signed out" refuses. A status that cannot tell, fails, or
+  has not answered within **3 s** creates the pane as before. The daemon keeps
+  waiting for that answer in the background and caches it for the next create.
+  A plain shell create (no `agentLaunch`) is never refused this way.
+- The host shows its signed-out notice (one per agent and account, with Sign
+  in again). Offer "sign in on the computer" rather than a retry loop. A retry
+  after signing in goes through at once: a signed-out answer is never cached.
+- There is no `/api/config` flag. An older daemon never sends this error, and a
+  client that does not know the tag can treat it like any refused create.
 - `POST /api/sessions` keeps no request receipt: a retried request creates
   another pane. Reset the mode to `default` after every attempt and whenever
   the agent changes; never persist it.

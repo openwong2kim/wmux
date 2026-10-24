@@ -17,8 +17,9 @@ export const LOGIN_GATE_TTL_MS = 60_000;
  * next launch instead of being refused for the rest of the minute.
  *
  * `forget` drops what is known about an account (a turn just failed on its
- * sign-in, or just worked). A probe already running for it then answers
- * "cannot tell" instead of its now-stale result, and is not cached.
+ * sign-in) and `markWorks` records that it works (a turn just ended normally).
+ * Either way a probe already running for it then answers "cannot tell"
+ * instead of its now-stale result, and is not cached.
  */
 export class AgentLoginGate {
   private readonly cache = new Map<string, { at: number; signedIn: boolean | null }>();
@@ -32,8 +33,26 @@ export class AgentLoginGate {
     this.ttlMs = opts.ttlMs ?? LOGIN_GATE_TTL_MS;
   }
 
-  /** Signed in (true), signed out (false), or cannot tell (null; a failed probe too). */
-  check(agent: AuthLostAgent, env: NodeJS.ProcessEnv): Promise<boolean | null> {
+  /**
+   * Signed in (true), signed out (false), or cannot tell (null; a failed probe
+   * too). With `waitMs`, the caller waits at most that long and then gets null;
+   * the probe runs on, and its answer still lands in the cache.
+   */
+  check(agent: AuthLostAgent, env: NodeJS.ProcessEnv, opts: { waitMs?: number } = {}): Promise<boolean | null> {
+    const answer = this.answer(agent, env);
+    if (opts.waitMs === undefined) return answer;
+    const waitMs = opts.waitMs;
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), waitMs);
+      timer.unref?.();
+      void answer.then((signedIn) => {
+        clearTimeout(timer);
+        resolve(signedIn);
+      });
+    });
+  }
+
+  private answer(agent: AuthLostAgent, env: NodeJS.ProcessEnv): Promise<boolean | null> {
     const key = authLostKey(agent, authConfigDir(agent, env));
     const hit = this.cache.get(key);
     if (hit && this.now() - hit.at < this.ttlMs) return Promise.resolve(hit.signedIn);
@@ -58,9 +77,19 @@ export class AgentLoginGate {
   }
 
   forget(agent: AuthLostAgent, configDir: string | null): void {
+    this.cache.delete(this.supersede(agent, configDir));
+  }
+
+  /** A turn of this account just ended normally: it is signed in, for the next minute at least. */
+  markWorks(agent: AuthLostAgent, configDir: string | null): void {
+    this.cache.set(this.supersede(agent, configDir), { at: this.now(), signedIn: true });
+  }
+
+  /** Void what is in flight for an account; returns its key. */
+  private supersede(agent: AuthLostAgent, configDir: string | null): string {
     const key = authLostKey(agent, configDir);
     this.generation.set(key, (this.generation.get(key) ?? 0) + 1);
-    this.cache.delete(key);
     this.inflight.delete(key);
+    return key;
   }
 }

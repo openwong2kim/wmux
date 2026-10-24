@@ -58,6 +58,36 @@ describe('AgentLoginGate', () => {
     expect(await gate.signedOut('codex', {})).toBe(true);
   });
 
+  it('records a working turn as signed in, so the next launch needs no probe, and voids one in flight', async () => {
+    let release: (v: boolean | null) => void = () => undefined;
+    const probe = vi.fn(() => new Promise<boolean | null>((resolve) => { release = resolve; }));
+    const gate = new AgentLoginGate(probe, { now: () => 0 });
+    const stale = gate.check('claude', account());
+    gate.markWorks('claude', null);
+    release(false);
+    expect(await stale).toBeNull();
+    expect(await gate.check('claude', account())).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up waiting after waitMs while the probe runs on and its answer is cached', async () => {
+    vi.useFakeTimers();
+    try {
+      let release: (v: boolean | null) => void = () => undefined;
+      const probe = vi.fn(() => new Promise<boolean | null>((resolve) => { release = resolve; }));
+      const gate = new AgentLoginGate(probe, { now: () => 0 });
+      const bounded = gate.check('claude', account(), { waitMs: 3_000 });
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(await bounded).toBeNull();
+      release(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await gate.check('claude', account(), { waitMs: 3_000 })).toBe(true);
+      expect(probe).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('treats "cannot tell" and a failed probe as not signed out', async () => {
     expect(await new AgentLoginGate(async () => null).signedOut('codex', {})).toBe(false);
     expect(await new AgentLoginGate(async () => { throw new Error('spawn failed'); }).signedOut('codex', {})).toBe(false);

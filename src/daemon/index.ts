@@ -198,6 +198,7 @@ import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
 import { authConfigDir, isAuthLostAgent, type AgentAuthLost, type AuthLostAgent, type AuthLostOrigin } from '../shared/agentAuthLost';
 import { AgentLoginGate } from './agentLoginGate';
+import { refuseSignedOutAgent } from './web/agentSignedOut';
 import { AgentSetupDetector } from '../main/firstRun/AgentSetupDetector';
 import { serveTurnFailure } from './turnFailure/serveTurnFailure';
 import { buildTurnFailedPushPayload, turnFailedPushCollapseId } from './push/turnFailedPushPayload';
@@ -2852,6 +2853,14 @@ function registerRpcHandlers(
       // webPaneSpawn). The pane env gets the agent PATH too, for a later recovery
       // that replays the plain command.
       if (agentCommand) env = { ...env, PATH: (await agentExecEnv(env)).PATH ?? env.PATH };
+      // N4 — a surely signed-out account gets 409 agent-signed-out instead of a
+      // pane stuck on the agent's sign-in screen, before anything is reserved.
+      // The phone waits on this create, so the status gets SESSION_LOGIN_WAIT_MS
+      // at most; past that the pane is created as before.
+      if (agentLaunch) {
+        await refuseSignedOutAgent((agent, probeEnv, opts) => agentLoginGate.check(agent, probeEnv, opts), agentLaunch.agent, env,
+          (agent) => noteAuthLost?.('', agent, env, 'start'));
+      }
       let relay: Awaited<ReturnType<CodexPaneRelays['prepare']>> | undefined;
       if (agentLaunch?.agent === 'codex' && process.platform !== 'win32') {
         try { relay = await codexPaneRelays.prepare(id,env.CODEX_HOME); }
@@ -8598,18 +8607,19 @@ async function main(): Promise<void> {
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // N4 — main folds these into one notice per agent and account, and drops it
   // when any pane or run of that account is seen to work. Nothing about the
-  // account beyond its folder is sent. Either report makes the login gate
-  // forget the account, so a cached or in-flight answer from before is not used.
+  // account beyond its folder is sent. A loss makes the login gate forget the
+  // account and a working turn records it as signed in; either way an answer
+  // still in flight from before is not used.
   noteAuthLost = (sessionId, agent, env, origin, providerCode) => {
     const configDir = authConfigDir(agent, env);
     agentLoginGate.forget(agent, configDir);
     const lost: AgentAuthLost = { agent, configDir, origin, ...(providerCode ? { providerCode } : {}), at: Date.now() };
-    log('info', `[auth] ${sessionId || 'scheduled run'}: ${agent} is signed out (${origin}${providerCode ? `, ${providerCode}` : ''})`);
+    log('info', `[auth] ${sessionId || (origin === 'schedule' ? 'scheduled run' : 'new pane')}: ${agent} is signed out (${origin}${providerCode ? `, ${providerCode}` : ''})`);
     pipeServer.broadcast({ type: 'agent.auth_lost', sessionId, data: { lost } });
   };
   noteAuthWorks = (agent, env) => {
     const configDir = authConfigDir(agent, env);
-    agentLoginGate.forget(agent, configDir);
+    agentLoginGate.markWorks(agent, configDir);
     pipeServer.broadcast({ type: 'agent.auth_lost', sessionId: '', data: { works: { agent, configDir } } });
   };
   // A re-list nudge for main's HQ approval lane (deck/hqApprovalLane.ts).

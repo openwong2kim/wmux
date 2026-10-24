@@ -1,6 +1,7 @@
 import { LiveSettingsError, type LiveAgentSettings } from './codexLiveSettings';
 import type { PaneSettingsChoice } from './paneCodexSettings';
 import { buildAgentLaunch, type AgentLaunchChoice, type AgentLaunchOptions } from './agentLaunch';
+import { AgentSignedOutError } from './agentSignedOut';
 import type { TerminalLaunchAgent, TerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import { DesktopPhoneError, type DesktopPhoneBridge } from '../phone/DesktopPhoneBridge';
 import type { RunHistoryStore } from '../history/RunHistoryStore';
@@ -7182,6 +7183,10 @@ export class WebTerminalServer {
               if (refused) return this.json(res, refused.status, refused.body);
             }
             return this.json(res,401,{error:'authorization-expired'});
+          }
+          // N4 — the agent's own status says this account is signed out; nothing was created.
+          if (err instanceof AgentSignedOutError) {
+            return this.json(res, 409, { error: 'agent-signed-out', agent: err.agent, effect: 'none' });
           }
           // The desktop went away or failed mid-create, or an account check
           // refused at the spawn: typed, and nothing was created.
