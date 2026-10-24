@@ -166,8 +166,9 @@ export const execProbe: ProbeRunner = (command, args, opts) =>
 
 /**
  * Does the agent have a way to run that its status command does not report?
- * A non-empty listed environment variable, or the listed key set in its config
- * file (in the account folder, or the default one under the home folder).
+ * A non-empty listed environment variable, or the listed key set to anything
+ * but the agent's own value in its config file (in the account folder, or the
+ * default one under the home folder). The key is the registry's constant.
  */
 export function hasUnseenCredential(
   unseen: UnseenCredentials | undefined,
@@ -182,7 +183,14 @@ export function hasUnseenCredential(
   if (!config) return false;
   const folder = (accountEnv && env[accountEnv]?.trim()) || path.join(home, config.dir);
   const text = readFile(path.join(folder, config.file));
-  return text !== null && new RegExp(`^\\s*${config.key}\\s*=`, 'm').test(text);
+  if (text === null) return false;
+  for (const line of text.split(/\r?\n/)) {
+    const [name, ...rest] = line.split('=');
+    if (rest.length === 0 || name.trim() !== config.key) continue;
+    const value = rest.join('=').replace(/#.*$/, '').trim().replace(/^["']|["']$/g, '');
+    if (value !== '' && value !== config.ownValue) return true;
+  }
+  return false;
 }
 
 /**

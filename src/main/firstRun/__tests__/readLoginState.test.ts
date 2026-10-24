@@ -53,6 +53,8 @@ describe('AgentSetupDetector.loginState and credentials the status does not see'
     const config = 'model = "llama3"\n  model_provider = "ollama"\n';
     expect(await signedOutCodex({ '/acc/cx/config.toml': config }).loginState('codex', { CODEX_HOME: '/acc/cx' })).toBeNull();
     expect(await signedOutCodex({ '/home/me/.codex/config.toml': config }).loginState('codex', {})).toBeNull();
+    // Codex's own provider is its own sign-in, not another credential.
+    expect(await signedOutCodex({ '/home/me/.codex/config.toml': 'model_provider = "openai" # default\n' }).loginState('codex', {})).toBe(false);
     // Another account's folder is not this one's.
     expect(await signedOutCodex({ '/home/me/.codex/config.toml': config }).loginState('codex', { CODEX_HOME: '/acc/cx' })).toBe(false);
   });
