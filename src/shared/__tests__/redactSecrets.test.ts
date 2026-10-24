@@ -80,7 +80,7 @@ describe('redactSecrets — URLs, readable names and the masked count', () => {
   });
 
   it('readableNames keeps branch names, paths and ids that the long-token rule takes, and still masks a bare key', () => {
-    for (const s of ['feat/p1-7-remote-handoff-v2', 'src/daemon/a2aRemote/spawnRequester.ts', 'id 0b5f6a7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b']) {
+    for (const s of ['feat/p1-7-remote-handoff-v2', 'src/daemon/a2aRemote/spawnRequester.ts', 'fix-login-redirect-2026-10-24', 'src/renderer/components/Pane/UsageLimitCard.tsx', 'scripts/rust-terminal-core-bench.mjs']) {
       expect(redactSecretsCounted(s, { readableNames: true })).toEqual({ text: s, masked: 0 });
     }
     expect(redactSecrets('feat/p1-7-remote-handoff-v2')).toBe(REDACTED);
@@ -89,6 +89,32 @@ describe('redactSecrets — URLs, readable names and the masked count', () => {
     expect(redactSecretsCounted(`cookie sid=${bare}; path=/`, { readableNames: true }).text).toBe(`cookie ${REDACTED}; path=/`);
     const b64 = 'aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IGxpbmUgMTIzNDU2Nzg5MA==';
     expect(redactSecretsCounted(b64, { readableNames: true }).text).toBe(REDACTED);
+  });
+
+  it('readableNames scores the whole run too: a token split into short parts does not pass', () => {
+    // Built at run time: no credential-shaped literal in the source.
+    for (const token of [['tAnLEMyQw2Fw', '8yxjKN9mec23', 'RRrgBvc2W9dw', 'x1'].join('-'), ['wJalrXUtnFEMI', 'K7MDENG', 'bPxRfiCYEXAMPLEKEY'].join('/'), 'k3j4h5g6f7d8s9a0q1w2e3r4t5', '0b5f6a7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b']) {
+      expect(redactSecretsCounted(`use ${token} now`, { readableNames: true }).text).toBe(`use ${REDACTED} now`);
+    }
+  });
+
+  it('hex keys: 32 and 64 digits are always masked; a 40-digit commit stays readable unless a key word sits before it', () => {
+    const hex = (n: number) => Array.from({ length: n }, (_, i) => '0123456789abcdef'[(i * 7 + 3) % 16]).join('');
+    for (const n of [32, 48, 64]) {
+      expect(redactSecretsCounted(`k ${hex(n)} k`, { readableNames: true }).text).toBe(`k ${REDACTED} k`);
+      expect(redactSecrets(`k ${hex(n)} k`)).toBe(`k ${REDACTED} k`);
+      expect(redactSecrets(`k ${hex(n).toUpperCase()} k`)).toBe(`k ${REDACTED} k`);
+    }
+    const sha = hex(40);
+    expect(redactSecretsCounted(`commit ${sha} landed`, { readableNames: true }).text).toBe(`commit ${sha} landed`);
+    expect(redactSecretsCounted(`api token: ${sha}`, { readableNames: true }).text).toBe(`api token: ${REDACTED}`);
+    expect(redactSecretsCounted(`Bearer ${sha}`, { readableNames: true }).text).toBe(`Bearer ${REDACTED}`);
+    // Logs and other outbound text mask every hex run of 32+.
+    expect(redactSecrets(`commit ${sha} landed`)).toBe(`commit ${REDACTED} landed`);
+    // All digits, all letters or mixed case: not a hex key.
+    for (const s of ['1'.repeat(40), 'a'.repeat(40), `${hex(20)}${hex(20).toUpperCase()}`]) {
+      expect(redactSecretsCounted(s, { readableNames: true }).text).toBe(s);
+    }
   });
 
   it('readableNames still masks key shapes, assigned secrets and URL passwords', () => {

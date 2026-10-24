@@ -67,6 +67,10 @@ describe('continueOnPcText', () => {
     for (const secret of [KEY, GH, BARE]) expect(text).not.toContain(secret);
     expect(masked).toBe(text.split(REDACTED).length - 1);
     expect(masked).toBe(6);
+    // A `[redacted]` already in the conversation is quoted, not counted.
+    const old = note({ requests: [`it printed ${REDACTED} and ${KEY}`], reply: null, branch: 'main', files: [], planFiles: [] });
+    expect(old.text).toContain(`it printed ${REDACTED} and ${REDACTED}`);
+    expect(old.masked).toBe(1);
   });
 
   it('masks before it cuts: a key across the cut is never left half-visible, and no marker is split', () => {
@@ -169,6 +173,13 @@ describe('folderRelative / isSecretFileName / scrubLocalPaths / remoteHandoffHou
 
   it.each(['src/env.ts', 'id_utils.ts', 'keys.ts', 'src/credential-form.tsx', 'README.md', 'docs/secret-handling.md'])('reads %s as an ordinary one', (p) => {
     expect(isSecretFileName(p)).toBe(false);
+  });
+
+  it('scrubs WSL and JSON-escaped home paths too', () => {
+    expect(scrubLocalPaths('/mnt/c/Users/kim/x and /mnt/d/Users/kim/y', '/repo')).toBe('<home>/x and <home>/y');
+    expect(scrubLocalPaths('{"p":"\\/Users\\/kim\\/x","q":"C:\\\\Users\\\\kim\\\\y"}', '/repo')).toBe('{"p":"<home>\\/x","q":"<home>\\\\y"}');
+    expect(scrubLocalPaths('\\/home\\/kim\\/a', '/repo')).toBe('<home>\\/a');
+    expect(scrubLocalPaths('/usr/local/Users/x', '/repo')).toBe('/usr/local/Users/x');
   });
 
   it('replaces only the whole folder, and leaves paths that name no one', () => {

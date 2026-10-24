@@ -86,8 +86,10 @@ export function scrubLocalPaths(text: string, cwd: string | undefined): string {
   return out
     .replace(/\bfile:\/\/[^\s"'`<>]*/gi, '<file-url>')
     .replace(/(^|[\s"'`(<])\\\\[^\\\s"'`<>]+\\[^\s"'`<>]*/g, '$1<unc-path>')
+    // `C:\Users\kim`, also JSON-escaped (`C:\\Users\\kim`) or with forward slashes.
     .replace(/\b[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"'`<>]+/gi, '<home>')
-    .replace(/(^|[^\w.~-])\/(?:Users|home)\/[^/\s"'`<>]+/g, '$1<home>')
+    // `/Users/kim`, `/home/kim`, WSL's `/mnt/c/Users/kim`, also JSON-escaped (`\/Users\/kim`).
+    .replace(/(^|[^\w.~-])\\?\/(?:mnt\\?\/[a-z]\\?\/)?(?:Users|home)\\?\/[^/\\\s"'`<>]+/gi, '$1<home>')
     .replace(/(^|[^\w.~-])\/root(?=[/\s"'`<>]|$)/g, '$1<home>')
     .replace(/(^|[\s"'`(<])~[A-Za-z0-9._-]*(?=[\\/])/g, '$1<home>');
 }
@@ -172,7 +174,7 @@ function quoteId(): string {
 
 /**
  * The first prompt for an agent on another PC taking over `fromAgent`'s held
- * work. `masked`: mask markers in the text as sent; `leftOut`: paths left out
+ * work. `masked`: mask markers the note added; `leftOut`: paths left out
  * (outside the folder, or named like a secret). `cwd` is the held pane's
  * folder, the base its paths are given from. Pure but for the quote id, which
  * `opts.quoteId` fixes.
@@ -240,7 +242,9 @@ export function continueOnPcText(
   // Long paths or a long branch can still overflow: the head of the note is
   // what matters most, and the cut is final already (finalize changes nothing).
   text ??= finalizeSpawnPrompt(firstBytes(build(SHAPES[SHAPES.length - 1]), REMOTE_HANDOFF_MAX_BYTES)).text;
-  return { text, masked: markers(text), leftOut };
+  // Only the markers this note added: a quoted `[redacted]` already in the conversation is not one.
+  const before = markers([...(facts?.requests ?? []), facts?.reply ?? '', opts.carryDraft ? facts?.draft ?? '' : '', facts?.branch ?? '', ...(facts?.planFiles ?? []), ...(facts?.files ?? []).map((f) => f.path)].join('\n'));
+  return { text, masked: Math.max(0, markers(text) - before), leftOut };
 }
 
 /**

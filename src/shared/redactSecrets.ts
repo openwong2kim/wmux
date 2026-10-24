@@ -75,6 +75,46 @@ function looksRandom(s: string): boolean {
   return /[0-9]/.test(s) && /[A-Za-z]/.test(s) && entropy(s) >= 3.5;
 }
 
+/**
+ * A bare run of 32+ hex digits in one case, with both digits and letters, not
+ * inside a word. Entropy alone lets some random hex through (hex tops out at
+ * four bits a character), so hex has a rule of its own.
+ */
+const HEX_RUN = /(?<![A-Za-z0-9_])(?:[0-9a-f]{32,}|[0-9A-F]{32,})(?![A-Za-z0-9_])/g;
+/**
+ * A word that says the value right after it is a credential, with only a
+ * separator between (`token: `, `Bearer `, `api_key=`). Adjacent on purpose:
+ * a wider window would see a different word once earlier values are masked,
+ * and the pass would stop being a fixed point.
+ */
+const KEY_WORD_BEFORE = /(?:token|key|secret|api|auth|passw(?:or)?d|bearer)[\s:=_"'-]{0,3}$/i;
+const isHex40 = (s: string): boolean => /^[0-9a-fA-F]{40}$/.test(s);
+
+/**
+ * A part of a name: short, or mostly lower case with few digits, the way path
+ * parts and branch words read (`spawnRequester`, `handoff`, `2026`). A random
+ * token's parts are mixed case or digit-heavy (`tAnLEMyQw2Fw`, `0b5f6a7e`).
+ */
+function wordlike(part: string): boolean {
+  if (part.length < 8) return true;
+  const letters = (part.match(/[A-Za-z]/g) ?? []).length;
+  const upper = (part.match(/[A-Z]/g) ?? []).length;
+  const digits = (part.match(/[0-9]/g) ?? []).length;
+  return letters > 0 && upper <= letters * 0.25 && digits <= part.length * 0.25;
+}
+
+/**
+ * readableNames: a long run is masked when one part of 16+ characters looks
+ * random, or when the whole run looks random and is not shaped like a name
+ * (every part wordlike). A 40-hex run (a git commit) is left to HEX_RUN.
+ */
+function longRandomReadable(m: string): boolean {
+  if (isHex40(m)) return false;
+  const parts = m.split(/[/._\-+=]/);
+  if (parts.some((part) => part.length >= 16 && !isHex40(part) && looksRandom(part))) return true;
+  return m.length >= 24 && looksRandom(m) && !parts.every(wordlike);
+}
+
 /** `s` with every credential it carries replaced by [redacted]. */
 export function redactSecrets(s: string): string {
   return redactSecretsCounted(s).text;
@@ -84,19 +124,22 @@ const markers = (s: string): number => s.split(REDACTED).length - 1;
 
 /**
  * `redactSecrets`, also saying how many values it masked: the markers it added,
- * so a value two rules both take counts once. `readableNames` judges a long
- * run by its parts between `/`, `.`, `_` and `-`, masking it only when one part
- * of 16+ characters looks random: branch names and paths with digits in them
- * (`feat/p1-7-remote-handoff-v2`) stay readable, a bare key or a base64 line
- * does not.
+ * so a value two rules both take counts once. `readableNames` keeps branch
+ * names, paths and git commits readable (`feat/p1-7-remote-handoff-v2`, a
+ * 40-hex SHA with no key word before it) while a bare key, a split token, a
+ * base64 line or any other hex key does not pass (longRandomReadable, HEX_RUN).
  */
 export function redactSecretsCounted(s: string, opts: { readableNames?: boolean } = {}): { text: string; masked: number } {
-  const longRandom = opts.readableNames
-    ? (m: string) => m.split(/[/._-]/).some((part) => part.length >= 16 && looksRandom(part))
-    : looksRandom;
+  const longRandom = opts.readableNames ? longRandomReadable : looksRandom;
   let out = maskInlineCredentials(s);
   for (const re of KEY_SHAPES) out = out.replace(re, REDACTED);
   out = out.replace(ASSIGNED, (m, name: string, value: string) => (value === REDACTED ? m : `${name}${REDACTED}`));
+  out = out.replace(HEX_RUN, (m: string, at: number, whole: string) => {
+    if (!/[0-9]/.test(m) || !/[a-fA-F]/.test(m)) return m;
+    // readableNames: a commit SHA stays unless a key word sits just before it.
+    if (opts.readableNames && m.length === 40 && !KEY_WORD_BEFORE.test(whole.slice(Math.max(0, at - 16), at))) return m;
+    return REDACTED;
+  });
   out = out.replace(LONG_TOKEN, (m) => (m.includes(REDACTED) || !longRandom(m) ? m : REDACTED));
   for (const re of MORE_SHAPES) out = out.replace(re, REDACTED);
   return { text: out, masked: Math.max(0, markers(out) - markers(s)) };

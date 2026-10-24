@@ -217,6 +217,18 @@ describe('RemoteSpawnAskDialog', () => {
     expect(spawnAsk.mock.calls[1][0].requestKey).toBe(spawnAsk.mock.calls[0][0].requestKey);
   });
 
+  it('an edit after a failure is a new request, with a new key', async () => {
+    spawnAsk.mockRejectedValueOnce(new Error('timeout')).mockResolvedValue({ ok: true, online: true, spawn: {} as never });
+    render();
+    type('remote-spawn-ask-text', 'Fix the login test');
+    await act(async () => { send()!.click(); });
+    await vi.waitFor(() => expect(q('remote-spawn-ask-error')).not.toBeNull(), { timeout: 1000 });
+    type('remote-spawn-ask-text', 'Fix the login test, and the logout one');
+    await act(async () => { send()!.click(); });
+    expect(spawnAsk.mock.calls[1][0].text).toBe('Fix the login test, and the logout one');
+    expect(spawnAsk.mock.calls[1][0].requestKey).not.toBe(spawnAsk.mock.calls[0][0].requestKey);
+  });
+
   it('an ordinary ask says nothing about a handoff', () => {
     render();
     expect(q('remote-spawn-ask-handoff')).toBeNull();

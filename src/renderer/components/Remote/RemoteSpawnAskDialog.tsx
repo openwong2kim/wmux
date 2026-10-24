@@ -233,8 +233,10 @@ export default function RemoteSpawnAskDialog({ place, pcName, onClose, handoff }
   });
   const end = handoff ? (heldStartedFor ? null : handoff.end) : focused.end;
   const startedFor = handoff ? heldStartedFor : focused.startedFor;
-  // One per dialog, reused by every retry: a request already stored answers again instead of a second one.
-  const [requestKey] = useState(() => crypto.randomUUID());
+  // One per exact request, reused by a retry of it: a request already stored
+  // answers again instead of a second one. Any edit makes it a new request.
+  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
+  const edited = (): void => { setError(null); setRequestKey(crypto.randomUUID()); };
   const [reviewing, setReviewing] = useState(false);
   const [agent, setAgent] = useState<string>(() => place.targets?.agents[0] ?? '');
   const [root, setRoot] = useState<string>(() => place.targets?.roots[0]?.id ?? '');
@@ -294,11 +296,11 @@ export default function RemoteSpawnAskDialog({ place, pcName, onClose, handoff }
       sub={sub}
       text={text}
       hours={hours}
-      onAgent={(v) => { setAgent(v); setError(null); }}
-      onRoot={(v) => { setRoot(v); setError(null); }}
-      onSub={(v) => { setSub(v); setError(null); }}
-      onText={(v) => { setText(v); setError(null); setReviewing(false); }}
-      onHours={(v) => { setHours(v); setError(null); }}
+      onAgent={(v) => { setAgent(v); edited(); }}
+      onRoot={(v) => { setRoot(v); edited(); }}
+      onSub={(v) => { setSub(v); edited(); }}
+      onText={(v) => { setText(v); edited(); setReviewing(false); }}
+      onHours={(v) => { setHours(v); edited(); }}
       busy={busy}
       error={error}
       now={now}
