@@ -1,7 +1,7 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
-import { A2A_SPAWN_OUTGOING_EVENT, coerceSpawnPolicy, type A2aSpawnUiAsk } from '../../../shared/a2aSpawn';
+import { A2A_SPAWN_OUTGOING_EVENT, SPAWN_REQUEST_KEY_RE, coerceSpawnPolicy, type A2aSpawnUiAsk } from '../../../shared/a2aSpawn';
 import { isAgentSlug } from '../../../shared/agentIdentity';
 import { getFanOutGuards } from '../../worktask/fanoutGuards';
 import type {
@@ -18,7 +18,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import { detectRemote } from '../../github/PrProvider';
 import { A2aExposurePublisher, coercePaneSnapshot } from '../../a2aRemote/exposurePublisher';
 import type { RemoteA2aBridge } from '../../a2a/RemoteA2aBridge';
-import { redactSecretsCounted } from '../../../shared/redactSecrets';
+import { finalizeSpawnPrompt } from '../../../shared/a2aSpawnPrompt';
 
 // Module scope: the handlers are re-registered on every daemon (re)connect,
 // but the last pane snapshot (the gone-pane baseline) must outlive that.
@@ -189,17 +189,24 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
         }
         if (owner !== null) return { ok: false, error: 'bad-request', message: 'replies cannot go to a pane that was itself started for someone' };
         if (!isAgentSlug(p.agent) || typeof p.text !== 'string' || typeof p.folder?.root !== 'string') return { ok: false, error: 'bad-request' };
+        if (p.expiresInHours !== undefined && !(Number.isInteger(p.expiresInHours) && p.expiresInHours >= 1 && p.expiresInHours <= 72)) return { ok: false, error: 'bad-request' };
+        if (p.requestKey !== undefined && (typeof p.requestKey !== 'string' || !SPAWN_REQUEST_KEY_RE.test(p.requestKey))) return { ok: false, error: 'bad-request' };
+        // The dialog shows the prompt as finalizeSpawnPrompt makes it. One this
+        // pass would still change was not what the person saw: it is refused,
+        // never sent changed.
+        if (finalizeSpawnPrompt(p.text).text !== p.text) {
+          return { ok: false, error: 'needs-review', message: 'the prompt changes when it is checked for sending; review it and send again' };
+        }
         return c.a2aSpawnAsk({
           pc: str(p.hostId),
           agent: p.agent,
           folder: { root: p.folder.root, ...(typeof p.folder.sub === 'string' && p.folder.sub ? { sub: p.folder.sub } : {}) },
-          // A backstop for what a person typed or pasted: key shapes never leave
-          // this PC. Not the long-token rule, which also takes branch names and paths.
-          text: redactSecretsCounted(p.text, { keyShapesOnly: true }).text,
+          text: p.text,
           ...(typeof p.expiresInHours === 'number' ? { expiresInHours: p.expiresInHours } : {}),
           from: { kind: 'pane', workspaceId, paneId },
           // Per pane, as for an agent: the pane that gets the replies.
           callerKey: paneId,
+          ...(p.requestKey !== undefined ? { requestKey: p.requestKey } : {}),
         });
       },
     ],

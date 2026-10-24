@@ -10,6 +10,7 @@ import {
   SPAWN_ASK_GRACE_MS,
   SPAWN_ASK_TTL_DEFAULT_MS,
   SPAWN_CLOCK_SKEW_MS,
+  SPAWN_REQUEST_KEY_RE,
   SPAWN_TTL_MAX_MS,
   asSpawnLinkId,
   parseSpawnRequest,
@@ -78,6 +79,12 @@ export class A2aSpawnRequester {
     if (!this.deps.features(host.hostId)?.has(A2A_FEATURE_SPAWN)) {
       return { ok: false, error: 'not-supported', message: `${host.name}'s wmux cannot start agents for other PCs (or it has not connected since it was paired)` };
     }
+    // A retry of a request already stored: its answer, never a second request.
+    if (input.requestKey !== undefined) {
+      if (!SPAWN_REQUEST_KEY_RE.test(input.requestKey)) return { ok: false, error: 'bad-request', message: 'requestKey must be 8-64 characters of [A-Za-z0-9-]' };
+      const sent = this.deps.store.byRequestKey(input.callerKey, input.requestKey);
+      if (sent) return sent.hostId === host.hostId ? { ok: true, spawn: this.summary(sent, host.name), online: host.online } : { ok: false, error: 'bad-request', message: 'that requestKey was used for another PC' };
+    }
     const hours = input.expiresInHours ?? SPAWN_ASK_TTL_DEFAULT_MS / HOUR_MS;
     if (!Number.isInteger(hours) || hours < 1 || hours > 72) return { ok: false, error: 'bad-request', message: 'expiresInHours must be a whole number from 1 to 72' };
     const now = this.now();
@@ -103,7 +110,8 @@ export class A2aSpawnRequester {
       v: 1, hostId: host.hostId, spawnId, agent: request.agent, rootId: request.folder.root,
       ...(request.folder.sub ? { sub: request.folder.sub } : {}),
       from: { workspaceId: request.from.workspaceId, paneId: request.from.paneId },
-      callerKey: input.callerKey, text: request.text, state: 'sent', createdAt: at, updatedAt: at, expiresAt: request.expiresAt,
+      callerKey: input.callerKey, ...(input.requestKey !== undefined ? { requestKey: input.requestKey } : {}),
+      text: request.text, state: 'sent', createdAt: at, updatedAt: at, expiresAt: request.expiresAt,
     };
     try {
       this.deps.store.add(rec);
@@ -323,7 +331,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
     const from = isPlainObject(p['from']) ? p['from'] : null;
     if (typeof p['pc'] !== 'string' || !isAgentSlug(p['agent']) || !folder || typeof folder['root'] !== 'string' || typeof p['text'] !== 'string' ||
       !from || typeof from['workspaceId'] !== 'string' || typeof from['paneId'] !== 'string' || typeof p['callerKey'] !== 'string' ||
-      (p['expiresInHours'] !== undefined && typeof p['expiresInHours'] !== 'number')) {
+      (p['expiresInHours'] !== undefined && typeof p['expiresInHours'] !== 'number') || (p['requestKey'] !== undefined && typeof p['requestKey'] !== 'string')) {
       return { ok: false, error: 'bad-request', message: 'pc, agent, folder{root, sub?}, text, from{workspaceId, paneId} and callerKey are required' };
     }
     return requester.ask({
@@ -334,6 +342,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
       ...(typeof p['expiresInHours'] === 'number' ? { expiresInHours: p['expiresInHours'] } : {}),
       from: { kind: 'pane', workspaceId: from['workspaceId'], paneId: from['paneId'] },
       callerKey: p['callerKey'],
+      ...(typeof p['requestKey'] === 'string' ? { requestKey: p['requestKey'] } : {}),
     });
   });
   onRpc(A2A_SPAWN_RPC.outgoing, async (p) => requester.list(typeof p['spawnId'] === 'string' ? p['spawnId'] : undefined));

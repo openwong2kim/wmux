@@ -14,7 +14,7 @@
 //     (utils/continueOnPc.ts); not from a pane that was itself started for
 //     someone, since its replies could not come back to it;
 //   - when every account is out, the earliest time one reopens.
-import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -46,6 +46,7 @@ export interface UsageLimitPcHandoff {
   pcName: string;
   text: string;
   masked: number;
+  leftOut: number;
   hours: number;
 }
 
@@ -75,18 +76,25 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
   // Main refuses a reply pane whose workspace was itself started for someone (depth 1).
   const startedFor = useStore((s) => isShadowWorkspaceId(workspaceId) || !!(s.fanoutLineage[workspaceId] || s.fanoutSpawnOwner[workspaceId] || s.missionByPaneGroup[workspaceId]));
   const [places, setPlaces] = useState<A2aSpawnPlace[]>([]);
-  const pcs = !!limit && onContinueOnPc && !startedFor ? places.filter((p) => spawnAskBlock(p) === null) : [];
+  // Whole hours the request may wait; null once the limit has reset (the pane can simply resume).
+  const pcHours = limit ? remoteHandoffHours(limit.resetsAt, now) : null;
+  const pcs = pcHours !== null && onContinueOnPc && !startedFor ? places.filter((p) => spawnAskBlock(p) === null) : [];
 
   // Probed once; later opens reuse what that found.
   useEffect(() => { if (!getAgentSetupState().statuses) void refreshAgentStatus(); }, []);
-  // The paired PCs that let this one start an agent there, read once per open.
-  useEffect(() => {
+  // The paired PCs that let this one start an agent there: read on open, and again on a click.
+  const readPlaces = useCallback(async (): Promise<A2aSpawnPlace[] | null> => {
     const read = window.electronAPI?.a2aRemote?.spawnOutgoing;
-    if (!REMOTE_SPAWN_UI_ENABLED || !onContinueOnPc || !read) return;
+    if (!REMOTE_SPAWN_UI_ENABLED || !read) return null;
+    const v = await read().catch(() => null);
+    return v && Array.isArray(v.places) ? v.places : null;
+  }, []);
+  useEffect(() => {
+    if (!onContinueOnPc) return;
     let live = true;
-    void read().then((v) => { if (live && Array.isArray(v?.places)) setPlaces(v.places); }, () => undefined);
+    void readPlaces().then((v) => { if (live && v) setPlaces(v); });
     return () => { live = false; };
-  }, [onContinueOnPc]);
+  }, [onContinueOnPc, readPlaces]);
   // Gathered once another agent or PC can take over, so the note previewed is the one sent.
   const canHandOffAnywhere = canHandOff || pcs.length > 0;
   useEffect(() => {
@@ -261,8 +269,19 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
                   title={t('usageLimit.continueOnPcHint', { pc: pcName })}
                   onClick={() => {
                     if (!facts) return;
-                    const { text, masked } = continueOnPcText(fromAgent, facts, { carryDraft, ...(cwd ? { cwd } : {}) });
-                    onContinueOnPc({ place, pcName, text, masked, hours: remoteHandoffHours(limit.resetsAt, Date.now()) });
+                    // That PC's word may have changed since the card opened: it is asked again first.
+                    void readPlaces().then((fresh) => {
+                      const now2 = Date.now();
+                      const current = fresh?.find((p) => p.hostId === place.hostId);
+                      const hours = remoteHandoffHours(limit.resetsAt, now2);
+                      if (fresh) setPlaces(fresh);
+                      if (!current || spawnAskBlock(current) !== null || hours === null) {
+                        useStore.getState().pushToast({ level: 'warn', message: t('usageLimit.continueOnPcGone', { pc: pcName }) });
+                        return;
+                      }
+                      const { text, masked, leftOut } = continueOnPcText(fromAgent, facts, { carryDraft, ...(cwd ? { cwd } : {}) });
+                      onContinueOnPc({ place: current, pcName: current.name ?? pcName, text, masked, leftOut, hours });
+                    });
                   }}
                   data-usage-limit-card-pc={place.hostId}
                 >
@@ -271,6 +290,12 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
               );
             })}
           </div>
+          {facts?.draft && !(agents.length > 0 && note !== undefined) && (
+            <label className="mt-2 flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
+              <Checkbox checked={carryDraft} onCheckedChange={setCarryDraft} data-usage-limit-card-action="carry-draft" />
+              {t('usageLimit.carryDraft')}
+            </label>
+          )}
         </PopoverSection>
       )}
     </Popover>,

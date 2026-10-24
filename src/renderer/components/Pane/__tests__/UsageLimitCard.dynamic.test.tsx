@@ -215,7 +215,7 @@ describe('usage-limit card', () => {
 
   it('another PC: offered for each PC that lets this one start an agent, and opens the ask with the note', async () => {
     stubApi({ codex: 'login-needed', places: PLACES });
-    hold({ resetsAt: Date.now() + 90 * 60_000 });
+    hold({ resetsAt: Date.now() + 150 * 60_000 });
     await render();
     expect(q('[data-usage-limit-card-pc="' + OLD_HOST + '"]')).toBeNull();
     const button = q<HTMLButtonElement>('[data-usage-limit-card-pc="' + HOST + '"]')!;
@@ -228,11 +228,44 @@ describe('usage-limit card', () => {
     expect(text).toContain('A conversation with Claude Code on another PC stopped at its usage limit.');
     expect(text).toContain('fix the login bug');
     expect(text).not.toContain('and the logout one');
-    // The limit resets in 90 minutes: the request waits two hours at most.
+    // The limit resets in 150 minutes: the request waits two whole hours at most.
     expect(q<HTMLSelectElement>('[data-testid="remote-spawn-ask-hours"]')!.value).toBe('2');
     expect(q('[data-testid="remote-spawn-ask-end"]')!.textContent).toBe('W');
     await act(async () => q<HTMLButtonElement>('[data-testid="remote-spawn-ask-send"]')!.click());
-    expect(spawnAsk).toHaveBeenCalledWith({ hostId: HOST, agent: 'claude', folder: { root: 'web' }, text, expiresInHours: 2, end: { workspaceId: 'ws-1', paneId: 'pane-1' } });
+    expect(spawnAsk).toHaveBeenCalledWith({ hostId: HOST, agent: 'claude', folder: { root: 'web' }, text, expiresInHours: 2, end: { workspaceId: 'ws-1', paneId: 'pane-1' }, requestKey: expect.any(String) });
+  });
+
+  it('another PC: the unsent draft can go along with no other local agent, and only when ticked', async () => {
+    stubApi({ codex: 'login-needed', places: PLACES });
+    hold();
+    await render();
+    expect(q('[data-usage-limit-card-agent="codex"]')).toBeNull();
+    const box = q('[data-testid="usage-limit-card-pcs"] [data-usage-limit-card-action="carry-draft"]')!;
+    await act(async () => box.click());
+    useStore.setState({ activeWorkspaceId: 'elsewhere' } as never);
+    await act(async () => q<HTMLButtonElement>('[data-usage-limit-card-pc="' + HOST + '"]')!.click());
+    await act(async () => { await Promise.resolve(); });
+    expect(q<HTMLTextAreaElement>('[data-testid="remote-spawn-ask-text"]')!.value).toContain('and the logout one');
+  });
+
+  it('another PC: asked again on the click, and a PC that no longer lets this one start an agent opens nothing', async () => {
+    stubApi({ codex: 'login-needed', places: PLACES });
+    hold();
+    await render();
+    const button = q<HTMLButtonElement>('[data-usage-limit-card-pc="' + HOST + '"]')!;
+    const api = (window as unknown as { electronAPI: { a2aRemote: { spawnOutgoing: ReturnType<typeof vi.fn> } } }).electronAPI;
+    api.a2aRemote.spawnOutgoing.mockResolvedValue({ requests: [], places: [{ ...PLACES[0], targets: { v: 1, version: 2, roots: [], agents: [] } }] });
+    await act(async () => button.click());
+    await act(async () => { await Promise.resolve(); });
+    expect(q('[data-testid="remote-spawn-ask"]')).toBeNull();
+    expect(useStore.getState().toasts.at(-1)?.message).toBe('DESK no longer lets this PC start an agent there.');
+  });
+
+  it('another PC: not offered once the limit has reset', async () => {
+    stubApi({ places: PLACES });
+    hold({ resetsAt: Date.now() - 60_000 });
+    await render();
+    expect(q('[data-testid="usage-limit-card-pcs"]')).toBeNull();
   });
 
   it('another PC: not from a pane whose workspace was itself started for someone, nor with no such PC', async () => {

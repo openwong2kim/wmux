@@ -6,6 +6,7 @@ import { isHostId, type HostId } from '../../shared/a2aRemote';
 import {
   SPAWN_REQUESTS_MAX,
   SPAWN_REQUEST_KEEP_MS,
+  SPAWN_REQUEST_KEY_RE,
   isSpawnCode,
   isSpawnId,
   isSpawnRootId,
@@ -45,6 +46,8 @@ export interface SpawnOutgoingRecordV1 {
   from: { workspaceId: string; paneId: string };
   /** Who asked, for the per-pane hourly limit: the pane that gets the replies. */
   callerKey: string;
+  /** The asker's id for the request (`A2aSpawnAskInput.requestKey`). */
+  requestKey?: string;
   /** The prompt, until the request is final. */
   text?: string;
   state: A2aSpawnOutgoingState;
@@ -125,6 +128,12 @@ export class SpawnOutgoingStore {
     let n = 0;
     for (const r of this.records.values()) if (r.hostId === hostId && OPEN.has(r.state)) n += 1;
     return n;
+  }
+
+  /** The request `callerKey` already stored under `requestKey`, if any. */
+  byRequestKey(callerKey: string, requestKey: string): SpawnOutgoingRecordV1 | undefined {
+    for (const r of this.records.values()) if (r.callerKey === callerKey && r.requestKey === requestKey) return r;
+    return undefined;
   }
 
   /** Requests `callerKey` sent since `since` (ms), to any PC. */
@@ -230,18 +239,19 @@ export class SpawnOutgoingStore {
 
 function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
-  const { hostId, spawnId, agent, rootId, sub, from, callerKey, text, state, code, linkId, createdAt, updatedAt, expiresAt } = raw;
+  const { hostId, spawnId, agent, rootId, sub, from, callerKey, requestKey, text, state, code, linkId, createdAt, updatedAt, expiresAt } = raw;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent) || !isSpawnRootId(rootId)) return null;
   if (sub !== undefined && (typeof sub !== 'string' || !sub || normalizeSpawnSub(sub) !== sub)) return null;
   if (!isPlainObject(from) || !isSafeId(from['workspaceId']) || !isSafeId(from['paneId'])) return null;
   if (!isSafeId(callerKey) || (text !== undefined && typeof text !== 'string')) return null;
+  if (requestKey !== undefined && (typeof requestKey !== 'string' || !SPAWN_REQUEST_KEY_RE.test(requestKey))) return null;
   if (typeof state !== 'string' || !STATES.has(state) || (code !== undefined && !isSpawnCode(code))) return null;
   if (linkId !== undefined && (typeof linkId !== 'string' || !UUID_RE.test(linkId))) return null;
   if (!isIsoString(createdAt) || !isIsoString(updatedAt) || !isIsoString(expiresAt)) return null;
   return {
     v: 1, hostId, spawnId, agent, rootId, ...(sub ? { sub: sub as string } : {}),
     from: { workspaceId: from['workspaceId'] as string, paneId: from['paneId'] as string },
-    callerKey, ...(typeof text === 'string' ? { text } : {}),
+    callerKey, ...(typeof requestKey === 'string' ? { requestKey } : {}), ...(typeof text === 'string' ? { text } : {}),
     state: state as A2aSpawnOutgoingState, ...(code ? { code: code as A2aSpawnCode } : {}),
     ...(typeof linkId === 'string' ? { linkId } : {}),
     createdAt, updatedAt, expiresAt,

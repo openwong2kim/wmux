@@ -122,6 +122,25 @@ describe('asking', () => {
     expect(asks.ask(input()).ok).toBe(true);
   });
 
+  it('a retry with the same requestKey answers the stored request and sends nothing more, across a restart', () => {
+    const first = asks.ask(input({ requestKey: 'k-0123456789' }));
+    expect(first.ok).toBe(true);
+    // A restarted daemon reads the request back from disk.
+    store = new SpawnOutgoingStore({ dir: path.join(dir, 'a2a'), scheduleHarden: quiet, now: () => clock });
+    asks = make();
+    const again = asks.ask(input({ requestKey: 'k-0123456789', text: 'edited after a timeout' }));
+    expect(again).toMatchObject({ ok: true, spawn: { spawnId: first.ok ? first.spawn.spawnId : '' } });
+    expect(sent).toHaveLength(1);
+    expect(store.list()).toHaveLength(1);
+    // Another pane's key, a key used for another PC, and a malformed key are not that request.
+    expect(asks.ask(input({ requestKey: 'k-0123456789', callerKey: 'pane-b' })).ok).toBe(true);
+    expect(sent).toHaveLength(2);
+    features.set(C, new Set([A2A_FEATURE_SPAWN]));
+    expect(asks.ask(input({ requestKey: 'k-0123456789', pc: 'LAPTOP' }))).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(asks.ask(input({ requestKey: 'bad key!' }))).toMatchObject({ ok: false, error: 'bad-request' });
+    expect(sent).toHaveLength(2);
+  });
+
   it('a request that could not be queued is not kept', () => {
     const failing = new A2aSpawnRequester({
       store, links, taskService: tasks, enqueue: () => { throw new Error('outbox full'); },

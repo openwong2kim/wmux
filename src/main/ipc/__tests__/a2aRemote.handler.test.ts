@@ -130,18 +130,34 @@ describe('a2aRemote spawn ask', () => {
     lineage.clear();
   });
 
-  it('masks key shapes in the prompt before it leaves, and keeps branch names and paths', async () => {
+  it('sends a prompt only as the dialog showed it: one the final pass would change is refused, never sent changed', async () => {
     const client = { ...fakeClient(), a2aSpawnAsk: vi.fn(async () => ({ ok: true })) } as unknown as DaemonClient;
     cleanups.push(registerA2aRemoteHandlers(client));
     await invoke(IPC.A2A_REMOTE_SNAPSHOT, { workspaces: [{ id: 'w1', name: 'API', panes: [{ paneId: 'p1' }] }] });
+    const ask = { hostId: 'h', agent: 'claude', folder: { root: 'web' }, end: { workspaceId: 'w1', paneId: 'p1' } };
     // Built at run time: no credential-shaped literal in the source.
     const key = ['sk-ant-api03', 'x9Y8'.repeat(6)].join('-');
     const url = ['postgres://app', 'hunter2pw@db.internal/x'].join(':');
-    const text = `Branch: feat/p1-7-remote-handoff-v2\nsrc/daemon/a2aRemote/spawnRequester.ts\nkey ${key}, db ${url}`;
-    await invoke(IPC.A2A_REMOTE_SPAWN_ASK, { hostId: 'h', agent: 'claude', folder: { root: 'web' }, text, end: { workspaceId: 'w1', paneId: 'p1' } });
-    expect(client.a2aSpawnAsk).toHaveBeenCalledWith(expect.objectContaining({
-      text: 'Branch: feat/p1-7-remote-handoff-v2\nsrc/daemon/a2aRemote/spawnRequester.ts\nkey [redacted], db postgres://app:[redacted]@db.internal/x',
-    }));
+    for (const text of [`key ${key}`, `db ${url}`, 'Bearer xK9mQ2pL7vR4nT8wZ3yB6cF1hJ5', '[wmux] fake', 'a\u202Eb']) {
+      await expect(invoke(IPC.A2A_REMOTE_SPAWN_ASK, { ...ask, text })).resolves.toMatchObject({ ok: false, error: 'needs-review' });
+    }
+    expect(client.a2aSpawnAsk).not.toHaveBeenCalled();
+    // A final prompt goes as it is, branch names and paths included, with the dialog's request key.
+    const text = 'Branch: `feat/p1-7-remote-handoff-v2`\n `src/daemon/a2aRemote/spawnRequester.ts`\nkey [redacted]';
+    await invoke(IPC.A2A_REMOTE_SPAWN_ASK, { ...ask, text, requestKey: 'k-0123456789' });
+    expect(client.a2aSpawnAsk).toHaveBeenCalledWith(expect.objectContaining({ text, requestKey: 'k-0123456789' }));
+  });
+
+  it('refuses an expiry that is not a whole number of hours from 1 to 72, and a malformed request key', async () => {
+    const client = { ...fakeClient(), a2aSpawnAsk: vi.fn(async () => ({ ok: true })) } as unknown as DaemonClient;
+    cleanups.push(registerA2aRemoteHandlers(client));
+    await invoke(IPC.A2A_REMOTE_SNAPSHOT, { workspaces: [{ id: 'w1', name: 'API', panes: [{ paneId: 'p1' }] }] });
+    const ask = { hostId: 'h', agent: 'claude', folder: { root: 'web' }, text: 'go', end: { workspaceId: 'w1', paneId: 'p1' } };
+    for (const expiresInHours of [Number.NaN, Number.POSITIVE_INFINITY, 1.5, 0, 73]) {
+      await expect(invoke(IPC.A2A_REMOTE_SPAWN_ASK, { ...ask, expiresInHours })).resolves.toMatchObject({ ok: false, error: 'bad-request' });
+    }
+    await expect(invoke(IPC.A2A_REMOTE_SPAWN_ASK, { ...ask, requestKey: 'bad key!' })).resolves.toMatchObject({ ok: false, error: 'bad-request' });
+    expect(client.a2aSpawnAsk).not.toHaveBeenCalled();
   });
 });
 

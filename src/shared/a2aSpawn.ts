@@ -33,6 +33,8 @@ export const SPAWN_TTL_MAX_MS = 72 * 60 * 60 * 1000;
 export const SPAWN_CLOCK_SKEW_MS = 10 * 60 * 1000;
 /** A request's first prompt (bytes, UTF-8). */
 export const SPAWN_TEXT_MAX = A2A_REMOTE_BODY_MAX;
+/** A `requestKey`: an id the asker minted (`[A-Za-z0-9-]`). */
+export const SPAWN_REQUEST_KEY_RE = /^[A-Za-z0-9-]{8,64}$/;
 /** A folder's path below its root (characters). */
 export const SPAWN_SUB_MAX = 512;
 /** Roots and agents one policy may list. */
@@ -427,6 +429,12 @@ export interface A2aSpawnAskInput {
   from: A2aSpawnFromV1;
   /** Counts toward the per-pane hourly limit: the pane that gets the replies. */
   callerKey: string;
+  /**
+   * The asker's own id for this request: the same key from the same caller
+   * answers with the request already stored instead of sending a second one,
+   * so a retry after an unclear failure starts nothing twice. Never sent.
+   */
+  requestKey?: string;
 }
 
 /**
@@ -440,14 +448,18 @@ export interface A2aSpawnUiAsk {
   text: string;
   expiresInHours?: number;
   end: { workspaceId: string; paneId: string };
+  /** Minted once per dialog and reused on a retry (`A2aSpawnAskInput.requestKey`). */
+  requestKey?: string;
 }
 
 /**
  * Why a request was not sent. `not-supported`: that PC's wmux cannot take
  * one (it never said `spawn.1`); `unknown-pc` / `ambiguous-pc`: no paired PC,
- * or more than one, goes by that name.
+ * or more than one, goes by that name; `needs-review`: main's final pass over
+ * the prompt (finalizeSpawnPrompt) would change it, so the person did not see
+ * what would be sent.
  */
-export type A2aSpawnAskError = 'unknown-pc' | 'ambiguous-pc' | 'not-supported' | 'rate-limited' | 'bad-request' | 'unavailable';
+export type A2aSpawnAskError = 'unknown-pc' | 'ambiguous-pc' | 'not-supported' | 'rate-limited' | 'bad-request' | 'unavailable' | 'needs-review';
 
 export type A2aSpawnAskResult =
   /** `online`: the other PC's link is up now; when false the request waits for it until `expiresAt`. */

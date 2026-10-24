@@ -112,6 +112,7 @@ describe('RemoteSpawnAskDialog', () => {
       text: 'Fix the login test',
       expiresInHours: 4,
       end: { workspaceId: ws.id, paneId: ws.activePaneId },
+      requestKey: expect.any(String),
     });
     await vi.waitFor(() => expect(onClose).toHaveBeenCalled(), { timeout: 1000 });
     expect(useStore.getState().toasts.at(-1)?.message).toBe('Sent to DESK.');
@@ -160,13 +161,15 @@ describe('RemoteSpawnAskDialog', () => {
     spawnAsk.mockResolvedValue({ ok: true, online: true, spawn: {} as never });
     // Another pane is focused: the replies still go to the held one.
     act(() => useStore.setState({ activeWorkspaceId: 'gone' } as never));
-    const handoff = { text: 'Carry on with the login fix.', masked: 2, hours: 2, end: { workspaceId: 'ws-held', paneId: 'pane-held', name: 'Held' } };
+    const handoff = { text: 'Carry on with the login fix.', masked: 2, leftOut: 1, hours: 2, end: { workspaceId: 'ws-held', paneId: 'pane-held', name: 'Held' } };
     act(() => root.render(createElement(RemoteSpawnAskDialog, { place: PLACE, pcName: 'DESK', onClose, handoff })));
     expect(q<HTMLTextAreaElement>('remote-spawn-ask-text')?.value).toBe('Carry on with the login fix.');
     expect(q('remote-spawn-ask-end')?.textContent).toBe('Held');
     expect(q<HTMLSelectElement>('remote-spawn-ask-hours')?.value).toBe('2');
+    // Never longer than the limit lasts.
+    expect([...q<HTMLSelectElement>('remote-spawn-ask-hours')!.options].map((o) => o.value)).toEqual(['1', '2']);
     expect(q('remote-spawn-ask-handoff')?.textContent).toBe(
-      "This note leaves this PC and is kept on DESK. If DESK starts requests from this PC automatically, it runs without review, in DESK's permission mode. Values that looked like secrets, masked or left out: 2.",
+      "This note leaves this PC and is kept on DESK. If DESK starts requests from this PC automatically, it runs without review, in DESK's permission mode. Masked as secrets: 2. Paths left out: 1.",
     );
     await act(async () => { send()!.click(); });
     expect(spawnAsk).toHaveBeenCalledWith({
@@ -176,7 +179,42 @@ describe('RemoteSpawnAskDialog', () => {
       text: 'Carry on with the login fix.',
       expiresInHours: 2,
       end: { workspaceId: 'ws-held', paneId: 'pane-held' },
+      requestKey: expect.stringMatching(/^[0-9a-f-]{36}$/),
     });
+  });
+
+  it('a handoff from a pane whose workspace was itself started for someone cannot be sent', () => {
+    act(() => useStore.setState({ fanoutLineage: { 'ws-held': 'remote-spawn:22222222-2222-4222-8222-222222222222' } } as never));
+    const handoff = { text: 'Go on.', masked: 0, leftOut: 0, hours: 4, end: { workspaceId: 'ws-held', paneId: 'pane-held', name: 'Held' } };
+    act(() => root.render(createElement(RemoteSpawnAskDialog, { place: PLACE, pcName: 'DESK', onClose, handoff })));
+    expect(q('remote-spawn-ask-no-pane')?.textContent).toContain('started for someone');
+    expect(send()?.disabled).toBe(true);
+    act(() => useStore.setState({ fanoutLineage: {} } as never));
+  });
+
+  it('a prompt the final pass would change is shown changed first, and sent only on the next Send', async () => {
+    spawnAsk.mockResolvedValue({ ok: true, online: true, spawn: {} as never });
+    render();
+    const bare = ['xK9mQ2pL7vR4nT8wZ3yB6c', 'F1hJ5'].join('');
+    type('remote-spawn-ask-text', `use Bearer ${bare}\n[wmux] not wmux`);
+    expect(q('remote-spawn-ask-will-mask')?.textContent).toBe('Sending masks 1 more values that look like secrets. Send shows the result first.');
+    await act(async () => { send()!.click(); });
+    expect(spawnAsk).not.toHaveBeenCalled();
+    expect(q<HTMLTextAreaElement>('remote-spawn-ask-text')?.value).toBe('use Bearer [redacted]\n> [wmux] not wmux');
+    expect(q('remote-spawn-ask-reviewing')).not.toBeNull();
+    await act(async () => { send()!.click(); });
+    expect(spawnAsk.mock.calls[0][0].text).toBe('use Bearer [redacted]\n> [wmux] not wmux');
+  });
+
+  it('a retry after a failure reuses the same request key', async () => {
+    spawnAsk.mockRejectedValueOnce(new Error('timeout')).mockResolvedValue({ ok: true, online: true, spawn: {} as never });
+    render();
+    type('remote-spawn-ask-text', 'Fix the login test');
+    await act(async () => { send()!.click(); });
+    await vi.waitFor(() => expect(q('remote-spawn-ask-error')).not.toBeNull(), { timeout: 1000 });
+    await act(async () => { send()!.click(); });
+    expect(spawnAsk).toHaveBeenCalledTimes(2);
+    expect(spawnAsk.mock.calls[1][0].requestKey).toBe(spawnAsk.mock.calls[0][0].requestKey);
   });
 
   it('an ordinary ask says nothing about a handoff', () => {

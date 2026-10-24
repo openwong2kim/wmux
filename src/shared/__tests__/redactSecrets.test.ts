@@ -63,7 +63,7 @@ describe('redactSecrets', () => {
   ])('leaves ordinary screen text alone: %s', (s) => expect(redactSecrets(s)).toBe(s));
 });
 
-describe('redactSecrets — URL passwords and the key-shapes-only variant', () => {
+describe('redactSecrets — URLs, readable names and the masked count', () => {
   // Built at run time: no credential-shaped literal in the source.
   const url = (user: string, pw: string, rest: string) => `postgres://${user}:${pw}@${rest}`;
 
@@ -79,21 +79,45 @@ describe('redactSecrets — URL passwords and the key-shapes-only variant', () =
     expect(redactSecrets(url('app', 'a@b@c', 'h'))).toBe(url('app', REDACTED, 'h'));
   });
 
-  it('keyShapesOnly keeps branch names and paths with digits that the long-token rule takes', () => {
-    for (const s of ['feat/p1-7-remote-handoff-v2', 'src/daemon/a2aRemote/spawnRequester.ts']) {
-      expect(redactSecrets(s)).toBe(REDACTED);
-      expect(redactSecretsCounted(s, { keyShapesOnly: true })).toEqual({ text: s, masked: 0 });
+  it('readableNames keeps branch names, paths and ids that the long-token rule takes, and still masks a bare key', () => {
+    for (const s of ['feat/p1-7-remote-handoff-v2', 'src/daemon/a2aRemote/spawnRequester.ts', 'id 0b5f6a7e-1c2d-4e3f-8a9b-0c1d2e3f4a5b']) {
+      expect(redactSecretsCounted(s, { readableNames: true })).toEqual({ text: s, masked: 0 });
     }
+    expect(redactSecrets('feat/p1-7-remote-handoff-v2')).toBe(REDACTED);
+    const bare = 'xK9mQ2pL7vR4nT8wZ3yB6cF1hJ5';
+    expect(redactSecretsCounted(`Authorization: Bearer ${bare}`, { readableNames: true }).text).toBe(`Authorization: Bearer ${REDACTED}`);
+    expect(redactSecretsCounted(`cookie sid=${bare}; path=/`, { readableNames: true }).text).toBe(`cookie ${REDACTED}; path=/`);
+    const b64 = 'aGVsbG8gd29ybGQgdGhpcyBpcyBhIGxvbmcgYmFzZTY0IGxpbmUgMTIzNDU2Nzg5MA==';
+    expect(redactSecretsCounted(b64, { readableNames: true }).text).toBe(REDACTED);
   });
 
-  it('keyShapesOnly still masks key shapes, assigned secrets and URL passwords, and counts them', () => {
-    const r = redactSecretsCounted(`branch ${KEYS[1]} token=${'q'.repeat(12)} ${url('a', 'b', 'c')}`, { keyShapesOnly: true });
+  it('readableNames still masks key shapes, assigned secrets and URL passwords', () => {
+    const r = redactSecretsCounted(`branch ${KEYS[1]} token=${'q'.repeat(12)} ${url('a', 'b', 'c')}`, { readableNames: true });
     expect(r.text).toBe(`branch ${REDACTED} token=${REDACTED} ${url('a', REDACTED, 'c')}`);
     expect(r.masked).toBe(3);
   });
 
-  it('counts what the full rules mask and nothing for clean text', () => {
+  it('a URL inside JSON or a log line never runs into the text after it', () => {
+    const line = `{"url":"${url('u', 'p', 'h')}","by":"a@b.c"}`;
+    expect(redactSecrets(line)).toBe(`{"url":"${url('u', REDACTED, 'h')}","by":"a@b.c"}`);
+    expect(redactSecrets(`(${url('u', 'p', 'h')}), x@y`)).toBe(`(${url('u', REDACTED, 'h')}), x@y`);
+  });
+
+  it('masks a key-like user with no password, and keeps a plain one', () => {
+    const user = 'Zq8Lp2Xv9KtMnW4Y7cBs';
+    expect(redactSecrets(`https://${user}@github.com/o/r`)).toBe(`https://${REDACTED}@github.com/o/r`);
+    expect(redactSecrets('https://deploy-bot@example.com/x')).toBe('https://deploy-bot@example.com/x');
+  });
+
+  it.each(['access_token', 'api_key', 'apikey', 'password', 'client_secret', 'X-Amz-Signature', 'X-Amz-Credential', 'X-Amz-Security-Token'])('masks the %s query parameter', (name) => {
+    expect(maskInlineCredentials(`https://h/x?a=1&${name}=v4lu3&b=2`)).toBe(`https://h/x?a=1&${name}=${REDACTED}&b=2`);
+  });
+
+  it('counts each masked value once, even when two rules take it, and nothing for clean text', () => {
     expect(redactSecretsCounted(`a ${KEYS[0]} b ${KEYS[2]}`).masked).toBe(2);
+    // The sk- shape takes the start, the assignment rule the rest: one value, one marker.
+    expect(redactSecretsCounted(`token=${KEYS[0]}.tail1234`).masked).toBe(1);
+    expect(redactSecretsCounted(`already ${REDACTED} here`).masked).toBe(0);
     expect(redactSecretsCounted('nothing here').masked).toBe(0);
   });
 });

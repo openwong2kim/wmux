@@ -148,7 +148,7 @@ export default function UsageLimitChip({ ptyId, compact, readOnly = false, works
           place={pcHandoff.place}
           pcName={pcHandoff.pcName}
           onClose={() => setPcHandoff(null)}
-          handoff={{ text: pcHandoff.text, masked: pcHandoff.masked, hours: pcHandoff.hours, end: { workspaceId, paneId, name: workspaceName } }}
+          handoff={{ text: pcHandoff.text, masked: pcHandoff.masked, leftOut: pcHandoff.leftOut, hours: pcHandoff.hours, end: { workspaceId, paneId, name: workspaceName } }}
         />
       )}
       {!compact && (

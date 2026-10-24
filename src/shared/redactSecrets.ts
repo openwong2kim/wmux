@@ -13,19 +13,29 @@ import { KEY_RULES } from './secretGuard';
 export const REDACTED = '[redacted]';
 
 /**
- * Credentials that ride INSIDE a string — a query `token=`/`code=` or the
- * computer pairing link's `#wmux-desktop-code=` fragment.
+ * Credentials that ride INSIDE a string: a query or fragment parameter named
+ * for one (`token=`, `code=`, `access_token=`, `api_key=`, `password=`, AWS
+ * pre-signed `X-Amz-Signature=` / `-Credential=` / `-Security-Token=`, …) or
+ * the computer pairing link's `#wmux-desktop-code=` fragment.
  */
-const INLINE_CREDENTIAL = /([?&#](?:token|code|wmux-desktop-code)=)(?!%5Bredacted%5D|\[redacted\])[^&#\s"'\\]+/gi;
+const INLINE_CREDENTIAL = /([?&#](?:token|code|wmux-desktop-code|access_token|refresh_token|id_token|api[_-]?key|apikey|password|passwd|pwd|secret|client_secret|sig|signature|auth|x-amz-signature|x-amz-credential|x-amz-security-token)=)(?!%5Bredacted%5D|\[redacted\])[^&#\s"'\\]+/gi;
 /**
- * The password of a URL's userinfo (`scheme://user:password@host`); the user
- * name stays. The userinfo ends at the LAST `@` before the host, so a raw `@`
- * inside the password is masked with the rest of it.
+ * The userinfo of a URL (`scheme://user:password@host`). None of the parts
+ * crosses a quote, bracket, comma or semicolon, so a URL inside JSON or a log
+ * line never runs into the text after it. The userinfo ends at the LAST `@`
+ * before the host, so a raw `@` inside the password is masked with the rest;
+ * a raw `/`, `?` or `#` ends the authority (RFC 3986) and cannot be told from
+ * a path, so it is not read as part of a password.
  */
-const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:]*:)(?!\[redacted\]@)[^\s/?#]+(?=@[^\s/?#@]*(?:[\s/?#]|$))/gi;
+const URL_PASSWORD = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s/?#@:"'<>[\]{}(),;]*:)(?!\[redacted\]@)[^\s/?#"'<>[\]{}(),;]+(?=@[^\s/?#@"'<>[\]{}(),;]*(?:[\s/?#"'<>[\]{}(),;]|$))/gi;
+/** A userinfo with no password (`https://<token>@host`): masked when it looks like a key, so `git@` stays. */
+const URL_USER_TOKEN = /(\b[a-z][a-z0-9+.-]*:\/\/)(?!\[redacted\]@)([^\s/?#@:"'<>[\]{}(),;]{16,})(?=@)/gi;
 
 export function maskInlineCredentials(s: string): string {
-  return s.replace(INLINE_CREDENTIAL, '$1[redacted]').replace(URL_PASSWORD, '$1[redacted]');
+  return s
+    .replace(INLINE_CREDENTIAL, '$1[redacted]')
+    .replace(URL_PASSWORD, '$1[redacted]')
+    .replace(URL_USER_TOKEN, (m, keep: string, user: string) => (looksRandom(user) ? `${keep}${REDACTED}` : m));
 }
 
 const KEY_SHAPES: readonly RegExp[] = [
@@ -70,24 +80,24 @@ export function redactSecrets(s: string): string {
   return redactSecretsCounted(s).text;
 }
 
+const markers = (s: string): number => s.split(REDACTED).length - 1;
+
 /**
- * `redactSecrets`, also saying how many values it masked. `keyShapesOnly`
- * leaves out the long-random-token rule, which also takes branch names and
- * paths with digits in them (`feat/p1-7-remote-handoff-v2`): for text whose
- * long runs are names, not prose that may hide a bare key.
+ * `redactSecrets`, also saying how many values it masked: the markers it added,
+ * so a value two rules both take counts once. `readableNames` judges a long
+ * run by its parts between `/`, `.`, `_` and `-`, masking it only when one part
+ * of 16+ characters looks random: branch names and paths with digits in them
+ * (`feat/p1-7-remote-handoff-v2`) stay readable, a bare key or a base64 line
+ * does not.
  */
-export function redactSecretsCounted(s: string, opts: { keyShapesOnly?: boolean } = {}): { text: string; masked: number } {
-  let masked = 0;
-  const mask = (m: string, keep = ''): string => {
-    masked++;
-    return `${keep}${REDACTED}`;
-  };
-  let out = s
-    .replace(INLINE_CREDENTIAL, (_m, keep: string) => mask(_m, keep))
-    .replace(URL_PASSWORD, (_m, keep: string) => mask(_m, keep));
-  for (const re of KEY_SHAPES) out = out.replace(re, (m) => mask(m));
-  out = out.replace(ASSIGNED, (m, name: string, value: string) => (value === REDACTED ? m : mask(m, name)));
-  if (!opts.keyShapesOnly) out = out.replace(LONG_TOKEN, (m) => (m.includes(REDACTED) || !looksRandom(m) ? m : mask(m)));
-  for (const re of MORE_SHAPES) out = out.replace(re, (m) => mask(m));
-  return { text: out, masked };
+export function redactSecretsCounted(s: string, opts: { readableNames?: boolean } = {}): { text: string; masked: number } {
+  const longRandom = opts.readableNames
+    ? (m: string) => m.split(/[/._-]/).some((part) => part.length >= 16 && looksRandom(part))
+    : looksRandom;
+  let out = maskInlineCredentials(s);
+  for (const re of KEY_SHAPES) out = out.replace(re, REDACTED);
+  out = out.replace(ASSIGNED, (m, name: string, value: string) => (value === REDACTED ? m : `${name}${REDACTED}`));
+  out = out.replace(LONG_TOKEN, (m) => (m.includes(REDACTED) || !longRandom(m) ? m : REDACTED));
+  for (const re of MORE_SHAPES) out = out.replace(re, REDACTED);
+  return { text: out, masked: Math.max(0, markers(out) - markers(s)) };
 }
