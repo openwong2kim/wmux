@@ -362,7 +362,7 @@ export const AGENT_IDENTITIES = [
       // codex-cli 0.142.5, 2026-10-24), and Codex runs with either.
       loginStatus: {
         args: ['login', 'status'], read: 'exit-code', signedOutText: 'not logged in', accountEnv: 'CODEX_HOME',
-        unseenCredentials: { env: ['OPENAI_API_KEY', 'CODEX_API_KEY'], configKey: { dir: '.codex', file: 'config.toml', key: 'model_provider', ownValue: 'openai' } },
+        unseenCredentials: { env: ['OPENAI_API_KEY', 'CODEX_API_KEY'], configKey: { dir: '.codex', file: 'config.toml', key: 'model_provider', ownValue: 'openai', profile: { key: 'profile', table: 'profiles' } } },
       },
       // One background server per account, which pane identity relies on
       // (src/mcp/codexThreadIdentity.ts).
@@ -627,11 +627,17 @@ export type AgentSlug = (typeof AGENT_IDENTITIES)[number]['slug'];
 /**
  * See `loginStatus.unseenCredentials`. `configKey.dir` is the account folder's
  * default under the home folder; `ownValue` is the value that still means the
- * agent's own sign-in (Codex's default provider), so it is not another credential.
+ * agent's own sign-in (Codex's default provider), so it is not another
+ * credential. `profile` names the top-level key that selects a profile and the
+ * table the profiles live in: the selected profile's value wins over the
+ * top-level one, and a profile nobody selected does not count.
  */
 export interface UnseenCredentials {
   readonly env: readonly string[];
-  readonly configKey?: { readonly dir: string; readonly file: string; readonly key: string; readonly ownValue: string };
+  readonly configKey?: {
+    readonly dir: string; readonly file: string; readonly key: string; readonly ownValue: string;
+    readonly profile?: { readonly key: string; readonly table: string };
+  };
 }
 
 /** Human-facing agent name. */

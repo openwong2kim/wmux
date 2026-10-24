@@ -55,6 +55,12 @@ describe('AgentSetupDetector.loginState and credentials the status does not see'
     expect(await signedOutCodex({ '/home/me/.codex/config.toml': config }).loginState('codex', {})).toBeNull();
     // Codex's own provider is its own sign-in, not another credential.
     expect(await signedOutCodex({ '/home/me/.codex/config.toml': 'model_provider = "openai" # default\n' }).loginState('codex', {})).toBe(false);
+    // A profile nobody selected is not the provider a launch uses…
+    const profiles = '[model_providers.ollama]\nbase_url = "http://localhost:11434/v1"\n\n[profiles.local]\nmodel_provider = "ollama"\n';
+    expect(await signedOutCodex({ '/home/me/.codex/config.toml': profiles }).loginState('codex', {})).toBe(false);
+    // …but a selected one is, and it wins over the top level.
+    const selected = 'profile = "local"\nmodel_provider = "openai"\n' + profiles;
+    expect(await signedOutCodex({ '/home/me/.codex/config.toml': selected }).loginState('codex', {})).toBeNull();
     // Another account's folder is not this one's.
     expect(await signedOutCodex({ '/home/me/.codex/config.toml': config }).loginState('codex', { CODEX_HOME: '/acc/cx' })).toBe(false);
   });

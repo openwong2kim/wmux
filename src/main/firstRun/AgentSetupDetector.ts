@@ -165,10 +165,42 @@ export const execProbe: ProbeRunner = (command, args, opts) =>
   });
 
 /**
+ * The value a launch would use for `key` in a TOML config, read the way the
+ * agent does: the selected profile's table first (`profile = "x"` at the top
+ * selects `[<table>.x]`), then the top level. Other tables do not count. Only
+ * flat `key = value` lines are read; a value with an inline comment or quotes
+ * comes back bare.
+ */
+export function activeConfigValue(
+  text: string,
+  key: string,
+  profile?: { readonly key: string; readonly table: string },
+): string | undefined {
+  const tables = new Map<string, Map<string, string>>([['', new Map()]]);
+  let table = '';
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim();
+    const header = /^\[\s*([^\]]+?)\s*\]$/.exec(line);
+    if (header) {
+      table = header[1].replace(/["']/g, '');
+      if (!tables.has(table)) tables.set(table, new Map());
+      continue;
+    }
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    tables.get(table)?.set(line.slice(0, eq).trim(), line.slice(eq + 1).trim().replace(/^["']|["']$/g, ''));
+  }
+  const top = tables.get('') ?? new Map<string, string>();
+  const selected = profile ? top.get(profile.key) : undefined;
+  return (selected && profile ? tables.get(`${profile.table}.${selected}`)?.get(key) : undefined) ?? top.get(key);
+}
+
+/**
  * Does the agent have a way to run that its status command does not report?
- * A non-empty listed environment variable, or the listed key set to anything
- * but the agent's own value in its config file (in the account folder, or the
- * default one under the home folder). The key is the registry's constant.
+ * A non-empty listed environment variable, or the listed key, as the agent
+ * would read it (activeConfigValue), set to anything but the agent's own value
+ * in its config file (in the account folder, or the default one under the
+ * home folder).
  */
 export function hasUnseenCredential(
   unseen: UnseenCredentials | undefined,
@@ -184,13 +216,8 @@ export function hasUnseenCredential(
   const folder = (accountEnv && env[accountEnv]?.trim()) || path.join(home, config.dir);
   const text = readFile(path.join(folder, config.file));
   if (text === null) return false;
-  for (const line of text.split(/\r?\n/)) {
-    const [name, ...rest] = line.split('=');
-    if (rest.length === 0 || name.trim() !== config.key) continue;
-    const value = rest.join('=').replace(/#.*$/, '').trim().replace(/^["']|["']$/g, '');
-    if (value !== '' && value !== config.ownValue) return true;
-  }
-  return false;
+  const value = activeConfigValue(text, config.key, config.profile);
+  return value !== undefined && value !== '' && value !== config.ownValue;
 }
 
 /**
