@@ -4755,7 +4755,7 @@ export const ko = {
   'schedules.tpl.triage.prompt': "지난 평일 이후 열린 이슈를 살펴보라. 이슈마다 라벨, 우선순위, 중복 여부를 한 줄 근거와 함께 제안하라. 이슈는 수정하지 마라.",
   'schedules.tpl.browserPublish.title': "브라우저로 게시",
   'schedules.tpl.browserPublish.desc': "평일 10:00 · 로그인된 브라우저로 업데이트 게시",
-  'schedules.tpl.browserPublish.prompt': "브라우저에서 게시할 사이트를 열고, 이 저장소의 최근 변경 사항으로 오늘의 업데이트를 써서 게시하라. 로그인, 캡차, 확인 단계가 나오면 추측하지 말고 멈춰서 보고하라. 게시가 끝나면 스크린샷을 찍고 게시물 URL을 보고하라.",
+  'schedules.tpl.browserPublish.prompt': "브라우저에서 게시할 사이트를 열고, 이 저장소의 파일(변경 기록이나 노트 등)을 바탕으로 오늘의 업데이트를 써서 게시하라. 명령을 실행하지 말고 파일을 직접 읽어라. 로그인, 캡차, 확인 단계가 나오면 추측하지 말고 멈춰서 보고하라. 게시가 끝나면 스크린샷을 찍고 게시물 URL을 보고하라.",
   'fleetBoard.usage': "사용량 5h {session}% · 7d {weekly}%",
   'fleetBoard.nextSchedule': "다음 예약 {time}",
   'fleetBoard.approvals': "승인 {count}",
