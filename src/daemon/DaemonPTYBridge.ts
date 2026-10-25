@@ -341,6 +341,10 @@ export class DaemonPTYBridge extends EventEmitter {
   private shellPromptSeen = false;
   private shellSubmittedKeyRevision: number | undefined;
   private shellCommandKeyRevision = 0;
+  /** The shell command that ended last, until the next one starts: the key
+   *  revision it started from, the one it ended at, and whether a prompt was
+   *  drawn since (rebaseShellKeyInput). */
+  private endedShellCommand: { keyRevision: number; endedAt: number; prompted: boolean } | null = null;
   /**
    * At least one full activity window. A shorter one would let bytes banked
    * before a keystroke combine, inside the same 3 s measurement window, with
@@ -816,6 +820,26 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Stdin generation counting only writes that can act on the screen (see the field). */
   getKeyInputRevision(): number {
     return this.keyInputRevision;
+  }
+
+  /**
+   * The daemon itself ended the shell's foreground program (a proven stop of
+   * a TUI moving into chat). The keys typed up to `keyRevision`, read before
+   * that stop, went to the program, not to the shell's line editor, so they
+   * are not input queued at the next prompt. Keys after it still are. Works
+   * whether the shell has already drawn that prompt or not.
+   */
+  rebaseShellKeyInput(keyRevision: number): void {
+    if (this.shellCommandRunning) {
+      this.shellCommandKeyRevision = Math.max(this.shellCommandKeyRevision, keyRevision);
+      return;
+    }
+    const ended = this.endedShellCommand;
+    // Another command, or a key after the mark before the program ended: the end's verdict stands.
+    if (!ended || keyRevision < ended.keyRevision || ended.endedAt !== keyRevision) return;
+    if (!ended.prompted) this.completedShellCommand = true;
+    // Drawn already: empty unless a key reached the pane since.
+    else if (this.keyInputRevision === ended.endedAt) this.emptyShellPrompt = true;
   }
 
   /** `isInputQuiet` for writes that can act on the screen only: focus and
@@ -1862,6 +1886,9 @@ export class DaemonPTYBridge extends EventEmitter {
             // Input queued while a command runs can become history or a draft
             // at the next prompt. Completion must not erase that invalidation.
             this.completedShellCommand = this.shellCommandRunning && this.keyInputRevision === this.shellCommandKeyRevision;
+            this.endedShellCommand = this.shellCommandRunning
+              ? { keyRevision: this.shellCommandKeyRevision, endedAt: this.keyInputRevision, prompted: false }
+              : null;
             this.shellCommandRunning = false;
           }
           if (parsed.type === 'command_start') {
@@ -1869,6 +1896,7 @@ export class DaemonPTYBridge extends EventEmitter {
             this.shellCommandKeyRevision = this.shellSubmittedKeyRevision ?? this.keyInputRevision;
             this.shellSubmittedKeyRevision = undefined;
             this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false;
+            this.endedShellCommand = null;
           }
           // The shell's foreground program changed hands: whatever episode was
           // open (an agent's, or the Enter that launched the next one) is over.
@@ -1884,6 +1912,7 @@ export class DaemonPTYBridge extends EventEmitter {
             // passive input (counted by inputRevision) does not type.
             this.emptyShellPrompt = this.keyInputRevision === 0 || this.completedShellCommand;
             this.completedShellCommand = false;
+            if (this.endedShellCommand) this.endedShellCommand.prompted = true;
           }
           promptLog.append(parsed);
           this.emit('prompt', { sessionId, event: parsed });
@@ -2248,6 +2277,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.shellPromptSeen = false;
     this.shellSubmittedKeyRevision = undefined;
     this.shellCommandKeyRevision = 0;
+    this.endedShellCommand = null;
     this.emptyShellPrompt = false;
     this.completedShellCommand = false;
     this.settledStatus = null;

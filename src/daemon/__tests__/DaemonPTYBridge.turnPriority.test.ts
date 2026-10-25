@@ -83,6 +83,73 @@ describe('DaemonPTYBridge turn priority', () => {
     expect(bridge.isEmptyShellPrompt()).toBe(false);
   });
 
+  describe('keys a stopped TUI took (rebaseShellKeyInput)', () => {
+    // `claude` run from an empty prompt, a turn typed into it.
+    const runTui = () => {
+      feed('\x1b]133;A\x07$ \x1b]133;B\x07');
+      bridge.noteInput('claude\r');
+      feed('\x1b]133;C\x07');
+      bridge.noteInput('Reply with the single word ok.');
+      bridge.noteInput('\r');
+    };
+
+    it('without it, the prompt after a TUI that took keys reads as used, on any shell', () => {
+      runTui();
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07');
+      expect(bridge.isEmptyShellPrompt()).toBe(false);
+    });
+
+    it('the prompt the stop leads to reads empty, whether drawn before or after the rebase', () => {
+      runTui();
+      const mark = bridge.getKeyInputRevision();
+      // The stop proved before the shell drew its prompt.
+      bridge.rebaseShellKeyInput(mark);
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07');
+      expect(bridge.isEmptyShellPrompt()).toBe(true);
+    });
+
+    it('a prompt already drawn when the stop is proved reads empty too', () => {
+      runTui();
+      const mark = bridge.getKeyInputRevision();
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07');
+      expect(bridge.isEmptyShellPrompt()).toBe(false);
+      bridge.rebaseShellKeyInput(mark);
+      expect(bridge.isEmptyShellPrompt()).toBe(true);
+    });
+
+    it('a key after the mark still counts as queued input', () => {
+      runTui();
+      const mark = bridge.getKeyInputRevision();
+      bridge.noteInput('x');
+      bridge.rebaseShellKeyInput(mark);
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07');
+      expect(bridge.isEmptyShellPrompt()).toBe(false);
+
+      // After the prompt is drawn, too.
+      runTui();
+      const second = bridge.getKeyInputRevision();
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07');
+      bridge.noteInput('y');
+      bridge.rebaseShellKeyInput(second);
+      expect(bridge.isEmptyShellPrompt()).toBe(false);
+    });
+
+    it('a mark from before another command started changes nothing', () => {
+      runTui();
+      const mark = bridge.getKeyInputRevision();
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07');
+      bridge.noteInput('ls\r');
+      feed('\x1b]133;C\x07');
+      bridge.rebaseShellKeyInput(mark);
+      feed('\x1b]133;D;0\x07\x1b]133;A\x07$ \x1b]133;B\x07');
+      // `ls` ran with no keys after it: empty on its own merits.
+      expect(bridge.isEmptyShellPrompt()).toBe(true);
+      bridge.noteInput('z');
+      bridge.rebaseShellKeyInput(mark);
+      expect(bridge.isEmptyShellPrompt()).toBe(false);
+    });
+  });
+
   it('a terminal\'s replies and focus reports never make an untouched prompt read as used', () => {
     // ConPTY's startup queries answered (cursor position, device attributes)
     // and a focus change, all before the first prompt is drawn.
