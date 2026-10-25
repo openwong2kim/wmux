@@ -85,6 +85,10 @@ export interface PidWatcher {
  *  narrow without a cast dance. */
 const RUNTIME_STEMS: ReadonlySet<string> = new Set(['node', 'bun', 'deno', 'python', 'python3']);
 
+/** Windows images that may hold a Claude conversation when their command
+ *  line cannot be read (processesWithArg). */
+const UNREADABLE_HOLDER_IMAGE = /^(claude|node|bun)(\.exe)?$/i;
+
 /** Package-manager runners: when the script token is one of these (or
  *  python's `-m`), the agent name rides the NEXT non-flag argument
  *  (`npx -y gemini`, `python -m aider`). */
@@ -1235,10 +1239,19 @@ export class AgentProcessTracker {
   }
 
   /** Every live process whose command line carries `marker` (a conversation
-   *  id), from a fresh table. Throws when the table cannot be read. */
+   *  id), from a fresh table. On Windows also every claude, node or bun
+   *  process whose command line cannot be read (another user's, an elevated
+   *  one): it may carry the marker. Throws when the table cannot be read. */
   async processesWithArg(marker: string): Promise<ProcessTreeEntry[]> {
     if (!marker) return [];
-    return (await this.enumerate()).filter((e) => e.cmdline?.includes(marker) === true && e.pid !== process.pid);
+    const unreadable = (e: ProcessTreeEntry) => this.platform === 'win32' && !e.cmdline && UNREADABLE_HOLDER_IMAGE.test(e.name);
+    return (await this.enumerate()).filter((e) => (e.cmdline?.includes(marker) === true || unreadable(e)) && e.pid !== process.pid);
+  }
+
+  /** One fresh process table (on Windows with creation times), not shared
+   *  with a probe in flight. Throws when it cannot be read. */
+  async processTable(): Promise<ProcessTreeEntry[]> {
+    return this.enumerate();
   }
 
   /** Of `entries`, the ones a fresh process table still shows as the same

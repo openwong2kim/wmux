@@ -39,7 +39,7 @@ import { buildDriverEnv, DriverEnvError } from './env';
 import { boundEvent, EventBatcher } from './eventBatcher';
 import { beginPaneMove, claimChatV2Pane, endPaneMove, isPaneMoving, releaseChatV2Pane } from './paneClaims';
 import { driverState, handOffToTerminal, handedOffRefusal } from './handoff';
-import { checkTerminal, describeProcesses, releaseTerminal, STOPPED_PREFIX, type FromTerminalDeps } from './fromTerminal';
+import { checkTerminal, describeProcesses, holdersRefusal, releaseTerminal, STOPPED_PREFIX, type FromTerminalDeps } from './fromTerminal';
 import { whichOnPath } from '../../web/agentLaunch';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { sameProcessStartTime } from '../../phantomExit';
@@ -198,6 +198,31 @@ function fieldOf(block: Block | undefined, field: 'text' | 'detail' | 'output'):
   if (field === 'text') return block.text;
   if (field === 'detail') return block.tool?.detail;
   return block.tool?.preview?.output;
+}
+
+/** The pane env's PATH on Windows, whose key is often spelled `Path`. */
+export function windowsPathOf(env: Record<string, string | undefined>): string | undefined {
+  const key = Object.keys(env).find((k) => /^path$/i.test(k));
+  return key === undefined ? undefined : env[key];
+}
+
+/**
+ * Windows: the `claude.exe` a shell-less spawn of `claude` (the driver's)
+ * finds on `pathEnv`, or undefined. CreateProcess adds `.exe` and walks the
+ * `;`-separated PATH (entries trimmed, quotes stripped, empty ones skipped).
+ * Exactly claude.exe: Node will not run a `claude.cmd` (or any other PATHEXT
+ * shim) without a shell, so accepting one would stop the TUI and then fail
+ * to start the chat. Pure but for `isFile` (the file system is
+ * case-insensitive there).
+ */
+export function claudeExeOnWindowsPath(pathEnv: string, isFile: (file: string) => boolean): string | undefined {
+  for (const entry of pathEnv.split(';')) {
+    const dir = entry.trim().replace(/^"(.*)"$/, '$1');
+    if (!dir || !path.win32.isAbsolute(dir)) continue;
+    const file = path.win32.join(dir, 'claude.exe');
+    if (isFile(file)) return file;
+  }
+  return undefined;
 }
 
 /**
@@ -882,14 +907,31 @@ class Host implements ChatV2Host {
     } catch (error) {
       return chatV2Error('driver-unavailable', error instanceof DriverEnvError ? error.message : 'The chat agent could not be prepared.');
     }
-    const found = await (this.deps.claudeOnPath ?? ((p: string) => whichOnPath('claude', p)))(env.PATH ?? '').catch(() => undefined);
+    const win = (this.deps.platform ?? process.platform) === 'win32';
+    const isFile = (file: string) => !!this.fromTerminalFiles().stat(file);
+    const lookup = this.deps.claudeOnPath ?? (win ? async (p: string) => claudeExeOnWindowsPath(p, isFile) : (p: string) => whichOnPath('claude', p));
+    const found = await lookup((win ? windowsPathOf(env) : env.PATH) ?? '').catch(() => undefined);
     if (!found) return chatV2Error('driver-unavailable', 'Claude Code is not installed where the chat can run it.');
     const configDir = env.CLAUDE_CONFIG_DIR ?? path.join(env.HOME || os.homedir(), '.claude');
     return { ok: true, configDir };
   }
 
   private fromTerminalDeps(terminal: ChatV2TerminalDeps): FromTerminalDeps {
-    const files = this.deps.fs ?? {
+    return {
+      ...terminal,
+      ...this.fromTerminalFiles(),
+      // A chat in another pane on the same conversation holds it as much as a TUI does.
+      otherOwners: (paneId, sessionId) => [...terminal.otherOwners(paneId, sessionId), ...this.chatHolders(paneId, sessionId)],
+      paneFree: this.deps.paneFree,
+      shellKind: (paneId) => this.shellKind(paneId),
+      platform: this.deps.platform ?? process.platform,
+      ...(this.deps.moveTiming?.quietMs !== undefined ? { quietMs: this.deps.moveTiming.quietMs } : {}),
+      ...(this.deps.moveTiming?.freeWaitMs !== undefined ? { freeWaitMs: this.deps.moveTiming.freeWaitMs } : {}),
+    };
+  }
+
+  private fromTerminalFiles(): Pick<FromTerminalDeps, 'stat' | 'isDirectory' | 'realpath'> {
+    return this.deps.fs ?? {
       stat: (file: string) => {
         try {
           const st = fs.statSync(file);
@@ -902,16 +944,6 @@ class Host implements ChatV2Host {
         try { return fs.statSync(dir).isDirectory(); } catch { return false; }
       },
       realpath: (p: string) => fs.realpathSync.native(p),
-    };
-    return {
-      ...terminal,
-      ...files,
-      // A chat in another pane on the same conversation holds it as much as a TUI does.
-      otherOwners: (paneId, sessionId) => [...terminal.otherOwners(paneId, sessionId), ...this.chatHolders(paneId, sessionId)],
-      paneFree: this.deps.paneFree,
-      platform: this.deps.platform ?? process.platform,
-      ...(this.deps.moveTiming?.quietMs !== undefined ? { quietMs: this.deps.moveTiming.quietMs } : {}),
-      ...(this.deps.moveTiming?.freeWaitMs !== undefined ? { freeWaitMs: this.deps.moveTiming.freeWaitMs } : {}),
     };
   }
 
@@ -1027,7 +1059,7 @@ class Host implements ChatV2Host {
     const shell = classifyShell(pane.meta.cmd ?? '');
     if (shell === 'pwsh') return 'pwsh';
     if (shell === 'bash' || shell === 'zsh') return 'posix';
-    return process.platform === 'win32' ? null : 'posix';
+    return (this.deps.platform ?? process.platform) === 'win32' ? null : 'posix';
   }
 
   private async close(p: ChatV2ParamsByMethod['close']): Promise<Result<'close'>> {
@@ -1228,9 +1260,7 @@ class Host implements ChatV2Host {
     } catch {
       return 'Could not confirm that the chat is the conversation’s only process. The chat was stopped.';
     }
-    return others.length
-      ? `Another process holds this conversation: ${others.slice(0, 3).map((e) => `${e.name} (pid ${e.pid})`).join(', ')}. The chat was stopped.`
-      : null;
+    return others.length ? `${holdersRefusal(others)} The chat was stopped.` : null;
   }
 
   /** Stop the driver and wait until it is reaped. False: it did not exit, and it is kept. */

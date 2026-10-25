@@ -310,6 +310,22 @@ describe('AgentProcessTracker', () => {
     expect(watcher.watches.has('agent:s1')).toBe(true);
   });
 
+  it('processesWithArg: the marker in argv, and on Windows an agent image whose argv cannot be read', async () => {
+    const MARK = '0f8fad5b-d9cb-469f-a165-70867728950e';
+    const table = [
+      entry(300, 1, 'claude.exe', `claude --resume ${MARK}`),
+      entry(301, 1, 'node.exe'),
+      entry(302, 1, 'Bun.exe', ''),
+      entry(303, 1, 'svchost.exe'),
+      entry(304, 1, 'node.exe', 'node other.js'),
+    ];
+    const win = new AgentProcessTracker(makeWatcher(), async () => table, undefined, undefined, undefined, 'win32');
+    expect((await win.processesWithArg(MARK)).map((e) => e.pid)).toEqual([300, 301, 302]);
+    // Elsewhere ps always prints argv: only the marker counts.
+    const mac = new AgentProcessTracker(makeWatcher(), async () => table, undefined, undefined, undefined, 'darwin');
+    expect((await mac.processesWithArg(MARK)).map((e) => e.pid)).toEqual([300]);
+  });
+
   it('a reused pid is no longer the agent: the confirming read records its death edge', async () => {
     const watcher = makeWatcher();
     let table: ProcessTreeEntry[] = [entry(200, SHELL, 'claude.exe')];

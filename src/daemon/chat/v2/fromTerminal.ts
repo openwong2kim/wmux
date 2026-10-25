@@ -29,6 +29,8 @@ import type { ChatV2TerminalDeps } from './types';
 
 export interface FromTerminalDeps extends ChatV2TerminalDeps {
   paneFree: (paneId: string) => Promise<boolean>;
+  /** The resume line's grammar for the pane's shell (host.shellKind): null when wmux cannot type one into it. */
+  shellKind: (paneId: string) => 'posix' | 'pwsh' | null;
   /** Size, mtime and inode of a file, or null when it is not a readable regular file. */
   stat: (file: string) => { size: number; mtimeMs: number; ino: number } | null;
   isDirectory: (dir: string) => boolean;
@@ -65,6 +67,19 @@ const refuse = (message: string): { ok: false; error: ChatV2Error } => chatV2Err
 /** `name (pid N)` for a refusal that names who holds the conversation. */
 function named(entries: readonly ProcessTreeEntry[]): string {
   return entries.slice(0, 3).map((e) => `${e.name} (pid ${e.pid})`).join(', ');
+}
+
+/**
+ * Why `holders` keep the conversation from moving: a process whose argv
+ * carries the session id, or (Windows) a claude, node or bun process whose
+ * command line wmux cannot read. Names only, never argv.
+ */
+export function holdersRefusal(holders: readonly ProcessTreeEntry[]): string {
+  const read = holders.filter((e) => !!e.cmdline);
+  const unread = holders.filter((e) => !e.cmdline);
+  if (!read.length) return `A process wmux cannot read may hold this conversation: ${named(unread)}.`;
+  const held = `Another process holds this conversation: ${named(read)}.`;
+  return unread.length ? `${held} A process wmux cannot read may hold it too: ${named(unread)}.` : held;
 }
 
 /** What the stop would end, for the confirmation: names only, never argv. */
@@ -106,9 +121,11 @@ export function bindingRefusal(
  * whose Claude already exited may move too (there is nothing to stop).
  */
 export async function checkTerminal(deps: FromTerminalDeps, paneId: string, opts: { tombstone: boolean; configDir: string }): Promise<TerminalCheck> {
-  if (deps.platform !== 'darwin' && deps.platform !== 'linux') return refuse('Continuing in chat is available on macOS and Linux.');
+  if (deps.platform !== 'darwin' && deps.platform !== 'linux' && deps.platform !== 'win32') return refuse('Continuing in chat is available on macOS, Linux and Windows.');
   const unsupported = deps.unsupported(paneId);
   if (unsupported) return refuse(unsupported);
+  // cmd.exe has no resume line: after a failed start the terminal could not reopen the conversation.
+  if (deps.platform === 'win32' && deps.shellKind(paneId) === null) return refuse('This pane’s shell cannot reopen the conversation afterwards. Use PowerShell.');
   const binding = deps.binding(paneId);
   const bad = bindingRefusal(binding, opts.configDir, deps);
   if (bad || !binding) return refuse(bad ?? 'This pane has no Claude conversation wmux can resume.');
@@ -138,7 +155,7 @@ export async function checkTerminal(deps: FromTerminalDeps, paneId: string, opts
   } catch {
     return refuse('Could not read the running processes.');
   }
-  if (holders.length) return refuse(`Another process holds this conversation: ${named(holders)}.`);
+  if (holders.length) return refuse(holdersRefusal(holders));
   return { ok: true, binding, tree };
 }
 
@@ -154,6 +171,7 @@ export async function releaseTerminal(deps: FromTerminalDeps, paneId: string, ch
   if (tree) {
     const stop = await deps.stop(paneId, () => deps.stillIdle(paneId)).catch(() => ({ ok: false as const, code: 'still_running' as const, pid: tree.root.pid }));
     if (!stop.ok && stop.code === 'turn_open') return refuse('Claude started working again. Try once its turn ends.');
+    if (!stop.ok && stop.code === 'unverified') return refuse('wmux could not confirm which processes are Claude’s, so nothing was stopped. Try again.');
     if (!stop.ok) return fail('It did not exit; it may still be running in the terminal.');
     if (!stop.stopped) return refuse('Could not find the Claude process to stop.');
   }
@@ -173,7 +191,7 @@ export async function releaseTerminal(deps: FromTerminalDeps, paneId: string, ch
   } catch {
     return fail('Could not confirm that it exited.');
   }
-  if (holders.length) return fail(`Another process holds this conversation: ${named(holders)}.`);
+  if (holders.length) return fail(holdersRefusal(holders));
   const before = deps.stat(binding.transcriptPath!);
   await sleep(deps.quietMs ?? QUIET_MS);
   const after = deps.stat(binding.transcriptPath!);
