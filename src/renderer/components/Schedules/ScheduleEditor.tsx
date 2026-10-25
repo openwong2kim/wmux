@@ -25,6 +25,7 @@ import {
   emptyForm,
   formFromAutomation,
   browserIdentityArg,
+  browserToolsOff,
   grantNeeded,
   modeAfterAgentChange,
   modesFor,
@@ -123,13 +124,15 @@ function AgentIcon() {
  * lands on the revision the update produced — including after an edit that
  * changes what runs, so a granted mode is never left stale by the editor.
  */
-export default function ScheduleEditor({ original, review, accounts, initial, onClose, onSaved }: {
+export default function ScheduleEditor({ original, review, accounts, initial, pickBrowserIdentity = false, onClose, onSaved }: {
   original: Automation | null;
   /** A draft an agent proposed: saving also turns it on. */
   review: boolean;
   accounts: AccountOption[];
   /** A new schedule's starting values (a template, the current folder). */
   initial?: ScheduleForm;
+  /** Open with More options shown and the browser identity picker focused (a browser template). */
+  pickBrowserIdentity?: boolean;
   onClose: () => void;
   onSaved: (id: string) => void;
 }) {
@@ -143,7 +146,8 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
   // Set once create succeeded: a failed grant/enable retry must update this
   // schedule, never create a second one.
   const [created, setCreated] = useState<Automation | null>(null);
-  const [more, setMore] = useState(false);
+  const [more, setMore] = useState(pickBrowserIdentity);
+  const browserWorkspaceRef = useRef<HTMLSelectElement>(null);
   const [chip, setChip] = useState<Chip | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -164,6 +168,12 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
   const shown = (place: 'prompt' | Chip | 'more') => (showProblems
     ? problems.filter((p) => PROBLEM_PLACE[p] === place).map((p) => t(`schedules.problem.${p}`)).join(' ')
     : '');
+
+  // A browser template asks for an identity first, once, on open; nothing is
+  // picked for the user.
+  useEffect(() => {
+    if (pickBrowserIdentity) browserWorkspaceRef.current?.focus();
+  }, []);
 
   // A chip's popover closes on a click outside the chip row, or on Escape.
   useEffect(() => {
@@ -414,6 +424,11 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
               onValueChange={pickMode}
             />
           </Field>
+          {browserToolsOff(form) && (
+            <p className="ui-note" data-schedule-browser-tools-off>
+              {t('schedules.browserToolsOff', { mode: t(`schedules.mode.${form.mode}`) })}
+            </p>
+          )}
           {usesToolList(form) && (
             <Field label={t('schedules.tools')} description={t('schedules.toolsHint')} layout="stacked">
               <Input
@@ -437,6 +452,7 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
           >
             <div className="wmux-schedule-more-grid">
               <Select
+                ref={browserWorkspaceRef}
                 value={form.browserWorkspaceId}
                 onChange={(e) => setForm((f) => ({ ...f, browserWorkspaceId: e.target.value, browserPaneId: '' }))}
                 aria-label={t('schedules.browserWorkspace')}
@@ -467,6 +483,9 @@ export default function ScheduleEditor({ original, review, accounts, initial, on
               )}
             </div>
           </Field>
+          {pickBrowserIdentity && !form.browserPaneId && (
+            <p className="ui-note" data-schedule-browser-identity-nudge>{t('schedules.browserIdentityNudge')}</p>
+          )}
           <div className="wmux-schedule-more-grid">
             <Field label={t('schedules.model')} description={t('schedules.modelHint')} layout="stacked">
               <Input value={form.model} onChange={(e) => set('model', e.target.value)} spellCheck={false} data-schedule-model />

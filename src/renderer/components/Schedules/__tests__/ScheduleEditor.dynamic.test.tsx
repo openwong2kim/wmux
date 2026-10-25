@@ -6,6 +6,7 @@ import ScheduleEditor from '../ScheduleEditor';
 import { useStore } from '../../../stores';
 import { automation } from './fixtures';
 import type { Automation } from '../../../../shared/automation';
+import { BROWSER_PUBLISH_TOOLS, SCHEDULE_TEMPLATES, emptyForm, formFromTemplate, type ScheduleForm } from '../scheduleModel';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -279,5 +280,57 @@ describe('ScheduleEditor', () => {
     expect(q('[data-schedule-await]')).not.toBeNull();
     openChip('agent');
     expect(q('[data-schedule-popover="agent"] select')).not.toBeNull();
+  });
+});
+
+describe('browser tools and the browser publish template', () => {
+  const mountNew = (initial: ScheduleForm, pickBrowserIdentity = false) => act(() => root.render(
+    <ScheduleEditor original={null} review={false} accounts={[]} initial={initial}
+      pickBrowserIdentity={pickBrowserIdentity} onClose={vi.fn()} onSaved={vi.fn()} />,
+  ));
+  const note = () => q('[data-schedule-browser-tools-off]')?.textContent ?? null;
+
+  it('says browser tools are off in Auto and Bypass for Claude, and nowhere else', () => {
+    mountNew({ ...emptyForm(), cwd: '/repo' });
+    openMore();
+    expect(note()).toBe('Browser tools are not included in Auto.');
+    act(() => radio('Bypass').click());
+    expect(note()).toBe('Browser tools are not included in Bypass.');
+    act(() => radio('Scoped').click());
+    expect(note()).toBeNull();
+    act(() => radio('Approval').click());
+    expect(note()).toBeNull();
+    openChip('agent');
+    act(() => radio('Codex').click());
+    act(() => radio('Bypass').click());
+    expect(note()).toBeNull();
+  });
+
+  it('is not said when the run acts as a browser identity', () => {
+    mountNew({ ...emptyForm(), cwd: '/repo', mode: 'auto', browserWorkspaceId: 'ws-1', browserPaneId: 'pane-1' });
+    openMore();
+    expect(note()).toBeNull();
+  });
+
+  it('the template opens on the browser identity picker, asks for one, and picks nothing', () => {
+    const tpl = SCHEDULE_TEMPLATES.find((x) => x.id === 'browserPublish')!;
+    mountNew(formFromTemplate(tpl, 'Publish', 'Post the update', '/repo'), true);
+    const picker = q<HTMLSelectElement>('[data-schedule-browser-workspace]')!;
+    expect(q('[data-schedule-more-body]')).not.toBeNull();
+    expect(document.activeElement).toBe(picker);
+    expect(picker.value).toBe('');
+    expect(q('[data-schedule-browser-identity-nudge]')!.textContent)
+      .toBe('Pick a browser identity so the run uses your logged-in profile.');
+    expect(radio('Scoped').getAttribute('aria-checked')).toBe('true');
+    expect(q<HTMLInputElement>('[data-schedule-tools]')!.value).toBe(BROWSER_PUBLISH_TOOLS.join(', '));
+    expect(note()).toBeNull();
+  });
+
+  it('other new schedules open as before: More options closed, no nudge', () => {
+    mountNew({ ...emptyForm(), cwd: '/repo' });
+    expect(q('[data-schedule-more-body]')).toBeNull();
+    openMore();
+    expect(q('[data-schedule-browser-identity-nudge]')).toBeNull();
+    expect(document.activeElement).not.toBe(q('[data-schedule-browser-workspace]'));
   });
 });

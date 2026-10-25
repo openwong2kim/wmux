@@ -5239,6 +5239,9 @@ export const en = {
   'schedules.tpl.triage.title': "Issue triage",
   'schedules.tpl.triage.desc': "Weekdays at 9:30 · sort new issues",
   'schedules.tpl.triage.prompt': "Go through the issues opened since the last weekday. For each one suggest a label, a priority and whether it is a duplicate, with one line of reasoning. Do not change the issues.",
+  'schedules.tpl.browserPublish.title': "Publish through the browser",
+  'schedules.tpl.browserPublish.desc': "Weekdays at 10:00 · post an update from your logged-in browser",
+  'schedules.tpl.browserPublish.prompt': "In the browser, open the site you publish to and post today's update, written from this repository's recent changes. If a login, captcha or confirmation step appears, stop and report it instead of guessing. Once it is posted, take a screenshot and report the post's URL.",
   'fleetBoard.usage': "Usage 5h {session}% · 7d {weekly}%",
   'fleetBoard.nextSchedule': "Next schedule {time}",
   'fleetBoard.approvals': "Approvals {count}",
@@ -5566,6 +5569,8 @@ export const en = {
   // Scheduled runs: browser identity (protected pane)
   'schedules.browserIdentity': "Browser identity",
   'schedules.browserIdentityHint': "Let the run use one protected pane's browser and account, limited to that pane's allowed sites. wmux asks you to confirm when you save.",
+  'schedules.browserIdentityNudge': "Pick a browser identity so the run uses your logged-in profile.",
+  'schedules.browserToolsOff': "Browser tools are not included in {mode}.",
   'schedules.browserWorkspace': "Workspace",
   'schedules.browserPane': "Protected pane",
   'schedules.browserNone': "None",

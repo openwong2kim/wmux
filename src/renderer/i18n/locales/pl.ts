@@ -5199,6 +5199,9 @@ export const pl = {
   'schedules.tpl.triage.title': "Segregacja zgłoszeń",
   'schedules.tpl.triage.desc': "Dni robocze 9:30 · nowe zgłoszenia",
   'schedules.tpl.triage.prompt': "Przejrzyj zgłoszenia otwarte od ostatniego dnia roboczego. Dla każdego zaproponuj etykietę, priorytet i czy to duplikat, z jednym zdaniem uzasadnienia. Nie zmieniaj zgłoszeń.",
+  'schedules.tpl.browserPublish.title': "Publikacja przez przeglądarkę",
+  'schedules.tpl.browserPublish.desc': "Dni robocze 10:00 · wpis z zalogowanej przeglądarki",
+  'schedules.tpl.browserPublish.prompt': "W przeglądarce otwórz witrynę, na której publikujesz, i opublikuj dzisiejszą aktualizację napisaną na podstawie ostatnich zmian w tym repozytorium. Jeśli pojawi się logowanie, captcha lub krok potwierdzenia, zatrzymaj się i zgłoś to zamiast zgadywać. Po publikacji zrób zrzut ekranu i podaj adres URL wpisu.",
   'fleetBoard.usage': "Użycie 5h {session}% · 7d {weekly}%",
   'fleetBoard.nextSchedule': "Następny harmonogram {time}",
   'fleetBoard.approvals': "Zgody {count}",
@@ -5526,6 +5529,8 @@ export const pl = {
   // Scheduled runs: browser identity (protected pane)
   'schedules.browserIdentity': "Tożsamość przeglądarki",
   'schedules.browserIdentityHint': "Uruchomienie korzysta z przeglądarki i konta jednego chronionego panelu, tylko z jego dozwolonymi witrynami. wmux poprosi o potwierdzenie przy zapisie.",
+  'schedules.browserIdentityNudge': "Wybierz tożsamość przeglądarki, aby uruchomienie korzystało z Twojego zalogowanego profilu.",
+  'schedules.browserToolsOff': "Narzędzia przeglądarki nie są dostępne w trybie {mode}.",
   'schedules.browserWorkspace': "Obszar roboczy",
   'schedules.browserPane': "Chroniony panel",
   'schedules.browserNone': "Brak",

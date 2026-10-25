@@ -17,7 +17,7 @@ import { useAccounts } from './useAccounts';
 import { workspaceProbeCwd } from '../../utils/projectConfigProbe';
 
 type Pane =
-  | { mode: 'new'; initial?: ScheduleForm; seq: number }
+  | { mode: 'new'; initial?: ScheduleForm; seq: number; pickBrowserIdentity?: boolean }
   | { mode: 'edit' | 'review'; automation: Automation }
   | null;
 
@@ -71,14 +71,15 @@ export default function SchedulesView() {
   };
   // Each New / template click starts a fresh composer (its own key).
   const newSeq = useRef(0);
-  const startNew = (initial?: ScheduleForm) => setPane({
+  const startNew = (initial?: ScheduleForm, pickBrowserIdentity = false) => setPane({
     mode: 'new',
     seq: ++newSeq.current,
     initial: initial ?? { ...emptyForm(), cwd: defaultCwd },
+    ...(pickBrowserIdentity ? { pickBrowserIdentity: true } : {}),
   });
   const startTemplate = (tpl: ScheduleTemplate) => startNew(formFromTemplate(
     tpl, t(`schedules.tpl.${tpl.id}.title`), t(`schedules.tpl.${tpl.id}.prompt`), defaultCwd,
-  ));
+  ), tpl.pickBrowserIdentity === true);
 
   return (
     <section
@@ -152,6 +153,7 @@ export default function SchedulesView() {
             original={pane.mode === 'new' ? null : pane.automation}
             review={pane.mode === 'review'}
             initial={pane.mode === 'new' ? pane.initial : undefined}
+            pickBrowserIdentity={pane.mode === 'new' && pane.pickBrowserIdentity === true}
             accounts={accounts}
             onClose={() => setPane(null)}
             onSaved={(id) => {

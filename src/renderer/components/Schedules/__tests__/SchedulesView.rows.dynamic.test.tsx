@@ -38,7 +38,7 @@ describe('SchedulesView rows', () => {
     act(() => root.render(<SchedulesView />));
     const empty = container.querySelector('[data-schedules-empty]')!;
     expect(empty.textContent).toContain('Schedule a task');
-    expect(empty.querySelectorAll('[data-schedule-template]')).toHaveLength(6);
+    expect(empty.querySelectorAll('[data-schedule-template]')).toHaveLength(7);
     act(() => container.querySelector<HTMLButtonElement>('[data-schedule-template="depAudit"]')!.click());
     expect(container.querySelector('[data-schedules-empty]')).toBeNull();
     expect(container.querySelector<HTMLInputElement>('[data-schedule-name]')!.value).toBe('Dependency audit');
@@ -46,6 +46,21 @@ describe('SchedulesView rows', () => {
     const chip = container.querySelector('[data-schedule-chip-schedule]')!.textContent!;
     expect(chip).toContain('Weekly');
     expect(chip).toContain('10:00');
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  it('the browser publish template opens the composer on the browser identity picker', () => {
+    vi.stubGlobal('electronAPI', {});
+    useStore.setState({ automations: [], automationRuns: [], schedulesSelectedId: null });
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(<SchedulesView />));
+    act(() => container.querySelector<HTMLButtonElement>('[data-schedule-template="browserPublish"]')!.click());
+    expect(container.querySelector<HTMLInputElement>('[data-schedule-name]')!.value).toBe('Publish through the browser');
+    expect(document.activeElement).toBe(container.querySelector('[data-schedule-browser-workspace]'));
+    expect(container.querySelector('[data-schedule-browser-identity-nudge]')).not.toBeNull();
     act(() => root.unmount());
     container.remove();
   });

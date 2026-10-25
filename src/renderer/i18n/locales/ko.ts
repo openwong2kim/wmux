@@ -4753,6 +4753,9 @@ export const ko = {
   'schedules.tpl.triage.title': "이슈 분류",
   'schedules.tpl.triage.desc': "평일 9:30 · 새 이슈 분류 제안",
   'schedules.tpl.triage.prompt': "지난 평일 이후 열린 이슈를 살펴보라. 이슈마다 라벨, 우선순위, 중복 여부를 한 줄 근거와 함께 제안하라. 이슈는 수정하지 마라.",
+  'schedules.tpl.browserPublish.title': "브라우저로 게시",
+  'schedules.tpl.browserPublish.desc': "평일 10:00 · 로그인된 브라우저로 업데이트 게시",
+  'schedules.tpl.browserPublish.prompt': "브라우저에서 게시할 사이트를 열고, 이 저장소의 최근 변경 사항으로 오늘의 업데이트를 써서 게시하라. 로그인, 캡차, 확인 단계가 나오면 추측하지 말고 멈춰서 보고하라. 게시가 끝나면 스크린샷을 찍고 게시물 URL을 보고하라.",
   'fleetBoard.usage': "사용량 5h {session}% · 7d {weekly}%",
   'fleetBoard.nextSchedule': "다음 예약 {time}",
   'fleetBoard.approvals': "승인 {count}",
@@ -5080,6 +5083,8 @@ export const ko = {
   // Scheduled runs: browser identity (protected pane)
   'schedules.browserIdentity': "브라우저 신원",
   'schedules.browserIdentityHint': "실행이 보호된 창 하나의 브라우저와 계정을 쓰게 합니다. 그 창의 허용 사이트로만 제한되며, 저장할 때 wmux가 확인을 받습니다.",
+  'schedules.browserIdentityNudge': "실행이 로그인된 프로필을 쓰도록 브라우저 신원을 고르세요.",
+  'schedules.browserToolsOff': "{mode} 모드에는 브라우저 도구가 포함되지 않습니다.",
   'schedules.browserWorkspace': "워크스페이스",
   'schedules.browserPane': "보호된 창",
   'schedules.browserNone': "없음",

@@ -18,7 +18,10 @@ import {
   parseToolNames,
   validateForm,
   browserIdentityArg,
+  browserToolsOff,
+  BROWSER_PUBLISH_TOOLS,
 } from '../scheduleModel';
+import { AUTOMATION_TOOL_NAME_RE } from '../../../../shared/automation';
 import { automation } from './fixtures';
 
 describe('parseToolNames (scoped mode)', () => {
@@ -108,6 +111,53 @@ describe('schedule composer helpers', () => {
     expect(form).toMatchObject({ name: 'Issue triage', prompt: 'Sort new issues', cwd: '/repo', weekdays: WEEKDAYS, time: '09:30', mode: 'auto' });
     expect(validateForm(form)).toEqual([]);
     expect(validateForm({ ...form, cwd: '' })).toEqual(['cwd']);
+  });
+
+  it('the browser publish template fills Claude, Scoped and the browser tools, and asks for an identity', () => {
+    const tpl = SCHEDULE_TEMPLATES.find((x) => x.id === 'browserPublish')!;
+    expect(tpl.pickBrowserIdentity).toBe(true);
+    const form = formFromTemplate(tpl, 'Publish', 'Post the update', '/repo');
+    expect(form).toMatchObject({ agent: 'claude', mode: 'scoped', weekdays: WEEKDAYS, time: '10:00', browserWorkspaceId: '', browserPaneId: '' });
+    const { tools, invalid } = parseToolNames(form.toolsText);
+    expect(invalid).toEqual([]);
+    expect(tools).toEqual([...BROWSER_PUBLISH_TOOLS]);
+    expect(validateForm(form)).toEqual([]);
+    // Filled in, never granted: the permission stays out of the draft and is
+    // granted (and confirmed) when the user saves.
+    expect(draftFromForm(form)).not.toHaveProperty('permission');
+  });
+
+  it('the browser publish tool list: wmux browser tools only, every name a valid scoped name, nothing that reads cookies, storage, network or runs page script', () => {
+    expect(BROWSER_PUBLISH_TOOLS).toEqual([
+      'mcp__wmux__browser_open', 'mcp__wmux__browser_navigate', 'mcp__wmux__browser_tabs',
+      'mcp__wmux__browser_snapshot', 'mcp__wmux__browser_screenshot', 'mcp__wmux__browser_click',
+      'mcp__wmux__browser_type', 'mcp__wmux__browser_fill', 'mcp__wmux__browser_press_key',
+      'mcp__wmux__browser_select', 'mcp__wmux__browser_scroll', 'mcp__wmux__browser_wait',
+      'mcp__wmux__browser_file_upload', 'mcp__wmux__browser_dialog',
+    ]);
+    for (const name of BROWSER_PUBLISH_TOOLS) expect(AUTOMATION_TOOL_NAME_RE.test(name), name).toBe(true);
+    expect(BROWSER_PUBLISH_TOOLS.some((n) => /evaluate|cookies|storage|network|response_body/.test(n))).toBe(false);
+  });
+
+  it('the other templates leave the permission at the default', () => {
+    for (const tpl of SCHEDULE_TEMPLATES.filter((x) => x.id !== 'browserPublish')) {
+      expect(tpl.permission, tpl.id).toBeUndefined();
+      expect(formFromTemplate(tpl, 'n', 'p', '/repo')).toMatchObject({ agent: 'claude', mode: 'auto', toolsText: '' });
+    }
+  });
+
+  it('browser tools are off for Claude in Auto or Bypass without a browser identity', () => {
+    const cases: Array<[Parameters<typeof browserToolsOff>[0], boolean]> = [
+      [{ agent: 'claude', mode: 'auto', browserPaneId: '' }, true],
+      [{ agent: 'claude', mode: 'bypass', browserPaneId: '' }, true],
+      [{ agent: 'claude', mode: 'auto', browserPaneId: 'pane-1' }, false],
+      [{ agent: 'claude', mode: 'bypass', browserPaneId: 'pane-1' }, false],
+      [{ agent: 'claude', mode: 'scoped', browserPaneId: '' }, false],
+      [{ agent: 'claude', mode: 'approval', browserPaneId: '' }, false],
+      [{ agent: 'codex', mode: 'bypass', browserPaneId: '' }, false],
+      [{ agent: 'codex', mode: 'scoped', browserPaneId: '' }, false],
+    ];
+    for (const [form, off] of cases) expect(browserToolsOff(form), JSON.stringify(form)).toBe(off);
   });
 });
 

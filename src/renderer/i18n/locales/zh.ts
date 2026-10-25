@@ -4255,6 +4255,9 @@ export const zh = {
   'schedules.tpl.triage.title': "问题分拣",
   'schedules.tpl.triage.desc': "工作日 9:30 · 新问题分类建议",
   'schedules.tpl.triage.prompt': "查看上个工作日以来新开的问题。为每个问题建议标签、优先级以及是否重复，并附一行理由。不要修改问题。",
+  'schedules.tpl.browserPublish.title': "通过浏览器发布",
+  'schedules.tpl.browserPublish.desc': "工作日 10:00 · 用已登录的浏览器发布更新",
+  'schedules.tpl.browserPublish.prompt': "在浏览器中打开你要发布的网站，根据此仓库最近的变更撰写并发布今天的更新。如果出现登录、验证码或确认步骤，不要猜测，停下并报告。发布后截一张图，并报告帖子的 URL。",
   'fleetBoard.usage': "用量 5h {session}% · 7d {weekly}%",
   'fleetBoard.nextSchedule': "下次计划 {time}",
   'fleetBoard.approvals': "批准 {count}",
@@ -4582,6 +4585,8 @@ export const zh = {
   // Scheduled runs: browser identity (protected pane)
   'schedules.browserIdentity': "浏览器身份",
   'schedules.browserIdentityHint': "让此次运行使用一个受保护窗格的浏览器和账号，仅限该窗格允许的网站。保存时 wmux 会请你确认。",
+  'schedules.browserIdentityNudge': "请选择一个浏览器身份，让此次运行使用你已登录的配置文件。",
+  'schedules.browserToolsOff': "{mode} 模式不包含浏览器工具。",
   'schedules.browserWorkspace': "工作区",
   'schedules.browserPane': "受保护的窗格",
   'schedules.browserNone': "无",
