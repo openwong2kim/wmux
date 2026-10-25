@@ -825,8 +825,12 @@ class Host implements ChatV2Host {
     const checked = await checkTerminal(deps, paneId, { tombstone: !!existing, configDir: env.configDir });
     if (!checked.ok) return checked;
     // 2-3. Stop and prove.
+    const keyMark = pane.bridge.getKeyInputRevision();
     const released = await releaseTerminal(deps, paneId, checked);
     if (!released.ok) return released;
+    // The keys typed so far went to the TUI wmux just stopped, not to the
+    // shell: the prompt it leaves reads empty, so the chat can come back.
+    if (released.stopped && this.deps.sessionManager.getSession(paneId) === pane) pane.bridge.rebaseShellKeyInput(keyMark);
     const stoppedFail = (message: string) => chatV2Error('handoff-refused', released.stopped ? `${STOPPED_PREFIX} ${message}` : message);
     if (this.disposed || this.deps.sessionManager.getSession(paneId) !== pane) return stoppedFail('The pane closed.');
     if ((this.byPane.get(paneId) ?? null) !== existing) return stoppedFail('The pane\u2019s chat changed meanwhile.');
