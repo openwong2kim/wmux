@@ -33,6 +33,15 @@ describe('bot fan-out presets', () => {
     expect(BOT_FANOUT_PRESETS.verify.maxTasks).toBe(1);
   });
 
+  it('the research worker, with no worktree, also makes files in its scratch folder and reports their absolute paths, with no push', () => {
+    expect(BOT_FANOUT_PRESETS.research.worktree).toBe(false);
+    const prompt = composeBotWorkerPrompt('research', 'Make 2 PNG cards.');
+    expect(prompt).toContain('When the task asks for files');
+    expect(prompt).toContain('Keep every file you hand back inside this folder');
+    expect(prompt).toContain('the absolute path of each file you made');
+    expect(prompt).toContain('no push and no pull request');
+  });
+
   it('verify refuses a missing, non-detached or non-commit checkout', () => {
     expect(botPresetCheckoutRefusal('verify', { sha: SHA, detached: true })).toBeNull();
     expect(botPresetCheckoutRefusal('verify', { sha: SHA, detached: true, fetchRef: 'pull/3/head' })).toBeNull();

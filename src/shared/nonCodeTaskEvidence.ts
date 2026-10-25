@@ -21,9 +21,9 @@ export const TASK_CRITERION_MAX_CHARS = 200;
 /** Default research criteria (English). Main stamps these at dispatch when
  *  the brain did not name its own; the worker cannot change them. */
 export const DEFAULT_RESEARCH_CRITERIA: readonly string[] = [
-  'The findings answer the question',
-  'Each finding cites a source URL',
-  'The summary states what the findings mean for the question',
+  'The report answers the request',
+  'Each finding cites a source URL, and each file made is listed by its absolute path',
+  'The summary states what the findings or files mean for the request',
 ];
 
 /** Sanitize criteria for LedgerDispatch: trim, drop empties, cap count/length.

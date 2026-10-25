@@ -13,7 +13,12 @@
 //     `refs/wmux/keep/<taskId>`, so removal never leaves them to gc.
 //   - A research task's scratch folder
 //     (`<wmux data>/factory/bots/<botId>/research/<batch>/<task>`) is removed;
-//     its report is in the ledger and the room.
+//     its report is in the ledger and the room. Unless its report names a
+//     file still inside it (reportNamesFileIn): files a worker made for the
+//     owner, which its bot hands over with room_post `files` (a copy the card
+//     keeps) after the task ended. Such a folder is kept like one a stop kept
+//     (`kept_stopped`), and goes after TASK_FOLDER_KEPT_TTL_MS or with Clean
+//     up now.
 //   - Only once the task's processes are stopped: its worker is not resumed
 //     or still stopping (workerReclaim.ts), and no daemon session was started
 //     in the folder or has its working directory there. A failed task's
@@ -609,6 +614,43 @@ function throughNoLink(folder: string, root: string): boolean {
   }
 }
 
+/** Absolute paths a report names: its artifact items' locations, and the
+ *  absolute paths written in its summaries. */
+function reportPaths(entry: LedgerEntry): string[] {
+  const out: string[] = [];
+  for (const item of entry.evidence?.items ?? []) {
+    if (item.kind === 'artifact' && typeof item.location === 'string') out.push(item.location.trim());
+  }
+  for (const text of [entry.summary, entry.evidence?.summary]) {
+    if (typeof text !== 'string') continue;
+    for (const token of text.split(/[\s`'"()<>[\]]+/)) out.push(token.replace(/[.,;:]+$/, ''));
+  }
+  return out.filter((p) => p.length > 0 && path.isAbsolute(p));
+}
+
+/**
+ * Whether a research task's report names a file still inside its folder: a
+ * regular file (not a link) whose real path is strictly inside the folder's.
+ * A path outside the folder keeps nothing. Never throws.
+ */
+export function reportNamesFileIn(entry: LedgerEntry, folder: string): boolean {
+  let realFolder: string;
+  try {
+    realFolder = fs.realpathSync(folder);
+  } catch {
+    return false;
+  }
+  return reportPaths(entry).some((p) => {
+    try {
+      if (!fs.lstatSync(p).isFile()) return false;
+      const rel = path.relative(realFolder, fs.realpathSync(p));
+      return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+    } catch {
+      return false;
+    }
+  });
+}
+
 /**
  * Remove one ended bot task's folder when the rules allow it. `force`: the
  * owner's Clean up now (a folder kept dirty, or one a stop kept, is looked
@@ -749,6 +791,23 @@ async function cleanTaskFolderNow(
     return 'skipped';
   }
   if (kind === 'research') {
+    // Files the worker made and named in its report wait for its bot to hand
+    // them over; recorded so they go after the kept TTL.
+    if (opts.force !== true && !expired && reportNamesFileIn(entry, mission.folder)) {
+      if (prior?.state !== 'kept_stopped') {
+        const thread = entry.dispatch?.threadId;
+        await ports.store.put({
+          taskId: entry.id, kind, path: mission.folder, state: 'kept_stopped',
+          stopped: {
+            botId,
+            ...(entry.title ? { title: entry.title } : {}),
+            ...(entry.ownerWorkspaceId ? { workspaceId: entry.ownerWorkspaceId, threadId: typeof thread === 'string' && thread ? thread : `task:${entry.id}` } : {}),
+          },
+          at: now(),
+        }).catch((err: unknown) => log(`[factory] kept folder of ${entry.id} not recorded: ${String(err)}`));
+      }
+      return 'skipped';
+    }
     try {
       if (!fs.lstatSync(mission.folder).isDirectory()) return 'skipped';
       await ports.store.put({ taskId: entry.id, kind, path: mission.folder, state: 'removing', ...stoppedMark, at: keptAt ?? now() });

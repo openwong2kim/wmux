@@ -38,6 +38,7 @@ import {
 import { ReclaimedWorkers, resumeWorker, type ReclaimedWorker, type WorkerResumePorts } from '../workerReclaim';
 import { deliberateSleep, waitFor } from '../../../test-utils/waitFor';
 import { UNKNOWN_ROOT_REFUSAL } from '../../../shared/rpc';
+import { RoomFileStore } from '../roomFiles';
 
 // Every test here runs real git over real worktrees, several spawns in a
 // row; on a loaded CI runner (the Windows shard) one spawn can take a few
@@ -283,6 +284,45 @@ describe('cleanTaskFolder', () => {
     expect(fs.existsSync(path.dirname(scratch))).toBe(false);
     expect(await restoreTaskFolder(p, research.id, scratch)).toBe(true);
     expect(fs.readdirSync(scratch)).toEqual([]);
+  });
+
+  it('★ keeps a research folder while its report names a file inside it, the room takes that file, and the folder goes after the kept TTL', async () => {
+    const scratch = path.join(wmuxDir, 'factory', 'bots', BOT, 'research', 'batch-f', 'task-f');
+    fs.mkdirSync(scratch, { recursive: true });
+    const card = path.join(scratch, 'out', 'card-a.png');
+    fs.mkdirSync(path.dirname(card), { recursive: true });
+    fs.writeFileSync(card, Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+    const elsewhere = path.join(wmuxDir, 'elsewhere.png');
+    fs.writeFileSync(elsewhere, 'png');
+    const report = (location: string) => row('completed', {
+      id: 'wtask-files-12121212',
+      dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'research' },
+      summary: 'Made the cards.',
+      evidence: { summary: 'Made the cards.', items: [{ kind: 'artifact', status: 'verified', summary: 'card A', location }] },
+    });
+    let now = 50_000;
+    const p = ports({ now: () => now });
+
+    // A path outside the folder keeps nothing.
+    const outsideOnly = { ...report(elsewhere), id: 'wtask-outside-13131313' };
+    const outsideScratch = path.join(wmuxDir, 'factory', 'bots', BOT, 'research', 'batch-f', 'task-o');
+    fs.mkdirSync(outsideScratch, { recursive: true });
+    expect(await cleanTaskFolder(p, outsideOnly, { folder: outsideScratch }, [])).toBe('removed');
+
+    // The report names a file inside: the folder stays, recorded as kept.
+    const done = report(card);
+    expect(await cleanTaskFolder(p, done, { folder: scratch }, [])).toBe('skipped');
+    expect(fs.existsSync(card)).toBe(true);
+    expect(p.store.get(done.id)?.state).toBe('kept_stopped');
+
+    // The bot hands the owner the file: its own folder is an allowed root.
+    const files = new RoomFileStore({ root: path.join(wmuxDir, 'factory', 'room-files'), now: () => now, log: () => undefined });
+    expect(files.copyIn('ws-owner', card, [path.join(wmuxDir, 'factory', 'bots', BOT)]).ok).toBe(true);
+
+    // After the kept TTL the automatic pass removes it.
+    now = 50_000 + TASK_FOLDER_KEPT_TTL_MS;
+    expect(await cleanTaskFolder(p, done, { folder: scratch }, [], { keptTtl: true })).toBe('removed');
+    expect(fs.existsSync(scratch)).toBe(false);
   });
 
   it('removes a research batch once its task folders are gone and its .meta holds only removed tasks; never while a task of it is open', async () => {

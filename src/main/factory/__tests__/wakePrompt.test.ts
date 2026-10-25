@@ -133,6 +133,11 @@ describe('buildWakePrompt — group rooms and routines', () => {
     const none = buildWakePrompt({ item: wake, profile: lead, roster: [scout] });
     expect(none).toContain('No bot in this workspace has a repository');
     expect(none).toContain('tell them so in one line and ask them to set a repository on a bot\'s profile');
+    // Code work is still refused; files that need no repository go to a scratch-folder worker.
+    expect(none).toContain('dispatch none of it');
+    expect(none).toContain('Making files that need no repository (images, documents, a rendered video, a spreadsheet) is not code work');
+    expect(none).toContain('preset "research"');
+    expect(none).toContain('room_post `files`');
     // A coordinator with its own repository, or any other bot, gets neither.
     const own = buildWakePrompt({ item: wake, profile: { ...lead, repo: { repoKey: 'github.com/acme/app', repoPath: '/r' } }, roster: [scout] });
     expect(own).not.toMatch(/no repository of your own|No bot in this workspace has a repository/);

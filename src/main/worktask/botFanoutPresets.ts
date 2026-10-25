@@ -203,12 +203,13 @@ const RESEARCH_PROMPT = (): string => [
   'You are a research worker dispatched by a factory bot. Your current directory is an empty scratch folder: it is not a repository, and there is no branch, no commit, no push and no pull request for this task.',
   '',
   'What you can do here: search the web, read the sources, and keep notes or downloads in this folder if they help.',
+  'When the task asks for files (images, documents, a rendered video, a spreadsheet), make them in this folder; you may install and run local tools in it to do so. Keep every file you hand back inside this folder.',
   '',
   'Completion criteria are fixed on the task at dispatch (you cannot change them). Check each one and record evidence.',
   '',
   'What you hand back (ledger_update status review_requested):',
-  '- summary: your findings and what they mean for the question;',
-  '- evidence: items that show how each criterion was met (kind inspection or artifact with status verified, or kind command with status passed), each with a source URL in location or summary. Without evidence the task completes as Not verified.',
+  '- summary: your findings and what they mean for the question, and the absolute path of each file you made;',
+  '- evidence: items that show how each criterion was met (kind inspection or artifact with status verified, or kind command with status passed), each with a source URL in location or summary; each file you made is one artifact item with its absolute path in location. Without evidence the task completes as Not verified.',
   'If the question needs a change to code, say so in the summary instead of making one.',
 ].join('\n');
 
@@ -266,7 +267,7 @@ export const BOT_FANOUT_PRESETS: Readonly<Record<BotFanoutPresetName, BotFanoutP
   },
   research: {
     name: 'research',
-    description: 'Answer a question that needs no code: search, read, report findings with sources. No repository needed.',
+    description: 'Answer a question or make files that need no code: search, read, report findings with sources, or make the files in a scratch folder and report their paths. No repository needed.',
     workerPrompt: RESEARCH_PROMPT,
     permissionMode: UNATTENDED,
     agent: CLAUDE,
