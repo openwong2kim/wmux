@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+// @wmux-lane unit — 'win32' here is a fake window.electronAPI.platform value; nothing reaches the OS.
 // Continue in chat: the move's state lives above the views, so the dialog and
 // a failure after the TUI's stop outlive the view swap that stop causes.
 import { act } from 'react';
@@ -34,6 +35,15 @@ function Probe({ paneId }: { paneId: string }) {
 }
 
 describe('ContinueInChat', () => {
+  it('is offered on macOS, Linux and Windows only', async () => {
+    setChatV2BridgeForTests({ call: vi.fn() } as unknown as ChatV2BridgeApi);
+    for (const [platform, offered] of [['darwin', true], ['linux', true], ['win32', true], ['freebsd', false]] as const) {
+      (window as unknown as { electronAPI: unknown }).electronAPI = { platform };
+      await act(async () => root.render(<ContinueInChat key={platform} paneId="pty-a" />));
+      expect(!!host.querySelector('[data-chatv2-from-terminal]')).toBe(offered);
+    }
+  });
+
   it('a failure after the stop shows once the view that started the move is gone', async () => {
     let finish!: (message: string) => void;
     const call = vi.fn(async (_method: string, params: { preview?: true }) => (params.preview

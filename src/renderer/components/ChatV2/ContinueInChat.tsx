@@ -58,7 +58,7 @@ export function ContinueInChat({ paneId, tombstone = false, className }: {
   const setPhase = (next: Phase) => setMove(paneId, { phase: next });
   const bridge = getChatV2Bridge();
   const platform = window.electronAPI?.platform;
-  if (!bridge || (platform !== 'darwin' && platform !== 'linux')) return null;
+  if (!bridge || (platform !== 'darwin' && platform !== 'linux' && platform !== 'win32')) return null;
 
   const check = async () => {
     setMove(paneId, { phase: 'checking', error: '', fromProjection: !tombstone });
