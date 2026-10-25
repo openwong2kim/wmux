@@ -367,6 +367,12 @@ describe('cleanTaskFolder', () => {
     // A kept record keeps its time.
     expect(await cleanTaskFolder(ports({ now: () => 99_000 }), url.entry, { folder: url.folder }, [])).toBe('skipped');
     expect(p.store.get(url.entry.id)?.at).toBe(50_000);
+    // A folder put back for a resume whose worker then ends with a file in it: kept too.
+    const resumed = task((f) => make(path.join(f, 'scene-01.png')));
+    await p.store.put({ taskId: resumed.entry.id, kind: 'research', path: resumed.folder, state: 'restored', at: 50_000 - TASK_FOLDER_RESTORE_HOLD_MS });
+    expect(await cleanTaskFolder(p, resumed.entry, { folder: resumed.folder }, [])).toBe('skipped');
+    expect(p.store.get(resumed.entry.id)?.state).toBe('kept_stopped');
+    expect(fs.existsSync(path.join(resumed.folder, 'scene-01.png'))).toBe(true);
   });
 
   it('removes a research batch once its task folders are gone and its .meta holds only removed tasks; never while a task of it is open', async () => {

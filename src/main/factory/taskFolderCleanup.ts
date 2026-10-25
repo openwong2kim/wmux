@@ -813,9 +813,10 @@ async function cleanTaskFolderNow(
   }
   if (kind === 'research') {
     // Files the worker made and named in its report wait for its bot to hand
-    // them over; recorded so they go after the kept TTL. Only from no record
-    // or a kept one, whose time is never reset.
-    if ((!prior || !!prior.stopped) && opts.force !== true && !expired && reportNamesFileIn(entry, mission.folder)) {
+    // them over; recorded so they go after the kept TTL. Only from no record,
+    // a kept one (whose time is never reset), or one put back for a resume
+    // (a resumed worker's files count too).
+    if ((!prior || !!prior.stopped || prior.state === 'restored') && opts.force !== true && !expired && reportNamesFileIn(entry, mission.folder)) {
       if (prior?.state !== 'kept_stopped') {
         const thread = entry.dispatch?.threadId;
         const recorded = await ports.store.put({
