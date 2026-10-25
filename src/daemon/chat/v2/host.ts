@@ -42,6 +42,7 @@ import { driverState, handOffToTerminal, handedOffRefusal } from './handoff';
 import { checkTerminal, describeProcesses, holdersRefusal, releaseTerminal, STOPPED_PREFIX, type FromTerminalDeps } from './fromTerminal';
 import { whichOnPath } from '../../web/agentLaunch';
 import type { ResumeBinding } from '../../../shared/agentResume';
+import { findExecutable } from '../../../shared/exeSearch';
 import { sameProcessStartTime } from '../../phantomExit';
 import { classifyShell } from '../../shell-integration';
 import { ChatV2Store } from './store';
@@ -200,29 +201,19 @@ function fieldOf(block: Block | undefined, field: 'text' | 'detail' | 'output'):
   return block.tool?.preview?.output;
 }
 
-/** The pane env's PATH on Windows, whose key is often spelled `Path`. */
-export function windowsPathOf(env: Record<string, string | undefined>): string | undefined {
-  const key = Object.keys(env).find((k) => /^path$/i.test(k));
-  return key === undefined ? undefined : env[key];
-}
-
 /**
- * Windows: the `claude.exe` a shell-less spawn of `claude` (the driver's)
- * finds on `pathEnv`, or undefined. CreateProcess adds `.exe` and walks the
- * `;`-separated PATH (entries trimmed, quotes stripped, empty ones skipped).
- * Exactly claude.exe: Node will not run a `claude.cmd` (or any other PATHEXT
- * shim) without a shell, so accepting one would stop the TUI and then fail
- * to start the chat. Pure but for `isFile` (the file system is
- * case-insensitive there).
+ * Windows: the `claude` the chat driver's spawn will start from `env` (the
+ * pane env's Path, any key spelling), when it is a claude.exe; otherwise
+ * undefined. It is resolved exactly as spawnAgent resolves it (Path
+ * directories in order, each trying the PATHEXT extensions), so a
+ * `claude.cmd` in an earlier directory wins over a later claude.exe here
+ * too: only a native claude.exe is run, and a shim found first is refused
+ * before the TUI is stopped rather than started after it. Pure but for
+ * `isFile`.
  */
-export function claudeExeOnWindowsPath(pathEnv: string, isFile: (file: string) => boolean): string | undefined {
-  for (const entry of pathEnv.split(';')) {
-    const dir = entry.trim().replace(/^"(.*)"$/, '$1');
-    if (!dir || !path.win32.isAbsolute(dir)) continue;
-    const file = path.win32.join(dir, 'claude.exe');
-    if (isFile(file)) return file;
-  }
-  return undefined;
+export function claudeForWindowsChat(env: Record<string, string | undefined>, isFile: (file: string) => boolean): string | undefined {
+  const found = findExecutable('claude', { env, platform: 'win32', extensions: 'pathext', isFile });
+  return found && /\.exe$/i.test(found) ? found : undefined;
 }
 
 /**
@@ -909,8 +900,9 @@ class Host implements ChatV2Host {
     }
     const win = (this.deps.platform ?? process.platform) === 'win32';
     const isFile = (file: string) => !!this.fromTerminalFiles().stat(file);
-    const lookup = this.deps.claudeOnPath ?? (win ? async (p: string) => claudeExeOnWindowsPath(p, isFile) : (p: string) => whichOnPath('claude', p));
-    const found = await lookup((win ? windowsPathOf(env) : env.PATH) ?? '').catch(() => undefined);
+    const found = this.deps.claudeOnPath || !win
+      ? await (this.deps.claudeOnPath ?? ((p: string) => whichOnPath('claude', p)))(env.PATH ?? '').catch(() => undefined)
+      : claudeForWindowsChat(env, isFile);
     if (!found) return chatV2Error('driver-unavailable', 'Claude Code is not installed where the chat can run it.');
     const configDir = env.CLAUDE_CONFIG_DIR ?? path.join(env.HOME || os.homedir(), '.claude');
     return { ok: true, configDir };

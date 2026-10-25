@@ -143,11 +143,12 @@ function rig(options: RigOptions = {}): Rig {
   return r;
 }
 
-/** The real file system, plus the Windows `files` (exact paths) as regular files. */
+/** The real file system, plus the Windows `files` as regular files (names compared as Windows does, ignoring case). */
 function windowsFiles(files: string[]): NonNullable<ChatV2HostDeps['fs']> {
+  const present = new Set(files.map((f) => f.toLowerCase()));
   return {
     stat: (file) => {
-      if (files.includes(file)) return { size: 1, mtimeMs: 1, ino: 1 };
+      if (present.has(file.toLowerCase())) return { size: 1, mtimeMs: 1, ino: 1 };
       try {
         const st = fs.statSync(file);
         return st.isFile() ? { size: st.size, mtimeMs: st.mtimeMs, ino: st.ino } : null;
@@ -470,5 +471,18 @@ describe('terminal → chat on Windows', () => {
     const quoted = win({ windowsPath: { path: String.raw`C:\Windows; "C:\Program Files\Claude" ;`, files: [String.raw`C:\Program Files\Claude\claude.exe`] } });
     expect((await move(quoted)).ok).toBe(true);
     await quoted.host.dispose();
+  });
+
+  it('takes Claude from Path the way the spawn will: a shim in an earlier folder wins, so it is refused', async () => {
+    // The spawn walks the folders in order, trying each extension in a folder:
+    // A's claude.cmd comes before B's claude.exe.
+    const shimFirst = win({ windowsPath: { path: String.raw`C:\A;C:\B`, files: [String.raw`C:\A\claude.cmd`, String.raw`C:\B\claude.exe`] } });
+    expect(await move(shimFirst)).toMatchObject({ ok: false, error: { message: 'Claude Code is not installed where the chat can run it.' } });
+    expect(shimFirst.term.stops).toBe(0);
+
+    // The other way round: B's shim comes after A's claude.exe.
+    const exeFirst = win({ windowsPath: { path: String.raw`C:\A;C:\B`, files: [String.raw`C:\A\claude.exe`, String.raw`C:\B\claude.cmd`] } });
+    expect((await move(exeFirst)).ok).toBe(true);
+    await exeFirst.host.dispose();
   });
 });
