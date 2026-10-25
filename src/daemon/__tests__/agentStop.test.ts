@@ -76,7 +76,7 @@ describe('a stop with an orphan sweep (Windows, fromTerminal)', () => {
     expect(run).not.toHaveBeenCalled();
   });
 
-  it('tells the sweep when each tree process was known gone: right after its own signal', async () => {
+  it('tells the sweep when each tree process was first seen gone', async () => {
     let t = 1_000;
     const alive = new Set([100, 101]);
     let goneBy: ReadonlyMap<number, number> | undefined;
@@ -88,8 +88,31 @@ describe('a stop with an orphan sweep (Windows, fromTerminal)', () => {
       now: () => t,
       sweep: { arm: async (tree) => ({ kill: tree.descendants, unsure: [] }), run: async (g) => { goneBy = g; return 'clean'; } },
     });
-    // SIGTERM 100 at 1010; the grace read at 1110; the tree read at 1210 finds 101 alive; SIGKILL 101 at 1220.
-    expect(goneBy).toEqual(new Map([[100, 1_010], [101, 1_220]]));
+    // SIGTERM 100 at 1010; the grace read at 1110 finds it gone; the tree read at 1210
+    // finds 101 alive; SIGKILL 101 at 1220; the read at 1320 finds it gone.
+    expect(goneBy).toEqual(new Map([[100, 1_110], [101, 1_320]]));
+  });
+
+  it('a root that outlives its SIGTERM is not gone until a read shows it gone', async () => {
+    let t = 1_000;
+    let rootReads = 0;
+    const alive = new Set([100]);
+    let goneBy: ReadonlyMap<number, number> | undefined;
+    await stopAgentTree({
+      tree: async () => ({ root, descendants: [] }),
+      // The root survives the SIGTERM for two grace reads, then exits.
+      stillRunning: async (es) => {
+        t += 100;
+        if (es.includes(root) && ++rootReads > 2) alive.delete(100);
+        return es.filter((e) => alive.has(e.pid));
+      },
+      kill: () => { t += 10; },
+      sleep: async () => undefined,
+      now: () => t,
+      sweep: { arm: async () => ({ kill: [], unsure: [] }), run: async (g) => { goneBy = g; return 'clean'; } },
+    });
+    // SIGTERM at 1010; grace reads at 1110 and 1210 still show it; the one at 1310 does not.
+    expect(goneBy?.get(100)).toBe(1_310);
   });
 
   it('an orphan left running, or a sweep that fails, is not a stop', async () => {
