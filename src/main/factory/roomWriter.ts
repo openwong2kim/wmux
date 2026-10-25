@@ -1024,9 +1024,10 @@ export class RoomWriter {
   }
 
   /** The room's open cards of these kinds, in arrival order (the phone's
-   *  push of what bots are waiting on: phone/BotPromptPushFeed.ts). */
+   *  push of what bots are waiting on: phone/BotPromptPushFeed.ts). An
+   *  external guest's card is left out, as in `find` and `read`. */
   openCards(workspaceId: string, kinds: ReadonlySet<CardKind>): RoomCard[] {
-    return (this.room(workspaceId)?.cards ?? []).filter((c) => c.state === 'open' && kinds.has(c.kind));
+    return (this.room(workspaceId)?.cards ?? []).filter((c) => c.state === 'open' && kinds.has(c.kind) && !isGuestSourcedCard(c));
   }
 
   /** The first card of the room that matches, newest first. An external

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { botPromptPushRows, createBotPromptPushFeed, openBotPromptRows } from '../BotPromptPushFeed';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { botPromptPushRows, createBotPromptPushFeed, noteBotSetChanged, openBotPromptRows, setBotPromptPushFeed } from '../BotPromptPushFeed';
 import type { RoomCard } from '../../../shared/room';
 
 function card(id: string, over: Partial<RoomCard>): RoomCard {
@@ -42,7 +42,7 @@ describe('botPromptPushRows', () => {
 
 describe('openBotPromptRows', () => {
   it('★ is not known (null) until the rooms run, so a connect before them sends no empty table', () => {
-    const bots = { listEnabled: () => [{ workspaceId: 'ws-1' }], get: () => ({ name: 'Scout' }) } as never;
+    const bots = { listEnabled: () => [{ workspaceId: 'ws-1', id: 'bot-1' }], get: () => ({ name: 'Scout' }) } as never;
     expect(openBotPromptRows(null, bots)).toBeNull();
     const pushes: unknown[] = [];
     const feed = createBotPromptPushFeed({ rows: () => openBotPromptRows(null, bots), push: async (rows) => { pushes.push(rows); } });
@@ -50,5 +50,39 @@ describe('openBotPromptRows', () => {
     expect(pushes).toEqual([]);
     const writer = { openCards: () => [card('c-q1', {})] };
     expect(openBotPromptRows(writer, bots)?.map((r) => r.cardId)).toEqual(['c-q1']);
+  });
+
+  it('★ pushes a card only while its own bot is enabled, though another bot of the room is on', () => {
+    const enabled = new Set(['bot-1', 'bot-2']);
+    const bots = {
+      listEnabled: () => [...enabled].map((botId) => ({ workspaceId: 'ws-1', id: botId })),
+      get: () => ({ name: 'Scout' }),
+    } as never;
+    const writer = { openCards: () => [card('c-q1', {}), card('c-q2', { actor: { kind: 'bot', workspaceId: 'ws-1', botId: 'bot-2' } })] };
+    expect(openBotPromptRows(writer, bots)?.map((r) => r.cardId)).toEqual(['c-q1', 'c-q2']);
+    enabled.delete('bot-2');
+    expect(openBotPromptRows(writer, bots)?.map((r) => r.cardId)).toEqual(['c-q1']);
+  });
+});
+
+describe('noteBotSetChanged', () => {
+  afterEach(() => {
+    setBotPromptPushFeed(null);
+    vi.useRealTimers();
+  });
+
+  it('★ republishes when a bot is turned off, so its open card is retracted', async () => {
+    vi.useFakeTimers();
+    let on = true;
+    const bots = { listEnabled: () => (on ? [{ workspaceId: 'ws-1', id: 'bot-1' }] : []), get: () => ({ name: 'Scout' }) } as never;
+    const writer = { openCards: () => [card('c-q1', {})] };
+    const pushes: string[][] = [];
+    const feed = createBotPromptPushFeed({ rows: () => openBotPromptRows(writer, bots), push: async (rows) => { pushes.push(rows.map((r) => r.cardId)); } });
+    setBotPromptPushFeed(feed);
+    feed.publishNow();
+    on = false;
+    noteBotSetChanged();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(pushes).toEqual([['c-q1'], []]);
   });
 });

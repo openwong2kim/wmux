@@ -122,7 +122,7 @@ describe('room.post', () => {
     const s = setup([lead]);
     const r = await handleRoomPost({ kind: 'status', title: 'Working on #3', workspaceId: 'ws1' }, asBot(lead), s.deps) as { ok: true; card: { actor: unknown; workspaceId: string; threadId: string } };
     expect(r).toMatchObject({ ok: true, card: { workspaceId: 'ws1', threadId: 'general', actor: { kind: 'bot', workspaceId: 'ws1', botId: lead.id } } });
-    for (const kind of ['human', 'question', 'fact', 'refusal', 'budget']) {
+    for (const kind of ['human', 'question', 'fact', 'refusal', 'budget', 'login_request', 'secret_request']) {
       expect(await handleRoomPost({ kind, title: 'x' }, asBot(lead), s.deps), kind).toMatchObject({ ok: false, code: 'card_kind' });
     }
     expect(await handleRoomPost({ kind: 'status', title: 'x', workspaceId: 'ws2' }, asBot(lead), s.deps)).toMatchObject({ ok: false, code: 'cross_workspace' });

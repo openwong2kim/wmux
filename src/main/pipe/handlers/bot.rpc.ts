@@ -59,6 +59,7 @@ import type { WakeItem } from '../../../shared/wake';
 import { ROOMS_DIRNAME, getRoomWriter, resolveRoomPorts, runningWake, runningWakeThread, wakeReplyTo } from '../../factory/roomWriter';
 import { getFactoryStopPorts, stopFactoryWork, type FactoryStopPorts, type FactoryStopResult } from '../../factory/factoryStop';
 import { UNKNOWN_ROOT_REFUSAL } from '../../../shared/rpc';
+import { noteBotSetChanged } from '../../phone/BotPromptPushFeed';
 
 type Refusal = FactoryRefusal<'not_authorized' | 'not_started' | 'invalid_argument' | 'not_found' | 'not_running' | 'too_many_bots' | 'dropped' | 'not_owner_words' | 'not_a_repo' | 'repo_untrusted' | 'no_remote' | 'repo_mismatch' | 'stop_failed'>;
 
@@ -612,6 +613,7 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
       });
       setFactorySettingsStore(settings);
       setBotStore(store);
+      noteBotSetChanged();
       setWakeQueue(queue);
       setBotRuntime(runtime);
       setBotFanoutReceipts(receipts);
@@ -622,6 +624,8 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
           if (!store.get(botId)?.enabled) held.dropFor(botId);
         }
         send({ type: 'bots-changed' });
+        // The phone's copy of what bots are waiting on lists enabled bots only.
+        noteBotSetChanged();
       });
       // Every settings write reschedules: switching the factory off, from any
       // caller, cancels the running turns at once. The window is told too:

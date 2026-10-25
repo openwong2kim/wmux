@@ -29,7 +29,10 @@ export function botPromptPushRows(
         threadId: c.threadId,
         botId,
         botName: botName(botId),
-        // The login service rides in refs.label (botSecret.rpc.ts).
+        // The login service rides in refs.label, written by main only:
+        // botLogin.request sets it from its own service enum (and takes a URL
+        // for `website` alone), and a bot's room_post cannot write a
+        // login_request card (BOT_POSTABLE_CARD_KINDS).
         ...(c.kind === 'secret_request' ? { secretName: c.refs?.secretName } : {}),
         ...(c.kind === 'login_request' ? { loginService: c.refs?.label } : {}),
       };
@@ -37,17 +40,25 @@ export function botPromptPushRows(
   return parseBotPromptPushRows(raw) ?? [];
 }
 
-/** The open prompts in the rooms of the owner's own workspaces with enabled
- *  bots: `listEnabled` leaves a guest workspace's bots out, as the phone's bot
- *  list does. Null while the rooms or the bots are not running (not started
- *  yet, or stopping on quit): not known, so nothing is sent. */
+/** The open prompts of the owner's enabled bots, each in its own
+ *  workspace's room: `listEnabled` leaves a guest workspace's bots out, as
+ *  the phone's bot list does, and a disabled or removed bot's card is not
+ *  pushed though another bot of its workspace is on. Null while the rooms or
+ *  the bots are not running (not started yet, or stopping on quit): not
+ *  known, so nothing is sent. */
 export function openBotPromptRows(
   writer: Pick<RoomWriter, 'openCards'> | null,
   bots: Pick<BotDirectoryApi, 'listEnabled' | 'get'> | null,
 ): BotPromptPushRow[] | null {
   if (!writer || !bots) return null;
-  const workspaces = new Set(bots.listEnabled().map((b) => b.workspaceId));
-  const cards = [...workspaces].flatMap((ws) => writer.openCards(ws, BOT_PROMPT_CARD_KINDS));
+  const enabled = new Map<string, Set<string>>();
+  for (const b of bots.listEnabled()) {
+    const ids = enabled.get(b.workspaceId) ?? new Set<string>();
+    ids.add(b.id);
+    enabled.set(b.workspaceId, ids);
+  }
+  const cards = [...enabled].flatMap(([ws, ids]) => writer.openCards(ws, BOT_PROMPT_CARD_KINDS)
+    .filter((c) => c.actor.kind === 'bot' && ids.has(c.actor.botId)));
   return botPromptPushRows(cards, (botId) => bots.get(botId)?.name);
 }
 
@@ -60,6 +71,12 @@ let feed: PushTableFeed | null = null;
 /** Wired once by index.ts; null in tests and before it runs. */
 export function setBotPromptPushFeed(next: PushTableFeed | null): void {
   feed = next;
+}
+
+/** The bots changed (one turned on or off, added or removed, or the bot
+ *  store started): a card can enter or leave the table with no card event. */
+export function noteBotSetChanged(): void {
+  feed?.schedule();
 }
 
 /** A room card was written or changed: republish when it is a prompt. */

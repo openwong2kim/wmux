@@ -148,6 +148,14 @@ describe('RoomWriter store', () => {
     expect(w.post(guest)).toMatchObject({ ok: true, duplicate: true });
   });
 
+  it('openCards leaves out a guest-sourced card, as find and read do', () => {
+    const w = writer();
+    const bot = { kind: 'bot' as const, workspaceId: 'ws1', botId: 'bot-0000aaaa' };
+    expect(w.post({ workspaceId: 'ws1', kind: 'question', actor: bot, title: 'From a guest turn', state: 'open', origin: 'guest' })).toMatchObject({ ok: true });
+    expect(w.post({ workspaceId: 'ws1', kind: 'question', actor: bot, title: 'Clean', state: 'open', origin: 'clean' })).toMatchObject({ ok: true });
+    expect(w.openCards('ws1', new Set(['question'])).map((c) => c.title)).toEqual(['Clean']);
+  });
+
   it('replyTo must name a card of the same thread', () => {
     const w = writer();
     const parent = w.append({ workspaceId: 'ws1', threadId: 'task:t1', kind: 'dispatch', actor: SYS, title: 'p' })!;

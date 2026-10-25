@@ -26,7 +26,8 @@ function summary(row: BotPromptPushRow): string {
         ? `Asks you to sign in to ${LOGIN_NAMES[row.loginService]}`
         : 'Asks you to log in to a website';
     case 'secret_request':
-      return row.secretName ? `Asks for the secret ${row.secretName}` : 'Asks for a secret';
+      // parseBotPromptPushRows drops a secret_request row without a name.
+      return `Asks for the secret ${row.secretName}`;
   }
 }
 
