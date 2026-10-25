@@ -472,7 +472,7 @@ describe('terminal → chat on Windows', () => {
     expect(await move(r)).toMatchObject({ ok: false, error: { message: 'Another process holds this conversation: claude.exe (pid 9100). A process wmux cannot read may hold it too: node.exe (pid 9200).' } });
   });
 
-  it('finds claude.exe on the pane’s Path the way the driver’s shell-less spawn will', async () => {
+  it('finds claude.exe on the pane’s Path the way the driver’s spawn will', async () => {
     const PATH = String.raw`C:\Windows\system32;;"D:\tools";C:\Users\u\.local\bin`;
     const r = win({ windowsPath: { path: PATH, files: [String.raw`C:\Users\u\.local\bin\claude.exe`] } });
     const res = await move(r);
@@ -480,7 +480,7 @@ describe('terminal → chat on Windows', () => {
     expect(r.term.stops).toBe(1);
     await r.host.dispose();
 
-    // Only a shim a shell would run: not where the chat can run it, and nothing is stopped.
+    // Only shims, no claude.exe: the chat runs only a native claude.exe, so it is refused and nothing is stopped.
     const s = win({ windowsPath: { path: PATH, files: [String.raw`C:\Users\u\.local\bin\claude.cmd`, String.raw`D:\tools\claude.ps1`] } });
     expect(await move(s)).toMatchObject({ ok: false, error: { message: 'Claude Code is not installed where the chat can run it.' } });
     expect(s.term.stops).toBe(0);
