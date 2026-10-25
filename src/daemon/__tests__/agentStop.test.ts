@@ -39,6 +39,133 @@ describe('stopAgentTree', () => {
   });
 });
 
+describe('a stop with an orphan sweep (Windows, fromTerminal)', () => {
+  it('arms the sweep before the turn check and the first signal, and runs it once the tree is gone', async () => {
+    const order: string[] = [];
+    const alive = new Set([100, 101]);
+    const r = await stopAgentTree({
+      tree: async () => ({ root, descendants: [mcp] }),
+      stillRunning: async (es) => es.filter((e) => alive.has(e.pid)),
+      kill: (pid, sig) => { order.push(`${sig} ${pid}`); alive.delete(pid); },
+      sleep: async () => undefined,
+      stillIdle: () => { order.push('stillIdle'); return true; },
+      sweep: {
+        arm: async (tree) => { order.push(`arm ${[tree.root, ...tree.descendants].map((e) => e.pid).join(',')}`); return { kill: tree.descendants, unsure: [] }; },
+        run: async () => { order.push('run'); return 'clean'; },
+      },
+    });
+    expect(order).toEqual(['arm 100,101', 'stillIdle', 'SIGTERM 100', 'SIGKILL 101', 'run']);
+    expect(r).toEqual({ ok: true, stopped: true, pid: 100, killed: 2 });
+  });
+
+  it('a sweep that cannot confirm the tree stops nothing: no signal, no turn check', async () => {
+    const kill = vi.fn();
+    const stillIdle = vi.fn(() => true);
+    const run = vi.fn(async () => 'clean' as const);
+    const r = await stopAgentTree({
+      tree: async () => ({ root, descendants: [mcp] }),
+      stillRunning: async (es) => [...es],
+      kill,
+      sleep: async () => undefined,
+      stillIdle,
+      sweep: { arm: async () => null, run },
+    });
+    expect(r).toEqual({ ok: false, code: 'unverified' });
+    expect(kill).not.toHaveBeenCalled();
+    expect(stillIdle).not.toHaveBeenCalled();
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('tells the sweep when each tree process was known gone: right after its own signal', async () => {
+    let t = 1_000;
+    const alive = new Set([100, 101]);
+    let goneBy: ReadonlyMap<number, number> | undefined;
+    await stopAgentTree({
+      tree: async () => ({ root, descendants: [mcp] }),
+      stillRunning: async (es) => { t += 100; return es.filter((e) => alive.has(e.pid)); },
+      kill: (pid) => { t += 10; alive.delete(pid); },
+      sleep: async () => undefined,
+      now: () => t,
+      sweep: { arm: async (tree) => ({ kill: tree.descendants, unsure: [] }), run: async (g) => { goneBy = g; return 'clean'; } },
+    });
+    // SIGTERM 100 at 1010; the grace read at 1110; the tree read at 1210 finds 101 alive; SIGKILL 101 at 1220.
+    expect(goneBy).toEqual(new Map([[100, 1_010], [101, 1_220]]));
+  });
+
+  it('an orphan left running, or a sweep that fails, is not a stop', async () => {
+    for (const run of [async () => 'left' as const, async (): Promise<'clean'> => { throw new Error('unreadable'); }]) {
+      const r = await stopAgentTree({
+        tree: async () => ({ root, descendants: [] }),
+        stillRunning: async () => [],
+        kill: () => undefined,
+        sleep: async () => undefined,
+        sweep: { arm: async () => ({ kill: [], unsure: [] }), run },
+      });
+      expect(r).toEqual({ ok: false, code: 'still_running', pid: 100 });
+    }
+  });
+
+  // A descendant the sweep's fresh read no longer shows as the same process.
+  const changed: ProcessTreeEntry = { pid: 102, ppid: 100, name: 'node' };
+
+  it('signals only the descendants the sweep’s read confirms; one it does not, gone, does not fail the stop', async () => {
+    const alive = new Set([100, 101]);
+    const kill = vi.fn((pid: number) => { alive.delete(pid); });
+    const r = await stopAgentTree({
+      tree: async () => ({ root, descendants: [mcp, changed] }),
+      stillRunning: async (es) => es.filter((e) => alive.has(e.pid)),
+      kill,
+      sleep: async () => undefined,
+      sweep: { arm: async () => ({ kill: [mcp], unsure: [changed] }), run: async () => 'clean' },
+    });
+    expect(kill.mock.calls).toEqual([[100, 'SIGTERM'], [101, 'SIGKILL']]);
+    expect(r).toEqual({ ok: true, stopped: true, pid: 100, killed: 2 });
+  });
+
+  it('a descendant the sweep cannot confirm is never signalled; still running, it is not a stop', async () => {
+    const alive = new Set([100, 101]);
+    const kill = vi.fn((pid: number) => { alive.delete(pid); });
+    const run = vi.fn(async () => 'clean' as const);
+    const r = await stopAgentTree({
+      tree: async () => ({ root, descendants: [mcp] }),
+      stillRunning: async (es) => es.filter((e) => alive.has(e.pid)),
+      kill,
+      sleep: async () => undefined,
+      sweep: { arm: async () => ({ kill: [], unsure: [mcp] }), run },
+    });
+    expect(kill.mock.calls).toEqual([[100, 'SIGTERM']]);
+    expect(r).toEqual({ ok: false, code: 'still_running', pid: 100 });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it('without a sweep every descendant of the tree read is killed, as before', async () => {
+    const alive = new Set([100, 101, 102]);
+    const kill = vi.fn((pid: number) => { alive.delete(pid); });
+    const r = await stopAgentTree({
+      tree: async () => ({ root, descendants: [mcp, changed] }),
+      stillRunning: async (es) => es.filter((e) => alive.has(e.pid)),
+      kill,
+      sleep: async () => undefined,
+    });
+    expect(kill.mock.calls).toEqual([[100, 'SIGTERM'], [101, 'SIGKILL'], [102, 'SIGKILL']]);
+    expect(r).toEqual({ ok: true, stopped: true, pid: 100, killed: 3 });
+  });
+
+  it('a tree that survives is reported without a sweep', async () => {
+    const run = vi.fn(async () => 'clean' as const);
+    const r = await stopAgentTree({
+      tree: async () => ({ root, descendants: [] }),
+      stillRunning: async (es) => [...es],
+      kill: () => undefined,
+      sleep: async () => undefined,
+      graceMs: 400,
+      sweep: { arm: async () => ({ kill: [], unsure: [] }), run },
+    });
+    expect(r).toEqual({ ok: false, code: 'still_running', pid: 100 });
+    expect(run).not.toHaveBeenCalled();
+  });
+});
+
 describe('a conditional stop (main\'s idle stop of a reported worker)', () => {
   it('signals nothing when the turn opened by the time the tree is known', async () => {
     const kill = vi.fn();
