@@ -137,10 +137,10 @@ describe('DaemonPTYBridge turn priority', () => {
     it('a key typed after the program ended, before its prompt is drawn, still counts', () => {
       runTui();
       const mark = bridge.getKeyInputRevision();
-      feed(']133;D;0');
+      feed('\x1b]133;D;0\x07');
       bridge.noteInput('x');
       bridge.rebaseShellKeyInput(mark);
-      feed(']133;A$ ]133;B');
+      feed('\x1b]133;A\x07$ \x1b]133;B\x07');
       expect(bridge.isEmptyShellPrompt()).toBe(false);
     });
 
