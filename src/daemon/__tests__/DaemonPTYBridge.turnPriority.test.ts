@@ -134,6 +134,16 @@ describe('DaemonPTYBridge turn priority', () => {
       expect(bridge.isEmptyShellPrompt()).toBe(false);
     });
 
+    it('a key typed after the program ended, before its prompt is drawn, still counts', () => {
+      runTui();
+      const mark = bridge.getKeyInputRevision();
+      feed(']133;D;0');
+      bridge.noteInput('x');
+      bridge.rebaseShellKeyInput(mark);
+      feed(']133;A$ ]133;B');
+      expect(bridge.isEmptyShellPrompt()).toBe(false);
+    });
+
     it('a mark from before another command started changes nothing', () => {
       runTui();
       const mark = bridge.getKeyInputRevision();

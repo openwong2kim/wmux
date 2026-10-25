@@ -837,9 +837,10 @@ export class DaemonPTYBridge extends EventEmitter {
     const ended = this.endedShellCommand;
     // Another command, or a key after the mark before the program ended: the end's verdict stands.
     if (!ended || keyRevision < ended.keyRevision || ended.endedAt !== keyRevision) return;
+    // A key reached the pane after the program ended: the shell's line editor holds it.
+    if (this.keyInputRevision !== ended.endedAt) return;
     if (!ended.prompted) this.completedShellCommand = true;
-    // Drawn already: empty unless a key reached the pane since.
-    else if (this.keyInputRevision === ended.endedAt) this.emptyShellPrompt = true;
+    else this.emptyShellPrompt = true;
   }
 
   /** `isInputQuiet` for writes that can act on the screen only: focus and
