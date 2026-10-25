@@ -905,18 +905,28 @@ Decisions Log for the full contract.
 A 300px list beside a main pane. The list: the title, New schedule, a filter,
 then one row per schedule (its name over a muted `next run · schedule` line;
 turned-off schedules dimmed). The main pane shows the selected schedule,
-the composer, or — with nothing selected — "Schedule a task" and six
-development templates (repo briefing, nightly tests, dependency audit, flaky
-tests, changelog draft, issue triage) that open the composer filled in.
+the composer, or — with nothing selected — "Schedule a task" and seven
+templates that open the composer filled in: six development ones (repo
+briefing, nightly tests, dependency audit, flaky tests, changelog draft, issue
+triage) and "Publish through the browser". That one also fills Claude, Scoped
+and the wmux browser tools a publishing run needs (open, navigate, tabs,
+snapshot, screenshot, click, type, fill, press key, select, scroll, wait, file
+upload, dialog; never page script, cookies, storage or network), and opens
+with More options shown and the browser identity picker focused, a muted
+"Pick a browser identity so the run uses your logged-in profile." under it
+until one is picked. Nothing is picked or granted for the user; saving asks
+as always.
 
 - **Composer = one prompt box.** The name follows the prompt's first line
   until it is typed over. A row of chips under the box sets the schedule
   (daily, weekdays, weekly or picked days, and a time), the folder (the
   current workspace's by default) and the agent and account, each in a small
   popover. Permission, model, effort, the missed-run window and the response
-  limit sit behind More options at their defaults. One primary action
-  (Create, Save or Turn on) and Cancel; a problem shows under the part it is
-  about.
+  limit sit behind More options at their defaults. Under the permission, a
+  Claude run in Auto or Bypass with no browser identity gets one muted line,
+  "Browser tools are not included in Auto." (or Bypass): those runs start
+  without wmux's tools. One primary action (Create, Save or Turn on) and
+  Cancel; a problem shows under the part it is about.
 - **Missed while asleep:** after the computer slept through scheduled runs,
   one notice under the list header on the `--selection-subtle` fill: "N runs
   missed while asleep", a muted line that Run now starts each schedule once,
