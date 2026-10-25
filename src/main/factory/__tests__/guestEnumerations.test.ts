@@ -78,6 +78,7 @@ const BOT_LIST_CALLERS: Record<string, Why> = {
   'src/main/ipc/handlers/guestBots.handler.ts#defaultGuestWorkspacePorts': { kind: 'owner', why: 'the owner flagging one workspace checks its bots' },
   'src/main/ipc/handlers/room.handler.ts#registerRoomIpcHandlers': { kind: 'owner', why: 'the owner\'s room view' },
   'src/main/phone/PhoneFactory.ts#defaultPhoneFactoryPorts': { kind: 'owner', why: 'the owner\'s phone' },
+  'src/main/phone/BotPromptPushFeed.ts#openBotPromptRows': { kind: 'closed', why: 'the owner\'s phone push' },
   'src/main/pipe/handlers/bot.rpc.ts#botRuntimeModule': { kind: 'one-workspace', why: 'each bot\'s own queued wakes at start' },
   'src/main/pipe/handlers/bot.rpc.ts#registerBotRpcHandlers': { kind: 'guest-skip', why: 'bot.list: a bot lists only its side of the boundary' },
   'src/main/pipe/handlers/botSecret.rpc.ts#handleSecretList': { kind: 'not-bots', why: 'the secret store' },
@@ -130,6 +131,7 @@ const ROOM_READ_CALLERS: Record<string, Why> = {
   'src/main/phone/PhoneFactory.ts#handlePhoneRoomCommand': { kind: 'owner', why: 'the owner\'s phone; a guest\'s read goes through handleGuestCards, flag checked' },
   'src/main/phone/PhoneFactory.ts#newestMessage': { kind: 'owner', why: 'the owner\'s phone' },
   'src/main/phone/PhoneFactory.ts#openQuestionsIn': { kind: 'owner', why: 'the owner\'s phone' },
+  'src/main/phone/BotPromptPushFeed.ts#openBotPromptRows': { kind: 'closed', why: 'the owner\'s phone push; listEnabled leaves guest workspaces out' },
   'src/main/phone/PhoneFactory.ts#phoneFactoryState': { kind: 'owner', why: 'the owner\'s phone' },
   'src/main/phone/PhoneFactory.ts#phoneRoomAttachment': { kind: 'owner', why: 'the owner\'s phone' },
   'src/main/phone/PhoneFactory.ts#threads': { kind: 'owner', why: 'the owner\'s phone' },
@@ -150,7 +152,7 @@ const ROOM_READ_CALLERS: Record<string, Why> = {
 const ROOT = path.resolve(__dirname, '../../../..');
 const BOT_ALWAYS = new Set(['listEnabled', 'listEnabledIncludingGuest']);
 const BOT_LIST = new Set(['list', 'listRemoved']);
-const ROOM_READS = new Set(['read', 'find', 'get', 'threads', 'summary']);
+const ROOM_READS = new Set(['read', 'find', 'get', 'threads', 'summary', 'openCards']);
 
 function sources(dir: string, out: string[] = []): string[] {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {

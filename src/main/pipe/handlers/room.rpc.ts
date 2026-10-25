@@ -98,6 +98,7 @@ import { parseRoomAttachments, type RoomAttachment } from '../../../shared/roomA
 import { getRoomFileStore, type RoomFileStore } from '../../factory/roomFiles';
 import { ROOM_FILE_LIMITS, type RoomFile } from '../../../shared/roomFiles';
 import { getTaskFolderPorts, taskFolderKind } from '../../factory/taskFolderCleanup';
+import { noteRoomCardChanged } from '../../phone/BotPromptPushFeed';
 
 // The owner's messages (shared with the phone) live in factory/humanMessage.ts.
 export { humanAddressee, postHumanMessage };
@@ -815,9 +816,12 @@ export function createRoomModule(
         emit: (payload: RoomEventPayload) => {
           const win = deps.getMainWindow();
           if (win && !win.isDestroyed()) win.webContents.send(ROOM_EVENT, payload);
+          // The phone's copy of what bots are waiting on.
+          noteRoomCardChanged(payload.card);
         },
       });
       setRoomWriter(writer);
+      noteRoomCardChanged();
       // The first sweep of the bots' stored files: it needs the writer to
       // know which files the kept cards still list.
       getRoomFileStore()?.sweep();

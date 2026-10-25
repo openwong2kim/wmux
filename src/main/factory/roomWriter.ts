@@ -1023,6 +1023,12 @@ export class RoomWriter {
     return ids;
   }
 
+  /** The room's open cards of these kinds, in arrival order (the phone's
+   *  push of what bots are waiting on: phone/BotPromptPushFeed.ts). */
+  openCards(workspaceId: string, kinds: ReadonlySet<CardKind>): RoomCard[] {
+    return (this.room(workspaceId)?.cards ?? []).filter((c) => c.state === 'open' && kinds.has(c.kind));
+  }
+
   /** The first card of the room that matches, newest first. An external
    *  guest's card is skipped unless `guests` is set (see `read`). */
   find(workspaceId: string, match: (c: RoomCard) => boolean, opts: { guests?: boolean } = {}): RoomCard | null {

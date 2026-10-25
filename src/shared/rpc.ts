@@ -570,6 +570,9 @@ export type RpcMethod =
   // Main → daemon: the bot approval requests waiting on the owner, so the
   // daemon can push them to the phone (shared/botApprovalPush.ts).
   | 'daemon.botApprovals.set'
+  // Main → daemon: the bot prompts (question / login / secret cards) waiting
+  // on the owner (shared/botPromptPush.ts).
+  | 'daemon.botPrompts.set'
   // Main → daemon: which daemon session is the Moa (HQ brain) pane, or null.
   // The phone's access to that one brain pane stands only while it does.
   | 'daemon.moa.set'
@@ -927,6 +930,7 @@ export const ALL_RPC_METHODS = [
   'daemon.phone.complete',
   'daemon.workspaceFacts.set',
   'daemon.botApprovals.set',
+  'daemon.botPrompts.set',
   'daemon.moa.set',
   'daemon.inbox.poll',
   'lanlink.status',

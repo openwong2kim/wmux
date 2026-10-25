@@ -8,16 +8,15 @@
 // so the feed also republishes when the oldest one reaches its TTL: the read
 // that builds the table expires it, and the daemon retracts its banner.
 //
-// UNKNOWN IS NOT EMPTY. The daemon reads an empty table as "nothing waits"
-// and retracts every banner, so a table is sent only once the store has an
-// answer. Before the approval store starts (a daemon connect can come first)
-// and while it stops on quit, `rows` answers null and nothing is sent; only a
+// Unknown is not empty (pushTableFeed.ts): before the approval store starts
+// and while it stops on quit the table is null and nothing is sent; only a
 // store that failed to start sends an empty table, since nothing can be
 // answered then.
 
 import { APPROVAL_LIMITS, type ApprovalView } from '../factory/approvals';
 import { phoneBotApproval } from '../../shared/phoneBotApprovals';
 import { BOT_APPROVAL_PUSH_MAX_ROWS, type BotApprovalPushRow } from '../../shared/botApprovalPush';
+import { createPushTableFeed, type PushTableFeed, type PushTableFeedDeps } from './pushTableFeed';
 
 /** The waiting, phone-visible requests among `requests`, with their bot's
  *  name: the oldest BOT_APPROVAL_PUSH_MAX_ROWS, the ones the daemon keeps. */
@@ -38,80 +37,19 @@ export function botApprovalPushRows(
   return rows.sort((a, b) => a.request.createdAt - b.request.createdAt).slice(0, BOT_APPROVAL_PUSH_MAX_ROWS);
 }
 
-export interface BotApprovalPushFeedDeps {
-  /** The current table, or null while it is not known (nothing is sent).
-   *  Reading it expires requests past their TTL. */
-  rows: () => BotApprovalPushRow[] | null;
-  push: (rows: BotApprovalPushRow[]) => Promise<unknown>;
-  now?: () => number;
-  setTimer?: (fn: () => void, ms: number) => unknown;
-  clearTimer?: (handle: unknown) => void;
-}
+/** `rows` reads the store, which expires requests past their TTL. */
+export type BotApprovalPushFeedDeps = Omit<PushTableFeedDeps<BotApprovalPushRow>, 'refreshAt'>;
 
-export interface BotApprovalPushFeed {
-  /** Something may have changed: publish once, soon. */
-  schedule(): void;
-  /** Publish now (a daemon just connected). */
-  publishNow(): void;
-  dispose(): void;
-}
-
-/** Changes in one burst (a decide that also closes a card) go out as one push. */
-const COALESCE_MS = 50;
+export type BotApprovalPushFeed = PushTableFeed;
 
 export function createBotApprovalPushFeed(deps: BotApprovalPushFeedDeps): BotApprovalPushFeed {
-  const now = deps.now ?? Date.now;
-  const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => {
-    const t = setTimeout(fn, ms);
-    t.unref?.();
-    return t;
+  return createPushTableFeed({
+    ...deps,
+    // The oldest request reaches its TTL with nothing reported.
+    refreshAt: (rows) => rows.length > 0
+      ? Math.min(...rows.map((row) => row.request.createdAt)) + APPROVAL_LIMITS.PENDING_TTL_MS + 1_000
+      : undefined,
   });
-  const clearTimer = deps.clearTimer ?? ((h: unknown) => clearTimeout(h as NodeJS.Timeout));
-  let soon: unknown = null;
-  let expiry: unknown = null;
-  let retry: unknown = null;
-  let generation = 0;
-
-  const publishNow = (isRetry = false): void => {
-    if (soon !== null) { clearTimer(soon); soon = null; }
-    if (expiry !== null) { clearTimer(expiry); expiry = null; }
-    if (retry !== null) { clearTimer(retry); retry = null; }
-    let rows: BotApprovalPushRow[] | null;
-    try {
-      rows = deps.rows();
-    } catch {
-      return;
-    }
-    if (rows === null) return;
-    // A refused or timed-out push is tried once more, so a retraction is not
-    // lost until the next change. Each publication gets its own retry, and a
-    // retry gets none, so a daemon that stays unreachable costs two pushes per
-    // change; it gets the table on its next connect.
-    const gen = ++generation;
-    void deps.push(rows).catch(() => {
-      if (isRetry || gen !== generation) return;
-      retry = setTimer(() => { retry = null; publishNow(true); }, COALESCE_MS);
-    });
-    if (rows.length > 0) {
-      const oldest = Math.min(...rows.map((row) => row.request.createdAt));
-      expiry = setTimer(() => publishNow(), Math.max(0, oldest + APPROVAL_LIMITS.PENDING_TTL_MS - now()) + 1_000);
-    }
-  };
-
-  function schedule(): void {
-    if (soon === null) soon = setTimer(() => { soon = null; publishNow(); }, COALESCE_MS);
-  }
-
-  return {
-    schedule,
-    publishNow: () => publishNow(),
-    dispose() {
-      if (soon !== null) clearTimer(soon);
-      if (expiry !== null) clearTimer(expiry);
-      if (retry !== null) clearTimer(retry);
-      soon = expiry = retry = null;
-    },
-  };
 }
 
 let feed: BotApprovalPushFeed | null = null;

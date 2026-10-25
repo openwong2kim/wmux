@@ -13,6 +13,7 @@ import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
 import { handlePhoneQuickCommands } from './quickCommands/QuickCommandStore';
 import { installPhoneBridge } from './phone/installPhoneBridge';
 import { botApprovalPushTable, createBotApprovalPushFeed, setBotApprovalPushFeed } from './phone/BotApprovalPushFeed';
+import { createBotPromptPushFeed, openBotPromptRows, setBotPromptPushFeed } from './phone/BotPromptPushFeed';
 import { handlePhoneMoaWake } from './factory/phoneMessage';
 import { MOA_WAKE_COMMAND } from '../shared/moaWake';
 import { handlePhoneAccounts } from './phone/PhoneAccounts';
@@ -73,6 +74,7 @@ import type { RpcMethod } from '../shared/rpc';
 import { liveNoChangesCheck } from './factory/noChangesCheck';
 import { getBotDirectory, getBotStore } from './factory/botStore';
 import { getApprovalService } from './factory/approvals';
+import { getRoomWriter } from './factory/roomWriter';
 import { PipeServer } from './pipe/PipeServer';
 import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
@@ -1461,6 +1463,15 @@ const botApprovalPushFeed = createBotApprovalPushFeed({
   },
 });
 setBotApprovalPushFeed(botApprovalPushFeed);
+// A bot's open question / login / secret cards, the same way.
+const botPromptPushFeed = createBotPromptPushFeed({
+  rows: () => openBotPromptRows(getRoomWriter(), getBotDirectory()),
+  push: async (rows) => {
+    if (!daemonClient?.isConnected) throw new Error('Daemon not connected');
+    return daemonClient.rpc('daemon.botPrompts.set', { prompts: rows });
+  },
+});
+setBotPromptPushFeed(botPromptPushFeed);
 // The track record (deck/trackRecordFeed.ts): counts from wmux's own task
 // data, running only while the agent factory is on — its switch starts and
 // stops it.
@@ -2416,6 +2427,7 @@ app.on('ready', async () => {
       // A restarted daemon holds no bot approval table. Sent only once the
       // approval store has an answer; its start publishes otherwise.
       botApprovalPushFeed.publishNow();
+      botPromptPushFeed.publishNow();
       client.on('approvals:changed', () => { void trackRecordFeed.onApprovalsChanged(); });
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same

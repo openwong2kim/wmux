@@ -1,7 +1,7 @@
 // A bot's approval request, as a push to the phone, and the retraction once it
 // is no longer waiting. Main pushes the table of waiting requests
-// (shared/botApprovalPush.ts); BotApprovalPushRouter turns each change of that
-// table into sends, parks and retractions.
+// (shared/botApprovalPush.ts); BotApprovalPushRouter (a PushTableRouter) turns
+// each change of that table into sends, parks and retractions.
 //
 // The payload names the request by `botApprovalId`, NEVER `approvalId`: every
 // shipped extension attaches the pane-approval category and deep link to an
@@ -19,6 +19,7 @@ import { APPROVAL_NEVER_BY_RULE } from '../../shared/botApproval';
 import { BOT_APPROVAL_PUSH_CAPABILITY, type BotApprovalPushRow } from '../../shared/botApprovalPush';
 import type { PhoneBotApproval } from '../../shared/phoneBotApprovals';
 import { APPROVAL_RETRACTION_KIND } from './approvalPushPayload';
+import { PushTableRouter, type PushTableRouterDeps } from './pushTableRouter';
 
 /** The bot has no name the daemon was told. */
 const BOT_NAME_FALLBACK = 'A bot';
@@ -84,78 +85,17 @@ export function buildBotApprovalRetractionPayload(requestId: string): PushPayloa
 /** Park-queue keys, kept apart from pane approval ids. */
 export const BOT_APPROVAL_PARK_PREFIX = 'bot:';
 
-export interface BotApprovalPushRouterDeps {
-  /** Is presence holding this payload back? */
-  suppress: (payload: PushPayload) => boolean;
-  send: (payload: PushPayload, opts: { collapseId: string; requires: string }) => void;
-  park: (key: string, payload: PushPayload, collapseId: string, requires: string) => void;
-  forget: (key: string) => void;
-  log?: (level: 'info' | 'warn', message: string) => void;
-}
-
-/**
- * The daemon's copy of main's waiting table, and what was done with each row:
- *   - parked   held by presence under `bot:<requestId>`
- *   - sent     on the phone; retract when it leaves the table
- *   - dropped  the park queue evicted it unsent; nothing to retract
- */
-export class BotApprovalPushRouter {
-  private readonly deps: BotApprovalPushRouterDeps;
-  private readonly rows = new Map<string, 'parked' | 'sent' | 'dropped'>();
-
-  constructor(deps: BotApprovalPushRouterDeps) {
-    this.deps = deps;
-  }
-
-  /** Main's whole table. New rows are pushed, rows that left are retracted. */
-  set(table: readonly BotApprovalPushRow[]): void {
-    const next = new Map(table.map((row) => [row.request.requestId, row]));
-    for (const [id, state] of [...this.rows]) {
-      if (next.has(id)) continue;
-      this.rows.delete(id);
-      if (state === 'parked') this.deps.forget(BOT_APPROVAL_PARK_PREFIX + id);
-      if (state === 'sent') {
-        this.deps.log?.('info', `[push] retracting the push for bot approval ${id}`);
-        this.deps.send(buildBotApprovalRetractionPayload(id), {
-          collapseId: botApprovalPushCollapseId(id),
-          requires: BOT_APPROVAL_PUSH_CAPABILITY,
-        });
-      }
-    }
-    for (const [id, row] of next) {
-      if (this.rows.has(id)) continue;
-      const payload = buildBotApprovalPushPayload(row);
-      const collapseId = botApprovalPushCollapseId(id);
-      if (this.deps.suppress(payload)) {
-        this.deps.park(BOT_APPROVAL_PARK_PREFIX + id, payload, collapseId, BOT_APPROVAL_PUSH_CAPABILITY);
-        this.rows.set(id, 'parked');
-      } else {
-        this.deps.send(payload, { collapseId, requires: BOT_APPROVAL_PUSH_CAPABILITY });
-        this.rows.set(id, 'sent');
-      }
-    }
-  }
-
-  /**
-   * The main process that published the table went away. A push presence still
-   * holds would be released by that same exit ("desktop went away") for a
-   * request nobody can answer: `/api/bot-approvals/:id` needs the desktop. So
-   * held pushes are forgotten, and their rows dropped from the table, so the
-   * next main's table pushes them once (they were never delivered). Sent rows
-   * stay: their banners are not retracted on a quit.
-   */
-  forgetParked(): void {
-    for (const [id, state] of [...this.rows]) {
-      if (state !== 'parked') continue;
-      this.deps.forget(BOT_APPROVAL_PARK_PREFIX + id);
-      this.rows.delete(id);
-    }
-  }
-
-  /** The park queue released or evicted one of ours. */
-  onParkedOutcome(key: string, outcome: 'delivered' | 'dropped'): void {
-    const id = key.slice(BOT_APPROVAL_PARK_PREFIX.length);
-    if (this.rows.get(id) !== 'parked') return;
-    this.rows.set(id, outcome === 'delivered' ? 'sent' : 'dropped');
+/** Main's table of waiting bot approvals, as pushes and retractions. */
+export class BotApprovalPushRouter extends PushTableRouter<BotApprovalPushRow> {
+  constructor(deps: PushTableRouterDeps) {
+    super({
+      parkPrefix: BOT_APPROVAL_PARK_PREFIX,
+      requires: BOT_APPROVAL_PUSH_CAPABILITY,
+      noun: 'bot approval',
+      idOf: (row) => row.request.requestId,
+      build: buildBotApprovalPushPayload,
+      collapseId: botApprovalPushCollapseId,
+      retraction: buildBotApprovalRetractionPayload,
+    }, deps);
   }
 }

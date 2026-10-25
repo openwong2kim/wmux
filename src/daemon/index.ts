@@ -93,8 +93,11 @@ import { claudeComposerEmpty, claudeComposerVisible } from './transcript/deliver
 import { CHATV2_LAUNCH_ALLOWED_RPC } from '../shared/chatv2/ipc';
 import { isPaneMoving } from './chat/v2/paneClaims';
 import { ApprovalPushRouter } from './push/approvalPushRouter';
-import { BOT_APPROVAL_PARK_PREFIX, BotApprovalPushRouter } from './push/botApprovalPush';
+import { BotApprovalPushRouter } from './push/botApprovalPush';
+import { BotPromptPushRouter } from './push/botPromptPush';
+import type { PushTableRouterDeps } from './push/pushTableRouter';
 import { parseBotApprovalPushRows, type BotApprovalPushRow } from '../shared/botApprovalPush';
+import { parseBotPromptPushRows, type BotPromptPushRow } from '../shared/botPromptPush';
 import { readPendingToolUse } from './transcript/pendingToolUse';
 import { STALL_AGENT, StallWatch, lastHumanPrompt, readTranscriptTail, stopAndPrefill } from './transcript/stallWatch';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
@@ -463,8 +466,11 @@ let noteCodexTurnFailed: ((id:string, threadId:string, turn:unknown)=>void) | un
 let pushTurnFailed: ((sessionId:string, failure:TurnFailure)=>void) | undefined;
 /** Main's table of waiting bot approvals (`daemon.botApprovals.set`), set at boot once the push sender exists. */
 let pushBotApprovals: ((rows: BotApprovalPushRow[]) => void) | undefined;
-/** The pipe client that last published the bot approval table (main). */
+/** Main's table of open bot prompts (`daemon.botPrompts.set`), set at boot once the push sender exists. */
+let pushBotPrompts: ((rows: BotPromptPushRow[]) => void) | undefined;
+/** The pipe clients that last published the bot approval and prompt tables (main). */
 let botApprovalsPublisher: string | null = null;
+let botPromptsPublisher: string | null = null;
 /** N4 — an agent's sign-in was lost (shared/agentAuthLost); set at boot once the pipe server exists. */
 let noteAuthLost: ((sessionId: string, agent: AuthLostAgent, env: Record<string, string> | undefined, origin: AuthLostOrigin, providerCode?: string) => void) | undefined;
 /** N4 — an agent and account was seen to work (a confirmed turn end, or its status said signed in). */
@@ -5439,6 +5445,17 @@ function registerRpcHandlers(
     botApprovalsPublisher = ctx.clientId;
     return { ok: true, accepted: rows.length };
   });
+  // The same for a bot's open prompts; see shared/botPromptPush.ts.
+  pipeServer.onRpc('daemon.botPrompts.set', async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, 'daemon.botPrompts.set')) {
+      return { ok: false, error: 'daemon.botPrompts.set is first-party only' };
+    }
+    const rows = parseBotPromptPushRows((params as { prompts?: unknown } | undefined)?.prompts);
+    if (!rows) return { ok: false, error: 'daemon.botPrompts.set requires a prompts array' };
+    pushBotPrompts?.(rows);
+    botPromptsPublisher = ctx.clientId;
+    return { ok: true, accepted: rows.length };
+  });
 
   pipeServer.onRpc('daemon.workspaceFacts.set', async (params, ctx) => {
     // FIRST-PARTY ONLY, and this one is load-bearing rather than hygienic: a
@@ -8774,9 +8791,11 @@ async function main(): Promise<void> {
     // Whether a held push went out or was evicted unsent decides whether its
     // record may later retract it. Only called on a release or an eviction,
     // both of which happen after the router below exists.
-    onOutcome: (id, outcome, collapseId) => id.startsWith(BOT_APPROVAL_PARK_PREFIX)
-      ? botApprovalPushRouter.onParkedOutcome(id, outcome)
-      : approvalPushRouter.onParkedOutcome(id, outcome, collapseId),
+    onOutcome: (id, outcome, collapseId) => {
+      if (botApprovalPushRouter.owns(id)) botApprovalPushRouter.onParkedOutcome(id, outcome);
+      else if (botPromptPushRouter.owns(id)) botPromptPushRouter.onParkedOutcome(id, outcome);
+      else approvalPushRouter.onParkedOutcome(id, outcome, collapseId);
+    },
     isPresent: desktopIsPresent,
     staleAfterMs: () => presenceConfig().staleAfterMs,
     log: (level, msg) => log(level, msg),
@@ -8900,7 +8919,10 @@ async function main(): Promise<void> {
   // waiting on the owner (shared/botApprovalPush.ts). Same presence rules and
   // park queue as a pane approval; only devices that registered the
   // capability receive them.
-  const botApprovalPushRouter = new BotApprovalPushRouter({
+  //
+  // A bot's open prompts (question / login_request / secret_request cards)
+  // ride the same plumbing under their own capability (shared/botPromptPush.ts).
+  const botPushTableDeps: PushTableRouterDeps = {
     suppress: (payload) => shouldSuppressPush({
       state: desktopPresence.snapshot(),
       now: Date.now(),
@@ -8911,8 +8933,11 @@ async function main(): Promise<void> {
     park: (key, payload, collapseId, requires) => deferredPush.park(key, payload, collapseId, requires),
     forget: (key) => deferredPush.forget(key),
     log: (level, msg) => log(level, msg),
-  });
+  };
+  const botApprovalPushRouter = new BotApprovalPushRouter(botPushTableDeps);
+  const botPromptPushRouter = new BotPromptPushRouter(botPushTableDeps);
   pushBotApprovals = (rows) => botApprovalPushRouter.set(rows);
+  pushBotPrompts = (rows) => botPromptPushRouter.set(rows);
   // Contract §7 `turn_failed`: one push per failed turn (serveTurnFailure only
   // calls this for a failure it had not held). Presence is consulted like an
   // approval's, but a suppressed one is DROPPED, not parked: someone at the
@@ -8974,11 +8999,15 @@ async function main(): Promise<void> {
   // this, killing the app mid-focus would leave a fresh report standing for the
   // rest of the freshness window and swallow the pushes it was meant to hand off.
   pipeServer.onClientClose((clientId) => {
-    // Before presence drops below: the bot approval table's publisher took the
-    // only way to answer those requests with it, so its held pushes go first.
+    // Before presence drops below: a bot table's publisher took the only way
+    // to answer its rows with it, so its held pushes go first.
     if (botApprovalsPublisher !== null && botApprovalsPublisher === clientId) {
       botApprovalPushRouter.forgetParked();
       botApprovalsPublisher = null;
+    }
+    if (botPromptsPublisher !== null && botPromptsPublisher === clientId) {
+      botPromptPushRouter.forgetParked();
+      botPromptsPublisher = null;
     }
     desktopPresence.forget(clientId);
     deferredPush.onPresenceChanged();

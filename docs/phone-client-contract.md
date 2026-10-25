@@ -2674,7 +2674,56 @@ conversation and read what is waiting rather than relying on banners:
   a banner it already has.
 - At most the 200 oldest waiting requests are pushed.
 
-Bot questions, login requests and secret requests are not pushed yet.
+### Bot prompts — a question, a login or a secret a bot is waiting on
+
+A bot's open `question`, `login_request` or `secret_request` card (§ room
+cards) is pushed while it is open, **only to a device whose registration
+listed `capabilities: ["botPromptPush"]`**. Sealed plaintext:
+
+```json
+{
+  "title": "Scout needs you",
+  "body": "Asks for the secret NPM_TOKEN",
+  "approvalKind": "bot_prompt",
+  "promptKind": "secret_request",
+  "botPromptId": "<card id>",
+  "workspaceId": "<workspace id>",
+  "threadId": "general",
+  "botId": "<bot id>",
+  "requiresInAppChoice": true
+}
+```
+
+- **Never an `approvalId`**, and no `botApprovalId`. Open the Bots
+  conversation named by `workspaceId` and `threadId` and answer on the card
+  `botPromptId` names.
+- `promptKind` is `question`, `login_request` or `secret_request`.
+- `title` is `<bot name> needs you` (`A bot needs you` with no known name).
+- `body` is built from structured fields only, never from text the bot wrote:
+  `Has a question for you`; `Asks you to sign in to GitHub` / `… to Claude`;
+  `Asks you to log in to a website` (the URL stays on the card);
+  `Asks for the secret <NAME>`. A secret request names the secret and never
+  carries a value; the card holds none either.
+- No `risk`: presence holds these like a `normal` approval.
+- `botId` may be absent.
+- APNs collapse id: `botprompt-<botPromptId>`.
+
+When the card closes (the question is answered or closed, the login or the
+secret request is resolved), a retraction follows under the same collapse id,
+to the same devices:
+
+```json
+{
+  "title": "Answered",
+  "body": "No longer waiting — nothing to do.",
+  "kind": "approval_retraction",
+  "retractsBotPromptId": "<card id>"
+}
+```
+
+Handle it as the other retractions: silent, no category, drop any local copy
+of the card. The limits of bot approvals (daemon restart, a push is a nudge)
+apply the same way, with `botPromptPush` for the capability.
 
 ---
 
@@ -2715,7 +2764,7 @@ it. That is deliberate — the token now on file belongs to the build that just
 called, not to the one before it.
 
 `capabilities` lists the push kinds this build can open: `"botApprovalPush"`
-(Bot approvals, above). A push that needs a capability goes only to devices
+(Bot approvals, above) and `"botPromptPush"` (Bot prompts, above). A push that needs a capability goes only to devices
 that listed it. Like the rest of the registration it is replaced wholesale, so
 send the full list every time; leaving it out clears it. Entries that are not
 names (`^[A-Za-z][A-Za-z0-9_]{0,63}$`) are dropped rather than refused, and
