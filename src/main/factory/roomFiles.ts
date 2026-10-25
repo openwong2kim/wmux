@@ -10,6 +10,8 @@
 //     the real path of one allowed root (the caller decides the roots: the
 //     bot's repository, its task folders, its own folder); on Windows the
 //     real path must also start with the root in its exact case;
+//   - no folder between that root and the file is a link: the path as
+//     written below the root is its real path;
 //   - no path segment below that root is a protected file
 //     (botRepoRead.ts BOT_REPO_SECRET_PATTERNS: `.env`, keys, `.git`, ...);
 //   - the path itself is a regular file, not a link, a folder or a device,
@@ -152,7 +154,7 @@ export function parseRoomFiles(value: unknown): RoomFile[] | undefined {
 }
 
 /** Why a source was not taken. */
-export type RoomFileRefusalReason = 'outside' | 'protected' | 'missing' | 'not_file' | 'stream' | 'links' | 'size' | 'empty' | 'changed' | 'full' | 'store';
+export type RoomFileRefusalReason = 'outside' | 'protected' | 'missing' | 'not_file' | 'stream' | 'links' | 'linked_folder' | 'size' | 'empty' | 'changed' | 'full' | 'store';
 
 export type RoomFileCopy =
   | { ok: true; file: RoomFile }
@@ -165,6 +167,7 @@ const REFUSAL_TEXT: Record<RoomFileRefusalReason, string> = {
   not_file: 'it is not a regular file (a folder, a link or a device)',
   stream: 'it names a data stream of a file, not the file itself',
   links: 'it has more than one name on disk; attach a file with a single name',
+  linked_folder: 'a folder on its path is a link; attach the file by its own path',
   size: `it is larger than ${ROOM_FILE_LIMITS.MAX_BYTES / (1024 * 1024)} MiB`,
   empty: 'it is empty',
   changed: 'it changed while it was being read',
@@ -231,6 +234,24 @@ export function strictlyInside(root: string, target: string, platform: NodeJS.Pl
   if (!rel || rel === '..' || rel.startsWith(`..${p.sep}`) || p.isAbsolute(rel)) return null;
   if (platform === 'win32' && !target.startsWith(/[\\/]$/.test(root) ? root : `${root}${p.sep}`)) return null;
   return rel;
+}
+
+/**
+ * Whether `source`, as written, reaches the file through no link below its
+ * root: its path below one of the roots (as given, or resolved) is the real
+ * path below the root that holds the file. Case-blind on macOS and Windows.
+ */
+function writtenWithoutLinks(allowedRoots: readonly string[], source: string, realRel: string): boolean {
+  const written = path.resolve(source);
+  const caseBlind = process.platform === 'darwin' || process.platform === 'win32';
+  const same = (a: string, b: string) => (caseBlind ? a.toLowerCase() === b.toLowerCase() : a === b);
+  return allowedRoots.filter((r) => path.isAbsolute(r)).some((root) => {
+    for (const candidate of [path.resolve(root), realpathOrNull(root)]) {
+      const rel = candidate ? strictlyInside(candidate, written) : null;
+      if (rel !== null && same(rel, realRel)) return true;
+    }
+    return false;
+  });
 }
 
 /** The real root `real` is strictly inside, with the path below it. */
@@ -328,6 +349,7 @@ export class RoomFileStore {
     if (protectedPatternOf(inside.rel)) return refuse('protected');
     if (!lst.isFile() || lst.isSymbolicLink()) return refuse('not_file');
     if (lst.nlink > 1) return refuse('links');
+    if (!writtenWithoutLinks(allowedRoots, source, inside.rel)) return refuse('linked_folder');
     if (lst.size > ROOM_FILE_LIMITS.MAX_BYTES) return refuse('size');
     if (lst.size === 0) return refuse('empty');
     let data: Buffer | null;

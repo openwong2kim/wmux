@@ -38,7 +38,8 @@ describe('bot fan-out presets', () => {
     const prompt = composeBotWorkerPrompt('research', 'Make 2 PNG cards.');
     expect(prompt).toContain('When the task asks for files');
     expect(prompt).toContain('Keep every file you hand back inside this folder');
-    expect(prompt).toContain('the absolute path of each file you made');
+    expect(prompt).toContain('Each deliverable file you made is one artifact item (status verified) with its absolute path in location, and needs no source URL');
+    expect(prompt).toContain('notes, downloads and installed tools are not listed');
     expect(prompt).toContain('no push and no pull request');
   });
 

@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { persisterWritesSettled } from '../versionedFile';
@@ -323,6 +324,49 @@ describe('cleanTaskFolder', () => {
     now = 50_000 + TASK_FOLDER_KEPT_TTL_MS;
     expect(await cleanTaskFolder(p, done, { folder: scratch }, [], { keptTtl: true })).toBe('removed');
     expect(fs.existsSync(scratch)).toBe(false);
+  });
+
+  it('keeps a research folder only for an artifact location naming a single-named file inside it through no link, and never on an unwritten record', async () => {
+    const batch = path.join(wmuxDir, 'factory', 'bots', BOT, 'research', 'batch-k');
+    let n = 0;
+    const task = (setup: (folder: string) => string, opts: { inSummary?: boolean; asUrl?: boolean } = {}) => {
+      n += 1;
+      const folder = path.join(batch, `task-${n}`);
+      fs.mkdirSync(folder, { recursive: true });
+      const file = setup(folder);
+      const location = opts.asUrl ? pathToFileURL(file).href : file;
+      const entry = row('completed', {
+        id: `wtask-keep-${String(n).padStart(8, '0')}`,
+        dispatch: { origin: { kind: 'bot', botId: BOT }, preset: 'research' },
+        summary: opts.inSummary ? `Made ${file}` : 'Made the file.',
+        evidence: { summary: 'Made it.', items: opts.inSummary ? [{ kind: 'inspection', status: 'verified', summary: 'looked' }] : [{ kind: 'artifact', status: 'verified', summary: 'the file', location }] },
+      });
+      return { folder, entry };
+    };
+    const make = (f: string) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, 'x'); return f; };
+    const p = ports();
+
+    // A file:// URL counts, and a name starting with two dots is still inside.
+    const url = task((f) => make(path.join(f, '..card.png')), { asUrl: true });
+    expect(await cleanTaskFolder(p, url.entry, { folder: url.folder }, [])).toBe('skipped');
+    // A path only in a summary keeps nothing: a note the research mentions does not hold the folder.
+    const prose = task((f) => make(path.join(f, 'notes.md')), { inSummary: true });
+    expect(await cleanTaskFolder(p, prose.entry, { folder: prose.folder }, [])).toBe('removed');
+    if (process.platform !== 'win32') {
+      // Through a linked folder inside it, or a file with a second name: nothing kept.
+      const linked = task((f) => { make(path.join(f, 'real', 'a.png')); fs.symlinkSync(path.join(f, 'real'), path.join(f, 'via')); return path.join(f, 'via', 'a.png'); });
+      expect(await cleanTaskFolder(p, linked.entry, { folder: linked.folder }, [])).toBe('removed');
+      const twoNames = task((f) => { const a = make(path.join(f, 'a.png')); fs.linkSync(a, path.join(wmuxDir, 'other-name.png')); return a; });
+      expect(await cleanTaskFolder(p, twoNames.entry, { folder: twoNames.folder }, [])).toBe('removed');
+    }
+    // A kept record that cannot be written keeps nothing and is tried again; the folder is not removed meanwhile.
+    const unwritten = task((f) => make(path.join(f, 'b.png')));
+    const failing = ports({ store: Object.assign(Object.create(TaskFolders.prototype), p.store, { put: async () => { throw new Error('disk full'); } }) });
+    expect(await cleanTaskFolder(failing, unwritten.entry, { folder: unwritten.folder }, [])).toBe('failed');
+    expect(fs.existsSync(unwritten.folder)).toBe(true);
+    // A kept record keeps its time.
+    expect(await cleanTaskFolder(ports({ now: () => 99_000 }), url.entry, { folder: url.folder }, [])).toBe('skipped');
+    expect(p.store.get(url.entry.id)?.at).toBe(50_000);
   });
 
   it('removes a research batch once its task folders are gone and its .meta holds only removed tasks; never while a task of it is open', async () => {

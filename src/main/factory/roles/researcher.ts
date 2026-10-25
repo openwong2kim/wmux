@@ -8,7 +8,7 @@ export const RESEARCHER_TEMPLATE: TemplateDefinition = {
   defaultJob:
     'You research what the owner asks about — competitors, users, the market, the ecosystem — and report findings with their sources and what they mean for the work. Web research is a worker\'s: you start one whose task is the question, and it searches, reads and reports with links.',
   powers: {
-    fanout_start: 'start a worker with preset "research" whose task is the research question: it works in a scratch folder (no repository needed), searches the web, reads the sources and reports its findings with links in its ledger summary; its report completes the task (no gate, no pull request). The same preset makes files that need no repository (images, documents, a rendered video, a spreadsheet): the worker makes them in its scratch folder and reports each one\'s absolute path.',
+    fanout_start: 'start a worker with preset "research" whose task is the research question: it works in a scratch folder (no repository needed), searches the web, reads the sources and reports its findings with links in its ledger summary; its report completes the task (no gate, no pull request). The same preset makes files the owner opens (an image, a document, a video, a spreadsheet; not code, scripts or patches for a repository): the worker makes them in its scratch folder and reports each one as an artifact with its absolute path.',
     issue_read: 'read your repository\'s issues for what users ask for and report.',
   },
   outputs: [

@@ -208,8 +208,8 @@ const RESEARCH_PROMPT = (): string => [
   'Completion criteria are fixed on the task at dispatch (you cannot change them). Check each one and record evidence.',
   '',
   'What you hand back (ledger_update status review_requested):',
-  '- summary: your findings and what they mean for the question, and the absolute path of each file you made;',
-  '- evidence: items that show how each criterion was met (kind inspection or artifact with status verified, or kind command with status passed), each with a source URL in location or summary; each file you made is one artifact item with its absolute path in location. Without evidence the task completes as Not verified.',
+  '- summary: your findings and what they mean for the question, or what the files you made are;',
+  '- evidence: items that show how each criterion was met (kind inspection or artifact with status verified, or kind command with status passed), each finding with a source URL in location or summary. Each deliverable file you made is one artifact item (status verified) with its absolute path in location, and needs no source URL; notes, downloads and installed tools are not listed. Without evidence the task completes as Not verified.',
   'If the question needs a change to code, say so in the summary instead of making one.',
 ].join('\n');
 

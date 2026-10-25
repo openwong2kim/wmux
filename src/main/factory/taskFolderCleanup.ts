@@ -13,8 +13,9 @@
 //     `refs/wmux/keep/<taskId>`, so removal never leaves them to gc.
 //   - A research task's scratch folder
 //     (`<wmux data>/factory/bots/<botId>/research/<batch>/<task>`) is removed;
-//     its report is in the ledger and the room. Unless its report names a
-//     file still inside it (reportNamesFileIn): files a worker made for the
+//     its report is in the ledger and the room. Unless its report's
+//     `artifact` evidence names a file still inside it (reportNamesFileIn,
+//     a regular file with one name, reached through no link): files a worker made for the
 //     owner, which its bot hands over with room_post `files` (a copy the card
 //     keeps) after the task ended. Such a folder is kept like one a stop kept
 //     (`kept_stopped`), and goes after TASK_FOLDER_KEPT_TTL_MS or with Clean
@@ -67,10 +68,12 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import type { LedgerEntry } from '../../shared/ledger';
 import { BOT_ID_RE } from '../../shared/bot';
 import { getExecEnv } from '../../shared/execEnv';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
+import { strictlyInside } from './roomFiles';
 import { assertNothingRunsIn, sessionHostDir } from '../worktask/stopSessionsInDir';
 import { treeKillRefusal } from '../../daemon/automation/verifiedTreeKill';
 import { STOPPED_BY_OWNER, STOP_SYSTEM_WORKSPACE, isStoppedByOwnerRow } from './factoryStop';
@@ -614,41 +617,59 @@ function throughNoLink(folder: string, root: string): boolean {
   }
 }
 
-/** Absolute paths a report names: its artifact items' locations, and the
- *  absolute paths written in its summaries. */
-function reportPaths(entry: LedgerEntry): string[] {
+/** The files a report hands over: its `artifact` items' locations, each an
+ *  absolute path or a `file://` URL. Free text is never read for paths. */
+function reportArtifactPaths(entry: LedgerEntry): string[] {
   const out: string[] = [];
   for (const item of entry.evidence?.items ?? []) {
-    if (item.kind === 'artifact' && typeof item.location === 'string') out.push(item.location.trim());
+    if (item.kind !== 'artifact' || typeof item.location !== 'string') continue;
+    const location = item.location.trim();
+    let file = location;
+    if (/^file:/i.test(location)) {
+      try {
+        file = fileURLToPath(location);
+      } catch {
+        continue;
+      }
+    }
+    if (path.isAbsolute(file)) out.push(file);
   }
-  for (const text of [entry.summary, entry.evidence?.summary]) {
-    if (typeof text !== 'string') continue;
-    for (const token of text.split(/[\s`'"()<>[\]]+/)) out.push(token.replace(/[.,;:]+$/, ''));
-  }
-  return out.filter((p) => p.length > 0 && path.isAbsolute(p));
+  return out;
+}
+
+/** Path comparison as the file system makes it: case-blind on macOS and
+ *  Windows. */
+function samePath(a: string, b: string): boolean {
+  return process.platform === 'darwin' || process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 /**
- * Whether a research task's report names a file still inside its folder: a
- * regular file (not a link) whose real path is strictly inside the folder's.
- * A path outside the folder keeps nothing. Never throws.
+ * Whether `file` is a regular file with one name, strictly inside `folder`,
+ * reached through no link: its real path below the folder's real path is the
+ * path as written. Never throws.
  */
-export function reportNamesFileIn(entry: LedgerEntry, folder: string): boolean {
-  let realFolder: string;
+function fileInsideNoLink(file: string, folder: string): boolean {
   try {
-    realFolder = fs.realpathSync(folder);
+    const lst = fs.lstatSync(file);
+    if (!lst.isFile() || lst.nlink > 1) return false;
+    const realFolder = fs.realpathSync.native(folder);
+    const rel = strictlyInside(realFolder, fs.realpathSync.native(file));
+    if (rel === null) return false;
+    const written = path.resolve(file);
+    const lexical = strictlyInside(path.resolve(folder), written) ?? strictlyInside(realFolder, written);
+    return lexical !== null && samePath(lexical, rel);
   } catch {
     return false;
   }
-  return reportPaths(entry).some((p) => {
-    try {
-      if (!fs.lstatSync(p).isFile()) return false;
-      const rel = path.relative(realFolder, fs.realpathSync(p));
-      return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
-    } catch {
-      return false;
-    }
-  });
+}
+
+/**
+ * Whether a research task's report hands over a file still inside its
+ * folder: an `artifact` item naming a regular file there (fileInsideNoLink).
+ * A path outside the folder keeps nothing.
+ */
+export function reportNamesFileIn(entry: LedgerEntry, folder: string): boolean {
+  return reportArtifactPaths(entry).some((file) => fileInsideNoLink(file, folder));
 }
 
 /**
@@ -792,19 +813,24 @@ async function cleanTaskFolderNow(
   }
   if (kind === 'research') {
     // Files the worker made and named in its report wait for its bot to hand
-    // them over; recorded so they go after the kept TTL.
-    if (opts.force !== true && !expired && reportNamesFileIn(entry, mission.folder)) {
+    // them over; recorded so they go after the kept TTL. Only from no record
+    // or a kept one, whose time is never reset.
+    if ((!prior || !!prior.stopped) && opts.force !== true && !expired && reportNamesFileIn(entry, mission.folder)) {
       if (prior?.state !== 'kept_stopped') {
         const thread = entry.dispatch?.threadId;
-        await ports.store.put({
+        const recorded = await ports.store.put({
           taskId: entry.id, kind, path: mission.folder, state: 'kept_stopped',
-          stopped: {
+          ...(prior?.prepFailed ? { prepFailed: true as const } : {}),
+          stopped: prior?.stopped ?? {
             botId,
             ...(entry.title ? { title: entry.title } : {}),
-            ...(entry.ownerWorkspaceId ? { workspaceId: entry.ownerWorkspaceId, threadId: typeof thread === 'string' && thread ? thread : `task:${entry.id}` } : {}),
+            ...(entry.ownerWorkspaceId ? { workspaceId: entry.ownerWorkspaceId } : {}),
+            ...(entry.ownerWorkspaceId ? { threadId: typeof thread === 'string' && thread ? thread : `task:${entry.id}` } : {}),
           },
-          at: now(),
-        }).catch((err: unknown) => log(`[factory] kept folder of ${entry.id} not recorded: ${String(err)}`));
+          at: keptAt ?? now(),
+        }).then(() => true, () => false);
+        // Not kept unless recorded: the next pass tries again.
+        if (!recorded) return fail('its kept record could not be written');
       }
       return 'skipped';
     }

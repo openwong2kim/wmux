@@ -135,7 +135,8 @@ describe('buildWakePrompt — group rooms and routines', () => {
     expect(none).toContain('tell them so in one line and ask them to set a repository on a bot\'s profile');
     // Code work is still refused; files that need no repository go to a scratch-folder worker.
     expect(none).toContain('dispatch none of it');
-    expect(none).toContain('Making files that need no repository (images, documents, a rendered video, a spreadsheet) is not code work');
+    expect(none).toContain('Making files the owner opens (an image, a document, a video, a spreadsheet) is not code work');
+    expect(none).toContain('Source code, scripts or patches meant for a repository are code work and stay refused');
     expect(none).toContain('preset "research"');
     expect(none).toContain('room_post `files`');
     // A coordinator with its own repository, or any other bot, gets neither.

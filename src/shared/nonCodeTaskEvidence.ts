@@ -22,7 +22,8 @@ export const TASK_CRITERION_MAX_CHARS = 200;
  *  the brain did not name its own; the worker cannot change them. */
 export const DEFAULT_RESEARCH_CRITERIA: readonly string[] = [
   'The report answers the request',
-  'Each finding cites a source URL, and each file made is listed by its absolute path',
+  'Each finding cites a source URL (a task that only makes files has no findings to cite)',
+  'Each deliverable file made is an artifact item with its absolute path in location',
   'The summary states what the findings or files mean for the request',
 ];
 
