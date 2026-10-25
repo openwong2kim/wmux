@@ -135,6 +135,11 @@ export function createOrphanSweep(deps: OrphanSweepDeps): AgentStopSweep {
       }
       const confirmed = confirmTree(tree, table);
       if (!confirmed) return null;
+      // A descendant that cannot be confirmed and still runs (by pid and image)
+      // would never be signalled, so the stop could not be proven: refuse
+      // before the root is touched.
+      const runs = (e: ProcessTreeEntry) => table.some((t) => t.pid === e.pid && t.name === e.name);
+      if ([...confirmed.unsure, ...(tree.uncertain ?? [])].some(runs)) return null;
       parents = [
         ...[tree.root, ...confirmed.kill].map((entry) => ({ entry, created: entry.created })),
         ...[...confirmed.unsure, ...(tree.uncertain ?? [])].map((entry) => ({ entry, created: undefined })),
@@ -169,7 +174,8 @@ export function createOrphanSweep(deps: OrphanSweepDeps): AgentStopSweep {
           try {
             deps.kill(k.pid);
           } catch {
-            /* already gone */
+            // Refused or gone, it cannot be told: not proven ended.
+            return 'left';
           }
           ended.push({ proc: k, goneByMs: now() });
         }

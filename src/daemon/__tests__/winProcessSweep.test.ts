@@ -143,13 +143,36 @@ describe('createOrphanSweep', () => {
   });
 
   it('what a process the tree only may hold left behind is reported, never ended', async () => {
-    // The MCP server is not confirmed by the arm's read, and an uncertain one sits beside it.
+    // The MCP server and an uncertain one beside it are gone by the arm's read.
     const uncertain = proc(103, 100, 'node.exe', 'node tool.js', 1000);
     const late = proc(502, 101, 'node.exe', 'node server.js', 1500);
-    const { s, killed } = sweep([[ROOT, { ...MCP, created: 4_000 }], [late]]);
+    const { s, killed } = sweep([[ROOT], [late]]);
     expect(await s.arm({ ...TREE, uncertain: [uncertain] })).toEqual({ kill: [], unsure: [MCP] });
     expect(await s.run(new Map([[100, 5_000], [101, 5_000], [103, 5_000]]))).toBe('left');
     expect(killed).toEqual([]);
+  });
+
+  it('does not arm while a descendant it cannot confirm, or an uncertain one, still runs', async () => {
+    // Shown with another start time, or with no command line: alive, but not proven the same.
+    expect(await sweep([[ROOT, { ...MCP, created: 4_000 }]]).s.arm(TREE)).toBeNull();
+    expect(await sweep([[ROOT, { ...MCP, cmdline: undefined }]]).s.arm(TREE)).toBeNull();
+    const uncertain = proc(103, 100, 'node.exe', 'node tool.js', 1000);
+    expect(await sweep([[ROOT, MCP, uncertain]]).s.arm({ ...TREE, uncertain: [uncertain] })).toBeNull();
+    // The same pid now names another program: that one is not ours, and ours is gone.
+    expect(await sweep([[ROOT, MCP, { ...uncertain, name: 'svchost.exe' }]]).s.arm({ ...TREE, uncertain: [uncertain] })).toEqual({ kill: [MCP], unsure: [] });
+  });
+
+  it('a kill that throws is not proven, so the stop fails', async () => {
+    const late = proc(501, 100, 'node.exe', 'node server.js', 1500);
+    const tables = [[ROOT, MCP], [late], [late], []];
+    const s = createOrphanSweep({
+      read: async () => tables.shift() ?? [],
+      kill: () => { throw new Error('access denied'); },
+      now: () => 5_000,
+      sleep: async () => undefined,
+    });
+    await s.arm(TREE);
+    expect(await s.run(GONE)).toBe('left');
   });
 
   it('a pid that changed between the plan and the kill is not signalled', async () => {
@@ -236,19 +259,53 @@ describe('stopAgentTree with the sweep', () => {
     expect(alive.has(102)).toBe(true);
   });
 
-  it('a descendant the read does not confirm is not signalled, and while it runs the stop fails', async () => {
-    const alive = new Set([100, 101]);
-    const killed: number[] = [];
-    const kill = (pid: number) => { killed.push(pid); alive.delete(pid); };
+  it('a running descendant the read does not confirm refuses the stop before the root is touched', async () => {
+    const kill = vi.fn();
+    const stillIdle = vi.fn(() => true);
     const r = await stopAgentTree({
       tree: async () => TREE,
-      stillRunning: async (es) => es.filter((e) => alive.has(e.pid)),
+      stillRunning: async (es) => [...es],
       kill,
       sleep: async () => undefined,
+      stillIdle,
       // The MCP server's start time cannot be read now.
       sweep: createOrphanSweep({ read: async () => [ROOT, { ...MCP, created: undefined }], kill, now: () => 5_000, sleep: async () => undefined }),
     });
-    expect(r).toEqual({ ok: false, code: 'still_running', pid: 100 });
-    expect(killed).toEqual([100]);
+    expect(r).toEqual({ ok: false, code: 'unverified' });
+    expect(kill).not.toHaveBeenCalled();
+    expect(stillIdle).not.toHaveBeenCalled();
+  });
+
+  it('a child the root starts while outliving its SIGTERM is in the sweep’s window', async () => {
+    let t = 1_000;
+    let rootReads = 0;
+    const late = proc(501, 100, 'node.exe', 'node server.js', 1_150);
+    const alive = new Set([100, 101]);
+    const killed: string[] = [];
+    const kill = (pid: number, sig: NodeJS.Signals | 'sweep') => {
+      killed.push(`${sig} ${pid}`);
+      if (sig !== 'SIGTERM') alive.delete(pid);
+    };
+    const table = () => [ROOT, MCP, late].filter((e) => alive.has(e.pid));
+    const r = await stopAgentTree({
+      tree: async () => TREE,
+      stillRunning: async (es) => {
+        t += 100;
+        if (es.includes(ROOT)) {
+          rootReads += 1;
+          // Still alive at the first grace read (t=1100), it starts a child (t=1150), then exits.
+          if (rootReads === 1) alive.add(501);
+          if (rootReads === 2) alive.delete(100);
+        }
+        return es.filter((e) => alive.has(e.pid));
+      },
+      kill,
+      sleep: async () => undefined,
+      now: () => t,
+      sweep: createOrphanSweep({ read: async () => table(), kill: (pid) => kill(pid, 'sweep'), now: () => t, sleep: async () => undefined }),
+    });
+    // Ended by the sweep, not passed over as started after the root was gone.
+    expect(killed).toContain('sweep 501');
+    expect(r).toEqual({ ok: true, stopped: true, pid: 100, killed: 2 });
   });
 });
