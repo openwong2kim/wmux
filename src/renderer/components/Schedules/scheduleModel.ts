@@ -305,12 +305,14 @@ export function formFromTemplate(template: ScheduleTemplate, name: string, promp
 }
 
 /**
- * Whether to say that the wmux browser tools are off for this run: a Claude
- * run in Auto or Bypass starts without wmux's tools unless it acts as a
- * browser identity (main admits that run's browser calls).
+ * Whether to say that the wmux browser tools are off for this run: a run in
+ * Auto or Bypass starts without wmux's tools, and an agent that keeps the
+ * server for an unattended browser identity gets them back by picking one
+ * (main admits that run's browser calls).
  */
 export function browserToolsOff(form: Pick<ScheduleForm, 'agent' | 'mode' | 'browserPaneId'>): boolean {
-  return form.agent === 'claude' && (form.mode === 'auto' || form.mode === 'bypass') && !form.browserPaneId;
+  return AUTOMATION_AGENT_CAPS[form.agent].unattendedBrowserIdentity
+    && (form.mode === 'auto' || form.mode === 'bypass') && !form.browserPaneId;
 }
 
 /** Whether the form's browser identity differs from the schedule's. */
