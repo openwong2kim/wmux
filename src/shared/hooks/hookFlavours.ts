@@ -31,7 +31,7 @@ import type { AgentSignalKind } from './signal-types';
 
 /** Every flavour the shared bridge serves. A subset of the registry's
  *  `AgentHooksFlavour`, which also names the bespoke bridges. */
-export type CompatHookFlavourId = Extract<AgentHooksFlavour, 'kiro' | 'copilot' | 'gemini'>;
+export type CompatHookFlavourId = Extract<AgentHooksFlavour, 'kiro' | 'copilot' | 'gemini' | 'qwen'>;
 
 /** One dialect event → one wmux signal kind, optionally only when a payload
  *  field equals a value. */
@@ -199,6 +199,35 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
       strategy: 'settings-hooks-key',
       userFile: ['.gemini', 'settings.json'],
       register: ['SessionStart', 'BeforeAgent', 'AfterAgent', 'Notification'],
+      commandForm: 'shell',
+      timeoutMs: 5000,
+      wired: false,
+    },
+  },
+  qwen: {
+    id: 'qwen',
+    agent: 'qwen',
+    docs: [
+      'https://github.com/QwenLM/qwen-code/blob/main/docs/users/features/hooks.md',
+    ],
+    verified: 'docs',
+    events: {
+      SessionStart: { kind: 'agent.session_start' },
+      UserPromptSubmit: { kind: 'agent.user_prompt_submit' },
+      Stop: { kind: 'agent.stop' },
+      PermissionRequest: { kind: 'agent.awaiting_input' },
+    },
+    sessionIdFields: ['session_id'],
+    cwdFields: ['cwd'],
+    sourceField: 'source',
+    configLocations: [
+      '~/.qwen/settings.json `hooks` (user)',
+      '.qwen/settings.json `hooks` (project)',
+    ],
+    install: {
+      strategy: 'settings-hooks-key',
+      userFile: ['.qwen', 'settings.json'],
+      register: ['SessionStart', 'UserPromptSubmit', 'Stop', 'PermissionRequest'],
       commandForm: 'shell',
       timeoutMs: 5000,
       wired: false,

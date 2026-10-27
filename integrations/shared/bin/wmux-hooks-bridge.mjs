@@ -136,6 +136,23 @@ export const FLAVOURS = {
     logFile: 'gemini-hooks.log',
     requestPrefix: 'gemini-hook',
   },
+  // Qwen Code settings.json hooks. Claude's event names and payload envelope
+  // (session_id / cwd / source), plus a PermissionRequest event for approval
+  // pauses. Documented, not yet measured on a live CLI.
+  qwen: {
+    agent: 'qwen',
+    events: {
+      SessionStart: { kind: 'agent.session_start' },
+      UserPromptSubmit: { kind: 'agent.user_prompt_submit' },
+      Stop: { kind: 'agent.stop' },
+      PermissionRequest: { kind: 'agent.awaiting_input' },
+    },
+    sessionIdFields: ['session_id'],
+    cwdFields: ['cwd'],
+    sourceField: 'source',
+    logFile: 'qwen-hooks.log',
+    requestPrefix: 'qwen-hook',
+  },
 };
 
 // A SessionStart `source` (read from the flavour's `sourceField`) is forwarded

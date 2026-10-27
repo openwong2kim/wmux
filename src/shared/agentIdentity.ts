@@ -52,7 +52,7 @@
  * agent, and its status comes from the screen only. The shared hook path
  * (`src/shared/hooks/hookFlavours.ts`, #1904 item 2) serves a subset of these.
  */
-export type AgentHooksFlavour = 'claude' | 'openclaude' | 'codex' | 'opencode' | 'kiro' | 'gemini' | 'copilot';
+export type AgentHooksFlavour = 'claude' | 'openclaude' | 'codex' | 'opencode' | 'kiro' | 'gemini' | 'copilot' | 'qwen';
 
 /**
  * The family of terminal dialogs an agent draws: Claude Code's permission
@@ -575,6 +575,14 @@ export const AGENT_IDENTITIES = [
     resume: { picker: '--resume', exact: '--resume {id}', pin: '--session-id', idFormat: 'uuid' },
     process: { packages: ['@qwen-code/qwen-code'] },
     detect: 'screen',
+    hooks: 'qwen',
+    mcp: {
+      format: 'json',
+      configPath: ['.qwen', 'settings.json'],
+      createIfMissing: false,
+      verified: false,
+      autoRegister: true,
+    },
     setup: {
       binary: 'qwen',
       // The standalone installers (install-qwen-standalone.sh: ~/.local/bin;
