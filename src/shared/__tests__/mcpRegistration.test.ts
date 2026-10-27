@@ -391,7 +391,7 @@ describe('unregisterTarget', () => {
 
 describe('MCP_TARGETS registry', () => {
   it('has the expected ids, formats, and create policy', () => {
-    expect(MCP_TARGETS.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy']);
+    expect(MCP_TARGETS.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy', 'qwen']);
     expect(getMcpTarget('claude')!.createIfMissing).toBe(true);
     expect(getMcpTarget('codex')!.createIfMissing).toBe(false);
     expect(getMcpTarget('codex')!.format).toBe('toml');
@@ -399,6 +399,9 @@ describe('MCP_TARGETS registry', () => {
     expect(getMcpTarget('agy')!.createIfMissing).toBe(false);
     expect(getMcpTarget('agy')!.format).toBe('json');
     expect(getMcpTarget('agy')!.configPath('/h')).toBe(path.join('/h', '.gemini', 'config', 'mcp_config.json'));
+    expect(getMcpTarget('qwen')!.createIfMissing).toBe(false);
+    expect(getMcpTarget('qwen')!.format).toBe('json');
+    expect(getMcpTarget('qwen')!.configPath('/h')).toBe(path.join('/h', '.qwen', 'settings.json'));
   });
 
   it('keeps agy opt-in: only it is excluded from automatic registration', () => {

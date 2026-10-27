@@ -166,12 +166,12 @@ describe('canConnectBrokerPipe', () => {
 
 describe('selectedTargets — opt-in agy target', () => {
   it('leaves agy out of a target-less register', () => {
-    expect(selectedTargets(['register'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini']);
+    expect(selectedTargets(['register'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'qwen']);
   });
 
   it('covers agy on a target-less check and unregister, so an opt-in entry can be removed', () => {
-    expect(selectedTargets(['unregister'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy']);
-    expect(selectedTargets(['check'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy']);
+    expect(selectedTargets(['unregister'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy', 'qwen']);
+    expect(selectedTargets(['check'])!.map((t) => t.id)).toEqual(['claude', 'codex', 'gemini', 'agy', 'qwen']);
   });
 
   it('acts on agy only when it is named', () => {

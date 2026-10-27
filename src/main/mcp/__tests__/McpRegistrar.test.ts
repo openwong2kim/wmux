@@ -53,7 +53,7 @@ afterEach(() => {
 describe('McpRegistrar.getStatus (multi-target)', () => {
   it('reports every target as not registered when no configs exist', () => {
     const status = new McpRegistrar().getStatus();
-    expect(status.targets.map((t) => t.id).sort()).toEqual(['agy', 'claude', 'codex', 'gemini']);
+    expect(status.targets.map((t) => t.id).sort()).toEqual(['agy', 'claude', 'codex', 'gemini', 'qwen']);
     for (const t of status.targets) {
       expect(t.configExists).toBe(false);
       expect(t.configModified).toBeNull();
