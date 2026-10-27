@@ -145,6 +145,7 @@ export const FLAVOURS = {
       SessionStart: { kind: 'agent.session_start' },
       UserPromptSubmit: { kind: 'agent.user_prompt_submit' },
       Stop: { kind: 'agent.stop' },
+      StopFailure: { kind: 'agent.stop_failure' },
       PermissionRequest: { kind: 'agent.awaiting_input' },
     },
     sessionIdFields: ['session_id'],

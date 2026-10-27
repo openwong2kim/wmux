@@ -215,6 +215,7 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
       SessionStart: { kind: 'agent.session_start' },
       UserPromptSubmit: { kind: 'agent.user_prompt_submit' },
       Stop: { kind: 'agent.stop' },
+      StopFailure: { kind: 'agent.stop_failure' },
       PermissionRequest: { kind: 'agent.awaiting_input' },
     },
     sessionIdFields: ['session_id'],
@@ -227,7 +228,7 @@ export const COMPAT_HOOK_FLAVOURS: Readonly<Record<CompatHookFlavourId, CompatHo
     install: {
       strategy: 'settings-hooks-key',
       userFile: ['.qwen', 'settings.json'],
-      register: ['SessionStart', 'UserPromptSubmit', 'Stop', 'PermissionRequest'],
+      register: ['SessionStart', 'UserPromptSubmit', 'Stop', 'StopFailure', 'PermissionRequest'],
       commandForm: 'shell',
       timeoutMs: 5000,
       wired: false,

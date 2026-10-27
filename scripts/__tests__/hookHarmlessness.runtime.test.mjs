@@ -264,7 +264,7 @@ describe('the matrix covers what wmux actually installs', () => {
     // opencode is absent by design: it is an in-process plugin, not a spawned
     // hook, so it gets its own measurement below rather than a silent skip.
     // copilot and gemini run through the shared Claude-compatible bridge.
-    expect([...agents].sort()).toEqual(['claude', 'codex', 'copilot', 'gemini', 'kiro', 'openclaude']);
+    expect([...agents].sort()).toEqual(['claude', 'codex', 'copilot', 'gemini', 'kiro', 'openclaude', 'qwen']);
     for (const c of cases) expect(c.script).toMatch(/\.mjs$/);
     // The permission gate — the surface #898 lived on — must be in the matrix.
     expect(cases.some((c) => c.args.includes('--permission-gate'))).toBe(true);
