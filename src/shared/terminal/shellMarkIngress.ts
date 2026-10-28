@@ -82,8 +82,13 @@ export class ShellMarkIngress {
   wants(text: string): boolean {
     if (this.match !== Match.None || text.includes('\u001b]133')) return true;
     // `ESC`, `ESC]`, … `ESC]13` at the very end: the rest may come next read.
-    const tail = text.lastIndexOf('\u001b');
-    return tail >= 0 && text.length - tail < OPENER.length && OPENER.startsWith(text.slice(tail));
+    // These are the only prefixes to look for: any longer one (`ESC]133`,
+    // `ESC]133;`, …) holds the whole opener and matched the `includes` above.
+    // So the ESC of a prefix the next read may finish is in the last
+    // OPENER.length - 1 (4) characters.
+    const end = text.slice(-(OPENER.length - 1));
+    const tail = end.lastIndexOf('\u001b');
+    return tail >= 0 && OPENER.startsWith(end.slice(tail));
   }
 
   /**
@@ -91,14 +96,14 @@ export class ShellMarkIngress {
    * `bytes`. Returns how many were lowercased.
    */
   scanBytes(bytes: Uint8Array): number {
-    return this.scan(bytes.length, (i) => bytes[i], (i) => { bytes[i] |= LOWER; });
+    return this.scan(bytes.length, (i) => bytes[i], (from) => bytes.indexOf(ESC, from), (i) => { bytes[i] |= LOWER; });
   }
 
   /** The same scan over a string; returns it with every foreign kind lowercased. */
   scanText(text: string): { text: string; lowered: number } {
     const parts: string[] = [];
     let last = 0;
-    const lowered = this.scan(text.length, (i) => text.charCodeAt(i), (i) => {
+    const lowered = this.scan(text.length, (i) => text.charCodeAt(i), (from) => text.indexOf('\u001b', from), (i) => {
       parts.push(text.slice(last, i), String.fromCharCode(text.charCodeAt(i) | LOWER));
       last = i + 1;
     });
@@ -114,13 +119,20 @@ export class ShellMarkIngress {
     this.dKind = -1;
   }
 
-  private scan(length: number, at: (i: number) => number, lower: (i: number) => void): number {
+  /** `nextEsc(from)`: the index of the next ESC at or after `from`, or -1. */
+  private scan(length: number, at: (i: number) => number, nextEsc: (from: number) => number, lower: (i: number) => void): number {
     let lowered = 0;
     const foreignD = () => {
       // A D in running that is not `D;<int>`: the program's.
       if (this.dKind >= 0) { lower(this.dKind); lowered++; }
     };
     for (let i = 0; i < length; i++) {
+      if (this.match === Match.None) {
+        // Outside a mark only an ESC can start one: skip to it.
+        const esc = nextEsc(i);
+        if (esc < 0) break;
+        i = esc;
+      }
       const b = at(i);
       switch (this.match) {
         case Match.DSemi:

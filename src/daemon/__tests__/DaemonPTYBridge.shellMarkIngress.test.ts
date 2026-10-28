@@ -128,6 +128,22 @@ for (const lane of ['string', 'native'] as const) {
       expect(h.bridge.shellMarkState).toBe('idle');
     });
 
+    it('a program\'s mark split at every byte across two reads, after a plain read, is still lowercased', () => {
+      // Pins the chunk gate (ShellMarkIngress.wants): a read that ends in any
+      // prefix of the mark must be scanned so the carry is set.
+      const m = mark('A') + 'kimi> ';
+      for (let at = 1; at < m.length; at++) {
+        const h = rig(lane);
+        h.feed(SHELL_C);
+        h.feed('plain output with \x1b[32mcolor\x1b[0m\r\n');
+        h.feed(m.slice(0, at));
+        h.feed(m.slice(at));
+        expect(h.ring.readAll().toString(), `split at ${at}`).toBe(SHELL_C + 'plain output with \x1b[32mcolor\x1b[0m\r\n' + mark('a') + 'kimi> ');
+        expect(h.types(), `split at ${at}`).toEqual(['command_start']);
+        cleanups.splice(0).forEach((c) => c());
+      }
+    });
+
     it('D3: pwsh writes C twice for an incomplete line; the second is the program\'s', () => {
       const h = rig(lane);
       h.feed(mark('C') + mark('C') + mark('D;0') + mark('A') + mark('B'));
