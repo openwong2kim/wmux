@@ -41,6 +41,7 @@ import type { AgentStatus } from '../../shared/types';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
 import { canSeedHookIdentity } from '../../shared/hooks/detectorIdentity';
 import type { ApprovalScreenReader } from '../../shared/approvalScreen';
+import { ShellMarkIngress } from '../../shared/terminal/shellMarkIngress';
 
 // How long after an AgentDetector event to suppress the ActivityMonitor idle
 // fallback notification. Prevents double-firing when both signals agree
@@ -960,7 +961,22 @@ export class PTYBridge {
       }
     });
 
-    instance.process.onData((data: string) => {
+    // #2771 — a mark the running program wrote (not the shell) gets a
+    // lowercase kind before any reader sees the chunk, as in the daemon.
+    const marks = new ShellMarkIngress();
+    let marksLoweredLogged = false;
+    instance.process.onData((raw: string) => {
+      let data = raw;
+      if (marks.wants(data)) {
+        const scanned = marks.scanText(data);
+        if (scanned.lowered > 0) {
+          data = scanned.text;
+          if (!marksLoweredLogged) {
+            marksLoweredLogged = true;
+            console.log(`[pty] ${ptyId}: program-written OSC 133 marks lowercased (shell command running)`);
+          }
+        }
+      }
       // Micro-batch: enqueue this chunk and (re)arm a short flush timer.
       // Middlewares + IPC send are deferred to the flush so a torrent of
       // small chunks collapses into one pass. Backpressure here is what
@@ -998,6 +1014,7 @@ export class PTYBridge {
     });
 
     instance.process.onExit(({ exitCode, signal }) => {
+      marks.end();
       // Drain any buffered output before signalling exit so the renderer
       // sees the final lines (e.g. exit banner) before PTY_EXIT.
       this.flushPending(ptyId);

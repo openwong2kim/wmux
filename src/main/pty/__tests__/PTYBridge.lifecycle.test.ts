@@ -763,6 +763,20 @@ describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {
     expect(events[0]).toMatchObject({ source: 'osc133', exitCode: null });
   });
 
+  it('#2771: a D the running program writes is its own, not the shell\'s command end', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    // The shell starts a command; the program then writes its own marks.
+    proc.emitData('\x1b]133;C\x07' + OSC_133_A + OSC_133_D_NO_EXIT);
+    flush();
+    expect(pollLifecycle()).toHaveLength(0);
+
+    // The shell's own D;<n> at its next prompt still is.
+    proc.emitData(OSC_133_D_OK);
+    flush();
+    expect(pollLifecycle()).toEqual([expect.objectContaining({ source: 'osc133', exitCode: 0 })]);
+  });
+
   it('does NOT emit for non-D subcommands (A/B/C)', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });
 

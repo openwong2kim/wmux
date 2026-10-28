@@ -55,6 +55,24 @@ describe('native PTY output capture', () => {
     expect(data).toHaveBeenCalledOnce();
     h.bridge.setMuted(false, { replayHeld: true }); expect(data).toHaveBeenCalledOnce();
   });
+  it('a chunk with a program-written OSC 133 mark is read once, rewritten, and leaves the zero-copy path', () => {
+    const h = harness(); const data = vi.fn(); h.bridge.on('data', data);
+    h.feed('\x1b]133;C\x07'); // the shell starts a command
+    h.nativeWrites.mockClear(); data.mockClear();
+    const chunk = h.feed('한글\x1b]133;A\x07kimi> ');
+    expect(chunk.readBytes).toHaveBeenCalledOnce();
+    expect(h.nativeWrites).not.toHaveBeenCalled();
+    const rewritten = '한글\x1b]133;a\x07kimi> ';
+    expect(data.mock.calls[0][0].toString()).toBe(rewritten);
+    expect(h.ring.readAll().toString()).toBe('\x1b]133;C\x07' + rewritten);
+  });
+  it('a chunk whose marks are all the shell\'s keeps the native ring write and reuses its bytes for delivery', () => {
+    const h = harness(); const data = vi.fn(); h.bridge.on('data', data);
+    const chunk = h.feed('\x1b]133;D;0\x07\x1b]133;A\x07PS> ');
+    expect(chunk.readBytes).toHaveBeenCalledOnce();
+    expect(h.nativeWrites).toHaveBeenCalledWith(chunk);
+    expect(data.mock.calls[0][0].toString()).toBe(chunk.text);
+  });
   it('discards muted output when replay was not requested', () => {
     const h = harness(); h.bridge.setMuted(true); h.feed('discard'); h.bridge.setMuted(false);
     expect(h.ring.size).toBe(0); expect(h.nativeWrites).not.toHaveBeenCalled();
