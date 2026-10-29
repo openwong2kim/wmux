@@ -55,8 +55,8 @@ import { errMsg } from './storeFile';
  *      → `awaiting` (`waiting-for-approval`); the card answers `decide`.
  *
  * Then: approved → `ready`; the manifest (`receiving`), checked against the
- * policy, the request's commit, the caps and the disk; `received` once
- * PR2b's route has every file in staging; `claim` → `starting`, only while
+ * policy, the request's commit, the caps and the disk; `received` once its
+ * intake (`bytes`) has every file in staging; `claim` → `starting`, only while
  * `continueClaimable` and after the pane, policy and root checks again;
  * `started` / `failed` from main. An unclaimed request past its expiry ends
  * `expired` on the sweep. A claimed one is never started again. One main
@@ -108,6 +108,8 @@ export interface ContinueReceiverDeps {
   sessionLive: (sessionId: string) => boolean;
   /** The approval card can be shown. Absent: no card, so every request ends `not-allowed` after its checks. */
   cardAvailable?: () => boolean;
+  /** Where a receiving request's bytes come in (continueBundle.ts). Absent: none come, and a receiving request ends `expired`. */
+  bytes?: ContinueBytesIntake;
   /** This PC's caps, never above the contract's (default: the contract's). */
   limits?: { bytes: number; files: number };
   now?: () => number;
@@ -115,6 +117,19 @@ export interface ContinueReceiverDeps {
   checks?: SpawnChecks;
   resendCoalesceMs?: number;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
+}
+
+/**
+ * The intake of a request's bytes, told when a request starts receiving (its
+ * manifest taken), when one is decided (its staging goes), after a restart,
+ * and when a paired PC is removed. None of these throws or waits: each
+ * starts its own work, and the intake calls `received` or `receiveFailed`.
+ */
+export interface ContinueBytesIntake {
+  receiving(rec: ContinueRequestRecordV1): void;
+  decided(hostId: HostId, continueId: string): void;
+  recover(): void;
+  forgetHost(hostId: HostId): void;
 }
 
 /** What main needs to start a claimed conversation. */
@@ -245,6 +260,7 @@ export class A2aContinueReceiver {
       void this.serial(() => this.check(hostId, continueId));
     }
     this.sweep();
+    this.deps.bytes?.recover();
   }
 
   /**
@@ -327,6 +343,7 @@ export class A2aContinueReceiver {
     for (const k of [...this.answeredAt.keys()]) if (k.startsWith(`${hostId}:`)) this.answeredAt.delete(k);
     this.unknownAt.delete(hostId);
     this.refusedAt.delete(hostId);
+    this.deps.bytes?.forgetHost(hostId);
   }
 
   /** Settle every check, manifest and claim in flight (tests). */
@@ -548,7 +565,10 @@ export class A2aContinueReceiver {
       code = refusal() ?? (room ? undefined : 'no-space');
     }
     if (code) return this.finish(hostId, manifest.continueId, code) ? OK : UNAVAILABLE;
-    return this.step(hostId, manifest.continueId, ['ready'], 'receiving', { manifest }) ? OK : UNAVAILABLE;
+    if (!this.step(hostId, manifest.continueId, ['ready'], 'receiving', { manifest })) return UNAVAILABLE;
+    const taken = this.deps.requests.get(hostId, manifest.continueId);
+    if (taken) this.deps.bytes?.receiving(taken);
+    return OK;
   }
 
   /** This PC takes conversations from `hostId` (and of the request's agent, given one). The parser checked the agent can move. */
@@ -601,6 +621,7 @@ export class A2aContinueReceiver {
     if (!rec) return false;
     this.deps.log('info', `[a2a-remote] continue ${continueId} from ${hostId}: ${code}`);
     this.sendOwed(rec);
+    this.deps.bytes?.decided(hostId, continueId);
     return true;
   }
 
