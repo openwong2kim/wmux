@@ -110,6 +110,19 @@ describe('records', () => {
     expect(store.decide(HOST, req.continueId, 'started')).toBeUndefined();
   });
 
+  it('never writes a record a reload would skip: a state that needs a manifest without one, or one that takes none with one', () => {
+    const store = open();
+    const req = request();
+    store.receive(HOST, req);
+    expect(() => store.advance(HOST, req.continueId, ['pending'], 'awaiting', { manifest: manifestFor(req) })).toThrow('could not read back');
+    store.advance(HOST, req.continueId, ['pending'], 'awaiting');
+    store.advance(HOST, req.continueId, ['awaiting'], 'ready');
+    expect(() => store.advance(HOST, req.continueId, ['ready'], 'receiving')).toThrow('could not read back');
+    // Nothing was written: the record is still ready, here and after a reload.
+    expect(store.get(HOST, req.continueId)?.state).toBe('ready');
+    expect(open().get(HOST, req.continueId)?.state).toBe('ready');
+  });
+
   it('a failed write changes nothing', () => {
     const store = open({ write: () => { throw new Error('disk full'); } });
     expect(() => store.receive(HOST, request())).toThrow('disk full');

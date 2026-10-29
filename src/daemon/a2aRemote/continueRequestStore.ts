@@ -168,6 +168,8 @@ export class ContinueRequestStore {
     if (!rec || !from.includes(rec.state)) return undefined;
     this.assertWritable();
     const next: ContinueRequestRecordV1 = { ...rec, ...structuredClone(extra), state: to, updatedAt: new Date(this.now()).toISOString() };
+    // Never a record a reload would skip (a manifest where none belongs, or none where one must be): it would vanish on the next start.
+    if (!coerceRecord(next)) throw new Error(`a ${to} record this store could not read back (${WITH_MANIFEST.has(to) ? 'it needs' : 'it takes no'} manifest)`);
     this.commit((m) => m.set(key(hostId, continueId), next));
     return structuredClone(next);
   }
