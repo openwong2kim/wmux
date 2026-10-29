@@ -231,6 +231,7 @@ import { markRendererNotificationListenerNotReady } from './notification/rendere
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
+import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
 import { setA2aRemoteBridge } from './ipc/handlers/a2aRemote.handler';
 import { sendToRenderer } from './pipe/handlers/_bridge';
@@ -836,6 +837,7 @@ let remoteInboxBridge: RemoteInboxBridge | null = null;
 // Cross-host A2A: hands remote tasks/replies the daemon holds to the renderer.
 let remoteA2aBridge: RemoteA2aBridge | null = null;
 let remoteSpawnCoordinator: RemoteSpawnCoordinator | null = null;
+let continueStarter: ContinueStarter | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
 const automationBridge = new AutomationBridge(
   () => mainWindow,
@@ -2647,6 +2649,18 @@ app.on('ready', async () => {
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
       });
       remoteSpawnCoordinator.start();
+      // Continue on another PC (this PC starts a conversation another PC handed over): worktree, files, pane.
+      continueStarter?.stop();
+      continueStarter = new ContinueStarter({
+        daemonRpc: (method, params) => client.rpc(method, params),
+        sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        onDaemonEvent: (listener) => {
+          client.on('event', listener);
+          return () => { client.off('event', listener); };
+        },
+        log: (level, msg) => logLine(level, 'a2a-remote', msg),
+      });
+      continueStarter.start();
       automationBridge.start(client);
       usageReserve.pushNow();
       // X1 — context fold (git branch / worktree / ports / PR badge).
@@ -2691,6 +2705,8 @@ app.on('ready', async () => {
       remoteA2aBridge = null;
       remoteSpawnCoordinator?.stop();
       remoteSpawnCoordinator = null;
+      continueStarter?.stop();
+      continueStarter = null;
       setA2aRemoteBridge(null);
       automationBridge.stop();
       workspaceContextRouter?.stop();
