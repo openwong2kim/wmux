@@ -133,6 +133,10 @@ export interface ContinueClaim {
   bytes: number;
 }
 
+/** The codes a claimed start ends with when main could not start it: what it found on this PC's checkout or disk. */
+export const CONTINUE_START_FAILURES = ['failed', 'branch-not-found', 'branch-busy', 'head-missing', 'diverged', 'path-too-long', 'no-space'] as const;
+export type ContinueStartFailure = (typeof CONTINUE_START_FAILURES)[number];
+
 export type ContinueStepResult = { ok: true } | { ok: false; error: string };
 export type ContinueClaimResult = { ok: true; claim: ContinueClaim } | { ok: false; error: string };
 
@@ -312,9 +316,10 @@ export class A2aContinueReceiver {
     return this.endStart(hostId, continueId, 'started');
   }
 
-  /** Main could not start the claimed conversation. */
-  failed(hostId: HostId, continueId: string): ContinueStepResult {
-    return this.endStart(hostId, continueId, 'failed');
+  /** Main could not start the claimed conversation, and why (`failed` when nothing more precise applies). */
+  failed(hostId: HostId, continueId: string, code: ContinueStartFailure = 'failed'): ContinueStepResult {
+    if (!(CONTINUE_START_FAILURES as readonly string[]).includes(code)) return { ok: false, error: 'not a code a start ends with' };
+    return this.endStart(hostId, continueId, code);
   }
 
   /** A paired PC was removed: what this receiver keeps for it in memory goes too. */
@@ -404,7 +409,7 @@ export class A2aContinueReceiver {
     return undefined;
   }
 
-  private endStart(hostId: HostId, continueId: string, code: 'started' | 'failed'): ContinueStepResult {
+  private endStart(hostId: HostId, continueId: string, code: 'started' | ContinueStartFailure): ContinueStepResult {
     const rec = this.deps.requests.get(hostId, continueId);
     if (!rec || rec.state !== 'starting') return { ok: false, error: 'this request is not starting' };
     return this.finish(hostId, continueId, code) ? { ok: true } : NOT_STORED;
