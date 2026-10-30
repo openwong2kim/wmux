@@ -420,6 +420,7 @@ export default function SurfaceTabs({
   usageLimitCompact = false,
 }: SurfaceTabsProps) {
   const t = useT();
+  const tabLabel = (s: Surface): string => s.title || (s.surfaceType === 'board' ? t('company.board') : t('surface.terminal'));
   // "Continue in another agent": a held tab and the tab its work went on in
   // each name the other on a tooltip line of its own.
   const continuedNote = (s: Surface): string => ([['surface.continuedIn', s.continuedIn], ['surface.continuedFrom', s.continuedFrom]] as const)
@@ -1172,7 +1173,7 @@ export default function SurfaceTabs({
             />
           ) : (
             <span className="truncate max-w-[120px]">
-              {s.title || t('surface.terminal')}
+              {tabLabel(s)}
             </span>
           )}
           {/* X close button — always visible, not just on hover. The glyph is
@@ -1190,8 +1191,8 @@ export default function SurfaceTabs({
             // WHICH tab closes, so both the tooltip and the accessible name
             // carry the tab's own label — and they say the same thing, which is
             // the point of having two of them.
-            title={t('surface.closeTabNamed', { name: s.title || t('surface.terminal') })}
-            aria-label={t('surface.closeTabNamed', { name: s.title || t('surface.terminal') })}
+            title={t('surface.closeTabNamed', { name: tabLabel(s) })}
+            aria-label={t('surface.closeTabNamed', { name: tabLabel(s) })}
             {...tokenAttrs('danger', 'accent')}
           >
             ✕

@@ -288,4 +288,21 @@ describe('setWorkspaceCompany', () => {
     store.getState().setWorkspaceCompany(a.id, undefined);
     expect(store.getState().workspaces[0]).not.toHaveProperty('company');
   });
+
+  it('closes the board tab when the company is dissolved, unless it is all its pane holds', () => {
+    const a = createWorkspace('A');
+    const board = (id: string) => ({ id, ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'board' as const });
+    const terminalPane = a.rootPane as Extract<typeof a.rootPane, { type: 'leaf' }>;
+    terminalPane.surfaces.push({ id: 't-1', ptyId: 'pty-1', title: '', shell: 'zsh', cwd: '/repo', surfaceType: 'terminal' }, board('b-1'));
+    terminalPane.activeSurfaceId = 'b-1';
+    a.stashedPanes = [{ pane: { id: 'stashed', type: 'leaf', surfaces: [board('b-2')], activeSurfaceId: 'b-2' } } as never];
+    const store = createTestStore([a], a.id);
+    store.getState().setWorkspaceCompany(a.id, { coordinatorPaneId: terminalPane.id });
+    store.getState().setWorkspaceCompany(a.id, undefined);
+    const ws = store.getState().workspaces[0];
+    const leaf = ws.rootPane as typeof terminalPane;
+    expect(leaf.surfaces.map((s) => s.surfaceType ?? 'terminal')).toEqual(['terminal']);
+    expect(leaf.activeSurfaceId).toBe(leaf.surfaces[0].id);
+    expect(ws.stashedPanes?.[0].pane.type === 'leaf' && ws.stashedPanes[0].pane.surfaces.map((s) => s.id)).toEqual(['b-2']);
+  });
 });

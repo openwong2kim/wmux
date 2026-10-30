@@ -1745,7 +1745,11 @@ A pane is a terminal column plus, when it needs one, a work area.
   before the title in a narrow pane. A seat row focuses its pane. One muted
   closing line says work sent to other PCs and fan-out workers is not shown
   yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
-  colour beyond the status marks and needs-you.
+  colour beyond the status marks and needs-you. Dissolve company closes the
+  board tab; a pane holding nothing else keeps it, saying the workspace is no
+  longer a company. A pane with a board can be stashed (the board keeps no
+  state of its own), and while the board is the active tab Fleet still reads
+  the pane by the terminal beside it.
 
 ## The one-boundary rule
 

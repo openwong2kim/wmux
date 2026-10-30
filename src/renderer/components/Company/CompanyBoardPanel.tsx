@@ -12,12 +12,14 @@ import { FOCUS_RING } from '../focusRing';
 import { StatusMarkView } from '../Sidebar/AgentMarks';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { rosterPrimaryLabel } from '../Sidebar/WorkspaceAgentRoster';
+import type { Task } from '../../../shared/types';
 import { useWorkLinks } from '../FleetView/useFleetSources';
 import { buildFleetTickets, type FleetTicket } from '../FleetView/fleetTickets';
 import { isTerminalKindSurfaceType } from '../Pane/surfaceKinds';
 import { buildCompanyBoard, type BoardSeat } from './companyBoard';
 
 const NOW_SHOWN = 2;
+const NO_TASKS: Record<string, Task> = {};
 
 function Section({ title, count, needsYou = false, children }: { title: string; count?: number; needsYou?: boolean; children: ReactNode }) {
   return (
@@ -53,7 +55,9 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const roster = useStore(rosterSelector);
   const paneRole = useStore((s) => s.paneRole);
   const paneLabel = useStore((s) => s.paneLabel);
-  const a2aTasks = useStore((s) => s.a2aTasks);
+  // The task mirror only fills in a request or report a link lacks; a hidden
+  // board need not redraw on every task update in the app.
+  const a2aTasks = useStore((s) => (isActive ? s.a2aTasks : NO_TASKS));
   const links = useWorkLinks(isActive && !!company);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
@@ -87,6 +91,10 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const seat = paneId ? board.seats.find((s) => s.paneId === paneId) : undefined;
     return seat ? seatTitle(seat) : '';
   };
+  // A job inside the company is placed by its seat, one handed out by the workspace it went to.
+  const whereOf = (ticket: FleetTicket): string => (ticket.workspaceId === workspaceId
+    ? seatName(ticket.paneId)
+    : workspaceNames[ticket.workspaceId] ?? t('fleet.ticket.unknownWorkspace'));
   const stateWord = (ticket: FleetTicket) => t(`fleet.ticket.state.${ticket.state}`);
   const ticketTitle = (ticket: FleetTicket) => ticket.title || t('fleet.ticket.untitled');
 
@@ -171,7 +179,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
 
           {board.needsYou.length > 0 && (
             <Section title={t('company.board.needsYou')} count={board.needsYou.length} needsYou>
-              {board.needsYou.map((ticket) => ticketRow(ticket, seatName(ticket.paneId)))}
+              {board.needsYou.map((ticket) => ticketRow(ticket, whereOf(ticket)))}
             </Section>
           )}
 
@@ -179,7 +187,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
 
           {board.handedOut.length > 0 && (
             <Section title={t('company.board.handedOut')} count={board.handedOut.length}>
-              {board.handedOut.map((ticket) => ticketRow(ticket, workspaceNames[ticket.workspaceId] ?? t('fleet.ticket.unknownWorkspace')))}
+              {board.handedOut.map((ticket) => ticketRow(ticket, whereOf(ticket)))}
             </Section>
           )}
 
@@ -191,11 +199,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
 
           {board.log.length > 0 && (
             <Section title={t('company.board.log')}>
-              {board.log.map((ticket) => ticketRow(
-                ticket,
-                ticket.workspaceId === workspaceId ? seatName(ticket.paneId) : workspaceNames[ticket.workspaceId] ?? t('fleet.ticket.unknownWorkspace'),
-                ticket.result?.summary,
-              ))}
+              {board.log.map((ticket) => ticketRow(ticket, whereOf(ticket), ticket.result?.summary))}
             </Section>
           )}
 
