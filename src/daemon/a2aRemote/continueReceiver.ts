@@ -22,7 +22,7 @@ import {
 import { spawnHostAllowed, type A2aSpawnPolicyV1, type A2aSpawnRootV1 } from '../../shared/a2aSpawn';
 import type { ContinuePolicyStore } from './continuePolicyStore';
 import { continueManifestBytes, sameContinueBody, type ContinueRequestRecordV1, type ContinueRequestStore } from './continueRequestStore';
-import { spawnChecks, type SpawnChecks } from './spawnChecks';
+import { CheckTimeout, spawnChecks, type SpawnChecks } from './spawnChecks';
 import type { SpawnPolicyStore } from './spawnPolicyStore';
 import { errMsg } from './storeFile';
 
@@ -53,6 +53,10 @@ import { errMsg } from './storeFile';
  *   8. the policy and the expiry, read again after those waits
  *   9. a card can be shown                              else `not-allowed`
  *      → `awaiting` (`waiting-for-approval`); the card answers `decide`.
+ * A check that does not answer in time ends it `failed`; one that could not
+ * run now (the shared check gate busy, a git or disk error) leaves it
+ * pending, checked again later with a growing wait, and `expired` once past
+ * its expiry.
  *
  * Then: approved → `ready`; the manifest (`receiving`), checked against the
  * policy, the request's commit, the caps and the disk; `received` once its
@@ -78,6 +82,9 @@ export const CONTINUE_STARTING_GRACE_MS = 10 * 60 * 1000;
 /** Refusals of new requests sent to one PC per window; past it, nothing is sent. */
 export const CONTINUE_REFUSALS_PER_HOST_MAX = 10;
 export const CONTINUE_REFUSAL_WINDOW_MS = 60_000;
+/** A pending request whose checks could not run is checked again after this, doubling each time, at most RETRY_MAX_MS. */
+const RETRY_MIN_MS = 5_000;
+const RETRY_MAX_MS = 5 * 60_000;
 /** Recent answers remembered for coalescing. */
 const ANSWERED_RECENTLY_MAX = 1000;
 /** Open states before main claims a request: the sweep expires these. */
@@ -94,9 +101,9 @@ export interface ContinueReceiverDeps {
   requests: Pick<ContinueRequestStore, 'get' | 'inState' | 'unsent' | 'receive' | 'advance' | 'decide' | 'markSent' | 'prune' | 'reservedBytes'>;
   /** Queue an envelope to `hostId` (the delivery outbox); throws when it cannot. */
   enqueue: (hostId: HostId, envelope: A2aRemoteEnvelope) => void;
-  /** The origin of the repository at a spawn root, as originUrlRepoKey writes it; null without one (or unread). */
+  /** The origin of the repository at a spawn root, as originUrlRepoKey writes it; null without one. Throws when it could not be read now. */
   originKeyOf: (rootPath: string) => Promise<string | null>;
-  /** A spawn root is still its repository's top level (not a folder inside another one). */
+  /** A spawn root is still its repository's top level (not a folder inside another one). Throws when it could not be read now. */
   isRepoTop: (rootPath: string) => Promise<boolean>;
   /**
    * Free bytes on the staging volume (the a2a dir's), where a conversation's
@@ -116,6 +123,7 @@ export interface ContinueReceiverDeps {
   /** Test seams. */
   checks?: SpawnChecks;
   resendCoalesceMs?: number;
+  retryMinMs?: number;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
 }
 
@@ -199,6 +207,9 @@ export class A2aContinueReceiver {
   private readonly checks: SpawnChecks;
   private readonly limits: { bytes: number; files: number };
   private readonly coalesceMs: number;
+  private readonly retryMinMs: number;
+  /** Pending requests waiting to be checked again, by host:continueId. */
+  private readonly retries = new Map<string, ReturnType<typeof setTimeout>>();
   /** Makes every result's message id new, across restarts too. */
   private readonly boot: string;
   private sends = 0;
@@ -223,6 +234,7 @@ export class A2aContinueReceiver {
       files: Math.min(deps.limits?.files ?? CONTINUE_FILES_MAX, CONTINUE_FILES_MAX),
     };
     this.coalesceMs = deps.resendCoalesceMs ?? CONTINUE_RESEND_COALESCE_MS;
+    this.retryMinMs = deps.retryMinMs ?? RETRY_MIN_MS;
     this.boot = this.now().toString(36);
   }
 
@@ -343,6 +355,11 @@ export class A2aContinueReceiver {
     for (const k of [...this.answeredAt.keys()]) if (k.startsWith(`${hostId}:`)) this.answeredAt.delete(k);
     this.unknownAt.delete(hostId);
     this.refusedAt.delete(hostId);
+    for (const [k, t] of [...this.retries]) {
+      if (!k.startsWith(`${hostId}:`)) continue;
+      clearTimeout(t);
+      this.retries.delete(k);
+    }
     this.deps.bytes?.forgetHost(hostId);
   }
 
@@ -357,6 +374,8 @@ export class A2aContinueReceiver {
 
   stop(): void {
     this.stopped = true;
+    for (const t of this.retries.values()) clearTimeout(t);
+    this.retries.clear();
   }
 
   private async claimNow(hostId: HostId, continueId: string): Promise<ContinueClaimResult> {
@@ -461,28 +480,58 @@ export class A2aContinueReceiver {
     }
     if (got.kind === 'conflict') return CONFLICT;
     if (got.kind === 'duplicate') return this.answer(hostId, req.continueId, true);
-    if (got.kind === 'busy' || got.kind === 'full') return this.refuse(hostId, req.continueId, 'busy');
+    if (got.kind === 'busy' || got.kind === 'full') return this.refuse(hostId, req.continueId, got.kind);
     this.deps.log('info', `[a2a-remote] continue ${req.continueId} from ${hostId}: received (agent ${req.agent})`);
     void this.serial(() => this.check(hostId, req.continueId));
     return OK;
   }
 
-  /** The checks of a pending request, then its card or its refusal. */
-  private async check(hostId: HostId, continueId: string): Promise<void> {
+  /** The checks of a pending request, then its card or its refusal; a check that could not run now is tried again later. */
+  private async check(hostId: HostId, continueId: string, attempt = 0): Promise<void> {
     const rec = this.deps.requests.get(hostId, continueId);
     if (this.stopped || !rec || rec.state !== 'pending') return;
     let outcome: A2aContinueCode | { rootId: string };
     try {
       outcome = await this.evaluate(rec);
     } catch (err) {
-      this.deps.log('warn', `[a2a-remote] continue ${continueId} from ${hostId}: a check did not finish: ${errMsg(err)}`);
+      if (!(err instanceof CheckTimeout)) {
+        this.retryLater(hostId, continueId, attempt, err);
+        return;
+      }
+      this.deps.log('warn', `[a2a-remote] continue ${continueId} from ${hostId}: a check did not answer in time`);
       outcome = 'failed';
     }
     // The policy may have changed meanwhile: a PC no longer allowed learns nothing more, not even its repository codes.
     if (!this.allowed(hostId, rec.request)) outcome = 'not-allowed';
     if (this.stopped || this.deps.requests.get(hostId, continueId)?.state !== 'pending') return;
-    if (typeof outcome === 'string') this.finish(hostId, continueId, outcome);
-    else this.step(hostId, continueId, ['pending'], 'awaiting', { rootId: outcome.rootId });
+    const stored = typeof outcome === 'string'
+      ? this.finish(hostId, continueId, outcome)
+      : this.step(hostId, continueId, ['pending'], 'awaiting', { rootId: outcome.rootId });
+    // Not stored: it stays pending and is settled again later.
+    if (!stored) this.retryLater(hostId, continueId, attempt, new Error('the outcome could not be stored'));
+  }
+
+  /**
+   * An error that may pass (the shared check gate busy, a git or disk error,
+   * an outcome not stored): the request stays pending and is checked again,
+   * after RETRY_MIN_MS doubling up to RETRY_MAX_MS; once past its expiry it
+   * ends `expired`.
+   */
+  private retryLater(hostId: HostId, continueId: string, attempt: number, err: unknown): void {
+    if (this.stopped || this.deps.requests.get(hostId, continueId)?.state !== 'pending') return;
+    const delay = Math.min(this.retryMinMs * 2 ** attempt, RETRY_MAX_MS);
+    this.deps.log('warn', `[a2a-remote] continue ${continueId} from ${hostId}: not checked yet, trying again in ${Math.round(delay / 1000)}s: ${errMsg(err)}`);
+    const k = `${hostId}:${continueId}`;
+    clearTimeout(this.retries.get(k));
+    const t = setTimeout(() => {
+      this.retries.delete(k);
+      const now = this.deps.requests.get(hostId, continueId);
+      if (this.stopped || !now || now.state !== 'pending') return;
+      if (this.expired(now)) this.finish(hostId, continueId, 'expired');
+      else void this.serial(() => this.check(hostId, continueId, attempt + 1));
+    }, delay);
+    t.unref?.();
+    this.retries.set(k, t);
   }
 
   private async evaluate(rec: ContinueRequestRecordV1): Promise<A2aContinueCode | { rootId: string }> {
@@ -502,8 +551,8 @@ export class A2aContinueReceiver {
   /**
    * The roots of `policy` whose origin is `origin`. Each root's origin is
    * read once per spawn-policy version; `fresh` reads every root again (and
-   * keeps what it read). Only an origin read is kept: no origin (a failed
-   * read, a root not cloned yet) is read again next time. An error is thrown.
+   * keeps what it read). Only an origin read is kept: no origin (a root not
+   * cloned yet) is read again next time. A read that failed is thrown.
    */
   private async rootsWithOrigin(origin: string, fresh: boolean, policy = this.deps.spawnPolicy.get()): Promise<A2aSpawnRootV1[]> {
     if (this.origins.version !== policy.version) this.origins = { version: policy.version, keys: new Map() };
