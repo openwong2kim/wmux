@@ -15,7 +15,10 @@ export interface TerminalPty extends IPty {
 }
 const backends = new WeakMap<IPty, 'node' | 'rust'>();
 export const ptyBackend = (pty: IPty): 'node' | 'rust' => backends.get(pty) ?? 'node';
-type SpawnOptions = IPtyForkOptions & IWindowsPtyForkOptions;
+type SpawnOptions = IPtyForkOptions & IWindowsPtyForkOptions & {
+  /** The console window's owner, applied before the shell starts (Rust core only). */
+  parentWindow?: Buffer;
+};
 
 /** Win32 cannot open Electron's virtual ASAR paths. Forge unpacks these assets. */
 export function bundledConptyPath(packageFile: string, arch: string): string {
@@ -68,7 +71,7 @@ class RustPty implements TerminalPty {
     this.drain.add(listener); return { dispose: () => { this.drain.delete(listener); } };
   };
   constructor(command: string, args: string[], private readonly options: SpawnOptions,
-    Constructor: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string) => NativeTransport) {
+    Constructor: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport) {
     this.cols = options.cols ?? 80; this.rows = options.rows ?? 24;
     this.process = path.basename(command); this.handleFlowControl = options.handleFlowControl ?? false;
     const env: Record<string, string> = {};
@@ -79,7 +82,7 @@ class RustPty implements TerminalPty {
       const require = createRequire(path.join(__dirname, 'wmux-pty-assets.cjs'));
       conptyDll = bundledConptyPath(require.resolve('node-pty/package.json'), globalThis.process.arch);
     }
-    try { this.transport = new Constructor(command, args, options.cwd ?? globalThis.process.cwd(), env, this.cols, this.rows, this.wake, conptyDll); }
+    try { this.transport = new Constructor(command, args, options.cwd ?? globalThis.process.cwd(), env, this.cols, this.rows, this.wake, conptyDll, options.parentWindow); }
     catch (error) { this.ended = true; throw error; }
     this.pid = this.transport.pid;
     // Optional capability keeps older ABI-1 native modules usable.

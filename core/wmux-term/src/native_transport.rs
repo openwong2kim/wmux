@@ -146,6 +146,7 @@ impl NativeTransport {
         rows: u32,
         notify: Function<(), ()>,
         conpty_dll: Option<String>,
+        parent_window: Option<Uint8Array>,
     ) -> Result<Self> {
         let size = size(cols, rows)?;
         let gate = Arc::new(WakeGate::default());
@@ -165,7 +166,7 @@ impl NativeTransport {
         });
         #[cfg(unix)]
         let pair = {
-            let _ = conpty_dll;
+            let _ = (conpty_dll, parent_window);
             native_pty_system().openpty(size).map_err(error)?
         };
         #[cfg(windows)]
@@ -174,6 +175,11 @@ impl NativeTransport {
         }
         .openpty(size)
         .map_err(error)?;
+        // Before the shell starts, so a window it opens right away already has an owner.
+        #[cfg(windows)]
+        if let Some(hwnd) = parent_window.as_ref().and_then(native_window_handle) {
+            pair.master.set_parent_window(hwnd);
+        }
         #[cfg(unix)]
         let (unix_io, cancel) = UnixIo::new(
             pair.master
@@ -495,12 +501,12 @@ impl NativeTransport {
     /// of the wrong size, a closed PTY, or a ConPTY without the call.
     #[napi]
     pub fn set_parent_window(&self, handle: Uint8Array) -> bool {
-        let Ok(bytes) = <[u8; std::mem::size_of::<isize>()]>::try_from(&handle[..]) else {
+        let Some(hwnd) = native_window_handle(&handle) else {
             return false;
         };
         self.master
             .as_ref()
-            .is_some_and(|master| master.set_parent_window(isize::from_ne_bytes(bytes)))
+            .is_some_and(|master| master.set_parent_window(hwnd))
     }
 
     #[napi]
@@ -671,6 +677,13 @@ fn size(cols: u32, rows: u32) -> Result<PtySize> {
         pixel_width: 0,
         pixel_height: 0,
     })
+}
+/// An HWND from its bytes in native byte order, as BrowserWindow.getNativeWindowHandle()
+/// returns it; None for a handle of the wrong size.
+fn native_window_handle(handle: &Uint8Array) -> Option<isize> {
+    <[u8; std::mem::size_of::<isize>()]>::try_from(&handle[..])
+        .ok()
+        .map(isize::from_ne_bytes)
 }
 fn signal_number(signal: Option<&str>) -> Option<u32> {
     #[cfg(unix)]

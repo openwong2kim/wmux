@@ -32,6 +32,7 @@ pub fn native_core_capabilities() -> Vec<String> {
         "output-chunk-v1".into(),
         "output-interpreter-v1".into(),
         "ansi-v2".into(),
+        "console-owner-v1".into(),
     ]
 }
 

@@ -111,6 +111,16 @@ describe('RustPty console window owner (Windows sign-in pickers)', () => {
     expect(setParentWindow).toHaveBeenCalledWith(hwnd);
   });
 
+  it('hands the spawn-time handle to the native constructor, before the shell starts', () => {
+    const received: unknown[] = [];
+    vi.mocked(loadNativeTerminalCore).mockReturnValue({ NativeTransport: class {
+      constructor(...args: unknown[]) { received.push(args[8]); return transport; }
+    } } as unknown as NativeTerminalCore);
+    spawnTerminalPty('sh', [], { parentWindow: hwnd }, nodeSpawn);
+    spawnTerminalPty('sh', [], {}, nodeSpawn);
+    expect(received).toEqual([hwnd, undefined]);
+  });
+
   it('reports false on a native module built before the call', () => {
     const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
     expect(pty.setParentWindow?.(hwnd)).toBe(false);

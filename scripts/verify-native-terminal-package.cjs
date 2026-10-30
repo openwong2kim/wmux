@@ -38,7 +38,7 @@ async function smoke(resources) {
   assert(process.versions.electron, 'Run this smoke with the packaged Electron executable');
   const core = require(path.join(resources, 'wmux-native', 'index.cjs'));
   assert.equal(core.nativeCoreAbiVersion(), 1);
-  for (const capability of ['pty-v1', 'ring-v1', 'frozen-ring-v1', 'text-v1', 'ansi-v2', 'output-chunk-v1', 'output-interpreter-v1']) {
+  for (const capability of ['pty-v1', 'ring-v1', 'frozen-ring-v1', 'text-v1', 'ansi-v2', 'output-chunk-v1', 'output-interpreter-v1', 'console-owner-v1']) {
     assert(core.nativeCoreCapabilities().includes(capability), `Missing ${capability}`);
   }
 

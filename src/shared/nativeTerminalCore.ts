@@ -39,7 +39,7 @@ export interface NativeTerminalCore {
   NativeRing: new (capacity: number) => NativeRingStorage;
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
-  NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string) => NativeTransport;
+  NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
 }
 export interface NativeOscBatch { codes: Float64Array; data: string[] }
 export interface NativeOutputInterpreter {

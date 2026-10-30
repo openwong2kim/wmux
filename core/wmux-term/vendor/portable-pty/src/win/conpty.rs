@@ -89,7 +89,10 @@ impl ConPtyMasterPty {
 impl MasterPty for ConPtyMasterPty {
     fn clear(&self) { self.inner.lock().unwrap().con.clear(); }
     fn set_parent_window(&self, hwnd: isize) -> bool {
-        self.inner.lock().unwrap().con.reparent(hwnd as winapi::shared::windef::HWND)
+        self.inner
+            .lock()
+            .map(|inner| inner.con.reparent(hwnd as winapi::shared::windef::HWND))
+            .unwrap_or(false)
     }
     fn resize(&self, size: PtySize) -> anyhow::Result<()> {
         let mut inner = self.inner.lock().unwrap();
