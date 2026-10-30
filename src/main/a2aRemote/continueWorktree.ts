@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxHomeDir } from '../../shared/constants';
+import { getExecEnv } from '../../shared/execEnv';
 import { isContinueBranch, isContinueCommit, isContinueId, type A2aContinueStartFailure } from '../../shared/a2aContinue';
 import { taskFetchConfigRefusal } from '../worktask/taskFetch';
 import { originUrlFromConfigList, originUrlRepoKey, parseGitConfigList, workerGitConfigRefusal } from '../worktask/workerGit';
@@ -75,8 +76,13 @@ export async function createContinueWorktree(input: ContinueWorktreeInput, opts:
   const { repoPath: repo, branch, head, continueId } = input;
   if (!isContinueId(continueId) || !isContinueBranch(branch) || !isContinueCommit(head)) return fail('failed', 'not a continue request\'s id, branch or commit');
   const git = gitRunner(repo, opts);
-  // The network calls: no credential prompt (nobody is at a terminal), and more time.
-  const net = gitRunner(repo, { ...opts, env: { GIT_TERMINAL_PROMPT: '0', ...(opts.env ?? {}) }, timeoutMs: FETCH_TIMEOUT_MS });
+  // The network calls: no credential prompt (nobody is at a terminal), and
+  // more time. GIT_TERMINAL_PROMPT does not cover ssh, which prompts on
+  // /dev/tty; an ssh command already set in the environment wins
+  // (TaskWorktreeManager's runGit).
+  const seen = { ...getExecEnv(), ...(opts.env ?? {}) };
+  const noPrompt = { GIT_TERMINAL_PROMPT: '0', ...(!seen.GIT_SSH_COMMAND && !seen.GIT_SSH ? { GIT_SSH_COMMAND: 'ssh -o BatchMode=yes' } : {}) };
+  const net = gitRunner(repo, { ...opts, env: { ...(opts.env ?? {}), ...noPrompt }, timeoutMs: FETCH_TIMEOUT_MS });
 
   // 1. The repository's top level, as given.
   const repoReal = await realpathOrNull(repo);

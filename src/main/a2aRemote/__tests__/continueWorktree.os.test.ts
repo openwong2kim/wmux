@@ -143,6 +143,33 @@ describe('createContinueWorktree', () => {
     expect(fs.existsSync(treeDir())).toBe(false);
   });
 
+  // A stand-in `ssh` on PATH records how it was run; it needs a POSIX shell.
+  it.skipIf(process.platform === 'win32')('runs ssh in batch mode for the fetch and ls-remote, unless an ssh command is set already', async () => {
+    const bin = path.join(root, 'bin');
+    const calls = path.join(root, 'ssh.calls');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'ssh'), `#!/bin/sh\necho "$*" >> '${calls}'\nexit 1\n`, { mode: 0o755 });
+    // The owner's config now sends origin's address over ssh, to a host that never answers.
+    fs.writeFileSync(globalConfig, `[url "ssh://git@example.invalid/acme/widget.git"]\n\tinsteadOf = ${ORIGIN_URL}\n`);
+    const run = (env: Record<string, string>) => createContinueWorktree(
+      { repoPath: repo, origin: ORIGIN, branch: 'feat', head, sub: 'apps', continueId: ID },
+      { ...opts(), env: { ...gitEnv(), PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`, ...env } },
+    );
+    expect(await run({ GIT_SSH_COMMAND: '', GIT_SSH: '' })).toMatchObject({ ok: false, code: 'failed' });
+    const batch = fs.readFileSync(calls, 'utf8').trim().split('\n');
+    // The fetch, then ls-remote to tell a missing branch from a failure.
+    expect(batch.length).toBe(2);
+    for (const line of batch) expect(line).toContain('BatchMode=yes');
+
+    fs.rmSync(calls);
+    expect(await run({ GIT_SSH_COMMAND: 'ssh -o SendEnv=MINE' })).toMatchObject({ ok: false, code: 'failed' });
+    const own = fs.readFileSync(calls, 'utf8').trim().split('\n');
+    for (const line of own) {
+      expect(line).toContain('SendEnv=MINE');
+      expect(line).not.toContain('BatchMode');
+    }
+  });
+
   it('refuses a folder past Windows\' path limit on win32 only', async () => {
     wtRoot = path.join(root, 'w'.repeat(240));
     const long = (platform: NodeJS.Platform) =>
