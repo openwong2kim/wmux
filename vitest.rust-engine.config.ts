@@ -23,6 +23,7 @@ const nodeOnly = [
   'src/daemon/__tests__/DaemonSessionManager.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.wslSecretEnv.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.secretEnv.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.hostWindow.test.ts',
   'src/daemon/__tests__/spawnCwdRefusal.os.test.ts',
   'src/daemon/__tests__/spawnStartTimeRetry.os.test.ts',
   'src/daemon/__tests__/wslDistroSpawnArgs.os.test.ts',
