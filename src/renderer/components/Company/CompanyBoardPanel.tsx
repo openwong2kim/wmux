@@ -121,10 +121,13 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const { row } = seat;
     const title = seatTitle(seat);
     const trailer = row ? row.paneName : tagOf(seat.paneId);
-    const statusLabel = row ? t(AGENT_STATUS_ICON[row.status].labelKey) : seat.agent ? undefined : t('company.noAgent');
-    // The pane's terminal, never the board itself when the board sits in this pane.
+    // The pane's agent tab when its roster row reads another tab (a stashed
+    // pane with a shell in front), else its first terminal; never the board.
     const leaf = leaves.find((l) => l.id === seat.paneId);
-    const surfaceId = leaf?.surfaces.find((sf) => isTerminalKindSurfaceType(sf.surfaceType))?.id ?? leaf?.activeSurfaceId ?? '';
+    const agentTab = row ? undefined : leaf?.surfaces.find((sf) => !!sf.ptyId && !!surfaceAgent[sf.ptyId]?.name);
+    const status = row?.status ?? (agentTab ? surfaceAgent[agentTab.ptyId].status : 'idle');
+    const statusLabel = row || agentTab ? t(AGENT_STATUS_ICON[status].labelKey) : t('company.noAgent');
+    const surfaceId = (agentTab ?? leaf?.surfaces.find((sf) => isTerminalKindSurfaceType(sf.surfaceType)))?.id ?? leaf?.activeSurfaceId ?? '';
     return (
       <button
         key={seat.paneId}
@@ -136,7 +139,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
         data-board-seat={seat.paneId}
       >
         <span className="flex min-w-0 items-center gap-1.5">
-          <StatusMarkView status={row?.status ?? 'idle'} quiet usageWaiting={row?.usageLimitWaiting} />
+          <StatusMarkView status={status} quiet usageWaiting={row?.usageLimitWaiting} />
           {seat.coordinator && <span className="flex-none text-[11px] text-[var(--text-muted)]" data-board-ceo>{t('company.ceo')}</span>}
           <span className={`min-w-0 truncate font-semibold ${row ? 'text-[var(--text-main)]' : 'text-[var(--text-sub)]'}`}>{title}</span>
           {/* The coordinate gives way before the title does. */}
