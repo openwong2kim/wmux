@@ -476,7 +476,7 @@ export const pl = {
   'company.board.notCompany': "Ten obszar roboczy nie jest już firmą.",
   'company.board.needsYou': "Czeka na ciebie",
   'company.board.seats': "Stanowiska",
-  'company.board.notShown': "Praca wysłana na inne komputery i do pracowników fan-out nie jest tu jeszcze widoczna.",
+  'company.board.notShown': "Praca wysłana do pracowników fan-out nie jest tu jeszcze widoczna.",
   'company.board.owns': "Odpowiada za {role}",
   'company.board.next': "Dalej: {title}",
   'company.board.more': "+{count}",

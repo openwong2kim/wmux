@@ -271,6 +271,28 @@ describe('RemoteA2aBridge', () => {
     expect(renderer.mock.calls.at(-1)).toEqual(['a2a.remote.notify', expect.objectContaining({ messageId: 'r1', resnapshot: true })]);
   });
 
+  it('hands every listed task this PC sent to onPeerUpdate, and no task it received', async () => {
+    const sent = remoteTask(13);
+    const marker = sent.metadata.remote as A2aRemoteTaskState;
+    marker.direction = 'outbound';
+    delete marker.delivered;
+    sent.status.state = 'working';
+    marker.inbox = [{ messageId: 's1', kind: 'state', state: 'working', delivered: false }];
+    daemon.tasks.set(sent.id, sent);
+    daemon.tasks.set(id(14), remoteTask(14));
+    const onPeerUpdate = vi.fn();
+    const watched = new RemoteA2aBridge({
+      daemonRpc: (m, p) => daemon.rpc(m, p),
+      sendToRenderer: (m, p) => renderer(m, p),
+      onDaemonEvent: () => () => undefined,
+      onPeerUpdate,
+    });
+    watched.start();
+    await settle();
+    watched.stop();
+    expect(onPeerUpdate.mock.calls.map(([t]) => (t as Task).id)).toEqual([id(13)]);
+  });
+
   it('ignores other daemon events and stops cleanly', async () => {
     bridge.start();
     await settle();

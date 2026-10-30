@@ -173,6 +173,7 @@ import { createTrackRecordFeed, setTrackRecordFeed, type TrackApprovalRecord } f
 import { getTrackRecordStore } from './deck/trackRecordStore';
 import { loadDeckDecisions, onDecisionsChanged } from './deck/deckDecisionStore';
 import { getWorkLinkStore } from './workLink/workLinkStore';
+import { recordPeerTaskState } from './workLink/a2aProducer';
 import { agentSlug } from '../shared/trackRecord';
 import { onAutonomyWritten } from './deck/deckAutonomyStore';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
@@ -2627,6 +2628,8 @@ app.on('ready', async () => {
           return () => { client.off('event', listener); };
         },
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
+        // A task sent to another PC: its work link follows what the peer did.
+        onPeerUpdate: (task) => void recordPeerTaskState(task),
       });
       remoteA2aBridge.start();
       setA2aRemoteBridge(remoteA2aBridge);

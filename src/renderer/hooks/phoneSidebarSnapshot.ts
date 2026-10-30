@@ -296,7 +296,7 @@ export function projectFleetTickets(
       paneAgent ?? (isAgentSlug(ticket.agent) ? agentSlugToDisplay(ticket.agent) : ticket.agent),
       L.fleetTicketAgentName,
     );
-    const workspaceName = clampSidebarString(state.workspaces.find((w) => w.id === ticket.workspaceId)?.name, L.fleetTicketWorkspaceName);
+    const workspaceName = clampSidebarString(state.workspaces.find((w) => w.id === ticket.workspaceId)?.name ?? ticket.workspaceName, L.fleetTicketWorkspaceName);
     const requestLine = firstTicketLine(ticket.request, L.fleetTicketRequestLine);
     const resultSummary = firstTicketLine(ticket.result?.summary, L.fleetTicketResultSummary);
     const verification = ticket.result?.verification;

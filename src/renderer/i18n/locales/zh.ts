@@ -267,7 +267,7 @@ export const zh = {
   'company.board.notCompany': "此工作区已不再是公司。",
   'company.board.needsYou': "等你处理",
   'company.board.seats': "席位",
-  'company.board.notShown': "发送到其他电脑和扇出工作者的工作暂未在此显示。",
+  'company.board.notShown': "发送给扇出工作者的工作暂未在此显示。",
   'company.board.owns': "负责 {role}",
   'company.board.next': "下一项：{title}",
   'company.board.more': "+{count}",

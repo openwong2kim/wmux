@@ -17,6 +17,9 @@ export interface FleetTicket {
   /** The request as it was sent (untrusted text). */
   request?: string;
   workspaceId: string;
+  /** The owner's name where no workspace here has one: a pane on another
+   *  PC, by its alias (untrusted text). */
+  workspaceName?: string;
   paneId?: string;
   agent?: string;
   state: TicketState;
@@ -113,6 +116,7 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = 
     };
     const request = requestOf(task);
     if (request) ticket.request = request;
+    if (link.owner.name) ticket.workspaceName = link.owner.name;
     if (link.owner.paneId) ticket.paneId = link.owner.paneId;
     if (link.agent) ticket.agent = link.agent;
     if (link.a2aTaskId) ticket.a2aTaskId = link.a2aTaskId;

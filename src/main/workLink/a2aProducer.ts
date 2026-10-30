@@ -5,7 +5,8 @@
 
 import { isTaskState, type TaskState } from '../../shared/types';
 import { getWorkLinkStore, type WorkLinkStore, type WorkLinkUpsert } from './workLinkStore';
-import { workLinkResultFromTask } from '../../shared/workLink';
+import { workLinkResultFromTask, type WorkLinkParty } from '../../shared/workLink';
+import { remoteWorkspaceId } from '../../shared/a2aRemoteDelivery';
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v);
@@ -43,6 +44,32 @@ export function workLinkFromSentTask(
     a2aState: stateOfTask(task) ?? 'submitted',
     owner: { workspaceId: ownerWs, ...(toPane ? { paneId: toPane } : {}) },
     ...(fromWs ? { requester: { workspaceId: fromWs, ...(fromPane ? { paneId: fromPane } : {}) } } : {}),
+    ...(title ? { title } : {}),
+  };
+}
+
+/**
+ * The link for a task sent to a pane on another PC. The send's reply carries
+ * no task, so the link is built from what the sender resolved: the link the
+ * task went out on, its alias, and the verified sender. With no title, the
+ * message's first line names it, as the receiving PC titles the task.
+ */
+export function workLinkFromRemoteSend(input: {
+  taskId: string;
+  linkId: string;
+  alias: string;
+  requester: WorkLinkParty;
+  title: string;
+  message: string;
+  fromCommander: boolean;
+}): WorkLinkUpsert {
+  const title = input.title || input.message.split('\n', 1)[0].slice(0, 100);
+  return {
+    origin: input.fromCommander ? 'moa' : 'manual',
+    a2aTaskId: input.taskId,
+    a2aState: 'submitted',
+    owner: { workspaceId: remoteWorkspaceId(input.linkId), ...(input.alias ? { name: input.alias } : {}) },
+    requester: input.requester,
     ...(title ? { title } : {}),
   };
 }
@@ -109,6 +136,26 @@ export function recordTaskState(taskId: unknown, state: unknown, store?: WorkLin
       () => undefined,
       () => undefined,
     );
+  } catch {
+    return Promise.resolve();
+  }
+}
+
+/**
+ * A task we sent to a pane on another PC, as the daemon holds it after the
+ * peer moved it. Called on every pull while the peer's state waits to be
+ * shown here, so it writes only a state the link does not have yet: every
+ * write moves the link's time, which orders the company board's log. Never
+ * rejects.
+ */
+export function recordPeerTaskState(task: unknown, store?: WorkLinkStore): Promise<void> {
+  const taskId = isRecord(task) ? str(task.id) : undefined;
+  const state = stateOfTask(task);
+  if (!taskId || !state) return Promise.resolve();
+  try {
+    const s = store ?? getWorkLinkStore();
+    if (s.getByTaskId(taskId)?.a2aState === state) return Promise.resolve();
+    return recordTaskState(taskId, state, s, task);
   } catch {
     return Promise.resolve();
   }

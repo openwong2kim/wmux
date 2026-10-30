@@ -472,7 +472,7 @@ export const en = {
   'company.board.notCompany': "This workspace is no longer a company.",
   'company.board.needsYou': "Waiting on you",
   'company.board.seats': "Seats",
-  'company.board.notShown': "Work sent to other PCs and to fan-out workers is not shown here yet.",
+  'company.board.notShown': "Work sent to fan-out workers is not shown here yet.",
   'company.board.owns': "Owns {role}",
   'company.board.next': "Next: {title}",
   'company.board.more': "+{count}",

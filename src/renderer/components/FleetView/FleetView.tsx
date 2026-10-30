@@ -1104,7 +1104,7 @@ export default function FleetView() {
 
   // Tickets: who holds one, and where a ticket's jump lands.
   const workspaceName = useCallback((id: string) => workspaces.find((w) => w.id === id)?.name ?? '', [workspaces]);
-  const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || t('fleet.ticket.unknownWorkspace'), ticket.agent]
+  const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || ticket.workspaceName || t('fleet.ticket.unknownWorkspace'), ticket.agent]
     .filter(Boolean).join(' · ');
   const agentPanesByWorkspace = useMemo(() => {
     const out = new Map<string, number>();

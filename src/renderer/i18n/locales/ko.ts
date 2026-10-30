@@ -467,7 +467,7 @@ export const ko = {
   'company.board.notCompany': "이 워크스페이스는 더 이상 회사가 아닙니다.",
   'company.board.needsYou': "내 차례",
   'company.board.seats': "자리",
-  'company.board.notShown': "다른 PC로 보낸 일과 fanout 워커의 일은 아직 여기에 나오지 않습니다.",
+  'company.board.notShown': "fanout 워커에게 보낸 일은 아직 여기에 나오지 않습니다.",
   'company.board.owns': "담당 {role}",
   'company.board.next': "다음: {title}",
   'company.board.more': "+{count}",

@@ -61,6 +61,9 @@ export interface RemoteA2aBridgeDeps {
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
   /** Subscribe to daemon broadcasts; returns an unsubscribe. */
   onDaemonEvent: (listener: (event: { type?: unknown; [key: string]: unknown }) => void) => () => void;
+  /** A task this PC sent, listed because the peer replied to it or moved it;
+   *  called on every pull that lists it. */
+  onPeerUpdate?: (task: Task) => void;
   backstopMs?: number;
   now?: () => number;
   log?: (level: 'info' | 'warn', msg: string) => void;
@@ -208,6 +211,9 @@ export class RemoteA2aBridge {
     }
     const tasks = (isRecord(res) && Array.isArray(res.tasks) ? (res.tasks as Task[]) : [])
       .filter((t) => t && typeof t.id === 'string' && isRemoteTaskId(t.id));
+    for (const task of tasks) {
+      if ((task.metadata?.remote as A2aRemoteTaskState | undefined)?.direction === 'outbound') this.deps.onPeerUpdate?.(task);
+    }
     const work = tasks.flatMap(workOf);
     // Forget state for work the daemon no longer lists (delivered, held, ended).
     const listed = new Set(work.map((w) => w.key));

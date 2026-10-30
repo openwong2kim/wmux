@@ -100,10 +100,11 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const seat = paneId ? board.seats.find((s) => s.paneId === paneId) : undefined;
     return seat ? seatTitle(seat) : '';
   };
-  // A job inside the company is placed by its seat, one handed out by the workspace it went to.
+  // A job inside the company is placed by its seat, one handed out by the
+  // workspace or other PC's pane it went to.
   const whereOf = (ticket: FleetTicket): string => (ticket.workspaceId === workspaceId
     ? seatName(ticket.paneId)
-    : workspaceNames[ticket.workspaceId] ?? t('fleet.ticket.unknownWorkspace'));
+    : workspaceNames[ticket.workspaceId] ?? ticket.workspaceName ?? t('fleet.ticket.unknownWorkspace'));
   const stateWord = (ticket: FleetTicket) => t(`fleet.ticket.state.${ticket.state}`);
   const ticketTitle = (ticket: FleetTicket) => ticket.title || t('fleet.ticket.untitled');
 
