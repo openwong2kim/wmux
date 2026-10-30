@@ -2367,7 +2367,12 @@ server.tool(
   A2A_TASK_CANCEL_SHAPE,
   async ({ task_id, reason }) => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.task.cancel', { workspaceId: wsId, taskId: task_id, reason });
+    const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, reason };
+    // The caller's pane, as for an update: a company task is canceled only
+    // by the pane that created it.
+    const senderPtyId = getTaskSenderPtyId();
+    if (senderPtyId) params.senderPtyId = senderPtyId;
+    return callRpc('a2a.task.cancel', params);
   },
 );
 

@@ -72,6 +72,7 @@ const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-
 
 
 const INTERNAL_RENDERER_FIELDS = [
+  'trustedLane',
   'daemonCommitted',
   'committedTask',
   'daemonReopenedTask',
@@ -1286,6 +1287,7 @@ export function registerA2aRpc(
             ? { senderPtyId: params.senderPtyId }
             : {}),
         ...(callerPane.kind === 'absent' && !trustedLane ? { requirePaneIdentity: true } : {}),
+        ...(trustedLane ? { trustedLane: true } : {}),
         ...(params.evidence !== undefined ? { evidence: params.evidence } : {}),
         // The status message, checked above, so the daemon's copy keeps it too
         // (and a task with another PC sends it back with the state).
@@ -1497,17 +1499,27 @@ export function registerA2aRpc(
   });
 
   // task.cancel: cancel worker + 데몬 정본 커밋 + 렌더러 캐시/이벤트(envelope PR4).
-  router.register('a2a.task.cancel', async (params) => {
+  router.register('a2a.task.cancel', async (params, ctx) => {
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
-    if (taskId) claudeWorker.cancel(taskId);
+    // The caller's pane, resolved here as for an update: a company task is
+    // canceled only by the pane that created it (shared/company.ts).
+    const trustedLane = ctx?.operator === true || (ctx?.firstParty === true && !isHostedCaller(ctx));
+    const callerPane = await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId);
+    // Only fields main sets reach the renderer.
+    const forward = withOperatorOrigin(params, ctx);
+    if (trustedLane) forward.trustedLane = true;
     const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.cancel', {
       taskId,
       workspaceId: params.workspaceId,
+      ...(callerPane.kind === 'resolved' ? { callerPaneId: callerPane.paneId } : {}),
+      ...(trustedLane ? { trustedLane: true } : {}),
       // §4 멱등(리뷰 codex): update 경로와 대칭 — 파이프 호출자 키를 데몬까지 전달.
       ...(typeof params.idempotencyKey === 'string' ? { idempotencyKey: params.idempotencyKey } : {}),
     });
     if (gate.kind === 'reject') return { error: gate.error };
+    // A background worker stops only once the cancel is allowed.
     if (gate.kind === 'ok') {
+      if (taskId) claudeWorker.cancel(taskId);
       // G(패널 델타): 데몬이 실제로 canceled로 전이했을 때만 렌더러 cancelled 이벤트를
       // 태운다. 이미 종단(completed/failed)인 태스크의 멱등 no-op(데몬 G 수정)은 상태
       // 변화가 없는데, 렌더러 cancel 핸들러는 daemonCommitted 시 무조건 state:'canceled'
@@ -1519,7 +1531,7 @@ export function registerA2aRpc(
       if (committedState === 'canceled') {
         void recordTaskState(taskId, 'canceled');
         const applied = await sendToRenderer(getWindow, 'a2a.task.cancel', {
-          ...params,
+          ...forward,
           daemonCommitted: true,
           committedTask: gate.result.task,
         });
@@ -1528,8 +1540,11 @@ export function registerA2aRpc(
       }
       return { ok: true, taskId };
     }
-    const res = await sendToRenderer(getWindow, 'a2a.task.cancel', params);
-    if (isRecord(res) && res.ok === true) void recordTaskState(taskId, 'canceled');
+    const res = await sendToRenderer(getWindow, 'a2a.task.cancel', forward);
+    if (isRecord(res) && res.ok === true) {
+      if (taskId) claudeWorker.cancel(taskId);
+      void recordTaskState(taskId, 'canceled');
+    }
     return res;
   });
 }

@@ -208,6 +208,7 @@ import { WORKER_RESUME_ROUTE, workerResumeRefusal, workerResumeResponse, workerR
 import type { ChatV2Binding } from '../../shared/chatv2/ipc';
 import { buildWebCsp, WEB_APP_FONT_FILE } from './webCsp';
 import { folderTrustRefusal } from '../folderTrustState';
+import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../shared/folderTrustWording';
 // Type only — the channel service implementation stays out of this module.
 // The web server is a STATELESS consumer of its phone projection (§9): it
 // lists, pages, acks, joins and republishes mention notifications. The
@@ -7955,6 +7956,7 @@ export class WebTerminalServer {
           const human = launch === 'human';
           const refused = await folderTrustRefusal(this.deps.sessionManager, sessionId, human ? 'web launch line' : 'web automated launch line', {
             refuseUnknown: !human, log: (message) => this.deps.log('warn', message),
+            ...(human ? {} : { budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }),
           });
           if (refused) return this.json(res,409,{error:'folder-trust',verdict:refused,effect:'none'});
           if (this.inputSession(fresh.principal,sessionId) !== managed || managed.meta.incarnationId !== incarnation) {

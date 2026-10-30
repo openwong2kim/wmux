@@ -388,6 +388,36 @@ describe('WorkspaceSlice.loadSession — Fix 0 contract', () => {
   });
 });
 
+describe('loadSession — companies', () => {
+  function load(workspaces: unknown[]) {
+    const store = createTestStore();
+    store.getState().loadSession({
+      workspaces,
+      activeWorkspaceId: 'ws-a',
+      sidebarVisible: true,
+    } as unknown as SessionData);
+    return store.getState().workspaces as unknown as Record<string, unknown>[];
+  }
+  const tree = () => makeNestedTree('pty-a', 'pty-b', 'pty-c');
+
+  it("drops the old company role and department name, so a saved 'lead' is no company", () => {
+    const [ws] = load([{ id: 'ws-a', name: 'A', rootPane: tree(), activePaneId: 'pane-left', companyRole: 'lead', companyDeptName: 'Eng' }]);
+    expect(ws).not.toHaveProperty('companyRole');
+    expect(ws).not.toHaveProperty('companyDeptName');
+    expect(ws).not.toHaveProperty('company');
+  });
+
+  it('keeps a valid company record and drops a broken one', () => {
+    const home = { v: 1, id: 'co-eng', coordinatorPaneId: 'pane-left' };
+    const [a, b] = load([
+      { id: 'ws-a', name: 'A', rootPane: tree(), activePaneId: 'pane-left', company: home },
+      { id: 'ws-b', name: 'B', rootPane: tree(), activePaneId: 'pane-left', company: { v: 9, id: 'x', coordinatorPaneId: null } },
+    ]);
+    expect(a.company).toEqual(home);
+    expect(b).not.toHaveProperty('company');
+  });
+});
+
 describe('loadSession — a session saved by the removed company mode', () => {
   it('restores the workspaces and keeps the old company keys out of the store', () => {
     const store = createTestStore();
@@ -396,7 +426,6 @@ describe('loadSession — a session saved by the removed company mode', () => {
       name: 'CEO',
       rootPane: makeNestedTree('pty-a', 'pty-b', 'pty-c'),
       activePaneId: 'pane-left',
-      companyRole: 'ceo',
     };
     const data = {
       workspaces: [ws],

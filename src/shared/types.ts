@@ -13,6 +13,7 @@ import type { StarPromptState } from './starPrompt';
 import type { AgentSignalKind } from './hooks/signal-types';
 import type { DeadPaneRecovery } from './ptyRecovery';
 import type { ShellPromptSignal } from './shellPrompt';
+import type { WorkspaceCompany } from './company';
 
 /** BYOB M0 — which runtime serves as a workspace's orchestrator brain.
  *  'claude' = the Claude Agent SDK (default); 'hermes' = the generic ACP
@@ -250,8 +251,8 @@ export interface Workspace {
   metadata?: WorkspaceMetadata;
   /** Per-workspace process profile (env + startup command) for new panes. */
   profile?: WorkspaceProfile;
-  companyRole?: 'ceo' | 'lead' | 'member';
-  companyDeptName?: string;
+  /** Set when the workspace is a company-mode company (shared/company.ts). */
+  company?: WorkspaceCompany;
   /**
    * Optional user-assigned color tag (see shared/workspaceColors.ts). Purely a
    * visual label for telling workspaces apart at a glance — it never carries

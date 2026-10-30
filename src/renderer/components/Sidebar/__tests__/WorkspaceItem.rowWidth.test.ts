@@ -107,7 +107,8 @@ describe('the hover actions take their own width and nothing else', () => {
   it('sit in flow — git line, name line, or a line of their own — never floated', () => {
     // A row with a branch: the actions end the git line, and the diff counts
     // and the PR badge step aside while they show, so the name never shrinks.
-    expect(itemSource).toContain('const actionsOnGitLine = !!metadata?.gitBranch || !!question;');
+    // A company row's mission line takes the git line's place.
+    expect(itemSource).toContain('const actionsOnGitLine = (company ? !!company.mission : !!metadata?.gitBranch) || !!question;');
     expect(itemSource).toContain("actions={actionsOnGitLine ? actionCluster('-ml-2') : null}");
     expect(itemSource).toMatch(/actions\s*\? <span className=\{`flex flex-shrink-0 \$\{metaHiddenOnHover \?\? ''\}`\}><GitSyncBadge/);
     expect(itemSource).toMatch(/actions\s*\? <span className=\{`flex flex-shrink-0 \$\{metaHiddenOnHover \?\? ''\}`\}><PrBadge/);
@@ -196,7 +197,7 @@ describe('the git line at narrow widths', () => {
   });
 
   it('puts the roster chip and the status words on the name line, not beside both lines', () => {
-    const trailing = itemSource.slice(itemSource.indexOf('data-row-trailing'), itemSource.indexOf('{(metadata || question) && ('));
+    const trailing = itemSource.slice(itemSource.indexOf('data-row-trailing'), itemSource.indexOf('{(metadata || question || company?.mission) && ('));
     expect(trailing).toContain('<WorkspaceRosterSummaryMemo');
     expect(trailing).toContain('data-row-needs-you');
     expect(trailing).toContain('data-row-error');

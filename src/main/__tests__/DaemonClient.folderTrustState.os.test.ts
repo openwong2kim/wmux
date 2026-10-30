@@ -32,6 +32,7 @@ describe('DaemonClient.folderTrustState', () => {
   let client: DaemonClient;
   let answer: () => Promise<unknown>;
   let asked: unknown[];
+  let budgets: unknown[];
 
   beforeEach(async () => {
     const name = pipeName();
@@ -39,9 +40,11 @@ describe('DaemonClient.folderTrustState', () => {
     server.setAuthToken(TOKEN);
     server.onRpc('daemon.client.identify', async () => ({ ok: true }));
     asked = [];
+    budgets = [];
     answer = async () => ({ state: 'clear' });
     server.onRpc('daemon.folderTrustState', async (params) => {
       asked.push(params['id']);
+      budgets.push(params['budgetMs']);
       return answer();
     });
     await server.start();
@@ -60,6 +63,21 @@ describe('DaemonClient.folderTrustState', () => {
       expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state });
     }
     expect(asked).toEqual(['daemon-1', 'daemon-1', 'daemon-1']);
+  });
+
+  it('sends a read budget only when the caller names one', async () => {
+    await client.folderTrustState('daemon-1', 1150, 1000);
+    await client.folderTrustState('daemon-1', 400);
+    expect(budgets).toEqual([1000, undefined]);
+  });
+
+  it("carries the reason tag of an 'unknown', and drops one it cannot log", async () => {
+    answer = async () => ({ state: 'unknown', reason: 'unseen-cells' });
+    expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'unknown', reason: 'unseen-cells' });
+    answer = async () => ({ state: 'clear', reason: 'unseen-cells' });
+    expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'clear' });
+    answer = async () => ({ state: 'unknown', reason: 'two\nlines' });
+    expect(await client.folderTrustState('daemon-1', 400)).toEqual({ state: 'unknown' });
   });
 
   it('says why there is no verdict: a malformed answer, an error, an older daemon', async () => {
@@ -125,6 +143,9 @@ describe('daemon.folderTrustState end to end', () => {
       expect(await c.folderTrustState('pane-trust', 400)).toEqual({ state: 'trust' });
       expect(await c.folderTrustState('pane-shell', 400)).toEqual({ state: 'clear' });
       expect(await c.folderTrustState('pane-gone', 400)).toEqual({ state: 'clear' });
+      // A delivery's budget, and one past the ceiling, read the same ring.
+      expect(await c.folderTrustState('pane-trust', 1150, 1000)).toEqual({ state: 'trust' });
+      expect(await c.folderTrustState('pane-shell', 2150, 60_000)).toEqual({ state: 'clear' });
     } finally {
       await c.disconnect();
       await server.stop();
