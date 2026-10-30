@@ -25,6 +25,7 @@ const fakeGit = (answers: Record<string, GitOut>): Git => async (args) => {
 const ok = (stdout: string): GitOut => ({ code: 0, stdout, stderr: '' });
 const notRepo: GitOut = { code: 128, stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git' };
 const timedOut: GitOut = { code: 1, stdout: '', stderr: 'timed out' };
+const noStart: GitOut = { code: 1, stdout: '', stderr: 'Error: spawn /usr/bin/git ENOENT' };
 const originList = (url: string): string => `local\0remote.origin.url\n${url}\0`;
 
 describe('rootOriginKey', () => {
@@ -38,6 +39,11 @@ describe('rootOriginKey', () => {
     await expect(rootOriginKey(fakeGit({ '--git-common-dir': timedOut }), root)).rejects.toThrow('timed out');
     await expect(rootOriginKey(fakeGit({ '--git-common-dir': ok('.git\n'), config: timedOut }), root)).rejects.toThrow('timed out');
   });
+
+  it('answers none for a root folder that is gone, where git cannot start; throws when it cannot start in one that is there', async () => {
+    expect(await rootOriginKey(fakeGit({ '--git-common-dir': noStart }), path.join(root, 'deleted'))).toBeNull();
+    await expect(rootOriginKey(fakeGit({ '--git-common-dir': noStart }), root)).rejects.toThrow('ENOENT');
+  });
 });
 
 describe('rootIsRepoTop', () => {
@@ -50,5 +56,10 @@ describe('rootIsRepoTop', () => {
 
   it('throws when git could not be read now', async () => {
     await expect(rootIsRepoTop(fakeGit({ '--show-toplevel': timedOut }), root)).rejects.toThrow('timed out');
+  });
+
+  it('false for a root folder that is gone, where git cannot start; throws when it cannot start in one that is there', async () => {
+    expect(await rootIsRepoTop(fakeGit({ '--show-toplevel': noStart }), path.join(root, 'deleted'))).toBe(false);
+    await expect(rootIsRepoTop(fakeGit({ '--show-toplevel': noStart }), root)).rejects.toThrow('ENOENT');
   });
 });

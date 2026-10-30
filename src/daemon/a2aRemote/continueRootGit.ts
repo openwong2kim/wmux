@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import type { Git } from '../../main/a2aRemote/spawnWorktree';
 import { originUrlFromConfigList, originUrlRepoKey } from '../../main/worktask/workerGit';
@@ -16,6 +17,20 @@ import { notThere, realpathNative } from './spawnChecks';
 const NOT_A_REPO = /not a git repository|cannot change to/i;
 
 /**
+ * Whether a failed git means the root itself is gone (or no folder): git
+ * then fails to start in it (spawn ENOENT), which is an answer, not a read
+ * that failed. A git that fails in a folder that is there still throws.
+ */
+async function rootGone(rootPath: string): Promise<boolean> {
+  try {
+    return !(await fs.promises.stat(rootPath)).isDirectory();
+  } catch (err) {
+    if (notThere(err)) return true;
+    throw err;
+  }
+}
+
+/**
  * The origin of the repository at `rootPath`, read through its common git
  * dir and keyed as the asker keys its own (originUrlRepoKey); null when it
  * has none or one that key cannot name, or the folder is no repository.
@@ -23,7 +38,7 @@ const NOT_A_REPO = /not a git repository|cannot change to/i;
 export async function rootOriginKey(git: Git, rootPath: string): Promise<string | null> {
   const common = await git(['rev-parse', '--git-common-dir'], [], rootPath);
   if (common.code !== 0) {
-    if (NOT_A_REPO.test(common.stderr)) return null;
+    if (NOT_A_REPO.test(common.stderr) || (await rootGone(rootPath))) return null;
     throw new Error(`git rev-parse --git-common-dir failed: ${common.stderr.trim().slice(0, 300)}`);
   }
   const dir = common.stdout.trim();
@@ -38,7 +53,7 @@ export async function rootOriginKey(git: Git, rootPath: string): Promise<string 
 export async function rootIsRepoTop(git: Git, rootPath: string): Promise<boolean> {
   const out = await git(['rev-parse', '--show-toplevel'], [], rootPath);
   if (out.code !== 0) {
-    if (NOT_A_REPO.test(out.stderr)) return false;
+    if (NOT_A_REPO.test(out.stderr) || (await rootGone(rootPath))) return false;
     throw new Error(`git rev-parse --show-toplevel failed: ${out.stderr.trim().slice(0, 300)}`);
   }
   const top = out.stdout.trim();
