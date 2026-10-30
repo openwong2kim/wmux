@@ -43,8 +43,11 @@ function capture(t: Terminal): State {
       const cells: unknown[] = [];
       for (let x = 0; x < t.cols; x++) {
         const c = line.getCell(x)!;
-        cells.push([c.getChars() || ' ', c.getWidth(), c.getFgColor(), c.getBgColor(), c.getFgColorMode(), c.getBgColorMode(),
-          c.isBold(), c.isDim(), c.isItalic(), c.isUnderline(), c.isBlink(), c.isInverse(), c.isInvisible(), c.isStrikethrough(), c.isOverline()]);
+        const chars = c.getChars() || ' ';
+        // A blank shows its background and lines, not its foreground, weight,
+        // slant or blink (reflow leaves those on xterm's empty cells at random).
+        const glyph = chars.trim() ? [c.getFgColor(), c.getFgColorMode(), c.isBold(), c.isDim(), c.isItalic(), c.isBlink(), c.isInvisible()] : [];
+        cells.push([chars, c.getWidth(), c.getBgColor(), c.getBgColorMode(), c.isUnderline(), c.isInverse(), c.isStrikethrough(), c.isOverline(), ...glyph]);
       }
       rows.push({ wrapped: line.isWrapped, text: line.translateToString(true), cells: JSON.stringify(cells) });
     }
@@ -246,6 +249,10 @@ const resizes: Case[] = [
   resized('fewer-rows-cursor-high', 'a\r\nb\r\nc\r\nd\x1b[2;1H', [80, 12], [80, 3]),
   resized('narrow-history-cursor-top', `${many}\x1b[H`, [80, 12], [40, 12]),
   resized('narrow-no-wrap', 'short\r\nlines\r\nonly', [80, 12], [40, 12]),
+  // Colored CJK paragraphs reflowed to 9..20 columns (bench/rust-snapshot-parity.ts).
+  ...Array.from({ length: 24 }, (_, i) => i + 1).filter(seed => seed !== 14).map(seed => resized(`reflow-seed-${seed}`,
+    Array.from({ length: seed }, (_, i) => `\x1b[3${i % 8}m${'abc\ud55c'.repeat(1 + i % 5)}\x1b[0m`).join('\r\n'),
+    [12, 6], [8 + seed % 13, 6])),
 ];
 
 function corpus(): Case[] {

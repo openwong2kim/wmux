@@ -161,13 +161,16 @@ fn cursor(out: &mut String, pen: &mut Pen, grid: &Grid<Cell>) {
     pen.set_link(out, grid.cursor.template.hyperlink().filter(replayable));
 }
 
-/// An erased or never-written cell: xterm stores these as empty cells, which
-/// copy and reflow treat as absent, while a printed space is content. Erase
-/// keeps only the background, so a cell with any other attribute was printed.
+/// A cell that may replay as empty: xterm stores erased or never-written
+/// cells as empty, which copy and reflow treat as absent, while a printed
+/// space is content. Alacritty cannot tell them apart, nor keep the colors a
+/// reflow leaves on xterm's empty cells. Attributes a blank does not show
+/// (foreground, bold, italic, blink) are dropped with it; visible ones keep it.
 fn blank(cell: &Cell) -> bool {
     (cell.c == ' ' || cell.c == '\t')
-        && cell.flags.is_empty()
-        && cell.fg == Color::Named(NamedColor::Foreground)
+        && !cell.flags.intersects(
+            Flags::INVERSE | Flags::ALL_UNDERLINES | Flags::STRIKEOUT | Flags::WIDE_CHAR_SPACER,
+        )
         && cell.zerowidth().is_none()
         && cell.extra.is_none()
 }
