@@ -85,6 +85,13 @@ export const A2A_ROUTES = Object.freeze({
    * fetches one the server's stream named. Path: /api/a2a/blobs/:sha256
    */
   blobs: '/api/a2a/blobs',
+  /**
+   * One file of a conversation another PC continues (continue), by its
+   * SHA-256 in the request's manifest: `PUT` — A uploads it to B when B is
+   * the server; `HEAD` — whether B holds it already; `GET` — B, the joiner,
+   * fetches it from A. Path: /api/a2a/continue/:continueId/:sha256
+   */
+  continue: '/api/a2a/continue',
 } as const);
 
 /**

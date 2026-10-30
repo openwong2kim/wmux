@@ -89,6 +89,12 @@ export class PinnedClientError extends Error {
   }
 }
 
+/** A streamed answer (`getStream`): its headers, and its body to read once. */
+export interface PinnedStreamedBody {
+  headers: http.IncomingHttpHeaders;
+  body: http.IncomingMessage;
+}
+
 /** One server-sent event whose `data` was JSON. */
 export interface PinnedSseEvent {
   /** The stream's last event id at dispatch (SSE semantics: it persists across events). */
@@ -193,6 +199,75 @@ export class PinnedTlsClient {
       throw new PinnedClientError('http', `HTTP ${status}`, { sent: true, status, json: parseJsonOrNull(body.toString('utf8')) });
     }
     return body;
+  }
+
+  /**
+   * Download a body too large to hold (`GET`): `consume` reads it as it
+   * arrives. The whole exchange gets `timeoutMs`; past it, on `signal`, or
+   * on a failed socket, the body is destroyed with that error, so the read
+   * in `consume` fails, and the call settles as `consume` does (which must
+   * settle once its body ends or fails). A status other than 200 throws
+   * `http` (with the JSON answer, if any) before `consume` is called.
+   */
+  async getStream<T>(
+    path: string,
+    opts: { timeoutMs: number; signal?: AbortSignal; acceptEncoding?: string },
+    consume: (res: PinnedStreamedBody) => Promise<T>,
+  ): Promise<T> {
+    if (opts.signal?.aborted) throw new PinnedClientError('aborted', 'aborted', { sent: false });
+    const { socket, address } = await this.connect(opts.signal);
+    try {
+      return await new Promise<T>((resolve, reject) => {
+        let settled = false;
+        let res: http.IncomingMessage | undefined;
+        const req = http.request({
+          method: 'GET',
+          path,
+          host: address,
+          port: this.opts.port,
+          headers: this.headers({ Accept: 'application/octet-stream', ...(opts.acceptEncoding ? { 'Accept-Encoding': opts.acceptEncoding } : {}) }),
+          createConnection: () => socket,
+        });
+        const finish = (err: Error | null, value?: T): void => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          detach();
+          opts.signal?.removeEventListener('abort', onAbort);
+          if (err) reject(err);
+          else resolve(value as T);
+        };
+        // Before the answer the call fails at once; after it, its body does.
+        const fail = (err: PinnedClientError): void => {
+          if (res) res.destroy(err);
+          else finish(err);
+        };
+        const onAbort = (): void => fail(new PinnedClientError('aborted', 'aborted', { sent: true }));
+        opts.signal?.addEventListener('abort', onAbort, { once: true });
+        const timer = setTimeout(() => fail(new PinnedClientError('timeout', `not done within ${opts.timeoutMs}ms`, { sent: true })), opts.timeoutMs);
+        const detach = watchSocket(socket, (err) => fail(new PinnedClientError('network', errMsg(err), { sent: true })));
+        req.on('error', (err) => fail(asSentError(err)));
+        req.on('response', (r) => {
+          // From here the body owns failure reporting: a socket that closes after its last byte cuts nothing.
+          detach();
+          res = r;
+          if (r.statusCode !== 200) {
+            readCappedBytes(r, undefined, MAX_BODY_BYTES).then(
+              (body) => finish(new PinnedClientError('http', `HTTP ${r.statusCode}`, { sent: true, status: r.statusCode ?? 0, json: parseJsonOrNull(body.toString('utf8')) })),
+              (err: unknown) => finish(asSentError(err)),
+            );
+            return;
+          }
+          consume({ headers: r.headers, body: r }).then(
+            (value) => finish(null, value),
+            (err: unknown) => finish(err instanceof Error ? err : new Error(String(err))),
+          );
+        });
+        req.end();
+      });
+    } finally {
+      socket.destroy();
+    }
   }
 
   private async request(

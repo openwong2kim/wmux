@@ -138,20 +138,20 @@ import { A2aOffers } from './a2aRemote/offers';
 import { OfferStore } from './a2aRemote/offerStore';
 import { A2aRemoteDelivery, shareOfferFeatures } from './a2aRemote/delivery';
 import { A2aSpawnReceiver, registerSpawnRpc } from './a2aRemote/spawnReceiver';
-import { SpawnPolicyStore, samePath } from './a2aRemote/spawnPolicyStore';
-import { realpathNative } from './a2aRemote/spawnChecks';
+import { SpawnPolicyStore } from './a2aRemote/spawnPolicyStore';
 import { SpawnRequestStore } from './a2aRemote/spawnRequestStore';
 import { SpawnLinkStore } from './a2aRemote/spawnLinkStore';
 import { A2aSpawnStarter, registerSpawnStartRpc } from './a2aRemote/spawnStarter';
 import { A2aSpawnRequester, registerSpawnAskRpc } from './a2aRemote/spawnRequester';
 import { SpawnOutgoingStore } from './a2aRemote/spawnOutgoingStore';
 import { A2aContinueReceiver, paneHoldsSession } from './a2aRemote/continueReceiver';
+import { ContinueBundle } from './a2aRemote/continueBundle';
 import { ContinuePolicyStore } from './a2aRemote/continuePolicyStore';
 import { ContinueRequestStore } from './a2aRemote/continueRequestStore';
 import { ContinuePlacer } from './a2aRemote/continuePlacer';
 import { registerContinueRpc } from './a2aRemote/continueRpc';
+import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { gitRunner } from '../main/a2aRemote/spawnWorktree';
-import { originUrlRepoKey, readRawOriginUrl } from '../main/worktask/workerGit';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
@@ -10322,7 +10322,11 @@ async function main(): Promise<void> {
         a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt) || a2aRemoteHosts.get(hostId) !== undefined;
       a2aSpawnPolicy.retainHosts(a2aPaired);
       a2aSpawnRequests.retainHosts(a2aPaired);
-      a2aContinuePolicy.retainHosts(a2aPaired);
+      try {
+        a2aContinuePolicy.retainHosts(a2aPaired);
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
+      }
       a2aContinueRequests.retainHosts(a2aPaired);
     }
     const a2aHostName = (hostId: string): string | undefined =>
@@ -10397,6 +10401,17 @@ async function main(): Promise<void> {
       if (!git) a2aRootGits.set(rootPath, (git = gitRunner(rootPath, {})));
       return git;
     };
+    // The bytes of such a conversation land in `continue-in/` under the a2a
+    // dir: uploaded by a PC that joined this one, pulled from one this PC joined.
+    const a2aContinueBytes: ContinueBundle = new ContinueBundle({
+      a2aDir,
+      requests: a2aContinueRequests,
+      policy: a2aContinuePolicy,
+      received: (hostId, continueId) => a2aContinue.received(hostId, continueId),
+      receiveFailed: (hostId, continueId) => a2aContinue.receiveFailed(hostId, continueId),
+      fetchFrom: (hostId) => a2aDelivery?.continueFetch(hostId) ?? null,
+      log: a2aLog,
+    });
     const a2aContinue = new A2aContinueReceiver({
       policy: a2aContinuePolicy,
       spawnPolicy: a2aSpawnPolicy,
@@ -10411,17 +10426,9 @@ async function main(): Promise<void> {
           pipeServer.broadcast({ type: event.type, sessionId: '', data: event });
         }
       },
-      // The root's own origin, read through its common git dir, keyed as the asker keys its own.
-      originKeyOf: async (rootPath) => {
-        const git = a2aRootGit(rootPath);
-        const url = await readRawOriginUrl((args, cwd) => git(args, [], cwd), rootPath);
-        return url ? originUrlRepoKey(url) : null;
-      },
-      isRepoTop: async (rootPath) => {
-        const out = await a2aRootGit(rootPath)(['rev-parse', '--show-toplevel']);
-        const top = out.code === 0 ? out.stdout.trim() : '';
-        return top !== '' && samePath(await realpathNative(top), rootPath);
-      },
+      // The root's own origin, keyed as the asker keys its own; a git that could not be read throws (checked again later).
+      originKeyOf: (rootPath) => rootOriginKey(a2aRootGit(rootPath), rootPath),
+      isRepoTop: (rootPath) => rootIsRepoTop(a2aRootGit(rootPath), rootPath),
       // The staging volume: the bytes land under the a2a dir.
       freeBytes: () => fs.promises.statfs(a2aDir).then((s) => s.bavail * s.bsize),
       sessionLive: (sessionId) => sessionManager.listLiveSessions().some((m) => paneHoldsSession(
@@ -10430,6 +10437,7 @@ async function main(): Promise<void> {
         () => transcriptProjector?.transcriptPath(m.id) ?? null,
         sessionId,
       )),
+      bytes: a2aContinueBytes,
       log: a2aLog,
     });
     const a2aForgetHost = forgetHostCascade({ links: a2aLinks, exposures: a2aExposures, offers: a2aOffersRef }, a2aLog);
@@ -10555,6 +10563,7 @@ async function main(): Promise<void> {
         offers: a2aOffersRef,
         spawn: a2aSpawn,
         continue: a2aContinue,
+        continueBytes: a2aContinueBytes,
         ...(a2aStarter ? { spawnLinks: a2aStarter } : {}),
         ...(a2aAsks ? { spawnAsks: a2aAsks } : {}),
         // This build shows and accepts share offers, takes images on
@@ -10583,9 +10592,15 @@ async function main(): Promise<void> {
       a2aSpawn.sendTargets();
       // Cards and approved starts past their expiry end `expired` even with nobody looking.
       // Put-backs of ended spawn links that could not be done yet are retried here too.
+      // A removed PC's send allow whose write failed is written here once it can be, before a restart could read it back.
       const spawnSweep = setInterval(() => {
         a2aSpawn.sweep();
         a2aContinue.sweep();
+        try {
+          a2aContinuePolicy.retainHosts(() => true, 'an earlier removal');
+        } catch (err) {
+          a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
+        }
         a2aStarter?.reconcile();
         a2aAsks?.expire();
       }, 60_000);

@@ -17,7 +17,7 @@ import {
 } from '../../shared/a2aRemote';
 import type { A2aRemoteHostStatus } from '../../shared/rpc';
 import type { OutboxStore } from './outboxStore';
-import { PinnedClientError, PinnedTlsClient, type PinnedClientOptions, type PinnedSseEvent } from './pinnedClient';
+import { PinnedClientError, PinnedTlsClient, type PinnedClientOptions, type PinnedSseEvent, type PinnedStreamedBody } from './pinnedClient';
 import type { ImagePull } from './inbound';
 import { formatCursorId, parseCursorId } from './streamHub';
 import { errMsg, isPlainObject } from './storeFile';
@@ -88,7 +88,15 @@ export interface SessionClient {
   putBytes?(path: string, body: Buffer, timeoutMs: number, signal?: AbortSignal): Promise<{ status: number; json: unknown }>;
   headStatus?(path: string, timeoutMs: number, signal?: AbortSignal): Promise<number>;
   getBytes?(path: string, opts: { maxBytes: number; timeoutMs: number; signal?: AbortSignal }): Promise<Buffer>;
+  getStream?<T>(path: string, opts: { timeoutMs: number; signal?: AbortSignal; acceptEncoding?: string }, consume: (res: PinnedStreamedBody) => Promise<T>): Promise<T>;
 }
+
+/** A GET whose body `consume` reads as it arrives (JoinerSession.fetchStream). */
+export type StreamedGet = <T>(
+  path: string,
+  opts: { timeoutMs: number; signal: AbortSignal; acceptEncoding?: string },
+  consume: (res: PinnedStreamedBody) => Promise<T>,
+) => Promise<T>;
 
 /** Failed uploads of one message's images (each one sent and not answered, or refused for now) before the message is given up. */
 export const IMAGE_UPLOAD_MAX_FAILURES = 4;
@@ -198,6 +206,28 @@ export class JoinerSession {
     this.reconcileTimer = null;
     await this.loop;
     await this.pumping;
+  }
+
+  /**
+   * A GET from the server whose body is too large to hold (the files of a
+   * conversation that PC hands this one): through a pinned client to the
+   * host as it is now, ended by `opts.signal` or by stop(). Throws as the
+   * pinned client does; a certificate that is not the pinned one stops the
+   * session.
+   */
+  async fetchStream<T>(
+    path: string,
+    opts: { timeoutMs: number; signal: AbortSignal; acceptEncoding?: string },
+    consume: (res: PinnedStreamedBody) => Promise<T>,
+  ): Promise<T> {
+    const client = this.status.state === 'identity-changed' ? null : this.client();
+    if (!client?.getStream) throw new PinnedClientError('connect-failed', 'that PC cannot be reached from here now', { sent: false });
+    try {
+      return await client.getStream(path, { ...opts, signal: AbortSignal.any([opts.signal, this.halt.signal]) }, consume);
+    } catch (err) {
+      if (err instanceof PinnedClientError && err.code === 'fingerprint-mismatch') this.identityChanged(err.message);
+      throw err;
+    }
   }
 
   /** New outbox records for this host: pump now (unless a backoff is pending). */

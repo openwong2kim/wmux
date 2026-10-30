@@ -5,7 +5,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_PROTOCOL, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import { continueResumesSource, defaultContinuePolicy, parseContinueRequest, type A2aContinuePolicyV1 } from '../../../shared/a2aContinue';
 import { defaultSpawnPolicy, type A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
@@ -16,8 +16,8 @@ import {
   paneHoldsSession,
   type ContinueReceiverDeps,
 } from '../continueReceiver';
-import { ContinueRequestStore } from '../continueRequestStore';
-import { SpawnChecks } from '../spawnChecks';
+import { CONTINUE_OPEN_PER_HOST_MAX, ContinueRequestStore } from '../continueRequestStore';
+import { CheckBusy, CheckTimeout, SpawnChecks } from '../spawnChecks';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 const OTHER = '22222222-2222-4222-8222-222222222222';
@@ -177,9 +177,22 @@ describe('a request: who may ask, and what each refusal says', () => {
     expect(state(running)).toBe('decided');
   });
 
-  it('with no card to show: not-allowed after the checks; a check that fails: failed', async () => {
+  it('full, not busy: a PC holding as many open requests as it may have, while another PC still may ask', async () => {
+    for (let i = 0; i < CONTINUE_OPEN_PER_HOST_MAX; i++) {
+      // eslint-disable-next-line no-await-in-loop -- one request after another
+      expect(await ask(request())).toEqual(['waiting-for-approval']);
+    }
+    const more = request();
+    expect(await ask(more)).toEqual(['full']);
+    expect(state(more)).toBeUndefined();
+    expect(continueResumesSource('full')).toBe(true);
+    spawn.hosts[OTHER] = { allowed: true };
+    expect(await ask(request(), OTHER)).toEqual(['waiting-for-approval']);
+  });
+
+  it('with no card to show: not-allowed after the checks; a check that does not answer in time: failed', async () => {
     expect(await ask(request(), HOST, makeReceiver({ cardAvailable: undefined }))).toEqual(['not-allowed']);
-    expect(await ask(request(), HOST, makeReceiver({ freeBytes: async () => { throw new Error('EIO'); } }))).toEqual(['failed']);
+    expect(await ask(request(), HOST, makeReceiver({ freeBytes: async () => { throw new CheckTimeout('check timed out'); } }))).toEqual(['failed']);
   });
 
   it('the asker is the authenticated peer, never a field of the body; a malformed body is refused', async () => {
@@ -203,6 +216,36 @@ describe('a request: who may ask, and what each refusal says', () => {
     expect(codes(id(req))).toEqual(['waiting-for-approval', 'waiting-for-approval']);
     const other = { ...req, estimate: { bytes: 1, files: 0 } };
     expect(receiver.applyInbound(link('continue', id(req), { continue: other }), { hostId: HOST })).toEqual({ ok: false, error: 'conflict' });
+  });
+});
+
+describe('a check that could not run now', () => {
+  it('a disk or git error, or the shared check gate busy: still pending, checked again, then its card', async () => {
+    // First the gate is busy, then the disk fails, then both answer.
+    let busy = 1;
+    let eio = 1;
+    const flaky = makeReceiver({
+      retryMinMs: 1,
+      originKeyOf: async (p) => { if (busy-- > 0) throw new CheckBusy('too many checks are running'); return origins[p] ?? null; },
+      freeBytes: async () => { if (eio-- > 0) throw new Error('EIO'); return free; },
+    });
+    const req = request();
+    expect(await ask(req, HOST, flaky)).toEqual([]);
+    expect(state(req)).toBe('pending');
+    await vi.waitFor(() => expect(codes(id(req))).toEqual(['waiting-for-approval']), { timeout: 5_000 });
+    // Both failures happened (the gate's first, on the first root), and each was tried again.
+    expect(busy).toBeLessThan(0);
+    expect(eio).toBe(-1);
+    flaky.stop();
+  });
+
+  it('one that keeps failing ends expired once past its expiry, never failed', async () => {
+    const broken = makeReceiver({ retryMinMs: 1, freeBytes: async () => { throw new Error('EIO'); } });
+    const req = request();
+    expect(await ask(req, HOST, broken)).toEqual([]);
+    clock += 3600_001;
+    await vi.waitFor(() => expect(codes(id(req))).toEqual(['expired']), { timeout: 5_000 });
+    broken.stop();
   });
 });
 
@@ -532,6 +575,22 @@ describe('the claim checks again', () => {
     expect(codes(id(twice)).at(-1)).toBe('repo-ambiguous');
   });
 
+  it('a root that could not be read now leaves it received, and the next claim starts it', async () => {
+    const req = await toReceived();
+    let fail: 'origin' | 'top' | null = 'origin';
+    const r = makeReceiver({
+      originKeyOf: async (p) => { if (fail === 'origin') throw new Error('timed out'); return origins[p] ?? null; },
+      isRepoTop: async () => { if (fail === 'top') throw new Error('timed out'); return true; },
+    });
+    expect(await r.claim(HOST, id(req))).toMatchObject({ ok: false, error: expect.stringContaining('try again') });
+    fail = 'top';
+    expect(await r.claim(HOST, id(req))).toMatchObject({ ok: false, error: expect.stringContaining('try again') });
+    expect(state(req)).toBe('received');
+    fail = null;
+    expect(await r.claim(HOST, id(req))).toMatchObject({ ok: true, claim: { rootId: 'web' } });
+    r.stop();
+  });
+
   it('origins are read once per spawn-policy version, and again at each claim', async () => {
     const read: string[] = [];
     const counting = makeReceiver({ originKeyOf: async (p) => { read.push(p); return origins[p] ?? null; } });
@@ -597,7 +656,7 @@ describe('paneHoldsSession', () => {
 });
 
 describe('origins and the root at the claim', () => {
-  it('a root whose origin could not be read is read again next time, not kept as none', async () => {
+  it('a root with no origin yet is read again next time, not kept as none', async () => {
     let reads = 0;
     const flaky = makeReceiver({ originKeyOf: async (p) => (p === '/repos/web' && reads++ === 0 ? null : origins[p] ?? null) });
     expect(await ask(request(), HOST, flaky)).toEqual(['repo-not-found']);
