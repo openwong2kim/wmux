@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_PROTOCOL, A2A_ROUTES, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import { defaultContinuePolicy, type A2aContinuePolicyV1 } from '../../../shared/a2aContinue';
 import { defaultSpawnPolicy, type A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
+import { deliberateSleep } from '../../../test-utils/waitFor';
+import { atomicWriteJSONSync } from '../../util/atomicWrite';
 import { ContinueBundle, type ContinueBundleDeps } from '../continueBundle';
 import { A2aContinueReceiver } from '../continueReceiver';
 import { ContinueRequestStore } from '../continueRequestStore';
@@ -566,6 +568,42 @@ describe('pulls (this PC joined A)', () => {
 });
 
 describe('lifecycle', () => {
+  it('tells the receiver again, with a backoff, when it could not store `received`, until it does', async () => {
+    let failWrites = 0;
+    requests = new ContinueRequestStore({
+      dir: a2aDir, scheduleHarden: quiet, now: () => clock,
+      write: (p, d) => {
+        if (failWrites > 0) {
+          failWrites -= 1;
+          throw new Error('EPERM: the rename was refused');
+        }
+        atomicWriteJSONSync(p, d);
+      },
+    });
+    build({ receivedRetry: { minMs: 20, maxMs: 40 } });
+    const t = bytes(1_000, 40);
+    const a = await toReceiving(t);
+    failWrites = 2;
+    expect((await send('PUT', a, sha(t), { body: t })).status).toBe(200);
+    expect(stateOf(a)).toBe('receiving');
+    await vi.waitFor(() => expect(stateOf(a)).toBe('received'), { timeout: 5_000 });
+    expect(calls).toEqual(Array.from({ length: 3 }, () => `received ${a.continueId}`));
+
+    // One the receiver never stores is told again only until the request is decided.
+    const stuck = await toReceiving(bytes(1_000, 41));
+    calls.length = 0;
+    failWrites = 1_000;
+    expect((await send('PUT', stuck, sha(bytes(1_000, 41)), { body: bytes(1_000, 41) })).status).toBe(200);
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(1), { timeout: 5_000 });
+    failWrites = 0;
+    clock += 2 * 3600_000;
+    receiver.sweep();
+    expect(codeOf(stuck)).toBe('expired');
+    const told = calls.length;
+    await deliberateSleep(150, 'real timer: no further try fires after the decision');
+    expect(calls).toHaveLength(told);
+  });
+
   it('removes a request’s staging on its decision', async () => {
     const t = bytes(2_000, 22);
     const a = await toReceiving(t, [{ rel: 'f', body: bytes(10, 23) }]);
