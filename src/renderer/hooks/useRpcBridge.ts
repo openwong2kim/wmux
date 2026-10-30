@@ -555,10 +555,10 @@ export function useRpcBridge(): void {
     // `electronAPI.rpc.invoke('events.poll', params)` which routes
     // through main into the live pipe RpcRouter → the daemon-side
     // `events.poll` handler registered in `src/main/pipe/handlers/events.rpc.ts`.
-    // The renderer-side `useStore((s) => s.company)?.ceoWorkspaceId` is
-    // injected by the hook as the per-recipient scoping key (see plan
-    // U3); the daemon's per-workspace filter at events.rpc.ts:115-124
-    // admits the renderer's own workspace's events on that basis.
+    // The hook injects the human's reserved workspace (HUMAN_WORKSPACE_ID)
+    // as the per-recipient scoping key (see plan U3); the daemon's
+    // per-workspace filter at events.rpc.ts:115-124 admits the renderer's
+    // own workspace's events on that basis.
     (window as unknown as {
       __wmuxEventsPoll: (params: {
         cursor: number;

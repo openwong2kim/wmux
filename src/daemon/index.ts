@@ -9651,9 +9651,8 @@ async function main(): Promise<void> {
         paneId,
       ),
     // U5 archive-authz (KTD-F): the CEO override is gated on this field.
-    // The renderer owns `Company.ceoWorkspaceId` today; the daemon does
-    // not have a copy, so we pass `undefined` (creator-only archive)
-    // until the company-mode config key lands. The gate in
+    // Nothing sets a CEO workspace yet, so we pass `undefined`
+    // (creator-only archive) until the company-mode config key lands. The gate in
     // `ChannelService.archive()` is already wired and will activate
     // automatically once a real value is plumbed in.
     ceoWorkspaceId: undefined,
@@ -9793,8 +9792,8 @@ async function main(): Promise<void> {
         log: channelEventLogDeps.log,
         channels: channelService,
         origin: { machineId: channelEventLogDeps.machineId, daemonEpoch: CHANNELS_EPOCH },
-        // 데몬은 오늘 ceoWorkspaceId를 알지 못한다(ChannelService.archive와 동일 —
-        // 렌더러가 Company.ceoWorkspaceId 소유). CEO 예외 활성은 배선 후속.
+        // 데몬은 오늘 ceoWorkspaceId를 알지 못한다(ChannelService.archive와 동일).
+        // CEO 예외 활성은 배선 후속.
         ceoWorkspaceId: undefined,
         // §5 배타 불변식의 realpath 해석기. 경로가 디스크에 실존하면 심링크를 풀고,
         // 부재면(fs 예외) 원본을 반환해 순수 문자열 정규화로 폴백한다.

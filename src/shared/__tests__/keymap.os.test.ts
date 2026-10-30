@@ -7,6 +7,7 @@ import {
   collidesWithKeymap,
   ADVERTISED_SHORTCUTS,
   UNBOUND_SHORTCUTS,
+  settingsUnboundRows,
   SHORTCUT_ACTION_IDS,
   comboFromEvent,
   concreteCombo,
@@ -628,7 +629,9 @@ describe('the removed company-mode toggles', () => {
     }
   });
 
-  it('drop a key a user saved on them', () => {
+  it('drop a key a user saved on them, and Settings lists neither', () => {
     expect(sanitizeShortcutOverrides({ toggleCompanyView: 'Ctrl+Alt+O', toggleMessageFeed: 'Ctrl+Alt+M' })).toEqual({});
+    expect(settingsUnboundRows()).not.toContain('toggleCompanyView');
+    expect(settingsUnboundRows()).toContain('stashPane');
   });
 });
