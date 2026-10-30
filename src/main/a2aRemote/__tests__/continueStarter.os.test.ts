@@ -239,15 +239,29 @@ describe('a lost started answer', () => {
     expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([]);
   });
 
-  it('refuses one still starting first, then takes it down without a second report', async () => {
+  it('keeps one the daemon still holds as starting: the pane runs it, and the sweep settles it started', async () => {
     const r = rig({ started: lost, state: () => ({ state: 'starting' }) });
+    await r.run();
+    expect(r.order.slice(-2)).toEqual(['started', 'state']);
+    expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([]);
+  });
+
+  it('takes down one the daemon decided otherwise, without reporting again', async () => {
+    const r = rig({ started: lost, state: () => ({ state: 'decided', code: 'unknown' }) });
+    await r.run();
+    expect(r.order.slice(-4)).toEqual(['state', 'workspace.close', 'unplace', 'removeWorktree']);
+    expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([]);
+  });
+
+  it('refuses one the daemon holds no record of first, then takes it down without a second report', async () => {
+    const r = rig({ started: lost, state: () => ({}) });
     await r.run();
     expect(r.order.slice(-6)).toEqual(['started', 'state', 'failed', 'workspace.close', 'unplace', 'removeWorktree']);
     expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([{ hostId: HOST, continueId: CID, code: 'failed' }]);
   });
 
   it('keeps one whose refusal the daemon did not take (it stored the start meanwhile)', async () => {
-    const r = rig({ started: lost, state: () => ({ state: 'starting' }), failed: () => ({ ok: false, error: 'this request is not starting' }) });
+    const r = rig({ started: lost, state: () => ({}), failed: () => ({ ok: false, error: 'this request is not starting' }) });
     await r.run();
     expect(r.order).not.toContain('workspace.close');
   });

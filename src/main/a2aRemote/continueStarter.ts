@@ -282,16 +282,24 @@ export class ContinueStarter {
       try {
         res = await this.deps.daemonRpc(A2A_CONTINUE_RPC.started, { hostId, continueId });
       } catch (err) {
-        // No answer: the daemon may have stored the start anyway. Ask before
-        // taking anything down; a start it stored stands, and one it cannot
-        // tell about is left for the person.
-        const stored = await this.startStored(hostId, continueId);
-        if (stored === false) {
-          // Refused before anything is taken down: one stored meanwhile refuses this and stands.
+        // No answer: the pane runs the conversation already, so what the
+        // daemon holds decides, as for a start it did not store. One still
+        // starting stays (the sweep settles it started while its agent runs),
+        // as does one decided started; one decided otherwise is taken down
+        // without being reported again.
+        const now = await this.requestState(hostId, continueId);
+        if (now?.state === 'starting' || (now?.state === 'decided' && now.code === 'started')) {
+          this.deps.log('warn', `[continue] ${continueId} from ${hostId}: started, no answer; kept, as ${now.state}: ${errText(err)}`);
+          return;
+        }
+        if (now?.state === 'decided') return await undo('failed', `no answer, and decided ${now.code ?? 'otherwise'}: ${errText(err)}`, true);
+        if (now) {
+          // No record: refused before anything is taken down; one stored meanwhile refuses this and stands.
           const refused = await this.deps.daemonRpc(A2A_CONTINUE_RPC.failed, { hostId, continueId, code: 'failed' }).then(isOk, () => false);
           if (refused) return await undo('failed', `not stored: ${errText(err)}`, true);
         }
-        this.deps.log('warn', `[continue] ${continueId} from ${hostId}: started, ${stored ? 'stored by the daemon' : 'not confirmed'}; kept: ${errText(err)}`);
+        // One it cannot tell about is left for the person.
+        this.deps.log('warn', `[continue] ${continueId} from ${hostId}: started, not confirmed; kept: ${errText(err)}`);
         return;
       }
       if (!isOk(res)) {
@@ -337,12 +345,6 @@ export class ContinueStarter {
       // eslint-disable-next-line no-await-in-loop -- one poll at a time
       await new Promise((r) => setTimeout(r, this.deps.bindPollMs ?? BIND_POLL_MS));
     }
-  }
-
-  /** Whether the daemon stored this request as started; undefined when it cannot be asked. */
-  private async startStored(hostId: string, continueId: string): Promise<boolean | undefined> {
-    const rec = await this.requestState(hostId, continueId);
-    return rec && rec.state === 'decided' && rec.code === 'started';
   }
 
   /** Where the daemon holds this request now; undefined when it cannot be asked. */
