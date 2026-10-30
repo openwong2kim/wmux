@@ -39,6 +39,7 @@ import {
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
+import { createHardWrappedLinkProvider } from '../terminal/hardWrappedLinkProvider';
 import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPromptCarry, noteCodexEndedByPrompt, clearCodexEndedOnSlug } from '../terminal/newlineKeys';
 import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
 import { isWslShell } from '../../shared/imagePaste';
@@ -1461,6 +1462,46 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const webLinksAddon = new WebLinksAddon(activateTerminalUrl);
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
+    // Main-side validation in shell.handler.openPath is the security
+    // boundary; the renderer regexes are only a UX filter.
+    const openTerminalPath = (filePath: string): void => {
+      void window.electronAPI.shell.openPath(filePath).then((result) => {
+        // Main-side outcomes:
+        //   • ok=true → opened cleanly, nothing to surface
+        //   • error='BLOCKED_EXTENSION' → security gate refused (.exe etc.)
+        //   • error=<message> → openPath failed (file gone, no handler);
+        //     main already revealed the parent folder via showItemInFolder
+        // The toast tells the user *why* their click landed on a folder
+        // instead of opening the file — otherwise it reads as a no-op.
+        if (!result || result.ok) return;
+        showOpenPathToast(
+          result.error === 'BLOCKED_EXTENSION'
+            ? 'terminal.openPathBlocked'
+            : 'terminal.openPathFailed',
+        );
+      }).catch((err: unknown) => {
+        // IPC-level rejection (validation throw: non-string, NUL byte,
+        // not absolute, length cap). These are developer-visible bugs
+        // rather than user-actionable failures — log only.
+        console.warn('[useTerminal] openPath failed:', err);
+      });
+    };
+    // Claude Code wraps long lines itself (cursor move + indent), so a URL or
+    // path it wraps lands on two unrelated rows. This provider joins them. It
+    // is registered before WebLinksAddon and the path provider on purpose:
+    // xterm prefers the earliest provider and drops later links that overlap
+    // its link, which retires their cut-off first-row links.
+    const hardWrappedLinkDisposable = terminal.registerLinkProvider(
+      createHardWrappedLinkProvider(terminal, {
+        getAgentSlug: () => {
+          const id = ptyIdRef.current;
+          return id ? useStore.getState().surfaceAgent[id]?.slug : undefined;
+        },
+        activateUrl: activateTerminalUrl,
+        openPath: openTerminalPath,
+        platform: window.electronAPI.platform,
+      }),
+    );
     terminal.loadAddon(webLinksAddon);
     // #1641: sixel / iTerm2 inline images. Bound to the terminal instance (an
     // adopted terminal keeps its addon and images), attached here — before the
@@ -1469,31 +1510,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Path link provider — Ctrl+click an absolute filesystem path to open
     // it in Explorer / Finder. Coexists with WebLinksAddon (URLs); the two
     // detect disjoint token shapes so a single span never claims both.
-    // Main-side validation in shell.handler.openPath is the security
-    // boundary; the renderer regex is only a UX filter.
     const pathLinkDisposable = terminal.registerLinkProvider(
-      createPathLinkProvider(terminal, (filePath) => {
-        void window.electronAPI.shell.openPath(filePath).then((result) => {
-          // Main-side outcomes:
-          //   • ok=true → opened cleanly, nothing to surface
-          //   • error='BLOCKED_EXTENSION' → security gate refused (.exe etc.)
-          //   • error=<message> → openPath failed (file gone, no handler);
-          //     main already revealed the parent folder via showItemInFolder
-          // The toast tells the user *why* their click landed on a folder
-          // instead of opening the file — otherwise it reads as a no-op.
-          if (!result || result.ok) return;
-          showOpenPathToast(
-            result.error === 'BLOCKED_EXTENSION'
-              ? 'terminal.openPathBlocked'
-              : 'terminal.openPathFailed',
-          );
-        }).catch((err: unknown) => {
-          // IPC-level rejection (validation throw: non-string, NUL byte,
-          // not absolute, length cap). These are developer-visible bugs
-          // rather than user-actionable failures — log only.
-          console.warn('[useTerminal] openPath failed:', err);
-        });
-      }, window.electronAPI.platform),
+      createPathLinkProvider(terminal, openTerminalPath, window.electronAPI.platform),
     );
 
     // OSC 52 clipboard-write bridge. Full-screen TUI apps (Claude Code, vim,
@@ -3661,6 +3679,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       selectionDisposable.dispose();
       charSizeDisposable?.dispose();
       document.fonts.removeEventListener('loadingdone', onFontsLoadingDone);
+      hardWrappedLinkDisposable.dispose();
       pathLinkDisposable.dispose();
       osc52Disposable.dispose();
       // #582: dispose the xterm→PTY input listener BEFORE the deferred-
