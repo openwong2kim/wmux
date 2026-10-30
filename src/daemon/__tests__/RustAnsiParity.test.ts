@@ -317,6 +317,18 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     expect(selected.payload.equals(reference.payload)).toBe(true);
   });
 
+  // xterm's public modes do not expose the mouse encoding, so capture() cannot
+  // compare it: check the restored ?1016 directly.
+  it.each(['\x1b[?1003;1016hx', '\x1b[?1002;1006;1016hx', '\x1b[?1016hx', '\x1b[?1000;1016h\x1b[?1016lx', '\x1b[?1000;1016h\x1bcx'])('restores the pixel mouse encoding as xterm does: %j', async (stream) => {
+    const req: SnapshotRequest = { cols: 20, rows: 4, scrollback: 100, initial: Buffer.from(stream) };
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const reference = await generateSnapshotUnqueued(req);
+    const native = await generateRustSnapshot(req, 'ansi');
+    if (!reference.ok || !native.ok) throw new Error('snapshot failed');
+    const pixels = (payload: Buffer) => payload.toString('latin1').includes('\x1b[?1016h');
+    expect(pixels(native.payload as Buffer)).toBe(pixels(reference.payload));
+  });
+
   // Evidence for each refusal: without it the Rust payload would diverge.
   it.each(refused.map(c => [c.name, c] as const))('Rust alone diverges on %s', async (_name, { req }) => {
     vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');

@@ -112,6 +112,9 @@ struct XtermFeed {
     margins: bool,
     /// DECTCEM off (CursorVisibilityTracker).
     cursor_hidden: bool,
+    /// SGR-pixels mouse encoding, ?1016 (SgrMouseEncodingTracker). Alacritty
+    /// does not parse it, so its mode set never carries it.
+    sgr_pixels: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
 }
@@ -174,6 +177,9 @@ impl XtermFeed {
         if sequence == b"\x1bc" || sequence == b"\x1b[!p" {
             self.margins = false;
         }
+        if sequence == b"\x1bc" {
+            self.sgr_pixels = false;
+        }
         if sequence == b"\x1b[!p" {
             self.cursor_hidden = false;
         }
@@ -189,11 +195,14 @@ impl XtermFeed {
             .strip_prefix(b"\x1b[?")
             .and_then(<[u8]>::split_last)
         {
-            if matches!(last, b'h' | b'l')
-                && numeric(params)
-                && params.split(|&b| b == b';').any(|mode| mode == b"25")
-            {
-                self.cursor_hidden = last == b'l';
+            if matches!(last, b'h' | b'l') && numeric(params) {
+                let mut modes = params.split(|&b| b == b';');
+                if modes.clone().any(|mode| mode == b"25") {
+                    self.cursor_hidden = last == b'l';
+                }
+                if modes.any(|mode| mode == b"1016") {
+                    self.sgr_pixels = last == b'h';
+                }
             }
         }
     }
@@ -495,6 +504,11 @@ impl NativeTerminal {
         let synchronized = self.parser.sync_timeout().pending_timeout();
         self.parser.stop_sync(term);
         let mut result = crate::native_serialize::serialize(term).map_err(Error::from_reason)?;
+        // xterm's modes tail restores the pixel encoding only while a mouse
+        // tracking mode is on.
+        if self.feed.sgr_pixels && term.mode().intersects(TermMode::MOUSE_MODE) {
+            result.push_str("\x1b[?1016h");
+        }
         if synchronized {
             result.push_str("\x1b[?2026h");
         }
@@ -1156,5 +1170,14 @@ mod tests {
         assert_eq!(state(&["\x1b[2;4r\x1bc"]), (false, false));
         assert_eq!(state(&["\x1b[?1;25l"]), (false, true));
         assert_eq!(state(&["\x1b[?25l\x1b[?25h"]), (false, false));
+    }
+
+    #[test]
+    fn the_pixel_mouse_encoding_follows_the_stream_tracker() {
+        let pixels = |chunks: &[&str]| feed_with(chunks).2.sgr_pixels;
+        assert!(pixels(&["\x1b[?1003;1016h"]));
+        assert!(!pixels(&["\x1b[?1016h\x1b[?1016l"]));
+        assert!(!pixels(&["\x1b[?1016h\x1bc"]));
+        assert!(pixels(&["\x1b[?10", "16h"]), "split across chunks");
     }
 }
