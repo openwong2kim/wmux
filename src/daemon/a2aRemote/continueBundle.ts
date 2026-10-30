@@ -38,8 +38,11 @@ import { errMsg } from './storeFile';
  *   B is the server (A joined B): A uploads each file.
  *     PUT  /api/a2a/continue/:continueId/:sha256 — one file, its body raw or
  *          gzipped (Content-Encoding identity or gzip, else 415).
- *     HEAD /api/a2a/continue/:continueId/:sha256 — 200 when that file is
- *          staged already (A skips it after a reconnect), else 404.
+ *     HEAD /api/a2a/continue/:continueId/:sha256 — 200 while the request
+ *          receives and that file is staged already (A skips it after a
+ *          reconnect), else 404. Once the last file lands the request is
+ *          `received` and every HEAD is 404: A hears that from its
+ *          `continue-result`, not here.
  *     Both answer only the PC whose request it is (its authenticated id,
  *     never a field it sent), for a request that is `receiving`, about a
  *     hash of its manifest (for a PUT, one not staged yet). Anything else is

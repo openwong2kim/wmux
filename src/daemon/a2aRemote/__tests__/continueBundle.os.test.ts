@@ -228,7 +228,7 @@ function stalled(a: Asked, digest: string, declared: number, host?: string): { r
 }
 
 describe('uploads (A joined this PC)', () => {
-  it('stages a file sent raw and one gzipped, says so by HEAD, and is received once, after the last', async () => {
+  it('stages a file sent raw and one gzipped, says so by HEAD while it receives, and is received once, after the last', async () => {
     const transcript = bytes(70_000, 1);
     const file = Buffer.from('tool output\n'.repeat(2_000));
     const a = await toReceiving(transcript, [{ rel: 'tool-results/1.txt', body: file }]);
@@ -252,6 +252,8 @@ describe('uploads (A joined this PC)', () => {
     // Only the layout is left; and nothing more is taken for it.
     expect(fs.readdirSync(a.dir).sort()).toEqual([a.sessionId, `${a.sessionId}.jsonl`].sort());
     expect((await send('PUT', a, sha(file), { body: file })).status).toBe(404);
+    // Received: HEAD answers 404 for a file it holds, and A hears of it from its continue-result.
+    expect((await send('HEAD', a, sha(transcript))).status).toBe(404);
     expect(calls).toHaveLength(1);
   });
 
