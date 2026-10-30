@@ -265,10 +265,10 @@ export default function StatusBar() {
         {!onFleetPage && <StatusClockUsage />}
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
-        <BalanceLayoutButton />
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
+        <BalanceLayoutButton />
       </div>
     </div>
   );

@@ -252,7 +252,7 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   it matters. The file tree toggle is not here: it is the agent bar's Files
   button (see File tree column). There is no room or bot panel toggle: bot
   conversations live on the Bots page.
-  **Balance layout** is a bare 28px icon (columns glyph, no fill at rest) left of the notification bell; it shows only on the Workspaces page with two or more panes, and gives every column and row an equal share.
+  **Balance layout** is a bare 28px icon (columns glyph, no fill at rest) at the cluster's right end, beside the native window controls; it shows only on the Workspaces page with two or more panes, and gives every column and row an equal share.
   Settings is not here: it lives in the rail's More menu (and ⌘,).
 - **Windows:** the native window controls sit at the right edge in the
   `titleBarOverlay` strip, drawn in the colour the frame actually paints
