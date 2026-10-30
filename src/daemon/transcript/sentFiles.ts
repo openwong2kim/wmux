@@ -5,9 +5,9 @@
 // `/turns/image` and `/turns/file` serve paths under the pane's spawn cwd and
 // the uploads directory. A file the agent explicitly sent to the user is the
 // one addition: it is served when the transcript bound to THAT pane holds a
-// `SendUserFile` tool_use naming it byte for byte in `input.files[]`, the
-// matching tool_result succeeded, and the call is under 24 hours old. The list
-// always comes from the transcript, never from the request.
+// `SendUserFile` tool_use whose matching tool_result succeeded and names it
+// (see `sentGrantPaths`), and the call is under 24 hours old. The list always
+// comes from the transcript, never from the request.
 //
 // `/turns/image` also serves an image the agent opened with `Read`: the same
 // rules, with `input.file_path` in place of `input.files[]`. Agents write their
@@ -102,6 +102,8 @@ interface LineRef {
 interface PendingCall {
   tool: GrantTool;
   files: string[];
+  /** The tool_use line's `cwd`, which a relative `input.files` entry is resolved against. */
+  cwd: string | undefined;
   at: number;
   call: LineRef;
 }
@@ -162,6 +164,47 @@ export function sentFileParts(raw: string, p: path.PlatformPath = path): { dir: 
 }
 
 /**
+ * The absolute paths a successful `SendUserFile` result grants.
+ *
+ * When the result line carries `toolUseResult.attachments` (Claude Code
+ * writes it for every send), only its entries marked `pathValidated: true`
+ * count, and `input.files` is ignored. Those are the paths Claude Code itself
+ * resolved, checked and delivered; `input.files` is the model's string before
+ * any of that. So an absolute `input.files` path that differs from the
+ * attachment path it became grants the attachment path alone, never both, and
+ * an attachments list with nothing validated grants nothing. The turn
+ * projection hands the phone `input.files` resolved against the call line's
+ * `cwd` (parseEntry), which is what Claude Code writes as the attachment path
+ * for a plain relative send; a send it spelled differently is not served.
+ *
+ * With no attachments list (an older Claude Code), the input is the only
+ * record: an absolute path counts as written, and a relative one is resolved
+ * against the call line's `cwd`, the same resolution the projection applies.
+ * A result line that answers more than one call cannot say which call its
+ * attachments belong to, so it grants nothing for this one.
+ */
+function sentGrantPaths(call: PendingCall, entry: Record<string, unknown>, resultsInLine: number): string[] {
+  const result = entry['toolUseResult'];
+  const attachments = isObject(result) ? result['attachments'] : undefined;
+  if (Array.isArray(attachments)) {
+    if (resultsInLine !== 1) return [];
+    const out: string[] = [];
+    for (const item of attachments) {
+      if (!isObject(item) || item['pathValidated'] !== true) continue;
+      const p = item['path'];
+      if (typeof p === 'string' && p.length > 0 && path.isAbsolute(p)) out.push(p);
+    }
+    return out;
+  }
+  const out: string[] = [];
+  for (const file of call.files) {
+    if (path.isAbsolute(file)) out.push(file);
+    else if (call.cwd !== undefined) out.push(path.resolve(call.cwd, file));
+  }
+  return out;
+}
+
+/**
  * Fold one transcript line into the index. Lines that cannot name a
  * `SendUserFile` call or answer a pending one are rejected on a substring test
  * before any JSON is parsed: tool results for other tools can be large.
@@ -186,7 +229,10 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
   const type = entry['type'];
   let ref: LineRef | undefined;
   const lineRef = (): LineRef => (ref ??= { offset, length: bytes.length, hash: sha256(bytes) });
-  for (const block of contentBlocks(entry)) {
+  const blocks = contentBlocks(entry);
+  const cwd = typeof entry['cwd'] === 'string' && path.isAbsolute(entry['cwd']) ? entry['cwd'] : undefined;
+  const resultsInLine = type === 'user' ? blocks.filter((b) => b['type'] === 'tool_result').length : 0;
+  for (const block of blocks) {
     const name = block['name'];
     if (type === 'assistant' && block['type'] === 'tool_use' && (name === TOOL_NAME || name === 'Read')) {
       const id = block['id'];
@@ -202,7 +248,7 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
         files = typeof raw === 'string' && READ_IMAGE_EXT.test(raw) ? [raw] : [];
       }
       if (files.length === 0) continue;
-      index.pending.set(id, { tool: name, files, at, call: lineRef() });
+      index.pending.set(id, { tool: name, files, cwd, at, call: lineRef() });
       if (index.pending.size > MAX_PENDING_CALLS) {
         const oldest = index.pending.keys().next();
         if (!oldest.done) index.pending.delete(oldest.value);
@@ -214,7 +260,8 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
       if (block['is_error'] === true) continue;
       if (call.tool === 'Read' && !hasImageBlock(block['content'])) continue;
       const grants = call.tool === TOOL_NAME ? index.sent : index.read;
-      for (const file of call.files) {
+      const granted = call.tool === TOOL_NAME ? sentGrantPaths(call, entry, resultsInLine) : call.files;
+      for (const file of granted) {
         const prev = grants.get(file);
         if (prev && prev.at > call.at) continue;
         // Re-inserted so the Map's order stays oldest-first for eviction.
@@ -338,7 +385,8 @@ export class SentFileIndex {
   }
 
   /**
-   * When `filePath` (compared byte for byte) was sent with a successful
+   * When `filePath` (compared byte for byte with the path the grant was
+   * recorded under, see `sentGrantPaths`) was sent with a successful
    * `SendUserFile` call in `transcriptPath` no more than 24 hours before
    * `nowMs` — the call's timestamp — or null. The two transcript lines the
    * grant rests on are re-read first; if either changed, the transcript is

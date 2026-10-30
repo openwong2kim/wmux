@@ -241,6 +241,9 @@ import { ensureDaemon, killDaemonByPidFile, describeDaemonKillOutcome, killVerif
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { createDaemonExitWatch } from './daemon/daemonExitWatch';
 import { loadConfig, getWmuxDir } from '../daemon/config';
+import { atomicWriteJSON } from '../daemon/util/atomicWrite';
+import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
+import { claudeFileSendPath, readClaudeFileSend } from '../daemon/claudeFileSendSetting';
 import { CHANNELS_EPOCH } from '../shared/channels';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { installApplicationMenu } from './menu/appMenu';
@@ -1676,6 +1679,18 @@ ipcMain.handle(IPC.USAGE_RESERVE_SET, async (_event, enabled: unknown) => {
   if (typeof enabled !== 'boolean') return { ok: false };
   try {
     await usageReserve.setEnabled(enabled);
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+});
+
+// Claude file send: main owns writes; both spawn paths read the file at spawn.
+ipcMain.handle(CLAUDE_FILE_SEND_IPC.GET, () => ({ enabled: readClaudeFileSend(getWmuxDir()) }));
+ipcMain.handle(CLAUDE_FILE_SEND_IPC.SET, async (_event, enabled: unknown) => {
+  if (typeof enabled !== 'boolean') return { ok: false };
+  try {
+    await atomicWriteJSON(claudeFileSendPath(getWmuxDir()), { enabled });
     return { ok: true };
   } catch {
     return { ok: false };

@@ -7043,7 +7043,8 @@ export class WebTerminalServer {
    * with the call's time; or null.
    *
    * The match is on `raw` as the request spelled it, byte for byte against the
-   * transcript's `input.files[]` (or `input.file_path`); `sentFileParts`
+   * path the grant was recorded under (`SendUserFile`: the result's validated
+   * `attachments[].path`, see sentFiles.ts; `Read`: `input.file_path`); `sentFileParts`
    * separately refuses `.`/`..` segments and doubled separators. A `Read`
    * grant also matches macOS's `/tmp/` ↔ `/private/tmp/` respelling, as a
    * string. Only the PARENT is resolved: the last

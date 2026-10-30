@@ -277,6 +277,7 @@ import { GUEST_BOT_RPC } from '../shared/guestBots';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity, withViewingSessions } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
+import { readClaudeFileSend } from './claudeFileSendSetting';
 import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
@@ -10553,6 +10554,7 @@ async function main(): Promise<void> {
   // #2388: a task folder whose removal did not finish takes no new pane,
   // whoever asks (the desktop, a phone, an automation, a recovery).
   sessionManager.setSpawnCwdRefusal((cwd, session) => pendingRemovalRefusalAt(getWmuxDir(), cwd, session));
+  sessionManager.setClaudeFileSend(() => readClaudeFileSend(getWmuxDir()));
 
   // Forward reference — initialised at step 8c after the snapshot runner is
   // wired. RPC handlers that fire before initialisation simply skip the
