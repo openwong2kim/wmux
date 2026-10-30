@@ -602,6 +602,19 @@ describe('lifecycle', () => {
     expect(fs.existsSync(other.dir)).toBe(true);
   });
 
+  it.skipIf(process.platform === 'win32')('after a restart, removes a link where continue-in goes, never walking into it', async () => {
+    const otherDisk = path.join(root, 'other-disk');
+    fs.mkdirSync(path.join(otherDisk, 'keep-me'), { recursive: true });
+    fs.writeFileSync(path.join(otherDisk, 'note.txt'), 'x');
+    fs.mkdirSync(a2aDir, { recursive: true });
+    fs.symlinkSync(otherDisk, path.join(a2aDir, 'continue-in'), 'dir');
+    receiver.recover();
+    await receiver.idle();
+    await bundle.idle();
+    expect(fs.readdirSync(otherDisk).sort()).toEqual(['keep-me', 'note.txt']);
+    expect(fs.existsSync(path.join(a2aDir, 'continue-in'))).toBe(false);
+  });
+
   it('after a restart: staging of no open request goes; a receiving one keeps what checks out, drops part files, and takes the rest', async () => {
     const t = bytes(8_000, 25);
     const f1 = bytes(3_000, 26);

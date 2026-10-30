@@ -437,7 +437,13 @@ export class ContinueBundle implements ContinueBytesIntake {
 
   private async recoverNow(): Promise<void> {
     const root = continueStagingRoot(this.deps.a2aDir);
-    for (const host of await namesIn(root)) {
+    // A link (or a file) where `continue-in` goes is removed itself, never walked: staging only ever made a plain folder there.
+    const top = await fs.promises.lstat(root).catch(() => null);
+    const plainRoot = top !== null && top.isDirectory() && !top.isSymbolicLink();
+    if (top && !plainRoot) {
+      await fs.promises.unlink(root).catch((err: unknown) => this.deps.log('warn', `[a2a-remote] continue staging: ${root} is not a plain folder and was not removed: ${errMsg(err)}`));
+    }
+    for (const host of plainRoot ? await namesIn(root) : []) {
       const hostDir = path.join(root, host);
       // eslint-disable-next-line no-await-in-loop -- one PC's staging at a time
       const plain = isHostId(host) && (await isPlainDir(hostDir));
