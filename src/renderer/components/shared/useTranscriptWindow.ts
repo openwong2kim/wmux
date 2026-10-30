@@ -19,8 +19,22 @@ interface WindowState {
   end: number | null;
   /** At the tail: the start moves with new turns. Off once the reader scrolls up. */
   follow: boolean;
-  /** Key of the first row, to tell rows read in before it. */
-  first: string | undefined;
+  /** Keys of the first and (with a finite end) last row shown, to keep them when rows land above. */
+  startKey: string | undefined;
+  endKey: string | undefined;
+}
+
+/**
+ * The first row of the scroller's content (its first child holds the rows)
+ * that reaches into view, and how far its top sits from the scroller's top.
+ */
+function rowInView(scroller: HTMLElement): { row: Element | null; offset: number } {
+  const top = scroller.getBoundingClientRect().top;
+  for (const row of Array.from(scroller.firstElementChild?.children ?? [])) {
+    const box = row.getBoundingClientRect();
+    if (box.bottom > top) return { row, offset: box.top - top };
+  }
+  return { row: null, offset: 0 };
 }
 
 /**
@@ -37,40 +51,52 @@ export function useTranscriptWindow<T>({ resetKey, items, keyOf, isTurnStart, sc
   isTurnStart: (item: T) => boolean;
   scrollRef: RefObject<HTMLElement | null>;
 }) {
-  const first = items.length ? keyOf(items[0]) : undefined;
-  const fresh = (): WindowState => ({ resetKey, start: followWindowStart(items, 0, isTurnStart), end: null, follow: true, first });
+  const keyAt = (index: number): string | undefined => (index >= 0 && index < items.length ? keyOf(items[index]) : undefined);
+  const indexOf = (key: string): number => items.findIndex((item) => keyOf(item) === key);
+  /** A window over `start`..`end`, with the keys that hold it in place. */
+  const place = (start: number, end: number | null) => ({ start, end, startKey: keyAt(start), endKey: end === null ? undefined : keyAt(end - 1) });
+  const fresh = (): WindowState => ({ resetKey, follow: true, ...place(followWindowStart(items, 0, isTurnStart), null) });
   const [state, setState] = useState(fresh);
 
   // Adjusted while rendering, so the rows shown never lag the rows given.
   let next = state;
   if (state.resetKey !== resetKey) next = fresh();
   else {
-    if (state.first !== first) {
-      // A page read in before the first row moves every index. A window that
-      // showed the first row shows the page too, as the view did before.
-      const shift = state.first === undefined ? -1 : items.findIndex((item) => keyOf(item) === state.first);
-      const end = state.end === null || shift <= 0 ? state.end : state.end + shift;
-      next = shift <= 0 ? { ...next, first } : state.start === 0 ? { ...next, end, follow: false, first } : { ...next, start: state.start + shift, end, first };
+    // Rows that land above the window (an earlier page, a card inserted into
+    // the timeline) move every index after them: the same rows stay in view.
+    // A window that showed the first row shows rows read in before it too.
+    if (state.startKey !== undefined && keyAt(state.start) !== state.startKey) {
+      const at = indexOf(state.startKey);
+      if (at > 0 && state.start === 0) next = { ...next, follow: false };
+      else if (at >= 0) next = { ...next, start: at };
+    }
+    if (state.end !== null && state.endKey !== undefined && keyAt(state.end - 1) !== state.endKey) {
+      const at = indexOf(state.endKey);
+      if (at >= 0) next = { ...next, end: at + 1 };
     }
     if (next.follow && next.end === null) {
       const start = followWindowStart(items, next.start, isTurnStart);
       if (start !== next.start) next = { ...next, start };
     }
   }
-  if (next !== state) setState(next);
 
   const view = useMemo(() => resolveTranscriptWindow(items, next.start, TRANSCRIPT_WINDOW_SIZE, next.end), [items, next.start, next.end]);
+  const startKey = keyAt(view.startIndex);
+  const endKey = next.end === null ? undefined : keyAt(view.endIndex - 1);
+  if (startKey !== next.startKey || endKey !== next.endKey) next = { ...next, startKey, endKey };
+  if (next !== state) setState(next);
 
   const lastTop = useRef(0);
-  // The scroll position before rows were added above, restored once they are in.
-  const held = useRef<{ top: number; height: number } | null>(null);
+  // The row in view before rows were added above, kept at the same offset once they are in.
+  const held = useRef<{ row: Element | null; offset: number } | null>(null);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     const before = held.current;
     held.current = null;
-    if (!el || !before) return;
-    // Set, not added: native scroll anchoring may already have moved it.
-    el.scrollTop = before.top + (el.scrollHeight - before.height);
+    if (!el || !before?.row?.isConnected) return;
+    // Measured, not summed from heights: rows streamed in below and native
+    // scroll anchoring do not move it twice.
+    el.scrollTop += before.row.getBoundingClientRect().top - el.getBoundingClientRect().top - before.offset;
     lastTop.current = el.scrollTop;
   }, [view.startIndex, scrollRef]);
 
@@ -81,17 +107,17 @@ export function useTranscriptWindow<T>({ resetKey, items, keyOf, isTurnStart, sc
     const up = top < lastTop.current;
     lastTop.current = top;
     if (atBottom && view.laterCount === 0) {
-      if (!next.follow) setState((s) => ({ ...s, follow: true, end: null }));
+      if (!next.follow) setState((s) => ({ ...s, follow: true, end: null, endKey: undefined }));
       return;
     }
     if (up && next.follow) setState((s) => ({ ...s, follow: false }));
     if (top <= WINDOW_EDGE_PX && view.hiddenCount > 0 && !held.current) {
-      held.current = { top, height: el.scrollHeight };
+      held.current = rowInView(el);
       const start = expandWindowStart(view.startIndex);
-      setState((s) => ({ ...s, start, follow: false }));
+      setState((s) => ({ ...s, ...place(start, s.end), follow: false }));
     } else if (view.laterCount > 0 && el.scrollHeight - top - el.clientHeight <= WINDOW_EDGE_PX) {
-      const end = Math.min(items.length, view.endIndex + TRANSCRIPT_WINDOW_SIZE);
-      setState((s) => ({ ...s, end: end >= items.length ? null : end }));
+      // The end of a window cut short (find): everything after it.
+      setState((s) => ({ ...s, end: null, endKey: undefined }));
     }
   };
 
@@ -99,8 +125,11 @@ export function useTranscriptWindow<T>({ resetKey, items, keyOf, isTurnStart, sc
   const reveal = (index: number) => {
     if (index < 0 || (index >= view.startIndex && index < view.endIndex)) return;
     const range = focusWindowRange(items.length, index);
-    setState((s) => ({ ...s, start: range.start, end: range.end >= items.length ? null : range.end, follow: false }));
+    setState((s) => ({ ...s, ...place(range.start, range.end >= items.length ? null : range.end), follow: false }));
   };
 
-  return { ...view, onScroll, reveal };
+  /** Back to the tail, following it. */
+  const toTail = () => setState((s) => ({ ...s, ...place(followWindowStart(items, 0, isTurnStart), null), follow: true }));
+
+  return { ...view, onScroll, reveal, toTail };
 }

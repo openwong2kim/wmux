@@ -35,6 +35,15 @@ beforeEach(() => {
   stub(HTMLElement.prototype, 'clientHeight', { get: () => 400 });
   stub(HTMLElement.prototype, 'scrollTop', { get(this: HTMLElement) { return tops.get(this) ?? 0; }, set(this: HTMLElement, v: number) { tops.set(this, Math.max(0, Math.min(v, this.scrollHeight - 400))); } });
   stub(Element.prototype, 'scrollIntoView', { value: vi.fn() });
+  // A row's box: its place in the column, moved by the viewport's scroll.
+  stub(Element.prototype, 'getBoundingClientRect', {
+    value(this: Element) {
+      const column = this.parentElement;
+      const viewport = this.closest('.wmux-chatv2-viewport') as HTMLElement | null;
+      const top = column?.classList.contains('wmux-chatv2-column') && viewport ? [...column.children].indexOf(this) * ROW_PX - viewport.scrollTop : 0;
+      return { top, bottom: top + ROW_PX, left: 0, right: 0, width: 0, height: ROW_PX, x: 0, y: top, toJSON: () => ({}) };
+    },
+  });
   if (typeof CSS === 'undefined') vi.stubGlobal('CSS', { escape: (value: string) => value });
   host = document.createElement('div');
   document.body.append(host);
@@ -68,6 +77,21 @@ async function openLong(paneId: string, turns: number) {
   }
   for (let i = 0; i < events.length; i += 300) mock.emit(paneId, events.slice(i, i + 300));
   await act(async () => root.render(<ChatV2View paneId={paneId} active onTerminal={() => undefined} />));
+  await flush();
+}
+
+/** A long transcript with find open on a row the window hides (question 5). */
+async function openFind(paneId: string) {
+  await openLong(paneId, 400);
+  expect(host.textContent).not.toContain('question 5 end');
+  await act(async () => {
+    host.querySelector('.wmux-chatv2')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
+  });
+  const input = host.querySelector('.wmux-chatv2-find input') as HTMLInputElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'question 5 end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
   await flush();
 }
 
@@ -106,21 +130,45 @@ describe('ChatV2 transcript window', () => {
     expect(el.scrollTop).toBe(100 + added * ROW_PX);
   });
 
+  it('holds the row in view when rows stream in below while earlier ones are read in', async () => {
+    await openLong('win-stream', 400);
+    const el = viewport();
+    const before = rowEls().length;
+    await act(async () => {
+      el.scrollTop = 100;
+      el.dispatchEvent(new Event('scroll'));
+      mock.emit('win-stream', [{ type: 'user.message', text: 'late end', clientMessageId: 'c-99999998' }, { type: 'message.delta', text: 'late reply' }]);
+    });
+    // 120 read in above, the new turn below: only the rows above move the view.
+    expect(rowEls().length).toBeGreaterThan(before + TRANSCRIPT_WINDOW_SIZE);
+    expect(el.scrollTop).toBe(100 + TRANSCRIPT_WINDOW_SIZE * ROW_PX);
+  });
+
   it('finds and reveals a row the window hides', async () => {
-    await openLong('win-find', 400);
-    expect(host.textContent).not.toContain('question 5 end');
-    await act(async () => {
-      host.querySelector('.wmux-chatv2')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'f', ctrlKey: true, bubbles: true }));
-    });
-    const input = host.querySelector('.wmux-chatv2-find input') as HTMLInputElement;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'question 5 end');
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await flush();
+    await openFind('win-find');
     const match = host.querySelector('[data-find-active]');
     expect(match?.textContent).toContain('question 5 end');
     expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     expect(rowEls().length).toBeLessThanOrEqual(TRANSCRIPT_WINDOW_SIZE + 1);
+  });
+
+  it('closing find returns a reader who was following to the tail, and follows new turns', async () => {
+    await openFind('win-close');
+    expect(host.textContent).not.toContain('question 399 end');
+    await act(async () => { (host.querySelector('.wmux-chatv2-find input') as HTMLInputElement).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+    expect(host.querySelector('.wmux-chatv2-find')).toBeNull();
+    expect(host.textContent).toContain('question 399 end');
+    expect(host.textContent).not.toContain('question 5 end');
+    await act(async () => { mock.emit('win-close', [{ type: 'user.message', text: 'after find end', clientMessageId: 'c-99999997' }]); });
+    expect(host.textContent).toContain('after find end');
+    expect(viewport().scrollTop).toBe(viewport().scrollHeight - 400);
+  });
+
+  it('reaching the bottom of a window find cut short reads in everything after it', async () => {
+    await openFind('win-cut');
+    expect(host.textContent).not.toContain('question 399 end');
+    const el = viewport();
+    await act(async () => { el.scrollTop = el.scrollHeight - 400; el.dispatchEvent(new Event('scroll')); });
+    expect(host.textContent).toContain('question 399 end');
   });
 });

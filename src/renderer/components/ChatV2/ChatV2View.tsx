@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
 import { Composer, setDraft, shortDir } from './Composer';
@@ -153,14 +153,23 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     transcriptWindow.reveal(index);
   }, [findId, transcriptWindow.startIndex, transcriptWindow.endIndex]);
 
+  const followedBeforeFind = useRef(false);
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f' && view) {
       event.preventDefault();
       event.stopPropagation();
+      if (!findOpen) followedBeforeFind.current = pinned.current;
       setFindOpen(true);
     }
   };
-  const closeFind = useCallback(() => { setFindOpen(false); setFindId(null); }, []);
+  // A reader who was following before find opened is back at the newest row.
+  const closeFind = () => {
+    setFindOpen(false);
+    setFindId(null);
+    if (!followedBeforeFind.current) return;
+    pinned.current = true;
+    transcriptWindow.toTail();
+  };
 
   if (state.phase === 'loading') {
     return <div className="wmux-chatv2" data-chatv2="loading">{kindRow}<div className="wmux-chatv2-state" role="status">{t('chat.loading')}</div></div>;
