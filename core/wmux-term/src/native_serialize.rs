@@ -1,7 +1,7 @@
 //! ANSI replay of a Rust-engine session (AnsiSnapshotBackend selects it).
 //! Grid/cursor/style restoration is separate from partial input-tail handling.
 use alacritty_terminal::event::VoidListener;
-use alacritty_terminal::grid::{Dimensions, Grid};
+use alacritty_terminal::grid::{Dimensions, Grid, Row};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags, Hyperlink};
 use alacritty_terminal::term::{Term, TermMode};
@@ -175,17 +175,56 @@ fn blank(cell: &Cell) -> bool {
         && cell.extra.is_none()
 }
 
+/// xterm erases a fullwidth glyph whole when an erase, insert or delete
+/// touches either half; Alacritty can leave one half behind, and replaying it
+/// would shift the rest of the row. An orphan half becomes the blank its
+/// erased partner holds; one whose partner is not blank is refused.
+fn whole_glyphs(line: &Row<Cell>, columns: usize) -> Result<Option<Vec<Cell>>, &'static str> {
+    let mut fixed: Option<Vec<Cell>> = None;
+    for x in 0..columns {
+        let flags = line[Column(x)].flags;
+        let partner = if flags.contains(Flags::WIDE_CHAR) {
+            let spacer =
+                x + 1 < columns && line[Column(x + 1)].flags.contains(Flags::WIDE_CHAR_SPACER);
+            (!spacer).then_some(x + 1)
+        } else if flags.contains(Flags::WIDE_CHAR_SPACER) {
+            let glyph = x > 0 && line[Column(x - 1)].flags.contains(Flags::WIDE_CHAR);
+            (!glyph).then(|| x.wrapping_sub(1))
+        } else {
+            None
+        };
+        let Some(partner) = partner else {
+            continue;
+        };
+        let erased = (partner < columns)
+            .then(|| &line[Column(partner)])
+            .filter(|cell| blank(cell) && !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
+            .ok_or("unsupported-wide-half: half a fullwidth glyph next to content")?;
+        let cells =
+            fixed.get_or_insert_with(|| (0..columns).map(|i| line[Column(i)].clone()).collect());
+        let wrap = cells[x].flags & Flags::WRAPLINE;
+        cells[x] = Cell {
+            bg: erased.bg,
+            ..Cell::default()
+        };
+        cells[x].flags |= wrap;
+    }
+    Ok(fixed)
+}
+
 /// Returns whether the replay leaves a hyperlink open.
-fn screen(out: &mut String, grid: &Grid<Cell>) -> bool {
+fn screen(out: &mut String, grid: &Grid<Cell>) -> Result<bool, &'static str> {
     let mut pen = Pen::default();
     let columns = grid.columns();
     for y in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
-        let line = &grid[Line(y)];
-        let wrapped = line[grid.last_column()].flags.contains(Flags::WRAPLINE);
+        let row = &grid[Line(y)];
+        let fixed = whole_glyphs(row, columns)?;
+        let line = |x: usize| fixed.as_ref().map_or(&row[Column(x)], |cells| &cells[x]);
+        let wrapped = row[grid.last_column()].flags.contains(Flags::WRAPLINE);
         // A soft-wrapped row must reach its last column to wrap again.
         let mut end = columns;
         if !wrapped {
-            while end > 0 && blank(&line[Column(end - 1)]) {
+            while end > 0 && blank(line(end - 1)) {
                 end -= 1;
             }
             // Blanks left of the cursor are usually printed: a prompt's
@@ -195,7 +234,7 @@ fn screen(out: &mut String, grid: &Grid<Cell>) -> bool {
             }
         }
         for x in 0..end {
-            let cell = &line[Column(x)];
+            let cell = line(x);
             // A fullwidth glyph that did not fit wraps by itself on replay,
             // leaving the edge cell empty as xterm does; a printed spacer
             // would turn that cell into content.
@@ -210,13 +249,13 @@ fn screen(out: &mut String, grid: &Grid<Cell>) -> bool {
         // the cells stay empty but keep their background, as an erase left them.
         let mut x = end;
         while x < columns {
-            let bg = line[Column(x)].bg;
+            let bg = line(x).bg;
             let mut run = x;
-            while run < columns && line[Column(run)].bg == bg {
+            while run < columns && line(run).bg == bg {
                 run += 1;
             }
             if bg != Color::Named(NamedColor::Background) {
-                pen.set(out, &line[Column(x)]);
+                pen.set(out, line(x));
                 let _ = write!(out, "\x1b[{}X", run - x);
             }
             if run < columns {
@@ -236,7 +275,7 @@ fn screen(out: &mut String, grid: &Grid<Cell>) -> bool {
         }
     }
     cursor(out, &mut pen, grid);
-    pen.link.is_some()
+    Ok(pen.link.is_some())
 }
 
 /// The length of the escape sequence at `data[0] == ESC`, or None while it
@@ -285,9 +324,12 @@ fn sgr_divergent(params: &str) -> bool {
     while let Some(param) = list.next() {
         let mut parts = param.split(':');
         let attribute = number(parts.next().unwrap_or(""));
-        let colon = parts.next().is_some();
+        let mode = parts.next();
+        let colon = mode.is_some();
         match attribute {
             Some(21 | 53) => return true,
+            // `38:2:r:g:b` without a colorspace: vte reads r,g,b, xterm g,b,0.
+            Some(38 | 48 | 58) if mode == Some("2") && parts.clone().count() == 3 => return true,
             Some(38 | 48 | 58) if !colon => {
                 let operands = match list.next().and_then(number) {
                     Some(5) => 1,
@@ -319,11 +361,17 @@ pub(crate) fn divergent(sequence: &[u8]) -> bool {
     if body.iter().any(|&b| b < 0x20) {
         filtered = body.iter().copied().filter(|&b| b >= 0x20).collect();
         body = &filtered;
+        // The feed gives ED xterm's semantics only in its plain spelling.
+        if body.first() == Some(&b'[') && body.last() == Some(&b'J') {
+            return true;
+        }
     }
     match body.split_first() {
         Some((b'[', rest)) => csi_divergent(rest),
         Some((b'(' | b')', rest)) => rest != b"B",
         Some((b'*' | b'+' | b'-' | b'.' | b'/', _)) => true,
+        // DECALN: Alacritty fills the screen but leaves the cursor in place.
+        Some((b'#', rest)) => rest == b"8",
         _ => false,
     }
 }
@@ -345,10 +393,15 @@ fn csi_divergent(rest: &[u8]) -> bool {
     match (private, intermediates, last) {
         (Some(b'?'), b"", b'J' | b'K') => true,
         (None, b" ", b'@' | b'A') | (None, b"'", b'}' | b'~') | (None, b"!", b'p') => true,
-        (None, b"", b'S') => true,
-        (Some(b'?'), b"", b'h' | b'l') => params
-            .split(';')
-            .any(|mode| matches!(mode, "9" | "45" | "66" | "47" | "1047" | "1048")),
+        // SU keeps rows in Alacritty's history; Alacritty ignores SD as `CSI ^`.
+        (None, b"", b'S' | b'^') => true,
+        (Some(b'?'), b"", b'h' | b'l') => {
+            // vte leaves a synchronized update only on exactly `CSI ? 2026 l`.
+            params.contains(';') && params.split(';').any(|mode| mode == "2026")
+                || params
+                    .split(';')
+                    .any(|mode| matches!(mode, "3" | "9" | "45" | "66" | "47" | "1047" | "1048"))
+        }
         (None, b"", b'h' | b'l') => params.split(';').any(|mode| mode == "20"),
         (None, b"", b'J') => {
             let first = number(params.split([';', ':']).next().unwrap_or(""));
@@ -383,18 +436,17 @@ pub fn serialize(term: &Term<VoidListener>) -> Result<String, &'static str> {
     if modes.contains(TermMode::ALT_SCREEN) {
         // DECSC on entry saves the primary template, open hyperlink included,
         // as it did live; the alternate grid then starts without one.
-        let linked = screen(&mut out, term.inactive_grid());
+        let linked = screen(&mut out, term.inactive_grid())?;
         out.push_str("\x1b[?1049h\x1b[0m\x1b[H");
         if linked {
             out.push_str("\x1b]8;;\x1b\\");
         }
     }
-    screen(&mut out, term.grid());
+    screen(&mut out, term.grid())?;
     for (mode, code) in [
         (TermMode::APP_CURSOR, 1),
         (TermMode::ORIGIN, 6),
         (TermMode::FOCUS_IN_OUT, 1004),
-        (TermMode::SGR_MOUSE, 1006),
         (TermMode::BRACKETED_PASTE, 2004),
     ] {
         if modes.contains(mode) {
@@ -409,13 +461,6 @@ pub fn serialize(term: &Term<VoidListener>) -> Result<String, &'static str> {
     }
     if !modes.contains(TermMode::LINE_WRAP) {
         out.push_str("\x1b[?7l");
-    }
-    if modes.contains(TermMode::MOUSE_MOTION) {
-        out.push_str("\x1b[?1003h");
-    } else if modes.contains(TermMode::MOUSE_DRAG) {
-        out.push_str("\x1b[?1002h");
-    } else if modes.contains(TermMode::MOUSE_REPORT_CLICK) {
-        out.push_str("\x1b[?1000h");
     }
     out.push_str(if modes.contains(TermMode::SHOW_CURSOR) {
         "\x1b[?25h"
@@ -523,6 +568,16 @@ mod tests {
             "\x1b[38;2;53m",
             "\x1b[38;5m",
             "\x1b[38;7;1m",
+            "\x1b[?3h",
+            "\x1b[?3l",
+            "\x1b[?2026;1l",
+            "\x1b[?1;2026h",
+            "\x1b[1^",
+            "\x1b#8",
+            "\x1b[38:2:1:2:3m",
+            "\x1b[48:2:1:2:3m",
+            "\x1b[2\x00J",
+            "\x1b[1\nJ",
         ] {
             let found = classify(text);
             assert!(found.iter().any(|&d| d), "{text:?}");
@@ -583,6 +638,21 @@ mod tests {
     fn fullwidth_wrap_leaves_the_edge_empty() {
         let out = replay(4, "abc\u{4e2d}").unwrap();
         assert!(out.contains("abc\u{4e2d}"), "{out:?}");
+    }
+
+    #[test]
+    fn an_orphan_glyph_half_replays_as_the_erased_blank() {
+        // ECH on the first half: b stays in column 3, not 2.
+        let out = replay(10, "a\u{4e2d}b\x1b[1;2H\x1b[X").unwrap();
+        assert!(out.contains("\x1b[0ma  b"), "{out:?}");
+        // EL0 on the second half erases the glyph whole (the blank left of
+        // the cursor replays as printed).
+        let out = replay(10, "a\u{4e2d}b\x1b[1;3H\x1b[K").unwrap();
+        assert!(out.contains("\x1b[0ma \r\n"), "{out:?}");
+        assert!(!out.contains('\u{4e2d}'), "{out:?}");
+        // DCH pulls the second half next to content: refused.
+        let err = replay(10, "a\u{4e2d}b\x1b[1;2H\x1b[P").unwrap_err();
+        assert!(err.starts_with("unsupported-wide-half"));
     }
 
     #[test]

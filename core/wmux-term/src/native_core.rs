@@ -115,8 +115,29 @@ struct XtermFeed {
     /// SGR-pixels mouse encoding, ?1016 (SgrMouseEncodingTracker). Alacritty
     /// does not parse it, so its mode set never carries it.
     sgr_pixels: bool,
+    /// SGR mouse encoding, ?1006 (SgrMouseEncodingTracker). Alacritty drops
+    /// it on ?1005, which xterm ignores.
+    sgr_mouse: bool,
+    /// xterm's mouse protocol (9, 1000, 1002 or 1003; 0 for none): any of
+    /// their resets turns it off, where Alacritty clears only that mode.
+    mouse: u16,
+    /// The stream so far ends in a printed character, which REP repeats.
+    printed: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
+}
+
+/// A byte of a printed character (not a C0 control or DEL).
+fn printable(byte: u8) -> bool {
+    byte >= 0x20 && byte != 0x7f
+}
+
+/// REP: `CSI Ps b`.
+fn is_rep(sequence: &[u8]) -> bool {
+    sequence
+        .strip_prefix(b"\x1b[")
+        .and_then(|s| s.strip_suffix(b"b"))
+        .is_some_and(|params| params.iter().all(|&b| b.is_ascii_digit() || b == b';'))
 }
 
 /// String terminators as PartialSequenceTracker reads them: BEL, CAN, SUB,
@@ -179,6 +200,8 @@ impl XtermFeed {
         }
         if sequence == b"\x1bc" {
             self.sgr_pixels = false;
+            self.sgr_mouse = false;
+            self.mouse = 0;
         }
         if sequence == b"\x1b[!p" {
             self.cursor_hidden = false;
@@ -196,12 +219,21 @@ impl XtermFeed {
             .and_then(<[u8]>::split_last)
         {
             if matches!(last, b'h' | b'l') && numeric(params) {
-                let mut modes = params.split(|&b| b == b';');
-                if modes.clone().any(|mode| mode == b"25") {
-                    self.cursor_hidden = last == b'l';
-                }
-                if modes.any(|mode| mode == b"1016") {
-                    self.sgr_pixels = last == b'h';
+                let set = last == b'h';
+                for mode in params.split(|&b| b == b';') {
+                    match mode {
+                        b"25" => self.cursor_hidden = !set,
+                        b"1016" => self.sgr_pixels = set,
+                        b"1006" => self.sgr_mouse = set,
+                        b"9" | b"1000" | b"1002" | b"1003" => {
+                            self.mouse = if set {
+                                std::str::from_utf8(mode).map_or(0, |m| m.parse().unwrap_or(0))
+                            } else {
+                                0
+                            };
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -219,11 +251,20 @@ impl XtermFeed {
         } else {
             Some(0)
         };
+        // Whether the stream so far ends in a printed character (false after
+        // a sequence or string, and at the start of a feed after either).
+        let mut printed = self.printed;
         while let Some(at) = next {
             let Some(found) = data[at..].iter().position(|&b| b == 0x1b) else {
+                if at < data.len() {
+                    printed = printable(data[data.len() - 1]);
+                }
                 break;
             };
             let at = at + found;
+            if found > 0 {
+                printed = printable(data[at - 1]);
+            }
             let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
                 if data.len() - at <= MAX_HELD {
                     self.held = data.split_off(at);
@@ -243,11 +284,17 @@ impl XtermFeed {
                 self.push_tail(sequence);
                 next = self.string_payload(&mut data, at + len);
             } else {
-                self.divergent |= crate::native_serialize::divergent(sequence);
+                // xterm forgets the preceding character at any control;
+                // Alacritty repeats whatever was printed last.
+                self.divergent |=
+                    crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
                 self.track(sequence);
                 next = Some(at + len);
             }
+            printed = false;
         }
+        // A held sequence or an unfinished string ends the stream so far.
+        self.printed = printed && self.held.is_empty() && !self.in_string;
         parser.advance(term, &data[from..]);
     }
 
@@ -392,9 +439,18 @@ impl NativeTerminal {
                 (grid.history_size(), room)
             })
         };
+        // vte holds bytes back inside a synchronized update; xterm parsed them
+        // at the old size. Apply them first, then re-enter the update.
+        let synchronized = self.parser.sync_timeout().pending_timeout();
+        if synchronized {
+            self.parser.stop_sync(term);
+        }
         let start = before(term);
         term.resize(size);
         let end = before(term);
+        if synchronized {
+            self.parser.advance(term, b"\x1b[?2026h");
+        }
         if start
             .iter()
             .zip(end.iter())
@@ -484,6 +540,9 @@ impl NativeTerminal {
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
         // An unfinished sequence is part of the stream: parse it, then ship it.
         self.parser.advance(term, &self.feed.held);
+        // Bytes held in a synchronized update count for the checks below.
+        let synchronized = self.parser.sync_timeout().pending_timeout();
+        self.parser.stop_sync(term);
         if let Some(refusal) = self.refusal {
             return Err(Error::from_reason(refusal));
         }
@@ -501,13 +560,16 @@ impl NativeTerminal {
             return Err(Error::from_reason("margins"));
         }
         let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
-        let synchronized = self.parser.sync_timeout().pending_timeout();
-        self.parser.stop_sync(term);
         let mut result = crate::native_serialize::serialize(term).map_err(Error::from_reason)?;
-        // xterm's modes tail restores the pixel encoding only while a mouse
-        // tracking mode is on.
-        if self.feed.sgr_pixels && term.mode().intersects(TermMode::MOUSE_MODE) {
-            result.push_str("\x1b[?1016h");
+        // Mouse protocol and encoding as xterm's modes tail restores them: the
+        // encoding only while a protocol is on.
+        if self.feed.mouse != 0 {
+            result.push_str(&format!("\x1b[?{}h", self.feed.mouse));
+            if self.feed.sgr_pixels {
+                result.push_str("\x1b[?1016h");
+            } else if self.feed.sgr_mouse {
+                result.push_str("\x1b[?1006h");
+            }
         }
         if synchronized {
             result.push_str("\x1b[?2026h");
@@ -1157,6 +1219,34 @@ mod tests {
             tail(&["\x1bP", &"x".repeat(5000)]).unwrap_err(),
             "partial-tail-overflow"
         );
+    }
+
+    #[test]
+    fn rep_needs_a_character_printed_right_before() {
+        let divergent = |chunks: &[&str]| feed_with(chunks).2.divergent;
+        assert!(!divergent(&["ab\x1b[3b"]));
+        assert!(
+            !divergent(&["ab", "\x1b[3b"]),
+            "printed in the previous chunk"
+        );
+        assert!(divergent(&["X\r\x1b[3b"]));
+        assert!(divergent(&["X\x1b[31m\x1b[3b"]));
+        assert!(divergent(&["X\x1b[31m", "\x1b[3b"]));
+        assert!(divergent(&["\x1b[3b"]));
+        assert!(divergent(&["X\x1b]0;t\x07\x1b[3b"]));
+    }
+
+    #[test]
+    fn the_mouse_protocol_follows_xterm() {
+        let mouse = |chunks: &[&str]| {
+            let feed = feed_with(chunks).2;
+            (feed.mouse, feed.sgr_mouse)
+        };
+        assert_eq!(mouse(&["\x1b[?1002h\x1b[?1006h"]), (1002, true));
+        assert_eq!(mouse(&["\x1b[?1002h\x1b[?1000l"]), (0, false));
+        assert_eq!(mouse(&["\x1b[?1003;1000h"]), (1000, false));
+        assert_eq!(mouse(&["\x1b[?1000h\x1b[?1006h\x1b[?1005h"]), (1000, true));
+        assert_eq!(mouse(&["\x1b[?1000h\x1b[?1006h\x1bc"]), (0, false));
     }
 
     #[test]

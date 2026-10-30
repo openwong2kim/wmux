@@ -166,10 +166,32 @@ const accepted: Case[] = [
   synthetic('modes', '\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b=\x1b[4hready'),
   synthetic('mode-sgr-pixels', '\x1b[?1000h\x1b[?1016hx'),
   synthetic('mode-sync-open', '\x1b[?2026hx'),
+  // A fullwidth glyph erased by half: xterm erases it whole.
+  synthetic('wide-ech-first-half', 'a\u4e2db\x1b[1;2H\x1b[X'),
+  synthetic('wide-el0-second-half', 'a\u4e2db\x1b[1;3H\x1b[K'),
+  synthetic('wide-el1-first-half', 'a\u4e2db\x1b[1;2H\x1b[1K'),
+  synthetic('wide-ed0-second-half', 'a\u4e2db\x1b[1;3H\x1b[J'),
+  synthetic('wide-ed1-first-half', 'x\r\na\u4e2db\x1b[2;2H\x1b[1J'),
+  synthetic('wide-ech-colored', 'a\x1b[42m\u4e2d\x1b[0mb\x1b[44m\x1b[1;3H\x1b[X\x1b[0m'),
+  // Mouse protocol and encoding with xterm's semantics.
+  synthetic('mouse-reset-by-other', '\x1b[?1002h\x1b[?1006h\x1b[?1000lx'),
+  synthetic('mouse-1005-keeps-sgr', '\x1b[?1000h\x1b[?1006h\x1b[?1005hx'),
+  synthetic('mouse-last-set-wins', '\x1b[?1003;1000h\x1b[?1016hx'),
+  synthetic('rep-after-print', 'ab\x1b[3bc'),
 ];
 
 // Classes that stay on xterm because Alacritty parses them differently.
 const refused: Case[] = [
+  // Half a fullwidth glyph next to content (DCH pulls the second half left).
+  synthetic('wide-dch-first-half', 'a\u4e2db\x1b[1;2H\x1b[P', 'xterm'),
+  synthetic('sync-mixed-params', 'a\x1b[?2026hb\x1b[?2026;1lc', 'xterm'),
+  synthetic('deccolm', 'abc\x1b[?3hd', 'xterm'),
+  synthetic('colon-rgb-no-colorspace', '\x1b[38:2:10:20:30mx', 'xterm'),
+  synthetic('rep-after-control', 'X\r\x1b[3b', 'xterm'),
+  synthetic('rep-after-sgr', 'X\x1b[31m\x1b[3b', 'xterm'),
+  synthetic('decaln', 'ab\x1b[2;3H\x1b#8', 'xterm'),
+  synthetic('sd-caret', '1\r\n2\r\n3\x1b[1^x', 'xterm'),
+  synthetic('ed2-embedded-c0', '1\r\n2\r\n3\x1b[2\x00Jx', 'xterm'),
   synthetic('designate-dec', '\x1b(0' + Array.from({ length: 32 }, (_, i) => String.fromCharCode(0x5f + i)).join('') + '\x1b(B', 'xterm', 40),
   synthetic('designate-uk', '\x1b(A#x\x1b(B#', 'xterm'),
   synthetic('designate-g2', '\x1b*0\x1bnlq\x1b(Bz', 'xterm'),
@@ -200,8 +222,6 @@ const refused: Case[] = [
 const others: Case[] = [
   synthetic('ris', 'abc\x1b[31m\x1bcdef'),
   synthetic('ind-nel-ri', 'a\x1bDb\x1bEc\x1bMd'),
-  synthetic('decaln', '\x1b#8'),
-  synthetic('rep', 'ab\x1b[3bc'),
   synthetic('cht-cbt', 'a\x1b[2Ib\x1b[Zc'),
   synthetic('cnl-cpl', 'a\r\nb\x1b[Fc\x1b[2Ed'),
   synthetic('hpa-vpa', '\x1b[5`a\x1b[3db'),
@@ -236,6 +256,8 @@ const resized = (name: string, text: string, from: [number, number], to: [number
 const box = Array.from({ length: 3 }, (_, k) => `${`[frame ${k}]`.padEnd(70, '=')}\r\n${`[body ${k}]`.padEnd(70, '.')}\r\n${k < 2 ? '\x1b[2A\r' : ''}`).join('');
 const many = Array.from({ length: 30 }, (_, i) => `row ${i} ${'x'.repeat(i % 50)}`).join('\r\n');
 const resizes: Case[] = [
+  // vte holds bytes inside a synchronized update; xterm parsed them at 80.
+  resized('resize-in-sync-update', '\x1b[?2026h\x1b[1;70HX', [80, 12], [40, 12]),
   // Refused by the native terminal: Alacritty's reflow scrolls rows above the
   // cursor into history where xterm moves the cursor down.
   resized('narrow-cursor-high', `line before the box\r\n${box}`, [80, 12], [40, 12], 'xterm'),
