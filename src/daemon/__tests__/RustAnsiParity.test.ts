@@ -178,6 +178,14 @@ const accepted: Case[] = [
   synthetic('mouse-1005-keeps-sgr', '\x1b[?1000h\x1b[?1006h\x1b[?1005hx'),
   synthetic('mouse-last-set-wins', '\x1b[?1003;1000h\x1b[?1016hx'),
   synthetic('rep-after-print', 'ab\x1b[3bc'),
+  // ICH, DCH and ECH drop a pending wrap in xterm (the live probe then prints Z).
+  synthetic('ech-at-pending-wrap', 'abcdefghij\x1b[X', 'rust', 10),
+  synthetic('dch-at-pending-wrap', 'abcdefghij\x1b[P', 'rust', 10),
+  synthetic('ich-at-pending-wrap', 'abcdefghij\x1b[@', 'rust', 10),
+  // Mode spellings xterm reads by number.
+  synthetic('mouse-embedded-c0', '\x1b[?100\r0hx'),
+  synthetic('mouse-leading-zeros', '\x1b[?01002;01006hx'),
+  synthetic('colon-rgb-colorspace', '\x1b[38:2::10:20:30mx\x1b[48:5:3my'),
 ];
 
 // Classes that stay on xterm because Alacritty parses them differently.
@@ -187,6 +195,11 @@ const refused: Case[] = [
   synthetic('sync-mixed-params', 'a\x1b[?2026hb\x1b[?2026;1lc', 'xterm'),
   synthetic('deccolm', 'abc\x1b[?3hd', 'xterm'),
   synthetic('colon-rgb-no-colorspace', '\x1b[38:2:10:20:30mx', 'xterm'),
+  synthetic('colon-indexed-no-operand', '\x1b[31m\x1b[38:5mx', 'xterm'),
+  synthetic('colon-rgb-short', '\x1b[38:2::10:20mx', 'xterm'),
+  // A DCH orphan: xterm fills it with the erase attribute.
+  synthetic('wide-dch-second-half-blank', ' \u4e2db\x1b[44m\x1b[1;2H\x1b[P', 'xterm'),
+  synthetic('alt-1047-leading-zero', 'n\x1b[?01047ha', 'xterm'),
   synthetic('rep-after-control', 'X\r\x1b[3b', 'xterm'),
   synthetic('rep-after-sgr', 'X\x1b[31m\x1b[3b', 'xterm'),
   synthetic('decaln', 'ab\x1b[2;3H\x1b#8', 'xterm'),

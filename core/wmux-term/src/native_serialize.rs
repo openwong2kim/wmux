@@ -179,7 +179,11 @@ fn blank(cell: &Cell) -> bool {
 /// touches either half; Alacritty can leave one half behind, and replaying it
 /// would shift the rest of the row. An orphan half becomes the blank its
 /// erased partner holds; one whose partner is not blank is refused.
-fn whole_glyphs(line: &Row<Cell>, columns: usize) -> Result<Option<Vec<Cell>>, &'static str> {
+fn whole_glyphs(
+    line: &Row<Cell>,
+    columns: usize,
+    repair: bool,
+) -> Result<Option<Vec<Cell>>, &'static str> {
     let mut fixed: Option<Vec<Cell>> = None;
     for x in 0..columns {
         let flags = line[Column(x)].flags;
@@ -196,7 +200,9 @@ fn whole_glyphs(line: &Row<Cell>, columns: usize) -> Result<Option<Vec<Cell>>, &
         let Some(partner) = partner else {
             continue;
         };
-        let erased = (partner < columns)
+        // After DCH or ICH the partner may be an unrelated cell, and xterm
+        // fills the orphan with the erase attribute: not reproducible.
+        let erased = (repair && partner < columns)
             .then(|| &line[Column(partner)])
             .filter(|cell| blank(cell) && !cell.flags.contains(Flags::WIDE_CHAR_SPACER))
             .ok_or("unsupported-wide-half: half a fullwidth glyph next to content")?;
@@ -213,12 +219,12 @@ fn whole_glyphs(line: &Row<Cell>, columns: usize) -> Result<Option<Vec<Cell>>, &
 }
 
 /// Returns whether the replay leaves a hyperlink open.
-fn screen(out: &mut String, grid: &Grid<Cell>) -> Result<bool, &'static str> {
+fn screen(out: &mut String, grid: &Grid<Cell>, repair: bool) -> Result<bool, &'static str> {
     let mut pen = Pen::default();
     let columns = grid.columns();
     for y in -(grid.history_size() as i32)..grid.screen_lines() as i32 {
         let row = &grid[Line(y)];
-        let fixed = whole_glyphs(row, columns)?;
+        let fixed = whole_glyphs(row, columns, repair)?;
         let line = |x: usize| fixed.as_ref().map_or(&row[Column(x)], |cells| &cells[x]);
         let wrapped = row[grid.last_column()].flags.contains(Flags::WRAPLINE);
         // A soft-wrapped row must reach its last column to wrap again.
@@ -328,9 +334,21 @@ fn sgr_divergent(params: &str) -> bool {
         let colon = mode.is_some();
         match attribute {
             Some(21 | 53) => return true,
-            // `38:2:r:g:b` without a colorspace: vte reads r,g,b, xterm g,b,0.
-            Some(38 | 48 | 58) if mode == Some("2") && parts.clone().count() == 3 => return true,
-            Some(38 | 48 | 58) if !colon => {
+            // Colon colors read alike only as `38:5:n` and `38:2:cs:r:g:b`:
+            // vte reads `38:2:r:g:b` as r,g,b where xterm reads g,b,0, and
+            // leaves the color on `38:5`, which xterm sets to index 0.
+            Some(38 | 48 | 58) if colon => {
+                let operands: Vec<&str> = parts.collect();
+                let readable = match mode {
+                    Some("5") => operands.len() == 1 && digits(operands[0]),
+                    Some("2") => operands.len() == 4 && operands[1..].iter().all(|v| digits(v)),
+                    _ => false,
+                };
+                if !readable {
+                    return true;
+                }
+            }
+            Some(38 | 48 | 58) => {
                 let operands = match list.next().and_then(number) {
                     Some(5) => 1,
                     Some(2) => 3,
@@ -396,13 +414,12 @@ fn csi_divergent(rest: &[u8]) -> bool {
         // SU keeps rows in Alacritty's history; Alacritty ignores SD as `CSI ^`.
         (None, b"", b'S' | b'^') => true,
         (Some(b'?'), b"", b'h' | b'l') => {
+            let mut modes = params.split(';').map(number);
             // vte leaves a synchronized update only on exactly `CSI ? 2026 l`.
-            params.contains(';') && params.split(';').any(|mode| mode == "2026")
-                || params
-                    .split(';')
-                    .any(|mode| matches!(mode, "3" | "9" | "45" | "66" | "47" | "1047" | "1048"))
+            params != "2026" && modes.clone().any(|mode| mode == Some(2026))
+                || modes.any(|mode| matches!(mode, Some(3 | 9 | 45 | 66 | 47 | 1047 | 1048)))
         }
-        (None, b"", b'h' | b'l') => params.split(';').any(|mode| mode == "20"),
+        (None, b"", b'h' | b'l') => params.split(';').any(|mode| number(mode) == Some(20)),
         (None, b"", b'J') => {
             let first = number(params.split([';', ':']).next().unwrap_or(""));
             matches!(first, Some(1 | 2)) && params != "1" && params != "2"
@@ -412,7 +429,9 @@ fn csi_divergent(rest: &[u8]) -> bool {
     }
 }
 
-pub fn serialize(term: &Term<VoidListener>) -> Result<String, &'static str> {
+/// `repair_wide`: whether a half-erased fullwidth glyph may be replayed as
+/// the blank its erased partner holds (the stream shifted no cells).
+pub fn serialize(term: &Term<VoidListener>, repair_wide: bool) -> Result<String, &'static str> {
     // xterm can retain half a wide glyph when clipping the cursor paragraph.
     // Printing that glyph would wrap instead. Refuse instead of corrupting it.
     for grid in [term.grid(), term.inactive_grid()] {
@@ -436,13 +455,13 @@ pub fn serialize(term: &Term<VoidListener>) -> Result<String, &'static str> {
     if modes.contains(TermMode::ALT_SCREEN) {
         // DECSC on entry saves the primary template, open hyperlink included,
         // as it did live; the alternate grid then starts without one.
-        let linked = screen(&mut out, term.inactive_grid())?;
+        let linked = screen(&mut out, term.inactive_grid(), repair_wide)?;
         out.push_str("\x1b[?1049h\x1b[0m\x1b[H");
         if linked {
             out.push_str("\x1b]8;;\x1b\\");
         }
     }
-    screen(&mut out, term.grid())?;
+    screen(&mut out, term.grid(), repair_wide)?;
     for (mode, code) in [
         (TermMode::APP_CURSOR, 1),
         (TermMode::ORIGIN, 6),
@@ -495,7 +514,7 @@ mod tests {
         let mut term = Term::new(Config::default(), &Size(cols, 3), VoidListener);
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, bytes.as_bytes());
-        serialize(&term)
+        serialize(&term, true)
     }
 
     use super::{divergent, has_c1, sequence_len};
@@ -576,6 +595,14 @@ mod tests {
             "\x1b#8",
             "\x1b[38:2:1:2:3m",
             "\x1b[48:2:1:2:3m",
+            "\x1b[38:5m",
+            "\x1b[38:2:1:2m",
+            "\x1b[38:2::1:2m",
+            "\x1b[38:5:1:2m",
+            "\x1b[38:7:1m",
+            "\x1b[?01047h",
+            "\x1b[?2026;0h",
+            "\x1b[020h",
             "\x1b[2\x00J",
             "\x1b[1\nJ",
         ] {
@@ -653,6 +680,13 @@ mod tests {
         // DCH pulls the second half next to content: refused.
         let err = replay(10, "a\u{4e2d}b\x1b[1;2H\x1b[P").unwrap_err();
         assert!(err.starts_with("unsupported-wide-half"));
+        // Next to a blank too: xterm fills it with the erase attribute.
+        let mut term = Term::new(Config::default(), &Size(10, 3), VoidListener);
+        let mut parser: Processor = Processor::new();
+        parser.advance(&mut term, " \u{4e2d}b\x1b[44m\x1b[1;2H\x1b[P".as_bytes());
+        assert!(serialize(&term, false)
+            .unwrap_err()
+            .starts_with("unsupported-wide-half"));
     }
 
     #[test]

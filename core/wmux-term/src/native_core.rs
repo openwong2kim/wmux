@@ -123,6 +123,9 @@ struct XtermFeed {
     mouse: u16,
     /// The stream so far ends in a printed character, which REP repeats.
     printed: bool,
+    /// DCH or ICH ran: a half-erased fullwidth glyph may sit next to an
+    /// unrelated cell, so it cannot be repaired from its partner.
+    shifted: bool,
     /// A control Alacritty parses differently from xterm.
     divergent: bool,
 }
@@ -130,6 +133,17 @@ struct XtermFeed {
 /// A byte of a printed character (not a C0 control or DEL).
 fn printable(byte: u8) -> bool {
     byte >= 0x20 && byte != 0x7f
+}
+
+/// ICH, DCH or ECH: `CSI Ps @`, `CSI Ps P`, `CSI Ps X`.
+fn is_restricting(sequence: &[u8]) -> bool {
+    sequence
+        .strip_prefix(b"\x1b[")
+        .and_then(<[u8]>::split_last)
+        .is_some_and(|(last, params)| {
+            matches!(last, b'@' | b'P' | b'X')
+                && params.iter().all(|&b| b.is_ascii_digit() || b == b';')
+        })
 }
 
 /// REP: `CSI Ps b`.
@@ -194,6 +208,18 @@ impl XtermFeed {
     }
 
     fn track(&mut self, sequence: &[u8]) {
+        // C0 controls inside a sequence execute and are not part of it.
+        let filtered: Vec<u8>;
+        let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
+            filtered = sequence[..1]
+                .iter()
+                .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
+                .copied()
+                .collect();
+            &filtered[..]
+        } else {
+            sequence
+        };
         let numeric = |params: &[u8]| params.iter().all(|&b| b.is_ascii_digit() || b == b';');
         if sequence == b"\x1bc" || sequence == b"\x1b[!p" {
             self.margins = false;
@@ -220,17 +246,19 @@ impl XtermFeed {
         {
             if matches!(last, b'h' | b'l') && numeric(params) {
                 let set = last == b'h';
-                for mode in params.split(|&b| b == b';') {
+                // Modes by number, as xterm reads them: `01000` is 1000.
+                let modes = params.split(|&b| b == b';').map(|mode| {
+                    std::str::from_utf8(mode)
+                        .ok()
+                        .and_then(|m| m.parse::<u16>().ok())
+                });
+                for mode in modes {
                     match mode {
-                        b"25" => self.cursor_hidden = !set,
-                        b"1016" => self.sgr_pixels = set,
-                        b"1006" => self.sgr_mouse = set,
-                        b"9" | b"1000" | b"1002" | b"1003" => {
-                            self.mouse = if set {
-                                std::str::from_utf8(mode).map_or(0, |m| m.parse().unwrap_or(0))
-                            } else {
-                                0
-                            };
+                        Some(25) => self.cursor_hidden = !set,
+                        Some(1016) => self.sgr_pixels = set,
+                        Some(1006) => self.sgr_mouse = set,
+                        Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
+                            self.mouse = if set { protocol } else { 0 };
                         }
                         _ => {}
                     }
@@ -278,6 +306,21 @@ impl XtermFeed {
                 parser.advance(term, &data[from..at]);
                 erase_like_xterm(parser, term, sequence[2] == b'2');
                 from = at + len;
+                next = Some(at + len);
+            } else if is_restricting(sequence) {
+                // xterm's ICH, DCH and ECH first restrict the cursor, which
+                // drops a pending wrap; Alacritty keeps it.
+                parser.advance(term, &data[from..at]);
+                let synchronized = parser.sync_timeout().pending_timeout();
+                if synchronized {
+                    parser.stop_sync(term);
+                }
+                term.grid_mut().cursor.input_needs_wrap = false;
+                if synchronized {
+                    parser.advance(term, b"\x1b[?2026h");
+                }
+                self.shifted |= sequence.last() != Some(&b'X');
+                from = at;
                 next = Some(at + len);
             } else if len == 2 && matches!(sequence[1], b']' | b'P' | b'X' | b'^' | b'_') {
                 self.start_string();
@@ -560,7 +603,8 @@ impl NativeTerminal {
             return Err(Error::from_reason("margins"));
         }
         let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
-        let mut result = crate::native_serialize::serialize(term).map_err(Error::from_reason)?;
+        let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)
+            .map_err(Error::from_reason)?;
         // Mouse protocol and encoding as xterm's modes tail restores them: the
         // encoding only while a protocol is on.
         if self.feed.mouse != 0 {
@@ -1237,6 +1281,20 @@ mod tests {
     }
 
     #[test]
+    fn insert_delete_and_erase_drop_a_pending_wrap() {
+        for edit in ["\x1b[X", "\x1b[P", "\x1b[@"] {
+            let (mut term, mut parser, feed) = feed_with(&["abcdefghij", edit, "Z"]);
+            parser.advance(&mut term, &feed.held);
+            assert_eq!(term.grid().cursor.point.line.0, 0, "{edit:?}");
+            assert_eq!(row(&term, 1), "", "{edit:?}");
+        }
+        let (_, _, feed) = feed_with(&["a\x1b[X"]);
+        assert!(!feed.shifted);
+        let (_, _, feed) = feed_with(&["a\x1b[2P"]);
+        assert!(feed.shifted);
+    }
+
+    #[test]
     fn the_mouse_protocol_follows_xterm() {
         let mouse = |chunks: &[&str]| {
             let feed = feed_with(chunks).2;
@@ -1247,6 +1305,13 @@ mod tests {
         assert_eq!(mouse(&["\x1b[?1003;1000h"]), (1000, false));
         assert_eq!(mouse(&["\x1b[?1000h\x1b[?1006h\x1b[?1005h"]), (1000, true));
         assert_eq!(mouse(&["\x1b[?1000h\x1b[?1006h\x1bc"]), (0, false));
+        assert_eq!(mouse(&["\x1b[?100\r0h"]), (1000, false), "embedded C0");
+        assert_eq!(
+            mouse(&["\x1b[?01000;01006h"]),
+            (1000, true),
+            "leading zeros"
+        );
+        assert_eq!(mouse(&["\x1b[?1000h\x1b[?01000l"]), (0, false));
     }
 
     #[test]
