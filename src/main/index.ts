@@ -2652,12 +2652,14 @@ app.on('ready', async () => {
       continueStarter = new ContinueStarter({
         // The client of the moment: a start that spans a reconnect takes back
         // what it placed through the new connection, not the one that dropped.
-        daemonRpc: (method, params) => (daemonClient ?? client).rpc(method, params),
+        daemonRpc: (method, params, opts) => (daemonClient ?? client).rpc(method, params, opts),
         sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
         onDaemonEvent: (listener) => {
           client.on('event', listener);
           return () => { client.off('event', listener); };
         },
+        // Any answer to a cheap read the window's RPC bridge handles means it is up.
+        rendererReady: () => sendToRenderer(() => mainWindow, 'workspace.current', {}, { timeoutMs: 2_000 }).then(() => true, () => false),
         log: (level, msg) => logLine(level, 'a2a-remote', msg),
       });
       continueStarter.start();

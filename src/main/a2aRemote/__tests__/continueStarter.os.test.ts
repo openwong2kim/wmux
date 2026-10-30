@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { firstRunEnvForAgent } from '../../../shared/agentFirstRun';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 import { A2A_CONTINUE_EVENT, A2A_CONTINUE_RPC, type A2aContinueClaimV1 } from '../../../shared/a2aContinue';
-import { ContinueStarter, continueLaunchLine, type ContinueStarterDeps } from '../continueStarter';
+import { CONTINUE_CLAIM_TIMEOUT_MS, CONTINUE_PLACE_TIMEOUT_MS, ContinueStarter, continueLaunchLine, type ContinueStarterDeps } from '../continueStarter';
 import type { ContinueWorktreeMade } from '../continueWorktree';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
@@ -33,10 +33,11 @@ interface Over {
   state?: () => unknown;
   failed?: () => unknown;
   realpath?: (p: string) => Promise<string | null>;
+  rendererReady?: () => Promise<boolean>;
   retryMs?: number;
 }
 
-type Call = (method: string, params: Record<string, unknown>) => Promise<unknown>;
+type Call = (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
 
 const starters: ContinueStarter[] = [];
 afterEach(() => {
@@ -76,6 +77,7 @@ function rig(over: Over = {}) {
       listener = l;
       return () => { listener = undefined; };
     },
+    rendererReady: over.rendererReady ?? (async () => true),
     createWorktree: worktree as ContinueStarterDeps['createWorktree'],
     removeWorktree: async (m) => {
       order.push('removeWorktree');
@@ -155,6 +157,17 @@ describe('starting a received conversation', () => {
     expect(r.order).toEqual(['work', 'claim', 'worktree', 'place', 'removeWorktree', 'failed']);
     expect(r.removed).toEqual([made]);
     expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([{ hostId: HOST, continueId: CID, code: 'no-space' }]);
+  });
+
+  it('gives the claim, the place and the unplace more time than a plain daemon call', async () => {
+    const r = rig({ render: () => ({ error: 'fanout.spawnWorkspace: PTY create failed' }) });
+    await r.run();
+    const optsOf = (method: string): unknown[] => r.rpc.mock.calls.filter((c) => c[0] === method).map((c) => c[2]);
+    expect(optsOf(A2A_CONTINUE_RPC.claim)).toEqual([{ timeoutMs: CONTINUE_CLAIM_TIMEOUT_MS }]);
+    expect(optsOf(A2A_CONTINUE_RPC.place)).toEqual([{ timeoutMs: CONTINUE_PLACE_TIMEOUT_MS }]);
+    expect(optsOf(A2A_CONTINUE_RPC.unplace)).toEqual([{ timeoutMs: CONTINUE_PLACE_TIMEOUT_MS }]);
+    // Longer than the daemon client's default 10 s.
+    expect(Math.min(CONTINUE_CLAIM_TIMEOUT_MS, CONTINUE_PLACE_TIMEOUT_MS)).toBeGreaterThan(10_000);
   });
 
   it('asks the daemon to take back a place it did not answer', async () => {
@@ -310,6 +323,19 @@ describe('what drives a start', () => {
     await later.run();
     await vi.waitFor(() => expect(later.calls(A2A_CONTINUE_RPC.started)).toHaveLength(1), { timeout: 2_000 });
     expect(later.calls(A2A_CONTINUE_RPC.work).length).toBeGreaterThan(1);
+  });
+
+  it('claims nothing while the window cannot open a workspace yet, and starts once it can', async () => {
+    for (const notYet of [async () => false, async (): Promise<boolean> => { throw new Error('RPC timeout: workspace.current'); }]) {
+      let ready = false;
+      const r = rig({ rendererReady: () => (ready ? Promise.resolve(true) : notYet()), retryMs: 1 });
+      await r.run();
+      expect(r.calls(A2A_CONTINUE_RPC.claim)).toEqual([]);
+      ready = true;
+      await vi.waitFor(() => expect(r.calls(A2A_CONTINUE_RPC.started)).toHaveLength(1), { timeout: 2_000 });
+      expect(r.calls(A2A_CONTINUE_RPC.claim)).toHaveLength(1);
+      r.starter.stop();
+    }
   });
 
   it('the daemon\'s continue broadcast reads the work again', async () => {

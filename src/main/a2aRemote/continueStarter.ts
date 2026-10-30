@@ -53,6 +53,10 @@ export const CONTINUE_BIND_WAIT_MS = 90_000;
 const BIND_POLL_MS = 1_000;
 /** How long the renderer may take to open the workspace. */
 const SPAWN_WORKSPACE_TIMEOUT_MS = 60_000;
+/** A claim reads every root's origin again through the daemon's git gate: more than a plain call's 10 s. */
+export const CONTINUE_CLAIM_TIMEOUT_MS = 2 * 60_000;
+/** A place may copy and sync a whole conversation across volumes, and an unplace waits for a place still running. */
+export const CONTINUE_PLACE_TIMEOUT_MS = 10 * 60_000;
 
 /**
  * Claude's own word for each of B's modes. Never left out: without the flag
@@ -83,9 +87,14 @@ export function continueLaunchLine(launcher: string, transcriptPath: string, mod
 }
 
 export interface ContinueStarterDeps {
-  daemonRpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  daemonRpc: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
   onDaemonEvent: (listener: (event: { type?: unknown; [key: string]: unknown }) => void) => () => void;
+  /**
+   * Whether the window's RPC bridge answers. A request is sent to the window
+   * without being queued, so one sent before the bridge is up is dropped.
+   */
+  rendererReady: () => Promise<boolean>;
   createWorktree?: (input: ContinueWorktreeInput) => Promise<ContinueWorktreeResult>;
   removeWorktree?: (made: ContinueWorktreeMade) => Promise<void>;
   /** The OS realpath, or null when it does not resolve. */
@@ -183,9 +192,16 @@ export class ContinueStarter {
     const key = `${hostId}:${continueId}`;
     if (this.starting.has(key) || this.retryTimers.has(key) || this.stopped) return;
     this.starting.add(key);
+    // Nothing is claimed before the window can open the workspace: the
+    // request stays received, and is tried again.
+    if (!(await this.deps.rendererReady().catch(() => false))) {
+      this.starting.delete(key);
+      this.retryLater(key, continueId, 'the window does not answer yet');
+      return;
+    }
     let claimed: A2aContinueClaimResult;
     try {
-      claimed = (await this.deps.daemonRpc(A2A_CONTINUE_RPC.claim, { hostId, continueId })) as A2aContinueClaimResult;
+      claimed = (await this.deps.daemonRpc(A2A_CONTINUE_RPC.claim, { hostId, continueId }, { timeoutMs: CONTINUE_CLAIM_TIMEOUT_MS })) as A2aContinueClaimResult;
     } catch (err) {
       // No answer: the daemon may have claimed it anyway, and a claimed
       // request is never listed again. One it holds as starting is given up,
@@ -219,7 +235,8 @@ export class ContinueStarter {
           this.deps.log('warn', `[continue] ${continueId}: workspace ${workspaceId} not closed: ${errText(err)}`));
       }
       if (placed) {
-        const back = await this.deps.daemonRpc(A2A_CONTINUE_RPC.unplace, { hostId, continueId }).catch((err: unknown) => ({ ok: false, error: errText(err) }));
+        const back = await this.deps.daemonRpc(A2A_CONTINUE_RPC.unplace, { hostId, continueId }, { timeoutMs: CONTINUE_PLACE_TIMEOUT_MS })
+          .catch((err: unknown) => ({ ok: false, error: errText(err) }));
         if (!isOk(back)) this.deps.log('warn', `[continue] ${continueId}: placed files not taken back: ${errorOf(back)}`);
       }
       if (tree) {
@@ -240,7 +257,7 @@ export class ContinueStarter {
       tree = made.made;
       let put: A2aContinuePlaceResult;
       try {
-        put = (await this.deps.daemonRpc(A2A_CONTINUE_RPC.place, { hostId, continueId, cwd: made.cwd })) as A2aContinuePlaceResult;
+        put = (await this.deps.daemonRpc(A2A_CONTINUE_RPC.place, { hostId, continueId, cwd: made.cwd }, { timeoutMs: CONTINUE_PLACE_TIMEOUT_MS })) as A2aContinuePlaceResult;
       } catch (err) {
         // No answer: the daemon may have placed them, and unplace takes back whatever it did.
         placed = true;
