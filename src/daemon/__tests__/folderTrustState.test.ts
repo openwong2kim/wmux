@@ -448,6 +448,31 @@ describe('a ring that outgrew the tail window, on a pane that went idle (#2855)'
     expect(wholeParses).toBe(3);
   });
 
+  it("a ring past the parse's own budget is parsed again after the retry window, though the pane printed nothing", async () => {
+    const s = longAfter(frame(IDLE), spinner, '\x1b[31;1H\x1b[K');
+    let wholeParses = 0;
+    const snapshot: NonNullable<FolderTrustDeps['snapshot']> = async (req) => {
+      if (req.initial.length <= 512 * 1024) return generateTextSnapshotUnqueued(req);
+      wholeParses++;
+      return { ok: false, reason: 'budget' };
+    };
+    const log = (): void => {};
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now');
+    try {
+      clock.mockReturnValue(now);
+      await readFolderTrust(deps(s, { snapshot, log }), 'pty-1');
+      clock.mockReturnValue(now + 10_000);
+      await readFolderTrust(deps(s, { snapshot, log }), 'pty-1');
+      expect(wholeParses).toBe(1);
+      clock.mockReturnValue(now + 31_000);
+      await readFolderTrust(deps(s, { snapshot, log }), 'pty-1');
+      expect(wholeParses).toBe(2);
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
   it("a ring that does not parse within the parse's own budget is kept as 'unknown' until the pane prints", async () => {
     const s = longAfter(frame(IDLE), spinner, '\x1b[31;1H\x1b[K');
     let wholeParses = 0;

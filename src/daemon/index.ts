@@ -92,7 +92,7 @@ import { normalizeLivePaneIds } from '../shared/a2aOrphanedTask';
 import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../shared/web';
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenText, queuedTextSnapshot } from './queuedSessionText';
-import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc } from './folderTrustState';
+import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import type { TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
@@ -1342,6 +1342,8 @@ const daemonLogWriter = createDaemonLogWriter({
   bufferMaxBytes: 64 * 1024,
 });
 process.once('exit', () => daemonLogWriter.flush());
+// Whole-ring trust parses log their timing to the daemon log file, not stdout only.
+setFolderTrustTimingLog((message) => log('info', message));
 /** recoveryCwd, plus a warning when a WSL pane's stored cwd could not be
  *  entered and recovery starts it in home instead (#1729). */
 function recoveryCwdLogged(session: { id?: string; cmd: string; cwd: string }): string {

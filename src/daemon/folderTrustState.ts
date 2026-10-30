@@ -106,10 +106,27 @@ interface WholeRingVerdict {
   cols: number;
   rows: number;
   reading: FolderTrustReading;
+  /** When a parse past its own budget was kept; such a verdict is retried after OVER_BUDGET_RETRY_MS. */
+  overBudgetAt?: number;
 }
 
 /** The last whole-ring verdict per session. */
 const wholeRingVerdicts = new WeakMap<FolderTrustSession, WholeRingVerdict>();
+
+/**
+ * How long a parse that ran past its own budget keeps answering for the same
+ * bytes. The budget is wall-clock time shared with the other lanes, so missing
+ * it can mean load rather than size, and an idle pane may never print again.
+ */
+const OVER_BUDGET_RETRY_MS = 30_000;
+
+/** Where a whole-ring parse's timing line goes when the caller passes no `log`. */
+let wholeRingTimingLog: ((message: string) => void) | undefined;
+
+/** Set by the daemon at start so timing lines reach its log file. */
+export function setFolderTrustTimingLog(log: (message: string) => void): void {
+  wholeRingTimingLog = log;
+}
 
 /** One whole-ring parse of a session. `mark`: where it read the ring; unset
  *  while it waits for its turn, when it will read bytes at least as new as
@@ -246,6 +263,7 @@ function verdictOf(frame: AwaitingFrame): FolderTrustReading {
 function currentWholeRingVerdict(session: FolderTrustSession, mark: number): FolderTrustReading | null {
   const known = wholeRingVerdicts.get(session);
   if (!known || known.mark !== mark || known.muted !== session.bridge.isMuted) return null;
+  if (known.overBudgetAt !== undefined && Date.now() - known.overBudgetAt > OVER_BUDGET_RETRY_MS) return null;
   const size = liveGeometry(session);
   return size && size.cols === known.cols && size.rows === known.rows ? known.reading : null;
 }
@@ -322,11 +340,16 @@ async function parseWholeRing(
     };
     const frame = await renderPaneScreen(live, parse, { tail: false }).catch(() => null);
     const reading: FolderTrustReading = frame ? verdictOf(frame) : { state: 'unknown', reason: 'unreadable' };
-    if (frame || overBudget) wholeRingVerdicts.set(session, { mark: readable.mark, muted, cols: size.cols, rows: size.rows, reading });
+    if (frame || overBudget) {
+      wholeRingVerdicts.set(session, {
+        mark: readable.mark, muted, cols: size.cols, rows: size.rows, reading,
+        ...(frame ? {} : { overBudgetAt: Date.now() }),
+      });
+    }
     const outcome = frame
       ? `${reading.state}${reading.reason ? ` (${reading.reason})` : ''}`
       : `not decided (${overBudget ? `past its ${WHOLE_RING_BUDGET_MS} ms budget` : 'unreadable'})`;
-    (deps.log ?? console.log)(`[folder-trust] whole-ring parse on pane ${id}: ${bytes} bytes in ${Date.now() - started} ms, after ${started - queuedAt} ms waiting: ${outcome}`);
+    (deps.log ?? wholeRingTimingLog ?? console.log)(`[folder-trust] whole-ring parse on pane ${id}: ${bytes} bytes in ${Date.now() - started} ms, after ${started - queuedAt} ms waiting: ${outcome}`);
     return reading;
   } catch {
     return { state: 'unknown', reason: 'unreadable' };
