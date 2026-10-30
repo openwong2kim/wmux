@@ -509,6 +509,8 @@ export const pl = {
   'companyPreset.error.ceo': "Wybierz stanowisko CEO.",
   'companyPreset.error.label': "Nazwa stanowiska nie może zawierać spacji, # ani @, zaczynać się cyfrą ani wyglądać jak w1-2.",
   'companyPreset.error.duplicate': "Dwa stanowiska mają tę samą nazwę.",
+  'companyPreset.error.agent': "Agent jednego ze stanowisk nie jest tu zainstalowany. Wybierz innego albo Bez agenta.",
+  'companyPreset.labelRefused': "Panel stanowiska {label} nie mógł przyjąć tej nazwy. Zmień jego nazwę albo podaj CEO jego #nazwę.",
   'companyPreset.failed': "Nie utworzono firmy: {error}",
   'workspaceSettle.toastSnoozed': "{name}: odłożony do {time}",
   'workspaceSettle.toastSnoozedNoTime': "{name}: odłożony",

@@ -505,6 +505,8 @@ export const en = {
   'companyPreset.error.ceo': "Pick the CEO seat.",
   'companyPreset.error.label': "A seat name cannot contain spaces, # or @, start with a digit, or look like w1-2.",
   'companyPreset.error.duplicate': "Two seats have the same name.",
+  'companyPreset.error.agent': "A seat's agent is not installed here. Pick another or No agent.",
+  'companyPreset.labelRefused': "The pane for seat {label} could not take that name. Rename it, or tell the CEO its #name.",
   'companyPreset.failed': "The company was not made: {error}",
   'workspaceSettle.toastSnoozed': "{name} snoozed until {time}",
   'workspaceSettle.toastSnoozedNoTime': "{name} snoozed",

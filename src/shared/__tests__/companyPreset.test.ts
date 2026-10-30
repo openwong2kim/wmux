@@ -21,6 +21,9 @@ describe('company presets', () => {
     expect(companySeatsError([seat('a'), seat('b')], 2)).toBe('ceo');
     expect(companySeatsError([seat('lead dev')], 0)).toBe('label');
     expect(companySeatsError([seat('w1-2')], 0)).toBe('label');
+    // Taken, `w1` would become the coordinate-like `w1-2`.
+    expect(companySeatsError([seat('w1')], 0)).toBe('label');
+    expect(companySeatsError([seat('x'.repeat(61))], 0)).toBe('label');
     expect(companySeatsError([seat('Dev'), seat('dev')], 0)).toBe('duplicate');
   });
 

@@ -300,6 +300,8 @@ export const zh = {
   'companyPreset.error.ceo': "请选择 CEO 席位。",
   'companyPreset.error.label': "席位名称不能包含空格、# 或 @，不能以数字开头，也不能形如 w1-2。",
   'companyPreset.error.duplicate': "有两个席位名称相同。",
+  'companyPreset.error.agent': "有席位选择的代理未在此电脑上安装。请选择其他代理或“无代理”。",
+  'companyPreset.labelRefused': "席位 {label} 的窗格无法使用该名称。请重命名它，或告诉 CEO 它的 #名称。",
   'companyPreset.failed': "未能创建公司：{error}",
   'workspaceSettle.toastSnoozed': "{name} 已暂缓至 {time}",
   'workspaceSettle.toastSnoozedNoTime': "{name} 已暂缓",

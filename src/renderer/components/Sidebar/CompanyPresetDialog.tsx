@@ -1,14 +1,7 @@
-import { useEffect, useId, useMemo, useRef, useState, type TextareaHTMLAttributes } from 'react';
+import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { generateId } from '../../../shared/types';
-import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
-import { isAgentSlug, type AgentSlug } from '../../../shared/agentIdentity';
-import {
-  companySeatsError,
-  freeSeatLabels,
-  seatBrief,
-  type CompanyPreset,
-  type CompanyPresetSeat,
-} from '../../../shared/companyPreset';
+import { agentSlugToDisplay, isAgentSlug, type AgentSlug } from '../../../shared/agentIdentity';
+import { companySeatsError, type CompanyPreset, type CompanyPresetSeat } from '../../../shared/companyPreset';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { displayPath } from '../../utils/displayPath';
@@ -17,7 +10,8 @@ import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
 import Checkbox from '../ui/Checkbox';
-import Field, { useFieldWiring } from '../ui/Field';
+import Field from '../ui/Field';
+import TextArea from '../ui/TextArea';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import { FOCUS_RING } from '../focusRing';
 
@@ -44,11 +38,6 @@ function useAgentChoices(): AgentChoice[] {
   return choices;
 }
 
-function TextArea({ id, 'aria-describedby': describedBy, className = '', ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  const wiring = useFieldWiring(id, describedBy);
-  return <textarea {...rest} id={wiring.id} aria-describedby={wiring['aria-describedby']} className={`ui-input resize-y ${className}`} />;
-}
-
 /**
  * New company from a preset (DESIGN.md "Company presets"): a workspace with a
  * pane per seat, each named, given what it owns and started with its agent,
@@ -70,9 +59,16 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
   const [failed, setFailed] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const seatsLabelId = useId();
+  // A company made after the dialog was closed is one the user backed out of.
+  const open = useRef(true);
+  useEffect(() => {
+    open.current = true;
+    return () => { open.current = false; };
+  }, []);
 
   const trimmed = useMemo(() => seats.map((s) => ({ ...s, label: s.label.trim(), owns: s.owns.trim() })), [seats]);
-  const seatsError = companySeatsError(trimmed, ceo);
+  const installed = (agent: AgentSlug) => agents.some((a) => a.agent === agent && a.installed);
+  const seatsError = companySeatsError(trimmed, ceo) ?? (trimmed.some((s) => s.agent && !installed(s.agent)) ? 'agent' : null);
   const folderName = folder?.split(/[/\\]/).filter(Boolean).pop();
   const companyName = name.trim() || folderName || t('companyPreset.defaultName');
 
@@ -88,23 +84,19 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
     if (seatsError || busy) return;
     setBusy(true);
     setFailed(null);
-    const state = useStore.getState();
-    // A name another pane already answers to gets a suffix, so #researcher of
-    // a second company does not collide with the first.
-    const taken = state.workspaces.flatMap((w) => getWorkspaceLeafPanes(w).map((l) => state.paneLabel[l.id]).filter(Boolean));
-    const labels = freeSeatLabels(trimmed.map((s) => s.label), taken);
-    const made = trimmed.map((s, i) => ({ label: labels[i], owns: s.owns }));
     const id = generateId('ws');
+    // Main settles each seat's pane name (it holds every label) and writes the
+    // briefs with those names.
     const res = await window.electronAPI?.company?.seatLaunches?.({
       workspaceId: id,
-      seats: trimmed.map((s, i) => ({
-        label: labels[i],
-        ...(s.agent ? { agent: s.agent } : {}),
-        ...(s.agent && tellSeats
-          ? { brief: seatBrief({ company: companyName, mission, standingOrders, seats: made, ceo, seat: i }) }
-          : {}),
-      })),
+      company: companyName,
+      mission,
+      standingOrders,
+      ceo,
+      tellSeats,
+      seats: trimmed.map((s) => ({ label: s.label, owns: s.owns, ...(s.agent ? { agent: s.agent } : {}) })),
     }).catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }));
+    if (!open.current) return;
     if (!res?.ok) {
       setBusy(false);
       setFailed(res?.error ?? 'unavailable');
@@ -117,7 +109,7 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
       mission,
       standingOrders,
       ceo,
-      seats: made.map((s, i) => ({ ...s, command: res.commands[i] ?? null })),
+      seats: trimmed.map((s, i) => ({ label: res.labels[i], owns: s.owns, command: res.commands[i] ?? null })),
     });
     setBusy(false);
     if (!ok) {
@@ -198,6 +190,9 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
                           {a.installed ? a.label : t('companyPreset.notInstalled', { agent: a.label })}
                         </option>
                       ))}
+                      {seat.agent && !agents.some((a) => a.agent === seat.agent) && (
+                        <option value={seat.agent} disabled>{t('companyPreset.notInstalled', { agent: agentSlugToDisplay(seat.agent) })}</option>
+                      )}
                       <option value="">{t('companyPreset.noAgent')}</option>
                     </Select>
                   </td>

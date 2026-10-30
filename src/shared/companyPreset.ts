@@ -4,7 +4,7 @@
 // renderer (the dialog and the store) and main (the brief files) share it.
 
 import { COMPANY_BRIEF_KIND, BRIEF_FIELDS } from './company';
-import { createLeafPane, type Pane, type PaneLeaf } from './types';
+import { createLeafPane, PANE_METADATA_LABEL_MAX, type Pane, type PaneLeaf } from './types';
 import { createBranchPane } from './layoutPresets';
 import { normalizePaneLabel, paneLabelShapeError } from './paneLabelRules';
 import type { AgentSlug } from './agentIdentity';
@@ -83,10 +83,14 @@ export function companyPresetTree(count: number): { root: Pane; leaves: PaneLeaf
   return { root: createBranchPane('horizontal', [leaves[0], right], [50, 50]), leaves };
 }
 
+/** A seat name leaves room for the `-<n>` a taken name gets. */
+export const SEAT_LABEL_MAX = PANE_METADATA_LABEL_MAX - 4;
+
 /**
  * The seat labels as panes will carry them: a label another pane already
  * uses (or an earlier seat took) gets the first free `-2`, `-3`… suffix, so a
  * second company from the same preset does not collide on `#researcher`.
+ * companySeatsError keeps out a name whose suffixed form is not a pane label.
  */
 export function freeSeatLabels(labels: readonly string[], taken: Iterable<string>): string[] {
   const used = new Set([...taken].map(normalizePaneLabel));
@@ -106,7 +110,8 @@ export function companySeatsError(seats: readonly CompanyPresetSeat[], ceo: numb
   const seen = new Set<string>();
   for (const seat of seats) {
     const label = seat.label.trim();
-    if (!label || paneLabelShapeError(label)) return 'label';
+    // `w1` would become `w1-2` once taken, which reads as a pane's own coordinate.
+    if (!label || label.length > SEAT_LABEL_MAX || paneLabelShapeError(label) || paneLabelShapeError(`${label}-2`)) return 'label';
     if (seen.has(normalizePaneLabel(label))) return 'duplicate';
     seen.add(normalizePaneLabel(label));
   }

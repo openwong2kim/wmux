@@ -500,6 +500,8 @@ export const ko = {
   'companyPreset.error.ceo': "CEO 자리를 고르세요.",
   'companyPreset.error.label': "자리 이름에는 공백, #, @를 쓸 수 없고, 숫자로 시작하거나 w1-2 같은 모양일 수 없습니다.",
   'companyPreset.error.duplicate': "같은 이름의 자리가 두 개 있습니다.",
+  'companyPreset.error.agent': "이 PC에 설치되지 않은 에이전트를 고른 자리가 있습니다. 다른 에이전트나 '에이전트 없음'을 고르세요.",
+  'companyPreset.labelRefused': "{label} 자리의 판에 그 이름을 붙이지 못했습니다. 판 이름을 바꾸거나 CEO에게 실제 #이름을 알려 주세요.",
   'companyPreset.failed': "회사를 만들지 못했습니다: {error}",
   'workspaceSettle.toastSnoozed': "{name}: {time}까지 미뤄둠",
   'workspaceSettle.toastSnoozedNoTime': "{name} 미뤄둠",
