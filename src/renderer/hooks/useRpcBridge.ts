@@ -3626,9 +3626,15 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // resolved above, so the check and the delivery name the same pane, before
     // anything is stored (shared/company.ts).
     const companyDecision = decideCompanySend({
-      workspaces: store.workspaces.map((w) => ({ id: w.id, company: w.company, ptyIds: getWorkspacePtyIds(w) })),
+      workspaces: store.workspaces.map((w) => ({
+        id: w.id,
+        name: w.name,
+        company: w.company,
+        paneIds: getWorkspaceLeafPanes(w).map((leaf) => leaf.id),
+        ptyIds: getWorkspacePtyIds(w),
+      })),
       targetWorkspaceId: target.id,
-      targetPtyId: toAnchor?.ptyId ?? null,
+      targetPaneId: toAnchor?.paneId ?? null,
       senderPtyId,
       operator: params.operatorOrigin === true,
       data: params.data,

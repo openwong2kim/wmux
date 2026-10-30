@@ -22,21 +22,25 @@ const BRIEF = {
   report: 'reply with the diff summary',
 };
 
-// Company "Eng": home ws-home (coordinator pty-coord, member pty-m1), a
-// member workspace ws-member (pty-m2). Company "Ops": home ws-ops with its
-// coordinator pty-ops. ws-plain is in no company.
+// Company "Eng" is ws-eng: coordinator pane-coord and staff pane-m1, pane-m2.
+// Company "Ops" is ws-ops with its coordinator pane-ops. ws-plain is no company.
 const WORKSPACES: CompanyWorkspaceView[] = [
-  { id: 'ws-home', company: { v: 1, kind: 'home', id: 'd-eng', name: 'Eng', coordinatorPtyId: 'pty-coord' }, ptyIds: ['pty-coord', 'pty-m1'] },
-  { id: 'ws-member', company: { v: 1, kind: 'member', id: 'd-eng' }, ptyIds: ['pty-m2'] },
-  { id: 'ws-ops', company: { v: 1, kind: 'home', id: 'd-ops', name: 'Ops', coordinatorPtyId: 'pty-ops' }, ptyIds: ['pty-ops', 'pty-ops2'] },
-  { id: 'ws-plain', ptyIds: ['pty-plain'] },
+  {
+    id: 'ws-eng',
+    name: 'Eng',
+    company: { v: 1, id: 'co-eng', coordinatorPaneId: 'pane-coord' },
+    paneIds: ['pane-coord', 'pane-m1', 'pane-m2'],
+    ptyIds: ['pty-coord', 'pty-m1', 'pty-m2'],
+  },
+  { id: 'ws-ops', name: 'Ops', company: { v: 1, id: 'co-ops', coordinatorPaneId: 'pane-ops' }, paneIds: ['pane-ops'], ptyIds: ['pty-ops'] },
+  { id: 'ws-plain', name: 'plain', paneIds: ['pane-plain'], ptyIds: ['pty-plain'] },
 ];
 
 function send(over: Partial<Parameters<typeof decideCompanySend>[0]>) {
   return decideCompanySend({
     workspaces: WORKSPACES,
-    targetWorkspaceId: 'ws-home',
-    targetPtyId: 'pty-m1',
+    targetWorkspaceId: 'ws-eng',
+    targetPaneId: 'pane-m1',
     senderPtyId: 'pty-coord',
     operator: false,
     data: BRIEF,
@@ -57,13 +61,14 @@ const briefMessage: Message = {
 const plainMessage: Message = { kind: 'message', messageId: 'msg-2', role: 'user', parts: [{ kind: 'text', text: 'hi' }] };
 
 describe('parseWorkspaceCompany', () => {
-  it('keeps a home and a member record and drops anything else', () => {
-    expect(parseWorkspaceCompany({ v: 1, kind: 'home', id: 'd', name: 'Eng', coordinatorPtyId: 'pty-1' }))
-      .toEqual({ v: 1, kind: 'home', id: 'd', name: 'Eng', coordinatorPtyId: 'pty-1' });
-    expect(parseWorkspaceCompany({ v: 1, kind: 'member', id: 'd', extra: 1 })).toEqual({ v: 1, kind: 'member', id: 'd' });
-    expect(parseWorkspaceCompany({ v: 1, kind: 'home', id: 'd', name: 'Eng' })?.kind).toBe('home');
-    expect(parseWorkspaceCompany({ v: 2, kind: 'home', id: 'd', name: 'Eng' })).toBeUndefined();
-    expect(parseWorkspaceCompany({ v: 1, kind: 'home', id: 'd', name: '' })).toBeUndefined();
+  it('keeps a company record and drops anything else', () => {
+    expect(parseWorkspaceCompany({ v: 1, id: 'co', coordinatorPaneId: 'pane-1', extra: 1 }))
+      .toEqual({ v: 1, id: 'co', coordinatorPaneId: 'pane-1' });
+    expect(parseWorkspaceCompany({ v: 1, id: 'co', coordinatorPaneId: null })).toEqual({ v: 1, id: 'co', coordinatorPaneId: null });
+    // A record that names no seat at all is not a company.
+    expect(parseWorkspaceCompany({ v: 1, kind: 'member', id: 'co' })).toBeUndefined();
+    expect(parseWorkspaceCompany({ v: 2, id: 'co', coordinatorPaneId: null })).toBeUndefined();
+    expect(parseWorkspaceCompany({ v: 1, id: '', coordinatorPaneId: null })).toBeUndefined();
     expect(parseWorkspaceCompany('ceo')).toBeUndefined();
   });
 });
@@ -84,55 +89,55 @@ describe('missingBriefFields / isCompanyTask', () => {
 });
 
 describe('companyOfWorkspace', () => {
-  it('places a member workspace in its home company', () => {
-    expect(companyOfWorkspace(WORKSPACES, 'ws-member')).toEqual({
-      id: 'd-eng', name: 'Eng', homeWorkspaceId: 'ws-home', coordinatorPtyId: 'pty-coord',
+  it('names the company after its workspace', () => {
+    expect(companyOfWorkspace(WORKSPACES, 'ws-eng')).toEqual({
+      id: 'co-eng', name: 'Eng', workspaceId: 'ws-eng', coordinatorPaneId: 'pane-coord',
     });
     expect(companyOfWorkspace(WORKSPACES, 'ws-plain')).toBeNull();
   });
 
-  it('a coordinator pty that left the home workspace is a vacant seat', () => {
-    const moved = WORKSPACES.map((w) => (w.id === 'ws-home' ? { ...w, ptyIds: ['pty-m1'] } : w));
-    expect(companyOfWorkspace(moved, 'ws-home')?.coordinatorPtyId).toBeNull();
-  });
-
-  it('a member whose home is gone belongs to no company', () => {
-    const noHome = WORKSPACES.filter((w) => w.id !== 'ws-home');
-    expect(companyOfWorkspace(noHome, 'ws-member')).toBeNull();
+  it('keeps the seat when the coordinator pane gets a new pty, and vacates it when the pane is gone', () => {
+    const restarted = WORKSPACES.map((w) => (w.id === 'ws-eng' ? { ...w, ptyIds: ['pty-coord-2', 'pty-m1', 'pty-m2'] } : w));
+    expect(companyOfWorkspace(restarted, 'ws-eng')?.coordinatorPaneId).toBe('pane-coord');
+    const closed = WORKSPACES.map((w) => (w.id === 'ws-eng' ? { ...w, paneIds: ['pane-m1', 'pane-m2'] } : w));
+    expect(companyOfWorkspace(closed, 'ws-eng')?.coordinatorPaneId).toBeNull();
   });
 });
 
 describe('decideCompanySend', () => {
   it('leaves a target outside every company alone', () => {
-    expect(send({ targetWorkspaceId: 'ws-plain', targetPtyId: 'pty-plain', senderPtyId: '', data: undefined }))
+    expect(send({ targetWorkspaceId: 'ws-plain', targetPaneId: 'pane-plain', senderPtyId: '', data: undefined }))
       .toEqual({ kind: 'allow', companyTask: false });
   });
 
-  it('lets the coordinator brief a member, and a member brief another', () => {
+  it('lets the coordinator brief a staff pane, and one staff pane brief another', () => {
     expect(send({})).toEqual({ kind: 'allow', companyTask: true });
-    expect(send({ targetWorkspaceId: 'ws-member', targetPtyId: 'pty-m2', senderPtyId: 'pty-m1' }))
-      .toEqual({ kind: 'allow', companyTask: true });
+    expect(send({ targetPaneId: 'pane-m2', senderPtyId: 'pty-m1' })).toEqual({ kind: 'allow', companyTask: true });
   });
 
-  it('lets work from outside in only through the coordinator', () => {
-    expect(send({ targetPtyId: 'pty-coord', senderPtyId: 'pty-plain' })).toEqual({ kind: 'allow', companyTask: true });
-    const toMember = send({ senderPtyId: 'pty-plain' });
-    expect(toMember).toMatchObject({ kind: 'refuse' });
-    expect(toMember.kind === 'refuse' && toMember.error).toContain('through its coordinator');
+  it('takes a request to the coordinator from anyone, with or without a brief', () => {
+    expect(send({ targetPaneId: 'pane-coord', senderPtyId: 'pty-plain', data: { goal: 'Add Apple Pay' } }))
+      .toEqual({ kind: 'allow', companyTask: false });
+    expect(send({ targetPaneId: 'pane-coord', senderPtyId: 'pty-ops' })).toEqual({ kind: 'allow', companyTask: true });
+  });
+
+  it('lets work from outside reach a staff pane only through the coordinator', () => {
+    const fromOutside = send({ senderPtyId: 'pty-plain' });
+    expect(fromOutside).toMatchObject({ kind: 'refuse' });
+    expect(fromOutside.kind === 'refuse' && fromOutside.error).toContain('through its coordinator');
     // Another company's coordinator goes through this one's coordinator too.
     expect(send({ senderPtyId: 'pty-ops' })).toMatchObject({ kind: 'refuse' });
-    expect(send({ targetPtyId: 'pty-coord', senderPtyId: 'pty-ops' })).toEqual({ kind: 'allow', companyTask: true });
   });
 
   it('says when the company has no coordinator to go through', () => {
-    const vacant = WORKSPACES.map((w) => (w.id === 'ws-home'
-      ? { ...w, company: { v: 1 as const, kind: 'home' as const, id: 'd-eng', name: 'Eng', coordinatorPtyId: null } }
+    const vacant = WORKSPACES.map((w) => (w.id === 'ws-eng'
+      ? { ...w, company: { v: 1 as const, id: 'co-eng', coordinatorPaneId: null } }
       : w));
     const res = send({ workspaces: vacant, senderPtyId: 'pty-plain' });
     expect(res.kind === 'refuse' && res.error).toContain('has none right now');
   });
 
-  it('refuses without a brief, naming the missing fields', () => {
+  it('refuses a staff pane without a brief, naming the missing fields', () => {
     const res = send({ data: { ...BRIEF, acceptance: '' } });
     expect(res).toMatchObject({ kind: 'refuse' });
     expect(res.kind === 'refuse' && res.error).toContain('missing: acceptance');
@@ -140,31 +145,32 @@ describe('decideCompanySend', () => {
 
   it('refuses a caller wmux cannot tie to a pane, or an unpinned receiver', () => {
     expect(send({ senderPtyId: '' })).toMatchObject({ kind: 'refuse' });
+    expect(send({ targetPaneId: 'pane-coord', senderPtyId: '' })).toMatchObject({ kind: 'refuse' });
     // A pty no workspace owns reads as no caller at all.
     expect(send({ senderPtyId: 'pty-forged' })).toMatchObject({ kind: 'refuse' });
-    const unpinned = send({ targetPtyId: null });
+    const unpinned = send({ targetPaneId: null });
     expect(unpinned.kind === 'refuse' && unpinned.error).toContain('pane_id');
   });
 
   it('exempts the human lane, which needs neither a pane nor a brief', () => {
-    expect(send({ operator: true, senderPtyId: '', targetPtyId: null, data: undefined }))
+    expect(send({ operator: true, senderPtyId: '', targetPaneId: null, data: undefined }))
       .toEqual({ kind: 'allow', companyTask: false });
   });
 });
 
 describe('companyCancelRefusal', () => {
-  const fromCoordinator = { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-coord' };
+  const fromCoordinator = { workspaceId: 'ws-eng', name: 'Eng', paneId: 'pane-coord' };
 
   it('lets only the creating pane cancel a company task', () => {
     const t = task([briefMessage], fromCoordinator);
-    expect(companyCancelRefusal(t, { workspaceId: 'ws-home', paneId: 'pane-coord', trusted: false })).toBeNull();
+    expect(companyCancelRefusal(t, { workspaceId: 'ws-eng', paneId: 'pane-coord', trusted: false })).toBeNull();
     // A sibling pane of the same workspace, or no pane at all, is refused.
-    expect(companyCancelRefusal(t, { workspaceId: 'ws-home', paneId: 'pane-m1', trusted: false })).toContain('only the pane');
-    expect(companyCancelRefusal(t, { workspaceId: 'ws-home', paneId: undefined, trusted: false })).toContain('only the pane');
+    expect(companyCancelRefusal(t, { workspaceId: 'ws-eng', paneId: 'pane-m1', trusted: false })).toContain('only the pane');
+    expect(companyCancelRefusal(t, { workspaceId: 'ws-eng', paneId: undefined, trusted: false })).toContain('only the pane');
   });
 
   it('leaves ordinary tasks and the trusted lanes alone', () => {
-    expect(companyCancelRefusal(task([plainMessage], fromCoordinator), { workspaceId: 'ws-home', paneId: undefined, trusted: false })).toBeNull();
+    expect(companyCancelRefusal(task([plainMessage], fromCoordinator), { workspaceId: 'ws-eng', paneId: undefined, trusted: false })).toBeNull();
     expect(companyCancelRefusal(task([briefMessage], fromCoordinator), { workspaceId: 'ws-x', paneId: undefined, trusted: true })).toBeNull();
   });
 });

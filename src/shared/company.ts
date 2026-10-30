@@ -1,5 +1,7 @@
-// Company mode companies: the record a workspace carries, the brief a task
-// to a company pane must hold, and the decisions built on them.
+// Company mode: a workspace becomes a company. One of its panes is the
+// coordinator (shown as the CEO) and its other panes are the staff. This holds
+// the record a company workspace carries, the brief a task to a staff pane
+// must hold, and the decisions built on them.
 //
 // Shared by the renderer (which resolves the target pane and creates the task)
 // and the daemon (which holds the task log), so the two can never disagree
@@ -11,22 +13,19 @@
 import type { Message, WmuxTaskMetadata } from './types';
 
 /**
- * A workspace's place in a company. The company's own record lives on
- * its home workspace; a member workspace only names the company it joined.
- * The coordinator is a pane of the home workspace, named by its ptyId, which a
- * daemon respawn or session restore never re-mints (workspace ids can change).
+ * The record a company workspace carries; the company's name is the
+ * workspace's. The coordinator is one of its panes, named by paneId: a pane
+ * keeps its id across app restarts and when its agent restarts in a new tab,
+ * while a pty id can be re-minted then (A2A pane links bind paneId for the
+ * same reason).
  */
-export type WorkspaceCompany =
-  | {
-      v: 1;
-      kind: 'home';
-      id: string;
-      name: string;
-      /** null while no pane is the coordinator (a vacant seat). */
-      coordinatorPtyId: string | null;
-      standingOrders?: string;
-    }
-  | { v: 1; kind: 'member'; id: string };
+export interface WorkspaceCompany {
+  v: 1;
+  id: string;
+  /** null while no pane is the coordinator (a vacant seat). */
+  coordinatorPaneId: string | null;
+  standingOrders?: string;
+}
 
 /** The `kind` of the DataPart that carries a company task's brief. */
 export const COMPANY_BRIEF_KIND = 'wmux.company.brief';
@@ -63,15 +62,12 @@ function nonEmptyString(v: unknown): v is string {
  */
 export function parseWorkspaceCompany(raw: unknown): WorkspaceCompany | undefined {
   if (!isRecord(raw) || raw.v !== 1 || !nonEmptyString(raw.id)) return undefined;
-  if (raw.kind === 'member') return { v: 1, kind: 'member', id: raw.id };
-  if (raw.kind !== 'home' || !nonEmptyString(raw.name)) return undefined;
-  const coordinatorPtyId = nonEmptyString(raw.coordinatorPtyId) ? raw.coordinatorPtyId : null;
+  const seat = raw.coordinatorPaneId;
+  if (seat !== null && !nonEmptyString(seat)) return undefined;
   return {
     v: 1,
-    kind: 'home',
     id: raw.id,
-    name: raw.name,
-    coordinatorPtyId,
+    coordinatorPaneId: seat,
     ...(typeof raw.standingOrders === 'string' && raw.standingOrders ? { standingOrders: raw.standingOrders } : {}),
   };
 }
@@ -95,7 +91,10 @@ export function isCompanyTask(history: readonly Message[]): boolean {
 /** What the decisions need to know about one workspace. */
 export interface CompanyWorkspaceView {
   id: string;
+  name: string;
   company?: WorkspaceCompany;
+  /** Every leaf pane in the workspace, stashed panes included. */
+  paneIds: readonly string[];
   /** Every terminal pty in the workspace, stashed panes included. */
   ptyIds: readonly string[];
 }
@@ -103,33 +102,24 @@ export interface CompanyWorkspaceView {
 export interface CompanyPlacement {
   id: string;
   name: string;
-  homeWorkspaceId: string;
-  /** The coordinator's pty while it is still a pane of the home workspace. */
-  coordinatorPtyId: string | null;
+  workspaceId: string;
+  /** The coordinator's pane while it is still a pane of the workspace. */
+  coordinatorPaneId: string | null;
 }
 
-/**
- * The company a workspace belongs to, or null. A member whose company
- * has no home any more (the home workspace was deleted) belongs to none: the
- * company dissolved with its home.
- */
+/** The company a workspace is, or null. */
 export function companyOfWorkspace(
   workspaces: readonly CompanyWorkspaceView[],
   workspaceId: string,
 ): CompanyPlacement | null {
   const ws = workspaces.find((w) => w.id === workspaceId);
-  const dept = ws?.company;
-  if (!dept) return null;
-  const home = dept.kind === 'home'
-    ? ws
-    : workspaces.find((w) => w.company?.kind === 'home' && w.company.id === dept.id);
-  if (!home || home.company?.kind !== 'home') return null;
-  const seat = home.company.coordinatorPtyId;
+  if (!ws?.company) return null;
+  const seat = ws.company.coordinatorPaneId;
   return {
-    id: home.company.id,
-    name: home.company.name,
-    homeWorkspaceId: home.id,
-    coordinatorPtyId: seat && home.ptyIds.includes(seat) ? seat : null,
+    id: ws.company.id,
+    name: ws.name,
+    workspaceId: ws.id,
+    coordinatorPaneId: seat && ws.paneIds.includes(seat) ? seat : null,
   };
 }
 
@@ -148,16 +138,17 @@ export type CompanySendDecision =
 
 /**
  * May this new task go to the resolved receiver pane? Keyed on the receiver:
- * a pane outside every company takes any task as before. A task to a
- * company pane needs a sender pane, the receiver pinned, and a complete
- * brief, and work from outside the company enters through its coordinator.
- * The human's own lane is exempt.
+ * a pane outside every company takes any task as before. A task to a company
+ * pane needs a sender pane and the receiver pinned. The coordinator takes a
+ * request from anyone, brief or not, since it writes the briefs; any other
+ * pane of the company takes a complete brief, and only from inside the
+ * company. The human's own lane is exempt.
  */
 export function decideCompanySend(input: {
   workspaces: readonly CompanyWorkspaceView[];
   targetWorkspaceId: string;
-  /** The receiver pane's pty, or null when no single pane was resolved. */
-  targetPtyId: string | null;
+  /** The receiver pane, or null when no single pane was resolved. */
+  targetPaneId: string | null;
   /** The caller's own pty, already checked against its pane tree ('' if none). */
   senderPtyId: string;
   operator: boolean;
@@ -168,30 +159,27 @@ export function decideCompanySend(input: {
   const hasBrief = missingBriefFields(input.data).length === 0;
   if (input.operator) return { kind: 'allow', companyTask: hasBrief };
   const where = `company "${target.name}"`;
-  if (!input.targetPtyId) {
+  if (!input.targetPaneId) {
     return { kind: 'refuse', error: `a task to a pane in ${where} must name that pane (pane_id)` };
   }
   const senderWs = workspaceOwningPty(input.workspaces, input.senderPtyId);
   if (!senderWs) {
     return { kind: 'refuse', error: `wmux cannot tie the caller to a pane, and a task to ${where} needs one` };
   }
+  if (input.targetPaneId === target.coordinatorPaneId) return { kind: 'allow', companyTask: hasBrief };
   const missing = missingBriefFields(input.data);
   if (missing.length > 0) {
     return {
       kind: 'refuse',
-      error: `a task to ${where} needs a brief in data ({"kind":"${COMPANY_BRIEF_KIND}","v":1,…}); missing: ${missing.join(', ')}`,
+      error: `a task to a staff pane in ${where} needs a brief in data ({"kind":"${COMPANY_BRIEF_KIND}","v":1,…}); missing: ${missing.join(', ')}`,
     };
   }
-  const sender = companyOfWorkspace(input.workspaces, senderWs);
-  if (sender?.id === target.id) return { kind: 'allow', companyTask: true };
-  if (target.coordinatorPtyId && input.targetPtyId === target.coordinatorPtyId) {
-    return { kind: 'allow', companyTask: true };
-  }
+  if (senderWs === target.workspaceId) return { kind: 'allow', companyTask: true };
   return {
     kind: 'refuse',
-    error: target.coordinatorPtyId
-      ? `${where} takes work from outside through its coordinator; send it there`
-      : `${where} takes work from outside through its coordinator, and it has none right now`,
+    error: target.coordinatorPaneId
+      ? `${where} takes work from outside through its coordinator pane; send it there`
+      : `${where} takes work from outside through its coordinator pane, and it has none right now`,
   };
 }
 

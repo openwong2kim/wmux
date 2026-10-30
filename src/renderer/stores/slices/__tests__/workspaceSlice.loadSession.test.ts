@@ -408,10 +408,10 @@ describe('loadSession — companies', () => {
   });
 
   it('keeps a valid company record and drops a broken one', () => {
-    const home = { v: 1, kind: 'home', id: 'd-eng', name: 'Eng', coordinatorPtyId: 'pty-a' };
+    const home = { v: 1, id: 'co-eng', coordinatorPaneId: 'pane-left' };
     const [a, b] = load([
       { id: 'ws-a', name: 'A', rootPane: tree(), activePaneId: 'pane-left', company: home },
-      { id: 'ws-b', name: 'B', rootPane: tree(), activePaneId: 'pane-left', company: { v: 9, kind: 'home', id: 'x' } },
+      { id: 'ws-b', name: 'B', rootPane: tree(), activePaneId: 'pane-left', company: { v: 9, id: 'x', coordinatorPaneId: null } },
     ]);
     expect(a.company).toEqual(home);
     expect(b).not.toHaveProperty('company');

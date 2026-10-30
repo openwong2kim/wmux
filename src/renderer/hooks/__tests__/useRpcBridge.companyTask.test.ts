@@ -24,7 +24,7 @@ function leaf(id: string, ptyId: string): PaneLeaf {
   return { id, type: 'leaf', surfaces: [surface], activeSurfaceId: surface.id };
 }
 
-// Company "Eng" lives in HOME: the coordinator pane and one member pane.
+// HOME is the company "Eng": the coordinator pane and one staff pane.
 const HOME = {
   id: 'ws-dept-home',
   name: 'Eng',
@@ -36,7 +36,7 @@ const HOME = {
     children: [leaf('pane-coord', 'pty-coord'), leaf('pane-member', 'pty-member')],
   } as Pane,
   activePaneId: 'pane-coord',
-  company: { v: 1, kind: 'home', id: 'd-eng', name: 'Eng', coordinatorPtyId: 'pty-coord' },
+  company: { v: 1, id: 'co-eng', coordinatorPaneId: 'pane-coord' },
 } as Workspace;
 const OUTSIDE = { id: 'ws-dept-outside', name: 'Outside', rootPane: leaf('pane-out', 'pty-out'), activePaneId: 'pane-out' } as Workspace;
 
@@ -79,7 +79,7 @@ describe('a new task to a company pane', () => {
     expect(taskCount()).toBe(0);
   });
 
-  it('from outside the company reaches the coordinator but not a member', async () => {
+  it('from outside the company reaches the coordinator but not a staff pane', async () => {
     const toMember = await send({ workspaceId: OUTSIDE.id, to: HOME.id, paneId: 'pane-member', senderPtyId: 'pty-out', data: BRIEF });
     expect(toMember.error).toContain('through its coordinator');
     expect(taskCount()).toBe(0);
@@ -88,7 +88,13 @@ describe('a new task to a company pane', () => {
     expect(taskCount()).toBe(1);
   });
 
-  it('from a caller that claims the home workspace without its pane is refused', async () => {
+  it('from outside, a one-line request without a brief reaches the coordinator', async () => {
+    const res = await send({ workspaceId: OUTSIDE.id, to: HOME.id, paneId: 'pane-coord', senderPtyId: 'pty-out' });
+    expect(res.error).toBeUndefined();
+    expect(useStore.getState().a2aTasks[res.taskId as string].metadata.to.paneId).toBe('pane-coord');
+  });
+
+  it('from a caller that claims the company workspace without its pane is refused', async () => {
     // pty-out is not a pane of HOME, so the claimed sender pane does not hold.
     const res = await send({ workspaceId: HOME.id, to: HOME.id, paneId: 'pane-member', senderPtyId: 'pty-out', data: BRIEF });
     expect(res.error).toBeDefined();
