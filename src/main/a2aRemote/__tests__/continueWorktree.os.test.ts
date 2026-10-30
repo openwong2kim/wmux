@@ -176,6 +176,9 @@ describe('createContinueWorktree', () => {
       createContinueWorktree({ repoPath: repo, origin: ORIGIN, branch: 'feat', head, sub: 'apps', continueId: ID }, { ...opts(), platform });
     expect(await long('win32')).toMatchObject({ ok: false, code: 'path-too-long' });
     expect(tipOf('feat')).toBeNull();
-    expect(await long('darwin')).toMatchObject({ ok: true });
+    const other = await long('darwin');
+    // Git on Windows cannot use a folder this long (core.longpaths is off), so there only the limit's absence is checked.
+    if (process.platform === 'win32') expect(other).not.toMatchObject({ code: 'path-too-long' });
+    else expect(other).toMatchObject({ ok: true });
   });
 });

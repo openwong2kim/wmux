@@ -65,6 +65,8 @@ function placer(over: Partial<ContinuePlacerDeps> = {}): ContinuePlacer {
     env: () => ({ CLAUDE_CONFIG_DIR: configDir }),
     freeBytes: async () => 1024 * 1024 * 1024,
     log: () => undefined,
+    // The Windows path limit has its own test: a long CI temp dir must not trip it everywhere.
+    platform: 'linux',
     ...over,
   });
 }
