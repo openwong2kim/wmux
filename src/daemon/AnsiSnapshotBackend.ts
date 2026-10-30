@@ -2,7 +2,6 @@ import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import type { SnapshotOutcome, SnapshotRequest } from './HeadlessSnapshot';
 import { generateRustSnapshot } from './RustSnapshot';
 import { withSnapshotShadow } from './SnapshotShadow';
-import { nativeSnapshotEligible } from './TextSnapshotBackend';
 
 type Reference = (req: SnapshotRequest) => Promise<SnapshotOutcome>;
 type Reason = 'native' | 'error' | 'budget' | 'unsupported' | 'limits' | 'state' | 'circuit-open';
@@ -18,6 +17,18 @@ let failedModule: { path: string | undefined } | undefined;
 export function getAnsiSnapshotBackendDiagnostics(): Diagnostics & { circuitOpen: boolean } {
   return { ...diagnostics, last: diagnostics.last && { ...diagnostics.last },
     circuitOpen: !!failedModule && failedModule.path === (process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE) };
+}
+
+/** A full default (8 MiB) ring plus its mode preamble. */
+const MAX_INPUT_BYTES = 8 * 1024 * 1024 + 64 * 1024;
+
+/** Sizes the native grid accepts. Its history is capped by RustSnapshot at the
+ * grid's cell limit, so the attach's 100k-row scrollback is eligible too. */
+function eligible(req: SnapshotRequest): boolean {
+  const scrollback = req.scrollback ?? 5000;
+  if (req.initial.length > MAX_INPUT_BYTES || !Number.isInteger(scrollback) || scrollback < 0 || scrollback > 100000) return false;
+  return [req, ...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : [])].every(({ cols, rows }) =>
+    Number.isInteger(cols) && Number.isInteger(rows) && cols >= 2 && cols <= 1000 && rows >= 1 && rows <= 1000);
 }
 
 /** Both backends replay the frozen native history as plain bytes. */
@@ -40,7 +51,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   if (mode !== 'ansi' && mode !== 'all') return withSnapshotShadow(input, 'ansi', xterm);
   const modulePath = process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE;
   if (failedModule && failedModule.path !== modulePath) failedModule = undefined;
-  const skip = !nativeSnapshotEligible(input) ? 'limits' : failedModule ? 'circuit-open' : hasUnqualifiedState(input.initial) ? 'state' : undefined;
+  const skip = !eligible(input) ? 'limits' : failedModule ? 'circuit-open' : hasUnqualifiedState(input.initial) ? 'state' : undefined;
   if (skip) {
     diagnostics.skipped++;
     diagnostics.last = { backend: 'xterm', reason: skip };
@@ -117,7 +128,9 @@ function drainTail(initial: Buffer, drained: Buffer[]): Buffer {
  *   and DECRC restores the shifted set only in xterm;
  * - C1 controls as code points, which xterm executes and Alacritty prints;
  * - selective erase (DECSED/DECSEL), SL/SR, DECIC/DECDC and DECSTR;
- * - SU, which moves rows into Alacritty's scrollback but not xterm's;
+ * - SU, which moves rows into Alacritty's scrollback but not xterm's, and
+ *   ED 1/2 spelled other than `CSI 1 J` / `CSI 2 J` (the native feed gives
+ *   those xterm's semantics: Alacritty's ED 2 scrolls the screen into history);
  * - modes Alacritty lacks: X10 mouse (9), reverse wrap (45), DECNKM (66),
  *   alternate screen 47/1047, cursor save 1048 and LNM (20).
  * Everything else, OSC included, replays on Rust: titles, notifications and
@@ -135,6 +148,11 @@ export function hasUnqualifiedState(bytes: Buffer): boolean {
   for (const match of text.matchAll(/\x1b\[(\??)([0-9;]*)[hl]/g)) {
     const params = match[2].split(';');
     if (match[1] ? params.some(param => UNSUPPORTED_PRIVATE_MODES.has(param)) : params.includes('20')) return true;
+  }
+  // The native feed gives ED 1/2 xterm's semantics in their usual spelling only.
+  for (const match of text.matchAll(/\x1b\[([0-9;:]*)J/g)) {
+    const first = Number(match[1].split(/[;:]/)[0]);
+    if ((first === 1 || first === 2) && match[1] !== '1' && match[1] !== '2') return true;
   }
   for (const match of text.matchAll(/\x1b\[([0-9;:]*)m/g)) {
     const params = match[1].split(';');

@@ -8,6 +8,9 @@ use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color, NamedColor};
 use std::fmt::Write;
 
+/// The rendition `style` gives a default cell.
+const RESET: &str = "\x1b[0m";
+
 fn color(out: &mut String, value: Color, foreground: bool) {
     let base = if foreground { 38 } else { 48 };
     match value {
@@ -102,6 +105,8 @@ fn replayable(link: &Hyperlink) -> bool {
 #[derive(Default)]
 struct Pen {
     style: String,
+    /// The current rendition paints erased and scrolled-in cells.
+    colored: bool,
     link: Option<Hyperlink>,
 }
 
@@ -111,6 +116,7 @@ impl Pen {
         if style != self.style {
             out.push_str(&style);
             self.style = style;
+            self.colored = cell.bg != Color::Named(NamedColor::Background);
         }
         self.set_link(out, cell.hyperlink().filter(replayable));
     }
@@ -179,6 +185,11 @@ fn screen(out: &mut String, grid: &Grid<Cell>) -> bool {
             while end > 0 && blank(&line[Column(end - 1)]) {
                 end -= 1;
             }
+            // Blanks left of the cursor are usually printed: a prompt's
+            // trailing space, which reads back as part of the prompt.
+            if y == grid.cursor.point.line.0 {
+                end = end.max(grid.cursor.point.column.0);
+            }
         }
         for x in 0..end {
             let cell = &line[Column(x)];
@@ -211,10 +222,14 @@ fn screen(out: &mut String, grid: &Grid<Cell>) -> bool {
             x = run;
         }
         if y < grid.screen_lines() as i32 - 1 && !wrapped {
-            // Clear rendition before scrolling; otherwise a colored blank
-            // template can paint extra cells beyond the serialized content.
-            out.push_str("\x1b[0m\r\n");
-            pen.style.clear();
+            // A scroll fills the new row with the current background; clear
+            // a colored one first so it paints no cells the grid lacks.
+            if pen.colored {
+                out.push_str(RESET);
+                pen.style = RESET.to_owned();
+                pen.colored = false;
+            }
+            out.push_str("\r\n");
         }
     }
     cursor(out, &mut pen, grid);
@@ -318,7 +333,13 @@ mod tests {
     #[test]
     fn trailing_blanks_stay_empty_cells() {
         let out = replay(10, "ab   \r\ncd").unwrap();
-        assert!(out.contains("\x1b[0mab\x1b[0m\r\n"), "{out:?}");
+        assert!(out.contains("\x1b[0mab\r\ncd"), "{out:?}");
+    }
+
+    #[test]
+    fn blanks_before_the_cursor_stay_printed() {
+        let out = replay(10, "ab\r\n$ ").unwrap();
+        assert!(out.contains("ab\r\n$ \r\n"), "{out:?}");
     }
 
     #[test]

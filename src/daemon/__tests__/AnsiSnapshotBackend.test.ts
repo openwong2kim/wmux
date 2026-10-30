@@ -82,6 +82,7 @@ describe('ANSI snapshot backend selection', () => {
     ['DECIC', '\x1b[2\'}'],
     ['DECSTR', '\x1b[!p'],
     ['SU', '\x1b[2S'],
+    ['ED 2 spelled 0;2', '\x1b[2;0J'],
     ['LNM', '\x1b[20h'],
     ['X10 mouse', '\x1b[?9h'],
     ['reverse wrap', '\x1b[?1;45h'],
@@ -152,6 +153,25 @@ describe('ANSI snapshot backend selection', () => {
     nativeSuccess(request.initial);
     await selectAnsiSnapshot(request, reference);
     expect(native).toHaveBeenCalledTimes(2);
+  });
+
+  it('takes an attach request: a full ring with its preamble and 100k rows of scrollback', async () => {
+    const initial = Buffer.alloc(8 * 1024 * 1024 + 64, 0x61);
+    nativeSuccess(initial);
+    const reference = vi.fn();
+    await selectAnsiSnapshot({ ...request, initial, scrollback: 100000 }, reference);
+    expect(native).toHaveBeenCalledOnce(); expect(reference).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['an oversized input', { initial: Buffer.alloc(9 * 1024 * 1024) }],
+    ['a scrollback above 100k', { scrollback: 100001 }],
+    ['a recorded size above 1000 columns', { geometry: { start: { cols: 1001, rows: 24 }, changes: [] } }],
+  ])('keeps xterm for %s', async (_name, change) => {
+    const reference = vi.fn(async () => success);
+    await selectAnsiSnapshot({ ...request, ...change }, reference);
+    expect(native).not.toHaveBeenCalled();
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'limits' });
   });
 
   it('returns a margins refusal without parsing again on xterm', async () => {

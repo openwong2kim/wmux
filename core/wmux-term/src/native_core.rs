@@ -32,6 +32,7 @@ pub fn native_core_capabilities() -> Vec<String> {
         "output-chunk-v1".into(),
         "output-interpreter-v1".into(),
         "ansi-v2".into(),
+        "ansi-v3".into(),
     ]
 }
 
@@ -82,6 +83,75 @@ pub struct NativeTerminal {
     term: Option<Term<VoidListener>>,
     parser: Processor,
     scrollback: u32,
+    /// `feed_xterm`: a trailing prefix of ED 1/ED 2 awaiting its final byte.
+    held: Vec<u8>,
+    /// A resize moved rows into history that xterm would have kept on screen.
+    reflowed_into_history: bool,
+}
+
+/// ED 1 and ED 2 in the forms programs write them.
+const ERASES: [&[u8]; 2] = [b"\x1b[1J", b"\x1b[2J"];
+
+/// Feed `bytes`, giving ED 1 and ED 2 xterm's semantics. A trailing prefix
+/// of either is kept in `held` until the bytes that complete it arrive.
+fn feed_like_xterm(
+    parser: &mut Processor,
+    term: &mut Term<VoidListener>,
+    held: &mut Vec<u8>,
+    bytes: &[u8],
+) {
+    let mut data = std::mem::take(held);
+    data.extend_from_slice(bytes);
+    let keep = (1..4)
+        .rev()
+        .find(|&n| n <= data.len() && ERASES.iter().any(|seq| data[data.len() - n..] == seq[..n]))
+        .unwrap_or(0);
+    *held = data.split_off(data.len() - keep);
+    let mut from = 0;
+    let mut at = 0;
+    while let Some(found) = data[at..].iter().position(|&b| b == 0x1b) {
+        at += found;
+        match ERASES.iter().position(|seq| data[at..].starts_with(seq)) {
+            Some(kind) => {
+                parser.advance(term, &data[from..at]);
+                erase_like_xterm(parser, term, kind == 1);
+                at += ERASES[kind].len();
+                from = at;
+            }
+            None => at += 1,
+        }
+    }
+    parser.advance(term, &data[from..]);
+}
+
+/// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
+/// screen scrolls the screen into history, and its ED 1 skips the top row
+/// when the cursor is on the second. The renderer is xterm.
+fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: bool) {
+    // A real ESC [ ends any string or sequence in progress; Alacritty
+    // ignores DECSED, so this ends it the same way and does nothing else.
+    parser.advance(term, b"\x1b[?J");
+    // Inside a synchronized update the parser holds bytes back; apply them
+    // first, then re-enter the update (buffering is timing, not state).
+    let synchronized = parser.sync_timeout().pending_timeout();
+    if synchronized {
+        parser.stop_sync(term);
+    }
+    let grid = term.grid_mut();
+    if all {
+        grid.reset_region(..);
+    } else {
+        let cursor = grid.cursor.point;
+        grid.reset_region(..cursor.line);
+        let bg = grid.cursor.template.bg;
+        let end = (cursor.column.0 + 1).min(grid.columns());
+        for cell in &mut grid[cursor.line][..Column(end)] {
+            *cell = bg.into();
+        }
+    }
+    if synchronized {
+        parser.advance(term, b"\x1b[?2026h");
+    }
 }
 
 #[napi]
@@ -103,6 +173,8 @@ impl NativeTerminal {
             term: Some(Term::new(config, &size, VoidListener)),
             parser: Processor::new(),
             scrollback,
+            held: Vec::new(),
+            reflowed_into_history: false,
         })
     }
 
@@ -115,6 +187,18 @@ impl NativeTerminal {
         // Parser retains incomplete UTF-8 / escape state across feeds.
         // VoidListener intentionally discards all PTY replies and clipboard events.
         self.parser.advance(term, &bytes);
+        Ok(())
+    }
+
+    /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase
+    /// as xterm does (see erase_like_xterm). `ansi_snapshot` feeds what is held.
+    #[napi]
+    pub fn feed_xterm(&mut self, bytes: Uint8Array) -> Result<()> {
+        let term = self
+            .term
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        feed_like_xterm(&mut self.parser, term, &mut self.held, &bytes);
         Ok(())
     }
 
@@ -141,10 +225,25 @@ impl NativeTerminal {
                 "Experiment grid exceeds four million cells",
             ));
         }
-        self.term
+        let term = self
+            .term
             .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?
-            .resize(size);
+            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        // Rows a narrower reflow adds above the cursor go into Alacritty's
+        // history even with room below; xterm moves the cursor down instead.
+        let before = |term: &Term<VoidListener>| {
+            [term.grid(), term.inactive_grid()].map(|grid| {
+                let room = grid.cursor.point.line.0 + 1 < grid.screen_lines() as i32;
+                (grid.history_size(), room)
+            })
+        };
+        let start = before(term);
+        term.resize(size);
+        let end = before(term);
+        self.reflowed_into_history |= start
+            .iter()
+            .zip(end.iter())
+            .any(|(&(history, room), &(after, _))| room && after > history);
         Ok(())
     }
 
@@ -215,12 +314,32 @@ impl NativeTerminal {
         })
     }
 
+    /// `requested_scrollback` above this terminal's own limit means the
+    /// caller capped the history to bound memory: a history that reached the
+    /// cap may have dropped rows the request would have kept.
     #[napi]
-    pub fn ansi_snapshot(&mut self) -> Result<String> {
+    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<String> {
         let term = self
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        // An unfinished ED prefix is an ordinary partial sequence.
+        let held = std::mem::take(&mut self.held);
+        self.parser.advance(term, &held);
+        if self.reflowed_into_history {
+            return Err(Error::from_reason(
+                "unsupported-reflow: a resize scrolled rows xterm keeps on screen",
+            ));
+        }
+        if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
+            && [term.grid(), term.inactive_grid()]
+                .iter()
+                .any(|grid| grid.history_size() >= self.scrollback as usize)
+        {
+            return Err(Error::from_reason(
+                "unsupported-history-limit: history reached the native grid cap",
+            ));
+        }
         let synchronized = self.parser.sync_timeout().pending_timeout();
         self.parser.stop_sync(term);
         let mut result = crate::native_serialize::serialize(term).map_err(Error::from_reason)?;
@@ -766,5 +885,72 @@ impl NativeRing {
         if self.geometry.len() > 256 {
             self.geometry.drain(..self.geometry.len() - 256);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{feed_like_xterm, Size};
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::vte::ansi::{Processor, Timeout};
+
+    fn feed(chunks: &[&str]) -> Term<VoidListener> {
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut held = Vec::new();
+        for chunk in chunks {
+            feed_like_xterm(&mut parser, &mut term, &mut held, chunk.as_bytes());
+        }
+        parser.advance(&mut term, &held);
+        term
+    }
+
+    fn row(term: &Term<VoidListener>, line: i32) -> String {
+        let grid = term.grid();
+        (0..grid.columns())
+            .map(|x| grid[Line(line)][Column(x)].c)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    #[test]
+    fn erase_display_keeps_the_screen_out_of_history() {
+        // Split inside the sequence, as a slice or live chunk boundary can.
+        let term = feed(&["1\r\n2\r\n3\x1b[", "2Jx"]);
+        assert_eq!(term.grid().history_size(), 0);
+        assert_eq!(
+            (row(&term, 0), row(&term, 1), row(&term, 2)),
+            ("".into(), "".into(), " x".into())
+        );
+    }
+
+    #[test]
+    fn erase_above_clears_the_top_row_from_the_second() {
+        let term = feed(&["aaa\r\nbbb\x1b[1;2H\x1b[1J"]);
+        assert_eq!((row(&term, 0), row(&term, 1)), ("  a".into(), "bbb".into()));
+        let term = feed(&["aaa\r\nbbb\x1b[2;2H\x1b[1J"]);
+        assert_eq!((row(&term, 0), row(&term, 1)), ("".into(), "  b".into()));
+    }
+
+    #[test]
+    fn erase_inside_a_synchronized_update_keeps_the_update_open() {
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut held = Vec::new();
+        feed_like_xterm(&mut parser, &mut term, &mut held, b"a\x1b[?2026hb\x1b[2Jc");
+        assert!(parser.sync_timeout().pending_timeout());
+        parser.stop_sync(&mut term);
+        assert_eq!(row(&term, 0), "  c");
+        assert_eq!(term.grid().history_size(), 0);
+    }
+
+    #[test]
+    fn erase_ends_a_string_like_the_real_escape() {
+        let term = feed(&["a\x1b]0;title\x1b[2Jc"]);
+        assert_eq!(row(&term, 0), " c");
     }
 }
