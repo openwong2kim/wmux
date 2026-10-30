@@ -851,6 +851,7 @@ export const pl = {
   'pane.renameError.failed': "Nie udało się zmienić nazwy panelu",
   'pane.renameTab': 'Zmień nazwę karty',
   'pane.stash': 'Odłóż panel',
+  'pane.balanceLayout': 'Wyrównaj układ',
   'pane.muteNotifications': 'Wycisz powiadomienia',
   'pane.unmuteNotifications': 'Włącz powiadomienia',
   'pane.notificationsMuted': 'Powiadomienia z tego panelu są wyciszone',
@@ -3720,6 +3721,7 @@ export const pl = {
   'settings.prefix.swapPanePrev': 'Zamień z poprzednim panelem',
   'settings.prefix.swapPaneNext': 'Zamień z następnym panelem',
   'settings.prefix.stashPane': 'Odłóż panel',
+  'settings.prefix.balanceLayout': 'Wyrównaj układ',
 
   // Custom keybindings
   'settings.customKeybindings': 'Niestandardowe przypisania klawiszy',

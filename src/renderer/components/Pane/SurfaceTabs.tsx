@@ -518,6 +518,7 @@ export default function SurfaceTabs({
     useStore.getState().togglePaneZoom(paneId);
   }, [paneId]);
   const stashChord = prefixChordFor(prefixConfig, 'stashPane');
+  const balanceChord = prefixChordFor(prefixConfig, 'balanceLayout');
   const stashTooltip = stashDisabled
     ? t('pane.stashNoDaemon')
     : `${t('pane.stash')} — ${t('pane.stashHint')}`;
@@ -877,6 +878,13 @@ export default function SurfaceTabs({
       separatorBefore: true,
       onSelect: toggleZoom,
     },
+    {
+      key: 'balance',
+      label: t('pane.balanceLayout'),
+      shortcut: balanceChord ?? undefined,
+      icon: <IconGrid size={14} />,
+      onSelect: () => { useStore.getState().balanceLayout(); },
+    },
     // #1237 — snap the RUNNING panes into a saved arrangement. Menu-only on
     // purpose: a sixth cluster button would break the five-button width
     // contract (PANE_ACTIONS_CLUSTER_WIDTH, two DESIGN.md rulings), and the
@@ -894,7 +902,7 @@ export default function SurfaceTabs({
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, browserPolicy.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
     menuTabSurface, startRename, canLinkRemote, canShareRemote, sharePeers, paneMuted, togglePaneMuted, continueAccount.mainItems, claudeRewindItems,
-    stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
+    stashChord, balanceChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
     layoutTemplates, shadow, splitRightKey, splitDownKey,
   ]);
 

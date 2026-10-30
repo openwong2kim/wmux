@@ -788,6 +788,8 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
     // #977 — stash the active pane. `!` is tmux's break-pane, which is the
     // closest gesture in muscle memory: take this pane out of the layout.
     '!': 'stashPane',
+    // Rebalance the whole layout: every column and row back to an equal share.
+    '=': 'balanceLayout',
     'K': 'movePaneUp',
     'J': 'movePaneDown',
     'H': 'movePaneLeft',

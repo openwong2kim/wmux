@@ -284,6 +284,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (ws) state.togglePaneZoom(ws.activePaneId);
     },
+    balanceLayout: () => { store.getState().balanceLayout(); },
     commandPalette: () => { store.getState().toggleCommandPalette(); },
     focusUp: () => { store.getState().focusPaneDirection('up'); },
     focusDown: () => { store.getState().focusPaneDirection('down'); },
