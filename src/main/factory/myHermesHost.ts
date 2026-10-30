@@ -7,7 +7,9 @@
 // no settings write (`applyHermesSettings`), no gateway restart before a spawn
 // (`ensureOwnGateway`), and no gateway stop when a turn does not settle or the
 // app quits; a turn is ended with ACP `session/cancel` and the bot stays
-// blocked until Hermes says the turn ended (AcpBrainAdapter own mode).
+// blocked until Hermes says the turn ended (AcpBrainAdapter own mode), at most
+// the adapter's cancel bound: past it wmux lets go of the `hermes acp` process
+// it spawned for the bot, and the owner is told in the bot's 1:1 chat.
 //
 // Right before every agent spawn (`prepare`) all of these must hold:
 // - the read-only readiness (myHermes.ts) answers ready, fresh: the install
@@ -24,6 +26,7 @@
 
 import type { BotBinding } from '../../shared/bot';
 import { HERMES_PROFILE_RE } from '../../shared/bot';
+import { dmThreadId } from '../../shared/room';
 import type { AcpBrainAdapter, AcpHermesPolicy } from '../deck/AcpBrainAdapter';
 import { waitForCommanderTokenUse } from '../deck/commanderTrust';
 import { getApprovalService, type ApprovalService } from './approvals';
@@ -32,12 +35,20 @@ import { hermesEnv, hermesNotReadyMessage, readHermesGatewayState, type HermesGa
 import { defaultMyHermesDeps, myHermesProfileDir, myHermesReadiness, type MyHermesReadinessDeps } from './myHermes';
 import { HERMES_PERMISSION_TIMEOUT_MS } from './hermesHost';
 import { getBotStore } from './botStore';
+import { noticeBot, type BotNoticePorts } from './botNotices';
+import { getFactLog } from './factLog';
+import { getWakeQueue } from './wakeQueue';
 
 /** How long a new session's MCP child may take to call main. */
 const MCP_READY_MS = 15_000;
 
 /** The wmux tool a bot on My Hermes holds (its only wmux MCP tool). */
 export const OWN_HERMES_WMUX_TOOL = 'room_post';
+
+/** The room card of a cancelled turn that did not end within the adapter's
+ *  bound (the English title; `turn.unsettled` words it in the reader's
+ *  language). */
+export const OWN_HERMES_UNSETTLED_TITLE = 'My Hermes did not stop the last turn cleanly, so wmux closed its connection to Hermes. Your next message reconnects, in a new conversation if this one cannot resume.';
 
 /** Gateway launch flags that change what a bot attached to it may do. */
 const GATEWAY_MODE_FLAGS = new Set(['yolo', 'safe_mode', 'ignore_user_config']);
@@ -76,6 +87,32 @@ export interface OwnHermesHostDeps {
   attended?: (botId: string) => boolean;
   /** The approval store (default: getApprovalService). */
   approvals?: () => Pick<ApprovalService, 'askNativeTool'> | null;
+  /** Tell the owner in the bot's 1:1 chat that its cancelled turn did not
+   *  end in time (default: noteOwnHermesUnsettled). */
+  unsettledNotice?: (binding: BotBinding) => void;
+}
+
+/** The owner's card for a bot on My Hermes whose cancelled turn did not end
+ *  in time, in its 1:1 chat. */
+export function noteOwnHermesUnsettled(
+  binding: BotBinding,
+  ports: BotNoticePorts = { factLog: getFactLog, wakes: getWakeQueue },
+  botExists: (botId: string) => boolean = (id) => !!getBotStore()?.get(id),
+): void {
+  // A bot deleted meanwhile has no chat to tell.
+  if (!botExists(binding.botId)) return;
+  noticeBot(ports, {
+    // A wake would be refused (no owner words): the card is the owner's.
+    quiet: true,
+    card: true,
+    botId: binding.botId,
+    workspaceId: binding.workspaceId,
+    key: `my-hermes-unsettled:${binding.botId}:${Date.now()}`,
+    topic: 'turn.unsettled',
+    title: OWN_HERMES_UNSETTLED_TITLE,
+    threadId: dmThreadId(binding.botId),
+    notice: { code: 'turn.unsettled' },
+  });
 }
 
 function defaultPidAlive(pid: number): boolean {
@@ -167,10 +204,16 @@ export class OwnHermesHost {
       },
       toolAllowed: ownHermesToolAllowed,
       mcpReady: (token, since) => waitForCommanderTokenUse(token, since, MCP_READY_MS),
-      // The owner's gateway is never stopped: the turn was cancelled and
-      // the bot stays blocked until Hermes reports its end.
+      // The owner's gateway is never stopped: the cancelled turn did not
+      // end within the bound and the adapter let go of its own agent
+      // process; the owner is told.
       unsettled: async () => {
-        this.log(`[hermes:own] ${binding.botId}'s cancelled turn has not settled; waiting for Hermes (the owner's gateway is not stopped)`);
+        this.log(`[hermes:own] ${binding.botId}'s cancelled turn did not end in time; wmux closed its own Hermes ACP process (the owner's gateway is not stopped)`);
+        try {
+          (this.deps.unsettledNotice ?? noteOwnHermesUnsettled)(binding);
+        } catch (err) {
+          this.log(`[hermes:own] the unsettled-turn note of ${binding.botId} was not posted: ${String(err)}`);
+        }
       },
       disposed: (adapter) => {
         this.adapters.delete(adapter);

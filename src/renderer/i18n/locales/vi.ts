@@ -248,8 +248,6 @@ export const vi = {
   'viCopy.visual': '-- TRỰC QUAN --',
 
   // StatusBar
-  'statusBar.company': 'CÔNG TY',
-  'statusBar.session': 'Phiên: {min} phút',
   'statusBar.settingsTooltip': 'Cài đặt (Ctrl+,)',
 
   // Settings

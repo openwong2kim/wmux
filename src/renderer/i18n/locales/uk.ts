@@ -248,8 +248,6 @@ export const uk = {
   'viCopy.visual': '-- ВІЗУАЛЬНИЙ --',
 
   // StatusBar
-  'statusBar.company': 'КОМПАНІЯ',
-  'statusBar.session': 'Сесія: {min} хв',
   'statusBar.settingsTooltip': 'Налаштування (Ctrl+,)',
 
   // Settings

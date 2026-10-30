@@ -25,18 +25,26 @@ import type { WakeRoutineSummary } from './wakePrompt';
  *  its prompt are both built from (BotRuntime.ts). */
 export type OwnHermesRoutine = Pick<WakeRoutineSummary, 'prompt' | 'author' | 'botId' | 'workspaceId' | 'threadId'>;
 
+/** The stable code of a refusal the owner is told of (the `refusal` arg of
+ *  the `wake.refused` room notice), so the reader's language words it. */
+export type OwnHermesRefusalCode =
+  | 'routineBotWritten' | 'routineOutsideDm' | 'routineCleanUnknown' | 'routineTainted' | 'roomDirtyPaused'
+  | 'notOwnerMessage' | 'outsideDm' | 'notAttended' | 'roomUnreadable' | 'roomDirty';
+
 /** Why an own-mode bot's wake is not sent to Hermes. `pause`: the reason
  *  stays until the owner acts, so the routine is paused (and the note posted
- *  once). `note`: the owner is told in the room. */
+ *  once). `note`: the owner is told in the room. `code`: the note's stable
+ *  code (null when no note is posted); `why` stays its English. */
 export interface OwnHermesRefusal {
   why: string;
   pause: boolean;
   note: boolean;
+  code: OwnHermesRefusalCode | null;
 }
 
-const room = (input: { roomClean: boolean | null }): string | null => {
-  if (input.roomClean === null) return 'wmux could not read this chat to check who wrote in it, so this was not sent to My Hermes.';
-  if (input.roomClean !== true) return 'Another bot or a guest has written in this chat, so wmux no longer sends it to My Hermes.';
+const room = (input: { roomClean: boolean | null }): { why: string; code: 'roomUnreadable' | 'roomDirty' } | null => {
+  if (input.roomClean === null) return { why: 'wmux could not read this chat to check who wrote in it, so this was not sent to My Hermes.', code: 'roomUnreadable' };
+  if (input.roomClean !== true) return { why: 'Another bot or a guest has written in this chat, so wmux no longer sends it to My Hermes.', code: 'roomDirty' };
   return null;
 };
 
@@ -62,24 +70,24 @@ export function ownHermesWakeRefusal(input: {
     const rt = input.routine;
     // Gone, or not this bot's (a queue item naming another bot's routine):
     // nothing of the owner's to pause or tell.
-    if (!rt) return { why: 'its routine is gone, so this was not sent to My Hermes.', pause: false, note: false };
-    if (rt.botId !== input.botId || rt.workspaceId !== input.item.workspaceId) return { why: 'the routine is not this bot\'s, so this was not sent to My Hermes.', pause: false, note: false };
-    if (rt.author !== 'owner') return { why: 'My Hermes runs only routines you set for it yourself; a bot wrote this one, so it is paused.', pause: true, note: true };
-    if (rt.threadId !== dm || input.item.threadId !== dm) return { why: 'My Hermes runs routines only in its 1:1 chat, so this one is paused.', pause: true, note: true };
-    if (input.routineClean === null) return { why: 'wmux could not check that this conversation is clean, so this run of the routine was not sent to My Hermes.', pause: false, note: true };
-    if (!input.routineClean) return { why: 'This conversation has taken in outside text, so wmux paused this routine; start a new conversation with My Hermes, then resume it.', pause: true, note: true };
+    if (!rt) return { why: 'its routine is gone, so this was not sent to My Hermes.', pause: false, note: false, code: null };
+    if (rt.botId !== input.botId || rt.workspaceId !== input.item.workspaceId) return { why: 'the routine is not this bot\'s, so this was not sent to My Hermes.', pause: false, note: false, code: null };
+    if (rt.author !== 'owner') return { why: 'My Hermes runs only routines you set for it yourself; a bot wrote this one, so it is paused.', pause: true, note: true, code: 'routineBotWritten' };
+    if (rt.threadId !== dm || input.item.threadId !== dm) return { why: 'My Hermes runs routines only in its 1:1 chat, so this one is paused.', pause: true, note: true, code: 'routineOutsideDm' };
+    if (input.routineClean === null) return { why: 'wmux could not check that this conversation is clean, so this run of the routine was not sent to My Hermes.', pause: false, note: true, code: 'routineCleanUnknown' };
+    if (!input.routineClean) return { why: 'This conversation has taken in outside text, so wmux paused this routine; start a new conversation with My Hermes, then resume it.', pause: true, note: true, code: 'routineTainted' };
     const dirty = room(input);
     if (!dirty) return null;
     // A chat that could not be read may be readable next time.
-    return input.roomClean === null ? { why: dirty, pause: false, note: true } : { why: `${dirty} The routine is paused.`, pause: true, note: true };
+    return input.roomClean === null ? { ...dirty, pause: false, note: true } : { why: `${dirty.why} The routine is paused.`, pause: true, note: true, code: 'roomDirtyPaused' };
   }
-  if (r.kind !== 'human') return { why: 'My Hermes answers only your own messages in its 1:1 chat, so this was not sent to it.', pause: false, note: true };
+  if (r.kind !== 'human') return { why: 'My Hermes answers only your own messages in its 1:1 chat, so this was not sent to it.', pause: false, note: true, code: 'notOwnerMessage' };
   if (input.item.threadId !== dm || r.room === true || r.roomWide === true || r.lead === true) {
-    return { why: 'My Hermes talks with you one to one, so a message outside its 1:1 chat was not sent to it.', pause: false, note: true };
+    return { why: 'My Hermes talks with you one to one, so a message outside its 1:1 chat was not sent to it.', pause: false, note: true, code: 'outsideDm' };
   }
-  if (!input.attended) return { why: 'wmux could not confirm this message is yours alone, so it was not sent to My Hermes.', pause: false, note: true };
+  if (!input.attended) return { why: 'wmux could not confirm this message is yours alone, so it was not sent to My Hermes.', pause: false, note: true, code: 'notAttended' };
   const dirty = room(input);
-  return dirty ? { why: dirty, pause: false, note: true } : null;
+  return dirty ? { ...dirty, pause: false, note: true } : null;
 }
 
 /** The owner's message as Hermes is sent it: a leading `/` escaped. Pure. */

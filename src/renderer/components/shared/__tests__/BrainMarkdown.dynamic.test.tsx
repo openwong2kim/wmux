@@ -346,6 +346,13 @@ describe('renderBrainMarkdown', () => {
     expect(inlineCode.className).not.toContain('--accent');
   });
 
+  it('a double-click on inline code selects the whole span', () => {
+    render('run `src/main/index.ts --no-sandbox` now');
+    const code = container.querySelector('[data-brain-md-code-inline]') as HTMLElement;
+    act(() => { code.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); });
+    expect(window.getSelection()?.toString()).toBe('src/main/index.ts --no-sandbox');
+  });
+
   it('renders bullet and numbered lists with markers', () => {
     render('- first\n  - nested\n1. one\n2) two');
     const items = container.querySelectorAll('[data-brain-md-li]');

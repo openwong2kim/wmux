@@ -120,7 +120,7 @@ describe('rpc:invoke', () => {
     'routine.set',
     'routine.pause',
     'fact.emit',
-    'company.destroy',
+    'daemon.shutdown',
     'task.mission.close',
     'a2a.channel.post',
   ])('refuses %s', async (method) => {

@@ -42,7 +42,6 @@ import {
   reattachModelEnvMarker,
   splitModelEnvMarker,
 } from '../../shared/workerLaunch';
-import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { t } from '../i18n';
 import { parseRemoteSpawnedBy, remoteSpawnToastMessage } from '../utils/remoteSpawnedBy';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
@@ -556,10 +555,10 @@ export function useRpcBridge(): void {
     // `electronAPI.rpc.invoke('events.poll', params)` which routes
     // through main into the live pipe RpcRouter → the daemon-side
     // `events.poll` handler registered in `src/main/pipe/handlers/events.rpc.ts`.
-    // The renderer-side `useStore((s) => s.company)?.ceoWorkspaceId` is
-    // injected by the hook as the per-recipient scoping key (see plan
-    // U3); the daemon's per-workspace filter at events.rpc.ts:115-124
-    // admits the renderer's own workspace's events on that basis.
+    // The hook injects the human's reserved workspace (HUMAN_WORKSPACE_ID)
+    // as the per-recipient scoping key (see plan U3); the daemon's
+    // per-workspace filter at events.rpc.ts:115-124 admits the renderer's
+    // own workspace's events on that basis.
     (window as unknown as {
       __wmuxEventsPoll: (params: {
         cursor: number;
@@ -4194,15 +4193,6 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     );
     store.setAgentSkills(workspaceId, skills);
     return { ok: true };
-  }
-
-  // -------------------------------------------------------------------------
-  // company.* — Company mode handlers
-  // -------------------------------------------------------------------------
-
-  if (method.startsWith('company.')) {
-    const result = await handleCompanyRpc(method, params, store);
-    if (result !== null) return result;
   }
 
   // -------------------------------------------------------------------------

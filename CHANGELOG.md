@@ -1,5 +1,282 @@
 ## [Unreleased]
 
+## [4.13.0] — 2026-10-30
+
+### Added
+
+- **A schedule that keeps failing pauses itself.** Before, a scheduled run
+  that failed the same way every time kept firing until you noticed. Now,
+  after three scheduled runs in a row fail for the same reason, wmux turns
+  the schedule off and tells you why on the schedule's page. Fix the cause,
+  then turn the schedule back on. Cancelled runs, skipped occurrences, runs
+  that timed out waiting for your answer and Run now never count, and editing
+  what the schedule runs starts the count over. The run that pauses the
+  schedule shows one notification, not two.
+  (Idea adopted, with attribution, from the MIT-licensed
+  [cobusgreyling/loop-engineering](https://github.com/cobusgreyling/loop-engineering);
+  no code was copied.)
+
+- **Qwen Code gets the wmux MCP server.** If you use Qwen Code, wmux now adds
+  its MCP server to your existing `~/.qwen/settings.json`, the same way it
+  already does for Claude Code, Codex and Gemini CLI, so Qwen can drive panes,
+  the browser and agent messaging without manual setup. wmux never creates
+  that file; if Qwen Code is not set up, nothing is written. Qwen's hook events
+  are also mapped for later status tracking, but the hooks are not installed
+  yet. (#2824)
+
+- **Codex panes show the exact running / needs-you state Codex reports
+  itself.** Codex CLI writes its own status (working, waiting on you, idle)
+  with the Program Status Protocol (OSC 7501), and wmux now reads it: a pane
+  stays Running through a long, quiet reasoning stretch, shows Needs you the
+  moment an approval box opens even when the question wraps on a narrow pane,
+  and settles when Codex says the turn is over. Before, the status was guessed
+  from the window title, output volume and lines on the screen, which read a
+  quiet turn as idle and a repainted footer as finished. Those guesses remain
+  the fallback for agents that do not report. (#2836)
+
+- **Choose My Hermes or wmux's Hermes per bot.** Add bot and the bot profile
+  now offer My Hermes, which is your own Hermes (`~/.hermes` or one of its
+  profiles), next to Claude and wmux's managed Hermes. Before you pick a
+  profile, wmux shows whether it could serve a bot: the version, a model,
+  approvals, and no wmux MCP entry or messenger platforms. These checks are
+  read-only, and wmux never writes to your Hermes. One bot can use a profile
+  at a time, and wmux asks you in its own dialog before it binds one. My
+  Hermes works on macOS and Linux only.
+
+- **Read and answer a Hermes Agent pane from your phone.** Before, the phone's
+  Chat view had nothing to show for a pane running Hermes Agent. Now, once
+  you have sent Hermes its first message in the terminal, the Chat view shows
+  the conversation, tool calls included, and you can send the next message
+  from the phone while Hermes is waiting at its prompt. wmux reads Hermes' own
+  session history without changing it, and only while Hermes is running.
+  Sending is closed during a turn and while Hermes asks you something in the
+  terminal. This works with Hermes' standard terminal interface, not with its
+  `--tui` interface, a profile started with `-p`, or two Hermes panes in the
+  same folder.
+
+- **Bots run on My Hermes.** A bot set to My Hermes now answers in its 1:1
+  chat with your own Hermes profile, using that profile's tools and approval
+  settings as you configured them. wmux sends it only your own messages from
+  that chat: nothing from other bots, guests or the rest of the room. Its
+  only wmux tool is posting in that chat. Hermes's permission requests come to you as
+  approval cards. Stopping the bot cancels its turn and never stops your
+  Hermes gateway. Before every start wmux checks the profile again, and it
+  never writes to it. Schedule actions and the Run button are not sent to
+  My Hermes yet (routines you write are; see below); the chat says so
+  instead. macOS and Linux only.
+
+- **Routines for My Hermes.** A bot on My Hermes can now run on a schedule,
+  from routines you write for it yourself. Each routine runs in the bot's 1:1
+  chat with your own Hermes tools and approval settings. wmux sends it only
+  the routine's text, and only while that chat and conversation are clean.
+  Hermes's permission requests during a scheduled run are denied at once,
+  because no one is there to answer them. A routine the bot wrote, or one
+  whose chat or conversation took in outside text, is paused with a note
+  until you resume it. A bot cannot change, pause or resume a routine you
+  wrote. The Schedules page form for these routines comes in a later
+  release.
+
+- **`pane_list` flags an agent whose install was deleted under it.** Claude
+  Code's native installer removes the previous version when it updates, and a
+  pane still running that version keeps going without its own program: on
+  macOS it loses folder access, and tool runs start failing. Before, nothing
+  said which panes were affected. Now `pane_list` marks such a pane with
+  `agentImageMissing: true`, so an agent or script can tell you which panes to
+  restart. macOS and Linux, native installs only. Windows locks a running
+  program, so it cannot be deleted, and an npm update replaces the files in
+  place.
+
+### Changed
+
+- **Settings is easier to scan.** A long setting description now fits on one
+  line and ends in a small info icon. Hover over it, focus it with the
+  keyboard or click it to read the rest, and press Escape to close it. Before,
+  about 66 rows each had a "Learn more" link on a line of its own. The Bots
+  page sections no longer touch, the Token usage quota cards no longer sit
+  inside another card, the page no longer shifts sideways when a scrollbar
+  appears, and the action buttons on settings rows are all the same height.
+
+- **Settings controls are consistent, and General is shorter.** The keyboard
+  shortcut rows and the per-workspace mute rows are now switches; before,
+  they used checkboxes. Notification sound is one switch
+  instead of a switch plus a separate Default/None choice. General groups its
+  settings into four sections (Language and updates, Startup and power, Git
+  safety, Setup and reset) instead of eight small ones. Each prefix binding on
+  the Keyboard page reads like a shortcut row: what it does on the left, its
+  key on the right. The Claude Code page's setup and plugin rows now look like
+  every other settings row. (#2834)
+
+- **Settings puts things where you look for them.** Terminal font size, font and cursor shape moved from Appearance to the top of Terminal, and the Plugins tab in Settings, which only linked to the Plugins page, is gone. On macOS and Linux, Settings no longer shows text written for Windows: the agy accounts section appears only on Windows, and rows that work everywhere now use your system's names (Finder, the Dock, ⌘G). Search follows the same rules. A switch that is off now disables the rows that depend on it, such as the pane flash under the pane ring, and the Bots morning report and phone bot while the bots are off. Bots safety rows, such as auto-merge and caps, stay editable so you can set them before the bots start. The account rotation checkboxes are now switches, and the Company View shortcut, which has done nothing since #503, no longer holds Ctrl+Shift+O, so that key reaches the terminal again. (#2835)
+
+- **An agent that needs you is said once, in orange.** Before, one waiting
+  agent showed up about six times: the sidebar row, the rail's Fleet badge, a
+  "1 need you" chip in the titlebar, a blue pop-up and a gold-outlined row in
+  the notification panel. It also had four names: "Needs you", "Needs input",
+  "Needs your input" and "The agent asks: Needs your input". Now the sidebar
+  row and the rail's Fleet badge say it. The titlebar chip and the in-app
+  pop-up are gone; other pop-ups stay, and so does the system notification
+  while wmux is in the background. The state reads "Needs you" in the sidebar,
+  Fleet and the notification panel. A notification row now names the
+  workspace and agent and shows the agent's question, or says plainly that
+  none came. In Fleet the details open right under the list instead of at the
+  bottom of the page, and a shell name such as "Zsh" is no longer shown as the
+  agent.
+
+- **The Git page opens on what a repo without a remote can use.** A repository
+  with no origin remote now opens on Worktrees instead of an empty Issues tab.
+  Its Issues and Pull requests explain that origin is missing and offer the
+  `git remote add origin <address>` command to copy and Check again. The detail
+  pane no longer asks you to select something that cannot be listed. (#2840)
+
+- **The Bots first run leads with one action.** Start is the only button next
+  to the name. Add a team and Start from a recipe are quiet links below it. A
+  folder with no origin remote a bot can push to now shows one plain line with
+  Copy command and Show details, instead of a paragraph with the folder's full
+  path. (#2840)
+
+- **A first launch is one short screen.** Before, a new install opened a long
+  scrolling setup wizard, then a four-step tour that pulled you from Fleet
+  back to Workspaces, then the keyboard cheat sheet. Now the welcome screen
+  checks that an agent is ready and that wmux is connected to Claude Code,
+  asks about updates, and ends on **Open a folder…**, which opens a workspace
+  on your project. The tour and the cheat sheet open only when you ask for
+  them, from Settings › General › Setup and reset or the `?` prefix action.
+  Skipping the welcome screen is no longer reported as "completed" when you
+  reopen it or in Settings. If you already set wmux up, you won't see the
+  first run again.
+
+- **One way to write a shortcut, and the key you actually press.** Every
+  shortcut hint now uses one notation per platform — `⌘D`, `⇧⌘D`, `⌃B` on
+  macOS, `Ctrl+Shift+D` on Windows and Linux — and reads your current
+  binding, so a key you rebind shows as rebound. Before, the same shortcut
+  appeared as `⌘+Shift+D`, `⌘Shift+D` and `⇧⌘D`, the notification panel said
+  `Ctrl+I` on macOS, the sidebar tooltip named the wrong key, and the stash
+  tooltip showed the Ctrl prefix as `⌘`.
+
+- **Plain words instead of internal names.** The palette says Tab, not
+  Surface; the Remote page and Settings say PC messages, not A2A; the bots'
+  main workspace replaces HQ; Settings › Bots says Auto-merge bot pull
+  requests instead of Merge lane; Claude Code hooks replaces Hook bridge;
+  schedules call their no-approval mode Full access; and raw ids (pty ids,
+  hook event names, `bypassPermissions`, `mcp__name__tool`) are no longer
+  shown. Commands and labels are in sentence case, split commands say where
+  the new pane goes (Split right, Split down), and counts read "1 file", not
+  "1 file(s)".
+
+- **Each bot has one settings page.** Before, a bot's settings were split
+  between a popover under its name in the chat and a row editor in
+  Settings › Bots, and the two showed different fields and sometimes
+  different values. Now the ⚙ button in a bot's chat header, its name, or
+  "Open settings" next to it in Settings › Bots opens one page with
+  everything: its name, picture, job, repository, engine and models, what
+  its workers run on, what wakes it, its limits, its connections, its
+  memory and skills, and what it can do. Changes to the fields are saved
+  together with Save and apply from the bot's next turn; Pause, Resume,
+  Stop and Delete still act at once. Leaving with unsaved changes asks
+  first. A bot on My Hermes shows only the settings that apply to it, and
+  says what it can and cannot do.
+
+### Fixed
+
+- **A Codex `/status` no longer leaves the pane "running".** The pane kept
+  its running dot and its row in Fleet's Running section until the next
+  prompt. (#2794)
+
+- **Pasting an image into an ssh session explains why it cannot work.**
+  Before, pasting a clipboard image into a pane running `ssh` typed the path
+  of a temporary file on this computer, which the remote host cannot open. On
+  macOS and Linux, wmux now sees that the pane is in an `ssh` (or `mosh`, `et`)
+  session, shows a short notice and pastes nothing. Windows panes paste as
+  before.
+
+- **Connect a PC is easier to hit.** The button at the top of the Remote page
+  was the small size; it is now a full-size button, like the one shown when
+  no PC is connected yet. (#2837)
+
+- **Looking at the Invite tab no longer turns on PC messaging.** In Remote ›
+  Connect a PC, just showing "Invite this PC" used to turn on connections
+  from other PCs, try to open a port (and report an error when the port was
+  taken), and copy an invite. Showing the tab now changes nothing: a Create
+  invite button does that, and while messaging is off it reads "Turn on and
+  create invite", with a line naming the port it will listen on. The dialog
+  also starts with focus on its first field instead of the close button, and
+  Connect stays a plain button until there is something to connect. (#2842)
+
+- **A pane running Hermes Agent is named Hermes, not the Claude that ran there
+  before.** wmux did not recognise `hermes`, so a pane whose Claude had exited
+  and that now ran Hermes Agent still read as Claude in the pane list, and the
+  phone offered to start Claude in a shell Hermes was using. wmux now
+  recognises Hermes Agent (`hermes`): the pane is labelled Hermes Agent while
+  it runs, and the phone sends you to the terminal instead of offering a
+  launch. Reading and sending Hermes conversations from the phone is not part
+  of this change.
+
+- **A phone send the pane refused is now on record.** If the computer refused a message before typing anything (no conversation, chat unavailable, a read-only managed chat, or a changed session), the refusal is now kept as the message's receipt. A later receipt check reads "refused" and no longer "unknown", and the daemon log has one line per send with its id and why it was refused, never its text. Before, such a refusal left no trace, so "refused but delivered?" could not be checked afterwards.
+
+- **A message that reached the terminal is never reported as not sent.** Whether a send may have been typed is now decided by the terminal write itself, not by a signal raised before the write. A queued message whose delivery already typed something is never pasted a second time.
+
+- **Checking My Hermes no longer runs Hermes.** The check that tells
+  whether your own Hermes can serve a bot used to run the Hermes command
+  line. Hermes's update check then wrote a cache file in your Hermes
+  folder. The check now only reads files: the installed version, its ACP
+  support, and the profile's `config.yaml`. A file it cannot read counts as
+  "not known" rather than a guess.
+
+- **Checking wmux's Hermes no longer runs Hermes's update check.** Picking
+  the Hermes engine for a bot used to run `hermes --version`, which also
+  checks for Hermes updates. That check fetched from the internet into the
+  Hermes install that `hermes` points to, which may be your own. wmux now
+  reads the version from the install's files.
+
+- **An idle pane off screen no longer refuses automated writes for good.**
+  When a pane was stashed, or its workspace was unloaded while hidden, wmux
+  checked it for a folder-trust prompt using only its newest output. After a
+  long agent turn that was not enough to read the screen, so
+  `terminal_send`, an Enter key and A2A deliveries to that idle pane were
+  refused until someone showed the pane again. Now wmux reads the pane's
+  whole output once and reuses that answer until the pane prints again. The
+  refusal that can still happen says the pane is off screen, that a retry in
+  a few seconds helps only while that read is still running, and that
+  showing the pane, or waiting until it prints again, gets past it. Before,
+  it asked for a wider pane. (#2858)
+
+- **A restored pane that is not on screen yet no longer refuses automated
+  writes for good after printing a lot.** After wmux restarts, a pane nobody
+  has shown yet keeps the start of its output for when it is shown. Once it
+  printed more than that, for example a long resumed conversation, wmux could
+  not read its screen to rule out a folder-trust prompt, so `terminal_send`,
+  an Enter key and A2A deliveries to it were refused until someone showed the
+  pane. Now wmux also keeps the pane's newest output for that check, and
+  shows it when the pane is displayed, after the start of what it printed.
+  Before, a pane shown at the size it was restored at stayed on the start of
+  that output until the program redrew it. (#2861)
+
+- **An approved bot act whose GitHub reads keep failing no longer retries forever.** An act that an earlier try may already have posted was left out of the one-day limit on approvals. When the reads around it kept failing, wmux could keep trying it on every sweep while the card still said "approved". Now, once those reads have failed for a day, wmux sends nothing more for it. If a later read finds nothing on GitHub, the act is refused with the last read error. If GitHub still cannot say, its thread gets one card saying the act may already be on GitHub and should be checked there, and wmux keeps checking. (#2862)
+
+- **A bot worker on Linux whose worktree path is very long can use its own
+  temporary folder again.** The worker fence keeps every other session's
+  folder in Claude's temporary folder closed, and the worker's own open. For
+  a worktree path over about 200 characters it got the name of the worker's
+  own folder wrong and closed it too, so the worker's background commands
+  could not write their output. (#2865)
+
+- **A bot on My Hermes no longer gets stuck when a cancelled turn does not end.**
+  Before, if Hermes never confirmed that a stopped or timed-out turn had
+  ended, the bot stayed blocked until you restarted wmux. Now wmux waits at
+  most a minute. After that it closes only the Hermes connection it opened
+  for the bot, together with any command that connection was still running,
+  never your gateway, and says so in the bot's chat. Your next
+  message reconnects and continues the conversation if Hermes can resume it.
+
+- **Deleting a bot on My Hermes or switching its engine no longer lets a new
+  session start while the old turn may still run.** wmux now waits for that
+  turn to end, or for the same one-minute limit, before another session on
+  the same Hermes profile starts.
+
+- **My Hermes notes now appear in your language.** The notes saying why a
+  message was not sent to My Hermes, and the new note about a turn that did
+  not stop cleanly, are shown in English, Korean, Polish and Chinese.
+
 ## [4.12.0] — 2026-10-28
 
 ### Added

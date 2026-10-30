@@ -250,8 +250,6 @@ export const ja = {
   'viCopy.visual': '-- ビジュアル --',
 
   // StatusBar
-  'statusBar.company': '会社',
-  'statusBar.session': 'セッション: {min}分',
   'statusBar.settingsTooltip': '設定 (Ctrl+,)',
 
   // Settings

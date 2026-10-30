@@ -223,7 +223,7 @@ function parseCapabilityMap(source, file) {
 // === Grouping ===
 
 // Ordered prefix groups for readability. Methods are matched against the
-// longest prefix first (so 'company.a2a.*' wins over 'company.*'). Any method
+// longest prefix first (a longer prefix wins over a shorter one). Any method
 // that matches no prefix lands in the "other" bucket and is still emitted.
 const GROUP_ORDER = [
   { key: 'workspace.', title: 'workspace' },
@@ -239,8 +239,6 @@ const GROUP_ORDER = [
   { key: 'browser.', title: 'browser' },
   { key: 'computer.', title: 'computer' },
   { key: 'a2a.', title: 'a2a' },
-  { key: 'company.a2a.', title: 'company.a2a' },
-  { key: 'company.', title: 'company' },
   { key: 'lanlink.', title: 'lanlink' },
   { key: 'daemon.', title: 'daemon' },
   { key: 'hooks.', title: 'hooks' },

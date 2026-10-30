@@ -4558,7 +4558,7 @@ export function TabShortcuts() {
   const pluginPages = railPagePlugins(plugins).map((p) => pluginPageShortcut(p.name));
   const orphanedPages = (Object.keys(shortcutOverrides) as ShortcutActionId[])
     .filter((action) => isPluginPageShortcut(action) && !pluginPages.includes(action));
-  const visibleUnbound = [...settingsUnboundRows(shortcutOverrides), ...pluginPages, ...orphanedPages].filter((action) => {
+  const visibleUnbound = [...settingsUnboundRows(), ...pluginPages, ...orphanedPages].filter((action) => {
     const override = shortcutOverrides[action];
     return matchesShortcut(describe(action), typeof override === 'string' ? displayCombo(override, platform) : '');
   });

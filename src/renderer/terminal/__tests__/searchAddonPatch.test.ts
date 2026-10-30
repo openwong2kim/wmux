@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, it, expect } from 'vitest';
 
 /**
- * Guards the @xterm/addon-search patch (patches/@xterm+addon-search+0.17.0-beta.301.patch).
+ * Guards the @xterm/addon-search patch (patches/@xterm+addon-search+0.17.0-beta.330.patch).
  *
  * Upstream 0.16 (and still 0.17) caps every search loop at `buffer.active.baseY + rows` — the
  * viewport bottom. That is only equal to the buffer end when the viewport is
@@ -17,7 +17,7 @@ import { describe, it, expect } from 'vitest';
  * probe: if the patch silently stops applying (version drift, hybrid
  * node_modules), this fails instead of the bug reappearing in the field.
  */
-describe('installed addon-search 0.17.0-beta.301 search-range patch', () => {
+describe('installed addon-search 0.17.0-beta.330 search-range patch', () => {
   const FILES = [
     'node_modules/@xterm/addon-search/lib/addon-search.js',
     'node_modules/@xterm/addon-search/lib/addon-search.mjs',
@@ -27,7 +27,7 @@ describe('installed addon-search 0.17.0-beta.301 search-range patch', () => {
     const pkg = JSON.parse(
       readFileSync('node_modules/@xterm/addon-search/package.json', 'utf8'),
     ) as { version: string };
-    expect(pkg.version).toBe('0.17.0-beta.301');
+    expect(pkg.version).toBe('0.17.0-beta.330');
   });
 
   it.each(FILES)('%s scans to the buffer end, not the viewport bottom', (file) => {

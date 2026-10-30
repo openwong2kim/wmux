@@ -248,8 +248,6 @@ export const ptBR = {
   'viCopy.visual': '-- VISUAL --',
 
   // StatusBar
-  'statusBar.company': 'EMPRESA',
-  'statusBar.session': 'Sessão: {min} min',
   'statusBar.settingsTooltip': 'Configurações (Ctrl+,)',
 
   // Settings

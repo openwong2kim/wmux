@@ -251,7 +251,7 @@ export interface ChannelServiceDeps {
    *  authz gate (KTD-F): the CEO may archive any channel regardless of
    *  who created it. When `undefined`, only the creator can archive.
    *  Daemon-side this stays `undefined` until the company-mode config
-   *  key lands (the renderer owns `Company.ceoWorkspaceId` today). */
+   *  key lands. */
   ceoWorkspaceId?: string;
   /** Hours a channel stays in the trash before `sweepRetention` destroys it.
    *  `0` disables the purge pass entirely (trash keeps everything forever).

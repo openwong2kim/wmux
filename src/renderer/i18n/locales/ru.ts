@@ -248,8 +248,6 @@ export const ru = {
   'viCopy.visual': '-- ВИЗУАЛЬНЫЙ --',
 
   // StatusBar
-  'statusBar.company': 'КОМПАНИЯ',
-  'statusBar.session': 'Сессия: {min} мин',
   'statusBar.settingsTooltip': 'Настройки (Ctrl+,)',
 
   // Settings

@@ -248,8 +248,6 @@ export const da = {
   'viCopy.visual': '-- VISUEL --',
 
   // StatusBar
-  'statusBar.company': 'VIRKSOMHED',
-  'statusBar.session': 'Session: {min} min',
   'statusBar.settingsTooltip': 'Indstillinger (Ctrl+,)',
 
   // Settings

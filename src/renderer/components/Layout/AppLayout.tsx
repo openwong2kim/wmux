@@ -36,14 +36,11 @@ const CommandPalette = lazy(() => import('../Palette/CommandPalette'));
 const WorktaskCleanupView = lazy(() => import('../WorkTask/WorktaskCleanupView'));
 const InspectOverlay = lazy(() => import('../Inspect/InspectOverlay'));
 import FileTreePanel from '../FileTree/FileTreePanel';
-import ApprovalDialog from '../Company/ApprovalDialog';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import PermissionApprovalDialogContainer from '../Approval/PermissionApprovalDialogContainer';
 import CloseTabConfirm from '../Pane/CloseTabConfirm';
 import { initAtlasWakeRecovery } from '../../terminal/atlasWakeRecovery';
 import { windowDisplayedStore } from '../../hooks/useWindowDisplayed';
-import CompanyView from '../Company/CompanyView';
-import MessageFeedPanel from '../Company/MessageFeedPanel';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
 import FirstRunWizard from '../FirstRunWizard';
 import KeyboardCheatSheet from '../KeyboardCheatSheet';
@@ -398,7 +395,6 @@ function stripLivePorts(metadata: NonNullable<Workspace['metadata']>): Workspace
 /** Build a consistent SessionData snapshot for save operations */
 function buildSessionData(dumped: Map<string, boolean>): SessionData {
   const state = useStore.getState();
-  const companySafe = state.company ? { ...state.company, skipPermissions: undefined } : null;
   return {
     workspaces: state.workspaces.map((ws) => {
       // Private browser tabs never reach the saved session (no restore after
@@ -425,10 +421,6 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     phoneWorkspaceRequestIds: state.phoneWorkspaceRequestIds,
     sidebarVisible: state.sidebarVisible,
     channelDockVisible: state.channelDockVisible,
-    sidebarMode: state.sidebarMode,
-    company: companySafe,
-    memberCosts: state.memberCosts,
-    sessionStartTime: state.sessionStartTime ?? undefined,
     // User preferences
     theme: state.theme,
     locale: state.locale,
@@ -828,8 +820,6 @@ export default function AppLayout() {
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
-  const companyViewVisible = useStore((s) => s.companyViewVisible);
-  const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
   // PERF (2026-07-13): AppLayout does NOT subscribe to the whole `workspaces`
   // array NOR to `activeWorkspaceId` — those re-rendered its ~1300-line chrome
   // on every pane metadata/surface update (53% CPU at 5 workspaces) and on every
@@ -2339,7 +2329,6 @@ export default function AppLayout() {
       {/* Fleet, Schedules, Remote or Settings, swapped in by the rail. */}
       <RailPage />
       <NotificationPanel />
-      <MessageFeedPanel />
       {/* Cross-pane search results panel (T-F). Mount-gated on
           searchPanelOpen at this level (I3) so the panel's 6-field zustand
           subscriptions don't run when closed. */}
@@ -2375,7 +2364,6 @@ export default function AppLayout() {
           <Suspense fallback={null}><InspectOverlay /></Suspense>
         </ErrorBoundary>
       )}
-      <ApprovalDialog />
       {!inboxOwnsApprovals && <ExecuteApprovalDialog />}
       {!inboxOwnsApprovals && <PermissionApprovalDialogContainer />}
       <CloseTabConfirm />
@@ -2424,10 +2412,6 @@ export default function AppLayout() {
           the `?` prefix action and Settings › Setup and reset show it. It
           never opens by itself. */}
       {firstRunCompleted && cheatSheetForceShown && <KeyboardCheatSheet />}
-
-      {companyViewVisible && (
-        <CompanyView onClose={() => setCompanyViewVisible(false)} />
-      )}
 
       {/* Visual drag indicator — pointer-events always 'none' so it never
           blocks clicks, scrolling, or keyboard. Drop handling is done entirely

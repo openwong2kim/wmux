@@ -1,7 +1,7 @@
 /**
  * Helpers for delivering structured inter-agent messages to PTYs.
  *
- * A2A/company notifications are not typed by the local user; they can include
+ * A2A notifications are not typed by the local user; they can include
  * sender-controlled text and are delivered across workspace boundaries. Always
  * bracket them as terminal paste data so embedded line breaks are inserted into
  * paste-aware prompts instead of being interpreted as individual keystrokes.
@@ -49,7 +49,7 @@ export function submitBracketedPasteToPty(
 /**
  * Paste `text` into `ptyId` and submit it through main's approval gate
  * (IPC.GATED_SUBMIT). For every delivery made on a non-operator's behalf —
- * agent-to-agent tasks, company messages, channel mention nudges: an Enter into
+ * agent-to-agent tasks and channel mention nudges: an Enter into
  * a pane showing an approval would answer it. Main runs the gate before the
  * paste and again before the Enter. Never throws; a bridge that is missing or
  * fails is `gate_unavailable` (nothing is written from here either way).

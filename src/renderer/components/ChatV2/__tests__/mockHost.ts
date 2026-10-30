@@ -212,6 +212,13 @@ export function createMockHost(options: MockHostOptions = {}): MockHost {
       emit(params.paneId, [{ type: 'turn.ended', outcome: 'interrupted' }]);
       return { ok: true, interrupted: true };
     },
+    async forceStop(params) {
+      const record = find(params);
+      if (!record) return notFound();
+      if (!record.session.busy) return { ok: true, stopped: false };
+      emit(params.paneId, [{ type: 'turn.ended', outcome: 'interrupted' }]);
+      return { ok: true, stopped: true };
+    },
     async answer(params) {
       const record = find(params);
       if (!record) return notFound();

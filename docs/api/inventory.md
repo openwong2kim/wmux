@@ -13,7 +13,7 @@
 | Tier | Meaning | Breaking-change policy |
 |---|---|---|
 | **stable** | Covered by the v3.0 substrate contract. Wire shape + semantics frozen. | Only on a major version bump. Additive changes (new optional fields, new event types) allowed within a major. |
-| **experimental** | Shipped and supported, but the wire shape or semantics may evolve before being promoted to stable. Includes Company Mode and the browser/CDP surface. | Breaking changes allowed within a major; release notes flag them. |
+| **experimental** | Shipped and supported, but the wire shape or semantics may evolve before being promoted to stable. Includes the browser/CDP surface. | Breaking changes allowed within a major; release notes flag them. |
 | **internal** | Implementation detail. Not part of the external contract. Documented here only so external tooling knows what *not* to depend on. | May change without notice. |
 
 The stability tier is reported by `system.capabilities` in v3.0 (planned addition). Today, callers can read this document as the source of truth.
@@ -179,13 +179,6 @@ tabs normalize flags only for the selected account key. This is not a workspace/
 A home WSL cannot translate (a UNC path into another distro or a network share) is not
 forwarded; the login tab prints why instead of leaving the login on the default home.
 
-### Company Mode (deferred to Phase 4 gate)
-
-| Method | Tier | Notes |
-|---|---|---|
-| `company.{create, destroy, status, addDept, removeDept, addMember, removeMember, broadcast, sendDept, sendMember, message, save, restore, templates, worktreeSetup, mergeDept, provision, provisionAll, provisionCeo}` | **experimental** | 3-tier orchestration (CEO → Department → Teammate). Per the Substrate 3.0 decision (memory `project_company_mode_vision.md`), Company Mode is being re-evaluated at the post-v3.0 gate as a first-party reference orchestrator on top of the substrate, not a core wmux feature. |
-| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. **Currently has no caller.** The six `company_a2a_*` MCP tools were its only entry point and have been removed (see [Company A2A (removed)](#company-a2a-removed)); no renderer, preload, or daemon path reaches these handlers. They are retained rather than deleted pending the Company mode re-evaluation. |
-
 ---
 
 ## MCP tools
@@ -263,7 +256,7 @@ There is intentionally no `channel_archive` MCP tool: archiving tears a channel 
 
 **Deprecation — the six `company_a2a_*` MCP tools (`whoami`, `send`, `broadcast`, `inbox`, `ack`, `status`) were removed from every profile.** They were never driven by any prompt, skill, or documented flow, and each one cost schema bytes in the `tools/list` every session pays for before it does any work.
 
-**Company mode's UI is unaffected** — the panel, spawn, and the `company.*` provisioning/mutation RPCs behind them work exactly as before. **Company A2A messaging (the member inbox) currently has no caller**, however: these six tools were the only entry point into `company.a2a.*`, and no renderer, preload, or daemon path reaches those handlers. The pipe handlers are retained rather than deleted, pending the Company mode re-evaluation.
+The `company.*` and `company.a2a.*` RPCs behind them were removed later, together with the rest of the old company mode.
 
 Two of the six have a direct workspace-level equivalent. The other four do not — department/CEO name routing, the member inbox, and the department tree were Company-mode-only features and are removed from MCP outright:
 
@@ -416,7 +409,6 @@ The capability column below summarises the table. Three sentinels:
 | `workspace.new` / `workspace.focus` / `workspace.close` | `wmux.internal` | — | — |
 | `surface.list` / `surface.new` / `surface.focus` / `surface.close` | `wmux.internal` | — | — |
 | `daemon.*` | `wmux.internal` | — | — |
-| `company.*` | `wmux.internal` | — | — |
 | `notify` | `wmux.internal` | — | — |
 | `hooks.signal` | `wmux.internal` | — | — |
 | `usage.rateLimits` | `wmux.internal` | — | — |

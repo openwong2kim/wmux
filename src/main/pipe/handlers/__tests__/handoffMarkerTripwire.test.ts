@@ -66,18 +66,4 @@ describe('hand-off marker tripwire — disguised and other paths', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
-  it('company sends are refused off the operator lane', async () => {
-    const { registerCompanyRpc } = await import('../company.rpc');
-    const router = new RpcRouter();
-    registerCompanyRpc(router, () => ({}) as BrowserWindow);
-    for (const [method, params] of [
-      ['company.broadcast', { message: marked }],
-      ['company.sendMember', { deptId: 'd', memberId: 'm', message: marked }],
-      ['company.a2a.send', { from: 'a', to: 'b', message: marked }],
-    ] as const) {
-      const res = (await router.dispatch({ id: method, method, params })) as { ok: boolean; result?: { error?: string } };
-      expect(res.result?.error ?? '', method).toMatch(/operator-approved hand-offs/);
-    }
-    expect(sendToRendererMock).not.toHaveBeenCalled();
-  });
 });

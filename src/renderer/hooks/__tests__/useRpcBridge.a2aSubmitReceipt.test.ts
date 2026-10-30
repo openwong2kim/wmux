@@ -22,10 +22,6 @@ describe('useRpcBridge — A2A submit receipt wiring', () => {
   const dir = path.join(__dirname, '..');
   const bridge = fs.readFileSync(path.join(dir, 'useRpcBridge.ts'), 'utf-8');
   const channels = fs.readFileSync(path.join(dir, 'useChannelsEventSubscription.ts'), 'utf-8');
-  const company = fs.readFileSync(
-    path.join(dir, '..', '..', 'company', 'renderer', 'rpcHandlers.ts'),
-    'utf-8',
-  );
 
   /** Call sites of the raw delivery primitive, excluding its import. */
   function rawCalls(src: string): string[] {
@@ -66,13 +62,5 @@ describe('useRpcBridge — A2A submit receipt wiring', () => {
     expect(rawCalls(channels)).toHaveLength(0);
     expect(channels).toMatch(/gatedSubmitToPty\(ptyId, text, \{/);
     expect(channels).toMatch(/agent: useStore\.getState\(\)\.surfaceAgent\[ptyId\]\?\.slug/);
-  });
-
-  it('company-mode delivery routes through one agent-aware helper', () => {
-    // One raw call (inside the helper); every member/CEO write uses the helper.
-    expect(rawCalls(company)).toHaveLength(1);
-    expect(company).toMatch(/function submitToMemberPty\(\s*ptyId: string,\s*text: string,/);
-    expect(company).toMatch(/surfaceAgent\[ptyId\]\?\.name/);
-    expect(company.match(/submitToMemberPty\(/g)?.length ?? 0).toBeGreaterThanOrEqual(9);
   });
 });
