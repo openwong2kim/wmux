@@ -2,7 +2,7 @@
 // prompt on screen always stops them, a screen that cannot rule one out stops
 // only an automated line, and no verdict to have types as before.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { daemonFolderTrustVerdict, folderTrustLaunchRefusal, forgetFolderTrustPane } from '../folderTrustCheck';
+import { daemonFolderTrustReading, daemonFolderTrustVerdict, folderTrustLaunchHold, folderTrustLaunchRefusal, forgetFolderTrustPane } from '../folderTrustCheck';
 import { FOLDER_TRUST_LAUNCH_REFUSAL } from '../../shared/folderTrustWording';
 import type { DaemonClient } from '../DaemonClient';
 
@@ -32,10 +32,30 @@ describe('folderTrustLaunchRefusal', () => {
     expect(await folderTrustLaunchRefusal(daemon({ state: 'clear' }), 'pty-1', 'auto-resume line', { refuseUnknown: true })).toBeNull();
     expect(await folderTrustLaunchRefusal(daemon({ unavailable: 'timeout' }), 'pty-1', 'auto-resume line', { refuseUnknown: true })).toBeNull();
     expect(await folderTrustLaunchRefusal(null, 'pty-1', 'auto-resume line', { refuseUnknown: true })).toBeNull();
+    expect(await folderTrustLaunchRefusal(daemon({ state: 'unknown', reason: 'unseen-cells' }), 'pty-1', 'auto-resume line', { refuseUnknown: true }))
+      .toMatch(/folder-trust prompt cannot be ruled out/);
     expect(warn.mock.calls.map((c) => c[0])).toEqual([
       '[folder-trust] refused auto-resume line on pane pty-1: folder-trust unknown',
       '[folder-trust] check unavailable on pane pty-1: timeout',
+      // The daemon's reason tag, when it sent one.
+      '[folder-trust] refused auto-resume line on pane pty-1: folder-trust unknown (unseen-cells)',
     ]);
+  });
+});
+
+describe('daemonFolderTrustReading', () => {
+  it("names a caller's read budget to the daemon and waits past it; the default names none", async () => {
+    const dc = daemon({ state: 'clear' });
+    await daemonFolderTrustReading(dc, 'pty-1', { budgetMs: 1000 });
+    await daemonFolderTrustReading(dc, 'pty-1');
+    expect(dc.folderTrustState.mock.calls).toEqual([['pty-1', 1150, 1000], ['pty-1', 400]]);
+  });
+
+  it('a launch line no person waits on names its budget; a person\'s line keeps the default', async () => {
+    const dc = daemon({ state: 'clear' });
+    expect(await folderTrustLaunchHold(dc, 'pty-1', 'startup line', { refuseUnknown: true, budgetMs: 1000 })).toBeNull();
+    expect(await folderTrustLaunchRefusal(dc, 'pty-1', 'launch line', { refuseUnknown: false })).toBeNull();
+    expect(dc.folderTrustState.mock.calls).toEqual([['pty-1', 1150, 1000], ['pty-1', 400]]);
   });
 });
 

@@ -104,7 +104,7 @@ describe('bot.resumeWorker', () => {
     expect(ask).toBeLessThan(reclaim.lastIndexOf("if (stopped()) return refuse('not_now', 'the bot\\'s work was stopped while this resume was under way');"));
     // main's resume asks the daemon, an unreadable screen stopping it too (a bot types it).
     expect(fs.readFileSync(path.resolve(process.cwd(), 'src/main/factory/workerLifecycleHost.ts'), 'utf8'))
-      .toContain("folderTrustRefusal: (sessionId) => folderTrustLaunchRefusal(daemon(), sessionId, 'bot worker resume line', { refuseUnknown: true })");
+      .toContain("folderTrustRefusal: (sessionId) => folderTrustLaunchRefusal(daemon(), sessionId, 'bot worker resume line', { refuseUnknown: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS })");
   });
 
   it('is judged again, by the wake it was asked in, right before the line is typed: a wake no longer known clean types nothing', async () => {

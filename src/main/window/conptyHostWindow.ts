@@ -8,7 +8,7 @@
 // reported on every daemon connection and every time a main window is adopted;
 // the daemon applies it to its live panes and to each pane it spawns later.
 
-import { HOST_WINDOW_RPC } from '../../shared/conptyParentWindow';
+import { HOST_WINDOW_RPC, NATIVE_WINDOW_HANDLE_BYTES } from '../../shared/conptyParentWindow';
 
 /** The slice of BrowserWindow this reads, so a test can pass a stub. */
 export interface HostWindowSource {
@@ -43,7 +43,22 @@ export function reportHostWindow(
   platform: NodeJS.Platform = process.platform,
 ): void {
   const handle = hostWindowHandle(win, platform);
-  if (!handle) return;
+  if (handle) send(getClient, handle);
+}
+
+/**
+ * Tell the daemon the reported window is gone (Windows), so panes stop naming
+ * a destroyed window as their owner. Sent as an all-zero handle, which the
+ * daemon reads as no window. Same rules as reportHostWindow otherwise.
+ */
+export function clearHostWindow(
+  getClient: () => HostWindowRpcClient | null,
+  platform: NodeJS.Platform = process.platform,
+): void {
+  if (platform === 'win32') send(getClient, Buffer.alloc(NATIVE_WINDOW_HANDLE_BYTES));
+}
+
+function send(getClient: () => HostWindowRpcClient | null, handle: Buffer): void {
   const client = getClient();
   if (!client?.isConnected) return;
   void client.rpc(HOST_WINDOW_RPC, { handle: handle.toString('base64') }).catch(() => {

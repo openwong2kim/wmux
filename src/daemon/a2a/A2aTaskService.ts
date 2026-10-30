@@ -46,6 +46,7 @@ import {
   validateCompletionEvidence,
 } from '../../shared/completionEvidence';
 import { isVerifiedTaskSender } from '../../shared/a2aReopen';
+import { companyCancelRefusal } from '../../shared/company';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import type {
   A2aRemoteMarkPayload,
@@ -164,6 +165,8 @@ export interface TransitionInput {
    * lanes and the headless ClaudeWorker do not set it.
    */
   requirePaneIdentity?: boolean;
+  /** The human's lane or an in-process first-party caller (set by main). */
+  trustedLane?: boolean;
   /**
    * Live pane ids of the caller's workspace (stashed included), resolved by
    * main from the pane tree in the same read as `callerAddr` — so it carries
@@ -183,6 +186,10 @@ export interface TransitionInput {
 export interface CancelTaskInput {
   taskId: string;
   callerWorkspaceId: string;
+  /** The caller's pane, resolved by main from its senderPtyId. */
+  callerPaneId?: string;
+  /** The human's lane or an in-process first-party caller (set by main). */
+  trustedLane?: boolean;
   idempotencyKey?: string;
 }
 
@@ -477,6 +484,15 @@ export class A2aTaskService {
       if (input.requirePaneIdentity && !input.callerAddr && task.metadata.to.paneId) {
         return { ok: false, error: 'a2a.task.update: this task is pinned to a pane; only that pane can update it (no verified pane identity)' };
       }
+      // A company task ends as canceled only through its creator's cancel.
+      if (input.to === 'canceled') {
+        const refusal = companyCancelRefusal(task, {
+          workspaceId: input.callerWorkspaceId,
+          paneId: input.callerAddr?.paneId,
+          trusted: input.trustedLane === true,
+        });
+        if (refusal) return { ok: false, error: `a2a.task.update: ${refusal}` };
+      }
       // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과. 위치는 authz·soft-defer
       // **뒤**(리뷰 codex 델타: 히트가 authz를 앞지르면 키를 아는 비참여자가 커밋 스냅샷을
       // 재생 조회 — authz 우회), validateTransition **앞**(종단 재시도가 invalid
@@ -570,6 +586,12 @@ export class A2aTaskService {
       if (!isSender && !isReceiver) {
         return { ok: false, error: `a2a.task.cancel: caller ${input.callerWorkspaceId} is not sender or receiver` };
       }
+      const companyRefusal = companyCancelRefusal(task, {
+        workspaceId: input.callerWorkspaceId,
+        paneId: input.callerPaneId,
+        trusted: input.trustedLane === true,
+      });
+      if (companyRefusal) return { ok: false, error: `a2a.task.cancel: ${companyRefusal}` };
       // §4 멱등: transition과 대칭 — 히트는 authz 뒤(비참여자 키 재생 조회 차단),
       // op 네임스페이스 분리(transition 키로 cancel 결과를 재생하지 못하게 — codex 델타).
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'cancel');

@@ -149,11 +149,15 @@ export function groupChipAgents(agents: readonly RosterChipAgent[]): RosterChipA
 /**
  * Whether a roster row names its agent kind after the title: only non-Claude
  * agents, only beside a real title, and not when the title already is the
- * agent ("Codex" beside "Codex CLI" says the same thing twice).
+ * agent ("Codex" beside "Codex CLI" says the same thing twice). A company's
+ * coordinator row puts the CEO word in that slot instead.
  */
-export function rosterShowsAgentKind(row: Pick<WorkspaceAgentRosterRow, 'surfaceTitle' | 'slug' | 'agentName'>): boolean {
-  if (!row.surfaceTitle || !row.slug || row.slug === 'claude') return false;
-  const title = row.surfaceTitle.trim().toLowerCase();
+export function rosterShowsAgentKind(
+  row: Pick<WorkspaceAgentRosterRow, 'surfaceTitle' | 'slug' | 'agentName' | 'seatTitle' | 'coordinator'>,
+): boolean {
+  const lead = row.seatTitle || row.surfaceTitle;
+  if (row.coordinator || !lead || !row.slug || row.slug === 'claude') return false;
+  const title = lead.trim().toLowerCase();
   const name = (row.agentName ?? '').trim().toLowerCase();
   if (!name) return true;
   const startsWord = (a: string, b: string) => a === b || a.startsWith(`${b} `);
@@ -165,7 +169,8 @@ export function rosterPrimaryLabel(row: WorkspaceAgentRosterRow): string {
   // let `''` win the lead. The trailer already tests truthiness, so `??` here
   // meant an empty title erased BOTH labels — no name led the row and the
   // vendor was withheld from the trailer as "already shown".
-  return row.surfaceTitle ? row.surfaceTitle : row.agentName;
+  // A company seat's title (the pane label) leads over both.
+  return row.seatTitle || (row.surfaceTitle ? row.surfaceTitle : row.agentName);
 }
 
 /**
@@ -490,7 +495,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
             const stashedAgo = row.stashedAt ? timeAgo(row.stashedAt) : undefined;
-            const rowAriaLabel = [row.ptyId && unseenByPtyId[row.ptyId] ? t('sidebar.changedSinceSeen') : undefined, primary, agentLabel !== primary ? agentLabel : undefined, secondary, stuck ? t('agentStall.label') : undefined, unverifiableLabel ?? statusLabel, subagentLabel, elapsed, stashedAgo, detail, verb]
+            const rowAriaLabel = [row.ptyId && unseenByPtyId[row.ptyId] ? t('sidebar.changedSinceSeen') : undefined, primary, row.coordinator ? t('company.ceo') : undefined, agentLabel !== primary ? agentLabel : undefined, secondary, stuck ? t('agentStall.label') : undefined, unverifiableLabel ?? statusLabel, subagentLabel, elapsed, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
             const rowTaskIds = firstRowOfPane.get(row.paneId) === index ? taskSplit.byPane.get(row.paneId) : undefined;
@@ -606,6 +611,11 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     {rosterShowsAgentKind(row) && (
                       <span className="max-w-[35%] flex-none truncate text-[11px] text-[var(--text-muted)]" data-roster-agent-kind>
                         {agentLabel}
+                      </span>
+                    )}
+                    {row.coordinator && (
+                      <span className="flex-none whitespace-nowrap text-[11px] text-[var(--text-muted)]" data-roster-ceo>
+                        {t('company.ceo')}
                       </span>
                     )}
                     {row.ptyId && unseenByPtyId[row.ptyId] && (

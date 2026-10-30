@@ -125,10 +125,10 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 | `a2a.resolve.identity` | `{ workspaceId? }` | stable | Returns `{ mappings }` — the current PID→ptyId map (from `~/.wmux/pid-map`) that a caller walks up its own process tree to resolve its owning workspace (PROTOCOL.md §6.1 path B). Not a finished identity; the pty→workspace edge is resolved live. |
 | `a2a.whoami` | — | stable | The calling MCP's claimed identity. |
 | `a2a.discover` | `{ filter? }` | stable | Lists other agents in the local wmux instance. |
-| `a2a.task.send` | `{ to, paneId?, surfaceId?, title?, taskId?, message, execute?, silent?, data? }` | stable | `execute:true` is new-task only; approval is gated before task creation unless global A2A execute auto-approve is enabled. |
+| `a2a.task.send` | `{ to, paneId?, surfaceId?, title?, taskId?, message, execute?, silent?, data? }` | stable | `execute:true` is new-task only; approval is gated before task creation unless global A2A execute auto-approve is enabled. In company mode a workspace is a company: one of its panes is the coordinator and the others are its staff. A new task to a company pane must come from a pane wmux can identify and name its receiver pane. The coordinator takes a request from anyone, with or without a brief. A staff pane takes a task only from inside the company, with a brief in `data` (`{"kind":"wmux.company.brief","v":1,"goal","scope","acceptance","verify","report"}`); work from outside goes to the coordinator. The human's own sends are exempt. This is a brake on runaway agents, not a security boundary: a pane's identity can be forged by any process of the same user. Tasks from another PC and channel mentions are not checked yet. |
 | `a2a.task.query` | `{ id }` | stable | |
 | `a2a.task.update` | `{ id, status, result? }` | stable | |
-| `a2a.task.cancel` | `{ id }` | stable | |
+| `a2a.task.cancel` | `{ id }` | stable | A company task (one whose first message carries a brief) is canceled only by the pane that created it; the receiver reports `failed` with evidence instead. |
 | `a2a.broadcast` | `{ kind, payload }` | stable | |
 | `a2a.channel.list` | `{ workspaceId }` | stable | Lists channels in the caller's company. Closes Path D — explicit `workspaceId` is required (no `activeWorkspaceId` fallback). |
 | `a2a.channel.create` | `{ workspaceId, name, visibility, topic?, createdBy }` | stable | Creates a channel and auto-adds the creator as a member (KTD10). Capability `a2a.channel.send`. |

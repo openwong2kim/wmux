@@ -95,6 +95,7 @@ import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
+import { decideCompanySend, companyCancelRefusal } from '../../shared/company';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import type { MoaPendingDecision } from '../../shared/moa';
@@ -3621,6 +3622,25 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // send — both are pinned on the task identically (see `to` below).
     const toAnchor = resolvedAddr ?? resolvedFallback;
 
+    // Company mode: a task to a company pane is checked against the receiver
+    // resolved above, so the check and the delivery name the same pane, before
+    // anything is stored (shared/company.ts).
+    const companyDecision = decideCompanySend({
+      workspaces: store.workspaces.map((w) => ({
+        id: w.id,
+        name: w.name,
+        company: w.company,
+        paneIds: getWorkspaceLeafPanes(w).map((leaf) => leaf.id),
+        ptyIds: getWorkspacePtyIds(w),
+      })),
+      targetWorkspaceId: target.id,
+      targetPaneId: toAnchor?.paneId ?? null,
+      senderPtyId,
+      operator: params.operatorOrigin === true,
+      data: params.data,
+    });
+    if (companyDecision.kind === 'refuse') return { error: `a2a.task.send: ${companyDecision.error}` };
+
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
     // A task id main minted for its own operator send (Moa's hand-off names the
     // task in the text it delivers); main keeps it on the operator lane only.
@@ -3917,6 +3937,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         store.applyDaemonTaskUpdate(committedTask);
         transitioned = true;
       } else {
+        // A company task ends as canceled only through its creator's cancel.
+        const cancelTarget = nextState === 'canceled' ? store.getTask(taskId) : undefined;
+        const refusal = cancelTarget && companyCancelRefusal(cancelTarget, {
+          workspaceId,
+          paneId: callerAddrUpdate?.paneId,
+          trusted: params.requirePaneIdentity !== true,
+        });
+        if (refusal) return { error: `a2a.task.update: ${refusal}` };
         const result = store.updateTaskStatus(
           taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence, params.requirePaneIdentity === true,
         );
@@ -4110,6 +4138,20 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // read off pre-mutation metadata (cancelTask flips status in place today,
     // but a future GC/eviction could remove the task — capture first).
     const cancelTarget = store.getTask(taskId);
+    // Company mode: a company task is canceled by the pane that created it,
+    // the same rule the daemon applies when it holds the task.
+    if (cancelTarget) {
+      const callerWs = store.workspaces.find((w) => w.id === workspaceId);
+      const callerLeaves = callerWs ? getWorkspaceLeafPanes(callerWs) : [];
+      const rawCallerPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+      const callerPtyId = isTerminalPtyInLeaves(callerLeaves, rawCallerPtyId) ? rawCallerPtyId : '';
+      const refusal = companyCancelRefusal(cancelTarget, {
+        workspaceId,
+        paneId: resolveSenderPaneAddress(callerLeaves, callerPtyId)?.paneId,
+        trusted: params.operatorOrigin === true || params.trustedLane === true,
+      });
+      if (refusal) return { error: `a2a.task.cancel: ${refusal}` };
+    }
     const result = store.cancelTask(taskId, workspaceId);
     if (!result.ok) return { error: `a2a.task.cancel: ${result.error}` };
     // Tee the cancellation onto the bus (cancelled), strictly AFTER the

@@ -1113,13 +1113,24 @@ export class DaemonClient extends EventEmitter {
    * Whether a session's ring shows an agent's folder-trust dialog
    * (daemon/folderTrustState): the daemon's verdict, or why there is none
    * (not connected, a daemon that predates the method, no answer in time).
+   * An 'unknown' carries the daemon's reason tag when it sent one (older
+   * daemons do not), for the refusal logs. `budgetMs`: the daemon's read
+   * budget, when not its default (an older daemon ignores it).
    */
-  async folderTrustState(sessionId: string, timeoutMs: number): Promise<{ state: FolderTrustState } | { unavailable: string }> {
+  async folderTrustState(
+    sessionId: string,
+    timeoutMs: number,
+    budgetMs?: number,
+  ): Promise<{ state: FolderTrustState; reason?: string } | { unavailable: string }> {
     if (!this.isConnected) return { unavailable: 'daemon not connected' };
     try {
-      const r = (await this.rpc('daemon.folderTrustState', { id: sessionId }, { timeoutMs })) as { state?: unknown } | null;
+      const params = budgetMs !== undefined ? { id: sessionId, budgetMs } : { id: sessionId };
+      const r = (await this.rpc('daemon.folderTrustState', params, { timeoutMs })) as { state?: unknown; reason?: unknown } | null;
       const state = r?.state;
-      return state === 'trust' || state === 'clear' || state === 'unknown' ? { state } : { unavailable: 'malformed answer' };
+      if (state !== 'trust' && state !== 'clear' && state !== 'unknown') return { unavailable: 'malformed answer' };
+      // Only a short tag goes into a log line.
+      const reason = state === 'unknown' && typeof r?.reason === 'string' && /^[a-z-]{1,32}$/.test(r.reason) ? r.reason : undefined;
+      return reason ? { state, reason } : { state };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       return { unavailable: /Unknown method/.test(message) ? 'daemon predates daemon.folderTrustState' : message };
