@@ -63,9 +63,11 @@ export default function CompanyDialog({ workspace, onClose }: { workspace: Works
   const eligible = (c: CeoCandidate) => !!c.agent || c.paneId === company?.coordinatorPaneId;
   const [mission, setMission] = useState(company?.mission ?? '');
   const [standingOrders, setStandingOrders] = useState(company?.standingOrders ?? '');
+  // A company whose CEO pane is gone opens with the seat empty: saving another
+  // field must not hand the seat to a pane nobody picked.
   const [ceo, setCeo] = useState<string | null>(() => {
-    const seated = candidates.find((c) => c.paneId === company?.coordinatorPaneId);
-    return (seated ?? candidates.find(eligible))?.paneId ?? null;
+    if (company) return candidates.find((c) => c.paneId === company.coordinatorPaneId)?.paneId ?? null;
+    return candidates.find(eligible)?.paneId ?? null;
   });
   const missionRef = useRef<HTMLInputElement>(null);
   const radioRefs = useRef<Array<HTMLButtonElement | null>>([]);
@@ -90,8 +92,10 @@ export default function CompanyDialog({ workspace, onClose }: { workspace: Works
     }
   };
 
+  // A new company needs a CEO; an existing one may keep its seat vacant.
+  const canSave = !!picked || !!company;
   const save = () => {
-    if (!picked) return;
+    if (!canSave) return;
     setWorkspaceCompany(workspace.id, { coordinatorPaneId: picked, mission, standingOrders });
     onClose();
   };
@@ -180,7 +184,7 @@ export default function CompanyDialog({ workspace, onClose }: { workspace: Works
         <Button size="md" variant="secondary" onClick={onClose}>
           {t('common.cancel')}
         </Button>
-        <Button size="md" variant={picked ? 'primary' : 'secondary'} disabled={!picked} onClick={save}>
+        <Button size="md" variant={canSave ? 'primary' : 'secondary'} disabled={!canSave} onClick={save}>
           {company ? t('company.save') : t('company.make')}
         </Button>
       </DialogFooter>

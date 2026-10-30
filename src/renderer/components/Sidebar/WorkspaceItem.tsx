@@ -491,6 +491,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
 
@@ -1298,6 +1299,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
             tabindex): focus here reveals the same actions hover does, and the
             ring sits on the line, never on the roster below it. */}
         <div
+          ref={rowRef}
           className={`${hover.group} -mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2`}
           role="treeitem"
           aria-level={taskRow ? 2 : 1}
@@ -1619,7 +1621,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
             <button
               className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
               style={{ color: 'var(--text-main)' }}
-              onClick={() => { setMenuPos(null); setCompanyDialogOpen(true); }}
+              // The menu button unmounts as the dialog opens; with the row
+              // focused first, the dialog hands focus back to it on close.
+              onClick={() => { rowRef.current?.focus(); setMenuPos(null); setCompanyDialogOpen(true); }}
               data-workspace-action="company"
             >
               {company ? t('company.settingsMenu') : t('company.makeMenu')}

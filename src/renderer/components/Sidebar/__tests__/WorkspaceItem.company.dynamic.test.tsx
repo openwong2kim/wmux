@@ -105,6 +105,23 @@ describe('company workspace row', () => {
     expect(rows[2].textContent?.match(/Scout/g)).toHaveLength(1);
   });
 
+  it('settings keep a vacant seat empty until a pane is picked, and focus returns to the row', async () => {
+    useStore.setState({ workspaces: [{ ...ws, company: { v: 1, id: 'co-1', coordinatorPaneId: 'p-gone', mission: 'm' } }] });
+    await render();
+    const row = container.querySelector<HTMLElement>('[role="treeitem"]')!;
+    act(() => {
+      row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    });
+    act(() => { container.querySelector<HTMLButtonElement>('[data-workspace-action="company"]')!.click(); });
+    const dialog = document.querySelector('[data-testid="company-dialog"]')!;
+    expect([...dialog.querySelectorAll('[role="radio"]')].map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'false', 'false']);
+    const save = [...dialog.querySelectorAll('button')].find((b) => b.textContent === 'Save')!;
+    expect(save.disabled).toBe(false);
+    act(() => { save.click(); });
+    expect(useStore.getState().workspaces[0].company).toEqual({ v: 1, id: 'co-1', coordinatorPaneId: null, mission: 'm' });
+    expect(document.activeElement).toBe(row);
+  });
+
   it('dissolving from the row menu brings the git line back', async () => {
     await render();
     act(() => {
