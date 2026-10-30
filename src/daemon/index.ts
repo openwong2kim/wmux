@@ -144,6 +144,11 @@ import { SpawnLinkStore } from './a2aRemote/spawnLinkStore';
 import { A2aSpawnStarter, registerSpawnStartRpc } from './a2aRemote/spawnStarter';
 import { A2aSpawnRequester, registerSpawnAskRpc } from './a2aRemote/spawnRequester';
 import { SpawnOutgoingStore } from './a2aRemote/spawnOutgoingStore';
+import { A2aContinueReceiver, paneHoldsSession } from './a2aRemote/continueReceiver';
+import { ContinuePolicyStore } from './a2aRemote/continuePolicyStore';
+import { ContinueRequestStore } from './a2aRemote/continueRequestStore';
+import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
+import { gitRunner } from '../main/a2aRemote/spawnWorktree';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
@@ -10302,6 +10307,9 @@ async function main(): Promise<void> {
     // Remote spawn (receiver side): off until this PC's human opts a PC in.
     const a2aSpawnPolicy = new SpawnPolicyStore({ dir: a2aDir, log: a2aLog });
     const a2aSpawnRequests = new SpawnRequestStore({ dir: a2aDir, log: a2aLog });
+    // Continuing a conversation from another PC: off until this PC's human opts in.
+    const a2aContinuePolicy = new ContinuePolicyStore({ dir: a2aDir, log: a2aLog });
+    const a2aContinueRequests = new ContinueRequestStore({ dir: a2aDir, log: a2aLog });
     // A PC removed while a write failed is dropped again on start; only when
     // both pairing files read, so an unreadable one never clears the opt-ins.
     if (a2aPeers.usable && a2aRemoteHosts.usable) {
@@ -10309,6 +10317,12 @@ async function main(): Promise<void> {
         a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt) || a2aRemoteHosts.get(hostId) !== undefined;
       a2aSpawnPolicy.retainHosts(a2aPaired);
       a2aSpawnRequests.retainHosts(a2aPaired);
+      try {
+        a2aContinuePolicy.retainHosts(a2aPaired);
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
+      }
+      a2aContinueRequests.retainHosts(a2aPaired);
     }
     const a2aHostName = (hostId: string): string | undefined =>
       a2aRemoteHosts.get(hostId)?.name ?? a2aPeers.list().find((p) => p.hostId === hostId && !p.revokedAt)?.name;
@@ -10373,6 +10387,36 @@ async function main(): Promise<void> {
         a2aDelivery?.outbox.pending(hostId).some((r) => r.envelope.kind === 'link' && r.envelope.link?.state === 'spawn-targets') === true,
       log: a2aLog,
     });
+    // A conversation another PC continues here (receiver side): off until this
+    // PC's human opts in, and not advertised to any PC yet.
+    // One git runner per spawn root (read-only git, the worker hardening).
+    const a2aRootGits = new Map<string, ReturnType<typeof gitRunner>>();
+    const a2aRootGit = (rootPath: string): ReturnType<typeof gitRunner> => {
+      let git = a2aRootGits.get(rootPath);
+      if (!git) a2aRootGits.set(rootPath, (git = gitRunner(rootPath, {})));
+      return git;
+    };
+    const a2aContinue = new A2aContinueReceiver({
+      policy: a2aContinuePolicy,
+      spawnPolicy: a2aSpawnPolicy,
+      requests: a2aContinueRequests,
+      enqueue: (hostId, envelope) => {
+        if (!a2aDelivery) throw new Error('messages between PCs are not carried this run');
+        a2aDelivery.outbox.enqueue(hostId, envelope);
+      },
+      // The root's own origin, keyed as the asker keys its own; a git that could not be read throws (checked again later).
+      originKeyOf: (rootPath) => rootOriginKey(a2aRootGit(rootPath), rootPath),
+      isRepoTop: (rootPath) => rootIsRepoTop(a2aRootGit(rootPath), rootPath),
+      // The staging volume: the bytes land under the a2a dir.
+      freeBytes: () => fs.promises.statfs(a2aDir).then((s) => s.bavail * s.bsize),
+      sessionLive: (sessionId) => sessionManager.listLiveSessions().some((m) => paneHoldsSession(
+        m,
+        () => paneLiveAgent(sessionManager, agentProcessTracker, m.id),
+        () => transcriptProjector?.transcriptPath(m.id) ?? null,
+        sessionId,
+      )),
+      log: a2aLog,
+    });
     const a2aForgetHost = forgetHostCascade({ links: a2aLinks, exposures: a2aExposures, offers: a2aOffersRef }, a2aLog);
     const a2aCascade = (hostId: string): void => {
       a2aForgetHost(hostId);
@@ -10397,6 +10441,21 @@ async function main(): Promise<void> {
         a2aAsks?.forgetHost(hostId);
       } catch (err) {
         a2aLog('error', `[a2a-remote] revoke cascade: spawn requests sent to ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        a2aContinuePolicy.forgetHost(hostId);
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] revoke cascade: continue policy for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        a2aContinueRequests.forgetHost(hostId);
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] revoke cascade: continue requests from ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      try {
+        a2aContinue.forgetHost(hostId);
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] revoke cascade: continue receiver for ${hostId}: ${err instanceof Error ? err.message : String(err)}`);
       }
       a2aDelivery?.onPeerRevoked(hostId);
     };
@@ -10469,6 +10528,7 @@ async function main(): Promise<void> {
         refreshLink: (linkId) => (refresh ? refresh({ linkId }) : Promise.resolve(null)),
         offers: a2aOffersRef,
         spawn: a2aSpawn,
+        continue: a2aContinue,
         ...(a2aStarter ? { spawnLinks: a2aStarter } : {}),
         ...(a2aAsks ? { spawnAsks: a2aAsks } : {}),
         // This build shows and accepts share offers, takes images on
@@ -10492,12 +10552,20 @@ async function main(): Promise<void> {
       // A spawn request still pending from before a restart is decided now.
       a2aStarter?.reconcile();
       a2aSpawn.recover();
+      a2aContinue.recover();
       // Each PC allowed to ask learns what it may ask for (unless that is still queued for it).
       a2aSpawn.sendTargets();
       // Cards and approved starts past their expiry end `expired` even with nobody looking.
       // Put-backs of ended spawn links that could not be done yet are retried here too.
+      // A removed PC's send allow whose write failed is written here once it can be, before a restart could read it back.
       const spawnSweep = setInterval(() => {
         a2aSpawn.sweep();
+        a2aContinue.sweep();
+        try {
+          a2aContinuePolicy.retainHosts(() => true, 'an earlier removal');
+        } catch (err) {
+          a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
+        }
         a2aStarter?.reconcile();
         a2aAsks?.expire();
       }, 60_000);

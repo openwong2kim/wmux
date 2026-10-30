@@ -94,15 +94,18 @@ export const A2A_CONTINUE_CODES = [
   'diverged',
   /** A pane on B already runs that conversation, or another request carries it. */
   'busy',
+  /** B already holds as many requests from A as it takes; A may ask again later. */
+  'full',
   'too-large',
   'no-space',
   'path-too-long',
   'declined',
   'expired',
   /**
-   * B holds no record of the request (a status answer). Not proof that B
-   * never started it (B may have lost or pruned a record it ran), so A never
-   * resumes on it by itself.
+   * B holds no record of the request (a status answer), or B began a start
+   * it cannot tell ever ran (its report never came, and no pane there runs
+   * the conversation). Not proof that B never started it (B may have lost
+   * or pruned a record it ran), so A never resumes on it by itself.
    */
   'unknown',
   'failed',

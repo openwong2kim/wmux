@@ -73,6 +73,8 @@ export interface A2aRemoteDeliveryDeps {
   offers?: A2aOffers;
   /** Remote spawn requests, results and targets (link envelopes; see `spawnReceiver.ts`). */
   spawn?: InboundDeps['spawn'];
+  /** Conversations other PCs continue here (link envelopes; see `continueReceiver.ts`). */
+  continue?: InboundDeps['continue'];
   /** Links a remote start made here (spawnStarter.ts): redacted, no images, follow-ups held for their card. */
   spawnLinks?: NonNullable<InboundDeps['spawnLinks']>;
   /** This PC's requests to start agents on other PCs (spawnRequester.ts): told when the other PC refuses one for good. */
@@ -689,6 +691,7 @@ export class A2aRemoteDelivery {
       ...(this.deps.localWorkspaceName ? { localWorkspaceName: this.deps.localWorkspaceName } : {}),
       ...(this.deps.offers ? { offers: this.deps.offers } : {}),
       ...(this.deps.spawn ? { spawn: this.deps.spawn } : {}),
+      ...(this.deps.continue ? { continue: this.deps.continue } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       taskBudget: this.taskBudget,
