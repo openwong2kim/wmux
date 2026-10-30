@@ -2969,7 +2969,7 @@ SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-fit@0.12.0-beta.301
+@xterm/addon-fit@0.12.0-beta.332
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-fit
@@ -2996,7 +2996,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-image@0.10.0-beta.301
+@xterm/addon-image@0.10.0-beta.331
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-image
@@ -3023,7 +3023,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-search@0.17.0-beta.301
+@xterm/addon-search@0.17.0-beta.330
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-search
@@ -3050,7 +3050,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-unicode11@0.10.0-beta.301
+@xterm/addon-unicode11@0.10.0-beta.330
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-unicode11
@@ -3077,7 +3077,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-web-links@0.13.0-beta.301
+@xterm/addon-web-links@0.13.0-beta.330
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-web-links
@@ -3104,7 +3104,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-webgl@0.20.0-beta.300
+@xterm/addon-webgl@0.20.0-beta.329
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-webgl
@@ -3131,7 +3131,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/xterm@6.1.0-beta.304
+@xterm/xterm@6.1.0-beta.336
 License: MIT
 Repository: https://github.com/xtermjs/xterm.js
 
