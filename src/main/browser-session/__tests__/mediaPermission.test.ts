@@ -32,6 +32,9 @@ describe('browser panes and media', () => {
     denyMediaPermissions(ses as never);
     expect(ask(ses, 'media')).toBe(false);
     expect(ses.handlers.check?.(null, 'media')).toBe(false);
+    // Electron 45 reports a screen, window or tab capture as display-capture.
+    expect(ask(ses, 'display-capture')).toBe(false);
+    expect(ses.handlers.check?.(null, 'display-capture')).toBe(false);
     expect(ask(ses, 'notifications')).toBe(true);
     expect(ask(ses, 'clipboard-sanitized-write')).toBe(true);
     expect(ses.handlers.check?.(null, 'fullscreen')).toBe(true);
