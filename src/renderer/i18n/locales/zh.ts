@@ -983,6 +983,7 @@ export const zh = {
   'settings.sc.zoomReset': '重置字号',
   'settings.sc.mentionAgent': '提及智能体',
   'settings.sc.stashPane': '暂存窗格（保持会话运行）',
+  'settings.sc.balanceLayout': '均分布局（等宽列与等高行）',
   'settings.sc.movePaneLeft': '向左移动窗格',
   'settings.sc.movePaneRight': '向右移动窗格',
   'settings.sc.movePaneUp': '向上移动窗格',

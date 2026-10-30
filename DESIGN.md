@@ -252,6 +252,7 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   it matters. The file tree toggle is not here: it is the agent bar's Files
   button (see File tree column). There is no room or bot panel toggle: bot
   conversations live on the Bots page.
+  **Balance layout** is a bare 28px icon (columns glyph, no fill at rest) left of the notification bell; it shows only on the Workspaces page with two or more panes, and gives every column and row an equal share.
   Settings is not here: it lives in the rail's More menu (and ⌘,).
 - **Windows:** the native window controls sit at the right edge in the
   `titleBarOverlay` strip, drawn in the colour the frame actually paints
@@ -2273,6 +2274,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-30 | Owner-approved (old company mode removed): the Toggle Company View and Toggle message feed actions go with the components they opened, which rendered nothing. A key a user saved on either is dropped on load and no Shortcuts row lists it, and Ctrl+Shift+M (Toggle message feed's default) reaches the pane. Amends the 2026-10-28 line that kept a saved Company View key | Both actions opened components that drew nothing, and the components are deleted with the rest of the old company mode; a saved key bound to nothing would only swallow that key |
 | 2026-10-30 | Owner-approved (mockup round 5): company mode's first UI. Make company…, Company settings… and Dissolve company on the workspace row menu; a company row shows its mission instead of the git line and hides the branch, PR badge and sync badge; the coordinator's row leads the roster with a muted CEO word in the agent-kind slot; staff titles come from the pane label | A workspace's branch, PR and sync come from whichever pane reported last, which says nothing when a company's panes work in different worktrees; the mission is what the row is for. The CEO word reuses an existing slot and style, and the pane label is already the name a pane is addressed by |
 | 2026-10-30 | Owner-approved (mockup round 5, board as a tab): company mode's board is a work tab in the company workspace, opened beside the CEO's terminal, not a rail page or sidebar view. Seats are the workspace's panes, so a pane between agent runs keeps its seat and its jobs | The owner rejected a board that took over the sidebar; a work tab keeps the CEO's terminal beside it and expands with ◫. Seating by pane, not by detected agent, keeps a job sent to a restarting pane on that pane |
+| 2026-10-31 | Balance layout joins the titlebar's right cluster as one bare icon, with a prefix chord (`=`), the palette and the settings-bindable shortcut as other doors | Dragging dividers across a 9-pane screen drifts it uneven and the only repair was divider by divider. It acts on the whole workspace, so the app-wide row is its home; it appears only where it can act (Workspaces page, 2+ panes), per the no-dead-controls rule. Cost accepted: one more icon in the cluster; the 2026-08-15 no-titlebar-verbs ruling was about pane-scoped agent verbs, and this one is a layout verb of the workspace |
 
 ### Desktop conversation view
 
