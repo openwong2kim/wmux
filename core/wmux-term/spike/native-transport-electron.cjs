@@ -40,7 +40,7 @@ app.whenReady().then(() => {
   const args = process.platform === 'win32' ? ['/d', '/s', '/c', 'echo native-electron'] : ['-e', 'console.log("native-electron")'];
   // The console-window owner (sign-in pickers), given at spawn and again later: the
   // bundled conpty.dll takes a real window's handle; elsewhere, and for a handle of
-  // the wrong size, it is a no-op.
+  // the wrong size or a NULL one, it is a no-op.
   const owner = new BrowserWindow({ show: false });
   transport = new NativeTransport(command, args, process.cwd(),
     { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, 80, 24, () => setImmediate(pump), process.platform === 'win32'
@@ -49,5 +49,6 @@ app.whenReady().then(() => {
   try {
     assert.equal(transport.setParentWindow(owner.getNativeWindowHandle()), process.platform === 'win32');
     assert.equal(transport.setParentWindow(Buffer.alloc(3)), false);
+    assert.equal(transport.setParentWindow(Buffer.alloc(8)), false);
   } finally { owner.destroy(); }
 }).catch(e => { console.error(e); clearTimeout(timer); transport?.close(); app.exit(1); });
