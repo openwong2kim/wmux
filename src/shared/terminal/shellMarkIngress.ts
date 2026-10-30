@@ -25,11 +25,10 @@
 //   - No output is held. A mark split across reads is followed through a
 //     carry. A kind byte that was already passed on cannot be changed: a D
 //     whose kind byte ends a read keeps its case, and the state waits for the
-//     bytes after it (a pending D). A PTY exit or the end of the stream
-//     resolves a pending D toward idle (`end`).
+//     bytes after it (a pending D).
 //
-// Marks are ASCII, so the scanner reads code units: the same code serves a
-// UTF-8 byte buffer and a UTF-16 string.
+// Marks are ASCII, so the scanner reads the decoded text: a mark's UTF-16 code
+// units have the same values as its UTF-8 bytes.
 
 export type ShellMarkState = 'idle' | 'running';
 
@@ -92,18 +91,13 @@ export class ShellMarkIngress {
   }
 
   /**
-   * Scan one read in place: lowercase the kind byte of every foreign mark in
-   * `bytes`. Returns how many were lowercased.
+   * Scan one read: returns it with the kind byte of every foreign mark
+   * lowercased, and how many were. With none lowered, `text` comes back as is.
    */
-  scanBytes(bytes: Uint8Array): number {
-    return this.scan(bytes.length, (i) => bytes[i], (from) => bytes.indexOf(ESC, from), (i) => { bytes[i] |= LOWER; });
-  }
-
-  /** The same scan over a string; returns it with every foreign kind lowercased. */
   scanText(text: string): { text: string; lowered: number } {
     const parts: string[] = [];
     let last = 0;
-    const lowered = this.scan(text.length, (i) => text.charCodeAt(i), (from) => text.indexOf('\u001b', from), (i) => {
+    const lowered = this.scan(text, (i) => {
       parts.push(text.slice(last, i), String.fromCharCode(text.charCodeAt(i) | LOWER));
       last = i + 1;
     });
@@ -112,21 +106,14 @@ export class ShellMarkIngress {
     return { text: parts.join(''), lowered };
   }
 
-  /** The stream ended (or the PTY exited): a pending D resolves toward idle. */
-  end(): void {
-    if (this.match >= Match.DSemi) this.current = 'idle';
-    this.match = Match.None;
-    this.dKind = -1;
-  }
-
-  /** `nextEsc(from)`: the index of the next ESC at or after `from`, or -1. */
-  private scan(length: number, at: (i: number) => number, nextEsc: (from: number) => number, lower: (i: number) => void): number {
+  /** Calls `lower(i)` for each foreign kind byte, in ascending order of `i`. */
+  private scan(text: string, lower: (i: number) => void): number {
     let lowered = 0;
     const foreignD = () => {
       // A D in running that is not `D;<int>`: the program's.
       if (this.dKind >= 0) { lower(this.dKind); lowered++; }
     };
-    for (let i = 0; i < length; i++) {
+    for (let i = 0; i < text.length; i++) {
       if (this.match === Match.None) {
         // Outside a mark only an ESC can start one: skip to it.
         const esc = nextEsc(i);
