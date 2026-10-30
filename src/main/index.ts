@@ -63,7 +63,7 @@ import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { checkUserDataIsolation, claimPortableDataNotice, mayInstallDarwinCliShim, PORTABLE_DATA_SUFFIX, shouldUsePortableData } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { attachDesktopPresenceReporter, reportDesktopPresence } from './window/desktopPresence';
-import { hostWindowHandle, reportHostWindow } from './window/conptyHostWindow';
+import { clearHostWindow, hostWindowHandle, reportHostWindow } from './window/conptyHostWindow';
 import { installSleepPrevention } from './power/installSleepPrevention';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
@@ -3173,7 +3173,11 @@ function adoptMainWindow(win: BrowserWindow): void {
   win.on('closed', () => {
     // Guarded: a recovery window may be adopted while the old reference is
     // still being torn down, and only the current one may clear the binding.
-    if (mainWindow === win) mainWindow = null;
+    if (mainWindow !== win) return;
+    mainWindow = null;
+    // Its HWND is gone, so it can no longer own the panes' console windows.
+    ptyManager.setHostWindow(null);
+    clearHostWindow(() => daemonClient);
   });
 
   // Intercept window close — hide to tray instead of destroying, except for
