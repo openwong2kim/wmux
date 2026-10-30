@@ -24,6 +24,8 @@ export interface WorkspaceCompany {
   id: string;
   /** null while no pane is the coordinator (a vacant seat). */
   coordinatorPaneId: string | null;
+  /** One line on what the company is for; the sidebar row shows it. */
+  mission?: string;
   standingOrders?: string;
 }
 
@@ -68,6 +70,7 @@ export function parseWorkspaceCompany(raw: unknown): WorkspaceCompany | undefine
     v: 1,
     id: raw.id,
     coordinatorPaneId: seat,
+    ...(typeof raw.mission === 'string' && raw.mission ? { mission: raw.mission } : {}),
     ...(typeof raw.standingOrders === 'string' && raw.standingOrders ? { standingOrders: raw.standingOrders } : {}),
   };
 }

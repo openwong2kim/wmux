@@ -71,6 +71,13 @@ describe('parseWorkspaceCompany', () => {
     expect(parseWorkspaceCompany({ v: 1, id: '', coordinatorPaneId: null })).toBeUndefined();
     expect(parseWorkspaceCompany('ceo')).toBeUndefined();
   });
+
+  it('keeps a written mission and drops an empty or non-text one', () => {
+    expect(parseWorkspaceCompany({ v: 1, id: 'co', coordinatorPaneId: 'pane-1', mission: 'Ship 4.14 green' }))
+      .toEqual({ v: 1, id: 'co', coordinatorPaneId: 'pane-1', mission: 'Ship 4.14 green' });
+    expect(parseWorkspaceCompany({ v: 1, id: 'co', coordinatorPaneId: 'pane-1', mission: '' })).not.toHaveProperty('mission');
+    expect(parseWorkspaceCompany({ v: 1, id: 'co', coordinatorPaneId: 'pane-1', mission: 42 })).not.toHaveProperty('mission');
+  });
 });
 
 describe('missingBriefFields / isCompanyTask', () => {

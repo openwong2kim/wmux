@@ -37,7 +37,7 @@ import {
 } from '../shadowWorkspace';
 import { clampFileTreeWidth } from '../../utils/fileTreeLayout';
 import { isSleepPreventionMode } from '../../../shared/sleepPrevention';
-import { parseWorkspaceCompany } from '../../../shared/company';
+import { parseWorkspaceCompany, type WorkspaceCompany } from '../../../shared/company';
 import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
@@ -325,6 +325,12 @@ export interface WorkspaceSlice {
    * normalizeWorkspaceColor rather than stored.
    */
   setWorkspaceColor: (id: string, color: WorkspaceColorId | undefined) => void;
+  /**
+   * Make the workspace a company, change its seats, or (undefined) dissolve
+   * it. A workspace that already is one keeps its company id, so tasks and
+   * records that name it still match after the CEO or mission changes.
+   */
+  setWorkspaceCompany: (id: string, company: Omit<WorkspaceCompany, 'v' | 'id'> | undefined) => void;
   /** Mark a workspace as started by another PC (remote spawn); kept for its life. */
   setWorkspaceRemoteSpawnedBy: (id: string, by: A2aRemoteSpawnedBy) => void;
   /** `pin` is the drop target's pin state; omitted keeps the row's own. */
@@ -1040,6 +1046,23 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       } else {
         delete ws.color;
       }
+    }),
+
+    setWorkspaceCompany: (id, company) => set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === id);
+      if (!ws) return;
+      if (!company) {
+        delete ws.company;
+        return;
+      }
+      const record = parseWorkspaceCompany({
+        v: 1,
+        id: ws.company?.id ?? generateId('co'),
+        coordinatorPaneId: company.coordinatorPaneId,
+        mission: company.mission?.trim(),
+        standingOrders: company.standingOrders?.trim(),
+      });
+      if (record) ws.company = record;
     }),
 
     setWorkspaceRemoteSpawnedBy: (id, by) => set((state: StoreState) => {

@@ -271,3 +271,21 @@ describe('removeWorkspace — multiview membership is pruned', () => {
     expect(store.getState().multiviewIds).toEqual([a.id, b.id]);
   });
 });
+
+describe('setWorkspaceCompany', () => {
+  it('makes a company with a new id, keeps that id when the seats change, and dissolves it', () => {
+    const a = createWorkspace('A');
+    const store = createTestStore([a], a.id);
+    store.getState().setWorkspaceCompany(a.id, { coordinatorPaneId: 'pane-1', mission: '  Ship 4.14 green ', standingOrders: '' });
+    const made = store.getState().workspaces[0].company;
+    expect(made).toEqual({ v: 1, id: expect.stringMatching(/^co-/), coordinatorPaneId: 'pane-1', mission: 'Ship 4.14 green' });
+
+    store.getState().setWorkspaceCompany(a.id, { coordinatorPaneId: 'pane-2', standingOrders: 'Reply in English' });
+    expect(store.getState().workspaces[0].company).toEqual({
+      v: 1, id: made!.id, coordinatorPaneId: 'pane-2', standingOrders: 'Reply in English',
+    });
+
+    store.getState().setWorkspaceCompany(a.id, undefined);
+    expect(store.getState().workspaces[0]).not.toHaveProperty('company');
+  });
+});
