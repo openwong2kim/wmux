@@ -18,6 +18,7 @@ vi.mock('electron', () => {
   const readText = vi.fn(async () => 'hello');
   const has = vi.fn(async (_mime: string) => false);
   const read = vi.fn(async () => [] as unknown[]);
+  const createFromBuffer = vi.fn((_bytes: Buffer) => ({ isEmpty: () => true, toPNG: () => Buffer.alloc(0) }));
   const ipcMain = {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -35,12 +36,14 @@ vi.mock('electron', () => {
       read,
     },
     app: { getPath: vi.fn(() => '/tmp') },
+    nativeImage: { createFromBuffer },
     // Expose registered handlers + clipboard.writeText for tests
     __handlers: handlers,
     __writeText: writeText,
     __readText: readText,
     __has: has,
     __read: read,
+    __createFromBuffer: createFromBuffer,
   };
 });
 
@@ -67,6 +70,7 @@ const writeText = (electron as unknown as { __writeText: ReturnType<typeof vi.fn
 const readText = (electron as unknown as { __readText: ReturnType<typeof vi.fn> }).__readText;
 const clipboardHas = (electron as unknown as { __has: ReturnType<typeof vi.fn> }).__has;
 const clipboardRead = (electron as unknown as { __read: ReturnType<typeof vi.fn> }).__read;
+const createFromBuffer = (electron as unknown as { __createFromBuffer: ReturnType<typeof vi.fn> }).__createFromBuffer;
 const execFileMock = execFile as unknown as ReturnType<typeof vi.fn>;
 
 // execFile(file, args, opts, cb) 콜백 시그니처
@@ -338,12 +342,30 @@ describe('CLIPBOARD_READ_IMAGE / CLIPBOARD_HAS_IMAGE', () => {
     await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(true);
   });
 
-  it('answers no image when the clipboard holds none, without listing its types', async () => {
+  it('answers no image when the clipboard holds none', async () => {
     copiedFile('file:///Users/foo/x');
-    clipboardRead.mockClear();
     await expect(getHandler(IPC.CLIPBOARD_READ_IMAGE)({} as never)).resolves.toBeNull();
     await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(false);
-    expect(clipboardRead).not.toHaveBeenCalled();
+  });
+
+  it('counts an image stored in another format only (a bitmap), and pastes it converted to PNG', async () => {
+    setPlatform('darwin');
+    // has('image/png') says no; the item still lists an image type.
+    clipboardRead.mockResolvedValue([{ types: ['image/bmp'], getType: async () => new Blob([new Uint8Array([0x42, 0x4d, 1, 2])]) }]);
+    const converted = Buffer.from([0x89, 0x50, 0x4e, 0x47, 9]);
+    createFromBuffer.mockReturnValueOnce({ isEmpty: () => false, toPNG: () => converted });
+    const fs = await import('fs');
+
+    await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(true);
+    const path = await getHandler(IPC.CLIPBOARD_READ_IMAGE)({} as never);
+    expect(fs.writeFileSync).toHaveBeenCalledWith(path, converted);
+  });
+
+  it('a busy clipboard answers no image rather than failing the call', async () => {
+    const busy = new Error('OpenClipboard failed: 0x800401D0');
+    clipboardHas.mockRejectedValue(busy);
+    clipboardRead.mockRejectedValue(busy);
+    await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(false);
   });
 });
 

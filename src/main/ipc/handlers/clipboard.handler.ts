@@ -7,7 +7,7 @@ import { wrapHandler } from '../wrapHandler';
 import { foregroundRemoteShellClient, imagePathForPane } from '../../../shared/imagePaste';
 import { getPtyShell } from '../../pty/ptyShellRegistry';
 import { EphemeralClipboard } from '../../clipboard/ephemeralClipboard';
-import { readClipboardPng } from '../../clipboard/clipboardImage';
+import { clipboardHasImage, readClipboardPng } from '../../clipboard/clipboardImage';
 import { ELEMENT_SHOT_PREFIX } from '../../../shared/browserElementHandoff';
 
 let ephemeral: EphemeralClipboard | null = null;
@@ -315,8 +315,7 @@ export function registerClipboardHandlers(
     return paneRemoteShell(ptyId, opts.shellPidFor);
   }));
 
-  // The image readImage takes, checked as a single format (no listing of every type).
   ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, wrapHandler(IPC.CLIPBOARD_HAS_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
-    return clipboard.has('image/png');
+    return clipboardHasImage();
   }));
 }

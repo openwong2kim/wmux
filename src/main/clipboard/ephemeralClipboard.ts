@@ -68,6 +68,9 @@ export class EphemeralClipboard {
       this.forget();
       if (!held) return;
       try {
+        // Not atomic: the clipboard offers no compare-and-swap, so text another
+        // app copies between this read and the write is cleared too. The window
+        // is one asynchronous hop; a second read would narrow it, not close it.
         if ((await this.deps.readText()) === held.text) await this.deps.writeText('');
       } catch {
         /* clipboard busy — nothing more can be done at this point */

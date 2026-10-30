@@ -1,16 +1,38 @@
-import { clipboard } from 'electron';
+import { clipboard, nativeImage } from 'electron';
+
+const isImage = (type: string): boolean => type.startsWith('image/');
 
 /**
- * The clipboard's image as PNG bytes, or null when it holds none. Electron
- * hands a clipboard image over as `image/png`, whatever the platform stored.
+ * Whether the clipboard holds an image in any format, as availableFormats()
+ * used to say: a source that stored only another format (a bitmap, a TIFF)
+ * counts too. A busy clipboard (the Win32 one can be locked) is no image.
+ */
+export async function clipboardHasImage(): Promise<boolean> {
+  try {
+    return (await clipboard.read()).some((item) => item.types.some(isImage));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The clipboard's image as PNG bytes, or null when it holds none. `image/png`
+ * is taken as it is; another image format is converted, so a source that
+ * stored only that format still pastes.
  */
 export async function readClipboardPng(): Promise<Buffer | null> {
-  // A single-format check first: a paste with no image lists no types.
-  if (!(await clipboard.has('image/png'))) return null;
-  const item = (await clipboard.read()).find((i) => i.types.includes('image/png'));
-  if (!item) return null;
-  const png = Buffer.from(await (await item.getType('image/png')).arrayBuffer());
-  return png.length > 0 ? png : null;
+  for (const item of await clipboard.read()) {
+    const type = item.types.includes('image/png') ? 'image/png' : item.types.find(isImage);
+    if (!type) continue;
+    // eslint-disable-next-line no-await-in-loop -- one item at a time, the first image wins
+    // An image type always comes back as a Blob (only the bookmark format does not).
+    const bytes = Buffer.from(await ((await item.getType(type)) as Blob).arrayBuffer());
+    if (bytes.length === 0) continue;
+    if (type === 'image/png') return bytes;
+    const image = nativeImage.createFromBuffer(bytes);
+    if (!image.isEmpty()) return image.toPNG();
+  }
+  return null;
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
