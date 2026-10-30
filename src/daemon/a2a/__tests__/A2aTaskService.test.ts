@@ -9,7 +9,7 @@ import type { A2aTaskTransitionPayload } from '../../../shared/a2aEventlog';
 import type { CompletionEvidence } from '../../../shared/types';
 import type { EventEnvelope } from '../../../shared/eventlog';
 import { panePrincipalId } from '../../../shared/principals';
-import { COMPANY_BRIEF_KIND } from '../../../shared/department';
+import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 
 let dir: string;
 const syncOk = (): void => {};
@@ -917,8 +917,8 @@ describe('#1598 receiver cancel through transition', () => {
   });
 });
 
-describe('company mode: canceling a department task', () => {
-  async function seedDepartmentTask(svc: A2aTaskService): Promise<void> {
+describe('company mode: canceling a company task', () => {
+  async function seedCompanyTask(svc: A2aTaskService): Promise<void> {
     const created = await svc.createTask({
       id: 'task-dept',
       title: 'T',
@@ -936,7 +936,7 @@ describe('company mode: canceling a department task', () => {
 
   it('refuses another pane of the same workspace and allows the creating pane', async () => {
     const svc = newService(newLog());
-    await seedDepartmentTask(svc);
+    await seedCompanyTask(svc);
     const bySibling = await svc.cancelTask({ taskId: 'task-dept', callerWorkspaceId: 'ws-home', callerPaneId: 'pane-member' });
     expect(!bySibling.ok && bySibling.error).toContain('only the pane that created');
     const noPane = await svc.cancelTask({ taskId: 'task-dept', callerWorkspaceId: 'ws-home' });
@@ -949,13 +949,13 @@ describe('company mode: canceling a department task', () => {
 
   it('lets the trusted lane cancel without a pane', async () => {
     const svc = newService(newLog());
-    await seedDepartmentTask(svc);
+    await seedCompanyTask(svc);
     const res = await svc.cancelTask({ taskId: 'task-dept', callerWorkspaceId: 'ws-home', trustedLane: true });
     expect(res.ok).toBe(true);
   });
 });
 
-describe('company mode: a department task does not end as canceled through an update', () => {
+describe('company mode: a company task does not end as canceled through an update', () => {
   it('refuses the receiver pane and lets the trusted lane through', async () => {
     const svc = newService(newLog());
     await svc.createTask({

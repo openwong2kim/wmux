@@ -1501,8 +1501,8 @@ export function registerA2aRpc(
   // task.cancel: cancel worker + 데몬 정본 커밋 + 렌더러 캐시/이벤트(envelope PR4).
   router.register('a2a.task.cancel', async (params, ctx) => {
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
-    // The caller's pane, resolved here as for an update: a department task is
-    // canceled only by the pane that created it (shared/department.ts).
+    // The caller's pane, resolved here as for an update: a company task is
+    // canceled only by the pane that created it (shared/company.ts).
     const trustedLane = ctx?.operator === true || (ctx?.firstParty === true && !isHostedCaller(ctx));
     const callerPane = await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId);
     // Only fields main sets reach the renderer.

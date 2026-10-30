@@ -37,7 +37,7 @@ import {
 } from '../shadowWorkspace';
 import { clampFileTreeWidth } from '../../utils/fileTreeLayout';
 import { isSleepPreventionMode } from '../../../shared/sleepPrevention';
-import { parseWorkspaceDepartment } from '../../../shared/department';
+import { parseWorkspaceCompany } from '../../../shared/company';
 import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
@@ -277,7 +277,7 @@ export interface WorkspaceSlice {
    * cleared ptyIds → new panes spawn their own PTYs) and its PROFILE (env +
    * startup command, re-normalized through the save-boundary secret policy).
    * The clone is named "<name> (copy [N])", inserted right after the source, and
-   * activated. Department membership is intentionally NOT copied.
+   * activated. The company record is intentionally NOT copied.
    * No-op if the id is unknown.
    */
   duplicateWorkspace: (id: string) => void;
@@ -1331,14 +1331,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // main pushes fresh ones as the panes report.
         if (ws.metadata?.pr !== undefined) delete ws.metadata.pr;
         if (ws.metadata?.gitSync !== undefined) delete ws.metadata.gitSync;
-        // The old company mode stamped these; a department is its own record,
+        // The old company mode stamped these; a company is its own record,
         // so a saved 'ceo' or 'lead' never comes back as one.
         const legacy = ws as Workspace & { companyRole?: unknown; companyDeptName?: unknown };
         delete legacy.companyRole;
         delete legacy.companyDeptName;
-        const department = parseWorkspaceDepartment(ws.department);
-        if (department) ws.department = department;
-        else delete ws.department;
+        const company = parseWorkspaceCompany(ws.company);
+        if (company) ws.company = company;
+        else delete ws.company;
       }
 
       state.workspaces = data.workspaces;

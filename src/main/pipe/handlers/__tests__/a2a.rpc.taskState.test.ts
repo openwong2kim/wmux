@@ -411,7 +411,7 @@ describe('a2a.task.cancel — the caller pane decides, the worker waits for the 
     rendererWithPanes([{ id: 'pane-member', surfacePtyIds: ['pty-member'] }]);
     const router = setup(async (method, params) => {
       calls.push({ method, params });
-      return { ok: false, error: 'a2a.task.cancel: only the pane that created this department task can cancel it' };
+      return { ok: false, error: 'a2a.task.cancel: only the pane that created this company task can cancel it' };
     });
     const res = await router.dispatch({
       id: 'c1',

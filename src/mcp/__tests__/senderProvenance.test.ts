@@ -111,7 +111,7 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     expect(tokens - decls).toBeGreaterThanOrEqual(5);
   });
 
-  it('a2a_task_cancel names the caller pane, so the pane that created a department task can cancel it', () => {
+  it('a2a_task_cancel names the caller pane, so the pane that created a company task can cancel it', () => {
     const handler = /server\.tool\(\s*'a2a_task_cancel'[\s\S]*?\n\);/.exec(mcpIndexSrc)?.[0] ?? '';
     expect(handler).not.toBe('');
     expect(handler).toMatch(/const senderPtyId = getTaskSenderPtyId\(\);\s*if \(senderPtyId\) params\.senderPtyId = senderPtyId;/);

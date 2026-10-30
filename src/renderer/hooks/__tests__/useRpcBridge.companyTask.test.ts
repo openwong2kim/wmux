@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 //
-// Company mode: a new task to a department pane is checked against the pane
-// the send resolved, before anything is stored; a department task is canceled
+// Company mode: a new task to a company pane is checked against the pane
+// the send resolved, before anything is stored; a company task is canceled
 // only by the pane that created it. These drive the real bridge handler.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
-import { COMPANY_BRIEF_KIND } from '../../../shared/department';
+import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 import { useStore } from '../../stores';
 import { handleRpcMethod } from '../useRpcBridge';
 
@@ -24,7 +24,7 @@ function leaf(id: string, ptyId: string): PaneLeaf {
   return { id, type: 'leaf', surfaces: [surface], activeSurfaceId: surface.id };
 }
 
-// Department "Eng" lives in HOME: the coordinator pane and one member pane.
+// Company "Eng" lives in HOME: the coordinator pane and one member pane.
 const HOME = {
   id: 'ws-dept-home',
   name: 'Eng',
@@ -36,7 +36,7 @@ const HOME = {
     children: [leaf('pane-coord', 'pty-coord'), leaf('pane-member', 'pty-member')],
   } as Pane,
   activePaneId: 'pane-coord',
-  department: { v: 1, kind: 'home', id: 'd-eng', name: 'Eng', coordinatorPtyId: 'pty-coord' },
+  company: { v: 1, kind: 'home', id: 'd-eng', name: 'Eng', coordinatorPtyId: 'pty-coord' },
 } as Workspace;
 const OUTSIDE = { id: 'ws-dept-outside', name: 'Outside', rootPane: leaf('pane-out', 'pty-out'), activePaneId: 'pane-out' } as Workspace;
 
@@ -63,7 +63,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe('a new task to a department pane', () => {
+describe('a new task to a company pane', () => {
   it('from the coordinator, with a brief, is stored pinned to both panes with the brief first', async () => {
     const res = await send({ workspaceId: HOME.id, to: HOME.id, paneId: 'pane-member', senderPtyId: 'pty-coord', data: BRIEF });
     expect(res.error).toBeUndefined();
@@ -79,7 +79,7 @@ describe('a new task to a department pane', () => {
     expect(taskCount()).toBe(0);
   });
 
-  it('from outside the department reaches the coordinator but not a member', async () => {
+  it('from outside the company reaches the coordinator but not a member', async () => {
     const toMember = await send({ workspaceId: OUTSIDE.id, to: HOME.id, paneId: 'pane-member', senderPtyId: 'pty-out', data: BRIEF });
     expect(toMember.error).toContain('through its coordinator');
     expect(taskCount()).toBe(0);
@@ -95,14 +95,14 @@ describe('a new task to a department pane', () => {
     expect(taskCount()).toBe(0);
   });
 
-  it('leaves a send to a workspace outside every department as it was', async () => {
+  it('leaves a send to a workspace outside every company as it was', async () => {
     const res = await send({ workspaceId: HOME.id, to: OUTSIDE.id, senderPtyId: 'pty-member' });
     expect(res.error).toBeUndefined();
     expect(taskCount()).toBe(1);
   });
 });
 
-describe('canceling a department task (no daemon)', () => {
+describe('canceling a company task (no daemon)', () => {
   it('is refused for a sibling pane and allowed for the pane that created it', async () => {
     const created = await send({ workspaceId: HOME.id, to: HOME.id, paneId: 'pane-member', senderPtyId: 'pty-coord', data: BRIEF });
     const taskId = created.taskId as string;
