@@ -10318,7 +10318,11 @@ async function main(): Promise<void> {
         a2aPeers.list().some((p) => p.hostId === hostId && !p.revokedAt) || a2aRemoteHosts.get(hostId) !== undefined;
       a2aSpawnPolicy.retainHosts(a2aPaired);
       a2aSpawnRequests.retainHosts(a2aPaired);
-      a2aContinuePolicy.retainHosts(a2aPaired);
+      try {
+        a2aContinuePolicy.retainHosts(a2aPaired);
+      } catch (err) {
+        a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
+      }
       a2aContinueRequests.retainHosts(a2aPaired);
     }
     const a2aHostName = (hostId: string): string | undefined =>
@@ -10554,9 +10558,15 @@ async function main(): Promise<void> {
       a2aSpawn.sendTargets();
       // Cards and approved starts past their expiry end `expired` even with nobody looking.
       // Put-backs of ended spawn links that could not be done yet are retried here too.
+      // A removed PC's send allow whose write failed is written here once it can be, before a restart could read it back.
       const spawnSweep = setInterval(() => {
         a2aSpawn.sweep();
         a2aContinue.sweep();
+        try {
+          a2aContinuePolicy.retainHosts(() => true, 'an earlier removal');
+        } catch (err) {
+          a2aLog('error', `[a2a-remote] ${err instanceof Error ? err.message : String(err)}`);
+        }
         a2aStarter?.reconcile();
         a2aAsks?.expire();
       }, 60_000);
