@@ -1,0 +1,226 @@
+/**
+ * Rendered parity of the Rust ANSI snapshot against xterm's. Each payload is
+ * replayed into a fresh @xterm/headless (the renderer's parser) and the
+ * cells, cursor, modes and wrap flags are compared, then again after live
+ * bytes continue the stream and after leaving the alternate screen.
+ *
+ * Accepted deviation: Alacritty cannot tell a printed space from an erased
+ * cell, so trailing blanks replay as empty cells. A restored row may drop
+ * trailing printed spaces from its copied text; it never gains any, except
+ * inside a soft-wrapped paragraph, where copy and reflow ignore the edge.
+ *
+ * Runs where the native module is built (the rust-engine lane builds it).
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Terminal } from '@xterm/headless';
+import { nativeCorePath } from '../../shared/nativeTerminalCore';
+import { getAnsiSnapshotBackendDiagnostics } from '../AnsiSnapshotBackend';
+import { generateSnapshotUnqueued, type SnapshotRequest } from '../HeadlessSnapshot';
+import { generateRustSnapshot } from '../RustSnapshot';
+import { snapshotTestTerminal, writeTerminal } from '../snapshotFingerprint';
+import { CLAUDE_WRAPPED_REPLY_80x30 } from '../../renderer/terminal/__tests__/fixtures/claudeWrappedReply';
+
+const modulePath = nativeCorePath();
+const available = fs.existsSync(modulePath);
+if (!available && process.env.WMUX_REQUIRE_RUST_CORE) throw new Error(`native core missing: ${modulePath}`);
+
+interface Row { wrapped: boolean; text: string; cells: string }
+interface State { head: string; rows: Row[] }
+
+function capture(t: Terminal): State {
+  const rows: Row[] = [];
+  const head: unknown[] = [t.cols, t.rows, t.buffer.active.type, t.modes];
+  for (const buffer of [t.buffer.normal, t.buffer.alternate]) {
+    if (buffer.type === 'alternate' && t.buffer.active.type !== 'alternate') continue;
+    head.push([buffer.type, buffer.baseY, buffer.cursorX, buffer.cursorY, buffer.length]);
+    for (let y = 0; y < buffer.length; y++) {
+      const line = buffer.getLine(y)!;
+      const cells: unknown[] = [];
+      for (let x = 0; x < t.cols; x++) {
+        const c = line.getCell(x)!;
+        cells.push([c.getChars() || ' ', c.getWidth(), c.getFgColor(), c.getBgColor(), c.getFgColorMode(), c.getBgColorMode(),
+          c.isBold(), c.isDim(), c.isItalic(), c.isUnderline(), c.isBlink(), c.isInverse(), c.isInvisible(), c.isStrikethrough(), c.isOverline()]);
+      }
+      rows.push({ wrapped: line.isWrapped, text: line.translateToString(true), cells: JSON.stringify(cells) });
+    }
+  }
+  return { head: JSON.stringify(head), rows };
+}
+
+async function replay(req: SnapshotRequest, payload: Buffer): Promise<State[]> {
+  const t = snapshotTestTerminal(req.cols, req.rows, req.scrollback ?? 5000);
+  try {
+    await writeTerminal(t, payload);
+    const states = [capture(t)];
+    // Live bytes continue after the snapshot: wrap-pending, SGR and parser
+    // state must match too. Then the saved primary screen and cursor.
+    for (const probe of ['\x1b[?2026lZ한\r\n', '\x1b[?1049lX']) { await writeTerminal(t, probe); states.push(capture(t)); }
+    return states;
+  } finally { t.dispose(); }
+}
+
+/** First difference, or undefined. Trailing printed spaces may be dropped. */
+function difference(rust: State[], ref: State[]): string | undefined {
+  for (let i = 0; i < ref.length; i++) {
+    if (rust[i].head !== ref[i].head) return `state ${i}: ${rust[i].head} != ${ref[i].head}`;
+    for (let y = 0; y < ref[i].rows.length; y++) {
+      const a = rust[i].rows[y], b = ref[i].rows[y];
+      // A soft-wrapped row is copied and reflowed with its full width, so
+      // its trailing blanks are unobservable either way.
+      const continued = ref[i].rows[y + 1]?.wrapped && rust[i].rows[y + 1]?.wrapped;
+      const text = a.text === b.text || (continued ? a.text.trimEnd() === b.text.trimEnd()
+        : b.text.startsWith(a.text) && b.text.slice(a.text.length).trim() === '');
+      if (a.wrapped !== b.wrapped || a.cells !== b.cells || !text) {
+        return `state ${i} row ${y}: ${JSON.stringify([a.wrapped, a.text])} != ${JSON.stringify([b.wrapped, b.text])}`;
+      }
+    }
+  }
+  return undefined;
+}
+
+type Case = { name: string; req: SnapshotRequest; backend: 'rust' | 'xterm' };
+const synthetic = (name: string, text: string, backend: 'rust' | 'xterm' = 'rust', cols = 20): Case =>
+  ({ name, backend, req: { cols, rows: 6, scrollback: 100, initial: Buffer.from(text) } });
+
+// One or more cases per control class the selector used to refuse wholesale.
+const accepted: Case[] = [
+  // OSC: not screen state (xterm's path drops it too) except OSC 8, restored.
+  synthetic('osc-title-bel', '\x1b]0;title\x07hello'),
+  synthetic('osc-title-st', '\x1b]2;t\x1b\\x'),
+  synthetic('osc-133', '\x1b]133;A\x07$ ls\r\nout\x1b]133;D;0\x07'),
+  synthetic('osc-query', '\x1b]11;?\x07x'),
+  synthetic('osc-palette', '\x1b]4;1;rgb:ff/00/00\x07\x1b[31mred'),
+  synthetic('osc-52', '\x1b]52;c;aGk=\x07x'),
+  synthetic('osc-partial-tail', 'hi\x1b]0;tit'),
+  synthetic('osc-esc-abort', '\x1b]0;a\x1b[31mred'),
+  synthetic('osc-can', '\x1b]0;a\x18text'),
+  synthetic('osc-utf8', '\x1b]0;✳ Claude\x07ok'),
+  synthetic('osc8-link', '\x1b]8;;https://e.com\x07link\x1b]8;;\x07 after'),
+  synthetic('osc8-styles', '\x1b]8;;http://x\x07\x1b[1mbold\x1b[0mplain\x1b]8;;\x07 no'),
+  synthetic('osc8-open-tail', 'a\x1b]8;id=k;http://y\x07open'),
+  synthetic('osc8-alt', '\x1b]8;;http://n\x07nn\x1b[?1049h\x1b]8;;http://a\x07aa'),
+  // SO/SI and ASCII designation: with only ASCII designated, shifts are no-ops.
+  synthetic('so-si', '\x0eabc\x0fdef'),
+  synthetic('designate-ascii', '\x1b(B\x1b)Babc\x0e\x1b[mx\x0f'),
+  // DECSC/DECRC and SCOSC/SCORC: parsed alike; neither path restores the slot.
+  synthetic('decsc', 'ab\x1b7cd\r\n\x1b8X'),
+  synthetic('decrc-unsaved', 'abc\r\n\x1b8X'),
+  synthetic('decsc-attrs', '\x1b[31m\x1b7\x1b[0m\x1b8X'),
+  synthetic('decsc-alt', 'n\x1b7\x1b[?1049ha\x1b7b\x1b[?1049l\x1b8X'),
+  synthetic('scosc', 'ab\x1b[scd\x1b[uX'),
+  // Kitty keyboard flags: input state, restored by neither path.
+  synthetic('kitty-push-pop', '\x1b[>1uhello\x1b[<u'),
+  synthetic('kitty-query', '\x1b[?uhi'),
+  synthetic('kitty-set', '\x1b[=1;1uhi'),
+  // Tab stops (HTS, TBC): parsed alike, restored by neither path.
+  synthetic('hts', '\x1b[1;5H\x1bH\r\ta\tb'),
+  synthetic('tbc-all', '\x1b[3g\tX'),
+  synthetic('tbc-one', '\x1b[1;9H\x1b[g\r\tX'),
+  synthetic('tab-plain', 'a\tb\tc\r\nxx\t\ty'),
+  synthetic('tab-at-wrap', 'abcdefgh\tX', 'rust', 8),
+  // CSI q family: cursor style, LEDs, protection and version query.
+  synthetic('decscusr', '\x1b[5 qhi'),
+  synthetic('xtversion', '\x1b[>0qhi'),
+  synthetic('decll', '\x1b[1qhi'),
+  synthetic('decsca', '\x1b[1"qhi\x1b[0"q'),
+  synthetic('sgr-no-overline', 'a\x1b[55mb'),
+  // Rows and blanks.
+  synthetic('trailing-printed-space', 'ab   \r\ncd'),
+  synthetic('erase-bg', 'abc\x1b[44m\x1b[K\x1b[0m\r\nx\x1b[41m  \x1b[0m'),
+  synthetic('erase-bg-middle', '\x1b[44m\x1b[2K\x1b[0m\x1b[1;5Hmid'),
+  synthetic('wide-wrap', 'abcdefg中X', 'rust', 8),
+  synthetic('modes', '\x1b[?1h\x1b[?2004h\x1b[?1002h\x1b[?1006h\x1b[?1004h\x1b=\x1b[4hready'),
+  synthetic('mode-sgr-pixels', '\x1b[?1000h\x1b[?1016hx'),
+  synthetic('mode-sync-open', '\x1b[?2026hx'),
+];
+
+// Classes that stay on xterm because Alacritty parses them differently.
+const refused: Case[] = [
+  synthetic('designate-dec', '\x1b(0' + Array.from({ length: 32 }, (_, i) => String.fromCharCode(0x5f + i)).join('') + '\x1b(B', 'xterm', 40),
+  synthetic('designate-uk', '\x1b(A#x\x1b(B#', 'xterm'),
+  synthetic('designate-g2', '\x1b*0\x1bnlq\x1b(Bz', 'xterm'),
+  synthetic('so-dec-decsc', '\x1b)0\x0e\x1b7\x0fq\x1b8q', 'xterm'),
+  synthetic('overline', '\x1b[53mover\x1b[55mno', 'xterm'),
+  synthetic('sgr-21', '\x1b[21mx\x1b[24my', 'xterm'),
+  synthetic('c1', 'a\u009b31mred', 'xterm'),
+  synthetic('decsed', 'abc\r\ndef\x1b[?2J', 'xterm'),
+  synthetic('decsel', 'abcdef\x1b[1;3H\x1b[?K', 'xterm'),
+  synthetic('sl', 'abcdef\x1b[2 @', 'xterm'),
+  synthetic('decic', 'abcdef\x1b[1;2H\x1b[2\'}', 'xterm'),
+  synthetic('decstr', 'ab\x1b[4h\x1b[!pcd', 'xterm'),
+  synthetic('su', '1\r\n2\r\n3\x1b[2S\x1b[1T', 'xterm'),
+  synthetic('lnm', '\x1b[20ha\nb', 'xterm'),
+  synthetic('mode-x10', '\x1b[?9hx', 'xterm'),
+  synthetic('mode-reverse-wrap', '\x1b[?45hx', 'xterm'),
+  synthetic('mode-decnkm', '\x1b[?66hx', 'xterm'),
+  synthetic('alt-47', 'n\x1b[?47ha', 'xterm'),
+  synthetic('alt-1047', 'n\x1b[?1047ha\x1b[?1047lb', 'xterm'),
+  synthetic('save-1048', 'ab\x1b[?1048hcd\r\n\x1b[?1048lX', 'xterm'),
+  // Refused by the serializer: xterm drops a saved pending wrap.
+  synthetic('decsc-wrap-pending', 'abcdefgh\x1b7\x1b[H\x1b8X', 'xterm', 8),
+  synthetic('alt-save-at-wrap', 'abcdefgh\x1b[?1049h\x1b[?1049lX', 'xterm', 8),
+];
+
+// Controls the selector never refused, rechecked now that Rust is the default.
+const others: Case[] = [
+  synthetic('ris', 'abc\x1b[31m\x1bcdef'),
+  synthetic('ind-nel-ri', 'a\x1bDb\x1bEc\x1bMd'),
+  synthetic('decaln', '\x1b#8'),
+  synthetic('rep', 'ab\x1b[3bc'),
+  synthetic('cht-cbt', 'a\x1b[2Ib\x1b[Zc'),
+  synthetic('cnl-cpl', 'a\r\nb\x1b[Fc\x1b[2Ed'),
+  synthetic('hpa-vpa', '\x1b[5`a\x1b[3db'),
+  synthetic('ich-dch-ech', 'abcdef\x1b[1;2H\x1b[2@\x1b[1P\x1b[2X'),
+  synthetic('il-dl', '1\r\n2\r\n3\x1b[2;1H\x1b[L\x1b[2M'),
+  synthetic('ed3', '1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n7\r\n8\x1b[3J'),
+  synthetic('sgr', '\x1b[1;2;3;4;5;7;8;9;31;44mstyled\x1b[22;23;24;25;27;28;29mplain\x1b[4:3;58:2::1:2:3mcurl\x1b[91;102mbright'),
+  synthetic('sgr-color-operands', '\x1b[38;5;53mx\x1b[48;2;53;55;6my\x1b[38:2::53:55:5mz'),
+  synthetic('emoji-cjk', 'abc한\u{1F600}Z é \u{1F468}‍\u{1F469}', 'rust', 12),
+  synthetic('dcs-apc', 'a\x1bP1$r0m\x1b\\b\x1b_x\x1b\\c'),
+  synthetic('partial-sgr', 'hello\x1b[31;'),
+  synthetic('scroll-history', Array.from({ length: 50 }, (_, i) => `\x1b[3${i % 8}mline${i}\x1b[0m`).join('\r\n')),
+];
+
+function corpus(): Case[] {
+  const root = path.join(process.cwd(), 'core/harness/corpus');
+  return fs.readdirSync(root).map(name => {
+    const dir = path.join(root, name);
+    const events = fs.readFileSync(path.join(dir, 'events.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const changes = events.filter(e => e.type === 'resize').map(e => ({ offset: e.byteOffset, ...e.geometry }));
+    const start = events[0].geometry;
+    const end = changes.at(-1) ?? start;
+    return { name: `corpus/${name}`, backend: 'rust' as const,
+      req: { cols: end.cols, rows: end.rows, scrollback: 5000, initial: fs.readFileSync(path.join(dir, 'recording.bin')), geometry: { start, changes } } };
+  });
+}
+
+const claude: Case = { name: 'claude-code-capture', backend: 'rust',
+  req: { cols: 80, rows: 30, scrollback: 1000, initial: Buffer.from(CLAUDE_WRAPPED_REPLY_80x30, 'base64') } };
+
+describe.skipIf(!available)('Rust ANSI snapshot rendered parity', () => {
+  beforeEach(() => vi.stubEnv('WMUX_RUST_SNAPSHOT_MODULE', modulePath));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it.each([...accepted, ...refused, ...others, ...corpus(), claude].map(c => [c.name, c] as const))('%s', async (_name, { req, backend }) => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const reference = await generateSnapshotUnqueued(req);
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'ansi');
+    const selected = await generateSnapshotUnqueued(req);
+    expect(reference.ok && selected.ok, JSON.stringify([reference, selected])).toBe(true);
+    if (!reference.ok || !selected.ok) return;
+    expect(getAnsiSnapshotBackendDiagnostics().last?.backend).toBe(backend);
+    expect(difference(await replay(req, selected.payload), await replay(req, reference.payload))).toBeUndefined();
+  });
+
+  // Evidence for each refusal: without it the Rust payload would diverge.
+  it.each(refused.map(c => [c.name, c] as const))('Rust alone diverges on %s', async (_name, { req }) => {
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const reference = await generateSnapshotUnqueued(req);
+    const native = await generateRustSnapshot(req, 'ansi');
+    if (!reference.ok) throw new Error('reference failed');
+    if (!native.ok) return expect(native.detail).toMatch(/^unsupported-/);
+    expect(difference(await replay(req, native.payload), await replay(req, reference.payload))).toBeDefined();
+  });
+});
