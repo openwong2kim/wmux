@@ -94,6 +94,8 @@ export const A2A_CONTINUE_CODES = [
   'diverged',
   /** A pane on B already runs that conversation, or another request carries it. */
   'busy',
+  /** B already holds as many requests from A as it takes; A may ask again later. */
+  'full',
   'too-large',
   'no-space',
   'path-too-long',

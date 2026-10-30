@@ -138,8 +138,7 @@ import { A2aOffers } from './a2aRemote/offers';
 import { OfferStore } from './a2aRemote/offerStore';
 import { A2aRemoteDelivery, shareOfferFeatures } from './a2aRemote/delivery';
 import { A2aSpawnReceiver, registerSpawnRpc } from './a2aRemote/spawnReceiver';
-import { SpawnPolicyStore, samePath } from './a2aRemote/spawnPolicyStore';
-import { realpathNative } from './a2aRemote/spawnChecks';
+import { SpawnPolicyStore } from './a2aRemote/spawnPolicyStore';
 import { SpawnRequestStore } from './a2aRemote/spawnRequestStore';
 import { SpawnLinkStore } from './a2aRemote/spawnLinkStore';
 import { A2aSpawnStarter, registerSpawnStartRpc } from './a2aRemote/spawnStarter';
@@ -148,8 +147,8 @@ import { SpawnOutgoingStore } from './a2aRemote/spawnOutgoingStore';
 import { A2aContinueReceiver, paneHoldsSession } from './a2aRemote/continueReceiver';
 import { ContinuePolicyStore } from './a2aRemote/continuePolicyStore';
 import { ContinueRequestStore } from './a2aRemote/continueRequestStore';
+import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { gitRunner } from '../main/a2aRemote/spawnWorktree';
-import { originUrlRepoKey, readRawOriginUrl } from '../main/worktask/workerGit';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
 import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
@@ -10402,17 +10401,9 @@ async function main(): Promise<void> {
         if (!a2aDelivery) throw new Error('messages between PCs are not carried this run');
         a2aDelivery.outbox.enqueue(hostId, envelope);
       },
-      // The root's own origin, read through its common git dir, keyed as the asker keys its own.
-      originKeyOf: async (rootPath) => {
-        const git = a2aRootGit(rootPath);
-        const url = await readRawOriginUrl((args, cwd) => git(args, [], cwd), rootPath);
-        return url ? originUrlRepoKey(url) : null;
-      },
-      isRepoTop: async (rootPath) => {
-        const out = await a2aRootGit(rootPath)(['rev-parse', '--show-toplevel']);
-        const top = out.code === 0 ? out.stdout.trim() : '';
-        return top !== '' && samePath(await realpathNative(top), rootPath);
-      },
+      // The root's own origin, keyed as the asker keys its own; a git that could not be read throws (checked again later).
+      originKeyOf: (rootPath) => rootOriginKey(a2aRootGit(rootPath), rootPath),
+      isRepoTop: (rootPath) => rootIsRepoTop(a2aRootGit(rootPath), rootPath),
       // The staging volume: the bytes land under the a2a dir.
       freeBytes: () => fs.promises.statfs(a2aDir).then((s) => s.bavail * s.bsize),
       sessionLive: (sessionId) => sessionManager.listLiveSessions().some((m) => paneHoldsSession(
