@@ -14,16 +14,19 @@ import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { rosterPrimaryLabel } from '../Sidebar/WorkspaceAgentRoster';
 import { useWorkLinks } from '../FleetView/useFleetSources';
 import { buildFleetTickets, type FleetTicket } from '../FleetView/fleetTickets';
+import { isTerminalKindSurfaceType } from '../Pane/surfaceKinds';
 import { buildCompanyBoard, type BoardSeat } from './companyBoard';
 
 const NOW_SHOWN = 2;
 
-function Section({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
+function Section({ title, count, needsYou = false, children }: { title: string; count?: number; needsYou?: boolean; children: ReactNode }) {
   return (
     <section className="flex flex-col">
       <h3 className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">
         {title}
-        {count !== undefined && <span className="ml-1.5 tabular-nums">{count}</span>}
+        {count !== undefined && (
+          <span className={`ml-1.5 tabular-nums ${needsYou ? 'text-[var(--attention-text)]' : ''}`}>{count}</span>
+        )}
       </h3>
       <div className="flex flex-col divide-y divide-[var(--stroke)]">{children}</div>
     </section>
@@ -102,24 +105,28 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const title = seatTitle(seat);
     const trailer = row ? row.paneName : tagOf(seat.paneId);
     const statusLabel = row ? t(AGENT_STATUS_ICON[row.status].labelKey) : t('company.noAgent');
-    const surfaceId = leaves.find((l) => l.id === seat.paneId)?.activeSurfaceId ?? '';
+    // The pane's terminal, never the board itself when the board sits in this pane.
+    const leaf = leaves.find((l) => l.id === seat.paneId);
+    const surfaceId = leaf?.surfaces.find((sf) => isTerminalKindSurfaceType(sf.surfaceType))?.id ?? leaf?.activeSurfaceId ?? '';
     return (
       <button
         key={seat.paneId}
         type="button"
-        className={`flex w-full flex-col gap-0.5 rounded-[var(--chip-radius)] px-1 py-1.5 text-left hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
-        onClick={() => focusSeat(row, surfaceId)}
+        className={`flex w-full flex-col gap-0.5 py-1.5 text-left hover:bg-[var(--hover-fill)] ${FOCUS_RING}`}
+        // The board's own pane takes a click that bubbles up and would win the focus back.
+        onClick={(event) => { event.stopPropagation(); focusSeat(row, surfaceId); }}
         aria-label={[title, seat.coordinator ? t('company.ceo') : undefined, statusLabel].filter(Boolean).join(', ')}
         data-board-seat={seat.paneId}
       >
         <span className="flex min-w-0 items-center gap-1.5">
           <StatusMarkView status={row?.status ?? 'idle'} quiet usageWaiting={row?.usageLimitWaiting} />
           {seat.coordinator && <span className="flex-none text-[11px] text-[var(--text-muted)]" data-board-ceo>{t('company.ceo')}</span>}
-          <span className={`truncate font-semibold ${row ? 'text-[var(--text-main)]' : 'text-[var(--text-sub)]'}`}>{title}</span>
-          {trailer !== title && <span className="flex-none text-[11px] text-[var(--text-muted)]">{trailer}</span>}
-          {!row && <span className="flex-none text-[11px] text-[var(--text-muted)]" data-board-no-agent>{t('company.noAgent')}</span>}
+          <span className={`min-w-0 truncate font-semibold ${row ? 'text-[var(--text-main)]' : 'text-[var(--text-sub)]'}`}>{title}</span>
+          {/* The coordinate gives way before the title does. */}
+          {trailer !== title && <span className="min-w-0 shrink-[4] truncate text-[11px] text-[var(--text-muted)]">{trailer}</span>}
         </span>
         <span className="flex flex-col gap-0.5 pl-[16px]">
+          {!row && <span className="truncate text-[11px] text-[var(--text-muted)]" data-board-no-agent>{t('company.noAgent')}</span>}
           {seat.owns && <span className="truncate text-[11px] text-[var(--text-muted)]">{t('company.board.owns', { role: seat.owns })}</span>}
           {seat.now.slice(0, NOW_SHOWN).map((ticket) => (
             <span
@@ -163,7 +170,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
           </header>
 
           {board.needsYou.length > 0 && (
-            <Section title={t('company.board.needsYou')} count={board.needsYou.length}>
+            <Section title={t('company.board.needsYou')} count={board.needsYou.length} needsYou>
               {board.needsYou.map((ticket) => ticketRow(ticket, seatName(ticket.paneId)))}
             </Section>
           )}

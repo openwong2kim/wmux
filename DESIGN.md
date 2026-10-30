@@ -1741,10 +1741,11 @@ A pane is a terminal column plus, when it needs one, a work area.
   out** (open jobs sent to other workspaces), **Not on a seat** and **Log**
   (finished jobs, newest first, ten at most). A section with nothing in it is
   not drawn, Seats aside; a pane with no agent keeps its seat with a muted
-  `No agent in this pane`. A seat row focuses its pane. One muted closing line
-  says work sent to other PCs and fan-out workers is not shown yet. Jobs are
-  the delegated-work tickets Fleet lists; the board adds no colour beyond the
-  status marks and needs-you.
+  `No agent in this pane` under its title, and the coordinate gives way
+  before the title in a narrow pane. A seat row focuses its pane. One muted
+  closing line says work sent to other PCs and fan-out workers is not shown
+  yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
+  colour beyond the status marks and needs-you.
 
 ## The one-boundary rule
 
