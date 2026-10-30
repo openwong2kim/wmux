@@ -160,6 +160,18 @@ describe('factory system cards in the reader\'s language (RoomCard.notice)', () 
     expect(ownerCardText(card({ notice: { code: 'research.completed' } }), [], undefined, i18nT).title).toBe('조사 보고됨: 작업 완료');
   });
 
+  it('a My Hermes refusal and an unsettled turn are worded in the reader\'s language; an unknown refusal keeps the English', () => {
+    setLocale('ko');
+    const refused = card({ title: 'wmux could not confirm this message is yours alone, so it was not sent to My Hermes.', body: undefined, notice: { code: 'wake.refused', args: { refusal: 'notAttended' } } });
+    expect(ownerCardText(refused, [], undefined, i18nT).title).toBe('wmux가 이 메시지가 내 것만인지 확인하지 못해서 My Hermes에 보내지 않았어요.');
+    expect(noticeText(card({ notice: { code: 'turn.unsettled' } }), i18nT)?.title).toMatch(/^My Hermes가 지난 턴을/);
+    expect(noticeText(card({ notice: { code: 'wake.refused', args: { refusal: 'later' } } }), i18nT)).toBeNull();
+    expect(noticeText(card({ notice: { code: 'wake.refused' } }), i18nT)).toBeNull();
+    // English words it as the card's own title.
+    setLocale('en');
+    expect(noticeText(refused, i18nT)?.title).toBe(refused.title);
+  });
+
   it('keeps the English for no code, an unknown code or value, and a card that is not the system\'s', () => {
     setLocale('ko');
     expect(noticeText(card({}), i18nT)).toBeNull();

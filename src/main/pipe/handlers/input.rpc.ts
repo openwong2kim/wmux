@@ -1049,10 +1049,10 @@ async function assertNotTypingAtAnApproval(
 
 /**
  * The gate for a message pasted into a pane and submitted with Enter on a
- * non-operator's behalf: agent-to-agent tasks, company messages, channel
- * mention nudges. Those used to be written by the renderer outside
- * `input.send`, so they never met the raw-input guard above, and an Enter into
- * a pane showing an approval selects its highlighted option.
+ * non-operator's behalf: agent-to-agent tasks and channel mention nudges.
+ * Those used to be written by the renderer outside `input.send`, so they
+ * never met the raw-input guard above, and an Enter into a pane showing an
+ * approval selects its highlighted option.
  *
  * Same guard as `input.send` (pending record, folder-trust prompt, workspace
  * policy, live screen), stricter on one point: an unreadable screen is refused

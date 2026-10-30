@@ -248,8 +248,6 @@ export const th = {
   'viCopy.visual': '-- วิชวล --',
 
   // StatusBar
-  'statusBar.company': 'บริษัท',
-  'statusBar.session': 'เซสชัน: {min} นาที',
   'statusBar.settingsTooltip': 'การตั้งค่า (Ctrl+,)',
 
   // Settings

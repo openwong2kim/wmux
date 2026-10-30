@@ -654,31 +654,6 @@ export type RpcMethod =
   | 'a2a.task.cancel'
   | 'a2a.broadcast'
   | 'meta.setSkills'
-  | 'company.create'
-  | 'company.destroy'
-  | 'company.status'
-  | 'company.addDept'
-  | 'company.removeDept'
-  | 'company.addMember'
-  | 'company.removeMember'
-  | 'company.broadcast'
-  | 'company.sendDept'
-  | 'company.sendMember'
-  | 'company.message'
-  | 'company.save'
-  | 'company.restore'
-  | 'company.templates'
-  | 'company.worktreeSetup'
-  | 'company.mergeDept'
-  | 'company.a2a.whoami'
-  | 'company.a2a.send'
-  | 'company.a2a.broadcast'
-  | 'company.a2a.inbox'
-  | 'company.a2a.ack'
-  | 'company.a2a.status'
-  | 'company.provision'
-  | 'company.provisionAll'
-  | 'company.provisionCeo'
   | 'hooks.signal'
   | 'usage.rateLimits'
   | 'usage.trail'
@@ -1018,31 +993,6 @@ export const ALL_RPC_METHODS = [
   'a2a.task.cancel',
   'a2a.broadcast',
   'meta.setSkills',
-  'company.create',
-  'company.destroy',
-  'company.status',
-  'company.addDept',
-  'company.removeDept',
-  'company.addMember',
-  'company.removeMember',
-  'company.broadcast',
-  'company.sendDept',
-  'company.sendMember',
-  'company.message',
-  'company.save',
-  'company.restore',
-  'company.templates',
-  'company.worktreeSetup',
-  'company.mergeDept',
-  'company.a2a.whoami',
-  'company.a2a.send',
-  'company.a2a.broadcast',
-  'company.a2a.inbox',
-  'company.a2a.ack',
-  'company.a2a.status',
-  'company.provision',
-  'company.provisionAll',
-  'company.provisionCeo',
   'hooks.signal',
   'usage.rateLimits',
   'usage.trail',

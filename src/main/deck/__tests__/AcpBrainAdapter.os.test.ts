@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import { AcpBrainAdapter, type AcpHermesPolicy } from '../AcpBrainAdapter';
@@ -631,6 +631,10 @@ describe('AcpBrainAdapter (Hermes preset)', () => {
 });
 
 describe('AcpBrainAdapter (My Hermes, own mode)', () => {
+  // A test on fake timers that fails must not leave them to the next one.
+  afterEach(() => {
+    vi.useRealTimers();
+  });
   /** A Hermes that holds every prompt and answers a held one only when told
    *  (a cancel alone does not end the turn). */
   function slowHermes() {
@@ -670,11 +674,170 @@ describe('AcpBrainAdapter (My Hermes, own mode)', () => {
     };
     return { spawnFn, children, answer, texts, held };
   }
-  const ownAdapter = (spawnFn: () => ChildProcessWithoutNullStreams, over: Partial<AcpHermesPolicy> = {}, mcpBundlePath: string | null = '/app/mcp/index.js') => {
+  const ownAdapter = (
+    spawnFn: () => ChildProcessWithoutNullStreams,
+    over: Partial<AcpHermesPolicy> = {},
+    mcpBundlePath: string | null = '/app/mcp/index.js',
+    timing: { promptTimeoutMs?: number; ownCancelBoundMs?: number } = {},
+  ) => {
     const { policy, asks } = hermesPolicy({ mode: 'own', ...over });
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath, spawnFn, hermes: policy, promptTimeoutMs: 200 });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath, spawnFn, hermes: policy, promptTimeoutMs: 200, ...timing });
     return { adapter, policy, asks };
   };
+
+  it('a stop Hermes never answers: past the bound wmux closes only its own agent, tells the owner, and the next message starts a new agent', async () => {
+    const h = slowHermes();
+    const { adapter, policy, asks } = ownAdapter(h.spawnFn, {}, undefined, { promptTimeoutMs: 60_000, ownCancelBoundMs: 300 });
+    adapter.start({});
+    const turn = collect(adapter.send('hello'));
+    await vi.waitFor(() => expect(asks).toHaveLength(1), { timeout: 5_000 });
+    // The owner stops the bot (BotRuntime's turn timeout stops it the same
+    // way); Hermes never reports the cancelled turn's end.
+    adapter.interrupt();
+    const first = h.children[0];
+    expect(first.sent.some((s) => s.msg.method === 'session/cancel')).toBe(true);
+    await deliberateSleep(100, 'a negative check: within the bound the bot stays in the turn');
+    expect(first.killed).toBe(false);
+    expect(policy.unsettled).not.toHaveBeenCalled();
+    expect((await turn).at(-1)).toMatchObject({ type: 'error' });
+    expect(first.killed).toBe(true);
+    expect(policy.unsettled).toHaveBeenCalledTimes(1);
+    // The killed agent's held prompt is gone with it.
+    h.held.length = 0;
+    const next = collect(adapter.send('next'));
+    await vi.waitFor(() => expect(h.texts).toEqual(['hello', 'next']), { timeout: 3_000 });
+    // A new agent, which resumes the conversation (this Hermes accepts the load).
+    expect(h.children).toHaveLength(2);
+    expect(h.children[1].sent.some((s) => s.msg.method === 'session/load' && (s.msg.params as Record<string, unknown>).sessionId === 'h-1')).toBe(true);
+    h.answer('end_turn');
+    expect((await next).at(-1)).toMatchObject({ type: 'turn-end' });
+    adapter.dispose();
+  });
+
+  it.skipIf(process.platform === 'win32')('at the bound wmux stops its agent with what it started, and the bot\'s turn ends only once they are gone', async () => {
+    const h = slowHermes();
+    const withPid = () => Object.assign(h.spawnFn(), { pid: 424242 }) as unknown as ChildProcessWithoutNullStreams;
+    let stopped: () => void = () => undefined;
+    const stops: number[] = [];
+    const stopAgentTree = (pid: number) => new Promise<void>((r) => {
+      stops.push(pid);
+      stopped = r;
+    });
+    const { policy, asks } = hermesPolicy({ mode: 'own' });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: '/app/mcp/index.js', spawnFn: withPid, hermes: policy, promptTimeoutMs: 60_000, ownCancelBoundMs: 200, stopAgentTree });
+    adapter.start({});
+    let done = false;
+    const turn = collect(adapter.send('hello')).then((evs) => { done = true; return evs; });
+    await vi.waitFor(() => expect(asks).toHaveLength(1), { timeout: 5_000 });
+    adapter.interrupt();
+    await vi.waitFor(() => expect(stops).toEqual([424242]), { timeout: 5_000 });
+    // The tree is still being stopped: the turn (and the bot's gate) holds.
+    await deliberateSleep(100, 'a negative check: the turn must not end before the tree is gone');
+    expect(done).toBe(false);
+    stopped();
+    expect((await turn).at(-1)).toMatchObject({ type: 'error' });
+    expect(policy.unsettled).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+
+  it('a cancel watch whose turn fails stops wmux\'s agent at once instead of leaving its timer armed', async () => {
+    const h = slowHermes();
+    const { adapter, policy, asks } = ownAdapter(h.spawnFn, {}, undefined, { promptTimeoutMs: 60_000, ownCancelBoundMs: 60_000 });
+    adapter.start({});
+    const turn = collect(adapter.send('hello'));
+    await vi.waitFor(() => expect(asks).toHaveLength(1), { timeout: 5_000 });
+    const failed = Promise.reject(new Error('boom'));
+    failed.catch(() => undefined);
+    (adapter as unknown as { ownTurn: Promise<void> }).ownTurn = failed;
+    adapter.interrupt();
+    await vi.waitFor(() => expect(h.children[0].killed).toBe(true), { timeout: 3_000 });
+    expect(policy.unsettled).toHaveBeenCalledTimes(1);
+    expect((await turn).at(-1)).toMatchObject({ type: 'error' });
+    adapter.dispose();
+  });
+
+  it('a timed-out turn Hermes never ends is let go at the bound too, so the bot is not blocked until restart', async () => {
+    const h = slowHermes();
+    const { adapter, policy, asks } = ownAdapter(h.spawnFn, {}, undefined, { promptTimeoutMs: 200, ownCancelBoundMs: 300 });
+    adapter.start({});
+    const turn = collect(adapter.send('hello'));
+    await vi.waitFor(() => expect(asks).toHaveLength(1), { timeout: 5_000 });
+    expect((await turn).at(-1)).toMatchObject({ type: 'error', message: expect.stringContaining('timed out') });
+    expect(h.children[0].killed).toBe(true);
+    expect(policy.unsettled).toHaveBeenCalledTimes(1);
+    // The timed-out message is not sent again on the new agent.
+    h.held.length = 0;
+    const next = collect(adapter.send('next'));
+    await vi.waitFor(() => expect(h.texts).toEqual(['hello', 'next']), { timeout: 3_000 });
+    h.answer('end_turn');
+    await next;
+    adapter.dispose();
+  });
+
+  it('a dispose holds the profile\'s turn gate until Hermes ends the cancelled turn or the bound passes, not after the 10 s settle', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const flush = async (): Promise<void> => {
+        for (let i = 0; i < 50; i++) await new Promise<void>((r) => setImmediate(r));
+      };
+      const h = slowHermes();
+      const turnGate = { ended: null as Promise<void> | null };
+      const timing = { promptTimeoutMs: 600_000, ownCancelBoundMs: 30_000 };
+      const a = ownAdapter(h.spawnFn, { turnGate }, undefined, timing);
+      a.adapter.start({});
+      const turn = collect(a.adapter.send('hello'));
+      await flush();
+      expect(a.asks).toHaveLength(1);
+      // The bot is deleted or switched engines: its adapter goes while Hermes
+      // still runs the cancelled turn, and a new session of the profile starts.
+      a.adapter.dispose();
+      const b = ownAdapter(h.spawnFn, { turnGate }, undefined, timing);
+      b.adapter.start({});
+      const next = collect(b.adapter.send('again'));
+      await vi.advanceTimersByTimeAsync(11_000);
+      await flush();
+      expect(h.texts).toEqual(['hello']);
+      expect(h.children[0].killed).toBe(false);
+      // The bound passes: wmux lets its own agent go, and only then may the new session prompt.
+      await vi.advanceTimersByTimeAsync(20_000);
+      await flush();
+      expect(h.children[0].killed).toBe(true);
+      expect(a.policy.unsettled).toHaveBeenCalledTimes(1);
+      await turn;
+      // The killed agent's held prompt is gone with it; the new session's stays.
+      h.held.shift();
+      expect(h.texts).toEqual(['hello', 'again']);
+      h.answer('end_turn');
+      await flush();
+      expect((await next).at(-1)).toMatchObject({ type: 'turn-end' });
+      b.adapter.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a dispose whose turn Hermes ends opens the gate at that end, with no notice', async () => {
+    const h = slowHermes();
+    const turnGate = { ended: null as Promise<void> | null };
+    const a = ownAdapter(h.spawnFn, { turnGate }, undefined, { promptTimeoutMs: 60_000 });
+    a.adapter.start({});
+    const turn = collect(a.adapter.send('hello'));
+    await vi.waitFor(() => expect(a.asks).toHaveLength(1), { timeout: 5_000 });
+    const quitting = a.adapter.shutdown();
+    const b = ownAdapter(h.spawnFn, { turnGate }, undefined, { promptTimeoutMs: 60_000 });
+    b.adapter.start({});
+    const next = collect(b.adapter.send('again'));
+    await deliberateSleep(100, 'a negative check: the new session waits for the cancelled turn');
+    expect(h.texts).toEqual(['hello']);
+    h.answer();
+    await quitting;
+    await turn;
+    await vi.waitFor(() => expect(h.texts).toEqual(['hello', 'again']), { timeout: 3_000 });
+    expect(a.policy.unsettled).not.toHaveBeenCalled();
+    h.answer('end_turn');
+    await next;
+    b.adapter.dispose();
+  });
 
   it('a timed-out turn is cancelled, its request rejected, and the bot blocked until Hermes ends it; no gateway stop', async () => {
     const h = slowHermes();

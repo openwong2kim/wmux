@@ -158,6 +158,7 @@ export const CHATV2_IPC = {
   unsubscribe: 'chatv2:unsubscribe',
   send: 'chatv2:send',
   interrupt: 'chatv2:interrupt',
+  forceStop: 'chatv2:force-stop',
   answer: 'chatv2:answer',
   bodies: 'chatv2:bodies',
   toTerminal: 'chatv2:to-terminal',
@@ -181,6 +182,7 @@ export const CHATV2_RPC = {
   unsubscribe: 'daemon.chatv2.unsubscribe',
   send: 'daemon.chatv2.send',
   interrupt: 'daemon.chatv2.interrupt',
+  forceStop: 'daemon.chatv2.forceStop',
   answer: 'daemon.chatv2.answer',
   bodies: 'daemon.chatv2.bodies',
   toTerminal: 'daemon.chatv2.toTerminal',
@@ -472,6 +474,7 @@ export interface ChatV2ParamsByMethod {
   unsubscribe: ChatV2PaneParams;
   send: ChatV2SendParams;
   interrupt: ChatV2InterruptParams;
+  forceStop: ChatV2InterruptParams;
   answer: ChatV2AnswerParams;
   bodies: ChatV2BodiesParams;
   toTerminal: ChatV2SessionParams;
@@ -495,6 +498,15 @@ export interface ChatV2ResultByMethod {
   /** `seq` = the seq of the `user.message` event; `duplicate` = an earlier send with this id and payload. */
   send: ChatV2Result<{ clientMessageId: string; seq: number; duplicate?: true }>;
   interrupt: ChatV2Result<{ interrupted: boolean }>;
+  /**
+   * For an agent that ignores `interrupt` (`Session.stopOverdue`): the open
+   * turn ends as `interrupted` (its approvals and question settled), then the
+   * driver's process tree is stopped. The transcript stays, and the next send
+   * resumes the same conversation in a new process. `stopped: false` = no turn
+   * was open (same guards as `interrupt`). `driver-failed` = the turn ended
+   * but the process was not seen to exit; sends wait until it does.
+   */
+  forceStop: ChatV2Result<{ stopped: boolean }>;
   answer: ChatV2Result;
   /** One page of the value; `nextOffset` = more follows (call again with it as `offset`). */
   bodies: ChatV2Result<{ text: string; nextOffset?: number }>;
@@ -590,6 +602,7 @@ export function parseChatV2Params<M extends ChatV2Method>(method: M, value: unkn
       parsed = { paneId };
       break;
     case 'interrupt':
+    case 'forceStop':
       if (!session) return null;
       if (o.epoch !== undefined && !matches(o.epoch, CHATV2_EPOCH)) return null;
       if (o.turnId !== undefined && !matches(o.turnId, CHATV2_BLOCK_ID)) return null;

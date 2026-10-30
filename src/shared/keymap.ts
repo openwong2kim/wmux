@@ -58,8 +58,8 @@ export const SHORTCUT_ACTION_IDS = [
   'nextSurface', 'prevSurface', 'nextPane', 'prevPane',
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
   'focusUpAlt', 'focusDownAlt', 'focusLeftAlt', 'focusRightAlt',
-  'toggleSidebar', 'toggleFileTree', 'openSettings', 'toggleFleetView', 'toggleCompanyView', 'toggleBotsView',
-  'clearMultiview', 'openBrowser', 'openPrivateBrowser', 'addBookmark', 'toggleMessageFeed',
+  'toggleSidebar', 'toggleFileTree', 'openSettings', 'toggleFleetView', 'toggleBotsView',
+  'clearMultiview', 'openBrowser', 'openPrivateBrowser', 'addBookmark',
   'zoomIn', 'zoomOut', 'zoomReset',
   'mentionAgent', 'dictatePane',
   // Unbound by default (UNBOUND_SHORTCUTS): command-palette commands a user
@@ -207,9 +207,8 @@ export const WMUX_KEYMAP: readonly KeymapEntry[] = [
   { action: 'openBrowser', combo: 'Ctrl+Shift+L', descriptionKey: 'settings.sc.openBrowser' },
   // Chrome's incognito key (⌘⇧N on macOS).
   { action: 'openPrivateBrowser', combo: 'Ctrl+Shift+N', descriptionKey: 'settings.sc.openPrivateBrowser' },
-  // Bookmark / message-feed convention → literal Ctrl on every OS.
+  // Bookmark convention → literal Ctrl on every OS.
   { action: 'addBookmark', combo: 'Ctrl+M', literalCtrl: true, descriptionKey: 'settings.sc.addBookmark' },
-  { action: 'toggleMessageFeed', combo: 'Ctrl+Shift+M', literalCtrl: true, descriptionKey: 'settings.sc.toggleMessageFeed' },
 
   // Terminal font zoom. These are the combos Electron's default View menu
   // owned as resetZoom / zoomIn / zoomOut, so on macOS they hit webFrame zoom
@@ -277,23 +276,11 @@ export const UNBOUND_SHORTCUTS: readonly { action: ShortcutActionId; description
   // The Plugins page. No default key: Ctrl+Shift+P is where users move the
   // command palette, and a default here would win over that override.
   { action: 'togglePluginsView', descriptionKey: 'settings.sc.togglePluginsView' },
-  // Opens nothing since #503 (CompanyView renders null). It once held
-  // Ctrl+Shift+O, which then did nothing but swallow the key; with no default
-  // the key reaches the pane again, and a key a user saved still binds.
-  { action: 'toggleCompanyView', descriptionKey: 'settings.sc.toggleCompanyView' },
 ];
 
-/** Unbound actions Settings › Shortcuts leaves out: they do nothing. */
-const UNLISTED_SHORTCUTS: ReadonlySet<ShortcutActionId> = new Set<ShortcutActionId>(['toggleCompanyView']);
-
-/**
- * The unbound actions Settings › Shortcuts lists. An unlisted one is listed
- * only while the user has a key on it, so that key can be taken off.
- */
-export function settingsUnboundRows(overrides: ShortcutOverrides): ShortcutActionId[] {
-  return UNBOUND_SHORTCUTS
-    .map((e) => e.action)
-    .filter((action) => !UNLISTED_SHORTCUTS.has(action) || typeof overrides[action] === 'string');
+/** The unbound actions Settings › Shortcuts lists. */
+export function settingsUnboundRows(): ShortcutActionId[] {
+  return UNBOUND_SHORTCUTS.map((e) => e.action);
 }
 
 /** The i18n key (and vars) naming `action` in shortcut lists. */

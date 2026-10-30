@@ -537,6 +537,51 @@ const BORROWED_SOURCES = [
       'wmux files: src/shared/botGroupProtocol.ts (each adapted file carries a\n' +
       'header naming its source). Its avatars and other assets are not taken.',
   },
+  {
+    name: 'OpenMausBot',
+    license: 'Apache License 2.0',
+    repo: 'https://github.com/milind-soni/OpenMausBot',
+    copyright: 'Copyright 2026 Milind Soni and OpenMausBot contributors',
+    what:
+      'Transcript windowing, adapted from its source at commit\n' +
+      '0213b7435fc83a936f77c18475ba2a0d7b7c2de4:\n' +
+      '- src/lib/transcript-window.ts and src/lib/transcript-window.test.ts:\n' +
+      '  the window over a long transcript (tail, follow, expand, focus range).\n' +
+      '- src/hooks/use-transcript-viewport.ts: following the tail until the\n' +
+      '  reader scrolls up, reading earlier rows in near the top while holding\n' +
+      '  the scroll position, and widening the window to reveal a hidden row.\n' +
+      'wmux files: src/renderer/components/shared/transcriptWindow.ts,\n' +
+      'useTranscriptWindow.ts and __tests__/transcriptWindow.test.ts. Each\n' +
+      'adapted file carries a header naming its source and stating that wmux\n' +
+      'modified it.',
+    // Apache 2.0 §4(d): the part of its NOTICE that pertains to what was taken.
+    notice:
+      'OpenMausBot\n' +
+      'Copyright 2026 Milind Soni and OpenMausBot contributors\n' +
+      '\n' +
+      'OpenMausBot was relicensed from the MIT License to the Apache License,\n' +
+      'Version 2.0, with the consent of all contributors whose copyright was\n' +
+      'incorporated before the transition.',
+  },
+  {
+    name: 'T3 Code',
+    license: 'MIT License',
+    repo: 'https://github.com/pingdotgg/t3code',
+    copyright: 'Copyright (c) 2026 T3 Tools Inc.',
+    what:
+      'Chat view, from its source at commit\n' +
+      'fa4e4677c0ecc437aece2dcea39f76ef31414152:\n' +
+      '- Ideas only, no code taken: a double-click on inline code selects the\n' +
+      '  whole span (apps/web/src/components/ChatMarkdown.tsx). wmux file:\n' +
+      '  src/renderer/components/shared/BrainMarkdown.tsx.\n' +
+      '- Ideas only, no code taken, from commit\n' +
+      '  6b1245cceda1d504b6f16b438e16f2a2e08f3388: after Stop, a turn the agent\n' +
+      '  has not ended within a grace period is marked unresponsive, and a force\n' +
+      '  stop kills the agent process and ends the turn as interrupted\n' +
+      '  (apps/server/src/orchestration-v2/ProviderSessionManager.ts,\n' +
+      '  ThreadManagementService.ts, Orchestrator.ts). wmux file:\n' +
+      '  src/daemon/chat/v2/host.ts.',
+  },
 ];
 lines.push('ADAPTED SOURCES AND IMPLEMENTATION TECHNIQUES');
 lines.push('');
@@ -555,6 +600,19 @@ for (const b of BORROWED_SOURCES) {
   lines.push('');
   lines.push(b.what);
   lines.push('');
+  if (b.license === 'Apache License 2.0') {
+    lines.push('Licensed under the Apache License, Version 2.0. The full license text is');
+    lines.push('reproduced above with the npm packages that use it, and is available at');
+    lines.push('https://www.apache.org/licenses/LICENSE-2.0');
+    lines.push('');
+    lines.push('NOTICE (the part that pertains to the adapted files):');
+    lines.push('');
+    lines.push(b.notice);
+    lines.push('');
+    lines.push(SEP);
+    lines.push('');
+    continue;
+  }
   lines.push('Permission is hereby granted, free of charge, to any person obtaining a copy');
   lines.push('of this software and associated documentation files (the "Software"), to deal');
   lines.push('in the Software without restriction, including without limitation the rights');

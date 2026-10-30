@@ -93,9 +93,9 @@ describe('PermissionEnforcer.check — wmux-cli allowlist', () => {
 
   it('does NOT widen scope: a gated method the CLI never calls falls through to reject', () => {
     // pane.setMetadata is a real gated method the bundled MCP calls but the CLI
-    // does NOT — wmux-cli must not reach it. daemon.shutdown / company.create are
+    // does NOT — wmux-cli must not reach it. daemon.shutdown / daemon.compact are
     // destructive and likewise absent from WMUX_CLI_METHODS.
-    for (const method of ['pane.setMetadata', 'daemon.shutdown', 'company.create'] as const) {
+    for (const method of ['pane.setMetadata', 'daemon.shutdown', 'daemon.compact'] as const) {
       expect(WMUX_CLI_METHODS.has(method as RpcMethod)).toBe(false);
       const out = check({
         method,

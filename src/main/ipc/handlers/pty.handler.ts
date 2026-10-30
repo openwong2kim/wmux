@@ -832,10 +832,10 @@ export function registerPTYHandlers(
 
       // Workspace profile startup command. Written as shell INPUT (not spawned
       // as the executable) so the allowed-shell check and quoting behavior are
-      // preserved — same pattern company provisioning uses. Gated on the
-      // session's first output (see scheduleInitialCommand) and retried while
-      // the pipe reports "not delivered", which fixes the intermittent
-      // never-ran-the-command race the fixed-delay version had.
+      // preserved. Gated on the session's first output (see
+      // scheduleInitialCommand) and retried while the pipe reports "not
+      // delivered", which fixes the intermittent never-ran-the-command race
+      // the fixed-delay version had.
       //
       // X8: for an exec-style unit the command IS the pane's root process, so
       // there is nothing to type — pass `undefined` so scheduleInitialCommand

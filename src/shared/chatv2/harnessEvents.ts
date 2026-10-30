@@ -58,6 +58,12 @@ export type HarnessEvent =
   /** wmux: the turn is over. Settles open streams, approvals and the question. */
   | { type: "turn.ended"; outcome: TurnOutcome }
   /**
+   * wmux: Stop was asked for and the open turn has not ended within
+   * `CHATV2_STOP_GRACE_MS`; the view can offer a force stop. Cleared when the
+   * turn ends.
+   */
+  | { type: "stop.overdue" }
+  /**
    * Appended as-is; an empty delta is a no-op. A driver whose agent resends a
    * whole message drops the part already sent (`snapshotRemainder`) before
    * emitting.

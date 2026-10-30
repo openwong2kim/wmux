@@ -162,7 +162,7 @@ async function repoBroken(repo: WorkspaceRepo, deps: BotRepoDeps): Promise<Broke
  *  works: never bound to a new bot, never re-pointed here; a bot profile's
  *  Change is the fix. */
 export function brokenRepoRefusal(b: BrokenRepo): { ok: false } & BrokenRepo {
-  return { ok: false, code: b.code, message: `The workspace's repository folder no longer works (${b.message.replace(/\.$/, '')}); change it on a bot's profile.` };
+  return { ok: false, code: b.code, message: `The workspace's repository folder no longer works (${b.message.replace(/\.$/, '')}); change it in a bot's settings.` };
 }
 
 /** The workspace's repository as a new bot there takes it, resolved again

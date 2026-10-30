@@ -6,10 +6,12 @@
 // Each owner phrase stands for the surface tools behind it and is shown only
 // when the surface holds one of them, so the list can never claim a power
 // the surface lacks. Tools that only read the factory's own event feeds have
-// no phrase.
+// no phrase. A bot on My Hermes holds only `room_post` (botSurface.ts
+// ROOM_POST_SURFACE_TOOLS): it answers in its own 1:1 with its Hermes's own
+// tools, so it has its own short list, checked against that surface.
 
-import { isCoordinatorBot, type BotEngine, type BotProfile, type BotRole, type BotTemplate, type BotWorkerAgent } from '../../../shared/bot';
-import { SHARED_SURFACE, type BotToolName } from '../../../shared/botSurface';
+import { isCoordinatorBot, isOwnHermesEngine, type BotEngine, type BotProfile, type BotRole, type BotTemplate, type BotWorkerAgent } from '../../../shared/bot';
+import { ROOM_POST_SURFACE_TOOLS, SHARED_SURFACE, type BotToolName } from '../../../shared/botSurface';
 import { CLAUDE_EFFORT_LEVELS, claudeModelLabel } from '../../../shared/claudeModels';
 import { validateBotBrainModel, validateFanoutModel } from '../../../shared/fanoutPreset';
 import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, validateBotWorkerAgent } from '../../../shared/botWorkerAgent';
@@ -41,8 +43,21 @@ export const CAN_DO_COORDINATOR = 'botsPage.canDo.coordinator';
  *  the factory, not powers the owner grants. */
 export const CAN_DO_UNLISTED: ReadonlySet<BotToolName> = new Set<BotToolName>(['fact_poll']);
 
+/** A My Hermes bot's phrases: the wmux tools it holds (room_post), then its
+ *  Hermes's own tools (no wmux tool stands for them). */
+export const CAN_DO_MY_HERMES: ReadonlyArray<{ key: string; tools: readonly string[] }> = [
+  { key: 'botsPage.canDo.myHermesTalk', tools: ['room_post'] },
+  { key: 'botsPage.canDo.myHermesTools', tools: [] },
+];
+
+/** What a My Hermes bot cannot do that every other bot can. */
+export const CANNOT_DO_MY_HERMES = 'botsPage.canDo.myHermesCannot';
+
 /** The i18n keys of what a bot can do, in display order. Pure. */
-export function botCanDo(bot: { role: BotRole; template?: BotTemplate }): string[] {
+export function botCanDo(bot: { role: BotRole; template?: BotTemplate; engine?: BotEngine }): string[] {
+  if (isOwnHermesEngine(bot.engine)) {
+    return CAN_DO_MY_HERMES.filter((p) => p.tools.every((tool) => ROOM_POST_SURFACE_TOOLS.has(tool))).map((p) => p.key);
+  }
   const keys = CAN_DO_PHRASES.filter((p) => p.tools.some((tool) => SHARED_SURFACE.tools.has(tool))).map((p) => p.key);
   return isCoordinatorBot(bot) ? [...keys, CAN_DO_COORDINATOR] : keys;
 }

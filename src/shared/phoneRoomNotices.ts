@@ -38,6 +38,7 @@ const HOLDERS = [
   'room.notice.holders.other', 'room.notice.holders.others', 'room.notice.holders.more', 'room.notice.holders.none',
 ];
 const START_CAUSES = ['fetch', 'worktree', 'repository', 'promptFile', 'slot', 'pane', 'setupStep', 'setup'].map((c) => `room.notice.worker.startFailed.cause.${c}`);
+const OWN_HERMES_REFUSALS = ['routineBotWritten', 'routineOutsideDm', 'routineCleanUnknown', 'routineTainted', 'roomDirtyPaused', 'notOwnerMessage', 'outsideDm', 'notAttended', 'roomUnreadable', 'roomDirty'];
 const BUDGET_LIMITS = ['turns_hour', 'turns_day', 'concurrent_workers', 'worker_hours_day', 'factory_workers'].map((l) => `room.notice.budget.exhausted.${l}`);
 
 const k = (code: string): string => `room.notice.${code}`;
@@ -146,4 +147,8 @@ export const PHONE_ROOM_NOTICE_CODES: Readonly<Record<string, PhoneNoticeCode>> 
   'skill.archived': bodied('skill.archived', { skill: 'string' }),
   // The owner deleted a key a bot asked for or last used (botSecret.rpc.ts).
   'secret.deleted': bodied('secret.deleted', { name: 'string' }),
+  // A bot on My Hermes: a wake not sent to it, one title per `refusal`
+  // (myHermesTurn.ts), and a cancelled turn that did not end in time (myHermesHost.ts).
+  'wake.refused': { args: { refusal: 'string' }, titles: OWN_HERMES_REFUSALS.map((r) => `room.notice.wake.refused.${r}`) },
+  'turn.unsettled': titled('turn.unsettled'),
 };

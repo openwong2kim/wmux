@@ -339,7 +339,6 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
     return msgs && msgs.length > 0 ? msgs[msgs.length - 1].seq : 0;
   });
   const workspaces = useStore((s) => s.workspaces);
-  const company = useStore((s) => s.company);
   const pushToast = useStore((s) => s.pushToast);
   // R2: agent-detection mirror used to compute explicit-join candidates + liveness.
   const surfaceAgent = useStore((s) => s.surfaceAgent);
@@ -353,11 +352,6 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
 
   const selfIsMember =
     !!selfWorkspaceId && members.some((m) => m.workspaceId === selfWorkspaceId);
-  // Company CEO (only when Company mode is active) may moderate without being a
-  // member — mirrors the daemon kick() CEO override (B5). In the default build
-  // `company` is undefined, so this is always false and kick is membership-gated.
-  const isCeo =
-    !!company?.ceoWorkspaceId && company.ceoWorkspaceId === selfWorkspaceId;
 
   // Operator model: the roster shows ALL members, every workspace treated the
   // same — there is no privileged "owner" in the panel. Previously the creating
@@ -533,7 +527,7 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   // member (or the company CEO), so a non-member would only get NOT_AUTHORIZED.
   // Now that the roster reveals every member (incl. other workspaces), gating on
   // membership keeps the popover from sprouting dead kick buttons.
-  const canKick = (selfIsMember || isCeo) && channel.status !== 'archived';
+  const canKick = selfIsMember && channel.status !== 'archived';
   const handleKick = (memberId: string, workspaceId: string): void => {
     if (!selfWorkspaceId) return;
     const label = workspaceLabel(workspaceId);

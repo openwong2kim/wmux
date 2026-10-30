@@ -245,7 +245,7 @@ export function WorkspaceViewport() {
           isActive={ws.id === activeWorkspaceId}
           // Visible ⇒ never rendered as parked, regardless of the parked set.
           // activeWorkspaceId is assigned directly by several handoff paths
-          // (removeWorkspace, company destroy/removeDept, loadSession) that
+          // (removeWorkspace, loadSession) that
           // don't run the un-park action, so a parked id promoted to active
           // would otherwise render a blank viewport until the 30s sweep. This
           // render guard covers every current and future promotion path; the

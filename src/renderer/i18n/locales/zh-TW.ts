@@ -248,8 +248,6 @@ export const zhTW = {
   'viCopy.visual': '-- 視覺 --',
 
   // StatusBar
-  'statusBar.company': '公司',
-  'statusBar.session': '工作階段: {min} 分',
   'statusBar.settingsTooltip': '設定 (Ctrl+,)',
 
   // Settings

@@ -36,7 +36,6 @@ const CHROME_FILES = [
   'Sidebar/MissionsSection.tsx',
   'Sidebar/MiniSidebar.tsx',
   'Sidebar/SidebarNavigation.tsx',
-  'Sidebar/CompanyPanel.tsx',
   'Sidebar/PresetPicker.tsx',
   'Sidebar/WorkspaceProfileModal.tsx',
   'Sidebar/WorkspaceAccountMenu.tsx',
@@ -108,12 +107,11 @@ describe('chrome accessible names', () => {
     expect(unnamed).toEqual([]);
   });
 
-  it('names the four controls the audit caught, from the existing table', () => {
+  it('names the three controls the audit caught, from the existing table', () => {
     const expected: [string, RegExp][] = [
       ['Sidebar/Sidebar.tsx', /aria-label=\{t\('settings\.title'\)\}/],
       ['Sidebar/Sidebar.tsx', /aria-label=\{t\('sidebar\.hideTooltip'\)\}/],
       ['Pane/SurfaceTabs.tsx', /aria-label=\{t\('surface\.closeTabNamed'/],
-      ['Sidebar/CompanyPanel.tsx', /aria-label=\{t\('company\.destroyTitle'\)\}/],
     ];
     for (const [file, re] of expected) {
       expect(readFileSync(join(COMPONENTS, file), 'utf8'), file).toMatch(re);

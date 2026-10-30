@@ -99,8 +99,6 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       'daemon.compact',
       'workspace.new',
       'workspace.close',
-      'company.create',
-      'company.destroy',
       // operator-join (§2.3 / Codex #7): registered in RpcMethod + METHOD_CAPABILITY
       // for completeness, but MUST NOT be first-party-granted — that would leak an
       // agent-reachable path to the humans-only operator surface.
