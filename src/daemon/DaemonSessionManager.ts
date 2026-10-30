@@ -464,6 +464,7 @@ export class DaemonSessionManager extends EventEmitter {
       let conptyBackend: ConptyBackend = 'inbox';
       let ptyProcess: IPty;
       const spawnMark = this.paneJob?.spawnMark() ?? null;
+      const hostWindowAtSpawn = this.hostWindow;
       this.spawningCreates.add(token);
       try {
         ptyProcess = await spawnPty(this.spawnRequest(prepared, (backend) => { conptyBackend = backend; }));
@@ -483,6 +484,10 @@ export class DaemonSessionManager extends EventEmitter {
         throw new Error('Session creation cancelled');
       }
       const created = this.registerSpawned(prepared, ptyProcess, conptyBackend, spawnMark);
+      // A host window reported while the pid was pending missed this pane:
+      // setHostWindow only reaches registered sessions. The app's first pane
+      // races its own report this way on every launch.
+      if (this.hostWindow && this.hostWindow !== hostWindowAtSpawn) applyParentWindow(ptyProcess, this.hostWindow);
       if (wsl) this.pendingRecovery.delete(params.id);
       return created;
     } finally {

@@ -54,6 +54,15 @@ describe('DaemonSessionManager host window', () => {
     expect(spawned.at(-1)?.parents[0].equals(hwnd)).toBe(true);
   });
 
+  it('gives the window to a pane whose pid was still pending when it was reported (the first pane at app start)', async () => {
+    const pending = manager.createSessionAsync({ id: 'g', cmd: '/bin/bash', cwd: os.tmpdir(), env: { PATH: '/usr/bin' } });
+    // Spawned already, not registered yet: the live-pane sweep cannot see it.
+    expect(manager.setHostWindow(hwnd)).toBe(0);
+    await pending;
+    expect(spawned.at(-1)?.parents).toHaveLength(1);
+    expect(spawned.at(-1)?.parents[0].equals(hwnd)).toBe(true);
+  });
+
   it('spawns without an owner until main has reported a window', () => {
     create(manager, 'd');
     expect(spawned.at(-1)?.parents).toHaveLength(0);

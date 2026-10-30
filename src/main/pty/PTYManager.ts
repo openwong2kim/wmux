@@ -220,6 +220,7 @@ export class PTYManager {
       if (cancelled()) throw new Error('PTY creation cancelled');
       const prepared = this.prepareSpawn({ ...options, shell }, wsl, id);
       let ptyProcess: IPty;
+      const hostWindowAtSpawn = this.hostWindow;
       this.spawningIds.add(id);
       try {
         ptyProcess = await spawnPty(this.spawnRequest(prepared));
@@ -235,6 +236,9 @@ export class PTYManager {
         try { ptyProcess.kill(); } catch { /* already gone */ }
         throw new Error(cancelled() ? 'PTY creation cancelled' : 'Maximum PTY instances reached');
       }
+      // A host window set while the pid was pending missed this pane (setHostWindow
+      // only reaches registered ones).
+      if (this.hostWindow && this.hostWindow !== hostWindowAtSpawn) applyParentWindow(ptyProcess, this.hostWindow);
       return this.registerSpawned(prepared, ptyProcess);
     } finally {
       this.pendingCreates.delete(id);
