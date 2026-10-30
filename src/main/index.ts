@@ -2650,7 +2650,9 @@ app.on('ready', async () => {
       // Continue on another PC (this PC starts a conversation another PC handed over): worktree, files, pane.
       continueStarter?.stop();
       continueStarter = new ContinueStarter({
-        daemonRpc: (method, params) => client.rpc(method, params),
+        // The client of the moment: a start that spans a reconnect takes back
+        // what it placed through the new connection, not the one that dropped.
+        daemonRpc: (method, params) => (daemonClient ?? client).rpc(method, params),
         sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
         onDaemonEvent: (listener) => {
           client.on('event', listener);
