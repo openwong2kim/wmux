@@ -44,7 +44,7 @@ import { quitAndStopSessions, type QuitAndStopCallbacks } from '../quit/quitAndS
  * `appMenu.template.os.test.ts` fails when package.json's major drifts from this.
  * Re-probe with `npx electron scripts/probe-menu-role-accelerators.js`.
  */
-export const PROBED_ELECTRON_MAJOR = 42;
+export const PROBED_ELECTRON_MAJOR = 45;
 
 /**
  * Accelerators Electron attaches to a role when the template does not spell one
