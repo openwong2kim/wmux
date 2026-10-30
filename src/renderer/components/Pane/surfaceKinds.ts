@@ -25,7 +25,8 @@ export function isTerminalKindSurfaceType(surfaceType: string | undefined): bool
 }
 
 export function isWorkSurfaceType(surfaceType: string | undefined): boolean {
-  return surfaceType === 'browser' || surfaceType === 'editor' || surfaceType === 'preview' || surfaceType === 'diff';
+  return surfaceType === 'browser' || surfaceType === 'editor' || surfaceType === 'preview' || surfaceType === 'diff'
+    || surfaceType === 'board';
 }
 
 /**

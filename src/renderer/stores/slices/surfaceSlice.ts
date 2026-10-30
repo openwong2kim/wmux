@@ -3,7 +3,7 @@ import type { StoreState } from '../index';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createRemoteSurface, createSurface, generateId } from '../../../shared/types';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
-import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isPrivateBrowserPartition, isPrivateBrowserSurface } from '../../../shared/privateBrowser';
 import { dropStalePaneFoldKeys } from '../../utils/sidebarLayout';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
@@ -39,6 +39,10 @@ export interface SurfaceSlice {
   /** #2150 — read-only image/PDF tab in the pane's work area. Same rules as
    *  addEditorSurface: one tab per file per pane, never in a shadow workspace. */
   addPreviewSurface: (paneId: string, filePath: string) => void;
+  /** Company mode: show the workspace's board and focus it. One board per
+   *  workspace; a new one opens beside the CEO when the CEO's pane is in the
+   *  layout, else in the active pane. A workspace that is not a company has none. */
+  openCompanyBoard: (workspaceId: string) => void;
   /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
    * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
   addDiffSurface: (paneId: string, taskId: string, title?: string, workspaceId?: string, ownerWorkspaceId?: string) => void;
@@ -259,6 +263,31 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
   }),
+
+  openCompanyBoard: (workspaceId) => {
+    if (isShadowWorkspaceId(workspaceId)) return;
+    const ws = get().workspaces.find((w: Workspace) => w.id === workspaceId);
+    if (!ws?.company) return;
+    const open = getWorkspaceLeafPanes(ws).find((leaf) => leaf.surfaces.some((s) => s.surfaceType === 'board'));
+    if (open && !findLeafPane(ws.rootPane, open.id)) get().unstashPane(open.id, workspaceId);
+    const leaves = getLeafPanes(ws.rootPane);
+    const host = open
+      ?? leaves.find((leaf) => leaf.id === ws.company?.coordinatorPaneId)
+      ?? leaves.find((leaf) => leaf.id === ws.activePaneId)
+      ?? leaves[0];
+    if (!host) return;
+    let boardId = host.surfaces.find((s) => s.surfaceType === 'board')?.id;
+    if (!boardId) {
+      const surface: Surface = { id: generateId('surface'), ptyId: '', title: '', shell: '', cwd: '', surfaceType: 'board' };
+      boardId = surface.id;
+      set((state: StoreState) => {
+        const draft = state.workspaces.find((w: Workspace) => w.id === workspaceId);
+        const pane = draft && findLeafPane(draft.rootPane, host.id);
+        if (pane) pane.surfaces.push(surface);
+      });
+    }
+    get().focusPaneSurface(workspaceId, host.id, boardId);
+  },
 
   addDiffSurface: (paneId, taskId, title, workspaceId, ownerWorkspaceId) => set((state: StoreState) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;

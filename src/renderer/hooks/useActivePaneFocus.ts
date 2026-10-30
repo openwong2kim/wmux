@@ -31,7 +31,7 @@ export function resolveActivePanePtyId(
   // Browser / editor surfaces have no xterm. The registry lookup below would
   // miss them anyway, but skipping here keeps the retry loop from spinning
   // 10 frames every time the user lands on a browser pane.
-  if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'preview' || surface.surfaceType === 'diff') return null;
+  if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'preview' || surface.surfaceType === 'diff' || surface.surfaceType === 'board') return null;
   return surface.ptyId;
 }
 

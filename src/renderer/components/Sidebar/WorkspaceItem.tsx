@@ -502,6 +502,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
   const setWorkspaceColor = useRowStore((s) => s.setWorkspaceColor);
   const setWorkspaceCompany = useRowStore((s) => s.setWorkspaceCompany);
+  const openCompanyBoard = useRowStore((s) => s.openCompanyBoard);
   // Browser mirror (wmux web /app): no rename, reorder, context menu or row actions.
   const readOnly = useRowStore((s) => s.readOnly);
   const setDraggedWorkspaceIndex = useRowStore((s) => s.setDraggedWorkspaceIndex);
@@ -1617,6 +1618,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
             {t('workspace.configureProfile')}
           </button>
           {/* Company mode: a task row rides with its owner, so it is never one. */}
+          {!taskRow && company && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); onSelect(workspaceId); openCompanyBoard(workspaceId); }}
+              data-workspace-action="open-board"
+            >
+              {t('company.openBoard')}
+            </button>
+          )}
           {!taskRow && (
             <button
               className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"

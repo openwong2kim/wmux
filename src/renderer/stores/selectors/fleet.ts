@@ -34,7 +34,7 @@ export interface FleetPane {
   paneLabel?: string;
   cwd?: string;
   title: string;
-  surfaceType: 'terminal' | 'browser' | 'editor' | 'preview' | 'diff' | 'git' | 'review' | 'remote-terminal' | 'placeholder';
+  surfaceType: 'terminal' | 'browser' | 'editor' | 'preview' | 'diff' | 'board' | 'git' | 'review' | 'remote-terminal' | 'placeholder';
   /** True when this leaf is its workspace's active pane (badge fidelity hint). */
   isActivePane: boolean;
   /**
