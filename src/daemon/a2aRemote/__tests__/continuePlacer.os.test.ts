@@ -154,6 +154,34 @@ describe('ContinuePlacer.place', () => {
     expect(fs.existsSync(path.join(projectDir(), `${SID}.jsonl`))).toBe(false);
   });
 
+  it('refuses when another project folder holds the conversation (the checkout it once ran in)', async () => {
+    const projects = path.join(configDir, 'projects');
+    // Other folders around it, holding other conversations, are looked past.
+    write(path.join(projects, '-Users-b-other', 'ffffffff-4b5a-4697-8877-665544332211.jsonl'), '{}\n');
+    write(path.join(projects, '-Users-b-repo', `${SID}.jsonl`), '{"turn":1}\n');
+    expect(await placer().place(HOST, CID, cwd)).toMatchObject({ ok: false, code: 'diverged' });
+    expect(fs.existsSync(projectDir())).toBe(false);
+    expect(read(path.join(staging, `${SID}.jsonl`))).toBe(TRANSCRIPT);
+
+    // Its folder alone counts as well.
+    fs.rmSync(path.join(projects, '-Users-b-repo'), { recursive: true });
+    fs.mkdirSync(path.join(projects, '-Users-b-repo', SID, 'tool-results'), { recursive: true });
+    expect(await placer().place(HOST, CID, cwd)).toMatchObject({ ok: false, code: 'diverged' });
+
+    // With no copy elsewhere it places.
+    fs.rmSync(path.join(projects, '-Users-b-repo'), { recursive: true });
+    expect(await placer().place(HOST, CID, cwd)).toMatchObject({ ok: true });
+  });
+
+  it('refuses a project folder that is a link: whether it holds the conversation is not looked up through it', async () => {
+    const elsewhere = path.join(root, 'elsewhere');
+    write(path.join(elsewhere, `${SID}.jsonl`), '{"turn":1}\n');
+    fs.mkdirSync(path.join(configDir, 'projects'));
+    fs.symlinkSync(elsewhere, path.join(configDir, 'projects', '-Users-b-linked'), 'junction');
+    expect(await placer().place(HOST, CID, cwd)).toMatchObject({ ok: false, code: 'failed' });
+    expect(fs.existsSync(projectDir())).toBe(false);
+  });
+
   it('refuses a projects folder that is a link', async () => {
     const elsewhere = path.join(root, 'elsewhere');
     fs.mkdirSync(elsewhere);

@@ -22,7 +22,9 @@ import { errMsg } from './storeFile';
  * `~/.claude`. No component below it may be a link. A file already there is
  * taken over only when it is an earlier state of the staged one (its bytes
  * start the staged file's), and only when this PC holds no file of that
- * conversation the manifest lacks; anything else is `diverged`. What was
+ * conversation the manifest lacks; anything else is `diverged`, as is a copy
+ * of that conversation in any other project folder (Claude could bind that
+ * stale copy, and a resume from that folder would open it). What was
  * there is moved aside into staging (`.prior/`) and put back on any failure,
  * so a failed place leaves the folder as it was. A rename that crosses
  * volumes (EXDEV) is a copy, synced, renamed into place from a temp name
@@ -157,6 +159,11 @@ export class ContinuePlacer {
     if (kinds.project !== 'none' && kinds.project !== 'dir') return fail('failed', `${projectDir} is a link or not a folder`);
     if (kinds.transcript !== 'none' && kinds.transcript !== 'file') return fail('failed', `${transcript} is a link or not a file`);
     if (kinds.folder !== 'none' && kinds.folder !== 'dir') return fail('failed', `${folder} is a link or not a folder`);
+    // A copy in any other project folder could be the one Claude binds or a
+    // resume elsewhere opens: one conversation is held in one folder only.
+    const elsewhere = kinds.projects === 'dir' ? await heldElsewhere(projectsDir, path.basename(projectDir), sessionId) : null;
+    if (elsewhere?.link) return fail('failed', `${elsewhere.link} is a link, so whether it holds this conversation is not known`);
+    if (elsewhere?.copy) return fail('diverged', `another project folder holds this conversation: ${elsewhere.copy}`);
     const held = kinds.folder === 'dir' ? await heldFiles(folder) : { files: [], dirs: new Set<string>() };
     if ('link' in held) return fail('failed', `${held.link} is a link or not a file`);
     if ('tooMany' in held) return fail('diverged', 'this PC holds more files of the conversation than any manifest');
@@ -337,6 +344,26 @@ async function heldFiles(folder: string): Promise<{ files: string[]; dirs: Set<s
   if (bad === '') return { tooMany: true };
   if (bad !== null) return { link: bad };
   return { files, dirs };
+}
+
+/**
+ * Whether a project folder other than `own` holds conversation `sessionId`:
+ * its `<sessionId>.jsonl` or `<sessionId>/`, in any form. Every folder is
+ * looked in and no link is followed: a project folder that is a link cannot
+ * be looked in without following it, so it is answered as `link`.
+ */
+async function heldElsewhere(projectsDir: string, own: string, sessionId: string): Promise<{ copy?: string; link?: string }> {
+  for (const entry of await fs.promises.readdir(projectsDir, { withFileTypes: true })) {
+    if (entry.name === own) continue;
+    const at = path.join(projectsDir, entry.name);
+    if (entry.isSymbolicLink()) return { link: at };
+    if (!entry.isDirectory()) continue;
+    for (const name of [`${sessionId}.jsonl`, sessionId]) {
+      // eslint-disable-next-line no-await-in-loop -- every folder, one at a time
+      if ((await kindOf(path.join(at, name))) !== 'none') return { copy: path.join(at, name) };
+    }
+  }
+  return {};
 }
 
 /** `path.relative` that stays at or below its base. */
