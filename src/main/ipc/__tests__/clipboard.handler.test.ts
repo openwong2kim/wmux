@@ -58,7 +58,7 @@ vi.mock('node:child_process', () => {
 
 import * as electron from 'electron';
 import { execFile } from 'node:child_process';
-import { registerClipboardHandlers } from '../handlers/clipboard.handler';
+import { clearEphemeralClipboard, registerClipboardHandlers } from '../handlers/clipboard.handler';
 import { IPC } from '../../../shared/constants';
 
 // Pull the test fixtures back out of the mocked module
@@ -89,6 +89,7 @@ function copiedFile(uriList: string): void {
 
 /** The clipboard holds an image, as Electron hands it over. */
 function copiedImage(png: Buffer): void {
+  clipboardHas.mockImplementation(async (mime: string) => mime === 'image/png');
   clipboardRead.mockResolvedValue([{ types: ['image/png'], getType: async () => new Blob([new Uint8Array(png)]) }]);
 }
 
@@ -304,9 +305,18 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     expect(clipboardRead).not.toHaveBeenCalled();
   });
 
+  it('darwin copied web link (no file) → readText, no osascript spawn', async () => {
+    setPlatform('darwin');
+    copiedFile('https://example.com/page');
+
+    const handler = getHandler(IPC.CLIPBOARD_READ);
+    await expect(handler({} as never)).resolves.toBe('hello');
+    expect(execFileMock).not.toHaveBeenCalled();
+  });
+
   it('darwin copied file whose URL cannot be read here → osascript, never the basename text', async () => {
     setPlatform('darwin');
-    copiedFile('not-a-file-url');
+    copiedFile('file:///Users/foo/%E0%A4%A');
     mockResolverStdout('/Users/foo/doc.txt\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -328,9 +338,26 @@ describe('CLIPBOARD_READ_IMAGE / CLIPBOARD_HAS_IMAGE', () => {
     await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(true);
   });
 
-  it('answers no image when the clipboard holds none', async () => {
+  it('answers no image when the clipboard holds none, without listing its types', async () => {
     copiedFile('file:///Users/foo/x');
+    clipboardRead.mockClear();
     await expect(getHandler(IPC.CLIPBOARD_READ_IMAGE)({} as never)).resolves.toBeNull();
     await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(false);
+    expect(clipboardRead).not.toHaveBeenCalled();
+  });
+});
+
+describe('the pairing link at quit', () => {
+  it('clearEphemeralClipboard takes the link off only while the clipboard still holds it', async () => {
+    const link = 'https://desk.ts.net/pair#wmux-desktop-code=QWXZ7K9M';
+    await getHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL)({} as never, link, 600_000);
+    readText.mockResolvedValue('something the operator copied later');
+    await clearEphemeralClipboard();
+    expect(writeText).not.toHaveBeenCalledWith('');
+
+    await getHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL)({} as never, link, 600_000);
+    readText.mockResolvedValue(link);
+    await clearEphemeralClipboard();
+    expect(writeText).toHaveBeenLastCalledWith('');
   });
 });

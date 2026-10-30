@@ -70,6 +70,7 @@ import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
+import { clearEphemeralClipboard } from './ipc/handlers/clipboard.handler';
 import { registerConnectorTerminalHandlers } from './ipc/handlers/connectorTerminal.handler';
 import { registerConnectorOAuthHandlers } from './ipc/handlers/connectorOAuth.handler';
 import { setWorkerGatewayOAuth } from './connectors/workerGateway';
@@ -3274,6 +3275,8 @@ async function prepareInstallQuit(): Promise<void> {
   } catch (err) {
     console.error('[Main] install-quit chromeRegistry.disposeAll failed:', err);
   }
+  // The full before-quit is skipped here too: the pairing link comes off now.
+  await clearEphemeralClipboard();
   try {
     chromeSurfaceStore.flushSync();
     getActionCacheStore().flushSync();
@@ -3403,6 +3406,9 @@ app.on('before-quit', async (e) => {
   const chromeStopped = chromeRegistry.disposeAll().catch((err) => {
     console.error('[Main] before-quit step "chromeRegistry.disposeAll" threw — continuing:', err);
   });
+  // A pairing link still on the clipboard comes off before the app exits
+  // (clipboard reads are asynchronous); awaited with the Chrome above.
+  const clipboardCleared = clearEphemeralClipboard();
 
   // Pending usage-history samples, before anything below can stall.
   usageTrail.flushSync();
@@ -3623,6 +3629,7 @@ app.on('before-quit', async (e) => {
   safeStep('webviewCdpManager.disposeAll', () => webviewCdpManager.disposeAll());
   // Started at the top of this handler; long settled on a slow teardown.
   await chromeStopped;
+  await clipboardCleared;
   safeStep('chromeSurfaceStore.flushSync', () => chromeSurfaceStore.flushSync());
   // Recorded browser flows are written on a debounce, so a quit inside that
   // window would drop the save the agent just made — the one it is most likely

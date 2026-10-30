@@ -11,7 +11,14 @@ import { readClipboardPng } from '../../clipboard/clipboardImage';
 import { ELEMENT_SHOT_PREFIX } from '../../../shared/browserElementHandoff';
 
 let ephemeral: EphemeralClipboard | null = null;
-let quitHookInstalled = false;
+
+/**
+ * Take the pairing link off the clipboard if it is still there. Clipboard
+ * reads are asynchronous, so the quit paths await this before the app exits.
+ */
+export function clearEphemeralClipboard(): Promise<void> {
+  return ephemeral?.clear() ?? Promise.resolve();
+}
 
 // Paste temp files must outlive the next paste: consumers (e.g. Claude Code)
 // read the pasted file path later, so deleting the previous file on each paste
@@ -77,7 +84,7 @@ function quotePathForPty(p: string): string {
  * `text/uri-list` (on macOS, the pasteboard's file URLs), one RFC 2483 URI
  * per line; a real file URL (`file:///Users/me/%ED%8F%B4%EB%8D%94`) resolves
  * here. Only the opaque `file:///.file/id=` bookmark form cannot be resolved
- * in JS — that, and a list this cannot read, take the osascript path below.
+ * in JS — that, and a file URL this cannot read, take the osascript path below.
  * This is what makes ordinary Finder path pastes instant instead of paying
  * an osascript SPAWN (hundreds of ms, 2s worst case) on every Cmd+V.
  *
@@ -101,10 +108,11 @@ async function readFileUrlFromPasteboard(): Promise<string | typeof OPAQUE_FILE_
   } catch {
     return null;
   }
+  // A copied link that is no file is plain text: readText has it.
+  const url = raw.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith('#')) ?? '';
+  if (!url.startsWith('file://')) return null;
   // A file is there from here on: anything unreadable goes to osascript, so a
   // file paste never regresses to Finder's basename-only readText.
-  const url = raw.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith('#')) ?? '';
-  if (!url.startsWith('file://')) return OPAQUE_FILE_URL;
   // Opaque Finder bookmark (`file:///.file/id=…`) — unresolvable in JS.
   if (url.includes('/.file/id=')) return OPAQUE_FILE_URL;
   let decoded: string;
@@ -209,14 +217,9 @@ export function registerClipboardHandlers(
   }));
 
   // A pairing link copied from the Remote popover: main owns its lifetime so a
-  // renderer remount cannot orphan it, and quitting the app clears it.
+  // renderer remount cannot orphan it, and quitting the app clears it
+  // (clearEphemeralClipboard).
   ephemeral ??= new EphemeralClipboard({ readText: () => clipboard.readText(), writeText: (t) => clipboard.writeText(t) });
-  if (!quitHookInstalled && typeof app?.on === 'function') {
-    quitHookInstalled = true;
-    // The clear is asynchronous: main's own before-quit holds the quit while it
-    // saves and detaches, far longer than one clipboard read and write.
-    app.on('before-quit', () => void ephemeral?.clear());
-  }
   ipcMain.removeHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL);
   ipcMain.handle(IPC.CLIPBOARD_WRITE_EPHEMERAL, wrapHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL,
     async (_event: Electron.IpcMainInvokeEvent, text: unknown, ttlMs: unknown) => {
@@ -312,7 +315,8 @@ export function registerClipboardHandlers(
     return paneRemoteShell(ptyId, opts.shellPidFor);
   }));
 
-  ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, wrapHandler(IPC.CLIPBOARD_HAS_IMAGE, async (_event: Electron.IpcMainInvokeEvent) => {
-    return (await clipboard.read()).some((item) => item.types.some((t) => t.startsWith('image/')));
+  // The image readImage takes, checked as a single format (no listing of every type).
+  ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, wrapHandler(IPC.CLIPBOARD_HAS_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
+    return clipboard.has('image/png');
   }));
 }

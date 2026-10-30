@@ -8,6 +8,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { deliberateSleep } from '../../../../test-utils/waitFor';
 
+/** The first bytes of a PNG of `width` × `height`: its signature and IHDR header. */
+const pngOf = vi.hoisted(() => (width: number, height: number): Uint8Array<ArrayBuffer> => {
+  const b = new Uint8Array(33);
+  b.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+  new DataView(b.buffer).setUint32(16, width);
+  new DataView(b.buffer).setUint32(20, height);
+  return b;
+});
 const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
 const ipcListeners = new Map<string, (...args: unknown[]) => unknown>();
 const appListeners = new Map<string, (...args: unknown[]) => unknown>();
@@ -37,16 +45,13 @@ vi.mock('electron', () => {
   };
   // The clipboard's image, for the send-files path, as Electron hands it over.
   const clipboard = {
-    read: vi.fn(async () => [{
-      types: ['image/png'],
-      getType: async () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])]),
-    }]),
+    has: vi.fn(async (mime: string) => mime === 'image/png'),
+    read: vi.fn(async () => [{ types: ['image/png'], getType: async () => new Blob([pngOf(2, 2)]) }]),
   };
-  const nativeImage = { createFromBuffer: vi.fn(() => ({ getSize: () => ({ width: 2, height: 2 }) })) };
-  return { ipcMain, app, clipboard, nativeImage };
+  return { ipcMain, app, clipboard };
 });
 
-import { clipboard, nativeImage } from 'electron';
+import { clipboard } from 'electron';
 import { registerRemoteHandlers } from '../remote.handler';
 import { IPC } from '../../../../shared/constants';
 import type { RemoteAttachmentDescriptor, RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
@@ -1887,7 +1892,7 @@ describe('remote.handler — sending files to a pane', () => {
     const { client } = setup();
     const sender = fakeSender(361);
     const attachId = await attach(sender);
-    vi.mocked(nativeImage.createFromBuffer).mockReturnValueOnce({ getSize: () => ({ width: 10_000, height: 10_000 }) } as never);
+    vi.mocked(clipboard.read).mockResolvedValueOnce([{ types: ['image/png'], getType: async () => new Blob([pngOf(10_000, 10_000)]) }] as never);
     expect(await send(sender, attachId, { kind: 'clipboard-image' })).toEqual({ ok: false, reason: 'too-large' });
     expect(client.upload).not.toHaveBeenCalled();
   });

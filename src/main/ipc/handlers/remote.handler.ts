@@ -15,11 +15,11 @@
 // Observer + input only: no route here ever calls a remote destroy/delete
 // endpoint (RemoteHostClient itself never exposes one either).
 
-import { app, ipcMain, nativeImage } from 'electron';
+import { app, ipcMain } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
-import { readClipboardPng } from '../../clipboard/clipboardImage';
+import { pngSize, readClipboardPng } from '../../clipboard/clipboardImage';
 import {
   RemoteHostClient,
   RemoteInsecureTransportError,
@@ -1102,9 +1102,9 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         let files: RemoteSendFile[];
         if (src.kind === 'clipboard-image') {
           const png = await readClipboardPng();
-          if (!png) return { ok: false, reason: 'no-image' };
-          const { width, height } = nativeImage.createFromBuffer(png).getSize();
-          if (width * height > REMOTE_UPLOAD_LIMITS.MAX_CLIPBOARD_PIXELS) return { ok: false, reason: 'too-large' };
+          const size = png && pngSize(png);
+          if (!png || !size) return { ok: false, reason: 'no-image' };
+          if (size.width * size.height > REMOTE_UPLOAD_LIMITS.MAX_CLIPBOARD_PIXELS) return { ok: false, reason: 'too-large' };
           files = [{ name: 'clipboard.png', bytes: png }];
         } else if (src.kind === 'drop' && typeof src.token === 'string') {
           const drop = dropTokens.get(src.token);
