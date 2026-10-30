@@ -93,6 +93,7 @@ import { WEB_DEFAULT_PORT, webHostIsLoopback, type WebTlsConfig } from '../share
 import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, generateTextSnapshotUnqueued, runSmallSnapshotJob, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { queuedScreenText, queuedTextSnapshot } from './queuedSessionText';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc } from './folderTrustState';
+import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
 import type { TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen, renderPaneTail } from './AwaitingScreenVerifier';
@@ -6058,9 +6059,10 @@ function registerRpcHandlers(
   ) =>
     deliverScheduledPrompt(agentSlug, incarnationId, prompt, {
       ...opts,
-      // Each of these is tried again later: one log line per pane while the refusal holds.
+      // Each of these is tried again later: one log line per pane while the
+      // refusal holds. No person waits on them, so the read may take longer.
       folderTrustBlocks: async () => {
-        const refused = await trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true });
+        const refused = await trustRefusal(sessionManager, id, writer, trust.refuseUnknown ?? true, { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS });
         if (refused) trust.onRefused?.(refused);
         return refused;
       },
@@ -6293,8 +6295,9 @@ function registerRpcHandlers(
     sendKey: async (id, sequence) => {
       if (!liveManaged(id)) throw new Error('session gone');
       // Escape (the first-run dismiss key) stops only at a prompt seen, as any
-      // Escape does; Enter also at a screen that cannot rule one out.
-      const refused = await trustRefusal(sessionManager, id, 'automation key', sequence !== '\x1b', { once: true });
+      // Escape does; Enter also at a screen that cannot rule one out. No
+      // person waits on the key, so the read may take longer.
+      const refused = await trustRefusal(sessionManager, id, 'automation key', sequence !== '\x1b', { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS });
       if (refused) throw new FolderTrustRefusedError(refused);
       const managed = liveManaged(id);
       if (!managed) throw new Error('session gone');
@@ -6328,7 +6331,8 @@ function registerRpcHandlers(
     deliverContinue: async (id, slug, incarnationId, stillWanted) => (usageLimits?.holds(id)
       ? 'busy'
       : deliverContinueMessage(id, slug, incarnationId, stillWanted, 'automation retry', { refuseUnknown: true })),
-    folderTrustState: (id) => folderTrustState({ getSession: (sid) => sessionManager.getSession(sid) }, id),
+    // No person waits on a scheduled run's check, so the read may take longer.
+    folderTrustState: (id) => folderTrustState({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, id),
     hasPendingApproval: (id) => approvalRegistry?.list().pending.some((r) => r.sessionId === id) ?? false,
     transcriptTurnEndAt: (id) => transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at,
     transcriptLastEventAt: (id) => projector.snapshot(id)?.events.at(-1)?.ts,
@@ -6441,8 +6445,10 @@ function registerRpcHandlers(
     // A folder-trust prompt gets nothing; a screen that cannot rule one out
     // stops all but a line a person asked for (`origin: 'human'`, the
     // first-run sample command). Callers try again: one log line per pane.
+    // No person waits on a line wmux types on its own, so its read may take longer.
     const human = params['origin'] === 'human';
-    if (await trustRefusal(sessionManager, sessionId, human ? 'sample command' : 'launch line', !human, { once: true })) {
+    const trustOpts = human ? { once: true } : { once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS };
+    if (await trustRefusal(sessionManager, sessionId, human ? 'sample command' : 'launch line', !human, trustOpts)) {
       return { written: false, reason: 'folder_trust' };
     }
     const managed = sessionManager.getSession(sessionId);
@@ -8666,12 +8672,14 @@ let diskOnlySessions: DaemonSession[] = [];
 
 /** What every save writes: the managed sessions, then the disk-only records they have not taken. */
 /** Why a daemon writer must not type into `id` now (folderTrustState.ts):
- *  'trust' always, 'unknown' when `refuseUnknown` (an automated writer). */
+ *  'trust' always, 'unknown' when `refuseUnknown` (an automated writer).
+ *  `budgetMs`: the read budget, for a writer no person waits on. */
 function trustRefusal(
-  sessionManager: DaemonSessionManager, id: string, writer: string, refuseUnknown: boolean, opts: { once?: boolean } = {},
+  sessionManager: DaemonSessionManager, id: string, writer: string, refuseUnknown: boolean, opts: { once?: boolean; budgetMs?: number } = {},
 ): Promise<'trust' | 'unknown' | null> {
   return folderTrustRefusal(sessionManager, id, writer, {
     refuseUnknown,
+    ...(opts.budgetMs !== undefined ? { budgetMs: opts.budgetMs } : {}),
     log: (message) => {
       // A writer that tries again (`once`) logs a refusal once per pane while it holds.
       if (opts.once && trustRefusalLogged.get(id) === message) return;
@@ -9933,8 +9941,9 @@ async function main(): Promise<void> {
     approvalBlocked: (id) =>
       sessionManager.getSession(id)?.bridge.isAwaitingHuman() === true
       || approvalRegistry?.list().pending.some((request) => request.sessionId === id) === true,
-    // The worker logs a held nudge once per pane while the verdict holds.
-    folderTrustVerdict: (id) => folderTrustState({ getSession: (sid) => sessionManager.getSession(sid) }, id),
+    // The worker logs a held nudge once per pane while the verdict holds. No
+    // person waits on a nudge, so the read may take longer.
+    folderTrustVerdict: (id) => folderTrustState({ getSession: (sid) => sessionManager.getSession(sid), timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }, id),
     screenShowsApproval: async (id) => {
       const frame = await renderPaneScreen(() => sessionManager.getSession(id), generateTextSnapshot);
       if (!frame || frame.rows.every((row) => !row.trim())) return null;

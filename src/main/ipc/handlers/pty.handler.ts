@@ -89,6 +89,7 @@ import { localReconnectAnswer } from './localPtyReconnect';
 import { pendingRemovalRefusal } from '../../worktask/pendingWorktreeRemovals';
 import { launchAllowedByChat } from './chatLaunchGuard';
 import { folderTrustLaunchHold, folderTrustLaunchRefusal, forgetFolderTrustPane } from '../../folderTrustCheck';
+import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
 
 /**
  * Allowed shell basenames (compared case-insensitively).
@@ -858,8 +859,8 @@ export function registerPTYHandlers(
       let verifying = false;
       const initialCmd = scheduleInitialCommand(botWorker && !isWslShell(shell) ? clearedLaunchLine(typedLine, shell) : typedLine, {
         // A shell rc that starts an agent can put its folder-trust prompt
-        // where the startup line would land.
-        beforeWrite: () => folderTrustLaunchHold(daemonClient, sessionId, 'startup line', { refuseUnknown: true, once: true }),
+        // where the startup line would land. No person waits on the line.
+        beforeWrite: () => folderTrustLaunchHold(daemonClient, sessionId, 'startup line', { refuseUnknown: true, once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }),
         write: (cmd) => {
           const delivered = writeLaunchLine(cmd);
           if (delivered && verifyTaskLine && !verifying) {
@@ -1199,7 +1200,9 @@ export function registerPTYHandlers(
     // screen; one wmux types on its own (any caller that does not say
     // otherwise) also when the screen cannot rule one out.
     const human = origin === 'human';
-    const trustRefusal = await folderTrustLaunchRefusal(dc, id, human ? 'launch line' : 'automated launch line', { refuseUnknown: !human });
+    // No person waits on an automated line, so the daemon's read may take longer.
+    const trustOpts = human ? { refuseUnknown: false } : { refuseUnknown: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS };
+    const trustRefusal = await folderTrustLaunchRefusal(dc, id, human ? 'launch line' : 'automated launch line', trustOpts);
     if (trustRefusal) throw new Error(`PTY_WRITE_LAUNCH: ${trustRefusal}`);
     // Chat v2 owns the pane, or a move into chat holds it: a resume typed now
     // would put a second process on the conversation. The daemon decides.
