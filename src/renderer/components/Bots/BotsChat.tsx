@@ -97,6 +97,7 @@ import { conversationStartedThreads, workView } from './botsWork';
 import BotsWorkCard from './BotsWorkCard';
 import BotsWorkflowCard from './BotsWorkflowCard';
 import { countNewWorkflows, withWorkflows, type WorkflowTimelineItem } from './botsWorkflow';
+import { useTranscriptWindow } from '../shared/useTranscriptWindow';
 import { useConversationWorkflows } from './useBotWorkflows';
 import '../Chat/chatMono.css';
 
@@ -2214,6 +2215,14 @@ export function BotsChat({ conversation, roomCards, bots, title, t, onBack, api,
   }, [main, threads, surfaced, waits, newAfter, work, workAuthor, coordinators]);
   const flows = useConversationWorkflows(conversation, cards);
   const shownItems = useMemo(() => withWorkflows(items, flows.workflows), [items, flows.workflows]);
+  // A long chat mounts its recent items; earlier ones are read in on the way up.
+  const timelineWindow = useTranscriptWindow({
+    resetKey: conversation.id,
+    items: shownItems,
+    keyOf: (item) => item.key,
+    isTurnStart: (item) => item.kind === 'message' && item.card.actor.kind === 'human',
+    scrollRef,
+  });
   const botNames = useMemo(() => bots.map((b) => b.bot.name), [bots]);
   const taskTitle = useMemo(() => {
     const byId = new Map<string, string>();
@@ -2510,6 +2519,7 @@ export function BotsChat({ conversation, roomCards, bots, title, t, onBack, api,
             const el = e.currentTarget;
             const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
             atBottom.current = bottom;
+            timelineWindow.onScroll(bottom);
             if (bottom) {
               setNewCount(0);
               markSeen();
@@ -2523,7 +2533,7 @@ export function BotsChat({ conversation, roomCards, bots, title, t, onBack, api,
             {empty && conversation.kind === 'room' && (
               <p data-bots-empty-chat className="py-8 text-center text-[12px] text-[var(--text-muted)]">{emptyGroupLine(conversation.bots, t)}</p>
             )}
-            <TimelineView items={shownItems} ctx={ctx} group={group} onCancelWorkflow={flows.cancel} />
+            <TimelineView items={timelineWindow.visible} ctx={ctx} group={group} onCancelWorkflow={flows.cancel} />
           </div>
         </div>
         {newCount > 0 && (

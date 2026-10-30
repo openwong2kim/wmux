@@ -12,8 +12,13 @@ import { ChatKindBadge } from '../Chat/ChatKindBadge';
 import { ContinueInChat, usePaneMove } from './ContinueInChat';
 import { useStore } from '../../stores';
 import { focusPaneByPtyId } from '../../hooks/useNotificationListener';
+import { useTranscriptWindow } from '../shared/useTranscriptWindow';
 
 const NEAR_BOTTOM_PX = 48;
+
+/** Whether `row` shows the block `blockId` (a group, as one of its members). */
+const holdsBlock = (row: TranscriptRow, blockId: string): boolean =>
+  row.kind === 'toolGroup' ? row.rows.some((member) => 'block' in member && member.block.id === blockId) : 'block' in row && row.block.id === blockId;
 
 const kindRow = <div className="wmux-chatv2-kind"><ChatKindBadge kind="chatOnly" /></div>;
 
@@ -105,6 +110,14 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     entered.current = new Set();
   }
   knownKeys.current = enteringKeys(rows, knownKeys.current, entered.current);
+  // A long transcript mounts its recent rows; earlier ones are read in on the way up.
+  const transcriptWindow = useTranscriptWindow({
+    resetKey: view?.session.id,
+    items: rows,
+    keyOf: (row) => row.key,
+    isTurnStart: (row) => row.kind === 'user',
+    scrollRef: scroller,
+  });
   const actions = useMemo<TranscriptActions>(() => ({
     answer: (requestId, decision, answers) => controller?.answer(requestId, decision, answers) ?? Promise.resolve(false),
     body: (blockId, field, offset) => controller?.body(blockId, field, offset) ?? Promise.resolve(null),
@@ -114,15 +127,31 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
   useLayoutEffect(() => {
     const el = scroller.current;
     if (el && pinned.current && !findId) el.scrollTop = el.scrollHeight;
-  }, [rows, findId]);
+  }, [transcriptWindow.visible, findId]);
   const onScroll = () => {
     const el = scroller.current;
-    if (el) pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < NEAR_BOTTOM_PX;
+    // The bottom of a window cut short (after find) is not the end of the chat.
+    pinned.current = atBottom && transcriptWindow.laterCount === 0;
+    transcriptWindow.onScroll(atBottom);
   };
+  // A match the window hides is revealed first, then scrolled to once.
+  const shownFind = useRef<string | null>(null);
   useEffect(() => {
-    if (!findId) return;
-    scroller.current?.querySelector(`[data-block-id="${CSS.escape(findId)}"]`)?.scrollIntoView({ block: 'center' });
-  }, [findId]);
+    if (!findId) { shownFind.current = null; return; }
+    if (shownFind.current === findId) return;
+    const match = scroller.current?.querySelector(`[data-block-id="${CSS.escape(findId)}"]`);
+    if (match) {
+      shownFind.current = findId;
+      match.scrollIntoView({ block: 'center' });
+      return;
+    }
+    const index = rows.findIndex((row) => holdsBlock(row, findId));
+    if (index < 0) return;
+    pinned.current = false;
+    transcriptWindow.reveal(index);
+  }, [findId, transcriptWindow.startIndex, transcriptWindow.endIndex]);
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'f' && view) {
@@ -213,16 +242,16 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
       {findOpen && <FindBar blocks={view.session.blocks} onNavigate={setFindId} onClose={closeFind} />}
       <div className="wmux-chatv2-viewport" ref={scroller} onScroll={onScroll}>
         <div className="wmux-chatv2-column" role="log" aria-label={t('chat.conversation')}>
-          {state.hasEarlier && (
+          {state.hasEarlier && transcriptWindow.hiddenCount === 0 && (
             <button type="button" className="wmux-chatv2-link wmux-chatv2-earlier" onClick={() => void controller.loadEarlier()}>{S.loadEarlier}</button>
           )}
-          {rows.map((row) => (
+          {transcriptWindow.visible.map((row) => (
             <TranscriptRowView
               key={row.key}
               row={row}
               cwd={view.session.cwd}
               actions={actions}
-              findActive={!!findId && (row.kind === 'toolGroup' ? row.rows.some((member) => 'block' in member && member.block.id === findId) : 'block' in row && row.block.id === findId)}
+              findActive={!!findId && holdsBlock(row, findId)}
               findId={row.kind === 'toolGroup' ? findId : undefined}
               enter={entered.current.has(row.key)}
             />

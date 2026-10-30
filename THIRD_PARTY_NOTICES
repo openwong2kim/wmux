@@ -13257,6 +13257,39 @@ SOFTWARE.
 
 ================================================================================
 
+OpenMausBot
+License: Apache License 2.0
+Repository: https://github.com/milind-soni/OpenMausBot
+
+Copyright 2026 Milind Soni and OpenMausBot contributors
+
+Transcript windowing, adapted from its source at commit
+0213b7435fc83a936f77c18475ba2a0d7b7c2de4:
+- src/lib/transcript-window.ts and src/lib/transcript-window.test.ts:
+  the window over a long transcript (tail, follow, expand, focus range).
+- src/hooks/use-transcript-viewport.ts: following the tail until the
+  reader scrolls up, reading earlier rows in near the top while holding
+  the scroll position, and widening the window to reveal a hidden row.
+wmux files: src/renderer/components/shared/transcriptWindow.ts,
+useTranscriptWindow.ts and __tests__/transcriptWindow.test.ts. Each
+adapted file carries a header naming its source and stating that wmux
+modified it.
+
+Licensed under the Apache License, Version 2.0. The full license text is
+reproduced above with the npm packages that use it, and is available at
+https://www.apache.org/licenses/LICENSE-2.0
+
+NOTICE (the part that pertains to the adapted files):
+
+OpenMausBot
+Copyright 2026 Milind Soni and OpenMausBot contributors
+
+OpenMausBot was relicensed from the MIT License to the Apache License,
+Version 2.0, with the consent of all contributors whose copyright was
+incorporated before the transition.
+
+================================================================================
+
 PROJECTS THAT INSPIRED THE DESIGN
 
 Parts of wmux were inspired by ideas from the projects below. No code or text
