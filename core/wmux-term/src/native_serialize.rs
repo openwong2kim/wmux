@@ -239,6 +239,126 @@ fn screen(out: &mut String, grid: &Grid<Cell>) -> bool {
     pen.link.is_some()
 }
 
+/// The length of the escape sequence at `data[0] == ESC`, or None while it
+/// is unfinished. A string (OSC, DCS, ...) counts only its introducer: an
+/// ESC inside one ends it in both parsers, and the rest scans as text. C0
+/// controls inside a sequence execute without ending it; ESC, CAN and SUB
+/// abort it, which ends it before them.
+pub(crate) fn sequence_len(data: &[u8]) -> Option<usize> {
+    let csi = data.get(1) == Some(&b'[');
+    let mut i = if csi { 2 } else { 1 };
+    loop {
+        let b = *data.get(i)?;
+        match b {
+            0x1b | 0x18 | 0x1a => return Some(i.max(1)),
+            0x00..=0x1f => {}
+            0x20..=0x2f => {}
+            0x30..=0x3f if csi => {}
+            0x30..=0x7e => return Some(i + 1),
+            _ => return Some(i),
+        }
+        i += 1;
+    }
+}
+
+/// A C1 control as a UTF-8 code point: xterm executes it, Alacritty prints it.
+pub(crate) fn has_c1(data: &[u8]) -> bool {
+    data.windows(2)
+        .any(|pair| pair[0] == 0xc2 && (0x80..=0x9f).contains(&pair[1]))
+}
+
+/// A parameter as xterm reads it: empty is 0, anything else not a number.
+fn number(param: &str) -> Option<u32> {
+    if param.is_empty() {
+        Some(0)
+    } else {
+        param.parse().ok()
+    }
+}
+
+/// SGR 53 (overline: Alacritty has none), SGR 21 (xterm's double
+/// underline), and color syntax the two parse differently. A color's
+/// operands are not attributes: RGB red 53 is not overline.
+fn sgr_divergent(params: &str) -> bool {
+    let digits = |value: &str| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit());
+    let mut list = params.split(';');
+    while let Some(param) = list.next() {
+        let mut parts = param.split(':');
+        let attribute = number(parts.next().unwrap_or(""));
+        let colon = parts.next().is_some();
+        match attribute {
+            Some(21 | 53) => return true,
+            Some(38 | 48 | 58) if !colon => {
+                let operands = match list.next().and_then(number) {
+                    Some(5) => 1,
+                    Some(2) => 3,
+                    _ => return true,
+                };
+                for _ in 0..operands {
+                    if !list.next().is_some_and(digits) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Controls whose parse differs between Alacritty and xterm, so a replay of
+/// Alacritty's grid cannot match xterm's (RustAnsiParity.test.ts measures
+/// each): charset designators other than ASCII, selective erase, SL/SR,
+/// DECIC/DECDC, DECSTR, SU (Alacritty keeps the rows in history), ED 1/2
+/// spelled other than `CSI 1 J` / `CSI 2 J`, the modes 9, 20, 45, 47, 66,
+/// 1047 and 1048, and SGR 21/53 or malformed colors. `sequence` is complete.
+pub(crate) fn divergent(sequence: &[u8]) -> bool {
+    // C0 controls inside a sequence execute and are not part of it (rare).
+    let filtered: Vec<u8>;
+    let mut body = &sequence[1..];
+    if body.iter().any(|&b| b < 0x20) {
+        filtered = body.iter().copied().filter(|&b| b >= 0x20).collect();
+        body = &filtered;
+    }
+    match body.split_first() {
+        Some((b'[', rest)) => csi_divergent(rest),
+        Some((b'(' | b')', rest)) => rest != b"B",
+        Some((b'*' | b'+' | b'-' | b'.' | b'/', _)) => true,
+        _ => false,
+    }
+}
+
+fn csi_divergent(rest: &[u8]) -> bool {
+    let Some((&last, head)) = rest.split_last() else {
+        return false;
+    };
+    let (private, head) = match head.split_first() {
+        Some((&marker, tail)) if b"<=>?".contains(&marker) => (Some(marker), tail),
+        _ => (None, head),
+    };
+    let split = head
+        .iter()
+        .position(|b| (0x20..=0x2f).contains(b))
+        .unwrap_or(head.len());
+    let (params, intermediates) = head.split_at(split);
+    let params = std::str::from_utf8(params).unwrap_or("");
+    match (private, intermediates, last) {
+        (Some(b'?'), b"", b'J' | b'K') => true,
+        (None, b" ", b'@' | b'A') | (None, b"'", b'}' | b'~') | (None, b"!", b'p') => true,
+        (None, b"", b'S') => true,
+        (Some(b'?'), b"", b'h' | b'l') => params
+            .split(';')
+            .any(|mode| matches!(mode, "9" | "45" | "66" | "47" | "1047" | "1048")),
+        (None, b"", b'h' | b'l') => params.split(';').any(|mode| mode == "20"),
+        (None, b"", b'J') => {
+            let first = number(params.split([';', ':']).next().unwrap_or(""));
+            matches!(first, Some(1 | 2)) && params != "1" && params != "2"
+        }
+        (None, b"", b'm') => sgr_divergent(params),
+        _ => false,
+    }
+}
+
 pub fn serialize(term: &Term<VoidListener>) -> Result<String, &'static str> {
     // xterm can retain half a wide glyph when clipping the cursor paragraph.
     // Printing that glyph would wrap instead. Refuse instead of corrupting it.
@@ -331,6 +451,93 @@ mod tests {
         let mut parser: Processor = Processor::new();
         parser.advance(&mut term, bytes.as_bytes());
         serialize(&term)
+    }
+
+    use super::{divergent, has_c1, sequence_len};
+
+    fn classify(text: &str) -> Vec<bool> {
+        let bytes = text.as_bytes();
+        let mut found = Vec::new();
+        let mut at = 0;
+        while let Some(offset) = bytes[at..].iter().position(|&b| b == 0x1b) {
+            at += offset;
+            let len = sequence_len(&bytes[at..]).expect("complete sequence");
+            found.push(divergent(&bytes[at..at + len]));
+            at += len;
+        }
+        found
+    }
+
+    #[test]
+    fn accepted_controls_replay_on_rust() {
+        for text in [
+            "\x1b]0;\u{2733} Claude Code\x07",
+            "\x1b]8;;https://e.com\x1b\\",
+            "\x1b7\x1b8",
+            "\x1b[s\x1b[u",
+            "\x1b[>1u\x1b[?u\x1b[<u\x1b[=1;1u",
+            "\x1bH\x1b[3g\x1b[g",
+            "\x1b[5 q\x1b[>0q\x1b[1q\x1b[1\"q",
+            "\x1b(B\x1b)B",
+            "\x1b[55m\x1b[5m",
+            "\x1b[38;5;53m\x1b[48;2;53;55;6m\x1b[38:2::53:55:5m",
+            "\x1b[?1049h\x1b[?2004h\x1b[?1006h\x1b[4h\x1b[0J\x1b[J\x1b[3J",
+            "\x1b[2T\x1b[?2;1S",
+        ] {
+            assert!(classify(text).iter().all(|d| !d), "{text:?}");
+        }
+        assert!(!has_c1("\u{2733}\u{d55c}".as_bytes()));
+    }
+
+    #[test]
+    fn divergent_controls_stay_on_xterm() {
+        for text in [
+            "\x1b(0",
+            "\x1b)0",
+            "\x1b(A",
+            "\x1b(%5",
+            "\x1b*0",
+            "\x1b+B",
+            "\x1b-A",
+            "\x1b[?2J",
+            "\x1b[?K",
+            "\x1b[2 @",
+            "\x1b[ A",
+            "\x1b[2'}",
+            "\x1b['~",
+            "\x1b[!p",
+            "\x1b[2S",
+            "\x1b[20h",
+            "\x1b[?9h",
+            "\x1b[?1;45h",
+            "\x1b[?66h",
+            "\x1b[?47h",
+            "\x1b[?1047l",
+            "\x1b[?1048h",
+            "\x1b[02J",
+            "\x1b[2;0J",
+            "\x1b[1:1J",
+            "\x1b[53m",
+            "\x1b[21m",
+            "\x1b[38;2;1;2;3;53m",
+            "\x1b[38;2;53m",
+            "\x1b[38;5m",
+            "\x1b[38;7;1m",
+        ] {
+            let found = classify(text);
+            assert!(found.iter().any(|&d| d), "{text:?}");
+        }
+        assert!(has_c1("a\u{9b}31m".as_bytes()));
+    }
+
+    #[test]
+    fn unfinished_sequences_wait_for_more_bytes() {
+        for text in ["\x1b", "\x1b[", "\x1b[38;2;1", "\x1b(", "\x1b[ "] {
+            assert_eq!(sequence_len(text.as_bytes()), None, "{text:?}");
+        }
+        // ESC aborts a sequence in progress, which ends before it.
+        assert_eq!(sequence_len(b"\x1b[3\x1b[m"), Some(3));
+        assert_eq!(sequence_len(b"\x1b\x1b"), Some(1));
     }
 
     #[test]

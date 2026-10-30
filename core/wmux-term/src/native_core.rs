@@ -83,45 +83,176 @@ pub struct NativeTerminal {
     term: Option<Term<VoidListener>>,
     parser: Processor,
     scrollback: u32,
-    /// `feed_xterm`: a trailing prefix of ED 1/ED 2 awaiting its final byte.
-    held: Vec<u8>,
-    /// A resize moved rows into history that xterm would have kept on screen.
-    reflowed_into_history: bool,
+    /// `feed_xterm` state besides the grid.
+    feed: XtermFeed,
+    /// Why the ANSI snapshot of this stream cannot match xterm's.
+    refusal: Option<&'static str>,
 }
 
-/// ED 1 and ED 2 in the forms programs write them.
-const ERASES: [&[u8]; 2] = [b"\x1b[1J", b"\x1b[2J"];
+/// The longest unfinished sequence `feed_xterm` holds for its next bytes.
+const MAX_HELD: usize = 256;
+/// The longest unfinished string re-shipped after a snapshot, in UTF-16
+/// units (util/ansiStreamScan.ts MAX_PENDING_TAIL_CHARS).
+const MAX_TAIL_UNITS: usize = 4096;
 
-/// Feed `bytes`, giving ED 1 and ED 2 xterm's semantics. A trailing prefix
-/// of either is kept in `held` until the bytes that complete it arrive.
-fn feed_like_xterm(
-    parser: &mut Processor,
-    term: &mut Term<VoidListener>,
-    held: &mut Vec<u8>,
-    bytes: &[u8],
-) {
-    let mut data = std::mem::take(held);
-    data.extend_from_slice(bytes);
-    let keep = (1..4)
-        .rev()
-        .find(|&n| n <= data.len() && ERASES.iter().any(|seq| data[data.len() - n..] == seq[..n]))
-        .unwrap_or(0);
-    *held = data.split_off(data.len() - keep);
-    let mut from = 0;
-    let mut at = 0;
-    while let Some(found) = data[at..].iter().position(|&b| b == 0x1b) {
-        at += found;
-        match ERASES.iter().position(|seq| data[at..].starts_with(seq)) {
-            Some(kind) => {
-                parser.advance(term, &data[from..at]);
-                erase_like_xterm(parser, term, kind == 1);
-                at += ERASES[kind].len();
-                from = at;
+/// What the ANSI feed tracks besides the grid. Margins, cursor visibility
+/// and the pending input tail follow util/ansiStreamScan.ts, which the xterm
+/// path runs over the same bytes, so both payloads restore the same state.
+#[derive(Default)]
+struct XtermFeed {
+    /// An unfinished escape sequence awaiting its next bytes.
+    held: Vec<u8>,
+    /// The stream ends inside a string (OSC, DCS, SOS, PM, APC): `tail`
+    /// holds it from its introducer, `tail_units` counts it.
+    in_string: bool,
+    tail: Vec<u8>,
+    tail_units: usize,
+    tail_overflow: bool,
+    /// DECSTBM margins in effect (MarginTracker).
+    margins: bool,
+    /// DECTCEM off (CursorVisibilityTracker).
+    cursor_hidden: bool,
+    /// A control Alacritty parses differently from xterm.
+    divergent: bool,
+}
+
+/// String terminators as PartialSequenceTracker reads them: BEL, CAN, SUB,
+/// and ESC (ST, or an abort that starts a new sequence).
+fn string_end(data: &[u8]) -> Option<usize> {
+    data.iter()
+        .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
+}
+
+impl XtermFeed {
+    fn push_tail(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if self.tail_overflow {
+                return;
             }
-            None => at += 1,
+            if b & 0xc0 != 0x80 {
+                if self.tail_units >= MAX_TAIL_UNITS {
+                    self.tail_overflow = true;
+                    self.tail = Vec::new();
+                    return;
+                }
+                self.tail_units += if b >= 0xf0 { 2 } else { 1 };
+            }
+            self.tail.push(b);
         }
     }
-    parser.advance(term, &data[from..]);
+
+    fn start_string(&mut self) {
+        self.in_string = true;
+        self.tail.clear();
+        self.tail_units = 0;
+        self.tail_overflow = false;
+    }
+
+    /// Consume a string's payload from `data[at..]`; returns where scanning
+    /// resumes, or None when the string continues past the data. An ESC as
+    /// the last byte is held: it ends the string only with what follows.
+    fn string_payload(&mut self, data: &mut Vec<u8>, at: usize) -> Option<usize> {
+        match string_end(&data[at..]).map(|end| at + end) {
+            Some(end) if data[end] == 0x1b && end + 1 == data.len() => {
+                self.push_tail(&data[at..end]);
+                self.held = data.split_off(end);
+                None
+            }
+            Some(end) => {
+                self.in_string = false;
+                Some(if data[end] == 0x1b { end } else { end + 1 })
+            }
+            None => {
+                self.push_tail(&data[at..]);
+                None
+            }
+        }
+    }
+
+    fn track(&mut self, sequence: &[u8]) {
+        let numeric = |params: &[u8]| params.iter().all(|&b| b.is_ascii_digit() || b == b';');
+        if sequence == b"\x1bc" || sequence == b"\x1b[!p" {
+            self.margins = false;
+        }
+        if sequence == b"\x1b[!p" {
+            self.cursor_hidden = false;
+        }
+        if let Some(params) = sequence
+            .strip_prefix(b"\x1b[")
+            .and_then(|s| s.strip_suffix(b"r"))
+        {
+            if numeric(params) {
+                self.margins = params.iter().any(u8::is_ascii_digit);
+            }
+        }
+        if let Some((&last, params)) = sequence
+            .strip_prefix(b"\x1b[?")
+            .and_then(<[u8]>::split_last)
+        {
+            if matches!(last, b'h' | b'l')
+                && numeric(params)
+                && params.split(|&b| b == b';').any(|mode| mode == b"25")
+            {
+                self.cursor_hidden = last == b'l';
+            }
+        }
+    }
+
+    /// Feed `bytes`, giving ED 1 and ED 2 xterm's semantics. An unfinished
+    /// sequence at the end waits in `held` for the bytes that complete it.
+    fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
+        let mut data = std::mem::take(&mut self.held);
+        data.extend_from_slice(bytes);
+        self.divergent |= crate::native_serialize::has_c1(&data);
+        let mut from = 0;
+        let mut next = if self.in_string {
+            self.string_payload(&mut data, 0)
+        } else {
+            Some(0)
+        };
+        while let Some(at) = next {
+            let Some(found) = data[at..].iter().position(|&b| b == 0x1b) else {
+                break;
+            };
+            let at = at + found;
+            let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
+                if data.len() - at <= MAX_HELD {
+                    self.held = data.split_off(at);
+                } else {
+                    self.divergent = true;
+                }
+                break;
+            };
+            let sequence = &data[at..at + len];
+            if sequence == b"\x1b[1J" || sequence == b"\x1b[2J" {
+                parser.advance(term, &data[from..at]);
+                erase_like_xterm(parser, term, sequence[2] == b'2');
+                from = at + len;
+                next = Some(at + len);
+            } else if len == 2 && matches!(sequence[1], b']' | b'P' | b'X' | b'^' | b'_') {
+                self.start_string();
+                self.push_tail(sequence);
+                next = self.string_payload(&mut data, at + len);
+            } else {
+                self.divergent |= crate::native_serialize::divergent(sequence);
+                self.track(sequence);
+                next = Some(at + len);
+            }
+        }
+        parser.advance(term, &data[from..]);
+    }
+
+    /// The bytes that leave a replaying parser where this one is: the
+    /// unfinished string or sequence the stream ends inside.
+    fn pending_tail(&self) -> std::result::Result<Vec<u8>, &'static str> {
+        if !self.in_string {
+            return Ok(self.held.clone());
+        }
+        if self.tail_overflow {
+            return Err("partial-tail-overflow");
+        }
+        Ok([self.tail.as_slice(), &self.held].concat())
+    }
 }
 
 /// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
@@ -173,8 +304,8 @@ impl NativeTerminal {
             term: Some(Term::new(config, &size, VoidListener)),
             parser: Processor::new(),
             scrollback,
-            held: Vec::new(),
-            reflowed_into_history: false,
+            feed: XtermFeed::default(),
+            refusal: None,
         })
     }
 
@@ -190,16 +321,31 @@ impl NativeTerminal {
         Ok(())
     }
 
-    /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase
-    /// as xterm does (see erase_like_xterm). `ansi_snapshot` feeds what is held.
+    /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase as
+    /// xterm does (see erase_like_xterm). Returns whether the snapshot is
+    /// already refused, so the caller can stop parsing: a control Alacritty
+    /// parses differently, or a history past this terminal's cap when the
+    /// request asked for more.
     #[napi]
-    pub fn feed_xterm(&mut self, bytes: Uint8Array) -> Result<()> {
+    pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
         let term = self
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        feed_like_xterm(&mut self.parser, term, &mut self.held, &bytes);
-        Ok(())
+        if self.refusal.is_none() {
+            self.feed.feed(&mut self.parser, term, &bytes);
+            if self.feed.divergent {
+                self.refusal = Some("unsupported-state: a control Alacritty parses differently");
+            } else if requested_scrollback > self.scrollback
+                && [term.grid(), term.inactive_grid()]
+                    .iter()
+                    .any(|grid| grid.history_size() >= self.scrollback as usize)
+            {
+                self.refusal =
+                    Some("unsupported-history-limit: history reached the native grid cap");
+            }
+        }
+        Ok(self.refusal.is_some())
     }
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
@@ -240,10 +386,14 @@ impl NativeTerminal {
         let start = before(term);
         term.resize(size);
         let end = before(term);
-        self.reflowed_into_history |= start
+        if start
             .iter()
             .zip(end.iter())
-            .any(|(&(history, room), &(after, _))| room && after > history);
+            .any(|(&(history, room), &(after, _))| room && after > history)
+        {
+            self.refusal
+                .get_or_insert("unsupported-reflow: a resize scrolled rows xterm keeps on screen");
+        }
         Ok(())
     }
 
@@ -318,18 +468,15 @@ impl NativeTerminal {
     /// caller capped the history to bound memory: a history that reached the
     /// cap may have dropped rows the request would have kept.
     #[napi]
-    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<String> {
+    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer> {
         let term = self
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
-        // An unfinished ED prefix is an ordinary partial sequence.
-        let held = std::mem::take(&mut self.held);
-        self.parser.advance(term, &held);
-        if self.reflowed_into_history {
-            return Err(Error::from_reason(
-                "unsupported-reflow: a resize scrolled rows xterm keeps on screen",
-            ));
+        // An unfinished sequence is part of the stream: parse it, then ship it.
+        self.parser.advance(term, &self.feed.held);
+        if let Some(refusal) = self.refusal {
+            return Err(Error::from_reason(refusal));
         }
         if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
             && [term.grid(), term.inactive_grid()]
@@ -340,13 +487,26 @@ impl NativeTerminal {
                 "unsupported-history-limit: history reached the native grid cap",
             ));
         }
+        // xterm's SerializeAddon drops margins: both paths replay raw then.
+        if self.feed.margins {
+            return Err(Error::from_reason("margins"));
+        }
+        let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
         let synchronized = self.parser.sync_timeout().pending_timeout();
         self.parser.stop_sync(term);
         let mut result = crate::native_serialize::serialize(term).map_err(Error::from_reason)?;
         if synchronized {
             result.push_str("\x1b[?2026h");
         }
-        Ok(result)
+        // Asserted always: a reflush lands on a client whose cursor may be hidden.
+        result.push_str(if self.feed.cursor_hidden {
+            "\x1b[?25l"
+        } else {
+            "\x1b[?25h"
+        });
+        let mut payload = result.into_bytes();
+        payload.extend_from_slice(&tail);
+        Ok(payload.into())
     }
 
     #[napi]
@@ -890,21 +1050,26 @@ impl NativeRing {
 
 #[cfg(test)]
 mod tests {
-    use super::{feed_like_xterm, Size};
+    use super::{Size, XtermFeed};
     use alacritty_terminal::event::VoidListener;
     use alacritty_terminal::grid::Dimensions;
     use alacritty_terminal::index::{Column, Line};
     use alacritty_terminal::term::{Config, Term};
     use alacritty_terminal::vte::ansi::{Processor, Timeout};
 
-    fn feed(chunks: &[&str]) -> Term<VoidListener> {
+    fn feed_with(chunks: &[&str]) -> (Term<VoidListener>, Processor, XtermFeed) {
         let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
         let mut parser: Processor = Processor::new();
-        let mut held = Vec::new();
+        let mut feed = XtermFeed::default();
         for chunk in chunks {
-            feed_like_xterm(&mut parser, &mut term, &mut held, chunk.as_bytes());
+            feed.feed(&mut parser, &mut term, chunk.as_bytes());
         }
-        parser.advance(&mut term, &held);
+        (term, parser, feed)
+    }
+
+    fn feed(chunks: &[&str]) -> Term<VoidListener> {
+        let (mut term, mut parser, feed) = feed_with(chunks);
+        parser.advance(&mut term, &feed.held);
         term
     }
 
@@ -938,10 +1103,7 @@ mod tests {
 
     #[test]
     fn erase_inside_a_synchronized_update_keeps_the_update_open() {
-        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
-        let mut parser: Processor = Processor::new();
-        let mut held = Vec::new();
-        feed_like_xterm(&mut parser, &mut term, &mut held, b"a\x1b[?2026hb\x1b[2Jc");
+        let (mut term, mut parser, _) = feed_with(&["a\x1b[?2026hb\x1b[2Jc"]);
         assert!(parser.sync_timeout().pending_timeout());
         parser.stop_sync(&mut term);
         assert_eq!(row(&term, 0), "  c");
@@ -952,5 +1114,47 @@ mod tests {
     fn erase_ends_a_string_like_the_real_escape() {
         let term = feed(&["a\x1b]0;title\x1b[2Jc"]);
         assert_eq!(row(&term, 0), " c");
+    }
+
+    #[test]
+    fn a_split_divergent_control_is_seen() {
+        let (_, _, feed) = feed_with(&["hello\x1b(", "0q"]);
+        assert!(feed.divergent);
+        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(0 in a title\x07"]);
+        assert!(feed.divergent, "ESC ends the string, then designates");
+        let (_, _, feed) = feed_with(&["\x1b]0;(0 in a title\x07ok"]);
+        assert!(!feed.divergent);
+    }
+
+    #[test]
+    fn the_pending_tail_matches_the_stream_trackers() {
+        let tail = |chunks: &[&str]| {
+            feed_with(chunks)
+                .2
+                .pending_tail()
+                .map(|t| String::from_utf8(t).unwrap())
+        };
+        assert_eq!(tail(&["hi\x1b[31;"]).unwrap(), "\x1b[31;");
+        assert_eq!(tail(&["hi\x1b]0;ti", "tle"]).unwrap(), "\x1b]0;title");
+        assert_eq!(tail(&["hi\x1b]0;title\x1b"]).unwrap(), "\x1b]0;title\x1b");
+        assert_eq!(tail(&["hi\x1b]0;title\x1b", "\\done"]).unwrap(), "");
+        assert_eq!(tail(&["hi\x1b]0;title\x07done"]).unwrap(), "");
+        assert_eq!(
+            tail(&["\x1bP", &"x".repeat(5000)]).unwrap_err(),
+            "partial-tail-overflow"
+        );
+    }
+
+    #[test]
+    fn margins_and_cursor_follow_the_stream_trackers() {
+        let state = |chunks: &[&str]| {
+            let (_, _, feed) = feed_with(chunks);
+            (feed.margins, feed.cursor_hidden)
+        };
+        assert_eq!(state(&["\x1b[2;4r"]), (true, false));
+        assert_eq!(state(&["\x1b[2;4r\x1b[r"]), (false, false));
+        assert_eq!(state(&["\x1b[2;4r\x1bc"]), (false, false));
+        assert_eq!(state(&["\x1b[?1;25l"]), (false, true));
+        assert_eq!(state(&["\x1b[?25l\x1b[?25h"]), (false, false));
     }
 }

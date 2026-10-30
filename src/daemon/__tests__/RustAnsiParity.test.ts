@@ -305,6 +305,18 @@ describe.skipIf(!available)('Rust ANSI snapshot rendered parity', { timeout: 30_
     }
   });
 
+  it('refuses a divergent control that arrives on the live tee, split from the history', async () => {
+    const tee = () => { const queue = [[Buffer.from('0lqk')], [Buffer.from('\x1b(Bok')]]; return () => queue.shift() ?? []; };
+    const req: SnapshotRequest = { cols: 20, rows: 6, scrollback: 100, initial: Buffer.from('hello\x1b(') };
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');
+    const reference = await generateSnapshotUnqueued({ ...req, drainQueue: tee() });
+    vi.stubEnv('WMUX_RUST_SNAPSHOT', 'ansi');
+    const selected = await generateSnapshotUnqueued({ ...req, drainQueue: tee() });
+    if (!reference.ok || !selected.ok) throw new Error('snapshot failed');
+    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'state' });
+    expect(selected.payload.equals(reference.payload)).toBe(true);
+  });
+
   // Evidence for each refusal: without it the Rust payload would diverge.
   it.each(refused.map(c => [c.name, c] as const))('Rust alone diverges on %s', async (_name, { req }) => {
     vi.stubEnv('WMUX_RUST_SNAPSHOT', 'off');

@@ -51,7 +51,7 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   if (mode !== 'ansi' && mode !== 'all') return withSnapshotShadow(input, 'ansi', xterm);
   const modulePath = process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE;
   if (failedModule && failedModule.path !== modulePath) failedModule = undefined;
-  const skip = !eligible(input) ? 'limits' : failedModule ? 'circuit-open' : hasUnqualifiedState(input.initial) ? 'state' : undefined;
+  const skip = !eligible(input) ? 'limits' : failedModule ? 'circuit-open' : undefined;
   if (skip) {
     diagnostics.skipped++;
     diagnostics.last = { backend: 'xterm', reason: skip };
@@ -78,14 +78,10 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
     // Half of the caller's total budget stays reserved for the fallback.
     const native = await generateRustSnapshot({ ...input, drainQueue: record, budgetMs: budget / 2 }, 'ansi');
     if (native.ok && Buffer.isBuffer(native.payload) && native.bytesIn === input.initial.length + drainedBytes) {
-      // Live bytes are scanned only now; a refused class there retries on xterm.
-      if (drained.length && hasUnqualifiedState(drainTail(input.initial, drained))) failure = 'state';
-      else if (performance.now() - started > budget) return overBudget();
-      else {
-        diagnostics.native++;
-        diagnostics.last = { backend: 'rust', reason: 'native' };
-        return { ...native, durationMs: performance.now() - started };
-      }
+      if (performance.now() - started > budget) return overBudget();
+      diagnostics.native++;
+      diagnostics.last = { backend: 'rust', reason: 'native' };
+      return { ...native, durationMs: performance.now() - started };
     } else if (!native.ok) {
       // Both backends run the same stream trackers on the same bytes, so
       // margins and an oversized partial tail fail the reference identically.
@@ -95,7 +91,10 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
         return native;
       }
       if (native.reason === 'budget') failure = 'budget';
-      // The serializer refuses grid state it cannot replay; the module is sound.
+      // The native terminal refuses a stream or grid it cannot replay as
+      // xterm would (a divergent control, a reflow, the history cap): the
+      // module is sound.
+      else if (native.detail?.startsWith('unsupported-state')) failure = 'state';
       else if (native.detail?.startsWith('unsupported-')) failure = 'unsupported';
     }
   } catch { /* Module or disposal errors also use the intact xterm input. */ }
@@ -112,65 +111,3 @@ export async function selectAnsiSnapshot(req: SnapshotRequest, xterm: Reference)
   const fallback = await xterm({ ...input, drainQueue: replay, budgetMs: remaining });
   return fallback.ok ? { ...fallback, durationMs: performance.now() - started } : fallback;
 }
-
-/** Drained bytes, led by the last sequence of the initial history they may continue. */
-function drainTail(initial: Buffer, drained: Buffer[]): Buffer {
-  const lead = initial.lastIndexOf(0x1b);
-  return Buffer.concat([lead === -1 ? Buffer.alloc(0) : initial.subarray(lead), ...drained]);
-}
-
-/* eslint-disable no-control-regex -- These patterns recognize terminal controls. */
-/**
- * Controls whose parse differs between Alacritty and xterm, measured by the
- * rendered-parity suite (RustAnsiParity.test.ts):
- * - charset designators other than ASCII (`ESC ( B`, `ESC ) B`): the DEC
- *   graphics table maps `_` differently, national sets and G2/G3 are absent,
- *   and DECRC restores the shifted set only in xterm;
- * - C1 controls as code points, which xterm executes and Alacritty prints;
- * - selective erase (DECSED/DECSEL), SL/SR, DECIC/DECDC and DECSTR;
- * - SU, which moves rows into Alacritty's scrollback but not xterm's, and
- *   ED 1/2 spelled other than `CSI 1 J` / `CSI 2 J` (the native feed gives
- *   those xterm's semantics: Alacritty's ED 2 scrolls the screen into history);
- * - modes Alacritty lacks: X10 mouse (9), reverse wrap (45), DECNKM (66),
- *   alternate screen 47/1047, cursor save 1048 and LNM (20).
- * Everything else, OSC included, replays on Rust: titles, notifications and
- * queries are not screen state and xterm's path drops them too, and OSC 8
- * hyperlinks are restored by the native serializer.
- */
-const DIVERGENT = /\x1b(?:[()][^B]|[*+\-./]|\[(?:\?[0-9;]*[JK]|[0-9;]*(?: [@A]|'[}~]|!p|S)))|[\u0080-\u009f]/;
-const UNSUPPORTED_PRIVATE_MODES = new Set(['9', '45', '66', '47', '1047', '1048']);
-
-/** Refuse divergent state. SGR color values are operands, not attributes:
- * RGB red=53 must not be mistaken for the unsupported overline command. */
-export function hasUnqualifiedState(bytes: Buffer): boolean {
-  const text = bytes.toString('utf8');
-  if (DIVERGENT.test(text)) return true;
-  for (const match of text.matchAll(/\x1b\[(\??)([0-9;]*)[hl]/g)) {
-    const params = match[2].split(';');
-    if (match[1] ? params.some(param => UNSUPPORTED_PRIVATE_MODES.has(param)) : params.includes('20')) return true;
-  }
-  // The native feed gives ED 1/2 xterm's semantics in their usual spelling only.
-  for (const match of text.matchAll(/\x1b\[([0-9;:]*)J/g)) {
-    const first = Number(match[1].split(/[;:]/)[0]);
-    if ((first === 1 || first === 2) && match[1] !== '1' && match[1] !== '2') return true;
-  }
-  for (const match of text.matchAll(/\x1b\[([0-9;:]*)m/g)) {
-    const params = match[1].split(';');
-    for (let index = 0; index < params.length; index++) {
-      const parts = params[index].split(':');
-      const attribute = Number(parts[0]);
-      // Overline is absent in Alacritty; SGR 21 is xterm's double underline.
-      if (attribute === 53 || attribute === 21) return true;
-      if ([38, 48, 58].includes(attribute) && parts.length === 1) {
-        const mode = Number(params[index + 1]);
-        const operands = mode === 5 ? 2 : mode === 2 ? 4 : 0;
-        // Malformed or mixed color syntax stays on the reference path.
-        if (!operands || index + operands >= params.length ||
-            params.slice(index + 1, index + operands + 1).some(value => !/^\d+$/.test(value))) return true;
-        index += operands;
-      }
-    }
-  }
-  return false;
-}
-/* eslint-enable no-control-regex */

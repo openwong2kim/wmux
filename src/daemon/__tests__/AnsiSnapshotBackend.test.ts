@@ -39,61 +39,13 @@ describe('ANSI snapshot backend selection', () => {
     expect(native).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['OSC title', '\x1b]0;✳ Claude Code\x07ready'],
-    ['OSC query', '\x1b]11;?\x07ready'],
-    ['OSC 8 hyperlink', '\x1b]8;;https://example.com\x07link\x1b]8;;\x07'],
-    ['DECSC/DECRC', '\x1b7\x1b[r\x1b8saved'],
-    ['SCOSC/SCORC', '\x1b[sx\x1b[u'],
-    ['kitty keyboard', '\x1b[>1u\x1b[?u\x1b[<u'],
-    ['HTS', '\x1bH\tx'],
-    ['TBC', '\x1b[3g\x1b[g'],
-    ['DECSCUSR', '\x1b[5 q'],
-    ['XTVERSION', '\x1b[>0q'],
-    ['DECSCA', '\x1b[1"q'],
-    ['SO/SI', '\x0ex\x0f'],
-    ['ASCII designation', '\x1b(B\x1b)B\x1b[m'],
-    ['SGR 55', '\x1b[55mx'],
-    ['blink', '\x1b[5mblink'],
-    ['color operand 53', '\x1b[38;5;53mcolor'],
-    ['RGB operands 53/55', '\x1b[48;2;53;55;6mcolor'],
-    ['colon RGB operands', '\x1b[38:2::53:55:5mcolor'],
-  ])('replays %s on Rust', async (_name, text) => {
-    const initial = Buffer.from(text);
-    nativeSuccess(initial);
-    const reference = vi.fn();
-    await selectAnsiSnapshot({ ...request, initial }, reference);
-    expect(native).toHaveBeenCalledOnce(); expect(reference).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['DEC graphics', '\x1b(0lqk\x1b(B'],
-    ['G1 DEC graphics', '\x1b)0\x0eq\x0f'],
-    ['national set', '\x1b(A#'],
-    ['G2 designation', '\x1b*0'],
-    ['C1 CSI', 'a\u009b31m'],
-    ['overline', '\x1b[53moverline'],
-    ['SGR 21', '\x1b[21mx'],
-    ['overline after RGB', '\x1b[38;2;1;2;3;53moverline'],
-    ['malformed color', '\x1b[38;2;53mbad color'],
-    ['DECSED', '\x1b[?2J'],
-    ['DECSEL', '\x1b[?K'],
-    ['SL', '\x1b[2 @'],
-    ['DECIC', '\x1b[2\'}'],
-    ['DECSTR', '\x1b[!p'],
-    ['SU', '\x1b[2S'],
-    ['ED 2 spelled 0;2', '\x1b[2;0J'],
-    ['LNM', '\x1b[20h'],
-    ['X10 mouse', '\x1b[?9h'],
-    ['reverse wrap', '\x1b[?1;45h'],
-    ['DECNKM', '\x1b[?66h'],
-    ['alt 1047', '\x1b[?1047l'],
-    ['cursor save 1048', '\x1b[?1048h'],
-  ])('retains xterm for %s', async (_name, text) => {
+  // Which controls Rust refuses is decided natively (native_serialize.rs
+  // tests, RustAnsiParity.test.ts); here only the selector's reaction.
+  it('falls back on a divergent-control refusal without opening the circuit', async () => {
+    native.mockResolvedValue({ ok: false, reason: 'error', detail: 'unsupported-state: a control Alacritty parses differently' });
     const reference = vi.fn(async () => success);
-    await selectAnsiSnapshot({ ...request, initial: Buffer.from(text) }, reference);
-    expect(native).not.toHaveBeenCalled(); expect(reference).toHaveBeenCalledOnce();
-    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'state' });
+    expect(await selectAnsiSnapshot(request, reference)).toMatchObject({ ...success, durationMs: expect.any(Number) });
+    expect(getAnsiSnapshotBackendDiagnostics()).toMatchObject({ circuitOpen: false, last: { backend: 'xterm', reason: 'state' } });
   });
 
   it('replays the live tee drained by Rust into the xterm fallback', async () => {
@@ -120,17 +72,18 @@ describe('ANSI snapshot backend selection', () => {
     expect(reference).not.toHaveBeenCalled();
   });
 
-  it('falls back when drained bytes carry divergent state, even split from the history', async () => {
-    const initial = Buffer.from('hello\x1b(');
-    const queue = [[Buffer.from('0q')], []];
-    native.mockImplementation(drainAll);
+  it('replays drained bytes into the fallback when Rust refuses them', async () => {
+    const queue = [[Buffer.from('\x1b(0q')], []];
+    native.mockImplementation((async (req: SnapshotRequest) => {
+      for (let chunks = req.drainQueue!(); chunks.length; chunks = req.drainQueue!()) { /* parsed, then refused */ }
+      return { ok: false, reason: 'error', detail: 'unsupported-state: a control Alacritty parses differently' };
+    }) as never);
     const seen: string[] = [];
     const reference = vi.fn(async (req: SnapshotRequest): Promise<SnapshotOutcome> => {
       seen.push(...req.drainQueue!().map(String)); return success;
     });
-    await selectAnsiSnapshot({ ...request, initial, drainQueue: () => queue.shift() ?? [] }, reference);
-    expect(reference).toHaveBeenCalledOnce(); expect(seen).toEqual(['0q']);
-    expect(getAnsiSnapshotBackendDiagnostics().last).toEqual({ backend: 'xterm', reason: 'state' });
+    await selectAnsiSnapshot({ ...request, drainQueue: () => queue.shift() ?? [] }, reference);
+    expect(reference).toHaveBeenCalledOnce(); expect(seen).toEqual(['\x1b(0q']);
   });
 
   it('retries unsupported serialization with the remaining budget and original bytes', async () => {
