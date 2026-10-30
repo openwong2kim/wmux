@@ -954,3 +954,27 @@ describe('company mode: canceling a department task', () => {
     expect(res.ok).toBe(true);
   });
 });
+
+describe('company mode: a department task does not end as canceled through an update', () => {
+  it('refuses the receiver pane and lets the trusted lane through', async () => {
+    const svc = newService(newLog());
+    await svc.createTask({
+      id: 'task-dept-u',
+      title: 'T',
+      from: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-coord' },
+      to: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-member' },
+      history: [{
+        kind: 'message',
+        messageId: 'msg-u',
+        role: 'user',
+        parts: [{ kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } }],
+      }],
+    });
+    const byReceiver = await svc.transition({ taskId: 'task-dept-u', to: 'canceled', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-member' } });
+    expect(!byReceiver.ok && byReceiver.error).toContain('only the pane that created');
+    const trusted = await svc.transition({
+      taskId: 'task-dept-u', to: 'canceled', callerWorkspaceId: 'ws-home', trustedLane: true, evidence: { summary: 'stopped by the owner', items: [] },
+    });
+    expect(trusted.ok).toBe(true);
+  });
+});

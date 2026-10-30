@@ -165,6 +165,8 @@ export interface TransitionInput {
    * lanes and the headless ClaudeWorker do not set it.
    */
   requirePaneIdentity?: boolean;
+  /** The human's lane or an in-process first-party caller (set by main). */
+  trustedLane?: boolean;
   /**
    * Live pane ids of the caller's workspace (stashed included), resolved by
    * main from the pane tree in the same read as `callerAddr` — so it carries
@@ -481,6 +483,15 @@ export class A2aTaskService {
       }
       if (input.requirePaneIdentity && !input.callerAddr && task.metadata.to.paneId) {
         return { ok: false, error: 'a2a.task.update: this task is pinned to a pane; only that pane can update it (no verified pane identity)' };
+      }
+      // A department task ends as canceled only through its creator's cancel.
+      if (input.to === 'canceled') {
+        const refusal = departmentCancelRefusal(task, {
+          workspaceId: input.callerWorkspaceId,
+          paneId: input.callerAddr?.paneId,
+          trusted: input.trustedLane === true,
+        });
+        if (refusal) return { ok: false, error: `a2a.task.update: ${refusal}` };
       }
       // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과. 위치는 authz·soft-defer
       // **뒤**(리뷰 codex 델타: 히트가 authz를 앞지르면 키를 아는 비참여자가 커밋 스냅샷을

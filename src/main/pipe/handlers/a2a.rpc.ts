@@ -1287,6 +1287,7 @@ export function registerA2aRpc(
             ? { senderPtyId: params.senderPtyId }
             : {}),
         ...(callerPane.kind === 'absent' && !trustedLane ? { requirePaneIdentity: true } : {}),
+        ...(trustedLane ? { trustedLane: true } : {}),
         ...(params.evidence !== undefined ? { evidence: params.evidence } : {}),
         // The status message, checked above, so the daemon's copy keeps it too
         // (and a task with another PC sends it back with the state).

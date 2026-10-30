@@ -7220,6 +7220,7 @@ function registerRpcHandlers(
       // can only narrow the workspace-level authz, never widen it.
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
       ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
+      ...(p.trustedLane === true ? { trustedLane: true } : {}),
       // #1598: main's read of the caller workspace's panes (same read as
       // callerPaneId); lets a verified pane adopt a task whose pane is gone.
       ...(livePaneIds ? { livePaneIds } : {}),

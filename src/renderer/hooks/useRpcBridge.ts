@@ -3931,6 +3931,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         store.applyDaemonTaskUpdate(committedTask);
         transitioned = true;
       } else {
+        // A department task ends as canceled only through its creator's cancel.
+        const cancelTarget = nextState === 'canceled' ? store.getTask(taskId) : undefined;
+        const refusal = cancelTarget && departmentCancelRefusal(cancelTarget, {
+          workspaceId,
+          paneId: callerAddrUpdate?.paneId,
+          trusted: params.requirePaneIdentity !== true,
+        });
+        if (refusal) return { error: `a2a.task.update: ${refusal}` };
         const result = store.updateTaskStatus(
           taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence, params.requirePaneIdentity === true,
         );

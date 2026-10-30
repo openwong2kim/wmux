@@ -113,4 +113,15 @@ describe('canceling a department task (no daemon)', () => {
     expect(byCreator.ok).toBe(true);
     expect(useStore.getState().a2aTasks[taskId].status.state).toBe('canceled');
   });
+
+  it('is refused when the receiver moves it to canceled through an update', async () => {
+    const created = await send({ workspaceId: HOME.id, to: HOME.id, paneId: 'pane-member', senderPtyId: 'pty-coord', data: BRIEF });
+    const taskId = created.taskId as string;
+    const res = (await handleRpcMethod('a2a.task.update', {
+      taskId, workspaceId: HOME.id, status: 'canceled', senderPtyId: 'pty-member', requirePaneIdentity: true,
+      evidence: { summary: 'giving up', items: [] },
+    })) as Result;
+    expect(res.error).toContain('only the pane that created');
+    expect(useStore.getState().a2aTasks[taskId].status.state).toBe('submitted');
+  });
 });
