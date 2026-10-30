@@ -152,7 +152,7 @@ describe('spawnPty — console window owner (Windows sign-in pickers)', () => {
     expect(p.setParentWindow).toHaveBeenCalledOnce();
   });
 
-  it('brings the pty up to date when the window was replaced or cleared during the pid wait', async () => {
+  it('brings the pty up to date when the window was replaced during the pid wait, and sends nothing when it was cleared', async () => {
     const other = Buffer.from([0x99, 0, 0, 0, 0, 0, 0, 0]);
     let current: Buffer | null = hwnd;
     const replaced = Object.assign(new DeferredPty(), { setParentWindow: vi.fn<(handle: Buffer) => boolean>(() => true) });
@@ -168,8 +168,8 @@ describe('spawnPty — console window owner (Windows sign-in pickers)', () => {
     current = null;
     cleared.connect(79);
     await pending2;
-    // The app went away mid-wait: the owner set at spawn is cleared (a NULL HWND).
-    expect(cleared.setParentWindow.mock.calls.map(([b]) => b)).toEqual([hwnd, Buffer.alloc(8)]);
+    // The app went away mid-wait: no NULL owner is sent (Windows drops a destroyed one itself).
+    expect(cleared.setParentWindow.mock.calls.map(([b]) => b)).toEqual([hwnd]);
   });
 
   it('sends nothing when there is no host window yet', async () => {

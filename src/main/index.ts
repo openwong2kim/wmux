@@ -3175,7 +3175,7 @@ function adoptMainWindow(win: BrowserWindow): void {
     // still being torn down, and only the current one may clear the binding.
     if (mainWindow !== win) return;
     mainWindow = null;
-    // Its HWND is gone, so it can no longer own the panes' console windows.
+    // Its HWND is gone: stop handing it to panes spawned from now on.
     ptyManager.setHostWindow(null);
     clearHostWindow(() => daemonClient);
   });

@@ -75,11 +75,12 @@ describe('DaemonSessionManager host window', () => {
     expect(spawned.at(-1)?.parents).toHaveLength(0);
   });
 
-  it('clears the owner of live panes when the window goes, and stops giving it to new ones', () => {
+  it('stops giving a window to new panes when it goes, without sending live ones a NULL owner', () => {
     create(manager, 'e');
     manager.setHostWindow(hwnd);
-    manager.setHostWindow(null);
-    expect(spawned[0].parents.at(-1)?.equals(Buffer.alloc(8))).toBe(true);
+    expect(manager.setHostWindow(null)).toBe(0);
+    // Windows drops a destroyed window as the owner itself; NULL never reaches ConPTY.
+    expect(spawned[0].parents).toHaveLength(1);
     create(manager, 'f');
     expect(spawned.at(-1)?.parents).toHaveLength(0);
   });
