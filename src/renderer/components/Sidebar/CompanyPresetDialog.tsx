@@ -160,7 +160,7 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
             <span className="ui-field-label" id={seatsLabelId}>{t('companyPreset.seats')}</span>
             <span className="ui-field-description">{t('companyPreset.seatsHint')}</span>
           </div>
-          <table className="w-full text-[12.5px]" aria-labelledby={seatsLabelId}>
+          <table className="w-full text-[13px]" aria-labelledby={seatsLabelId}>
             <thead>
               <tr className="text-left text-[11px] text-[var(--text-muted)]">
                 <th className="py-1 pr-2 font-normal">{t('company.ceo')}</th>
