@@ -1,3 +1,4 @@
+// @wmux-lane unit — 'win32' here is the platform the reporter is told it runs on; the window and the daemon client are stubs.
 import { describe, expect, it, vi } from 'vitest';
 import { HOST_WINDOW_RPC, hostWindowHandle, reportHostWindow } from '../conptyHostWindow';
 import { HOST_WINDOW_RPC as DAEMON_HOST_WINDOW_RPC } from '../../../daemon/hostWindowRpc';
