@@ -98,3 +98,31 @@ describe('native output chunks', () => {
     expect(transport.close).toHaveBeenCalledOnce();
   });
 });
+
+describe('RustPty console window owner (Windows sign-in pickers)', () => {
+  const hwnd = Buffer.from([0x2a, 0x10, 0, 0, 0, 0, 0, 0]);
+  afterEach(() => { delete (transport as { setParentWindow?: unknown }).setParentWindow; });
+
+  it('forwards the window handle to the native transport and returns what it reports', () => {
+    const setParentWindow = vi.fn(() => true);
+    Object.assign(transport, { setParentWindow });
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    expect(pty.setParentWindow?.(hwnd)).toBe(true);
+    expect(setParentWindow).toHaveBeenCalledWith(hwnd);
+  });
+
+  it('reports false on a native module built before the call', () => {
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    expect(pty.setParentWindow?.(hwnd)).toBe(false);
+  });
+
+  it('reports false once the pty has ended, without touching the transport', async () => {
+    const setParentWindow = vi.fn(() => true);
+    Object.assign(transport, { setParentWindow });
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    transport.read.mockReturnValue({ ...idle, eof: true, childExited: true, exitCode: 0 });
+    wake(); await tick();
+    expect(pty.setParentWindow?.(hwnd)).toBe(false);
+    expect(setParentWindow).not.toHaveBeenCalled();
+  });
+});

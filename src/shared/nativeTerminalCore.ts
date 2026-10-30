@@ -58,6 +58,8 @@ export interface NativeTransport {
   readChunk?(paused?: boolean): Omit<ReturnType<NativeTransport['read']>, 'data'> & { chunk: NativeOutputChunk; bytesRead: number };
   write(data: Uint8Array): void;
   clear(): void;
+  /** Absent on a module built before it (see shared/conptyParentWindow.ts). */
+  setParentWindow?(handle: Uint8Array): boolean;
   resize(cols: number, rows: number): void;
   kill(signal?: number): void;
   close(): void;

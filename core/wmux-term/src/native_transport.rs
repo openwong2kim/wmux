@@ -487,6 +487,22 @@ impl NativeTransport {
         }
     }
 
+    /// Make a top-level window the owner of the pane's console window (Windows, the
+    /// bundled conpty.dll only), so a window a console program parents to it, such as
+    /// a sign-in prompt, opens above that window. `handle` is the HWND's bytes in native
+    /// byte order, as BrowserWindow.getNativeWindowHandle() returns it. Returns whether
+    /// the request reached ConPTY, which applies it asynchronously; false for a handle
+    /// of the wrong size, a closed PTY, or a ConPTY without the call.
+    #[napi]
+    pub fn set_parent_window(&self, handle: Uint8Array) -> bool {
+        let Ok(bytes) = <[u8; std::mem::size_of::<isize>()]>::try_from(&handle[..]) else {
+            return false;
+        };
+        self.master
+            .as_ref()
+            .is_some_and(|master| master.set_parent_window(isize::from_ne_bytes(bytes)))
+    }
+
     #[napi]
     pub fn kill(&self, signal: Option<u32>) -> Result<()> {
         let exited = self.state.exited.lock().map_err(error)?;

@@ -99,6 +99,12 @@ class RustPty implements TerminalPty {
     this.transport.resize(cols, rows); this.cols = cols; this.rows = rows;
   }
   clear(): void { this.transport.clear(); }
+  // The console-window owner, as node-pty's setParentWindow (shared/conptyParentWindow.ts).
+  // An older native module without the call reports false.
+  setParentWindow(handle: Buffer): boolean {
+    if (this.ended) return false;
+    return this.transport.setParentWindow?.(handle) ?? false;
+  }
   pause(): void { this.paused = true; }
   resume(): void { this.paused = false; this.wake(); }
   kill(signal?: string): void {
