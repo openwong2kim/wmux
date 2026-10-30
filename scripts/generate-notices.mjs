@@ -563,6 +563,18 @@ const BORROWED_SOURCES = [
       'Version 2.0, with the consent of all contributors whose copyright was\n' +
       'incorporated before the transition.',
   },
+  {
+    name: 'T3 Code',
+    license: 'MIT License',
+    repo: 'https://github.com/pingdotgg/t3code',
+    copyright: 'Copyright (c) 2026 T3 Tools Inc.',
+    what:
+      'Chat view, from its source at commit\n' +
+      'fa4e4677c0ecc437aece2dcea39f76ef31414152:\n' +
+      '- Ideas only, no code taken: a double-click on inline code selects the\n' +
+      '  whole span (apps/web/src/components/ChatMarkdown.tsx). wmux file:\n' +
+      '  src/renderer/components/shared/BrainMarkdown.tsx.',
+  },
 ];
 lines.push('ADAPTED SOURCES AND IMPLEMENTATION TECHNIQUES');
 lines.push('');

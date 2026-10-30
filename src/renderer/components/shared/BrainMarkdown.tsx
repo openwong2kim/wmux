@@ -285,7 +285,8 @@ function ExternalLink({ url, children }: { url: string; children: React.ReactNod
 /** Inline subset: `code`, **bold**, *italic*, [label](url), and with links on
  *  bare http(s) URLs. Bold before italic so ** never half-matches. */
 // The browser's word selection stops at `-`, `.` and `/`, which splits a path
-// or a flag, so a double-click on inline code takes the whole span.
+// or a flag, so a double-click on inline code takes the whole span. Mirrors
+// T3 Code's ChatMarkdown inline code (MIT, see THIRD_PARTY_NOTICES).
 function selectWholeCode(event: React.MouseEvent<HTMLElement>): void {
   window.getSelection()?.selectAllChildren(event.currentTarget);
 }
