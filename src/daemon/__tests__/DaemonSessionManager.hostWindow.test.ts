@@ -63,6 +63,13 @@ describe('DaemonSessionManager host window', () => {
     expect(spawned.at(-1)?.parents[0].equals(hwnd)).toBe(true);
   });
 
+  it('a repeated report of the same window costs no call per pane', () => {
+    create(manager, 'h');
+    expect(manager.setHostWindow(hwnd)).toBe(1);
+    expect(manager.setHostWindow(Buffer.from(hwnd))).toBe(0);
+    expect(spawned.at(-1)?.parents).toHaveLength(1);
+  });
+
   it('spawns without an owner until main has reported a window', () => {
     create(manager, 'd');
     expect(spawned.at(-1)?.parents).toHaveLength(0);

@@ -22,7 +22,7 @@ import * as pty from 'node-pty';
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty';
 import { spawnTerminalPty } from './terminalPty';
 import { spawnWithConptyPolicy, type ConptyBackend } from './conptyWindows';
-import { applyParentWindow } from './conptyParentWindow';
+import { applyParentWindow, NATIVE_WINDOW_HANDLE_BYTES } from './conptyParentWindow';
 
 /** node-pty's own bound on the ConPTY connect (its CONNECTION_TIMEOUT). */
 export const PTY_PID_TIMEOUT_MS = 5000;
@@ -49,7 +49,7 @@ export interface SpawnPtyRequest {
   pidTimeoutMs?: number;
 }
 
-function start(req: SpawnPtyRequest): IPty {
+function start(req: SpawnPtyRequest): { p: IPty; parent: Buffer | null } {
   const nodeSpawn = req.nodeSpawn ?? pty.spawn;
   const p = spawnWithConptyPolicy(
     (useBundled) => spawnTerminalPty(req.command, req.args, {
@@ -65,6 +65,18 @@ function start(req: SpawnPtyRequest): IPty {
   // starts, so even the shell's first window has the owner.
   const parent = req.parentWindow?.() ?? null;
   if (parent) applyParentWindow(p, parent);
+  return { p, parent };
+}
+
+/**
+ * A window reported, replaced or cleared while the pid was pending reached
+ * no session (the caller registers the pty only after this resolves), so
+ * bring this pty up to date. Null is sent as an all-zero HWND, which clears
+ * the owner the spawn may have set.
+ */
+function reapplyParentWindow(p: IPty, req: SpawnPtyRequest, atSpawn: Buffer | null): IPty {
+  const now = req.parentWindow?.() ?? null;
+  if (now !== atSpawn) applyParentWindow(p, now ?? Buffer.alloc(NATIVE_WINDOW_HANDLE_BYTES));
   return p;
 }
 
@@ -74,9 +86,9 @@ function killQuietly(p: IPty): void {
 
 /** Spawn a PTY and resolve once it reports the shell's pid. */
 export function spawnPty(req: SpawnPtyRequest): Promise<IPty> {
-  const p = start(req);
-  if (p.pid > 0) return Promise.resolve(p);
-  return awaitPtyPid(p, req.pidTimeoutMs ?? PTY_PID_TIMEOUT_MS);
+  const { p, parent } = start(req);
+  const ready = p.pid > 0 ? Promise.resolve(p) : awaitPtyPid(p, req.pidTimeoutMs ?? PTY_PID_TIMEOUT_MS);
+  return ready.then((r) => reapplyParentWindow(r, req, parent));
 }
 
 /** The part of node-pty's internal output socket the wait listens on. */
@@ -137,7 +149,7 @@ export function awaitPtyPid(p: IPty, timeoutMs: number): Promise<IPty> {
  * 1.2.0-beta that is every real spawn, so production must use `spawnPty`.
  */
 export function spawnPtySync(req: SpawnPtyRequest): IPty {
-  const p = start(req);
+  const { p } = start(req);
   if (p.pid > 0) return p;
   killQuietly(p);
   throw new Error('Cannot create process, the PTY has no pid yet (use the async create path)');

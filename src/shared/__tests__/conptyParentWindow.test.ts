@@ -38,8 +38,9 @@ describe('decodeNativeWindowHandle', () => {
     expect(decoded?.equals(hwnd)).toBe(true);
   });
 
-  it('takes null as "no window"', () => {
+  it('takes null and an all-zero HWND alike as "no window"', () => {
     expect(decodeNativeWindowHandle(null)).toBeNull();
+    expect(decodeNativeWindowHandle(Buffer.alloc(8).toString('base64'))).toBeNull();
   });
 
   it('refuses anything that is not exactly one HWND in canonical base64', () => {

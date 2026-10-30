@@ -338,7 +338,6 @@ export class DaemonSessionManager extends EventEmitter {
    * it; null until main reports one, and again once main has gone.
    */
   private hostWindow: Buffer | null = null;
-  private hostWindowUnsupportedLogged = false;
 
   cancelPendingCreates(): void { this.pendingCreates.clear(); }
 
@@ -349,6 +348,9 @@ export class DaemonSessionManager extends EventEmitter {
    * Returns how many live sessions the request reached.
    */
   setHostWindow(handle: Buffer | null): number {
+    // Each reconnect and each adopted window reports again; the same window
+    // changes nothing, so it costs no call per pane.
+    if (handle === this.hostWindow || (handle && this.hostWindow?.equals(handle))) return 0;
     this.hostWindow = handle;
     const sent = handle ?? Buffer.alloc(NATIVE_WINDOW_HANDLE_BYTES);
     let reached = 0;
@@ -358,10 +360,8 @@ export class DaemonSessionManager extends EventEmitter {
       if (applyParentWindow(managed.ptyProcess, sent)) reached++;
       else declined++;
     }
-    // In-box ConPTY has no reparent call; say so once, not per pane.
-    if (declined > 0 && !this.hostWindowUnsupportedLogged) {
-      this.hostWindowUnsupportedLogged = true;
-      console.log(`[DaemonSessionManager] host window: ${declined} session(s) cannot take a console owner (not on the bundled ConPTY)`);
+    if (declined > 0) {
+      console.log(`[DaemonSessionManager] host window: ${declined} session(s) cannot take a console owner (only node-pty on the bundled ConPTY can)`);
     }
     return reached;
   }
@@ -464,7 +464,6 @@ export class DaemonSessionManager extends EventEmitter {
       let conptyBackend: ConptyBackend = 'inbox';
       let ptyProcess: IPty;
       const spawnMark = this.paneJob?.spawnMark() ?? null;
-      const hostWindowAtSpawn = this.hostWindow;
       this.spawningCreates.add(token);
       try {
         ptyProcess = await spawnPty(this.spawnRequest(prepared, (backend) => { conptyBackend = backend; }));
@@ -484,10 +483,6 @@ export class DaemonSessionManager extends EventEmitter {
         throw new Error('Session creation cancelled');
       }
       const created = this.registerSpawned(prepared, ptyProcess, conptyBackend, spawnMark);
-      // A host window reported while the pid was pending missed this pane:
-      // setHostWindow only reaches registered sessions. The app's first pane
-      // races its own report this way on every launch.
-      if (this.hostWindow && this.hostWindow !== hostWindowAtSpawn) applyParentWindow(ptyProcess, this.hostWindow);
       if (wsl) this.pendingRecovery.delete(params.id);
       return created;
     } finally {

@@ -18,6 +18,9 @@ import type { IPty } from 'node-pty';
 /** The size of an HWND in a 64-bit process, as Electron's getNativeWindowHandle() returns it. */
 export const NATIVE_WINDOW_HANDLE_BYTES = 8;
 
+/** Main → daemon: `{ handle: base64 | null }`, the desk window (daemon/hostWindowRpc.ts). */
+export const HOST_WINDOW_RPC = 'daemon.setHostWindow';
+
 /** A handle that node-pty accepts: the HWND's bytes in native byte order. */
 export function isNativeWindowHandle(handle: unknown): handle is Buffer {
   return Buffer.isBuffer(handle) && handle.length === NATIVE_WINDOW_HANDLE_BYTES;
@@ -52,5 +55,5 @@ export function decodeNativeWindowHandle(wire: unknown): Buffer | null | undefin
   if (typeof wire !== 'string') return undefined;
   const bytes = Buffer.from(wire, 'base64');
   if (!isNativeWindowHandle(bytes) || bytes.toString('base64') !== wire) return undefined;
-  return bytes;
+  return bytes.every((b) => b === 0) ? null : bytes;
 }

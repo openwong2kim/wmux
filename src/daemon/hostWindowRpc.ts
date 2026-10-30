@@ -14,7 +14,7 @@
  */
 import { decodeNativeWindowHandle } from '../shared/conptyParentWindow';
 
-export const HOST_WINDOW_RPC = 'daemon.setHostWindow';
+export { HOST_WINDOW_RPC } from '../shared/conptyParentWindow';
 
 export interface HostWindowRpcDeps {
   isFirstParty: (clientId: string) => boolean;

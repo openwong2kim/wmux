@@ -1,7 +1,7 @@
 // @wmux-lane unit — 'win32' here is the platform the reporter is told it runs on; the window and the daemon client are stubs.
 import { describe, expect, it, vi } from 'vitest';
-import { HOST_WINDOW_RPC, hostWindowHandle, reportHostWindow } from '../conptyHostWindow';
-import { HOST_WINDOW_RPC as DAEMON_HOST_WINDOW_RPC } from '../../../daemon/hostWindowRpc';
+import { hostWindowHandle, reportHostWindow } from '../conptyHostWindow';
+import { HOST_WINDOW_RPC } from '../../../shared/conptyParentWindow';
 
 const hwnd = Buffer.from([0x2a, 0x10, 0, 0, 0, 0, 0, 0]);
 const win = (destroyed = false) => ({ isDestroyed: () => destroyed, getNativeWindowHandle: () => hwnd });
@@ -12,10 +12,6 @@ describe('reportHostWindow', () => {
     const c = client();
     reportHostWindow(() => c, win(), 'win32');
     expect(c.rpc).toHaveBeenCalledWith(HOST_WINDOW_RPC, { handle: hwnd.toString('base64') });
-  });
-
-  it('names the method the daemon registers', () => {
-    expect(HOST_WINDOW_RPC).toBe(DAEMON_HOST_WINDOW_RPC);
   });
 
   it('sends nothing off Windows, for a destroyed window, or without a connected daemon', () => {

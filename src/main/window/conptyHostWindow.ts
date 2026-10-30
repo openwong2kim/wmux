@@ -8,6 +8,8 @@
 // reported on every daemon connection and every time a main window is adopted;
 // the daemon applies it to its live panes and to each pane it spawns later.
 
+import { HOST_WINDOW_RPC } from '../../shared/conptyParentWindow';
+
 /** The slice of BrowserWindow this reads, so a test can pass a stub. */
 export interface HostWindowSource {
   isDestroyed(): boolean;
@@ -20,8 +22,6 @@ export interface HostWindowRpcClient {
   rpc(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
 
-/** Must match daemon/hostWindowRpc.ts HOST_WINDOW_RPC (main does not import daemon code). */
-export const HOST_WINDOW_RPC = 'daemon.setHostWindow';
 
 /** The window's HWND bytes, or null when there is no live window or not on Windows. */
 export function hostWindowHandle(

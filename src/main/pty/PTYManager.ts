@@ -5,7 +5,7 @@ import { getWmuxDir } from '../../daemon/config';
 import type { IPty } from 'node-pty';
 import type { TerminalPty } from '../../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../../shared/spawnPty';
-import { applyParentWindow } from '../../shared/conptyParentWindow';
+import { applyParentWindow, NATIVE_WINDOW_HANDLE_BYTES } from '../../shared/conptyParentWindow';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -74,12 +74,14 @@ export class PTYManager {
 
   /**
    * Make `handle` the owner of every pane's console window, now and for each
-   * pane spawned later (Windows, bundled ConPTY; a no-op elsewhere).
+   * pane spawned later (Windows, bundled ConPTY; a no-op elsewhere). Null
+   * clears the owner of the live ones, as DaemonSessionManager.setHostWindow does.
    */
   setHostWindow(handle: Buffer | null): void {
+    if (handle === this.hostWindow || (handle && this.hostWindow?.equals(handle))) return;
     this.hostWindow = handle;
-    if (!handle) return;
-    for (const instance of this.instances.values()) applyParentWindow(instance.process, handle);
+    const sent = handle ?? Buffer.alloc(NATIVE_WINDOW_HANDLE_BYTES);
+    for (const instance of this.instances.values()) applyParentWindow(instance.process, sent);
   }
 
   /**
@@ -220,7 +222,6 @@ export class PTYManager {
       if (cancelled()) throw new Error('PTY creation cancelled');
       const prepared = this.prepareSpawn({ ...options, shell }, wsl, id);
       let ptyProcess: IPty;
-      const hostWindowAtSpawn = this.hostWindow;
       this.spawningIds.add(id);
       try {
         ptyProcess = await spawnPty(this.spawnRequest(prepared));
@@ -236,9 +237,6 @@ export class PTYManager {
         try { ptyProcess.kill(); } catch { /* already gone */ }
         throw new Error(cancelled() ? 'PTY creation cancelled' : 'Maximum PTY instances reached');
       }
-      // A host window set while the pid was pending missed this pane (setHostWindow
-      // only reaches registered ones).
-      if (this.hostWindow && this.hostWindow !== hostWindowAtSpawn) applyParentWindow(ptyProcess, this.hostWindow);
       return this.registerSpawned(prepared, ptyProcess);
     } finally {
       this.pendingCreates.delete(id);

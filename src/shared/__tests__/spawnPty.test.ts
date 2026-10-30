@@ -152,6 +152,26 @@ describe('spawnPty — console window owner (Windows sign-in pickers)', () => {
     expect(p.setParentWindow).toHaveBeenCalledOnce();
   });
 
+  it('brings the pty up to date when the window was replaced or cleared during the pid wait', async () => {
+    const other = Buffer.from([0x99, 0, 0, 0, 0, 0, 0, 0]);
+    let current: Buffer | null = hwnd;
+    const replaced = Object.assign(new DeferredPty(), { setParentWindow: vi.fn<(handle: Buffer) => boolean>(() => true) });
+    const pending = spawnPty(request(replaced, { parentWindow: () => current }));
+    current = other;
+    replaced.connect(78);
+    await pending;
+    expect(replaced.setParentWindow.mock.calls.map(([b]) => b)).toEqual([hwnd, other]);
+
+    current = hwnd;
+    const cleared = Object.assign(new DeferredPty(), { setParentWindow: vi.fn<(handle: Buffer) => boolean>(() => true) });
+    const pending2 = spawnPty(request(cleared, { parentWindow: () => current }));
+    current = null;
+    cleared.connect(79);
+    await pending2;
+    // The app went away mid-wait: the owner set at spawn is cleared (a NULL HWND).
+    expect(cleared.setParentWindow.mock.calls.map(([b]) => b)).toEqual([hwnd, Buffer.alloc(8)]);
+  });
+
   it('sends nothing when there is no host window yet', async () => {
     const ready = { pid: 9, onExit: vi.fn(), kill: vi.fn(), setParentWindow: vi.fn(() => true) };
     await spawnPty(request(ready, { parentWindow: () => null }));

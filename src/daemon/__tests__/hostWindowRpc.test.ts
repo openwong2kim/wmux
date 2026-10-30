@@ -5,7 +5,7 @@ const hwnd = Buffer.from([0x2a, 0x10, 0, 0, 0, 0, 0, 0]);
 const wire = hwnd.toString('base64');
 
 function setup(firstParty: string[] = ['main-1']) {
-  const setHostWindow = vi.fn((_handle: Buffer | null) => 3);
+  const setHostWindow = vi.fn<(handle: Buffer | null) => number>(() => 3);
   const rpc = createHostWindowRpc({ isFirstParty: (id) => firstParty.includes(id), setHostWindow });
   return { rpc, setHostWindow };
 }
@@ -22,6 +22,14 @@ describe('daemon.setHostWindow', () => {
     const { rpc, setHostWindow } = setup();
     expect(rpc.handle({ handle: wire }, 'mcp-7')).toEqual({ ok: false, reason: 'not-authorized' });
     expect(setHostWindow).not.toHaveBeenCalled();
+  });
+
+  it('takes an all-zero HWND as no window: it clears, and leaves no owner to clear again on close', () => {
+    const { rpc, setHostWindow } = setup();
+    expect(rpc.handle({ handle: Buffer.alloc(8).toString('base64') }, 'main-1')).toEqual({ ok: true, reached: 3 });
+    expect(setHostWindow).toHaveBeenLastCalledWith(null);
+    rpc.onClientClose('main-1');
+    expect(setHostWindow).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a handle that is not one HWND', () => {
