@@ -36,6 +36,8 @@ export class ContinuePolicyStore {
   private readonly scheduleHarden: (filePath: string) => void;
   private policy: A2aContinuePolicyV1;
   private readonly writable: boolean;
+  /** A removed PC is gone from memory but its removal is not on disk yet: the next write carries it. */
+  private unsaved = false;
 
   constructor(opts: ContinuePolicyStoreOptions) {
     this.filePath = path.join(opts.dir, CONTINUE_POLICY_FILE);
@@ -61,18 +63,22 @@ export class ContinuePolicyStore {
 
   /**
    * Replace the policy with `raw`. `raw.version` is the version the caller
-   * read; a save whose version is no longer current is a `conflict` and
-   * changes nothing. The write lands before the policy in memory changes.
+   * read, and is required; a save whose version is no longer current is a
+   * `conflict` and changes nothing. The write lands before the policy in
+   * memory changes.
    */
   set(raw: unknown): ContinuePolicySetResult {
     if (!this.writable) return { ok: false, error: storeUnavailable(CONTINUE_POLICY_FILE).message };
     const next = coerceContinuePolicy(raw);
-    if (!next) return { ok: false, error: 'the policy is not valid' };
-    if (next.version !== this.policy.version) return { ok: false, conflict: true, error: 'the settings changed in the meantime' };
+    // coerce reads a missing version as 0: the caller's own must be there.
+    const read = (raw as { version?: unknown } | null)?.version;
+    if (!next || typeof read !== 'number' || !Number.isInteger(read) || read < 0) return { ok: false, error: 'the policy is not valid' };
+    if (read !== this.policy.version) return { ok: false, conflict: true, error: 'the settings changed in the meantime' };
     const saved: A2aContinuePolicyV1 = { ...next, version: this.policy.version + 1 };
     this.write(this.filePath, saved);
     this.scheduleHarden(this.filePath);
     this.policy = saved;
+    this.unsaved = false;
     return { ok: true, policy: structuredClone(saved) };
   }
 
@@ -82,23 +88,30 @@ export class ContinuePolicyStore {
   }
 
   /**
-   * Keep only the PCs `paired` still knows, e.g. on start. Memory first: the
-   * live policy stops allowing a removed PC even when the file cannot be
-   * written; that is logged, and the next save writes the whole policy again.
+   * Keep only the PCs `paired` still knows, e.g. on start; true when one was
+   * dropped. Memory first: the live policy stops allowing a removed PC even
+   * when the file cannot be written. Then a write that fails throws, and the
+   * removal stays owed: the next save, or the next call of this (even one
+   * that drops nothing, such as after that PC is paired again), writes it.
    */
   retainHosts(paired: (hostId: HostId) => boolean, why = 'dropping PCs no longer paired'): boolean {
     const gone = Object.keys(this.policy.out).filter((h) => !paired(h));
-    if (gone.length === 0) return false;
-    const out = { ...this.policy.out };
-    for (const h of gone) delete out[h];
-    this.policy = { ...this.policy, out, version: this.policy.version + 1 };
-    try {
-      if (!this.writable) throw storeUnavailable(CONTINUE_POLICY_FILE);
-      this.write(this.filePath, this.policy);
-      this.scheduleHarden(this.filePath);
-    } catch (err) {
-      this.log('error', `[a2a-remote] ${CONTINUE_POLICY_FILE}: not saved after ${why}: ${err instanceof Error ? err.message : String(err)}`);
+    if (gone.length > 0) {
+      const out = { ...this.policy.out };
+      for (const h of gone) delete out[h];
+      this.policy = { ...this.policy, out, version: this.policy.version + 1 };
+      this.unsaved = true;
     }
-    return true;
+    if (this.unsaved) {
+      try {
+        if (!this.writable) throw storeUnavailable(CONTINUE_POLICY_FILE);
+        this.write(this.filePath, this.policy);
+        this.scheduleHarden(this.filePath);
+      } catch (err) {
+        throw new Error(`${CONTINUE_POLICY_FILE}: not saved after ${why}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      this.unsaved = false;
+    }
+    return gone.length > 0;
   }
 }

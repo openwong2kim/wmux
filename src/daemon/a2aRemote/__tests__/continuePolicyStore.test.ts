@@ -30,6 +30,34 @@ describe('ContinuePolicyStore', () => {
     expect(store.get().in.enabled).toBe(true);
   });
 
+  it('a save must name the version it read: a missing or malformed one is refused, even on a fresh store', () => {
+    const store = open();
+    for (const version of [undefined, -1, 0.5, '0']) {
+      expect(store.set({ v: 1, in: { enabled: true }, version })).toMatchObject({ ok: false, error: 'the policy is not valid' });
+    }
+    expect(store.get()).toMatchObject({ in: { enabled: false }, version: 0 });
+    expect(fs.existsSync(path.join(dir, CONTINUE_POLICY_FILE))).toBe(false);
+  });
+
+  it('a removal whose write failed says so, and the next write carries it: unpair, pair again, reload', () => {
+    let failing = false;
+    const store = new ContinuePolicyStore({
+      dir, scheduleHarden: () => undefined,
+      write: (p, d) => {
+        if (failing) throw new Error('disk full');
+        fs.writeFileSync(p, JSON.stringify(d));
+      },
+    });
+    store.set({ v: 1, in: { enabled: true }, out: { [HOST]: { allowed: true } }, version: 0 });
+    failing = true;
+    expect(() => store.forgetHost(HOST)).toThrow('not saved after forgetting');
+    expect(store.get().out).toEqual({});
+    failing = false;
+    // HOST is paired again: nothing more to drop, but the removal is still owed.
+    expect(store.retainHosts(() => true)).toBe(false);
+    expect(open().get().out).toEqual({});
+  });
+
   it('a removed PC loses its send allow, in memory and on disk; retaining keeps only paired PCs', () => {
     const OTHER = '22222222-2222-4222-8222-222222222222';
     const store = open();
