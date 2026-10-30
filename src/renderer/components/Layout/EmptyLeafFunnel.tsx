@@ -192,6 +192,7 @@ export function EmptyLeafFunnel() {
         // in renderer tests that stub only the APIs they exercise.
         void window.electronAPI?.metadata?.setRole?.(paneId, wsId, projectSeed.role);
       }
+      if (projectSeed?.label) void window.electronAPI?.metadata?.setLabel?.(paneId, wsId, projectSeed.label);
       // A refused create (toast surfaced by useIpc) leaves the leaf refused.
       void ptyLifecycle.ensure<{ id: string; shell?: string; cwd?: string }>(paneId, {
         create: () => ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>

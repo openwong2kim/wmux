@@ -1,0 +1,164 @@
+// Company presets: one pick makes a company workspace with a pane per seat,
+// each seat named, given what it owns and started with its agent, the CEO
+// seat set, and every agent told its seat on its first turn. Pure, so the
+// renderer (the dialog and the store) and main (the brief files) share it.
+
+import { COMPANY_BRIEF_KIND, BRIEF_FIELDS } from './company';
+import { createLeafPane, type Pane, type PaneLeaf } from './types';
+import { createBranchPane } from './layoutPresets';
+import { normalizePaneLabel, paneLabelShapeError } from './paneLabelRules';
+import type { AgentSlug } from './agentIdentity';
+
+export interface CompanyPresetSeat {
+  /** The pane name (#tag) and title: pane-label rules, no spaces. */
+  label: string;
+  /** What the seat owns, free text; empty when the company decides. */
+  owns: string;
+  /** The agent the seat starts; undefined leaves a plain shell. */
+  agent?: AgentSlug;
+}
+
+export interface CompanyPreset {
+  id: string;
+  /** Index into `seats` of the CEO seat. */
+  ceo: number;
+  seats: CompanyPresetSeat[];
+  standingOrders: string;
+}
+
+/** What the store needs to make a company workspace from a preset: every
+ *  seat's final name, what it owns and its launch line (null: a plain shell). */
+export interface CompanyWorkspaceInput {
+  id: string;
+  name: string;
+  /** Absolute folder every seat starts in; the usual start folder when absent. */
+  cwd?: string;
+  mission?: string;
+  standingOrders?: string;
+  ceo: number;
+  seats: { label: string; owns: string; command: string | null }[];
+}
+
+/** Seats a preset may hold: the CEO and up to five more. */
+export const COMPANY_PRESET_MAX_SEATS = 6;
+
+/** The built-in presets. Names and descriptions are i18n keys
+ *  (`companyPreset.<id>.name` / `.description`). */
+export const BUILTIN_COMPANY_PRESETS: readonly CompanyPreset[] = [
+  {
+    id: 'researcher-devs',
+    ceo: 0,
+    seats: [
+      { label: 'researcher', owns: 'Research and briefs', agent: 'claude' },
+      { label: 'dev-1', owns: '', agent: 'claude' },
+      { label: 'dev-2', owns: '', agent: 'claude' },
+      { label: 'dev-3', owns: '', agent: 'claude' },
+    ],
+    standingOrders: 'The researcher investigates and writes the briefs; developers build and report back with test output.',
+  },
+  {
+    id: 'lead-reviewer',
+    ceo: 0,
+    seats: [
+      { label: 'lead', owns: 'Plan and merges', agent: 'claude' },
+      { label: 'builder', owns: '', agent: 'claude' },
+      { label: 'reviewer', owns: 'Reviews', agent: 'codex' },
+    ],
+    standingOrders: 'Every change gets a review from the reviewer before it merges.',
+  },
+];
+
+/**
+ * The pane tree for `count` seats, leaves in seat order: the CEO on the left
+ * at half the width (its board tab opens there), the other seats stacked top
+ * to bottom on the right. One seat is a single pane.
+ */
+export function companyPresetTree(count: number): { root: Pane; leaves: PaneLeaf[] } {
+  const leaves = Array.from({ length: Math.max(1, count) }, () => createLeafPane());
+  if (leaves.length === 1) return { root: leaves[0], leaves };
+  const staff = leaves.slice(1);
+  const right = staff.length === 1
+    ? staff[0]
+    : createBranchPane('vertical', staff, staff.map(() => 100 / staff.length));
+  return { root: createBranchPane('horizontal', [leaves[0], right], [50, 50]), leaves };
+}
+
+/**
+ * The seat labels as panes will carry them: a label another pane already
+ * uses (or an earlier seat took) gets the first free `-2`, `-3`… suffix, so a
+ * second company from the same preset does not collide on `#researcher`.
+ */
+export function freeSeatLabels(labels: readonly string[], taken: Iterable<string>): string[] {
+  const used = new Set([...taken].map(normalizePaneLabel));
+  return labels.map((label) => {
+    let next = label;
+    for (let n = 2; used.has(normalizePaneLabel(next)); n += 1) next = `${label}-${n}`;
+    used.add(normalizePaneLabel(next));
+    return next;
+  });
+}
+
+/** Why the seats cannot be made, or null: a missing or bad label, two seats
+ *  with one name, too many seats, or no CEO seat. */
+export function companySeatsError(seats: readonly CompanyPresetSeat[], ceo: number): string | null {
+  if (seats.length === 0 || seats.length > COMPANY_PRESET_MAX_SEATS) return 'seat-count';
+  if (!Number.isInteger(ceo) || ceo < 0 || ceo >= seats.length) return 'ceo';
+  const seen = new Set<string>();
+  for (const seat of seats) {
+    const label = seat.label.trim();
+    if (!label || paneLabelShapeError(label)) return 'label';
+    if (seen.has(normalizePaneLabel(label))) return 'duplicate';
+    seen.add(normalizePaneLabel(label));
+  }
+  return null;
+}
+
+export interface SeatBriefInput {
+  company: string;
+  mission?: string;
+  standingOrders?: string;
+  /** Every seat as made (labels after suffixing), CEO included. */
+  seats: readonly { label: string; owns: string }[];
+  ceo: number;
+  /** The seat this brief is for. */
+  seat: number;
+}
+
+/**
+ * The first message a seat's agent gets: who it is, what it owns, the
+ * mission and standing orders, and how work moves. The CEO also gets the
+ * other seats and the shape of a brief, which wmux requires on every task it
+ * sends to a staff seat (shared/company.ts decideCompanySend).
+ */
+export function seatBrief(input: SeatBriefInput): string {
+  const me = input.seats[input.seat];
+  const ceo = input.seats[input.ceo];
+  const lines: string[] = [];
+  const owns = me.owns.trim();
+  if (input.seat === input.ceo) {
+    lines.push(`You are #${me.label}, the CEO of the company "${input.company}" in wmux.`);
+    if (owns) lines.push(`You own: ${owns}.`);
+  } else {
+    lines.push(`You are #${me.label} in the company "${input.company}" in wmux. Your CEO is #${ceo.label}.`);
+    if (owns) lines.push(`You own: ${owns}.`);
+  }
+  if (input.mission?.trim()) lines.push(`Mission: ${input.mission.trim()}`);
+  if (input.standingOrders?.trim()) lines.push(`Standing orders: ${input.standingOrders.trim()}`);
+  if (input.seat === input.ceo) {
+    const staff = input.seats.filter((_, i) => i !== input.ceo)
+      .map((s) => (s.owns.trim() ? `#${s.label} (owns ${s.owns.trim()})` : `#${s.label}`));
+    if (staff.length > 0) {
+      lines.push(`Your seats: ${staff.join(', ')}.`);
+      lines.push(
+        `Hand work to a seat with the wmux send_message tool, to its #name, with a brief in data: ` +
+        `{"kind":"${COMPANY_BRIEF_KIND}","v":1,${BRIEF_FIELDS.map((f) => `"${f}":"…"`).join(',')}}. ` +
+        'A task to a seat without a full brief is refused. Follow the work with a2a_task_query.',
+      );
+    }
+    lines.push('Wait for the owner\'s first request.');
+  } else {
+    lines.push(`Take briefs from #${ceo.label}. When one arrives, do the work, then report back on the task with a2a_task_update and evidence.`);
+    lines.push('Wait for a brief.');
+  }
+  return lines.join('\n');
+}
