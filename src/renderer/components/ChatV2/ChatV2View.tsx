@@ -108,6 +108,8 @@ export default function ChatV2View({ paneId, active, onTerminal, cwd }: {
     knownFor.current = view?.session.id;
     knownKeys.current = null;
     entered.current = new Set();
+    // Its window opens at the tail, so the view follows it from there.
+    pinned.current = true;
   }
   knownKeys.current = enteringKeys(rows, knownKeys.current, entered.current);
   // A long transcript mounts its recent rows; earlier ones are read in on the way up.
