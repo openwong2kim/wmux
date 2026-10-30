@@ -154,8 +154,14 @@ interface Live {
   lastBindingKey: string;
   /** Armed by the first Stop of a turn: stamps `stop.overdue` if the turn is still open at CHATV2_STOP_GRACE_MS. */
   stopTimer: ReturnType<typeof setTimeout> | null;
-  /** A force stop is running; what its driver still says is dropped, its exit aside. */
-  forceStopping: { driver: ChatV2Driver | null } | null;
+  /** A force stop is running: no turn starts, and no second force stop, until it ends. */
+  forceStopping: boolean;
+  /**
+   * The driver a force stop ended the turn of, until its process is gone:
+   * what it still says is dropped, its exit aside, even after a kill that
+   * did not see it exit.
+   */
+  supersededDriver: ChatV2Driver | null;
   /** The pid of the last driver spawned, kept after a failed start: a rollback proves it exited first. */
   lastPid?: number;
   /** The last driver's `marker`, kept with lastPid. */
@@ -680,6 +686,7 @@ class Host implements ChatV2Host {
     if (sessionNeedsInput(live.record.session)) return chatV2Error('needs-input', 'Answer the pending request first.');
     if (live.record.session.busy || live.sending || live.starting) return chatV2Error('turn-running', 'The agent is still working.');
     if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
+    if (live.forceStopping) return chatV2Error('turn-running', 'The agent is being stopped.');
     const attachments = this.checkAttachments(attachmentPaths);
     if (!attachments) return chatV2Error('attachment-refused', 'An attachment could not be used.');
     live.sending = true;
@@ -781,7 +788,8 @@ class Host implements ChatV2Host {
     const live = this.liveFor(p.paneId, p.chatSessionId);
     if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
     if (p.epoch !== undefined && p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
-    if (live.forceStopping) return { ok: true, stopped: false };
+    // Not `stopped: false`: the turn is not over yet, so the view keeps offering the force stop.
+    if (live.forceStopping) return chatV2Error('turn-running', 'The agent is already being stopped.');
     // A turn already ended by an earlier force stop whose process did not exit: kill it again.
     const retry = !live.record.session.busy && live.unreaped && !!live.driver;
     if (!live.record.session.busy && !retry) return { ok: true, stopped: false };
@@ -790,7 +798,9 @@ class Host implements ChatV2Host {
     if (live.sending) return chatV2Error('turn-running', 'The message is still being sent. Try again in a moment.');
     this.deps.log('info', `[chatv2] force stopping the turn on ${live.record.paneId}`);
     this.clearStopTimer(live);
-    live.forceStopping = { driver: live.driver };
+    live.forceStopping = true;
+    const driver = live.driver;
+    live.supersededDriver = driver;
     const held = [...live.decisions.values()];
     let stopped: boolean;
     try {
@@ -811,14 +821,15 @@ class Host implements ChatV2Host {
       stopped = await this.stopDriver(live);
       await live.drained;
       // Decisions that were still being recorded when the turn ended: their
-      // registry cards may have been made after the expiry above.
-      await this.expireDecisions(live, 'turn-ended');
+      // registry cards may have been made after the expiry above. No other
+      // driver can have raised one: no turn starts while this runs.
+      if (live.driver === null || live.driver === driver) await this.expireDecisions(live, 'turn-ended');
       const registry = this.deps.approvals();
       for (const h of held) {
         if (h.registryId) await registry?.expireNative(live.record.paneId, h.native, 'turn-ended').catch(() => undefined);
       }
     } finally {
-      live.forceStopping = null;
+      live.forceStopping = false;
     }
     await this.persistNow(live);
     if (!stopped) return chatV2Error('driver-failed', 'The agent did not exit. Try again.');
@@ -895,7 +906,7 @@ class Host implements ChatV2Host {
     if (handedOff) return handedOff;
     if (!CHATV2_AGENT_CAPS[live.record.agent].terminalHandoff) return chatV2Error('handoff-refused', 'Only a Claude chat can continue in the terminal.');
     const { session } = live.record;
-    if (session.busy || sessionNeedsInput(session) || live.sending || live.starting) {
+    if (session.busy || sessionNeedsInput(session) || live.sending || live.starting || live.forceStopping) {
       return chatV2Error('handoff-refused', 'The agent is still working. Stop the turn first.');
     }
     const current = live;
@@ -1312,7 +1323,8 @@ class Host implements ChatV2Host {
       persistTimer: null,
       lastBindingKey: '',
       stopTimer: null,
-      forceStopping: null,
+      forceStopping: false,
+      supersededDriver: null,
       driverTag: newEpoch(),
     };
     live.lastBindingKey = this.bindingKey(this.binding(live));
@@ -1327,6 +1339,7 @@ class Host implements ChatV2Host {
     const handedOff = handedOffRefusal(record);
     if (handedOff) return handedOff;
     if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
+    if (live.forceStopping) return chatV2Error('turn-running', 'The agent is being stopped.');
     // Only a pid this start spawns may decide a rollback (dropFailedStart).
     live.lastPid = undefined;
     live.lastMarker = undefined;
@@ -1468,6 +1481,7 @@ class Host implements ChatV2Host {
 
   /** The driver's process is gone (exit or stop). */
   private onDriverGone(live: Live, driver: ChatV2Driver, code: number | null | undefined): void {
+    if (live.supersededDriver === driver) live.supersededDriver = null;
     if (live.driver !== driver) return;
     live.driver = null;
     live.exitPending = false;
@@ -1485,7 +1499,7 @@ class Host implements ChatV2Host {
   private enqueue(live: Live, item: InboxItem): void {
     if (live.closed && item.kind !== 'exited') return;
     // The turn already ended as interrupted: nothing the dying agent says may reopen it.
-    if (live.forceStopping && (item.kind === 'decision' || item.kind === 'event') && item.driver === live.forceStopping.driver
+    if (live.supersededDriver && (item.kind === 'decision' || item.kind === 'event') && item.driver === live.supersededDriver
       && !(item.kind === 'event' && item.event.type === 'session.ended')) {
       if (item.kind === 'decision') void item.driver.answer(item.decision.requestId, { decision: 'deny', formKind: item.decision.kind }).catch(() => 'unavailable');
       return;

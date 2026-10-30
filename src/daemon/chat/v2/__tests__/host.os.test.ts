@@ -853,8 +853,13 @@ describe('chat v2 host: Stop always ends the turn', () => {
     let result;
     try {
       const pending = r.host.call('forceStop', base, 'main');
-      // A second click while the first runs does nothing more.
-      expect(await r.host.call('forceStop', base, 'main')).toEqual({ ok: true, stopped: false });
+      // A second click while the first runs says it is still stopping.
+      expect(await r.host.call('forceStop', base, 'main')).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+      // No turn starts on the dying agent, nor a handoff.
+      const userLines = hung.stdin.filter((line) => line.type === 'user').length;
+      expect(await sent(r, 'too soon', 'msg-00003')).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+      expect(await r.host.call('toTerminal', base, 'main')).toMatchObject({ ok: false, error: { code: 'handoff-refused' } });
+      expect(hung.stdin.filter((line) => line.type === 'user')).toHaveLength(userLines);
       // What the dying agent still asks reopens nothing.
       hung.canUseTool('req-late', 'Bash', { command: 'rm -r build' }, 'toolu_late');
       hung.out({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'late' } } });
@@ -905,6 +910,13 @@ describe('chat v2 host: Stop always ends the turn', () => {
     expect(r.host.sessionForPane(PANE)!.blocks.find((x) => x.role === 'user')!.outcome).toBe('interrupted');
     expect(await sent(r, 'again', 'msg-00002')).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
     expect(r.host.statusForPane(PANE)).toBe('failed');
+    // The process that outlived the kill cannot reopen the ended turn.
+    r.fake().canUseTool('req-zombie', 'Bash', { command: 'ls' }, 'toolu_z');
+    r.fake().out({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'zombie' } } });
+    await tick(50);
+    expect(r.registry!.list().pending).toHaveLength(0);
+    expect(sessionNeedsInput(r.host.sessionForPane(PANE)!)).toBe(false);
+    expect(r.host.sessionForPane(PANE)!.blocks.some((x) => x.role === 'assistant')).toBe(false);
     // The retry the error asks for kills it again; this time it dies.
     r.fake().stubborn = false;
     const kills = r.fake().kills;
