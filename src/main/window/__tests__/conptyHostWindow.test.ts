@@ -1,0 +1,45 @@
+import { describe, expect, it, vi } from 'vitest';
+import { HOST_WINDOW_RPC, hostWindowHandle, reportHostWindow } from '../conptyHostWindow';
+import { HOST_WINDOW_RPC as DAEMON_HOST_WINDOW_RPC } from '../../../daemon/hostWindowRpc';
+
+const hwnd = Buffer.from([0x2a, 0x10, 0, 0, 0, 0, 0, 0]);
+const win = (destroyed = false) => ({ isDestroyed: () => destroyed, getNativeWindowHandle: () => hwnd });
+const client = (isConnected = true) => ({ isConnected, rpc: vi.fn(() => Promise.resolve({ ok: true })) });
+
+describe('reportHostWindow', () => {
+  it('sends the desk window handle to the daemon as base64 (Windows)', () => {
+    const c = client();
+    reportHostWindow(() => c, win(), 'win32');
+    expect(c.rpc).toHaveBeenCalledWith(HOST_WINDOW_RPC, { handle: hwnd.toString('base64') });
+  });
+
+  it('names the method the daemon registers', () => {
+    expect(HOST_WINDOW_RPC).toBe(DAEMON_HOST_WINDOW_RPC);
+  });
+
+  it('sends nothing off Windows, for a destroyed window, or without a connected daemon', () => {
+    const c = client();
+    reportHostWindow(() => c, win(), 'darwin');
+    reportHostWindow(() => c, win(true), 'win32');
+    reportHostWindow(() => c, null, 'win32');
+    const down = client(false);
+    reportHostWindow(() => down, win(), 'win32');
+    reportHostWindow(() => null, win(), 'win32');
+    expect(c.rpc).not.toHaveBeenCalled();
+    expect(down.rpc).not.toHaveBeenCalled();
+  });
+
+  it('swallows a daemon that does not know the method', async () => {
+    const old = { isConnected: true, rpc: vi.fn(() => Promise.reject(new Error('Unknown method: daemon.setHostWindow'))) };
+    expect(() => reportHostWindow(() => old, win(), 'win32')).not.toThrow();
+    await Promise.resolve();
+  });
+});
+
+describe('hostWindowHandle', () => {
+  it('is the window HWND on Windows and null otherwise', () => {
+    expect(hostWindowHandle(win(), 'win32')?.equals(hwnd)).toBe(true);
+    expect(hostWindowHandle(win(), 'linux')).toBeNull();
+    expect(hostWindowHandle(win(true), 'win32')).toBeNull();
+  });
+});

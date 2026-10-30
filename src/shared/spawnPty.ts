@@ -22,6 +22,7 @@ import * as pty from 'node-pty';
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty';
 import { spawnTerminalPty } from './terminalPty';
 import { spawnWithConptyPolicy, type ConptyBackend } from './conptyWindows';
+import { applyParentWindow } from './conptyParentWindow';
 
 /** node-pty's own bound on the ConPTY connect (its CONNECTION_TIMEOUT). */
 export const PTY_PID_TIMEOUT_MS = 5000;
@@ -37,6 +38,11 @@ export interface SpawnPtyRequest {
   useBundledConpty: boolean;
   onNotice: (level: 'info' | 'warn', message: string) => void;
   onBackend?: (backend: ConptyBackend) => void;
+  /**
+   * The window that should own the pane's console window (see
+   * conptyParentWindow.ts), read at spawn. Absent or null: none.
+   */
+  parentWindow?: () => Buffer | null;
   /** Tests only. */
   nodeSpawn?: NodeSpawn;
   /** Tests only. */
@@ -45,7 +51,7 @@ export interface SpawnPtyRequest {
 
 function start(req: SpawnPtyRequest): IPty {
   const nodeSpawn = req.nodeSpawn ?? pty.spawn;
-  return spawnWithConptyPolicy(
+  const p = spawnWithConptyPolicy(
     (useBundled) => spawnTerminalPty(req.command, req.args, {
       ...req.options,
       useConpty: true,
@@ -55,6 +61,11 @@ function start(req: SpawnPtyRequest): IPty {
     req.onNotice,
     req.onBackend,
   );
+  // Before the pid wait: the request then reaches ConPTY before the shell
+  // starts, so even the shell's first window has the owner.
+  const parent = req.parentWindow?.() ?? null;
+  if (parent) applyParentWindow(p, parent);
+  return p;
 }
 
 function killQuietly(p: IPty): void {

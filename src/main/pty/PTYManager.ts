@@ -5,6 +5,7 @@ import { getWmuxDir } from '../../daemon/config';
 import type { IPty } from 'node-pty';
 import type { TerminalPty } from '../../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../../shared/spawnPty';
+import { applyParentWindow } from '../../shared/conptyParentWindow';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -64,9 +65,21 @@ export class PTYManager {
   private instances = new Map<string, PTYInstance>();
   private nextId = 0;
   private onDisposeCallback: ((ptyId: string) => void) | null = null;
+  /** The window that owns each pane's console window (shared/conptyParentWindow.ts). */
+  private hostWindow: Buffer | null = null;
 
   onDispose(callback: (ptyId: string) => void): void {
     this.onDisposeCallback = callback;
+  }
+
+  /**
+   * Make `handle` the owner of every pane's console window, now and for each
+   * pane spawned later (Windows, bundled ConPTY; a no-op elsewhere).
+   */
+  setHostWindow(handle: Buffer | null): void {
+    this.hostWindow = handle;
+    if (!handle) return;
+    for (const instance of this.instances.values()) applyParentWindow(instance.process, handle);
   }
 
   /**
@@ -407,6 +420,7 @@ export class PTYManager {
         if (level === 'warn') console.error(`[PTYManager] pane ${id}: ${message}`);
         else console.log(`[PTYManager] pane ${id}: ${message}`);
       },
+      parentWindow: () => this.hostWindow,
     };
   }
 
