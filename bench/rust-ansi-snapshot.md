@@ -13,7 +13,7 @@ terminals and compares rows, wrap flags, cursor, modes and every cell, again
 after live bytes continue the stream and after leaving the alternate screen.
 Rust must match xterm's payload, or the live terminal where xterm's own
 payload loses state (a colored erase below the last written row, OSC 8
-links). 154 cases (121 served by Rust, 33 refused to xterm): one or more
+links). 164 cases (127 served by Rust, 37 refused to xterm): one or more
 per control class, resize reflow (the 23 seeds of `rust-snapshot-parity.ts`),
 the `core/harness` corpus and a real Claude Code capture; 0 mismatches. Each
 refused class also has a case proving that Rust alone would diverge. Accepted differences, by construction of the check:
@@ -39,10 +39,11 @@ refused class also has a case proving that Rust alone would diverge. Accepted di
 | DECSC/DECRC, SCOSC/SCORC | Accepted; a cursor saved with a pending wrap is refused (xterm drops the wrap on restore) |
 | Kitty keyboard (`CSI > u` …), DECSCUSR, XTVERSION, DECLL, DECSCA | Accepted: input/cursor state neither path restores |
 | HTS, TBC (`ESC H`, `CSI g`) | Accepted; tab cells now replay as blanks (they were replayed as TAB) |
-| SGR 55 / SGR 53, 21, malformed colors | 55 accepted; 53, 21, malformed colors and colon RGB without a colorspace (`38:2:r:g:b`: vte reads r,g,b, xterm g,b,0) refused |
+| SGR 55 / SGR 53, 21, malformed colors | 55 accepted; 53, 21 and malformed colors refused; colon colors only as `38:5:n` or `38:2:cs:r:g:b` (vte reads `38:2:r:g:b` as r,g,b where xterm reads g,b,0, and ignores `38:5`) |
 | ED 2 / ED 1 | Native feed gives xterm's semantics (Alacritty's ED 2 scrolled the screen into history; its ED 1 skipped row 0 from row 1); spelled with an embedded C0 refused |
-| Half a fullwidth glyph left by ECH, EL, ED, ICH or DCH | Replayed as the blank its erased partner holds (xterm erases the glyph whole); refused when the partner is content |
-| Mouse protocol 9/1000/1002/1003, encodings 1006/1016 | Tracked with xterm's semantics (any protocol reset turns tracking off; ?1005 leaves SGR on) and restored from that |
+| Half a fullwidth glyph left by ECH, EL or ED | Replayed as the blank its erased partner holds (xterm erases the glyph whole); refused when the partner is content, and always after DCH or ICH (xterm fills it with the erase attribute) |
+| ICH, DCH, ECH at a pending wrap | Native feed drops the pending wrap first, as xterm's cursor restriction does |
+| Mouse protocol 9/1000/1002/1003, encodings 1006/1016 | Tracked with xterm's semantics (any protocol reset turns tracking off; ?1005 leaves SGR on; modes read by number, embedded C0 ignored) and restored from that |
 | Resize inside an open ?2026 update | The bytes vte holds are parsed at the old size first, as xterm did |
 | `?2026` sharing a DECSET/DECRST with other modes | Refused: vte leaves the update only on exactly `CSI ? 2026 l` |
 | REP | Accepted right after a printed character; refused after any control (xterm forgets the character, vte repeats it) |
