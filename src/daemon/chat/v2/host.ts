@@ -753,7 +753,7 @@ class Host implements ChatV2Host {
     }
   }
 
-  // Mirrors T3 Code's unresponsive-interrupt mark and force stop (ThreadStop, MIT, see THIRD_PARTY_NOTICES).
+  // Mirrors T3 Code's unresponsive-interrupt mark and force stop (MIT, see THIRD_PARTY_NOTICES).
   /**
    * Start the stop grace period for the open turn (a repeated Stop keeps the
    * first deadline). Past it, a turn still open is marked `stop.overdue`.

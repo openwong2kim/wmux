@@ -573,7 +573,14 @@ const BORROWED_SOURCES = [
       'fa4e4677c0ecc437aece2dcea39f76ef31414152:\n' +
       '- Ideas only, no code taken: a double-click on inline code selects the\n' +
       '  whole span (apps/web/src/components/ChatMarkdown.tsx). wmux file:\n' +
-      '  src/renderer/components/shared/BrainMarkdown.tsx.',
+      '  src/renderer/components/shared/BrainMarkdown.tsx.\n' +
+      '- Ideas only, no code taken, from commit\n' +
+      '  6b1245cceda1d504b6f16b438e16f2a2e08f3388: after Stop, a turn the agent\n' +
+      '  has not ended within a grace period is marked unresponsive, and a force\n' +
+      '  stop kills the agent process and ends the turn as interrupted\n' +
+      '  (apps/server/src/orchestration-v2/ProviderSessionManager.ts,\n' +
+      '  ThreadManagementService.ts, Orchestrator.ts). wmux file:\n' +
+      '  src/daemon/chat/v2/host.ts.',
   },
 ];
 lines.push('ADAPTED SOURCES AND IMPLEMENTATION TECHNIQUES');

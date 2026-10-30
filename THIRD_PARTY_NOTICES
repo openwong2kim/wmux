@@ -13301,6 +13301,13 @@ fa4e4677c0ecc437aece2dcea39f76ef31414152:
 - Ideas only, no code taken: a double-click on inline code selects the
   whole span (apps/web/src/components/ChatMarkdown.tsx). wmux file:
   src/renderer/components/shared/BrainMarkdown.tsx.
+- Ideas only, no code taken, from commit
+  6b1245cceda1d504b6f16b438e16f2a2e08f3388: after Stop, a turn the agent
+  has not ended within a grace period is marked unresponsive, and a force
+  stop kills the agent process and ends the turn as interrupted
+  (apps/server/src/orchestration-v2/ProviderSessionManager.ts,
+  ThreadManagementService.ts, Orchestrator.ts). wmux file:
+  src/daemon/chat/v2/host.ts.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
