@@ -187,8 +187,17 @@ export class ContinueStarter {
     try {
       claimed = (await this.deps.daemonRpc(A2A_CONTINUE_RPC.claim, { hostId, continueId })) as A2aContinueClaimResult;
     } catch (err) {
+      // No answer: the daemon may have claimed it anyway, and a claimed
+      // request is never listed again. One it holds as starting is given up,
+      // so the other PC resumes its own copy; any other is tried again.
+      const now = await this.requestState(hostId, continueId);
+      if (now?.state === 'starting') {
+        const ended = await this.deps.daemonRpc(A2A_CONTINUE_RPC.failed, { hostId, continueId, code: 'failed' }).then(isOk, () => false);
+        this.deps.log('warn', `[continue] ${continueId} from ${hostId}: claimed with no answer, ${ended ? 'given up' : 'not given up'}: ${errText(err)}`);
+      } else {
+        this.retryLater(key, continueId, errText(err));
+      }
       this.starting.delete(key);
-      this.retryLater(key, continueId, errText(err));
       return;
     }
     if (!claimed?.ok) {
@@ -283,7 +292,17 @@ export class ContinueStarter {
         this.deps.log('warn', `[continue] ${continueId} from ${hostId}: started, ${stored ? 'stored by the daemon' : 'not confirmed'}; kept: ${errText(err)}`);
         return;
       }
-      if (!isOk(res)) return await undo('failed', `not stored: ${errorOf(res)}`);
+      if (!isOk(res)) {
+        // Not stored: what the daemon holds decides. One still starting stays
+        // (the sweep settles it started while its agent runs), as does one
+        // decided started; one decided otherwise is not reported again.
+        const now = await this.requestState(hostId, continueId);
+        if (now?.state === 'starting' || (now?.state === 'decided' && now.code === 'started')) {
+          this.deps.log('warn', `[continue] ${continueId} from ${hostId}: started, not stored (${errorOf(res)}); kept, as ${now.state}`);
+          return;
+        }
+        return await undo('failed', `not stored: ${errorOf(res)}`, now?.state === 'decided');
+      }
       this.deps.log('info', `[continue] ${continueId} from ${hostId}: started ${claim.agent} in workspace ${pane.workspaceId}`);
     } catch (err) {
       await undo('failed', `start failed: ${errText(err)}`);
@@ -320,9 +339,14 @@ export class ContinueStarter {
 
   /** Whether the daemon stored this request as started; undefined when it cannot be asked. */
   private async startStored(hostId: string, continueId: string): Promise<boolean | undefined> {
+    const rec = await this.requestState(hostId, continueId);
+    return rec && rec.state === 'decided' && rec.code === 'started';
+  }
+
+  /** Where the daemon holds this request now; undefined when it cannot be asked. */
+  private async requestState(hostId: string, continueId: string): Promise<A2aContinueRequestState | undefined> {
     try {
-      const rec = (await this.deps.daemonRpc(A2A_CONTINUE_RPC.state, { hostId, continueId })) as A2aContinueRequestState;
-      return rec?.state === 'decided' && rec.code === 'started';
+      return ((await this.deps.daemonRpc(A2A_CONTINUE_RPC.state, { hostId, continueId })) as A2aContinueRequestState | undefined) ?? {};
     } catch {
       return undefined;
     }

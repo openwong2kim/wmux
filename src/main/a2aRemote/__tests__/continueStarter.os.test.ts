@@ -197,7 +197,27 @@ describe('starting a received conversation', () => {
   it('takes everything down when the daemon does not store the start', async () => {
     const r = rig({ started: () => ({ ok: false, error: 'this request is not starting' }) });
     await r.run();
-    expect(r.order.slice(-4)).toEqual(['workspace.close', 'unplace', 'removeWorktree', 'failed']);
+    expect(r.order.slice(-5)).toEqual(['state', 'workspace.close', 'unplace', 'removeWorktree', 'failed']);
+  });
+});
+
+describe('a started the daemon did not store', () => {
+  const notStored = () => ({ ok: false, error: 'the answer could not be stored' });
+
+  it('keeps everything while the daemon still holds the start as starting, or as started', async () => {
+    for (const state of [{ state: 'starting' }, { state: 'decided', code: 'started' }]) {
+      const r = rig({ started: notStored, state: () => state });
+      await r.run();
+      expect(r.order.slice(-2)).toEqual(['started', 'state']);
+      r.starter.stop();
+    }
+  });
+
+  it('takes it down without reporting again when the daemon decided it otherwise', async () => {
+    const r = rig({ started: notStored, state: () => ({ state: 'decided', code: 'unknown' }) });
+    await r.run();
+    expect(r.order.slice(-4)).toEqual(['state', 'workspace.close', 'unplace', 'removeWorktree']);
+    expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([]);
   });
 });
 
@@ -229,6 +249,30 @@ describe('a lost started answer', () => {
     await r.run();
     expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([]);
     expect(r.order).not.toContain('workspace.close');
+  });
+});
+
+describe('a lost claim answer', () => {
+  const lost = (): never => { throw new Error('RPC timeout'); };
+
+  it('gives up a request the daemon claimed meanwhile, so the other PC resumes its copy', async () => {
+    const r = rig({ claim: lost, state: () => ({ state: 'starting' }), retryMs: 1 });
+    await r.run();
+    expect(r.order).toEqual(['work', 'claim', 'state', 'failed']);
+    expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([{ hostId: HOST, continueId: CID, code: 'failed' }]);
+    await deliberateSleep(20, 'a given-up request schedules no retry: nothing should run in this window');
+    expect(r.calls(A2A_CONTINUE_RPC.work)).toHaveLength(1);
+  });
+
+  it('tries again one still received, and one it cannot ask about', async () => {
+    for (const state of [() => ({ state: 'received' }), lost]) {
+      let n = 0;
+      const r = rig({ claim: () => (++n === 1 ? lost() : { ok: true, claim }), state, retryMs: 1 });
+      await r.run();
+      await vi.waitFor(() => expect(r.calls(A2A_CONTINUE_RPC.started)).toHaveLength(1), { timeout: 2_000 });
+      expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([]);
+      r.starter.stop();
+    }
   });
 });
 
