@@ -255,6 +255,8 @@ export type Session = {
   busy?: boolean;
   /** What the live turn waits on after the agent yielded with background work. */
   backgroundTasks?: string[];
+  /** The live turn ignored Stop past its grace period (`stop.overdue`); a force stop can end it. */
+  stopOverdue?: boolean;
   /** Last turn hit a provider usage limit; cleared by the next send. */
   usageLimit?: UsageLimit;
   /** The agent's own conversation id (Claude `session_id`), once bound. */

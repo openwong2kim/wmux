@@ -28,6 +28,7 @@ import {
   CHATV2_PERSIST_DEBOUNCE_MS,
   CHATV2_ANSWER_ARM_MS,
   CHATV2_SEND_LEDGER_MAX,
+  CHATV2_STOP_GRACE_MS,
   truncateUtf8,
   utf8Bytes,
 } from '../../../shared/chatv2/limits';
@@ -151,6 +152,8 @@ interface Live {
   batchBase: Session;
   persistTimer: ReturnType<typeof setTimeout> | null;
   lastBindingKey: string;
+  /** Armed by the first Stop of a turn: stamps `stop.overdue` if the turn is still open at CHATV2_STOP_GRACE_MS. */
+  stopTimer: ReturnType<typeof setTimeout> | null;
   /** The pid of the last driver spawned, kept after a failed start: a rollback proves it exited first. */
   lastPid?: number;
   /** The last driver's `marker`, kept with lastPid. */
@@ -347,6 +350,7 @@ class Host implements ChatV2Host {
     if (timer) clearTimeout(timer);
     for (const live of lives) {
       if (live.persistTimer) clearTimeout(live.persistTimer);
+      this.clearStopTimer(live);
       live.batcher.dispose();
     }
   }
@@ -503,6 +507,7 @@ class Host implements ChatV2Host {
     },
     send: (p) => this.send(p),
     interrupt: (p) => this.interrupt(p),
+    forceStop: (p) => this.forceStop(p),
     answer: (p) => this.answer(p),
     bodies: async (p) => this.bodies(p),
     toTerminal: (p) => this.toTerminal(p),
@@ -730,11 +735,73 @@ class Host implements ChatV2Host {
     if (p.epoch !== undefined && p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
     if (!live.driver || !live.record.session.busy) return { ok: true, interrupted: false };
     if (p.turnId !== undefined && openTurnId(live.record.session) !== p.turnId) return { ok: true, interrupted: false };
+    // Armed whatever the agent says: a turn the host holds open must end, or be offered a force stop.
+    this.armStopTimer(live);
     try {
       return { ok: true, interrupted: await live.driver.interrupt() };
     } catch {
       return chatV2Error('driver-failed', 'The agent did not take the stop request.');
     }
+  }
+
+  // Mirrors T3 Code's unresponsive-interrupt mark and force stop (ThreadStop, MIT, see THIRD_PARTY_NOTICES).
+  /**
+   * Start the stop grace period for the open turn (a repeated Stop keeps the
+   * first deadline). Past it, a turn still open is marked `stop.overdue`.
+   */
+  private armStopTimer(live: Live): void {
+    if (live.stopTimer) return;
+    const turnId = openTurnId(live.record.session);
+    live.stopTimer = setTimeout(() => {
+      live.stopTimer = null;
+      const { session } = live.record;
+      if (live.closed || !session.busy || session.stopOverdue || openTurnId(session) !== turnId) return;
+      // Behind any driver output still queued, so a turn end already on its way wins.
+      this.enqueue(live, { kind: 'stamp', event: { type: 'stop.overdue' } });
+    }, CHATV2_STOP_GRACE_MS);
+    live.stopTimer.unref?.();
+  }
+
+  private clearStopTimer(live: Live): void {
+    if (!live.stopTimer) return;
+    clearTimeout(live.stopTimer);
+    live.stopTimer = null;
+  }
+
+  /**
+   * Stop for an agent that ignores `interrupt`: the open turn ends as
+   * interrupted first (so the driver's exit folds as a no-op, not `failed`),
+   * its decisions are settled, then the driver's process tree is stopped the
+   * way close does it. The record stays; the next send starts a driver that
+   * resumes the conversation (startDriver).
+   */
+  private async forceStop(p: ChatV2ParamsByMethod['forceStop']): Promise<Result<'forceStop'>> {
+    const live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    if (p.epoch !== undefined && p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
+    if (!live.record.session.busy) return { ok: true, stopped: false };
+    if (p.turnId !== undefined && openTurnId(live.record.session) !== p.turnId) return { ok: true, stopped: false };
+    this.deps.log('info', `[chatv2] force stopping the turn on ${live.record.paneId}`);
+    this.clearStopTimer(live);
+    // The turn's cards and question settle as cancelled, as when the agent drops them.
+    for (const held of live.decisions.values()) {
+      this.enqueue(live, {
+        kind: 'stamp',
+        event: held.kind === 'permission'
+          ? { type: 'approval.resolved', requestId: held.requestId, decision: 'cancelled' }
+          : { type: 'question.resolved', requestId: held.requestId, decision: 'cancelled' },
+      });
+    }
+    this.enqueue(live, { kind: 'stamp', event: { type: 'turn.ended', outcome: 'interrupted' } });
+    const stopped = await this.stopDriver(live);
+    await live.drained;
+    // A stamped turn end skips take()'s expiry, and a stop that did not see
+    // the exit skips onDriverGone's: the turn's registry cards go here, after
+    // any decision still being recorded.
+    await this.expireDecisions(live, 'turn-ended');
+    await this.persistNow(live);
+    if (!stopped) return chatV2Error('driver-failed', 'The agent did not exit. Try again.');
+    return { ok: true, stopped: true };
   }
 
   private async answer(p: ChatV2ParamsByMethod['answer']): Promise<Result<'answer'>> {
@@ -1150,6 +1217,7 @@ class Host implements ChatV2Host {
       return chatV2Error('driver-failed', 'The agent did not stop. Try again.');
     }
     await this.expireDecisions(live, 'session-start');
+    this.clearStopTimer(live);
     live.batcher.flush();
     if (live.persistTimer) clearTimeout(live.persistTimer);
     live.batcher.dispose();
@@ -1221,6 +1289,7 @@ class Host implements ChatV2Host {
       batchBase: record.session,
       persistTimer: null,
       lastBindingKey: '',
+      stopTimer: null,
       driverTag: newEpoch(),
     };
     live.lastBindingKey = this.bindingKey(this.binding(live));
@@ -1586,6 +1655,7 @@ class Host implements ChatV2Host {
     switch (event.type) {
       case 'turn.ended':
       case 'session.ended':
+        this.clearStopTimer(live);
         // Harvest now, while the shadow still holds the full values; the
         // write itself is queued.
         this.harvestBodies(live);

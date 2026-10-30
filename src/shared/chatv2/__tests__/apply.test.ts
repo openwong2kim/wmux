@@ -43,6 +43,18 @@ describe("background work", () => {
   });
 });
 
+describe("stop overdue", () => {
+  it("marks only an open turn, and clears when the turn ends", () => {
+    expect(applyHarnessEvent(newSession("claude", "/tmp"), { type: "stop.overdue" }).stopOverdue).toBeUndefined();
+    let session = appendUser(newSession("claude", "/tmp"), "hi");
+    session = applyHarnessEvent(session, { type: "stop.overdue" });
+    expect(session.stopOverdue).toBe(true);
+    session = applyHarnessEvent(session, { type: "turn.ended", outcome: "interrupted" });
+    expect(session.stopOverdue).toBeUndefined();
+    expect(session.busy).toBe(false);
+  });
+});
+
 describe("turn duration", () => {
   it("stamps how long the agent worked when the turn ends", () => {
     now = 1_000;
