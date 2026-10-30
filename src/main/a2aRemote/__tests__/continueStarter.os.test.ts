@@ -34,6 +34,7 @@ interface Over {
   failed?: () => unknown;
   realpath?: (p: string) => Promise<string | null>;
   rendererReady?: () => Promise<boolean>;
+  close?: () => unknown;
   retryMs?: number;
 }
 
@@ -62,7 +63,7 @@ function rig(over: Over = {}) {
   });
   const render = vi.fn<Call>(async (method) => {
     order.push(method);
-    if (method === 'workspace.close') return { ok: true };
+    if (method === 'workspace.close') return over.close ? over.close() : { ok: true };
     return over.render ? over.render() : { workspaceId: 'ws-new', ptyId: 'pty-1', paneId: 'pane-new' };
   });
   const worktree = vi.fn(async () => {
@@ -189,8 +190,26 @@ describe('starting a received conversation', () => {
     const r = rig({ binding: () => ({ transcriptPath: `/home/b/.claude/projects/-elsewhere/${SID}.jsonl` }) });
     await r.run();
     expect(r.order).toEqual(['work', 'claim', 'worktree', 'place', 'fanout.spawnWorkspace', 'binding', 'workspace.close', 'unplace', 'removeWorktree', 'failed']);
+    // Forced: the window refuses to close a workspace whose agent runs otherwise.
+    expect(r.render.mock.calls.find((c) => c[0] === 'workspace.close')?.[1]).toEqual({ id: 'ws-new', force: true });
     expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([{ hostId: HOST, continueId: CID, code: 'failed' }]);
     expect(r.calls(A2A_CONTINUE_RPC.started)).toEqual([]);
+  });
+
+  it('takes nothing back and reports nothing when the window does not close the workspace', async () => {
+    const refusals = [
+      () => ({ error: 'workspace.close: refusing to close a workspace whose agent is running; pass --force' }),
+      () => { throw new Error('renderer gone'); },
+    ];
+    for (const close of refusals) {
+      const r = rig({ binding: () => ({ transcriptPath: `/home/b/.claude/projects/-elsewhere/${SID}.jsonl` }), close });
+      await r.run();
+      expect(r.order.slice(-2)).toEqual(['binding', 'workspace.close']);
+      expect(r.calls(A2A_CONTINUE_RPC.unplace)).toEqual([]);
+      expect(r.removed).toEqual([]);
+      expect(r.calls(A2A_CONTINUE_RPC.failed)).toEqual([]);
+      r.starter.stop();
+    }
   });
 
   it('compares the bound path by realpath', async () => {

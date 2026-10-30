@@ -230,9 +230,17 @@ export class ContinueStarter {
     const undo = async (code: A2aContinueStartFailure, why: string, refused = false): Promise<void> => {
       this.deps.log('warn', `[continue] ${continueId} from ${hostId}: not started (${code}): ${why}`);
       if (workspaceId) {
-        // Closing the workspace ends its pane and the agent in it, before its files go.
-        await this.deps.sendToRenderer('workspace.close', { id: workspaceId }).catch((err: unknown) =>
-          this.deps.log('warn', `[continue] ${continueId}: workspace ${workspaceId} not closed: ${errText(err)}`));
+        // Closing the workspace ends its pane and the agent in it, before its
+        // files go; without force the window refuses while an agent runs.
+        const closeError = await this.deps.sendToRenderer('workspace.close', { id: workspaceId, force: true })
+          .then((res) => errorField(res), (err: unknown) => errText(err));
+        if (closeError !== null) {
+          // The agent may still run there, so its files, its worktree and the
+          // request stay as they are: the daemon's sweep settles the start
+          // started while a live agent runs it, else unknown, and A resumes on neither.
+          this.deps.log('warn', `[continue] ${continueId}: workspace ${workspaceId} not closed, so nothing is taken back: ${closeError}`);
+          return;
+        }
       }
       if (placed) {
         const back = await this.deps.daemonRpc(A2A_CONTINUE_RPC.unplace, { hostId, continueId }, { timeoutMs: CONTINUE_PLACE_TIMEOUT_MS })
@@ -405,6 +413,12 @@ function workspaceIdOf(res: unknown): string | null {
 
 function isOk(res: unknown): boolean {
   return typeof res === 'object' && res !== null && (res as { ok?: unknown }).ok === true;
+}
+
+/** The `error` a renderer answer carries (a refusal resolves, it does not throw), or null. */
+function errorField(res: unknown): string | null {
+  const e = typeof res === 'object' && res !== null ? (res as { error?: unknown }).error : undefined;
+  return e === undefined || e === null || e === '' ? null : String(e);
 }
 
 function errorOf(res: unknown): string {
