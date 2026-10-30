@@ -1739,7 +1739,7 @@ A pane is a terminal column plus, when it needs one, a work area.
   coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
   needs-you one in `--attention-text`, and a muted `Next:` line), **Handed
   out** (open jobs sent to other workspaces), **Not on a seat** and **Log**
-  (finished jobs, newest first, ten at most). A section with nothing in it is
+  (finished jobs, newest first, the last ten however old). A section with nothing in it is
   not drawn, Seats aside; a pane with no agent keeps its seat with a muted
   `No agent in this pane` under its title, and the coordinate gives way
   before the title in a narrow pane. A seat row focuses its pane. One muted

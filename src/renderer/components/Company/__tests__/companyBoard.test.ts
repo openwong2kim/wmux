@@ -39,7 +39,10 @@ describe('buildCompanyBoard', () => {
 
   it('gives a job with no pane to the only seat with an agent, and leaves it unseated when there are several', () => {
     const tickets = [ticket('loose', 'working', 'co')];
-    expect(buildCompanyBoard({ ...base, rows: [row('ceo')], tickets }).seats[0].now.map((t) => t.id)).toEqual(['loose']);
+    const stashedShell = { ...row('shell'), agentName: '', stashed: true };
+    const sole = buildCompanyBoard({ ...base, rows: [row('ceo'), stashedShell], tickets });
+    expect(sole.seats[0].now.map((t) => t.id)).toEqual(['loose']);
+    expect(sole.seats.find((s) => s.paneId === 'shell')?.row).toBeUndefined();
     expect(buildCompanyBoard({ ...base, rows: [row('ceo'), row('dev')], tickets }).unseated.map((t) => t.id)).toEqual(['loose']);
   });
 

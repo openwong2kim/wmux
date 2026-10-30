@@ -54,6 +54,8 @@ export function buildCompanyBoard({ workspaceId, coordinatorPaneId, paneIds, row
 }): CompanyBoard {
   const rowOf = new Map<string, WorkspaceAgentRosterRow>();
   for (const row of rows) {
+    // A stashed shell is listed in the roster but runs no agent.
+    if (!row.agentName) continue;
     const held = rowOf.get(row.paneId);
     if (!held || chipStatusRank(row.status) < chipStatusRank(held.status)) rowOf.set(row.paneId, row);
   }

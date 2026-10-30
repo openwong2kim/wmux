@@ -13,7 +13,7 @@ import { StatusMarkView } from '../Sidebar/AgentMarks';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { rosterPrimaryLabel } from '../Sidebar/WorkspaceAgentRoster';
 import type { Task } from '../../../shared/types';
-import { useWorkLinks } from '../FleetView/useFleetSources';
+import { useMoaDecisions, useWorkLinks } from '../FleetView/useFleetSources';
 import { buildFleetTickets, type FleetTicket } from '../FleetView/fleetTickets';
 import { isTerminalKindSurfaceType } from '../Pane/surfaceKinds';
 import { buildCompanyBoard, type BoardSeat } from './companyBoard';
@@ -59,6 +59,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   // board need not redraw on every task update in the app.
   const a2aTasks = useStore((s) => (isActive ? s.a2aTasks : NO_TASKS));
   const links = useWorkLinks(isActive && !!company);
+  const { decisions } = useMoaDecisions(isActive && !!company);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!isActive) return undefined;
@@ -69,7 +70,8 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
 
   const leaves = useMemo(() => (workspace ? getWorkspaceLeafPanes(workspace) : []), [workspace]);
   const board = useMemo(() => {
-    const tickets = buildFleetTickets({ links, decisions: [], a2aTasks, now });
+    // The log keeps the last ten finished jobs however old, not Fleet's last day.
+    const tickets = buildFleetTickets({ links, decisions, a2aTasks, now, recentMs: Infinity });
     return buildCompanyBoard({
       workspaceId,
       coordinatorPaneId: company?.coordinatorPaneId ?? null,
@@ -79,7 +81,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
       links,
       paneRole,
     });
-  }, [links, a2aTasks, now, workspaceId, company?.coordinatorPaneId, leaves, roster.rows, paneRole]);
+  }, [links, decisions, a2aTasks, now, workspaceId, company?.coordinatorPaneId, leaves, roster.rows, paneRole]);
 
   const tagOf = (paneId: string): string => {
     const leaf = leaves.find((l) => l.id === paneId);
