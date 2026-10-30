@@ -7244,6 +7244,8 @@ function registerRpcHandlers(
     const canceled = await a2aTaskService.cancelTask({
       taskId,
       callerWorkspaceId: workspaceId,
+      ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerPaneId: p.callerPaneId } : {}),
+      ...(p.trustedLane === true ? { trustedLane: true } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });
     if (canceled.ok && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);

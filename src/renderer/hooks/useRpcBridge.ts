@@ -95,6 +95,7 @@ import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
+import { decideDepartmentSend, departmentCancelRefusal } from '../../shared/department';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import type { MoaPendingDecision } from '../../shared/moa';
@@ -3621,6 +3622,19 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // send — both are pinned on the task identically (see `to` below).
     const toAnchor = resolvedAddr ?? resolvedFallback;
 
+    // Company mode: a task to a department pane is checked against the receiver
+    // resolved above, so the check and the delivery name the same pane, before
+    // anything is stored (shared/department.ts).
+    const departmentDecision = decideDepartmentSend({
+      workspaces: store.workspaces.map((w) => ({ id: w.id, department: w.department, ptyIds: getWorkspacePtyIds(w) })),
+      targetWorkspaceId: target.id,
+      targetPtyId: toAnchor?.ptyId ?? null,
+      senderPtyId,
+      operator: params.operatorOrigin === true,
+      data: params.data,
+    });
+    if (departmentDecision.kind === 'refuse') return { error: `a2a.task.send: ${departmentDecision.error}` };
+
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
     // A task id main minted for its own operator send (Moa's hand-off names the
     // task in the text it delivers); main keeps it on the operator lane only.
@@ -4110,6 +4124,20 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // read off pre-mutation metadata (cancelTask flips status in place today,
     // but a future GC/eviction could remove the task — capture first).
     const cancelTarget = store.getTask(taskId);
+    // Company mode: a department task is canceled by the pane that created it,
+    // the same rule the daemon applies when it holds the task.
+    if (cancelTarget) {
+      const callerWs = store.workspaces.find((w) => w.id === workspaceId);
+      const callerLeaves = callerWs ? getWorkspaceLeafPanes(callerWs) : [];
+      const rawCallerPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+      const callerPtyId = isTerminalPtyInLeaves(callerLeaves, rawCallerPtyId) ? rawCallerPtyId : '';
+      const refusal = departmentCancelRefusal(cancelTarget, {
+        workspaceId,
+        paneId: resolveSenderPaneAddress(callerLeaves, callerPtyId)?.paneId,
+        trusted: params.operatorOrigin === true || params.trustedLane === true,
+      });
+      if (refusal) return { error: `a2a.task.cancel: ${refusal}` };
+    }
     const result = store.cancelTask(taskId, workspaceId);
     if (!result.ok) return { error: `a2a.task.cancel: ${result.error}` };
     // Tee the cancellation onto the bus (cancelled), strictly AFTER the

@@ -46,6 +46,7 @@ import {
   validateCompletionEvidence,
 } from '../../shared/completionEvidence';
 import { isVerifiedTaskSender } from '../../shared/a2aReopen';
+import { departmentCancelRefusal } from '../../shared/department';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import type {
   A2aRemoteMarkPayload,
@@ -183,6 +184,10 @@ export interface TransitionInput {
 export interface CancelTaskInput {
   taskId: string;
   callerWorkspaceId: string;
+  /** The caller's pane, resolved by main from its senderPtyId. */
+  callerPaneId?: string;
+  /** The human's lane or an in-process first-party caller (set by main). */
+  trustedLane?: boolean;
   idempotencyKey?: string;
 }
 
@@ -570,6 +575,12 @@ export class A2aTaskService {
       if (!isSender && !isReceiver) {
         return { ok: false, error: `a2a.task.cancel: caller ${input.callerWorkspaceId} is not sender or receiver` };
       }
+      const departmentRefusal = departmentCancelRefusal(task, {
+        workspaceId: input.callerWorkspaceId,
+        paneId: input.callerPaneId,
+        trusted: input.trustedLane === true,
+      });
+      if (departmentRefusal) return { ok: false, error: `a2a.task.cancel: ${departmentRefusal}` };
       // §4 멱등: transition과 대칭 — 히트는 authz 뒤(비참여자 키 재생 조회 차단),
       // op 네임스페이스 분리(transition 키로 cancel 결과를 재생하지 못하게 — codex 델타).
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'cancel');
