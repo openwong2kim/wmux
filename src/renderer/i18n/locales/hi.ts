@@ -248,8 +248,6 @@ export const hi = {
   'viCopy.visual': '-- विज़ुअल --',
 
   // StatusBar
-  'statusBar.company': 'कंपनी',
-  'statusBar.session': 'सेशन: {min} मिनट',
   'statusBar.settingsTooltip': 'सेटिंग्स (Ctrl+,)',
 
   // Settings

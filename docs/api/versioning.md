@@ -49,7 +49,7 @@ A client that uses only `stable` surfaces, reads the `system.capabilities` tier 
 ### `experimental`
 
 - **May change wire shape or semantics within a major.** Release notes will call it out.
-- **Typically newer surfaces** that need real-world feedback before being promoted, OR older surfaces whose contract is still being reshaped (Company Mode falls in the latter bucket — Phase 4 gate decides its trajectory).
+- **Typically newer surfaces** that need real-world feedback before being promoted, OR older surfaces whose contract is still being reshaped.
 - **MAY be promoted to `stable`** in any minor release.
 - **MAY be removed**, with a deprecation window of at least one minor release.
 

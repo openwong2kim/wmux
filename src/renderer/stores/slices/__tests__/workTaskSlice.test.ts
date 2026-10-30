@@ -5,7 +5,7 @@ import { createWorkTaskSlice, type WorkTaskSlice } from '../workTaskSlice';
 import type { WorkTask } from '../../../../shared/workTask';
 
 // WorkTaskSlice는 StoreState 전체가 아니라 자기 상태만 건드리므로 최소 목 스토어로
-// 검증한다(companySlice.test.ts 관례 동형).
+// 검증한다.
 function createTestStore() {
   return create<WorkTaskSlice>()(
     immer((...args) => ({

@@ -419,7 +419,6 @@ export const ko = {
   'rail.more': '더 보기',
   'rail.version': 'wmux v{version}',
   'sidebar.hideTooltip': '사이드바 숨기기',
-  'sidebar.showCompany': '회사 보기',
   'sidebar.showWorkspaces': '워크스페이스 보기',
   'sidebar.expandTooltip': '사이드바 펼치기',
   'sidebar.unreadCount': '읽지 않음 {count}개',
@@ -1224,8 +1223,6 @@ export const ko = {
   'viCopy.visual': '-- 비주얼 --',
 
   // StatusBar
-  'statusBar.company': '회사',
-  'statusBar.session': '세션: {min}분',
   'statusBar.settingsTooltip': '설정 (Ctrl+,)',
   'statusBar.channelsTooltip': '채널 토글',
 
@@ -3095,11 +3092,9 @@ export const ko = {
   'settings.sc.toggleBotsView': 'Bots 전환',
   'settings.sc.togglePluginsView': "플러그인 전환",
   'settings.sc.togglePluginPage': '{name} 전환',
-  'settings.sc.toggleCompanyView': 'Company View 전환',
   'settings.sc.clearMultiview': '단일 보기로 돌아가기',
   'settings.sc.openBrowser': '브라우저 창 열기',
   'settings.sc.addBookmark': '스크롤 위치 북마크',
-  'settings.sc.toggleMessageFeed': '메시지 피드 전환',
   'settings.sc.zoomIn': '글꼴 크게',
   'settings.sc.zoomOut': '글꼴 작게',
   'settings.sc.zoomReset': '글꼴 크기 초기화',

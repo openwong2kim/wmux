@@ -68,9 +68,8 @@ function leafCwd(leaf: PaneLeaf): string {
 /**
  * Cold-park convergence helper: drop a workspace's parked / idle-clock entries.
  * Called wherever activeWorkspaceId is assigned OUTSIDE setActiveWorkspace
- * (removeWorkspace, company destroy/removeDept, loadSession) so a promoted-to-
- * visible workspace's park state converges immediately instead of lingering
- * until the next sweep. Guarded for stores/tests without the cold-park maps.
+ * (removeWorkspace, loadSession) so a promoted-to-visible workspace's park
+ * state converges immediately instead of lingering until the next sweep. Guarded for stores/tests without the cold-park maps.
  */
 /** The UI language a session restores to. */
 export function sessionLocaleOf(data: Pick<SessionData, 'locale'>): Locale {
@@ -147,11 +146,11 @@ export function activateLocalWorkspace(
 /**
  * Drop multiview members whose workspace is gone, and disband a group left with
  * fewer than two. Call from every path where workspaces disappear — the same set
- * clearColdParkEntry covers (removeWorkspace, company destroy/removeDept,
- * loadSession) — because they fail the same way: the grid gate counts
- * `multiviewIds` while the tiles are filtered against live workspaces, so one
- * live member plus one stale id renders a one-tile "grid" with full multiview
- * chrome that nothing but Ctrl+Shift+G dismisses (#751).
+ * clearColdParkEntry covers (removeWorkspace, loadSession) — because they fail
+ * the same way: the grid gate counts `multiviewIds` while the tiles are
+ * filtered against live workspaces, so one live member plus one stale id
+ * renders a one-tile "grid" with full multiview chrome that nothing but
+ * Ctrl+Shift+G dismisses (#751).
  * Guarded for stores/tests mounted without uiSlice.
  */
 export function pruneMultiviewMembership(state: {
@@ -333,8 +332,7 @@ export interface WorkspaceSlice {
   /**
    * Fix 0 fallback action. Clears every ptyId-keyed piece of renderer state
    * in one atomic immer set: terminal surface ptyId across all workspaces +
-   * nested split panes, floatingPanePtyId, terminalBookmarks,
-   * and company member.ptyId. Called from AppLayout startup when scrollback
+   * nested split panes, floatingPanePtyId and terminalBookmarks. Called from AppLayout startup when scrollback
    * restore is off, and from its catch only when no daemon holds sessions
    * (local mode), so Terminal.tsx self-create receives a consistent blank
    * slate and external RPC handlers don't have stale pty-keyed maps lying
@@ -1171,12 +1169,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       //   call store.clearAllPtyState(), the explicit, logged,
       //   generation-guarded form of the historical wipe.
       //
-      //   Side state (floatingPanePtyId, terminalBookmarks,
-      //   company member.ptyId) is also cleared by
+      //   Side state (floatingPanePtyId, terminalBookmarks) is also
+      //   cleared by
       //   clearAllPtyState — see workspaceSlice.clearAllPtyState
       //   below for the cross-slice fan-out.
       //
-      //   External RPC handlers (useRpcBridge, companyRpcHandlers)
+      //   External RPC handlers (useRpcBridge)
       //   guard on uiSlice.paneGate === 'ready' to prevent
       //   stale-ptyId writes during the pending window.
       //
@@ -1771,11 +1769,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.autoUpdateEnabled = data.autoUpdateEnabled;
         window.electronAPI.settings.setAutoUpdateEnabled(data.autoUpdateEnabled);
       }
-      if (data.sidebarMode) state.sidebarMode = data.sidebarMode;
       if (data.channelDockVisible != null) state.channelDockVisible = data.channelDockVisible;
-      if (data.company !== undefined) state.company = data.company ?? null;
-      if (data.memberCosts) state.memberCosts = data.memberCosts;
-      if (data.sessionStartTime != null) state.sessionStartTime = data.sessionStartTime;
       if (data.onboardingCompleted != null) state.onboardingCompleted = data.onboardingCompleted;
       // First-run wizard + cheat sheet (Plan 1.15 + 1.18). Mirrors onboardingCompleted
       // pattern: only overwrite when the saved field is present, otherwise leave the
@@ -1823,7 +1817,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     // Called from AppLayout startup catch when reconcile aborts or times
     // out. Reproduces the historical loadSession wipe as an explicit
     // fallback, plus the side-state fan-out the original wipe never
-    // covered (floating pane, bookmarks, token data, company members).
+    // covered (floating pane, bookmarks, token data).
     // After this runs, Terminal.tsx self-create sees externalPtyId='' on
     // mount and creates fresh PTYs — the well-tested new-pane path.
     clearSurfacePtyIdByPty: (ptyId: string, recovery?: DeadPaneRecovery) => set((state: StoreState) => {
@@ -1899,15 +1893,6 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (state.deadPaneRecoveryOfferByPtyId) state.deadPaneRecoveryOfferByPtyId = {};
       if (state.ptyUnconfirmedById) state.ptyUnconfirmedById = {};
-
-      // 3. companySlice — member.ptyId across all departments.
-      if (state.company) {
-        for (const dept of state.company.departments) {
-          for (const member of dept.members) {
-            member.ptyId = undefined;
-          }
-        }
-      }
     }),
   };
 };

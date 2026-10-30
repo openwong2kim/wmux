@@ -116,7 +116,7 @@ describe('PermissionEnforcer.check — grandfather lane closed (#1111)', () => {
   // dispatch is not a real caller today — and exempting it would let a future
   // one skip the capability gate, reserved lifecycle methods included.
   it('rejects an envelope-less firstParty dispatch (not exempt, unlike operator)', () => {
-    for (const method of ['pane.list', 'workspace.close', 'company.destroy'] as const) {
+    for (const method of ['pane.list', 'workspace.close', 'daemon.shutdown'] as const) {
       const out = check({
         method,
         params: {},

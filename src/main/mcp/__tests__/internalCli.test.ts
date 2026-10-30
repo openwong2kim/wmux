@@ -86,13 +86,11 @@ describe('WMUX_CLI_METHODS source invariant', () => {
 
   it('does not allowlist destructive control surface the CLI never calls (least privilege)', () => {
     // The CLI legitimately does workspace/surface lifecycle (wmux workspace new,
-    // wmux surface close), so those ARE allowed — but daemon control and company
-    // mutation must never be reachable through the wmux-cli tier.
+    // wmux surface close), so those ARE allowed — but daemon control must never
+    // be reachable through the wmux-cli tier.
     for (const m of [
       'daemon.shutdown',
       'daemon.compact',
-      'company.create',
-      'company.destroy',
     ] as const) {
       expect(WMUX_CLI_METHODS.has(m as RpcMethod)).toBe(false);
     }

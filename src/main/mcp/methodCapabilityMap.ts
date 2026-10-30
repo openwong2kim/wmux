@@ -21,10 +21,9 @@
 // the plan-review pass — the table stays single-source-of-truth even for
 // "no gate" methods).
 //
-// Internal-only surfaces (daemon control, company subsystem, surface
-// arrangement) map to the reserved `wmux.internal` capability. The
-// permissionGrammar reserves the `wmux.` prefix, so no plugin can ever
-// declare it. Only wmux's own curated lanes reach these methods: legacy
+// Internal-only surfaces (daemon control, surface arrangement) map to the
+// reserved `wmux.internal` capability. The permissionGrammar reserves the
+// `wmux.` prefix, so no plugin can ever declare it. Only wmux's own curated lanes reach these methods: legacy
 // callers (no `clientName` envelope) used to grandfather through, and are
 // refused since #1111 closed that lane.
 
@@ -710,34 +709,6 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'automation.propose': { capability: 'automation.write', riskClass: 'a2a' },
   'automation.list':    { capability: 'automation.read',  riskClass: 'a2a' },
   'automation.runs':    { capability: 'automation.read',  riskClass: 'a2a' },
-
-  // --- Company subsystem (substrate-internal team/orchestration). All
-  //     internal for v3.0; can be re-classified once spec covers a2a teams.
-  'company.create':         { capability: 'wmux.internal' },
-  'company.destroy':        { capability: 'wmux.internal' },
-  'company.status':         { capability: 'wmux.internal' },
-  'company.addDept':        { capability: 'wmux.internal' },
-  'company.removeDept':     { capability: 'wmux.internal' },
-  'company.addMember':      { capability: 'wmux.internal' },
-  'company.removeMember':   { capability: 'wmux.internal' },
-  'company.broadcast':      { capability: 'wmux.internal' },
-  'company.sendDept':       { capability: 'wmux.internal' },
-  'company.sendMember':     { capability: 'wmux.internal' },
-  'company.message':        { capability: 'wmux.internal' },
-  'company.save':           { capability: 'wmux.internal' },
-  'company.restore':        { capability: 'wmux.internal' },
-  'company.templates':      { capability: 'wmux.internal' },
-  'company.worktreeSetup':  { capability: 'wmux.internal' },
-  'company.mergeDept':      { capability: 'wmux.internal' },
-  'company.a2a.whoami':     { capability: 'wmux.internal' },
-  'company.a2a.send':       { capability: 'wmux.internal' },
-  'company.a2a.broadcast':  { capability: 'wmux.internal' },
-  'company.a2a.inbox':      { capability: 'wmux.internal' },
-  'company.a2a.ack':        { capability: 'wmux.internal' },
-  'company.a2a.status':     { capability: 'wmux.internal' },
-  'company.provision':      { capability: 'wmux.internal' },
-  'company.provisionAll':   { capability: 'wmux.internal' },
-  'company.provisionCeo':   { capability: 'wmux.internal' },
 
   // --- Hooks (Phase 1 hook plugin) ---
   // Internal channel from the wmux-bundled hook plugin. No external plugin

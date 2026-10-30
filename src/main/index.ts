@@ -126,7 +126,6 @@ import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerA2aChannelRpc } from './pipe/handlers/a2a.channel.rpc';
-import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { PluginHostLoader } from './plugins/PluginHostLoader';
 import { registerPluginProtocolHandler } from './plugins/pluginProtocol';
@@ -1102,7 +1101,7 @@ const inputRpc = registerInputRpc(
     readSessionStart: (ptyId) => hookSignalRouter?.sessionStartFor(ptyId),
   },
 );
-// Non-operator deliveries (A2A, company, channel mention nudges) are pasted
+// Non-operator deliveries (A2A, channel mention nudges) are pasted
 // and submitted here, behind the same approval guard as `input.send`, checked
 // again right before the Enter. Registered once, beside the router, so
 // crash-recovery handler reloads do not double-register it.
@@ -1319,7 +1318,6 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
   remote: daemonRemoteA2aRpcDeps(() => daemonClient),
 });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
-registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
 registerUiPluginRpc(rpcRouter, () => mainWindow);
 registerMcpPluginRpc(rpcRouter);

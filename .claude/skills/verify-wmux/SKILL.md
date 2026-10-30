@@ -155,7 +155,7 @@ Pure rules (suffix refusal, CDP claim parsing, env scrub, console parsing) live 
 
 These existing scripts drive the UI over CDP against whatever wmux is already running (several scan the 18800-18899 range and attach to the first answer, which can be the owner's instance; some write evidence to hard-coded Windows paths), and each re-implements attach and evidence. Their scenarios should move into feature files driven by `control-wmux`; they are left untouched for now:
 
-- `scripts/channel-dock-dogfood.mjs`, `scripts/channel-members-dogfood.mjs`, `scripts/channels-company-dogfood.mjs`
+- `scripts/channel-dock-dogfood.mjs`, `scripts/channel-members-dogfood.mjs`
 - `scripts/s-c1-fleet-dogfood.mjs`, `scripts/s-c2-fleet-deepening-dogfood.mjs`
 - `scripts/x3-dogfood-main.mjs`, `scripts/x3-dogfood-linkclick.mjs`, `scripts/x3-dogfood-restore.mjs`, `scripts/x3-dogfood-cleanup.mjs`
 - `scripts/pane-stacking-dogfood.mjs`, `scripts/v281-gui-probe.mjs`, `scripts/homescreen-launch-probe.mjs`

@@ -54,7 +54,6 @@ export const WEB_STUBS: Record<string, string> = {
   [r('src/renderer/components/Remote/RemotePaneSurface.tsx')]: NULL_STUB,
   [r('src/renderer/components/Remote/AddRemotePaneModal.tsx')]: NULL_STUB,
   [r('src/renderer/plugins/PluginPanels.tsx')]: NULL_STUB,
-  [r('src/renderer/components/Sidebar/CompanyPanel.tsx')]: NULL_STUB,
   [r('src/renderer/components/Sidebar/PresetPicker.tsx')]: NULL_STUB,
   [r('src/renderer/components/Sidebar/WorkspaceAccountMenu.tsx')]: NULL_STUB,
   [r('src/renderer/components/Sidebar/WorkspaceChromeProfileMenu.tsx')]: NULL_STUB,

@@ -42,7 +42,6 @@ import {
   reattachModelEnvMarker,
   splitModelEnvMarker,
 } from '../../shared/workerLaunch';
-import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { t } from '../i18n';
 import { parseRemoteSpawnedBy, remoteSpawnToastMessage } from '../utils/remoteSpawnedBy';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName, type A2aFormatOptions } from '../utils/a2aFormat';
@@ -4194,15 +4193,6 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     );
     store.setAgentSkills(workspaceId, skills);
     return { ok: true };
-  }
-
-  // -------------------------------------------------------------------------
-  // company.* — Company mode handlers
-  // -------------------------------------------------------------------------
-
-  if (method.startsWith('company.')) {
-    const result = await handleCompanyRpc(method, params, store);
-    if (result !== null) return result;
   }
 
   // -------------------------------------------------------------------------

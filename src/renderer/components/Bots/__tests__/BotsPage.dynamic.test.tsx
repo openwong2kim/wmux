@@ -2,7 +2,7 @@
 // The Bots rail page: the first screen, the conversation list (by latest
 // activity, no pinned HQ; needs-you on the bot rows), adding a bot, a 1:1 and a group chat, the thread chip,
 // sending to one bot, a worker's Open, the rail item's route and badge (the
-// sum of the page's own rows) and the Toggle Company View shortcut.
+// sum of the page's own rows) and the Toggle Bots shortcut.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';

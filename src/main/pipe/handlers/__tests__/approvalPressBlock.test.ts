@@ -474,7 +474,7 @@ describe('a terminal_prompt record (the agent\'s own dialog)', () => {
   });
 });
 
-// Non-operator deliveries (A2A, company, channel nudges) are pasted and
+// Non-operator deliveries (A2A, channel nudges) are pasted and
 // submitted by main's gated submit: the input.send guard, before the paste and
 // again before the Enter.
 describe('the gated submit for non-operator deliveries', () => {

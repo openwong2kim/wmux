@@ -418,7 +418,6 @@ export const en = {
   'sidebar.newWorkspaceTooltip': 'New workspace',
   'sidebar.newRemoteWorkspace': 'New workspace on {name}',
   'sidebar.hideTooltip': 'Hide sidebar',
-  'sidebar.showCompany': 'Show company',
   'sidebar.showWorkspaces': 'Show workspaces',
   'sidebar.expandTooltip': 'Expand sidebar',
   'sidebar.toggleShow': 'Show sidebar',
@@ -567,22 +566,6 @@ export const en = {
   'missions.openCount': '{count} open',
   'missions.finishedCount': '{count} finished',
   'missions.summaryTooltip': 'Open the delegated tasks in the Agent deck',
-
-  // Sidebar — Company mode
-  'company.deptRemoveHint': 'Right-click to remove',
-  'company.active': 'Active',
-  'company.idle': 'Idle',
-  'company.addMember': 'Add member',
-  'company.removeDeptConfirm': 'Remove "{name}"?',
-  'company.empty': 'No company created yet.',
-  'company.create': 'Create Company',
-  'company.stats': '{depts} depts / {provisioned}/{total} active',
-  'company.manageTitle': 'Manage company',
-  'company.manage': 'Manage',
-  'company.destroyConfirm': 'Destroy company and all teams?',
-  'company.destroyTitle': 'Destroy company',
-  'company.noDepts': 'No departments yet.',
-  'company.addDept': '+ Add Department',
 
   // Editor / file-tree / error surfaces
   'editor.unableToRead': 'Unable to read file',
@@ -1445,8 +1428,6 @@ export const en = {
   'viCopy.visual': '-- VISUAL --',
 
   // StatusBar
-  'statusBar.company': 'COMPANY',
-  'statusBar.session': 'Session: {min}m',
   'statusBar.settingsTooltip': 'Settings (Ctrl+,)',
   'statusBar.channelsTooltip': 'Toggle channels',
 
@@ -3640,11 +3621,9 @@ export const en = {
   'settings.sc.toggleBotsView': 'Toggle Bots',
   'settings.sc.togglePluginsView': "Toggle Plugins",
   'settings.sc.togglePluginPage': 'Toggle {name}',
-  'settings.sc.toggleCompanyView': 'Toggle Company View',
   'settings.sc.clearMultiview': 'Back to single view',
   'settings.sc.openBrowser': 'Open browser pane',
   'settings.sc.addBookmark': 'Bookmark scroll position',
-  'settings.sc.toggleMessageFeed': 'Toggle message feed',
   'settings.sc.zoomIn': 'Increase font size',
   'settings.sc.zoomOut': 'Decrease font size',
   'settings.sc.zoomReset': 'Reset font size',

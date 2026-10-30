@@ -12,7 +12,6 @@ import { IconGear, IconCornerUpLeft } from '../icons';
 import { selectFleetPanes, type FleetPane } from '../../stores/selectors/fleet';
 import { selectOwnerWorkspaces } from '../Sidebar/botTasks';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
-import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
 import { RAIL_PAGE_TITLE_KEYS, workspaceChromeInTitlebar } from '../Titlebar/railPageTitle';
@@ -186,17 +185,7 @@ export default function StatusBar() {
   const prefixMode = useStore((s) => s.prefixMode);
   const prefixError = useStore((s) => s.prefixError);
 
-  // Company 모드 여부(사이드바 모드 기준). 비용/경과 분·시각·메모리는 시계
-  // 커서에 의존하므로 A5에서 StatusClock{Usage,Time}로 분리됐다 — 시계 틱이
-  // StatusBar 본체를 리렌더하지 않게 하기 위함.
-  const sidebarMode = useStore((s) => s.sidebarMode);
-
   const branch = activeWs.branch;
-  // Company-mode UI is gated behind COMPANY_MODE_ENABLED (paid "wmux max").
-  // Even with a leftover persisted `sidebarMode === 'company'` (from a build
-  // where company mode was reachable), the status-bar badge + cost must stay
-  // hidden so the deactivated build shows zero company traces.
-  const isCompanyMode = COMPANY_MODE_ENABLED && sidebarMode === 'company';
 
   // Bridge redesign P1.5 — the status strip lives INSIDE the custom titlebar
   // now (owner feedback: the empty titlebar center read as wasted space, and
@@ -251,12 +240,6 @@ export default function StatusBar() {
             <span className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>⎇</span> {branch}
           </button>
         )}
-        {/* Company 모드 배지 */}
-        {isCompanyMode && (
-          <span className="text-[10px] font-mono px-1.5 py-px bg-[var(--bg-surface)] text-[var(--accent-blue)] rounded">
-            {t('statusBar.company')}
-          </span>
-        )}
         {/* Plugin status-bar widgets (B-1 ui.statusbar, left-aligned) */}
         <PluginStatusBarWidgets alignment="left" />
       </div>
@@ -277,8 +260,8 @@ export default function StatusBar() {
             {(t('strip.running') || '{count} running').replace('{count}', String(fleetVitals.running))}
           </span>
         )}
-        {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
-        {!onFleetPage && <StatusClockUsage isCompanyMode={isCompanyMode} />}
+        {/* A5: 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
+        {!onFleetPage && <StatusClockUsage />}
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />

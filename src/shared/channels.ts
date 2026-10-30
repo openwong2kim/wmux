@@ -3,9 +3,9 @@
 // channels: scoped membership, durable history, public-or-private visibility
 // (immutable post-creation), and a human-observable sidebar in the renderer.
 //
-// Companion to MessageQueue (which still owns the 1-to-1 + broadcast A2A
-// primitives). Channels layer on top: posts fan out via the same idle-targeted
-// delivery path, but the channel owns its own state, history, and membership.
+// Companion to the 1-to-1 + broadcast A2A primitives. Channels layer on top:
+// posts fan out via the same idle-targeted delivery path, but the channel owns
+// its own state, history, and membership.
 
 /**
  * Channel visibility. Immutable post-creation (see plan KTD7).

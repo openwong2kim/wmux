@@ -324,22 +324,6 @@ export const zh = {
   // Sidebar — workspace search
   'sidebar.searchPlaceholder': '搜索工作区…',
 
-  // Sidebar — Company mode
-  'company.deptRemoveHint': '右键移除',
-  'company.active': '活跃',
-  'company.idle': '空闲',
-  'company.addMember': '添加成员',
-  'company.removeDeptConfirm': '移除「{name}」？',
-  'company.empty': '尚未创建公司。',
-  'company.create': '创建公司',
-  'company.stats': '{depts} 个部门 / {provisioned}/{total} 活跃',
-  'company.manageTitle': '管理公司',
-  'company.manage': '管理',
-  'company.destroyConfirm': '销毁公司及所有团队？',
-  'company.destroyTitle': '销毁公司',
-  'company.noDepts': '还没有部门。',
-  'company.addDept': '+ 添加部门',
-
   // Editor / file-tree / error surfaces
   'editor.unableToRead': '无法读取文件',
   'editor.reloadTitle': '重新加载文件',
@@ -669,8 +653,6 @@ export const zh = {
   'viCopy.visual': '-- 可视 --',
 
   // StatusBar
-  'statusBar.company': '公司',
-  'statusBar.session': '会话: {min}分钟',
   'statusBar.settingsTooltip': '设置 (Ctrl+,)',
 
   // Settings
@@ -963,11 +945,9 @@ export const zh = {
   'settings.sc.toggleBotsView': '切换机器人',
   'settings.sc.togglePluginsView': "切换插件",
   'settings.sc.togglePluginPage': '切换{name}',
-  'settings.sc.toggleCompanyView': '切换 Company View',
   'settings.sc.clearMultiview': '返回单一视图',
   'settings.sc.openBrowser': '打开浏览器面板',
   'settings.sc.addBookmark': '书签当前滚动位置',
-  'settings.sc.toggleMessageFeed': '切换消息流',
   'settings.sc.zoomIn': '增大字号',
   'settings.sc.zoomOut': '减小字号',
   'settings.sc.zoomReset': '重置字号',
@@ -1302,7 +1282,6 @@ export const zh = {
   // ─── 工作区条目: 任务工作树边界警告 ───
   'workspace.cwdDeparted': '面板 cwd 已越出任务工作树边界：{cwd}',
   'workspace.departed': '已越界',
-  'sidebar.showCompany': '显示公司',
   'sidebar.showWorkspaces': '显示工作区',
   'sidebar.screenOff': '关闭屏幕',
   'sidebar.screenOn': '打开屏幕',

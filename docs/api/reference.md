@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **311** methods (`ALL_RPC_METHODS` in
+Total: **286** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -269,41 +269,6 @@ Total: **311** methods (`ALL_RPC_METHODS` in
 | `a2a.principal.upsert` | `wmux.internal` |  |
 | `a2a.principal.remove` | `wmux.internal` |  |
 | `a2a.principal.markStaleWorkspace` | `wmux.internal` |  |
-
-### `company.a2a`
-
-| Method | Capability | Risk class |
-|---|---|---|
-| `company.a2a.whoami` | `wmux.internal` |  |
-| `company.a2a.send` | `wmux.internal` |  |
-| `company.a2a.broadcast` | `wmux.internal` |  |
-| `company.a2a.inbox` | `wmux.internal` |  |
-| `company.a2a.ack` | `wmux.internal` |  |
-| `company.a2a.status` | `wmux.internal` |  |
-
-### `company`
-
-| Method | Capability | Risk class |
-|---|---|---|
-| `company.create` | `wmux.internal` |  |
-| `company.destroy` | `wmux.internal` |  |
-| `company.status` | `wmux.internal` |  |
-| `company.addDept` | `wmux.internal` |  |
-| `company.removeDept` | `wmux.internal` |  |
-| `company.addMember` | `wmux.internal` |  |
-| `company.removeMember` | `wmux.internal` |  |
-| `company.broadcast` | `wmux.internal` |  |
-| `company.sendDept` | `wmux.internal` |  |
-| `company.sendMember` | `wmux.internal` |  |
-| `company.message` | `wmux.internal` |  |
-| `company.save` | `wmux.internal` |  |
-| `company.restore` | `wmux.internal` |  |
-| `company.templates` | `wmux.internal` |  |
-| `company.worktreeSetup` | `wmux.internal` |  |
-| `company.mergeDept` | `wmux.internal` |  |
-| `company.provision` | `wmux.internal` |  |
-| `company.provisionAll` | `wmux.internal` |  |
-| `company.provisionCeo` | `wmux.internal` |  |
 
 ### `lanlink`
 

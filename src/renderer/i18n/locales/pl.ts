@@ -428,7 +428,6 @@ export const pl = {
   'rail.more': 'Więcej',
   'rail.version': 'wmux v{version}',
   'sidebar.hideTooltip': 'Ukryj pasek boczny',
-  'sidebar.showCompany': 'Pokaż firmę',
   'sidebar.showWorkspaces': 'Pokaż obszary robocze',
   'sidebar.expandTooltip': 'Rozwiń pasek boczny',
   'sidebar.unreadCount': '{count} nieprzeczytanych',
@@ -559,22 +558,6 @@ export const pl = {
   'missions.openCount': 'otwarte: {count}',
   'missions.finishedCount': 'ukończone: {count}',
   'missions.summaryTooltip': 'Otwórz zlecone zadania w decku Agent',
-
-  // Sidebar — Company mode
-  'company.deptRemoveHint': 'Kliknij prawym przyciskiem, aby usunąć',
-  'company.active': 'Aktywny',
-  'company.idle': 'Bezczynny',
-  'company.addMember': 'Dodaj członka',
-  'company.removeDeptConfirm': 'Usunąć „{name}”?',
-  'company.empty': 'Nie utworzono jeszcze firmy.',
-  'company.create': 'Utwórz firmę',
-  'company.stats': '{depts} działów / {provisioned}/{total} aktywnych',
-  'company.manageTitle': 'Zarządzaj firmą',
-  'company.manage': 'Zarządzaj',
-  'company.destroyConfirm': 'Usunąć firmę i wszystkie zespoły?',
-  'company.destroyTitle': 'Usuń firmę',
-  'company.noDepts': 'Brak działów.',
-  'company.addDept': '+ Dodaj dział',
 
   // Editor / file-tree / error surfaces
   'editor.unableToRead': 'Nie można odczytać pliku',
@@ -1425,8 +1408,6 @@ export const pl = {
   'viCopy.visual': '-- WIZUALNY --',
 
   // StatusBar
-  'statusBar.company': 'FIRMA',
-  'statusBar.session': 'Sesja: {min} min',
   'statusBar.settingsTooltip': 'Ustawienia (Ctrl+,)',
   'statusBar.channelsTooltip': 'Przełącz kanały',
 
@@ -3611,11 +3592,9 @@ export const pl = {
   'settings.sc.toggleBotsView': 'Przełącz boty',
   'settings.sc.togglePluginsView': "Przełącz wtyczki",
   'settings.sc.togglePluginPage': 'Przełącz: {name}',
-  'settings.sc.toggleCompanyView': 'Przełącz Company View',
   'settings.sc.clearMultiview': 'Wróć do pojedynczego widoku',
   'settings.sc.openBrowser': 'Otwórz panel przeglądarki',
   'settings.sc.addBookmark': 'Dodaj zakładkę w miejscu przewinięcia',
-  'settings.sc.toggleMessageFeed': 'Przełącz kanał wiadomości',
   'settings.sc.zoomIn': 'Zwiększ czcionkę',
   'settings.sc.zoomOut': 'Zmniejsz czcionkę',
   'settings.sc.zoomReset': 'Resetuj rozmiar czcionki',

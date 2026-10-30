@@ -177,8 +177,8 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
   it('SECURITY: even spoofing clientName="claude-code" only reaches the curated set, never reserved daemon methods', () => {
     // Defense-in-depth assertion: the worst a clientName impersonator (who
     // already needs the daemon auth token) can do via the first-party path is
-    // the allowlist — never daemon.shutdown/compact or company mutation.
-    for (const method of ['daemon.shutdown', 'daemon.compact', 'company.create'] as const) {
+    // the allowlist — never daemon.shutdown/compact or workspace creation.
+    for (const method of ['daemon.shutdown', 'daemon.compact', 'workspace.new'] as const) {
       const out = check({
         method,
         params: {},

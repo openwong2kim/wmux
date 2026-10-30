@@ -248,8 +248,6 @@ export const ms = {
   'viCopy.visual': '-- VISUAL --',
 
   // StatusBar
-  'statusBar.company': 'SYARIKAT',
-  'statusBar.session': 'Sesi: {min} min',
   'statusBar.settingsTooltip': 'Tetapan (Ctrl+,)',
 
   // Settings

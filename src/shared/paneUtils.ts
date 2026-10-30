@@ -213,7 +213,6 @@ export function collectRemoteSurfaceWorkspaces(
 //     collectTerminalSurfaces — surface-level results, terminal-only filters.
 //   - workspaceSlice.removeWorkspace's collectSurfaces — returns {id, ptyId}
 //     pairs, not panes.
-//   - company/provisioner.collectPtyIds — leaf-only entry shape.
 //   - uiSlice / projectConfigSlice / wmuxProjectConfig template walks — they
 //     REBUILD trees (clone, assign ordinals, count) rather than flatten them.
 //   - SessionManager.collectPtyIds (main process) — walks the on-disk session
