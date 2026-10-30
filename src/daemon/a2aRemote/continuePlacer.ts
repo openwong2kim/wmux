@@ -75,6 +75,8 @@ export class ContinuePlacer {
   private readonly platform: NodeJS.Platform;
   private readonly rename: (from: string, to: string) => Promise<void>;
   private readonly placements = new Map<string, Placement>();
+  /** Places still running, per request: an unplace meanwhile waits for its own. */
+  private readonly placing = new Map<string, Promise<A2aContinuePlaceResult>>();
   private temps = 0;
 
   constructor(deps: ContinuePlacerDeps) {
@@ -86,10 +88,43 @@ export class ContinuePlacer {
   /** Place a starting request's conversation for a pane in `cwd`; the placed transcript's path, or why not. */
   async place(hostId: HostId, continueId: string, cwd: string): Promise<A2aContinuePlaceResult> {
     const key = `${hostId}:${continueId}`;
-    if (this.placements.has(key)) return fail('failed', 'this request was placed already');
+    if (this.placements.has(key) || this.placing.has(key)) return fail('failed', 'this request was placed already');
     const placement: Placement = { made: [], aside: [], placed: [] };
     // Held from the start, so a second call meanwhile is refused.
     this.placements.set(key, placement);
+    const running = this.placeOnce(hostId, continueId, cwd, key, placement);
+    this.placing.set(key, running);
+    try {
+      return await running;
+    } finally {
+      this.placing.delete(key);
+    }
+  }
+
+  /**
+   * Take back what `place` did for this request. A place still running (main
+   * stopped waiting for its answer) is let finish first, then taken back
+   * whole; one that failed has taken itself back already.
+   */
+  async unplace(hostId: HostId, continueId: string): Promise<A2aContinueStepResult> {
+    const key = `${hostId}:${continueId}`;
+    const placement = this.placements.get(key);
+    if (!placement) return { ok: false, error: 'nothing was placed for this request in this run' };
+    // Taken at once: a forget meanwhile (main reports the start failed when
+    // this answer is late) cannot drop what is still to be taken back.
+    this.placements.delete(key);
+    const running = this.placing.get(key);
+    if (running && !(await running).ok) return { ok: true };
+    return (await this.undo(placement)) ? { ok: true } : { ok: false, error: 'not everything placed could be taken back' };
+  }
+
+  /** The request is decided: what its place did is no longer taken back. */
+  forget(hostId: HostId, continueId: string): void {
+    this.placements.delete(`${hostId}:${continueId}`);
+  }
+
+  /** One place, taken back by itself when it fails. Never rejects. */
+  private async placeOnce(hostId: HostId, continueId: string, cwd: string, key: string, placement: Placement): Promise<A2aContinuePlaceResult> {
     let res: A2aContinuePlaceResult;
     try {
       res = await this.placeNow(hostId, continueId, cwd, placement);
@@ -98,24 +133,10 @@ export class ContinuePlacer {
     }
     if (!res.ok) {
       if (!(await this.undo(placement))) this.deps.log('error', `[a2a-remote] continue ${continueId}: a failed place was not fully taken back`);
-      this.placements.delete(key);
+      if (this.placements.get(key) === placement) this.placements.delete(key);
       this.deps.log('warn', `[a2a-remote] continue ${continueId} from ${hostId}: not placed (${res.code}): ${res.error}`);
     }
     return res;
-  }
-
-  /** Take back what `place` did for this request. */
-  async unplace(hostId: HostId, continueId: string): Promise<A2aContinueStepResult> {
-    const key = `${hostId}:${continueId}`;
-    const placement = this.placements.get(key);
-    if (!placement) return { ok: false, error: 'nothing was placed for this request in this run' };
-    this.placements.delete(key);
-    return (await this.undo(placement)) ? { ok: true } : { ok: false, error: 'not everything placed could be taken back' };
-  }
-
-  /** The request is decided: what its place did is no longer taken back. */
-  forget(hostId: HostId, continueId: string): void {
-    this.placements.delete(`${hostId}:${continueId}`);
   }
 
   private async placeNow(hostId: HostId, continueId: string, cwd: string, placement: Placement): Promise<A2aContinuePlaceResult> {

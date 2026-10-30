@@ -247,6 +247,60 @@ describe('ContinuePlacer.place', () => {
     expect(await p.place(HOST, CID, cwd)).toMatchObject({ ok: false, code: 'failed' });
   });
 
+  /**
+   * A placer whose move of the staged transcript waits until released, as a
+   * slow place does when main stops waiting for its answer and takes it back.
+   */
+  function heldPlacer(): { p: ContinuePlacer; reached: Promise<void>; release: () => void } {
+    let reach!: () => void;
+    let release!: () => void;
+    const reached = new Promise<void>((r) => { reach = r; });
+    const gate = new Promise<void>((r) => { release = r; });
+    const staged = path.join(staging, `${SID}.jsonl`);
+    const rename = async (from: string, to: string): Promise<void> => {
+      if (from === staged) {
+        reach();
+        await gate;
+      }
+      await fs.promises.rename(from, to);
+    };
+    return { p: placer({ rename }), reached, release };
+  }
+
+  it('an unplace while the place still runs waits for it, then takes back all of it', async () => {
+    const transcript = path.join(projectDir(), `${SID}.jsonl`);
+    write(transcript, '{"turn":1}\n');
+    const { p, reached, release } = heldPlacer();
+    const placing = p.place(HOST, CID, cwd);
+    await reached;
+    const unplacing = p.unplace(HOST, CID);
+    // A second place meanwhile is refused, and a forget (main reporting failed) drops nothing.
+    const second = p.place(HOST, CID, cwd);
+    p.forget(HOST, CID);
+    release();
+    expect(await second).toMatchObject({ ok: false, code: 'failed' });
+    expect(await placing).toMatchObject({ ok: true });
+    expect(await unplacing).toEqual({ ok: true });
+    expect(read(transcript)).toBe('{"turn":1}\n');
+    expect(fs.readdirSync(projectDir())).toEqual([`${SID}.jsonl`]);
+  });
+
+  it('an unplace waiting for a place that then fails answers ok, and nothing it made remains', async () => {
+    const transcript = path.join(projectDir(), `${SID}.jsonl`);
+    write(transcript, '{"turn":1}\n');
+    const { p, reached, release } = heldPlacer();
+    const placing = p.place(HOST, CID, cwd);
+    await reached;
+    const unplacing = p.unplace(HOST, CID);
+    // The last staged file is gone, so the place fails once released.
+    fs.rmSync(path.join(staging, SID, 'subagents', 'agent-1.jsonl'));
+    release();
+    expect(await placing).toMatchObject({ ok: false, code: 'failed' });
+    expect(await unplacing).toEqual({ ok: true });
+    expect(read(transcript)).toBe('{"turn":1}\n');
+    expect(fs.readdirSync(projectDir())).toEqual([`${SID}.jsonl`]);
+  });
+
   it('uses ~/.claude when CLAUDE_CONFIG_DIR is not absolute', async () => {
     const home = path.join(root, 'home');
     fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
