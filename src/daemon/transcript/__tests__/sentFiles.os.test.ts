@@ -158,6 +158,51 @@ describe('SentFileIndex', () => {
     expect(await index.sentAt(transcript, path.join(dir, 'unchecked.png'), NOW)).toBeNull();
   });
 
+  it('serves the projected path through a symlinked cwd as the attachment it is the same file as', async () => {
+    const real = path.join(dir, 'real');
+    const link = path.join(dir, 'link');
+    fs.mkdirSync(real);
+    // A junction needs no privilege on Windows; elsewhere the type is ignored.
+    fs.symlinkSync(real, link, 'junction');
+    fs.writeFileSync(path.join(real, 'tiny.png'), 'png');
+    // Claude Code ran in the link (`/tmp/...`) and reported the real path (`/private/tmp/...`).
+    fs.writeFileSync(transcript, sendWith(['./tiny.png'], link, {
+      attachments: [{ path: path.join(real, 'tiny.png'), pathValidated: true }],
+    }));
+    const index = new SentFileIndex();
+    // What the projection hands the phone.
+    const projected = path.join(link, 'tiny.png');
+    expect(await index.sentAt(transcript, projected, NOW)).toBe(NOW);
+    // The file opened is the attachment's path, not the requested spelling.
+    expect(await index.grantFor(transcript, projected, NOW, 'SendUserFile')).toEqual({ at: NOW, path: path.join(real, 'tiny.png') });
+    expect(await index.sentAt(transcript, path.join(real, 'tiny.png'), NOW)).toBe(NOW);
+  });
+
+  it('refuses a projected path whose file is not the attachment\'s file', async () => {
+    const sent = path.join(dir, 'tiny.png');
+    const other = path.join(dir, 'other.png');
+    fs.writeFileSync(sent, 'sent');
+    fs.writeFileSync(other, 'other');
+    fs.writeFileSync(transcript, [
+      sendWith([other], dir, { attachments: [{ path: sent, pathValidated: true }] }),
+      sendWith(['./other.png'], dir, { attachments: [{ path: sent, pathValidated: true }] }),
+    ].join(''));
+    const index = new SentFileIndex();
+    expect(await index.sentAt(transcript, other, NOW)).toBeNull();
+    expect(await index.sentAt(transcript, sent, NOW)).toBe(NOW);
+  });
+
+  it('finds a send from a result without attachments under its /tmp respelling on macOS', async () => {
+    fs.writeFileSync(transcript, sendWith(['/tmp/s/a.png'], '/tmp/s', undefined));
+    const mac = new SentFileIndex({ platform: 'darwin' });
+    expect(await mac.sentAt(transcript, '/private/tmp/s/a.png', NOW)).toBe(NOW);
+    expect(await mac.sentAt(transcript, '/tmp/s/a.png', NOW)).toBe(NOW);
+    expect(await new SentFileIndex({ platform: 'linux' }).sentAt(transcript, '/private/tmp/s/a.png', NOW)).toBeNull();
+    // A grant from validated attachments is not respelled.
+    fs.writeFileSync(transcript, sendWith(['/tmp/s/b.png'], '/tmp/s', { attachments: [{ path: '/tmp/s/b.png', pathValidated: true }] }));
+    expect(await new SentFileIndex({ platform: 'darwin' }).sentAt(transcript, '/private/tmp/s/b.png', NOW)).toBeNull();
+  });
+
   it('ignores error results, unanswered calls, malformed inputs and calls without a timestamp', async () => {
     fs.writeFileSync(transcript, [
       send(['/s/err.png'], { isError: true }),
