@@ -1,4 +1,4 @@
-import BalanceLayoutButton from '../TitleBar/BalanceLayoutButton';
+import BalanceLayoutButton from '../Titlebar/BalanceLayoutButton';
 import { type CSSProperties, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
