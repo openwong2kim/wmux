@@ -1111,7 +1111,7 @@ export default function FleetView() {
     for (const p of panes) if (!p.remote && p.agentName) out.set(p.workspaceId, (out.get(p.workspaceId) ?? 0) + 1);
     return out;
   }, [panes]);
-  const paneOfTicket = (ticket: FleetTicket) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
+  const paneOfTicket = (ticket: { workspaceId: string; paneId?: string }) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
     && (!ticket.paneId || p.paneId === ticket.paneId));
   const selectTicket = useCallback((ticket: FleetTicket) => {
     const key = ticketKey(ticket.id);
@@ -1120,14 +1120,15 @@ export default function FleetView() {
     setExplicitTicket(ticket.id);
   }, [focusedKey]);
   const jumpToTicket = (ticket: FleetTicket) => {
-    const pane = paneOfTicket(ticket);
+    const at = ticket.sentFrom ?? ticket;
+    const pane = paneOfTicket(at);
     if (pane) { jump(pane); return; }
-    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: at.workspaceId });
     finishJump();
   };
   // A ticket's decision card waits in its workspace's decision slot.
   const openTicketDecision = (ticket: FleetTicket) => {
-    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: (ticket.sentFrom ?? ticket).workspaceId });
     finishJump();
   };
 

@@ -173,7 +173,8 @@ export class WorkLinkStore {
    *  `queued` forever (the daemon fails only the tasks it still tracks). A
    *  link with a PR is left alone: the PR outlives the workspace and its own
    *  state still says where the work stands. A pane on another PC is not a
-   *  workspace here: its peer ends the task. Returns how many were settled. */
+   *  workspace here: the daemon's copy of its task settles the link
+   *  (reconcileRemoteLinks). Returns how many were settled. */
   async abandonOrphaned(isLive: (workspaceId: string) => boolean): Promise<number> {
     let settled = 0;
     for (const link of [...this.cache().values()]) {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { recordPeerTaskState, recordSentTask, workLinkFromRemoteSend } from '../a2aProducer';
+import { reconcileRemoteLinks, recordSentTask, workLinkFromRemoteSend } from '../a2aProducer';
 import { WorkLinkStore } from '../workLinkStore';
 import { parseWorkLink, WORK_LINK_LIMITS } from '../../../shared/workLink';
 
@@ -29,8 +29,6 @@ const send = (over: Partial<Parameters<typeof workLinkFromRemoteSend>[0]> = {}) 
   title: '', message: 'Fix the flaky test\nand report back', fromCommander: false, ...over,
 });
 
-const peerTask = (state: string, evidence?: unknown) => ({ id: RT, status: { state, ...(evidence ? { evidence } : {}) } });
-
 describe('work links for tasks sent to another PC', () => {
   it('records a remote send as queued work owned by the remote pane, named by its alias', async () => {
     await recordSentTask(send(), store);
@@ -39,27 +37,25 @@ describe('work links for tasks sent to another PC', () => {
       state: 'queued',
       owner: { workspaceId: `remote:${LINK}`, name: 'mac-mini/wmux/#w1-2' },
       requester: { workspaceId: 'ws-co', paneId: 'pane-ceo' },
-      title: 'Fix the flaky test',
+      title: 'Fix the flaky test\nand report back',
     });
     await recordSentTask(send({ taskId: `rt-${'c'.repeat(32)}`, title: 'Flaky test' }), store);
     expect(store.getByTaskId(`rt-${'c'.repeat(32)}`)?.title).toBe('Flaky test');
   });
 
-  it('follows the peer: a state new to the link is written once, the report kept on completion', async () => {
+  it('keeps a finished link and its report once the daemon has dropped the task', async () => {
     await recordSentTask(send(), store);
-    await recordPeerTaskState(peerTask('working'), store);
-    const running = store.getByTaskId(RT);
-    expect(running?.state).toBe('running');
-    // The same state listed again on the next pull leaves the link as it was.
-    await recordPeerTaskState(peerTask('working'), store);
-    expect(store.getByTaskId(RT)?.updatedAt).toBe(running?.updatedAt);
-    await recordPeerTaskState(peerTask('completed', { summary: 'Fixed; 3 runs green.', items: [] }), store);
-    expect(store.getByTaskId(RT)).toMatchObject({ state: 'done', result: { summary: 'Fixed; 3 runs green.' } });
+    await store.upsert({ a2aTaskId: RT, a2aState: 'completed', result: { summary: 'Fixed.', at: 5 } });
+    await reconcileRemoteLinks(async () => ({ ok: true, tasks: [] }), store);
+    expect(store.getByTaskId(RT)).toMatchObject({ state: 'done', result: { summary: 'Fixed.' } });
   });
 
-  it('never invents a link for a task that was not sent from here', async () => {
-    await recordPeerTaskState(peerTask('working'), store);
-    expect(store.list({})).toEqual([]);
+  it('changes nothing while the daemon gives no answer', async () => {
+    await recordSentTask(send(), store);
+    const before = store.getByTaskId(RT);
+    await reconcileRemoteLinks(async () => ({ ok: false, error: 'a2a.task.query: task log unavailable' }), store);
+    await reconcileRemoteLinks(async () => { throw new Error('DaemonClient not connected'); }, store);
+    expect(store.getByTaskId(RT)).toEqual(before);
   });
 
   it('is not settled as orphaned when local workspaces close: the peer ends it', async () => {

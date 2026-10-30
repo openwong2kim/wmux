@@ -271,26 +271,36 @@ describe('RemoteA2aBridge', () => {
     expect(renderer.mock.calls.at(-1)).toEqual(['a2a.remote.notify', expect.objectContaining({ messageId: 'r1', resnapshot: true })]);
   });
 
-  it('hands every listed task this PC sent to onPeerUpdate, and no task it received', async () => {
-    const sent = remoteTask(13);
-    const marker = sent.metadata.remote as A2aRemoteTaskState;
-    marker.direction = 'outbound';
-    delete marker.delivered;
-    sent.status.state = 'working';
-    marker.inbox = [{ messageId: 's1', kind: 'state', state: 'working', delivered: false }];
-    daemon.tasks.set(sent.id, sent);
-    daemon.tasks.set(id(14), remoteTask(14));
-    const onPeerUpdate = vi.fn();
+  it('runs afterPull after each pull that reached the daemon, one at a time, and not once stopped', async () => {
+    let running = 0;
+    let overlapped = false;
+    const afterPull = vi.fn(async () => {
+      running += 1;
+      if (running > 1) overlapped = true;
+      await Promise.resolve();
+      running -= 1;
+    });
     const watched = new RemoteA2aBridge({
       daemonRpc: (m, p) => daemon.rpc(m, p),
       sendToRenderer: (m, p) => renderer(m, p),
       onDaemonEvent: () => () => undefined,
-      onPeerUpdate,
+      afterPull,
     });
-    watched.start();
-    await settle();
+    await Promise.all([watched.trigger(), watched.trigger(), watched.trigger()]);
+    expect(afterPull).toHaveBeenCalledTimes(2);
+    expect(overlapped).toBe(false);
     watched.stop();
-    expect(onPeerUpdate.mock.calls.map(([t]) => (t as Task).id)).toEqual([id(13)]);
+    await watched.trigger();
+    expect(afterPull).toHaveBeenCalledTimes(2);
+    const down = vi.fn(async () => undefined);
+    const unreachable = new RemoteA2aBridge({
+      daemonRpc: async () => { throw new Error('DaemonClient not connected'); },
+      sendToRenderer: (m, p) => renderer(m, p),
+      onDaemonEvent: () => () => undefined,
+      afterPull: down,
+    });
+    await unreachable.trigger();
+    expect(down).not.toHaveBeenCalled();
   });
 
   it('ignores other daemon events and stops cleanly', async () => {

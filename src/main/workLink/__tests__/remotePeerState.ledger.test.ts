@@ -1,6 +1,7 @@
-// A task sent to another PC, end to end on this PC's side over the real
-// pieces: the daemon ledger applies the peer's states, the remote bridge pulls
-// them the way main does, and the work link follows.
+// Work sent to another PC, end to end on this PC's side over the real pieces:
+// the daemon ledger holds the task and every way it moves, the remote bridge
+// pulls the way main does, and after each pull the work link is brought in
+// line with the ledger through the daemon's own task query.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,9 +9,10 @@ import path from 'node:path';
 import { AppendOnlyLog } from '../../../daemon/eventlog/AppendOnlyLog';
 import { A2aTaskService } from '../../../daemon/a2a/A2aTaskService';
 import { A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
+import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
 import { RemoteA2aBridge } from '../../a2a/RemoteA2aBridge';
 import { WorkLinkStore } from '../workLinkStore';
-import { recordPeerTaskState, recordSentTask, workLinkFromRemoteSend } from '../a2aProducer';
+import { reconcileRemoteLinks, recordSentTask, workLinkFromRemoteSend } from '../a2aProducer';
 
 const LINK = '11111111-1111-4111-8111-111111111111';
 const HOST = '22222222-2222-4222-8222-222222222222';
@@ -21,7 +23,9 @@ let dir: string;
 let svc: A2aTaskService;
 let store: WorkLinkStore;
 let bridge: RemoteA2aBridge;
-let writes: Promise<void>[];
+
+/** What crosses the daemon socket is JSON. */
+const wire = <T>(v: T): T => JSON.parse(JSON.stringify(v));
 
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-remote-ledger-'));
@@ -30,11 +34,12 @@ beforeEach(async () => {
   svc = new A2aTaskService({ log, origin: { machineId: 'm1', daemonEpoch: 1 } });
   let clock = 1000;
   store = new WorkLinkStore({ dir, pendingDecisionIds: () => new Set(), now: () => ++clock });
-  writes = [];
+  // The daemon's `a2a.task.query` handler, as daemon/index.ts registers it.
+  const query = async (p: Record<string, unknown>) =>
+    wire({ ok: true, workspaceId: p.workspaceId, tasks: applyTaskQueryView(svc.queryTasks(p.workspaceId as string), p) });
   bridge = new RemoteA2aBridge({
-    // What crosses the daemon socket is JSON.
     daemonRpc: async (method, p) => {
-      if (method === A2A_REMOTE_RPC.pending) return JSON.parse(JSON.stringify({ tasks: svc.listRemotePending() }));
+      if (method === A2A_REMOTE_RPC.pending) return wire({ tasks: svc.listRemotePending() });
       if (method === A2A_REMOTE_RPC.mark) {
         const res = await svc.markRemote({
           taskId: p.taskId as string,
@@ -48,7 +53,7 @@ beforeEach(async () => {
     },
     sendToRenderer: async () => ({ ok: true, delivered: true }),
     onDaemonEvent: () => () => undefined,
-    onPeerUpdate: (task) => { writes.push(recordPeerTaskState(task, store)); },
+    afterPull: () => reconcileRemoteLinks(query, store),
     backstopMs: 3_600_000,
   });
   vi.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -76,10 +81,9 @@ afterEach(async () => {
 async function pull(): Promise<void> {
   await bridge.trigger();
   await bridge.whenIdle();
-  await Promise.all(writes);
 }
 
-describe('a task sent to another PC, over the real ledger and bridge', () => {
+describe('work sent to another PC, over the real ledger and bridge', () => {
   it('its link follows the peer from queued to working to done, with the report', async () => {
     expect(store.getByTaskId(RT)?.state).toBe('queued');
 
@@ -110,5 +114,23 @@ describe('a task sent to another PC, over the real ledger and bridge', () => {
     await svc.applyRemoteState({ taskId: RT, linkId: LINK, messageId: 's-3', to: 'canceled' });
     await pull();
     expect(store.getByTaskId(RT)?.state).toBe('abandoned');
+  });
+
+  it('a task the daemon ends itself, with nothing queued for this pane, still ends its link', async () => {
+    const ended = await svc.forceFailRemote({ taskId: RT, reason: 'the other PC refused it: too many new tasks', forced: 'remote_refused' });
+    expect(ended.ok).toBe(true);
+    expect(svc.listRemotePending()).toEqual([]);
+    await pull();
+    expect(store.getByTaskId(RT)).toMatchObject({ state: 'blocked', reason: 'task-failed', result: { summary: expect.stringContaining('refused') } });
+  });
+
+  it('a live link whose task the daemon no longer holds is closed', async () => {
+    await recordSentTask(workLinkFromRemoteSend({
+      taskId: `rt-${'9'.repeat(32)}`, linkId: LINK, alias: ALIAS, requester: { workspaceId: 'ws-co' },
+      title: 'Gone', message: 'x', fromCommander: false,
+    }), store);
+    await pull();
+    expect(store.getByTaskId(`rt-${'9'.repeat(32)}`)?.state).toBe('abandoned');
+    expect(store.getByTaskId(RT)?.state).toBe('queued');
   });
 });

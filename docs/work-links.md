@@ -111,10 +111,15 @@ blocks or fails the delivery or decision that triggered it.
   to a remote pane's alias becomes a link once the daemon stored it for the
   peer: `owner` is `remote:<linkId>` named by the alias, `requester` the
   verified sender pane, state `queued`. It never joins a named link.
-- **Peer state.** The remote bridge (`RemoteA2aBridge`) lists a task we sent
-  whenever the peer replied to it or moved it, and the link takes the
-  daemon's state for it, with the report on `completed` or `failed`. It
-  writes only a state the link does not have yet.
+- **Remote state.** After every pull of the remote bridge
+  (`RemoteA2aBridge`), each open remote-owned link is checked against the
+  daemon's copy of its task (`a2a.task.query`, `view: 'state'`). That copy
+  moves on the peer's states, and also when the peer refuses the task, the
+  link is revoked or broken, or a hold expires, none of which reaches main
+  one by one. A link takes a state it does not have yet, with the report on
+  `completed` or `failed`. A link whose task is not over and is no longer in
+  the daemon ended unseen (the daemon drops ended tasks), and is set
+  `abandoned`. A finished link is not checked again, so its report stays.
 - **A2A state.** Only committed states are recorded. `a2a.task.update`
   records the daemon's committed state, or the requested state once the
   renderer accepted the fallback. `a2a.task.cancel` records `canceled` only on
@@ -195,7 +200,6 @@ change.
 - Nothing writes `prStatus` yet, so a completed task with a PR shows `review`
   until the Git page reads that PR.
 - Fan-out workers get no link.
-- A link owned by a pane on another PC is never settled as orphaned: its peer
-  ends the task. A task on a link that is later revoked or broken never ends,
-  so its link stays `queued` or `running`. A reply to a remote task that has
-  ended does not reopen it.
+- A link owned by a pane on another PC is not settled when a local workspace
+  closes; the daemon's copy of its task settles it. A reply to a remote task
+  that has ended does not reopen it.
