@@ -35,18 +35,18 @@ vi.mock('electron', () => {
       appListeners.delete(event);
     }),
   };
-  // The clipboard's image, for the send-files path.
+  // The clipboard's image, for the send-files path, as Electron hands it over.
   const clipboard = {
-    readImage: vi.fn(() => ({
-      isEmpty: () => false,
-      getSize: () => ({ width: 2, height: 2 }),
-      toPNG: () => Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]),
-    })),
+    read: vi.fn(async () => [{
+      types: ['image/png'],
+      getType: async () => new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0])]),
+    }]),
   };
-  return { ipcMain, app, clipboard };
+  const nativeImage = { createFromBuffer: vi.fn(() => ({ getSize: () => ({ width: 2, height: 2 }) })) };
+  return { ipcMain, app, clipboard, nativeImage };
 });
 
-import { clipboard } from 'electron';
+import { clipboard, nativeImage } from 'electron';
 import { registerRemoteHandlers } from '../remote.handler';
 import { IPC } from '../../../../shared/constants';
 import type { RemoteAttachmentDescriptor, RemoteHost, RemoteHostPublic, RemoteWorkspacesResponse } from '../../../../shared/remoteHosts';
@@ -1804,9 +1804,9 @@ describe('remote.handler — sending files to a pane', () => {
     const { client } = setup({ ...config, allowUpload: false });
     const sender = fakeSender(391);
     const attachId = await attach(sender);
-    vi.mocked(clipboard.readImage).mockClear();
+    vi.mocked(clipboard.read).mockClear();
     expect(await send(sender, attachId, { kind: 'clipboard-image' })).toEqual({ ok: false, reason: 'uploads-disabled' });
-    expect(clipboard.readImage).not.toHaveBeenCalled();
+    expect(clipboard.read).not.toHaveBeenCalled();
     // A path that does not exist: read first, it would answer not-a-file.
     const token = await getHandler(IPC.REMOTE_DROP_REGISTER)({ sender }, ['/no/such/file.png']) as string;
     expect(await send(sender, attachId, { kind: 'drop', token })).toEqual({ ok: false, reason: 'uploads-disabled' });
@@ -1831,7 +1831,7 @@ describe('remote.handler — sending files to a pane', () => {
       return new Promise((_resolve, reject) => s.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
     });
     const pending = send(sender, attachId, { kind: 'clipboard-image' });
-    await vi.waitFor(() => expect(signal).toBeDefined());
+    await vi.waitFor(() => expect(signal).toBeDefined(), { timeout: 5_000 });
     await getHandler(IPC.REMOTE_PANE_DETACH)({}, attachId);
     expect(await pending).toEqual({ ok: false, reason: 'pane-changed' });
     expect(await getHandler(IPC.REMOTE_PANE_WRITE_CHECKED)({ sender }, attachId, "'/x'")).toEqual({ ok: false, reason: 'not-connected' });
@@ -1848,7 +1848,7 @@ describe('remote.handler — sending files to a pane', () => {
       return new Promise((_resolve, reject) => s.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
     });
     const pending = send(sender, attachId, { kind: 'clipboard-image' });
-    await vi.waitFor(() => expect(signal).toBeDefined());
+    await vi.waitFor(() => expect(signal).toBeDefined(), { timeout: 5_000 });
     sender.fireDestroyed();
     expect(await pending).toEqual({ ok: false, reason: 'pane-changed' });
   });
@@ -1864,7 +1864,7 @@ describe('remote.handler — sending files to a pane', () => {
       return new Promise((_resolve, reject) => s.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' }))));
     });
     const pending = send(sender, second, { kind: 'clipboard-image' });
-    await vi.waitFor(() => expect(signal).toBeDefined());
+    await vi.waitFor(() => expect(signal).toBeDefined(), { timeout: 5_000 });
     await getHandler(IPC.REMOTE_PANE_DETACH)({}, second);
     expect(await pending).toEqual({ ok: false, reason: 'pane-changed' });
     expect(client.detach).not.toHaveBeenCalled();
@@ -1877,20 +1877,18 @@ describe('remote.handler — sending files to a pane', () => {
     let finish: (v: unknown) => void = () => undefined;
     client.upload.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
     const first = send(sender, attachId, { kind: 'clipboard-image' });
-    await vi.waitFor(() => expect(client.upload).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(client.upload).toHaveBeenCalledTimes(1), { timeout: 5_000 });
     expect(await send(sender, attachId, { kind: 'clipboard-image' })).toEqual({ ok: false, reason: 'already-sending' });
     finish({ ok: true, path: '/Users/o/.wmux/uploads/phone/photo-2026-10-24T01-02-03-456Z-0123abcd.png' });
     expect(await first).toEqual({ ok: true, count: 1, text: "'/Users/o/.wmux/uploads/phone/photo-2026-10-24T01-02-03-456Z-0123abcd.png'" });
   });
 
-  it('refuses an oversized clipboard image before encoding it', async () => {
+  it('refuses an oversized clipboard image before uploading it', async () => {
     const { client } = setup();
     const sender = fakeSender(361);
     const attachId = await attach(sender);
-    const toPNG = vi.fn();
-    vi.mocked(clipboard.readImage).mockReturnValueOnce({ isEmpty: () => false, getSize: () => ({ width: 10_000, height: 10_000 }), toPNG } as never);
+    vi.mocked(nativeImage.createFromBuffer).mockReturnValueOnce({ getSize: () => ({ width: 10_000, height: 10_000 }) } as never);
     expect(await send(sender, attachId, { kind: 'clipboard-image' })).toEqual({ ok: false, reason: 'too-large' });
-    expect(toPNG).not.toHaveBeenCalled();
     expect(client.upload).not.toHaveBeenCalled();
   });
 

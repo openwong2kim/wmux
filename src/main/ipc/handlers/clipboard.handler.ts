@@ -7,6 +7,7 @@ import { wrapHandler } from '../wrapHandler';
 import { foregroundRemoteShellClient, imagePathForPane } from '../../../shared/imagePaste';
 import { getPtyShell } from '../../pty/ptyShellRegistry';
 import { EphemeralClipboard } from '../../clipboard/ephemeralClipboard';
+import { readClipboardPng } from '../../clipboard/clipboardImage';
 import { ELEMENT_SHOT_PREFIX } from '../../../shared/browserElementHandoff';
 
 let ephemeral: EphemeralClipboard | null = null;
@@ -71,61 +72,52 @@ function quotePathForPty(p: string): string {
  * 실패·타임아웃·비파일·빈 출력은 전부 null로 반환해 붙여넣기를 절대 악화시키지 않는다.
  */
 /**
- * Fast path: read the pasteboard's `public.file-url` slot directly via
- * Electron — no subprocess. Finder usually writes a REAL file URL here
- * (`file:///Users/me/%ED%8F%B4%EB%8D%94`); only some copy paths produce the
- * opaque `file:///.file/id=` bookmark form, which we cannot resolve in JS —
- * those return null and fall through to the osascript path below. This is
- * what makes ordinary Finder path pastes instant instead of paying an
- * osascript SPAWN (hundreds of ms, 2s worst case) on every Cmd+V.
+ * Fast path: read the copied file's URL straight from the clipboard via
+ * Electron — no subprocess. Electron hands a copied file over as
+ * `text/uri-list` (on macOS, the pasteboard's file URLs), one RFC 2483 URI
+ * per line; a real file URL (`file:///Users/me/%ED%8F%B4%EB%8D%94`) resolves
+ * here. Only the opaque `file:///.file/id=` bookmark form cannot be resolved
+ * in JS — that, and a list this cannot read, take the osascript path below.
+ * This is what makes ordinary Finder path pastes instant instead of paying
+ * an osascript SPAWN (hundreds of ms, 2s worst case) on every Cmd+V.
  *
  * The decoded path is normalized to NFC: macOS hands out NFD-decomposed
  * names, and pasting decomposed jamo into a terminal renders Korean folder
  * names as broken syllable parts and breaks string matching against typed
  * NFC input. (Same normalization the osascript fallback applies.)
  */
-/** Sentinel: the pasteboard HAS a file URL, but in the opaque bookmark form
- *  only AppleScript can resolve — the caller should take the osascript path. */
+/** Sentinel: the clipboard HAS a file, but in a form only AppleScript can
+ *  resolve — the caller should take the osascript path. */
 const OPAQUE_FILE_URL = Symbol('opaque-file-url');
 
-function readFileUrlFromPasteboard(): string | typeof OPAQUE_FILE_URL | null {
+async function readFileUrlFromPasteboard(): Promise<string | typeof OPAQUE_FILE_URL | null> {
+  let raw: string;
   try {
-    // Electron's string `read()` is restricted to MIME-like formats on some
-    // versions, while the pasteboard slot is a native UTI — `readBuffer` is
-    // the reliable accessor (Codex review, PR #479). Try both; a failure on
-    // either is just a fall-through, never an exception out of this helper.
-    let raw = '';
-    try {
-      raw = clipboard.readBuffer('public.file-url').toString('utf8');
-    } catch {
-      /* fall through to read() */
-    }
-    if (!raw) {
-      try {
-        raw = clipboard.read('public.file-url');
-      } catch {
-        /* not readable as string either */
-      }
-    }
-    if (!raw || typeof raw !== 'string') return null;
-    const url = raw.trim();
-    if (!url.startsWith('file://')) return null;
-    // Opaque Finder bookmark (`file:///.file/id=…`) — unresolvable in JS.
-    if (url.includes('/.file/id=')) return OPAQUE_FILE_URL;
-    let decoded: string;
-    try {
-      decoded = decodeURIComponent(url.slice('file://'.length));
-    } catch {
-      return null; // malformed percent-encoding — let readText handle it
-    }
-    // Strip a possible host segment (file://localhost/...): everything up to
-    // the first '/' is host.
-    const slash = decoded.indexOf('/');
-    const p = slash >= 0 ? decoded.slice(slash) : decoded;
-    return p.startsWith('/') ? p.normalize('NFC') : null;
+    // A single-format check first: listing every type is the slow path below.
+    if (!(await clipboard.has('text/uri-list'))) return null;
+    const item = (await clipboard.read()).find((i) => i.types.includes('text/uri-list'));
+    if (!item) return null;
+    raw = Buffer.from(await (await item.getType('text/uri-list')).arrayBuffer()).toString('utf8');
   } catch {
     return null;
   }
+  // A file is there from here on: anything unreadable goes to osascript, so a
+  // file paste never regresses to Finder's basename-only readText.
+  const url = raw.split(/\r?\n/).map((line) => line.trim()).find((line) => line && !line.startsWith('#')) ?? '';
+  if (!url.startsWith('file://')) return OPAQUE_FILE_URL;
+  // Opaque Finder bookmark (`file:///.file/id=…`) — unresolvable in JS.
+  if (url.includes('/.file/id=')) return OPAQUE_FILE_URL;
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(url.slice('file://'.length));
+  } catch {
+    return OPAQUE_FILE_URL; // malformed percent-encoding
+  }
+  // Strip a possible host segment (file://localhost/...): everything up to
+  // the first '/' is host.
+  const slash = decoded.indexOf('/');
+  const p = slash >= 0 ? decoded.slice(slash) : decoded;
+  return p.startsWith('/') ? p.normalize('NFC') : OPAQUE_FILE_URL;
 }
 
 function resolveFinderFilePath(): Promise<string | null> {
@@ -197,7 +189,7 @@ export function registerClipboardHandlers(
   ipcMain.removeHandler(IPC.CLIPBOARD_HAS_IMAGE);
   ipcMain.removeHandler(IPC.CLIPBOARD_PANE_REMOTE_SHELL);
 
-  ipcMain.handle(IPC.CLIPBOARD_WRITE, wrapHandler(IPC.CLIPBOARD_WRITE, (_event: Electron.IpcMainInvokeEvent, text: string) => {
+  ipcMain.handle(IPC.CLIPBOARD_WRITE, wrapHandler(IPC.CLIPBOARD_WRITE, async (_event: Electron.IpcMainInvokeEvent, text: string) => {
     // Surface validation failures so renderer can react instead of silently
     // showing "copied" toasts when nothing actually reached the clipboard.
     if (typeof text !== 'string') {
@@ -207,7 +199,7 @@ export function registerClipboardHandlers(
       throw new Error('CLIPBOARD_TOO_LARGE');
     }
     try {
-      clipboard.writeText(text);
+      await clipboard.writeText(text);
     } catch (err) {
       // Win32 clipboard can fail under lock contention with other apps —
       // surface the underlying message so renderer can retry/notify.
@@ -221,15 +213,17 @@ export function registerClipboardHandlers(
   ephemeral ??= new EphemeralClipboard({ readText: () => clipboard.readText(), writeText: (t) => clipboard.writeText(t) });
   if (!quitHookInstalled && typeof app?.on === 'function') {
     quitHookInstalled = true;
-    app.on('before-quit', () => ephemeral?.clear());
+    // The clear is asynchronous: main's own before-quit holds the quit while it
+    // saves and detaches, far longer than one clipboard read and write.
+    app.on('before-quit', () => void ephemeral?.clear());
   }
   ipcMain.removeHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL);
   ipcMain.handle(IPC.CLIPBOARD_WRITE_EPHEMERAL, wrapHandler(IPC.CLIPBOARD_WRITE_EPHEMERAL,
-    (_event: Electron.IpcMainInvokeEvent, text: unknown, ttlMs: unknown) => {
+    async (_event: Electron.IpcMainInvokeEvent, text: unknown, ttlMs: unknown) => {
       if (typeof text !== 'string' || text.length === 0 || text.length > 4096) throw new Error('CLIPBOARD_INVALID_TYPE');
       const ttl = typeof ttlMs === 'number' && Number.isFinite(ttlMs) ? ttlMs : 0;
       try {
-        ephemeral?.write(text, ttl);
+        await ephemeral?.write(text, ttl);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(`CLIPBOARD_WRITE_FAILED: ${msg}`);
@@ -246,9 +240,9 @@ export function registerClipboardHandlers(
     // 때만 경로 해석을 시도한다. 그 외(일반 텍스트, 타 OS)는 기존과 완전히 동일하게
     // readText()를 즉시 반환하므로 일반 붙여넣기의 지연·동작 변화는 0이다.
     if (process.platform === 'darwin') {
-      // Fast path first: try reading the `public.file-url` slot DIRECTLY —
-      // a single-format read. Deliberately NOT gated on availableFormats():
-      // format enumeration touches every pasteboard type Finder registered
+      // Fast path first: a single-format check for a copied file's URL list,
+      // read only when it is there. Deliberately NOT gated on listing every
+      // type: format enumeration touches every pasteboard type Finder registered
       // (icons, promises) and is itself a known macOS slow path (VS Code /
       // Electron issue lore), so the old gate taxed every ordinary text
       // paste too. A non-file clipboard just returns null here and falls
@@ -256,18 +250,14 @@ export function registerClipboardHandlers(
       // `.file/id=` bookmark form still needs the osascript fallback — that
       // keeps ordinary Finder path pastes instant instead of paying an
       // osascript SPAWN (the reported multi-hundred-ms paste delay).
-      const fromPasteboard = readFileUrlFromPasteboard();
-      // osascript fallback fires for the opaque bookmark form AND when the
-      // native reads yielded nothing but the pasteboard demonstrably holds a
-      // file (uri-list present) — e.g. an Electron version whose clipboard
-      // APIs can't surface the UTI (Codex review: never regress a file paste
-      // to Finder's basename-only readText). The enumeration gate is only
-      // reached on that fallback path; successful native reads skip it.
+      const fromPasteboard = await readFileUrlFromPasteboard();
+      // osascript fallback fires for the opaque bookmark form AND for a file
+      // whose URL could not be read here (Codex review: never regress a file
+      // paste to Finder's basename-only readText).
       const filePath =
         typeof fromPasteboard === 'string'
           ? fromPasteboard
-          : fromPasteboard === OPAQUE_FILE_URL ||
-              clipboard.availableFormats().includes('text/uri-list')
+          : fromPasteboard === OPAQUE_FILE_URL
             ? await resolveFinderFilePath()
             : null;
       if (filePath) {
@@ -279,7 +269,7 @@ export function registerClipboardHandlers(
       }
       // 해석 실패(비파일 furl, 타임아웃, 빈 출력 등) → 아래 readText() 폴백.
     }
-    const text = clipboard.readText();
+    const text = await clipboard.readText();
     // darwin + "경로처럼 생긴 단일행 텍스트"만 NFC 정규화: Finder의 "경로명
     // 복사"(Option+Cmd+C)가 NFD(자모 분해)를 내놓는 케이스를 잡는다. 임의
     // 텍스트를 전부 정규화하면 의도적으로 NFD인 소스 스니펫/테스트 벡터/
@@ -295,9 +285,9 @@ export function registerClipboardHandlers(
     return text;
   }));
 
-  ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, wrapHandler(IPC.CLIPBOARD_READ_IMAGE, (_event: Electron.IpcMainInvokeEvent, ptyId?: string) => {
-    const image = clipboard.readImage();
-    if (image.isEmpty()) return null;
+  ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, wrapHandler(IPC.CLIPBOARD_READ_IMAGE, async (_event: Electron.IpcMainInvokeEvent, ptyId?: string) => {
+    const png = await readClipboardPng();
+    if (!png) return null;
 
     const tempDir = app.getPath('temp');
     // Date.now() alone can collide when pasting rapidly; add a random suffix
@@ -305,7 +295,7 @@ export function registerClipboardHandlers(
       tempDir,
       `wmux-paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
     );
-    fs.writeFileSync(filePath, image.toPNG());
+    fs.writeFileSync(filePath, png);
     // A WSL pane sees the Windows temp dir only under /mnt (#1196): pasting the
     // native `C:\...` path there hands the agent a file it cannot open. Any pane
     // whose shell we can't identify keeps the untouched path — a wrong /mnt
@@ -322,7 +312,7 @@ export function registerClipboardHandlers(
     return paneRemoteShell(ptyId, opts.shellPidFor);
   }));
 
-  ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, wrapHandler(IPC.CLIPBOARD_HAS_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {
-    return clipboard.availableFormats().some(f => f.startsWith('image/'));
+  ipcMain.handle(IPC.CLIPBOARD_HAS_IMAGE, wrapHandler(IPC.CLIPBOARD_HAS_IMAGE, async (_event: Electron.IpcMainInvokeEvent) => {
+    return (await clipboard.read()).some((item) => item.types.some((t) => t.startsWith('image/')));
   }));
 }

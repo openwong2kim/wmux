@@ -15,10 +15,11 @@
 // Observer + input only: no route here ever calls a remote destroy/delete
 // endpoint (RemoteHostClient itself never exposes one either).
 
-import { app, clipboard, ipcMain } from 'electron';
+import { app, ipcMain, nativeImage } from 'electron';
 import type { IpcMainInvokeEvent, WebContents } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { readClipboardPng } from '../../clipboard/clipboardImage';
 import {
   RemoteHostClient,
   RemoteInsecureTransportError,
@@ -1100,11 +1101,11 @@ export function registerRemoteHandlers(deps: RegisterRemoteHandlersDeps): () => 
         if (refused) return { ok: false, reason: refused };
         let files: RemoteSendFile[];
         if (src.kind === 'clipboard-image') {
-          const image = clipboard.readImage();
-          if (image.isEmpty()) return { ok: false, reason: 'no-image' };
-          const { width, height } = image.getSize();
+          const png = await readClipboardPng();
+          if (!png) return { ok: false, reason: 'no-image' };
+          const { width, height } = nativeImage.createFromBuffer(png).getSize();
           if (width * height > REMOTE_UPLOAD_LIMITS.MAX_CLIPBOARD_PIXELS) return { ok: false, reason: 'too-large' };
-          files = [{ name: 'clipboard.png', bytes: image.toPNG() }];
+          files = [{ name: 'clipboard.png', bytes: png }];
         } else if (src.kind === 'drop' && typeof src.token === 'string') {
           const drop = dropTokens.get(src.token);
           dropTokens.delete(src.token);

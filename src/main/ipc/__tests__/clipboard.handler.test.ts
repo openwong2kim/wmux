@@ -14,10 +14,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 vi.mock('electron', () => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
-  const writeText = vi.fn();
-  const readText = vi.fn(() => 'hello');
-  const availableFormats = vi.fn(() => [] as string[]);
-  const read = vi.fn(() => '' as string);
+  const writeText = vi.fn(async (_text: string) => undefined);
+  const readText = vi.fn(async () => 'hello');
+  const has = vi.fn(async (_mime: string) => false);
+  const read = vi.fn(async () => [] as unknown[]);
   const ipcMain = {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -31,8 +31,7 @@ vi.mock('electron', () => {
     clipboard: {
       writeText,
       readText,
-      readImage: vi.fn(() => ({ isEmpty: () => true, toPNG: () => Buffer.from([]) })),
-      availableFormats,
+      has,
       read,
     },
     app: { getPath: vi.fn(() => '/tmp') },
@@ -40,7 +39,7 @@ vi.mock('electron', () => {
     __handlers: handlers,
     __writeText: writeText,
     __readText: readText,
-    __availableFormats: availableFormats,
+    __has: has,
     __read: read,
   };
 });
@@ -66,8 +65,8 @@ import { IPC } from '../../../shared/constants';
 const handlers = (electron as unknown as { __handlers: Map<string, (...a: unknown[]) => unknown> }).__handlers;
 const writeText = (electron as unknown as { __writeText: ReturnType<typeof vi.fn> }).__writeText;
 const readText = (electron as unknown as { __readText: ReturnType<typeof vi.fn> }).__readText;
-const availableFormats = (electron as unknown as { __availableFormats: ReturnType<typeof vi.fn> }).__availableFormats;
-const pasteboardRead = (electron as unknown as { __read: ReturnType<typeof vi.fn> }).__read;
+const clipboardHas = (electron as unknown as { __has: ReturnType<typeof vi.fn> }).__has;
+const clipboardRead = (electron as unknown as { __read: ReturnType<typeof vi.fn> }).__read;
 const execFileMock = execFile as unknown as ReturnType<typeof vi.fn>;
 
 // execFile(file, args, opts, cb) 콜백 시그니처
@@ -80,6 +79,17 @@ function mockResolverStdout(stdout: string): void {
       (cb as ExecFileCb)(null, stdout, '');
     }
   );
+}
+
+/** The clipboard holds a copied file: Electron hands it over as a `text/uri-list`. */
+function copiedFile(uriList: string): void {
+  clipboardHas.mockImplementation(async (mime: string) => mime === 'text/uri-list');
+  clipboardRead.mockResolvedValue([{ types: ['text/uri-list'], getType: async () => new Blob([uriList]) }]);
+}
+
+/** The clipboard holds an image, as Electron hands it over. */
+function copiedImage(png: Buffer): void {
+  clipboardRead.mockResolvedValue([{ types: ['image/png'], getType: async () => new Blob([new Uint8Array(png)]) }]);
 }
 
 // process.platform을 테스트별로 바꾸고 afterEach에서 원복한다
@@ -100,11 +110,11 @@ beforeEach(() => {
   handlers.clear();
   writeText.mockReset();
   readText.mockReset();
-  readText.mockReturnValue('hello');
-  availableFormats.mockReset();
-  availableFormats.mockReturnValue([] as string[]);
-  pasteboardRead.mockReset();
-  pasteboardRead.mockReturnValue('');
+  readText.mockResolvedValue('hello');
+  clipboardHas.mockReset();
+  clipboardHas.mockResolvedValue(false);
+  clipboardRead.mockReset();
+  clipboardRead.mockResolvedValue([]);
   execFileMock.mockReset();
   stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   registerClipboardHandlers();
@@ -155,9 +165,7 @@ describe('CLIPBOARD_WRITE — error surfacing', () => {
 
   it('throws CLIPBOARD_WRITE_FAILED when underlying clipboard.writeText throws', async () => {
     const handler = getHandler(IPC.CLIPBOARD_WRITE);
-    writeText.mockImplementationOnce(() => {
-      throw new Error('OpenClipboard failed: 0x800401D0');
-    });
+    writeText.mockRejectedValueOnce(new Error('OpenClipboard failed: 0x800401D0'));
     await expect(handler({} as never, 'payload'))
       .rejects.toThrow(/CLIPBOARD_WRITE_FAILED.*OpenClipboard failed/);
   });
@@ -169,9 +177,9 @@ describe('CLIPBOARD_WRITE — error surfacing', () => {
 });
 
 describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
-  it('darwin fast path: public.file-url resolves WITHOUT osascript (the paste-delay fix)', async () => {
+  it('darwin fast path: a copied file\'s URL resolves WITHOUT osascript (the paste-delay fix)', async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///Users/foo/project/out/wmux-darwin-arm64/');
+    copiedFile('file:///Users/foo/project/out/wmux-darwin-arm64/');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     // 디렉터리 trailing slash는 macOS가 준 그대로 유지된다
@@ -183,7 +191,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('darwin opaque bookmark (file:///.file/id=) falls back to the osascript resolver', async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///.file/id=6571367.8927864');
+    copiedFile('file:///.file/id=6571367.8927864');
     mockResolverStdout('/Users/foo/project/out/wmux-darwin-arm64/\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -195,7 +203,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
   it('darwin fast path NFC-normalizes NFD Korean folder names (한글 경로 깨짐)', async () => {
     setPlatform('darwin');
     const nfd = '한글'.normalize('NFD');
-    pasteboardRead.mockReturnValue('file:///Users/foo/' + encodeURIComponent(nfd));
+    copiedFile('file:///Users/foo/' + encodeURIComponent(nfd));
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     // 한글은 SAFE_PATH_RE 밖 → pty용 단일따옴표 인용. 핵심 단언은 따옴표 안이
@@ -205,7 +213,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('darwin readText fallback NFC-normalizes NFD text (Finder "경로명 복사")', async () => {
     setPlatform('darwin');
-    readText.mockReturnValue('/Users/foo/한글'.normalize('NFD'));
+    readText.mockResolvedValue('/Users/foo/한글'.normalize('NFD'));
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('/Users/foo/한글');
@@ -213,7 +221,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('single-quotes the resolved path when it contains spaces', async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///.file/id=1');
+    copiedFile('file:///.file/id=1');
     mockResolverStdout('/Users/foo/My Folder/file.txt\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -224,7 +232,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     // Finder 파일명은 사용자 통제 밖 입력이 셸로 들어가는 경계 — 큰따옴표는 $·백틱을
     // 여전히 해석하므로 부족하다(CodeRabbit 지적). 단일따옴표 안은 전부 리터럴.
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///.file/id=1');
+    copiedFile('file:///.file/id=1');
     mockResolverStdout('/Users/foo/we$ird `name";dir\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -233,7 +241,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it("escapes embedded single quotes with the POSIX '\\'' idiom", async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///.file/id=1');
+    copiedFile('file:///.file/id=1');
     mockResolverStdout("/Users/foo/it's here\n");
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -243,7 +251,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('falls back to readText when the resolver fails (non-zero exit / timeout)', async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///.file/id=1');
+    copiedFile('file:///.file/id=1');
     execFileMock.mockImplementation(
       (_file: unknown, _args: unknown, _opts: unknown, cb: unknown) => {
         (cb as ExecFileCb)(new Error('osascript timed out'), '', '');
@@ -257,7 +265,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('falls back to readText when output is empty (browser URL exposes uri-list but no «class furl»)', async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///.file/id=1');
+    copiedFile('file:///.file/id=1');
     // furl 가드 스크립트는 비파일 클립보드(브라우저 URL 복사 등)에서 빈 문자열을 낸다
     mockResolverStdout('\n');
 
@@ -268,7 +276,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('falls back to readText when output is not an absolute path', async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('file:///.file/id=1');
+    copiedFile('file:///.file/id=1');
     mockResolverStdout('garbage-not-a-path\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -277,23 +285,52 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('non-darwin → readText untouched and resolver is never spawned', async () => {
     setPlatform('linux');
-    // file-url 슬롯이 있어도 darwin 게이트가 먼저 컷한다
-    pasteboardRead.mockReturnValue('file:///home/foo/x');
+    // 파일 URL이 있어도 darwin 게이트가 먼저 컷한다
+    copiedFile('file:///home/foo/x');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('hello');
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it('darwin plain text copy (no file-url slot) → readText, no osascript spawn', async () => {
+  it('darwin plain text copy (no file URL) → readText, no osascript spawn, no listing of every type', async () => {
     setPlatform('darwin');
-    pasteboardRead.mockReturnValue('');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('hello');
-    // 열거(availableFormats)는 "네이티브 read가 빈손일 때 파일 여부 확인"용으로
-    // 남는다(Codex: 클립보드 API가 UTI를 못 읽는 버전에서 파일 paste가 basename
-    // 텍스트로 퇴행하면 안 됨). 보장하는 건 스폰 없음 — 지연의 원흉은 osascript다.
+    // 보장하는 건 스폰 없음(지연의 원흉은 osascript)과, 모든 타입 열거 없이
+    // 단일 포맷 확인만 하는 것이다.
     expect(execFileMock).not.toHaveBeenCalled();
+    expect(clipboardRead).not.toHaveBeenCalled();
+  });
+
+  it('darwin copied file whose URL cannot be read here → osascript, never the basename text', async () => {
+    setPlatform('darwin');
+    copiedFile('not-a-file-url');
+    mockResolverStdout('/Users/foo/doc.txt\n');
+
+    const handler = getHandler(IPC.CLIPBOARD_READ);
+    await expect(handler({} as never)).resolves.toBe('/Users/foo/doc.txt');
+    expect(execFileMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('CLIPBOARD_READ_IMAGE / CLIPBOARD_HAS_IMAGE', () => {
+  it('writes the clipboard image\'s PNG bytes to a temp file and answers its path', async () => {
+    setPlatform('darwin');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    copiedImage(png);
+    const fs = await import('fs');
+
+    const path = await getHandler(IPC.CLIPBOARD_READ_IMAGE)({} as never);
+    expect(path).toMatch(/wmux-paste-.*\.png$/);
+    expect(fs.writeFileSync).toHaveBeenCalledWith(path, png);
+    await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(true);
+  });
+
+  it('answers no image when the clipboard holds none', async () => {
+    copiedFile('file:///Users/foo/x');
+    await expect(getHandler(IPC.CLIPBOARD_READ_IMAGE)({} as never)).resolves.toBeNull();
+    await expect(getHandler(IPC.CLIPBOARD_HAS_IMAGE)({} as never)).resolves.toBe(false);
   });
 });

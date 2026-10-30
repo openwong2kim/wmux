@@ -7,10 +7,14 @@
  * Every clear is conditional: the clipboard is emptied only if it still holds
  * exactly the text this module put there. Anything the operator copied since
  * is theirs and is left alone.
+ *
+ * The clipboard is asynchronous, so writes and clears run one at a time, in
+ * the order they were asked for: a clear still reading never empties a link
+ * written after it.
  */
 export interface EphemeralClipboardDeps {
-  readText: () => string;
-  writeText: (text: string) => void;
+  readText: () => Promise<string>;
+  writeText: (text: string) => Promise<void>;
   setTimer?: (fn: () => void, ms: number) => unknown;
   clearTimer?: (handle: unknown) => void;
 }
@@ -20,6 +24,7 @@ const MAX_TTL_MS = 60 * 60 * 1000;
 
 export class EphemeralClipboard {
   private held: { text: string; timer: unknown } | null = null;
+  private queue: Promise<void> = Promise.resolve();
   private readonly setTimer: (fn: () => void, ms: number) => unknown;
   private readonly clearTimer: (handle: unknown) => void;
 
@@ -34,12 +39,14 @@ export class EphemeralClipboard {
     this.clearTimer = deps.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
   }
 
-  /** Write `text` and take it back off after `ttlMs` (if still there). */
-  write(text: string, ttlMs: number): void {
-    this.forget();
-    this.deps.writeText(text);
-    const ms = Math.max(0, Math.min(ttlMs, MAX_TTL_MS));
-    this.held = { text, timer: this.setTimer(() => this.clear(), ms) };
+  /** Write `text` and take it back off after `ttlMs` (if still there). A failed write rejects. */
+  write(text: string, ttlMs: number): Promise<void> {
+    return this.inTurn(async () => {
+      this.forget();
+      await this.deps.writeText(text);
+      const ms = Math.max(0, Math.min(ttlMs, MAX_TTL_MS));
+      this.held = { text, timer: this.setTimer(() => void this.clear(), ms) };
+    });
   }
 
   /**
@@ -51,19 +58,28 @@ export class EphemeralClipboard {
   keepOnly(stillValid: string): void {
     if (!this.held) return;
     if (stillValid && this.held.text.split('\n').includes(stillValid)) return;
-    this.clear();
+    void this.clear();
   }
 
-  /** Clear the held text if the clipboard still has it (expiry, quit). */
-  clear(): void {
-    const held = this.held;
-    this.forget();
-    if (!held) return;
-    try {
-      if (this.deps.readText() === held.text) this.deps.writeText('');
-    } catch {
-      /* clipboard busy — nothing more can be done at this point */
-    }
+  /** Clear the held text if the clipboard still has it (expiry, quit). Never rejects. */
+  clear(): Promise<void> {
+    return this.inTurn(async () => {
+      const held = this.held;
+      this.forget();
+      if (!held) return;
+      try {
+        if ((await this.deps.readText()) === held.text) await this.deps.writeText('');
+      } catch {
+        /* clipboard busy — nothing more can be done at this point */
+      }
+    });
+  }
+
+  /** Run `step` after every step asked for before it. */
+  private inTurn(step: () => Promise<void>): Promise<void> {
+    const run = this.queue.then(step);
+    this.queue = run.catch(() => undefined);
+    return run;
   }
 
   private forget(): void {
