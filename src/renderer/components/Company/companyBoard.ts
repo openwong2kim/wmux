@@ -9,6 +9,8 @@ import type { FleetTicket } from '../FleetView/fleetTickets';
 export interface BoardSeat {
   paneId: string;
   coordinator: boolean;
+  /** An agent runs on one of the pane's terminal tabs. */
+  agent: boolean;
   /** The pane's agent, the most urgent one when the pane runs several;
    *  absent while no agent runs there. */
   row?: WorkspaceAgentRosterRow;
@@ -39,14 +41,16 @@ const isOpen = (t: FleetTicket) => t.state !== 'done' && t.state !== 'failed';
 
 /**
  * `paneIds` is every pane of the workspace in layout order, stashed ones
- * included; `rows` its roster; `tickets` every ticket as buildFleetTickets
+ * included; `agentPaneIds` the ones with an agent on any terminal tab (a
+ * stashed pane's roster row reads only one tab); `rows` its roster; `tickets` every ticket as buildFleetTickets
  * orders them (needs-you first, then newest); `links` the work links they came
  * from, which say who handed each job out.
  */
-export function buildCompanyBoard({ workspaceId, coordinatorPaneId, paneIds, rows, tickets, links, paneRole }: {
+export function buildCompanyBoard({ workspaceId, coordinatorPaneId, paneIds, agentPaneIds, rows, tickets, links, paneRole }: {
   workspaceId: string;
   coordinatorPaneId: string | null;
   paneIds: readonly string[];
+  agentPaneIds: ReadonlySet<string>;
   rows: readonly WorkspaceAgentRosterRow[];
   tickets: readonly FleetTicket[];
   links: readonly WorkLink[];
@@ -65,10 +69,11 @@ export function buildCompanyBoard({ workspaceId, coordinatorPaneId, paneIds, row
   const seats = ordered.map((paneId): BoardSeat => {
     const row = rowOf.get(paneId);
     const owns = paneRole[paneId]?.trim();
-    return { paneId, coordinator: paneId === coordinatorPaneId, ...(row ? { row } : {}), ...(owns ? { owns } : {}), now: [], next: [] };
+    const agent = !!row || agentPaneIds.has(paneId);
+    return { paneId, coordinator: paneId === coordinatorPaneId, agent, ...(row ? { row } : {}), ...(owns ? { owns } : {}), now: [], next: [] };
   });
   const seatOf = new Map(seats.map((seat) => [seat.paneId, seat]));
-  const agentSeats = seats.filter((seat) => seat.row);
+  const agentSeats = seats.filter((seat) => seat.agent);
 
   const fromHere = new Set(links.filter((l) => l.requester?.workspaceId === workspaceId).map((l) => l.id));
   const board: CompanyBoard = { needsYou: [], seats, unseated: [], handedOut: [], log: [] };

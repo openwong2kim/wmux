@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useStore } from '../../stores';
+import { useStore, type StoreState } from '../../stores';
 import { createWorkspaceAgentRosterSelector, type WorkspaceAgentRosterRow } from '../../stores/selectors/workspaceAgentRoster';
 import { useT } from '../../hooks/useT';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
@@ -20,6 +20,7 @@ import { buildCompanyBoard, type BoardSeat } from './companyBoard';
 
 const NOW_SHOWN = 2;
 const NO_TASKS: Record<string, Task> = {};
+const NO_AGENTS: StoreState['surfaceAgent'] = {};
 
 function Section({ title, count, needsYou = false, children }: { title: string; count?: number; needsYou?: boolean; children: ReactNode }) {
   return (
@@ -55,6 +56,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const roster = useStore(rosterSelector);
   const paneRole = useStore((s) => s.paneRole);
   const paneLabel = useStore((s) => s.paneLabel);
+  const surfaceAgent = useStore((s) => (isActive ? s.surfaceAgent : NO_AGENTS));
   // The task mirror only fills in a request or report a link lacks; a hidden
   // board need not redraw on every task update in the app.
   const a2aTasks = useStore((s) => (isActive ? s.a2aTasks : NO_TASKS));
@@ -69,6 +71,10 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   }, [isActive]);
 
   const leaves = useMemo(() => (workspace ? getWorkspaceLeafPanes(workspace) : []), [workspace]);
+  const agentPaneIds = useMemo(
+    () => new Set(leaves.filter((leaf) => leaf.surfaces.some((sf) => !!sf.ptyId && !!surfaceAgent[sf.ptyId]?.name)).map((leaf) => leaf.id)),
+    [leaves, surfaceAgent],
+  );
   const board = useMemo(() => {
     // The log keeps the last ten finished jobs however old, not Fleet's last day.
     const tickets = buildFleetTickets({ links, decisions, a2aTasks, now, recentMs: Infinity });
@@ -76,12 +82,13 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
       workspaceId,
       coordinatorPaneId: company?.coordinatorPaneId ?? null,
       paneIds: leaves.map((leaf) => leaf.id),
+      agentPaneIds,
       rows: roster.rows,
       tickets,
       links,
       paneRole,
     });
-  }, [links, decisions, a2aTasks, now, workspaceId, company?.coordinatorPaneId, leaves, roster.rows, paneRole]);
+  }, [links, decisions, a2aTasks, now, workspaceId, company?.coordinatorPaneId, leaves, agentPaneIds, roster.rows, paneRole]);
 
   const tagOf = (paneId: string): string => {
     const leaf = leaves.find((l) => l.id === paneId);
@@ -114,7 +121,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const { row } = seat;
     const title = seatTitle(seat);
     const trailer = row ? row.paneName : tagOf(seat.paneId);
-    const statusLabel = row ? t(AGENT_STATUS_ICON[row.status].labelKey) : t('company.noAgent');
+    const statusLabel = row ? t(AGENT_STATUS_ICON[row.status].labelKey) : seat.agent ? undefined : t('company.noAgent');
     // The pane's terminal, never the board itself when the board sits in this pane.
     const leaf = leaves.find((l) => l.id === seat.paneId);
     const surfaceId = leaf?.surfaces.find((sf) => isTerminalKindSurfaceType(sf.surfaceType))?.id ?? leaf?.activeSurfaceId ?? '';
@@ -136,7 +143,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
           {trailer !== title && <span className="min-w-0 shrink-[4] truncate text-[11px] text-[var(--text-muted)]">{trailer}</span>}
         </span>
         <span className="flex flex-col gap-0.5 pl-[16px]">
-          {!row && <span className="truncate text-[11px] text-[var(--text-muted)]" data-board-no-agent>{t('company.noAgent')}</span>}
+          {!seat.agent && <span className="truncate text-[11px] text-[var(--text-muted)]" data-board-no-agent>{t('company.noAgent')}</span>}
           {seat.owns && <span className="truncate text-[11px] text-[var(--text-muted)]">{t('company.board.owns', { role: seat.owns })}</span>}
           {seat.now.slice(0, NOW_SHOWN).map((ticket) => (
             <span

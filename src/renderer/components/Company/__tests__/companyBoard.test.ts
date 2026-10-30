@@ -14,7 +14,7 @@ const ticket = (id: string, state: FleetTicket['state'], workspaceId: string, pa
 const link = (id: string, requesterWs: string): WorkLink =>
   ({ id, origin: 'manual', owner: { workspaceId: 'x' }, requester: { workspaceId: requesterWs }, state: 'running', decisionIds: [], createdAt: 0, updatedAt: 0 }) as unknown as WorkLink;
 
-const base = { workspaceId: 'co', coordinatorPaneId: 'ceo', paneIds: ['dev', 'ceo', 'shell'], links: [] as WorkLink[], paneRole: {} };
+const base = { workspaceId: 'co', coordinatorPaneId: 'ceo', paneIds: ['dev', 'ceo', 'shell'], agentPaneIds: new Set<string>(), links: [] as WorkLink[], paneRole: {} };
 
 describe('buildCompanyBoard', () => {
   it('seats every pane with the CEO first, and keeps a job on its seat while the agent is gone', () => {
@@ -43,6 +43,10 @@ describe('buildCompanyBoard', () => {
     const sole = buildCompanyBoard({ ...base, rows: [row('ceo'), stashedShell], tickets });
     expect(sole.seats[0].now.map((t) => t.id)).toEqual(['loose']);
     expect(sole.seats.find((s) => s.paneId === 'shell')?.row).toBeUndefined();
+    // A stashed pane whose agent is on a background tab still holds an agent seat.
+    const twoAgents = buildCompanyBoard({ ...base, agentPaneIds: new Set(['shell']), rows: [row('ceo'), stashedShell], tickets });
+    expect(twoAgents.seats.find((s) => s.paneId === 'shell')?.agent).toBe(true);
+    expect(twoAgents.unseated.map((t) => t.id)).toEqual(['loose']);
     expect(buildCompanyBoard({ ...base, rows: [row('ceo'), row('dev')], tickets }).unseated.map((t) => t.id)).toEqual(['loose']);
   });
 
