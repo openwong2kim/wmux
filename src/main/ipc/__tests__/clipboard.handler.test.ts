@@ -286,7 +286,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('non-darwin → readText untouched and resolver is never spawned', async () => {
     setPlatform('linux');
-    // 파일 URL이 있어도 darwin 게이트가 먼저 컷한다
+    // A file URL on the clipboard still stops at the darwin gate.
     copiedFile('file:///home/foo/x');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -299,8 +299,8 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('hello');
-    // 보장하는 건 스폰 없음(지연의 원흉은 osascript)과, 모든 타입 열거 없이
-    // 단일 포맷 확인만 하는 것이다.
+    // No osascript spawn (the paste delay's cause), and a single-format check
+    // instead of listing every type.
     expect(execFileMock).not.toHaveBeenCalled();
     expect(clipboardRead).not.toHaveBeenCalled();
   });
