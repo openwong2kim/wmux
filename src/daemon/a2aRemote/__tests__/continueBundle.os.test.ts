@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_REMOTE_PROTOCOL, A2A_ROUTES, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import { defaultContinuePolicy, type A2aContinuePolicyV1 } from '../../../shared/a2aContinue';
 import { defaultSpawnPolicy, type A2aSpawnPolicyV1 } from '../../../shared/a2aSpawn';
+import { deliberateSleep } from '../../../test-utils/waitFor';
+import { atomicWriteJSONSync } from '../../util/atomicWrite';
 import { ContinueBundle, type ContinueBundleDeps } from '../continueBundle';
 import { A2aContinueReceiver } from '../continueReceiver';
 import { ContinueRequestStore } from '../continueRequestStore';
@@ -226,7 +228,7 @@ function stalled(a: Asked, digest: string, declared: number, host?: string): { r
 }
 
 describe('uploads (A joined this PC)', () => {
-  it('stages a file sent raw and one gzipped, says so by HEAD, and is received once, after the last', async () => {
+  it('stages a file sent raw and one gzipped, says so by HEAD while it receives, and is received once, after the last', async () => {
     const transcript = bytes(70_000, 1);
     const file = Buffer.from('tool output\n'.repeat(2_000));
     const a = await toReceiving(transcript, [{ rel: 'tool-results/1.txt', body: file }]);
@@ -250,6 +252,8 @@ describe('uploads (A joined this PC)', () => {
     // Only the layout is left; and nothing more is taken for it.
     expect(fs.readdirSync(a.dir).sort()).toEqual([a.sessionId, `${a.sessionId}.jsonl`].sort());
     expect((await send('PUT', a, sha(file), { body: file })).status).toBe(404);
+    // Received: HEAD answers 404 for a file it holds, and A hears of it from its continue-result.
+    expect((await send('HEAD', a, sha(transcript))).status).toBe(404);
     expect(calls).toHaveLength(1);
   });
 
@@ -352,6 +356,33 @@ describe('uploads (A joined this PC)', () => {
     expect(calls).toEqual([]);
   });
 
+  it('keeps the connection after a HEAD, whatever it answers', async () => {
+    const t = bytes(1_000, 43);
+    const a = await toReceiving(t, [{ rel: 'f', body: bytes(10, 44) }]);
+    expect((await send('PUT', a, sha(t), { body: t })).status).toBe(200);
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    try {
+      const head = (digest: string, host?: string): Promise<{ status: number; reused: boolean }> =>
+        new Promise((resolve, reject) => {
+          const req = http.request(
+            { host: '127.0.0.1', port, method: 'HEAD', agent, path: `${A2A_ROUTES.continue}/${a.continueId}/${digest}`, headers: host ? { 'x-test-host': host } : {} },
+            (res) => {
+              res.resume();
+              res.on('end', () => resolve({ status: res.statusCode ?? 0, reused: req.reusedSocket }));
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        });
+      expect(await head(sha(bytes(10, 44)))).toEqual({ status: 404, reused: false });
+      // A has up to a thousand files to ask about: no new handshake for each.
+      expect(await head(sha(bytes(10, 45)), B)).toEqual({ status: 404, reused: true });
+      expect(await head(sha(t))).toEqual({ status: 200, reused: true });
+    } finally {
+      agent.destroy();
+    }
+  });
+
   it('takes one transfer per PC and two in all: the others are refused, unread, with 429', async () => {
     const t = bytes(50_000, 10);
     const fromA = await toReceiving(t, [{ rel: 'x.txt', body: bytes(10, 11) }], A);
@@ -436,6 +467,40 @@ describe('staging', () => {
     expect(codeOf(a)).toBe('failed');
     expect(fs.existsSync(a.dir)).toBe(false);
     expect(fs.existsSync(outside)).toBe(true);
+  });
+
+  it('flushes each file to disk before it takes its staged name', async () => {
+    const events: string[] = [];
+    const realOpen = fs.promises.open.bind(fs.promises);
+    const realRename = fs.promises.rename.bind(fs.promises);
+    const opened = vi.spyOn(fs.promises, 'open').mockImplementation((async (file: fs.PathLike, flags?: string, mode?: number) => {
+      const handle = await realOpen(file, flags, mode);
+      const realSync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        events.push(`sync ${String(file)}`);
+        return realSync();
+      };
+      return handle;
+    }) as typeof fs.promises.open);
+    const renamed = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      events.push(`rename ${String(from)}`);
+      return realRename(from, to);
+    });
+    try {
+      const t = bytes(3_000, 42);
+      const a = await toReceiving(t, [{ rel: 'copy', body: t }, { rel: 'empty', body: Buffer.alloc(0) }]);
+      expect((await send('PUT', a, sha(t), { body: t })).status).toBe(200);
+      // The empty file, the transfer and its copy: each part flushed, then renamed.
+      const parts = events.filter((e) => e.includes(continuePartsDir(a.dir)));
+      expect(parts).toHaveLength(6);
+      for (let i = 0; i < parts.length; i += 2) {
+        expect(parts[i]).toBe(parts[i + 1].replace(/^rename /, 'sync '));
+        expect(parts[i + 1]).toMatch(/^rename /);
+      }
+    } finally {
+      opened.mockRestore();
+      renamed.mockRestore();
+    }
   });
 
   it('fills every entry of one hash from one transfer, and makes empty files with none', async () => {
@@ -566,6 +631,42 @@ describe('pulls (this PC joined A)', () => {
 });
 
 describe('lifecycle', () => {
+  it('tells the receiver again, with a backoff, when it could not store `received`, until it does', async () => {
+    let failWrites = 0;
+    requests = new ContinueRequestStore({
+      dir: a2aDir, scheduleHarden: quiet, now: () => clock,
+      write: (p, d) => {
+        if (failWrites > 0) {
+          failWrites -= 1;
+          throw new Error('EPERM: the rename was refused');
+        }
+        atomicWriteJSONSync(p, d);
+      },
+    });
+    build({ receivedRetry: { minMs: 20, maxMs: 40 } });
+    const t = bytes(1_000, 40);
+    const a = await toReceiving(t);
+    failWrites = 2;
+    expect((await send('PUT', a, sha(t), { body: t })).status).toBe(200);
+    expect(stateOf(a)).toBe('receiving');
+    await vi.waitFor(() => expect(stateOf(a)).toBe('received'), { timeout: 5_000 });
+    expect(calls).toEqual(Array.from({ length: 3 }, () => `received ${a.continueId}`));
+
+    // One the receiver never stores is told again only until the request is decided.
+    const stuck = await toReceiving(bytes(1_000, 41));
+    calls.length = 0;
+    failWrites = 1_000;
+    expect((await send('PUT', stuck, sha(bytes(1_000, 41)), { body: bytes(1_000, 41) })).status).toBe(200);
+    await vi.waitFor(() => expect(calls.length).toBeGreaterThan(1), { timeout: 5_000 });
+    failWrites = 0;
+    clock += 2 * 3600_000;
+    receiver.sweep();
+    expect(codeOf(stuck)).toBe('expired');
+    const told = calls.length;
+    await deliberateSleep(150, 'real timer: no further try fires after the decision');
+    expect(calls).toHaveLength(told);
+  });
+
   it('removes a request’s staging on its decision', async () => {
     const t = bytes(2_000, 22);
     const a = await toReceiving(t, [{ rel: 'f', body: bytes(10, 23) }]);
@@ -600,6 +701,19 @@ describe('lifecycle', () => {
     await bundle.idle();
     expect(fs.existsSync(path.join(a2aDir, 'continue-in', A))).toBe(false);
     expect(fs.existsSync(other.dir)).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('after a restart, removes a link where continue-in goes, never walking into it', async () => {
+    const otherDisk = path.join(root, 'other-disk');
+    fs.mkdirSync(path.join(otherDisk, 'keep-me'), { recursive: true });
+    fs.writeFileSync(path.join(otherDisk, 'note.txt'), 'x');
+    fs.mkdirSync(a2aDir, { recursive: true });
+    fs.symlinkSync(otherDisk, path.join(a2aDir, 'continue-in'), 'dir');
+    receiver.recover();
+    await receiver.idle();
+    await bundle.idle();
+    expect(fs.readdirSync(otherDisk).sort()).toEqual(['keep-me', 'note.txt']);
+    expect(fs.existsSync(path.join(a2aDir, 'continue-in'))).toBe(false);
   });
 
   it('after a restart: staging of no open request goes; a receiving one keeps what checks out, drops part files, and takes the rest', async () => {

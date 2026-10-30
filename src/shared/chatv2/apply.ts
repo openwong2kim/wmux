@@ -123,6 +123,8 @@ export function applyHarnessEvent(
       return appendUser(session, event, fold);
     case "turn.ended":
       return endTurn(session, event.outcome, fold);
+    case "stop.overdue":
+      return session.busy && !session.stopOverdue ? { ...session, stopOverdue: true } : session;
     case "session.ended":
       return session.busy ? endTurn(session, "failed", fold) : session;
     case "message.delta":
@@ -551,7 +553,7 @@ function endTurn(
 }
 
 export function stopStreaming(session: Session, endedAt: number): Session {
-  const { backgroundTasks: _cleared, ...settled } =
+  const { backgroundTasks: _cleared, stopOverdue: _stop, ...settled } =
     settlePendingApprovals(session);
   return {
     ...settled,

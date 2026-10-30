@@ -82,9 +82,9 @@ describe('ChannelMembers — wiring regression guard', () => {
   it('container wires kick (humans-only eject) via kickChannelDaemon, gated by canKick', () => {
     expect(members).toContain('kickChannelDaemon');
     expect(members).toMatch(/const canKick =/);
-    // kick is gated on the actor being a member (or company CEO) + non-archived,
+    // kick is gated on the actor being a member + non-archived,
     // mirroring the daemon kick() authz so non-members don't see dead buttons.
-    expect(members).toMatch(/const canKick = \(selfIsMember \|\| isCeo\) && channel\.status !== 'archived'/);
+    expect(members).toMatch(/const canKick = selfIsMember && channel\.status !== 'archived'/);
   });
 
   it('view renders kick on NON-self rows and leave on the self row', () => {

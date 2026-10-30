@@ -19,6 +19,7 @@ import { BotChips } from '../BotChips';
 import { RoomCard } from '../RoomCard';
 import type { RoomCard as RoomCardData } from '../../../../shared/room';
 import { AddBotForm, FactoryTab, avatarPickError } from '../../Settings/FactoryTab';
+import { BotSettingsPage } from '../../Bots/BotSettingsPage';
 import type { FactoryBotPort, FactoryBotRow } from '../factoryPorts';
 
 const WS = 'ws-a';
@@ -351,52 +352,61 @@ describe('Add bot: name and picture', () => {
   });
 });
 
-describe('Settings bot list, profile editor and chips', () => {
+describe('Settings bot list, a bot\'s settings page and chips', () => {
   const view = {
     version: 1 as const, enabled: true, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1] },
     verifierOnOwnerPrs: true, defaultEngine: { kind: 'claude-sdk' as const }, globalConcurrentBots: 2, laneAutoMerge: false, laneDailyCap: 5,
   };
 
-  it('each row shows its avatar; the editor changes the picture on Save and removes it', async () => {
+  it('each Settings row shows its avatar', async () => {
     useStore.setState({ workspaces: [{ id: WS, name: 'App' }] as never, activeWorkspaceId: WS });
     const rows = [row('bot-00000001', { name: 'Ada', avatar: PICTURE }), row('bot-00000002', { name: '검증봇', role: 'verifier' })];
-    const setAvatar = vi.fn(async (_id: string, avatar: string | null) => ({ ok: true as const, bot: { ...rows[0].bot, ...(avatar ? { avatar } : {}) } }));
-    const update = vi.fn(async () => ({ ok: true }));
-    const pickAvatar = vi.fn(async () => ({ ok: true as const, avatar: `${PICTURE}AA` }));
-    const botPort: FactoryBotPort = { available: true, list: async () => rows, subscribe: () => () => undefined, act: async () => ({ ok: true }), update, setAvatar, pickAvatar };
+    const botPort: FactoryBotPort = { available: true, list: async () => rows, subscribe: () => () => undefined, act: async () => ({ ok: true }) };
     const settingsPort = { available: true, get: vi.fn(async () => view), set: vi.fn(async () => view) };
     await render(createElement(FactoryTab, { settingsPort, botPort }));
     const rowEls = [...container.querySelectorAll<HTMLButtonElement>('[data-testid="factory-bot-row"]')];
     expect(rowEls[0].querySelector('[data-bot-avatar]')?.getAttribute('data-bot-avatar')).toBe('image');
     expect(rowEls[1].querySelector('[data-bot-avatar]')?.getAttribute('data-bot-avatar')).toBe('face');
+  });
 
+  it('the settings page changes the picture on Save and removes it; a refused profile saves no picture', async () => {
+    const bot = row('bot-00000001', { name: 'Ada', avatar: PICTURE });
+    const setAvatar = vi.fn(async (_id: string, avatar: string | null) => ({ ok: true as const, bot: { ...bot.bot, ...(avatar ? { avatar } : {}) } }));
+    const update = vi.fn(async () => ({ ok: true }));
+    const pickAvatar = vi.fn(async () => ({ ok: true as const, avatar: `${PICTURE}AA` }));
+    const page = (r: FactoryBotRow) => createElement(BotSettingsPage, {
+      row: r, workers: [], workspaceName: 'App', t, port: { update, setAvatar, pickAvatar }, stopPort: {},
+      onBack: () => undefined, onDirtyChange: () => undefined, leaveAsk: null,
+    });
+    await render(page(bot));
+    const save = () => container.querySelector<HTMLButtonElement>('[data-testid="bot-settings-save"]')!;
     // Change: nothing is saved until Save.
-    await act(async () => rowEls[0].click());
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-picture-choose"]')!.click());
     expect(setAvatar).not.toHaveBeenCalled();
     expect(container.querySelector('[data-testid="factory-picture-preview"] img')?.getAttribute('src')).toBe(`${PICTURE}AA`);
-    // Save is the editor's last button.
-    const save = [...container.querySelectorAll<HTMLButtonElement>('[data-testid="factory-bot-editor"] button')].at(-1)!;
-    await act(async () => save.click());
+    await act(async () => save().click());
     expect(setAvatar).toHaveBeenCalledWith('bot-00000001', `${PICTURE}AA`);
-    expect(update).toHaveBeenCalled();
+    // A picture alone sends no profile patch.
+    expect(update).not.toHaveBeenCalled();
 
     // Remove.
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-bot-row"]')!.click());
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-picture-remove"]')!.click());
-    const save2 = [...container.querySelectorAll<HTMLButtonElement>('[data-testid="factory-bot-editor"] button')].at(-1)!;
-    await act(async () => save2.click());
+    await act(async () => save().click());
     expect(setAvatar).toHaveBeenLastCalledWith('bot-00000001', null);
 
-    // A refused profile saves no picture and keeps the editor open.
+    // A refused profile saves no picture and keeps the changes.
     update.mockResolvedValueOnce({ ok: false, message: 'budget is malformed or over its caps' } as never);
     setAvatar.mockClear();
-    await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-bot-row"]')!.click());
     await act(async () => container.querySelector<HTMLButtonElement>('[data-testid="factory-picture-choose"]')!.click());
-    const save3 = [...container.querySelectorAll<HTMLButtonElement>('[data-testid="factory-bot-editor"] button')].at(-1)!;
-    await act(async () => save3.click());
+    const name = container.querySelector<HTMLInputElement>('[data-testid="bot-settings-name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'Ada 2');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => save().click());
+    expect(update).toHaveBeenCalledWith('bot-00000001', { name: 'Ada 2' });
     expect(setAvatar).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="factory-bot-editor"]')?.textContent).toContain('budget is malformed');
+    expect(container.querySelector('[data-bot-settings-foot]')?.textContent).toContain('budget is malformed');
   });
 
   it('a chip leads with the bot\'s avatar', async () => {

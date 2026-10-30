@@ -872,7 +872,7 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
     // A bot on My Hermes (myHermesTurn.ts): its 1:1 chat must hold no other
     // bot's or guest's card, and a wake it is not sent says why there.
     ownHermesRoomClean: (profile) => ownHermesRoomClean(getRoomWriter(), profile.workspaceId, profile.id),
-    noteOwnHermesRefusal: (profile, item, why) => {
+    noteOwnHermesRefusal: (profile, item, why, code) => {
       noticeBot({ factLog: getFactLog, wakes: getWakeQueue }, {
         quiet: true,
         card: true,
@@ -882,6 +882,8 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
         topic: 'wake.refused',
         title: why,
         ...(item.threadId ? { threadId: item.threadId } : {}),
+        // The English title stays for a reader that does not know the code.
+        ...(code ? { notice: { code: 'wake.refused', args: { refusal: code } } } : {}),
       });
     },
   });

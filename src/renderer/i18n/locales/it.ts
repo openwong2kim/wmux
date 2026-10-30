@@ -248,8 +248,6 @@ export const it = {
   'viCopy.visual': '-- VISUALE --',
 
   // StatusBar
-  'statusBar.company': 'AZIENDA',
-  'statusBar.session': 'Sessione: {min} min',
   'statusBar.settingsTooltip': 'Impostazioni (Ctrl+,)',
 
   // Settings

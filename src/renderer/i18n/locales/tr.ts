@@ -248,8 +248,6 @@ export const tr = {
   'viCopy.visual': '-- GÖRSEL --',
 
   // StatusBar
-  'statusBar.company': 'ŞİRKET',
-  'statusBar.session': 'Oturum: {min} dk',
   'statusBar.settingsTooltip': 'Ayarlar (Ctrl+,)',
 
   // Settings

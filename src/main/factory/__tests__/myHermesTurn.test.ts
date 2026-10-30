@@ -45,6 +45,25 @@ describe('ownHermesWakeRefusal', () => {
     expect(ownHermesWakeRefusal({ ...base, item: slot, routine: { ...owners, workspaceId: 'ws-2' } })).toMatchObject({ pause: false, note: false });
   });
 
+  it('gives every refusal the owner is told of a code its card is worded by', () => {
+    const slot = item({ kind: 'routine', routineId: 'r-aaaaaaaa', dueAt: 1 });
+    const owners = { prompt: 'p', author: 'owner' as const, botId: BOT, workspaceId: 'ws-1', threadId: `dm:${BOT}` as const };
+    const code = (over: Partial<Parameters<typeof ownHermesWakeRefusal>[0]> & { item: WakeItem }) => ownHermesWakeRefusal({ ...base, ...over })?.code;
+    expect(code({ item: item({ kind: 'manual', by: 'human' }) })).toBe('notOwnerMessage');
+    expect(code({ item: item(human, 'general') })).toBe('outsideDm');
+    expect(code({ item: item(human), attended: false })).toBe('notAttended');
+    expect(code({ item: item(human), roomClean: null })).toBe('roomUnreadable');
+    expect(code({ item: item(human), roomClean: false })).toBe('roomDirty');
+    expect(code({ item: slot, routine: { ...owners, author: undefined } })).toBe('routineBotWritten');
+    expect(code({ item: slot, routine: { ...owners, threadId: 'general' } })).toBe('routineOutsideDm');
+    expect(code({ item: slot, routine: owners, routineClean: null })).toBe('routineCleanUnknown');
+    expect(code({ item: slot, routine: owners, routineClean: false })).toBe('routineTainted');
+    expect(code({ item: slot, routine: owners, roomClean: false })).toBe('roomDirtyPaused');
+    expect(code({ item: slot, routine: owners, roomClean: null })).toBe('roomUnreadable');
+    // No note, no code.
+    expect(code({ item: slot, routine: null })).toBeNull();
+  });
+
   it('escapes a leading slash only', () => {
     expect(ownHermesPrompt('/tools')).toBe('\\/tools');
     expect(ownHermesPrompt('  /model x')).toBe('  \\/model x');

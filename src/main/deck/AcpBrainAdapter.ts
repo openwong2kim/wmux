@@ -36,6 +36,7 @@ import { writeBotTokenHandoff, type BotTokenHandoff } from '../factory/botTokenH
 import type { BotBinding } from '../../shared/bot';
 import { COMMANDER_MODE_ARG } from '../../shared/commanderSurface';
 import { getWmuxDir } from '../../daemon/config';
+import { stopAgentTree } from './agentTreeStop';
 import { HERMES_MCP_MISSING_LEAD, HERMES_TOOLS_CHANGED_LEAD } from '../factory/engineError';
 
 // ── wire types (structural subset of ACP; validated defensively) ────────────
@@ -72,6 +73,11 @@ export interface AcpBrainAdapterDeps {
   promptTimeoutMs?: number;
   /** Fresh-session settle override (tests: 0). See NEW_SESSION_SETTLE_MS. */
   newSessionSettleMs?: number;
+  /** Own mode: the cancel bound override (tests). See OWN_CANCEL_BOUND_MS. */
+  ownCancelBoundMs?: number;
+  /** Own mode, POSIX: how the agent and what it started are stopped
+   *  (default agentTreeStop.ts stopAgentTree; tests). */
+  stopAgentTree?: (pid: number) => Promise<void>;
   /** Agent factory bot mode: the session runs as this bot. The token is a
    *  bot token, handed to each MCP child in a fresh 0600 file named in its
    *  args (`--bot=<role>`, `--bot-token-file=`), never in its environment;
@@ -108,7 +114,9 @@ export interface AcpHermesPolicy {
   /** Resolves true once the session's MCP child called main with `token`
    *  after `since` (ms). */
   mcpReady(token: string, since: number): Promise<boolean>;
-  /** A turn did not settle after a cancel: stop the gateway that runs it. */
+  /** A turn did not settle after a cancel: stop the gateway that runs it.
+   *  Own mode: the turn did not end within OWN_CANCEL_BOUND_MS and wmux let
+   *  its own agent process go (the gateway is never stopped); tell the owner. */
   unsettled(): Promise<void>;
   /** The adapter is gone (unregister from quit). */
   disposed?(adapter: AcpBrainAdapter): void;
@@ -119,6 +127,13 @@ export interface AcpHermesPolicy {
 
 /** How long a cancelled Hermes turn may take to settle before its gateway is stopped. */
 const HERMES_SETTLE_MS = 10_000;
+/** Own mode: how long a cancelled turn may take to end in Hermes before wmux
+ *  lets go of the `hermes acp` process it spawned for the bot (never the
+ *  owner's gateway). Hermes's cancel interrupts the agent and its running
+ *  tools, so a turn that heeds it ends within seconds; past this bound it is
+ *  taken as wedged. It holds the bot (and its profile's turn gate) at most
+ *  this long after a stop, a timeout or a dispose. */
+const OWN_CANCEL_BOUND_MS = 60_000;
 
 /** The tool name in a Hermes tool_call title (`<tool>: <preview>`, or the
  *  bare name; Hermes acp_adapter/tools.py build_tool_title). Pure. */
@@ -225,6 +240,11 @@ export class AcpBrainAdapter implements BrainAdapter {
   private ownEpoch = 0;
   /** Own mode: sends waiting at the gate, woken by a stop. */
   private ownStopWaiters = new Set<() => void>();
+  /** Own mode: the end of this adapter's turn still running in Hermes, until
+   *  Hermes reports it (the gate's `ended` while this adapter holds it). */
+  private ownTurn: Promise<void> | null = null;
+  /** Own mode: the turn whose cancel is being watched (watchOwnCancel). */
+  private ownCancelWatched: Promise<void> | null = null;
 
   constructor(deps: AcpBrainAdapterDeps) {
     this.deps = deps;
@@ -801,7 +821,7 @@ export class AcpBrainAdapter implements BrainAdapter {
         await new Promise<void>((r) => {
           woke = r;
           this.ownStopWaiters.add(r);
-          void gate.then(r);
+          void gate.then(r, r);
         });
         this.ownStopWaiters.delete(woke);
       }
@@ -865,9 +885,12 @@ export class AcpBrainAdapter implements BrainAdapter {
         });
         turnEnded = ended;
         this.gate().ended = ended;
-        void ended.then(() => {
+        this.ownTurn = ended;
+        const clear = (): void => {
           if (this.gate().ended === ended) this.gate().ended = null;
-        });
+          if (this.ownTurn === ended) this.ownTurn = null;
+        };
+        void ended.then(clear, clear);
       }
       const promptDone = this.request(
         'session/prompt',
@@ -934,7 +957,8 @@ export class AcpBrainAdapter implements BrainAdapter {
           if (/timed out/i.test(message)) {
             if (own) {
               // The owner's gateway is never stopped: cancel the turn and
-              // stay blocked until Hermes reports that it ended.
+              // stay blocked until Hermes reports that it ended, or the
+              // cancel bound lets wmux's own agent process go.
               this.cancelOwnTurn();
               if (turnEnded) await turnEnded;
             } else if (this.deps.hermes) {
@@ -1008,12 +1032,23 @@ export class AcpBrainAdapter implements BrainAdapter {
     // handler ignores a child that is not current), so they end here: else
     // the bot would wait for that turn forever.
     if (this.own() && child) {
-      this.endLateTurns();
-      for (const [, entry] of this.pending) {
-        clearTimeout(entry.timer);
-        entry.resolve({ error: { message: 'ACP agent process exited' } });
-      }
+      const late = [...this.late.values()];
+      this.late.clear();
+      const pending = [...this.pending.values()];
       this.pending.clear();
+      for (const entry of pending) clearTimeout(entry.timer);
+      const end = (): void => {
+        for (const ended of late) ended();
+        for (const entry of pending) entry.resolve({ error: { message: 'ACP agent process exited' } });
+      };
+      // POSIX: the agent's tool commands run in sessions of their own, so the
+      // tree is stopped by its snapshot (agentTreeStop.ts), and the turn ends
+      // (opening the bot's turn gate) only once what it started is gone.
+      if (process.platform !== 'win32' && child.pid && child.exitCode === null) {
+        void (this.deps.stopAgentTree ?? stopAgentTree)(child.pid).catch(() => undefined).then(end);
+        return;
+      }
+      end();
     }
     if (!child || child.exitCode !== null) return;
     try {
@@ -1046,6 +1081,7 @@ export class AcpBrainAdapter implements BrainAdapter {
     if (this.own()) {
       this.rejectPendingPermission();
       this.stopOwnWaiters();
+      this.watchOwnCancel();
     } else if (this.deps.hermes) {
       this.rejectPendingPermission();
       const inFlight = this.promptInFlight;
@@ -1086,16 +1122,55 @@ export class AcpBrainAdapter implements BrainAdapter {
   private cancelOwnTurn(): void {
     if (this._sessionId) this.writeMessage({ jsonrpc: '2.0', method: 'session/cancel', params: { sessionId: this._sessionId } });
     this.rejectPendingPermission();
+    this.watchOwnCancel();
+  }
+
+  /** Own mode, after a cancel: wait for this adapter's turn to end, at most
+   *  OWN_CANCEL_BOUND_MS from the first cancel. Past it, the turn is taken as
+   *  wedged: wmux lets go of the agent process it spawned (killChildTree
+   *  ends the turn's request, which opens the bot's turn gate) and tells the
+   *  owner (`unsettled`). The owner's gateway is never touched. The next
+   *  message spawns a new agent, which resumes the conversation by
+   *  session/load when Hermes accepts it, else starts a new one. */
+  private watchOwnCancel(): void {
+    const turn = this.ownTurn;
+    if (!turn || this.ownCancelWatched === turn) return;
+    this.ownCancelWatched = turn;
+    const boundMs = this.deps.ownCancelBoundMs ?? OWN_CANCEL_BOUND_MS;
+    let timer: NodeJS.Timeout | undefined;
+    const bound = new Promise<boolean>((r) => {
+      timer = setTimeout(() => r(false), boundMs);
+    });
+    const letGo = (why: string): void => {
+      console.warn(`[acp-brain:${this.deps.spawnSpec.command}] a cancelled My Hermes turn ${why}; closing wmux's own agent process (the gateway is not stopped)`);
+      this.killChildTree();
+      void this.deps.hermes?.unsettled().catch(() => undefined);
+    };
+    void Promise.race([turn.then(() => true), bound]).then(
+      (ended) => {
+        clearTimeout(timer);
+        if (ended || this.ownTurn !== turn) return;
+        letGo(`did not end in ${boundMs} ms`);
+      },
+      (err: unknown) => {
+        // Whether Hermes ended the turn cannot be told: as at the bound,
+        // what wmux started is stopped before the gate opens.
+        clearTimeout(timer);
+        letGo(`failed (${String(err)})`);
+      },
+    );
   }
 
   /** Hermes: cancel the running turn, wait for it to settle, then kill the agent. */
   private async cancelAndSettle(): Promise<void> {
     if (this.own()) {
-      // App quit or dispose: cancel, give the turn the settle time, then let
-      // wmux's own viewer process go. The owner's gateway is not stopped.
-      const ended = this.gate().ended;
+      // App quit or dispose: cancel, then hold this adapter's turn (and so
+      // the profile's turn gate) until Hermes ends it or the cancel bound
+      // lets wmux's own agent process go; only then may another session of
+      // the profile prompt. The owner's gateway is not stopped.
+      const turn = this.ownTurn;
       this.cancelOwnTurn();
-      if (ended) await Promise.race([ended, new Promise((r) => setTimeout(r, HERMES_SETTLE_MS))]);
+      if (turn) await turn.catch(() => undefined);
       this.killChildTree();
       return;
     }

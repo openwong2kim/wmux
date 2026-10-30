@@ -665,6 +665,10 @@ describe.skipIf(isWin)('what else the fence closes', () => {
   it('other sessions\' folders in claude\'s temp folder: one pattern on macOS, each but its own elsewhere', () => {
     expect(claudeTempDenies('/w/t', 'darwin', ['/tmp/claude-501', '/private/tmp/claude-501'])).toEqual(['/tmp/claude-501/-*', '/private/tmp/claude-501/-*']);
     expect(claudeTempDenies('/w/t', 'linux', ['/tmp/claude-1000'], () => ['-w-t', '-other-session', 'tasks'])).toEqual(['/tmp/claude-1000/-other-session']);
+    // A worktree path past 200 characters: Claude cuts its folder's name and adds a hash, and that folder stays open.
+    const long = `/home/me/.wmux/worktrees/${'nested-folder/'.repeat(14)}task`;
+    const ownLong = `${long.replace(/[^a-zA-Z0-9]/g, '-').slice(0, 200)}-${Math.abs([...long].reduce((h, c) => ((h << 5) - h + c.charCodeAt(0)) | 0, 0)).toString(36)}`;
+    expect(claudeTempDenies(long, 'linux', ['/tmp/claude-1000'], () => [ownLong, '-other-session'])).toEqual(['/tmp/claude-1000/-other-session']);
     const s = settingsOf(create(LINE, deps({ fence: { runtime: RUNTIME, home, env: {}, platform: 'darwin', claudeTempRoots: ['/tmp/claude-501', '/private/tmp/claude-501'] } }))!.initialCommand!);
     expect((s.sandbox as { filesystem: { denyWrite: string[] } }).filesystem.denyWrite).toEqual(expect.arrayContaining(['/tmp/claude-501/-*', '/private/tmp/claude-501/-*']));
   });

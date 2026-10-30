@@ -120,7 +120,6 @@ import {
   type CustomKeybinding,
   type CustomThemeColors,
   type XtermThemeColors,
-  type Company,
   type LayoutTemplate,
   type LayoutNode,
   type Pane,
@@ -179,7 +178,7 @@ export type AppRoute = 'workspaces' | 'bots' | 'fleet' | 'schedules' | 'remote' 
 export interface UISlice {
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
   // Lifecycle marker promoted from local AppLayout state so RPC handlers
-  // (useRpcBridge, companyRpcHandlers) can cheaply guard against stale
+  // (useRpcBridge) can cheaply guard against stale
   // ptyId writes during the startup reconcile window. Flips from
   // 'pending' to 'ready' exactly once per renderer lifetime, in
   // AppLayout's mount effect finally block.
@@ -962,30 +961,11 @@ export interface UISlice {
   fileTreeWidth: number;
   setFileTreeWidth: (width: number) => void;
 
-  // ─── Company mode ──────────────────────────────────────────────────────
-  sidebarMode: 'workspaces' | 'company';
-  setSidebarMode: (mode: 'workspaces' | 'company') => void;
-
-  company: Company | null;
-  setCompany: (company: Company | null) => void;
-
-  memberCosts: Record<string, number>;
-  setMemberCosts: (costs: Record<string, number>) => void;
-
-  sessionStartTime: number | null;
-  setSessionStartTime: (time: number | null) => void;
-
-  companyViewVisible: boolean;
-  toggleCompanyView: () => void;
+  // ─── Bots page ─────────────────────────────────────────────────────────
   toggleBotsView: () => void;
   /** The Bots page while the bots are on; otherwise Settings › Bots, where
    *  they are turned on (the page has no rail item while they are off). */
   openBotsPage: () => void;
-  setCompanyViewVisible: (visible: boolean) => void;
-
-  messageFeedVisible: boolean;
-  toggleMessageFeed: () => void;
-  setMessageFeedVisible: (visible: boolean) => void;
 
   // ─── Custom theme ─────────────────────────────────────────────────────
   customThemeColors: CustomThemeColors | null;
@@ -1327,13 +1307,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // ─── Rail route ──────────────────────────────────────────────────────────
   appRoute: 'workspaces',
 
-  setAppRoute: (route) => set((state) => {
-    if (state.appRoute === route) return;
-    applyAppRoute(state, route);
-    // A new page is a destination: the overlays that led here step aside.
-    state.commandPaletteVisible = false;
-    state.notificationPanelVisible = false;
-  }),
+  setAppRoute: (route) => {
+    // Leaving the Bots page with a bot's settings unsaved asks first; the
+    // page calls back here once the owner discards them.
+    const cur = get();
+    if (cur.appRoute === 'bots' && route !== 'bots' && cur.botsLeaveGuard?.(() => get().setAppRoute(route))) return;
+    set((state) => {
+      if (state.appRoute === route) return;
+      applyAppRoute(state, route);
+      // A new page is a destination: the overlays that led here step aside.
+      state.commandPaletteVisible = false;
+      state.notificationPanelVisible = false;
+    });
+  },
   pluginsSelection: null,
   setPluginsSelection: (selection) => set((state) => { state.pluginsSelection = selection; }),
   togglePluginsView: () => {
@@ -2301,24 +2287,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.fileTreeWidth = clampFileTreeWidth(width);
   }),
 
-  // ─── Company mode ──────────────────────────────────────────────────────
-  sidebarMode: 'workspaces',
-  setSidebarMode: (mode) => set((state) => { state.sidebarMode = mode; }),
-
-  company: null,
-  setCompany: (company) => set((state) => { state.company = company; }),
-
-  memberCosts: {},
-  setMemberCosts: (costs) => set((state) => { state.memberCosts = costs; }),
-
-  sessionStartTime: null,
-  setSessionStartTime: (time) => set((state) => { state.sessionStartTime = time; }),
-
-  companyViewVisible: false,
-  toggleCompanyView: () => set((state) => { state.companyViewVisible = !state.companyViewVisible; }),
+  // ─── Bots page ─────────────────────────────────────────────────────────
   // Opens the Bots rail page and, pressed there, returns to Workspaces.
   toggleBotsView: () => {
-    if (get().appRoute === 'bots') set((state) => { leaveAppRoute(state, 'bots'); });
+    if (get().appRoute === 'bots') {
+      if (get().botsLeaveGuard?.(() => get().toggleBotsView())) return;
+      set((state) => { leaveAppRoute(state, 'bots'); });
+    }
     else get().openBotsPage();
   },
   openBotsPage: () => {
@@ -2326,11 +2301,6 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     // Settings › Bots (FACTORY_SETTINGS_TAB in components/Bots/botsAddBot.ts).
     else get().openSettingsTab('factory');
   },
-  setCompanyViewVisible: (visible) => set((state) => { state.companyViewVisible = visible; }),
-
-  messageFeedVisible: false,
-  toggleMessageFeed: () => set((state) => { state.messageFeedVisible = !state.messageFeedVisible; }),
-  setMessageFeedVisible: (visible) => set((state) => { state.messageFeedVisible = visible; }),
 
   // ─── Custom theme ─────────────────────────────────────────────────────
   customThemeColors: null,

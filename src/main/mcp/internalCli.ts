@@ -18,8 +18,8 @@
 // against same-user code (a same-user process already holds the auth token and
 // can hit the pipe directly). What the scoped allowlist buys over the blanket
 // grandfather is that even an impersonator using this name reaches ONLY the
-// CLI's curated surface — never `daemon.*`, `company.*` mutation,
-// `workspace.new`'s neighbours it doesn't use, etc.
+// CLI's curated surface — never `daemon.*`, `workspace.new`'s neighbours it
+// doesn't use, etc.
 //
 // Kept in lockstep with the real CLI surface by internalCli.test.ts, which
 // parses src/cli/** for every `sendRequest`/`sendRequestToPipe` method literal

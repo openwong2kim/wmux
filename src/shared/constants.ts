@@ -144,7 +144,7 @@ export const IPC = {
   // Renderer → main: paste a message into a pty and submit it, gated by the
   // raw-input approval guard `input.send` applies, re-checked before the Enter
   // (input.rpc.ts `gatedPasteSubmit`). Used for every non-operator delivery
-  // (A2A, company, channel mention nudges). Renderer-only, not on the pipe.
+  // (A2A, channel mention nudges). Renderer-only, not on the pipe.
   GATED_SUBMIT: 'pty:gated-submit',
   // J1 fan-out — renderer(다이얼로그) → main: 프롬프트 1개 → N 격리 태스크 스폰.
   // main의 FanOutService가 데몬 RPC(mission.start/update/invite)와 렌더러 spawn을

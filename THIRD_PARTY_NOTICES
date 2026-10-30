@@ -2969,7 +2969,7 @@ SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-fit@0.12.0-beta.301
+@xterm/addon-fit@0.12.0-beta.332
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-fit
@@ -2996,7 +2996,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-image@0.10.0-beta.301
+@xterm/addon-image@0.10.0-beta.331
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-image
@@ -3023,7 +3023,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-search@0.17.0-beta.301
+@xterm/addon-search@0.17.0-beta.330
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-search
@@ -3050,7 +3050,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-unicode11@0.10.0-beta.301
+@xterm/addon-unicode11@0.10.0-beta.330
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-unicode11
@@ -3077,7 +3077,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-web-links@0.13.0-beta.301
+@xterm/addon-web-links@0.13.0-beta.330
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-web-links
@@ -3104,7 +3104,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/addon-webgl@0.20.0-beta.300
+@xterm/addon-webgl@0.20.0-beta.329
 License: MIT
 Author: The xterm.js authors (https://xtermjs.org/)
 Repository: https://github.com/xtermjs/xterm.js/tree/master/addons/addon-webgl
@@ -3131,7 +3131,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-@xterm/xterm@6.1.0-beta.304
+@xterm/xterm@6.1.0-beta.336
 License: MIT
 Repository: https://github.com/xtermjs/xterm.js
 
@@ -3833,7 +3833,7 @@ THE SOFTWARE.
 
 ================================================================================
 
-electron@42.11.16
+electron@42.11.18
 License: MIT
 Author: Electron Community
 Repository: https://github.com/electron/electron
@@ -13236,6 +13236,78 @@ Bot group chat protocol, adapted from its source at commit
   tapback, its small emoji palette, and the marker parsing.
 wmux files: src/shared/botGroupProtocol.ts (each adapted file carries a
 header naming its source). Its avatars and other assets are not taken.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
+OpenMausBot
+License: Apache License 2.0
+Repository: https://github.com/milind-soni/OpenMausBot
+
+Copyright 2026 Milind Soni and OpenMausBot contributors
+
+Transcript windowing, adapted from its source at commit
+0213b7435fc83a936f77c18475ba2a0d7b7c2de4:
+- src/lib/transcript-window.ts and src/lib/transcript-window.test.ts:
+  the window over a long transcript (tail, follow, expand, focus range).
+- src/hooks/use-transcript-viewport.ts: following the tail until the
+  reader scrolls up, reading earlier rows in near the top while holding
+  the scroll position, and widening the window to reveal a hidden row.
+wmux files: src/renderer/components/shared/transcriptWindow.ts,
+useTranscriptWindow.ts and __tests__/transcriptWindow.test.ts. Each
+adapted file carries a header naming its source and stating that wmux
+modified it.
+
+Licensed under the Apache License, Version 2.0. The full license text is
+reproduced above with the npm packages that use it, and is available at
+https://www.apache.org/licenses/LICENSE-2.0
+
+NOTICE (the part that pertains to the adapted files):
+
+OpenMausBot
+Copyright 2026 Milind Soni and OpenMausBot contributors
+
+OpenMausBot was relicensed from the MIT License to the Apache License,
+Version 2.0, with the consent of all contributors whose copyright was
+incorporated before the transition.
+
+================================================================================
+
+T3 Code
+License: MIT License
+Repository: https://github.com/pingdotgg/t3code
+
+Copyright (c) 2026 T3 Tools Inc.
+
+Chat view, from its source at commit
+fa4e4677c0ecc437aece2dcea39f76ef31414152:
+- Ideas only, no code taken: a double-click on inline code selects the
+  whole span (apps/web/src/components/ChatMarkdown.tsx). wmux file:
+  src/renderer/components/shared/BrainMarkdown.tsx.
+- Ideas only, no code taken, from commit
+  6b1245cceda1d504b6f16b438e16f2a2e08f3388: after Stop, a turn the agent
+  has not ended within a grace period is marked unresponsive, and a force
+  stop kills the agent process and ends the turn as interrupted
+  (apps/server/src/orchestration-v2/ProviderSessionManager.ts,
+  ThreadManagementService.ts, Orchestrator.ts). wmux file:
+  src/daemon/chat/v2/host.ts.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

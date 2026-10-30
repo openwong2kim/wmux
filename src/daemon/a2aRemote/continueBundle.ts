@@ -38,13 +38,17 @@ import { errMsg } from './storeFile';
  *   B is the server (A joined B): A uploads each file.
  *     PUT  /api/a2a/continue/:continueId/:sha256 — one file, its body raw or
  *          gzipped (Content-Encoding identity or gzip, else 415).
- *     HEAD /api/a2a/continue/:continueId/:sha256 — 200 when that file is
- *          staged already (A skips it after a reconnect), else 404.
+ *     HEAD /api/a2a/continue/:continueId/:sha256 — 200 while the request
+ *          receives and that file is staged already (A skips it after a
+ *          reconnect), else 404. Once the last file lands the request is
+ *          `received` and every HEAD is 404: A hears that from its
+ *          `continue-result`, not here.
  *     Both answer only the PC whose request it is (its authenticated id,
  *     never a field it sent), for a request that is `receiving`, about a
  *     hash of its manifest (for a PUT, one not staged yet). Anything else is
- *     404, answered before any byte of the body is read, and the connection
- *     is closed. While the continue policy is off neither route exists.
+ *     404; a PUT's is answered before any byte of its body is read, and its
+ *     connection is closed. While the continue policy is off neither route
+ *     exists.
  *   B is the joiner (B joined A): B pulls each file with a GET from A
  *     (`Accept-Encoding: gzip`) through its joiner session.
  *
@@ -72,6 +76,9 @@ const TRANSFERS_MAX = 2;
 /** How long a pull waits before it tries again: at first, and at most. */
 const PULL_RETRY_MIN_MS = 1_000;
 const PULL_RETRY_MAX_MS = 60_000;
+/** How long a `received` the receiver could not store waits before it is told again: at first, and at most. */
+const RECEIVED_RETRY_MIN_MS = 5_000;
+const RECEIVED_RETRY_MAX_MS = 5 * 60_000;
 /** The hash of no bytes: the only one an empty file has. */
 const EMPTY_SHA256 = crypto.createHash('sha256').digest('hex');
 /** The states whose staging dir holds their bytes. */
@@ -110,6 +117,8 @@ interface Intake {
   over: boolean;
   /** Transfers in flight: the staging dir goes only once they have ended. */
   work: Set<Promise<Outcome>>;
+  /** The next try to tell the receiver every file is in, while the last one was not stored. */
+  tellAgain?: ReturnType<typeof setTimeout>;
 }
 
 export interface ContinueBundleDeps {
@@ -127,6 +136,7 @@ export interface ContinueBundleDeps {
   /** Test seams. */
   transferBudgetMs?: (bytes: number) => number;
   pullRetry?: { minMs: number; maxMs: number };
+  receivedRetry?: { minMs: number; maxMs: number };
 }
 
 const key = (hostId: HostId, continueId: string): string => `${hostId}:${continueId}`;
@@ -135,6 +145,7 @@ export class ContinueBundle implements ContinueBytesIntake {
   private readonly deps: ContinueBundleDeps;
   private readonly budget: (bytes: number) => number;
   private readonly retry: { minMs: number; maxMs: number };
+  private readonly receivedRetry: { minMs: number; maxMs: number };
   private readonly intakes = new Map<string, Intake>();
   private readonly slots = transferSlots(TRANSFERS_MAX);
   /** Work started here and not settled yet (idle). */
@@ -145,6 +156,7 @@ export class ContinueBundle implements ContinueBytesIntake {
     this.deps = deps;
     this.budget = deps.transferBudgetMs ?? continueTransferBudgetMs;
     this.retry = deps.pullRetry ?? { minMs: PULL_RETRY_MIN_MS, maxMs: PULL_RETRY_MAX_MS };
+    this.receivedRetry = deps.receivedRetry ?? { minMs: RECEIVED_RETRY_MIN_MS, maxMs: RECEIVED_RETRY_MAX_MS };
   }
 
   registerRoutes(table: A2aRouteTable): void {
@@ -184,7 +196,7 @@ export class ContinueBundle implements ContinueBytesIntake {
     const k = key(hostId, continueId);
     const intake = this.intakes.get(k);
     this.intakes.delete(k);
-    intake?.abort.abort();
+    if (intake) this.end(intake);
     void this.track(this.removeAfter(intake ? [intake] : [], () => removeContinueStagingDir(this.deps.a2aDir, hostId, continueId), `continue ${continueId} from ${hostId}`));
   }
 
@@ -193,7 +205,7 @@ export class ContinueBundle implements ContinueBytesIntake {
     if (!isHostId(hostId)) return;
     const gone = [...this.intakes.values()].filter((i) => i.hostId === hostId);
     for (const intake of gone) {
-      intake.abort.abort();
+      this.end(intake);
       this.intakes.delete(key(intake.hostId, intake.continueId));
     }
     const dir = continueStagingHostDir(this.deps.a2aDir, hostId);
@@ -212,7 +224,7 @@ export class ContinueBundle implements ContinueBytesIntake {
   /** Every transfer ends (the daemon stops). */
   stop(): void {
     this.stopped = true;
-    for (const intake of this.intakes.values()) intake.abort.abort();
+    for (const intake of this.intakes.values()) this.end(intake);
   }
 
   /** Settle every transfer, pull and removal in flight (tests). */
@@ -225,12 +237,14 @@ export class ContinueBundle implements ContinueBytesIntake {
 
   // --- routes ---------------------------------------------------------------
 
-  private async head({ req, res, params, peer }: A2aRouteContext): Promise<void> {
+  /**
+   * A HEAD has no body to leave unread: its connection stays for the next
+   * file A asks about (its length of 0 lets a client tell the answer ended).
+   */
+  private async head({ res, params, peer }: A2aRouteContext): Promise<void> {
     const sha = params['sha256'] ?? '';
     const intake = await this.authorized(peer.hostId, params['continueId'] ?? '', sha);
-    const status = intake?.staged.has(sha) ? 200 : 404;
-    res.writeHead(status, { 'Cache-Control': 'no-store', ...(status === 200 ? {} : { Connection: 'close' }) });
-    if (status !== 200) res.once('finish', () => req.socket?.destroy());
+    res.writeHead(intake?.staged.has(sha) ? 200 : 404, { 'Cache-Control': 'no-store', 'Content-Length': 0 });
     res.end();
   }
 
@@ -390,9 +404,36 @@ export class ContinueBundle implements ContinueBytesIntake {
     if (intake.over) return;
     intake.over = true;
     await fs.promises.rm(continuePartsDir(intake.dir), { recursive: true, force: true }).catch(() => undefined);
-    if (intake.abort.signal.aborted) return;
+    this.tellReceived(intake, 0);
+  }
+
+  /**
+   * Tell the receiver every file is in. A step it could not store (a failed
+   * write) is told again with a backoff, until it is stored, the request
+   * leaves `receiving` (expired, say), or the request ends here.
+   */
+  private tellReceived(intake: Intake, attempt: number): void {
+    intake.tellAgain = undefined;
+    const what = `continue ${intake.continueId} from ${intake.hostId}`;
+    const receiving = (): boolean => this.deps.requests.get(intake.hostId, intake.continueId)?.state === 'receiving';
+    if (intake.abort.signal.aborted || this.stopped || !receiving()) return;
     const res = this.deps.received(intake.hostId, intake.continueId);
-    if (!res.ok) this.deps.log('warn', `[a2a-remote] continue ${intake.continueId} from ${intake.hostId}: every file is staged, yet ${res.error}`);
+    if (res.ok) return;
+    if (!receiving()) {
+      this.deps.log('warn', `[a2a-remote] ${what}: every file is staged, yet ${res.error}`);
+      return;
+    }
+    const delay = Math.min(this.receivedRetry.minMs * 2 ** attempt, this.receivedRetry.maxMs);
+    this.deps.log('warn', `[a2a-remote] ${what}: every file is staged, yet ${res.error}; told again in ${Math.round(delay / 1000)} s`);
+    intake.tellAgain = setTimeout(() => this.tellReceived(intake, attempt + 1), delay);
+    intake.tellAgain.unref?.();
+  }
+
+  /** The request ends here: its transfers and its pull stop, and nothing more is told. */
+  private end(intake: Intake): void {
+    intake.abort.abort();
+    if (intake.tellAgain) clearTimeout(intake.tellAgain);
+    intake.tellAgain = undefined;
   }
 
   /** A check failed: the request fails, and its staging goes. */
@@ -437,7 +478,13 @@ export class ContinueBundle implements ContinueBytesIntake {
 
   private async recoverNow(): Promise<void> {
     const root = continueStagingRoot(this.deps.a2aDir);
-    for (const host of await namesIn(root)) {
+    // A link (or a file) where `continue-in` goes is removed itself, never walked: staging only ever made a plain folder there.
+    const top = await fs.promises.lstat(root).catch(() => null);
+    const plainRoot = top !== null && top.isDirectory() && !top.isSymbolicLink();
+    if (top && !plainRoot) {
+      await fs.promises.unlink(root).catch((err: unknown) => this.deps.log('warn', `[a2a-remote] continue staging: ${root} is not a plain folder and was not removed: ${errMsg(err)}`));
+    }
+    for (const host of plainRoot ? await namesIn(root) : []) {
       const hostDir = path.join(root, host);
       // eslint-disable-next-line no-await-in-loop -- one PC's staging at a time
       const plain = isHostId(host) && (await isPlainDir(hostDir));
@@ -584,10 +631,22 @@ async function placePart(dir: string, part: string, target: string): Promise<voi
     await continueParentsInside(dir, target, true);
     const st = await fs.promises.lstat(target).catch(() => null);
     if (st && !st.isFile()) throw new ContinueStagingRefusal('something other than a plain file where a staged file goes');
+    // On disk before it takes its name: a power cut after `received` never leaves a staged file cut short.
+    await syncFile(part);
     await fs.promises.rename(part, target);
   } catch (err) {
     await fs.promises.rm(part, { force: true }).catch(() => undefined);
     throw err;
+  }
+}
+
+/** Flush a written file's bytes to disk. */
+async function syncFile(file: string): Promise<void> {
+  const handle = await fs.promises.open(file, 'r+');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 

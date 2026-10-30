@@ -49,6 +49,7 @@ const cases: Record<HarnessEventType, { events: HarnessEvent[]; expected: unknow
   },
   'usage.limited': { events: [{ type: 'usage.limited', resetsAt: 5 }], expected: [] },
   'background.updated': { events: [{ type: 'background.updated', tasks: ['build'] }], expected: [] },
+  'stop.overdue': { events: [{ type: 'stop.overdue' }], expected: [] },
   interjection: {
     events: [{ type: 'interjection', text: 'Hold on', customType: 'review' }],
     expected: [{ id: '2.1', kind: 'meta', subtype: 'unknown', label: 'Hold on' }],

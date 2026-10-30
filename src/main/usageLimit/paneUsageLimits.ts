@@ -1,7 +1,7 @@
 // Main's mirror of the daemon's pane usage-limit holds (shared/usageLimit).
 //
 // The daemon owns the state; main keeps a copy for two reasons only: its own
-// gated delivery (a2a, company messages, channel mentions, turn-end reminders)
+// gated delivery (a2a, channel mentions, turn-end reminders)
 // refuses a held pane without a daemon round-trip, and it fills a reset time
 // the hook text did not carry from the statusline's live `rate_limits` for the
 // same pane.

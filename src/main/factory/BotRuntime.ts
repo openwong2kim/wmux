@@ -79,7 +79,7 @@ import {
 import type { WakeQueue } from './wakeQueue';
 import { redactStoredSecrets } from './secretRedaction';
 import { ownerRoutineWakeClean, runningWakeAttended, wakeTaintExpected } from './wakeTaint';
-import { ownHermesPrompt, ownHermesWakeRefusal } from './myHermesTurn';
+import { ownHermesPrompt, ownHermesWakeRefusal, type OwnHermesRefusalCode } from './myHermesTurn';
 import { conversationMarks, endConversation, holdSignedInForWake, markConversation, releaseWakeHold, setConversationMarkListener, startConversation, type ConversationMarks } from './conversationMarks';
 
 /** The wakes the owner started: a My Hermes bot that is not sent one says
@@ -341,8 +341,8 @@ export interface BotRuntimePorts {
    *  cannot tell, which refuses. */
   ownHermesRoomClean?: (profile: BotProfile) => boolean | null;
   /** A bot on My Hermes was not sent a wake: say why in the wake's thread
-   *  (a system card). */
-  noteOwnHermesRefusal?: (profile: BotProfile, item: WakeItem, why: string) => void;
+   *  (a system card; `code` words it in the reader's language). */
+  noteOwnHermesRefusal?: (profile: BotProfile, item: WakeItem, why: string, code: OwnHermesRefusalCode | null) => void;
   /** Whether a routine wake of `botId` and its conversation are clean; null
    *  when that cannot be told now (wakeTaint.ts ownerRoutineWakeClean, the
    *  default). */
@@ -1330,7 +1330,7 @@ export class BotRuntime {
           const note = refusal.note && tell && OWNER_STARTED_WAKES.has(item.reason.kind);
           if (note) {
             try {
-              ports.noteOwnHermesRefusal?.(profile, item, refusal.why);
+              ports.noteOwnHermesRefusal?.(profile, item, refusal.why, refusal.code);
             } catch (err) {
               console.warn(`[factory] the My Hermes note of ${item.id} was not posted: ${String(err)}`);
             }

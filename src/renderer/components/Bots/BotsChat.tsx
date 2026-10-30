@@ -57,9 +57,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent,
 import { dmThreadBot, dmThreadId, groupThreadGroup, type RoomCard as RoomCardData, type ThreadId, type ThreadSummary } from '../../../shared/room';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
-import Select from '../ui/Select';
 import Popover from '../ui/Popover';
-import { IconFanOut, IconImage, IconPlus } from '../icons';
+import { IconFanOut, IconGear, IconImage, IconPlus } from '../icons';
 import { ChatAttachmentChips } from '../Chat/ChatAttachmentViews';
 import { spliceAtCaret, type ChatAttachment } from '../Chat/chatAttachments';
 import { DictationButton, dictationAvailable } from '../Dictation/DictationButton';
@@ -75,12 +74,11 @@ import { RoomCard, useIdLabels } from '../Room/RoomCard';
 import { CardAnswers, useWorkspaceNames } from '../Room/CardAnswers';
 import { ApprovePendingChip } from '../Room/ApprovalAnswers';
 import { pendingForChip, useApprovals } from '../Room/approvalsStore';
-import { PresenceDot, botActionsFor, botPresence } from '../Room/BotChips';
+import { PresenceDot, botPresence } from '../Room/BotChips';
 import { deliveryLine, deliveryTaken, photoPostParams, roomLead, roomPostParams, sentFrom, useMentionPicks, type SentTo } from '../Room/RoomComposer';
-import { actorLabel, botKindLabel, cardApplyTaskId, cardResumeTaskId, cardTone, isRefThread, kindLabel, onceText, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
-import { BOT_JOB_MAX, botTemplate, delegatesFromConversation, normalizeBotJob, type BotPresence, type BotProfile as BotProfileData } from '../../../shared/bot';
-import { DEFAULT_BOT_WORKER_AGENT, botWorkerAgentLabel, type BotWorkerAgentOption } from '../../../shared/botWorkerAgent';
-import { pickFolderDialog, templateJob } from '../Settings/FactoryTab';
+import { actorLabel, cardApplyTaskId, cardResumeTaskId, cardTone, isRefThread, kindLabel, onceText, ownerCardText, planTextWithNames, requestTitles, threadLabel, threadRef, type IdLabels, type RoomActorView } from '../Room/roomFormat';
+import { botTemplate, delegatesFromConversation, type BotPresence, type BotProfile as BotProfileData } from '../../../shared/bot';
+import { templateJob } from '../Settings/FactoryTab';
 import BotAvatar, { botHueIndex, botIdentityColor, noteRemovedBotHues } from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
 import { awaitsApproval, conversationCards, groupViewCards, livePlanIds, taskBubbles, conversationTurns, type BotTreeRow, type BotWorker, type Conversation, type RoomEntry } from './botsModel';
@@ -89,26 +87,17 @@ import { loadWholeThread } from './useBots';
 import { loadRoomActors } from '../../hooks/useRoomSync';
 import { useShallow } from 'zustand/react/shallow';
 import type { BotTaskView, FactoryTaskApplyResult } from '../../../shared/botTask';
-import { botCanDo } from './botsProfile';
-import { BotConnections } from './BotConnections';
-import { BotRecipeChecklist } from './BotRecipes';
-import { BotSkills } from './BotSkills';
-import { BotMemory } from './BotMemory';
-import { BotCommands } from './BotCommands';
-import { BotToday } from './BotToday';
-import { BrainModelLine, WorkerModelLine } from './BotModelLines';
-import { BotEngineLine } from './BotEngineLine';
 import { stopBotSummary, useWorkerStopUnfinished, type BotsStopPort } from './botsStop';
 import { InlineConfirm } from './InlineConfirm';
 import BotsWorkerPanel from './BotsWorkerPanel';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
 import { BOTS_SESSION_START, selectWorkerPanelHost } from '../../stores/slices/roomSlice';
-import { routineScheduleText, routineStateText, useBotRoutines } from '../Schedules/BotRoutines';
 import { buildTimeline, clockTime, elapsed, fullTime, hasKindWord, liveNewAfter, separatorLabel, splitThreads, threadCards, type ThreadView, type TimelineItem } from './botsTimeline';
 import { conversationStartedThreads, workView } from './botsWork';
 import BotsWorkCard from './BotsWorkCard';
 import BotsWorkflowCard from './BotsWorkflowCard';
 import { countNewWorkflows, withWorkflows, type WorkflowTimelineItem } from './botsWorkflow';
+import { useTranscriptWindow } from '../shared/useTranscriptWindow';
 import { useConversationWorkflows } from './useBotWorkflows';
 import '../Chat/chatMono.css';
 
@@ -1861,29 +1850,17 @@ function emptyGroupLine(bots: readonly FactoryBotRow[], t: T): string {
   return lead ? t('botsPage.group.emptyLead', { name: lead.bot.name }) : t('botsPage.group.empty');
 }
 
-function ProfileLine({ label, value }: { label: string; value: React.ReactNode }) {
-  return (
-    <div className="flex items-baseline gap-3 py-1 text-[12px]">
-      <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{label}</span>
-      <span className="min-w-0 truncate text-[var(--text-main)]">{value}</span>
-    </div>
-  );
-}
-
-/** Pause (park the bot: it takes no new turn until Resume; reversible, so
- *  no confirm) beside Stop (the bot's turn and its workers, after an inline
- *  confirm; the result is a toast) and New conversation (the bot's next
- *  wake starts clean, after an inline confirm; refused mid-turn). A paused
- *  bot shows Resume in Today. */
-function StopBot({ row, port, act, t }: { row: FactoryBotRow; port: BotsStopPort; act?: FactoryBotPort['act']; t: T }) {
+/** Stop (the bot's turn and its workers, after an inline confirm; the
+ *  result is a toast) beside New conversation (the bot's next wake starts
+ *  clean, after an inline confirm; refused mid-turn). Pause is the settings
+ *  page's status strip. */
+export function StopBot({ row, port, t }: { row: FactoryBotRow; port: BotsStopPort; t: T }) {
   const [confirming, setConfirming] = useState(false);
   const [confirmingNew, setConfirmingNew] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [pausing, setPausing] = useState(false);
   const stopBot = port.stopBot;
   const newConversation = port.newConversation;
-  const canPause = !!act && row.bot.enabled && botActionsFor(row).park;
-  if (!stopBot && !canPause && !newConversation) return null;
+  if (!stopBot && !newConversation) return null;
   const run = async () => {
     if (!stopBot) return;
     setBusy(true);
@@ -1915,20 +1892,8 @@ function StopBot({ row, port, act, t }: { row: FactoryBotRow; port: BotsStopPort
       setBusy(false);
     }
   };
-  const pause = async () => {
-    if (!act) return;
-    setPausing(true);
-    try {
-      const r = await act('park', row.bot.id);
-      if (!r.ok) useStore.getState().pushToast({ message: t('room.bot.actionFailed', { name: row.bot.name, reason: r.message ?? '' }), level: 'error' });
-    } catch (err) {
-      useStore.getState().pushToast({ message: t('room.bot.actionFailed', { name: row.bot.name, reason: err instanceof Error ? err.message : String(err) }), level: 'error' });
-    } finally {
-      setPausing(false);
-    }
-  };
   return (
-    <div className="mt-1 border-t border-[var(--stroke)] pt-2" data-bots-stop-bot={row.bot.id}>
+    <div data-bots-stop-bot={row.bot.id}>
       {confirming && stopBot ? (
         <InlineConfirm
           text={t('botsPage.stop.botConfirm', { name: row.bot.name })}
@@ -1951,7 +1916,6 @@ function StopBot({ row, port, act, t }: { row: FactoryBotRow; port: BotsStopPort
         />
       ) : (
         <div className="flex items-center gap-2">
-          {canPause && <Button size="sm" variant="secondary" data-testid="bots-pause-bot" disabled={pausing} onClick={() => void pause()}>{t('botsPage.pause.bot')}</Button>}
           {newConversation && <Button size="sm" variant="secondary" data-testid="bots-new-conversation" onClick={() => setConfirmingNew(true)}>{t('botsPage.newConversation')}</Button>}
           {stopBot && <Button size="sm" variant="destructive" data-testid="bots-stop-bot" onClick={() => setConfirming(true)}>{t('botsPage.stop.bot')}</Button>}
         </div>
@@ -1962,12 +1926,12 @@ function StopBot({ row, port, act, t }: { row: FactoryBotRow; port: BotsStopPort
 
 /** The verbs the profile sends through the bot port beyond the job editor:
  *  Resume and Delete bot (absent ones show no control). */
-type BotAdminPort = Partial<Pick<FactoryBotPort, 'act' | 'remove'>>;
+export type BotAdminPort = Partial<Pick<FactoryBotPort, 'act' | 'remove'>>;
 
 /** Delete bot, after an inline confirm that says what happens: its history
  *  stays, its running workers are stopped, its routines are removed. Its
  *  colour goes with its tombstone, so its old cards keep its face. */
-function DeleteBot({ row, port, t }: { row: FactoryBotRow; port?: BotAdminPort; t: T }) {
+export function DeleteBot({ row, port, t }: { row: FactoryBotRow; port?: BotAdminPort; t: T }) {
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
   const remove = port?.remove;
@@ -2050,193 +2014,6 @@ function ClearArchived({ name, t, onClear }: { name: string; t: T; onClear: () =
   );
 }
 
-/** The bot's job in its profile: the text, and Edit when the bot port can
- *  update (saved as the owner; an empty job clears it). */
-function JobLine({ row, t, jobPort }: { row: FactoryBotRow; t: T; jobPort?: Pick<FactoryBotPort, 'update'> }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(row.bot.job ?? '');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const update = jobPort?.update;
-  const ok = draft.trim() === '' || normalizeBotJob(draft) !== undefined;
-  const save = async () => {
-    if (!update) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await update(row.bot.id, { job: draft.trim() === '' ? null : draft.trim() });
-      if (r.ok) setEditing(false);
-      else setError(r.message || t('botsPage.profile.jobFailed'));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  // No job of its own: it works on its template's starting job, shown in
-  // the owner's language (main's copy of it is English).
-  const startingJob = row.bot.job ? '' : templateJob(botTemplate(row.bot), t);
-  return (
-    <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-job>
-      <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.job')}</span>
-      <div className="min-w-0 flex-1">
-        {editing ? (
-          <>
-            <textarea
-              data-testid="bots-profile-job-input"
-              aria-label={t('botsPage.profile.job')}
-              value={draft}
-              rows={4}
-              maxLength={BOT_JOB_MAX}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => e.stopPropagation()}
-              className={`w-full rounded-[6px] border border-[var(--line)] focus:border-[var(--line-strong)] bg-transparent px-2 py-1.5 text-[13px] text-[var(--text-main)] outline-none ${FOCUS_RING}`}
-            />
-            <div className="mt-1 flex items-center gap-1.5">
-              <Button size="sm" variant="ghost" disabled={busy} onClick={() => { setEditing(false); setDraft(row.bot.job ?? ''); setError(null); }}>{t('settings.factory.cancel')}</Button>
-              <Button size="sm" variant="primary" data-testid="bots-profile-job-save" disabled={busy || !ok} onClick={() => void save()}>{t('settings.factory.save')}</Button>
-            </div>
-            {error && <p role="alert" className="mt-1 text-[11px] text-[var(--accent-red)]">{error}</p>}
-          </>
-        ) : (
-          <>
-            <p data-bots-profile-job-text className={`whitespace-pre-wrap break-words ${row.bot.job ? 'text-[var(--text-main)]' : 'text-[var(--text-muted)]'}`}>
-              {row.bot.job ?? (startingJob || t('botsPage.profile.noJob'))}
-            </p>
-            {startingJob && <p data-bots-profile-job-default className="text-[11px] text-[var(--text-muted)]">{t('botsPage.profile.defaultJob')}</p>}
-            {update && (
-              <button
-                type="button"
-                data-testid="bots-profile-job-edit"
-                onClick={() => { setDraft(row.bot.job ?? ''); setEditing(true); }}
-                className={`mt-0.5 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
-              >
-                {t('botsPage.profile.editJob')}
-              </button>
-            )}
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/** The bot's repository, with Change: the folder picker Add bot uses; main
- *  resolves the folder and checks it as it does at creation (its origin's
- *  owner/repo, never a local path; one repository per workspace). */
-function RepoLine({ row, t, port, pickFolder = pickFolderDialog }: { row: FactoryBotRow; t: T; port?: Pick<FactoryBotPort, 'update'>; pickFolder?: () => Promise<string | null> }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const update = port?.update;
-  const change = async () => {
-    if (!update) return;
-    setError(null);
-    try {
-      const folder = await pickFolder();
-      if (!folder) return;
-      setBusy(true);
-      const r = await update(row.bot.id, { repoFolder: folder });
-      if (!r.ok) setError(r.message || t('botsPage.profile.repoFailed'));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-repo>
-      <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.repo')}</span>
-      <div className="min-w-0 flex-1">
-        <div className="flex min-w-0 items-baseline gap-2">
-          <span data-bots-profile-repo-key className="min-w-0 truncate text-[var(--text-main)]" title={row.bot.repo?.repoPath}>{row.bot.repo?.repoKey ?? t('botsPage.profile.noRepo')}</span>
-          {update && (
-            <button
-              type="button"
-              data-testid="bots-profile-repo-change"
-              disabled={busy}
-              onClick={() => void change()}
-              className={`shrink-0 text-[11px] text-[var(--text-muted)] hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}
-            >
-              {t(row.bot.repo ? 'settings.factory.addBotChangeFolder' : 'settings.factory.addBotChooseFolder')}
-            </button>
-          )}
-        </div>
-        {!row.bot.repo && !error && <p data-bots-profile-repo-hint className="mt-1 text-[11px] text-[var(--text-muted)]">{t('botsPage.profile.repoHint')}</p>}
-        {error && <p role="alert" data-bots-profile-repo-error className="mt-1 text-[11px] text-[var(--accent-red)]">{error}</p>}
-      </div>
-    </div>
-  );
-}
-
-/** What the bot's workers run on: the default (the presets' engine) or an
- *  installed engine that has a worker guard, saved as the owner. Read-only
- *  text when the port cannot update or list the engines. */
-function WorkerEngineLine({ row, t, port }: { row: FactoryBotRow; t: T; port?: Pick<FactoryBotPort, 'update' | 'workerAgents'> }) {
-  const [options, setOptions] = useState<BotWorkerAgentOption[] | null>(null);
-  const [pending, setPending] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const list = port?.workerAgents;
-  const update = port?.update;
-  useEffect(() => {
-    if (!list) return;
-    let live = true;
-    list().then((o) => { if (live) setOptions(o); }, () => { if (live) setOptions([]); });
-    return () => { live = false; };
-  }, [list]);
-  const current = row.bot.workerAgent?.agent ?? '';
-  // A save in flight shows its value until the profile catches up.
-  useEffect(() => { if (pending !== null && pending === current) setPending(null); }, [pending, current]);
-  const defaultName = botWorkerAgentLabel(DEFAULT_BOT_WORKER_AGENT);
-  const label = t('botsPage.profile.workersRunOn');
-  if (!update || !list) {
-    return <ProfileLine label={label} value={<span data-bots-profile-workers-engine>{current ? botWorkerAgentLabel(current) : t('botsPage.profile.workersDefault', { name: defaultName })}</span>} />;
-  }
-  // Every guarded engine but the default's own (listed only when it is the
-  // stored pick), and the stored pick even when the list could not be read.
-  const listed = (options ?? []).filter((o) => o.agent !== DEFAULT_BOT_WORKER_AGENT || o.agent === current);
-  const choices = current && !listed.some((o) => o.agent === current)
-    ? [...listed, { agent: current, label: botWorkerAgentLabel(current), installed: false, supported: true }]
-    : listed;
-  const save = async (value: string) => {
-    setPending(value);
-    setError(null);
-    try {
-      const r = await update(row.bot.id, { workerAgent: value ? { agent: value } : null });
-      if (!r.ok) {
-        setPending(null);
-        setError(r.message || t('botsPage.profile.workersFailed'));
-      }
-    } catch (err) {
-      setPending(null);
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  };
-  const optionText = (o: BotWorkerAgentOption): string => {
-    if (!o.supported) return t('botsPage.profile.workersUnavailable', { name: o.label });
-    return o.installed ? o.label : t('botsPage.profile.workersNotInstalled', { name: o.label });
-  };
-  return (
-    <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-workers-engine>
-      <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{label}</span>
-      <div className="min-w-0 flex-1">
-        <Select
-          data-testid="bots-profile-workers-engine"
-          aria-label={label}
-          value={pending ?? current}
-          disabled={pending !== null || options === null}
-          onChange={(e) => void save(e.target.value)}
-        >
-          <option value="">{t('botsPage.profile.workersDefault', { name: defaultName })}</option>
-          {choices.map((o) => (
-            <option key={o.agent} value={o.agent} disabled={!o.installed || !o.supported}>{optionText(o)}</option>
-          ))}
-        </Select>
-        {error && <p role="alert" className="mt-1 text-[11px] text-[var(--accent-red)]">{error}</p>}
-      </div>
-    </div>
-  );
-}
-
 /** Each bot's last presence the runtime reported while the app runs, and
  *  when one last reported parked went unreported (its Resume). */
 const lastProfilePresence = new Map<string, BotPresence>();
@@ -2272,9 +2049,9 @@ export function profilePresenceKey(
   return 'room.presence.unknown';
 }
 
-/** The profile's state line: on/off and presence, re-read when "Resuming…"
- *  runs out. */
-function ProfileState({ row, t }: { row: FactoryBotRow; t: T }) {
+/** The bot's presence key (profilePresenceKey), read again when
+ *  "Resuming…" runs out. */
+export function useProfilePresenceKey(row: FactoryBotRow): string {
   const [, expire] = useState(0);
   const key = profilePresenceKey(row);
   useEffect(() => {
@@ -2283,73 +2060,7 @@ function ProfileState({ row, t }: { row: FactoryBotRow; t: T }) {
     const h = setTimeout(() => expire((n) => n + 1), Math.max(0, at + RESUMING_MAX_MS - Date.now()));
     return () => clearTimeout(h);
   }, [key, row.bot.id]);
-  return <ProfileLine label={t('botsPage.profile.state')} value={<span data-bots-profile-state>{`${t(row.bot.enabled ? 'botsPage.profile.on' : 'botsPage.profile.off')} · ${t(key)}`}</span>} />;
-}
-
-/** The bot's profile under its name pill: template, job (editable),
- *  workspace, repo, its engine (with Hermes's readiness on Hermes), the
- *  model it thinks on, what its workers run on and
- *  their model, on/off, what it used today of each limit (and what stops
- *  it, with Resume when parked), its routines
- *  (read-only), the recipe it was added from and what its connections still
- *  need, its connections, then what it can do (the shared powers,
- *  read-only), whom it reports to, its workers now, and Pause and Stop. */
-function BotProfile({ row, workers, workspaceName, t, stopPort, jobPort, adminPort }: { row: FactoryBotRow; workers: readonly BotWorker[]; workspaceName: string; t: T; stopPort: BotsStopPort; jobPort?: Pick<FactoryBotPort, 'update' | 'workerAgents'>; adminPort?: BotAdminPort }) {
-  const routines = (useBotRoutines()?.routines ?? []).filter((r) => r.botId === row.bot.id);
-  const canDo = botCanDo(row.bot);
-  const waiting = workers.filter((w) => w.waiting).length;
-  const running = workers.length - waiting;
-  return (
-    <div data-bots-profile={row.bot.id} className="px-3 py-2">
-      <ProfileLine label={t('botsPage.profile.template')} value={<span data-bots-profile-template>{botKindLabel(row.bot, t)}</span>} />
-      <JobLine key={`${row.bot.id}:${row.bot.job ?? ''}`} row={row} t={t} jobPort={jobPort} />
-      <ProfileLine label={t('botsPage.profile.workspace')} value={workspaceName} />
-      <RepoLine row={row} t={t} port={jobPort} />
-      <BotEngineLine row={row} t={t} />
-      <BrainModelLine row={row} t={t} port={jobPort} />
-      <WorkerEngineLine row={row} t={t} port={jobPort} />
-      <WorkerModelLine row={row} t={t} port={jobPort} />
-      <ProfileState row={row} t={t} />
-      <BotToday row={row} act={adminPort?.act} liveWorkers={workers.length} t={t} />
-      {routines.length > 0 && (
-        <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-routines>
-          <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.routines')}</span>
-          <ul className="min-w-0 flex-1 space-y-0.5">
-            {routines.map((r) => (
-              <li key={r.id} data-bot-routine={r.id} className={`truncate ${r.state !== 'active' ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'}`}>
-                {`${r.title} · ${routineScheduleText(r.schedule)} · ${routineStateText(r)}`}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      <BotRecipeChecklist bot={row.bot} t={t} />
-      <BotConnections row={row} t={t} />
-      <BotSkills row={row} t={t} />
-      <BotMemory row={row} t={t} />
-      <BotCommands row={row} t={t} />
-      <div className="mt-1 border-t border-[var(--stroke)] pt-1">
-        <div className="flex items-baseline gap-3 py-1 text-[12px]" data-bots-profile-can-do>
-          <span className="w-[112px] shrink-0 text-[var(--text-muted)]">{t('botsPage.profile.canDo')}</span>
-          <ul className="min-w-0 flex-1 space-y-0.5 text-[var(--text-main)]">
-            {canDo.map((key) => <li key={key} data-can-do={key}>{t(key)}</li>)}
-          </ul>
-        </div>
-        <ProfileLine label={t('botsPage.profile.reportsTo')} value={<span data-bots-profile-reports-to>{t('botsPage.profile.reportsToYou')}</span>} />
-        <ProfileLine
-          label={t('botsPage.profile.workersNow')}
-          value={(
-            <span data-bots-profile-workers={workers.length}>
-              {t('botsPage.profile.workersRunning', { count: running })}
-              {waiting > 0 && <span className="text-[var(--attention-text)]">{` · ${t('botsPage.profile.workersWaiting', { count: waiting })}`}</span>}
-            </span>
-          )}
-        />
-      </div>
-      <StopBot row={row} port={stopPort} act={adminPort?.act} t={t} />
-      <DeleteBot row={row} port={adminPort} t={t} />
-    </div>
-  );
+  return key;
 }
 
 /** Whether a card waits on the owner's answer: an open question, the live
@@ -2409,13 +2120,12 @@ function HeadWorkers({ rows, name, shownId, t, onOpen }: {
   );
 }
 
-export function BotsChat({ conversation, roomCards, bots, title, workspaceName, t, onBack, api, now, readOnly: pausedView = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup, threadAsk, onClearArchived }: {
+export function BotsChat({ conversation, roomCards, bots, title, t, onBack, api, now, readOnly: pausedView = false, stopPort = {}, jobPort, resumePort, onOpenBot, onEditGroup, onOpenSettings, threadAsk, onClearArchived }: {
   conversation: Conversation;
   roomCards: readonly RoomCardData[];
   /** Every bot (names for senders and the addressee check). */
   bots: readonly FactoryBotRow[];
   title: string;
-  workspaceName: string;
   t: T;
   onBack: () => void;
   api?: RoomsApi | null;
@@ -2436,6 +2146,8 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   /** A group chat's pill: rename it, change its bots or delete it (absent:
    *  the pill does nothing). */
   onEditGroup?: () => void;
+  /** A bot's ⚙ and its name pill: its settings page (absent: neither). */
+  onOpenSettings?: () => void;
   /** A thread to open beside the chat (a bot row led here to what it asks);
    *  a new nonce opens it again. */
   threadAsk?: { workspaceId: string; threadId: ThreadId; nonce: number };
@@ -2445,8 +2157,8 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
 }): React.ReactElement {
   // A deleted bot's 1:1 is read only: no composer, profile or answers.
   const removedBot = conversation.kind === 'bot' && conversation.removed === true;
+  const settingsLabel = t('botsPage.settings.open', { name: title });
   const readOnly = pausedView || removedBot;
-  const [profileOpen, setProfileOpen] = useState(false);
   const [sent, setSent] = useState<Record<string, SentTo[] | null>>({});
   const [started, setStarted] = useState<ReadonlySet<string>>(() => new Set());
   // The bot list each message was sent against: an idle bot counts as having
@@ -2503,6 +2215,14 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
   }, [main, threads, surfaced, waits, newAfter, work, workAuthor, coordinators]);
   const flows = useConversationWorkflows(conversation, cards);
   const shownItems = useMemo(() => withWorkflows(items, flows.workflows), [items, flows.workflows]);
+  // A long chat mounts its recent items; earlier ones are read in on the way up.
+  const timelineWindow = useTranscriptWindow({
+    resetKey: conversation.id,
+    items: shownItems,
+    keyOf: (item) => item.key,
+    isTurnStart: (item) => item.kind === 'message' && item.card.actor.kind === 'human',
+    scrollRef,
+  });
   const botNames = useMemo(() => bots.map((b) => b.bot.name), [bots]);
   const taskTitle = useMemo(() => {
     const byId = new Map<string, string>();
@@ -2605,28 +2325,6 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
     botsAtSend.current.set(cardId, botsRef.current);
     setSent((cur) => ({ ...cur, [cardId]: to }));
   }, []);
-  // The profile closes on Escape or a press outside it (the pill toggles it).
-  const profileRef = useRef<HTMLDivElement>(null);
-  const pillRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => {
-    if (!profileOpen) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as Node;
-      if (!profileRef.current?.contains(target) && !pillRef.current?.contains(target)) setProfileOpen(false);
-    };
-    const onKey = (e: globalThis.KeyboardEvent) => {
-      if (e.key !== 'Escape') return;
-      e.stopPropagation();
-      setProfileOpen(false);
-      pillRef.current?.focus();
-    };
-    document.addEventListener('mousedown', onDown);
-    document.addEventListener('keydown', onKey, true);
-    return () => {
-      document.removeEventListener('mousedown', onDown);
-      document.removeEventListener('keydown', onKey, true);
-    };
-  }, [profileOpen]);
   const presence = conversation.kind === 'bot' && !removedBot ? botPresence(conversation.row) : null;
   const group = conversation.kind === 'room';
   // One side panel at a time: a worker's terminal, a thread or a file a bot
@@ -2788,13 +2486,11 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
         </button>
         <button
           type="button"
-          ref={pillRef}
           data-bots-pill
-          aria-expanded={conversation.kind === 'bot' && !removedBot ? profileOpen : undefined}
           aria-haspopup={conversation.kind === 'room' && onEditGroup ? 'dialog' : undefined}
-          title={conversation.kind === 'room' && onEditGroup ? t('botsPage.group.edit') : undefined}
-          onClick={() => (conversation.kind === 'bot' ? setProfileOpen((v) => !v) : onEditGroup?.())}
-          disabled={removedBot || (conversation.kind !== 'bot' && !onEditGroup)}
+          title={conversation.kind === 'room' ? (onEditGroup ? t('botsPage.group.edit') : undefined) : onOpenSettings ? settingsLabel : undefined}
+          onClick={() => (conversation.kind === 'bot' ? onOpenSettings?.() : onEditGroup?.())}
+          disabled={removedBot || (conversation.kind === 'bot' ? !onOpenSettings : !onEditGroup)}
           className={`wmux-bots-pill ${FOCUS_RING}`}
         >
           {conversation.kind === 'bot' ? <BotAvatar bot={conversation.row.bot} size={20} /> : <RoomAvatar bots={conversation.bots} size={20} layout="row" />}
@@ -2802,11 +2498,15 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
           {presence && <PresenceDot presence={presence} />}
           {group && <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{conversation.bots.length === 1 ? t('botsPage.botCountOne') : t('botsPage.botCount', { count: conversation.bots.length })}</span>}
         </button>
-        {tree.length > 0 && <HeadWorkers rows={tree} name={title} shownId={shownId} t={t} onOpen={openWorker} />}
+        <span className="wmux-bots-head-end">
+          {tree.length > 0 && <HeadWorkers rows={tree} name={title} shownId={shownId} t={t} onOpen={openWorker} />}
+          {conversation.kind === 'bot' && !removedBot && onOpenSettings && (
+            <button type="button" data-bots-settings onClick={onOpenSettings} aria-label={settingsLabel} title={settingsLabel} className={`wmux-bots-icon-button ${FOCUS_RING}`}>
+              <IconGear size={15} />
+            </button>
+          )}
+        </span>
       </div>
-      {profileOpen && conversation.kind === 'bot' && !removedBot && (
-        <div className="wmux-bots-profile" ref={profileRef}><BotProfile row={conversation.row} workers={workers} workspaceName={workspaceName} t={t} stopPort={stopPort} jobPort={readOnly ? undefined : jobPort} adminPort={readOnly ? (jobPort?.remove ? { remove: jobPort.remove } : undefined) : jobPort} /></div>
-      )}
 
       <div className="wmux-bots-scroll-wrap">
         <div
@@ -2819,6 +2519,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
             const el = e.currentTarget;
             const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
             atBottom.current = bottom;
+            timelineWindow.onScroll(bottom);
             if (bottom) {
               setNewCount(0);
               markSeen();
@@ -2832,7 +2533,7 @@ export function BotsChat({ conversation, roomCards, bots, title, workspaceName, 
             {empty && conversation.kind === 'room' && (
               <p data-bots-empty-chat className="py-8 text-center text-[12px] text-[var(--text-muted)]">{emptyGroupLine(conversation.bots, t)}</p>
             )}
-            <TimelineView items={shownItems} ctx={ctx} group={group} onCancelWorkflow={flows.cancel} />
+            <TimelineView items={timelineWindow.visible} ctx={ctx} group={group} onCancelWorkflow={flows.cancel} />
           </div>
         </div>
         {newCount > 0 && (

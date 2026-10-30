@@ -84,7 +84,7 @@ describe('parseChatV2Params', () => {
   });
 
   it('needs a chat session id where the method names one', () => {
-    for (const method of ['snapshot', 'interrupt', 'toTerminal', 'close'] as const) {
+    for (const method of ['snapshot', 'interrupt', 'forceStop', 'toTerminal', 'close'] as const) {
       expect(parseChatV2Params(method, session)).toEqual(session);
       expect(parseChatV2Params(method, { paneId: 'pty-1' })).toBeNull();
     }
@@ -94,6 +94,11 @@ describe('parseChatV2Params', () => {
     expect(parseChatV2Params('interrupt', { ...session, epoch, turnId: '3.1' })).toEqual({ ...session, epoch, turnId: '3.1' });
     expect(parseChatV2Params('interrupt', { ...session, epoch: 'nope' })).toBeNull();
     expect(parseChatV2Params('interrupt', { ...session, turnId: 't1:3' })).toBeNull();
+  });
+
+  it('takes the same guards on a force stop', () => {
+    expect(parseChatV2Params('forceStop', { ...session, epoch, turnId: '3.1' })).toEqual({ ...session, epoch, turnId: '3.1' });
+    expect(parseChatV2Params('forceStop', { ...session, epoch: 'nope' })).toBeNull();
   });
 });
 
