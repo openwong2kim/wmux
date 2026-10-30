@@ -5,7 +5,7 @@ import { getWmuxDir } from '../../daemon/config';
 import type { IPty } from 'node-pty';
 import type { TerminalPty } from '../../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../../shared/spawnPty';
-import { applyParentWindow, NATIVE_WINDOW_HANDLE_BYTES } from '../../shared/conptyParentWindow';
+import { applyParentWindow } from '../../shared/conptyParentWindow';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -74,14 +74,14 @@ export class PTYManager {
 
   /**
    * Make `handle` the owner of every pane's console window, now and for each
-   * pane spawned later (Windows, bundled ConPTY; a no-op elsewhere). Null
-   * clears the owner of the live ones, as DaemonSessionManager.setHostWindow does.
+   * pane spawned later (Windows, bundled ConPTY; a no-op elsewhere). Null only
+   * stops handing one to new panes, as DaemonSessionManager.setHostWindow does.
    */
   setHostWindow(handle: Buffer | null): void {
     if (handle === this.hostWindow || (handle && this.hostWindow?.equals(handle))) return;
     this.hostWindow = handle;
-    const sent = handle ?? Buffer.alloc(NATIVE_WINDOW_HANDLE_BYTES);
-    for (const instance of this.instances.values()) applyParentWindow(instance.process, sent);
+    if (!handle) return;
+    for (const instance of this.instances.values()) applyParentWindow(instance.process, handle);
   }
 
   /**

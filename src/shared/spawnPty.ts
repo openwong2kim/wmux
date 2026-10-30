@@ -22,7 +22,7 @@ import * as pty from 'node-pty';
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty';
 import { ptyBackend, spawnTerminalPty } from './terminalPty';
 import { spawnWithConptyPolicy, type ConptyBackend } from './conptyWindows';
-import { applyParentWindow, NATIVE_WINDOW_HANDLE_BYTES } from './conptyParentWindow';
+import { applyParentWindow } from './conptyParentWindow';
 
 /** node-pty's own bound on the ConPTY connect (its CONNECTION_TIMEOUT). */
 export const PTY_PID_TIMEOUT_MS = 5000;
@@ -71,14 +71,14 @@ function start(req: SpawnPtyRequest): { p: IPty; parent: Buffer | null } {
 }
 
 /**
- * A window reported, replaced or cleared while the pid was pending reached
- * no session (the caller registers the pty only after this resolves), so
- * bring this pty up to date. Null is sent as an all-zero HWND, which clears
- * the owner the spawn may have set.
+ * A window reported or replaced while the pid was pending reached no session
+ * (the caller registers the pty only after this resolves), so bring this pty
+ * up to date. A window cleared meanwhile needs nothing: if it was destroyed,
+ * Windows drops it as the owner by itself; if not, it is still a fine owner.
  */
 function reapplyParentWindow(p: IPty, req: SpawnPtyRequest, atSpawn: Buffer | null): IPty {
   const now = req.parentWindow?.() ?? null;
-  if (now !== atSpawn) applyParentWindow(p, now ?? Buffer.alloc(NATIVE_WINDOW_HANDLE_BYTES));
+  if (now && now !== atSpawn) applyParentWindow(p, now);
   return p;
 }
 

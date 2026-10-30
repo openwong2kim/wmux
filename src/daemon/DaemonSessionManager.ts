@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { IPty } from 'node-pty';
 import { ptyBackend, type TerminalPty } from '../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../shared/spawnPty';
-import { applyParentWindow, NATIVE_WINDOW_HANDLE_BYTES } from '../shared/conptyParentWindow';
+import { applyParentWindow } from '../shared/conptyParentWindow';
 import type { PaneJob } from './paneJob';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -343,21 +343,23 @@ export class DaemonSessionManager extends EventEmitter {
 
   /**
    * Make `handle` the owner of every live pane's console window, and of each
-   * one spawned from now on. Null clears the owner of the live ones (an
-   * all-zero HWND), so a window that is gone is not left as their owner.
-   * Returns how many live sessions the request reached.
+   * one spawned from now on. Null only stops handing a window to new panes:
+   * live ones are never sent a NULL owner. A destroyed window stops being
+   * their owner by itself (Windows drops it), and one main merely lost touch
+   * with is still a fine owner. Returns how many live sessions the request
+   * reached.
    */
   setHostWindow(handle: Buffer | null): number {
     // Each reconnect and each adopted window reports again; the same window
     // changes nothing, so it costs no call per pane.
     if (handle === this.hostWindow || (handle && this.hostWindow?.equals(handle))) return 0;
     this.hostWindow = handle;
-    const sent = handle ?? Buffer.alloc(NATIVE_WINDOW_HANDLE_BYTES);
+    if (!handle) return 0;
     let reached = 0;
     let declined = 0;
     for (const managed of this.sessions.values()) {
       if (managed.meta.state === 'dead' || managed.meta.state === 'suspended') continue;
-      if (applyParentWindow(managed.ptyProcess, sent)) reached++;
+      if (applyParentWindow(managed.ptyProcess, handle)) reached++;
       else declined++;
     }
     if (declined > 0) {

@@ -29,6 +29,13 @@ describe('applyParentWindow', () => {
     expect(applyParentWindow({ setParentWindow }, Buffer.alloc(4))).toBe(false);
     expect(setParentWindow).not.toHaveBeenCalled();
   });
+
+  it('never hands ConPTY a NULL owner (an all-zero HWND)', () => {
+    const setParentWindow = vi.fn(() => true);
+    expect(isNativeWindowHandle(Buffer.alloc(8))).toBe(false);
+    expect(applyParentWindow({ setParentWindow }, Buffer.alloc(8))).toBe(false);
+    expect(setParentWindow).not.toHaveBeenCalled();
+  });
 });
 
 describe('decodeNativeWindowHandle', () => {

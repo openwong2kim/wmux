@@ -47,9 +47,10 @@ export function reportHostWindow(
 }
 
 /**
- * Tell the daemon the reported window is gone (Windows), so panes stop naming
- * a destroyed window as their owner. Sent as an all-zero handle, which the
- * daemon reads as no window. Same rules as reportHostWindow otherwise.
+ * Tell the daemon the reported window is gone (Windows), so it stops handing
+ * that window to new panes. Sent as an all-zero handle, which the daemon reads
+ * as no window; it never passes it on to ConPTY. Same rules as
+ * reportHostWindow otherwise.
  */
 export function clearHostWindow(
   getClient: () => HostWindowRpcClient | null,
