@@ -199,6 +199,14 @@ describe('starting a received conversation', () => {
     await r.run();
     expect(r.order.slice(-5)).toEqual(['state', 'workspace.close', 'unplace', 'removeWorktree', 'failed']);
   });
+
+  it('opens no pane once it stopped (a reconnect) during the start', async () => {
+    let stopNow = (): void => undefined;
+    const r = rig({ place: () => { stopNow(); return { ok: true, transcriptPath: PLACED }; } });
+    stopNow = () => r.starter.stop();
+    await r.run();
+    expect(r.order).toEqual(['work', 'claim', 'worktree', 'place', 'unplace', 'removeWorktree', 'failed']);
+  });
 });
 
 describe('a started the daemon did not store', () => {
