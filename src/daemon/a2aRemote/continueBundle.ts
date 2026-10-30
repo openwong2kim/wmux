@@ -43,8 +43,9 @@ import { errMsg } from './storeFile';
  *     Both answer only the PC whose request it is (its authenticated id,
  *     never a field it sent), for a request that is `receiving`, about a
  *     hash of its manifest (for a PUT, one not staged yet). Anything else is
- *     404, answered before any byte of the body is read, and the connection
- *     is closed. While the continue policy is off neither route exists.
+ *     404; a PUT's is answered before any byte of its body is read, and its
+ *     connection is closed. While the continue policy is off neither route
+ *     exists.
  *   B is the joiner (B joined A): B pulls each file with a GET from A
  *     (`Accept-Encoding: gzip`) through its joiner session.
  *
@@ -233,12 +234,14 @@ export class ContinueBundle implements ContinueBytesIntake {
 
   // --- routes ---------------------------------------------------------------
 
-  private async head({ req, res, params, peer }: A2aRouteContext): Promise<void> {
+  /**
+   * A HEAD has no body to leave unread: its connection stays for the next
+   * file A asks about (its length of 0 lets a client tell the answer ended).
+   */
+  private async head({ res, params, peer }: A2aRouteContext): Promise<void> {
     const sha = params['sha256'] ?? '';
     const intake = await this.authorized(peer.hostId, params['continueId'] ?? '', sha);
-    const status = intake?.staged.has(sha) ? 200 : 404;
-    res.writeHead(status, { 'Cache-Control': 'no-store', ...(status === 200 ? {} : { Connection: 'close' }) });
-    if (status !== 200) res.once('finish', () => req.socket?.destroy());
+    res.writeHead(intake?.staged.has(sha) ? 200 : 404, { 'Cache-Control': 'no-store', 'Content-Length': 0 });
     res.end();
   }
 

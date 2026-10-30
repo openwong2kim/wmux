@@ -354,6 +354,33 @@ describe('uploads (A joined this PC)', () => {
     expect(calls).toEqual([]);
   });
 
+  it('keeps the connection after a HEAD, whatever it answers', async () => {
+    const t = bytes(1_000, 43);
+    const a = await toReceiving(t, [{ rel: 'f', body: bytes(10, 44) }]);
+    expect((await send('PUT', a, sha(t), { body: t })).status).toBe(200);
+    const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
+    try {
+      const head = (digest: string, host?: string): Promise<{ status: number; reused: boolean }> =>
+        new Promise((resolve, reject) => {
+          const req = http.request(
+            { host: '127.0.0.1', port, method: 'HEAD', agent, path: `${A2A_ROUTES.continue}/${a.continueId}/${digest}`, headers: host ? { 'x-test-host': host } : {} },
+            (res) => {
+              res.resume();
+              res.on('end', () => resolve({ status: res.statusCode ?? 0, reused: req.reusedSocket }));
+            },
+          );
+          req.on('error', reject);
+          req.end();
+        });
+      expect(await head(sha(bytes(10, 44)))).toEqual({ status: 404, reused: false });
+      // A has up to a thousand files to ask about: no new handshake for each.
+      expect(await head(sha(bytes(10, 45)), B)).toEqual({ status: 404, reused: true });
+      expect(await head(sha(t))).toEqual({ status: 200, reused: true });
+    } finally {
+      agent.destroy();
+    }
+  });
+
   it('takes one transfer per PC and two in all: the others are refused, unread, with 429', async () => {
     const t = bytes(50_000, 10);
     const fromA = await toReceiving(t, [{ rel: 'x.txt', body: bytes(10, 11) }], A);
