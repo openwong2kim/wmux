@@ -851,6 +851,7 @@ export const pl = {
   'pane.renameError.failed': "Nie udało się zmienić nazwy panelu",
   'pane.renameTab': 'Zmień nazwę karty',
   'pane.stash': 'Odłóż panel',
+  'pane.balanceLayout': 'Wyrównaj układ',
   'pane.muteNotifications': 'Wycisz powiadomienia',
   'pane.unmuteNotifications': 'Włącz powiadomienia',
   'pane.notificationsMuted': 'Powiadomienia z tego panelu są wyciszone',
@@ -923,6 +924,7 @@ export const pl = {
   'palette.cmd.splitRight': 'Podziel w prawo',
   'palette.cmd.splitDown': 'Podziel w dół',
   'palette.cmd.stashPane': 'Odłóż panel (sesja działa dalej)',
+  'palette.cmd.balanceLayout': 'Wyrównaj układ (równe kolumny i wiersze)',
   'palette.cmd.movePane.left': 'Przenieś panel w lewo',
   'palette.cmd.movePane.right': 'Przenieś panel w prawo',
   'palette.cmd.movePane.up': 'Przenieś panel w górę',
@@ -3630,6 +3632,7 @@ export const pl = {
   'settings.sc.zoomReset': 'Resetuj rozmiar czcionki',
   'settings.sc.mentionAgent': 'Wspomnij agenta',
   'settings.sc.stashPane': 'Odłóż panel (sesja dalej działa)',
+  'settings.sc.balanceLayout': 'Wyrównaj układ (równe kolumny i wiersze)',
   'settings.sc.movePaneLeft': 'Przenieś panel w lewo',
   'settings.sc.movePaneRight': 'Przenieś panel w prawo',
   'settings.sc.movePaneUp': 'Przenieś panel w górę',
@@ -3720,6 +3723,7 @@ export const pl = {
   'settings.prefix.swapPanePrev': 'Zamień z poprzednim panelem',
   'settings.prefix.swapPaneNext': 'Zamień z następnym panelem',
   'settings.prefix.stashPane': 'Odłóż panel',
+  'settings.prefix.balanceLayout': 'Wyrównaj układ',
 
   // Custom keybindings
   'settings.customKeybindings': 'Niestandardowe przypisania klawiszy',

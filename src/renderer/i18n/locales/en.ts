@@ -859,6 +859,7 @@ export const en = {
   'pane.renameError.failed': "Could not rename the pane",
   'pane.renameTab': 'Rename tab',
   'pane.stash': 'Stash pane',
+  'pane.balanceLayout': 'Balance layout',
   'pane.muteNotifications': 'Mute notifications',
   'pane.unmuteNotifications': 'Unmute notifications',
   'pane.notificationsMuted': 'Notifications muted for this pane',
@@ -934,6 +935,7 @@ export const en = {
   'palette.cmd.splitRight': 'Split right',
   'palette.cmd.splitDown': 'Split down',
   'palette.cmd.stashPane': 'Stash pane (keep the session running)',
+  'palette.cmd.balanceLayout': 'Balance layout (equal columns and rows)',
   'palette.cmd.movePane.left': 'Move pane left',
   'palette.cmd.movePane.right': 'Move pane right',
   'palette.cmd.movePane.up': 'Move pane up',
@@ -3660,6 +3662,7 @@ export const en = {
   'settings.sc.zoomReset': 'Reset font size',
   'settings.sc.mentionAgent': 'Mention an agent',
   'settings.sc.stashPane': 'Stash pane (keep the session running)',
+  'settings.sc.balanceLayout': 'Balance layout (equal columns and rows)',
   'settings.sc.movePaneLeft': 'Move pane left',
   'settings.sc.movePaneRight': 'Move pane right',
   'settings.sc.movePaneUp': 'Move pane up',
@@ -3750,6 +3753,7 @@ export const en = {
   'settings.prefix.swapPanePrev': 'Swap with previous pane',
   'settings.prefix.swapPaneNext': 'Swap with next pane',
   'settings.prefix.stashPane': 'Stash pane',
+  'settings.prefix.balanceLayout': 'Balance layout',
 
   // Custom keybindings
   'settings.customKeybindings': 'Custom keybindings',
