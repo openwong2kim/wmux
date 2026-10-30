@@ -440,6 +440,40 @@ describe('staging', () => {
     expect(fs.existsSync(outside)).toBe(true);
   });
 
+  it('flushes each file to disk before it takes its staged name', async () => {
+    const events: string[] = [];
+    const realOpen = fs.promises.open.bind(fs.promises);
+    const realRename = fs.promises.rename.bind(fs.promises);
+    const opened = vi.spyOn(fs.promises, 'open').mockImplementation((async (file: fs.PathLike, flags?: string, mode?: number) => {
+      const handle = await realOpen(file, flags, mode);
+      const realSync = handle.sync.bind(handle);
+      handle.sync = async () => {
+        events.push(`sync ${String(file)}`);
+        return realSync();
+      };
+      return handle;
+    }) as typeof fs.promises.open);
+    const renamed = vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+      events.push(`rename ${String(from)}`);
+      return realRename(from, to);
+    });
+    try {
+      const t = bytes(3_000, 42);
+      const a = await toReceiving(t, [{ rel: 'copy', body: t }, { rel: 'empty', body: Buffer.alloc(0) }]);
+      expect((await send('PUT', a, sha(t), { body: t })).status).toBe(200);
+      // The empty file, the transfer and its copy: each part flushed, then renamed.
+      const parts = events.filter((e) => e.includes(continuePartsDir(a.dir)));
+      expect(parts).toHaveLength(6);
+      for (let i = 0; i < parts.length; i += 2) {
+        expect(parts[i]).toBe(parts[i + 1].replace(/^rename /, 'sync '));
+        expect(parts[i + 1]).toMatch(/^rename /);
+      }
+    } finally {
+      opened.mockRestore();
+      renamed.mockRestore();
+    }
+  });
+
   it('fills every entry of one hash from one transfer, and makes empty files with none', async () => {
     const t = bytes(9_000, 16);
     const a = await toReceiving(t, [

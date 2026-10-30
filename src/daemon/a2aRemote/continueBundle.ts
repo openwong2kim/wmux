@@ -625,10 +625,22 @@ async function placePart(dir: string, part: string, target: string): Promise<voi
     await continueParentsInside(dir, target, true);
     const st = await fs.promises.lstat(target).catch(() => null);
     if (st && !st.isFile()) throw new ContinueStagingRefusal('something other than a plain file where a staged file goes');
+    // On disk before it takes its name: a power cut after `received` never leaves a staged file cut short.
+    await syncFile(part);
     await fs.promises.rename(part, target);
   } catch (err) {
     await fs.promises.rm(part, { force: true }).catch(() => undefined);
     throw err;
+  }
+}
+
+/** Flush a written file's bytes to disk. */
+async function syncFile(file: string): Promise<void> {
+  const handle = await fs.promises.open(file, 'r+');
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
   }
 }
 
