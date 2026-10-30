@@ -1,5 +1,5 @@
 /** Production transport and packaged loader in Electron main. */
-const { app } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { NativeTransport, NativeRing, NativeOutputDecoder, NativeOutputInterpreter, nativeCoreCapabilities } = require('../../../dist/wmux-native/index.cjs');
@@ -40,4 +40,11 @@ app.whenReady().then(() => {
   transport = new NativeTransport(command, args, process.cwd(),
     { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, 80, 24, () => setImmediate(pump), process.platform === 'win32'
       ? path.resolve('node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll') : undefined);
+  // The console-window owner (sign-in pickers): the bundled conpty.dll takes a real
+  // window's handle; elsewhere, and for a handle of the wrong size, it is a no-op.
+  const owner = new BrowserWindow({ show: false });
+  try {
+    assert.equal(transport.setParentWindow(owner.getNativeWindowHandle()), process.platform === 'win32');
+    assert.equal(transport.setParentWindow(Buffer.alloc(3)), false);
+  } finally { owner.destroy(); }
 }).catch(e => { console.error(e); clearTimeout(timer); transport?.close(); app.exit(1); });
