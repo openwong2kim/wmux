@@ -154,6 +154,8 @@ interface Live {
   lastBindingKey: string;
   /** Armed by the first Stop of a turn: stamps `stop.overdue` if the turn is still open at CHATV2_STOP_GRACE_MS. */
   stopTimer: ReturnType<typeof setTimeout> | null;
+  /** A force stop is running; what its driver still says is dropped, its exit aside. */
+  forceStopping: { driver: ChatV2Driver | null } | null;
   /** The pid of the last driver spawned, kept after a failed start: a rollback proves it exited first. */
   lastPid?: number;
   /** The last driver's `marker`, kept with lastPid. */
@@ -779,26 +781,45 @@ class Host implements ChatV2Host {
     const live = this.liveFor(p.paneId, p.chatSessionId);
     if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
     if (p.epoch !== undefined && p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
-    if (!live.record.session.busy) return { ok: true, stopped: false };
-    if (p.turnId !== undefined && openTurnId(live.record.session) !== p.turnId) return { ok: true, stopped: false };
+    if (live.forceStopping) return { ok: true, stopped: false };
+    // A turn already ended by an earlier force stop whose process did not exit: kill it again.
+    const retry = !live.record.session.busy && live.unreaped && !!live.driver;
+    if (!live.record.session.busy && !retry) return { ok: true, stopped: false };
+    if (!retry && p.turnId !== undefined && openTurnId(live.record.session) !== p.turnId) return { ok: true, stopped: false };
+    // send() is between its user turn and the driver write: its own failure path would end the turn.
+    if (live.sending) return chatV2Error('turn-running', 'The message is still being sent. Try again in a moment.');
     this.deps.log('info', `[chatv2] force stopping the turn on ${live.record.paneId}`);
     this.clearStopTimer(live);
-    // The turn's cards and question settle as cancelled, as when the agent drops them.
-    for (const held of live.decisions.values()) {
-      this.enqueue(live, {
-        kind: 'stamp',
-        event: held.kind === 'permission'
-          ? { type: 'approval.resolved', requestId: held.requestId, decision: 'cancelled' }
-          : { type: 'question.resolved', requestId: held.requestId, decision: 'cancelled' },
-      });
+    live.forceStopping = { driver: live.driver };
+    const held = [...live.decisions.values()];
+    let stopped: boolean;
+    try {
+      if (!retry) {
+        // The turn's cards and question settle as cancelled, as when the agent drops them.
+        for (const h of held) {
+          this.enqueue(live, {
+            kind: 'stamp',
+            event: h.kind === 'permission'
+              ? { type: 'approval.resolved', requestId: h.requestId, decision: 'cancelled' }
+              : { type: 'question.resolved', requestId: h.requestId, decision: 'cancelled' },
+          });
+        }
+        this.enqueue(live, { kind: 'stamp', event: { type: 'turn.ended', outcome: 'interrupted' } });
+        // Off the books before the stop's wait, so no answer reaches the agent meanwhile.
+        await this.expireDecisions(live, 'turn-ended');
+      }
+      stopped = await this.stopDriver(live);
+      await live.drained;
+      // Decisions that were still being recorded when the turn ended: their
+      // registry cards may have been made after the expiry above.
+      await this.expireDecisions(live, 'turn-ended');
+      const registry = this.deps.approvals();
+      for (const h of held) {
+        if (h.registryId) await registry?.expireNative(live.record.paneId, h.native, 'turn-ended').catch(() => undefined);
+      }
+    } finally {
+      live.forceStopping = null;
     }
-    this.enqueue(live, { kind: 'stamp', event: { type: 'turn.ended', outcome: 'interrupted' } });
-    const stopped = await this.stopDriver(live);
-    await live.drained;
-    // A stamped turn end skips take()'s expiry, and a stop that did not see
-    // the exit skips onDriverGone's: the turn's registry cards go here, after
-    // any decision still being recorded.
-    await this.expireDecisions(live, 'turn-ended');
     await this.persistNow(live);
     if (!stopped) return chatV2Error('driver-failed', 'The agent did not exit. Try again.');
     return { ok: true, stopped: true };
@@ -1029,6 +1050,7 @@ class Host implements ChatV2Host {
   /** A tombstone another record replaced: off the pane and out of the store. */
   private async retire(live: Live): Promise<void> {
     live.closed = true;
+    this.clearStopTimer(live);
     live.batcher.dispose();
     if (live.persistTimer) clearTimeout(live.persistTimer);
     await live.saveChain;
@@ -1290,6 +1312,7 @@ class Host implements ChatV2Host {
       persistTimer: null,
       lastBindingKey: '',
       stopTimer: null,
+      forceStopping: null,
       driverTag: newEpoch(),
     };
     live.lastBindingKey = this.bindingKey(this.binding(live));
@@ -1461,6 +1484,12 @@ class Host implements ChatV2Host {
 
   private enqueue(live: Live, item: InboxItem): void {
     if (live.closed && item.kind !== 'exited') return;
+    // The turn already ended as interrupted: nothing the dying agent says may reopen it.
+    if (live.forceStopping && (item.kind === 'decision' || item.kind === 'event') && item.driver === live.forceStopping.driver
+      && !(item.kind === 'event' && item.event.type === 'session.ended')) {
+      if (item.kind === 'decision') void item.driver.answer(item.decision.requestId, { decision: 'deny', formKind: item.decision.kind }).catch(() => 'unavailable');
+      return;
+    }
     if ((item.kind === 'exited' || (item.kind === 'event' && item.event.type === 'session.ended')) && item.driver === live.driver) {
       live.exitPending = true;
     }
