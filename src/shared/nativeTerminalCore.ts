@@ -71,6 +71,13 @@ const requireNative = createRequire(path.join(process.cwd(), 'wmux-core-loader.c
 let cached: { file: string; module: NativeTerminalCore } | undefined;
 const failures = new Set<string>();
 
+/**
+ * The module named by WMUX_TERMINAL_CORE_MODULE (absolute), else the first one
+ * found where wmux installs it: the packaged app's resources, or beside the
+ * bundle (the server runtime, and `npm run build:terminal-core`'s
+ * dist/wmux-native for dist bundles). Nothing is looked up from the working
+ * directory; a checkout's own build is named with the variable.
+ */
 export function nativeCorePath(): string {
   const override = process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE;
   if (override) {
@@ -82,7 +89,6 @@ export function nativeCorePath(): string {
     ...(resources ? [path.join(resources, 'wmux-native/index.cjs')] : []),
     path.join(__dirname, '../wmux-native/index.cjs'),
     path.join(__dirname, 'wmux-native/index.cjs'),
-    path.resolve('core/wmux-term/dist/native-core/index.cjs'),
   ];
   return candidates.find(p => fs.existsSync(p)) ?? candidates[0];
 }

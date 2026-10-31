@@ -27,8 +27,8 @@
 //   <ver>/resources/wmux-native/              dist/wmux-native (Rust terminal core),
 //                                             built on this host by `npm run build:terminal-core`
 // The daemon finds the native terminal core at `<daemon-bundle>/../wmux-native`
-// (src/shared/nativeTerminalCore.ts). It uses it only when the host picks the
-// rust engine; node stays the default.
+// (src/shared/nativeTerminalCore.ts). It runs on it unless the host picks the
+// node engine, and on node when it cannot load.
 //
 // `manifest` merges the per-arch fragments into the ServerArtifactManifest the
 // desktop app ships as resources/server-manifest.json (release.yml runs it

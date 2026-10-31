@@ -56,11 +56,16 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a npx electron --no-sandbox core/wmux-term/spike/native-transport-electron.cjs
       - name: Backend, snapshot, input and lifecycle contracts
-        run: npx vitest run src/shared/__tests__/terminalPty.os.test.ts src/shared/__tests__/terminalCoreSettings.os.test.ts src/daemon/__tests__/RingBuffer.test.ts src/daemon/__tests__/BufferHibernation.os.test.ts src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts src/daemon/__tests__/DaemonPTYBridge.nativeOutput.test.ts src/daemon/__tests__/SessionPipe.inputBackpressure.os.test.ts src/main/pty/__tests__/PTYManager.wsl.test.ts src/main/ipc/handlers/__tests__/terminalCore.handler.test.ts src/renderer/components/Settings/__tests__/TerminalEngineSetting.test.tsx src/daemon/__tests__/sessionReattach.engines.os.test.ts src/daemon/__tests__/nativeProcessTable.parity.os.test.ts
+        run: npx vitest run src/shared/__tests__/terminalPty.os.test.ts src/shared/__tests__/terminalCoreSettings.os.test.ts src/daemon/__tests__/RingBuffer.test.ts src/daemon/__tests__/BufferHibernation.os.test.ts src/daemon/__tests__/DaemonPTYBridge.nativeOutput.test.ts src/daemon/__tests__/SessionPipe.inputBackpressure.os.test.ts src/main/pty/__tests__/PTYManager.wsl.test.ts src/main/ipc/handlers/__tests__/terminalCore.handler.test.ts src/renderer/components/Settings/__tests__/TerminalEngineSetting.test.tsx src/daemon/__tests__/sessionReattach.engines.os.test.ts src/daemon/__tests__/nativeProcessTable.parity.os.test.ts
         env:
           # The module is built above, so on macOS and Linux its rust cases
           # must run, not skip. The suite is POSIX only: Windows skips it.
           WMUX_REQUIRE_RUST_CORE: '1'
+          # The checkout's build is never found on its own: name it.
+          WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
+      # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
+      - name: Opt-in snapshot module contracts
+        run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts
       - name: Output interpretation contracts
         run: npx vitest run src/daemon/__tests__/OutputInterpreter.test.ts src/daemon/util/__tests__/outputModeTracker.test.ts src/main/pty/__tests__/OscParser.test.ts
       - name: Retain native verification evidence
