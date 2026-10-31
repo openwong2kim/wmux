@@ -18,21 +18,26 @@ export async function clipboardHasImage(): Promise<boolean> {
 /**
  * The clipboard's image as PNG bytes, or null when it holds none. `image/png`
  * is taken as it is; another image format is converted, so a source that
- * stored only that format still pastes.
+ * stored only that format still pastes. A busy clipboard is no image, as in
+ * clipboardHasImage.
  */
 export async function readClipboardPng(): Promise<Buffer | null> {
-  for (const item of await clipboard.read()) {
-    const type = item.types.includes('image/png') ? 'image/png' : item.types.find(isImage);
-    if (!type) continue;
-    // eslint-disable-next-line no-await-in-loop -- one item at a time, the first image wins
-    // An image type always comes back as a Blob (only the bookmark format does not).
-    const bytes = Buffer.from(await ((await item.getType(type)) as Blob).arrayBuffer());
-    if (bytes.length === 0) continue;
-    if (type === 'image/png') return bytes;
-    const image = nativeImage.createFromBuffer(bytes);
-    if (!image.isEmpty()) return image.toPNG();
+  try {
+    for (const item of await clipboard.read()) {
+      const type = item.types.includes('image/png') ? 'image/png' : item.types.find(isImage);
+      if (!type) continue;
+      // eslint-disable-next-line no-await-in-loop -- one item at a time, the first image wins
+      // An image type always comes back as a Blob (only the bookmark format does not).
+      const bytes = Buffer.from(await ((await item.getType(type)) as Blob).arrayBuffer());
+      if (bytes.length === 0) continue;
+      if (type === 'image/png') return bytes;
+      const image = nativeImage.createFromBuffer(bytes);
+      if (!image.isEmpty()) return image.toPNG();
+    }
+    return null;
+  } catch {
+    return null;
   }
-  return null;
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
