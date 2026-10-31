@@ -88,8 +88,8 @@ function formatBody(message: string, opts: A2aFormatOptions): string {
  * delimiters (━) so the receiving agent can clearly identify it.
  *
  *   ━━━ WMUX A2A [Priority: HIGH] ━━━
- *   From: Workspace 1
- *   To: Workspace 2
+ *   From: Workspace 1.q1
+ *   To: Workspace 2.release
  *
  *   Please check the build output.
  *   ━━━ END ━━━
@@ -118,7 +118,7 @@ export function formatA2aMessage(
  * Broadcast variant — delivered to all workspaces.
  *
  *   ━━━ WMUX A2A BROADCAST [Priority: HIGH] ━━━
- *   From: Workspace 1
+ *   From: Workspace 1.q1
  *
  *   All workspaces: please pull latest.
  *   ━━━ END ━━━
