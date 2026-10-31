@@ -9,10 +9,11 @@ macOS**, the way wmux already lets them drive a browser over CDP.
 
 ## Code-origin rule
 
-Same rule as `docs/chat-view-oss-research-2026-09-24.md`: other projects are
-referenced for behaviour, protocol shape and UX only. No source, tests or
-assets are copied, translated or adapted. AGPL components are not even read
-for design (trycua `som`, `cua-perception`).
+Other projects are referenced for behaviour, protocol shape and UX. Code may be
+adapted only from permissively licensed projects the owner approved (Cua
+Driver, MIT): each adapted file names its source and commit in a header
+comment, and the license text goes into `THIRD_PARTY_NOTICES.md`. AGPL
+components are not even read for design (trycua `som`, `cua-perception`).
 
 ## Shape
 
