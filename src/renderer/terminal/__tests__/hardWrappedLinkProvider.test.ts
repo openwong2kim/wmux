@@ -211,7 +211,7 @@ describe('createHardWrappedLinkProvider', () => {
       const { links, handlers } = provide(term, y, 'claude');
       const link = links?.[0];
       expect(links).toHaveLength(1);
-      const event = {} as MouseEvent;
+      const event = { button: 0 } as MouseEvent;
       link?.activate(event, link.text);
       expect(handlers.activateUrl).toHaveBeenCalledWith(event, 'https://claude.ai/artifact/LDGd85Xb69ZumnNkPAggHT');
       expect(handlers.openPath).not.toHaveBeenCalled();
@@ -222,8 +222,24 @@ describe('createHardWrappedLinkProvider', () => {
     const term = await screen([toMargin('  ', ' /Users/me/project/src/'), '  index.ts:12 에서']);
     const { links, handlers } = provide(term, 1, 'claude');
     const link = links?.[0];
-    link?.activate({} as MouseEvent, link.text);
+    link?.activate({ button: 0 } as MouseEvent, link.text);
     expect(handlers.openPath).toHaveBeenCalledWith('/Users/me/project/src/index.ts');
+  });
+
+  it.each([
+    [0, true],
+    [1, false],
+    [2, false],
+  ])('mouse button %i opens a joined URL and a joined path: %s (#2901)', async (button, opens) => {
+    const event = { button } as MouseEvent;
+    const url = provide(await screen(rows), 1, 'claude');
+    expect(url.links).toHaveLength(1);
+    url.links?.[0].activate(event, url.links[0].text);
+    expect(url.handlers.activateUrl).toHaveBeenCalledTimes(opens ? 1 : 0);
+    const path = provide(await screen([toMargin('  ', ' /Users/me/project/src/'), '  index.ts:12 에서']), 1, 'claude');
+    expect(path.links).toHaveLength(1);
+    path.links?.[0].activate(event, path.links[0].text);
+    expect(path.handlers.openPath).toHaveBeenCalledTimes(opens ? 1 : 0);
   });
 
   it('(e) never joins outside a Claude pane', async () => {
