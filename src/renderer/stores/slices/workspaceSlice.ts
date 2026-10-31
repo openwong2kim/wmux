@@ -1053,6 +1053,13 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (!ws) return;
       if (!company) {
         delete ws.company;
+        // The board goes with the company; a pane holding nothing else keeps
+        // it, and it says the workspace is no longer a company.
+        for (const leaf of getWorkspaceLeafPanes(ws)) {
+          if (leaf.surfaces.every((s) => s.surfaceType === 'board')) continue;
+          leaf.surfaces = leaf.surfaces.filter((s) => s.surfaceType !== 'board');
+          if (!leaf.surfaces.some((s) => s.id === leaf.activeSurfaceId)) leaf.activeSurfaceId = leaf.surfaces[0].id;
+        }
         return;
       }
       const record = parseWorkspaceCompany({

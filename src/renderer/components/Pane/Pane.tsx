@@ -20,6 +20,7 @@ import { forgetChatV2Pane, usePaneChatV2Binding } from '../ChatV2/useChatV2';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import PreviewPanel from '../Preview/PreviewPanel';
+import CompanyBoardPanel from '../Company/CompanyBoardPanel';
 import DiffPanel from '../Diff/DiffPanel';
 import RemotePaneSurface from '../Remote/RemotePaneSurface';
 import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
@@ -1778,6 +1779,9 @@ function SplitSurfaceView({
           paneId={pane.id}
         />
       );
+    }
+    if (surface.surfaceType === 'board') {
+      return <CompanyBoardPanel key={surface.id} workspaceId={workspaceId} isActive={drawn} />;
     }
     if (surface.surfaceType === 'browser') {
       return (

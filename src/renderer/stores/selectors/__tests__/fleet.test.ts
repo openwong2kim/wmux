@@ -125,6 +125,16 @@ describe('selectFleetPanes', () => {
     expect(card.ptyId).toBe('pty-active');           // card stays keyed on active surface
   });
 
+  it('keeps a running agent\'s card on its terminal while a work tab beside it is active', () => {
+    const split = leaf('p', [surface('term', 'pty-ceo'), surface('board', '', { surfaceType: 'board' })], 'board');
+    const ws = workspace('w', 'w', split, 'p');
+    const [card] = selectFleetPanes({
+      workspaces: [ws], surfaceAgentStatus: { 'pty-ceo': 'running' }, surfaceActivity: {},
+      surfaceAgent: { 'pty-ceo': { name: 'Claude Code', status: 'running' } },
+    });
+    expect(card).toMatchObject({ ptyId: 'pty-ceo', surfaceType: 'terminal', agentStatus: 'running' });
+  });
+
   it('picks the most-urgent attention status across a leaf\'s surfaces', () => {
     const tabbed = leaf('p', [surface('a', 'pa'), surface('b', 'pb'), surface('c', 'pc')], 'a');
     const ws = workspace('w', 'w', tabbed, 'p');

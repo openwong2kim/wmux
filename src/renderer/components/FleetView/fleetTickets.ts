@@ -83,13 +83,15 @@ export interface TicketSources {
   decisions: readonly MoaPendingDecision[];
   a2aTasks: Readonly<Record<string, Task>>;
   now: number;
+  /** How long a finished ticket stays listed; TICKET_RECENT_MS unless given. */
+  recentMs?: number;
 }
 
 /**
  * Every ticket, the ones that need you first, then newest first. Finished
  * tickets older than TICKET_RECENT_MS drop off; abandoned ones never show.
  */
-export function buildFleetTickets({ links, decisions, a2aTasks, now }: TicketSources): FleetTicket[] {
+export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = TICKET_RECENT_MS }: TicketSources): FleetTicket[] {
   const pending = new Set(decisions.map((d) => d.decision.id));
   const out: FleetTicket[] = [];
   for (const link of links) {
@@ -98,7 +100,7 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now }: TicketSou
     const decisionIds = link.decisionIds.filter((id) => pending.has(id));
     const state = ticketStateOf(link, decisionIds.length > 0);
     if (!state) continue;
-    if ((state === 'done' || state === 'failed') && now - link.updatedAt > TICKET_RECENT_MS) continue;
+    if ((state === 'done' || state === 'failed') && now - link.updatedAt > recentMs) continue;
     const task = link.a2aTaskId ? a2aTasks[link.a2aTaskId] : undefined;
     const ticket: FleetTicket = {
       id: link.id,

@@ -79,6 +79,8 @@ describe('buildFleetTickets', () => {
       now: NOW,
     });
     expect(tickets.map((t) => t.id)).toEqual(['handoff:d-1', 'wl-run']);
+    const kept = buildFleetTickets({ links: [link({ id: 'wl-old', a2aState: 'completed', state: 'done', updatedAt: NOW - TICKET_RECENT_MS - 1 })], decisions: [], a2aTasks: {}, now: NOW, recentMs: Infinity });
+    expect(kept.map((t) => t.id)).toEqual(['wl-old']);
     expect(tickets[0]).toMatchObject({ state: 'needs-you', request: 'Please fix it', paneId: 'p2', decisionIds: ['d-1'] });
   });
 

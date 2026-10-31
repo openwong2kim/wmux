@@ -4,6 +4,7 @@ import { stashedPaneLiveness } from '../../../shared/paneStash';
 import { isBrainPtyId } from '../../../shared/constants';
 import { remoteAgentKey } from '../../../shared/remoteHosts';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { isTerminalKindSurfaceType, isWorkSurfaceType } from '../../components/Pane/surfaceKinds';
 import type { AttachedRemoteWorkspace } from '../slices/remoteWorkspacesSlice';
 import type { StoreState } from '../index';
 import { flattenAgentText } from '../../../shared/assistantPreview';
@@ -34,7 +35,7 @@ export interface FleetPane {
   paneLabel?: string;
   cwd?: string;
   title: string;
-  surfaceType: 'terminal' | 'browser' | 'editor' | 'preview' | 'diff' | 'git' | 'review' | 'remote-terminal' | 'placeholder';
+  surfaceType: 'terminal' | 'browser' | 'editor' | 'preview' | 'diff' | 'board' | 'git' | 'review' | 'remote-terminal' | 'placeholder';
   /** True when this leaf is its workspace's active pane (badge fidelity hint). */
   isActivePane: boolean;
   /**
@@ -536,10 +537,13 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
       const stashed = !visibleIds.has(leaf.id);
       // Stashed rows use the shared #977 picker (see above) so this card and
       // the sidebar roster can never disagree; visible rows keep the plain
-      // active-tab rule the tests pin.
+      // active-tab rule the tests pin, except that a work tab (browser, editor,
+      // board…) draws beside the terminal column, which stays on screen, so
+      // the row stays on that column's terminal.
+      const active = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
       const surf = stashed
         ? pickStashedRepresentativeSurface(leaf, state.surfaceAgent ?? {})
-        : leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId) ?? leaf.surfaces[0];
+        : (isWorkSurfaceType(active?.surfaceType) && leaf.surfaces.find((s) => isTerminalKindSurfaceType(s.surfaceType))) || active;
       const ptyId = surf?.ptyId ?? '';
       // #1343 — a remote-terminal surface has ptyId '' by contract and is
       // invisible to every local PTY-keyed map below, so without this it lands
