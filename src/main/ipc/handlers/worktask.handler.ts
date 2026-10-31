@@ -36,7 +36,10 @@ import { TREE_DESTROY_TIMEOUT_MS, assertNothingRunsIn, destroyedTreeOf, forgetFo
 import { TaskPrService } from '../../worktask/TaskPrService';
 import { WorktaskScanService, type ScanOpenTask } from '../../worktask/WorktaskScanService';
 import { deletePhoneBranch, removePhoneWorktree } from '../../worktask/PhoneWorktreeRemoval';
-import { SEAT_SWEEP_ATTEMPTS, SEAT_SWEEP_RETRY_MS, serialSeatSweeps, sweepCompanySeats } from '../../company/seatCleanup';
+import {
+  SEAT_SWEEP_ATTEMPTS, SEAT_SWEEP_RETRY_MS, deleteCompanySeatBranch, listCompanySeatLeftovers, removeCompanySeat,
+  serialSeatSweeps, sweepCompanySeats,
+} from '../../company/seatCleanup';
 import { seatWorktrees } from '../../company/seatLaunch';
 import { prStatusCache } from '../../metadata/PrStatusCache';
 import { getWmuxHomeDir } from '../../../shared/constants';
@@ -187,11 +190,21 @@ export function registerWorktaskHandlers(
   };
   sweep(1);
 
+  /** The working directories of every live pane (spawn and current). */
+  const livePaneCwds = async (): Promise<string[]> => {
+    const dc = getDaemonClient();
+    if (!dc) throw new Error('Daemon not connected');
+    const sessions = (await dc.rpc('daemon.listSessions', {})) as Array<{ cwd?: string; spawnCwd?: string }>;
+    return (Array.isArray(sessions) ? sessions : []).flatMap((s) =>
+      [s.cwd, s.spawnCwd].filter((c): c is string => typeof c === 'string' && c.length > 0));
+  };
+  const seatRoot = (): string => path.join(getWmuxHomeDir(), 'company-worktrees');
+
   // Company seat worktrees nothing uses any more (company/seatCleanup.ts),
   // through the seats' own TaskWorktreeManager so a removal and a seat
   // being made in the same repository take turns.
   const seatSweeps = serialSeatSweeps((keep) => sweepCompanySeats({
-    root: path.join(getWmuxHomeDir(), 'company-worktrees'),
+    root: seatRoot(),
     sessions: recoveredSessions,
     keep,
     worktrees: seatWorktrees(),
@@ -321,7 +334,11 @@ export function registerWorktaskHandlers(
           ...(typeof kt.outputDir === 'string' && kt.outputDir ? { outputDir: kt.outputDir } : {}),
         });
       }
-      const result = await scanService.scan([...byId.values()]);
+      // Company seat folders kept for a person, judged against the folders
+      // the renderer keeps; a request without them lists none.
+      const keep = keepSetOf(raw);
+      const seats = keep ? await listCompanySeatLeftovers({ root: seatRoot(), sessions: recoveredSessions, keep }) : [];
+      const result = await scanService.scan([...byId.values()], seats);
       return { ok: true, ...result };
     }),
   );
@@ -419,13 +436,7 @@ export function registerWorktaskHandlers(
       if (typeof r.worktreePath !== 'string') return { ok: false as const, reason: 'invalid' as const };
       return removePhoneWorktree(r.worktreePath, r.force === true, {
         root: path.join(getWmuxHomeDir(), 'worktrees'),
-        livePaneCwds: async () => {
-          const dc = getDaemonClient();
-          if (!dc) throw new Error('Daemon not connected');
-          const sessions = (await dc.rpc('daemon.listSessions', {})) as Array<{ cwd?: string; spawnCwd?: string }>;
-          return (Array.isArray(sessions) ? sessions : []).flatMap((s) =>
-            [s.cwd, s.spawnCwd].filter((c): c is string => typeof c === 'string' && c.length > 0));
-        },
+        livePaneCwds,
       }).catch((error: unknown) => ({ ok: false as const, reason: 'error' as const, error: error instanceof Error ? error.message : String(error) }));
     }),
   );
@@ -436,6 +447,29 @@ export function registerWorktaskHandlers(
       const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
       if (typeof r.repo !== 'string' || typeof r.branch !== 'string') return { ok: false, error: 'invalid request' };
       return deletePhoneBranch(r.repo, r.branch);
+    }),
+  );
+
+  // ── worktask:remove-company-seat / worktask:delete-company-seat-branch ─
+  // A company seat folder the cleanup list shows, removed on the person's
+  // word by its path (the seat shape), like a phone worktree.
+  ipcMain.removeHandler(IPC.WORKTASK_REMOVE_COMPANY_SEAT);
+  ipcMain.handle(
+    IPC.WORKTASK_REMOVE_COMPANY_SEAT,
+    wrapHandler(IPC.WORKTASK_REMOVE_COMPANY_SEAT, async (_event, raw: unknown) => {
+      const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      if (typeof r.worktreePath !== 'string') return { ok: false as const, reason: 'invalid' as const };
+      return removeCompanySeat(r.worktreePath, r.force === true, { root: seatRoot(), livePaneCwds })
+        .catch((error: unknown) => ({ ok: false as const, reason: 'error' as const, error: error instanceof Error ? error.message : String(error) }));
+    }),
+  );
+  ipcMain.removeHandler(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH);
+  ipcMain.handle(
+    IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH,
+    wrapHandler(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, async (_event, raw: unknown) => {
+      const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      if (typeof r.worktreePath !== 'string' || typeof r.repo !== 'string' || typeof r.branch !== 'string') return { ok: false, error: 'invalid request' };
+      return deleteCompanySeatBranch(seatRoot(), r.worktreePath, r.repo, r.branch);
     }),
   );
 
@@ -464,6 +498,8 @@ export function registerWorktaskHandlers(
     ipcMain.removeHandler(IPC.WORKTASK_REMOVE_PHONE);
     ipcMain.removeHandler(IPC.WORKTASK_DELETE_PHONE_BRANCH);
     ipcMain.removeHandler(IPC.WORKTASK_SWEEP_COMPANY_SEATS);
+    ipcMain.removeHandler(IPC.WORKTASK_REMOVE_COMPANY_SEAT);
+    ipcMain.removeHandler(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH);
   };
 }
 

@@ -11,10 +11,14 @@ import * as path from 'node:path';
 import { directoryHold as defaultDirectoryHold, type DirectoryHold } from '../../shared/directoryHold';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { git as defaultGit, type GitResult } from '../git/git';
-import { shapedWorktreeDir } from '../worktask/PhoneWorktreeRemoval';
+import {
+  deleteConfirmedBranch, removeShapedWorktree, shapedWorktreeDir, shapedWorktreeName,
+  type PhoneWorktreeRemoveDeps, type PhoneWorktreeRemoveResult,
+} from '../worktask/PhoneWorktreeRemoval';
 import { sessionHostDir, sessionsStartedIn } from '../worktask/stopSessionsInDir';
 import { metaDirForWorktree, type TaskWorktreeManager } from '../worktask/TaskWorktreeManager';
 import { workerGitPreflight } from '../worktask/workerGit';
+import type { CompanySeatLeftover } from '../worktask/WorktaskScanService';
 import { SEAT_STAMP_FILE, type SeatStamp } from './seatLaunch';
 import {
   COMPANY_SEAT_BRANCH_PREFIX, COMPANY_SEAT_SHAPE, seatBranchToDelete, seatVerdict,
@@ -240,6 +244,55 @@ export async function sweepCompanySeats(deps: SeatCleanupDeps & { worktrees: Tas
     if (report.verdict.kind === 'remove' && await removeSeat(report, deps, log)) removed.push(dir);
   }
   return { removed };
+}
+
+/**
+ * The seat folders the task cleanup list shows: the ones the rule keeps for
+ * a person (changes, commits only here, locked, unknown to git). None while
+ * the daemon cannot say which panes run where: a seat in use would read as
+ * a leftover. Removes nothing.
+ */
+export async function listCompanySeatLeftovers(deps: SeatCleanupDeps): Promise<CompanySeatLeftover[]> {
+  const folders = seatFolders(deps.root);
+  if (folders.length === 0) return [];
+  const listed = await deps.sessions().catch(() => null);
+  if (!listed?.recoveryDone) return [];
+  const out: CompanySeatLeftover[] = [];
+  for (const dir of folders) {
+    const { verdict, label, company } = await reportOf(dir, listed.sessions, deps);
+    if (verdict.kind !== 'list') continue;
+    out.push({
+      worktreePath: dir, reason: verdict.reason,
+      ...(verdict.commits !== undefined ? { commits: verdict.commits } : {}),
+      ...(label ? { label } : {}),
+      ...(company ? { company } : {}),
+    });
+  }
+  return out;
+}
+
+/**
+ * Remove a listed seat folder on the person's word, by its path (checked
+ * against the seat shape), with PhoneWorktreeRemoval's checks: a pane inside
+ * refuses, and changes, a lock or a folder git does not know need `force`.
+ * Its meta folder goes with it. A `company/<folder>` branch it had checked
+ * out is reported for a separate, confirmed delete.
+ */
+export async function removeCompanySeat(worktreePath: string, force: boolean, deps: PhoneWorktreeRemoveDeps): Promise<PhoneWorktreeRemoveResult> {
+  const dir = shapedWorktreeDir(deps.root, worktreePath, COMPANY_SEAT_SHAPE);
+  const res = await removeShapedWorktree(worktreePath, force, deps, COMPANY_SEAT_SHAPE);
+  if (res.ok && dir) {
+    try { await fs.promises.rm(metaDirForWorktree(dir), { recursive: true, force: true }); } catch { /* a stamp with no worktree is never read */ }
+  }
+  return res;
+}
+
+/** Delete a removed seat's branch on the person's word: only
+ *  `company/<folder>` of that seat folder. */
+export async function deleteCompanySeatBranch(root: string, worktreePath: string, repo: string, branch: string): Promise<{ ok: boolean; error?: string }> {
+  const folder = shapedWorktreeName(root, worktreePath, COMPANY_SEAT_SHAPE);
+  if (!folder || branch !== `${COMPANY_SEAT_BRANCH_PREFIX}${folder}`) return { ok: false, error: "not this seat's branch" };
+  return deleteConfirmedBranch(repo, branch);
 }
 
 /** A sweep's answer: `run` numbers the sweep, so requests that waited for

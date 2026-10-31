@@ -9,7 +9,7 @@ import path from 'node:path';
 import { shapedWorktreeDir } from '../../worktask/PhoneWorktreeRemoval';
 import { TaskWorktreeManager } from '../../worktask/TaskWorktreeManager';
 import { COMPANY_SEAT_SHAPE, SEAT_SWEEP_MIN_AGE_MS } from '../seatCleanupRule';
-import { serialSeatSweeps, sweepCompanySeats, type SeatSession } from '../seatCleanup';
+import { listCompanySeatLeftovers, serialSeatSweeps, sweepCompanySeats, type SeatSession } from '../seatCleanup';
 import { seatLaunches } from '../seatLaunch';
 
 const HASH = 'abc123def456';
@@ -143,7 +143,7 @@ describe('the seat sweep', () => {
     expect(branches()).not.toContain('company/dev-1-456789ab');
   });
 
-  it('keeps a seat with an untracked file, and one with a commit only on this PC with its branch', async () => {
+  it('keeps and lists a seat with an untracked file, and one with a commit only on this PC with its count', async () => {
     const [dev1, dev2] = await seats();
     fs.writeFileSync(path.join(dev1, 'notes.txt'), 'mine');
     commit(dev2, 'local.txt');
@@ -151,6 +151,27 @@ describe('the seat sweep', () => {
     expect(fs.readFileSync(path.join(dev1, 'notes.txt'), 'utf8')).toBe('mine');
     expect(fs.existsSync(path.join(dev2, 'local.txt'))).toBe(true);
     expect(branches()).toContain('company/dev-2-456789ab');
+    const listed = await listCompanySeatLeftovers({
+      root, sessions: async () => ({ sessions: [], recoveryDone: true }), keep: [], now: () => LATER,
+    });
+    expect(listed.sort((a, b) => a.worktreePath.localeCompare(b.worktreePath))).toEqual([
+      { worktreePath: dev1, reason: 'uncommitted', label: 'dev-1', company: 'checkout' },
+      { worktreePath: dev2, reason: 'unpushed', commits: 1, label: 'dev-2', company: 'checkout' },
+    ]);
+  });
+
+  it('lists nothing while the daemon cannot say which panes run where, and nothing it removes or keeps in use', async () => {
+    const [dev1] = await seats();
+    fs.writeFileSync(path.join(dev1, 'notes.txt'), 'mine');
+    const list = (over: { recoveryDone?: boolean; keep?: string[]; now?: number }) => listCompanySeatLeftovers({
+      root, sessions: async () => ({ sessions: [], recoveryDone: over.recoveryDone ?? true }), keep: over.keep ?? [], now: () => over.now ?? LATER,
+    });
+    expect(await list({ recoveryDone: false })).toEqual([]);
+    expect(await list({ keep: [dev1] })).toEqual([]);
+    expect(await list({ now: T0 })).toEqual([]);
+    // dev-2 is clean and at origin's main: the sweep's, not the list's.
+    expect((await list({})).map((s) => s.worktreePath)).toEqual([dev1]);
+    expect(fs.existsSync(dev1)).toBe(true);
   });
 
   it('keeps a seat the renderer keeps, one a pane works in, and a young one', async () => {
