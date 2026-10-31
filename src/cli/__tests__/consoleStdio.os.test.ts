@@ -77,9 +77,10 @@ function run(root: string, args: string, redirect = '', extraEnv: Record<string,
 }
 
 // wmux.exe is Electron run as Node, a GUI-subsystem program. With nothing
-// redirected Electron attaches to the console itself and hands Node write-only
-// console handles; with a stream redirected it does not attach, and the other
-// stream arrives as no handle at all. A GUI-subsystem copy of Node cannot stand
+// redirected Electron attaches to the console itself and, since Electron 45
+// (Chromium 156), hands Node console handles it can read, so Node sees a TTY;
+// with a stream redirected it does not attach, and the other stream arrives as
+// no handle at all. A GUI-subsystem copy of Node cannot stand
 // in: Node fills a missing std handle with NUL at startup, which is
 // indistinguishable from a real `>nul`. Since Electron 42 `require('electron')`
 // downloads a missing binary, so the installed one is looked up without it; CI's
@@ -183,12 +184,17 @@ describe.skipIf(process.platform !== 'win32' || !electron || !nodeFs.existsSync(
   }, 60_000);
 
   it('keeps today\'s streams without koffi, and says why under WMUX_DEBUG', async () => {
-    const quiet = await run(bare, ON_STDERR);
+    // Nothing redirected: Node's own TTY streams need no route.
+    const bareTty = await run(bare, ON_STDERR);
+    expect(bareTty.screen).toContain(STDERR_LINE);
+    expect(bareTty.screen).not.toContain('koffi');
+    // stderr to a file, so stdout arrives as no handle: only the route could show it.
+    const quiet = await run(bare, ON_STDOUT, '2>FILE');
     expect(quiet.exitCode).toBe(1);
-    expect(quiet.screen).not.toContain('koffi');
-    expect(quiet.screen).not.toContain(STDERR_LINE);
-    const debug = await run(bare, ON_STDERR, '', { WMUX_DEBUG: '1' });
-    expect(debug.screen).toContain('wmux: console output is not rerouted, koffi did not load');
+    expect(quiet.screen).not.toContain('unknown subcommand');
+    expect(quiet.file).not.toContain('koffi');
+    const debug = await run(bare, ON_STDOUT, '2>FILE', { WMUX_DEBUG: '1' });
+    expect(debug.file).toContain('wmux: console output is not rerouted, koffi did not load');
   }, 60_000);
 
   describe('routed streams behave as Node\'s own stdio', () => {
@@ -201,9 +207,10 @@ describe.skipIf(process.platform !== 'win32' || !electron || !nodeFs.existsSync(
     };
 
     it('survive an error, end(), destroy() and a pipe, and let the process end on its own', async () => {
-      const r = await probe('');
+      // stdout to a file, so stderr arrived as no handle and is the routed one.
+      const r = await probe('>FILE');
       expect(r.facts.isStdio).toEqual([true, true]);
-      expect(r.facts.isTTY).toEqual([true, true]);
+      expect(r.facts.isTTY).toEqual([false, true]);
       // An 'error' with no listener of the caller's would have thrown before this line was written.
       expect(r.screen).toContain('AFTER ERROR 한글');
       expect(r.facts.fdOpenAfterEnd).toBe(true);
