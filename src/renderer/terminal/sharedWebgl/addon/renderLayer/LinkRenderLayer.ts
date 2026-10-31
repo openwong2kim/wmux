@@ -22,9 +22,11 @@ export class LinkRenderLayer extends BaseRenderLayer {
     linkifier2: ILinkifier2,
     coreBrowserService: ICoreBrowserService,
     optionsService: IOptionsService,
-    themeService: IThemeService
+    themeService: IThemeService,
+    deviceMaxTextureSize: number,
+    customGlyphs: boolean
   ) {
-    super(terminal, container, 'link', zIndex, true, coreBrowserService, optionsService, themeService);
+    super(terminal, container, 'link', zIndex, true, coreBrowserService, optionsService, themeService, deviceMaxTextureSize, customGlyphs);
 
     this._register(linkifier2.onShowLinkUnderline(e => this._handleShowLinkUnderline(e)));
     this._register(linkifier2.onHideLinkUnderline(e => this._handleHideLinkUnderline(e)));

@@ -36,7 +36,9 @@ export abstract class BaseRenderLayer extends Disposable implements IRenderLayer
     private _alpha: boolean,
     protected readonly _coreBrowserService: ICoreBrowserService,
     protected readonly _optionsService: IOptionsService,
-    protected readonly _themeService: IThemeService
+    protected readonly _themeService: IThemeService,
+    private readonly _deviceMaxTextureSize: number,
+    private readonly _customGlyphs: boolean
   ) {
     super();
     this._canvas = this._coreBrowserService.mainDocument.createElement('canvas');
@@ -96,7 +98,11 @@ export abstract class BaseRenderLayer extends Disposable implements IRenderLayer
       return;
     }
 
-    this._charAtlas = acquireTextureAtlas(terminal, this._optionsService.rawOptions, colorSet, this._deviceCellWidth, this._deviceCellHeight, this._deviceCharWidth, this._deviceCharHeight, this._coreBrowserService.dpr, 2048);
+    // wmux: acquire with the main renderer's texture size and glyph options.
+    // Upstream passes 2048 here, a different atlas config than the renderer's
+    // GL maximum, so each terminal owned two atlases that released each other
+    // in acquireTextureAtlas on every refresh.
+    this._charAtlas = acquireTextureAtlas(terminal, this._optionsService.rawOptions, colorSet, this._deviceCellWidth, this._deviceCellHeight, this._deviceCharWidth, this._deviceCharHeight, this._coreBrowserService.dpr, this._deviceMaxTextureSize, this._customGlyphs);
     this._charAtlas.warmUp();
   }
 

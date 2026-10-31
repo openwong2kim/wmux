@@ -75,6 +75,9 @@ void main() {
   if (v_texpage == 0) {
     outColor = texture(u_texture[0], v_texcoord);
   } ${textureConditionals}
+  else {
+    outColor = vec4(0.0);
+  }
 }`);
 }
 

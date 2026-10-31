@@ -105,8 +105,10 @@ export class WebglRenderer extends Disposable implements IRenderer {
 
     this._core = (this._terminal as any)._core;
 
+    this._deviceMaxTextureSize = this._gl.getParameter(this._gl.MAX_TEXTURE_SIZE);
+
     this._renderLayers = [
-      new LinkRenderLayer(this._core.screenElement!, 2, this._terminal, this._core.linkifier!, this._coreBrowserService, _optionsService, this._themeService)
+      new LinkRenderLayer(this._core.screenElement!, 2, this._terminal, this._core.linkifier!, this._coreBrowserService, _optionsService, this._themeService, this._deviceMaxTextureSize, this._customGlyphs)
     ];
     this.dimensions = createRenderDimensions();
     this._devicePixelRatio = this._coreBrowserService.dpr;
@@ -119,8 +121,6 @@ export class WebglRenderer extends Disposable implements IRenderer {
       this._optionsService
     ));
     this._resetBlinkingRowState();
-
-    this._deviceMaxTextureSize = this._gl.getParameter(this._gl.MAX_TEXTURE_SIZE);
 
     this._register(addDisposableListener(this._canvas, 'webglcontextlost', (e) => {
       this._logService.debug('webglcontextlost event received');

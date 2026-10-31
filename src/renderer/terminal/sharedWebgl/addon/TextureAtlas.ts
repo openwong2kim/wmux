@@ -138,21 +138,52 @@ export class TextureAtlas implements ITextureAtlas {
   private _pageLayoutVersion = 0;
   public get pageLayoutVersion(): number { return this._pageLayoutVersion; }
 
+  /**
+   * wmux: the name wmux's atlas guard duck-types a coherent atlas by. Same
+   * monotonic counter as pageLayoutVersion (bumped on every wipe, merge and
+   * eviction), so each observer still compares it independently (I3).
+   */
+  public get clearModelGeneration(): number { return this._pageLayoutVersion; }
+
+  /**
+   * I1 — clearTexture is total: probe every page (glyphs or packing cursor),
+   * never page 0 alone. A merged page holds every glyph it absorbed while its
+   * packing cursor sits at the origin, so the page-0 cursor probe reads an
+   * occupied atlas as empty and skips the clear. Drop every page (and
+   * overflow), clear both caches, one fresh page, bump the layout version.
+   */
   public clearTexture(): void {
-    if (this._pages[0].currentRow.x === 0 && this._pages[0].currentRow.y === 0) {
+    if (this._isConstructorShape()) {
+      // Cheap no-op for an already-empty atlas. Still empty the caches so
+      // sentinel (empty-glyph) entries cannot survive the probe.
+      this._cacheMap.clear();
+      this._cacheMapCombined.clear();
       return;
     }
-    for (const page of this._pages) {
-      page.clear();
-    }
-    this._cacheMap.clear();
-    this._cacheMapCombined.clear();
-    this._didWarmUp = false;
+    this._evictAllPages();
+    const newPage = new AtlasPage(this._document, this._textureSize);
+    this._pages.push(newPage);
+    this._activePages.push(newPage);
+    this._onAddTextureAtlasCanvas.fire(newPage.canvas);
+  }
 
-    // Invalidate renderer models so all texture pages are refreshed. The atlas may be shared, in
-    // which case the clearing renderer has cleared only its own model and every other owner still
-    // holds texture coords into the rows just wiped.
-    this._pageLayoutVersion++;
+  private _pageIsOccupied(page: AtlasPage): boolean {
+    return page.glyphs.length > 0 ||
+      page.currentRow.x !== 0 ||
+      page.currentRow.y !== 0 ||
+      page.fixedRows.length > 0;
+  }
+
+  private _isConstructorShape(): boolean {
+    if (this._pages.length !== 1 || this._overflowSizePage) {
+      return false;
+    }
+    for (const page of this._pages) {
+      if (this._pageIsOccupied(page)) {
+        return false;
+      }
+    }
+    return true;
   }
 
   private _createNewPage(): AtlasPage {
