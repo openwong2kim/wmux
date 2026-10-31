@@ -49,7 +49,7 @@ jobs:
       # already runs on windows-latest, and was the slowest job on every PR.
       matrix:
         os:
-          - macos-14         # Apple Silicon
+          - macos-15         # Apple Silicon
           - ubuntu-22.04     # Linux baseline
 
     steps:
@@ -113,7 +113,7 @@ jobs:
           apt_retry update
           apt_retry install -y build-essential libxss1
 
-      # macos-14 (Apple Silicon) ships with Xcode Command Line Tools preinstalled.
+      # macos-15 (Apple Silicon) ships with Xcode Command Line Tools preinstalled.
       # We only verify presence — do NOT attempt to install, that would burn
       # ~10 minutes and is unnecessary on GitHub-hosted runners.
       - name: Verify macOS Xcode CLT
@@ -137,7 +137,7 @@ jobs:
       # No type check here. Type errors do not depend on the OS, and the one
       # disk-dependent case, an import whose casing differs from the file, is
       # checked by scripts/typecheck.mjs against the disk itself. Running it on
-      # three runners added no signal, and on macos-14 (7 GB RAM) the old
+      # three runners added no signal, and on macos-15 (7 GB RAM) the old
       # single-program check ran out of the default V8 heap. ci.yml type-checks
       # once with scripts/typecheck.mjs; the mcp and daemon programs are
       # compiled by the checks job's build:mcp and build:daemon steps.

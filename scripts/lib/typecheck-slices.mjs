@@ -2,7 +2,7 @@
 // a CI runner's default V8 heap.
 //
 // One `tsc -p tsconfig.json` program holds ~3,600 files (half of them tests)
-// and peaks near 2.4 GB of heap. On macos-14 (7 GB RAM) that sits on the
+// and peaks near 2.4 GB of heap. On macos-15 (7 GB RAM) that sits on the
 // default heap limit, so the check died with "JavaScript heap out of memory"
 // on and off from 2026-09-27, and six parallel local gates pushed a 16 GB Mac
 // into swap. Each slice below is its own program; together they must list
