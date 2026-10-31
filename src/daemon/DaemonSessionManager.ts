@@ -21,6 +21,7 @@ import { buildSpawnInjection, classifyShell, BASH_INIT } from './shell-integrati
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
+import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
@@ -996,7 +997,7 @@ export class DaemonSessionManager extends EventEmitter {
       ? this.config.session.bufferSizeMb * 1024 * 1024
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
-      compress: this.config?.session.ringCompression === true,
+      compress: this.config?.session.ringCompression === true || labsSettingsAtStartup().ringCompression,
     });
     // Replays parse each stretch of the ring at the size it was written at.
     // Recovered scrollback below is assumed to be at the spawn size.
