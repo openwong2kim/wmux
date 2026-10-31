@@ -441,3 +441,43 @@ describe('a2a.task.cancel — the caller pane decides, the worker waits for the 
     expect(worker.cancel).toHaveBeenCalledWith('t1');
   });
 });
+
+describe('a2a.task.update — the company coordinator comes from the pane tree', () => {
+  beforeEach(() => sendToRendererMock.mockReset());
+
+  const okDaemon = (calls: DaemonCall[]) => async (method: string, params: Record<string, unknown>) => {
+    calls.push({ method, params });
+    return { ok: true, task: { id: 't1', status: { state: params.status, timestamp: 'x' }, metadata: { updatedAt: 'x' } } };
+  };
+  const panes = [
+    { id: 'pane-ceo', surfacePtyIds: ['pty-ceo'], coordinator: true },
+    { id: 'pane-b', surfacePtyIds: ['pty-b'] },
+  ];
+  const done = (over: Record<string, unknown>) => ({
+    taskId: 't1', workspaceId: 'ws-home', status: 'completed', evidence: { summary: 'checked', items: [] }, ...over,
+  });
+
+  it('tells the daemon when the resolved caller pane holds the coordinator seat', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes(panes);
+    const router = setup(okDaemon(calls));
+    await router.dispatch({ id: 'k1', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo' }) });
+    expect(calls[0].params.callerPaneId).toBe('pane-ceo');
+    expect(calls[0].params.callerIsCoordinator).toBe(true);
+    expect(rendererUpdateCalls()[0]).not.toHaveProperty('callerIsCoordinator');
+  });
+
+  it('never takes the flag from the caller', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes(panes);
+    const router = setup(okDaemon(calls));
+    // Another pane, a caller with no pane, and an unreadable pane tree all claim it.
+    await router.dispatch({ id: 'k2', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-b', callerIsCoordinator: true }) });
+    await router.dispatch({ id: 'k3', method: 'a2a.task.update', params: done({ callerIsCoordinator: true }) });
+    rendererWithPanes({ error: 'pane gate not ready', retryable: true });
+    await router.dispatch({ id: 'k4', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo', callerIsCoordinator: true }) });
+    expect(calls).toHaveLength(3);
+    for (const call of calls) expect(call.params).not.toHaveProperty('callerIsCoordinator');
+    for (const sent of rendererUpdateCalls()) expect(sent).not.toHaveProperty('callerIsCoordinator');
+  });
+});

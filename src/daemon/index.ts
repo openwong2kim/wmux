@@ -7218,8 +7218,10 @@ function registerRpcHandlers(
     // state machine as any transition, with a reason (evidence.summary).
     if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
     // Only the app's main process reads the pane tree; take the list from it
-    // alone. Anything else leaves it unknown (no relaxation).
-    const livePaneIds = pipeServer.isFirstParty(ctx.clientId) ? normalizeLivePaneIds(p.livePaneIds) : undefined;
+    // alone. Anything else leaves it unknown (no relaxation). The same goes
+    // for the other fields main sets (trustedLane, callerIsCoordinator).
+    const firstParty = pipeServer.isFirstParty(ctx.clientId);
+    const livePaneIds = firstParty ? normalizeLivePaneIds(p.livePaneIds) : undefined;
     let message: Message | undefined;
     try {
       message = statusMessageFromWire(p.message, randomUUID);
@@ -7239,7 +7241,10 @@ function registerRpcHandlers(
       // can only narrow the workspace-level authz, never widen it.
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
       ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
-      ...(p.trustedLane === true ? { trustedLane: true } : {}),
+      ...(firstParty && p.trustedLane === true ? { trustedLane: true } : {}),
+      // Main's read of the caller's pane (same read as callerPaneId): it holds
+      // its company's coordinator seat, whose done the service accepts.
+      ...(firstParty && p.callerIsCoordinator === true ? { callerIsCoordinator: true } : {}),
       // #1598: main's read of the caller workspace's panes (same read as
       // callerPaneId); lets a verified pane adopt a task whose pane is gone.
       ...(livePaneIds ? { livePaneIds } : {}),

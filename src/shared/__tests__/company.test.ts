@@ -5,6 +5,7 @@ import {
   COMPANY_BRIEF_KIND,
   decideCompanySend,
   companyCancelRefusal,
+  companyDoneRefusal,
   companyOfWorkspace,
   isCompanyTask,
   missingBriefFields,
@@ -163,6 +164,17 @@ describe('decideCompanySend', () => {
     expect(send({ operator: true, senderPtyId: '', targetPaneId: null, data: undefined }))
       .toEqual({ kind: 'allow', companyTask: false });
   });
+
+  it('refuses a background worker for any company pane, except from the human lane', () => {
+    const staff = send({ execute: true });
+    expect(staff).toMatchObject({ kind: 'refuse' });
+    expect(staff.kind === 'refuse' && staff.error).toContain('without execute');
+    expect(send({ execute: true, targetPaneId: 'pane-coord', senderPtyId: 'pty-plain', data: undefined }))
+      .toMatchObject({ kind: 'refuse' });
+    expect(send({ execute: true, operator: true })).toEqual({ kind: 'allow', companyTask: true });
+    expect(send({ execute: true, targetWorkspaceId: 'ws-plain', targetPaneId: 'pane-plain', senderPtyId: '', data: undefined }))
+      .toEqual({ kind: 'allow', companyTask: false });
+  });
 });
 
 describe('companyCancelRefusal', () => {
@@ -179,5 +191,25 @@ describe('companyCancelRefusal', () => {
   it('leaves ordinary tasks and the trusted lanes alone', () => {
     expect(companyCancelRefusal(task([plainMessage], fromCoordinator), { workspaceId: 'ws-eng', paneId: undefined, trusted: false })).toBeNull();
     expect(companyCancelRefusal(task([briefMessage], fromCoordinator), { workspaceId: 'ws-x', paneId: undefined, trusted: true })).toBeNull();
+  });
+});
+
+describe('companyDoneRefusal', () => {
+  const t = { history: [briefMessage] };
+
+  it('refuses the seat that did the work and tells it to report instead', () => {
+    const refusal = companyDoneRefusal(t, { trusted: false, coordinator: false });
+    expect(refusal).toContain('coordinator (CEO) pane or the human');
+    expect(refusal).toContain('input-required');
+    expect(refusal).toContain('PR URL');
+  });
+
+  it('lets the coordinator or the human mark it done', () => {
+    expect(companyDoneRefusal(t, { trusted: false, coordinator: true })).toBeNull();
+    expect(companyDoneRefusal(t, { trusted: true, coordinator: false })).toBeNull();
+  });
+
+  it('leaves ordinary tasks alone', () => {
+    expect(companyDoneRefusal({ history: [plainMessage] }, { trusted: false, coordinator: false })).toBeNull();
   });
 });
