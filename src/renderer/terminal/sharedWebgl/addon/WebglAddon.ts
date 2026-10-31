@@ -29,8 +29,14 @@ export class WebglAddon extends Disposable implements ITerminalAddon, IWebglApi 
 
   private readonly _customGlyphs: boolean;
   private readonly _preserveDrawingBuffer?: boolean;
+  /**
+   * wmux: draw through the document's one shared WebGL2 context
+   * (SharedGlContext) instead of a context of this terminal's own.
+   * webglTeardown reads it: a shared-context addon never loses its context.
+   */
+  public readonly usesSharedContext: boolean;
 
-  constructor(options?: IWebglAddonOptions) {
+  constructor(options?: IWebglAddonOptions & { sharedContext?: boolean }) {
     if (isSafari && getSafariVersion() < 16) {
       // Perform an extra check to determine if Webgl2 is manually enabled in developer settings
       const contextAttributes = {
@@ -46,6 +52,7 @@ export class WebglAddon extends Disposable implements ITerminalAddon, IWebglApi 
     super();
     this._customGlyphs = options?.customGlyphs ?? true;
     this._preserveDrawingBuffer = options?.preserveDrawingBuffer;
+    this.usesSharedContext = options?.sharedContext ?? false;
   }
 
   public activate(terminal: Terminal): void {
@@ -79,7 +86,8 @@ export class WebglAddon extends Disposable implements ITerminalAddon, IWebglApi 
       optionsService,
       themeService,
       this._customGlyphs,
-      this._preserveDrawingBuffer
+      this._preserveDrawingBuffer,
+      this.usesSharedContext
     ));
     this._register(EventUtils.forward(this._renderer.onContextLoss, this._onContextLoss));
     this._register(EventUtils.forward(this._renderer.onChangeTextureAtlas, this._onChangeTextureAtlas));

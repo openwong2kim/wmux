@@ -26,7 +26,9 @@ import { IRenderLayer } from './renderLayer/Types';
 import { Emitter, EventUtils } from '../xterm/common/Event';
 import { addDisposableListener } from '../xterm/browser/Dom';
 import { combinedDisposable, Disposable, MutableDisposable, toDisposable } from '../xterm/common/Lifecycle';
-import { createRenderDimensions } from '../xterm/browser/renderer/shared/RendererUtils';
+import { createRenderDimensions, throwIfFalsy } from '../xterm/browser/renderer/shared/RendererUtils';
+import { GlResources } from './GlResources';
+import { acquireSharedGlContext, SharedGlContext } from './SharedGlContext';
 
 const enum Constants {
   MERGE_RETRY_LIMIT = 32
@@ -48,8 +50,14 @@ export class WebglRenderer extends Disposable implements IRenderer {
   private _workCell: ICellData = new CellData();
   private _cellColorResolver: CellColorResolver;
 
+  // wmux: with a shared context, `_canvas` is the pane's visible 2D canvas and
+  // `_gl` stays undefined: only SharedGlContext holds (and may lose) the GL
+  // context. Without one, both are upstream's.
   private _canvas: HTMLCanvasElement;
-  private _gl: IWebGL2RenderingContext;
+  private _gl: IWebGL2RenderingContext | undefined;
+  private _ownResources: GlResources | undefined;
+  private _sharedContext: SharedGlContext | undefined;
+  private _paneContext: CanvasRenderingContext2D | undefined;
   private _rectangleRenderer: MutableDisposable<RectangleRenderer> = this._register(new MutableDisposable());
   private _glyphRenderer: MutableDisposable<GlyphRenderer> = this._register(new MutableDisposable());
 
@@ -81,7 +89,8 @@ export class WebglRenderer extends Disposable implements IRenderer {
     private readonly _optionsService: IOptionsService,
     private readonly _themeService: IThemeService,
     private readonly _customGlyphs: boolean = true,
-    preserveDrawingBuffer?: boolean
+    preserveDrawingBuffer?: boolean,
+    sharedContext: boolean = false
   ) {
     super();
 
@@ -89,14 +98,20 @@ export class WebglRenderer extends Disposable implements IRenderer {
     // prevent possible listeners leaking and continuing to operate after the WebglRenderer has been
     // discarded.
     this._canvas = this._coreBrowserService.mainDocument.createElement('canvas');
-    const contextAttributes = {
-      antialias: false,
-      depth: false,
-      preserveDrawingBuffer
-    };
-    this._gl = this._canvas.getContext('webgl2', contextAttributes) as IWebGL2RenderingContext;
-    if (!this._gl) {
-      throw new Error('WebGL2 not supported ' + this._gl);
+    if (sharedContext) {
+      this._sharedContext = acquireSharedGlContext(this._coreBrowserService.mainDocument);
+      this._paneContext = throwIfFalsy(this._canvas.getContext('2d'));
+    } else {
+      const contextAttributes = {
+        antialias: false,
+        depth: false,
+        preserveDrawingBuffer
+      };
+      this._gl = this._canvas.getContext('webgl2', contextAttributes) as IWebGL2RenderingContext;
+      if (!this._gl) {
+        throw new Error('WebGL2 not supported ' + this._gl);
+      }
+      this._ownResources = new GlResources(this._gl);
     }
 
     this._register(this._themeService.onChangeColors(() => this._handleColorChange()));
@@ -105,7 +120,7 @@ export class WebglRenderer extends Disposable implements IRenderer {
 
     this._core = (this._terminal as any)._core;
 
-    this._deviceMaxTextureSize = this._gl.getParameter(this._gl.MAX_TEXTURE_SIZE);
+    this._deviceMaxTextureSize = this._sharedContext ? this._sharedContext.maxTextureSize : this._gl!.getParameter(this._gl!.MAX_TEXTURE_SIZE);
 
     this._renderLayers = [
       new LinkRenderLayer(this._core.screenElement!, 2, this._terminal, this._core.linkifier!, this._coreBrowserService, _optionsService, this._themeService, this._deviceMaxTextureSize, this._customGlyphs)
@@ -122,8 +137,23 @@ export class WebglRenderer extends Disposable implements IRenderer {
     ));
     this._resetBlinkingRowState();
 
+    if (this._sharedContext) {
+      this._register(this._sharedContext.register({
+        // Nothing to do: renderRows draws nothing while the context is lost, so
+        // the pane canvas keeps the last frame.
+        handleSharedContextLost: () => {},
+        handleSharedContextRestored: () => {
+          // The atlases live on the CPU and survived; their textures upload
+          // again into the new context's sets.
+          this._initializeWebGLState();
+          this._requestRedrawViewport();
+        },
+        handleSharedContextFailed: () => this._onContextLoss.fire()
+      }));
+    }
     this._register(addDisposableListener(this._canvas, 'webglcontextlost', (e) => {
       this._logService.debug('webglcontextlost event received');
+      this._ownResources?.markLost();
       // Prevent the default behavior in order to enable WebGL context restoration.
       e.preventDefault();
       // Wait a few seconds to see if the 'webglcontextrestored' event is fired.
@@ -141,6 +171,7 @@ export class WebglRenderer extends Disposable implements IRenderer {
       // The texture atlas and glyph renderer must be fully reinitialized
       // because their contents have been lost.
       removeTerminalFromCache(this._terminal);
+      this._ownResources = new GlResources(this._gl!);
       this._initializeWebGLState();
       this._requestRedrawViewport();
     }));
@@ -154,7 +185,9 @@ export class WebglRenderer extends Disposable implements IRenderer {
 
     this._core.screenElement!.appendChild(this._canvas);
 
-    [this._rectangleRenderer.value, this._glyphRenderer.value] = this._initializeWebGLState();
+    if (!this._sharedContext?.isLost) {
+      this._initializeWebGLState();
+    }
 
     this._isAttached = this._core.screenElement!.isConnected;
 
@@ -172,7 +205,9 @@ export class WebglRenderer extends Disposable implements IRenderer {
       // dispose many terminals these orphaned contexts accumulate and the
       // browser force-evicts the oldest LIVE context, blanking an active
       // terminal. Explicitly lose the context so it is released immediately.
-      this._gl.getExtension('WEBGL_lose_context')?.loseContext();
+      // wmux: a shared-mode renderer has no context of its own to lose.
+      this._ownResources?.dispose();
+      this._gl?.getExtension('WEBGL_lose_context')?.loseContext();
     }));
   }
 
@@ -283,14 +318,14 @@ export class WebglRenderer extends Disposable implements IRenderer {
   /**
    * Initializes members dependent on WebGL context state.
    */
-  private _initializeWebGLState(): [RectangleRenderer, GlyphRenderer] {
-    this._rectangleRenderer.value = new RectangleRenderer(this._terminal, this._gl, this.dimensions, this._themeService, this._logService);
-    this._glyphRenderer.value = new GlyphRenderer(this._terminal, this._gl, this.dimensions, this._optionsService, this._logService);
+  private _initializeWebGLState(): void {
+    const gl = this._sharedContext ? this._sharedContext.gl : this._gl!;
+    const resources = this._sharedContext ? this._sharedContext.resources : this._ownResources!;
+    this._rectangleRenderer.value = new RectangleRenderer(this._terminal, gl, this.dimensions, this._themeService, this._logService, resources);
+    this._glyphRenderer.value = new GlyphRenderer(this._terminal, gl, this.dimensions, this._optionsService, this._logService, resources);
 
     // Update dimensions and acquire char atlas
     this.handleCharSizeChanged();
-
-    return [this._rectangleRenderer.value, this._glyphRenderer.value];
   }
 
   /**
@@ -378,6 +413,12 @@ export class WebglRenderer extends Disposable implements IRenderer {
       return;
     }
 
+    // wmux: a lost shared context draws nothing; the pane keeps its last frame
+    // until every renderer rebuilds on restore.
+    if (this._sharedContext?.isLost) {
+      return;
+    }
+
     // Tell renderer the frame is beginning
     // upon a model clear also refresh the full viewport model
     // (also triggered by an atlas page merge, part of #4480)
@@ -403,10 +444,18 @@ export class WebglRenderer extends Disposable implements IRenderer {
     }
 
     // Render
+    const width = this.dimensions.device.canvas.width;
+    const height = this.dimensions.device.canvas.height;
+    this._sharedContext?.beginPane(width, height);
     this._rectangleRenderer.value.renderBackgrounds();
     this._glyphRenderer.value.render(this._model);
     if (!this._cursorBlinkStateManager.value || this._cursorBlinkStateManager.value.isCursorVisible) {
       this._rectangleRenderer.value.renderCursor();
+    }
+    // wmux: copy the frame out of the shared framebuffer before another pane
+    // draws over it.
+    if (this._sharedContext) {
+      this._sharedContext.present(this._paneContext!, width, height);
     }
   }
 

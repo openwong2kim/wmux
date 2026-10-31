@@ -15,6 +15,7 @@ import { IRenderModel, IWebGL2RenderingContext, IWebGLVertexArrayObject } from '
 import { createProgram, expandFloat32Array, PROJECTION_MATRIX } from './WebglUtils';
 import { throwIfFalsy } from '../xterm/browser/renderer/shared/RendererUtils';
 import type { ILogService } from '../xterm/common/services/Services';
+import { GlResources } from './GlResources';
 
 const enum VertexAttribLocations {
   POSITION = 0,
@@ -74,6 +75,21 @@ let $g = 0;
 let $b = 0;
 let $a = 0;
 
+/** wmux: the rectangle program, created once per context (GlResources). */
+class RectangleProgram {
+  public readonly program: WebGLProgram;
+  public readonly projectionLocation: WebGLUniformLocation;
+
+  constructor(private readonly _gl: IWebGL2RenderingContext, logService: ILogService) {
+    this.program = throwIfFalsy(createProgram(_gl, vertexShaderSource, fragmentShaderSource, logService));
+    this.projectionLocation = throwIfFalsy(_gl.getUniformLocation(this.program, 'u_projection'));
+  }
+
+  public dispose(): void {
+    this._gl.deleteProgram(this.program);
+  }
+}
+
 export class RectangleRenderer extends Disposable {
 
   private _program: WebGLProgram;
@@ -91,27 +107,34 @@ export class RectangleRenderer extends Disposable {
     private _gl: IWebGL2RenderingContext,
     private _dimensions: IRenderDimensions,
     private readonly _themeService: IThemeService,
-    private readonly _logService: ILogService
+    private readonly _logService: ILogService,
+    resources: GlResources
   ) {
     super();
 
     const gl = this._gl;
+    // wmux: objects of a lost context are not deleted (see GlResources).
+    const deleteUnlessLost = (del: () => void) => toDisposable(() => {
+      if (!resources.isLost) {
+        del();
+      }
+    });
 
-    this._program = throwIfFalsy(createProgram(gl, vertexShaderSource, fragmentShaderSource, this._logService));
-    this._register(toDisposable(() => gl.deleteProgram(this._program)));
+    const program = resources.program('rectangle', () => new RectangleProgram(gl, this._logService));
+    this._program = program.program;
 
     // Uniform locations
-    this._projectionLocation = throwIfFalsy(gl.getUniformLocation(this._program, 'u_projection'));
+    this._projectionLocation = program.projectionLocation;
 
     // Create and set the vertex array object
     const vertexArrayObject = this._vertexArrayObject = gl.createVertexArray();
-    this._register(toDisposable(() => gl.deleteVertexArray(vertexArrayObject)));
+    this._register(deleteUnlessLost(() => gl.deleteVertexArray(vertexArrayObject)));
     gl.bindVertexArray(vertexArrayObject);
 
     // Setup a_unitquad, this defines the 4 vertices of a rectangle
     const unitQuadVertices = new Float32Array([0, 0, 1, 0, 0, 1, 1, 1]);
     const unitQuadVerticesBuffer = gl.createBuffer();
-    this._register(toDisposable(() => gl.deleteBuffer(unitQuadVerticesBuffer)));
+    this._register(deleteUnlessLost(() => gl.deleteBuffer(unitQuadVerticesBuffer)));
     gl.bindBuffer(gl.ARRAY_BUFFER, unitQuadVerticesBuffer);
     gl.bufferData(gl.ARRAY_BUFFER, unitQuadVertices, gl.STATIC_DRAW);
     gl.enableVertexAttribArray(VertexAttribLocations.UNIT_QUAD);
@@ -122,13 +145,13 @@ export class RectangleRenderer extends Disposable {
     // triangle strip
     const unitQuadElementIndices = new Uint8Array([0, 1, 2, 3]);
     const elementIndicesBuffer = gl.createBuffer();
-    this._register(toDisposable(() => gl.deleteBuffer(elementIndicesBuffer)));
+    this._register(deleteUnlessLost(() => gl.deleteBuffer(elementIndicesBuffer)));
     gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, elementIndicesBuffer);
     gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, unitQuadElementIndices, gl.STATIC_DRAW);
 
     // Setup attributes
     this._attributesBuffer = throwIfFalsy(gl.createBuffer());
-    this._register(toDisposable(() => gl.deleteBuffer(this._attributesBuffer)));
+    this._register(deleteUnlessLost(() => gl.deleteBuffer(this._attributesBuffer)));
     gl.bindBuffer(gl.ARRAY_BUFFER, this._attributesBuffer);
     gl.enableVertexAttribArray(VertexAttribLocations.POSITION);
     gl.vertexAttribPointer(VertexAttribLocations.POSITION, 2, gl.FLOAT, false, BYTES_PER_RECTANGLE, 0);
