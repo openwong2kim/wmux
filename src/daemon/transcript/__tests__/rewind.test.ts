@@ -1,14 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseTranscriptLineDetailed } from '../parseEntry';
+import { transcriptLineLink } from '../parseEntry';
 import { analyzeRewinds, type EntryLink } from '../rewind';
 
 const FIXTURES = path.join(__dirname, 'fixtures');
 
 function linksOf(name: string): EntryLink[] {
   return fs.readFileSync(path.join(FIXTURES, name), 'utf8').split('\n')
-    .map((line, i) => parseTranscriptLineDetailed(line, i).link)
+    .map((line, i) => transcriptLineLink(line, i))
     .filter((link): link is EntryLink => link !== undefined);
 }
 
@@ -64,6 +64,6 @@ describe('analyzeRewinds', () => {
 
   it('gives a subagent (sidechain) entry no link, so it never counts as a rewind', () => {
     const line = JSON.stringify({ type: 'user', uuid: 's1', parentUuid: 'a1', isSidechain: true, message: { role: 'user', content: 'task' } });
-    expect(parseTranscriptLineDetailed(line, 0).link).toBeUndefined();
+    expect(transcriptLineLink(line, 0)).toBeUndefined();
   });
 });

@@ -1228,6 +1228,27 @@ describe('TranscriptProjector — a Claude rewind (Esc Esc)', () => {
     expect(texts(last.events)).toEqual(['first question', 'first answer', 'new question', 'new answer']);
   });
 
+  it('hides an abandoned run longer than one read window on every page', () => {
+    const lines = fs.readFileSync(path.join(FIXTURES, 'rewind.jsonl'), 'utf8').split('\n').filter(Boolean);
+    // The abandoned run's tool result outgrows the tail window, so the
+    // abandoned prompt and the replacing one land in different pages.
+    const big = JSON.parse(lines[4]) as { message: { content: Array<{ content: string }> } };
+    big.message.content[0].content = 'x'.repeat(400 * 1024);
+    lines[4] = JSON.stringify(big);
+    const file = path.join(harness.projects, 'rewind-long.jsonl');
+    fs.writeFileSync(file, lines.map((l) => l + '\n').join(''), 'utf8');
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+
+    const seen: string[] = [];
+    let page = harness.projector.snapshot('pty-1')!;
+    for (let guard = 0; guard < 10; guard++) {
+      seen.unshift(...texts(page.events).map(String));
+      if (!page.hasMore) break;
+      page = harness.projector.snapshot('pty-1', { before: page.cursor.headOffset })!;
+    }
+    expect(seen).toEqual(['first question', 'first answer', 'new question', 'new answer']);
+  });
+
   it('keeps a chain across compact boundaries and parallel tool calls whole, and appends without a reset', () => {
     const { file, rest } = staged('compact-chain.jsonl', 15);
     harness.bindings.set('pty-1', binding({ transcriptPath: file }));

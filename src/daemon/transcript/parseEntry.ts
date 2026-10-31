@@ -65,8 +65,6 @@ export interface ParsedTranscriptLine {
   events: TurnEvent[];
   /** eventId → (CodeBlockRef.n → body text). */
   bodies: Map<string, Map<number, string>>;
-  /** Where a main-thread entry sits in the conversation tree; absent without a uuid. */
-  link?: EntryLink;
 }
 
 /** One raw JSONL line → 0..n TurnEvents. NEVER throws; unknown shapes → []. */
@@ -99,27 +97,38 @@ export function parseTranscriptLineDetailed(
     // Expected on the partial leading line of any mid-file seek.
     return empty;
   }
-  const parsed = parseEntryObject(entry, offsetHint);
-  const link = entryLink(entry, parsed.events);
-  return link ? { ...parsed, link } : parsed;
+  return parseEntryObject(entry, offsetHint);
 }
 
 /**
- * A main-thread entry's place in the conversation tree, for the rewind check
- * (`rewind.ts`). Sidechain entries belong to a subagent's thread and never
- * take part.
+ * A main-thread line's place in the conversation tree, for the rewind check
+ * (`rewind.ts`). Undefined for a line without a uuid and for a sidechain
+ * entry, which belongs to a subagent's thread and never takes part. NEVER
+ * throws.
  */
-function entryLink(entry: Record<string, unknown>, events: readonly TurnEvent[]): EntryLink | undefined {
+export function transcriptLineLink(line: string, offsetHint: number): EntryLink | undefined {
+  let entry: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(line.replace(/^﻿/, '').trim());
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    entry = parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
   const uuid = entry['uuid'];
   if (typeof uuid !== 'string' || !uuid || entry['isSidechain'] === true) return undefined;
   const parent = entry['parentUuid'];
   const logical = entry['logicalParentUuid'];
+  const content = asObject(entry['message'])?.['content'];
+  const toolResult = Array.isArray(content) && content.some((block) => asObject(block)?.['type'] === 'tool_result');
   return {
     uuid,
     ...(typeof parent === 'string' && parent ? { parentUuid: parent } : {}),
     ...(typeof logical === 'string' && logical ? { logicalParentUuid: logical } : {}),
-    // A typed prompt: a `user` entry that reads as the operator's own message.
-    prompt: entry['type'] === 'user' && events.some((event) => event.kind === 'user_text'),
+    // A typed prompt: a `user` entry, not a tool result, that reads as the
+    // operator's own message.
+    prompt: entry['type'] === 'user' && !toolResult &&
+      parseEntryObject(entry, offsetHint).events.some((event) => event.kind === 'user_text'),
   };
 }
 

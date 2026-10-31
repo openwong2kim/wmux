@@ -44,9 +44,8 @@ import {
   readTranscriptPage,
   statTranscript,
   transcriptBasename,
-  type ReadPageOptions,
 } from './readTail';
-import { analyzeRewinds, rewindRecorder, type EntryLink } from './rewind';
+import { RewindIndex } from './rewind';
 import type { AgentSignalKind, CodeBlockRequest, TranscriptProjectorDeps } from './types';
 import type {
   TranscriptAppendData,
@@ -102,6 +101,9 @@ const DRAIN_DELAY_MS = 10;
  */
 const MAX_STALL_BACKOFF_MS = 5000;
 
+/** Claude transcripts whose rewind index is kept; the least recently read goes first. */
+const MAX_REWIND_INDEXES = 32;
+
 
 
 /** One budget-fitted read, ready to become an append event. */
@@ -111,7 +113,7 @@ interface BudgetedRead {
   reset: boolean;
   /** See `TranscriptDelta.stalled` — nothing was consumed; back off. */
   stalled?: boolean;
-  /** A new prompt abandoned a branch already sent (rewind.ts): re-snapshot. */
+  /** A Claude rewind abandoned rows already sent (rewind.ts): re-snapshot. */
   rewound?: boolean;
 }
 
@@ -157,30 +159,6 @@ function cursorStale(transcriptPath: string, size: number, offset: number, curso
   return offset > 0 && !isLineBoundary(transcriptPath, offset);
 }
 
-type LineParser = (line: string, offset: number) => ParsedTranscriptLine;
-
-/** A page without the rows of a branch a Claude rewind abandoned (rewind.ts). */
-function readLivePage(transcriptPath: string, parse: LineParser, opts: Omit<ReadPageOptions, 'parseLine'> = {}): TranscriptPage | null {
-  const recorder = rewindRecorder(parse);
-  const page = readTranscriptPage(transcriptPath, { ...opts, parseLine: recorder.parseLine });
-  return page && { ...page, events: recorder.prune(page.events) };
-}
-
-/**
- * Whether a prompt among `links` (read from `fromOffset` on) was a rewind: its
- * parent already had a prompt. The earlier one is looked for in `links` and in
- * one page before `fromOffset`, which is read only when a new prompt is there,
- * so at most once a turn. A rewind whose earlier prompt lies further back than
- * that page is not seen, and its rows stay (rewind.ts: unproven stays visible).
- */
-function rewoundSince(transcriptPath: string, parse: LineParser, fromOffset: number, links: readonly EntryLink[]): boolean {
-  if (!links.some((link) => link.prompt)) return false;
-  const before = rewindRecorder(parse);
-  if (fromOffset > 0) readTranscriptPage(transcriptPath, { before: fromOffset, maxBytes: TAIL_BYTES, parseLine: before.parseLine });
-  const { rewinds } = analyzeRewinds([...before.links, ...links]);
-  return links.some((link) => rewinds.has(link.uuid));
-}
-
 /** A WSL pane's last proof (proveWsl). `transient`: the share did not answer. */
 type WslProof =
   | { key: string; ok: true; hostPath: string; pending: boolean }
@@ -221,6 +199,8 @@ export class TranscriptProjector {
   private readonly sessionGenerations = new Map<string, number>();
   /** Keys already logged by `warnOnce`. */
   private readonly warned = new Set<string>();
+  /** Per Claude transcript, the branches a rewind abandoned (rewind.ts), most recent last. */
+  private readonly rewindIndexes = new Map<string, RewindIndex>();
   private disposed = false;
 
   constructor(deps: TranscriptProjectorDeps) {
@@ -312,13 +292,13 @@ export class TranscriptProjector {
     if (this.notWrittenYet(sessionId, resolved)) return EMPTY_PAGE();
 
     let maxBytes = TAIL_BYTES;
-    let page = readLivePage(resolved.transcriptPath, resolved.parse, { ...opts, maxBytes });
+    let page = this.live(readTranscriptPage(resolved.transcriptPath, { ...opts, maxBytes, parseLine: (line, offset) => resolved.parse(line, offset).events }), resolved);
     while (page && maxBytes > MIN_READ_BYTES && !withinBudget(page.events)) {
       // A3: shrink the WINDOW, never the honesty of the cursor. The events we
       // did not return are still reachable — the caller pages backward for
       // older ones, and the delta path carries newer ones.
       maxBytes = Math.max(MIN_READ_BYTES, Math.floor(maxBytes / 2));
-      page = readLivePage(resolved.transcriptPath, resolved.parse, { ...opts, maxBytes });
+      page = this.live(readTranscriptPage(resolved.transcriptPath, { ...opts, maxBytes, parseLine: (line, offset) => resolved.parse(line, offset).events }), resolved);
     }
     if (page && !withinBudget(page.events)) {
       // One entry alone exceeds the budget. Report the cursor truthfully with
@@ -350,7 +330,7 @@ export class TranscriptProjector {
     // can start from (a window inside the line reports a mid-line head).
     let probe = page.cursor.headOffset;
     while (probe > 0 && out.events.length < THIN_PAGE_EVENTS && page.cursor.headOffset - probe < MAX_REACH_BACK_BYTES) {
-      const older = readLivePage(resolved.transcriptPath, resolved.parse, { before: probe, maxBytes: TAIL_BYTES });
+      const older = this.live(readTranscriptPage(resolved.transcriptPath, { before: probe, maxBytes: TAIL_BYTES, parseLine: (line, offset) => resolved.parse(line, offset).events }), resolved);
       if (!older || older.cursor.headOffset >= probe) break;
       probe = older.cursor.headOffset;
       if (older.events.length === 0) continue;
@@ -383,11 +363,13 @@ export class TranscriptProjector {
     if (this.notWrittenYet(sessionId, resolved)) return { ok: true, page: EMPTY_PAGE(), lineEnds: [] };
     const starts: number[] = [];
     const counts: number[] = [];
+    const rewinds = this.rewinds(resolved.transcriptPath, resolved.parse);
     const page = readTranscriptPage(resolved.transcriptPath, {
       ...(before !== undefined ? { before } : {}),
       maxBytes: TAIL_BYTES,
       parseLine: (line, offset) => {
-        const events = resolved.parse(line, offset).events;
+        // A search hit must be a row the conversation still shows.
+        const events = resolved.parse(line, offset).events.filter((event) => !rewinds?.isAbandoned(event.id));
         starts.push(offset);
         counts.push(events.length);
         return events;
@@ -451,7 +433,7 @@ export class TranscriptProjector {
 
     const resetSnapshot = () => {
       const { result: page, budgetDropped } = this.fitWithReceipt((maxBytes) =>
-        readLivePage(resolved.transcriptPath, resolved.parse, { maxBytes }),
+        this.live(readTranscriptPage(resolved.transcriptPath, { maxBytes, parseLine: (line, offset) => resolved.parse(line, offset).events }), resolved),
       );
       if (!page) return null;
       return {
@@ -463,19 +445,13 @@ export class TranscriptProjector {
     };
     if (reset) return resetSnapshot();
 
-    let rewound = false;
     const { result, budgetDropped } = this.fitWithReceipt((maxBytes) => {
-      const recorder = rewindRecorder(resolved.parse);
-      const d = readTranscriptDelta(resolved.transcriptPath, fromOffset, maxBytes, recorder.parseLine);
-      if (!d) return null;
-      // A shrunk file comes back as a whole tail page.
-      if (d.reset) return { events: recorder.prune(d.events), cursor: d.cursor, reset: true };
-      // A Claude rewind: the rows already sent hold an abandoned branch, so
-      // the answer is a reset snapshot without it, not an append.
-      rewound = rewoundSince(resolved.transcriptPath, resolved.parse, fromOffset, recorder.links);
-      return { events: d.events, cursor: d.cursor };
+      const d = readTranscriptDelta(resolved.transcriptPath, fromOffset, maxBytes, (line, offset) => resolved.parse(line, offset).events);
+      return this.live(d && { events: d.events, cursor: d.cursor, ...(d.reset ? { reset: true } : {}) }, resolved);
     });
-    if (rewound) return resetSnapshot();
+    // A Claude rewind since the caller's cursor: rows it already holds are on
+    // the abandoned branch, so it gets a reset snapshot instead of an append.
+    if (result && this.rewinds(resolved.transcriptPath, resolved.parse)?.heldAbandoned(fromOffset)) return resetSnapshot();
     if (!result) return null;
     const r = result as { events: TurnEvent[]; cursor: TranscriptPage['cursor']; reset?: boolean };
     return {
@@ -1163,7 +1139,7 @@ export class TranscriptProjector {
       ? this.readSnapshotForAppend(state)
       : this.readDeltaForAppend(state);
     if (budgeted?.rewound) {
-      // A Claude rewind: the rows already sent hold the abandoned branch.
+      // A Claude rewind: rows already sent are on the abandoned branch.
       // Replace them with a snapshot of the live one, as any other reset does.
       state.tailOffset = -1;
       state.forceReset = true;
@@ -1238,8 +1214,8 @@ export class TranscriptProjector {
     state: WatchState,
   ): BudgetedRead | null {
     const page = this.fit((maxBytes) => {
-      const p = readLivePage(state.transcriptPath, state.parse, { maxBytes });
-      return p && { events: p.events, cursor: p.cursor, reset: false };
+      const p = readTranscriptPage(state.transcriptPath, { maxBytes, parseLine: (line, offset) => state.parse(line, offset).events });
+      return this.live(p && { events: p.events, cursor: p.cursor, reset: false }, state);
     });
     return page;
   }
@@ -1247,20 +1223,17 @@ export class TranscriptProjector {
   private readDeltaForAppend(
     state: WatchState,
   ): BudgetedRead | null {
-    return this.fit((maxBytes) => {
-      const recorder = rewindRecorder(state.parse);
-      const delta = readTranscriptDelta(state.transcriptPath, state.tailOffset, maxBytes, recorder.parseLine);
-      if (!delta) return null;
-      // A shrunk file comes back as a whole tail page.
-      if (delta.reset) return { events: recorder.prune(delta.events), cursor: delta.cursor, reset: true };
-      return {
+    const read = this.fit((maxBytes) => {
+      const delta = readTranscriptDelta(state.transcriptPath, state.tailOffset, maxBytes, (line, offset) => state.parse(line, offset).events);
+      return this.live(delta && {
         events: delta.events,
         cursor: delta.cursor,
-        reset: false,
+        reset: delta.reset,
         ...(delta.stalled ? { stalled: true } : {}),
-        ...(rewoundSince(state.transcriptPath, state.parse, state.tailOffset, recorder.links) ? { rewound: true } : {}),
-      };
+      }, state);
     });
+    const rewound = !!read && !read.reset && this.rewinds(state.transcriptPath, state.parse)?.heldAbandoned(state.tailOffset) === true;
+    return read && rewound ? { ...read, rewound: true } : read;
   }
 
   /**
@@ -1293,6 +1266,32 @@ export class TranscriptProjector {
 
   private fit<T extends { events: TurnEvent[] }>(read: (maxBytes: number) => T | null): T | null {
     return this.fitWithReceipt(read).result;
+  }
+
+  /**
+   * A Claude transcript's rewind index, brought up to the end of the file.
+   * Called after a read, so it has seen every line that read returned. Other
+   * agents' transcripts have no rewind: undefined.
+   */
+  private rewinds(transcriptPath: string, parse: (line: string, offset: number) => ParsedTranscriptLine): RewindIndex | undefined {
+    if (parse !== fileTranscriptProvider('claude')?.parse) return undefined;
+    let index = this.rewindIndexes.get(transcriptPath);
+    if (index) this.rewindIndexes.delete(transcriptPath);
+    else index = new RewindIndex(transcriptPath);
+    this.rewindIndexes.set(transcriptPath, index);
+    const oldest = this.rewindIndexes.keys().next();
+    if (this.rewindIndexes.size > MAX_REWIND_INDEXES && !oldest.done) this.rewindIndexes.delete(oldest.value);
+    index.update();
+    return index;
+  }
+
+  /** `read` without the rows of a branch a Claude rewind abandoned. */
+  private live<T extends { events: TurnEvent[] }>(
+    read: T | null,
+    resolved: { transcriptPath: string; parse: (line: string, offset: number) => ParsedTranscriptLine },
+  ): T | null {
+    const index = read ? this.rewinds(resolved.transcriptPath, resolved.parse) : undefined;
+    return read && index ? { ...read, events: index.prune(read.events) } : read;
   }
 
   private disarmWatch(state: WatchState): void {

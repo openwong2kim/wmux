@@ -12,15 +12,18 @@
 // measured over 400 real transcripts: a new human prompt whose parent already
 // has an earlier human prompt child (33 such forks, all of them two human
 // prompts; no parallel-tool or hook fork matched). Only that earlier prompt and
-// its descendants are hidden. Anything whose link cannot be followed inside the
-// read stays visible: showing an abandoned row is a smaller harm than hiding a
-// live one.
+// its descendants are hidden. Anything whose link cannot be followed stays
+// visible: showing an abandoned row is a smaller harm than hiding a live one.
 //
-// Known gap: a rewind to the very first message writes two prompts with no
-// parent at all. That is not a fork, and it is not detected.
+// Known gaps: a rewind to the very first message writes two prompts with no
+// parent at all, which is not a fork, and is not detected. A rewind further
+// back than the first scan (REWIND_FIRST_SCAN_BYTES before the end of the file
+// when a pane is first read), or over a run longer than REWIND_RUN_MAX_BYTES,
+// is not detected and its rows stay.
 
+import { transcriptLineLink } from './parseEntry';
+import { readRange, statTranscript } from './readTail';
 import type { TurnEvent } from '../../shared/transcript/turnEvents';
-import type { ParsedTranscriptLine } from './parseEntry';
 
 /** A main-thread entry's place in the conversation tree. */
 export interface EntryLink {
@@ -70,8 +73,8 @@ export function analyzeRewinds(links: readonly EntryLink[]): RewindAnalysis {
     while (at !== undefined) {
       const known = verdict.get(at);
       if (known !== undefined) { hit = known; break; }
-      if (roots.has(at)) { hit = true; path.push(at); break; }
       path.push(at);
+      if (roots.has(at)) { hit = true; break; }
       at = parentOf.get(at);
     }
     for (const step of path) verdict.set(step, hit);
@@ -80,28 +83,123 @@ export function analyzeRewinds(links: readonly EntryLink[]): RewindAnalysis {
   return { abandoned, rewinds };
 }
 
+/** How far back the first read of a transcript looks for prompts. */
+export const REWIND_FIRST_SCAN_BYTES = 16 * 1024 * 1024;
+/** The longest abandoned run read back to find its rows. */
+export const REWIND_RUN_MAX_BYTES = 16 * 1024 * 1024;
+const CHUNK_BYTES = 1024 * 1024;
+
 /**
- * Wraps a line parser for one read: records each line's link and the rows it
- * produced, so the read's rows can be pruned once the whole window is known.
- * One recorder per read attempt.
+ * Each complete line in `[from, to)`, with its byte offset. A `from` inside a
+ * line skips to the next one. Returns where the last complete line ended.
  */
-export function rewindRecorder(parse: (line: string, offset: number) => ParsedTranscriptLine) {
-  const links: EntryLink[] = [];
-  const owner = new Map<TurnEvent, string>();
-  return {
-    links,
-    parseLine: (line: string, offset: number): TurnEvent[] => {
-      const parsed = parse(line, offset);
-      if (parsed.link) {
-        links.push(parsed.link);
-        for (const event of parsed.events) owner.set(event, parsed.link.uuid);
-      }
-      return parsed.events;
-    },
-    /** `events` without the rows of an abandoned branch. */
-    prune(events: TurnEvent[], analysis = analyzeRewinds(links)): TurnEvent[] {
-      if (!analysis.abandoned.size) return events;
-      return events.filter((event) => !analysis.abandoned.has(owner.get(event) ?? ''));
-    },
-  };
+function forEachLine(transcriptPath: string, from: number, to: number, midLine: boolean,
+  fn: (line: string, offset: number) => void): number {
+  let at = from;
+  let skip = midLine;
+  let carry = Buffer.alloc(0);
+  let carryStart = from;
+  let end = from;
+  while (at < to) {
+    const chunk = readRange(transcriptPath, at, Math.min(CHUNK_BYTES, to - at));
+    if (!chunk || chunk.length === 0) break;
+    const buf = carry.length ? Buffer.concat([carry, chunk]) : chunk;
+    let start = 0;
+    for (let nl = buf.indexOf(0x0a); nl >= 0; nl = buf.indexOf(0x0a, start)) {
+      if (!skip) fn(buf.subarray(start, nl).toString('utf8'), carryStart + start);
+      skip = false;
+      start = nl + 1;
+      end = carryStart + start;
+    }
+    carry = buf.subarray(start);
+    carryStart += start;
+    at += chunk.length;
+  }
+  return end;
+}
+
+/**
+ * The abandoned branches of one transcript, kept as the file grows so every
+ * reader (snapshot, older page, delta, push, search) gives the same verdict
+ * on the same row. Only `user` prompt lines are parsed while scanning; a
+ * run's lines are parsed once, when a later prompt abandons it.
+ */
+export class RewindIndex {
+  private ino = -1;
+  private scanned = 0;
+  /** Parent uuid → the prompts written under it, with their line offsets. */
+  private prompts = new Map<string, Array<{ uuid: string; offset: number }>>();
+  /** Each rewind: the abandoned prompt's offset and the replacing prompt's line end. */
+  private rewinds: Array<{ from: number; at: number }> = [];
+  private abandoned = new Set<string>();
+
+  constructor(private readonly transcriptPath: string) {}
+
+  /** Reads the lines written since the last call. */
+  update(): void {
+    const stat = statTranscript(this.transcriptPath);
+    if (!stat) return;
+    if (stat.ino !== this.ino || stat.size < this.scanned) {
+      this.ino = stat.ino;
+      this.scanned = Math.max(0, stat.size - REWIND_FIRST_SCAN_BYTES);
+      this.prompts = new Map();
+      this.rewinds = [];
+      this.abandoned = new Set();
+      this.scanned = this.scan(this.scanned, stat.size, this.scanned > 0);
+      return;
+    }
+    if (stat.size > this.scanned) this.scanned = this.scan(this.scanned, stat.size, false);
+  }
+
+  private scan(from: number, to: number, midLine: boolean): number {
+    return forEachLine(this.transcriptPath, from, to, midLine, (line, offset) => {
+      // Only a `user` line that is not a tool result can be a prompt; the rest
+      // (most of the bytes) are not parsed here. Quotes inside a message are
+      // escaped in the JSON, so these keys match only the entry's own fields.
+      if (!line.includes('"type":"user"') || line.includes('"type":"tool_result"')) return;
+      const link = transcriptLineLink(line, offset);
+      const key = link?.prompt ? link.parentUuid ?? link.logicalParentUuid : undefined;
+      if (!link || key === undefined) return;
+      const earlier = this.prompts.get(key) ?? [];
+      const lineEnd = offset + Buffer.byteLength(line, 'utf8') + 1;
+      for (const prior of earlier) this.abandon(prior.offset, lineEnd);
+      this.prompts.set(key, [...earlier, { uuid: link.uuid, offset }]);
+    });
+  }
+
+  /**
+   * Reads the run from the abandoned prompt through the one that replaced it,
+   * once. A run longer than REWIND_RUN_MAX_BYTES is left visible: its rows
+   * cannot be proven to descend from the abandoned prompt without reading it.
+   */
+  private abandon(from: number, at: number): void {
+    if (at - from > REWIND_RUN_MAX_BYTES) return;
+    this.rewinds.push({ from, at });
+    const links: EntryLink[] = [];
+    forEachLine(this.transcriptPath, from, at, false, (line, offset) => {
+      const link = transcriptLineLink(line, offset);
+      if (link) links.push(link);
+    });
+    for (const uuid of analyzeRewinds(links).abandoned) this.abandoned.add(uuid);
+  }
+
+  /**
+   * Whether a reader whose rows end at `offset` holds part of a branch a later
+   * prompt abandoned: it read the abandoned prompt but not its replacement.
+   */
+  heldAbandoned(offset: number): boolean {
+    return this.rewinds.some((r) => r.from < offset && offset < r.at);
+  }
+
+  /** Whether a row (by its event id: the entry uuid, `#n` for a later row of it) is abandoned. */
+  isAbandoned(eventId: string): boolean {
+    if (!this.abandoned.size) return false;
+    const hash = eventId.indexOf('#');
+    return this.abandoned.has(hash < 0 ? eventId : eventId.slice(0, hash));
+  }
+
+  /** `events` without the rows of an abandoned branch. */
+  prune(events: TurnEvent[]): TurnEvent[] {
+    return this.abandoned.size ? events.filter((event) => !this.isAbandoned(event.id)) : events;
+  }
 }
