@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { loadedSharedWebglAddon, preloadSharedWebgl } from '../terminal/sharedWebgl/load';
+import { preloadSharedWebgl, sharedWebglAddonClassFor } from '../terminal/sharedWebgl/load';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
@@ -674,14 +674,15 @@ let webglTokenSeq = 0;
 //
 // The renderer is a separate chunk, loaded once the flag is seen on (at start,
 // on session restore, or when it is switched on). A pane built before the chunk
-// has loaded gets the stock addon, as with the flag off, and keeps it.
-function sharedWebglAddonClass() {
-  return useStore.getState().terminalSharedWebgl === true ? loadedSharedWebglAddon() : null;
+// has loaded gets the stock addon, as with the flag off, and keeps it. A load
+// that failed is retried the next time the flag is switched on.
+function sharedWebglAddonClass(replaces?: WebglAddon) {
+  return sharedWebglAddonClassFor(useStore.getState().terminalSharedWebgl === true, replaces);
 }
 webglContextPool.setUnbudgeted(() => sharedWebglAddonClass() !== null);
 if (useStore.getState().terminalSharedWebgl === true) void preloadSharedWebgl();
-useStore.subscribe((state) => {
-  if (state.terminalSharedWebgl === true) void preloadSharedWebgl();
+useStore.subscribe((state, prev) => {
+  if (state.terminalSharedWebgl === true && prev.terminalSharedWebgl !== true) void preloadSharedWebgl();
 });
 
 // A hidden terminal KEEPS its WebGL context. It gives the context back only
@@ -1843,10 +1844,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // recently shown terminals, so persistence can restore an arbitrary session
     // count without any pane going blank. loadWebgl is the pool's "acquire"
     // callback; disposeWebgl is its "evict" callback (reverts to DOM renderer).
-    function loadWebgl() {
+    // `replaces`: the addon a rebuild replaces, whose kind (stock or shared
+    // context) the new one keeps — see sharedWebglAddonClassFor.
+    function loadWebgl(replaces?: WebglAddon) {
       if (webglAddonRef.current) return; // already loaded
       try {
-        const SharedContextWebglAddon = sharedWebglAddonClass();
+        const SharedContextWebglAddon = sharedWebglAddonClass(replaces);
         const addon: WebglAddon = SharedContextWebglAddon
           ? new SharedContextWebglAddon({ sharedContext: true })
           : new WebglAddon();
@@ -1999,9 +2002,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // recreating — this runs once per terminal on mount, so on a multi-pane
         // restore it is a burst of dispose+create pairs; leaking the old
         // contexts here is a prime zombie-context source.
-        teardownWebglAddon(webglAddonRef.current, terminal);
+        const replaced = webglAddonRef.current;
+        teardownWebglAddon(replaced, terminal);
         webglAddonRef.current = null;
-        loadWebgl();
+        loadWebgl(replaced);
       }
       // runFit carries the selection guard, the #1255 floor gate and — unlike
       // a direct addon fit — the sendResize, which a re-measured cell needs:

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { loadedSharedWebglAddon, preloadSharedWebgl } from '../sharedWebgl/load';
+import { loadedSharedWebglAddon, preloadSharedWebgl, sharedWebglAddonClassFor } from '../sharedWebgl/load';
 import { WebglContextPool } from '../webglContextPool';
 
 /**
@@ -42,5 +42,20 @@ describe('sharedWebgl lazy load', () => {
     expect(c.acquire).toHaveBeenCalledOnce();
     expect(pool.grantedTokens()).toEqual(['b', 'c']);
     expect(pool.grantedCount()).toBe(1);
+  });
+
+  it('a rebuild keeps the kind of the addon it replaces, whatever the flag says now', () => {
+    // The fonts.ready rebuild runs outside the pool, which budgeted the pane
+    // when it granted it. Re-picking from the flag would leave a stock context
+    // unbudgeted, or a shared pane in a budgeted slot that eviction can hit.
+    const cls = loadedSharedWebglAddon();
+    const shared = { usesSharedContext: true };
+    const stock = {};
+    expect(sharedWebglAddonClassFor(true)).toBe(cls);
+    expect(sharedWebglAddonClassFor(false)).toBeNull();
+    expect(sharedWebglAddonClassFor(false, shared)).toBe(cls);
+    expect(sharedWebglAddonClassFor(true, stock)).toBeNull();
+    expect(sharedWebglAddonClassFor(true, shared)).toBe(cls);
+    expect(sharedWebglAddonClassFor(false, stock)).toBeNull();
   });
 });
