@@ -226,7 +226,8 @@ internal static unsafe class Input
     /// way). A failure after the first throws: some of the input went in, so
     /// it must not be sent again. Posted messages change no keyboard or
     /// button state anywhere, so nothing here is recorded as held; if a key
-    /// went down without its up, the up is posted to the same window.
+    /// or button went down without its up, the up (and for a button
+    /// WM_CANCELMODE) is posted to the same window once more.
     /// </summary>
     public static int PostMessages(HWND receiver, IReadOnlyList<PostedMessage> messages)
     {
@@ -242,10 +243,11 @@ internal static unsafe class Input
                     continue;
                 }
                 if (i == 0) return 0;
-                // A key down whose up did not go in: try that up once more.
-                if (messages[i - 1].Msg == Core.Background.WmKeyDown && m.Msg == Core.Background.WmKeyUp)
+                // Best effort: a key or button left down by this sequence gets
+                // its up again (and a button WM_CANCELMODE, ending a capture).
+                foreach (var r in Core.Background.Repair(messages, i))
                 {
-                    PInvoke.PostMessage(receiver, m.Msg, new WPARAM(m.WParam), new LPARAM(m.LParam));
+                    PInvoke.PostMessage(receiver, r.Msg, new WPARAM(r.WParam), new LPARAM(r.LParam));
                 }
                 throw new HelperError("internal", $"Windows took only {i} of {messages.Count} posted messages (the app's message queue may be full, or its window closed); the rest was not sent. Check the app state before retrying");
             }

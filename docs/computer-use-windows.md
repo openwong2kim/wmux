@@ -185,57 +185,79 @@ refused before anything was posted goes the real way (`SendInput`, next
 section); that result says `delivery: "foreground"`. A posted one says
 `delivery: "background"`.
 
-- **How.** `PostMessage` to one child window of the target: the deepest
-  child at the point (`ChildWindowFromPointEx` from the target window down,
-  skipping invisible, disabled and transparent children), with the point in
-  that child's client coordinates. A click is `WM_MOUSEMOVE`,
-  `WM_LBUTTONDOWN`, `WM_LBUTTONUP`. Text is one `WM_CHAR` per UTF-16 unit
-  (both halves of a surrogate pair); Enter, Tab and other named keys are
-  `WM_KEYDOWN` and `WM_KEYUP` with the scan code and extended bit in
+- **How.** `PostMessage` to one child window of the target: the child a real
+  click at the point would hit. From the target window down, that is the
+  topmost child in z-order that is visible, enabled, not
+  `WS_EX_TRANSPARENT`, contains the point, and does not answer
+  `WM_NCHITTEST` with `HTTRANSPARENT` (a group box lets the click through to
+  the control behind it). Each hit test gets 100 ms; one that goes
+  unanswered refuses. The point is sent in that child's client coordinates.
+  A click is `WM_MOUSEMOVE`, `WM_LBUTTONDOWN`, `WM_LBUTTONUP`. Text is one
+  `WM_CHAR` per UTF-16 unit (both halves of a surrogate pair); named keys
+  are `WM_KEYDOWN` and `WM_KEYUP` with the scan code and extended bit in
   `lParam` (the key-up also sets bits 30 and 31), and the app's own
   `TranslateMessage` makes their characters. Posted messages press nothing
   system-wide, so they are not recorded as held input.
-- **Covered windows are the point.** The deepest child is looked up inside
-  the target window whoever covers that point on screen, so the
-  "foreground window" and "window under the point" preflights of real input
-  do not apply. The safety checks do: the input desktop, elevation, secret
-  fields, the shutdown gate.
-- **Per action.**
+- **Covered windows are the point.** The child is looked up inside the
+  target window whoever covers that point on screen, so the "foreground
+  window" and "window under the point" preflights of real input do not
+  apply. The safety checks do: the input desktop, elevation, secret fields,
+  the shutdown gate.
+- **Which windows.** Only window classes posted input is measured with, or
+  standard Win32 controls that act on their own mouse and key messages:
+  `Chrome_RenderWidgetHostHWND` and `Chrome_WidgetWin_*` (Chrome, Edge,
+  Electron), `RichEditD2DPT` (Notepad), the `RichEdit` family
+  (`RichEdit20W`, `RICHEDIT50W`), `Edit`, `Button`, `ComboBox`, `ListBox`,
+  `SysListView32` and `SysTreeView32` (class names compare
+  case-insensitively). Everything else (WPF, UWP / WinUI / XAML islands,
+  Qt, Java, Flutter, SDL, games reading raw input, custom controls) could
+  drop posted input without a trace, so it gets real input.
+- **Per action.** Checked first, before any window state is read: what the
+  action asks for.
   - `click`: a single left click with no modifiers, after the UIA ladder
     (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern.
     Right and middle buttons, double and triple clicks, and modifiers go the
     real way: posted messages carry no keyboard state, and the rest was not
     measured.
-  - `type` with an index: the field is clicked first (posted), then the
-    keys go to the window under that click. Always, because Chromium and
-    Electron (`Chrome_RenderWidgetHostHWND`) drop posted keys that no posted
-    click preceded, and ignore them again after any real activation; for
-    other apps it moves focus inside the target without UIA `SetFocus`,
-    which can raise the window. The caret lands where the click puts it,
-    the middle of the field. A trailing `
-` types Enter in the same
-    action.
+  - `type` with an index: the field is clicked first (posted), then it must
+    report keyboard focus (it is the system's focused element, or its UIA
+    `HasKeyboardFocus` is true, within 300 ms) before any key is posted, and
+    the keys go to the window under that click. Always clicked, because
+    Chromium and Electron drop posted keys that no posted click preceded,
+    and ignore them again after any real activation; for other apps it
+    moves focus inside the target without UIA `SetFocus`, which can raise
+    the window. The caret lands where the click puts it, the middle of the
+    field. If the field does not report focus, nothing is typed and the
+    action fails (`action_not_supported`, `delivered_unverified`: the click
+    went in), never falling back to real input.
   - `type` without an index, `pressKey`, and `hotkey` with no modifiers: the
     keys go to the target thread's focused window (`GetGUIThreadInfo`), only
-    when it lies inside the target window and is itself a plain text
-    control (UIA Edit or Document) that is not a password field. A thread
-    that is not in front may have no focused window; then, and for
-    Chromium (no field to click), the keys go the real way. A host window
-    (Qt, WPF, XAML) is refused because a windowless password field may have
-    focus inside it.
+    when it lies inside the target window, is one of the classes above and
+    not a Chromium window (no field to click), is itself a UIA Edit or
+    Document, and the element with keyboard focus inside it (the window's
+    own element or a windowless descendant) is found and is not a password
+    field. A thread that is not in front may have no focused window; then
+    the keys go the real way.
+  - `type` whose text holds a Tab or any other control character goes the
+    real way, which re-checks focus before every chunk: a Tab can move
+    focus (to the next field of a page, or through a dialog) so the rest
+    would land where no check was made. Only one trailing newline is
+    posted: a trailing `\n` (backslash, n) types Enter in the same action.
   - `hotkey` with modifiers and `scroll`: always the real way (a chord
     cannot be posted; `WM_MOUSEWHEEL` was not measured).
   - `setValue` and the UIA click ladder are not input; their results say
     `background` unless the target window came to the front during the call.
-- **Refused before posting** (`not_delivered`, then real input): the target
-  window is minimized, hidden or cloaked, on another virtual desktop
-  (`IVirtualDesktopManager`; if that call fails it is no reason to refuse),
-  or elevated; nothing of the target's process at the point; the point is
-  on a frame or scroll bar; a popup or menu of the target is on screen at
-  the point (it takes a real click); the window at the point is WPF
-  (`HwndWrapper[…]`), a UWP / WinUI / XAML-island input site or a menu; the
-  field under the click is (or may be) a password field. A `PostMessage`
-  that fails on the first message also counts as nothing posted.
+- **Refused before posting** (`not_delivered`, then real input), besides
+  the above: the target window is minimized, hidden or cloaked, on another
+  virtual desktop (`IVirtualDesktopManager`; if that call fails it is no
+  reason to refuse), or elevated; nothing of the target's process at the
+  point; a hit test went unanswered; the point is on a frame or scroll bar;
+  a menu, an owned window (a dropdown, a dialog) or a tool window of the
+  target process lies over the point, whatever covers it on screen (it
+  takes a real click); the window at the point is not one of the classes
+  above; the field under the click is (or may be) a password field. A
+  `PostMessage` that fails on the first message also counts as nothing
+  posted.
 - **No delivery acknowledgement.** `PostMessage` succeeding is not proof the
   app acted on it. A posted action is `unverified` (`delivered_unverified`)
   unless a re-read confirms it: for `type`, the field's UIA value is the
@@ -244,16 +266,19 @@ section); that result says `delivery: "foreground"`. A posted one says
   keys are `unverified`.
 - **Our side effects.** The cursor position and the foreground window are
   read before posting and again at least 60 ms after it. If the cursor now
-  sits on the target point and did not before, or the target window is now
-  in front and was not before, the result is `unverified` with
+  sits on the target point and did not before, or the foreground window
+  changed to a window of the target's process (the target, a dialog or popup
+  it opened, another of its windows), the result is `unverified` with
   `delivery: "foreground"` and a note, and the input is never sent a second
-  way. The user moving the mouse or switching windows meanwhile is not
-  counted.
+  way. The user moving the mouse or switching to another app meanwhile is
+  not counted.
 - **Errors.** Once anything was posted, a later failure ends the action with
-  an error and no fallback. Every control error carries a `disposition`:
-  `not_delivered` when no input event, posted message or UIA pattern call
-  went out during the request, `delivered_unverified` otherwise (the same
-  rule as the macOS helper).
+  an error and no fallback. If a button-up or key-up is refused after its
+  down went in, the up is posted once more (and for a button
+  `WM_CANCELMODE`, which ends a capture or drag the app started). Every
+  control error carries a `disposition`: `not_delivered` when no input
+  event, posted message or UIA pattern call went out during the request,
+  `delivered_unverified` otherwise (the same rule as the macOS helper).
 - **Capabilities.** `hello.capabilities.input` is
   `{ backgroundPointer: true, focusWithoutRaise: false, keyAuth: true }`:
   posted clicks leave the cursor alone; nothing gives a window focus without

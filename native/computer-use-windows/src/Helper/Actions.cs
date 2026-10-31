@@ -578,7 +578,7 @@ internal static unsafe class Actions
             {
                 fieldPoint = null;
             }
-            var posted = BackgroundInput.Type(target, text, el, fieldPoint);
+            var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
             if (!posted.FallBack) return Posted(posted);
             try
             {
@@ -597,7 +597,7 @@ internal static unsafe class Actions
         }
         else
         {
-            var posted = BackgroundInput.Type(target, text, null, null);
+            var posted = BackgroundInput.Type(target, text, null, null, -1, null);
             if (!posted.FallBack) return Posted(posted);
         }
 
@@ -697,8 +697,7 @@ internal static unsafe class Actions
             _ => throw new HelperError("invalid_argument", "direction must be up, down, left or right"),
         };
         var (x, y, _) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
-        // Not posted (WM_MOUSEWHEEL was not measured): this only records why.
-        BackgroundInput.Scroll(target);
+        // Always real input: WM_MOUSEWHEEL was not measured (Core Background.ActionRefusal).
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);

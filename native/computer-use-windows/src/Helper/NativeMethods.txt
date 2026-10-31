@@ -74,7 +74,7 @@ MapVirtualKey
 GetAsyncKeyState
 // Background (posted) input
 PostMessage
-ChildWindowFromPointEx
+IsWindowEnabled
 ScreenToClient
 GetClientRect
 IVirtualDesktopManager
