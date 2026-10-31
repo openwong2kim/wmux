@@ -4,19 +4,19 @@
 // sha256 in its baked resources/server-manifest.json, so the manifest must be
 // written from the artifacts before any app is packaged, and must refuse
 // fragments that do not describe one consistent release.
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { maxGlibcRequirement, mergeFragments, serverArtifactName } from '../build-server-artifact.mjs';
+import os from 'node:os';
+import { createHash } from 'node:crypto';
+import { maxGlibcRequirement, mergeFragments, serverArtifactName, stageNativeCore } from '../build-server-artifact.mjs';
 import { serverArtifactName as contractName } from '../../src/shared/sshPcContract';
 
-const RELEASE = fs
-  .readFileSync(
-    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '.github', 'workflows', 'release.yml'),
-    'utf8',
-  )
-  .replace(/\r\n/g, '\n');
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const read = (...parts) => fs.readFileSync(path.join(ROOT, ...parts), 'utf8').replace(/\r\n/g, '\n');
+const RELEASE = read('.github', 'workflows', 'release.yml');
+const SERVER_WORKFLOW = read('.github', 'workflows', 'server-artifact.yml');
 
 function fragment(arch, over = {}) {
   return {
@@ -63,19 +63,77 @@ describe('server manifest merge', () => {
   });
 });
 
-describe('release.yml server artifacts', () => {
-  function job(name) {
-    const start = RELEASE.indexOf(`\n  ${name}:\n`);
-    expect(start, `job "${name}" is missing`).toBeGreaterThanOrEqual(0);
-    const next = RELEASE.slice(start + 1).search(/\n {2}[a-z][\w-]*:\n/);
-    return next < 0 ? RELEASE.slice(start) : RELEASE.slice(start, start + 1 + next);
-  }
+describe('staging the native terminal core', () => {
+  let src;
+  let dest;
+  beforeEach(() => {
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-server-native-'));
+    src = path.join(parent, 'wmux-native');
+    dest = path.join(parent, 'resources', 'wmux-native');
+    fs.mkdirSync(src);
+    const binary = 'wmux-term.linux-arm64-gnu.node';
+    const bytes = Buffer.from('fixture native binary');
+    fs.writeFileSync(path.join(src, binary), bytes);
+    fs.writeFileSync(path.join(src, 'index.cjs'), 'module.exports = {};');
+    fs.writeFileSync(path.join(src, 'THIRD_PARTY_NOTICES'), 'fixture notices');
+    fs.writeFileSync(path.join(src, 'manifest.json'), JSON.stringify({
+      abi: 1, platform: 'linux', arch: 'arm64', binary, sha256: createHash('sha256').update(bytes).digest('hex'),
+    }));
+  });
+  afterEach(() => fs.rmSync(path.dirname(src), { recursive: true, force: true }));
 
-  it('builds each arch natively on its own runner', () => {
-    const server = job('server');
+  it('copies the built core where the daemon looks for it, and checks the copy', () => {
+    // Another target's build left in the stage (a desktop build in the same checkout).
+    fs.writeFileSync(path.join(src, 'wmux-term.darwin-arm64.node'), 'stale');
+    stageNativeCore(src, dest, 'arm64');
+    expect(fs.readdirSync(dest).sort()).toEqual(['THIRD_PARTY_NOTICES', 'index.cjs', 'manifest.json', 'wmux-term.linux-arm64-gnu.node']);
+  });
+
+  it('refuses a core built for another arch, and a missing one', () => {
+    expect(() => stageNativeCore(src, dest, 'x64')).toThrow(/architecture mismatch/);
+    fs.rmSync(path.join(src, 'manifest.json'));
+    expect(() => stageNativeCore(src, path.join(dest, 'again'), 'arm64')).toThrow(/build:terminal-core/);
+  });
+});
+
+describe('release.yml server artifacts', () => {
+  function job(name, text = RELEASE) {
+    const start = text.indexOf(`\n  ${name}:\n`);
+    expect(start, `job "${name}" is missing`).toBeGreaterThanOrEqual(0);
+    const next = text.slice(start + 1).search(/\n {2}[a-z][\w-]*:\n/);
+    return next < 0 ? text.slice(start) : text.slice(start, start + 1 + next);
+  }
+  const step = (text, name) => text.indexOf(`- name: ${name}\n`);
+
+  it('builds each arch natively on its own runner, in the workflow pull requests run too', () => {
+    expect(job('server')).toMatch(/\n {4}uses: \.\/\.github\/workflows\/server-artifact\.yml\n/);
+    expect(SERVER_WORKFLOW).toMatch(/\non:\n {2}workflow_call:\n {2}pull_request:\n/);
+    for (const file of ['build-server-artifact.mjs', 'build-server-artifact-container.sh', 'prove-server-artifact.mjs', 'prove-server-artifact.sh', 'build-native-terminal.mjs', 'verify-native-terminal-package.cjs']) {
+      expect(SERVER_WORKFLOW).toContain(`- 'scripts/${file}'\n`);
+    }
+    const server = job('server', SERVER_WORKFLOW);
     expect(server).toMatch(/arch: x64\n\s+runner: ubuntu-22\.04\n/);
     expect(server).toMatch(/arch: arm64\n\s+runner: ubuntu-22\.04-arm\n/);
     expect(server).toContain('bash scripts/build-server-artifact-container.sh "$ARCH" out/server');
+  });
+
+  it('proves every arch on the rust engine after the build, and uploads only for a release run', () => {
+    const server = job('server', SERVER_WORKFLOW);
+    const build = step(server, 'Build the server artifact');
+    const prove = step(server, 'Prove the artifact on the rust engine');
+    const upload = step(server, 'Upload the server artifact');
+    expect(build).toBeGreaterThan(0);
+    expect(prove).toBeGreaterThan(build);
+    expect(upload).toBeGreaterThan(prove);
+    expect(server.slice(prove, upload)).toContain('run: bash scripts/prove-server-artifact.sh "$ARCH" out/server\n');
+    expect(server.slice(upload)).toContain("if: github.event_name != 'pull_request'\n");
+
+    const wrapper = read('scripts', 'prove-server-artifact.sh');
+    expect(wrapper).toMatch(/\nIMAGE=debian:11-slim@sha256:[0-9a-f]{64}\n/);
+    const proof = read('scripts', 'prove-server-artifact.mjs');
+    expect(proof).toContain("JSON.stringify({ engine: 'rust' })");
+    expect(proof).toContain("terminalCore.effective !== 'rust'");
+    expect(proof).not.toContain('WMUX_TERMINAL_CORE:');
   });
 
   it('builds against glibc 2.28 in a digest-pinned image and refuses anything newer', () => {
@@ -96,6 +154,20 @@ describe('release.yml server artifacts', () => {
     expect(ci).toBeGreaterThan(0);
     expect(rebuild).toBeGreaterThan(ci);
     expect(rebuild).toBeLessThan(wrapper.indexOf('node scripts/build-server-artifact.mjs build'));
+  });
+
+  it('installs Rust in the image from a pinned, checked rustup-init and builds the terminal core there', () => {
+    const wrapper = read('scripts', 'build-server-artifact-container.sh');
+    expect(wrapper).toMatch(/\nRUSTUP_VERSION=\d+\.\d+\.\d+\n/);
+    expect(wrapper.match(/\n {4}RUSTUP_SHA256=[0-9a-f]{64}\n/g)).toHaveLength(2);
+    const check = wrapper.indexOf('echo "$RUSTUP_SHA256  /tmp/rustup-init" | sha256sum -c -');
+    const install = wrapper.indexOf('/tmp/rustup-init -y');
+    const ci = wrapper.indexOf('npm ci --no-audit --no-fund');
+    const core = wrapper.indexOf('npm run build:terminal-core');
+    expect(check).toBeGreaterThan(0);
+    expect(install).toBeGreaterThan(check);
+    expect(core).toBeGreaterThan(Math.max(install, ci));
+    expect(core).toBeLessThan(wrapper.indexOf('node scripts/build-server-artifact.mjs build'));
   });
 
   it('writes the manifest before every app is packaged, and checks it shipped', () => {

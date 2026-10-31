@@ -26,49 +26,16 @@ jobs:
   # ── wmux-server (headless Linux runtime for "Add PC over SSH") ───────────
   # Built FIRST: every packaging job below bakes these artifacts' sha256 into
   # the app as resources/server-manifest.json, and the desktop app hands that
-  # hash to the host it installs on. node-pty is native, so each arch builds on
-  # its own runner — never cross-built — inside a glibc 2.28 image, so the
-  # artifact also runs on Ubuntu 20.04, Debian 11 and RHEL 8. The tarballs reach the release through
-  # the one release-creating step in `build`, so prerelease/latest gating is
-  # the same as for every other asset.
+  # hash to the host it installs on. The per-arch build inside a glibc 2.28
+  # image, its proof on the rust engine and the upload live in
+  # server-artifact.yml, which pull requests that change them run too. The
+  # tarballs reach the release through the one release-creating step in
+  # `build`, so prerelease/latest gating is the same as for every other asset.
   server:
-    name: Build wmux-server (linux-${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    name: Build wmux-server
     permissions:
       contents: read
-    strategy:
-      # A failed leg blocks the release either way; keeping the other one
-      # means "Re-run failed jobs" only redoes that leg.
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: ubuntu-22.04
-          - arch: arm64
-            runner: ubuntu-22.04-arm
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Only fetches and checks the pinned Node on the runner; everything else
-      # runs in the container on that Node.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      # In a manylinux_2_28 image pinned by digest: `npm ci` (compiling
-      # node-pty against glibc 2.28), the bundles, staging, a real PTY with the
-      # staged Node, then the tarball. Fails if anything needs glibc > 2.28.
-      - name: Build the server artifact
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: bash scripts/build-server-artifact-container.sh "$ARCH" out/server
-
-      - name: Upload the server artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wmux-server-${{ matrix.arch }}
-          path: out/server/
-          if-no-files-found: error
+    uses: ./.github/workflows/server-artifact.yml
 
   build:
     needs: server
