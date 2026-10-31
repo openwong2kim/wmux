@@ -60,23 +60,24 @@ describe('ProcessMonitor on the native process table', () => {
     expect(spawn.execFile).not.toHaveBeenCalled();
   });
 
-  it('sends a failed read to tasklist, and stays there after three in a row', async () => {
+  it('skips the sweep on a failed read, and moves to tasklist after three in a row', async () => {
     const { ProcessMonitor } = await load();
-    native.processTable.mockRejectedValueOnce(new Error('snapshot failed'));
     tasklistAnswers('"pwsh.exe","10","Console","1","95,000 K"\n');
-    expect([...(await ProcessMonitor.batchCheckAliveDetailed([10])).alive]).toEqual([10]);
-    expect(spawn.execFile).toHaveBeenCalledTimes(1);
+    native.processTable.mockRejectedValueOnce(new Error('snapshot failed'));
+    await expect(ProcessMonitor.batchCheckAliveDetailed([10])).rejects.toThrow();
+    expect(spawn.execFile).not.toHaveBeenCalled();
 
     native.processTable.mockResolvedValueOnce([{ pid: 10, ppid: 1, name: 'pwsh.exe' }]);
-    await ProcessMonitor.batchCheckAliveDetailed([10]); // native again; resets the count
-    expect(spawn.execFile).toHaveBeenCalledTimes(1);
+    await ProcessMonitor.batchCheckAliveDetailed([10]); // a success resets the count
 
     native.processTable.mockRejectedValue(new Error('snapshot failed'));
-    for (let i = 0; i < 3; i++) await ProcessMonitor.batchCheckAliveDetailed([10]);
-    expect(native.processTable).toHaveBeenCalledTimes(5);
+    for (let i = 0; i < 2; i++) await expect(ProcessMonitor.batchCheckAliveDetailed([10])).rejects.toThrow();
+    expect(spawn.execFile).not.toHaveBeenCalled();
+    // The third in a row latches native off; that read and later ones use tasklist.
+    expect([...(await ProcessMonitor.batchCheckAliveDetailed([10])).alive]).toEqual([10]);
     await ProcessMonitor.batchCheckAliveDetailed([10]);
-    expect(native.processTable).toHaveBeenCalledTimes(5); // latched off
-    expect(spawn.execFile).toHaveBeenCalledTimes(5);
+    expect(native.processTable).toHaveBeenCalledTimes(5);
+    expect(spawn.execFile).toHaveBeenCalledTimes(2);
   });
 
   it('loads the module once', async () => {
@@ -102,9 +103,13 @@ describe('ProcessMonitor on the native process table', () => {
     expect(spawn.execFile).toHaveBeenCalledTimes(1);
   });
 
-  it('a confirmation probe that fails natively falls to tasklist, never to "dead"', async () => {
+  it('a confirmation probe that fails natively is "unknown", never "dead"', async () => {
     const { ProcessMonitor } = await load();
     native.processTable.mockRejectedValue(new Error('snapshot failed'));
+    await expect(ProcessMonitor.isDefinitelyDead(10)).rejects.toThrow('Native process table read failed');
+    expect(spawn.execFile).not.toHaveBeenCalled();
+    await expect(ProcessMonitor.isDefinitelyDead(10)).rejects.toThrow('Native process table read failed');
+    // The third failure in a row latches native off: a failing tasklist probe is still unknown.
     spawn.execFile.mockImplementation((_f: string, _a: string[], _o: unknown, cb: (e: Error | null) => void) => cb(new Error('timeout')));
     await expect(ProcessMonitor.isDefinitelyDead(10)).rejects.toThrow('timeout');
   });

@@ -127,12 +127,14 @@ export class ProcessMonitor {
    */
   static async probeWindowsPid(pid: number): Promise<{ present: boolean; imageName?: string }> {
     // A fresh native snapshot is the independent second read the callers
-    // need; it fails into the tasklist probe below, never into "absent".
+    // need. A failed one is "couldn't check", never "absent"; tasklist takes
+    // over only once the native path has latched off.
     const rows = await readNativeProcessTable(false);
     if (rows) {
       const row = rows.find((r) => r.pid === pid);
       return row ? { present: true, imageName: row.name } : { present: false };
     }
+    if (nativeProcessTable()) throw new Error('Native process table read failed');
     const { stdout } = await execFileAsync(
       tasklistPath(),
       ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
@@ -207,6 +209,10 @@ export class ProcessMonitor {
     if (process.platform === 'win32') {
       const rows = await readNativeProcessTable(false);
       if (rows) return ProcessMonitor.fromNativeRows(rows, new Set(pids));
+      // A failed native read skips this sweep (the watch loop retries next
+      // tick) rather than spawning tasklist at the native cadence; tasklist
+      // serves the sweep once the native path has latched off.
+      if (nativeProcessTable()) throw new Error('Native process table read failed');
       try {
         // Single call: get full process list in CSV format (no filter)
         const { stdout } = await execFileAsync(
@@ -297,8 +303,8 @@ export class ProcessMonitor {
   }
 
   /** The native cadence while the native table is usable, else the spawn
-   *  cadence. Re-read after every batch: a native failure latches the table
-   *  off, and tasklist must not inherit the 3 s cadence. */
+   *  cadence. Re-read after every batch: repeated native failures latch the
+   *  table off, and tasklist must not inherit the 3 s cadence. */
   private batchPeriod(): number {
     const statics = ProcessMonitor as unknown as { CHECK_INTERVAL_MS: number; NATIVE_CHECK_INTERVAL_MS: number };
     return nativeProcessTable()
