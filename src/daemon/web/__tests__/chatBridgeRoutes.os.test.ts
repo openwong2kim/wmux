@@ -1600,7 +1600,7 @@ describe('native chat routes (contract v0.3.1)', () => {
       const info = await start();
       const h = { ...bearer(info.token as string), ...QUEUE_CAP };
       const fns = wireQueue();
-      const shot = (n: number) => `${dir}/photo-${n}.jpg`;
+      const shot = (n: number) => `${dir}/photo-2026-10-30T20-53-5${n}-000Z-0a1b2c3${n}.jpg`;
       const [steer, normal, literal, short] = [freshId(), freshId(), freshId(), freshId()];
       fns.delivered.mockImplementation(() => [
         { clientMessageId: steer, text: [1, 2, 3, 4].map(shot).join(' '), at: 0 },
@@ -1619,6 +1619,17 @@ describe('native chat routes (contract v0.3.1)', () => {
       ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
       const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
       expect(events.map((e) => e.clientMessageId)).toEqual([steer, normal, undefined, undefined]);
+
+      // Two photo-only sends read alike: a page holding only the newer row takes the newer id.
+      const [older, newer] = [freshId(), freshId()];
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: older, text: shot(1), at: 1_000 },
+        { clientMessageId: newer, text: shot(2), at: 60_000 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'u5', kind: 'user_text', text: '[Image #2]', hasImage: true, ts: 61_000 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      expect((await turns(h)).body.events[0]).toMatchObject({ id: 'u5', clientMessageId: newer });
     });
 
     it('send: only a request carrying the cap opts into the queue, and a queued answer is 202 effect queued', async () => {

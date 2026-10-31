@@ -145,7 +145,7 @@ import {
   CHAT_SEND_MAX_UNITS,
   checkChatId,
   projectChatBlocked,
-  typedPhotoTextMatches,
+  typedPhotoTextMatcher,
   type ChatBlocked,
   type ChatBridge,
   type ChatDeliveredMessage,
@@ -5143,14 +5143,19 @@ export class WebTerminalServer {
     ];
     if (!Array.isArray(events) || delivered.length === 0) return events;
     const unused = [...delivered];
+    const photoMatches = typedPhotoTextMatcher(this.deps.uploadsDir);
     return events.map((event: Record<string, unknown>) => {
       if (event?.kind !== 'user_text' || typeof event.text !== 'string') return event;
       const text = event.text.trim();
       const ts = typeof event.ts === 'number' ? event.ts : undefined;
+      const inTime = (m: ChatDeliveredMessage) => ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS;
+      let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
       // A photo row reads `[Image #N]` where the typed text held the upload path.
-      const photo = event.hasImage === true;
-      const index = unused.findIndex((m) => (m.text.trim() === text || photo && typedPhotoTextMatches(m.text, text, this.deps.uploadsDir)) &&
-        (ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS));
+      // Photo-only sends all read alike, so the latest delivery before the row
+      // wins: a page holding only the newest row must not take an older id.
+      for (let i = unused.length - 1; index < 0 && event.hasImage === true && i >= 0; i--) {
+        if (inTime(unused[i]) && photoMatches(unused[i].text, text)) index = i;
+      }
       if (index < 0) return event;
       const [match] = unused.splice(index, 1);
       return { ...event, clientMessageId: match.clientMessageId };

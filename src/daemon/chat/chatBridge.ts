@@ -4,6 +4,7 @@ import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent, TerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import type { ChatQueueReason, ChatQueueState } from './ChatQueue';
 import type { ChatCancelProgress } from '../../shared/phoneChatCancelOutcome';
+import { UPLOAD_NAME_RE } from '../../shared/roomAttachments';
 
 /**
  * Phone native chat bridge (contract v0.3.1, N1-N19): the daemon-side seam the
@@ -480,16 +481,27 @@ function photoShape(text: string): string {
  * Whether a photo row (`user_text` with `hasImage`) is the message the daemon
  * typed. The typed text holds the upload paths the phone attached, and Claude
  * Code records each one as an `[Image #N]` placeholder instead, so the exact
- * text match can never pair them. Each upload path under `uploadsDir` stands in
- * for one placeholder: N is ignored, the counts must agree, and the whitespace
- * around a placeholder is not compared (Claude Code drops the space after one).
- * Callers use it for photo rows only, so a text row keeps the exact match.
+ * text match can never pair them. Each photo upload path under `uploadsDir`
+ * (a name the upload route wrote, `UPLOAD_NAME_RE`) stands in for one
+ * placeholder: N is ignored, the counts must agree, and the whitespace around a
+ * placeholder is not compared (Claude Code drops the space after one). A
+ * placeholder the person typed literally stays one on both sides. Built once
+ * per uploads directory; callers use it for photo rows only, so a text row
+ * keeps the exact match.
  */
-export function typedPhotoTextMatches(typed: string, rowText: string, uploadsDir: string | undefined): boolean {
-  if (!uploadsDir) return false;
+export function typedPhotoTextMatcher(uploadsDir: string | undefined): (typed: string, rowText: string) => boolean {
+  if (!uploadsDir) return () => false;
   const dir = uploadsDir.replace(/[\\/]+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const uploads = new RegExp(`${dir}[\\\\/][^\\s\\u0000]+?\\.(?:png|jpe?g|gif|webp)(?=\\s|$)`, 'gi');
-  const paths = typed.match(uploads)?.length ?? 0;
-  if (paths === 0 || (rowText.match(IMAGE_PLACEHOLDER)?.length ?? 0) !== paths) return false;
-  return photoShape(typed.replace(uploads, IMAGE_TOKEN)) === photoShape(rowText.replace(IMAGE_PLACEHOLDER, IMAGE_TOKEN));
+  const candidates = new RegExp(`${dir}[\\\\/]([^\\s\\\\/\\u0000]+)(?=\\s|$)`, 'g');
+  return (typed, rowText) => {
+    let uploads = 0;
+    const tokenized = typed.replace(candidates, (path: string, name: string) => {
+      if (!name.startsWith('photo-') || !UPLOAD_NAME_RE.test(name)) return path;
+      uploads += 1;
+      return IMAGE_TOKEN;
+    }).replace(IMAGE_PLACEHOLDER, IMAGE_TOKEN);
+    if (uploads === 0) return false;
+    const row = rowText.replace(IMAGE_PLACEHOLDER, IMAGE_TOKEN);
+    return photoShape(tokenized) === photoShape(row);
+  };
 }
