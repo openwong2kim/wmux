@@ -283,6 +283,9 @@ export function createHardWrappedLinkProvider(
         range: link.range,
         text: link.text,
         activate: (event: MouseEvent) => {
+          // #2901: xterm activates on mouseup of any button, and a path never
+          // reaches activateUrl's own check. Only a left click opens.
+          if (event.button !== 0) return;
           if (link.kind === 'url') options.activateUrl(event, link.text);
           else options.openPath(link.text);
         },
