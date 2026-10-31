@@ -5,17 +5,19 @@
 //     front window, so one agent at a time holds it, for INPUT_LOCK_IDLE_MS
 //     after its last foreground input. Another agent gets input_busy at once;
 //     the lease never waits.
-//   - PidLanes: input posted in the background to one app runs in arrival
-//     order, one action at a time per target pid; different pids never wait
-//     on each other. A stop ends every queued waiter with `aborted`.
+//   - PidLanes: every input action on one app runs in arrival order, one at
+//     a time per target pid; different pids never wait on each other. A stop
+//     ends every queued waiter with `aborted`.
 //   - foregroundCertain: the actions main knows need real input up front
-//     (they take the lease, never a pid slot). It mirrors the Windows
-//     helper's Core Background.ActionRefusal; anything else is sent with
-//     `foreground: 'refuse'` and upgraded only when the helper answers
+//     (sent with `foreground: 'allow'` under the lease). It mirrors the
+//     Windows helper's Core Background.ActionRefusal; anything else is sent
+//     with `foreground: 'refuse'` and upgraded only when the helper answers
 //     needs_foreground.
 //
-// Lock order is always pid slot, then lease. Foreground-first actions take no
-// pid slot and the lease never waits, so no cycle can form.
+// Lock order is always pid slot, then lease: an action with a target pid
+// takes its slot first, foreground or not, and only then the lease. An
+// action with no target pid (openApp) takes the lease only. The lease never
+// waits, so no cycle can form.
 
 import { ComputerError } from '../../shared/computer/errors';
 import type { ComputerControlAction, Modifier, MouseButton } from '../../shared/computer/protocol';
@@ -59,13 +61,12 @@ export type ReleaseSlot = () => void;
  */
 export class PidLanes {
   private readonly tails = new Map<number, Promise<void>>();
-  private stop = PidLanes.stopSignal();
-
-  private static stopSignal(): { fired: Promise<void>; fire: () => void } {
-    let fire!: () => void;
-    const fired = new Promise<void>((resolve) => { fire = resolve; });
-    return { fired, fire };
-  }
+  /**
+   * The abort hooks of the waiters that have not got their slot yet. A
+   * waiter leaves the set as soon as it is granted or aborted, so nothing of
+   * a finished action stays reachable from here.
+   */
+  private readonly waiting = new Set<() => void>();
 
   acquire(pid: number): Promise<ReleaseSlot> {
     const prev = this.tails.get(pid) ?? Promise.resolve();
@@ -82,27 +83,35 @@ export class PidLanes {
       released = true;
       open();
     };
-    const stop = this.stop;
     return new Promise<ReleaseSlot>((resolve, reject) => {
       let settled = false;
+      const abort = () => {
+        if (settled) return;
+        settled = true;
+        this.waiting.delete(abort);
+        reject(new ComputerError('aborted', 'computer use was stopped by the user'));
+      };
+      this.waiting.add(abort);
       void prev.then(() => {
         // Stopped while waiting: pass the slot straight on.
         if (settled) return release();
         settled = true;
+        this.waiting.delete(abort);
         resolve(release);
-      });
-      void stop.fired.then(() => {
-        if (settled) return;
-        settled = true;
-        reject(new ComputerError('aborted', 'computer use was stopped by the user'));
       });
     });
   }
 
   /** The stop key: every waiter still queued ends `aborted`. */
   abortWaiting(): void {
-    this.stop.fire();
-    this.stop = PidLanes.stopSignal();
+    const all = [...this.waiting];
+    this.waiting.clear();
+    for (const abort of all) abort();
+  }
+
+  /** Waiters that have not got their slot yet (for tests and status). */
+  waitingCount(): number {
+    return this.waiting.size;
   }
 
   /** Pids with a holder or a waiter (for tests and status). */
@@ -138,22 +147,30 @@ export interface LaneRequest {
 }
 
 /**
- * Whether an action certainly needs real input, so it takes the foreground
- * lease up front and no pid slot: any modifiers, a hotkey, a button other
- * than left, more than one click, scroll, openApp, and `type` text that can
- * move focus. setValue is a UIA call (no input, no raise), so it is not.
+ * Whether an action certainly needs real input, so it is sent with
+ * `foreground: 'allow'` under the foreground lease. Row for row the Windows
+ * helper's Core `Background.ActionRefusal`
+ * (native/computer-use-windows/src/Core/Background.cs):
+ *   - scroll: always;
+ *   - click: a button other than left, any modifiers, more than one click;
+ *   - hotkey: only with modifiers (one without is a plain key there);
+ *   - type: text that can move focus (Core `Background.MovesFocus`);
+ *   - pressKey, setValue: never (setValue is a UIA call: no input, no raise).
+ * openApp has no row there (it is not a posted action): launching and
+ * raising an app is always real input.
  */
 export function foregroundCertain(req: LaneRequest): boolean {
   switch (req.action) {
     case 'openApp':
-    case 'hotkey':
     case 'scroll':
       return true;
     case 'click':
-      return (req.modifiers?.length ?? 0) > 0 || (req.button ?? 'left') !== 'left' || (req.clickCount ?? 1) > 1;
+      return (req.button ?? 'left') !== 'left' || (req.modifiers?.length ?? 0) > 0 || (req.clickCount ?? 1) !== 1;
+    case 'hotkey':
+      return (req.modifiers?.length ?? 0) > 0;
     case 'type':
       return typeof req.text === 'string' && textMovesFocus(req.text);
     default:
-      return (req.modifiers?.length ?? 0) > 0;
+      return false;
   }
 }

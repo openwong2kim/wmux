@@ -175,9 +175,14 @@ export class HelperProcess {
     return this.running?.hello ?? null;
   }
 
-  /** Whether the running helper's hello has `input.deferForeground: true`; undefined while none runs. */
-  defersForeground(): boolean | undefined {
-    return this.running ? this.running.hello.capabilities.input?.deferForeground === true : undefined;
+  /**
+   * Whether the helper's hello has `input.deferForeground: true`. Starts the
+   * helper when none runs (or waits for the one starting) and reads its
+   * hello; no request is sent.
+   */
+  async defersForeground(): Promise<boolean> {
+    const running = await this.ensureRunning();
+    return running.hello.capabilities.input?.deferForeground === true;
   }
 
   /** Whether the running helper's hello listed `method`; undefined while none runs. */

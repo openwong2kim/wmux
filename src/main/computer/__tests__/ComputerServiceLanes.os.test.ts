@@ -4,8 +4,15 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
-import type { ActionResult, AppInfo, AppState, HelperMethod, WindowInfo } from '../../../shared/computer/protocol';
-import { ComputerService, INPUT_LOCK_IDLE_MS, type ComputerAgent, type HelperLike } from '../ComputerService';
+import { SNAPSHOT_TTL_MS, type ActionResult, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
+import {
+  ABORT_COOLDOWN_MS,
+  CONTROL_RATE_PER_MINUTE,
+  ComputerService,
+  INPUT_LOCK_IDLE_MS,
+  type ComputerAgent,
+  type HelperLike,
+} from '../ComputerService';
 
 const notepad: AppInfo = { id: 'c:\\windows\\notepad.exe', name: 'Notepad', pid: 10, path: 'C:\\Windows\\notepad.exe' };
 const paint: AppInfo = { id: 'c:\\windows\\mspaint.exe', name: 'Paint', pid: 12, path: 'C:\\Windows\\mspaint.exe' };
@@ -72,29 +79,30 @@ function controllableHelper(defer: boolean | undefined) {
       for (const p of pending.splice(0)) p.reject(new ComputerError('aborted', 'stopped by the user'));
     }),
     dispose: vi.fn(),
-    ...(defer !== undefined && { defersForeground: () => defer }),
+    ...(defer !== undefined && { defersForeground: async () => defer }),
   };
   const done = (call: PendingCall, delivery: 'background' | 'foreground' = 'background') =>
     call.resolve({ method: 'synthetic', verification: 'unverified', delivery });
-  const needsForeground = (call: PendingCall) =>
-    call.reject(new ComputerError('needs_foreground', 'needs real input', 'not_delivered'));
+  const needsForeground = (call: PendingCall, disposition: 'not_delivered' | 'delivered_unverified' = 'not_delivered') =>
+    call.reject(new ComputerError('needs_foreground', 'needs real input', disposition));
   return { helper, pending, controlCalls, done, needsForeground };
 }
 
 function makeService(defer: boolean | undefined) {
   let now = 1_000_000;
+  const stopKey = { held: true };
   const h = controllableHelper(defer);
   const service = new ComputerService({
     isEnabled: () => true,
     askPerApp: () => false,
     createHelper: () => h.helper,
     requestConsent: async () => 'approved',
-    stopKey: { arm: () => true, release: vi.fn() },
+    stopKey: { arm: () => stopKey.held, release: vi.fn() },
     blockContext: () => ({ selfPids: new Set([1]) }),
     now: () => now,
     platform: 'win32',
   });
-  return { service, ...h, advance: (ms: number) => { now += ms; } };
+  return { service, ...h, stopKey, advance: (ms: number) => { now += ms; } };
 }
 
 /** The oldest input call still waiting at the helper. */
@@ -313,18 +321,106 @@ describe('ComputerService input lanes', () => {
     await first;
   });
 
-  it('sends foreground-certain actions in allow mode under the lease, with no app slot', async () => {
+  it('runs a foreground action on an app behind that app\'s queued background action, slot then lease', async () => {
     const { service, pending, controlCalls, done } = makeService(true);
     const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
     const b = await service.getAppState(AGENT_B, { app: 'Notepad' });
-    // B's background action holds Notepad's slot...
-    const background = service.control(AGENT_B, { action: 'pressKey', snapshotId: b.snapshotId, key: 'b' });
+    // B's background action holds Notepad's slot (the helper holds it)...
+    const background = track(service.control(AGENT_B, { action: 'pressKey', snapshotId: b.snapshotId, key: 'b' }));
     await settle();
-    // ...and A's scroll on the same app does not queue behind it.
+    // ...so A's scroll on the same app waits for it, then runs in allow mode.
     const scroll = service.control(AGENT_A, { action: 'scroll', snapshotId: a.snapshotId, index: 0 });
     await settle();
+    expect(controlCalls.map((c) => [c.method, c.params.foreground])).toEqual([['pressKey', 'refuse']]);
+    done(oldest(pending));
+    await settle();
+    expect(background.settled).toBe(true);
     expect(controlCalls.map((c) => [c.method, c.params.foreground])).toEqual([['pressKey', 'refuse'], ['scroll', 'allow']]);
-    for (const call of pending.splice(0)) done(call);
-    await Promise.all([background, scroll]);
+    done(oldest(pending), 'foreground');
+    const result = await withinDeadline(scroll);
+    expect(result.delivery).toBe('foreground');
+    expect(service.inputHolder()).toBe('agent A');
+  });
+
+  it('re-sends needs_foreground only when the helper says nothing was sent', async () => {
+    const { service, pending, controlCalls, needsForeground } = makeService(true);
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const result = service.control(AGENT_A, { action: 'pressKey', snapshotId: a.snapshotId, key: 'a' }).catch((e: unknown) => e);
+    await settle();
+    needsForeground(oldest(pending), 'delivered_unverified');
+    const err = (await withinDeadline(result)) as ComputerError;
+    expect(err.code).not.toBe('needs_foreground');
+    expect(err.disposition).toBe('delivered_unverified');
+    expect(controlCalls.map((c) => c.params.foreground)).toEqual(['refuse']);
+    // Nor did it take the lease.
+    expect(service.inputHolder()).toBeNull();
+  });
+
+  it('checks the snapshot before taking the lease on an upgrade, so a failed check leaves no lease', async () => {
+    const { service, pending, controlCalls, done, needsForeground, advance } = makeService(true);
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const result = service.control(AGENT_A, { action: 'pressKey', snapshotId: a.snapshotId, key: 'a' }).catch((e: unknown) => e);
+    await settle();
+    // The snapshot expires while the helper works on the background attempt.
+    advance(SNAPSHOT_TTL_MS + 1);
+    needsForeground(oldest(pending));
+    const err = (await withinDeadline(result)) as ComputerError;
+    expect(err.code).toBe('snapshot_unknown');
+    expect(err.disposition).toBe('not_delivered');
+    expect(service.inputHolder()).toBeNull();
+    // B's foreground action right after is not busy.
+    const fresh = await service.getAppState(AGENT_B, { app: 'Paint' });
+    const chord = service.control(AGENT_B, { action: 'hotkey', snapshotId: fresh.snapshotId, keys: ['ctrl', 's'] });
+    await settle();
+    expect(controlCalls.at(-1)?.method).toBe('hotkey');
+    done(oldest(pending), 'foreground');
+    expect((await chord).delivery).toBe('foreground');
+  });
+
+  it('charges no rate budget for actions that ended while queued', async () => {
+    const { service, pending, controlCalls, done, advance } = makeService(true);
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const b = await service.getAppState(AGENT_B, { app: 'Notepad' });
+    const p = await service.getAppState(AGENT_B, { app: 'Paint' });
+    const running = service.control(AGENT_A, { action: 'pressKey', snapshotId: a.snapshotId, key: 'a' }).catch((e: unknown) => e);
+    const queued = Array.from({ length: CONTROL_RATE_PER_MINUTE }, () =>
+      service.control(AGENT_B, { action: 'pressKey', snapshotId: b.snapshotId, key: 'b' }).catch((e: unknown) => e));
+    await settle();
+    service.abort();
+    for (const q of queued) expect(((await q) as ComputerError).code).toBe('aborted');
+    await running;
+    advance(ABORT_COOLDOWN_MS + 1);
+    // B has used none of its budget: its next action goes to the helper.
+    const next = service.control(AGENT_B, { action: 'pressKey', snapshotId: p.snapshotId, key: 'c' });
+    await settle();
+    expect(controlCalls.at(-1)?.params.key).toBe('c');
+    done(oldest(pending));
+    expect((await next).disposition).toBe('delivered_unverified');
+  });
+
+  it('refuses stop_key_unavailable, not_delivered, when the stop key was lost while the action waited', async () => {
+    const { service, pending, controlCalls, done, stopKey } = makeService(true);
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const b = await service.getAppState(AGENT_B, { app: 'Notepad' });
+    const first = service.control(AGENT_A, { action: 'pressKey', snapshotId: a.snapshotId, key: 'a' });
+    const waiting = service.control(AGENT_B, { action: 'pressKey', snapshotId: b.snapshotId, key: 'b' }).catch((e: unknown) => e);
+    await settle();
+    stopKey.held = false;
+    done(oldest(pending));
+    await first;
+    const err = (await withinDeadline(waiting)) as ComputerError;
+    expect(err.code).toBe('stop_key_unavailable');
+    expect(err.disposition).toBe('not_delivered');
+    expect(controlCalls.map((c) => c.params.key)).toEqual(['a']);
+  });
+
+  it('sends a hotkey without modifiers in refuse mode, like the helper\'s own table', async () => {
+    const { service, pending, controlCalls, done } = makeService(true);
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const plain = service.control(AGENT_A, { action: 'hotkey', snapshotId: a.snapshotId, keys: ['Enter'] });
+    await settle();
+    expect(controlCalls.map((c) => [c.method, c.params.foreground])).toEqual([['hotkey', 'refuse']]);
+    done(oldest(pending));
+    await plain;
   });
 });

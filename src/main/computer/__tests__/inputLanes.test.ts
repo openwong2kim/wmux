@@ -61,6 +61,32 @@ describe('PidLanes', () => {
     next();
   });
 
+  it('retains no waiter after many acquire/release cycles without a stop', async () => {
+    const lanes = new PidLanes();
+    for (let i = 0; i < 200; i++) {
+      const pid = 10 + (i % 3);
+      const held = await lanes.acquire(pid);
+      const queued = lanes.acquire(pid);
+      expect(lanes.waitingCount()).toBe(1);
+      held();
+      (await queued)();
+    }
+    await settle();
+    expect(lanes.waitingCount()).toBe(0);
+    expect(lanes.busyPids()).toEqual([]);
+  });
+
+  it('drops an aborted waiter from the waiting set', async () => {
+    const lanes = new PidLanes();
+    const held = await lanes.acquire(10);
+    const queued = lanes.acquire(10);
+    expect(lanes.waitingCount()).toBe(1);
+    lanes.abortWaiting();
+    await expect(queued).rejects.toMatchObject({ code: 'aborted' });
+    expect(lanes.waitingCount()).toBe(0);
+    held();
+  });
+
   it('a release called twice is harmless', async () => {
     const lanes = new PidLanes();
     const release = await lanes.acquire(10);
@@ -71,23 +97,27 @@ describe('PidLanes', () => {
 });
 
 describe('foregroundCertain (mirrors Core Background.ActionRefusal)', () => {
+  // One row per row of Core Background.ActionRefusal, plus openApp (main only).
   it.each([
-    [{ action: 'openApp' as const }, true],
-    [{ action: 'hotkey' as const }, true],
-    [{ action: 'scroll' as const }, true],
-    [{ action: 'click' as const, modifiers: ['ctrl' as const] }, true],
-    [{ action: 'click' as const, button: 'right' as const }, true],
-    [{ action: 'click' as const, button: 'middle' as const }, true],
-    [{ action: 'click' as const, clickCount: 2 }, true],
-    [{ action: 'click' as const }, false],
-    [{ action: 'click' as const, button: 'left' as const, clickCount: 1, modifiers: [] }, false],
-    [{ action: 'type' as const, text: 'hello' }, false],
-    [{ action: 'type' as const, text: 'hello\n' }, false],
-    [{ action: 'type' as const, text: 'user\tpass' }, true],
-    [{ action: 'type' as const, text: 'a\nb' }, true],
-    [{ action: 'pressKey' as const }, false],
-    [{ action: 'setValue' as const }, false],
-  ])('%o -> %s', (req, expected) => {
+    ['scroll: always', { action: 'scroll' as const }, true],
+    ['click: right button', { action: 'click' as const, button: 'right' as const }, true],
+    ['click: middle button', { action: 'click' as const, button: 'middle' as const }, true],
+    ['click: modifiers', { action: 'click' as const, modifiers: ['ctrl' as const] }, true],
+    ['click: double', { action: 'click' as const, clickCount: 2 }, true],
+    ['click: triple', { action: 'click' as const, clickCount: 3 }, true],
+    ['click: plain left', { action: 'click' as const }, false],
+    ['click: explicit plain left', { action: 'click' as const, button: 'left' as const, clickCount: 1, modifiers: [] }, false],
+    ['hotkey: with modifiers (a chord)', { action: 'hotkey' as const, modifiers: ['ctrl' as const] }, true],
+    ['hotkey: without modifiers (a plain key)', { action: 'hotkey' as const, modifiers: [] }, false],
+    ['hotkey: modifiers left out', { action: 'hotkey' as const }, false],
+    ['type: plain text', { action: 'type' as const, text: 'hello' }, false],
+    ['type: one trailing newline', { action: 'type' as const, text: 'hello\n' }, false],
+    ['type: a Tab', { action: 'type' as const, text: 'user\tpass' }, true],
+    ['type: an inner newline', { action: 'type' as const, text: 'a\nb' }, true],
+    ['pressKey: never', { action: 'pressKey' as const }, false],
+    ['setValue: never (a UIA call)', { action: 'setValue' as const }, false],
+    ['openApp: always (main only)', { action: 'openApp' as const }, true],
+  ])('%s', (_row, req, expected) => {
     expect(foregroundCertain(req)).toBe(expected);
   });
 

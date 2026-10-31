@@ -100,6 +100,17 @@ describe('HelperProcess', () => {
     expect(helper.hello?.helperVersion).toBe('fake');
   });
 
+  it('reads deferForeground from the hello of the helper it starts, without sending a request', async () => {
+    const deferring = makeHelper('deferring');
+    expect(await deferring.helper.defersForeground()).toBe(true);
+    const plain = makeHelper('ok');
+    expect(await plain.helper.defersForeground()).toBe(false);
+    // No capabilities round trip: the hello alone answers it.
+    await deliberateSleep(200, 'negative: no capabilities request reaches either helper');
+    expect(deferring.requests()).toEqual([]);
+    expect(plain.requests()).toEqual([]);
+  });
+
   it('configures a helper that lists configure right after its hello, before the first request', async () => {
     let overlay = true;
     const { helper, requests, configures } = makeHelper('configurable', { configure: () => ({ overlay }) });

@@ -275,6 +275,10 @@ public static class Background
         }
     }
 
+    /// <summary>The refusals ActionRefusal gives: what the action asks for, whatever the target.</summary>
+    public static bool IsActionRefusal(BackgroundRefusal r) => r is BackgroundRefusal.Scroll or BackgroundRefusal.Button
+        or BackgroundRefusal.Modifiers or BackgroundRefusal.MultiClick or BackgroundRefusal.Chord or BackgroundRefusal.FocusMovingText;
+
     /// <summary>
     /// The refusals every action shares, in order: the target window must be
     /// on screen here (not minimized, visible, on this virtual desktop) and

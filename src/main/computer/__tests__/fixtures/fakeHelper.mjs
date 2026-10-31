@@ -17,6 +17,7 @@
 //               (a helper releasing held input on EOF)
 //   configurable  normal, but its hello also lists the optional `configure`
 //               and `openApp`; configure params go to `<argv[3]>.configure`
+//   deferring   normal, and its hello has `input.deferForeground: true`
 // Every request is appended to the file named by argv[3] (if given), so tests
 // can see what the helper received, including across restarts; releaseInput
 // params go to `<argv[3]>.params`, one JSON line each.
@@ -36,7 +37,12 @@ if (mode !== 'silent') {
     protocolVersion: mode === 'old' ? 0 : 2,
     os: 'win32',
     helperVersion: 'fake',
-    capabilities: { actions: mode === 'configurable' ? ['click', 'configure', 'openApp'] : ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } },
+    capabilities: {
+      actions: mode === 'configurable' ? ['click', 'configure', 'openApp'] : ['click'],
+      modes: ['ax'],
+      permissions: { accessibility: true, screenRecording: true },
+      ...(mode === 'deferring' && { input: { backgroundPointer: true, focusWithoutRaise: false, keyAuth: true, deferForeground: true } }),
+    },
   });
 }
 

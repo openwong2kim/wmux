@@ -459,9 +459,17 @@ internal static unsafe class Actions
     /// went out during the action (the protocol's rule: main re-sends it with
     /// real input, so anything sent before would arrive twice).
     /// </summary>
-    private static JsonObject? AfterBackground(BackgroundOutcome posted, bool refuseForeground, long sentAtStart)
+    private static JsonObject? AfterBackground(string action, BackgroundOutcome posted, bool refuseForeground, long sentAtStart)
     {
-        switch (Background.Next(posted, refuseForeground, Input.Sent != sentAtStart))
+        var next = Background.Next(posted, refuseForeground, Input.Sent != sentAtStart);
+        // Refusals that depend on the target's state are logged; what the
+        // action asks for (a chord, the wheel) never posts, so it is not.
+        if (next is AfterAttempt.RealInput or AfterAttempt.NeedsForeground && !Background.IsActionRefusal(posted.Refusal))
+        {
+            var why = Background.Describe(posted.Refusal);
+            Wire.Log(next == AfterAttempt.NeedsForeground ? $"{action}: needs foreground ({why})" : $"{action}: real input, not background ({why})");
+        }
+        switch (next)
         {
             case AfterAttempt.UseResult:
                 return Posted(posted);
@@ -499,7 +507,7 @@ internal static unsafe class Actions
         // Background first; RequirePointer (which may raise the window) only on the real-input path.
         Input.ThrowIfStopping();
         var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
-        if (AfterBackground(posted, refuse, sentAtStart) is { } result) return result;
+        if (AfterBackground("click", posted, refuse, sentAtStart) is { } result) return result;
         var preflight = Focus.RequirePointer(target, x, y);
         Input.Click(x, y, button, count, mods, preflight);
         return Result("synthetic", false, "foreground");
@@ -624,7 +632,7 @@ internal static unsafe class Actions
                 fieldPoint = null;
             }
             var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
-            if (AfterBackground(posted, refuse, sentAtStart) is { } result) return result;
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
             try
             {
                 Focus.RequireSemantic(target, el);
@@ -643,7 +651,7 @@ internal static unsafe class Actions
         else
         {
             var posted = BackgroundInput.Type(target, text, null, null, -1, null);
-            if (AfterBackground(posted, refuse, sentAtStart) is { } result) return result;
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
         }
 
         // Checked before anything is sent; FocusedValue below is the baseline for verification.
@@ -701,7 +709,7 @@ internal static unsafe class Actions
         int repeat = Math.Clamp(p.Int("repeat") ?? 1, 1, 50);
         Input.ThrowIfStopping();
         var posted = BackgroundInput.Key(target, keyName, repeat, 0, "pressKey");
-        if (AfterBackground(posted, refuse, sentAtStart) is { } result) return result;
+        if (AfterBackground("pressKey", posted, refuse, sentAtStart) is { } result) return result;
         for (int n = 0; n < repeat; n++)
         {
             if (n > 0) Sta.Sleep(4);
@@ -728,7 +736,7 @@ internal static unsafe class Actions
         Input.ThrowIfStopping();
         // Posted keys carry no modifier state, so a chord is always real input.
         var posted = BackgroundInput.Key(target, keyName, 1, mods.Count, "hotkey");
-        if (AfterBackground(posted, refuse, sentAtStart) is { } result) return result;
+        if (AfterBackground("hotkey", posted, refuse, sentAtStart) is { } result) return result;
         Input.Tap(key, mods, Focus.RequireKeyboard(target));
         return Result("synthetic", false, "foreground");
     }
@@ -749,7 +757,7 @@ internal static unsafe class Actions
         };
         var (x, y, _) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
         // Always real input: WM_MOUSEWHEEL was not measured (Core Background.ActionRefusal).
-        AfterBackground(BackgroundOutcome.Refused(BackgroundRefusal.Scroll), refuse, sentAtStart);
+        AfterBackground("scroll", BackgroundOutcome.Refused(BackgroundRefusal.Scroll), refuse, sentAtStart);
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);

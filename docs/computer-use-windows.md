@@ -325,6 +325,11 @@ section); that result says `delivery: "foreground"`. A posted one says
   `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
   `setValue` and the UIA click ladder are pattern calls, not input, and
   nothing in them raises the window, so `refuse` changes nothing for them.
+  The sent counter's baseline for a request is taken after the release of
+  keys a dead helper left down, so those up events never decide an
+  action's `not_delivered` or `needs_foreground`. The helper's stderr says
+  `needs foreground (…)` for such a refusal under `refuse`, and
+  `real input, not background (…)` under `allow`.
 - Measured on Windows 11 with Chrome 155, Electron 42 and Notepad
   (`RichEditD2DPT`): posted clicks move the caret or land as
   `pointerType: mouse`, posted keys insert text, and the cursor, foreground

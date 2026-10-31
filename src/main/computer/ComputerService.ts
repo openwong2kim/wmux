@@ -70,11 +70,12 @@ export interface HelperLike {
   /** Ends the running helper (a stale permission verdict); the next call starts a fresh one. */
   reset?(): void;
   /**
-   * Whether the running helper's hello has `input.deferForeground: true`
-   * (protocol ForegroundMode); undefined while none runs. A helper without
-   * this method never gets input lanes.
+   * Whether the helper's hello has `input.deferForeground: true` (protocol
+   * ForegroundMode). Starts the helper when none runs (the action needs it
+   * anyway) and reads its hello; sends no request. A helper without this
+   * method never gets input lanes.
    */
-  defersForeground?(): boolean | undefined;
+  defersForeground?(): Promise<boolean>;
 }
 
 /** What `capabilities` tells an agent: the helper's answer minus what cannot work. */
@@ -148,6 +149,8 @@ interface SnapshotRecord {
 }
 
 export const ABORT_COOLDOWN_MS = 5_000;
+const STOP_KEY_UNAVAILABLE =
+  'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps';
 export const CONTROL_RATE_PER_MINUTE = 120;
 const SNAPSHOT_RECORD_LIMIT = 64;
 
@@ -378,38 +381,27 @@ export class ComputerService {
       },
     };
     // No input without a working emergency stop.
-    if (!this.deps.stopKey.arm()) {
-      fail(
-        'stop_key_unavailable',
-        'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps',
-      );
-    }
+    if (!this.deps.stopKey.arm()) fail('stop_key_unavailable', STOP_KEY_UNAVAILABLE);
     if (params.action === 'openApp') fail('invalid_argument', 'openApp takes an app, not a snapshot');
     const generation = this.generation;
     if (!params.snapshotId) fail('invalid_argument', 'snapshotId is required; call getAppState first');
     const snapshotId = params.snapshotId;
-    const checkSnapshot = (now: number): SnapshotRecord => {
-      if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
-      const record = this.snapshots.get(snapshotId);
-      if (!record || record.expiresAt < now) fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired`);
-      if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
-      return record;
-    };
-    const snap = checkSnapshot(this.now());
+    const snap = this.checkSnapshot(agent, snapshotId, this.now());
     // Keys and modifiers are checked before consent or the lock: a refused
     // chord raises no prompt and takes nothing.
     const keys = this.resolveKeys(params);
     // Consent may have been revoked (abort clears grants) since the snapshot.
     await this.vet(agent, snap.app, snap.window, generation);
     // Whether this helper can be told to stay in the background decides the
-    // lane; asking may start the helper.
-    const defer = await this.defersForeground(ready);
+    // lane. Read from its hello: it starts the helper if none runs, which
+    // the action needs anyway, and sends no request.
+    const defer = (await ready.defersForeground?.()) === true;
     // Consent can take minutes; the clock and the stop key may both have
     // moved, so the snapshot and the cooldown are checked again on a fresh
     // clock before the lease, the slot and the rate slot are taken.
     this.assertCurrent(generation);
     let now = this.now();
-    checkSnapshot(now);
+    this.checkSnapshot(agent, snapshotId, now);
 
     const point = this.resolvePoint(params, snap);
     // The helper re-checks this window right before each input batch.
@@ -418,50 +410,66 @@ export class ComputerService {
     const send = (foreground?: 'allow' | 'refuse'): Promise<ActionResult> =>
       helper.request(call.method, (foreground ? { ...call.params, foreground } : call.params) as never) as Promise<ActionResult>;
 
-    const lane = defer && !foregroundCertain({
-      action: params.action,
-      button: params.button,
-      clickCount: clampInt(params.clickCount ?? 1, 1, 3),
-      modifiers: params.modifiers,
-      text: params.text,
-    });
-    if (!lane) {
-      // Real input, or a helper that cannot defer it: the foreground lease,
+    if (!defer) {
+      // A helper that cannot defer real input: the single lease of before,
       // taken at once or refused at once (input_busy, not_delivered).
       this.lease.take(agent, now);
       this.checkRate(agent.key, now);
       this.deps.onControl?.({ agent, action: params.action, window: snap.window });
-      return send(defer ? 'allow' : undefined);
+      return send();
     }
 
-    // Background first: only this app's slot, so other apps' agents run at
-    // the same time. The wait happens outside the slot; everything that may
-    // have changed meanwhile is checked again once it is held.
-    this.checkRate(agent.key, now);
+    const foreground = foregroundCertain({
+      action: params.action,
+      button: params.button,
+      clickCount: clampInt(params.clickCount ?? 1, 1, 3),
+      modifiers: keys?.modifiers ?? params.modifiers,
+      text: params.text,
+    });
+    // Every action on this app takes its slot first, foreground or not, so
+    // one app's actions run in arrival order; other apps' agents never wait
+    // on it. The wait happens outside the slot; everything that may have
+    // changed meanwhile is checked again once it is held. Lock order is
+    // always slot, then lease, and the lease never waits.
     const release = await this.lanes.acquire(target.pid);
     try {
       now = this.now();
       this.recheckInLane(agent, snapshotId, target.pid, generation, now);
+      if (foreground) {
+        this.lease.take(agent, now);
+        this.checkRate(agent.key, now);
+        this.deps.onControl?.({ agent, action: params.action, window: snap.window });
+        return await send('allow');
+      }
+      // Charged once the action will really be sent: one that ended while
+      // queued (a stop) costs no rate budget.
+      this.checkRate(agent.key, now);
       this.deps.onControl?.({ agent, action: params.action, window: snap.window });
       try {
         return await send('refuse');
       } catch (err) {
         if (!(err instanceof ComputerError && err.code === 'needs_foreground')) throw err;
+        // Re-sent only when the helper says nothing went out (protocol
+        // ForegroundMode rule). Any other verdict ends here: a re-send could
+        // deliver it twice.
+        if (err.disposition !== 'not_delivered') {
+          fail('internal', `the computer-use helper asked for real input after it may have sent some (${err.message}); nothing more was sent`);
+        }
       }
-      // The helper sent nothing (protocol ForegroundMode rule): upgrade.
-      // Still holding the slot, so a later action on this app stays behind
-      // it. Lock order is slot, then lease; the lease never waits.
+      // Upgrade, still holding the slot, so a later action on this app stays
+      // behind it. Checked first, then the lease: a failed check never
+      // leaves the lease held.
       sent.requested = false;
       now = this.now();
-      this.lease.take(agent, now);
       this.recheckInLane(agent, snapshotId, target.pid, generation, now);
+      this.lease.take(agent, now);
       try {
         return await send('allow');
       } catch (err) {
         if (err instanceof ComputerError && err.code === 'needs_foreground') {
           // Never shown to an agent, and never re-sent a second time.
-          sent.requested = false;
-          fail('internal', 'the computer-use helper refused real input it was allowed to use; nothing was sent');
+          if (err.disposition === 'not_delivered') sent.requested = false;
+          fail('internal', 'the computer-use helper refused real input it was allowed to use');
         }
         throw err;
       }
@@ -556,12 +564,7 @@ export class ComputerService {
     onLaunch: () => void,
   ): Promise<{ app: AppInfo; window: WindowInfo | null }> {
     const helper = this.ensureReady();
-    if (!this.deps.stopKey.arm()) {
-      fail(
-        'stop_key_unavailable',
-        'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps',
-      );
-    }
+    if (!this.deps.stopKey.arm()) fail('stop_key_unavailable', STOP_KEY_UNAVAILABLE);
     const generation = this.generation;
     if (typeof params.app !== 'string' || !params.app.trim()) fail('invalid_argument', 'openApp needs app');
     const coolingMs = this.abortedUntil - this.now();
@@ -703,18 +706,40 @@ export class ComputerService {
     if (generation !== this.generation) fail('aborted', 'computer use was stopped by the user');
   }
 
-  private async vet(agent: ComputerAgent, app: AppInfo, window: WindowInfo, generation: number): Promise<void> {
+  /**
+   * A snapshot this agent may act on now: not inside the stop cooldown,
+   * known, not expired, and its own.
+   */
+  private checkSnapshot(agent: ComputerAgent, snapshotId: string, now: number): SnapshotRecord {
+    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+    const record = this.snapshots.get(snapshotId);
+    if (!record || record.expiresAt < now) fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired`);
+    if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    return record;
+  }
+
+  /**
+   * The part of vet that needs no prompt: the blocklist, elevation and the
+   * remembered answer. True when the app may be used now (consent given, or
+   * not asked for); false when a prompt would be needed. Throws for a
+   * blocked app, an elevated window or a remembered Deny.
+   */
+  private vetWithoutPrompt(agent: ComputerAgent, app: AppInfo, window: WindowInfo): boolean {
     const reason = blockReasonFor(app, this.deps.blockContext());
     if (reason) fail('app_blocked', `${app.name}: ${BLOCK_REASON_TEXT[reason]}`);
     if (window.elevated) {
       fail('target_elevated', `${app.name} runs as administrator; Windows blocks input from wmux into it`);
     }
     // Consent is opt-in: off, every app that passed the blocklist counts as consented.
-    if (!this.deps.askPerApp()) return;
-    const key = grantKey(agent, app.id);
-    const granted = this.grants.get(key);
-    if (granted === true) return;
+    if (!this.deps.askPerApp()) return true;
+    const granted = this.grants.get(grantKey(agent, app.id));
     if (granted === false) fail('app_blocked', `the user declined computer use of ${app.name} for this agent`);
+    return granted === true;
+  }
+
+  private async vet(agent: ComputerAgent, app: AppInfo, window: WindowInfo, generation: number): Promise<void> {
+    if (this.vetWithoutPrompt(agent, app, window)) return;
+    const key = grantKey(agent, app.id);
 
     let pending = this.consentInflight.get(key);
     if (!pending) {
@@ -756,15 +781,6 @@ export class ComputerService {
     }
   }
 
-  /** Whether the running helper honours `foreground: 'refuse'`; starts the helper to find out. */
-  private async defersForeground(helper: HelperLike): Promise<boolean> {
-    if (!helper.defersForeground) return false;
-    const known = helper.defersForeground();
-    if (known !== undefined) return known;
-    await helper.request('capabilities', {});
-    return helper.defersForeground() ?? false;
-  }
-
   /**
    * After waiting for a pid slot: everything that may have changed while the
    * action waited, checked again without a prompt. Each failure is
@@ -772,17 +788,12 @@ export class ComputerService {
    */
   private recheckInLane(agent: ComputerAgent, snapshotId: string, pid: number, generation: number, now: number): void {
     this.assertCurrent(generation);
-    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
-    const record = this.snapshots.get(snapshotId);
-    if (!record || record.expiresAt < now) fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired`);
-    if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    // The stop key may have been lost (another app took the chord) while
+    // the action waited.
+    if (!this.deps.stopKey.arm()) fail('stop_key_unavailable', STOP_KEY_UNAVAILABLE);
+    const record = this.checkSnapshot(agent, snapshotId, now);
     if (record.window.pid !== pid) fail('internal', 'the snapshot window does not belong to the app this action waited for');
-    const reason = blockReasonFor(record.app, this.deps.blockContext());
-    if (reason) fail('app_blocked', `${record.app.name}: ${BLOCK_REASON_TEXT[reason]}`);
-    if (record.window.elevated) {
-      fail('target_elevated', `${record.app.name} runs as administrator; Windows blocks input from wmux into it`);
-    }
-    if (this.deps.askPerApp() && this.grants.get(grantKey(agent, record.app.id)) !== true) {
+    if (!this.vetWithoutPrompt(agent, record.app, record.window)) {
       // A prompt is never raised while holding an app's slot: getAppState asks.
       fail('snapshot_unknown', `consent for ${record.app.name} is not given for this agent any more; call getAppState to ask again`);
     }

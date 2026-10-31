@@ -87,7 +87,7 @@ internal static class Server
         long sentBefore = Input.Sent;
         try
         {
-            var result = Dispatch(method, p);
+            var result = Dispatch(method, p, ref sentBefore);
             Wire.Send(new JsonObject { ["id"] = id, ["ok"] = true, ["result"] = result }, id);
         }
         catch (HelperError e)
@@ -115,13 +115,24 @@ internal static class Server
         return new JsonObject { ["id"] = id, ["ok"] = false, ["error"] = error };
     }
 
-    private static JsonNode Dispatch(string method, Params p)
+    /// <remarks>
+    /// `sentBefore` is this request's baseline for Disposition. It is taken
+    /// again after the orphan release: up events a dead helper's keys needed
+    /// are not this action's input, so they can never make an action's
+    /// `needs_foreground` or `not_delivered` untrue, nor be mistaken for it
+    /// (the actions take their own baseline after this point too).
+    /// </remarks>
+    private static JsonNode Dispatch(string method, Params p, ref long sentBefore)
     {
         // Never act on the lock screen or a UAC / Ctrl+Alt+Del secure
         // desktop, and say why windows "vanished".
         if (method is not ("capabilities" or "listApps" or "releaseInput")) InputDesktop.Require();
         // A dead helper's held keys go up before this one sends anything.
-        if (method is "click" or "setValue" or "type" or "pressKey" or "hotkey" or "scroll") Input.EnsureOrphansReleased();
+        if (method is "click" or "setValue" or "type" or "pressKey" or "hotkey" or "scroll")
+        {
+            Input.EnsureOrphansReleased();
+            sentBefore = Input.Sent;
+        }
         switch (method)
         {
             case "capabilities": return Capabilities();

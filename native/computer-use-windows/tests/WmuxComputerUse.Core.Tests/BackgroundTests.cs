@@ -580,6 +580,22 @@ public class BackgroundTests
     }
 
     [Fact]
+    public void ActionRefusalsAreExactlyWhatActionRefusalCanReturn()
+    {
+        // Every refusal ActionRefusal gives is one, and no target-state refusal is.
+        var requests = new BackgroundRequest[]
+        {
+            new(InputAction.Scroll), new(InputAction.Click, Button: 1), new(InputAction.Click, Modifiers: 1),
+            new(InputAction.Click, ClickCount: 2), new(InputAction.Hotkey, Modifiers: 1), new(InputAction.Type, Text: "a\tb"),
+        };
+        var fromAction = requests.Select(Background.ActionRefusal).ToHashSet();
+        foreach (var r in Enum.GetValues<BackgroundRefusal>())
+        {
+            Assert.Equal(fromAction.Contains(r), Background.IsActionRefusal(r));
+        }
+    }
+
+    [Fact]
     public void ExecuteNeverReportsAFallBackOnceTheClickWasPosted()
     {
         // Every stop after the posted click is UseResult for Next, so refuse

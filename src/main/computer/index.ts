@@ -102,20 +102,20 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
     proc = null;
     return had;
   };
+  const helperProcess = () => proc ??= new HelperProcess({
+    command,
+    verify: verifyHelper,
+    configure: () => ({ overlay: readComputerUseOverlay() }),
+    log: (m) => console.warn(m),
+  });
   return {
     async request(method, params) {
       if (!ready()) {
         reset();
         throw notReadyError(command);
       }
-      proc ??= new HelperProcess({
-        command,
-        verify: verifyHelper,
-        configure: () => ({ overlay: readComputerUseOverlay() }),
-        log: (m) => console.warn(m),
-      });
       try {
-        return await proc.request(method, params);
+        return await helperProcess().request(method, params);
       } catch (err) {
         if (err instanceof ComputerError && err.code === 'helper_unavailable' && SPAWN_FAILURE.test(err.message)) {
           console.warn(`[computer] ${err.message}`);
@@ -133,7 +133,16 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
       }
     },
     supports: (method) => proc?.supports(method),
-    defersForeground: () => proc?.defersForeground(),
+    // A helper that cannot start answers false here; the request that
+    // follows reports why, through the error mapping above.
+    defersForeground: async () => {
+      if (!ready()) return false;
+      try {
+        return await helperProcess().defersForeground();
+      } catch {
+        return false;
+      }
+    },
     reconfigure: async () => { await proc?.reconfigure(); },
     abort: (reason) => proc?.abort(reason),
     dispose: () => { reset(); },
