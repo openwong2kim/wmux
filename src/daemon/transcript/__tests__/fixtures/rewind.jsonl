@@ -1,0 +1,8 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","uuid":"u1","timestamp":"2026-10-31T01:00:00.000Z","message":{"role":"user","content":"first question"}}
+{"parentUuid":"u1","isSidechain":false,"type":"assistant","uuid":"a1","timestamp":"2026-10-31T01:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"first answer"}],"stop_reason":"end_turn"}}
+{"parentUuid":"a1","isSidechain":false,"type":"user","uuid":"u2","timestamp":"2026-10-31T01:00:02.000Z","message":{"role":"user","content":"abandoned question"}}
+{"parentUuid":"u2","isSidechain":false,"type":"assistant","uuid":"a2","timestamp":"2026-10-31T01:00:03.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}],"stop_reason":"tool_use"}}
+{"parentUuid":"a2","isSidechain":false,"type":"user","uuid":"r2","timestamp":"2026-10-31T01:00:04.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"out"}]}}
+{"parentUuid":"r2","isSidechain":false,"type":"assistant","uuid":"a3","timestamp":"2026-10-31T01:00:05.000Z","message":{"role":"assistant","content":[{"type":"text","text":"abandoned answer"}],"stop_reason":"end_turn"}}
+{"parentUuid":"a1","isSidechain":false,"type":"user","uuid":"u3","timestamp":"2026-10-31T01:01:00.000Z","message":{"role":"user","content":"new question"}}
+{"parentUuid":"u3","isSidechain":false,"type":"assistant","uuid":"a4","timestamp":"2026-10-31T01:01:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"new answer"}],"stop_reason":"end_turn"}}

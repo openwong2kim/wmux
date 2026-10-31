@@ -1188,3 +1188,57 @@ describe('TranscriptProjector — a WSL pane\'s transcript on its distro share',
     await vi.waitFor(() => expect(cleared).toHaveBeenCalledWith(third), { timeout: 10_000 });
   });
 });
+
+describe('TranscriptProjector — a Claude rewind (Esc Esc)', () => {
+  const texts = (events: readonly { kind: string; text?: string }[]) =>
+    events.filter((e) => e.kind === 'user_text' || e.kind === 'assistant_text').map((e) => e.text);
+  /** Writes the first `head` lines of a fixture; `rest()` appends the others. */
+  function staged(name: string, head: number): { file: string; rest: () => void } {
+    const lines = fs.readFileSync(path.join(FIXTURES, name), 'utf8').split('\n').filter(Boolean);
+    const file = path.join(harness.projects, name);
+    fs.writeFileSync(file, lines.slice(0, head).map((l) => l + '\n').join(''), 'utf8');
+    return { file, rest: () => fs.appendFileSync(file, lines.slice(head).map((l) => l + '\n').join(''), 'utf8') };
+  }
+
+  it('drops the abandoned branch once the sibling prompt lands: delta answers a reset snapshot', () => {
+    const { file, rest } = staged('rewind.jsonl', 6);
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const before = harness.projector.snapshot('pty-1')!;
+    expect(texts(before.events)).toEqual(['first question', 'first answer', 'abandoned question', 'abandoned answer']);
+
+    rest();
+    const after = harness.projector.delta('pty-1', before.cursor.tailOffset, { cursorFileSize: before.cursor.fileSize })!;
+    expect(after.reset).toBe(true);
+    expect(texts(after.events)).toEqual(['first question', 'first answer', 'new question', 'new answer']);
+    expect(texts(harness.projector.snapshot('pty-1')!.events)).toEqual(['first question', 'first answer', 'new question', 'new answer']);
+  });
+
+  it('pushes the rewind to a subscriber as a reset append', async () => {
+    const { file, rest } = staged('rewind.jsonl', 6);
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    harness.projector.subscribe('c1', 'pty-1');
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await waitFor(() => harness.appends.length > 0);
+
+    rest();
+    harness.projector.nudge('pty-1', 'agent.stop');
+    await waitFor(() => harness.appends.length > 1);
+    const last = harness.appends[harness.appends.length - 1].data;
+    expect(last.reset).toBe(true);
+    expect(texts(last.events)).toEqual(['first question', 'first answer', 'new question', 'new answer']);
+  });
+
+  it('keeps a chain across compact boundaries and parallel tool calls whole, and appends without a reset', () => {
+    const { file, rest } = staged('compact-chain.jsonl', 15);
+    harness.bindings.set('pty-1', binding({ transcriptPath: file }));
+    const before = harness.projector.snapshot('pty-1')!;
+    expect(texts(before.events)).toEqual(['run two things', 'both done', 'after the first compact', 'answer three', 'after the second compact', 'answer four']);
+    expect(before.events.filter((e) => e.kind === 'tool_use')).toHaveLength(2);
+    expect(before.events.filter((e) => e.kind === 'tool_result')).toHaveLength(2);
+
+    rest();
+    const after = harness.projector.delta('pty-1', before.cursor.tailOffset, { cursorFileSize: before.cursor.fileSize })!;
+    expect(after.reset).toBe(false);
+    expect(texts(after.events)).toEqual(['one more', 'answer five']);
+  });
+});

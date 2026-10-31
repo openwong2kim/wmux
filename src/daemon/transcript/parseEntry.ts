@@ -23,6 +23,7 @@
 
 import path from 'node:path';
 import { summarizeActivity } from '../../shared/activitySummary';
+import type { EntryLink } from './rewind';
 import type {
   AssistantTextEvent,
   CodeBlockRef,
@@ -64,6 +65,8 @@ export interface ParsedTranscriptLine {
   events: TurnEvent[];
   /** eventId → (CodeBlockRef.n → body text). */
   bodies: Map<string, Map<number, string>>;
+  /** Where a main-thread entry sits in the conversation tree; absent without a uuid. */
+  link?: EntryLink;
 }
 
 /** One raw JSONL line → 0..n TurnEvents. NEVER throws; unknown shapes → []. */
@@ -96,7 +99,32 @@ export function parseTranscriptLineDetailed(
     // Expected on the partial leading line of any mid-file seek.
     return empty;
   }
+  const parsed = parseEntryObject(entry, offsetHint);
+  const link = entryLink(entry, parsed.events);
+  return link ? { ...parsed, link } : parsed;
+}
 
+/**
+ * A main-thread entry's place in the conversation tree, for the rewind check
+ * (`rewind.ts`). Sidechain entries belong to a subagent's thread and never
+ * take part.
+ */
+function entryLink(entry: Record<string, unknown>, events: readonly TurnEvent[]): EntryLink | undefined {
+  const uuid = entry['uuid'];
+  if (typeof uuid !== 'string' || !uuid || entry['isSidechain'] === true) return undefined;
+  const parent = entry['parentUuid'];
+  const logical = entry['logicalParentUuid'];
+  return {
+    uuid,
+    ...(typeof parent === 'string' && parent ? { parentUuid: parent } : {}),
+    ...(typeof logical === 'string' && logical ? { logicalParentUuid: logical } : {}),
+    // A typed prompt: a `user` entry that reads as the operator's own message.
+    prompt: entry['type'] === 'user' && events.some((event) => event.kind === 'user_text'),
+  };
+}
+
+function parseEntryObject(entry: Record<string, unknown>, offsetHint: number): ParsedTranscriptLine {
+  const empty: ParsedTranscriptLine = { events: [], bodies: new Map() };
   const type = typeof entry['type'] === 'string' ? (entry['type'] as string) : '';
   const message = asObject(entry['message']);
   const role = typeof message?.['role'] === 'string' ? (message['role'] as string) : '';
