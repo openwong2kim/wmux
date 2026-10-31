@@ -134,6 +134,25 @@ describe('ProcessMonitor on the native process table', () => {
     monitor.unwatchAll();
   });
 
+  it('reads liveness only from the walk (no details), so a pid missing from the detailed join stays alive', async () => {
+    const { ProcessMonitor } = await load();
+    // The detailed (joined) table has lost pid 100; the walk still lists it.
+    native.processTable.mockImplementation(async (details: boolean) =>
+      details ? [] : [{ pid: 100, ppid: 1, name: 'pwsh.exe' }]);
+    const onDead = vi.fn();
+    const monitor = new ProcessMonitor(60_000, 60_000);
+    monitor.watch('s', 100, onDead);
+    await settle();
+    for (let i = 0; i < 3; i++) {
+      (monitor as unknown as { runBatchCheck(): void }).runBatchCheck();
+      await settle();
+    }
+    expect(await ProcessMonitor.isDefinitelyDead(100)).toBe(false);
+    expect(onDead).not.toHaveBeenCalled();
+    expect(native.processTable.mock.calls.every(([details]) => details === false)).toBe(true);
+    monitor.unwatchAll();
+  });
+
   it('confirms a death with a second snapshot', async () => {
     const { ProcessMonitor } = await load();
     let rows: Row[] = [{ pid: 100, ppid: 1, name: 'pwsh.exe' }];

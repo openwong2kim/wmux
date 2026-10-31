@@ -173,19 +173,20 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
                 created: None,
                 cmdline: None,
             };
+            // Only the detailed table joins the two reads and may drop a row.
+            // The liveness table (no details) keeps every Toolhelp row, so a
+            // lost join can never read as a death.
             let keep = !with_details
                 || row.pid == 0
                 || match &listed {
                     // Without the kernel list, the process handle alone dates the row.
                     None => read_details(&mut row),
-                    // The same process in both reads: same parent and image.
-                    Some(list) => match list.get(&row.pid) {
-                        Some(l) if l.ppid == row.ppid && l.name == row.name => {
-                            row.created = l.created;
+                    Some(list) => match listed_creation(&row, list) {
+                        Some(created) => {
+                            row.created = created;
                             read_details(&mut row)
                         }
-                        // Exited after the walk, or its pid now names another process.
-                        _ => false,
+                        None => false,
                     },
                 };
             if keep {
@@ -232,6 +233,15 @@ fn read_details(row: &mut ProcessRow) -> bool {
     }
     row.cmdline = command_line(process.0);
     true
+}
+
+/// The kernel list's creation time for a walked row, when both reads saw the
+/// same process (same pid, parent and image). None when the process exited
+/// after the walk or its pid now names another process.
+fn listed_creation(row: &ProcessRow, list: &HashMap<u32, Listed>) -> Option<Option<f64>> {
+    list.get(&row.pid)
+        .filter(|l| l.ppid == row.ppid && l.name == row.name)
+        .map(|l| l.created)
 }
 
 /// One process as SystemProcessInformation lists it.
@@ -458,6 +468,39 @@ mod tests {
         assert!(read_details(&mut row));
         assert!(from_table.is_some());
         assert_eq!(from_table, row.created);
+    }
+
+    #[test]
+    fn the_join_needs_the_same_pid_parent_and_image() {
+        let row = ProcessRow {
+            pid: 10,
+            ppid: 2,
+            name: "pwsh.exe".into(),
+            created: None,
+            cmdline: None,
+        };
+        let listed = |ppid: u32, name: &str| Listed {
+            ppid,
+            name: name.into(),
+            created: Some(5.0),
+        };
+        let one = |l: Listed| HashMap::from([(10, l)]);
+        assert_eq!(
+            listed_creation(&row, &one(listed(2, "pwsh.exe"))),
+            Some(Some(5.0))
+        );
+        assert_eq!(listed_creation(&row, &one(listed(3, "pwsh.exe"))), None);
+        assert_eq!(listed_creation(&row, &one(listed(2, "node.exe"))), None);
+        assert_eq!(listed_creation(&row, &HashMap::new()), None);
+    }
+
+    #[test]
+    fn the_liveness_table_keeps_every_walked_row() {
+        // Without details nothing is joined or dropped: the table is Toolhelp's.
+        let rows = snapshot(false).expect("snapshot");
+        assert!(rows.iter().any(|r| r.pid == 0));
+        assert!(rows.iter().any(|r| r.pid == 4));
+        assert!(rows.iter().any(|r| r.pid == std::process::id()));
     }
 
     #[test]
