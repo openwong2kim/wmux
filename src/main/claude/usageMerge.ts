@@ -61,8 +61,10 @@ export function mergeLiveWindow(
 /**
  * Merge a live sample into a snapshot. Returns `prev` (same reference) when
  * nothing observable changed, and null when there is no previous snapshot and
- * the sample does not carry both windows (a snapshot with a made-up 0% would
- * read as real) — the caller reports that as not applied.
+ * the sample does not carry both windows — the caller reports that as not
+ * applied. A sample cannot say a window is absent, only that it did not carry
+ * it, so a reading with one window (an Ultra plan has no 5h window) starts
+ * from HTTP; a window neither side has stays absent, never a made-up 0%.
  *
  * Scoped limits are per-week: they are kept while the weekly window stays the
  * same and dropped when the sample moves the weekly window on, so an older
@@ -74,20 +76,19 @@ export function mergeLive(
   nowMs: number,
 ): UsageSnapshot | null {
   const nowSec = Math.floor(nowMs / 1000);
-  const prevSession = prev ? { pct: prev.sessionPct, resetEpochSec: prev.sessionResetEpochSec } : null;
-  const prevWeekly = prev ? { pct: prev.weeklyPct, resetEpochSec: prev.weeklyResetEpochSec } : null;
+  const prevSession = prev?.sessionPct !== undefined ? { pct: prev.sessionPct, resetEpochSec: prev.sessionResetEpochSec ?? 0 } : null;
+  const prevWeekly = prev?.weeklyPct !== undefined ? { pct: prev.weeklyPct, resetEpochSec: prev.weeklyResetEpochSec ?? 0 } : null;
   const session = mergeLiveWindow(prevSession, update.session, nowSec);
   const weekly = mergeLiveWindow(prevWeekly, update.weekly, nowSec);
-  if (!session || !weekly) return prev;
+  if (!prev && (!session || !weekly)) return null;
+  if (!session && !weekly) return prev;
   if (prev && session === prevSession && weekly === prevWeekly) return prev;
   const snapshot: UsageSnapshot = {
-    sessionPct: session.pct,
-    sessionResetEpochSec: session.resetEpochSec,
-    weeklyPct: weekly.pct,
-    weeklyResetEpochSec: weekly.resetEpochSec,
+    ...(session ? { sessionPct: session.pct, sessionResetEpochSec: session.resetEpochSec } : {}),
+    ...(weekly ? { weeklyPct: weekly.pct, weeklyResetEpochSec: weekly.resetEpochSec } : {}),
     fetchedAtMs: nowMs,
   };
-  const sameWeek = prevWeekly !== null && weekly.resetEpochSec === prevWeekly.resetEpochSec;
+  const sameWeek = prevWeekly !== null && weekly !== null && weekly.resetEpochSec === prevWeekly.resetEpochSec;
   if (sameWeek && prev?.scoped && prev.scoped.length > 0) snapshot.scoped = prev.scoped;
   return snapshot;
 }

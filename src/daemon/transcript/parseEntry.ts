@@ -14,7 +14,8 @@
 // they map to here:
 //   user / assistant                → the conversation (see below)
 //   pr-link                         → meta (`pr_link`)
-//   system, last-prompt, mode, permission-mode, attachment,
+//   attachment (queued_command, commandMode prompt) → user_text
+//   system, last-prompt, mode, permission-mode, other attachments,
 //   file-history-snapshot, ai-title, queue-operation, api-request-blob
 //   (2.1.301), anything unknown → []
 //
@@ -23,6 +24,7 @@
 
 import path from 'node:path';
 import { summarizeActivity } from '../../shared/activitySummary';
+import type { EntryLink } from './rewind';
 import type {
   AssistantTextEvent,
   CodeBlockRef,
@@ -96,7 +98,43 @@ export function parseTranscriptLineDetailed(
     // Expected on the partial leading line of any mid-file seek.
     return empty;
   }
+  return parseEntryObject(entry, offsetHint);
+}
 
+/**
+ * A main-thread line's place in the conversation tree, for the rewind check
+ * (`rewind.ts`). Undefined for a line without a uuid and for a sidechain
+ * entry, which belongs to a subagent's thread and never takes part. NEVER
+ * throws.
+ */
+export function transcriptLineLink(line: string, offsetHint: number): EntryLink | undefined {
+  let entry: Record<string, unknown>;
+  try {
+    const parsed: unknown = JSON.parse(line.replace(/^\uFEFF/, '').trim());
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    entry = parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
+  }
+  const uuid = entry['uuid'];
+  if (typeof uuid !== 'string' || !uuid || entry['isSidechain'] === true) return undefined;
+  const parent = entry['parentUuid'];
+  const logical = entry['logicalParentUuid'];
+  const content = asObject(entry['message'])?.['content'];
+  const toolResult = Array.isArray(content) && content.some((block) => asObject(block)?.['type'] === 'tool_result');
+  return {
+    uuid,
+    ...(typeof parent === 'string' && parent ? { parentUuid: parent } : {}),
+    ...(typeof logical === 'string' && logical ? { logicalParentUuid: logical } : {}),
+    // A typed prompt: a `user` entry, not a tool result, that reads as the
+    // operator's own message.
+    prompt: entry['type'] === 'user' && !toolResult &&
+      parseEntryObject(entry, offsetHint).events.some((event) => event.kind === 'user_text'),
+  };
+}
+
+function parseEntryObject(entry: Record<string, unknown>, offsetHint: number): ParsedTranscriptLine {
+  const empty: ParsedTranscriptLine = { events: [], bodies: new Map() };
   const type = typeof entry['type'] === 'string' ? (entry['type'] as string) : '';
   const message = asObject(entry['message']);
   const role = typeof message?.['role'] === 'string' ? (message['role'] as string) : '';
@@ -118,8 +156,12 @@ export function parseTranscriptLineDetailed(
   if (type === 'attachment' && entry['isSidechain'] !== true) {
     const attachment = asObject(entry['attachment']);
     const prompt = attachment?.['prompt'];
-    if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt' && typeof prompt === 'string' && prompt.trim()) {
-      return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+    if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt') {
+      if (typeof prompt === 'string' && prompt.trim()) {
+        return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+      }
+      // With photos the prompt is content blocks (2.1.312), read as a user entry's.
+      if (Array.isArray(prompt)) return parseUserEntry(entry, prompt, baseId, ts, offsetHint, true);
     }
     return empty;
   }
@@ -169,6 +211,8 @@ function parseUserEntry(
   baseId: string,
   ts: number | undefined,
   offsetHint: number,
+  /** The operator's own words (a queued prompt): never read as a meta row, as its string form is not. */
+  typed = false,
 ): ParsedTranscriptLine {
   const empty: ParsedTranscriptLine = { events: [], bodies: new Map() };
 
@@ -217,7 +261,7 @@ function parseUserEntry(
   }
   // The source note of the image in the previous entry: an `isMeta` entry of
   // nothing but `[Image: source: …]` lines.
-  if (!hasImage && sourceTexts.length && !parts.length && !out.length && entry['isMeta'] === true) {
+  if (!typed && !hasImage && sourceTexts.length && !parts.length && !out.length && entry['isMeta'] === true) {
     return single({ ...metaEvent(baseId, ts, 'caveat', 'Image source'), images: images.slice(0, 8) }, empty);
   }
   // Without an image block the line is the user's own words.
@@ -225,12 +269,12 @@ function parseUserEntry(
   const prose = parts.join('\n').trim();
   // Claude Code records an ESC interrupt as a text block of its own. A typed
   // prompt is stored as a plain string, so the same words typed stay a message.
-  if (!hasImage && !out.length && /^\[Request interrupted by user(?: for tool use)?\]$/.test(prose)) {
+  if (!typed && !hasImage && !out.length && /^\[Request interrupted by user(?: for tool use)?\]$/.test(prose)) {
     return single(metaEvent(baseId, ts, 'turn_aborted', 'Interrupted'), empty);
   }
   // Only classify when there IS prose: a bare tool-result entry keeps its
   // previous shape (results only, no chip) even if it carries `isMeta`.
-  const meta = prose ? classifyMetaUser(entry, prose) : null;
+  const meta = prose && !typed ? classifyMetaUser(entry, prose) : null;
   if (meta) {
     out.push(metaEvent(`${baseId}#${out.length}`, ts, meta.subtype, meta.label));
   } else {

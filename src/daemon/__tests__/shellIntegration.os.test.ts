@@ -367,3 +367,57 @@ describe('PWSH_INIT — the wrapped prompt sees the real $? (#1267)', () => {
     expect(promptBody).not.toMatch(/Write-Error [^\n]*-ErrorAction SilentlyContinue/);
   });
 });
+
+// #2771 — the daemon reads a D with no integer exit code, and a C while a
+// command runs, as a running program's marks. The pwsh integration writes
+// neither for its own prompt.
+const POWERSHELL_EXE = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+const hasPowerShellExe = process.platform === 'win32' && fs.existsSync(POWERSHELL_EXE);
+
+/** Dot-sources PWSH_INIT (written as the installer writes it) in a fresh powershell.exe, then runs `script`. */
+function runPwshInit(script: string): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pwsh-init-'));
+  try {
+    const init = path.join(dir, 'init.ps1');
+    fs.writeFileSync(init, PWSH_INIT, { encoding: 'utf-8' });
+    const out = spawnSync(POWERSHELL_EXE, [
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-Command', `. '${init}'; ${script}`,
+    ], { encoding: 'utf-8', timeout: 30_000, env: { ...process.env, WMUX_SHELL_INTEGRATION: '1' } });
+    return out.stdout ?? '';
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('PWSH_INIT — its own marks always read as the shell\'s (#2771)', () => {
+  it.runIf(hasPowerShellExe)('D carries an integer even when $LASTEXITCODE is $null, $true or a string', () => {
+    const out = runPwshInit([
+      '$global:LASTEXITCODE = 5; $a = prompt',
+      '$global:LASTEXITCODE = $null; $b = prompt',
+      '$global:LASTEXITCODE = $true; $c = prompt',
+      '$global:LASTEXITCODE = \'x\'; $d = prompt',
+      '[Console]::Out.Write($a + $b + $c + $d)',
+    ].join('; '));
+    const bel = String.fromCharCode(0x07);
+    const codes = [...out.matchAll(new RegExp(`\\]133;D;([^${bel}]*)${bel}`, 'g'))].map((m) => m[1]);
+    // A non-integer falls back to $?, which the assignment before the prompt left true.
+    expect(codes).toEqual(['5', '0', '0', '0']);
+  }, 40_000);
+
+  it.runIf(hasPowerShellExe)('a line PSReadLine would continue (open brace or quote) is not complete', () => {
+    const lines = ['echo hi', 'if ($true) {', '\'\'\'open', '}'];
+    const out = runPwshInit(`[Console]::Out.Write((@(${lines.map((l) => `'${l.replace(/'/g, '\'\'')}'`).join(', ')}) | ForEach-Object { & $global:__wmux_line_complete $_ }) -join ',')`);
+    // `}` alone is a syntax error, not incomplete input: PSReadLine runs it.
+    expect(out).toBe('True,False,False,True');
+  }, 40_000);
+
+  it('the Enter handler writes C only for a line it completes, read before AcceptLine', () => {
+    const handler = PWSH_INIT.slice(PWSH_INIT.indexOf('Set-PSReadLineKeyHandler -Key Enter'));
+    const read = handler.indexOf('GetBufferState([ref]$line, [ref]$cursor)');
+    const accept = handler.indexOf('::AcceptLine()');
+    expect(read).toBeGreaterThan(0);
+    expect(accept).toBeGreaterThan(read);
+    expect(handler).toContain('if (& $global:__wmux_line_complete $line) { [Console]::Write([char]27 + \']133;C\' + [char]7) }');
+  });
+});

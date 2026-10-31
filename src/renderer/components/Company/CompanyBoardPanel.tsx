@@ -14,7 +14,7 @@ import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { rosterPrimaryLabel } from '../Sidebar/WorkspaceAgentRoster';
 import type { Task } from '../../../shared/types';
 import { useMoaDecisions, useWorkLinks } from '../FleetView/useFleetSources';
-import { buildFleetTickets, type FleetTicket } from '../FleetView/fleetTickets';
+import { buildFleetTickets, paneLiveIn, type FleetTicket } from '../FleetView/fleetTickets';
 import { isTerminalKindSurfaceType } from '../Pane/surfaceKinds';
 import { buildCompanyBoard, type BoardSeat } from './companyBoard';
 
@@ -49,7 +49,8 @@ function focusSeat(row: WorkspaceAgentRosterRow | undefined, surfaceId: string):
  */
 export default function CompanyBoardPanel({ workspaceId, isActive }: { workspaceId: string; isActive: boolean }) {
   const t = useT();
-  const workspace = useStore((s) => s.workspaces.find((w) => w.id === workspaceId));
+  const workspaces = useStore((s) => s.workspaces);
+  const workspace = workspaces.find((w) => w.id === workspaceId);
   const company = workspace?.company;
   const workspaceNames = useStore(useShallow((s) => Object.fromEntries(s.workspaces.map((w) => [w.id, w.name]))));
   const rosterSelector = useMemo(() => createWorkspaceAgentRosterSelector(workspaceId), [workspaceId]);
@@ -77,7 +78,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   );
   const board = useMemo(() => {
     // The log keeps the last ten finished jobs however old, not Fleet's last day.
-    const tickets = buildFleetTickets({ links, decisions, a2aTasks, now, recentMs: Infinity });
+    const tickets = buildFleetTickets({ links, decisions, a2aTasks, now, recentMs: Infinity, paneLive: paneLiveIn(workspaces) });
     return buildCompanyBoard({
       workspaceId,
       coordinatorPaneId: company?.coordinatorPaneId ?? null,
@@ -88,7 +89,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
       links,
       paneRole,
     });
-  }, [links, decisions, a2aTasks, now, workspaceId, company?.coordinatorPaneId, leaves, agentPaneIds, roster.rows, paneRole]);
+  }, [links, decisions, a2aTasks, now, workspaces, workspaceId, company?.coordinatorPaneId, leaves, agentPaneIds, roster.rows, paneRole]);
 
   const tagOf = (paneId: string): string => {
     const leaf = leaves.find((l) => l.id === paneId);
@@ -100,11 +101,22 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const seat = paneId ? board.seats.find((s) => s.paneId === paneId) : undefined;
     return seat ? seatTitle(seat) : '';
   };
-  // A job inside the company is placed by its seat, one handed out by the workspace it went to.
+  // A job inside the company is placed by its seat, one handed out by the
+  // workspace or other PC's pane it went to.
   const whereOf = (ticket: FleetTicket): string => (ticket.workspaceId === workspaceId
     ? seatName(ticket.paneId)
-    : workspaceNames[ticket.workspaceId] ?? t('fleet.ticket.unknownWorkspace'));
-  const stateWord = (ticket: FleetTicket) => t(`fleet.ticket.state.${ticket.state}`);
+    : workspaceNames[ticket.workspaceId] ?? ticket.workspaceName ?? t('fleet.ticket.unknownWorkspace'));
+  // A job that reported back waits on the pane that sent it: the CEO, a seat,
+  // or a workspace outside the company.
+  const reportedTo = (ticket: FleetTicket): string | undefined => {
+    const party = ticket.waitingOn;
+    if (!party) return undefined;
+    const name = party.workspaceId !== workspaceId
+      ? workspaceNames[party.workspaceId] ?? t('fleet.ticket.unknownWorkspace')
+      : party.paneId === company?.coordinatorPaneId ? t('company.ceo') : seatName(party.paneId) || workspace?.name || '';
+    return t('company.board.reportedTo', { name });
+  };
+  const stateWord = (ticket: FleetTicket) => reportedTo(ticket) ?? t(`fleet.ticket.state.${ticket.state}`);
   const ticketTitle = (ticket: FleetTicket) => ticket.title || t('fleet.ticket.untitled');
 
   const ticketRow = (ticket: FleetTicket, where: string, detail?: string) => (
@@ -155,6 +167,9 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
               data-board-now={ticket.id}
             >
               {ticketTitle(ticket)}
+              {ticket.waitingOn && (
+                <span className="text-[11px] text-[var(--text-muted)]" data-board-reported>{` · ${reportedTo(ticket)}`}</span>
+              )}
             </span>
           ))}
           {seat.now.length > NOW_SHOWN && (

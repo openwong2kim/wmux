@@ -1217,7 +1217,9 @@ export interface TaskStatus {
 export const VALID_TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
   submitted: ['working', 'canceled'],
   working: ['completed', 'failed', 'canceled', 'input-required'],
-  'input-required': ['working', 'canceled'],
+  // -> completed: a report is accepted as done (a company task's coordinator
+  // marks a seat's report done).
+  'input-required': ['working', 'completed', 'canceled'],
   completed: [],
   failed: [],
   canceled: [],

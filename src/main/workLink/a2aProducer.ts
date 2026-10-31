@@ -3,9 +3,10 @@
 // handlers after the renderer has delivered, and fire-and-forget: a store
 // failure never blocks or fails a delivery.
 
-import { isTaskState, type TaskState } from '../../shared/types';
+import { isTaskState, TERMINAL_STATES, type TaskState } from '../../shared/types';
 import { getWorkLinkStore, type WorkLinkStore, type WorkLinkUpsert } from './workLinkStore';
-import { workLinkResultFromTask } from '../../shared/workLink';
+import { workLinkResultFromTask, type WorkLink, type WorkLinkParty } from '../../shared/workLink';
+import { isRemoteWorkspaceId, remoteWorkspaceId } from '../../shared/a2aRemoteDelivery';
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   !!v && typeof v === 'object' && !Array.isArray(v);
@@ -43,6 +44,32 @@ export function workLinkFromSentTask(
     a2aState: stateOfTask(task) ?? 'submitted',
     owner: { workspaceId: ownerWs, ...(toPane ? { paneId: toPane } : {}) },
     ...(fromWs ? { requester: { workspaceId: fromWs, ...(fromPane ? { paneId: fromPane } : {}) } } : {}),
+    ...(title ? { title } : {}),
+  };
+}
+
+/**
+ * The link for a task sent to a pane on another PC. The send's reply carries
+ * no task, so the link is built from what the sender resolved: the link the
+ * task went out on, its alias, and the verified sender. With no title, the
+ * message's first 100 characters name it, as the daemon titles the task.
+ */
+export function workLinkFromRemoteSend(input: {
+  taskId: string;
+  linkId: string;
+  alias: string;
+  requester: WorkLinkParty;
+  title: string;
+  message: string;
+  fromCommander: boolean;
+}): WorkLinkUpsert {
+  const title = input.title || input.message.slice(0, 100);
+  return {
+    origin: input.fromCommander ? 'moa' : 'manual',
+    a2aTaskId: input.taskId,
+    a2aState: 'submitted',
+    owner: { workspaceId: remoteWorkspaceId(input.linkId), ...(input.alias ? { name: input.alias } : {}) },
+    requester: input.requester,
     ...(title ? { title } : {}),
   };
 }
@@ -112,4 +139,61 @@ export function recordTaskState(taskId: unknown, state: unknown, store?: WorkLin
   } catch {
     return Promise.resolve();
   }
+}
+
+/** The daemon's `a2a.task.query`. */
+type DaemonTaskQuery = (params: Record<string, unknown>) => Promise<unknown>;
+
+/** The daemon's tasks in a query reply, or null when it gave no answer. */
+function queriedTasks(res: unknown): unknown[] | null {
+  return isRecord(res) && res.ok === true && Array.isArray(res.tasks) ? res.tasks : null;
+}
+
+/**
+ * Bring each open link of work sent to a pane on another PC in line with the
+ * daemon's copy of its task. That copy moves in ways main is not told about
+ * one by one: the peer's states, the peer refusing the task, the link being
+ * revoked or broken, a hold that expired. A link changes only when the state
+ * differs, so a run with nothing new writes nothing. The daemon drops an
+ * ended task after a while, so a live link whose task is gone ended unseen
+ * here: it is closed. Never rejects.
+ */
+export async function reconcileRemoteLinks(query: DaemonTaskQuery, store?: WorkLinkStore): Promise<void> {
+  try {
+    const s = store ?? getWorkLinkStore();
+    const open = s.list({}).filter((l) => !!l.a2aTaskId && isRemoteWorkspaceId(l.owner.workspaceId)
+      && !(l.a2aState && TERMINAL_STATES.includes(l.a2aState)) && l.state !== 'abandoned');
+    for (const link of open) {
+      try {
+        // eslint-disable-next-line no-await-in-loop -- a few links, one daemon call each
+        await reconcileRemoteLink(link, query, s);
+      } catch {
+        // this link is tried again on the next pull; the others go on
+      }
+    }
+  } catch {
+    // bookkeeping only: the next pull tries again
+  }
+}
+
+/** One link of reconcileRemoteLinks. A query with no answer leaves the link for the next pull. */
+async function reconcileRemoteLink(link: WorkLink, query: DaemonTaskQuery, s: WorkLinkStore): Promise<void> {
+  const at = { workspaceId: link.owner.workspaceId, taskId: link.a2aTaskId };
+  const tasks = queriedTasks(await query({ ...at, view: 'state' }));
+  if (!tasks) return;
+  if (tasks.length === 0) {
+    await s.setState(link.id, 'abandoned');
+    return;
+  }
+  const state = stateOfTask(tasks[0]);
+  if (!state || state === link.a2aState) return;
+  let task: unknown = tasks[0];
+  if (state === 'completed' || state === 'failed') {
+    // The report is on the full task. An ended link is never read again, so
+    // without an answer it waits for the next pull rather than end reportless.
+    const full = queriedTasks(await query({ ...at, view: 'page' }));
+    if (!full) return;
+    task = full[0] ?? task;
+  }
+  await recordTaskState(link.a2aTaskId, state, s, task);
 }

@@ -1,0 +1,87 @@
+name: wmux-server artifact
+
+# wmux-server, the headless Linux runtime "Add PC over SSH" installs: built per
+# arch inside a glibc 2.28 image, then proven on a clean Debian 11 host on the
+# Rust terminal engine. release.yml calls this for every release and rehearsal;
+# a pull request that changes how the artifact is built, packaged or started
+# runs it too, so a release tag is not the first run of such a change. The
+# daemon's own behaviour on the rust engine is tested on pull requests by
+# rust-engine-daemon.yml.
+on:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'scripts/build-server-artifact.mjs'
+      - 'scripts/build-server-artifact-container.sh'
+      - 'scripts/prove-server-artifact.mjs'
+      - 'scripts/prove-server-artifact.sh'
+      - 'scripts/build-native-terminal.mjs'
+      - 'scripts/lib/native-terminal-targets.mjs'
+      - 'scripts/verify-native-terminal-package.cjs'
+      - 'scripts/generate-rust-unicode11.mjs'
+      - 'core/wmux-term/**'
+      - 'src/shared/nativeTerminalCore.ts'
+      - 'src/shared/terminalCoreSettings.ts'
+      - 'src/shared/daemon/daemonLauncherCore.ts'
+      - 'src/cli/commands/daemon.ts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/server-artifact.yml'
+      - '.github/workflows/release.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  # node-pty and the terminal core are native, so each arch builds on its own
+  # runner, never cross-built, inside a glibc 2.28 image, so the artifact also
+  # runs on Ubuntu 20.04, Debian 11 and RHEL 8.
+  server:
+    name: Build wmux-server (linux-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    # A hung download, build or daemon start fails here, not after GitHub's
+    # 6 hours, with every packaging job of a release waiting on it.
+    timeout-minutes: 60
+    strategy:
+      # A failed leg blocks the release either way; keeping the other one
+      # means "Re-run failed jobs" only redoes that leg.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # Only fetches and checks the pinned Node on the runner; everything else
+      # runs in the container on that Node.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      # In a manylinux_2_28 image pinned by digest: `npm ci` (compiling
+      # node-pty against glibc 2.28), the Rust terminal core, the bundles,
+      # staging, a real PTY on the staged Node through node-pty and through the
+      # terminal core, then the tarball. Fails if anything needs glibc > 2.28.
+      - name: Build the server artifact
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/build-server-artifact-container.sh "$ARCH" out/server
+
+      # The tarball as shipped, extracted into a fresh home on Debian 11 and
+      # started through its own CLI with the rust engine picked in
+      # ~/.wmux/terminal-core.json: the daemon must run a shell on it.
+      - name: Prove the artifact on the rust engine
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: bash scripts/prove-server-artifact.sh "$ARCH" out/server
+
+      - name: Upload the server artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: wmux-server-${{ matrix.arch }}
+          path: out/server/
+          if-no-files-found: error

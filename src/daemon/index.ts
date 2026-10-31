@@ -311,6 +311,7 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { agentStatesFor } from '../shared/agentStateBatch';
+import { parseCompanySeat } from '../shared/company';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { createChatV2Host } from './chat/v2/host';
 import { registerChatV2Rpc } from './chat/v2/rpc';
@@ -7218,8 +7219,10 @@ function registerRpcHandlers(
     // state machine as any transition, with a reason (evidence.summary).
     if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
     // Only the app's main process reads the pane tree; take the list from it
-    // alone. Anything else leaves it unknown (no relaxation).
-    const livePaneIds = pipeServer.isFirstParty(ctx.clientId) ? normalizeLivePaneIds(p.livePaneIds) : undefined;
+    // alone. Anything else leaves it unknown (no relaxation). The same goes
+    // for the other fields main sets (trustedLane, callerCompanySeat).
+    const firstParty = pipeServer.isFirstParty(ctx.clientId);
+    const livePaneIds = firstParty ? normalizeLivePaneIds(p.livePaneIds) : undefined;
     let message: Message | undefined;
     try {
       message = statusMessageFromWire(p.message, randomUUID);
@@ -7239,7 +7242,10 @@ function registerRpcHandlers(
       // can only narrow the workspace-level authz, never widen it.
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
       ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
-      ...(p.trustedLane === true ? { trustedLane: true } : {}),
+      ...(firstParty && p.trustedLane === true ? { trustedLane: true } : {}),
+      // Main's read of the caller's pane (same read as callerPaneId): its seat
+      // in its workspace's company, which decides who marks a company task done.
+      ...(firstParty && parseCompanySeat(p.callerCompanySeat) ? { callerCompanySeat: parseCompanySeat(p.callerCompanySeat) } : {}),
       // #1598: main's read of the caller workspace's panes (same read as
       // callerPaneId); lets a verified pane adopt a task whose pane is gone.
       ...(livePaneIds ? { livePaneIds } : {}),
@@ -7255,7 +7261,7 @@ function registerRpcHandlers(
     return moved;
   });
 
-  pipeServer.onRpc('a2a.task.cancel', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.cancel', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.cancel: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
     const taskId = typeof p.taskId === 'string' ? p.taskId : '';
@@ -7265,7 +7271,8 @@ function registerRpcHandlers(
       taskId,
       callerWorkspaceId: workspaceId,
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerPaneId: p.callerPaneId } : {}),
-      ...(p.trustedLane === true ? { trustedLane: true } : {}),
+      // Main sets this, as on a2a.task.update.
+      ...(pipeServer.isFirstParty(ctx.clientId) && p.trustedLane === true ? { trustedLane: true } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });
     if (canceled.ok && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);

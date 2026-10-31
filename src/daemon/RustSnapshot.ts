@@ -5,14 +5,18 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { nativeCorePath, type NativeFrozenRing } from '../shared/nativeTerminalCore';
 import type { SnapshotRequest, SnapshotOutcome, TextSnapshotOutcome } from './HeadlessSnapshot';
-import { PartialSequenceTracker, MarginTracker, CursorVisibilityTracker, incompleteUtf8SuffixLength } from './util/ansiStreamScan';
+import { incompleteUtf8SuffixLength } from './util/ansiStreamScan';
 
 interface NativeTerminal {
   feed(bytes: Uint8Array): void;
+  /** ANSI feed; true once the snapshot is refused (stop feeding). */
+  feedXterm(bytes: Uint8Array, requestedScrollback: number): boolean;
   feedFrozen(source: NativeFrozenRing, start: number, end: number): void;
   resize(cols: number, rows: number): void;
   textSnapshot(undimmed: boolean): Omit<Extract<TextSnapshotOutcome, { ok: true }>, 'ok' | 'bytesIn' | 'durationMs'>;
-  ansiSnapshot(): string;
+  /** Payload with modes, cursor visibility and pending input tail; throws
+   * `margins`, `partial-tail-overflow` or an `unsupported-*` refusal. */
+  ansiSnapshot(requestedScrollback?: number): Buffer;
   dispose(): void;
 }
 interface NativeModule {
@@ -35,28 +39,41 @@ function load(): NativeModule {
   return cached.module;
 }
 
+/** NativeTerminal refuses a grid above four million cells, history included. */
+const NATIVE_CELL_LIMIT = 4_000_000;
+/** The most history rows the native grid can hold at every size the request replays. */
+export function ansiScrollbackCap(req: Pick<SnapshotRequest, 'cols' | 'rows' | 'geometry'>): number {
+  const sizes = [req, ...(req.geometry ? [req.geometry.start, ...req.geometry.changes] : [])];
+  return Math.min(...sizes.map(({ cols, rows }) => Math.floor(NATIVE_CELL_LIMIT / Math.max(1, cols)) - rows));
+}
+
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi'): Promise<SnapshotOutcome>;
 export function generateRustSnapshot(req: SnapshotRequest, kind: 'text'): Promise<TextSnapshotOutcome>;
 export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 'text'): Promise<SnapshotOutcome | TextSnapshotOutcome> {
   const started = performance.now();
   let term: NativeTerminal | undefined;
   try {
-    const scrollback = Number.isFinite(req.scrollback ?? 5000) ? Math.max(0, Math.min(100000, Math.floor(req.scrollback ?? 5000))) : 0;
+    const requested = Number.isFinite(req.scrollback ?? 5000) ? Math.max(0, Math.min(100000, Math.floor(req.scrollback ?? 5000))) : 0;
     let cols = req.geometry?.start.cols ?? req.cols;
     let rows = req.geometry?.start.rows ?? req.rows;
+    // An attach asks for 100k rows of history. The native grid allocates rows
+    // only as output fills them, so cap it at the grid's cell limit for every
+    // recorded size; the snapshot refuses a history that reached the cap.
+    const scrollback = kind === 'ansi' ? Math.min(requested, ansiScrollbackCap(req)) : requested;
     const native = load();
-    if (kind === 'ansi' && !native.nativeCoreCapabilities?.().includes('ansi-v2')) {
+    if (kind === 'ansi' && !native.nativeCoreCapabilities?.().includes('ansi-v3')) {
       throw new Error('Native ANSI capability missing; rebuild the native-core module');
     }
     const nativeTerminal = new native.NativeTerminal(cols, rows, scrollback);
     term = nativeTerminal;
-    const partial = new PartialSequenceTracker();
-    const margins = new MarginTracker();
-    const cursor = new CursorVisibilityTracker();
     let carry = Buffer.alloc(0);
     let bytesIn = 0;
+    // Set once the native terminal refuses the ANSI snapshot: parsing on
+    // would only delay the xterm fallback.
+    let refused = false;
     const feed = async (raw: Buffer): Promise<boolean> => {
       bytesIn += raw.length;
+      if (refused) return true;
       const data = carry.length ? Buffer.concat([carry, raw]) : raw;
       carry = Buffer.alloc(0);
       for (let offset = 0; offset < data.length;) {
@@ -66,9 +83,10 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
         if (end === data.length) { carry = Buffer.from(data.subarray(end - pending)); offset = end; }
         else offset = end - pending;
         if (bytes.length) {
-          const text = bytes.toString('utf8');
-          partial.feed(text); margins.feed(text); cursor.feed(text);
-          nativeTerminal.feed(bytes);
+          // The ANSI feed also tracks margins, cursor visibility and the
+          // pending tail natively, as ansiStreamScan does for xterm.
+          if (kind !== 'ansi') nativeTerminal.feed(bytes);
+          else if (nativeTerminal.feedXterm(bytes, requested)) { refused = true; return true; }
           await new Promise<void>(resolve => setImmediate(resolve));
         }
         if (performance.now() - started > (req.budgetMs ?? 4000)) return false;
@@ -116,11 +134,16 @@ export async function generateRustSnapshot(req: SnapshotRequest, kind: 'ansi' | 
       for (const chunk of chunks) if (!(await feed(chunk))) return { ok: false, reason: 'budget' };
     }
     if (kind === 'text') return { ok: true, ...term.textSnapshot(req.undimmed ?? false), bytesIn, durationMs: performance.now() - started };
-    if (margins.active) return { ok: false, reason: 'margins' };
-    const tail = partial.isPending ? partial.pendingTail : '';
-    if (tail === null) return { ok: false, reason: 'partial-tail-overflow' };
-    const payload = Buffer.concat([Buffer.from(term.ansiSnapshot() + (cursor.hidden ? '\x1b[?25l' : '\x1b[?25h') + tail), carry]);
-    return { ok: true, payload, bytesIn, durationMs: performance.now() - started };
+    let core: Buffer;
+    try {
+      core = term.ansiSnapshot(requested); // A refusal set while feeding throws here.
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      if (detail === 'margins' || detail === 'partial-tail-overflow') return { ok: false, reason: detail };
+      throw err;
+    }
+    // An incomplete UTF-8 character at the end goes out raw, as on xterm.
+    return { ok: true, payload: Buffer.concat([core, carry]), bytesIn, durationMs: performance.now() - started };
   } catch (err) {
     return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
   } finally { term?.dispose(); }

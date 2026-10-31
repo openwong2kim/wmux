@@ -88,6 +88,9 @@ impl Default for PtySize {
 pub trait MasterPty: Downcast + Send {
     /// Clear the Windows pseudo-console; no-op for Unix terminals.
     fn clear(&self) {}
+    /// Make the top-level window `hwnd` the owner of the Windows pseudo-console's window;
+    /// false where that is not supported (Unix, a ConPTY without the call).
+    fn set_parent_window(&self, _hwnd: isize) -> bool { false }
     /// Inform the kernel and thus the child process that the window resized.
     /// It will update the winsize information maintained by the kernel,
     /// and generate a signal for the child to notice and update its state.

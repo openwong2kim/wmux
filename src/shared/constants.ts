@@ -463,6 +463,8 @@ export const IPC = {
   WORK_LINK_LIST: 'workLink:list',
   WORK_LINK_GET: 'workLink:get',
   WORK_LINK_CHANGED: 'workLink:changed',
+  // Company presets: the launch line (and brief file) of each seat.
+  COMPANY_SEAT_LAUNCHES: 'company:seatLaunches',
   // Moa's track record (src/shared/trackRecord.ts): the weekly retro card and
   // its schedule. The counts themselves are main's and Moa's, not the renderer's.
   TRACK_RECORD_RETRO_GET: 'trackRecord:retro:get',

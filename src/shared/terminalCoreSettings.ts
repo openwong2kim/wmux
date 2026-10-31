@@ -27,14 +27,14 @@ export function terminalCoreSettingsPath(): string {
   return path.join(os.homedir(), `.wmux${dataSuffix()}`, 'terminal-core.json');
 }
 
-/** The engine when no valid choice is saved: Rust on Windows when this build
- * ships a loadable Rust module (it measured flatter memory and no worse latency
- * than Node there), Node everywhere else. */
+/** The engine when no valid choice is saved: Rust on Windows and macOS when
+ * this build ships a loadable Rust module (it measured flatter memory and no
+ * worse latency than Node there), Node on Linux. */
 export function defaultTerminalEngine(
   platform: NodeJS.Platform = process.platform,
   rustAvailable: () => boolean = rustTerminalCoreAvailable,
 ): TerminalEngine {
-  return platform === 'win32' && rustAvailable() ? 'rust' : 'node';
+  return (platform === 'win32' || platform === 'darwin') && rustAvailable() ? 'rust' : 'node';
 }
 
 export function readTerminalEngine(
@@ -60,9 +60,11 @@ let startupEngine: TerminalEngine | undefined;
  * change a live host's PTY, buffer or snapshot backend. Environment flags keep
  * their explicit precedence and are not injected into child daemon launches. */
 export function terminalCoreSelection(): TerminalEngine {
-  startupEngine ??= readTerminalEngine();
+  // An override decides alone: forcing node must not load the native module
+  // just to probe the default.
   const override = process.env.WMUX_TERMINAL_CORE;
-  return override !== undefined ? (override === 'rust' ? 'rust' : 'node') : startupEngine;
+  if (override !== undefined) return override === 'rust' ? 'rust' : 'node';
+  return startupEngine ??= readTerminalEngine();
 }
 
 export function rustTerminalCoreAvailable(): boolean {

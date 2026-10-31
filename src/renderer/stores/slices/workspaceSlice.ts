@@ -11,6 +11,7 @@ import type { A2aRemoteSpawnedBy } from '../../../shared/a2aSpawn';
 import { parseRemoteSpawnedBy, type RemoteSpawnedWorkspace } from '../../utils/remoteSpawnedBy';
 import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
+import { companyPresetTree, companySeatsError, type CompanyWorkspaceInput } from '../../../shared/companyPreset';
 import { setLocale as i18nSetLocale, t as i18nT, detectSupportedLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState, extractLayout, buildPaneFromLayout, siteGuidesAutoEnablePatch } from './uiSlice';
@@ -273,6 +274,14 @@ export interface WorkspaceSlice {
   addWorkspace: (name?: string, profile?: WorkspaceProfile, requestedId?: string) => void;
   addWorkspaceWithPreset: (presetId: string, name?: string) => void;
   /**
+   * A company workspace from a preset (shared/companyPreset.ts): a pane per
+   * seat in the preset layout, each seeded with its name, what it owns and its
+   * launch line, and the CEO seat set before any agent starts. The seeds land
+   * in the same update as the tree, so the pane funnel never sees a seat
+   * without its seed. False when the input is not a valid company.
+   */
+  addCompanyWorkspace: (input: CompanyWorkspaceInput) => boolean;
+  /**
    * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
    * cleared ptyIds → new panes spawn their own PTYs) and its PROFILE (env +
    * startup command, re-normalized through the save-boundary secret policy).
@@ -514,6 +523,49 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (state.sidebarNewAt) state.sidebarNewAt[ws.id] = Date.now();
       activateLocalWorkspace(state, ws.id);
     }),
+
+    addCompanyWorkspace: (input) => {
+      if (companySeatsError(input.seats, input.ceo, { made: true }) || get().workspaces.some((w: Workspace) => w.id === input.id)) return false;
+      set((state: StoreState) => {
+        const { root, leaves } = companyPresetTree(input.seats.length);
+        // The CEO takes the left pane; the other seats fill the rest in order.
+        const order = [input.ceo, ...input.seats.map((_, i) => i).filter((i) => i !== input.ceo)];
+        const leafOf = (seat: number) => leaves[order.indexOf(seat)];
+        const company = parseWorkspaceCompany({
+          v: 1,
+          id: generateId('co'),
+          coordinatorPaneId: leafOf(input.ceo).id,
+          mission: input.mission?.trim(),
+          standingOrders: input.standingOrders?.trim(),
+        });
+        const wsOrdinal = state.nextWorkspaceOrdinal ?? 1;
+        const ws: Workspace = {
+          id: input.id,
+          name: input.name,
+          rootPane: root,
+          activePaneId: leafOf(input.ceo).id,
+          wsOrdinal,
+          nextPaneOrdinal: assignPaneOrdinals(root, 1),
+          ...(input.cwd ? { profile: { startupCwd: input.cwd } } : {}),
+          ...(company ? { company } : {}),
+        };
+        input.seats.forEach((seat, i) => {
+          const owns = seat.owns.trim();
+          const cwd = seat.cwd ?? input.cwd;
+          state.projectPaneSeed[leafOf(i).id] = {
+            label: seat.label,
+            ...(seat.command ? { command: seat.command } : {}),
+            ...(cwd ? { cwd } : {}),
+            ...(owns ? { role: owns } : {}),
+          };
+        });
+        state.nextWorkspaceOrdinal = wsOrdinal + 1;
+        state.workspaces.push(ws);
+        if (state.sidebarNewAt) state.sidebarNewAt[ws.id] = Date.now();
+        activateLocalWorkspace(state, ws.id);
+      });
+      return true;
+    },
 
     // #1011 — Active → Archived → Deleted. Archiving snapshots the
     // configuration, then delegates the teardown to removeWorkspace so every

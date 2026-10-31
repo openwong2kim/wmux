@@ -61,6 +61,8 @@ export interface RemoteA2aBridgeDeps {
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
   /** Subscribe to daemon broadcasts; returns an unsubscribe. */
   onDaemonEvent: (listener: (event: { type?: unknown; [key: string]: unknown }) => void) => () => void;
+  /** Runs after every pull that reached the daemon; never overlaps itself. */
+  afterPull?: () => Promise<void>;
   backstopMs?: number;
   now?: () => number;
   log?: (level: 'info' | 'warn', msg: string) => void;
@@ -240,6 +242,7 @@ export class RemoteA2aBridge {
       });
       this.working.add(run);
     }
+    if (!this.stopped) await this.deps.afterPull?.().catch(() => undefined);
   }
 
   /** Hand one unit to the renderer and record the outcome. */

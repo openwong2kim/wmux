@@ -1,7 +1,7 @@
 name: Native terminal core
 on:
   pull_request:
-    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/native-interpreter-verify.ts', 'bench/fixtures/**', 'scripts/*native*', 'scripts/*rust*', 'scripts/__tests__/generateRustUnicode11.os.test.mjs', 'scripts/__tests__/nativeTerminalPackage.os.test.mjs', '.github/workflows/release.yml', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml', '.github/workflows/rust-engine-daemon.yml', 'vitest.rust-engine.config.ts', 'src/test-utils/requireRustEngine.ts']
+    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/native-interpreter-verify.ts', 'bench/fixtures/**', 'scripts/*native*', 'scripts/lib/native-terminal-targets.mjs', 'scripts/*rust*', 'scripts/__tests__/generateRustUnicode11.os.test.mjs', 'scripts/__tests__/nativeTerminalPackage.os.test.mjs', '.github/workflows/release.yml', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml', '.github/workflows/rust-engine-daemon.yml', 'vitest.rust-engine.config.ts', 'src/test-utils/requireRustEngine.ts']
   workflow_dispatch:
     inputs:
       soak:

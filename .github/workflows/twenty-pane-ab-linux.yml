@@ -1,0 +1,138 @@
+name: Twenty-pane engine A/B (Linux)
+
+# The Linux terminal engine A/B (docs/performance/twenty-panes.md, "Engine
+# A/B"): one packaged build with the Rust terminal core, then
+# scripts/twenty-pane-stability.mjs with the same flags on node and then on
+# rust, on the same runner, under Xvfb. Each run must complete on the engine it
+# asked for (scripts/twenty-pane-ab-check.mjs); both output directories are
+# uploaded. Started by hand: at the default 120 minutes a run it takes about
+# 4.5 hours.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes each engine runs after its setup (1 to 140, so both fit the job's timeout)
+        type: number
+        required: true
+        default: 120
+
+permissions:
+  contents: read
+
+jobs:
+  ab:
+    name: Engine A/B (ubuntu-22.04)
+    runs-on: ubuntu-22.04
+    # Two runs of at most 140 minutes, their setup and teardown, and the build.
+    timeout-minutes: 330
+    env:
+      MINUTES: ${{ inputs.minutes }}
+      APP: out/wmux-linux-x64/wmux
+      OUT: out/twenty-pane-stability
+    steps:
+      - name: Check the run length
+        run: |
+          if ! [[ "$MINUTES" =~ ^[0-9]+$ ]] || (( MINUTES < 1 || MINUTES > 140 )); then
+            echo "::error::minutes must be a whole number from 1 to 140, not '$MINUTES': two runs must fit the 330-minute timeout"
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      # libxss1 for Electron, build-essential for node-pty, xvfb for a display;
+      # the third-party sources and the retry as in ci-cross-platform-baseline.yml.
+      - name: Install Linux dependencies
+        run: |
+          set -euo pipefail
+          apt_retry() {
+            local attempt
+            for attempt in 1 2 3; do
+              if sudo apt-get -o Acquire::Retries=3 "$@"; then
+                return 0
+              fi
+              if [ "$attempt" -lt 3 ]; then
+                echo "apt-get $* failed (attempt ${attempt}/3); retrying after $((attempt * 15))s"
+                sleep $((attempt * 15))
+              fi
+            done
+            echo "apt-get $* failed after 3 attempts" >&2
+            return 1
+          }
+          sudo bash -c 'grep -rlE "packages\.microsoft\.com|dl\.google\.com" /etc/apt/sources.list.d/ 2>/dev/null | xargs -r rm -f'
+          apt_retry update
+          apt_retry install -y build-essential libxss1 xvfb
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal
+
+      - name: Build native terminal module
+        run: npm run build:terminal-core
+
+      # As the release's Linux job packages it; forge checks the copied module
+      # and runs a PTY with the packaged executable.
+      - name: Package
+        env:
+          WMUX_PACKAGE_TERMINAL_CORE: '1'
+        run: npm run package
+
+      # The .deb installs chrome-sandbox setuid root; give the packaged copy
+      # the same, so the app runs sandboxed as an installed one does.
+      - name: Set up the Chromium sandbox helper
+        run: |
+          sudo chown root:root out/wmux-linux-x64/chrome-sandbox
+          sudo chmod 4755 out/wmux-linux-x64/chrome-sandbox
+
+      - name: Runner
+        run: |
+          {
+            echo "## Twenty-pane engine A/B (Linux), ${MINUTES} min a run"
+            echo
+            echo "\`$(nproc)\` CPUs, \`$(free -m | awk '/^Mem:/ {print $2}')\` MiB RAM, $(lsb_release -ds)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run on node
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' node scripts/twenty-pane-stability.mjs --app "$APP" --minutes "$MINUTES" --claude 0 --engine node --out "$OUT/ab-node"
+
+      # Also after a failed run, to say why; the rust run still waits on a pass.
+      - name: Check the node run
+        if: ${{ !cancelled() }}
+        run: node scripts/twenty-pane-ab-check.mjs "$OUT/ab-node" node
+
+      # The check above failed the job unless the node instance was torn down
+      # cleanly; the doc's minute between runs lets the OS settle on top.
+      - name: Wait between runs
+        run: sleep 60
+
+      - name: Run on rust
+        run: xvfb-run -a -s '-screen 0 1920x1080x24' node scripts/twenty-pane-stability.mjs --app "$APP" --minutes "$MINUTES" --claude 0 --engine rust --out "$OUT/ab-rust"
+
+      - name: Check the rust run
+        if: ${{ !cancelled() }}
+        run: node scripts/twenty-pane-ab-check.mjs "$OUT/ab-rust" rust
+
+      - name: A/B table
+        if: ${{ !cancelled() }}
+        run: node scripts/twenty-pane-ab-check.mjs --table "$OUT/ab-node" "$OUT/ab-rust"
+
+      - name: Upload the runs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: twenty-pane-ab-linux
+          path: |
+            out/twenty-pane-stability/ab-node/
+            out/twenty-pane-stability/ab-rust/
+          if-no-files-found: warn
+          retention-days: 30

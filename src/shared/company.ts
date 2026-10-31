@@ -5,7 +5,7 @@
 //
 // Shared by the renderer (which resolves the target pane and creates the task)
 // and the daemon (which holds the task log), so the two can never disagree
-// about who may assign or cancel company work.
+// about who may assign, cancel or mark done company work.
 //
 // The scope rule is ADVISORY. Pane identity is the caller's senderPtyId, which
 // a same-user process can forge (the #113 ceiling), so these checks are a brake
@@ -142,10 +142,11 @@ export type CompanySendDecision =
 /**
  * May this new task go to the resolved receiver pane? Keyed on the receiver:
  * a pane outside every company takes any task as before. A task to a company
- * pane needs a sender pane and the receiver pinned. The coordinator takes a
- * request from anyone, brief or not, since it writes the briefs; any other
- * pane of the company takes a complete brief, and only from inside the
- * company. The human's own lane is exempt.
+ * pane needs a sender pane and the receiver pinned, and runs in that pane
+ * (never as a background execute worker). The coordinator takes a request
+ * from anyone, brief or not, since it writes the briefs; any other pane of
+ * the company takes a complete brief, and only from inside the company. The
+ * human's own lane is exempt.
  */
 export function decideCompanySend(input: {
   workspaces: readonly CompanyWorkspaceView[];
@@ -155,6 +156,8 @@ export function decideCompanySend(input: {
   /** The caller's own pty, already checked against its pane tree ('' if none). */
   senderPtyId: string;
   operator: boolean;
+  /** The send asked for a background worker (execute: true). */
+  execute?: boolean;
   data: unknown;
 }): CompanySendDecision {
   const target = companyOfWorkspace(input.workspaces, input.targetWorkspaceId);
@@ -162,6 +165,10 @@ export function decideCompanySend(input: {
   const hasBrief = missingBriefFields(input.data).length === 0;
   if (input.operator) return { kind: 'allow', companyTask: hasBrief };
   const where = `company "${target.name}"`;
+  // A background worker would be the seat that marks the work done.
+  if (input.execute) {
+    return { kind: 'refuse', error: `a task to a pane in ${where} runs in that pane's own agent; send it without execute` };
+  }
   if (!input.targetPaneId) {
     return { kind: 'refuse', error: `a task to a pane in ${where} must name that pane (pane_id)` };
   }
@@ -199,4 +206,34 @@ export function companyCancelRefusal(
   const from = task.metadata.from;
   if (from.workspaceId === caller.workspaceId && !!from.paneId && caller.paneId === from.paneId) return null;
   return 'only the pane that created this company task can cancel it; the receiver reports failed with evidence instead';
+}
+
+/** A pane's place in its workspace's company: the coordinator, or staff. */
+export type CompanySeat = 'coordinator' | 'staff';
+
+export function parseCompanySeat(v: unknown): CompanySeat | undefined {
+  return v === 'coordinator' || v === 'staff' ? v : undefined;
+}
+
+/** The pane's seat in the company, or undefined when there is no company. */
+export function companySeatOf(company: WorkspaceCompany | undefined, paneId: string | undefined): CompanySeat | undefined {
+  if (!company || !paneId) return undefined;
+  return company.coordinatorPaneId === paneId ? 'coordinator' : 'staff';
+}
+
+/**
+ * Why this caller may not mark the task completed, or null when it may. A
+ * company task is marked done by the company's coordinator pane (the CEO) or
+ * the human, never by the staff seat that did the work: that seat reports
+ * with input-required and the coordinator checks the report. A receiver in no
+ * company (a brief sent outside one, or to another PC) has no CEO to report
+ * to and finishes the task itself. `failed` stays the receiver's.
+ */
+export function companyDoneRefusal(
+  task: { history: readonly Message[] },
+  caller: { trusted: boolean; seat: CompanySeat | undefined },
+): string | null {
+  if (caller.trusted || caller.seat !== 'staff' || !isCompanyTask(task.history)) return null;
+  return 'a company task is marked done by the company\'s coordinator (CEO) pane or the human, not by the seat that did the work; '
+    + 'report it with status input-required and a message naming the PR URL, its head commit, what was run and who ran the live check';
 }

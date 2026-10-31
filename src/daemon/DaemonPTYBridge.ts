@@ -18,6 +18,7 @@ import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { stripPassiveInput } from '../shared/terminal/passiveInput';
+import { ShellMarkIngress } from '../shared/terminal/shellMarkIngress';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
 import { titleShowsFinishedTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
 import { AWAITING_TITLE, CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, RUNNING_TITLE } from '../shared/agentTitleRules';
@@ -1944,6 +1945,14 @@ export class DaemonPTYBridge extends EventEmitter {
     ringBuffer: RingBuffer,
     sessionId: string,
     promptLog?: PromptEventLog,
+    /**
+     * #2771 — how the pane's process writes OSC 133 marks: `exec` runs a
+     * program with no shell (it never prompts), `integrated` is a shell with
+     * wmux's integration (it marks every prompt with `D;<n>` and `A`),
+     * `plain` anything else, whose marks are passed through unread. Absent:
+     * `plain`.
+     */
+    shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
     const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node');
     this.outputInterpreter = interpreter;
@@ -1964,6 +1973,11 @@ export class DaemonPTYBridge extends EventEmitter {
     if (prefilled.length > 0) {
       interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
     }
+    // A bridge is built only for a freshly spawned process (a recovered
+    // ring holds the dead one's scrollback), so an integrated shell starts at
+    // its prompt and an exec unit's program starts running.
+    const marks = shellMarks === 'plain' ? null : new ShellMarkIngress(shellMarks === 'exec' ? 'running' : 'idle',
+      () => console.log(`[pty] ${sessionId}: program-written OSC 133 marks lowercased (shell command running)`));
 
     // With OSC 133 parsed here, the detector ends the agent on its markers in
     // stream order itself (see the command start/end branch below).
@@ -2388,6 +2402,19 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.startupDa1) this.checkStartupDa1(data, ptyProcess);
       this.lastOutputAt = Date.now();
 
+      // #2771 — before anything reads the chunk: a mark the running program
+      // wrote (not the shell) gets a lowercase kind, so the detector, the
+      // held chunks, the ring, the interpreter and live data all read the
+      // same decision. Only a chunk that can hold a mark is scanned.
+      if (marks) {
+        const decided = marks.apply(data);
+        if (decided !== data) {
+          data = decided;
+          // The native chunk's bytes no longer match: it leaves the zero-copy
+          // path. A chunk with only the shell's marks keeps it.
+          nativeChunk = undefined;
+        }
+      }
       const buf = nativeChunk ? undefined : Buffer.from(data);
       const byteLength = nativeChunk ? nativeChunk.byteLength : (buf?.length ?? 0);
 

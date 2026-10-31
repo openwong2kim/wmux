@@ -577,6 +577,22 @@ describe('parseTranscriptLine — pasted images and ESC interrupts', () => {
     expect(queued({ type: 'queued_command', prompt: '/compact', commandMode: 'bash' })).toEqual([]);
     expect(queued({ type: 'hook_success', content: 'x' })).toEqual([]);
   });
+
+  it('shows a queued prompt with photos, which Claude Code records as content blocks (2.1.312)', () => {
+    const events = parseFixture('queued-image-steer.jsonl');
+    // Three rows: the queued shell command (q2) stays off the conversation.
+    expect(events.map((e) => e.kind)).toEqual(['user_text', 'tool_use', 'user_text']);
+    expect(events[2]).toMatchObject({ id: 'q1', kind: 'user_text', text: '[Image #4] [Image #5] [Image #6] [Image #7]', hasImage: true });
+  });
+
+  it('reads a queued photo prompt as the operator typed it, as its string form is: no meta row', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    const line = JSON.stringify({ type: 'attachment', uuid: 'q', attachment: { type: 'queued_command', commandMode: 'prompt',
+      prompt: [{ type: 'text', text: '<command-name>/review</command-name> [Image #1]' }, image] } });
+    expect(parseTranscriptLine(line, 0)).toEqual([
+      expect.objectContaining({ id: 'q', kind: 'user_text', text: '<command-name>/review</command-name> [Image #1]', hasImage: true }),
+    ]);
+  });
 });
 
 describe('extractCodeBlocks', () => {

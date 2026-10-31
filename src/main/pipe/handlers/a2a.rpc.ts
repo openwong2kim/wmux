@@ -10,6 +10,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
+import { parseCompanySeat, type CompanySeat } from '../../../shared/company';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
 import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
 import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask, applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
@@ -33,7 +34,7 @@ import {
   type McpParentClass,
 } from '../../../mcp/codexThreadIdentity';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
-import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
+import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromRemoteSend, workLinkFromSentTask } from '../../workLink/a2aProducer';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
@@ -80,6 +81,7 @@ const INTERNAL_RENDERER_FIELDS = [
   'reopenPreflight',
   'requirePaneIdentity',
   'livePaneIds',
+  'callerCompanySeat',
   'deliveryDeadlineAt',
   'deliveryGuardKey',
   'presetTaskId',
@@ -149,8 +151,9 @@ async function daemonTaskRpc(
 }
 
 type CallerPane =
-  /** `livePaneIds`: every pane of the caller's workspace, from the same read. */
-  | { kind: 'resolved'; paneId: string; livePaneIds: string[] }
+  /** `livePaneIds`: every pane of the caller's workspace, from the same read;
+   *  `companySeat`: the pane's seat when its workspace is a company. */
+  | { kind: 'resolved'; paneId: string; livePaneIds: string[]; companySeat?: CompanySeat }
   /** No senderPtyId, or one that is not a terminal in the caller's own workspace. */
   | { kind: 'absent' }
   /** The pane tree could not be read: keep the daemon's deferral to the renderer. */
@@ -174,7 +177,10 @@ async function resolveCallerPane(
   const livePaneIds = panes.map((pane) => pane.id as string);
   for (const pane of panes) {
     const ptys = Array.isArray(pane.surfacePtyIds) ? pane.surfacePtyIds : [];
-    if (ptys.includes(senderPtyId)) return { kind: 'resolved', paneId: pane.id as string, livePaneIds };
+    if (ptys.includes(senderPtyId)) {
+      const companySeat = parseCompanySeat(pane.companySeat);
+      return { kind: 'resolved', paneId: pane.id as string, livePaneIds, ...(companySeat ? { companySeat } : {}) };
+    }
   }
   return { kind: 'absent' };
 }
@@ -389,6 +395,7 @@ export function registerA2aRpc(
     }
     const images = imagePathsOf(params.images);
     if (images === null) return { error: `a2a.task.send: images must be a list of up to ${IMAGES_MAX} absolute paths` };
+    const title = typeof params.title === 'string' ? params.title : '';
     if (ctx?.commanderWorkspace) {
       // A brain sends only on a brain link of its own workspace: Moa to
       // another PC's Moa. The sender is the token-verified commander binding,
@@ -408,11 +415,14 @@ export function registerA2aRpc(
       const res = await remote!.sendTask({
         linkId: brainLink.linkId,
         from: { workspaceId: hq, name: A2A_BRAIN_ALIAS },
-        title: typeof params.title === 'string' ? params.title : '',
+        title,
         text: message,
         ...(images ? { images } : {}),
       }).catch((err: unknown): RemoteOpResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
       if (!res.ok) return { error: `a2a.task.send: remote send refused (${res.error})` };
+      void recordSentTask(workLinkFromRemoteSend({
+        taskId: res.taskId, linkId: brainLink.linkId, alias: brainLink.alias, requester: { workspaceId: hq }, title, message, fromCommander: true,
+      }));
       return {
         ok: true,
         taskId: res.taskId,
@@ -436,11 +446,15 @@ export function registerA2aRpc(
       // The verified sender pty: a reply from the peer is held if another
       // agent holds this pane by then.
       from: { workspaceId, name: workspaceId, paneId: caller.paneId, ptyId: params.senderPtyId as string },
-      title: typeof params.title === 'string' ? params.title : '',
+      title,
       text: message,
       ...(images ? { images } : {}),
     }).catch((err: unknown): RemoteOpResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
     if (!res.ok) return { error: `a2a.task.send: remote send refused (${res.error})` };
+    // Work link (best-effort, never awaited), as for a local send.
+    void recordSentTask(workLinkFromRemoteSend({
+      taskId: res.taskId, linkId: link.linkId, alias: link.alias, requester: { workspaceId, paneId: caller.paneId }, title, message, fromCommander: false,
+    }));
     return { ok: true, taskId: res.taskId, remote: true, delivery: REMOTE_QUEUED, ...(res.note ? { note: res.note } : {}) };
   }
 
@@ -1281,8 +1295,15 @@ export function registerA2aRpc(
         // cache only, and the durable copy stayed `submitted`.
         // #1598: the same read's pane list lets the daemon tell a gone
         // receiver pane (adoptable by this workspace) from a live one.
+        // The same read gives the pane's company seat: who marks a company
+        // task done.
         ...(callerPane.kind === 'resolved'
-          ? { senderPtyId: params.senderPtyId, callerPaneId: callerPane.paneId, livePaneIds: callerPane.livePaneIds }
+          ? {
+            senderPtyId: params.senderPtyId,
+            callerPaneId: callerPane.paneId,
+            livePaneIds: callerPane.livePaneIds,
+            ...(callerPane.companySeat ? { callerCompanySeat: callerPane.companySeat } : {}),
+          }
           : callerPane.kind === 'unknown' && typeof params.senderPtyId === 'string'
             ? { senderPtyId: params.senderPtyId }
             : {}),

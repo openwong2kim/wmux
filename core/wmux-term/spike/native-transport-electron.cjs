@@ -1,5 +1,5 @@
 /** Production transport and packaged loader in Electron main. */
-const { app } = require('electron');
+const { app, BrowserWindow } = require('electron');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const { NativeTransport, NativeRing, NativeOutputDecoder, NativeOutputInterpreter, nativeCoreCapabilities } = require('../../../dist/wmux-native/index.cjs');
@@ -9,6 +9,7 @@ app.whenReady().then(() => {
   assert(nativeCoreCapabilities().includes('pty-v1'));
   assert(nativeCoreCapabilities().includes('output-chunk-v1'));
   assert(nativeCoreCapabilities().includes('output-interpreter-v1'));
+  assert(nativeCoreCapabilities().includes('console-owner-v1'));
   const interpreter = new NativeOutputInterpreter();
   const probe = new NativeOutputDecoder().feed(Buffer.from('\x1b[?2004h\x1b]7;file:///tmp/한글\x07\x1b]133;C\x07'), false);
   try {
@@ -37,7 +38,17 @@ app.whenReady().then(() => {
   // real console child there, as the product does for cmd/PowerShell sessions.
   const command = process.platform === 'win32' ? process.env.ComSpec ?? 'cmd.exe' : process.execPath;
   const args = process.platform === 'win32' ? ['/d', '/s', '/c', 'echo native-electron'] : ['-e', 'console.log("native-electron")'];
+  // The console-window owner (sign-in pickers), given at spawn and again later: the
+  // bundled conpty.dll takes a real window's handle; elsewhere, and for a handle of
+  // the wrong size or a NULL one, it is a no-op.
+  const owner = new BrowserWindow({ show: false });
   transport = new NativeTransport(command, args, process.cwd(),
     { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, 80, 24, () => setImmediate(pump), process.platform === 'win32'
-      ? path.resolve('node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll') : undefined);
+      ? path.resolve('node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll') : undefined,
+    owner.getNativeWindowHandle());
+  try {
+    assert.equal(transport.setParentWindow(owner.getNativeWindowHandle()), process.platform === 'win32');
+    assert.equal(transport.setParentWindow(Buffer.alloc(3)), false);
+    assert.equal(transport.setParentWindow(Buffer.alloc(8)), false);
+  } finally { owner.destroy(); }
 }).catch(e => { console.error(e); clearTimeout(timer); transport?.close(); app.exit(1); });

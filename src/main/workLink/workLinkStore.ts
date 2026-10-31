@@ -18,6 +18,7 @@
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { TERMINAL_STATES } from '../../shared/types';
+import { isRemoteWorkspaceId } from '../../shared/a2aRemoteDelivery';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 import { loadDeckDecisions, onDecisionsChanged } from '../deck/deckDecisionStore';
@@ -171,11 +172,14 @@ export class WorkLinkStore {
    *  task can never finish, so its link would otherwise read `running` or
    *  `queued` forever (the daemon fails only the tasks it still tracks). A
    *  link with a PR is left alone: the PR outlives the workspace and its own
-   *  state still says where the work stands. Returns how many were settled. */
+   *  state still says where the work stands. A pane on another PC is not a
+   *  workspace here: the daemon's copy of its task settles the link
+   *  (reconcileRemoteLinks). Returns how many were settled. */
   async abandonOrphaned(isLive: (workspaceId: string) => boolean): Promise<number> {
     let settled = 0;
     for (const link of [...this.cache().values()]) {
-      if (link.state === 'done' || link.state === 'abandoned' || link.pr || isLive(link.owner.workspaceId)) continue;
+      if (link.state === 'done' || link.state === 'abandoned' || link.pr || isRemoteWorkspaceId(link.owner.workspaceId)) continue;
+      if (isLive(link.owner.workspaceId)) continue;
       if (await this.setState(link.id, 'abandoned')) settled += 1;
     }
     return settled;

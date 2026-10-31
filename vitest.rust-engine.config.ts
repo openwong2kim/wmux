@@ -22,6 +22,7 @@ const nodeOnly = [
   // starts a real shell (cmd.exe on a mocked win32 fails to start at all).
   'src/daemon/__tests__/DaemonSessionManager.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.wslSecretEnv.os.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.shellMarks.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.secretEnv.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.hostWindow.test.ts',
   'src/daemon/__tests__/spawnCwdRefusal.os.test.ts',
@@ -34,6 +35,7 @@ const nodeOnly = [
   // Test the opt-in WMUX_RUST_SNAPSHOT path with a stubbed module; the rust
   // engine selects the built module and the text backend instead.
   'src/daemon/__tests__/TextSnapshotBackend.test.ts',
+  'src/daemon/__tests__/AnsiSnapshotBackend.test.ts',
   'src/daemon/__tests__/RustSnapshot.test.ts',
 ];
 // A renamed file would otherwise drop out of this list and back into the run.
