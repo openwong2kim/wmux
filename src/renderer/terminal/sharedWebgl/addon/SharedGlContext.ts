@@ -15,9 +15,12 @@
  * Only this module owns the context: renderers never lose it. When it is lost,
  * every registered renderer stops drawing and keeps its last frame; on
  * `webglcontextrestored`, or after SHARED_CONTEXT_RESTORE_TIMEOUT_MS on a new
- * canvas, they rebuild their GL state and redraw. If no new context can be
- * created, they are told the context failed, which the addon reports through
- * onContextLoss as upstream does.
+ * canvas, they rebuild their GL state and redraw. A recovery fails when no
+ * context can be created, when the new one is already lost, or when it is lost
+ * again within SHARED_CONTEXT_STABLE_MS; failed recoveries are retried every
+ * SHARED_CONTEXT_RETRY_MS, and after SHARED_CONTEXT_MAX_FAILURES in a row every
+ * renderer is told the context failed, which the addon reports through
+ * onContextLoss (wmux then falls back to the DOM renderer, as for upstream).
  */
 
 import { IDisposable } from '../xterm/common/Types';
@@ -35,6 +38,12 @@ export interface ISharedGlClient {
 
 /** Same wait as upstream's per-renderer restore window. */
 export const SHARED_CONTEXT_RESTORE_TIMEOUT_MS = 3000;
+/** Wait before another try after a recovery that failed. */
+export const SHARED_CONTEXT_RETRY_MS = 1000;
+/** A recovered context lost again within this window counts as a failure. */
+export const SHARED_CONTEXT_STABLE_MS = 10_000;
+/** Failed recoveries in a row before every pane is told the context failed. */
+export const SHARED_CONTEXT_MAX_FAILURES = 3;
 /** The shared canvas grows in steps of this many pixels, so a window drag that
  *  enlarges the largest pane does not reallocate the framebuffer every frame. */
 export const SHARED_CANVAS_GROW_STEP = 256;
@@ -84,6 +93,9 @@ export class SharedGlContext {
   private _isLost = false;
   private _isFailed = false;
   private _restoreTimeout: number | undefined;
+  private _stableTimeout: number | undefined;
+  /** Recoveries that did not hold since the context was last stable. */
+  private _failures = 0;
   private _detachCanvas: () => void;
   private readonly _clients = new Set<ISharedGlClient>();
   public readonly maxTextureSize: number;
@@ -102,7 +114,9 @@ export class SharedGlContext {
   public get gl(): IWebGL2RenderingContext { return this._gl; }
   public get resources(): GlResources { return this._resources; }
   public get canvas(): HTMLCanvasElement { return this._canvas; }
-  public get isLost(): boolean { return this._isLost; }
+  /** True from the moment the GL context is lost, before the event task that
+   *  reports it has run, until a recovery holds. */
+  public get isLost(): boolean { return this._isLost || this._gl.isContextLost(); }
   public get isFailed(): boolean { return this._isFailed; }
   public get clientCount(): number { return this._clients.size; }
 
@@ -134,8 +148,12 @@ export class SharedGlContext {
     gl.disable(gl.SCISSOR_TEST);
   }
 
-  /** Copy the frame beginPane started into the pane's visible canvas. */
+  /** Copy the frame beginPane started into the pane's visible canvas. A
+   *  context lost mid-frame drew nothing, so the pane keeps its last frame. */
   public present(target: CanvasRenderingContext2D, width: number, height: number): void {
+    if (this.isLost) {
+      return;
+    }
     const targetCanvas = target.canvas;
     target.clearRect(0, 0, targetCanvas.width, targetCanvas.height);
     target.drawImage(this._canvas, 0, 0, width, height, 0, paneCopyY(targetCanvas.height, height), width, height);
@@ -169,20 +187,35 @@ export class SharedGlContext {
     console.warn(`[wmux:shared-webgl] context lost — ${this._clients.size} pane(s) keep their last frame`);
     this._isLost = true;
     this._resources.markLost();
-    for (const client of [...this._clients]) {
-      client.handleSharedContextLost();
+    this._notify(client => client.handleSharedContextLost());
+    if (this._stableTimeout !== undefined) {
+      // Lost again soon after a recovery: that recovery did not hold.
+      window.clearTimeout(this._stableTimeout);
+      this._stableTimeout = undefined;
+      if (++this._failures >= SHARED_CONTEXT_MAX_FAILURES) {
+        this._fail();
+        return;
+      }
     }
-    this._restoreTimeout = window.setTimeout(() => {
-      this._restoreTimeout = undefined;
-      this._recreate();
-    }, SHARED_CONTEXT_RESTORE_TIMEOUT_MS);
+    this._scheduleRecreate(SHARED_CONTEXT_RESTORE_TIMEOUT_MS);
   }
 
   private _handleRestored(): void {
+    if (this._isFailed) {
+      return;
+    }
     window.clearTimeout(this._restoreTimeout);
     this._restoreTimeout = undefined;
     console.warn('[wmux:shared-webgl] context restored');
     this._resume();
+  }
+
+  private _scheduleRecreate(delay: number): void {
+    window.clearTimeout(this._restoreTimeout);
+    this._restoreTimeout = window.setTimeout(() => {
+      this._restoreTimeout = undefined;
+      this._recreate();
+    }, delay);
   }
 
   /** The browser did not restore the context: replace it with a new one. */
@@ -191,10 +224,7 @@ export class SharedGlContext {
     const created = this._createContext();
     if (!created) {
       console.warn('[wmux:shared-webgl] could not create a new context');
-      this._isFailed = true;
-      for (const client of [...this._clients]) {
-        client.handleSharedContextFailed();
-      }
+      this._recoveryFailed();
       return;
     }
     [this._canvas, this._gl] = created;
@@ -204,10 +234,55 @@ export class SharedGlContext {
   }
 
   private _resume(): void {
+    if (this._gl.isContextLost()) {
+      // Lost before anyone drew with it; its own loss event may never come.
+      console.warn('[wmux:shared-webgl] the new context is already lost');
+      this._recoveryFailed();
+      return;
+    }
     this._resources = new GlResources(this._gl);
     this._isLost = false;
+    this._notify(client => client.handleSharedContextRestored(), client => {
+      // This renderer could not rebuild; it alone falls back.
+      this._clients.delete(client);
+      try {
+        client.handleSharedContextFailed();
+      } catch {
+        // nothing more to do for it
+      }
+    });
+    this._stableTimeout = window.setTimeout(() => {
+      this._stableTimeout = undefined;
+      this._failures = 0;
+    }, SHARED_CONTEXT_STABLE_MS);
+  }
+
+  private _recoveryFailed(): void {
+    if (++this._failures >= SHARED_CONTEXT_MAX_FAILURES) {
+      this._fail();
+    } else {
+      this._scheduleRecreate(SHARED_CONTEXT_RETRY_MS);
+    }
+  }
+
+  private _fail(): void {
+    console.warn(`[wmux:shared-webgl] giving up after ${this._failures} failed recoveries — ${this._clients.size} pane(s) fall back`);
+    window.clearTimeout(this._restoreTimeout);
+    this._restoreTimeout = undefined;
+    this._isFailed = true;
+    this._isLost = true;
+    this._notify(client => client.handleSharedContextFailed());
+  }
+
+  /** Call `fn` for every client; one that throws does not stop the others. */
+  private _notify(fn: (client: ISharedGlClient) => void, onThrow?: (client: ISharedGlClient) => void): void {
     for (const client of [...this._clients]) {
-      client.handleSharedContextRestored();
+      try {
+        fn(client);
+      } catch (err) {
+        console.warn('[wmux:shared-webgl] a pane failed to handle a context change', err);
+        onThrow?.(client);
+      }
     }
   }
 }

@@ -6,7 +6,10 @@ import {
   paneCopyY,
   paneViewportY,
   SHARED_CANVAS_GROW_STEP,
+  SHARED_CONTEXT_MAX_FAILURES,
   SHARED_CONTEXT_RESTORE_TIMEOUT_MS,
+  SHARED_CONTEXT_RETRY_MS,
+  SHARED_CONTEXT_STABLE_MS,
   type ISharedGlClient,
 } from '../sharedWebgl/addon/SharedGlContext';
 import { TextureAtlas } from '../sharedWebgl/addon/TextureAtlas';
@@ -44,7 +47,7 @@ describe('shared framebuffer geometry', () => {
 });
 
 /** A WebGL2 stand-in that records calls and hands out numbered objects. */
-function fakeGl(canvas: { width: number; height: number }) {
+function fakeGl(canvas: { width: number; height: number }, lost = { value: false }) {
   let next = 1;
   const calls: [string, ...unknown[]][] = [];
   const record = (name: string, ret?: () => unknown) =>
@@ -56,6 +59,7 @@ function fakeGl(canvas: { width: number; height: number }) {
     TEXTURE0: 0x84c0, TEXTURE_2D: 1, TEXTURE_WRAP_S: 2, TEXTURE_WRAP_T: 3, CLAMP_TO_EDGE: 4, RGBA: 5,
     UNSIGNED_BYTE: 6, SCISSOR_TEST: 7, COLOR_BUFFER_BIT: 8, MAX_TEXTURE_SIZE: 9,
     get drawingBufferHeight() { return canvas.height; },
+    isContextLost: () => lost.value,
     getParameter: vi.fn(() => 16384),
     createTexture: record('createTexture', () => ({ id: next++ })),
     deleteTexture: record('deleteTexture'),
@@ -127,10 +131,15 @@ describe('GlResources', () => {
 class FakeCanvas {
   width = 0;
   height = 0;
-  readonly gl = fakeGl(this);
+  /** The context is lost (WEBGL_lose_context, or a GPU reset). */
+  readonly lost: { value: boolean };
+  readonly gl: ReturnType<typeof fakeGl>;
   readonly listeners = new Map<string, ((e: Event) => void)[]>();
 
-  constructor(private readonly _state: { available: boolean }) {}
+  constructor(private readonly _state: { available: boolean; lostOnCreate: boolean }) {
+    this.lost = { value: _state.lostOnCreate };
+    this.gl = fakeGl(this, this.lost);
+  }
 
   addEventListener(type: string, fn: (e: Event) => void): void {
     this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
@@ -147,7 +156,7 @@ class FakeCanvas {
 
 /** A document that makes FakeCanvases, with their loss listeners exposed. */
 function fakeDocument() {
-  const state = { available: true };
+  const state = { available: true, lostOnCreate: false };
   const canvases: FakeCanvas[] = [];
   const doc = {
     createElement: () => {
@@ -267,13 +276,16 @@ describe('SharedGlContext', () => {
     fire(0, 'webglcontextlost');
     state.available = false;
     vi.advanceTimersByTime(SHARED_CONTEXT_RESTORE_TIMEOUT_MS);
+    expect(a.handleSharedContextFailed).not.toHaveBeenCalled(); // retried first
+    vi.advanceTimersByTime(SHARED_CONTEXT_RETRY_MS * (SHARED_CONTEXT_MAX_FAILURES - 1));
     expect(a.handleSharedContextFailed).toHaveBeenCalledTimes(1);
     expect(ctx.isFailed).toBe(true);
+    expect(canvases).toHaveLength(1 + SHARED_CONTEXT_MAX_FAILURES);
 
     state.available = true;
     const fresh = acquireSharedGlContext(doc);
     expect(fresh).not.toBe(ctx);
-    expect(canvases).toHaveLength(3);
+    expect(canvases).toHaveLength(2 + SHARED_CONTEXT_MAX_FAILURES);
   });
 
   it('a pane that unregisters is not told about later losses', () => {
@@ -287,5 +299,86 @@ describe('SharedGlContext', () => {
     fire(0, 'webglcontextlost');
     expect(a.handleSharedContextLost).not.toHaveBeenCalled();
     expect(b.handleSharedContextLost).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not draw a pane in the gap before the loss event: GL already reports lost', () => {
+    const { doc, canvases } = fakeDocument();
+    const ctx = acquireSharedGlContext(doc);
+    canvases[0].lost.value = true; // loseContext() ran; its event task has not
+    expect(ctx.isLost).toBe(true);
+    const target = { canvas: { width: 10, height: 10 }, clearRect: vi.fn(), drawImage: vi.fn() };
+    ctx.present(target as unknown as CanvasRenderingContext2D, 10, 10);
+    expect(target.clearRect).not.toHaveBeenCalled(); // the last frame stays
+    expect(target.drawImage).not.toHaveBeenCalled();
+  });
+
+  it('retries a recreated context that is already lost, then fails every pane', () => {
+    const { doc, canvases, state, fire } = fakeDocument();
+    const ctx = acquireSharedGlContext(doc);
+    const a = client(), b = client();
+    ctx.register(a);
+    ctx.register(b);
+    state.lostOnCreate = true; // every new context dies at birth (GPU reset loop)
+    fire(0, 'webglcontextlost');
+    vi.advanceTimersByTime(SHARED_CONTEXT_RESTORE_TIMEOUT_MS);
+    expect(canvases).toHaveLength(2);
+    expect(a.handleSharedContextRestored).not.toHaveBeenCalled();
+    expect(a.handleSharedContextFailed).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(SHARED_CONTEXT_RETRY_MS * (SHARED_CONTEXT_MAX_FAILURES - 1));
+    expect(canvases).toHaveLength(1 + SHARED_CONTEXT_MAX_FAILURES);
+    for (const c of [a, b]) {
+      expect(c.handleSharedContextFailed).toHaveBeenCalledOnce();
+      expect(c.handleSharedContextRestored).not.toHaveBeenCalled();
+    }
+    expect(ctx.isFailed).toBe(true);
+    vi.advanceTimersByTime(SHARED_CONTEXT_RESTORE_TIMEOUT_MS * 10);
+    expect(canvases).toHaveLength(1 + SHARED_CONTEXT_MAX_FAILURES); // no further tries
+  });
+
+  it('counts a context lost again soon after a recovery, and resets once it held', () => {
+    const { doc, fire } = fakeDocument();
+    const ctx = acquireSharedGlContext(doc);
+    const a = client();
+    ctx.register(a);
+    // Lost and restored by the browser over and over, each time within the
+    // stable window: the third relapse gives up.
+    for (let i = 0; i < SHARED_CONTEXT_MAX_FAILURES; i++) {
+      fire(0, 'webglcontextlost');
+      fire(0, 'webglcontextrestored');
+    }
+    expect(a.handleSharedContextFailed).not.toHaveBeenCalled();
+    fire(0, 'webglcontextlost');
+    expect(a.handleSharedContextFailed).toHaveBeenCalledOnce();
+
+    // A fresh context that stays up for the stable window starts from zero.
+    const { doc: doc2, fire: fire2 } = fakeDocument();
+    const ctx2 = acquireSharedGlContext(doc2);
+    const b = client();
+    ctx2.register(b);
+    for (let i = 0; i < SHARED_CONTEXT_MAX_FAILURES + 2; i++) {
+      fire2(0, 'webglcontextlost');
+      fire2(0, 'webglcontextrestored');
+      vi.advanceTimersByTime(SHARED_CONTEXT_STABLE_MS);
+    }
+    expect(b.handleSharedContextFailed).not.toHaveBeenCalled();
+    expect(b.handleSharedContextRestored).toHaveBeenCalledTimes(SHARED_CONTEXT_MAX_FAILURES + 2);
+  });
+
+  it('a pane that throws while restoring falls back alone; the others are restored', () => {
+    const { doc, fire } = fakeDocument();
+    const ctx = acquireSharedGlContext(doc);
+    const a = client(), c = client();
+    const bad = { ...client(), handleSharedContextRestored: vi.fn(() => { throw new Error('createProgram failed'); }) };
+    ctx.register(a);
+    ctx.register(bad);
+    ctx.register(c);
+    fire(0, 'webglcontextlost');
+    fire(0, 'webglcontextrestored');
+    expect(a.handleSharedContextRestored).toHaveBeenCalledOnce();
+    expect(c.handleSharedContextRestored).toHaveBeenCalledOnce();
+    expect(bad.handleSharedContextFailed).toHaveBeenCalledOnce();
+    expect(a.handleSharedContextFailed).not.toHaveBeenCalled();
+    expect(ctx.clientCount).toBe(2);
+    expect(ctx.isLost).toBe(false);
   });
 });

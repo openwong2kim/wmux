@@ -137,20 +137,6 @@ export class WebglRenderer extends Disposable implements IRenderer {
     ));
     this._resetBlinkingRowState();
 
-    if (this._sharedContext) {
-      this._register(this._sharedContext.register({
-        // Nothing to do: renderRows draws nothing while the context is lost, so
-        // the pane canvas keeps the last frame.
-        handleSharedContextLost: () => {},
-        handleSharedContextRestored: () => {
-          // The atlases live on the CPU and survived; their textures upload
-          // again into the new context's sets.
-          this._initializeWebGLState();
-          this._requestRedrawViewport();
-        },
-        handleSharedContextFailed: () => this._onContextLoss.fire()
-      }));
-    }
     this._register(addDisposableListener(this._canvas, 'webglcontextlost', (e) => {
       this._logService.debug('webglcontextlost event received');
       this._ownResources?.markLost();
@@ -190,6 +176,23 @@ export class WebglRenderer extends Disposable implements IRenderer {
     }
 
     this._isAttached = this._core.screenElement!.isConnected;
+
+    // Registered last: a constructor that throws before here leaves no client
+    // for later restores to rebuild.
+    if (this._sharedContext) {
+      this._register(this._sharedContext.register({
+        // Nothing to do: renderRows draws nothing while the context is lost, so
+        // the pane canvas keeps the last frame.
+        handleSharedContextLost: () => {},
+        handleSharedContextRestored: () => {
+          // The atlases live on the CPU and survived; their textures upload
+          // again into the new context's sets.
+          this._initializeWebGLState();
+          this._requestRedrawViewport();
+        },
+        handleSharedContextFailed: () => this._onContextLoss.fire()
+      }));
+    }
 
     this._register(toDisposable(() => {
       clearTimeout(this._contextRestorationTimeout);
