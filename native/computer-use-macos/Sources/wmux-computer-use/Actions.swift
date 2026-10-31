@@ -374,6 +374,7 @@ enum Actions {
         let windowID = CGWindowID(target.windowID)
         var why = Background.reason(.keys, target)
         let start = Background.userState()
+        let sentBefore = Input.shared.sent
         // Focus first, in the background: a background app keeps its own
         // focused element, and a page's autofocus does not take in a window
         // that was never active.
@@ -389,6 +390,12 @@ enum Actions {
                 why = "the app has no focused text field to type into in the background"
             }
             if why == nil, Background.cameForward(target.pid, since: start) { why = "the app came to the front when it was focused" }
+            // A focus click already went out: real input now could click the
+            // field again (selecting a word), so the call ends here instead.
+            if let why, Input.shared.sent != sentBefore {
+                let back = await Background.settle(after: start, pid: target.pid)
+                throw HelperError("window_not_focused", "\(why) after a background click on it; nothing was typed\(back.map { " (\($0))" } ?? ""). It may have focus now: call getAppState, then type without an index")
+            }
         }
         if why == nil, let windowID {
             try Background.requireStillSafe(target, windowID, since: start)

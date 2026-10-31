@@ -223,8 +223,14 @@ is not re-walked.
     call returns `window_not_focused`. An app that brought itself to the front
     is put back behind the user's app, and the result says `foreground` with a
     note that says whether that worked.
-  - It goes as real input instead, with `delivery: "foreground"` and a note
-    saying why, when this macOS lacks the SkyLight calls, the window is
+  - A check that fails once something was posted ends the call: the error is
+    `delivered_unverified`, and no real input follows, which could do it
+    twice. That includes a background focus click for `type` after which the
+    field did not report focus or the app came forward; the call then says
+    to check the app and type without an index.
+  - It goes as real input instead, before anything was posted in the
+    background, with `delivery: "foreground"` and a note saying why, when
+    this macOS lacks the SkyLight calls, the window is
     minimized, hidden or on another Space, the click is not a left single or
     double click, the app reads the real pointer (Tk, LibreOffice), the target
     is Electron and the input is a scroll, the target is Chromium-based and

@@ -92,6 +92,7 @@ final class Input: @unchecked Sendable {
         defer { lock.unlock() }
         if stopping, event.type != .leftMouseUp, event.type != .keyUp { return false }
         SkyLight.post(event, pid: pid, auth: auth)
+        sentCount += 1
         return true
     }
 
