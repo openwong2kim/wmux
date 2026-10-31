@@ -98,11 +98,61 @@ public func backgroundClickPlan(at point: CGPoint, count: Int) -> [BackgroundMou
     return plan
 }
 
-/// Focusing the target in the background brought its app to the front: it
-/// was not frontmost when the action started and is now. The action then
-/// goes on as real input.
+/// The target app is frontmost now and was not when the action started.
 public func cameForward(_ pid: pid_t, start: pid_t?, now: pid_t?) -> Bool {
     start != pid && now == pid
+}
+
+/// The user's side of the screen at one moment.
+public struct UserState: Equatable {
+    public var front: pid_t?
+    public var pointer: CGPoint
+    public var space: UInt64?
+
+    public init(front: pid_t?, pointer: CGPoint, space: UInt64?) {
+        self.front = front
+        self.pointer = pointer
+        self.space = space
+    }
+}
+
+/// A change to the user's state that background input itself made.
+public enum SideEffect: Equatable {
+    /// The real pointer is at the point the input went to, and was not before.
+    case pointerAtTarget
+    /// The target app is frontmost, and was not before.
+    case targetCameForward
+    /// The active Space changed to one the target window is on.
+    case spaceSwitchedToTarget
+}
+
+/// How near the targeted point the real pointer must be to count as moved there.
+public let pointerNearTarget: CGFloat = 8
+
+/// What background input did to the user's state between `start` and `now`,
+/// or nil. Only its own side effects count: the user moving the pointer
+/// elsewhere, or switching to another app or Space, is none. `point` is where
+/// the pointer input went (nil for keys), and `targetOnScreen` whether the
+/// target window is on the active Space now.
+public func sideEffect(start: UserState, now: UserState, pid: pid_t, point: CGPoint?, targetOnScreen: Bool) -> SideEffect? {
+    func near(_ a: CGPoint, _ b: CGPoint) -> Bool { hypot(a.x - b.x, a.y - b.y) <= pointerNearTarget }
+    if let point, near(now.pointer, point), !near(start.pointer, point) { return .pointerAtTarget }
+    if cameForward(pid, start: start.front, now: now.front) { return .targetCameForward }
+    if now.space != start.space, targetOnScreen { return .spaceSwitchedToTarget }
+    return nil
+}
+
+/// What a background action does once one of its checks fails.
+public enum BackgroundStop: Equatable {
+    /// Nothing was posted yet: the action goes on as real input.
+    case realInput
+    /// Something was posted and may have landed: the action ends there, since
+    /// real input could do it twice.
+    case end
+}
+
+public func afterStop(posted: Bool) -> BackgroundStop {
+    posted ? .end : .realInput
 }
 
 /// Where a background click gives an element focus: the centre of the part

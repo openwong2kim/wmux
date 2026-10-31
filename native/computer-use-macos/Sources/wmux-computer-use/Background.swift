@@ -75,12 +75,6 @@ enum Background {
 
     // MARK: What the user sees
 
-    struct UserState: Equatable {
-        let front: pid_t?
-        let pointer: CGPoint
-        let space: UInt64?
-    }
-
     static func userState() -> UserState {
         UserState(
             front: NSWorkspace.shared.frontmostApplication?.processIdentifier,
@@ -89,12 +83,26 @@ enum Background {
         )
     }
 
-    /// Nothing is posted once the user's frontmost app, pointer or Space has
-    /// changed since the action started.
-    static func requireUnchanged(since start: UserState) throws {
-        let now = userState()
-        let what = now.front != start.front ? "the frontmost app" : now.pointer != start.pointer ? "the pointer" : now.space != start.space ? "the Space" : nil
-        if let what { throw HelperError("window_not_focused", "\(what) changed while the input was being sent in the background; nothing more was sent") }
+    /// A check that failed during background input. Actions goes on as real
+    /// input when nothing was posted yet, and ends the call when something
+    /// was (ComputerUseCore afterStop).
+    struct Stop: Error {
+        let reason: String
+    }
+
+    /// Stops on a side effect of our own input (ComputerUseCore sideEffect),
+    /// or once the target window left the screen. `point`: where the pointer
+    /// input goes, if any. The user moving the pointer elsewhere or switching
+    /// apps does not stop it.
+    static func check(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState, point: CGPoint?) throws {
+        let visible = onScreen(target.pid, windowID)
+        switch sideEffect(start: start, now: userState(), pid: target.pid, point: point, targetOnScreen: visible) {
+        case .pointerAtTarget: throw Stop(reason: "the real pointer moved to the target point")
+        case .targetCameForward: throw Stop(reason: "the target app came to the front")
+        case .spaceSwitchedToTarget: throw Stop(reason: "the Space switched to the target window's")
+        case nil: break
+        }
+        if !visible { throw Stop(reason: "the target window left the screen") }
     }
 
     /// The target app is in front now and was not when the action started.
@@ -105,22 +113,30 @@ enum Background {
     /// After the input: an app that brought itself to the front (a click on
     /// a link does, shortly after) is put back behind the one the user had,
     /// the way Focus.bringForward activates an app. Returns the note for the
-    /// result when it came forward, saying whether the user's app is back.
-    static func settle(after start: UserState, pid: pid_t) async -> String? {
+    /// result when the app came forward, saying whether the user's app is
+    /// back, or when the real pointer ended at `point`.
+    static func settle(after start: UserState, pid: pid_t, point: CGPoint? = nil) async -> String? {
+        let pointer = sideEffect(start: start, now: userState(), pid: pid, point: point, targetOnScreen: false) == .pointerAtTarget
+            ? "the real pointer moved to the target point, so the input may have gone as real input"
+            : nil
         var forward = false
         for n in 0..<4 {
             if n > 0 { try? await Task.sleep(nanoseconds: 40_000_000) }
             forward = cameForward(pid, since: start)
             if forward { break }
         }
-        guard forward, let front = start.front else { return nil }
+        guard forward, let front = start.front else { return pointer }
         NSRunningApplication(processIdentifier: front)?.activate()
         AXUIElementSetAttributeValue(AX.app(front), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        var note = "the app came to the front on its own, and the app that was in front could not be brought back"
         for _ in 0..<6 {
             try? await Task.sleep(nanoseconds: 50_000_000)
-            if NSWorkspace.shared.frontmostApplication?.processIdentifier == front { return "the app came to the front on its own; the app that was in front was brought back" }
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == front {
+                note = "the app came to the front on its own; the app that was in front was brought back"
+                break
+            }
         }
-        return "the app came to the front on its own, and the app that was in front could not be brought back"
+        return [pointer, note].compactMap { $0 }.joined(separator: "; ")
     }
 
     // MARK: Keyboard focus
@@ -132,7 +148,8 @@ enum Background {
     /// otherwise land in another one of the same app.
     ///
     /// Adapted from Cua Driver (MIT) libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs@a9902d27
-    static func focusWindow(_ target: ControlTarget, _ windowID: CGWindowID) async -> Bool {
+    /// `previous` is the window that had key status before, for restoreKey.
+    static func focusWindow(_ target: ControlTarget, _ windowID: CGWindowID) async -> (ok: Bool, previous: CGWindowID?) {
         let appEl = AX.app(target.pid)
         func current() -> CGWindowID? { AX.element(appEl, kAXFocusedWindowAttribute).flatMap(AX.windowID) }
         func settled() async -> Bool {
@@ -142,15 +159,23 @@ enum Background {
             }
             return current() == windowID
         }
-        if current() == windowID { return true }
+        let previous = current()
+        if previous == windowID { return (true, nil) }
         for _ in 0..<2 where SkyLight.moveWindowKey(from: current(), to: windowID) {
-            if await settled() { return true }
+            if await settled() { return (true, previous) }
         }
         let window = AX.elements(appEl, kAXWindowsAttribute).first { AX.windowID($0) == windowID }
         if let window, AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, window) == .success {
-            return await settled()
+            return (await settled(), previous)
         }
-        return false
+        return (false, previous)
+    }
+
+    /// Gives key status back to the window that had it in the app before
+    /// focusWindow, once the input is done: the same records, the other way.
+    static func restoreKey(_ windowID: CGWindowID, to previous: CGWindowID?) {
+        guard let previous, previous != windowID else { return }
+        _ = SkyLight.moveWindowKey(from: windowID, to: previous)
     }
 
     /// Gives `el` keyboard focus without bringing its app forward: AX first,
@@ -178,15 +203,13 @@ enum Background {
     }
 
     /// The re-check before every typed chunk and key press: the screen is not
-    /// locked, the user's frontmost app, pointer and Space are as they were,
-    /// the window is still on screen and focused in its app, and no password
-    /// field has focus.
-    static func requireStillSafe(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState) throws {
+    /// locked, no side effect of ours (check, with the focus click's `point`),
+    /// the window still focused in its app, and no password field has focus.
+    static func requireStillSafe(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState, point: CGPoint? = nil) throws {
         if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; the rest was not sent") }
-        try requireUnchanged(since: start)
-        guard onScreen(target.pid, windowID),
-              AX.element(AX.app(target.pid), kAXFocusedWindowAttribute).flatMap(AX.windowID) == windowID else {
-            throw HelperError("window_not_focused", "the target window is no longer the app's focused window on screen; the rest was not sent")
+        try check(target, windowID, since: start, point: point)
+        guard AX.element(AX.app(target.pid), kAXFocusedWindowAttribute).flatMap(AX.windowID) == windowID else {
+            throw Stop(reason: "the target window is no longer the app's focused window")
         }
         try Focus.refuseSecureInput(target.pid)
     }

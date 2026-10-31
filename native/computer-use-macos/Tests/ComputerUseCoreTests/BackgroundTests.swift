@@ -75,6 +75,41 @@ final class BackgroundTests: XCTestCase {
         XCTAssertFalse(cameForward(target, start: target, now: target))
     }
 
+    func testTheUserMovingThePointerElsewhereMidTypeIsNoSideEffect() {
+        let start = UserState(front: 100, pointer: CGPoint(x: 900, y: 500), space: 1)
+        var now = start
+        now.pointer = CGPoint(x: 40, y: 700)
+        XCTAssertNil(sideEffect(start: start, now: now, pid: 300, point: nil, targetOnScreen: true))
+        XCTAssertNil(sideEffect(start: start, now: now, pid: 300, point: CGPoint(x: 300, y: 200), targetOnScreen: true))
+        now.front = 200
+        XCTAssertNil(sideEffect(start: start, now: now, pid: 300, point: nil, targetOnScreen: true))
+        now.space = 2
+        XCTAssertNil(sideEffect(start: start, now: now, pid: 300, point: nil, targetOnScreen: false))
+    }
+
+    func testThePointerLandingOnTheTargetEndsTheCallWithoutASecondClick() {
+        let target = CGPoint(x: 300, y: 200)
+        let start = UserState(front: 100, pointer: CGPoint(x: 900, y: 500), space: 1)
+        var now = start
+        now.pointer = CGPoint(x: 303, y: 204)
+        XCTAssertEqual(sideEffect(start: start, now: now, pid: 300, point: target, targetOnScreen: true), .pointerAtTarget)
+        // Posted already: the call ends (delivered_unverified), no real click follows.
+        XCTAssertEqual(afterStop(posted: true), .end)
+        XCTAssertEqual(afterStop(posted: false), .realInput)
+        // A pointer that was there before is the user's, not ours.
+        XCTAssertNil(sideEffect(start: now, now: now, pid: 300, point: target, targetOnScreen: true))
+    }
+
+    func testTheTargetComingForwardOrTakingTheSpaceIsASideEffect() {
+        let start = UserState(front: 100, pointer: .zero, space: 1)
+        var now = start
+        now.front = 300
+        XCTAssertEqual(sideEffect(start: start, now: now, pid: 300, point: nil, targetOnScreen: true), .targetCameForward)
+        now = start
+        now.space = 2
+        XCTAssertEqual(sideEffect(start: start, now: now, pid: 300, point: nil, targetOnScreen: true), .spaceSwitchedToTarget)
+    }
+
     func testTheFocusClickLandsInsideTheWindowOrNotAtAll() {
         let window = CGRect(x: 0, y: 0, width: 400, height: 300)
         let partlyBelow = CGRect(x: 100, y: 250, width: 200, height: 100)
