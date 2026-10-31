@@ -1610,26 +1610,31 @@ describe('native chat routes (contract v0.3.1)', () => {
       ]);
       projectorMock.snapshot.mockReturnValue(page([
         // The queued steer (Claude Code 2.1.312) and an ordinary photo prompt.
-        { id: 'q1', kind: 'user_text', text: '[Image #4] [Image #5] [Image #6] [Image #7]', hasImage: true },
-        { id: 'u2', kind: 'user_text', text: '[Image #8]this crashes', hasImage: true },
+        { id: 'q1', kind: 'user_text', text: '[Image #4] [Image #5] [Image #6] [Image #7]', hasImage: true, ts: 10 },
+        { id: 'u2', kind: 'user_text', text: '[Image #8]this crashes', hasImage: true, ts: 10 },
         // Text that reads like placeholders, without a photo: exact match only.
         { id: 'u3', kind: 'user_text', text: '[Image #1] see [Image #1]' },
         // Two paths typed, one placeholder recorded.
-        { id: 'u4', kind: 'user_text', text: '[Image #9]', hasImage: true },
+        { id: 'u4', kind: 'user_text', text: '[Image #9]', hasImage: true, ts: 10 },
       ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
       const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
       expect(events.map((e) => e.clientMessageId)).toEqual([steer, normal, undefined, undefined]);
 
-      // Two photo-only sends read alike: a page holding only the newer row takes the newer id.
+      // Two photo-only sends of the same count, 3 s apart, read alike: the
+      // older row is in time for both, yet each row keeps its own send.
       const [older, newer] = [freshId(), freshId()];
       fns.delivered.mockImplementation(() => [
         { clientMessageId: older, text: shot(1), at: 1_000 },
-        { clientMessageId: newer, text: shot(2), at: 60_000 },
+        { clientMessageId: newer, text: shot(2), at: 4_000 },
       ]);
       projectorMock.snapshot.mockReturnValue(page([
-        { id: 'u5', kind: 'user_text', text: '[Image #2]', hasImage: true, ts: 61_000 },
+        { id: 'u5', kind: 'user_text', text: '[Image #1]', hasImage: true, ts: 3_000 },
+        { id: 'u6', kind: 'user_text', text: '[Image #2]', hasImage: true, ts: 5_000 },
+        // No time: it cannot be placed against the sends, so the photo rule skips it.
+        { id: 'u7', kind: 'user_text', text: '[Image #3]', hasImage: true },
       ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
-      expect((await turns(h)).body.events[0]).toMatchObject({ id: 'u5', clientMessageId: newer });
+      const alike = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(alike.map((e) => e.clientMessageId)).toEqual([older, newer, undefined]);
     });
 
     it('send: only a request carrying the cap opts into the queue, and a queued answer is 202 effect queued', async () => {

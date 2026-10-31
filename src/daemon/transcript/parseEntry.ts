@@ -123,7 +123,7 @@ export function parseTranscriptLineDetailed(
         return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
       }
       // With photos the prompt is content blocks (2.1.312), read as a user entry's.
-      if (Array.isArray(prompt)) return parseUserEntry(entry, prompt, baseId, ts, offsetHint);
+      if (Array.isArray(prompt)) return parseUserEntry(entry, prompt, baseId, ts, offsetHint, true);
     }
     return empty;
   }
@@ -173,6 +173,8 @@ function parseUserEntry(
   baseId: string,
   ts: number | undefined,
   offsetHint: number,
+  /** The operator's own words (a queued prompt): never read as a meta row, as its string form is not. */
+  typed = false,
 ): ParsedTranscriptLine {
   const empty: ParsedTranscriptLine = { events: [], bodies: new Map() };
 
@@ -221,7 +223,7 @@ function parseUserEntry(
   }
   // The source note of the image in the previous entry: an `isMeta` entry of
   // nothing but `[Image: source: …]` lines.
-  if (!hasImage && sourceTexts.length && !parts.length && !out.length && entry['isMeta'] === true) {
+  if (!typed && !hasImage && sourceTexts.length && !parts.length && !out.length && entry['isMeta'] === true) {
     return single({ ...metaEvent(baseId, ts, 'caveat', 'Image source'), images: images.slice(0, 8) }, empty);
   }
   // Without an image block the line is the user's own words.
@@ -229,12 +231,12 @@ function parseUserEntry(
   const prose = parts.join('\n').trim();
   // Claude Code records an ESC interrupt as a text block of its own. A typed
   // prompt is stored as a plain string, so the same words typed stay a message.
-  if (!hasImage && !out.length && /^\[Request interrupted by user(?: for tool use)?\]$/.test(prose)) {
+  if (!typed && !hasImage && !out.length && /^\[Request interrupted by user(?: for tool use)?\]$/.test(prose)) {
     return single(metaEvent(baseId, ts, 'turn_aborted', 'Interrupted'), empty);
   }
   // Only classify when there IS prose: a bare tool-result entry keeps its
   // previous shape (results only, no chip) even if it carries `isMeta`.
-  const meta = prose ? classifyMetaUser(entry, prose) : null;
+  const meta = prose && !typed ? classifyMetaUser(entry, prose) : null;
   if (meta) {
     out.push(metaEvent(`${baseId}#${out.length}`, ts, meta.subtype, meta.label));
   } else {

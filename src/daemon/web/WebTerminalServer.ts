@@ -5151,10 +5151,11 @@ export class WebTerminalServer {
       const inTime = (m: ChatDeliveredMessage) => ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS;
       let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
       // A photo row reads `[Image #N]` where the typed text held the upload path.
-      // Photo-only sends all read alike, so the latest delivery before the row
-      // wins: a page holding only the newest row must not take an older id.
-      for (let i = unused.length - 1; index < 0 && event.hasImage === true && i >= 0; i--) {
-        if (inTime(unused[i]) && photoMatches(unused[i].text, text)) index = i;
+      // Rows run oldest first, and so does the claim: each takes the oldest
+      // unclaimed send it matches, so two alike sends keep their own ids. A row
+      // without a time cannot be placed against the sends, so it is not paired.
+      if (index < 0 && event.hasImage === true && ts !== undefined) {
+        index = unused.findIndex((m) => inTime(m) && photoMatches(m.text, text));
       }
       if (index < 0) return event;
       const [match] = unused.splice(index, 1);
