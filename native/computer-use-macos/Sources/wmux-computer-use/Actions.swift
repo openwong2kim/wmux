@@ -191,8 +191,10 @@ enum Focus {
 
     /// Secure input (a password field anywhere has focus, or the focused
     /// element of the target is a password field): keystrokes are refused.
-    static func refuseSecureInput(_ pid: pid_t) throws {
-        if IsSecureEventInputEnabled() {
+    /// `global: false` skips the system-wide flag, for keys posted to an app
+    /// that is not frontmost: that flag is then the user's own password field.
+    static func refuseSecureInput(_ pid: pid_t, global: Bool = true) throws {
+        if global, IsSecureEventInputEnabled() {
             throw HelperError("app_blocked", "secure keyboard entry is on (a password field has focus); wmux does not type into it")
         }
         if let el = AX.element(AX.app(pid), kAXFocusedUIElementAttribute), isSecure(el) {
@@ -389,6 +391,12 @@ enum Actions {
             let start = Background.userState()
             let sentBefore = Input.shared.sent
             var previousKey: CGWindowID?
+            // Key status goes back on every way out, an error included.
+            func restoreKey() {
+                Background.restoreKey(windowID, to: previousKey, pid: target.pid)
+                previousKey = nil
+            }
+            defer { restoreKey() }
             var focusPoint: CGPoint?
             var typed = 0
             do {
@@ -405,16 +413,25 @@ enum Actions {
                     if !(await Background.focus(el, target, windowID, clickAt: focusPoint)) {
                         throw Background.Stop(reason: "element \(index) did not take keyboard focus in the background")
                     }
-                } else if !Background.focusedFieldTakesText(target.pid) {
-                    throw Background.Stop(reason: "the app has no focused text field to type into in the background")
+                } else {
+                    if let el = AX.element(AX.app(target.pid), kAXFocusedUIElementAttribute), Focus.isSecure(el) {
+                        throw HelperError("app_blocked", "the focused field is a password field; wmux does not type into it")
+                    }
+                    if !Background.focusedFieldTakesText(target.pid) {
+                        throw Background.Stop(reason: "the app has no focused text field to type into in the background")
+                    }
                 }
-                try Background.requireStillSafe(target, windowID, since: start, point: focusPoint)
+                // The focus click's own effect on the pointer is checked once,
+                // here; the per-chunk checks leave the pointer to the user.
+                try Background.requireStillSafe(target, windowID, since: start, point: focusPoint, beforeFirstKey: true)
                 await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
                 let before = focusedValue(target.pid)
                 var stop: Error?
+                var checks = 0
                 typed = Background.type(pid: target.pid, text) {
+                    checks += 1
                     do {
-                        try Background.requireStillSafe(target, windowID, since: start, point: focusPoint)
+                        try Background.requireStillSafe(target, windowID, since: start, beforeFirstKey: checks == 1)
                         return true
                     } catch {
                         stop = error
@@ -423,21 +440,23 @@ enum Actions {
                 }
                 if typed < text.count {
                     if let stop = stop as? Background.Stop { throw stop }
-                    let e = stop as? HelperError ?? HelperError("window_not_focused", "focus left the target")
+                    guard let e = stop as? HelperError else { throw Background.Stop(reason: "a key event could not be posted") }
                     throw HelperError(e.code, "\(e.message) (after \(typed) of \(text.count) characters; the rest was not typed)")
                 }
                 let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
-                Background.restoreKey(windowID, to: previousKey, pid: target.pid)
+                restoreKey()
                 return await backgroundResult(verified, since: start, pid: target.pid, point: focusPoint)
             } catch let stop as Background.Stop {
                 if Input.shared.sent != sentBefore {
                     let back = await Background.settle(after: start, pid: target.pid, point: focusPoint)
-                    Background.restoreKey(windowID, to: previousKey, pid: target.pid)
+                    restoreKey()
                     let note = back.map { " (\($0))" } ?? ""
-                    // A focus click alone went out: real input now could click
-                    // the field again and select a word, so the call ends.
+                    // Only focus went out (key status moved, or a focus click):
+                    // real input now could click the field again and select a
+                    // word, so the call ends.
                     if typed == 0 {
-                        throw HelperError("window_not_focused", "\(stop.reason) after a background click on the field; nothing was typed\(note). It may have focus now: call getAppState, then type without an index")
+                        let after = focusPoint == nil ? "after the window was focused in the background" : "after a background click on the field"
+                        throw HelperError("window_not_focused", "\(stop.reason) \(after); nothing was typed\(note). It may have focus now: call getAppState, then type without an index")
                     }
                     throw HelperError("window_not_focused", "\(stop.reason) while typing in the background, after \(typed) of \(text.count) characters; the rest was not typed\(note)")
                 }
@@ -513,6 +532,12 @@ enum Actions {
             let start = Background.userState()
             let sentBefore = Input.shared.sent
             var previousKey: CGWindowID?
+            // Key status goes back on every way out, an error included.
+            func restoreKey() {
+                Background.restoreKey(windowID, to: previousKey, pid: target.pid)
+                previousKey = nil
+            }
+            defer { restoreKey() }
             var pressed = 0
             do {
                 let focus = await Background.focusWindow(target, windowID)
@@ -521,18 +546,21 @@ enum Actions {
                 await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
                 for n in 0..<repeatCount {
                     do {
-                        try Background.requireStillSafe(target, windowID, since: start)
+                        try Background.requireStillSafe(target, windowID, since: start, beforeFirstKey: n == 0)
                     } catch let e as HelperError {
                         throw HelperError(e.code, n == 0 ? e.message : "\(e.message) (after \(n) of \(repeatCount) presses; the rest were not sent)")
                     }
-                    Background.tap(pid: target.pid, key: code, flags: flags)
+                    guard Background.tap(pid: target.pid, key: code, flags: flags) else {
+                        throw Background.Stop(reason: "the key event could not be posted")
+                    }
                     pressed += 1
                     usleep(4_000)
                 }
-                Background.restoreKey(windowID, to: previousKey, pid: target.pid)
+                restoreKey()
                 return await backgroundResult(since: start, pid: target.pid)
             } catch let stop as Background.Stop {
-                if Input.shared.sent != sentBefore { Background.restoreKey(windowID, to: previousKey, pid: target.pid) }
+                // The defer restores key status once this is decided: its
+                // own records must not count as this input.
                 why = try realInputAfter(stop, sentBefore: sentBefore, detail: " (after \(pressed) of \(repeatCount) presses)")
             }
         }
@@ -568,15 +596,27 @@ enum Actions {
         if why == nil, let windowID {
             let start = Background.userState()
             let sentBefore = Input.shared.sent
+            var previousKey: CGWindowID?
+            // Key status goes back on every way out, an error included.
+            func restoreKey() {
+                Background.restoreKey(windowID, to: previousKey, pid: target.pid)
+                previousKey = nil
+            }
+            defer { restoreKey() }
             do {
                 let focus = await Background.focusWindow(target, windowID)
+                previousKey = focus.previous
                 guard focus.ok else { throw Background.Stop(reason: "the target window did not take focus in the background") }
                 await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
-                try Background.requireStillSafe(target, windowID, since: start)
-                Background.tap(pid: target.pid, key: code, flags: flags)
-                Background.restoreKey(windowID, to: focus.previous, pid: target.pid)
+                try Background.requireStillSafe(target, windowID, since: start, beforeFirstKey: true)
+                guard Background.tap(pid: target.pid, key: code, flags: flags) else {
+                    throw Background.Stop(reason: "the key event could not be posted")
+                }
+                restoreKey()
                 return await backgroundResult(since: start, pid: target.pid)
             } catch let stop as Background.Stop {
+                // The defer restores key status once this is decided: its
+                // own records must not count as this input.
                 why = try realInputAfter(stop, sentBefore: sentBefore)
             }
         }

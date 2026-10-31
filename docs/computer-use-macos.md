@@ -220,21 +220,26 @@ is not re-walked.
     without the message, so a Command shortcut to a Chromium-based app goes
     as real input.
   - Before every batch, chunk and notch: the screen is unlocked, the window is
-    still on screen, and our own input has had no side effect on the user
+    still on screen (for keys, only before the first key: posted keys reach
+    the app anyway), and our own input has had no side effect on the user
     (`ComputerUseCore` `sideEffect`). That means the real pointer has not
     ended at the point the input went to, the target app has not come to the
     front, and the Space has not switched to the target window's. The user
     moving the pointer elsewhere, or switching to another app, does not stop
-    it.
+    it. The pointer is checked against a `type` focus click once, right
+    after that click. Keys also stop on a password field focused in the
+    target, with or without an index, and on system-wide secure input only
+    while the target is the frontmost app.
   - A check that fails before anything was posted sends the input as real
-    input instead. Once something was posted, the call ends with
+    input instead. Once something was posted (an event, or an event record
+    that moved key status inside the app), the call ends with
     `window_not_focused` and `delivered_unverified`, and no real input
     follows, which could do it twice. That includes a background focus click
     for `type` after which the field did not report focus or the app came
     forward; the call then says to check the app and type without an index.
   - After the input, an app that brought itself to the front is put back
     behind the user's app, and key status goes back to the app's window that
-    had it before. The result says `foreground`, with a note, when the app
+    had it before, on every way out, an error included. The result says `foreground`, with a note, when the app
     came forward or the real pointer ended at the target point.
   - It also goes as real input, before anything is posted, with
     `delivery: "foreground"` and a note saying why, when

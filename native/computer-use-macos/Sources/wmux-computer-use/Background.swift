@@ -95,10 +95,11 @@ enum Background {
     }
 
     /// Stops on a side effect of our own input (ComputerUseCore sideEffect),
-    /// or once the target window left the screen. `point`: where the pointer
-    /// input goes, if any. The user moving the pointer elsewhere or switching
-    /// apps does not stop it.
-    static func check(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState, point: CGPoint?) throws {
+    /// or, with `requireOnScreen`, once the target window left the screen.
+    /// `point`: where the pointer input goes, if any. The user moving the
+    /// pointer elsewhere or switching apps does not stop it.
+    static func check(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState, point: CGPoint?,
+                      requireOnScreen: Bool = true) throws {
         let visible = onScreen(target.pid, windowID)
         switch sideEffect(start: start, now: userState(), pid: target.pid, point: point, targetOnScreen: visible) {
         case .pointerAtTarget: throw Stop(reason: "the real pointer moved to the target point")
@@ -106,7 +107,7 @@ enum Background {
         case .spaceSwitchedToTarget: throw Stop(reason: "the Space switched to the target window's")
         case nil: break
         }
-        if !visible { throw Stop(reason: "the target window left the screen") }
+        if requireOnScreen, !visible { throw Stop(reason: "the target window left the screen") }
     }
 
     /// The target app is in front now and was not when the action started.
@@ -209,13 +210,18 @@ enum Background {
     /// The re-check before every typed chunk and key press: the screen is not
     /// locked, no side effect of ours (check, with the focus click's `point`),
     /// the window still focused in its app, and no password field has focus.
-    static func requireStillSafe(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState, point: CGPoint? = nil) throws {
+    /// The window must be on screen only before the first key
+    /// (`beforeFirstKey`): keys posted to the app reach it anyway, and the
+    /// user switching Spaces mid-type is no reason to stop. The system-wide
+    /// secure-input flag counts only while the target is frontmost.
+    static func requireStillSafe(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState, point: CGPoint? = nil,
+                                 beforeFirstKey: Bool) throws {
         if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; the rest was not sent") }
-        try check(target, windowID, since: start, point: point)
+        try check(target, windowID, since: start, point: point, requireOnScreen: beforeFirstKey)
         guard AX.element(AX.app(target.pid), kAXFocusedWindowAttribute).flatMap(AX.windowID) == windowID else {
             throw Stop(reason: "the target window is no longer the app's focused window")
         }
-        try Focus.refuseSecureInput(target.pid)
+        try Focus.refuseSecureInput(target.pid, global: NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid)
     }
 
     // MARK: Posting
@@ -274,24 +280,27 @@ enum Background {
 
     /// Types `text` as Unicode key events (named keys for Enter and Tab),
     /// posted to the process. `shouldContinue` runs before every chunk.
-    /// Returns how many characters were typed.
+    /// Returns how many characters were posted; it stops at the first chunk
+    /// that could not be.
     static func type(pid: pid_t, _ text: String, shouldContinue: () -> Bool) -> Int {
         var typed = 0
         for chunk in unicodeChunks(text) {
             guard shouldContinue() else { return typed }
+            let posted: Bool
             switch chunk {
             case .key(let name):
-                if let code = KeyCodes.named[name] { tap(pid: pid, key: code, flags: []) }
+                posted = KeyCodes.named[name].map { tap(pid: pid, key: $0, flags: []) } ?? false
             case .text(let s):
                 let units = Array(s.utf16)
                 guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-                      let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { break }
+                      let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return typed }
                 for e in [down, up] {
                     e.flags = []
                     e.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
                 }
-                _ = postKey(down: down, up: up, pid: pid, auth: SkyLight.keyAuth)
+                posted = postKey(down: down, up: up, pid: pid, auth: SkyLight.keyAuth)
             }
+            guard posted else { return typed }
             typed += chunk.characterCount
         }
         return typed
