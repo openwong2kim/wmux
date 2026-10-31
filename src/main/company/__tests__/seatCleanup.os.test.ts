@@ -193,6 +193,23 @@ describe('the seat sweep', () => {
     // On no branch but still at the base: nothing of its own to lose.
     g(dev2, 'checkout', '-q', '--detach');
     expect(await remove(dev2, false)).toMatchObject({ ok: true });
+    // A folder git does not know is refused as that, not as commits.
+    const stray = path.join(path.dirname(dev1), 'stray-456789ab');
+    fs.mkdirSync(stray);
+    expect(await remove(stray, false)).toEqual({ ok: false, reason: 'unregistered' });
+  });
+
+  it('keeps and lists a seat whose own branch has commits only here after HEAD left it', async () => {
+    const [dev1] = await seats();
+    commit(dev1, 'kept.txt');
+    g(dev1, 'checkout', '-q', '--detach', 'origin/main');
+    expect((await sweep())?.removed).not.toContain(dev1);
+    expect(fs.existsSync(dev1)).toBe(true);
+    expect(branches()).toContain('company/dev-1-456789ab');
+    const listed = await listCompanySeatLeftovers({
+      root, sessions: async () => ({ sessions: [], recoveryDone: true }), keep: [], now: () => LATER,
+    });
+    expect(listed.find((s) => s.worktreePath === dev1)).toMatchObject({ reason: 'unpushed', commits: 1 });
   });
 
   it('removes nothing until the daemon has recovered its sessions, and answers at once with no seat folder', async () => {
@@ -224,6 +241,24 @@ describe('serialSeatSweeps', () => {
     expect(await second).toEqual({ run: 2, removed: 2 });
     expect(await third).toEqual({ run: 2, removed: 2 });
     expect(calls).toEqual([['k1'], ['k3']]);
+  });
+
+  it('tries again with the newest keep set a request brought while it waited', async () => {
+    let wake: () => void = () => undefined;
+    const sleep = vi.fn(() => new Promise<void>((resolve) => { wake = resolve; }));
+    const calls: (readonly string[])[] = [];
+    const sweep = vi.fn(async (keep: readonly string[]) => {
+      calls.push(keep);
+      return calls.length === 1 ? null : { removed: [] };
+    });
+    const sweeps = serialSeatSweeps(sweep, { attempts: 3, delayMs: 15_000, sleep });
+    const first = sweeps.request(['k1']);
+    await vi.waitFor(() => expect(sleep).toHaveBeenCalled(), { timeout: 5_000 });
+    const second = sweeps.request(['k2']);
+    wake();
+    await first;
+    await second;
+    expect(calls).toEqual([['k1'], ['k2'], ['k2']]);
   });
 
   it('tries again while the daemon is not ready, and gives up after its attempts', async () => {

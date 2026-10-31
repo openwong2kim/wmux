@@ -45,6 +45,9 @@ export interface SeatGitFacts {
   head?: string;
   /** `rev-list HEAD --not --remotes --count`: commits on no remote ref. */
   onlyHere: number;
+  /** The same count for `company/<folder>` when HEAD has left it (0 at the
+   *  base or at HEAD). */
+  branchOnlyHere: number;
 }
 
 export interface SeatFacts {
@@ -85,6 +88,7 @@ export function seatVerdict(f: SeatFacts): SeatVerdict {
   if (git.dirty) return { kind: 'list', reason: 'uncommitted' };
   const atBase = f.baseOid !== undefined && git.head === f.baseOid;
   if (git.onlyHere > 0 && !atBase) return { kind: 'list', reason: 'unpushed', commits: git.onlyHere };
+  if (git.branchOnlyHere > 0) return { kind: 'list', reason: 'unpushed', commits: git.branchOnlyHere };
   return { kind: 'remove' };
 }
 

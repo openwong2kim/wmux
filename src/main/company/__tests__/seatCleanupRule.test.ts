@@ -7,7 +7,7 @@ const BASE = 'a'.repeat(40);
 const LATER = 'b'.repeat(40);
 
 /** A folder every check lets go: old, unused, free, clean, all on a remote. */
-const clean: SeatGitFacts = { registered: true, locked: false, dirty: false, head: LATER, onlyHere: 0 };
+const clean: SeatGitFacts = { registered: true, locked: false, dirty: false, head: LATER, onlyHere: 0, branchOnlyHere: 0 };
 const facts = (over: Partial<SeatFacts> = {}, git: Partial<SeatGitFacts> | null = {}): SeatFacts => ({
   ageMs: SEAT_SWEEP_MIN_AGE_MS + 1,
   liveSession: false,
@@ -54,6 +54,10 @@ describe('seatVerdict', () => {
     expect(seatVerdict(facts({}, { onlyHere: 1 }))).toEqual({ kind: 'list', reason: 'unpushed', commits: 1 });
     // Without a stamp nothing says which commits are the base's.
     expect(seatVerdict(facts({ baseOid: undefined }, { head: BASE, onlyHere: 12 }))).toEqual({ kind: 'list', reason: 'unpushed', commits: 12 });
+  });
+
+  it('lists commits only on the seat branch HEAD has left, even with HEAD back at the base', () => {
+    expect(seatVerdict(facts({}, { head: BASE, branchOnlyHere: 2 }))).toEqual({ kind: 'list', reason: 'unpushed', commits: 2 });
   });
 
   it('removes a folder still at the commit its branch was made at, with no remote at all', () => {

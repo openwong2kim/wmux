@@ -122,9 +122,9 @@ async function sessionIn(dir: string, sessions: readonly SeatSession[], platform
 
 /** What git says about the folder. A read that fails counts as uncommitted
  *  changes: the folder stays, listed, and a person looks at it. */
-async function gitFactsOf(dir: string, git: SeatGit): Promise<SeatGitFacts> {
+async function gitFactsOf(dir: string, git: SeatGit, baseOid?: string): Promise<SeatGitFacts> {
   const top = await git(['rev-parse', '--show-toplevel'], dir);
-  if (top.code !== 0 || canonical(top.stdout.trim()) !== dir) return { registered: false, locked: false, dirty: false, onlyHere: 0 };
+  if (top.code !== 0 || canonical(top.stdout.trim()) !== dir) return { registered: false, locked: false, dirty: false, onlyHere: 0, branchOnlyHere: 0 };
   const lock = await git(['rev-parse', '--git-path', 'locked'], dir);
   // A status read could run a content filter the repository's config names.
   const pre = await workerGitPreflight((args) => git(args, dir), 'read');
@@ -133,12 +133,21 @@ async function gitFactsOf(dir: string, git: SeatGit): Promise<SeatGitFacts> {
   const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], dir);
   const ahead = await git(['rev-list', '--count', 'HEAD', '--not', '--remotes'], dir);
   const onlyHere = Number.parseInt(ahead.stdout.trim(), 10);
+  // The seat's own branch, when HEAD has left it: commits there stay with
+  // the branch, but the folder is the only place that says so.
+  const branch = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${COMPANY_SEAT_BRANCH_PREFIX}${path.basename(dir)}^{commit}`], dir);
+  const branchOid = branch.code === 0 ? branch.stdout.trim() : undefined;
+  const branchAhead = branchOid && branchOid !== baseOid && branchOid !== head.stdout.trim()
+    ? Number.parseInt((await git(['rev-list', '--count', branchOid, '--not', '--remotes'], dir)).stdout.trim(), 10)
+    : 0;
   return {
     registered: true,
     locked: lock.code === 0 && fs.existsSync(path.resolve(dir, lock.stdout.trim())),
     dirty: changes !== '' || lock.code !== 0 || ahead.code !== 0 || !Number.isFinite(onlyHere),
     ...(head.code === 0 && OID.test(head.stdout.trim()) ? { head: head.stdout.trim() } : {}),
     onlyHere: Number.isFinite(onlyHere) ? onlyHere : 0,
+    // A count that cannot be read keeps the folder.
+    branchOnlyHere: Number.isFinite(branchAhead) ? branchAhead : 1,
   };
 }
 
@@ -160,7 +169,7 @@ async function reportOf(dir: string, sessions: readonly SeatSession[], deps: Sea
     ...(stamp.baseOid ? { baseOid: stamp.baseOid } : {}),
   };
   let verdict = seatVerdict(facts);
-  if (verdict.kind === 'needs-git') verdict = seatVerdict({ ...facts, git: await gitFactsOf(dir, deps.git ?? defaultGit) });
+  if (verdict.kind === 'needs-git') verdict = seatVerdict({ ...facts, git: await gitFactsOf(dir, deps.git ?? defaultGit, stamp.baseOid) });
   return {
     dir, verdict,
     ...(stamp.label ? { label: stamp.label } : {}),
@@ -274,9 +283,12 @@ export async function listCompanySeatLeftovers(deps: SeatCleanupDeps): Promise<C
 /** HEAD is on no branch and holds commits on no remote ref (not the stamp's
  *  base): removing the folder would take them with it. */
 async function detachedWorkOnlyHere(dir: string, git: SeatGit): Promise<boolean> {
+  // A folder git does not know is the shape check's to refuse ('unregistered').
+  const top = await git(['rev-parse', '--show-toplevel'], dir);
+  if (top.code !== 0 || canonical(top.stdout.trim()) !== dir) return false;
   if ((await git(['symbolic-ref', '-q', 'HEAD'], dir)).code === 0) return false;
   const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], dir);
-  if (head.code === 0 && head.stdout.trim() === readStamp(dir).baseOid) return false;
+  if (head.code !== 0 || head.stdout.trim() === readStamp(dir).baseOid) return false;
   const ahead = await git(['rev-list', '--count', 'HEAD', '--not', '--remotes'], dir);
   return ahead.code !== 0 || ahead.stdout.trim() !== '0';
 }
@@ -330,18 +342,20 @@ export function serialSeatSweeps(
   let running: Promise<SeatSweepRun> | null = null;
   let queued: Promise<SeatSweepRun> | null = null;
   let latest: readonly string[] = [];
-  const attempts = async (keep: readonly string[]): Promise<number> => {
+  // Each attempt reads the newest keep set: a sweep waiting on the daemon
+  // must not judge with the folders the window kept minutes ago.
+  const attempts = async (): Promise<number> => {
     for (let attempt = 1; !stopped; attempt++) {
-      const done = await sweep(keep);
+      const done = await sweep(latest);
       if (done) return done.removed.length;
       if (attempt >= opts.attempts) break;
       await sleep(opts.delayMs);
     }
     return 0;
   };
-  const start = (keep: readonly string[]): Promise<SeatSweepRun> => {
+  const start = (): Promise<SeatSweepRun> => {
     const run = ++runs;
-    const p = attempts(keep).catch((err: unknown) => {
+    const p = attempts().catch((err: unknown) => {
       opts.log?.(`[company] seat sweep failed: ${String(err)}`);
       return 0;
     }).then((removed) => ({ run, removed }));
@@ -351,11 +365,11 @@ export function serialSeatSweeps(
   };
   return {
     request(keep) {
-      if (!running) return start(keep);
       latest = keep;
+      if (!running) return start();
       queued ??= running.then(() => {
         queued = null;
-        return start(latest);
+        return start();
       });
       return queued;
     },
