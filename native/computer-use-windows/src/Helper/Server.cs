@@ -11,6 +11,9 @@ internal static class Server
     /// <summary>src/shared/computer/protocol.ts COMPUTER_PROTOCOL_VERSION.</summary>
     public const int ProtocolVersion = 2;
 
+    /// <summary>Methods whose errors say whether input was sent (protocol ActionDisposition).</summary>
+    private static readonly string[] ControlMethods = ["click", "setValue", "type", "pressKey", "hotkey", "scroll"];
+
     private static readonly string[] AgentActions =
     [
         "capabilities", "listApps", "listWindows", "getAppState",
@@ -44,6 +47,11 @@ internal static class Server
         ["methods"] = new JsonArray(AgentActions.Concat(["resolveTarget", "releaseInput"]).Select(m => (JsonNode)m).ToArray()),
         ["modes"] = new JsonArray("ax", "vision", "both"),
         ["permissions"] = new JsonObject { ["accessibility"] = true, ["screenRecording"] = true },
+        // Background input (BackgroundInput.cs): a posted left click leaves
+        // the cursor alone; nothing gives a window focus without the app
+        // taking it itself; posted keys reach Chromium-based apps after a
+        // posted click on the field.
+        ["input"] = new JsonObject { ["backgroundPointer"] = true, ["focusWithoutRaise"] = false, ["keyAuth"] = true },
     };
 
     public static void Handle(byte[] line)
@@ -68,6 +76,7 @@ internal static class Server
         int id = (int)idNumber;
         var method = request["method"] is JsonValue m && m.GetValueKind() == JsonValueKind.String ? m.GetValue<string>() : "";
         var p = new Params(request["params"] as JsonObject ?? new JsonObject());
+        long sentBefore = Input.Sent;
         try
         {
             var result = Dispatch(method, p);
@@ -75,20 +84,28 @@ internal static class Server
         }
         catch (HelperError e)
         {
-            Wire.Send(Error(id, e.Code, e.Message), id);
+            Wire.Send(Error(id, e.Code, e.Message, Disposition(method, sentBefore)), id);
         }
         catch (Exception e)
         {
-            Wire.Send(Error(id, Uia.ErrorCode(e), Uia.Describe(e)), id);
+            Wire.Send(Error(id, Uia.ErrorCode(e), Uia.Describe(e), Disposition(method, sentBefore)), id);
         }
     }
 
-    private static JsonObject Error(int id, string code, string message) => new()
+    /// <summary>
+    /// A control method's error says whether it sent anything: main may retry
+    /// only a `not_delivered` one. Input.Sent counts every input event,
+    /// posted message and UIA pattern call that may have reached an app.
+    /// </summary>
+    private static string? Disposition(string method, long sentBefore) =>
+        !ControlMethods.Contains(method) ? null : Input.Sent == sentBefore ? "not_delivered" : "delivered_unverified";
+
+    private static JsonObject Error(int id, string code, string message, string? disposition = null)
     {
-        ["id"] = id,
-        ["ok"] = false,
-        ["error"] = new JsonObject { ["code"] = code, ["message"] = message },
-    };
+        var error = new JsonObject { ["code"] = code, ["message"] = message };
+        if (disposition != null) error["disposition"] = disposition;
+        return new JsonObject { ["id"] = id, ["ok"] = false, ["error"] = error };
+    }
 
     private static JsonNode Dispatch(string method, Params p)
     {
