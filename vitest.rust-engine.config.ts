@@ -22,6 +22,7 @@ const nodeOnly = [
   // starts a real shell (cmd.exe on a mocked win32 fails to start at all).
   'src/daemon/__tests__/DaemonSessionManager.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.wslSecretEnv.os.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.shellMarks.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.secretEnv.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.hostWindow.test.ts',
   'src/daemon/__tests__/spawnCwdRefusal.os.test.ts',
