@@ -485,13 +485,13 @@ export class ComputerService {
     sent: { requested: boolean },
     send: () => Promise<T>,
   ): Promise<T> {
-    this.lease.take(agent, now);
+    const ticket = this.lease.take(agent, now);
     try {
       return await send();
     } catch (err) {
       throw needsForegroundAsInternal(err, sent);
     } finally {
-      this.lease.touch(agent, this.now());
+      this.lease.touch(ticket, this.now());
     }
   }
 

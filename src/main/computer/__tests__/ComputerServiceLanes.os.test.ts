@@ -452,6 +452,38 @@ describe('ComputerService input lanes', () => {
     expect((await withinDeadline(late)).delivery).toBe('foreground');
   });
 
+  it('a real-input request that outlives a stop does not release the same agent\'s next lease', async () => {
+    const h = makeService(true);
+    const { service, pending, controlCalls, done, advance } = h;
+    // The request is not at the helper yet (it waits for a replacement
+    // helper), so the stop cannot kill it: it settles after the stop.
+    h.helper.abort = vi.fn();
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const old = service.control(AGENT_A, { action: 'hotkey', snapshotId: a.snapshotId, keys: ['ctrl', 's'] }).catch((e: unknown) => e);
+    await settle();
+    const oldCall = oldest(pending);
+    service.abort();
+    advance(ABORT_COOLDOWN_MS + 1);
+
+    const p = await service.getAppState(AGENT_A, { app: 'Paint' });
+    const next = service.control(AGENT_A, { action: 'hotkey', snapshotId: p.snapshotId, keys: ['ctrl', 's'] });
+    await settle();
+    const nextCall = oldest(pending);
+    done(oldCall, 'foreground');
+    await withinDeadline(old);
+
+    // A's new real input is still on its way: B must not get the lease.
+    advance(INPUT_LOCK_IDLE_MS + 1);
+    const b = await service.getAppState(AGENT_B, { app: 'Notepad' });
+    const before = controlCalls.length;
+    const busy = service.control(AGENT_B, { action: 'click', snapshotId: b.snapshotId, index: 0, button: 'right' }).catch((e: unknown) => e);
+    await settle();
+    expect(controlCalls.length).toBe(before);
+    expect(((await withinDeadline(busy)) as ComputerError).code).toBe('input_busy');
+    done(nextCall, 'foreground');
+    await withinDeadline(next);
+  });
+
   it.each([
     ['a foreground-certain action', true, 'not_delivered', 'not_delivered'],
     ['a foreground-certain action', true, 'delivered_unverified', 'delivered_unverified'],

@@ -24,6 +24,12 @@ import type { ComputerControlAction, Modifier, MouseButton } from '../../shared/
 
 export const INPUT_LOCK_IDLE_MS = 15_000;
 
+/** What one `take` returns, handed back to `touch`: the agent and the lease epoch it was taken in. */
+export interface LeaseTicket {
+  readonly agentKey: string;
+  readonly epoch: number;
+}
+
 /**
  * One agent's hold on real input. It is busy from `take` until the matching
  * `touch` (the real-input request settled), however long that request waits
@@ -32,6 +38,8 @@ export const INPUT_LOCK_IDLE_MS = 15_000;
  */
 export class ForegroundLease {
   private holder: { agentKey: string; label: string; lastUsedAt: number; busy: number } | null = null;
+  /** Bumped by every `clear`: a request taken before a stop cannot touch a lease taken after it. */
+  private epoch = 0;
 
   constructor(private readonly idleMs = INPUT_LOCK_IDLE_MS) {}
 
@@ -44,18 +52,23 @@ export class ForegroundLease {
    * another agent holds it (busy, or idle for no more than idleMs). Every
    * successful take must be followed by one `touch` once that request settles.
    */
-  take(agent: { key: string; label: string }, now: number): void {
+  take(agent: { key: string; label: string }, now: number): LeaseTicket {
     if (this.holder && this.holder.agentKey !== agent.key && this.held(now)) {
       // The label, never the key: the key carries pane ids.
       throw new ComputerError('input_busy', `${this.holder.label} is using the desktop`);
     }
     const busy = this.holder?.agentKey === agent.key ? this.holder.busy : 0;
     this.holder = { agentKey: agent.key, label: agent.label, lastUsedAt: now, busy: busy + 1 };
+    return { agentKey: agent.key, epoch: this.epoch };
   }
 
-  /** `agent`'s real-input request settled: the idle time starts now. A no-op after a stop cleared it. */
-  touch(agent: { key: string }, now: number): void {
-    if (!this.holder || this.holder.agentKey !== agent.key) return;
+  /**
+   * The request `ticket` was taken for settled: the idle time starts now. A
+   * no-op once a stop cleared the lease it was taken in, even when the same
+   * agent has taken the lease again since.
+   */
+  touch(ticket: LeaseTicket, now: number): void {
+    if (!this.holder || ticket.epoch !== this.epoch || this.holder.agentKey !== ticket.agentKey) return;
     this.holder.busy = Math.max(0, this.holder.busy - 1);
     this.holder.lastUsedAt = now;
   }
@@ -67,6 +80,7 @@ export class ForegroundLease {
 
   clear(): void {
     this.holder = null;
+    this.epoch += 1;
   }
 }
 
