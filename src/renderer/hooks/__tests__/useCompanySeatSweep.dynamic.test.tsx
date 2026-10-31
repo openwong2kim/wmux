@@ -123,6 +123,8 @@ describe('useCompanySeatSweep', () => {
     vi.advanceTimersByTime(COMPANY_SEAT_SWEEP_DEBOUNCE_MS);
     await flush();
     expect(sweepCompanySeats).toHaveBeenCalledTimes(3);
-    expect(useStore.getState().toasts.map((toast) => toast.level)).toEqual(['info']);
+    expect(useStore.getState().toasts.map((toast) => [toast.level, toast.message])).toEqual([
+      ['info', 'Removed 2 company seat worktree(s); all their work is on the remote.'],
+    ]);
   });
 });

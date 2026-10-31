@@ -199,6 +199,20 @@ describe('WorktaskCleanupView', () => {
       expect(container.textContent).toContain('dev-1 · checkout');
     });
 
+    it('says how many commits are only on this PC', async () => {
+      const api = seatApi();
+      api.scan = vi.fn(async () => ({
+        ok: true,
+        scannedRoot: '/wt',
+        entries: [{ category: 'company-seat', title: 'dev-1', worktreePath: SEAT, detailCode: 'seat-unpushed', commitCount: 3, detail: 'RAW-FROM-MAIN' }],
+      }));
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      expect(container.textContent).toContain('Company seat worktree');
+      expect(container.textContent).toContain('3 commit(s) only on this PC — push them, or remove the worktree and keep its branch.');
+      expect(container.textContent).not.toContain('RAW-FROM-MAIN');
+    });
+
     it('asks in place before removing a seat with changes, then asks before deleting its branch', async () => {
       const api = seatApi();
       const confirm = vi.spyOn(window, 'confirm');
@@ -213,7 +227,9 @@ describe('WorktaskCleanupView', () => {
       expect(api.removeCompanySeat.mock.calls).toEqual([[SEAT, false], [SEAT, true]]);
       // The row stays until the branch question is answered.
       expect(api.scan).toHaveBeenCalledTimes(1);
-      expect(el('cleanup-seat-branch-confirm-row')).not.toBeNull();
+      expect(el('cleanup-seat-branch-confirm-row')?.textContent).toContain(
+        'Also delete the branch company/dev-1-456789ab? Commits that are only on this PC go with it.',
+      );
       act(() => el('cleanup-seat-branch-confirm')!.click());
       await flush();
       expect(api.deleteCompanySeatBranch).toHaveBeenCalledWith(SEAT, '/repo/.git', 'company/dev-1-456789ab');
