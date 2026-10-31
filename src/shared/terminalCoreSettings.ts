@@ -60,9 +60,11 @@ let startupEngine: TerminalEngine | undefined;
  * change a live host's PTY, buffer or snapshot backend. Environment flags keep
  * their explicit precedence and are not injected into child daemon launches. */
 export function terminalCoreSelection(): TerminalEngine {
-  startupEngine ??= readTerminalEngine();
+  // An override decides alone: forcing node must not load the native module
+  // just to probe the default.
   const override = process.env.WMUX_TERMINAL_CORE;
-  return override !== undefined ? (override === 'rust' ? 'rust' : 'node') : startupEngine;
+  if (override !== undefined) return override === 'rust' ? 'rust' : 'node';
+  return startupEngine ??= readTerminalEngine();
 }
 
 export function rustTerminalCoreAvailable(): boolean {
