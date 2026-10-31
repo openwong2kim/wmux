@@ -1,7 +1,8 @@
 // Check one engine's run of an engine A/B (scripts/twenty-pane-stability.mjs)
 // before its numbers are compared: it must have completed, on the engine it
-// asked for at start and at end, with one daemon throughout, and torn down
-// cleanly, so nothing of it runs on into the next engine's run. The harness
+// asked for at start and at end, with one daemon throughout, with its memory
+// recorded, and torn down cleanly, so nothing of it runs on into the next
+// engine's run. The harness
 // exits 0 either way and only flags these in summary.json; the A/B workflow
 // (.github/workflows/twenty-pane-ab-linux.yml) fails on them instead.
 //
@@ -28,6 +29,10 @@ export function abRunProblems(summary, engine) {
   // The engine checks above already cover the engine flags.
   for (const flag of summary.flags ?? []) {
     if (/daemon was replaced/.test(flag)) problems.push(flag);
+  }
+  // Memory is what the A/B compares first; a trend with no sample compares nothing.
+  for (const [name, trend] of [['daemon RSS', summary.memory?.daemonRss], ['process tree RSS', summary.memory?.processTree]]) {
+    if (!trend) problems.push(`the run recorded no ${name}, so it cannot be compared on memory`);
   }
   if (summary.teardown?.clean !== true) {
     const pid = summary.daemonLingering?.pid;

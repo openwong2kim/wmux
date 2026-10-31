@@ -48,6 +48,15 @@ describe('an engine A/B run', () => {
     expect(abRunProblems(summary({ flags: [replaced] }), 'rust')).toEqual([replaced]);
   });
 
+  it('refuses a run that recorded no memory to compare', () => {
+    expect(abRunProblems(summary({ memory: { daemonRss: null, processTree: { firstMiB: 1, lastMiB: 1, maxMiB: 1, growthMiBPerHour: null } } }), 'rust'))
+      .toEqual(['the run recorded no daemon RSS, so it cannot be compared on memory']);
+    expect(abRunProblems(summary({ memory: {} }), 'rust')).toEqual([
+      'the run recorded no daemon RSS, so it cannot be compared on memory',
+      'the run recorded no process tree RSS, so it cannot be compared on memory',
+    ]);
+  });
+
   it('refuses a run whose instance may run on into the next one', () => {
     const lingering = summary({ teardown: { removed: true, clean: false }, daemonLingering: { pid: 4242, pipeGone: false } });
     expect(abRunProblems(lingering, 'rust')).toEqual(['the instance was not torn down cleanly (its daemon, pid 4242, was still alive), so it may run on into the next run']);
