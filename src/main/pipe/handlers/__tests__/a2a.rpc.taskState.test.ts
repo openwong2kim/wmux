@@ -447,6 +447,8 @@ describe('a2a.task.update — the caller pane company seat comes from the pane t
 
   const okDaemon = (calls: DaemonCall[]) => async (method: string, params: Record<string, unknown>) => {
     calls.push({ method, params });
+    // The task read before a done: an ordinary task, so no PR is checked.
+    if (method === 'a2a.task.query') return { ok: true, tasks: [{ id: 't1', history: [] }] };
     return { ok: true, task: { id: 't1', status: { state: params.status, timestamp: 'x' }, metadata: { updatedAt: 'x' } } };
   };
   const panes = [
