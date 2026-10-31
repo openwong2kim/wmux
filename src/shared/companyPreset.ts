@@ -147,7 +147,9 @@ export interface SeatBriefInput {
  * The first message a seat's agent gets: who it is, what it owns, the
  * mission and standing orders, and how work moves. The CEO also gets the
  * other seats and the shape of a brief, which wmux requires on every task it
- * sends to a staff seat (shared/company.ts decideCompanySend).
+ * sends to a staff seat (shared/company.ts decideCompanySend). A seat reports
+ * with input-required and only the CEO or the owner marks the task done
+ * (companyDoneRefusal); both briefs say so.
  */
 export function seatBrief(input: SeatBriefInput): string {
   const me = input.seats[input.seat];
@@ -176,13 +178,21 @@ export function seatBrief(input: SeatBriefInput): string {
         `{"kind":"${COMPANY_BRIEF_KIND}","v":1,${BRIEF_FIELDS.map((f) => `"${f}":"…"`).join(',')}}. ` +
         'A task to a seat without a full brief is refused. Follow the work with a2a_task_query.',
       );
+      lines.push(
+        'A seat reports finished work with status input-required. Read the report and check it, then mark the task done ' +
+        'with a2a_task_update status completed and evidence. Only you or the owner can.',
+      );
     }
     lines.push('Wait for the owner\'s first request.');
   } else {
     if (me.worktree) {
       lines.push(`Your worktree is ${me.worktree.path}, on branch ${me.worktree.branch}. Work and commit only there, and open your pull request from that branch.`);
     }
-    lines.push(`Take briefs from #${ceo.label}. When one arrives, do the work, then report back on the task with a2a_task_update and evidence.`);
+    lines.push(
+      `Take briefs from #${ceo.label}. When one arrives, do the work. When it is ready, report it with a2a_task_update ` +
+      'status input-required and a message naming the PR URL, its head commit, what you ran, and who ran the live check and what they saw. ' +
+      `#${ceo.label} marks it done; you cannot.`,
+    );
     lines.push('Wait for a brief.');
   }
   return lines.join('\n');

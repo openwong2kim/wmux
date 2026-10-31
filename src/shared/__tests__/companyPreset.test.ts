@@ -60,4 +60,15 @@ describe('company presets', () => {
     expect(dev).toContain('a2a_task_update');
     expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 2 })).toContain('You own: Windows.');
   });
+
+  it('tells a seat to report with input-required and the CEO to mark the task done', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const dev = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 });
+    expect(dev).toContain('status input-required');
+    for (const part of ['PR URL', 'head commit', 'what you ran', 'who ran the live check']) expect(dev).toContain(part);
+    expect(dev).toContain('#ceo marks it done; you cannot.');
+    const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
+    expect(ceo).toContain('A seat reports finished work with status input-required.');
+    expect(ceo).toContain('status completed and evidence. Only you or the owner can.');
+  });
 });
