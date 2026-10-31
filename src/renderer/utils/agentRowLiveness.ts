@@ -25,6 +25,31 @@ export function clearSurfaceAgentsKnownGone(
 
 /** When each pane's agent process-death edge arrived (see applyProcessExits). */
 const processExitAt = new Map<string, number>();
+/** When each liveness snapshot (pty.list) still in flight was asked for. */
+const pendingSnapshots: number[] = [];
+
+/**
+ * A liveness snapshot is being asked for now. Returns its requestedAt; pass
+ * that to livenessSnapshotSettled once the answer is applied or failed.
+ */
+export function livenessSnapshotRequested(): number {
+  const requestedAt = Date.now();
+  pendingSnapshots.push(requestedAt);
+  return requestedAt;
+}
+
+/**
+ * The snapshot asked for at requestedAt has settled. A death-edge mark only
+ * matters to snapshots asked for before its edge, so it is retired once none
+ * of those is still in flight, whatever order the answers came back in.
+ */
+export function livenessSnapshotSettled(requestedAt: number): void {
+  const i = pendingSnapshots.indexOf(requestedAt);
+  if (i >= 0) pendingSnapshots.splice(i, 1);
+  for (const [ptyId, at] of processExitAt) {
+    if (!pendingSnapshots.some((pending) => pending < at)) processExitAt.delete(ptyId);
+  }
+}
 
 /**
  * The daemon's agent process-death edge for one pane: the alive=false branch
@@ -51,11 +76,10 @@ export function clearSurfaceAgentOnProcessExit(ptyId: string, slug: string | nul
  * read the daemon before the death and still say alive. Mark those panes dead
  * in it, so the poll neither re-seeds nor re-stamps the row the edge dropped.
  * A snapshot asked for after the edge is current (a relaunch reads alive
- * there) and retires the mark.
+ * there) and is left as it is. Marks are retired by livenessSnapshotSettled.
  */
 export function applyProcessExits(agentAlive: Record<string, boolean>, requestedAt: number): void {
   for (const [ptyId, at] of processExitAt) {
     if (requestedAt < at) agentAlive[ptyId] = false;
-    else processExitAt.delete(ptyId);
   }
 }

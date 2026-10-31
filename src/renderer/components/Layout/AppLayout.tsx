@@ -116,7 +116,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { noteDaemonConnected, noteDaemonDisconnected, noteDaemonGaveUp, noteDaemonReconnecting, notePaneReattached, notePaneWriteDropped, setDaemonLinkSurfaceResolver, type DaemonPaneRef } from '../../daemon/daemonLinkNotice';
 import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
-import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone } from '../../utils/agentRowLiveness';
+import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone, livenessSnapshotRequested, livenessSnapshotSettled } from '../../utils/agentRowLiveness';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import { AgentToolbarStrip } from '../AgentToolbar/ToolbarHost';
@@ -1965,7 +1965,7 @@ export default function AppLayout() {
   //     respawn re-derives badges without waiting for the next event.
   useEffect(() => {
     const hydrate = () => {
-      const requestedAt = Date.now();
+      const requestedAt = livenessSnapshotRequested();
       void window.electronAPI.pty.list().then((sessions) => {
         const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
         // X6 ②: resume hints for recovered interactive agent panes.
@@ -2034,7 +2034,8 @@ export default function AppLayout() {
             void useStore.getState().principalRegisterPane(ptyId);
           }).catch(() => { /* best-effort — transient failure; retry allowed on the next connect */ });
         }
-      }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ });
+      }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ })
+        .finally(() => livenessSnapshotSettled(requestedAt));
     };
     hydrate();
     const offConnected = window.electronAPI.daemon.onConnected(hydrate);
@@ -2065,7 +2066,7 @@ export default function AppLayout() {
   // note). One in-memory list RPC per 15s; negligible against the daemon idle diet.
   useEffect(() => {
     const refreshBindings = () => {
-      const requestedAt = Date.now();
+      const requestedAt = livenessSnapshotRequested();
       void window.electronAPI.pty.list().then((sessions) => {
         const snapshot: Record<string, ResumeBinding> = {};
         // OSC 133 shell state rides the same poll — keeps the chip's authoritative
@@ -2093,7 +2094,8 @@ export default function AppLayout() {
         // An agent relaunched after boot (the Resume pill) is attributed by
         // the daemon seconds later; this tick is what brings its row back.
         seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, cmdSnapshot);
-      }).catch(() => { /* transient list failure — the next tick self-heals */ });
+      }).catch(() => { /* transient list failure — the next tick self-heals */ })
+        .finally(() => livenessSnapshotSettled(requestedAt));
     };
     const id = window.setInterval(refreshBindings, 15_000);
     return () => window.clearInterval(id);

@@ -753,7 +753,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     if (!resolvedName) return;
     // P2: same retention rule for the slug — a status-only update keeps the
     // previously-detected slug so the `(<agent>)` auto-name suffix is stable.
-    const resolvedSlug = slug ?? existing?.slug;
+    // A new name is another agent: the old slug is not kept for it.
+    const resolvedSlug = slug ?? (resolvedName === existing?.name ? existing?.slug : undefined);
     state.surfaceAgent[ptyId] = {
       name: resolvedName,
       status: status ?? existing?.status ?? 'running',
