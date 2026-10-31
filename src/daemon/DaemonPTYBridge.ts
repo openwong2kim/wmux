@@ -18,7 +18,7 @@ import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { stripPassiveInput } from '../shared/terminal/passiveInput';
-import { ShellMarkIngress, type ShellMarkState } from '../shared/terminal/shellMarkIngress';
+import { ShellMarkIngress } from '../shared/terminal/shellMarkIngress';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
 import { titleShowsFinishedTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
 import { AWAITING_TITLE, CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, RUNNING_TITLE } from '../shared/agentTitleRules';
@@ -1373,13 +1373,6 @@ export class DaemonPTYBridge extends EventEmitter {
   /** OSC 133 command starts this pane's shell reported (monotonic; read through getCommandStarts). */
   private commandStarts = 0;
   private parsesOsc133 = false;
-  /** #2771 — whose OSC 133 marks this PTY lifetime's output carries (see ShellMarkIngress). */
-  private shellMarks: ShellMarkIngress | null = null;
-
-  /** The shell-mark state of this PTY lifetime: `running` while a shell command runs. Tests read it. */
-  get shellMarkState(): ShellMarkState | undefined {
-    return this.shellMarks?.state;
-  }
 
   /**
    * #2673 — how many commands the pane's shell has started (OSC 133 C), or
@@ -1956,7 +1949,8 @@ export class DaemonPTYBridge extends EventEmitter {
      * #2771 — how the pane's process writes OSC 133 marks: `exec` runs a
      * program with no shell (it never prompts), `integrated` is a shell with
      * wmux's integration (it marks every prompt with `D;<n>` and `A`),
-     * `plain` anything else. Absent: `plain`.
+     * `plain` anything else, whose marks are passed through unread. Absent:
+     * `plain`.
      */
     shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
@@ -1979,8 +1973,10 @@ export class DaemonPTYBridge extends EventEmitter {
     if (prefilled.length > 0) {
       interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
     }
-    const marks = new ShellMarkIngress(initialShellMarkState(shellMarks, prefilled));
-    this.shellMarks = marks;
+    // A bridge is built only for a freshly spawned process (a recovered
+    // ring holds the dead one's scrollback), so an integrated shell starts at
+    // its prompt and an exec unit's program starts running.
+    const marks = shellMarks === 'plain' ? null : new ShellMarkIngress(shellMarks === 'exec' ? 'running' : 'idle');
     let marksLoweredLogged = false;
     const noteMarksLowered = (): void => {
       if (marksLoweredLogged) return;
@@ -2342,8 +2338,6 @@ export class DaemonPTYBridge extends EventEmitter {
     const capture = (data: string, buf?: Buffer, nativeChunk?: NativeOutputChunk): void => {
       // Detached sessions need retention/analysis, but no JS byte copy. Snapshot
       // tees and live clients subscribe to data and materialize exactly once.
-      // A native chunk may come with its bytes already read (the shell-mark
-      // scan): they are its delivery, and the ring still takes the chunk.
       let delivery = buf;
       const forward = () => {
         this.emit('outputActivity');
@@ -2417,27 +2411,17 @@ export class DaemonPTYBridge extends EventEmitter {
       // wrote (not the shell) gets a lowercase kind, so the detector, the
       // held chunks, the ring, the interpreter and live data all read the
       // same decision. Only a chunk that can hold a mark is scanned.
-      let buf: Buffer | undefined;
-      if (marks.wants(data)) {
-        if (nativeChunk) {
-          // Rust path: the decision is made on the bytes. A chunk with a
-          // foreign mark leaves the zero-copy path; one without keeps it, with
-          // the bytes already read as its delivery.
-          buf = nativeChunk.readBytes();
-          if (marks.scanBytes(buf) > 0) {
-            noteMarksLowered();
-            data = buf.toString('utf8');
-            nativeChunk = undefined;
-          }
-        } else {
-          const scanned = marks.scanText(data);
-          if (scanned.lowered > 0) {
-            noteMarksLowered();
-            data = scanned.text;
-          }
+      if (marks?.wants(data)) {
+        const scanned = marks.scanText(data);
+        if (scanned.lowered > 0) {
+          noteMarksLowered();
+          data = scanned.text;
+          // The native chunk's bytes no longer match: it leaves the zero-copy
+          // path. A chunk with only the shell's marks keeps it.
+          nativeChunk = undefined;
         }
       }
-      if (!nativeChunk) buf ??= Buffer.from(data);
+      const buf = nativeChunk ? undefined : Buffer.from(data);
       const byteLength = nativeChunk ? nativeChunk.byteLength : (buf?.length ?? 0);
 
       // Byte activity is weaker than a detector/hook terminal edge. Process it
@@ -2525,8 +2509,6 @@ export class DaemonPTYBridge extends EventEmitter {
     const onExitDisposable = ptyProcess.onExit(({ exitCode, signal }) => {
       // The process is gone: its working and blocked records go with it.
       this.endProgramStatusEpisode();
-      // A D the shell left half-written resolves toward its prompt.
-      marks.end();
       this.emit('exit', { sessionId, exitCode, signal });
     });
     this.exitDisposable = () => onExitDisposable.dispose();
@@ -2789,23 +2771,4 @@ export class DaemonPTYBridge extends EventEmitter {
 
     this.removeAllListeners();
   }
-}
-
-/**
- * #2771 — where a PTY lifetime's shell-mark state starts. A program with no
- * shell never prompts, so it starts running. A shell with wmux's integration
- * on a recovered ring starts where the ring's last shell mark left it (the
- * program's marks there are lowercase, so they are skipped); it writes
- * `D;<n>` and `A` at its first prompt, so a wrong `running` lasts until then.
- * Anything else starts at the prompt, as it never reports the state back.
- */
-export function initialShellMarkState(shellMarks: 'exec' | 'integrated' | 'plain', ring: Buffer): ShellMarkState {
-  if (shellMarks === 'exec') return 'running';
-  if (shellMarks !== 'integrated' || ring.length === 0) return 'idle';
-  const text = ring.toString('latin1');
-  // eslint-disable-next-line no-control-regex
-  const marks = text.match(/\x1b\]133;([ABCD])(;-?\d)?/g);
-  const last = marks?.[marks.length - 1];
-  if (!last) return 'idle';
-  return last.charAt(6) === 'C' ? 'running' : 'idle';
 }

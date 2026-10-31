@@ -7,7 +7,7 @@
 // native ring and the native harness feeds real decoder chunks.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { IPty } from 'node-pty';
-import { DaemonPTYBridge, initialShellMarkState } from '../DaemonPTYBridge';
+import { DaemonPTYBridge } from '../DaemonPTYBridge';
 import { RingBuffer } from '../RingBuffer';
 import { PromptEventLog } from '../PromptEventLog';
 import { loadNativeTerminalCore, type NativeOutputChunk } from '../../shared/nativeTerminalCore';
@@ -37,13 +37,12 @@ afterEach(() => {
 function rig(lane: Lane, opts: { shellMarks?: 'exec' | 'integrated' | 'plain'; prefill?: string } = {}) {
   let onString: ((data: string) => void) | undefined;
   let onNative: ((chunk: NativeOutputChunk) => void) | undefined;
-  let onExit: ((e: { exitCode: number }) => void) | undefined;
   const pty = {
     onData: (cb: (data: string) => void) => { onString = cb; return { dispose: () => { onString = undefined; } }; },
     ...(lane === 'native' ? {
       onNativeData: (cb: (chunk: NativeOutputChunk) => void) => { onNative = cb; return { dispose: () => { onNative = undefined; } }; },
     } : {}),
-    onExit: (cb: (e: { exitCode: number }) => void) => { onExit = cb; return { dispose: () => undefined }; },
+    onExit: () => ({ dispose: () => undefined }),
     write: vi.fn(),
   } as unknown as IPty;
   const ring = new RingBuffer(65536);
@@ -61,7 +60,6 @@ function rig(lane: Lane, opts: { shellMarks?: 'exec' | 'integrated' | 'plain'; p
   };
   return {
     bridge, ring, log, live, feed,
-    exit: () => onExit?.({ exitCode: 0 }),
     types: () => log.recent(100).map((e) => e.type),
     lowered: () => logged.mock.calls.filter((c) => String(c[0]).includes('program-written OSC 133 marks lowercased')).length,
   };
@@ -72,6 +70,12 @@ function rig(lane: Lane, opts: { shellMarks?: 'exec' | 'integrated' | 'plain'; p
 const SHELL_C = mark('C');
 const KIMI = mark('A') + 'kimi> ' + mark('B') + mark('C') + 'reply text\r\n';
 const BACK = mark('A') + 'more' + mark('D;0') + mark('A') + 'PS> ' + mark('B');
+// What the prompt log reads from SHELL_C + KIMI + bare D + BACK when every
+// mark is taken for the shell's (main before #2771).
+const PLAIN_TYPES = [
+  'command_start', 'prompt_start', 'prompt_end', 'command_start', 'command_end',
+  'prompt_start', 'command_end', 'prompt_start', 'prompt_end',
+];
 
 for (const lane of ['string', 'native'] as const) {
   describe(`DaemonPTYBridge shell-mark ingress (${lane} output)`, () => {
@@ -88,7 +92,6 @@ for (const lane of ['string', 'native'] as const) {
       expect(h.types()).toEqual(['command_start', 'command_end', 'prompt_start', 'prompt_end']);
       expect(h.log.recent(100)[1]).toMatchObject({ type: 'command_end', exitCode: 0 });
       expect(h.bridge.getCommandStarts()).toBe(1);
-      expect(h.bridge.shellMarkState).toBe('idle');
       expect(h.lowered()).toBe(1);
     });
 
@@ -100,17 +103,14 @@ for (const lane of ['string', 'native'] as const) {
         h.feed(KIMI);
         const first = tail.slice(0, at);
         h.feed(first);
-        // Running until the bytes after D show `;<digit>`.
-        const decided = first.includes(`133;D;0`);
-        expect(h.bridge.shellMarkState, `split at ${at}`).toBe(decided ? 'idle' : 'running');
         h.feed(tail.slice(at));
+        // The A after the shell's D;0 is the shell's: back at the prompt.
         expect(h.ring.readAll().toString(), `split at ${at}`).toBe(SHELL_C + lower(KIMI) + tail);
         // The JS OSC parser drops a sequence whose ESC alone ends a read (a
         // separate, older gap); everywhere else the prompt log is exact.
         const events = first.endsWith(ESC) ? h.types().filter((t) => t !== 'command_end' && t !== 'prompt_start') : h.types();
         const want = first.endsWith(ESC) ? ['command_start'] : ['command_start', 'command_end', 'prompt_start'];
         expect(events, `split at ${at}`).toEqual(want);
-        expect(h.bridge.shellMarkState).toBe('idle');
         cleanups.splice(0).forEach((c) => c());
       }
     });
@@ -120,12 +120,8 @@ for (const lane of ['string', 'native'] as const) {
       h.feed(SHELL_C);
       h.feed(`${ESC}]133;D`);
       h.feed(BEL + mark('A'));
+      // The A after it is lowercased: the state stayed running.
       expect(h.ring.readAll().toString()).toBe(SHELL_C + `${ESC}]133;D` + BEL + mark('a'));
-      expect(h.bridge.shellMarkState).toBe('running');
-      // A PTY exit resolves a pending D toward the prompt.
-      h.feed(`${ESC}]133;D`);
-      h.exit();
-      expect(h.bridge.shellMarkState).toBe('idle');
     });
 
     it('a program\'s mark split at every byte across two reads, after a plain read, is still lowercased', () => {
@@ -161,7 +157,9 @@ for (const lane of ['string', 'native'] as const) {
         h.feed(seq.slice(at));
         expect(h.ring.readAll().toString()).toBe(SHELL_C + seq);
         expect(h.types()).toEqual(['command_start']);
-        expect(h.bridge.shellMarkState).toBe('running');
+        // Still running: a program's A after it is its own.
+        h.feed(mark('A'));
+        expect(h.ring.readAll().toString()).toBe(SHELL_C + seq + mark('a'));
         cleanups.splice(0).forEach((c) => c());
       }
     });
@@ -181,28 +179,32 @@ for (const lane of ['string', 'native'] as const) {
       h.feed(mark('A') + mark('B') + mark('C'));
       expect(h.ring.readAll().toString()).toBe(mark('a') + mark('b') + mark('c'));
       expect(h.types()).toEqual([]);
-      h.feed(mark('D;0'));
-      expect(h.bridge.shellMarkState).toBe('idle');
+      h.feed(mark('D;0') + mark('A'));
+      expect(h.ring.readAll().toString()).toBe(mark('a') + mark('b') + mark('c') + mark('D;0') + mark('A'));
     });
 
-    it('a recovered ring ending inside a shell command starts running, so a program\'s fresh A is its own', () => {
-      const h = rig(lane, { prefill: mark('D;0') + mark('A') + mark('B') + mark('C') + lower(KIMI) });
-      expect(h.bridge.shellMarkState).toBe('running');
-      h.feed(mark('A'));
-      expect(h.types()).toEqual([]);
-      expect(h.ring.readAll().toString().endsWith(mark('a'))).toBe(true);
+    it('a recovered ring ending inside a shell command does not seed the state: the new shell starts at its prompt', () => {
+      // A bridge is only built for a freshly spawned process; the ring holds
+      // the dead one's scrollback.
+      const prefill = mark('D;0') + mark('A') + mark('B') + mark('C') + lower(KIMI);
+      const h = rig(lane, { prefill });
+      h.feed(mark('A') + 'PS> ' + mark('B'));
+      expect(h.ring.readAll().toString()).toBe(prefill + mark('A') + 'PS> ' + mark('B'));
+      expect(h.types()).toEqual(['prompt_start', 'prompt_end']);
+    });
+
+    it('a plain pane (no wmux integration) passes every mark through as it is', () => {
+      const h = rig(lane, { shellMarks: 'plain' });
+      const input = SHELL_C + KIMI + mark('D') + BACK;
+      h.feed(SHELL_C);
+      h.feed(KIMI);
+      h.feed(mark('D') + BACK);
+      expect(h.ring.readAll().toString()).toBe(input);
+      expect(Buffer.concat(h.live).toString()).toBe(input);
+      expect(h.lowered()).toBe(0);
+      // Every mark is read as the shell's, as on a pane without the ingress.
+      expect(h.types()).toEqual(PLAIN_TYPES);
     });
   });
 }
 
-describe('initialShellMarkState', () => {
-  const ring = (text: string) => Buffer.from(text);
-  it('runs an exec unit, and starts any other pane at its prompt unless its integrated shell left a command running', () => {
-    expect(initialShellMarkState('exec', ring(''))).toBe('running');
-    expect(initialShellMarkState('plain', ring(mark('C')))).toBe('idle');
-    expect(initialShellMarkState('integrated', ring(''))).toBe('idle');
-    expect(initialShellMarkState('integrated', ring(mark('A') + mark('B') + mark('C') + 'out' + mark('a') + mark('c')))).toBe('running');
-    expect(initialShellMarkState('integrated', ring(mark('C') + mark('D;0') + mark('A') + mark('B')))).toBe('idle');
-    expect(initialShellMarkState('integrated', ring(mark('C') + mark('D;-1')))).toBe('idle');
-  });
-});

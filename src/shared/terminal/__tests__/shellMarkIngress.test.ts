@@ -5,16 +5,7 @@ const ESC = '\x1b';
 const BEL = '\x07';
 const mark = (kind: string) => `${ESC}]133;${kind}${BEL}`;
 
-/** Feed `parts` as separate reads through the byte scanner; returns the joined output. */
-function viaBytes(ingress: ShellMarkIngress, parts: string[]): string {
-  return parts.map((part) => {
-    const bytes = Buffer.from(part);
-    ingress.scanBytes(bytes);
-    return bytes.toString();
-  }).join('');
-}
-
-/** The same through the string scanner. */
+/** Feed `parts` as separate reads; returns the joined output. */
 function viaText(ingress: ShellMarkIngress, parts: string[]): string {
   return parts.map((part) => ingress.scanText(part).text).join('');
 }
@@ -99,70 +90,61 @@ describe('ShellMarkIngress transitions', () => {
     expect(ingress.state).toBe('idle');
   });
 
-  it('bytes and text agree around multi-byte text and a lone surrogate', () => {
+  it('changes only the kind byte around multi-byte text and a lone surrogate', () => {
     const input = '한글🙂' + mark('A') + '\ud800' + mark('B') + 'é' + mark('D;0');
-    const text = viaText(new ShellMarkIngress('running'), [input]);
-    const bytes = viaBytes(new ShellMarkIngress('running'), [input]);
-    expect(Buffer.from(text).toString()).toBe(bytes);
+    const { text, lowered } = new ShellMarkIngress('running').scanText(input);
     expect(text).toBe('한글🙂' + mark('a') + '\ud800' + mark('b') + 'é' + mark('D;0'));
+    expect(lowered).toBe(2);
+  });
+
+  it('returns the same string when nothing is lowered', () => {
+    const input = 'out' + mark('D;0') + mark('A') + 'PS> ';
+    expect(new ShellMarkIngress('running').scanText(input)).toEqual({ text: input, lowered: 0 });
   });
 });
 
 describe('ShellMarkIngress across reads', () => {
-  const states = (initial: ShellMarkState, parts: string[], scan: typeof viaText) => {
+  const states = (initial: ShellMarkState, parts: string[]) => {
     const ingress = new ShellMarkIngress(initial);
-    return { out: scan(ingress, parts), state: ingress.state };
+    return { out: viaText(ingress, parts), state: ingress.state };
   };
 
-  for (const [name, scan] of [['text', viaText], ['bytes', viaBytes]] as const) {
-    it(`${name}: a foreign mark split at any byte is still lowercased once its kind arrives`, () => {
-      const input = 'x' + mark('A') + 'y';
-      for (const parts of splits(input)) {
-        const { out, state } = states('running', parts, scan);
-        expect(out, JSON.stringify(parts)).toBe('x' + mark('a') + 'y');
-        expect(state).toBe('running');
-      }
-    });
+  it('a foreign mark split at any byte is still lowercased once its kind arrives', () => {
+    const input = 'x' + mark('A') + 'y';
+    for (const parts of splits(input)) {
+      const { out, state } = states('running', parts);
+      expect(out, JSON.stringify(parts)).toBe('x' + mark('a') + 'y');
+      expect(state).toBe('running');
+    }
+  });
 
-    it(`${name}: the shell's D;0 then A, split at every byte, ends running`, () => {
-      const input = mark('D;0') + mark('A');
-      for (const parts of splits(input)) {
-        const { out, state } = states('running', parts, scan);
-        expect(out, JSON.stringify(parts)).toBe(input);
-        expect(state, JSON.stringify(parts)).toBe('idle');
-      }
-    });
+  it('the shell\'s D;0 then A, split at every byte, ends running', () => {
+    const input = mark('D;0') + mark('A');
+    for (const parts of splits(input)) {
+      const { out, state } = states('running', parts);
+      expect(out, JSON.stringify(parts)).toBe(input);
+      expect(state, JSON.stringify(parts)).toBe('idle');
+    }
+  });
 
-    it(`${name}: a bare D split right after its kind byte keeps its case and keeps running`, () => {
-      // The kind byte already went out with the first read: it cannot be
-      // lowercased later, and the state waits for the bytes after it.
-      const first = `${ESC}]133;D`;
-      const ingress = new ShellMarkIngress('running');
-      expect(scan(ingress, [first])).toBe(first);
-      expect(ingress.state).toBe('running');
-      expect(ingress.pending).toBe(true);
-      expect(scan(ingress, [BEL + mark('A')])).toBe(BEL + mark('a'));
-      expect(ingress.state).toBe('running');
-    });
+  it('a bare D split right after its kind byte keeps its case and keeps running', () => {
+    // The kind byte already went out with the first read: it cannot be
+    // lowercased later, and the state waits for the bytes after it.
+    const first = `${ESC}]133;D`;
+    const ingress = new ShellMarkIngress('running');
+    expect(viaText(ingress, [first])).toBe(first);
+    expect(ingress.state).toBe('running');
+    expect(ingress.pending).toBe(true);
+    expect(viaText(ingress, [BEL + mark('A')])).toBe(BEL + mark('a'));
+    expect(ingress.state).toBe('running');
+  });
 
-    it(`${name}: ESC]1337 split at every byte is never a mark`, () => {
-      const input = `${ESC}]1337;File=inline=1:QUJD${BEL}` + `${ESC}]133` + `7;SetMark${BEL}`;
-      for (const parts of splits(input)) {
-        const { out, state } = states('running', parts, scan);
-        expect(out, JSON.stringify(parts)).toBe(input);
-        expect(state).toBe('running');
-      }
-    });
-  }
-
-  it('the end of the stream resolves a pending D toward idle', () => {
-    for (const tail of ['D', 'D;', 'D;-']) {
-      const ingress = new ShellMarkIngress('running');
-      viaText(ingress, [`${ESC}]133;${tail}`]);
-      expect(ingress.state).toBe('running');
-      ingress.end();
-      expect(ingress.state, tail).toBe('idle');
-      expect(ingress.pending).toBe(false);
+  it('ESC]1337 split at every byte is never a mark', () => {
+    const input = `${ESC}]1337;File=inline=1:QUJD${BEL}` + `${ESC}]133` + `7;SetMark${BEL}`;
+    for (const parts of splits(input)) {
+      const { out, state } = states('running', parts);
+      expect(out, JSON.stringify(parts)).toBe(input);
+      expect(state).toBe('running');
     }
   });
 

@@ -962,12 +962,14 @@ export class PTYBridge {
     });
 
     // #2771 — a mark the running program wrote (not the shell) gets a
-    // lowercase kind before any reader sees the chunk, as in the daemon.
-    const marks = new ShellMarkIngress();
+    // lowercase kind before any reader sees the chunk, as in the daemon. Only
+    // a WSL shell carries wmux's integration here (PTYManager.prepareSpawn);
+    // any other shell's marks pass through unread.
+    const marks = wslDistro ? new ShellMarkIngress() : null;
     let marksLoweredLogged = false;
     instance.process.onData((raw: string) => {
       let data = raw;
-      if (marks.wants(data)) {
+      if (marks?.wants(data)) {
         const scanned = marks.scanText(data);
         if (scanned.lowered > 0) {
           data = scanned.text;
@@ -1014,7 +1016,6 @@ export class PTYBridge {
     });
 
     instance.process.onExit(({ exitCode, signal }) => {
-      marks.end();
       // Drain any buffered output before signalling exit so the renderer
       // sees the final lines (e.g. exit banner) before PTY_EXIT.
       this.flushPending(ptyId);

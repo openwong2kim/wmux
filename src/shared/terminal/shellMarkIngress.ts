@@ -15,6 +15,12 @@
 // to lower case (`ESC]133;a`). Every reader ignores a lowercase kind, so the
 // ring, live output, replay and every consumer read one decision.
 //
+// That holds only for a shell that writes both: wmux's own integration (its
+// D always carries the exit code) or an exec unit, which has no shell and
+// starts running. A caller scans nothing else: a shell that never writes C
+// would have a program's C read as its own, and one whose D has no exit code
+// would never leave running. Such output passes through as it is.
+//
 // Rules:
 //   - idle: A, B and D are the shell's; C is the shell's and starts running.
 //   - running: A, B and C are foreign. D is the shell's only as `D;<int>`
@@ -116,11 +122,11 @@ export class ShellMarkIngress {
     for (let i = 0; i < text.length; i++) {
       if (this.match === Match.None) {
         // Outside a mark only an ESC can start one: skip to it.
-        const esc = nextEsc(i);
+        const esc = text.indexOf('\u001b', i);
         if (esc < 0) break;
         i = esc;
       }
-      const b = at(i);
+      const b = text.charCodeAt(i);
       switch (this.match) {
         case Match.DSemi:
           if (b === 0x3b) { this.match = Match.DDigit; continue; }
