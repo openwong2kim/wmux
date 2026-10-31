@@ -84,10 +84,13 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 const URL_TOKEN = /https:\/\/[^\s<>()[\]{}"'`\\]+/gi;
 // Sentence punctuation and markdown emphasis after the URL.
 const TRAILING = /[.,;:!?*_~]+$/;
+// A link into a PR (its files tab, a comment, a query) names that PR.
+const PR_BASE = /^(https:\/\/[^/]+\/[^/]+\/[^/]+\/pull\/\d+)(?:[/?#].*)?$/i;
 
 function prRefsInText(text: string): DonePrRef[] {
   return [...text.matchAll(URL_TOKEN)].flatMap((m): DonePrRef[] => {
-    const url = m[0].replace(TRAILING, '');
+    const token = m[0].replace(TRAILING, '');
+    const url = PR_BASE.exec(token)?.[1] ?? token;
     const parts = prUrlParts(url);
     return parts ? [{ url, ...parts }] : [];
   });

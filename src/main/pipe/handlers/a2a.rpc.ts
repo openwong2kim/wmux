@@ -82,6 +82,9 @@ type DaemonTaskGate =
 const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-authz deferred'];
 
 
+/** How long main waits on gh for one PR of a company task's done. */
+const DONE_PR_READ_DEADLINE_MS = 7_000;
+
 const INTERNAL_RENDERER_FIELDS = [
   'trustedLane',
   'daemonCommitted',
@@ -1314,12 +1317,20 @@ export function registerA2aRpc(
     });
     if (prs.length === 0) return null;
     if (prs.length > DONE_PR_CHECK_MAX) return tooManyDonePrs(prs.length);
+    // The caller's MCP request gives up after 10 s. A read still running then
+    // is refused, so a done never commits after the caller saw it fail.
     const outcomes = await Promise.all(prs.map(async (pr): Promise<DonePrOutcome> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const read = await prReview.donePrFacts(os.homedir(), `${pr.host}/${pr.owner}/${pr.repo}`, pr.number);
+        const late = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`no answer within ${DONE_PR_READ_DEADLINE_MS / 1000} s`)), DONE_PR_READ_DEADLINE_MS);
+        });
+        const read = await Promise.race([prReview.donePrFacts(os.homedir(), `${pr.host}/${pr.owner}/${pr.repo}`, pr.number), late]);
         return read.ok ? { pr, read: 'ok', facts: read.value } : { pr, read: 'error', message: read.message };
       } catch (err) {
         return { pr, read: 'error', message: err instanceof Error ? err.message : String(err) };
+      } finally {
+        clearTimeout(timer);
       }
     }));
     const decision = companyDonePrDecision(outcomes);

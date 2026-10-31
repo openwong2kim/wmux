@@ -223,6 +223,14 @@ describe('donePrRefs', () => {
     expect(numbers(donePrRefs({ history: [brief], message: msg }))).toEqual([12, 13, 14, 15, 16, 17, 18]);
   });
 
+  it('reads the PR out of a link into it: a tab, a comment, a query', () => {
+    const msg = 'Files https://github.com/acme/app/pull/30/files, comment https://github.com/acme/app/pull/31#issuecomment-9 '
+      + 'and checks https://github.com/acme/app/pull/32/checks?check_run_id=7.';
+    const refs = donePrRefs({ history: [brief], message: msg });
+    expect(numbers(refs)).toEqual([30, 31, 32]);
+    expect(refs[0].url).toBe('https://github.com/acme/app/pull/30');
+  });
+
   it('names a PR once, as first written, however often and however spelled', () => {
     const refs = donePrRefs({
       history: [brief, text('PR: https://github.com/acme/app/pull/12')],

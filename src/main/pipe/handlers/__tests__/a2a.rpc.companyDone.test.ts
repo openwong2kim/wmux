@@ -177,6 +177,20 @@ describe('a2a.task.update — a company task is done only once wmux has checked 
     expect(limited.updates()).toHaveLength(0);
   });
 
+  it('refuses a read gh has not answered in time, so the done never lands after the caller gave up', async () => {
+    vi.useFakeTimers();
+    try {
+      const { router, updates, donePrFacts } = setup();
+      donePrFacts.mockImplementation(() => new Promise(() => undefined));
+      const pending = router.dispatch({ id: 'd3c', method: 'a2a.task.update', params: done() });
+      await vi.advanceTimersByTimeAsync(7_000);
+      expect(errorOf(await pending)).toContain('through gh: no answer within 7 s');
+      expect(updates()).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('the owner\'s own lane skips the check', async () => {
     const { router, calls, updates, donePrFacts } = setup({ read: { ok: true, value: facts({ isDraft: true }) } });
     const res = await router.dispatch({ id: 'd4', method: 'a2a.task.update', params: done({ senderPtyId: undefined }) }, { operator: true });
