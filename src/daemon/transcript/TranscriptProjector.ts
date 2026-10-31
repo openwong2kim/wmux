@@ -363,7 +363,7 @@ export class TranscriptProjector {
     if (this.notWrittenYet(sessionId, resolved)) return { ok: true, page: EMPTY_PAGE(), lineEnds: [] };
     const starts: number[] = [];
     const counts: number[] = [];
-    const rewinds = this.rewinds(resolved.transcriptPath, resolved.parse);
+    const rewinds = this.rewinds(resolved.transcriptPath, resolved.parse, false);
     const page = readTranscriptPage(resolved.transcriptPath, {
       ...(before !== undefined ? { before } : {}),
       maxBytes: TAIL_BYTES,
@@ -1271,12 +1271,14 @@ export class TranscriptProjector {
   /**
    * A Claude transcript's rewind index, brought up to the end of the file.
    * Called after a read, so it has seen every line that read returned. Other
-   * agents' transcripts have no rewind: undefined.
+   * agents' transcripts have no rewind: undefined. `create: false` (search,
+   * which walks every pane) uses only an index a conversation read built.
    */
-  private rewinds(transcriptPath: string, parse: (line: string, offset: number) => ParsedTranscriptLine): RewindIndex | undefined {
+  private rewinds(transcriptPath: string, parse: (line: string, offset: number) => ParsedTranscriptLine, create = true): RewindIndex | undefined {
     if (parse !== fileTranscriptProvider('claude')?.parse) return undefined;
     let index = this.rewindIndexes.get(transcriptPath);
     if (index) this.rewindIndexes.delete(transcriptPath);
+    else if (!create) return undefined;
     else index = new RewindIndex(transcriptPath);
     this.rewindIndexes.set(transcriptPath, index);
     const oldest = this.rewindIndexes.keys().next();

@@ -22,7 +22,7 @@
 // is not detected and its rows stay.
 
 import { transcriptLineLink } from './parseEntry';
-import { readRange, statTranscript } from './readTail';
+import { isLineBoundary, readRange, statTranscript } from './readTail';
 import type { TurnEvent } from '../../shared/transcript/turnEvents';
 
 /** A main-thread entry's place in the conversation tree. */
@@ -88,13 +88,15 @@ export const REWIND_FIRST_SCAN_BYTES = 16 * 1024 * 1024;
 /** The longest abandoned run read back to find its rows. */
 export const REWIND_RUN_MAX_BYTES = 16 * 1024 * 1024;
 const CHUNK_BYTES = 1024 * 1024;
+const USER_KEY = Buffer.from('"type":"user"');
+const TOOL_RESULT_KEY = Buffer.from('"type":"tool_result"');
 
 /**
  * Each complete line in `[from, to)`, with its byte offset. A `from` inside a
  * line skips to the next one. Returns where the last complete line ended.
  */
 function forEachLine(transcriptPath: string, from: number, to: number, midLine: boolean,
-  fn: (line: string, offset: number) => void): number {
+  fn: (line: Buffer, offset: number, end: number) => void): number {
   let at = from;
   let skip = midLine;
   let carry = Buffer.alloc(0);
@@ -106,7 +108,7 @@ function forEachLine(transcriptPath: string, from: number, to: number, midLine: 
     const buf = carry.length ? Buffer.concat([carry, chunk]) : chunk;
     let start = 0;
     for (let nl = buf.indexOf(0x0a); nl >= 0; nl = buf.indexOf(0x0a, start)) {
-      if (!skip) fn(buf.subarray(start, nl).toString('utf8'), carryStart + start);
+      if (!skip) fn(buf.subarray(start, nl), carryStart + start, carryStart + nl + 1);
       skip = false;
       start = nl + 1;
       end = carryStart + start;
@@ -129,6 +131,8 @@ export class RewindIndex {
   private scanned = 0;
   /** Parent uuid → the prompts written under it, with their line offsets. */
   private prompts = new Map<string, Array<{ uuid: string; offset: number }>>();
+  /** Prompt uuids already counted. */
+  private seen = new Set<string>();
   /** Each rewind: the abandoned prompt's offset and the replacing prompt's line end. */
   private rewinds: Array<{ from: number; at: number }> = [];
   private abandoned = new Set<string>();
@@ -139,10 +143,13 @@ export class RewindIndex {
   update(): void {
     const stat = statTranscript(this.transcriptPath);
     if (!stat) return;
-    if (stat.ino !== this.ino || stat.size < this.scanned) {
+    // A replaced file, or one rewritten in place (the scan point is no longer
+    // a line start), is scanned afresh.
+    if (stat.ino !== this.ino || stat.size < this.scanned || this.scanned > 0 && !isLineBoundary(this.transcriptPath, this.scanned)) {
       this.ino = stat.ino;
       this.scanned = Math.max(0, stat.size - REWIND_FIRST_SCAN_BYTES);
       this.prompts = new Map();
+      this.seen = new Set();
       this.rewinds = [];
       this.abandoned = new Set();
       this.scanned = this.scan(this.scanned, stat.size, this.scanned > 0);
@@ -152,17 +159,18 @@ export class RewindIndex {
   }
 
   private scan(from: number, to: number, midLine: boolean): number {
-    return forEachLine(this.transcriptPath, from, to, midLine, (line, offset) => {
+    return forEachLine(this.transcriptPath, from, to, midLine, (line, offset, end) => {
       // Only a `user` line that is not a tool result can be a prompt; the rest
-      // (most of the bytes) are not parsed here. Quotes inside a message are
+      // (most of the bytes) are not decoded here. Quotes inside a message are
       // escaped in the JSON, so these keys match only the entry's own fields.
-      if (!line.includes('"type":"user"') || line.includes('"type":"tool_result"')) return;
-      const link = transcriptLineLink(line, offset);
+      if (line.indexOf(USER_KEY) < 0 || line.indexOf(TOOL_RESULT_KEY) >= 0) return;
+      const link = transcriptLineLink(line.toString('utf8'), offset);
       const key = link?.prompt ? link.parentUuid ?? link.logicalParentUuid : undefined;
-      if (!link || key === undefined) return;
+      // The same entry written twice is one prompt, not a rewind.
+      if (!link || key === undefined || this.seen.has(link.uuid)) return;
+      this.seen.add(link.uuid);
       const earlier = this.prompts.get(key) ?? [];
-      const lineEnd = offset + Buffer.byteLength(line, 'utf8') + 1;
-      for (const prior of earlier) this.abandon(prior.offset, lineEnd);
+      for (const prior of earlier) this.abandon(prior.offset, end);
       this.prompts.set(key, [...earlier, { uuid: link.uuid, offset }]);
     });
   }
@@ -177,7 +185,7 @@ export class RewindIndex {
     this.rewinds.push({ from, at });
     const links: EntryLink[] = [];
     forEachLine(this.transcriptPath, from, at, false, (line, offset) => {
-      const link = transcriptLineLink(line, offset);
+      const link = transcriptLineLink(line.toString('utf8'), offset);
       if (link) links.push(link);
     });
     for (const uuid of analyzeRewinds(links).abandoned) this.abandoned.add(uuid);
