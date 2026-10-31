@@ -94,6 +94,7 @@ import { generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, gen
 import { queuedScreenText, queuedTextSnapshot } from './queuedSessionText';
 import { FolderTrustRefusedError, folderTrustRefusal, folderTrustState, registerFolderTrustRpc, setFolderTrustTimingLog } from './folderTrustState';
 import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../shared/folderTrustWording';
+import { HOST_WINDOW_RPC, createHostWindowRpc } from './hostWindowRpc';
 import type { TerminalPty } from '../shared/terminalPty';
 import { serializeSession } from './sessionSerialize';
 import { AwaitingScreenVerifier, AWAITING_NARROW_DIALOG_COLS, questionInFlight, renderPaneScreen, renderPaneTail } from './AwaitingScreenVerifier';
@@ -149,10 +150,13 @@ import { A2aContinueReceiver, paneHoldsSession } from './a2aRemote/continueRecei
 import { ContinueBundle } from './a2aRemote/continueBundle';
 import { ContinuePolicyStore } from './a2aRemote/continuePolicyStore';
 import { ContinueRequestStore } from './a2aRemote/continueRequestStore';
+import { ContinuePlacer } from './a2aRemote/continuePlacer';
+import { registerContinueRpc } from './a2aRemote/continueRpc';
 import { rootIsRepoTop, rootOriginKey } from './a2aRemote/continueRootGit';
 import { gitRunner } from '../main/a2aRemote/spawnWorktree';
 import { linkAlias } from './a2aRemote/outbound';
 import { A2A_SPAWN_EVENT, type A2aSpawnEvent } from '../shared/a2aSpawn';
+import { A2A_CONTINUE_EVENT, isContinueAgent, type A2aContinueEvent } from '../shared/a2aContinue';
 import { A2A_FEATURE_IMAGES, A2A_FEATURE_LINK_OFFER, A2A_FEATURE_SPAWN, A2A_FEATURE_STREAM_PING, isRemoteTaskId, isTailnetIpv4 } from '../shared/a2aRemote';
 import type { A2aRemoteLinkEvent } from '../shared/rpc';
 import { ChannelService, ChannelStateWriter, ChannelWakeWorker, wakeAgentSlug, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope, stampChannelCaller, type CallerFieldSpec, type ChannelServiceEventLog } from './channels';
@@ -284,6 +288,7 @@ import { GUEST_BOT_RPC } from '../shared/guestBots';
 import { revokeDeviceAndDisconnect } from './web/deviceRevoke';
 import { withActivity, withViewingSessions } from './web/deviceActivity';
 import { buildWebPaneEnv } from './web/webPaneEnv';
+import { readClaudeFileSend } from './claudeFileSendSetting';
 import { makeChannelPhoneApi, type ChannelPhoneApi } from './web/channelsApi';
 import type { ApprovalDecision, DecisionFormKind, NativeDecisionOutcome, NativeDecisionRef, NativeDecisionReply } from './approvals/types';
 import type { AgentSlug } from '../shared/events';
@@ -9453,6 +9458,14 @@ async function main(): Promise<void> {
   pipeServer.onRpc('daemon.presence.desktop', async (params, ctx) =>
     presenceRpc(params, ctx.clientId),
   );
+  // The window that owns every pane's console window (Windows sign-in pickers).
+  const hostWindowRpc = createHostWindowRpc({
+    isFirstParty: (clientId) => pipeServer.isFirstParty(clientId),
+    setHostWindow: (handle) => sessionManager.setHostWindow(handle),
+    log: (level, msg) => log(level, msg),
+  });
+  pipeServer.onRpc(HOST_WINDOW_RPC, async (params, ctx) => hostWindowRpc.handle(params, ctx.clientId));
+  pipeServer.onClientClose((clientId) => hostWindowRpc.onClientClose(clientId));
   // A desktop that went away is not present, whatever it last reported. Without
   // this, killing the app mid-focus would leave a fresh report standing for the
   // rest of the freshness window and swallow the pushes it was meant to hand off.
@@ -10429,6 +10442,12 @@ async function main(): Promise<void> {
       enqueue: (hostId, envelope) => {
         if (!a2aDelivery) throw new Error('messages between PCs are not carried this run');
         a2aDelivery.outbox.enqueue(hostId, envelope);
+        // Each step's answer to the asker also tells main, which starts a request once it is received.
+        const result = envelope.continueResult;
+        if (result) {
+          const event: A2aContinueEvent = { type: A2A_CONTINUE_EVENT, hostId, continueId: result.continueId, code: result.code };
+          pipeServer.broadcast({ type: event.type, sessionId: '', data: event });
+        }
       },
       // The root's own origin, keyed as the asker keys its own; a git that could not be read throws (checked again later).
       originKeyOf: (rootPath) => rootOriginKey(a2aRootGit(rootPath), rootPath),
@@ -10521,6 +10540,17 @@ async function main(): Promise<void> {
       log: a2aLog,
     });
     registerSpawnRpc(onA2aRpc, { policy: a2aSpawnPolicy, requests: a2aSpawnRequests, onSaved: (previous) => a2aSpawn.sendTargets(previous) });
+    // Starting a conversation this PC received: main makes the worktree and the pane, the daemon places the files.
+    registerContinueRpc(onA2aRpc, {
+      receiver: a2aContinue,
+      requests: a2aContinueRequests,
+      placer: new ContinuePlacer({ a2aDir, worktreesRoot: path.join(wmuxDir, 'worktrees'), requests: a2aContinueRequests, log: a2aLog }),
+      hostName: a2aHostName,
+      paneTranscript: (ptyId) => {
+        const bound = sessionManager.getSession(ptyId)?.meta.resumeBinding;
+        return bound && isContinueAgent(bound.agent) && bound.transcriptPath ? bound.transcriptPath : null;
+      },
+    });
     // Link control RPCs. Their handlers are also kept here: the delivery
     // layer's link reconcile reuses `a2a.remote.links.refresh` as is.
     const a2aLinkHandlers = new Map<string, (params: Record<string, unknown>) => Promise<unknown>>();
@@ -10649,6 +10679,7 @@ async function main(): Promise<void> {
   // #2388: a task folder whose removal did not finish takes no new pane,
   // whoever asks (the desktop, a phone, an automation, a recovery).
   sessionManager.setSpawnCwdRefusal((cwd, session) => pendingRemovalRefusalAt(getWmuxDir(), cwd, session));
+  sessionManager.setClaudeFileSend(() => readClaudeFileSend(getWmuxDir()));
 
   // Forward reference — initialised at step 8c after the snapshot runner is
   // wired. RPC handlers that fire before initialisation simply skip the

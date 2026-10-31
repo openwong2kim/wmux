@@ -645,6 +645,14 @@ export type RpcMethod =
   | 'a2a.remote.spawn.outgoing'
   | 'a2a.remote.spawn'
   | 'a2a.remote.spawnStatus'
+  | 'a2a.remote.continue.work'
+  | 'a2a.remote.continue.claim'
+  | 'a2a.remote.continue.place'
+  | 'a2a.remote.continue.unplace'
+  | 'a2a.remote.continue.binding'
+  | 'a2a.remote.continue.started'
+  | 'a2a.remote.continue.failed'
+  | 'a2a.remote.continue.state'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -984,6 +992,14 @@ export const ALL_RPC_METHODS = [
   'a2a.remote.spawn.outgoing',
   'a2a.remote.spawn',
   'a2a.remote.spawnStatus',
+  'a2a.remote.continue.work',
+  'a2a.remote.continue.claim',
+  'a2a.remote.continue.place',
+  'a2a.remote.continue.unplace',
+  'a2a.remote.continue.binding',
+  'a2a.remote.continue.started',
+  'a2a.remote.continue.failed',
+  'a2a.remote.continue.state',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import type { IPty } from 'node-pty';
 import { ptyBackend, type TerminalPty } from '../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../shared/spawnPty';
+import { applyParentWindow } from '../shared/conptyParentWindow';
 import type { PaneJob } from './paneJob';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -24,6 +25,7 @@ import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 import { buildSafeChildEnv, isNestingMarker } from '../shared/envFilter';
+import { claudeFileSendEnv } from '../shared/claudeFileSend';
 import { sanitizeSecretEnv } from '../shared/botSecret';
 import { withoutExeSearchGuard } from '../shared/exeSearch';
 import { CLAUDE_SANDBOXED_ENV } from '../shared/agentFirstRun';
@@ -122,6 +124,8 @@ interface PreparedSpawn {
   hostCwd: string;
   env: Record<string, string>;
   secretEnv: Record<string, string> | null;
+  /** The Claude file send setting at prepare time (shared/claudeFileSend.ts). */
+  claudeFileSend: boolean;
   cols: number;
   rows: number;
   wsl: ResolvedWslCwd | undefined;
@@ -307,6 +311,17 @@ export class DaemonSessionManager extends EventEmitter {
     this.paneJob = job;
   }
 
+  /**
+   * Whether the Claude file send setting is on (shared/claudeFileSend.ts).
+   * Injected by daemon/index.ts, which reads main's file; asked for every
+   * spawn, recovery included. Default: off.
+   */
+  private claudeFileSend: () => boolean = () => false;
+
+  setClaudeFileSend(fn: () => boolean): void {
+    this.claudeFileSend = fn;
+  }
+
   private spawnCwdRefusalOf(prepared: PreparedSpawn): string | null {
     return this.spawnCwdRefusal(prepared.cwd, prepared.params.wslTarget ? { wslTarget: prepared.params.wslTarget } : {});
   }
@@ -331,7 +346,41 @@ export class DaemonSessionManager extends EventEmitter {
    */
   private spawningCreates = new Set<symbol>();
 
+  /**
+   * The desktop window that owns every pane's console window (Windows; see
+   * shared/conptyParentWindow.ts), as main last reported it. Every spawn reads
+   * it; null until main reports one, and again once main has gone.
+   */
+  private hostWindow: Buffer | null = null;
+
   cancelPendingCreates(): void { this.pendingCreates.clear(); }
+
+  /**
+   * Make `handle` the owner of every live pane's console window, and of each
+   * one spawned from now on. Null only stops handing a window to new panes:
+   * live ones are never sent a NULL owner. A destroyed window stops being
+   * their owner by itself (Windows drops it), and one main merely lost touch
+   * with is still a fine owner. Returns how many live sessions the request
+   * reached.
+   */
+  setHostWindow(handle: Buffer | null): number {
+    // Each reconnect and each adopted window reports again; the same window
+    // changes nothing, so it costs no call per pane.
+    if (handle === this.hostWindow || (handle && this.hostWindow?.equals(handle))) return 0;
+    this.hostWindow = handle;
+    if (!handle) return 0;
+    let reached = 0;
+    let declined = 0;
+    for (const managed of this.sessions.values()) {
+      if (managed.meta.state === 'dead' || managed.meta.state === 'suspended') continue;
+      if (applyParentWindow(managed.ptyProcess, handle)) reached++;
+      else declined++;
+    }
+    if (declined > 0) {
+      console.log(`[DaemonSessionManager] host window: ${declined} session(s) cannot take a console owner (only node-pty on the bundled ConPTY can)`);
+    }
+    return reached;
+  }
 
   /** Preserve retry state; unattempted placeholders retain normal suspended expiry. */
   keepPendingRecovery(session: DaemonSession, error?: string): void {
@@ -770,7 +819,7 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
-    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, cols, rows, wsl };
+    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, claudeFileSend: this.claudeFileSend(), cols, rows, wsl };
   }
 
   /**
@@ -791,7 +840,11 @@ export class DaemonSessionManager extends EventEmitter {
    * silently demote the pane to mouse-less forever.
    */
   private spawnRequest(prepared: PreparedSpawn, onBackend: (backend: ConptyBackend) => void): SpawnPtyRequest {
-    const { params, cmd, spawnArgs, hostCwd, env, secretEnv, cols, rows, wsl } = prepared;
+    const { params, cmd, spawnArgs, hostCwd, env, secretEnv, claudeFileSend, cols, rows, wsl } = prepared;
+    // The file send variable goes to the process only, like a worker's
+    // secrets: kept out of meta.env, a recovered pane follows the setting as
+    // it is then, not as it was when the pane was first created.
+    const processOnly = { ...claudeFileSendEnv(claudeFileSend), ...(secretEnv ?? {}) };
     return {
       command: cmd,
       args: spawnArgs,
@@ -802,7 +855,7 @@ export class DaemonSessionManager extends EventEmitter {
         cwd: hostCwd,
         // A worker's secrets reach the process only; meta.env below is
         // `env` itself, without them (and without their WSLENV names).
-        env: secretEnv ? withSecretEnv(env, secretEnv, !!wsl || isWslShell(cmd)) : env,
+        env: Object.keys(processOnly).length > 0 ? withSecretEnv(env, processOnly, !!wsl || isWslShell(cmd)) : env,
       },
       useBundledConpty: shouldUseBundledConpty(
         process.platform,
@@ -818,6 +871,7 @@ export class DaemonSessionManager extends EventEmitter {
         else console.log(line);
       },
       onBackend,
+      parentWindow: () => this.hostWindow,
     };
   }
 
