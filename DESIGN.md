@@ -1759,13 +1759,13 @@ A pane is a terminal column plus, when it needs one, a work area.
   pane, the CEO first: status mark, the muted CEO word, the title, the
   coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
   needs-you one in `--attention-text`, and a muted `Next:` line), **Handed
-  out** (open jobs sent to other workspaces), **Not on a seat** and **Log**
+  out** (open jobs sent to other workspaces, or to panes on other PCs, named
+  by their alias), **Not on a seat** and **Log**
   (finished jobs, newest first, the last ten however old). A section with nothing in it is
   not drawn, Seats aside; a pane with no agent keeps its seat with a muted
   `No agent in this pane` under its title, and the coordinate gives way
   before the title in a narrow pane. A seat row focuses its pane. One muted
-  closing line says work sent to other PCs and fan-out workers is not shown
-  yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
+  closing line says work sent to fan-out workers is not shown yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
   colour beyond the status marks and needs-you. Dissolve company closes the
   board tab; a pane holding nothing else keeps it, saying the workspace is no
   longer a company. A pane with a board can be stashed (the board keeps no
