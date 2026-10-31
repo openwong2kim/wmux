@@ -522,13 +522,14 @@ jobs:
     permissions:
       contents: write
     strategy:
-      # Keep both arches building so one regressing doesn't hide the other.
+      # Only arm64 (macos-15) builds today; fail-fast stays off so a re-added
+      # leg reports on its own.
       fail-fast: false
       matrix:
-        # macos-14 = Apple Silicon (arm64). macos-13 (Intel/x64) was dropped: the
+        # macos-15 = Apple Silicon (arm64). macos-13 (Intel/x64) was dropped: the
         # hosted runner cancels the job within ~1s on this repo, which only ever
         # showed up as a spurious red leg. Re-add when an Intel build is needed.
-        os: [macos-14]
+        os: [macos-15]
     env:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
