@@ -11,6 +11,7 @@ describe('ForegroundLease', () => {
     const a = { key: 'a', label: 'agent A' };
     const b = { key: 'b', label: 'agent B' };
     lease.take(a, 0);
+    lease.touch(a, 0);
     expect(() => lease.take(b, INPUT_LOCK_IDLE_MS)).toThrow(ComputerError);
     try {
       lease.take(b, 1);
@@ -19,11 +20,37 @@ describe('ForegroundLease', () => {
       expect((err as ComputerError).message).toContain('agent A');
     }
     lease.take(a, 10); // the holder refreshes it
+    lease.touch(a, 10);
     expect(lease.label(10 + INPUT_LOCK_IDLE_MS)).toBe('agent A');
     lease.take(b, 10 + INPUT_LOCK_IDLE_MS + 1);
     expect(lease.label(10 + INPUT_LOCK_IDLE_MS + 1)).toBe('agent B');
     lease.clear();
     expect(lease.label(0)).toBeNull();
+  });
+
+  it('never expires while its real-input request is still in flight; idle time counts from touch', () => {
+    const lease = new ForegroundLease();
+    const a = { key: 'a', label: 'agent A' };
+    const d = { key: 'd', label: 'agent D' };
+    lease.take(a, 0);
+    // A's request waits in the helper's queue for 20 s.
+    expect(() => lease.take(d, 16_000)).toThrow(/agent A/);
+    expect(lease.label(20_000)).toBe('agent A');
+    lease.touch(a, 20_000);
+    expect(() => lease.take(d, 20_000 + INPUT_LOCK_IDLE_MS)).toThrow(/agent A/);
+    lease.take(d, 20_000 + INPUT_LOCK_IDLE_MS + 1);
+    expect(lease.label(20_000 + INPUT_LOCK_IDLE_MS + 1)).toBe('agent D');
+  });
+
+  it('a touch after a stop cleared the lease, or by another agent, changes nothing', () => {
+    const lease = new ForegroundLease();
+    const a = { key: 'a', label: 'agent A' };
+    lease.take(a, 0);
+    lease.touch({ key: 'b' }, 1);
+    expect(lease.label(INPUT_LOCK_IDLE_MS + 5)).toBe('agent A'); // still busy
+    lease.clear();
+    lease.touch(a, 2);
+    expect(lease.label(2)).toBeNull();
   });
 });
 

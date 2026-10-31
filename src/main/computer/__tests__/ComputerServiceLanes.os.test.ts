@@ -2,8 +2,11 @@
 // run at once, one app's actions run in order, real input stays one agent at a
 // time, and a helper without `input.deferForeground` keeps the old single lock.
 
+import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
+import { trackedTempDir } from '../../../test-utils/trackedTempDir';
+import { HelperProcess } from '../HelperProcess';
 import { SNAPSHOT_TTL_MS, type ActionResult, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
 import {
   ABORT_COOLDOWN_MS,
@@ -423,4 +426,85 @@ describe('ComputerService input lanes', () => {
     done(oldest(pending));
     await plain;
   });
+
+  it('keeps the lease busy while its real input waits at the helper, and starts the idle time when it settles', async () => {
+    const { service, pending, controlCalls, done, advance } = makeService(true);
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const d = await service.getAppState(AGENT_B, { app: 'Paint' });
+    // A's chord sits at the helper (behind other agents' requests) for 20 s.
+    const chord = service.control(AGENT_A, { action: 'hotkey', snapshotId: a.snapshotId, keys: ['ctrl', 's'] });
+    await settle();
+    advance(16_000);
+    const early = await service.control(AGENT_B, { action: 'click', snapshotId: d.snapshotId, index: 0, button: 'right' }).catch((e: unknown) => e);
+    expect((early as ComputerError).code).toBe('input_busy');
+    expect((early as ComputerError).disposition).toBe('not_delivered');
+    advance(4_000);
+    done(oldest(pending), 'foreground');
+    await withinDeadline(chord);
+    advance(INPUT_LOCK_IDLE_MS);
+    const fresh = await service.getAppState(AGENT_B, { app: 'Paint' });
+    expect((await service.control(AGENT_B, { action: 'click', snapshotId: fresh.snapshotId, index: 0, button: 'right' }).catch((e: unknown) => e) as ComputerError).code).toBe('input_busy');
+    advance(1);
+    const late = service.control(AGENT_B, { action: 'click', snapshotId: fresh.snapshotId, index: 0, button: 'right' });
+    await settle();
+    expect(controlCalls.at(-1)?.params.button).toBe('right');
+    done(oldest(pending), 'foreground');
+    expect((await withinDeadline(late)).delivery).toBe('foreground');
+  });
+
+  it.each([
+    ['a foreground-certain action', true, 'not_delivered', 'not_delivered'],
+    ['a foreground-certain action', true, 'delivered_unverified', 'delivered_unverified'],
+    ['a helper without deferForeground', undefined, 'not_delivered', 'not_delivered'],
+    ['a helper without deferForeground', undefined, 'delivered_unverified', 'delivered_unverified'],
+  ] as const)('never surfaces needs_foreground from an allowed send (%s, %s)', async (_what, defer, helperSays, expected) => {
+    const { service, pending, controlCalls, needsForeground } = makeService(defer);
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const result = service.control(AGENT_A, { action: 'hotkey', snapshotId: a.snapshotId, keys: ['ctrl', 's'] }).catch((e: unknown) => e);
+    await settle();
+    needsForeground(oldest(pending), helperSays);
+    const err = (await withinDeadline(result)) as ComputerError;
+    expect(err.code).toBe('internal');
+    expect(err.disposition).toBe(expected);
+    expect(controlCalls).toHaveLength(1);
+    // The lease's idle time started when the send settled; it is not stuck busy.
+    expect(service.inputHolder()).toBe('agent A');
+  });
+});
+
+// Real timers and a real helper process: every helper request made while a
+// pid slot is held settles at its timeout (HelperProcess kills and replaces
+// the helper), so a helper that never answers cannot park an app's lane.
+describe('input lanes over a real helper process', () => {
+  it('releases a slot whose helper request times out, and then runs the next action on that app', async () => {
+    const logFile = path.join(trackedTempDir('wmux-lanes-', { until: 'file' }), 'requests.log');
+    const proc = new HelperProcess({
+      command: process.execPath,
+      args: [path.join(__dirname, 'fixtures', 'fakeHelper.mjs'), 'deferring-hang-once', logFile],
+      helloTimeoutMs: 5_000,
+      timeoutFor: (method) => (method === 'pressKey' ? 500 : 5_000),
+    });
+    const service = new ComputerService({
+      isEnabled: () => true,
+      askPerApp: () => false,
+      createHelper: () => proc,
+      requestConsent: async () => 'approved',
+      stopKey: { arm: () => true, release: vi.fn() },
+      blockContext: () => ({ selfPids: new Set([1]) }),
+      platform: 'win32',
+    });
+    try {
+      const a = await service.getAppState(AGENT_A, { app: 'Fake' });
+      const b = await service.getAppState(AGENT_B, { app: 'Fake' });
+      const hung = service.control(AGENT_A, { action: 'pressKey', snapshotId: a.snapshotId, key: 'a' }).catch((e: unknown) => e);
+      const next = service.control(AGENT_B, { action: 'pressKey', snapshotId: b.snapshotId, key: 'b' });
+      const err = (await hung) as ComputerError;
+      expect(err.code).toBe('timeout');
+      expect(err.disposition).toBe('delivered_unverified');
+      // The slot came back at the timeout: B's action on the same app ran.
+      expect((await next).disposition).toBe('delivered_unverified');
+    } finally {
+      service.dispose();
+    }
+  }, 20_000);
 });

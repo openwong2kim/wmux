@@ -24,25 +24,45 @@ import type { ComputerControlAction, Modifier, MouseButton } from '../../shared/
 
 export const INPUT_LOCK_IDLE_MS = 15_000;
 
-/** One agent's hold on real input. */
+/**
+ * One agent's hold on real input. It is busy from `take` until the matching
+ * `touch` (the real-input request settled), however long that request waits
+ * in the helper's queue behind other agents' requests; a busy lease never
+ * expires. The idle time counts only from the last `touch`.
+ */
 export class ForegroundLease {
-  private holder: { agentKey: string; label: string; lastUsedAt: number } | null = null;
+  private holder: { agentKey: string; label: string; lastUsedAt: number; busy: number } | null = null;
 
   constructor(private readonly idleMs = INPUT_LOCK_IDLE_MS) {}
 
-  /** Takes (or refreshes) the lease for `agent`; input_busy when another agent used it within idleMs. */
+  private held(now: number): boolean {
+    return this.holder !== null && (this.holder.busy > 0 || now - this.holder.lastUsedAt <= this.idleMs);
+  }
+
+  /**
+   * Takes the lease for `agent` for one real-input request; input_busy when
+   * another agent holds it (busy, or idle for no more than idleMs). Every
+   * successful take must be followed by one `touch` once that request settles.
+   */
   take(agent: { key: string; label: string }, now: number): void {
-    if (this.holder && this.holder.agentKey !== agent.key && now - this.holder.lastUsedAt <= this.idleMs) {
+    if (this.holder && this.holder.agentKey !== agent.key && this.held(now)) {
       // The label, never the key: the key carries pane ids.
       throw new ComputerError('input_busy', `${this.holder.label} is using the desktop`);
     }
-    this.holder = { agentKey: agent.key, label: agent.label, lastUsedAt: now };
+    const busy = this.holder?.agentKey === agent.key ? this.holder.busy : 0;
+    this.holder = { agentKey: agent.key, label: agent.label, lastUsedAt: now, busy: busy + 1 };
+  }
+
+  /** `agent`'s real-input request settled: the idle time starts now. A no-op after a stop cleared it. */
+  touch(agent: { key: string }, now: number): void {
+    if (!this.holder || this.holder.agentKey !== agent.key) return;
+    this.holder.busy = Math.max(0, this.holder.busy - 1);
+    this.holder.lastUsedAt = now;
   }
 
   /** The label of the agent holding it now, or null. */
   label(now: number): string | null {
-    if (!this.holder || now - this.holder.lastUsedAt > this.idleMs) return null;
-    return this.holder.label;
+    return this.holder && this.held(now) ? this.holder.label : null;
   }
 
   clear(): void {

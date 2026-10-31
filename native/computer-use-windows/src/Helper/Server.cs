@@ -3,6 +3,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using WmuxComputerUse.Core;
 
 namespace WmuxComputerUse;
 
@@ -84,6 +85,16 @@ internal static class Server
         int id = (int)idNumber;
         var method = request["method"] is JsonValue m && m.GetValueKind() == JsonValueKind.String ? m.GetValue<string>() : "";
         var p = new Params(request["params"] as JsonObject ?? new JsonObject());
+        // Dispositions and needs_foreground compare Input.Sent around one
+        // request, so they are true only while requests run one at a time
+        // (Core RequestGate). The loop is single-threaded; this asserts it.
+        if (!Gate.TryEnter())
+        {
+            Wire.Log("a request arrived while another was in flight; refused before sending anything");
+            Wire.Send(Error(id, "internal", "the computer-use helper was already running a request; nothing was sent",
+                ControlMethods.Contains(method) ? "not_delivered" : null), id);
+            return;
+        }
         long sentBefore = Input.Sent;
         try
         {
@@ -98,7 +109,13 @@ internal static class Server
         {
             Wire.Send(Error(id, Uia.ErrorCode(e), Uia.Describe(e), Disposition(method, sentBefore)), id);
         }
+        finally
+        {
+            Gate.Exit();
+        }
     }
+
+    private static readonly RequestGate Gate = new();
 
     /// <summary>
     /// A control method's error says whether it sent anything: main may retry

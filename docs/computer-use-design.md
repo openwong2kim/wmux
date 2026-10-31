@@ -272,9 +272,11 @@ snapshot is the v1.1 token saver.
 - **Input lanes** (`src/main/computer/inputLanes.ts`). Several agents can
   drive different apps at once:
   - The foreground lease: real input (it moves the user's pointer and front
-    window) is held by one agent session at a time, for 15 s after its last
-    real-input action. Another agent gets `input_busy` at once,
-    `not_delivered`; the lease never waits.
+    window) is held by one agent session at a time. It stays busy from the
+    moment it is taken until that real-input request settles (result,
+    error or timeout), however long it waits in the helper's queue, and
+    only then counts 15 s of idle time. Another agent gets `input_busy` at
+    once, `not_delivered`; the lease never waits.
   - Pid lanes: every input action with a target app (every snapshot
     action) takes that app's slot first, one action at a time per pid, in
     arrival order. Actions on different apps never wait on each other. The
@@ -311,7 +313,16 @@ snapshot is the v1.1 token saver.
     agent and is charged once the action is about to be sent, so an action
     that ended while queued costs none.
   - Main reads `deferForeground` from the hello of the helper the action
-    starts anyway; it sends no extra request for it.
+    starts anyway; it sends no extra request for it. A helper that cannot
+    start ends the action there with that error (`not_delivered`), started
+    once, not again by the request.
+  - Every helper request made while a slot is held has the helper's
+    request timeout, after which the helper is killed and replaced, so a
+    helper that never answers releases the slot at that timeout.
+  - The helper's retry-safety answers (dispositions, `needs_foreground`)
+    assume it runs one request at a time; the Windows helper's server loop
+    is single-threaded and also refuses (`internal`, nothing sent) a
+    request that arrives while another is in flight.
   - A helper whose hello lacks `input.deferForeground: true` (the macOS
     helper today, and older Windows helpers) gets no lanes: every input
     action takes the lease, exactly as before. The helper process itself

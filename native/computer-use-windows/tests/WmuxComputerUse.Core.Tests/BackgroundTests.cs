@@ -580,6 +580,20 @@ public class BackgroundTests
     }
 
     [Fact]
+    public void TheRequestGateAdmitsOneRequestAtATime()
+    {
+        var gate = new RequestGate();
+        Assert.True(gate.TryEnter());
+        Assert.True(gate.Busy);
+        // A second request while the first is in flight is refused.
+        Assert.False(gate.TryEnter());
+        gate.Exit();
+        Assert.False(gate.Busy);
+        Assert.True(gate.TryEnter());
+        gate.Exit();
+    }
+
+    [Fact]
     public void ActionRefusalsAreExactlyWhatActionRefusalCanReturn()
     {
         // Every refusal ActionRefusal gives is one, and no target-state refusal is.

@@ -72,8 +72,10 @@ export interface HelperLike {
   /**
    * Whether the helper's hello has `input.deferForeground: true` (protocol
    * ForegroundMode). Starts the helper when none runs (the action needs it
-   * anyway) and reads its hello; sends no request. A helper without this
-   * method never gets input lanes.
+   * anyway) and reads its hello; sends no request. A start that fails
+   * rejects with that error, which ends the action (not_delivered); it is
+   * not retried by the request. A helper without this method never gets
+   * input lanes.
    */
   defersForeground?(): Promise<boolean>;
 }
@@ -413,10 +415,11 @@ export class ComputerService {
     if (!defer) {
       // A helper that cannot defer real input: the single lease of before,
       // taken at once or refused at once (input_busy, not_delivered).
-      this.lease.take(agent, now);
-      this.checkRate(agent.key, now);
-      this.deps.onControl?.({ agent, action: params.action, window: snap.window });
-      return send();
+      return this.underLease(agent, now, sent, () => {
+        this.checkRate(agent.key, now);
+        this.deps.onControl?.({ agent, action: params.action, window: snap.window });
+        return send();
+      });
     }
 
     const foreground = foregroundCertain({
@@ -436,10 +439,12 @@ export class ComputerService {
       now = this.now();
       this.recheckInLane(agent, snapshotId, target.pid, generation, now);
       if (foreground) {
-        this.lease.take(agent, now);
-        this.checkRate(agent.key, now);
-        this.deps.onControl?.({ agent, action: params.action, window: snap.window });
-        return await send('allow');
+        const at = now;
+        return await this.underLease(agent, at, sent, () => {
+          this.checkRate(agent.key, at);
+          this.deps.onControl?.({ agent, action: params.action, window: snap.window });
+          return send('allow');
+        });
       }
       // Charged once the action will really be sent: one that ended while
       // queued (a stop) costs no rate budget.
@@ -452,9 +457,7 @@ export class ComputerService {
         // Re-sent only when the helper says nothing went out (protocol
         // ForegroundMode rule). Any other verdict ends here: a re-send could
         // deliver it twice.
-        if (err.disposition !== 'not_delivered') {
-          fail('internal', `the computer-use helper asked for real input after it may have sent some (${err.message}); nothing more was sent`);
-        }
+        if (err.disposition !== 'not_delivered') throw needsForegroundAsInternal(err, sent);
       }
       // Upgrade, still holding the slot, so a later action on this app stays
       // behind it. Checked first, then the lease: a failed check never
@@ -462,19 +465,33 @@ export class ComputerService {
       sent.requested = false;
       now = this.now();
       this.recheckInLane(agent, snapshotId, target.pid, generation, now);
-      this.lease.take(agent, now);
-      try {
-        return await send('allow');
-      } catch (err) {
-        if (err instanceof ComputerError && err.code === 'needs_foreground') {
-          // Never shown to an agent, and never re-sent a second time.
-          if (err.disposition === 'not_delivered') sent.requested = false;
-          fail('internal', 'the computer-use helper refused real input it was allowed to use');
-        }
-        throw err;
-      }
+      return await this.underLease(agent, now, sent, () => send('allow'));
     } finally {
       release();
+    }
+  }
+
+  /**
+   * Real input under the foreground lease: takes it (input_busy at once when
+   * another agent holds it), runs `send`, and only once that settles
+   * (result, error or timeout) starts the lease's idle time. Until then the
+   * lease stays busy, however long the request waits in the helper's queue,
+   * so it cannot lapse while its own real input is still on the way. A
+   * needs_foreground answer never reaches the agent.
+   */
+  private async underLease<T>(
+    agent: ComputerAgent,
+    now: number,
+    sent: { requested: boolean },
+    send: () => Promise<T>,
+  ): Promise<T> {
+    this.lease.take(agent, now);
+    try {
+      return await send();
+    } catch (err) {
+      throw needsForegroundAsInternal(err, sent);
+    } finally {
+      this.lease.touch(agent, this.now());
     }
   }
 
@@ -600,11 +617,13 @@ export class ComputerService {
       }
     }
     const now = this.now();
-    // Launching and raising an app is always real (foreground) input.
-    this.lease.take(agent, now);
-    this.checkRate(agent.key, now);
-    onLaunch();
-    const opened = await helper.request('openApp', { app: params.app });
+    // Launching and raising an app is always real (foreground) input; the
+    // lease stays busy until the launch request settles.
+    const opened = await this.underLease(agent, now, { requested: true }, () => {
+      this.checkRate(agent.key, now);
+      onLaunch();
+      return helper.request('openApp', { app: params.app });
+    });
     this.assertCurrent(generation);
     const reason = blockReasonFor(opened.app, this.deps.blockContext());
     if (reason) fail('app_blocked', `${opened.app.name}: ${BLOCK_REASON_TEXT[reason]}`);
@@ -856,6 +875,26 @@ export function capabilitiesForAgent(caps: HelperCapabilities): AgentCapabilitie
   // No Accessibility, no input at all: background ways of sending it do not apply.
   const { input, ...rest } = caps;
   return { ...rest, ...(caps.permissions.accessibility && input ? { input } : {}), actions, modes, missingPermissions: missing };
+}
+
+/**
+ * needs_foreground is internal to main: an agent never sees the code. Every
+ * place that would surface it goes through here. With `not_delivered` the
+ * helper says nothing went out for the action, so the error stays
+ * `not_delivered`; any other verdict may have sent input and is
+ * `delivered_unverified`. Other errors pass through unchanged.
+ */
+function needsForegroundAsInternal(err: unknown, sent: { requested: boolean }): unknown {
+  if (!(err instanceof ComputerError && err.code === 'needs_foreground')) return err;
+  const nothingSent = err.disposition === 'not_delivered';
+  if (nothingSent) sent.requested = false;
+  return new ComputerError(
+    'internal',
+    nothingSent
+      ? 'the computer-use helper refused real input it was allowed to use; nothing was sent'
+      : `the computer-use helper asked for real input after it may have sent some (${err.message}); nothing more was sent`,
+    nothingSent ? 'not_delivered' : 'delivered_unverified',
+  );
 }
 
 /** A window the helper reports must belong to the app it reports with it. */
