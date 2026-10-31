@@ -21,7 +21,7 @@ same records, so both show the same state.
 | `title?` | Task or issue title. Untrusted free text, capped at 256 characters. Render it as text only. |
 | `a2aTaskId?` | The A2A task carrying the work. At most one link per task. |
 | `a2aState?` | The last A2A state seen for that task. An input to the state derivation. |
-| `owner` | `{ workspaceId, paneId? }` of the workspace doing the work (the task's receiver). |
+| `owner` | `{ workspaceId, paneId?, name? }` of the workspace doing the work (the task's receiver). A pane on another PC is `remote:<linkId>`, as the task ledger names it, with its alias in `name`. |
 | `requester?` | `{ workspaceId, paneId? }` of the workspace that handed it out (the task's sender). |
 | `agent?` | Agent slug of the worker, e.g. `claude`. |
 | `worktree?` | `{ path, branch? }`. |
@@ -107,6 +107,19 @@ blocks or fails the delivery or decision that triggered it.
   its `owner` is the workspace the task went to. The joined link keeps its
   origin and title. Otherwise the task gets a link of its own. External
   callers' `workLinkId` is ignored, and the field never reaches the renderer.
+- **A2A send to another PC** (`sendRemoteTask` in `a2a.rpc.ts`). A new task
+  to a remote pane's alias becomes a link once the daemon stored it for the
+  peer: `owner` is `remote:<linkId>` named by the alias, `requester` the
+  verified sender pane, state `queued`. It never joins a named link.
+- **Remote state.** After every pull of the remote bridge
+  (`RemoteA2aBridge`), each open remote-owned link is checked against the
+  daemon's copy of its task (`a2a.task.query`, `view: 'state'`). That copy
+  moves on the peer's states, and also when the peer refuses the task, the
+  link is revoked or broken, or a hold expires, none of which reaches main
+  one by one. A link takes a state it does not have yet, with the report on
+  `completed` or `failed`. A link whose task is not over and is no longer in
+  the daemon ended unseen (the daemon drops ended tasks), and is set
+  `abandoned`. A finished link is not checked again, so its report stays.
 - **A2A state.** Only committed states are recorded. `a2a.task.update`
   records the daemon's committed state, or the requested state once the
   renderer accepted the fallback. `a2a.task.cancel` records `canceled` only on
@@ -135,7 +148,6 @@ Coming from the two lanes:
 - **Git page, PR reads:** `upsert({ id, pr, prStatus })` whenever a PR is
   read for a linked branch. `prStatus` feeds the `review`/`blocked`/`done`
   part of the derivation.
-- **Fanout:** upsert with the worker's `worktree`, `agent` and task id.
 
 ## Consumers
 
@@ -187,3 +199,7 @@ change.
   mention's auto-response) get no link.
 - Nothing writes `prStatus` yet, so a completed task with a PR shows `review`
   until the Git page reads that PR.
+- Fan-out workers get no link.
+- A link owned by a pane on another PC is not settled when a local workspace
+  closes; the daemon's copy of its task settles it. A reply to a remote task
+  that has ended does not reopen it.

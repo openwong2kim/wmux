@@ -6,6 +6,7 @@
 import type { MoaPendingDecision } from '../../../shared/moa';
 import { deriveLinkState, type WorkLink, type WorkLinkOrigin } from '../../../shared/workLink';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
+import { isRemoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
 import type { Message, Task } from '../../../shared/types';
 
 export type TicketState = 'queued' | 'working' | 'needs-you' | 'done' | 'failed';
@@ -17,6 +18,12 @@ export interface FleetTicket {
   /** The request as it was sent (untrusted text). */
   request?: string;
   workspaceId: string;
+  /** The owner's name where no workspace here has one: a pane on another
+   *  PC, by its alias (untrusted text). */
+  workspaceName?: string;
+  /** For a job on another PC's pane, the pane that sent it: the peer's
+   *  replies land there, so that is where a jump goes. */
+  sentFrom?: { workspaceId: string; paneId?: string };
   paneId?: string;
   agent?: string;
   state: TicketState;
@@ -113,6 +120,8 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = 
     };
     const request = requestOf(task);
     if (request) ticket.request = request;
+    if (link.owner.name) ticket.workspaceName = link.owner.name;
+    if (isRemoteWorkspaceId(link.owner.workspaceId) && link.requester) ticket.sentFrom = link.requester;
     if (link.owner.paneId) ticket.paneId = link.owner.paneId;
     if (link.agent) ticket.agent = link.agent;
     if (link.a2aTaskId) ticket.a2aTaskId = link.a2aTaskId;

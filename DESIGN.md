@@ -1588,6 +1588,27 @@ leaves the page.
   with a muted `CEO` after its title, in the agent-kind slot and style; a
   row's title is its pane label (Rename pane) when it has one, and the trailer
   keeps live activity, else the coordinate. The company adds no colour.
+- **Company presets** (owner-approved 2026-10-31, mockup round 6): the
+  titlebar + menu lists them under a muted **Company** heading, below the
+  layout presets, as label + description rows like theirs
+  (CEO + researcher + 3 devs, Lead + reviewer). A pick swaps the menu for a
+  dialog: Name and Folder side by side, Mission, Standing orders (filled
+  from the preset), then the seats as a table (a CEO radio, Seat, Owns,
+  Agent; an agent that is not installed is listed but disabled), a **Tell
+  each agent its seat** checkbox, on by default, and **Make company** the
+  one primary. A bad or repeated seat name, or two agent seats besides the
+  CEO with no folder, says why under the table and disables the primary.
+  Making it opens a new workspace with the CEO's pane on the left at half
+  the width and the other seats stacked top to bottom on the right, each
+  pane named after its seat (a name another pane answers to gets `-2`,
+  `-3`…), carrying what it owns, started with its agent, and the CEO seated
+  before any agent is up. Every seat but the CEO that starts an agent works
+  in its own worktree of the folder's repository, on its own branch from
+  origin's default branch; the CEO works in the folder. With the checkbox
+  on, each agent's first message is its seat: its name, what it owns, the
+  mission and standing orders, who it reports to, its worktree and branch,
+  and for the CEO the other seats with their branches and the brief a task
+  to them needs. The board is not opened for it; the row menu opens it.
 - **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
   `treeitem`) with one Tab stop — the row the keyboard was last on, else the
   selected row, else the first. ↑ ↓ Home End move between rows in screen
@@ -1738,13 +1759,13 @@ A pane is a terminal column plus, when it needs one, a work area.
   pane, the CEO first: status mark, the muted CEO word, the title, the
   coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
   needs-you one in `--attention-text`, and a muted `Next:` line), **Handed
-  out** (open jobs sent to other workspaces), **Not on a seat** and **Log**
+  out** (open jobs sent to other workspaces, or to panes on other PCs, named
+  by their alias), **Not on a seat** and **Log**
   (finished jobs, newest first, the last ten however old). A section with nothing in it is
   not drawn, Seats aside; a pane with no agent keeps its seat with a muted
   `No agent in this pane` under its title, and the coordinate gives way
   before the title in a narrow pane. A seat row focuses its pane. One muted
-  closing line says work sent to other PCs and fan-out workers is not shown
-  yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
+  closing line says work sent to fan-out workers is not shown yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
   colour beyond the status marks and needs-you. Dissolve company closes the
   board tab; a pane holding nothing else keeps it, saying the workspace is no
   longer a company. A pane with a board can be stashed (the board keeps no
@@ -2272,6 +2293,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-29 | Owner-approved: one settings page per bot, opened by ⚙ in its chat header, its name pill, or its row in Settings › Bots; the profile popover and the Settings row editor are gone. A status strip, a section nav, form fields saved by one footer Save; actions act at once; a My Hermes bot's page leaves out Work and Connections | A bot's settings lived in two places that disagreed: name and limits only in Settings, engine, models and readiness only in the popover, the job empty in one and the starting job in the other, and a Manage that dumped the owner at the top of Settings. One page with one value per setting removes the disagreement; one Save makes clear when a change is sent, while the acts that were immediate stay so |
 | 2026-10-30 | Owner-approved (old company mode removed): the Toggle Company View and Toggle message feed actions go with the components they opened, which rendered nothing. A key a user saved on either is dropped on load and no Shortcuts row lists it, and Ctrl+Shift+M (Toggle message feed's default) reaches the pane. Amends the 2026-10-28 line that kept a saved Company View key | Both actions opened components that drew nothing, and the components are deleted with the rest of the old company mode; a saved key bound to nothing would only swallow that key |
 | 2026-10-30 | Owner-approved (mockup round 5): company mode's first UI. Make company…, Company settings… and Dissolve company on the workspace row menu; a company row shows its mission instead of the git line and hides the branch, PR badge and sync badge; the coordinator's row leads the roster with a muted CEO word in the agent-kind slot; staff titles come from the pane label | A workspace's branch, PR and sync come from whichever pane reported last, which says nothing when a company's panes work in different worktrees; the mission is what the row is for. The CEO word reuses an existing slot and style, and the pane label is already the name a pane is addressed by |
+| 2026-10-31 | Owner-approved (mockup round 6, company presets): a company can be made in one pick from the + menu. Two built-ins, CEO + researcher + 3 devs (the owner's own shape: a CEO who orchestrates and writes no code, a researcher, developers not split by stack) and Lead + reviewer; each seat's agent is told its seat on its first turn | Making panes, starting agents and filling the company dialog by hand was the cost of every company. Agents that do not know their seat leave the company a set of empty roles, so the first message carries it. Seats on other PCs and saved presets come later: the other PC has to approve a start, and saving needs each pane's launch line |
 | 2026-10-30 | Owner-approved (mockup round 5, board as a tab): company mode's board is a work tab in the company workspace, opened beside the CEO's terminal, not a rail page or sidebar view. Seats are the workspace's panes, so a pane between agent runs keeps its seat and its jobs | The owner rejected a board that took over the sidebar; a work tab keeps the CEO's terminal beside it and expands with ◫. Seating by pane, not by detected agent, keeps a job sent to a restarting pane on that pane |
 
 ### Desktop conversation view

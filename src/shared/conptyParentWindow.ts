@@ -7,11 +7,12 @@
  * console window is a hidden pseudo-window with no owner, so the picker had no
  * relation to wmux and opened behind it: the pane looked frozen.
  *
- * node-pty 1.2.0-beta.17's `setParentWindow` asks the bundled conpty.dll
- * (`ConptyReparentPseudoConsole`) to make a given top-level window that
- * owner, so such a window stacks above wmux. The in-box ConPTY has no
- * equivalent: there, and off Windows (node-pty's Unix pty), the call is a
- * no-op that reports false.
+ * `setParentWindow` asks the bundled conpty.dll (`ConptyReparentPseudoConsole`)
+ * to make a given top-level window that owner, so such a window stacks above
+ * wmux. Both pty engines have it: node-pty 1.2.0-beta.17, and the Rust core
+ * (terminalPty.ts RustPty, through the vendored portable-pty). The in-box
+ * ConPTY has no equivalent: there, and off Windows, the call is a no-op that
+ * reports false.
  */
 import type { IPty } from 'node-pty';
 
@@ -40,8 +41,8 @@ function isNullHandle(bytes: Buffer): boolean {
 /**
  * Ask ConPTY to make `handle` the owner of `p`'s console window. Returns
  * whether the request was sent (ConPTY applies it asynchronously). Never
- * throws: a pty that is already closed, or one without the method (the Rust
- * core, a test double), just reports false.
+ * throws: a pty that is already closed, or one without the method (a Rust
+ * core module built before it, a test double), just reports false.
  */
 export function applyParentWindow(
   p: Pick<IPty, 'setParentWindow'>,

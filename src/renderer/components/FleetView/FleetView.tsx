@@ -1104,14 +1104,14 @@ export default function FleetView() {
 
   // Tickets: who holds one, and where a ticket's jump lands.
   const workspaceName = useCallback((id: string) => workspaces.find((w) => w.id === id)?.name ?? '', [workspaces]);
-  const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || t('fleet.ticket.unknownWorkspace'), ticket.agent]
+  const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || ticket.workspaceName || t('fleet.ticket.unknownWorkspace'), ticket.agent]
     .filter(Boolean).join(' · ');
   const agentPanesByWorkspace = useMemo(() => {
     const out = new Map<string, number>();
     for (const p of panes) if (!p.remote && p.agentName) out.set(p.workspaceId, (out.get(p.workspaceId) ?? 0) + 1);
     return out;
   }, [panes]);
-  const paneOfTicket = (ticket: FleetTicket) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
+  const paneOfTicket = (ticket: { workspaceId: string; paneId?: string }) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
     && (!ticket.paneId || p.paneId === ticket.paneId));
   const selectTicket = useCallback((ticket: FleetTicket) => {
     const key = ticketKey(ticket.id);
@@ -1120,14 +1120,15 @@ export default function FleetView() {
     setExplicitTicket(ticket.id);
   }, [focusedKey]);
   const jumpToTicket = (ticket: FleetTicket) => {
-    const pane = paneOfTicket(ticket);
+    const at = ticket.sentFrom ?? ticket;
+    const pane = paneOfTicket(at);
     if (pane) { jump(pane); return; }
-    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: at.workspaceId });
     finishJump();
   };
   // A ticket's decision card waits in its workspace's decision slot.
   const openTicketDecision = (ticket: FleetTicket) => {
-    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: (ticket.sentFrom ?? ticket).workspaceId });
     finishJump();
   };
 

@@ -17,6 +17,7 @@ import { ISSUE_REF_TITLE_MAX, issueUrlParts, type IssueRef } from './issueRef';
 import type { PrSummary } from './prSurface';
 import { isTaskState, type TaskState } from './types';
 import { isVerifiedItem } from './completionEvidence';
+import { REMOTE_WORKSPACE_PREFIX } from './a2aRemoteDelivery';
 
 export const WORK_LINK_STATES = [
   'queued',
@@ -64,8 +65,14 @@ export type WorkLinkPrStatus = Pick<PrSummary, 'state' | 'checks' | 'reviewDecis
 };
 
 export interface WorkLinkParty {
+  /** A local workspace, or `remote:<linkId>` for a pane on another PC. */
   workspaceId: string;
   paneId?: string;
+  /** A remote pane's alias (`<PC>/<workspace>/<pane>`) as it was when the
+   *  work was sent, kept because the link it names may be gone by the time
+   *  the work is read. UNTRUSTED (the peer names its PC and panes), capped:
+   *  show as text only. */
+  name?: string;
 }
 
 export interface WorkLink {
@@ -122,10 +129,12 @@ export const WORK_LINK_LIMITS = {
   MAX_BRANCH: 255,
   MAX_LAST_QUESTION: 2048,
   MAX_RESULT_SUMMARY: 2048,
+  MAX_PARTY_NAME: 200,
 } as const;
 
 const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+const REMOTE_WORKSPACE_ID_RE = new RegExp(`^${REMOTE_WORKSPACE_PREFIX}[A-Za-z0-9._-]{1,80}$`);
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 const NAME_RE = /^[\w.-]{1,100}$/;
 // A git ref name: no whitespace, control characters or the characters git refuses.
@@ -142,7 +151,8 @@ export const isWorkLinkState = (v: unknown): v is WorkLinkState => includes(WORK
 export const isWorkLinkOrigin = (v: unknown): v is WorkLinkOrigin => includes(WORK_LINK_ORIGINS, v);
 export const isWorkLinkReason = (v: unknown): v is WorkLinkReason => includes(WORK_LINK_REASONS, v);
 export const isWorkLinkId = (v: unknown): v is string => typeof v === 'string' && ID_RE.test(v);
-export const isWorkspaceId = (v: unknown): v is string => typeof v === 'string' && WORKSPACE_ID_RE.test(v);
+export const isWorkspaceId = (v: unknown): v is string =>
+  typeof v === 'string' && (WORKSPACE_ID_RE.test(v) || REMOTE_WORKSPACE_ID_RE.test(v));
 
 /** Only needs-you and blocked carry a reason. */
 export const stateTakesReason = (s: WorkLinkState): boolean => s === 'needs-you' || s === 'blocked';
@@ -193,7 +203,12 @@ export const refKey = (r: NumberKeyed): string => `${repoKey(r)}#${r.number}`;
 function parseParty(v: unknown): WorkLinkParty | null {
   if (!isRecord(v) || !isWorkspaceId(v.workspaceId)) return null;
   if (v.paneId !== undefined && !isWorkLinkId(v.paneId)) return null;
-  return { workspaceId: v.workspaceId, ...(v.paneId !== undefined ? { paneId: v.paneId as string } : {}) };
+  if (v.name !== undefined && (typeof v.name !== 'string' || !v.name)) return null;
+  return {
+    workspaceId: v.workspaceId,
+    ...(v.paneId !== undefined ? { paneId: v.paneId as string } : {}),
+    ...(typeof v.name === 'string' ? { name: capText(v.name, WORK_LINK_LIMITS.MAX_PARTY_NAME) } : {}),
+  };
 }
 
 function parseWorktree(v: unknown): WorkLink['worktree'] | null {

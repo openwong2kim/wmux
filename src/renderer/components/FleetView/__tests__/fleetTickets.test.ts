@@ -65,6 +65,27 @@ describe('buildFleetTickets', () => {
     expect(ticket.result).toEqual({ summary: 'Kept on the link.', verification: '2/2' });
   });
 
+  it('names a job on another PC\'s pane by the alias kept on the link, and jumps to the pane that sent it', () => {
+    const [ticket, local] = buildFleetTickets({
+      links: [
+        link({
+          origin: 'manual', a2aState: 'working', owner: { workspaceId: 'remote:abc', name: 'mac-mini/wmux/#w1-2' },
+          requester: { workspaceId: 'ws-co', paneId: 'pane-ceo' },
+        }),
+        link({ id: 'wl-2', a2aTaskId: 'task-2', requester: { workspaceId: 'ws-co', paneId: 'pane-ceo' }, updatedAt: NOW - 2000 }),
+      ],
+      decisions: [],
+      a2aTasks: {},
+      now: NOW,
+    });
+    expect(ticket).toMatchObject({
+      workspaceId: 'remote:abc', workspaceName: 'mac-mini/wmux/#w1-2', state: 'working',
+      sentFrom: { workspaceId: 'ws-co', paneId: 'pane-ceo' },
+    });
+    expect(ticket).not.toHaveProperty('paneId');
+    expect(local).not.toHaveProperty('sentFrom');
+  });
+
   it('lists a hand-off waiting for its click, keeps chat out, and drops old finished work', () => {
     const tickets = buildFleetTickets({
       links: [

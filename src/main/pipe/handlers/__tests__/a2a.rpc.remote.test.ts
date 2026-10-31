@@ -6,6 +6,7 @@ import { PEER_HINTS_DEADLINE_MS, registerA2aRpc, type RemoteA2aRpcDeps } from '.
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { DaemonClient } from '../../../DaemonClient';
 import type { A2aRemoteTarget } from '../../../../shared/a2aRemoteDelivery';
+import { getWorkLinkStore } from '../../../workLink/workLinkStore';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -158,6 +159,12 @@ describe('a2a.task.send — remote alias', () => {
     expect(res).toMatchObject({ ok: true, taskId: RT, remote: true });
     expect(remote.sendTask).toHaveBeenCalledWith({ linkId: LINK, from: { workspaceId: 'ws-a', name: 'ws-a', paneId: 'pane-a', ptyId: 'pty-a' }, title: 'T', text: 'run it' });
     expect(rendererCalls('a2a.task.send')).toEqual([]);
+    // The sender's boards list it as work handed to that pane.
+    await vi.waitFor(() => expect(getWorkLinkStore().getByTaskId(RT)).toMatchObject({
+      state: 'queued',
+      owner: { workspaceId: `remote:${LINK}`, name: ALIAS },
+      requester: { workspaceId: 'ws-a', paneId: 'pane-a' },
+    }), { timeout: 5_000 });
   });
 
   it('the remote:<linkId> id a2a.discover lists sends like the alias; an id with no active link is refused', async () => {

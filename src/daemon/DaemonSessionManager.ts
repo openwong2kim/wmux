@@ -377,7 +377,7 @@ export class DaemonSessionManager extends EventEmitter {
       else declined++;
     }
     if (declined > 0) {
-      console.log(`[DaemonSessionManager] host window: ${declined} session(s) cannot take a console owner (only node-pty on the bundled ConPTY can)`);
+      console.log(`[DaemonSessionManager] host window: ${declined} session(s) cannot take a console owner (only a pty on the bundled ConPTY can)`);
     }
     return reached;
   }

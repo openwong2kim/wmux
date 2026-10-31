@@ -33,7 +33,7 @@ import {
   type McpParentClass,
 } from '../../../mcp/codexThreadIdentity';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
-import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromSentTask } from '../../workLink/a2aProducer';
+import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromRemoteSend, workLinkFromSentTask } from '../../workLink/a2aProducer';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
@@ -389,6 +389,7 @@ export function registerA2aRpc(
     }
     const images = imagePathsOf(params.images);
     if (images === null) return { error: `a2a.task.send: images must be a list of up to ${IMAGES_MAX} absolute paths` };
+    const title = typeof params.title === 'string' ? params.title : '';
     if (ctx?.commanderWorkspace) {
       // A brain sends only on a brain link of its own workspace: Moa to
       // another PC's Moa. The sender is the token-verified commander binding,
@@ -408,11 +409,14 @@ export function registerA2aRpc(
       const res = await remote!.sendTask({
         linkId: brainLink.linkId,
         from: { workspaceId: hq, name: A2A_BRAIN_ALIAS },
-        title: typeof params.title === 'string' ? params.title : '',
+        title,
         text: message,
         ...(images ? { images } : {}),
       }).catch((err: unknown): RemoteOpResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
       if (!res.ok) return { error: `a2a.task.send: remote send refused (${res.error})` };
+      void recordSentTask(workLinkFromRemoteSend({
+        taskId: res.taskId, linkId: brainLink.linkId, alias: brainLink.alias, requester: { workspaceId: hq }, title, message, fromCommander: true,
+      }));
       return {
         ok: true,
         taskId: res.taskId,
@@ -436,11 +440,15 @@ export function registerA2aRpc(
       // The verified sender pty: a reply from the peer is held if another
       // agent holds this pane by then.
       from: { workspaceId, name: workspaceId, paneId: caller.paneId, ptyId: params.senderPtyId as string },
-      title: typeof params.title === 'string' ? params.title : '',
+      title,
       text: message,
       ...(images ? { images } : {}),
     }).catch((err: unknown): RemoteOpResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
     if (!res.ok) return { error: `a2a.task.send: remote send refused (${res.error})` };
+    // Work link (best-effort, never awaited), as for a local send.
+    void recordSentTask(workLinkFromRemoteSend({
+      taskId: res.taskId, linkId: link.linkId, alias: link.alias, requester: { workspaceId, paneId: caller.paneId }, title, message, fromCommander: false,
+    }));
     return { ok: true, taskId: res.taskId, remote: true, delivery: REMOTE_QUEUED, ...(res.note ? { note: res.note } : {}) };
   }
 
