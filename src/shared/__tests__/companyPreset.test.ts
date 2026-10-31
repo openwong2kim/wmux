@@ -12,7 +12,7 @@ import type { PaneBranch } from '../types';
 describe('company presets', () => {
   it('ships built-ins whose seats can be made as they are', () => {
     for (const preset of BUILTIN_COMPANY_PRESETS) expect(companySeatsError(preset.seats, preset.ceo)).toBeNull();
-    expect(BUILTIN_COMPANY_PRESETS.find((p) => p.id === 'researcher-devs')?.seats.map((s) => s.label)).toEqual(['researcher', 'dev-1', 'dev-2', 'dev-3']);
+    expect(BUILTIN_COMPANY_PRESETS.find((p) => p.id === 'researcher-devs')?.seats.map((s) => s.label)).toEqual(['ceo', 'researcher', 'dev-1', 'dev-2', 'dev-3']);
   });
 
   it('refuses seats a company cannot have', () => {
@@ -49,12 +49,14 @@ describe('company presets', () => {
     const ceo = seatBrief({ company: 'checkout', mission: 'Ship refunds', standingOrders: 'Report with tests.', seats, ceo: 0, seat: 0 });
     expect(ceo).toContain('You are #researcher, the CEO of the company "checkout"');
     expect(ceo).toContain('Your seats: #dev-1, #dev-2 (owns Windows).');
+    expect(ceo).toContain('Do not do a seat\'s work yourself.');
     expect(ceo).toContain('Mission: Ship refunds');
     const shape = JSON.parse(/data: (\{.*?\})\./.exec(ceo)![1].replace(/…/g, 'x'));
     expect(missingBriefFields(shape)).toEqual([]);
     const dev = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 });
     expect(dev).toContain('You are #dev-1 in the company "checkout" in wmux. Your CEO is #researcher.');
     expect(dev).not.toContain('You own');
+    expect(dev).not.toContain('You run the company');
     expect(dev).toContain('a2a_task_update');
     expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 2 })).toContain('You own: Windows.');
   });

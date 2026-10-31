@@ -49,12 +49,13 @@ export const BUILTIN_COMPANY_PRESETS: readonly CompanyPreset[] = [
     id: 'researcher-devs',
     ceo: 0,
     seats: [
-      { label: 'researcher', owns: 'Research and briefs', agent: 'claude' },
+      { label: 'ceo', owns: 'Plans and hands out the work', agent: 'claude' },
+      { label: 'researcher', owns: 'Research', agent: 'claude' },
       { label: 'dev-1', owns: '', agent: 'claude' },
       { label: 'dev-2', owns: '', agent: 'claude' },
       { label: 'dev-3', owns: '', agent: 'claude' },
     ],
-    standingOrders: 'The researcher investigates and writes the briefs; developers build and report back with test output.',
+    standingOrders: 'The CEO plans, hands out the work and checks the results, and writes no code. The researcher investigates; developers build and report back with test output.',
   },
   {
     id: 'lead-reviewer',
@@ -153,6 +154,7 @@ export function seatBrief(input: SeatBriefInput): string {
     const staff = input.seats.filter((_, i) => i !== input.ceo)
       .map((s) => (s.owns.trim() ? `#${s.label} (owns ${s.owns.trim()})` : `#${s.label}`));
     if (staff.length > 0) {
+      lines.push('You run the company: plan the work, hand it to your seats and check what comes back. Do not do a seat\'s work yourself.');
       lines.push(`Your seats: ${staff.join(', ')}.`);
       lines.push(
         `Hand work to a seat with the wmux send_message tool, to its #name, with a brief in data: ` +
