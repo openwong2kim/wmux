@@ -6,6 +6,9 @@
   program ran in a pane with wmux's shell integration, wmux took those marks
   for the shell prompting and ending commands mid-reply, which could end the
   pane's agent status or log commands that never ran. Marks written while a
-  shell command is running are now read as the program's. Marks from a nested
-  ssh session or a kitty-style program inside a running command are now
-  treated as the program's too, until that shell reports its own command end.
+  shell command is running are now read as the program's, and PowerShell's
+  integration no longer marks a command start on a continuation prompt. Marks
+  from a nested ssh session or a kitty-style program inside a running command
+  are now treated as the program's too. A nested shell that brings its own
+  shell integration (nested pwsh, or ssh to a host with OSC 133) is still read
+  as the shell once it reports its first command end. (#PENDING)

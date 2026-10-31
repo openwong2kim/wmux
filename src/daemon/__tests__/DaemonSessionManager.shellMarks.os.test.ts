@@ -10,8 +10,8 @@ class MockPty extends EventEmitter {
   pid = 4243;
   onData() { return { dispose() { /* no listener */ } }; }
   onExit() { return { dispose() { /* no listener */ } }; }
-  write(_data: string): void { /* no PTY input */ }
-  resize(_cols: number, _rows: number): void { /* no PTY geometry */ }
+  write(): void { /* no PTY input */ }
+  resize(): void { /* no PTY geometry */ }
   kill(): void { /* no child */ }
 }
 const { spawnMock, probeMock } = vi.hoisted(() => ({
