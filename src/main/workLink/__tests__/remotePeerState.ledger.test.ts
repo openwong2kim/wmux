@@ -106,11 +106,12 @@ describe('work sent to another PC, over the real ledger and bridge', () => {
     });
   });
 
-  it('a peer that asks for input puts the link on the owner, and a cancel takes it off the board', async () => {
+  it('a peer that asks for input puts the link on the pane that sent it, and a cancel takes it off the board', async () => {
     await svc.applyRemoteState({ taskId: RT, linkId: LINK, messageId: 's-1', to: 'working' });
     await svc.applyRemoteState({ taskId: RT, linkId: LINK, messageId: 's-2', to: 'input-required' });
     await pull();
-    expect(store.getByTaskId(RT)).toMatchObject({ state: 'needs-you', reason: 'input-required' });
+    // The CEO pane sent it, so the question waits on that pane, not on the human.
+    expect(store.getByTaskId(RT)?.state).toBe('running');
     await svc.applyRemoteState({ taskId: RT, linkId: LINK, messageId: 's-3', to: 'canceled' });
     await pull();
     expect(store.getByTaskId(RT)?.state).toBe('abandoned');

@@ -7260,7 +7260,7 @@ function registerRpcHandlers(
     return moved;
   });
 
-  pipeServer.onRpc('a2a.task.cancel', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.cancel', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.cancel: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
     const taskId = typeof p.taskId === 'string' ? p.taskId : '';
@@ -7270,7 +7270,8 @@ function registerRpcHandlers(
       taskId,
       callerWorkspaceId: workspaceId,
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerPaneId: p.callerPaneId } : {}),
-      ...(p.trustedLane === true ? { trustedLane: true } : {}),
+      // Main sets this, as on a2a.task.update.
+      ...(pipeServer.isFirstParty(ctx.clientId) && p.trustedLane === true ? { trustedLane: true } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });
     if (canceled.ok && isRemoteTaskId(taskId)) await a2aDeliveryRef?.syncTask(taskId);
