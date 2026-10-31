@@ -518,6 +518,9 @@ Behaviour and UX only:
 - stablyai/orca: `docs/site/content/docs/cli/computer-use.mdx`
 - trycua/cua `libs/cua-driver` (MIT core): action-result contract, background
   delivery notes
+- vercel-labs/agent-desktop (Apache-2.0): the three delivery outcomes (not
+  delivered, delivered but unverified, delivered), never trusting an input
+  API's success as proof, and holding the input lock only around the real send
 - openclaw/Peekaboo: snapshot-bound element IDs, permission onboarding
 - CursorTouch/Windows-MCP: UIA control-type filtering and caching
 - mediar-ai/terminator: pre-action checks, click result reporting
