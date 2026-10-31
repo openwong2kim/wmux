@@ -66,6 +66,11 @@ describe.runIf(core)('native process table parity with CIM', () => {
       if (!other || other.created === undefined || row.created == null || other.created !== row.created) continue;
       compared++;
       expect({ pid: row.pid, ppid: row.ppid, name: row.name }).toEqual({ pid: other.pid, ppid: other.ppid, name: other.name });
+      // WmiPrvSE hosts the provider answering this very CIM query, and CIM can
+      // report a host's command line without its arguments (seen on a CI
+      // runner: the bare exe path for a host the native read sees with its
+      // arguments). No caller reads these rows; every other row must agree.
+      if (row.name.toLowerCase() === 'wmiprvse.exe') continue;
       if (row.cmdline && other.cmdline) expect(row.cmdline).toBe(other.cmdline);
     }
     expect(compared).toBeGreaterThan(native.length / 2);
