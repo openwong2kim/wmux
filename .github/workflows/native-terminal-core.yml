@@ -61,6 +61,8 @@ jobs:
           # The module is built above, so on macOS and Linux its rust cases
           # must run, not skip. The suite is POSIX only: Windows skips it.
           WMUX_REQUIRE_RUST_CORE: '1'
+          # The checkout's build is never found on its own: name it.
+          WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
       - name: Output interpretation contracts
         run: npx vitest run src/daemon/__tests__/OutputInterpreter.test.ts src/daemon/util/__tests__/outputModeTracker.test.ts src/main/pty/__tests__/OscParser.test.ts
       - name: Retain native verification evidence

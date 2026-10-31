@@ -175,7 +175,10 @@ unreachable daemons display an unknown current engine rather than guessing.
 Use a new isolated daemon for benchmarks. Without a saved Rust choice or
 `WMUX_TERMINAL_CORE=rust`, node-pty and the JS ring remain selected.
 `WMUX_TERMINAL_CORE_MODULE` can name an absolute module path; otherwise the
-loader checks packaged `wmux-native` resources and the local build. The older
+loader looks only where wmux installs it: packaged `wmux-native` resources, or
+beside the bundle (the server runtime, and the `dist/wmux-native` that
+`npm run build:terminal-core` stages for `dist/` bundles). A checkout's
+`core/wmux-term/dist/native-core` build is used only when named. The older
 `WMUX_RUST_SNAPSHOT_MODULE` remains available for snapshot-only experiments.
 
 `WMUX_RUST_SNAPSHOT` independently overrides snapshot selection: `text`, `shadow`,
