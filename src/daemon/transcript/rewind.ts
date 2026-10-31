@@ -99,7 +99,7 @@ function forEachLine(transcriptPath: string, from: number, to: number, midLine: 
   fn: (line: Buffer, offset: number, end: number) => void): number {
   let at = from;
   let skip = midLine;
-  let carry = Buffer.alloc(0);
+  let carry: Buffer = Buffer.alloc(0);
   let carryStart = from;
   let end = from;
   while (at < to) {
