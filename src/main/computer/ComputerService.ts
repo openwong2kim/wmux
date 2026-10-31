@@ -50,6 +50,7 @@ import {
 } from '../../shared/computer/protocol';
 import { screenshotPointToWindow } from '../../shared/computer/scale';
 import { appBundleSelector } from './appBundleId';
+import { thinTreeReason } from './axFirst';
 
 /** What main needs from a helper; HelperProcess implements it. */
 export interface HelperLike {
@@ -63,6 +64,13 @@ export interface HelperLike {
   /** Ends the running helper (a stale permission verdict); the next call starts a fresh one. */
   reset?(): void;
 }
+
+/**
+ * What getAppState tells an agent: the helper's state, the mode it was taken
+ * in, and, when the agent named no mode and main added a screenshot to a thin
+ * tree, why.
+ */
+export type ObservedAppState = AppState & { mode: ObservationMode; screenshotAdded?: string };
 
 /** What `capabilities` tells an agent: the helper's answer minus what cannot work. */
 export type AgentCapabilities = HelperCapabilities & { missingPermissions?: Array<'accessibility' | 'screenRecording'> };
@@ -293,11 +301,12 @@ export class ComputerService {
     };
   }
 
-  async getAppState(agent: ComputerAgent, params: { app: string; window?: string; mode?: ObservationMode }): Promise<AppState> {
+  async getAppState(agent: ComputerAgent, params: { app: string; window?: string; mode?: ObservationMode }): Promise<ObservedAppState> {
     const helper = this.ensureReady();
     if (!params.app) fail('invalid_argument', 'app is required');
-    const mode = params.mode ?? 'both';
-    if (!OBSERVATION_MODES.includes(mode)) fail('invalid_argument', `mode must be one of ${OBSERVATION_MODES.join(', ')}`);
+    if (params.mode !== undefined && !OBSERVATION_MODES.includes(params.mode)) {
+      fail('invalid_argument', `mode must be one of ${OBSERVATION_MODES.join(', ')}`);
+    }
 
     const generation = this.generation;
     const target = await helper.request('resolveTarget', { app: params.app, ...(params.window && { window: params.window }) });
@@ -305,6 +314,40 @@ export class ComputerService {
     await this.vet(agent, target.app, target.window, generation);
 
     assertConsistent(target.app, target.window);
+    // No mode named: the tree alone, plus a screenshot only when the tree is
+    // too thin to act on (axFirst.ts). An explicit mode is taken as given.
+    let mode = params.mode ?? 'ax';
+    let state = await this.observe(agent, helper, target, mode, generation);
+    let screenshotAdded: string | undefined;
+    if (params.mode === undefined) {
+      screenshotAdded = thinTreeReason(state);
+      if (screenshotAdded) {
+        // A fresh walk rather than a vision-only call grafted on: indexes and
+        // pixels must come from one snapshot, and a thin tree is quick to walk.
+        mode = 'both';
+        state = await this.observe(agent, helper, target, mode, generation);
+      }
+    }
+
+    this.recordSnapshot(state.snapshotId, {
+      agentKey: agent.key,
+      app: state.app,
+      window: state.window,
+      ...(state.screenshot && {
+        image: { width: state.screenshot.width, height: state.screenshot.height, scale: state.screenshot.scale },
+      }),
+      expiresAt: this.now() + SNAPSHOT_TTL_MS,
+    });
+    return { ...state, mode, ...(screenshotAdded && { screenshotAdded }) };
+  }
+
+  private async observe(
+    agent: ComputerAgent,
+    helper: HelperLike,
+    target: { app: AppInfo; window: WindowInfo },
+    mode: ObservationMode,
+    generation: number,
+  ): Promise<AppState> {
     const state = await helper.request('getAppState', {
       app: target.app.id,
       window: target.window.id,
@@ -319,16 +362,6 @@ export class ComputerService {
     // consented app costs no prompt here.
     assertConsistent(state.app, state.window);
     await this.vet(agent, state.app, state.window, generation);
-
-    this.recordSnapshot(state.snapshotId, {
-      agentKey: agent.key,
-      app: state.app,
-      window: state.window,
-      ...(state.screenshot && {
-        image: { width: state.screenshot.width, height: state.screenshot.height, scale: state.screenshot.scale },
-      }),
-      expiresAt: this.now() + SNAPSHOT_TTL_MS,
-    });
     return state;
   }
 

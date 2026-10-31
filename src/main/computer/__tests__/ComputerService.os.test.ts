@@ -27,7 +27,7 @@ const win = (app: AppInfo, extra: Partial<WindowInfo> = {}): WindowInfo => ({
   ...extra,
 });
 
-function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>) {
+function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>, tree = '0 window') {
   let snapshotSeq = 0;
   const calls: Array<{ method: HelperMethod; params: unknown }> = [];
   const helper: HelperLike = {
@@ -44,9 +44,13 @@ function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>) 
             snapshotId: `s${++snapshotSeq}`,
             app: found.app,
             window: found.window,
-            tree: '0 window',
-            screenshot: { mime: 'image/jpeg', data: 'AAAA', width: 1280, height: 720, scale: 0.8 },
-            screenshotStatus: { status: 'captured' },
+            ...(params.mode !== 'vision' && { tree }),
+            ...(params.mode === 'ax'
+              ? { screenshotStatus: { status: 'skipped' } }
+              : {
+                screenshot: { mime: 'image/jpeg', data: 'AAAA', width: 1280, height: 720, scale: 0.8 },
+                screenshotStatus: { status: 'captured' },
+              }),
           };
           return state;
         }
@@ -75,12 +79,13 @@ function makeService(opts: {
   stopKeyHolds?: boolean;
   platform?: string;
   askPerApp?: boolean;
+  tree?: string;
 } = {}) {
   let now = 1_000_000;
   const { helper, calls } = fakeHelper({
     Notepad: { app: notepad, window: win(notepad, { elevated: opts.elevated }) },
     KeePassXC: { app: keepass, window: win(keepass) },
-  });
+  }, opts.tree);
   const stopKey = fakeStopKey(opts.stopKeyHolds ?? true);
   const consent = vi.fn(async () => {
     if (typeof opts.consent === 'function') return opts.consent();
@@ -237,7 +242,7 @@ describe('ComputerService', () => {
 
   it('converts screenshot pixels to window points using the snapshot scale', async () => {
     const { service, calls } = makeService();
-    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'both' });
     await service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 400, y: 200 });
     const click = calls.find((c) => c.method === 'click')!;
     expect(click.params).toMatchObject({ point: { x: 500, y: 250 }, button: 'left', clickCount: 1, modifiers: [] });
@@ -245,7 +250,7 @@ describe('ComputerService', () => {
 
   it('refuses coordinates outside the screenshot and index+coordinates together', async () => {
     const { service } = makeService();
-    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'both' });
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 1280, y: 10 }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 1, y: 1, index: 2 }))).toBe('invalid_argument');
   });
@@ -777,6 +782,74 @@ describe('openApp', () => {
   it('is refused on computer.act-style control calls that carry a snapshot', async () => {
     const { service } = openAppService();
     expect(await codeOf(service.control(AGENT_A, { action: 'openApp', snapshotId: 's1' }))).toBe('invalid_argument');
+  });
+});
+
+describe('accessibility-first observation', () => {
+  const RICH_TREE = [
+    'App: Notepad (pid 10) · Window: "notes.txt - Notepad"',
+    '0 window notes.txt - Notepad',
+    '\t1 document Text editor, Value: hello',
+    '\t2 button Save',
+    '\t3 check box Word wrap',
+    '\t4 tab item notes.txt',
+    '\t5 edit, Value: 12',
+    'Focused: 1',
+  ].join('\n');
+  // A canvas app: menus and the window's own buttons, nothing in the content.
+  const THIN_TREE = [
+    '0 window Game',
+    '\t1 menu bar',
+    '\t\t2 menu bar item File',
+    '\t\t\t3 menu item New',
+    '\t\t\t4 menu item Open',
+    '\t\t\t5 menu item Save',
+    '\t\t\t6 menu item Quit',
+    '\t7 button Close',
+    '\t8 button Minimize',
+    '\t9 button',
+    '\t10 group Canvas',
+  ].join('\n');
+  const observedModes = (calls: Array<{ method: HelperMethod; params: unknown }>) =>
+    calls.filter((c) => c.method === 'getAppState').map((c) => (c.params as { mode: string }).mode);
+
+  it('reads the tree alone when no mode is named and the tree has enough controls', async () => {
+    const { service, calls } = makeService({ tree: RICH_TREE });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(observedModes(calls)).toEqual(['ax']);
+    expect(state.mode).toBe('ax');
+    expect(state.screenshot).toBeUndefined();
+    expect(state.screenshotAdded).toBeUndefined();
+  });
+
+  it('adds a screenshot to a thin tree, says why, and binds x/y to that snapshot', async () => {
+    const { service, calls } = makeService({ tree: THIN_TREE });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(observedModes(calls)).toEqual(['ax', 'both']);
+    expect(state.mode).toBe('both');
+    expect(state.screenshot).toBeDefined();
+    // Menu items are skipped, and so is the unnamed button.
+    expect(state.screenshotAdded).toBe('the accessibility tree has only 2 named controls');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 10, y: 10 }))).toBe('resolved');
+  });
+
+  it('takes an explicit mode as given, and never calls a cut-short walk thin', async () => {
+    const { service, calls } = makeService({ tree: THIN_TREE });
+    const ax = await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'ax' });
+    expect(ax.screenshot).toBeUndefined();
+    expect(ax.screenshotAdded).toBeUndefined();
+    await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'vision' });
+    expect(observedModes(calls)).toEqual(['ax', 'vision']);
+
+    const helper = (service as unknown as { ensureReady: () => HelperLike }).ensureReady();
+    const original = helper.request.bind(helper);
+    helper.request = (async (method: HelperMethod, params: never) => {
+      const result = await original(method, params);
+      return method === 'getAppState' ? { ...(result as AppState), truncated: true } : result;
+    }) as HelperLike['request'];
+    const cut = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(cut.mode).toBe('ax');
+    expect(cut.screenshotAdded).toBeUndefined();
   });
 });
 
