@@ -222,14 +222,15 @@ is not re-walked.
     they were when the action started. Otherwise nothing more is sent and the
     call returns `window_not_focused`. An app that brought itself to the front
     is put back behind the user's app, and the result says `foreground` with a
-    note.
+    note that says whether that worked.
   - It goes as real input instead, with `delivery: "foreground"` and a note
     saying why, when this macOS lacks the SkyLight calls, the window is
     minimized, hidden or on another Space, the click is not a left single or
     double click, the app reads the real pointer (Tk, LibreOffice), the target
     is Electron and the input is a scroll, the target is Chromium-based and
-    this macOS has no key authentication (macOS 14), or the field does not
-    take focus in the background (a page Chrome does not expose to AX).
+    this macOS has no key authentication (macOS 14), the field does not take
+    focus in the background (a page Chrome does not expose to AX), or the app
+    came to the front when its window or field was focused.
 - Bringing the target forward, for real input: every input action (`click` by
   point or by an index that falls through to the pointer, `scroll`, `type`,
   `pressKey`, `hotkey`) first brings the target forward when it is not the frontmost app

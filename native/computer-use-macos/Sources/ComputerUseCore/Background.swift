@@ -97,3 +97,18 @@ public func backgroundClickPlan(at point: CGPoint, count: Int) -> [BackgroundMou
     }
     return plan
 }
+
+/// Focusing the target in the background brought its app to the front: it
+/// was not frontmost when the action started and is now. The action then
+/// goes on as real input.
+public func cameForward(_ pid: pid_t, start: pid_t?, now: pid_t?) -> Bool {
+    start != pid && now == pid
+}
+
+/// Where a background click gives an element focus: the centre of the part
+/// of its frame inside the window, or nil when none of it is inside.
+public func backgroundFocusPoint(frame: CGRect, window: CGRect) -> CGPoint? {
+    let visible = frame.intersection(window)
+    guard !visible.isNull, !visible.isEmpty else { return nil }
+    return CGPoint(x: visible.midX, y: visible.midY)
+}

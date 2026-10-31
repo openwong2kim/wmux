@@ -46,13 +46,15 @@ enum Background {
     }
 
     /// A Chromium browser keeps its helper apps inside its framework
-    /// (`Google Chrome Framework.framework/Helpers`).
+    /// (`Google Chrome Framework.framework/Helpers`); a CEF app ships
+    /// `Chromium Embedded Framework.framework`.
     private static func isChromium(_ bundle: URL) -> Bool {
         let frameworks = bundle.appendingPathComponent("Contents/Frameworks")
         let names = (try? FileManager.default.contentsOfDirectory(atPath: frameworks.path)) ?? []
         return names.contains {
-            $0.hasSuffix(" Framework.framework")
-                && FileManager.default.fileExists(atPath: frameworks.appendingPathComponent($0).appendingPathComponent("Helpers").path)
+            $0 == "Chromium Embedded Framework.framework"
+                || ($0.hasSuffix(" Framework.framework")
+                    && FileManager.default.fileExists(atPath: frameworks.appendingPathComponent($0).appendingPathComponent("Helpers").path))
         }
     }
 
@@ -95,13 +97,30 @@ enum Background {
         if let what { throw HelperError("window_not_focused", "\(what) changed while the input was being sent in the background; nothing more was sent") }
     }
 
-    /// After the input: an app that brought itself to the front is put back
-    /// behind the one the user had. Returns a note for the result when it did.
-    static func settle(after start: UserState, pid: pid_t) -> String? {
-        guard let front = start.front, front != pid,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
+    /// The target app is in front now and was not when the action started.
+    static func cameForward(_ pid: pid_t, since start: UserState) -> Bool {
+        ComputerUseCore.cameForward(pid, start: start.front, now: NSWorkspace.shared.frontmostApplication?.processIdentifier)
+    }
+
+    /// After the input: an app that brought itself to the front (a click on
+    /// a link does, shortly after) is put back behind the one the user had,
+    /// the way Focus.bringForward activates an app. Returns the note for the
+    /// result when it came forward, saying whether the user's app is back.
+    static func settle(after start: UserState, pid: pid_t) async -> String? {
+        var forward = false
+        for n in 0..<4 {
+            if n > 0 { try? await Task.sleep(nanoseconds: 40_000_000) }
+            forward = cameForward(pid, since: start)
+            if forward { break }
+        }
+        guard forward, let front = start.front else { return nil }
         NSRunningApplication(processIdentifier: front)?.activate()
-        return "the app came to the front on its own; the app that was in front was brought back"
+        AXUIElementSetAttributeValue(AX.app(front), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+        for _ in 0..<6 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if NSWorkspace.shared.frontmostApplication?.processIdentifier == front { return "the app came to the front on its own; the app that was in front was brought back" }
+        }
+        return "the app came to the front on its own, and the app that was in front could not be brought back"
     }
 
     // MARK: Keyboard focus
@@ -135,16 +154,16 @@ enum Background {
     }
 
     /// Gives `el` keyboard focus without bringing its app forward: AX first,
-    /// then a background click on it (a web page in a window that was never
-    /// active takes focus only that way). True once the app reports it focused.
-    static func focus(_ el: AXUIElement, _ target: ControlTarget, _ windowID: CGWindowID) async -> Bool {
+    /// then a background click at `point` (a web page in a window that was
+    /// never active takes focus only that way). True once the app reports it
+    /// focused.
+    static func focus(_ el: AXUIElement, _ target: ControlTarget, _ windowID: CGWindowID, clickAt point: CGPoint?) async -> Bool {
         func focused() -> Bool { AX.element(AX.app(target.pid), kAXFocusedUIElementAttribute).map { CFEqual($0, el) } ?? false }
         if focused() { return true }
         AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         if focused() { return true }
-        guard reason(.click(button: 0, count: 1), target) == nil,
-              let frame = AX.frame(el), frame.width > 0, frame.height > 0 else { return false }
-        click(pid: target.pid, windowID: windowID, at: CGPoint(x: frame.midX, y: frame.midY), count: 1, flags: [])
+        guard let point, !Session.isLocked, reason(.click(button: 0, count: 1), target) == nil else { return false }
+        click(pid: target.pid, windowID: windowID, at: point, count: 1, flags: [])
         for _ in 0..<6 {
             try? await Task.sleep(nanoseconds: 50_000_000)
             if focused() { return true }

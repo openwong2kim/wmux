@@ -66,4 +66,19 @@ final class BackgroundTests: XCTestCase {
         XCTAssertEqual(double[4].delayAfterMs, 80)
         XCTAssertEqual(backgroundClickPlan(at: p, count: 5).count, double.count)
     }
+
+    func testTheTargetCameForwardOnlyWhenItWasBehindAndIsNowInFront() {
+        let user: pid_t = 100, other: pid_t = 200, target: pid_t = 300
+        XCTAssertTrue(cameForward(target, start: user, now: target))
+        XCTAssertFalse(cameForward(target, start: user, now: other))
+        XCTAssertFalse(cameForward(target, start: user, now: user))
+        XCTAssertFalse(cameForward(target, start: target, now: target))
+    }
+
+    func testTheFocusClickLandsInsideTheWindowOrNotAtAll() {
+        let window = CGRect(x: 0, y: 0, width: 400, height: 300)
+        let partlyBelow = CGRect(x: 100, y: 250, width: 200, height: 100)
+        XCTAssertEqual(backgroundFocusPoint(frame: partlyBelow, window: window), CGPoint(x: 200, y: 275))
+        XCTAssertNil(backgroundFocusPoint(frame: CGRect(x: 100, y: 320, width: 200, height: 40), window: window))
+    }
 }

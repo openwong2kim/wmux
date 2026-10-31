@@ -227,8 +227,8 @@ private func accessibilityDelivery(since front: pid_t?) -> String {
 
 /// A background action's result: `foreground` after all when the app
 /// brought itself to the front (it was put back behind the user's app).
-private func backgroundResult(_ verified: Bool = false, since start: Background.UserState, pid: pid_t) -> JSON {
-    if let note = Background.settle(after: start, pid: pid) {
+private func backgroundResult(_ verified: Bool = false, since start: Background.UserState, pid: pid_t) async -> JSON {
+    if let note = await Background.settle(after: start, pid: pid) {
         return result("synthetic", verified: verified, delivery: "foreground", note: note)
     }
     return result("synthetic", verified: verified, delivery: "background")
@@ -318,6 +318,7 @@ enum Actions {
             let start = Background.userState()
             await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
             // The cursor glide awaited: check again right before posting.
+            if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; nothing was sent") }
             try Background.requireUnchanged(since: start)
             guard Background.onScreen(target.pid, windowID) else {
                 throw HelperError("window_not_focused", "the target window left the screen; nothing was sent")
@@ -325,7 +326,7 @@ enum Actions {
             await Overlay.shared.press(at: point)
             let flags = mods.reduce(into: CGEventFlags()) { $0.insert($1.flag) }
             Background.click(pid: target.pid, windowID: windowID, at: point, count: count, flags: flags)
-            return backgroundResult(since: start, pid: target.pid)
+            return await backgroundResult(since: start, pid: target.pid)
         }
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
@@ -372,6 +373,7 @@ enum Actions {
         guard !text.isEmpty else { throw HelperError("invalid_argument", "type needs text") }
         let windowID = CGWindowID(target.windowID)
         var why = Background.reason(.keys, target)
+        let start = Background.userState()
         // Focus first, in the background: a background app keeps its own
         // focused element, and a page's autofocus does not take in a window
         // that was never active.
@@ -381,13 +383,14 @@ enum Actions {
             } else if let index = p.int("index") {
                 let el = try snap.element(at: index)
                 if Focus.isSecure(el) { throw HelperError("app_blocked", "that is a password field; wmux does not type into it") }
-                if !(await Background.focus(el, target, windowID)) { why = "element \(index) did not take keyboard focus in the background" }
+                let point = AX.frame(el).flatMap { frame in (try? snap.windowFrame()).flatMap { backgroundFocusPoint(frame: frame, window: $0) } }
+                if !(await Background.focus(el, target, windowID, clickAt: point)) { why = "element \(index) did not take keyboard focus in the background" }
             } else if !Background.focusedFieldTakesText(target.pid) {
                 why = "the app has no focused text field to type into in the background"
             }
+            if why == nil, Background.cameForward(target.pid, since: start) { why = "the app came to the front when it was focused" }
         }
         if why == nil, let windowID {
-            let start = Background.userState()
             try Background.requireStillSafe(target, windowID, since: start)
             await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
             let before = focusedValue(target.pid)
@@ -408,7 +411,7 @@ enum Actions {
                 throw HelperError(e.code, "\(e.message) (after \(typed) of \(text.count) characters; the rest was not typed)")
             }
             let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
-            return backgroundResult(verified, since: start, pid: target.pid)
+            return await backgroundResult(verified, since: start, pid: target.pid)
         }
         if let index = p.int("index") {
             let el = try snap.element(at: index)
@@ -475,11 +478,12 @@ enum Actions {
         let flags = KeyCodes.intrinsicFlags(for: key)
         let windowID = CGWindowID(target.windowID)
         var why = Background.reason(.keys, target)
+        let start = Background.userState()
         if why == nil, let windowID, !(await Background.focusWindow(target, windowID)) {
             why = "the target window did not take focus in the background"
         }
+        if why == nil, Background.cameForward(target.pid, since: start) { why = "the app came to the front when it was focused" }
         if why == nil, let windowID {
-            let start = Background.userState()
             await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
             for n in 0..<repeatCount {
                 do {
@@ -490,7 +494,7 @@ enum Actions {
                 Background.tap(pid: target.pid, key: code, flags: flags)
                 usleep(4_000)
             }
-            return backgroundResult(since: start, pid: target.pid)
+            return await backgroundResult(since: start, pid: target.pid)
         }
         try await requireKeyboardForward(snap, target)
         for n in 0..<repeatCount {
@@ -520,16 +524,17 @@ enum Actions {
         }
         let windowID = CGWindowID(target.windowID)
         var why = Background.reason(.keys, target)
+        let start = Background.userState()
         if why == nil, let windowID, !(await Background.focusWindow(target, windowID)) {
             why = "the target window did not take focus in the background"
         }
+        if why == nil, Background.cameForward(target.pid, since: start) { why = "the app came to the front when it was focused" }
         if why == nil, let windowID {
-            let start = Background.userState()
             await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
             try Background.requireStillSafe(target, windowID, since: start)
             let flags = mods.reduce(into: KeyCodes.intrinsicFlags(for: key)) { $0.insert($1.flag) }
             Background.tap(pid: target.pid, key: code, flags: flags)
-            return backgroundResult(since: start, pid: target.pid)
+            return await backgroundResult(since: start, pid: target.pid)
         }
         try await requireKeyboardForward(snap, target)
         Input.shared.withModifiers(mods) { flags in
@@ -562,7 +567,7 @@ enum Actions {
             if sent < amount {
                 throw HelperError("window_not_focused", "the screen locked, the window left the screen, or the frontmost app, pointer or Space changed after \(sent) of \(amount) notches; the rest was not sent")
             }
-            return backgroundResult(since: start, pid: target.pid)
+            return await backgroundResult(since: start, pid: target.pid)
         }
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)

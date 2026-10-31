@@ -84,13 +84,13 @@ final class Input: @unchecked Sendable {
     }
 
     /// Posts one event to a process (Background.swift), under the same stop
-    /// gate as every other post. Nothing is recorded as held: background
-    /// batches send each down and its up together.
+    /// gate as every other post. Nothing is recorded as held; a release still
+    /// goes out once stopping, so the app is not left with a button or key down.
     @discardableResult
     func postToProcess(_ event: CGEvent, pid: pid_t, auth: Bool) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        if stopping { return false }
+        if stopping, event.type != .leftMouseUp, event.type != .keyUp { return false }
         SkyLight.post(event, pid: pid, auth: auth)
         return true
     }
