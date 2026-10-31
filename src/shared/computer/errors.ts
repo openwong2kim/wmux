@@ -143,13 +143,29 @@ export class ComputerError extends Error {
 
 /**
  * The error an input action ends with: `err` as a ComputerError carrying a
- * disposition, `fallback` when it had none.
+ * disposition, `fallback` when it had none. Another error keeps a code it can
+ * be told by (a TimeoutError or AbortError), otherwise it is `internal`.
  */
 export function withDisposition(err: unknown, fallback: ActionDisposition): ComputerError {
   if (err instanceof ComputerError) {
     return err.disposition ? err : new ComputerError(err.code, err.message, fallback);
   }
-  return new ComputerError('internal', err instanceof Error ? err.message : String(err), fallback);
+  const name = err instanceof Error ? err.name : '';
+  const code: ComputerErrorCode = name === 'TimeoutError' ? 'timeout' : name === 'AbortError' ? 'aborted' : 'internal';
+  return new ComputerError(code, err instanceof Error ? err.message : String(err), fallback);
+}
+
+/**
+ * The error an input action of one or more helper requests ends with.
+ * `requested`: one of its requests went to the helper. `earlier`: one already
+ * came back done, so input went out before this failure, and a
+ * `not_delivered` from the failing request is no longer true of the action.
+ */
+export function inputActionError(err: unknown, requested: boolean, earlier: boolean): ComputerError {
+  const error = withDisposition(err, requested ? 'delivered_unverified' : 'not_delivered');
+  return earlier && error.disposition === 'not_delivered'
+    ? new ComputerError(error.code, error.message, 'delivered_unverified')
+    : error;
 }
 
 const DISPOSITION_TEXT: Record<ActionDisposition, string> = {
@@ -176,7 +192,8 @@ export function formatComputerError(payload: ComputerErrorPayload): string {
  * it back.
  */
 export function parseComputerErrorMessage(message: string): ComputerErrorPayload {
-  const match = /^\[([a-z_]+)\]\s*([\s\S]*?)(?: \[disposition:([a-z_]+)\])?$/.exec(message);
+  // Only a known disposition is a suffix; anything else stays in the message.
+  const match = /^\[([a-z_]+)\]\s*([\s\S]*?)(?: \[disposition:(not_delivered|delivered_unverified|delivered)\])?$/.exec(message);
   if (match && isComputerErrorCode(match[1])) {
     return { code: match[1], message: match[2], ...(isActionDisposition(match[3]) && { disposition: match[3] }) };
   }

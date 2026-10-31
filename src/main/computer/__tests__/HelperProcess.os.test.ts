@@ -152,11 +152,25 @@ describe('HelperProcess', () => {
       verify: async () => { throw new ComputerError('helper_unavailable', 'the computer-use helper failed its code-signature check'); },
     });
     expect(await dispositionOf(refused.helper.request('scroll', scroll(1)))).toBe('not_delivered');
-    // One that hung on the request may have sent it.
-    const hung = makeHelper('hang', { timeoutFor: () => 300 });
-    expect(await dispositionOf(hung.helper.request('click', {
+    // One that hung on the request may have sent it. It keeps its timeout
+    // code, and it is killed, so it cannot post the input late, after the
+    // agent looked and retried.
+    const spawned: ChildProcessWithoutNullStreams[] = [];
+    const hung = makeHelper('hang', {
+      timeoutFor: () => 300,
+      spawn: (cmd, args) => {
+        const child = spawn(cmd, [...args], { stdio: 'pipe', windowsHide: true });
+        spawned.push(child);
+        return child;
+      },
+    });
+    const click = hung.helper.request('click', {
       snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
-    }))).toBe('delivered_unverified');
+    });
+    const failed = await click.catch((err: unknown) => err);
+    expect(failed).toBeInstanceOf(ComputerError);
+    expect((failed as ComputerError).toPayload()).toMatchObject({ code: 'timeout', disposition: 'delivered_unverified' });
+    expect(await waitFor(() => spawned[0].exitCode !== null || spawned[0].signalCode !== null)).toBe(true);
   });
 
   it('refuses a helper that speaks another protocol version (after one retry)', async () => {
