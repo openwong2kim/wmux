@@ -1635,6 +1635,18 @@ describe('native chat routes (contract v0.3.1)', () => {
       ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
       const alike = (await turns(h)).body.events as Array<Record<string, unknown>>;
       expect(alike.map((e) => e.clientMessageId)).toEqual([older, newer, undefined]);
+
+      // A live page holding only the newest row: a same-count send minutes
+      // earlier (its row already shown) must not take the new row's id.
+      const [old, fresh] = [freshId(), freshId()];
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: old, text: shot(1), at: 1_000 },
+        { clientMessageId: fresh, text: shot(2), at: 300_000 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'u8', kind: 'user_text', text: '[Image #5]', hasImage: true, ts: 301_000 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      expect((await turns(h)).body.events[0]).toMatchObject({ id: 'u8', clientMessageId: fresh });
     });
 
     it('send: only a request carrying the cap opts into the queue, and a queued answer is 202 effect queued', async () => {

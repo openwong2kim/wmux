@@ -5151,11 +5151,22 @@ export class WebTerminalServer {
       const inTime = (m: ChatDeliveredMessage) => ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS;
       let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
       // A photo row reads `[Image #N]` where the typed text held the upload path.
-      // Rows run oldest first, and so does the claim: each takes the oldest
-      // unclaimed send it matches, so two alike sends keep their own ids. A row
-      // without a time cannot be placed against the sends, so it is not paired.
+      // Photo sends of the same count read alike, so a row takes the unclaimed
+      // send nearest its own time: one sent before the row first, then one in
+      // the skew window after it, the later send on a tie. Two alike sends keep
+      // their own ids, and a page with only the newest row does not take an
+      // older send another page already showed. A row without a time cannot be
+      // placed against the sends, so it is not paired this way.
       if (index < 0 && event.hasImage === true && ts !== undefined) {
-        index = unused.findIndex((m) => inTime(m) && photoMatches(m.text, text));
+        const rank = (m: ChatDeliveredMessage) => [m.at <= ts ? 0 : 1, Math.abs(ts - m.at), -m.at];
+        const better = (m: ChatDeliveredMessage, than: ChatDeliveredMessage) => {
+          const [x, y] = [rank(m), rank(than)];
+          const k = x.findIndex((v, i) => v !== y[i]);
+          return k >= 0 && x[k] < y[k];
+        };
+        unused.forEach((m, i) => {
+          if (inTime(m) && photoMatches(m.text, text) && (index < 0 || better(m, unused[index]))) index = i;
+        });
       }
       if (index < 0) return event;
       const [match] = unused.splice(index, 1);
