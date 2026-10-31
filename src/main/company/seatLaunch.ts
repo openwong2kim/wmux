@@ -18,7 +18,8 @@ import { metadataStore } from '../metadata/MetadataStore';
 import { buildInitialCommand } from '../worktask/FanOutService';
 import { buildTaskSlug, TaskWorktreeManager } from '../worktask/TaskWorktreeManager';
 
-const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+// Not dots alone: `.` or `..` would name the briefs root or the data folder.
+const WORKSPACE_ID_RE = /^(?!\.+$)[A-Za-z0-9._-]{1,80}$/;
 const FOLDER_MAX = 4096;
 const TEXT_MAX = { company: 200, owns: 200, mission: 2000, standingOrders: 8000 } as const;
 /** Brief folders older than this are removed when the next company is made. */
@@ -117,17 +118,34 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
   const folder = path.join(root, r.workspaceId);
   const worktrees = deps.worktrees ?? seatWorktrees();
   const created: { repoRoot: string; repoHash: string; path: string; branch: string; oid?: string }[] = [];
+  let madeFolder = false;
   const undo = async () => {
     for (const w of created.reverse()) {
       await worktrees.removeWorktree(w.repoRoot, w.repoHash, w.path, undefined, { force: true });
       if (w.oid) await worktrees.deleteBranchIfAt(w.repoRoot, w.repoHash, w.branch, w.oid);
     }
-    try { fs.rmSync(folder, { recursive: true, force: true }); } catch { /* left for the prune */ }
+    if (madeFolder) {
+      try { fs.rmSync(folder, { recursive: true, force: true }); } catch { /* left for the prune */ }
+    }
   };
   const fail = async (error: string): Promise<SeatLaunchResult> => {
     await undo();
     return { ok: false, error };
   };
+
+  pruneOldBriefs(root, (deps.now ?? Date.now)());
+  if (r.tellSeats === true && seats.some((s) => s.agent)) {
+    // Made here and only here: a workspace id seen before is refused, so
+    // nothing below writes into or removes another company's briefs.
+    try {
+      fs.mkdirSync(root, { recursive: true });
+      fs.mkdirSync(folder);
+      madeFolder = true;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      return { ok: false, error: code === 'EEXIST' ? 'this workspace id already has seat briefs' : `could not make the seats: ${(err as Error).message}` };
+    }
+  }
 
   try {
     if (r.folder && own.length > 0) {
@@ -146,14 +164,12 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
         made[i].worktree = { path: wt.worktreePath, branch: wt.branch };
       }
     }
-    pruneOldBriefs(root, (deps.now ?? Date.now)());
     const commands = seats.map((seat, i) => {
       const row = seat.agent ? agentRow(seat.agent) : undefined;
       if (!row) return null;
       const launcher = agentLauncherStem(row);
       if (r.tellSeats !== true) return launcher;
       const file = path.join(folder, `seat-${i + 1}.md`);
-      fs.mkdirSync(folder, { recursive: true });
       fs.writeFileSync(file, seatBrief({
         company: r.company!.trim(), mission: r.mission, standingOrders: r.standingOrders, seats: made, ceo: r.ceo!, seat: i,
       }), 'utf8');

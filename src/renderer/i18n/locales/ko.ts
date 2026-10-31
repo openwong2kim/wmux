@@ -498,7 +498,7 @@ export const ko = {
   'companyPreset.tellSeatsHint': "첫 메시지로 이름, 담당, 미션, 상시 지침, 보고 대상을 알려 줍니다. CEO는 자리 목록과 일을 맡기는 방법도 받습니다.",
   'companyPreset.error.seat-count': "회사 자리는 1개에서 6개까지입니다.",
   'companyPreset.error.ceo': "CEO 자리를 고르세요.",
-  'companyPreset.error.label': "자리 이름에는 공백, #, @를 쓸 수 없고, 숫자로 시작하거나 w1-2 같은 모양일 수 없습니다.",
+  'companyPreset.error.label': "자리 이름은 1~60자이고 공백, #, @를 쓸 수 없습니다. 숫자로 시작하거나 w1, w1-2 같은 모양일 수 없습니다.",
   'companyPreset.error.duplicate': "같은 이름의 자리가 두 개 있습니다.",
   'companyPreset.error.folder': "폴더를 고르세요. CEO를 뺀 각 자리는 그 폴더의 자기 워크트리에서 일합니다.",
   'companyPreset.error.agent': "이 PC에 설치되지 않은 에이전트를 고른 자리가 있습니다. 다른 에이전트나 '에이전트 없음'을 고르세요.",

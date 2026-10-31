@@ -49,9 +49,19 @@ describe('seatLaunches', () => {
     expect((await seatLaunches(req({ seats: [{ label: '../../x', owns: '', agent: 'claude' }, { label: 'a b', owns: '' }] }), none)).ok).toBe(false);
     expect((await seatLaunches(req({ seats: [{ label: 'ok', owns: '', agent: 'rm -rf' }] }), none)).ok).toBe(false);
     expect((await seatLaunches(req({ workspaceId: '../x' }), none)).ok).toBe(false);
+    expect((await seatLaunches(req({ workspaceId: '.' }), none)).ok).toBe(false);
+    expect((await seatLaunches(req({ workspaceId: '..' }), none)).ok).toBe(false);
     expect((await seatLaunches(req({ ceo: 7 }), none)).ok).toBe(false);
     expect((await seatLaunches(req({ folder: 'relative/path' }), none)).ok).toBe(false);
     expect(fs.existsSync(path.join(dir, 'company-briefs'))).toBe(false);
+  });
+
+  it('refuses a workspace id that already has briefs, and leaves them as they are', async () => {
+    const theirs = path.join(dir, 'company-briefs', 'ws-1');
+    fs.mkdirSync(theirs, { recursive: true });
+    fs.writeFileSync(path.join(theirs, 'seat-1.md'), 'theirs');
+    expect(await seatLaunches(req(), { dir, takenLabels: () => [] })).toMatchObject({ ok: false });
+    expect(fs.readFileSync(path.join(theirs, 'seat-1.md'), 'utf8')).toBe('theirs');
   });
 
   it('removes brief folders older than a week when the next company is made', async () => {

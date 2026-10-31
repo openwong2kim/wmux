@@ -507,7 +507,7 @@ export const pl = {
   'companyPreset.tellSeatsHint': "Pierwsza wiadomość podaje jego nazwę, za co odpowiada, misję, stałe polecenia i komu raportuje. CEO dostaje też listę stanowisk i sposób zlecania im pracy.",
   'companyPreset.error.seat-count': "Firma ma od jednego do sześciu stanowisk.",
   'companyPreset.error.ceo': "Wybierz stanowisko CEO.",
-  'companyPreset.error.label': "Nazwa stanowiska nie może zawierać spacji, # ani @, zaczynać się cyfrą ani wyglądać jak w1-2.",
+  'companyPreset.error.label': "Nazwa stanowiska ma od 1 do 60 znaków, bez spacji, # i @. Nie może zaczynać się cyfrą ani wyglądać jak w1 lub w1-2.",
   'companyPreset.error.duplicate': "Dwa stanowiska mają tę samą nazwę.",
   'companyPreset.error.folder': "Wybierz folder: każde stanowisko poza CEO pracuje we własnym worktree tego folderu.",
   'companyPreset.error.agent': "Agent jednego ze stanowisk nie jest tu zainstalowany. Wybierz innego albo Bez agenta.",

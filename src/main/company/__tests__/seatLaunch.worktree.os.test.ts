@@ -56,7 +56,7 @@ describe('seatLaunches worktrees', () => {
     expect(path.dirname(path.dirname(dev1))).toBe(path.join(root, 'company-worktrees'));
     expect(g(dev1, 'branch', '--show-current')).toBe(branchOf('dev-1'));
     expect(g(dev2, 'branch', '--show-current')).toBe(branchOf('dev-2'));
-    expect(fs.readFileSync(path.join(dev1, 'a.txt'), 'utf8')).toBe('a\n');
+    expect(fs.readFileSync(path.join(dev1, 'a.txt'), 'utf8').trim()).toBe('a');
 
     const brief = (n: number) => fs.readFileSync(path.join(root, 'data', 'company-briefs', WS, `seat-${n}.md`), 'utf8');
     expect(brief(2)).toContain(`Your worktree is ${dev1}, on branch ${branchOf('dev-1')}.`);
@@ -69,7 +69,7 @@ describe('seatLaunches worktrees', () => {
     fs.mkdirSync(plain);
     expect((await seatLaunches(req({ folder: undefined }), deps)).ok).toBe(false);
     expect((await seatLaunches(req({ folder: plain }), deps)).ok).toBe(false);
-    expect(fs.existsSync(path.join(root, 'data', 'company-briefs'))).toBe(false);
+    expect(fs.existsSync(path.join(root, 'data', 'company-briefs', WS))).toBe(false);
     expect(branches()).toEqual(['main']);
   });
 

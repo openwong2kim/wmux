@@ -71,9 +71,9 @@ export const BUILTIN_COMPANY_PRESETS: readonly CompanyPreset[] = [
 ];
 
 /**
- * The pane tree for `count` seats, leaves in seat order: the CEO on the left
- * at half the width (its board tab opens there), the other seats stacked top
- * to bottom on the right. One seat is a single pane.
+ * The pane tree for `count` seats: `leaves[0]` on the left at half the width,
+ * for the CEO (its board tab opens there), the other leaves stacked top to
+ * bottom on the right. One seat is a single pane.
  */
 export function companyPresetTree(count: number): { root: Pane; leaves: PaneLeaf[] } {
   const leaves = Array.from({ length: Math.max(1, count) }, () => createLeafPane());
@@ -114,15 +114,17 @@ export function ownWorktreeSeats(seats: readonly { agent?: string }[], ceo: numb
 }
 
 /** Why the seats cannot be made, or null: a missing or bad label, two seats
- *  with one name, too many seats, or no CEO seat. */
-export function companySeatsError(seats: readonly CompanyPresetSeat[], ceo: number): string | null {
+ *  with one name, too many seats, or no CEO seat. `made`: the labels are the
+ *  final ones from freeSeatLabels, so a suffix may already be on them. */
+export function companySeatsError(seats: readonly CompanyPresetSeat[], ceo: number, opts: { made?: boolean } = {}): string | null {
   if (seats.length === 0 || seats.length > COMPANY_PRESET_MAX_SEATS) return 'seat-count';
   if (!Number.isInteger(ceo) || ceo < 0 || ceo >= seats.length) return 'ceo';
   const seen = new Set<string>();
+  const max = opts.made ? PANE_METADATA_LABEL_MAX : SEAT_LABEL_MAX;
   for (const seat of seats) {
     const label = seat.label.trim();
     // `w1` would become `w1-2` once taken, which reads as a pane's own coordinate.
-    if (!label || label.length > SEAT_LABEL_MAX || paneLabelShapeError(label) || paneLabelShapeError(`${label}-2`)) return 'label';
+    if (!label || label.length > max || paneLabelShapeError(label) || (!opts.made && paneLabelShapeError(`${label}-2`))) return 'label';
     if (seen.has(normalizePaneLabel(label))) return 'duplicate';
     seen.add(normalizePaneLabel(label));
   }

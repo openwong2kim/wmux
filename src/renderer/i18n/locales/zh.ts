@@ -298,7 +298,7 @@ export const zh = {
   'companyPreset.tellSeatsHint': "第一条消息会告诉它名称、负责什么、使命、常设指令以及向谁汇报。CEO 还会收到席位列表和分派工作的方法。",
   'companyPreset.error.seat-count': "公司有一到六个席位。",
   'companyPreset.error.ceo': "请选择 CEO 席位。",
-  'companyPreset.error.label': "席位名称不能包含空格、# 或 @，不能以数字开头，也不能形如 w1-2。",
+  'companyPreset.error.label': "席位名称为 1 到 60 个字符，不能包含空格、# 或 @，不能以数字开头，也不能形如 w1 或 w1-2。",
   'companyPreset.error.duplicate': "有两个席位名称相同。",
   'companyPreset.error.folder': "请选择文件夹：除 CEO 外，每个席位都在该文件夹自己的工作树中工作。",
   'companyPreset.error.agent': "有席位选择的代理未在此电脑上安装。请选择其他代理或“无代理”。",

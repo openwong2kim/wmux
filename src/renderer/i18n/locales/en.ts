@@ -503,7 +503,7 @@ export const en = {
   'companyPreset.tellSeatsHint': "Its first message gives its name, what it owns, the mission, the standing orders and who it reports to. The CEO also gets the seats and how to brief them.",
   'companyPreset.error.seat-count': "A company has one to six seats.",
   'companyPreset.error.ceo': "Pick the CEO seat.",
-  'companyPreset.error.label': "A seat name cannot contain spaces, # or @, start with a digit, or look like w1-2.",
+  'companyPreset.error.label': "A seat name needs 1 to 60 characters, with no spaces, # or @. It cannot start with a digit or look like w1 or w1-2.",
   'companyPreset.error.duplicate': "Two seats have the same name.",
   'companyPreset.error.folder': "Choose a folder: each seat but the CEO works in its own worktree of it.",
   'companyPreset.error.agent': "A seat's agent is not installed here. Pick another or No agent.",

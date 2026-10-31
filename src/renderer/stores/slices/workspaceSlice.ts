@@ -525,13 +525,16 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     }),
 
     addCompanyWorkspace: (input) => {
-      if (companySeatsError(input.seats, input.ceo) || get().workspaces.some((w: Workspace) => w.id === input.id)) return false;
+      if (companySeatsError(input.seats, input.ceo, { made: true }) || get().workspaces.some((w: Workspace) => w.id === input.id)) return false;
       set((state: StoreState) => {
         const { root, leaves } = companyPresetTree(input.seats.length);
+        // The CEO takes the left pane; the other seats fill the rest in order.
+        const order = [input.ceo, ...input.seats.map((_, i) => i).filter((i) => i !== input.ceo)];
+        const leafOf = (seat: number) => leaves[order.indexOf(seat)];
         const company = parseWorkspaceCompany({
           v: 1,
           id: generateId('co'),
-          coordinatorPaneId: leaves[input.ceo].id,
+          coordinatorPaneId: leafOf(input.ceo).id,
           mission: input.mission?.trim(),
           standingOrders: input.standingOrders?.trim(),
         });
@@ -540,7 +543,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           id: input.id,
           name: input.name,
           rootPane: root,
-          activePaneId: leaves[input.ceo].id,
+          activePaneId: leafOf(input.ceo).id,
           wsOrdinal,
           nextPaneOrdinal: assignPaneOrdinals(root, 1),
           ...(input.cwd ? { profile: { startupCwd: input.cwd } } : {}),
@@ -549,7 +552,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         input.seats.forEach((seat, i) => {
           const owns = seat.owns.trim();
           const cwd = seat.cwd ?? input.cwd;
-          state.projectPaneSeed[leaves[i].id] = {
+          state.projectPaneSeed[leafOf(i).id] = {
             label: seat.label,
             ...(seat.command ? { command: seat.command } : {}),
             ...(cwd ? { cwd } : {}),
