@@ -59,10 +59,14 @@ export const PROBED_ELECTRON_MAJOR = 45;
  * read out of a running Electron build by the probe script above, which is how
  * `quit` was caught: it has NO accelerator on Windows (Alt+F4 is the OS
  * gesture), only on Linux. The probe reports the platform it runs on, so each
- * column is only as fresh as its last probe: win32 was re-probed on Electron
- * 42.11.3; darwin and linux were last probed on Electron 41. darwin's
- * `pasteAndMatchStyle` was corrected from Electron 42.11.3's own role table
- * (`Cmd+Option+Shift+V` on macOS), which no darwin probe had caught.
+ * column is only as fresh as its last probe: darwin was re-probed on Electron
+ * 45.1.0; win32 was last probed on Electron 42.11.3 and linux on Electron 41.
+ * Electron 45 moved the role table into native code
+ * (shell/browser/api/electron_api_menu_roles.cc) with the same accelerators
+ * as Electron 42's, and the win32 and linux columns were checked against it.
+ * Corrected from Electron's own role table, which no probe had caught:
+ * darwin's `pasteAndMatchStyle` (`Cmd+Option+Shift+V`), and linux's `redo`
+ * (`Shift+CommandOrControl+Z`; only Windows uses `Control+Y`).
  */
 type RoleAccelerator = { all?: string; darwin?: string; win32?: string; linux?: string };
 
@@ -79,7 +83,7 @@ export const ROLE_DEFAULT_ACCELERATORS: Readonly<Record<string, RoleAccelerator>
   close: { all: 'CommandOrControl+W' },
   minimize: { all: 'CommandOrControl+M' },
   undo: { all: 'CommandOrControl+Z' },
-  redo: { darwin: 'Shift+Command+Z', win32: 'Control+Y', linux: 'Control+Y' },
+  redo: { darwin: 'Shift+Command+Z', win32: 'Control+Y', linux: 'Shift+CommandOrControl+Z' },
   cut: { all: 'CommandOrControl+X' },
   copy: { all: 'CommandOrControl+C' },
   paste: { all: 'CommandOrControl+V' },
