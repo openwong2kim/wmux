@@ -574,11 +574,11 @@ function requestIdle(cb: (deadline: IdleDeadlineLike) => void): () => void {
 const attached = new WeakMap<object, { dispose(): void }>();
 
 /**
- * Runs the idle sweep for one terminal after it writes, scrolls or resizes.
- * Idempotent per terminal, so a parked terminal that is adopted again keeps
- * its one sweep.
+ * Runs the idle sweep for one terminal after it writes, scrolls or resizes,
+ * while `isEnabled` answers true. Idempotent per terminal, so a parked
+ * terminal that is adopted again keeps its one sweep.
  */
-export function attachScrollbackCompaction(term: CompactableTerminal): { dispose(): void } {
+export function attachScrollbackCompaction(term: CompactableTerminal, isEnabled: () => boolean = () => true): { dispose(): void } {
   const existing = attached.get(term);
   if (existing) return existing;
   let cancel: (() => void) | null = null;
@@ -588,7 +588,7 @@ export function attachScrollbackCompaction(term: CompactableTerminal): { dispose
 
   const slice = (deadline: IdleDeadlineLike): void => {
     cancel = null;
-    if (disposed || disabled) return;
+    if (disposed || disabled || !isEnabled()) return;
     const { next } = compactScrollback(term, COMPACTION_MARGIN, resumeAt, () => deadline.timeRemaining() < 1);
     if (next !== null) {
       resumeAt = next;
@@ -602,7 +602,7 @@ export function attachScrollbackCompaction(term: CompactableTerminal): { dispose
     }
   };
   const schedule = (): void => {
-    if (disposed || disabled) return;
+    if (disposed || disabled || !isEnabled()) return;
     if (cancel) {
       rerun = true;
       return;
