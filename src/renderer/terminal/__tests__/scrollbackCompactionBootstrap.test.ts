@@ -43,7 +43,8 @@ describe('installScrollbackCompactionOnFlag', () => {
 
     // Off again: the sweep stops; reads still work.
     useStore.setState({ terminalCompactScrollback: false });
-    term.buffer.normal.getLine(1)?.getCell(0);
+    // Unpack row 1 the way a write into it would.
+    void (lines(term).get(1) as { _data?: unknown })._data;
     await new Promise<void>((resolve) => term.write('more\r\n', resolve));
     await deliberateSleep(200, 'a negative check: the sweep must not run while the flag is off');
     expect(isLineCompacted(lines(term).get(1))).toBe(false);

@@ -80,6 +80,13 @@ let warned = false;
 let outBytes = new Uint8Array(1024);
 let scratch = new Uint32Array(768);
 let pos = 0;
+// The row whose full decode `scratch` holds, so cell-by-cell reads of one
+// packed row (search reads every cell of a match row) decode it once.
+let scratchRow: CompactableLine | null = null;
+let scratchPacked: string | null = null;
+let scratchLength = -1;
+let scratchRowView: Uint32Array = scratch;
+let origGetTrimmedLength: LineMethod | null = null;
 
 function isPacked(line: CompactableLine): boolean {
   return line._rawData === null;
@@ -90,6 +97,7 @@ function ensureOut(size: number): void {
 }
 
 function scratchView(words: number): Uint32Array {
+  scratchRow = null;
   if (scratch.length < words) scratch = new Uint32Array(Math.max(words, scratch.length * 2));
   return scratch.subarray(0, words);
 }
@@ -284,13 +292,31 @@ function inflate(line: CompactableLine): Uint32Array {
   return d;
 }
 
+/** The whole row decoded into the shared scratch array, reused while it is the same row. */
+function fullScratch(line: CompactableLine): Uint32Array {
+  const n = line.length;
+  if (scratchRow === line && scratchPacked === line._packed && scratchLength === n) return scratchRowView;
+  const view = scratchView(n * 3);
+  decodeCells(line._packed as string, n, view);
+  scratchRowView = view;
+  scratchRow = line;
+  scratchPacked = line._packed as string;
+  scratchLength = n;
+  return view;
+}
+
 /**
  * Runs `fn` with the row decoded into a shared scratch array, leaving it
  * packed. `fn` may read only the cells below `limit`.
  */
 function withScratch<T>(line: CompactableLine, fn: () => T, limit = line.length): T {
-  const view = scratchView(line.length * 3);
-  decodeCells(line._packed as string, line.length, view, limit);
+  let view: Uint32Array;
+  if (limit < line.length) {
+    view = scratchView(line.length * 3);
+    decodeCells(line._packed as string, line.length, view, limit);
+  } else {
+    view = fullScratch(line);
+  }
   line._rawData = view;
   try {
     return fn();
@@ -318,6 +344,25 @@ export function isCompactionDisabled(): boolean {
 }
 
 /**
+ * Checks the header facts the no-decode paths rely on against the original
+ * cells: t is the trimmed length, and cutting to any cols >= m keeps every
+ * content cell and leaves no wide char in the last column.
+ */
+function checkHeader(line: CompactableLine, z: string, d: Uint32Array, n: number): string | null {
+  const { t, m } = readHeader(z);
+  if (t > 0) {
+    const trimmed = (origGetTrimmedLength as LineMethod).call(line);
+    if (t - 1 !== trimmed) return `header trimmed length ${t - 1} != ${String(trimmed)}`;
+    if (t - 1 > m) return `header shrink bound ${m} below trimmed length ${t - 1}`;
+  }
+  for (let j = Math.max(0, m - 1); j < n; j++) {
+    const c = d[j * 3];
+    if (c >> WIDTH_SHIFT === 2 || (j >= m && c & CODEPOINT_AND_COMBINED)) return `header shrink bound ${m} cuts cell ${j}`;
+  }
+  return null;
+}
+
+/**
  * Packs one row. Returns false when it was not packed: compaction is off or
  * not installed on this row's class, the row is already packed, or the
  * round-trip check failed (which also turns compaction off).
@@ -340,6 +385,11 @@ export function compactLine(lineObj: object): boolean {
         disable(`round-trip mismatch at word ${i} of ${n * 3}`);
         return false;
       }
+    }
+    const headerError = checkHeader(line, z, d, n);
+    if (headerError) {
+      disable(headerError);
+      return false;
     }
   } catch (err) {
     disable(String(err));
@@ -367,6 +417,7 @@ export function installScrollbackCompaction(lineClass: { prototype: object }): b
     return false;
   }
   const orig = Object.fromEntries(names.map((name) => [name, proto[name] as LineMethod])) as Record<string, LineMethod>;
+  origGetTrimmedLength = orig.getTrimmedLength;
 
   Object.defineProperty(proto, '_data', {
     configurable: true,
@@ -416,6 +467,26 @@ export function installScrollbackCompaction(lineClass: { prototype: object }): b
     if (!isPacked(this)) return orig.getNoBgTrimmedLength.call(this);
     return withScratch(this, () => orig.getNoBgTrimmedLength.call(this));
   };
+
+  // Cell reads copy out of `_data`, so they read a scratch decode too:
+  // addon-search calls getCell on the last cell of every row that wraps and
+  // on every cell of a match row, and through the getter that unpacked the
+  // whole buffer for good.
+  const cellReaders = ['get', 'getWidth', 'hasWidth', 'getFg', 'getBg', 'hasContent', 'getCodePoint', 'isCombined', 'getString', 'isProtected', 'loadCell', 'getCell', 'getExtended'];
+  // Called per cell, so no closure or rest array; none takes more than two arguments.
+  for (const name of cellReaders) {
+    const read = proto[name] as ((this: CompactableLine, a: unknown, b: unknown) => unknown) | undefined;
+    if (typeof read !== 'function') continue;
+    proto[name] = function (this: CompactableLine, a: unknown, b: unknown): unknown {
+      if (!isPacked(this)) return read.call(this, a, b);
+      this._rawData = fullScratch(this);
+      try {
+        return read.call(this, a, b);
+      } finally {
+        this._rawData = null;
+      }
+    };
+  }
 
   // A width change resizes every row. Growing with the default blank, or
   // shrinking without cutting into content or a wide char, only moves
@@ -511,14 +582,23 @@ export function installScrollbackCompactionFor(
 ): boolean {
   if (installedProto !== null) return true;
   if (disabled) return false;
-  const probe = new TerminalCtor({ cols: 2, rows: 1, scrollback: 0 });
+  // Fail closed: the caller is a store listener during session load.
+  let probe: { dispose(): void } | undefined;
   try {
+    probe = new TerminalCtor({ cols: 2, rows: 1, scrollback: 0 });
     const lineClass = bufferLineClassOf(probe);
     if (lineClass !== undefined && installScrollbackCompaction(lineClass)) return true;
     disable('xterm BufferLine does not have the expected shape');
     return false;
+  } catch (err) {
+    disable(`install failed: ${String(err)}`);
+    return false;
   } finally {
-    probe.dispose();
+    try {
+      probe?.dispose();
+    } catch {
+      // The probe is never opened; a failing dispose leaves nothing behind.
+    }
   }
 }
 
@@ -559,9 +639,19 @@ interface IdleDeadlineLike {
   timeRemaining(): number;
 }
 
+/** Work per slice when requestIdleCallback fires by its timeout (timeRemaining() is 0 then). */
+const TIMEOUT_SLICE_MS = 4;
+
 function requestIdle(cb: (deadline: IdleDeadlineLike) => void): () => void {
   if (typeof requestIdleCallback === 'function') {
-    const id = requestIdleCallback(cb, { timeout: 2000 });
+    const id = requestIdleCallback(
+      (deadline) => {
+        if (!deadline.didTimeout) return cb(deadline);
+        const end = performance.now() + TIMEOUT_SLICE_MS;
+        cb({ timeRemaining: () => end - performance.now() });
+      },
+      { timeout: 2000 },
+    );
     return () => cancelIdleCallback(id);
   }
   const id = setTimeout(() => {

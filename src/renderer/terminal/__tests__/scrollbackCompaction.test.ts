@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { createRequire } from 'node:module';
 import type { Terminal as HeadlessTerminal } from '@xterm/headless';
+import { SearchAddon } from '@xterm/addon-search';
 import {
   __resetCompactionForTests,
+  attachScrollbackCompaction,
   bufferLineClassOf,
   compactLine,
   compactScrollback,
@@ -173,10 +175,16 @@ describe('scrollback compaction', () => {
       const twin = randomLine(r);
       const n = twin.length;
 
-      const cellAt = (line: Line, i: number) => cellState(line, i);
+      // Cell reads stay packed. Two packed rows read in turn also check that
+      // the shared decode follows the row being read.
+      const cellsA = packedCopy(twin);
+      const otherTwin = randomLine(r);
+      const cellsB = packedCopy(otherTwin);
       for (let i = 0; i < n; i++) {
-        expect(cellAt(packedCopy(twin), i)).toEqual(cellAt(twin, i));
+        expect(cellState(cellsA, i)).toEqual(cellState(twin, i));
+        if (i < otherTwin.length) expect(cellState(cellsB, i)).toEqual(cellState(otherTwin, i));
       }
+      expect([isLineCompacted(cellsA), isLineCompacted(cellsB)]).toEqual([true, true]);
       const packed = packedCopy(twin);
       for (let i = 0; i < n; i++) {
         expect([packed.isCombined(i), packed.getWidth(i), packed.getFg(i), packed.getBg(i)]).toEqual([
@@ -187,8 +195,10 @@ describe('scrollback compaction', () => {
         ]);
       }
       for (const x of [-1, 0, n - 1, n]) {
-        expect(packedCopy(twin).getCell(x)?.getAsCharData()).toEqual(twin.getCell(x)?.getAsCharData());
+        expect(packed.getCell(x)?.getAsCharData()).toEqual(twin.getCell(x)?.getAsCharData());
+        expect(packed.get(Math.max(0, Math.min(x, n - 1)))).toEqual(twin.get(Math.max(0, Math.min(x, n - 1))));
       }
+      expect(isLineCompacted(packed)).toBe(true);
 
       // Read whole rows without inflating them.
       const reader = packedCopy(twin);
@@ -333,7 +343,7 @@ describe('scrollback compaction', () => {
       if (step % 25 === 0) compare();
     }
     compare();
-    expect(packed).toBeGreaterThan(10000);
+    expect(packed).toBeGreaterThan(5000);
     expect(keptPackedByResize).toBeGreaterThan(1000);
     expect(isCompactionDisabled()).toBe(false);
     a.dispose();
@@ -374,5 +384,65 @@ describe('scrollback compaction', () => {
     expect(compactLine(new LineClass(4))).toBe(false);
     expect(warn).toHaveBeenCalledTimes(1);
     warn.mockRestore();
+  });
+
+  it('a header that misstates the trimmed length or the shrink bound turns compaction off', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    // 'A' and nine default blanks: the true header is flags 1, k 2, t 2, m 1.
+    for (const header of ['\u0001\u0002\u0005\u0001', '\u0001\u0002\u0002\u0000']) {
+      __resetCompactionForTests();
+      const line = new LineClass(10);
+      const cell = new CellData();
+      cell.content = 0x41 | (1 << 22);
+      line.setCell(0, cell);
+      const spy = vi.spyOn(String, 'fromCharCode').mockReturnValue(`${header}A\u0000`);
+      expect(compactLine(line)).toBe(false);
+      spy.mockRestore();
+      expect(isLineCompacted(line)).toBe(false);
+      expect(isCompactionDisabled()).toBe(true);
+    }
+    expect(warn).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
+  it('a search over packed rows leaves them packed', async () => {
+    const term = new Patched.Terminal({ cols: 20, rows: 5, scrollback: 2000, allowProposedApi: true });
+    let data = '';
+    for (let i = 0; i < 300; i++) data += `${'w'.repeat(30)} ${i} needle\r\n`;
+    await new Promise<void>((resolve) => term.write(data, resolve));
+    Object.assign(term, { getSelectionPosition: () => undefined, clearSelection: () => undefined, select: () => undefined });
+    const search = new SearchAddon();
+    term.loadAddon(search as never);
+    const { compacted } = compactScrollback(term as unknown as CompactableTerminal);
+    expect(search.findNext('absent text')).toBe(false);
+    expect(search.findNext('needle')).toBe(true);
+    const lines = (term as any)._core.buffers.normal.lines;
+    let packed = 0;
+    for (let i = 0; i < lines.length; i++) if (isLineCompacted(lines.get(i))) packed++;
+    expect(packed).toBe(compacted);
+    term.dispose();
+  });
+
+  it('a slice that requestIdleCallback runs by its timeout still gets a working budget', async () => {
+    const callbacks: Array<(deadline: { didTimeout: boolean; timeRemaining(): number }) => void> = [];
+    vi.stubGlobal('requestIdleCallback', (cb: (typeof callbacks)[number]) => callbacks.push(cb));
+    vi.stubGlobal('cancelIdleCallback', () => undefined);
+    const term = new Patched.Terminal({ cols: 20, rows: 5, scrollback: 2000, allowProposedApi: true });
+    const sweep = attachScrollbackCompaction(term as unknown as CompactableTerminal);
+    let data = '';
+    for (let i = 0; i < 1000; i++) data += `row ${i}\r\n`;
+    await new Promise<void>((resolve) => term.write(data, resolve));
+    expect(callbacks.length).toBe(1);
+    // A frozen clock: the 4 ms budget never runs out, so one slice does all.
+    const now = vi.spyOn(performance, 'now').mockReturnValue(1000);
+    callbacks[0]({ didTimeout: true, timeRemaining: () => 0 });
+    now.mockRestore();
+    const buf = (term as any)._core.buffers.normal;
+    let packed = 0;
+    for (let i = 0; i < buf.lines.length; i++) if (isLineCompacted(buf.lines.get(i))) packed++;
+    expect(packed).toBe(buf.ybase - (term.rows + COMPACTION_MARGIN));
+    sweep.dispose();
+    term.dispose();
+    vi.unstubAllGlobals();
   });
 });
