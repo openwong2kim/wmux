@@ -2,12 +2,16 @@ import { describe, expect, it } from 'vitest';
 import {
   COMPUTER_ERROR_CODES,
   COMPUTER_ERROR_NEXT_STEPS,
+  ComputerError,
   encodeComputerErrorMessage,
   formatComputerError,
+  inputActionError,
   parseComputerErrorMessage,
+  withDisposition,
 } from '../errors';
+import { parseHelperLineV4130 } from './fixtures/parseHelperLine-v4.13.0';
 import { computeScreenshotScale, scaledSize, screenshotPointToWindow } from '../scale';
-import { COMPUTER_ACTIONS, isControlAction, isKey, normalizeKey, normalizeModifier, parseHelperLine, parseHotkey } from '../protocol';
+import { COMPUTER_ACTIONS, COMPUTER_PROTOCOL_VERSION, isControlAction, isKey, normalizeKey, normalizeModifier, parseHelperLine, parseHotkey } from '../protocol';
 import { blockReasonFor, osChordRefusal, selectorBlockReasonFor } from '../blocklist';
 
 describe('computer errors', () => {
@@ -25,6 +29,31 @@ describe('computer errors', () => {
   it('maps an unknown or missing code to internal', () => {
     expect(parseComputerErrorMessage('[not_a_code] boom')).toEqual({ code: 'internal', message: '[not_a_code] boom' });
     expect(parseComputerErrorMessage('plain failure').code).toBe('internal');
+  });
+
+  it('strips only a known disposition from the end of the message', () => {
+    expect(parseComputerErrorMessage(encodeComputerErrorMessage({ code: 'timeout', message: 'slow', disposition: 'delivered_unverified' })))
+      .toEqual({ code: 'timeout', message: 'slow', disposition: 'delivered_unverified' });
+    expect(parseComputerErrorMessage('[timeout] slow [disposition:maybe]')).toEqual({ code: 'timeout', message: 'slow [disposition:maybe]' });
+  });
+
+  it('keeps a code an error can be told by when it gives it a disposition', () => {
+    const timeout = Object.assign(new Error('late'), { name: 'TimeoutError' });
+    const abort = Object.assign(new Error('stop'), { name: 'AbortError' });
+    expect(withDisposition(timeout, 'delivered_unverified').toPayload()).toEqual({ code: 'timeout', message: 'late', disposition: 'delivered_unverified' });
+    expect(withDisposition(abort, 'not_delivered').code).toBe('aborted');
+    expect(withDisposition(new ComputerError('timeout', 'click did not finish'), 'delivered_unverified').code).toBe('timeout');
+    expect(withDisposition(new Error('boom'), 'not_delivered').code).toBe('internal');
+  });
+
+  it('never calls an input action not_delivered once one of its requests went out', () => {
+    const refused = new ComputerError('window_not_focused', 'covered', 'not_delivered');
+    expect(inputActionError(new ComputerError('input_busy', 'busy'), false, false).disposition).toBe('not_delivered');
+    // The one request the helper got: its own count is kept.
+    expect(inputActionError(refused, true, false).disposition).toBe('not_delivered');
+    // A later request of the same action: an earlier one already sent input.
+    expect(inputActionError(refused, true, true).disposition).toBe('delivered_unverified');
+    expect(inputActionError(new ComputerError('internal', 'gone'), true, false).disposition).toBe('delivered_unverified');
   });
 
   it('formats the code, message and next steps for the agent', () => {
@@ -91,6 +120,21 @@ describe('helper protocol', () => {
     expect(parseHelperLine('{"type":"hello","protocolVersion":1}').kind).toBe('invalid');
   });
 
+  it('reads the macOS input capabilities a hello carries, and drops a malformed set', () => {
+    const hello = (input: unknown) => JSON.stringify({
+      type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: '4.13.0',
+      capabilities: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true }, input },
+    });
+    const input = { backgroundPointer: true, focusWithoutRaise: true, keyAuth: false };
+    const parsed = parseHelperLine(hello(input));
+    expect(parsed.kind === 'hello' && parsed.hello.capabilities.input).toEqual(input);
+    for (const bad of [{ backgroundPointer: true, focusWithoutRaise: true }, { ...input, keyAuth: 'yes' }, null]) {
+      const dropped = parseHelperLine(hello(bad));
+      expect(dropped.kind).toBe('hello');
+      expect(dropped.kind === 'hello' && 'input' in dropped.hello.capabilities).toBe(false);
+    }
+  });
+
   it('parses success and error responses', () => {
     expect(parseHelperLine('{"id":3,"ok":true,"result":{"a":1}}')).toEqual({
       kind: 'response',
@@ -100,6 +144,15 @@ describe('helper protocol', () => {
       kind: 'response',
       response: { id: 4, ok: false, error: { code: 'element_stale', message: 'x' } },
     });
+  });
+
+  it('keeps a helper error\'s disposition and drops one it does not know', () => {
+    const error = (disposition: unknown) => {
+      const parsed = parseHelperLine(JSON.stringify({ id: 4, ok: false, error: { code: 'window_not_focused', message: 'x', disposition } }));
+      return parsed.kind === 'response' && !parsed.response.ok ? parsed.response.error : null;
+    };
+    expect(error('delivered_unverified')).toEqual({ code: 'window_not_focused', message: 'x', disposition: 'delivered_unverified' });
+    expect(error('maybe')).toEqual({ code: 'window_not_focused', message: 'x' });
   });
 
   it('downgrades an unknown helper error code to internal', () => {
@@ -112,6 +165,53 @@ describe('helper protocol', () => {
     expect(parseHelperLine('[1,2]').kind).toBe('invalid');
     expect(parseHelperLine('{"ok":true}').kind).toBe('invalid');
     expect(parseHelperLine('{"id":1.5,"ok":true}').kind).toBe('invalid');
+  });
+});
+
+// No protocol bump for delivery, disposition and input: they are optional
+// extras, so a released main and this helper still read each other. A bump
+// would make main refuse every helper that reports 2, today's Windows helper
+// among them.
+describe('helper skew across the delivery contract', () => {
+  const caps = { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } };
+  const hello = (version: string, extra: object = {}) =>
+    JSON.stringify({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: version, capabilities: { ...caps, ...extra } });
+  const newResult = '{"id":2,"ok":true,"result":{"method":"synthetic","verification":"unverified","delivery":"background"}}';
+  const newError = '{"id":3,"ok":false,"error":{"code":"window_not_focused","message":"covered","disposition":"not_delivered"}}';
+  // As v4.13.0's helpers (and today's Windows helper) write them.
+  const oldResult = '{"id":2,"ok":true,"result":{"method":"synthetic","verification":"unverified"}}';
+  const oldError = '{"id":3,"ok":false,"error":{"code":"window_not_focused","message":"covered"}}';
+
+  it('keeps protocol 2', () => {
+    expect(COMPUTER_PROTOCOL_VERSION).toBe(2);
+  });
+
+  it('a v4.13.0 main reads this helper and ignores what it does not know', () => {
+    const input = { input: { backgroundPointer: true, focusWithoutRaise: true, keyAuth: true } };
+    expect(parseHelperLineV4130(hello('4.14.0', input)).kind).toBe('hello');
+    expect(parseHelperLineV4130(newResult)).toEqual({
+      kind: 'response',
+      response: { id: 2, ok: true, result: { method: 'synthetic', verification: 'unverified', delivery: 'background' } },
+    });
+    expect(parseHelperLineV4130(newError)).toEqual({
+      kind: 'response',
+      response: { id: 3, ok: false, error: { code: 'window_not_focused', message: 'covered' } },
+    });
+  });
+
+  it('this main reads a v4.13.0 helper, which leaves the new fields out', () => {
+    const parsed = parseHelperLine(hello('4.13.0'));
+    expect(parsed.kind === 'hello' && parsed.hello.capabilities).toEqual(caps);
+    expect(parseHelperLine(oldResult)).toEqual({
+      kind: 'response',
+      response: { id: 2, ok: true, result: { method: 'synthetic', verification: 'unverified' } },
+    });
+    // HelperProcess stamps this error delivered_unverified, and ComputerService
+    // gives the result its disposition (their own tests).
+    expect(parseHelperLine(oldError)).toEqual({
+      kind: 'response',
+      response: { id: 3, ok: false, error: { code: 'window_not_focused', message: 'covered' } },
+    });
   });
 });
 

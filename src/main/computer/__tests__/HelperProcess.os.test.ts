@@ -48,6 +48,15 @@ function makeHelper(mode: string, extra: Partial<ConstructorParameters<typeof He
   return { helper, requests, releases, configures };
 }
 
+async function dispositionOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await promise;
+    return 'resolved';
+  } catch (err) {
+    return err instanceof ComputerError ? err.disposition : `non-computer error: ${String(err)}`;
+  }
+}
+
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -129,6 +138,39 @@ describe('HelperProcess', () => {
   it('carries a helper error code through', async () => {
     const { helper } = makeHelper('ok');
     expect(await codeOf(helper.request('fail' as never, {} as never))).toBe('element_stale');
+  });
+
+  it('says whether a failed input action may be retried: refused before it was sent, or after', async () => {
+    const scroll = (amount: number) => ({ snapshotId: 's', target: TARGET, index: 1, direction: 'down' as const, amount });
+    const { helper } = makeHelper('ok');
+    expect(await dispositionOf(helper.request('scroll', scroll(1)))).toBe('not_delivered');
+    expect(await dispositionOf(helper.request('scroll', scroll(2)))).toBe('delivered_unverified');
+    // Observation errors carry none.
+    expect(await dispositionOf(helper.request('fail' as never, {} as never))).toBeUndefined();
+    // A helper that never started got nothing.
+    const refused = makeHelper('ok', {
+      verify: async () => { throw new ComputerError('helper_unavailable', 'the computer-use helper failed its code-signature check'); },
+    });
+    expect(await dispositionOf(refused.helper.request('scroll', scroll(1)))).toBe('not_delivered');
+    // One that hung on the request may have sent it. It keeps its timeout
+    // code, and it is killed, so it cannot post the input late, after the
+    // agent looked and retried.
+    const spawned: ChildProcessWithoutNullStreams[] = [];
+    const hung = makeHelper('hang', {
+      timeoutFor: () => 300,
+      spawn: (cmd, args) => {
+        const child = spawn(cmd, [...args], { stdio: 'pipe', windowsHide: true });
+        spawned.push(child);
+        return child;
+      },
+    });
+    const click = hung.helper.request('click', {
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+    });
+    const failed = await click.catch((err: unknown) => err);
+    expect(failed).toBeInstanceOf(ComputerError);
+    expect((failed as ComputerError).toPayload()).toMatchObject({ code: 'timeout', disposition: 'delivered_unverified' });
+    expect(await waitFor(() => spawned[0].exitCode !== null || spawned[0].signalCode !== null)).toBe(true);
   });
 
   it('refuses a helper that speaks another protocol version (after one retry)', async () => {

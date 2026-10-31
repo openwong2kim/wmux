@@ -10,7 +10,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { RpcMethod } from '../../shared/rpc';
-import { formatComputerError, parseComputerErrorMessage } from '../../shared/computer/errors';
+import { formatComputerError, parseComputerErrorMessage, type ActionDisposition } from '../../shared/computer/errors';
 import {
   COMPUTER_ACTIONS,
   MODIFIERS,
@@ -64,9 +64,18 @@ const COMPUTER_SHAPE = {
   amount: z.number().int().min(1).max(50).optional(),
 };
 
-function errorResult(err: unknown): CallToolResult {
+/**
+ * `fallback`: an input action's disposition when the error carries none: not
+ * sent when it failed before its RPC, else possibly delivered (the pipe timed
+ * out or broke).
+ */
+function errorResult(err: unknown, fallback?: ActionDisposition): CallToolResult {
   const message = err instanceof Error ? err.message : String(err);
-  return { isError: true, content: [{ type: 'text', text: formatComputerError(parseComputerErrorMessage(message)) }] };
+  const payload = parseComputerErrorMessage(message);
+  // The pipe's own timeout, not an error main encoded.
+  if (payload.code === 'internal' && message.startsWith('RPC timeout:')) payload.code = 'timeout';
+  if (fallback && !payload.disposition) payload.disposition = fallback;
+  return { isError: true, content: [{ type: 'text', text: formatComputerError(payload) }] };
 }
 
 function textResult(value: unknown): CallToolResult {
@@ -113,6 +122,7 @@ export function createComputerTool(rpc: ComputerRpc) {
     strictInput: true,
     profiles: ['full'],
     invoke: async (input) => {
+      let sent = false;
       try {
         switch (input.action) {
           case 'capabilities':
@@ -131,17 +141,19 @@ export function createComputerTool(rpc: ComputerRpc) {
           }
           case 'openApp':
             // Addressed by selector, not snapshot; launching can take a while.
+            sent = true;
             return textResult(await rpc('computer.act', { action: 'openApp', app: input.app }, CONSENT_AWARE_TIMEOUT_MS));
           default: {
             if (!isControlAction(input.action)) return errorResult(new Error(`[invalid_argument] unknown action ${input.action}`));
             // Input actions address their target through the snapshot alone.
             const params = Object.fromEntries(Object.entries(input).filter(([key]) => !OBSERVATION_ONLY_KEYS.has(key)));
+            sent = true;
             const result = (await rpc('computer.act', params, CONSENT_AWARE_TIMEOUT_MS)) as ActionResult;
             return renderActionResult(result);
           }
         }
       } catch (err) {
-        return errorResult(err);
+        return errorResult(err, isControlAction(input.action) ? (sent ? 'delivered_unverified' : 'not_delivered') : undefined);
       }
     },
   });

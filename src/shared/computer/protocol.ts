@@ -11,7 +11,9 @@
 // implement layer 2 verbatim; bump COMPUTER_PROTOCOL_VERSION on any
 // incompatible change so main restarts or refuses a mismatched helper.
 
-import { isComputerErrorCode, type ComputerErrorPayload } from './errors';
+import { isActionDisposition, isComputerErrorCode, type ActionDisposition, type ComputerErrorPayload } from './errors';
+
+export type { ActionDisposition } from './errors';
 
 // 2: closed key vocabulary, `hotkey` as { modifiers, key }, and `target` on
 // every control request (#1689). No helper ever spoke 1 in a release.
@@ -244,17 +246,51 @@ export interface AppState {
 
 export type ActionMethod = 'accessibility' | 'synthetic' | 'clipboard';
 
+/**
+ * How the input reached the app. `background`: sent to the target app or
+ * window alone, so the user's pointer, frontmost app and Space stay as they
+ * were. `foreground`: real input, which brought the app to the front or moved
+ * the pointer. A helper that does not report it leaves it out.
+ */
+export type ActionDelivery = 'background' | 'foreground';
+
 export interface ActionResult {
   method: ActionMethod;
   /** `verified` only when the effect was read back (e.g. value after setValue). */
   verification: 'verified' | 'unverified';
+  delivery?: ActionDelivery;
+  disposition?: ActionDisposition;
   note?: string;
 }
+
+/**
+ * Which ways of sending input without real input this machine has, probed
+ * when the helper starts. Each flag means the same on every OS; on macOS the
+ * private SkyLight calls behind them change across releases. Whether an
+ * action went that way is its result's `delivery`. A helper that does not
+ * report it leaves `input` out.
+ */
+export interface HelperInputCapabilities {
+  /** Pointer events sent to one window of the target app, the user's pointer left where it is. */
+  backgroundPointer: boolean;
+  /** Giving the target window focus without raising it or changing the frontmost app. */
+  focusWithoutRaise: boolean;
+  /**
+   * Key events sent that way reach Chromium-based apps. Without it, those
+   * apps drop such keys, so their keys need real input. On macOS this is the
+   * key-event authentication message (SLSEventAuthenticationMessage, macOS 15
+   * and later).
+   */
+  keyAuth: boolean;
+}
+
+const HELPER_INPUT_CAPABILITIES = ['backgroundPointer', 'focusWithoutRaise', 'keyAuth'] as const;
 
 export interface HelperCapabilities {
   actions: string[];
   modes: ObservationMode[];
   permissions: { accessibility: boolean; screenRecording: boolean };
+  input?: HelperInputCapabilities;
 }
 
 export interface HelperHello {
@@ -388,6 +424,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isInputCapabilities(value: unknown): value is HelperInputCapabilities {
+  return isRecord(value) && HELPER_INPUT_CAPABILITIES.every((key) => typeof value[key] === 'boolean');
+}
+
 /**
  * Parses one NDJSON line from a helper. Never throws: a malformed line comes
  * back as `invalid` so the caller can decide to kill the helper.
@@ -414,6 +454,11 @@ export function parseHelperLine(line: string): HelperLine {
     ) {
       return { kind: 'invalid', reason: 'malformed hello' };
     }
+    // Advisory: a malformed set is dropped, not a reason to refuse the helper.
+    if (caps.input !== undefined && !isInputCapabilities(caps.input)) {
+      const { input: _dropped, ...rest } = caps;
+      return { kind: 'hello', hello: { ...value, capabilities: rest } as unknown as HelperHello };
+    }
     return { kind: 'hello', hello: value as unknown as HelperHello };
   }
 
@@ -424,7 +469,7 @@ export function parseHelperLine(line: string): HelperLine {
     return { kind: 'response', response: { id: value.id, ok: true, result: value.result } };
   }
   if (value.ok === false && isRecord(value.error)) {
-    const { code, message } = value.error;
+    const { code, message, disposition } = value.error;
     return {
       kind: 'response',
       response: {
@@ -433,6 +478,7 @@ export function parseHelperLine(line: string): HelperLine {
         error: {
           code: isComputerErrorCode(code) ? code : 'internal',
           message: typeof message === 'string' ? message : 'helper error',
+          ...(isActionDisposition(disposition) && { disposition }),
         },
       },
     };

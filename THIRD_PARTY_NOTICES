@@ -13329,6 +13329,52 @@ SOFTWARE.
 
 ================================================================================
 
+Cua Driver
+License: MIT License
+Repository: https://github.com/trycua/cua
+
+Copyright (c) 2025 Cua AI, Inc.
+
+macOS background input for computer use, adapted into Swift from Cua
+Driver (libs/cua-driver) at commit
+a9902d272655b65180fa713a8b1f2f1c1935e70b:
+- From rust/crates/platform-macos/src/input/skylight.rs: the run-time
+  lookup of the private SkyLight calls, so a call an OS release removed
+  turns its path off, and the check that the key-event authentication
+  message exists (macOS 15 and later). wmux file:
+  native/computer-use-macos/Sources/wmux-computer-use/SkyLight.swift.
+
+Cua Driver credits these MIT upstreams for parts of its sources, and
+their notices are kept with it here:
+- yabai (https://github.com/koekeishiya/yabai), Copyright (c) 2019
+  Åsmund Vikane: the focus-without-raise SkyLight event-record sequence
+  in skylight.rs.
+- trope-cua (https://github.com/voctory/trope-cua), Copyright (c) 2026
+  Victor Vannara: Windows background input and cursor overlay, and some
+  cursor-motion values.
+- Interface-Agent (https://github.com/francedot/Interface-Agent),
+  Copyright (c) 2024 Francesco Bonacci: the Windows UI Automation walk.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+
 PROJECTS THAT INSPIRED THE DESIGN
 
 Parts of wmux were inspired by ideas from the projects below. No code or text

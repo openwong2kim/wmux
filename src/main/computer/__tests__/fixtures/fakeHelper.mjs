@@ -65,6 +65,9 @@ rl.on('line', (line) => {
       return send({ id: req.id, ok: true, result: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } } });
     case 'fail':
       return send({ id: req.id, ok: false, error: { code: 'element_stale', message: 'changed' } });
+    case 'scroll':
+      // An input error: amount 1 carries the helper's disposition, any other none.
+      return send({ id: req.id, ok: false, error: { code: 'window_not_focused', message: 'covered', ...(req.params.amount === 1 && { disposition: 'not_delivered' }) } });
     default:
       return send({ id: req.id, ok: true, result: { method: 'synthetic', verification: 'unverified', echo: req.method } });
   }
