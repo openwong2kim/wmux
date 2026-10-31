@@ -56,7 +56,9 @@ The first matching rule wins:
 5. The task's state:
    - `input-required`: `needs-you` (`input-required`), or `running` when the
      `requester` names a pane: the report or question waits on that pane (a
-     company's CEO, say), not on you
+     company's CEO, say), not on you. Main cannot see panes and keeps
+     `running`; the renderer's surfaces (Fleet, the company board, the phone,
+     the Git page) put it back on you once that pane has closed
    - `submitted`: `queued`
    - `working`: `running`
    - `failed`: `blocked` (`task-failed`)
