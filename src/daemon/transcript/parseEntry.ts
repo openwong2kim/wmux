@@ -14,7 +14,8 @@
 // they map to here:
 //   user / assistant                → the conversation (see below)
 //   pr-link                         → meta (`pr_link`)
-//   system, last-prompt, mode, permission-mode, attachment,
+//   attachment (queued_command, commandMode prompt) → user_text
+//   system, last-prompt, mode, permission-mode, other attachments,
 //   file-history-snapshot, ai-title, queue-operation, api-request-blob
 //   (2.1.301), anything unknown → []
 //
