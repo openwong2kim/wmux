@@ -74,6 +74,20 @@ describe('AccountRotationService', () => {
     expect(refreshNow).not.toHaveBeenCalled();
   });
 
+  it('decides on the weekly window alone for accounts with no 5h window', async () => {
+    const s = make([acct('a', 'claude'), acct('b', 'claude')]);
+    await s.setEnabled('claude', true);
+    bindings['ws:claude'] = 'a';
+    const weeklyOnly = (id: string, weeklyPct: number): AccountUsageEntry => ({
+      accountId: id, status: 'ok', fetchedAtMs: NOW, lastError: null,
+      snapshot: { weeklyPct, weeklyResetEpochSec: RESET_SEC + 86400, fetchedAtMs: NOW },
+    });
+    usageEntries = [weeklyOnly('a', 99), weeklyOnly('b', 30)];
+    expect(await s.prepareLaunch('claude', 'ws')).toEqual({ kind: 'switch', accountId: 'b', env: { CLAUDE_CONFIG_DIR: '/acc/b' } });
+    usageEntries = [weeklyOnly('a', 99), weeklyOnly('b', 100)];
+    expect((await s.prepareLaunch('claude', 'ws')).kind).toBe('hold');
+  });
+
   it('switches a Claude pane to the account with quota and records it', async () => {
     const s = make([acct('a', 'claude'), acct('b', 'claude'), acct('c', 'claude')]);
     await s.setEnabled('claude', true);
@@ -297,6 +311,14 @@ describe('readings', () => {
   it('maps Claude percent used and reset seconds', () => {
     const r = claudeReading(usage('a', 25));
     expect(r?.windows[0]).toEqual({ remaining: 0.75, resetAtMs: RESET_SEC * 1000 });
+  });
+
+  it('maps a Claude reading with no 5h window to its weekly window alone', () => {
+    const entry: AccountUsageEntry = {
+      accountId: 'a', status: 'ok', fetchedAtMs: NOW, lastError: null,
+      snapshot: { weeklyPct: 40, weeklyResetEpochSec: RESET_SEC, fetchedAtMs: NOW },
+    };
+    expect(claudeReading(entry)?.windows).toEqual([{ remaining: 0.6, resetAtMs: RESET_SEC * 1000 }]);
   });
 
   it('maps Codex windows and skips missing ones', () => {

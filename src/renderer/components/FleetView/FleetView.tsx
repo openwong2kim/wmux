@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState, useCallback, useRef } from 'rea
 import { useStore } from '../../stores';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
+import { usageWindowsText } from '../StatusBar/UsageWidget';
 import {
   selectFleetBoard,
   selectHookRunningByPtyId,
@@ -1081,7 +1082,7 @@ export default function FleetView() {
   const chips = visibleChips([
     { id: 'approvals', count: inbox.length + plans.length },
     { id: 'lan', count: remoteInbox.length },
-    { id: 'usage', text: usage ? t('fleetBoard.usage', { session: Math.round(usage.sessionPct), weekly: Math.round(usage.weeklyPct) }) : '' },
+    { id: 'usage', text: usage ? t('fleetBoard.usage', { windows: usageWindowsText(usage) }) : '' },
     { id: 'next', text: nextRun !== null ? t('fleetBoard.nextSchedule', { time: formatNextShort(nextRun, now) }) : '' },
     { id: 'phones', count: phones },
   ]);

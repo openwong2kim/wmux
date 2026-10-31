@@ -2027,10 +2027,10 @@ const electronAPI = {
           | 'network-error'
           | 'read-error';
         snapshot: {
-          sessionPct: number;
-          sessionResetEpochSec: number;
-          weeklyPct: number;
-          weeklyResetEpochSec: number;
+          sessionPct?: number;
+          sessionResetEpochSec?: number;
+          weeklyPct?: number;
+          weeklyResetEpochSec?: number;
           fetchedAtMs: number;
           scoped?: Array<{
             kind: string;

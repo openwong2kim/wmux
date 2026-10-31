@@ -136,10 +136,32 @@ describe('parseUsageBody (pure)', () => {
     expect(s.scoped).toBeUndefined();
   });
 
-  it('only one window found (no fallback for the other) → null, not 0% ok', () => {
-    expect(parseUsageBody({ five_hour: { utilization: 40 }, seven_day: null }, FIXED_NOW)).toBeNull();
-    expect(parseUsageBody({ five_hour: null, seven_day: { utilization: 40 } }, FIXED_NOW)).toBeNull();
-    // ...but the missing one may come from limits[]
+  it('a body with no 5h window (an Ultra plan) is the weekly window alone, not an error or 0%', () => {
+    // The shape reported for an Ultra account (cortexkit/anthropic-auth#572).
+    const ultra = {
+      five_hour: null,
+      seven_day: {
+        utilization: 0,
+        resets_at: '2026-11-06T20:59:59.701522+00:00',
+        limit_dollars: null,
+        used_dollars: null,
+        remaining_dollars: null,
+        locked_reason: null,
+      },
+    };
+    expect(parseUsageBody(ultra, FIXED_NOW)).toEqual({
+      weeklyPct: 0,
+      weeklyResetEpochSec: sec('2026-11-06T20:59:59.701522+00:00'),
+      fetchedAtMs: FIXED_NOW,
+    });
+  });
+
+  it('only one window found (no fallback for the other) → that window alone', () => {
+    expect(parseUsageBody({ five_hour: { utilization: 40 }, seven_day: null }, FIXED_NOW))
+      .toEqual({ sessionPct: 40, sessionResetEpochSec: 0, fetchedAtMs: FIXED_NOW });
+    expect(parseUsageBody({ five_hour: null, seven_day: { utilization: 40 } }, FIXED_NOW))
+      .toEqual({ weeklyPct: 40, weeklyResetEpochSec: 0, fetchedAtMs: FIXED_NOW });
+    // ...and the missing one may come from limits[]
     expect(parseUsageBody(
       { five_hour: { utilization: 40 }, seven_day: null, limits: [{ kind: 'weekly_all', percent: 7 }] },
       FIXED_NOW,

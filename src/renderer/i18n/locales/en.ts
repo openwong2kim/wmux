@@ -5389,7 +5389,7 @@ export const en = {
   'schedules.tpl.browserPublish.title': "Publish through the browser",
   'schedules.tpl.browserPublish.desc': "Weekdays at 10:00 · post an update from your logged-in browser",
   'schedules.tpl.browserPublish.prompt': "In the browser, open the site you publish to and post today's update, written from this repository's own files, such as its changelog or notes. Read the files directly; don't run commands. If a login, captcha or confirmation step appears, stop and report it instead of guessing. Once it is posted, take a screenshot and report the post's URL.",
-  'fleetBoard.usage': "Usage 5h {session}% · 7d {weekly}%",
+  'fleetBoard.usage': "Usage {windows}",
   'fleetBoard.nextSchedule': "Next schedule {time}",
   'fleetBoard.approvals': "Approvals {count}",
   'fleetBoard.lan': "LAN messages {count}",

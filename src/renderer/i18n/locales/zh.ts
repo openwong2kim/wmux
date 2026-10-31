@@ -4309,7 +4309,7 @@ export const zh = {
   'schedules.tpl.browserPublish.title': "通过浏览器发布",
   'schedules.tpl.browserPublish.desc': "工作日 10:00 · 用已登录的浏览器发布更新",
   'schedules.tpl.browserPublish.prompt': "在浏览器中打开你要发布的网站，根据此仓库中的文件（如变更日志或笔记）撰写并发布今天的更新。直接读取文件，不要运行命令。如果出现登录、验证码或确认步骤，不要猜测，停下并报告。发布后截一张图，并报告帖子的 URL。",
-  'fleetBoard.usage': "用量 5h {session}% · 7d {weekly}%",
+  'fleetBoard.usage': "用量 {windows}",
   'fleetBoard.nextSchedule': "下次计划 {time}",
   'fleetBoard.approvals': "批准 {count}",
   'fleetBoard.lan': "局域网消息 {count}",

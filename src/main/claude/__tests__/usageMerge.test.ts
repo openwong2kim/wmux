@@ -66,6 +66,13 @@ describe('mergeLive', () => {
     expect(mergeLive(null, { session: { pct: 5, resetEpochSec: NOW_SEC + HOUR } }, NOW_MS)).toBeNull();
   });
 
+  it('a reading with one window takes its live numbers, and the other window stays absent', () => {
+    // An account with no 5h window (an Ultra plan), read over HTTP.
+    const weeklyOnly: UsageSnapshot = { weeklyPct: 20, weeklyResetEpochSec: NOW_SEC + 50 * HOUR, fetchedAtMs: NOW_MS - 60_000 };
+    expect(mergeLive(weeklyOnly, { weekly: { pct: 25, resetEpochSec: NOW_SEC + 50 * HOUR } }, NOW_MS))
+      .toEqual({ weeklyPct: 25, weeklyResetEpochSec: NOW_SEC + 50 * HOUR, fetchedAtMs: NOW_MS });
+  });
+
   it('keeps scoped limits while the weekly window is unchanged', () => {
     const http: UsageSnapshot = { ...snap(10, NOW_SEC + HOUR, 20, NOW_SEC + 50 * HOUR), scoped: SCOPED };
     const merged = mergeLive(http, { session: { pct: 12, resetEpochSec: NOW_SEC + HOUR } }, NOW_MS);

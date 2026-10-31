@@ -5346,7 +5346,7 @@ export const pl = {
   'schedules.tpl.browserPublish.title': "Publikacja przez przeglądarkę",
   'schedules.tpl.browserPublish.desc': "Dni robocze 10:00 · wpis z zalogowanej przeglądarki",
   'schedules.tpl.browserPublish.prompt': "W przeglądarce otwórz witrynę, na której publikujesz, i opublikuj dzisiejszą aktualizację napisaną na podstawie plików tego repozytorium, takich jak dziennik zmian lub notatki. Czytaj pliki bezpośrednio, nie uruchamiaj poleceń. Jeśli pojawi się logowanie, captcha lub krok potwierdzenia, zatrzymaj się i zgłoś to zamiast zgadywać. Po publikacji zrób zrzut ekranu i podaj adres URL wpisu.",
-  'fleetBoard.usage': "Użycie 5h {session}% · 7d {weekly}%",
+  'fleetBoard.usage': "Użycie {windows}",
   'fleetBoard.nextSchedule': "Następny harmonogram {time}",
   'fleetBoard.approvals': "Zgody {count}",
   'fleetBoard.lan': "Wiadomości LAN {count}",
