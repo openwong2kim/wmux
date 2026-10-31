@@ -15,9 +15,6 @@ on:
         type: number
         required: true
         default: 120
-  # TEMPORARY, removed before merge: one 2-minute run on this pull request.
-  pull_request:
-    paths: ['.github/workflows/twenty-pane-ab-linux.yml']
 
 permissions:
   contents: read
@@ -29,7 +26,7 @@ jobs:
     # Two runs of at most 140 minutes, their setup and teardown, and the build.
     timeout-minutes: 330
     env:
-      MINUTES: ${{ inputs.minutes || 2 }}
+      MINUTES: ${{ inputs.minutes }}
       APP: out/wmux-linux-x64/wmux
       OUT: out/twenty-pane-stability
     steps:
