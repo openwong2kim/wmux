@@ -9,7 +9,11 @@
 //      only while `askPerApp` is on (opt-in, read per call); otherwise every
 //      app that passed 2 counts as consented (owner decision 2026-10-08)
 // and, for input, additionally:
-//   4. abort cooldown, input lock (one agent drives at a time), rate cap
+//   4. abort cooldown, rate cap, and the input lanes (inputLanes.ts): real
+//      (foreground) input takes the foreground lease, one agent at a time;
+//      input a helper with `input.deferForeground` can post in the background
+//      takes only its target pid's slot, so agents on different apps run at
+//      once. Without that flag every input takes the lease, as before.
 //
 // Control actions must name a snapshot this class recorded, so the target app
 // of every click is one that already passed 2 and 3; a helper cannot be talked
@@ -50,6 +54,9 @@ import {
 } from '../../shared/computer/protocol';
 import { screenshotPointToWindow } from '../../shared/computer/scale';
 import { appBundleSelector } from './appBundleId';
+import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain } from './inputLanes';
+
+export { INPUT_LOCK_IDLE_MS };
 
 /** What main needs from a helper; HelperProcess implements it. */
 export interface HelperLike {
@@ -62,6 +69,12 @@ export interface HelperLike {
   reconfigure?(): Promise<void>;
   /** Ends the running helper (a stale permission verdict); the next call starts a fresh one. */
   reset?(): void;
+  /**
+   * Whether the running helper's hello has `input.deferForeground: true`
+   * (protocol ForegroundMode); undefined while none runs. A helper without
+   * this method never gets input lanes.
+   */
+  defersForeground?(): boolean | undefined;
 }
 
 /** What `capabilities` tells an agent: the helper's answer minus what cannot work. */
@@ -134,7 +147,6 @@ interface SnapshotRecord {
   expiresAt: number;
 }
 
-export const INPUT_LOCK_IDLE_MS = 15_000;
 export const ABORT_COOLDOWN_MS = 5_000;
 export const CONTROL_RATE_PER_MINUTE = 120;
 const SNAPSHOT_RECORD_LIMIT = 64;
@@ -187,7 +199,10 @@ export class ComputerService {
   private readonly consentInflight = new Map<string, Promise<ConsentAnswer>>();
   /** Aborted (and replaced) by every stop: withdraws the open consent prompts. */
   private consentAbort = new AbortController();
-  private lock: { agentKey: string; label: string; lastUsedAt: number } | null = null;
+  /** Real input: one agent at a time (inputLanes.ts). */
+  private readonly lease = new ForegroundLease();
+  /** Background input: one action at a time per target pid. */
+  private readonly lanes = new PidLanes();
   private abortedUntil = 0;
   /**
    * Bumped by abort(). A call captures it on entry and re-checks after every
@@ -386,63 +401,134 @@ export class ComputerService {
     const keys = this.resolveKeys(params);
     // Consent may have been revoked (abort clears grants) since the snapshot.
     await this.vet(agent, snap.app, snap.window, generation);
+    // Whether this helper can be told to stay in the background decides the
+    // lane; asking may start the helper.
+    const defer = await this.defersForeground(ready);
     // Consent can take minutes; the clock and the stop key may both have
     // moved, so the snapshot and the cooldown are checked again on a fresh
-    // clock before the lock and the rate slot are taken.
+    // clock before the lease, the slot and the rate slot are taken.
     this.assertCurrent(generation);
-    const now = this.now();
+    let now = this.now();
     checkSnapshot(now);
-
-    this.takeInputLock(agent, now);
-    this.checkRate(agent.key, now);
 
     const point = this.resolvePoint(params, snap);
     // The helper re-checks this window right before each input batch.
     const target = { pid: snap.window.pid, windowId: snap.window.id };
-    this.deps.onControl?.({ agent, action: params.action, window: snap.window });
+    const call = this.buildControlCall(params, snapshotId, target, point, keys);
+    const send = (foreground?: 'allow' | 'refuse'): Promise<ActionResult> =>
+      helper.request(call.method, (foreground ? { ...call.params, foreground } : call.params) as never) as Promise<ActionResult>;
 
+    const lane = defer && !foregroundCertain({
+      action: params.action,
+      button: params.button,
+      clickCount: clampInt(params.clickCount ?? 1, 1, 3),
+      modifiers: params.modifiers,
+      text: params.text,
+    });
+    if (!lane) {
+      // Real input, or a helper that cannot defer it: the foreground lease,
+      // taken at once or refused at once (input_busy, not_delivered).
+      this.lease.take(agent, now);
+      this.checkRate(agent.key, now);
+      this.deps.onControl?.({ agent, action: params.action, window: snap.window });
+      return send(defer ? 'allow' : undefined);
+    }
+
+    // Background first: only this app's slot, so other apps' agents run at
+    // the same time. The wait happens outside the slot; everything that may
+    // have changed meanwhile is checked again once it is held.
+    this.checkRate(agent.key, now);
+    const release = await this.lanes.acquire(target.pid);
+    try {
+      now = this.now();
+      this.recheckInLane(agent, snapshotId, target.pid, generation, now);
+      this.deps.onControl?.({ agent, action: params.action, window: snap.window });
+      try {
+        return await send('refuse');
+      } catch (err) {
+        if (!(err instanceof ComputerError && err.code === 'needs_foreground')) throw err;
+      }
+      // The helper sent nothing (protocol ForegroundMode rule): upgrade.
+      // Still holding the slot, so a later action on this app stays behind
+      // it. Lock order is slot, then lease; the lease never waits.
+      sent.requested = false;
+      now = this.now();
+      this.lease.take(agent, now);
+      this.recheckInLane(agent, snapshotId, target.pid, generation, now);
+      try {
+        return await send('allow');
+      } catch (err) {
+        if (err instanceof ComputerError && err.code === 'needs_foreground') {
+          // Never shown to an agent, and never re-sent a second time.
+          sent.requested = false;
+          fail('internal', 'the computer-use helper refused real input it was allowed to use; nothing was sent');
+        }
+        throw err;
+      }
+    } finally {
+      release();
+    }
+  }
+
+  /** The helper method and params of a control action (arguments validated here, before any lock). */
+  private buildControlCall(
+    params: ControlParams,
+    snapshotId: string,
+    target: { pid: number; windowId: string },
+    point: { x: number; y: number } | undefined,
+    keys: { modifiers: Modifier[]; key: Key } | null,
+  ): { method: HelperMethod; params: object } {
     switch (params.action) {
       case 'click':
         this.requireTarget(params, point);
-        return helper.request('click', {
-          snapshotId,
-          target,
-          ...(params.index !== undefined && { index: params.index }),
-          ...(point && { point }),
-          button: params.button ?? 'left',
-          clickCount: clampInt(params.clickCount ?? 1, 1, 3),
-          modifiers: validModifiers(params.modifiers),
-        });
+        return {
+          method: 'click',
+          params: {
+            snapshotId,
+            target,
+            ...(params.index !== undefined && { index: params.index }),
+            ...(point && { point }),
+            button: params.button ?? 'left',
+            clickCount: clampInt(params.clickCount ?? 1, 1, 3),
+            modifiers: validModifiers(params.modifiers),
+          },
+        };
       case 'setValue':
         if (params.index === undefined) fail('invalid_argument', 'setValue needs an element index');
         if (typeof params.value !== 'string') fail('invalid_argument', 'setValue needs a string value');
-        return helper.request('setValue', { snapshotId, target, index: params.index, value: params.value });
+        return { method: 'setValue', params: { snapshotId, target, index: params.index, value: params.value } };
       case 'type':
         if (typeof params.text !== 'string' || params.text.length === 0) fail('invalid_argument', 'type needs text');
-        return helper.request('type', {
-          snapshotId,
-          target,
-          ...(params.index !== undefined && { index: params.index }),
-          text: params.text,
-        });
+        return {
+          method: 'type',
+          params: {
+            snapshotId,
+            target,
+            ...(params.index !== undefined && { index: params.index }),
+            text: params.text,
+          },
+        };
       case 'pressKey': {
         const { key } = keys ?? fail('internal', 'pressKey reached the helper without a resolved key');
-        return helper.request('pressKey', { snapshotId, target, key, repeat: clampInt(params.repeat ?? 1, 1, 50) });
+        return { method: 'pressKey', params: { snapshotId, target, key, repeat: clampInt(params.repeat ?? 1, 1, 50) } };
       }
       case 'hotkey': {
         const { modifiers, key } = keys ?? fail('internal', 'hotkey reached the helper without a resolved chord');
-        return helper.request('hotkey', { snapshotId, target, modifiers, key });
+        return { method: 'hotkey', params: { snapshotId, target, modifiers, key } };
       }
       case 'scroll':
         this.requireTarget(params, point);
-        return helper.request('scroll', {
-          snapshotId,
-          target,
-          ...(params.index !== undefined && { index: params.index }),
-          ...(point && { point }),
-          direction: params.direction ?? 'down',
-          amount: clampInt(params.amount ?? 3, 1, 50),
-        });
+        return {
+          method: 'scroll',
+          params: {
+            snapshotId,
+            target,
+            ...(params.index !== undefined && { index: params.index }),
+            ...(point && { point }),
+            direction: params.direction ?? 'down',
+            amount: clampInt(params.amount ?? 3, 1, 50),
+          },
+        };
       default:
         return fail('invalid_argument', `unknown action ${String((params as { action: unknown }).action)}`);
     }
@@ -511,7 +597,8 @@ export class ComputerService {
       }
     }
     const now = this.now();
-    this.takeInputLock(agent, now);
+    // Launching and raising an app is always real (foreground) input.
+    this.lease.take(agent, now);
     this.checkRate(agent.key, now);
     onLaunch();
     const opened = await helper.request('openApp', { app: params.app });
@@ -545,15 +632,17 @@ export class ComputerService {
     this.generation += 1;
     this.withdrawConsentPrompts();
     this.helper?.abort('stopped by the user');
-    this.lock = null;
+    this.lease.clear();
+    // Every action still waiting for its app's slot ends `aborted` without
+    // reaching the helper.
+    this.lanes.abortWaiting();
     this.grants.clear();
     this.abortedUntil = this.now() + ABORT_COOLDOWN_MS;
   }
 
-  /** Who holds desktop input right now, for the overlay and status UI. */
+  /** Who holds real (foreground) input right now, for the overlay and status UI. */
   inputHolder(): string | null {
-    if (!this.lock || this.now() - this.lock.lastUsedAt > INPUT_LOCK_IDLE_MS) return null;
-    return this.lock.label;
+    return this.lease.label(this.now());
   }
 
   dispose(): void {
@@ -667,12 +756,36 @@ export class ComputerService {
     }
   }
 
-  private takeInputLock(agent: ComputerAgent, now: number): void {
-    if (this.lock && this.lock.agentKey !== agent.key && now - this.lock.lastUsedAt <= INPUT_LOCK_IDLE_MS) {
-      // The label, never the key: the key carries pane ids.
-      fail('input_busy', `${this.lock.label} is using the desktop`);
+  /** Whether the running helper honours `foreground: 'refuse'`; starts the helper to find out. */
+  private async defersForeground(helper: HelperLike): Promise<boolean> {
+    if (!helper.defersForeground) return false;
+    const known = helper.defersForeground();
+    if (known !== undefined) return known;
+    await helper.request('capabilities', {});
+    return helper.defersForeground() ?? false;
+  }
+
+  /**
+   * After waiting for a pid slot: everything that may have changed while the
+   * action waited, checked again without a prompt. Each failure is
+   * not_delivered (nothing went to the helper).
+   */
+  private recheckInLane(agent: ComputerAgent, snapshotId: string, pid: number, generation: number, now: number): void {
+    this.assertCurrent(generation);
+    if (now < this.abortedUntil) fail('aborted', 'computer use was just stopped by the user');
+    const record = this.snapshots.get(snapshotId);
+    if (!record || record.expiresAt < now) fail('snapshot_unknown', `snapshot ${snapshotId} is unknown or expired`);
+    if (record.agentKey !== agent.key) fail('snapshot_unknown', 'that snapshot belongs to another agent');
+    if (record.window.pid !== pid) fail('internal', 'the snapshot window does not belong to the app this action waited for');
+    const reason = blockReasonFor(record.app, this.deps.blockContext());
+    if (reason) fail('app_blocked', `${record.app.name}: ${BLOCK_REASON_TEXT[reason]}`);
+    if (record.window.elevated) {
+      fail('target_elevated', `${record.app.name} runs as administrator; Windows blocks input from wmux into it`);
     }
-    this.lock = { agentKey: agent.key, label: agent.label, lastUsedAt: now };
+    if (this.deps.askPerApp() && this.grants.get(grantKey(agent, record.app.id)) !== true) {
+      // A prompt is never raised while holding an app's slot: getAppState asks.
+      fail('snapshot_unknown', `consent for ${record.app.name} is not given for this agent any more; call getAppState to ask again`);
+    }
   }
 
   private checkRate(agentKey: string, now: number): void {

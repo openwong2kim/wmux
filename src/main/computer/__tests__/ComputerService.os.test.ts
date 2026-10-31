@@ -493,7 +493,7 @@ describe('ComputerService', () => {
     expect(await codeOf(service.control(paneA, { action: 'pressKey', snapshotId, key: 'a' }))).toBe('input_busy');
     const b = await service.getAppState(paneB, { app: 'Notepad' });
     // B is not throttled by A's actions (only by A's lock, which has gone idle here).
-    (service as unknown as { lock: unknown }).lock = null;
+    (service as unknown as { lease: { clear(): void } }).lease.clear();
     expect(await codeOf(service.control(paneB, { action: 'pressKey', snapshotId: b.snapshotId, key: 'a' }))).toBe('resolved');
   });
 

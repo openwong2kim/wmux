@@ -51,7 +51,15 @@ internal static class Server
         // the cursor alone; nothing gives a window focus without the app
         // taking it itself; posted keys reach Chromium-based apps after a
         // posted click on the field.
-        ["input"] = new JsonObject { ["backgroundPointer"] = true, ["focusWithoutRaise"] = false, ["keyAuth"] = true },
+        ["input"] = new JsonObject
+        {
+            ["backgroundPointer"] = true,
+            ["focusWithoutRaise"] = false,
+            ["keyAuth"] = true,
+            // Honours `foreground: 'refuse'` (answers needs_foreground
+            // instead of real input), so main can run input in per-app lanes.
+            ["deferForeground"] = true,
+        },
     };
 
     public static void Handle(byte[] line)

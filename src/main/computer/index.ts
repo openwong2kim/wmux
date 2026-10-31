@@ -133,6 +133,7 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
       }
     },
     supports: (method) => proc?.supports(method),
+    defersForeground: () => proc?.defersForeground(),
     reconfigure: async () => { await proc?.reconfigure(); },
     abort: (reason) => proc?.abort(reason),
     dispose: () => { reset(); },

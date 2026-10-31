@@ -175,6 +175,11 @@ export class HelperProcess {
     return this.running?.hello ?? null;
   }
 
+  /** Whether the running helper's hello has `input.deferForeground: true`; undefined while none runs. */
+  defersForeground(): boolean | undefined {
+    return this.running ? this.running.hello.capabilities.input?.deferForeground === true : undefined;
+  }
+
   /** Whether the running helper's hello listed `method`; undefined while none runs. */
   supports(method: HelperMethod): boolean | undefined {
     return this.running ? this.running.hello.capabilities.actions.includes(method) : undefined;
