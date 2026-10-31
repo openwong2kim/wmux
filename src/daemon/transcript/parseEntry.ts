@@ -109,7 +109,7 @@ export function parseTranscriptLineDetailed(
 export function transcriptLineLink(line: string, offsetHint: number): EntryLink | undefined {
   let entry: Record<string, unknown>;
   try {
-    const parsed: unknown = JSON.parse(line.replace(/^﻿/, '').trim());
+    const parsed: unknown = JSON.parse(line.replace(/^\uFEFF/, '').trim());
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
     entry = parsed as Record<string, unknown>;
   } catch {
