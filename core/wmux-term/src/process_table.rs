@@ -129,9 +129,10 @@ impl Drop for OwnedHandle {
 }
 
 /// Walk the process table. Only a failed snapshot is an error; a row whose
-/// details cannot be read keeps pid/ppid/name with `created`/`cmdline` unset.
-/// With details, a process that exited (or whose pid was reused) after the
-/// walk is left out: none of its details can be read any more.
+/// details cannot be read, or cannot be shown to belong to the walked
+/// process, keeps pid/ppid/name with `created`/`cmdline` unset. With details,
+/// a row is left out only when its handle proves the pid now belongs to a
+/// process created at another time.
 pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
     // SAFETY: plain Win32 calls; every out-pointer refers to a local of the declared layout.
     unsafe {
@@ -176,19 +177,7 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
             // Only the detailed table joins the two reads and may drop a row.
             // The liveness table (no details) keeps every Toolhelp row, so a
             // lost join can never read as a death.
-            let keep = !with_details
-                || row.pid == 0
-                || match &listed {
-                    // Without the kernel list, the process handle alone dates the row.
-                    None => read_details(&mut row),
-                    Some(list) => match listed_creation(&row, list) {
-                        Some(created) => {
-                            row.created = created;
-                            read_details(&mut row)
-                        }
-                        None => false,
-                    },
-                };
+            let keep = !with_details || row.pid == 0 || fill_details(&mut row, listed.as_ref());
             if keep {
                 rows.push(row);
             }
@@ -206,10 +195,23 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
     }
 }
 
-/// Fill the row's creation time (when unknown) and command line from a
-/// handle. False when the handle proves the walked process gone: its pid now
-/// belongs to a process created at another time.
-fn read_details(row: &mut ProcessRow) -> bool {
+/// Fill a walked row's creation time and command line. Details are taken
+/// only for a process the kernel list shows with the same pid, parent and
+/// image and a creation time the handle agrees with. Without that (no list,
+/// an exited or reused pid, an image name Toolhelp cut at 260 chars, a null
+/// kernel name) the row is kept with its details unset, as when the process
+/// cannot be opened. False only when the handle proves the pid reused.
+fn fill_details(row: &mut ProcessRow, listed: Option<&HashMap<u32, Listed>>) -> bool {
+    let Some(created) = listed.and_then(|list| listed_creation(row, list)).flatten() else {
+        return true;
+    };
+    row.created = Some(created);
+    read_details(row, created)
+}
+
+/// Read the command line from a handle whose creation time matches the
+/// listed one. False when it differs: the pid now names another process.
+fn read_details(row: &mut ProcessRow, created: f64) -> bool {
     // SAFETY: the handle is checked and closed by OwnedHandle.
     let raw = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, row.pid) };
     if raw.is_null() {
@@ -226,12 +228,12 @@ fn read_details(row: &mut ProcessRow) -> bool {
         } else {
             None
         };
-    match (row.created, opened) {
-        (Some(listed), Some(now)) if listed != now => return false,
-        (None, now) => row.created = now,
-        _ => {}
+    match opened {
+        Some(now) if now != created => return false,
+        Some(_) => row.cmdline = command_line(process.0),
+        // The handle cannot be dated: its command line may not be this process's.
+        None => {}
     }
-    row.cmdline = command_line(process.0);
     true
 }
 
@@ -359,34 +361,50 @@ fn filetime_to_epoch_ms(time: FileTime) -> Option<f64> {
 
 fn command_line(process: Handle) -> Option<String> {
     let query = nt_query_process()?;
-    // u64 storage keeps the UNICODE_STRING header pointer-aligned.
-    let mut buffer: Vec<u64> = vec![0; 64];
-    for _ in 0..3 {
-        let bytes = (buffer.len() * 8) as u32;
-        let mut needed = 0u32;
+    let (buffer, bytes) = query_growing(|buffer, bytes, needed| {
         // SAFETY: the buffer is `bytes` long and writable.
-        let status = unsafe {
+        unsafe {
             query(
                 process,
                 PROCESS_COMMAND_LINE_INFORMATION,
                 buffer.as_mut_ptr().cast(),
                 bytes,
-                &mut needed,
+                needed,
             )
-        };
+        }
+    })?;
+    decode_command_line(&buffer, bytes)
+}
+
+/// Largest command-line buffer: 32 Ki UTF-16 chars plus the header, rounded up.
+const COMMAND_LINE_CAP: usize = 1 << 20;
+
+/// Call `query` with a buffer that doubles on each "too small" status, up to
+/// the cap. The reported length is only a lower bound: a call that leaves it
+/// at 0 still gets a bigger buffer. u64 storage keeps the UNICODE_STRING
+/// header pointer-aligned.
+fn query_growing(
+    mut query: impl FnMut(&mut [u64], u32, &mut u32) -> i32,
+) -> Option<(Vec<u64>, usize)> {
+    let mut bytes = 512usize;
+    loop {
+        let mut buffer = vec![0u64; bytes / 8];
+        let mut needed = 0u32;
+        let status = query(&mut buffer, bytes as u32, &mut needed);
         if status >= 0 {
-            return decode_command_line(&buffer, bytes as usize);
+            return Some((buffer, bytes));
         }
         let retry = matches!(
             status,
             STATUS_INFO_LENGTH_MISMATCH | STATUS_BUFFER_OVERFLOW | STATUS_BUFFER_TOO_SMALL
         );
-        if !retry || needed <= bytes || needed > 1 << 20 {
+        if !retry || bytes >= COMMAND_LINE_CAP {
             return None;
         }
-        buffer = vec![0; (needed as usize).div_ceil(8)];
+        bytes = (bytes * 2)
+            .max((needed as usize).next_multiple_of(8))
+            .min(COMMAND_LINE_CAP);
     }
-    None
 }
 
 /// The kernel writes the UNICODE_STRING header followed by its characters
@@ -457,7 +475,6 @@ mod tests {
             own.name,
             exe.file_name().unwrap().to_string_lossy().to_string()
         );
-        let from_table = own.created;
         let mut row = ProcessRow {
             pid: me,
             ppid: 0,
@@ -465,9 +482,102 @@ mod tests {
             created: None,
             cmdline: None,
         };
-        assert!(read_details(&mut row));
-        assert!(from_table.is_some());
-        assert_eq!(from_table, row.created);
+        // A differing handle time would read as a reused pid (false).
+        assert!(read_details(&mut row, own.created.expect("listed time")));
+        assert!(row.cmdline.is_some());
+    }
+
+    fn own_row(name: &str) -> ProcessRow {
+        ProcessRow {
+            pid: std::process::id(),
+            ppid: 0,
+            name: name.into(),
+            created: None,
+            cmdline: None,
+        }
+    }
+
+    #[test]
+    fn a_join_miss_keeps_the_row_without_details() {
+        // The kernel list shows another image on this pid (or Toolhelp cut the
+        // name): the row stays listed, as when the process cannot be opened.
+        let listed = HashMap::from([(
+            std::process::id(),
+            Listed {
+                ppid: 0,
+                name: "another.exe".into(),
+                created: Some(5.0),
+            },
+        )]);
+        let mut row = own_row("walked.exe");
+        assert!(fill_details(&mut row, Some(&listed)));
+        assert_eq!((row.created, row.cmdline), (None, None));
+        let mut row = own_row("walked.exe");
+        assert!(fill_details(&mut row, Some(&HashMap::new())));
+        assert_eq!((row.created, row.cmdline), (None, None));
+    }
+
+    #[test]
+    fn without_the_kernel_list_no_details_are_adopted() {
+        // Nothing dates the walked process, so the handle's process (maybe a
+        // new owner of the pid) lends it nothing.
+        let mut row = own_row("walked.exe");
+        assert!(fill_details(&mut row, None));
+        assert_eq!((row.created, row.cmdline), (None, None));
+    }
+
+    #[test]
+    fn the_buffer_grows_when_the_needed_length_is_not_reported() {
+        let mut calls = 0;
+        let (_, bytes) = query_growing(|_, bytes, _needed| {
+            calls += 1;
+            if bytes < 5_000 {
+                STATUS_INFO_LENGTH_MISMATCH
+            } else {
+                0
+            }
+        })
+        .expect("grown buffer");
+        assert_eq!((bytes, calls), (8_192, 5));
+        // A reported length still jumps straight there.
+        let (_, bytes) = query_growing(|_, bytes, needed| {
+            *needed = 70_000;
+            if (bytes as usize) < 70_000 {
+                STATUS_BUFFER_TOO_SMALL
+            } else {
+                0
+            }
+        })
+        .expect("sized buffer");
+        assert_eq!(bytes, 70_000);
+        // Never past the cap.
+        let mut largest = 0;
+        let read = query_growing(|_, bytes, _| {
+            largest = largest.max(bytes as usize);
+            STATUS_BUFFER_OVERFLOW
+        });
+        assert!(read.is_none());
+        assert_eq!(largest, COMMAND_LINE_CAP);
+        assert!(query_growing(|_, _, _| 0xC000_0022_u32 as i32).is_none());
+    }
+
+    #[test]
+    fn reads_a_command_line_over_2_kb() {
+        use std::os::windows::io::AsRawHandle;
+        use std::os::windows::process::CommandExt;
+        let tail = "x".repeat(3_000);
+        // cmd stays at its prompt on the piped stdin until killed.
+        let mut child = std::process::Command::new("cmd.exe")
+            .raw_arg(format!("/d /q /k rem {tail}"))
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn cmd");
+        let read = command_line(child.as_raw_handle() as Handle);
+        child.kill().ok();
+        child.wait().ok();
+        let read = read.expect("command line");
+        assert!(read.len() > 3_000 && read.ends_with(&tail));
     }
 
     #[test]
@@ -507,14 +617,8 @@ mod tests {
     fn a_pid_reused_after_the_walk_is_dropped() {
         // The walk saw an earlier process on this pid: the handle's creation
         // time differs, so the open process's command line is not taken.
-        let mut row = ProcessRow {
-            pid: std::process::id(),
-            ppid: 0,
-            name: "earlier.exe".into(),
-            created: Some(1.0),
-            cmdline: None,
-        };
-        assert!(!read_details(&mut row));
+        let mut row = own_row("earlier.exe");
+        assert!(!read_details(&mut row, 1.0));
         assert_eq!(row.cmdline, None);
     }
 
