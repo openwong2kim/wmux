@@ -321,6 +321,95 @@ export function continueOutAllowed(policy: A2aContinuePolicyV1, hostId: HostId):
   return policy.out[hostId]?.allowed === true;
 }
 
+// ─── RPC (machine-local, `wmux.internal`) ───────────────────────────────────
+
+/** The daemon methods main starts a conversation this PC received with. */
+export const A2A_CONTINUE_RPC = Object.freeze({
+  /** → `A2aContinueWork`: the received requests main has to start (on connect, on each event, on a backstop). */
+  work: 'a2a.remote.continue.work',
+  /**
+   * `{ hostId, continueId }` → `A2aContinueClaimResult`. Takes a received
+   * request for starting, after checking it again right now. A refusal is
+   * settled and answered by the daemon itself.
+   */
+  claim: 'a2a.remote.continue.claim',
+  /**
+   * `{ hostId, continueId, cwd }` → `A2aContinuePlaceResult`: the staged
+   * conversation into Claude's project folder for `cwd`, a folder of that
+   * request's own worktree. Only for a request that is starting.
+   */
+  place: 'a2a.remote.continue.place',
+  /** `{ hostId, continueId }` → `A2aContinueStepResult`: take back exactly what `place` did. */
+  unplace: 'a2a.remote.continue.unplace',
+  /** `{ ptyId }` → `A2aContinueBinding`: the transcript the pane's agent named in its hooks, once it has. */
+  binding: 'a2a.remote.continue.binding',
+  /** `{ hostId, continueId }` → `A2aContinueStepResult`: the pane runs the conversation. */
+  started: 'a2a.remote.continue.started',
+  /** `{ hostId, continueId, code: A2aContinueStartFailure }` → `A2aContinueStepResult`: starting a claimed request failed. */
+  failed: 'a2a.remote.continue.failed',
+  /** `{ hostId, continueId }` → `A2aContinueRequestState`: where a request is now (asked after an answer was lost). */
+  state: 'a2a.remote.continue.state',
+} as const);
+
+/** Daemon broadcast: a request this PC received answers something new (main starts it once it is `received`). */
+export const A2A_CONTINUE_EVENT = 'a2a.remote.continue.changed';
+export interface A2aContinueEvent {
+  type: typeof A2A_CONTINUE_EVENT;
+  hostId: HostId;
+  continueId: string;
+  code: A2aContinueCode;
+}
+
+/** `work`'s answer. */
+export interface A2aContinueWork {
+  received: Array<{ hostId: HostId; continueId: string }>;
+}
+
+/** What main needs to start a claimed conversation. The files stay with the daemon, which places them. */
+export interface A2aContinueClaimV1 {
+  hostId: HostId;
+  /** This PC's name for the asking PC. */
+  hostName: string;
+  continueId: string;
+  sessionId: string;
+  agent: AgentSlug;
+  /** The matched root's realpath: a git repository's top level. */
+  repoPath: string;
+  /** The repository as the request names it: its origin key, branch and commit. */
+  origin: string;
+  branch: string;
+  head: string;
+  /** The conversation's folder below the top level ('' = the top level). */
+  sub: string;
+  permissionMode: A2aContinuePermissionMode;
+}
+
+export type A2aContinueClaimResult =
+  | { ok: true; claim: A2aContinueClaimV1 }
+  /** Not startable now; `code` is what the asker was told, when it was settled here. */
+  | { ok: false; error: string; code?: A2aContinueCode };
+
+/** The codes a claimed start ends with when main could not start it (the receiver's CONTINUE_START_FAILURES). */
+export type A2aContinueStartFailure = Extract<A2aContinueCode, 'failed' | 'branch-not-found' | 'branch-busy' | 'head-missing' | 'diverged' | 'path-too-long' | 'no-space'>;
+
+export type A2aContinuePlaceResult =
+  /** The placed transcript, as Claude is to be given it with `--resume`. */
+  | { ok: true; transcriptPath: string }
+  | { ok: false; code: Extract<A2aContinueStartFailure, 'failed' | 'diverged' | 'no-space' | 'path-too-long'>; error: string };
+
+export type A2aContinueStepResult = { ok: true } | { ok: false; error: string };
+
+/** `binding`'s answer: the transcript path the pane's hooks reported, or null before they have. */
+export interface A2aContinueBinding {
+  transcriptPath: string | null;
+}
+
+/** `state`'s answer: empty when this PC holds no record of the request. */
+export interface A2aContinueRequestState {
+  state?: A2aContinueIncomingState;
+  code?: A2aContinueCode;
+}
+
 // ─── Parsers ────────────────────────────────────────────────────────────────
 
 function isPlain(v: unknown): v is Record<string, unknown> {
