@@ -12,8 +12,9 @@
 //   4. checks the daemon reports rust as requested and effective;
 //   5. opens a shell session in the daemon and reads its prompt back from the
 //      session's screen text, then ends the session and stops the daemon;
-//   6. saves `{"engine": "node"}` the way a server user switches back, starts
-//      the daemon again and checks it reports node as requested and effective.
+//   6. waits for that daemon to exit, saves `{"engine": "node"}` the way a
+//      server user switches back, starts a new daemon and checks it reports
+//      node as requested and effective.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -117,10 +118,33 @@ try {
   try { wmux('daemon', 'stop'); } catch (err) { console.error(`wmux daemon stop: ${err.message}`); process.exitCode = 1; }
 }
 
+// `wmux daemon stop` returns before the daemon is gone, and a start before
+// that would find the old one still running. Bounded.
+async function waitForExit(pid, pipeName, timeoutMs = 15_000) {
+  const alive = () => {
+    if (!pid) return false;
+    try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+  };
+  const listening = () => new Promise((resolve) => {
+    const sock = net.connect(pipeName);
+    sock.once('connect', () => { sock.destroy(); resolve(true); });
+    sock.once('error', () => resolve(false));
+  });
+  const deadline = Date.now() + timeoutMs;
+  while (alive() || await listening()) {
+    if (Date.now() > deadline) {
+      throw new Error(`the daemon (pid ${pid ?? 'unknown'}) still ran ${timeoutMs} ms after \`wmux daemon stop\``);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
 // The switch back to Node that the server docs give: a saved choice wins over the default.
+await waitForExit(started.pid, started.pipeName);
 fs.mkdirSync(wmuxDir, { recursive: true });
 fs.writeFileSync(path.join(wmuxDir, 'terminal-core.json'), `${JSON.stringify({ engine: 'node' })}\n`);
 const restarted = JSON.parse(wmux('daemon', 'start', '--json'));
+if (!restarted.spawned) throw new Error('`wmux daemon start` reused a running daemon, so the saved choice was not read');
 try {
   const token = fs.readFileSync(path.join(wmuxDir, 'daemon-auth-token'), 'utf8').trim();
   const { terminalCore } = await rpc(restarted.pipeName, token, 'daemon.ping', { includeTerminalCore: true });

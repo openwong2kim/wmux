@@ -137,6 +137,10 @@ describe('release.yml server artifacts', () => {
     expect(proof).not.toContain("engine: 'rust'");
     expect(proof).toContain("terminalCore.effective !== 'rust'");
     expect(proof).toContain("JSON.stringify({ engine: 'node' })");
+    // The second start waits for the first daemon to be gone.
+    const wait = proof.indexOf('await waitForExit(started.pid, started.pipeName);');
+    expect(wait).toBeGreaterThan(0);
+    expect(wait).toBeLessThan(proof.indexOf("JSON.stringify({ engine: 'node' })"));
     expect(proof).toContain("terminalCore.effective !== 'node'");
     expect(proof).not.toContain('WMUX_TERMINAL_CORE:');
   });
