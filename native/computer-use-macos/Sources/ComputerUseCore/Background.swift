@@ -160,12 +160,24 @@ public struct UserState: Equatable {
     public var front: pid_t?
     public var pointer: CGPoint
     public var space: UInt64?
+    /// When it was read, in seconds on a monotonic clock.
+    public var time: Double
+    /// Seconds since the user's last real (HID) input, when it was read.
+    public var idle: Double
 
-    public init(front: pid_t?, pointer: CGPoint, space: UInt64?) {
+    public init(front: pid_t?, pointer: CGPoint, space: UInt64?, time: Double = 0, idle: Double = .infinity) {
         self.front = front
         self.pointer = pointer
         self.space = space
+        self.time = time
+        self.idle = idle
     }
+}
+
+/// The user gave real input between `start` and `now`: their last input is
+/// more recent than the start.
+public func userActed(start: UserState, now: UserState) -> Bool {
+    now.idle < now.time - start.time
 }
 
 /// A change to the user's state that background input itself made.
@@ -183,10 +195,12 @@ public let pointerNearTarget: CGFloat = 8
 
 /// What background input did to the user's state between `start` and `now`,
 /// or nil. Only its own side effects count: the user moving the pointer
-/// elsewhere, or switching to another app or Space, is none. `point` is where
-/// the pointer input went (nil for keys), and `targetOnScreen` whether the
-/// target window is on the active Space now.
+/// elsewhere, or switching to another app or Space, is none, and once the
+/// user gave real input since `start` no change is taken for ours. `point`
+/// is where the pointer input went (nil for keys), and `targetOnScreen`
+/// whether the target window is on the active Space now.
 public func sideEffect(start: UserState, now: UserState, pid: pid_t, point: CGPoint?, targetOnScreen: Bool) -> SideEffect? {
+    guard !userActed(start: start, now: now) else { return nil }
     func near(_ a: CGPoint, _ b: CGPoint) -> Bool { hypot(a.x - b.x, a.y - b.y) <= pointerNearTarget }
     if let point, near(now.pointer, point), !near(start.pointer, point) { return .pointerAtTarget }
     if cameForward(pid, start: start.front, now: now.front) { return .targetCameForward }
@@ -201,6 +215,14 @@ public enum BackgroundStop: Equatable {
     /// Something was posted and may have landed: the action ends there, since
     /// real input could do it twice.
     case end
+}
+
+/// The app to bring back to the front after background input: the one the
+/// user had in front at `start`, when the target came forward and the user
+/// gave no input since (so the switch was ours). Nil leaves the front alone.
+public func frontToRestore(start: UserState, now: UserState, pid: pid_t) -> pid_t? {
+    guard cameForward(pid, start: start.front, now: now.front), !userActed(start: start, now: now) else { return nil }
+    return start.front
 }
 
 public func afterStop(posted: Bool) -> BackgroundStop {

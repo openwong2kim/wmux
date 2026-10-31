@@ -79,11 +79,17 @@ enum Background {
 
     // MARK: What the user sees
 
+    /// kCGAnyInputEventType. Should it not convert, no user input is ever
+    /// seen and every change counts as ours, as before input was read.
+    private static let anyInput = CGEventType(rawValue: ~0)
+
     static func userState() -> UserState {
         UserState(
             front: NSWorkspace.shared.frontmostApplication?.processIdentifier,
             pointer: CGEvent(source: nil)?.location ?? .zero,
-            space: SkyLight.activeSpace()
+            space: SkyLight.activeSpace(),
+            time: ProcessInfo.processInfo.systemUptime,
+            idle: anyInput.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) } ?? .infinity
         )
     }
 
@@ -110,27 +116,27 @@ enum Background {
         if requireOnScreen, !visible { throw Stop(reason: "the target window left the screen") }
     }
 
-    /// The target app is in front now and was not when the action started.
-    static func cameForward(_ pid: pid_t, since start: UserState) -> Bool {
-        ComputerUseCore.cameForward(pid, start: start.front, now: NSWorkspace.shared.frontmostApplication?.processIdentifier)
-    }
-
     /// After the input: an app that brought itself to the front (a click on
     /// a link does, shortly after) is put back behind the one the user had,
-    /// the way Focus.bringForward activates an app. Returns the note for the
-    /// result when the app came forward, saying whether the user's app is
-    /// back, or when the real pointer ended at `point`.
+    /// the way Focus.bringForward activates an app. An app the user brought
+    /// forward (real input since `start`) stays (ComputerUseCore
+    /// frontToRestore). Returns the note for the result when the app came
+    /// forward, saying whether the user's app is back, or when the real
+    /// pointer ended at `point`.
     static func settle(after start: UserState, pid: pid_t, point: CGPoint? = nil) async -> String? {
         let pointer = sideEffect(start: start, now: userState(), pid: pid, point: point, targetOnScreen: false) == .pointerAtTarget
             ? "the real pointer moved to the target point, so the input may have gone as real input"
             : nil
-        var forward = false
+        var back: pid_t?
         for n in 0..<4 {
             if n > 0 { try? await Task.sleep(nanoseconds: 40_000_000) }
-            forward = cameForward(pid, since: start)
-            if forward { break }
+            let now = userState()
+            if cameForward(pid, start: start.front, now: now.front) {
+                back = frontToRestore(start: start, now: now, pid: pid)
+                break
+            }
         }
-        guard forward, let front = start.front else { return pointer }
+        guard let front = back else { return pointer }
         NSRunningApplication(processIdentifier: front)?.activate()
         AXUIElementSetAttributeValue(AX.app(front), kAXFrontmostAttribute as CFString, kCFBooleanTrue)
         var note = "the app came to the front on its own, and the app that was in front could not be brought back"

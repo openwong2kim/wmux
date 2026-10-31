@@ -226,7 +226,8 @@ is not re-walked.
     ended at the point the input went to, the target app has not come to the
     front, and the Space has not switched to the target window's. The user
     moving the pointer elsewhere, or switching to another app, does not stop
-    it. The pointer is checked against a `type` focus click once, right
+    it, and once the user gave real input (HID) since the action began, no
+    such change is taken for ours. The pointer is checked against a `type` focus click once, right
     after that click. Keys also stop on a password field focused in the
     target, with or without an index, and on system-wide secure input only
     while the target is the frontmost app.
@@ -238,7 +239,7 @@ is not re-walked.
     for `type` after which the field did not report focus or the app came
     forward; the call then says to check the app and type without an index.
   - After the input, an app that brought itself to the front is put back
-    behind the user's app, and key status goes back to the app's window that
+    behind the user's app (not when the user gave real input meanwhile), and key status goes back to the app's window that
     had it before, on every way out, an error included. The result says `foreground`, with a note, when the app
     came forward or the real pointer ended at the target point.
   - It also goes as real input, before anything is posted, with

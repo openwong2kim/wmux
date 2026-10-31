@@ -151,6 +151,34 @@ final class BackgroundTests: XCTestCase {
         XCTAssertEqual(sideEffect(start: start, now: now, pid: 300, point: nil, targetOnScreen: true), .spaceSwitchedToTarget)
     }
 
+    func testAChangeAfterRealUserInputIsTheUsersNotOurs() {
+        let target = CGPoint(x: 300, y: 200)
+        let start = UserState(front: 100, pointer: CGPoint(x: 900, y: 500), space: 1, time: 10, idle: 30)
+        var now = start
+        now.time = 12
+        now.front = 300
+        now.pointer = target
+        now.space = 2
+        // No input for 5 s, 2 s into the action: the changes are ours.
+        now.idle = 5
+        XCTAssertFalse(userActed(start: start, now: now))
+        XCTAssertNotNil(sideEffect(start: start, now: now, pid: 300, point: target, targetOnScreen: true))
+        XCTAssertEqual(frontToRestore(start: start, now: now, pid: 300), 100)
+        // Input 0.5 s ago, after the start: the user did it.
+        now.idle = 0.5
+        XCTAssertTrue(userActed(start: start, now: now))
+        XCTAssertNil(sideEffect(start: start, now: now, pid: 300, point: target, targetOnScreen: true))
+        XCTAssertNil(frontToRestore(start: start, now: now, pid: 300))
+    }
+
+    func testOnlyATargetThatCameForwardIsPutBack() {
+        let start = UserState(front: 100, pointer: .zero, space: 1)
+        XCTAssertNil(frontToRestore(start: start, now: start, pid: 300))
+        var now = start
+        now.front = 200
+        XCTAssertNil(frontToRestore(start: start, now: now, pid: 300))
+    }
+
     func testTheFocusClickLandsInsideTheWindowOrNotAtAll() {
         let window = CGRect(x: 0, y: 0, width: 400, height: 300)
         let partlyBelow = CGRect(x: 100, y: 250, width: 200, height: 100)
