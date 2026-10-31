@@ -7,10 +7,8 @@
 import type { AppState } from '../../shared/computer/protocol';
 
 /**
- * Fewer named controls than this, outside the menu bar and title bar, and the
- * tree is thin. The window's own buttons still count (macOS names them in the
- * system language, so they cannot be told apart by name), and there are up to
- * four of them, so the bar sits just above that.
+ * Fewer named controls than this, outside the window's own chrome (menu bar,
+ * title bar, and on macOS the window buttons), and the tree is thin.
  */
 export const THIN_TREE_MIN_CONTROLS = 5;
 
@@ -33,8 +31,11 @@ const CONTROL_ROLES: ReadonlySet<string> = new Set([
 /** App chrome present whatever the window shows: their subtrees are not counted. */
 const CHROME_ROLES: ReadonlySet<string> = new Set(['menu bar', 'title bar']);
 
-/** Longest first, so `menu bar item` is not read as `menu bar` and `pop up button` not as `button`. */
-const KNOWN_ROLES = [...CONTROL_ROLES, ...CHROME_ROLES, 'menu bar item'].sort((a, b) => b.length - a.length);
+/**
+ * Longest first, so `menu bar item` is not read as `menu bar`, `pop up button`
+ * not as `button` and macOS's `tab group` container not as a named `tab`.
+ */
+const KNOWN_ROLES = [...CONTROL_ROLES, ...CHROME_ROLES, 'menu bar item', 'tab group'].sort((a, b) => b.length - a.length);
 
 const ELEMENT_LINE = /^(\t*)\d+ (.*)$/;
 
@@ -42,8 +43,13 @@ const ELEMENT_LINE = /^(\t*)\d+ (.*)$/;
  * Named controls in a rendered tree, skipping the menu bar and title bar. A
  * control is named when its line carries a name or a value after the role; a
  * bare `button` or `button, State: disabled` tells the agent nothing.
+ *
+ * `skipWindowButtons`: macOS has no title bar element, so the close, minimise,
+ * zoom and full-screen buttons sit right under the window, named in the
+ * system language. Buttons that are direct children of the window are not
+ * counted there; Windows already drops them with the title bar.
  */
-export function countNamedControls(tree: string): number {
+export function countNamedControls(tree: string, opts: { skipWindowButtons?: boolean } = {}): number {
   let count = 0;
   let chromeDepth = -1;
   for (const line of tree.split('\n')) {
@@ -62,6 +68,7 @@ export function countNamedControls(tree: string): number {
       continue;
     }
     if (!CONTROL_ROLES.has(role)) continue;
+    if (opts.skipWindowButtons && role === 'button' && depth === 1) continue;
     const after = rest.slice(role.length);
     if (after.startsWith(' ') && after.trim().length > 0) count++;
     else if (after.startsWith(', Value:')) count++;
@@ -75,9 +82,9 @@ export function countNamedControls(tree: string): number {
  * called thin: its count says nothing about the window, and walking it again
  * for the screenshot would double the time it already ran out of.
  */
-export function thinTreeReason(state: AppState): string | undefined {
+export function thinTreeReason(state: AppState, opts: { skipWindowButtons?: boolean } = {}): string | undefined {
   if (state.truncated) return undefined;
-  const controls = state.tree ? countNamedControls(state.tree) : 0;
+  const controls = state.tree ? countNamedControls(state.tree, opts) : 0;
   if (controls >= THIN_TREE_MIN_CONTROLS) return undefined;
   return `the accessibility tree has only ${controls} named control${controls === 1 ? '' : 's'}`;
 }

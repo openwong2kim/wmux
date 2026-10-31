@@ -45,6 +45,7 @@ import {
   type Modifier,
   type MouseButton,
   type ObservationMode,
+  type ScreenshotStatus,
   type ScrollDirection,
   type WindowInfo,
 } from '../../shared/computer/protocol';
@@ -320,12 +321,28 @@ export class ComputerService {
     let state = await this.observe(agent, helper, target, mode, generation);
     let screenshotAdded: string | undefined;
     if (params.mode === undefined) {
-      screenshotAdded = thinTreeReason(state);
-      if (screenshotAdded) {
-        // A fresh walk rather than a vision-only call grafted on: indexes and
-        // pixels must come from one snapshot, and a thin tree is quick to walk.
-        mode = 'both';
-        state = await this.observe(agent, helper, target, mode, generation);
+      const thin = thinTreeReason(state, { skipWindowButtons: (this.deps.platform ?? process.platform) === 'darwin' });
+      if (thin) {
+        const caps = await helper.request('capabilities', {});
+        this.assertCurrent(generation);
+        if (!caps.permissions.screenRecording) {
+          // Walking again would only return the same tree without an image.
+          state = { ...state, screenshotStatus: screenshotNotAdded(thin, 'permission_missing', 'Screen Recording permission is missing') };
+        } else {
+          // A fresh walk rather than a vision-only call grafted on: indexes and
+          // pixels must come from one snapshot, and a thin tree is quick to walk.
+          try {
+            state = await this.observe(agent, helper, target, 'both', generation);
+            mode = 'both';
+            screenshotAdded = thin;
+          } catch (err) {
+            // A stop by the user ends the call; any other failure keeps the
+            // tree the agent already has rather than turning it into an error.
+            this.assertCurrent(generation);
+            const message = err instanceof Error ? err.message : String(err);
+            state = { ...state, screenshotStatus: screenshotNotAdded(thin, 'screenshot_failed', message) };
+          }
+        }
       }
     }
 
@@ -721,6 +738,11 @@ export function capabilitiesForAgent(caps: HelperCapabilities): AgentCapabilitie
   const actions = caps.actions.filter((a) =>
     (caps.permissions.accessibility || !control.has(a)) && (a !== 'getAppState' || modes.length > 0));
   return { ...caps, actions, modes, missingPermissions: missing };
+}
+
+/** A thin tree whose screenshot could not be added: the tree stands, the reason rides along. */
+function screenshotNotAdded(thin: string, code: 'permission_missing' | 'screenshot_failed', why: string): ScreenshotStatus {
+  return { status: 'failed', error: { code, message: `${thin}, but no screenshot was added: ${why}` } };
 }
 
 /** A window the helper reports must belong to the app it reports with it. */

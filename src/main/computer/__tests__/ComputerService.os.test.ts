@@ -3,6 +3,7 @@ import { ComputerError } from '../../../shared/computer/errors';
 import { SNAPSHOT_TTL_MS, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
 import { ApprovalQueue } from '../../mcp/ApprovalQueue';
 import type { PluginTrustStore } from '../../mcp/PluginTrustStore';
+import { countNamedControls } from '../axFirst';
 import { createComputerConsentRequester } from '../computerConsent';
 import {
   ABORT_COOLDOWN_MS,
@@ -58,6 +59,8 @@ function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>, 
           return { apps: Object.values(apps).map((t) => t.app) };
         case 'listWindows':
           return { windows: Object.values(apps).map((t) => t.window) };
+        case 'capabilities':
+          return { actions: ['getAppState', 'click'], modes: ['ax', 'vision', 'both'], permissions: { accessibility: true, screenRecording: true } };
         default:
           return { method: 'synthetic', verification: 'unverified' };
       }
@@ -850,6 +853,57 @@ describe('accessibility-first observation', () => {
     const cut = await service.getAppState(AGENT_A, { app: 'Notepad' });
     expect(cut.mode).toBe('ax');
     expect(cut.screenshotAdded).toBeUndefined();
+  });
+
+  it('keeps the tree when the screenshot cannot be added', async () => {
+    // No Screen Recording: no second walk, the reason rides on screenshotStatus.
+    const noPerm = makeService({ tree: THIN_TREE });
+    const helper = (noPerm.service as unknown as { ensureReady: () => HelperLike }).ensureReady();
+    const original = helper.request.bind(helper);
+    helper.request = (async (method: HelperMethod, params: never) => {
+      if (method === 'capabilities') {
+        return { actions: ['getAppState'], modes: ['ax'], permissions: { accessibility: true, screenRecording: false } };
+      }
+      return original(method, params);
+    }) as HelperLike['request'];
+    const state = await noPerm.service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(observedModes(noPerm.calls)).toEqual(['ax']);
+    expect(state.mode).toBe('ax');
+    expect(state.screenshotAdded).toBeUndefined();
+    expect(state.screenshotStatus).toMatchObject({ status: 'failed', error: { code: 'permission_missing' } });
+
+    // The second walk fails: the first tree is returned, not an error.
+    const failing = makeService({ tree: THIN_TREE });
+    const h2 = (failing.service as unknown as { ensureReady: () => HelperLike }).ensureReady();
+    const original2 = h2.request.bind(h2);
+    h2.request = (async (method: HelperMethod, params: never) => {
+      if (method === 'getAppState' && (params as { mode: string }).mode === 'both') {
+        throw new ComputerError('window_not_found', 'the window closed');
+      }
+      return original2(method, params);
+    }) as HelperLike['request'];
+    const kept = await failing.service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(kept.mode).toBe('ax');
+    expect(kept.tree).toContain('menu bar');
+    expect(kept.screenshotStatus).toMatchObject({ status: 'failed', error: { code: 'screenshot_failed' } });
+  });
+});
+
+describe('countNamedControls', () => {
+  it('skips macOS window buttons and does not read a tab group as a named tab', () => {
+    const mac = [
+      '0 window Preview',
+      '\t1 button close button',
+      '\t2 button minimize button',
+      '\t3 button zoom button',
+      '\t4 button full screen button',
+      '\t5 tab group',
+      '\t\t6 group Canvas',
+      '\t7 toolbar',
+      '\t\t8 button Share',
+    ].join('\n');
+    expect(countNamedControls(mac, { skipWindowButtons: true })).toBe(1);
+    expect(countNamedControls(mac)).toBe(5);
   });
 });
 

@@ -113,19 +113,21 @@ need screen-recording permission.
 controls in the tree text: lines whose role is one an agent can act on
 (button, text field, edit, link, list item, row, …) and that carry a name or a
 value. The menu bar and title bar subtrees are skipped, since every app has
-them. Fewer than 5 such controls means the tree is thin (canvas apps, games,
+them, and so are macOS's window buttons (close, minimise, zoom, full screen),
+which sit directly under the window there because macOS has no title bar
+element. Fewer than 5 such controls means the tree is thin (canvas apps, games,
 web content that exposes nothing), and main walks the window again in `both`
-mode, so the indexes and the pixels share one snapshot. The window's own
-buttons still count (macOS names them in the system language), which is why
-the bar sits just above the four they can add. A `truncated` walk is never
+mode, so the indexes and the pixels share one snapshot. A `truncated` walk is never
 called thin: its count says nothing about the window, and a second walk would
 double the time it already ran out of.
 
 The result names the mode it was taken in (`mode`), and a thin-tree fallback
 says why (`screenshotAdded: "the accessibility tree has only 2 named
-controls"`), so the agent knows it can ask for `vision` or `both` itself. On
-macOS without Screen Recording the fallback's capture fails, and the result
-carries `screenshotError` next to `screenshotAdded`. An explicit `mode` is
+controls"`), so the agent knows it can ask for `vision` or `both` itself.
+Without Screen Recording permission main skips the second walk, and when the
+second walk fails it keeps the first tree rather than returning an error: in
+both cases the result is the `ax` tree with a `screenshotError` that names the
+thin tree and why no screenshot came. An explicit `mode` is
 taken as given. A missing Accessibility permission does
 not fall back to `vision`: the macOS helper needs Accessibility to find the
 window even for a screenshot, and Windows needs no permission.
