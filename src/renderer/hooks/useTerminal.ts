@@ -4,7 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
-import { WebglAddon as SharedContextWebglAddon } from '../terminal/sharedWebgl/addon/WebglAddon';
+import { loadedSharedWebglAddon, preloadSharedWebgl } from '../terminal/sharedWebgl/load';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
@@ -671,10 +671,18 @@ let webglTokenSeq = 0;
 // its own. Read when a pane's addon is built, so a change applies to addons
 // built after it. Such a pane holds no context, so it takes no slot in the
 // context pool and is never evicted to the DOM renderer.
-function sharedWebglEnabled(): boolean {
-  return useStore.getState().terminalSharedWebgl === true;
+//
+// The renderer is a separate chunk, loaded once the flag is seen on (at start,
+// on session restore, or when it is switched on). A pane built before the chunk
+// has loaded gets the stock addon, as with the flag off, and keeps it.
+function sharedWebglAddonClass() {
+  return useStore.getState().terminalSharedWebgl === true ? loadedSharedWebglAddon() : null;
 }
-webglContextPool.setUnbudgeted(sharedWebglEnabled);
+webglContextPool.setUnbudgeted(() => sharedWebglAddonClass() !== null);
+if (useStore.getState().terminalSharedWebgl === true) void preloadSharedWebgl();
+useStore.subscribe((state) => {
+  if (state.terminalSharedWebgl === true) void preloadSharedWebgl();
+});
 
 // A hidden terminal KEEPS its WebGL context. It gives the context back only
 // when webglContextPool evicts it (LRU, once more terminals want one than the
@@ -1838,7 +1846,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     function loadWebgl() {
       if (webglAddonRef.current) return; // already loaded
       try {
-        const addon: WebglAddon = sharedWebglEnabled()
+        const SharedContextWebglAddon = sharedWebglAddonClass();
+        const addon: WebglAddon = SharedContextWebglAddon
           ? new SharedContextWebglAddon({ sharedContext: true })
           : new WebglAddon();
         addon.onContextLoss(() => {
