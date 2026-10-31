@@ -12,6 +12,7 @@ import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage, type Message } from '../../../shared/types';
 import { isCompanyTask, parseCompanySeat, type CompanySeat } from '../../../shared/company';
+import { configuredForge, forgeHosts } from '../../../shared/forgeHosts';
 import {
   DONE_PR_CHECK_MAX,
   companyDonePrDecision,
@@ -19,6 +20,7 @@ import {
   tooManyDonePrs,
   withDonePrEvidence,
   type DonePrOutcome,
+  type DonePrRef,
 } from '../../../shared/companyDonePrCheck';
 import { ghPrReviewService, type GhPrReviewService } from '../../github/GhPrReviewService';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
@@ -82,8 +84,12 @@ type DaemonTaskGate =
 const A2A_DAEMON_SOFT_ERRORS = ['task log unavailable', 'task not found', 'pane-authz deferred'];
 
 
-/** How long main waits on gh for one PR of a company task's done. */
+/** How long main waits on gh for one PR of a company task's done, and on
+ *  the whole check: the caller's MCP request gives up after 10 s. */
 const DONE_PR_READ_DEADLINE_MS = 7_000;
+const DONE_CHECK_BUDGET_MS = 9_000;
+/** PRs read at once for one done. */
+const DONE_PR_READS_AT_ONCE = 3;
 
 const INTERNAL_RENDERER_FIELDS = [
   'trustedLane',
@@ -1297,14 +1303,16 @@ export function registerA2aRpc(
    * Evidence that is missing or not shaped is left to the daemon's evidence
    * gate, which refuses it; nothing is read for it.
    */
-  async function companyDonePrRefusal(params: Record<string, unknown>): Promise<string | null> {
+  async function companyDonePrRefusal(params: Record<string, unknown>, seat: CompanySeat | undefined): Promise<string | null> {
+    const budgetEnd = Date.now() + DONE_CHECK_BUDGET_MS;
     const evidence = params.evidence;
     const items = isRecord(evidence) ? evidence.items : undefined;
     if (!isRecord(evidence) || typeof evidence.summary !== 'string' || !Array.isArray(items)) return null;
     const { taskId, workspaceId } = params;
     if (typeof taskId !== 'string' || !taskId || typeof workspaceId !== 'string' || !workspaceId) return null;
     const task = await readFullTask(workspaceId, taskId);
-    if (!task) return null;
+    // The CEO's done waits on the check, so a task wmux cannot read is not let through.
+    if (!task) return seat === 'coordinator' ? `a2a.task.update: wmux could not read task ${taskId} to check the PRs it names; retry` : null;
     const history: unknown[] = Array.isArray(task.history) ? task.history : [];
     const brief = history[0];
     if (!isRecord(brief) || !Array.isArray(brief.parts) || !isCompanyTask(history as Message[])) return null;
@@ -1317,13 +1325,20 @@ export function registerA2aRpc(
     });
     if (prs.length === 0) return null;
     if (prs.length > DONE_PR_CHECK_MAX) return tooManyDonePrs(prs.length);
-    // The caller's MCP request gives up after 10 s. A read still running then
-    // is refused, so a done never commits after the caller saw it fail.
-    const outcomes = await Promise.all(prs.map(async (pr): Promise<DonePrOutcome> => {
+    const elsewhere = prs.find((pr) => pr.host.toLowerCase() !== 'github.com' && configuredForge(pr.host, forgeHosts()) !== 'github');
+    if (elsewhere) {
+      return `a2a.task.update: wmux checks pull requests on github.com and on hosts gh is signed in to, and ${elsewhere.url} is on neither; `
+        + 'the owner can mark the task done from their own lane.';
+    }
+    // The caller's MCP request gives up after 10 s. A read still running near
+    // then is refused, so a done never commits after the caller saw it fail.
+    const readOne = async (pr: DonePrRef): Promise<DonePrOutcome> => {
+      const wait = Math.min(DONE_PR_READ_DEADLINE_MS, budgetEnd - Date.now());
+      if (wait <= 0) return { pr, read: 'error', message: 'no time left to read it' };
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const late = new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error(`no answer within ${DONE_PR_READ_DEADLINE_MS / 1000} s`)), DONE_PR_READ_DEADLINE_MS);
+          timer = setTimeout(() => reject(new Error(`no answer within ${Math.ceil(wait / 1000)} s`)), wait);
         });
         const read = await Promise.race([prReview.donePrFacts(os.homedir(), `${pr.host}/${pr.owner}/${pr.repo}`, pr.number), late]);
         return read.ok ? { pr, read: 'ok', facts: read.value } : { pr, read: 'error', message: read.message };
@@ -1332,7 +1347,12 @@ export function registerA2aRpc(
       } finally {
         clearTimeout(timer);
       }
-    }));
+    };
+    const outcomes: DonePrOutcome[] = [];
+    for (let i = 0; i < prs.length; i += DONE_PR_READS_AT_ONCE) {
+      // eslint-disable-next-line no-await-in-loop -- a few PRs, a few at a time
+      outcomes.push(...await Promise.all(prs.slice(i, i + DONE_PR_READS_AT_ONCE).map(readOne)));
+    }
     const decision = companyDonePrDecision(outcomes);
     if (decision.kind === 'refuse') return decision.error;
     const next = withDonePrEvidence({ ...evidence, items }, decision.items);
@@ -1376,7 +1396,7 @@ export function registerA2aRpc(
       // daemon anyway.
       if (params.status === 'completed' && !trustedLane
         && !(callerPane.kind === 'resolved' && callerPane.companySeat === 'staff')) {
-        const refused = await companyDonePrRefusal(params);
+        const refused = await companyDonePrRefusal(params, callerPane.kind === 'resolved' ? callerPane.companySeat : undefined);
         if (refused) return { error: refused };
       }
       const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.update', {

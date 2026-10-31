@@ -134,6 +134,11 @@ describe('donePrVerdict', () => {
     expect(v).toMatchObject({ kind: 'pass', summary: expect.stringMatching(/GitHub BLOCKED; waits on an approving review$/) });
   });
 
+  it('blocks a BLOCKED PR waiting on review when the required list of the base branch could not be read', () => {
+    const v = donePrVerdict(PR, facts({ mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED', baseRequired: [], baseRequiredUnread: ['rulesets'] }));
+    expect(v).toMatchObject({ kind: 'block', reason: expect.stringContaining('could not read the base branch') });
+  });
+
   it('blocks a BLOCKED PR nothing it read explains, or one with changes requested', () => {
     expect(reasonOf(facts({ mergeStateStatus: 'BLOCKED' })))
       .toBe('GitHub blocks the merge for a reason wmux cannot see; check the branch rules');

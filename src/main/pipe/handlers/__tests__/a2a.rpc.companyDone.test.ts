@@ -223,6 +223,21 @@ describe('a2a.task.update — a company task is done only once wmux has checked 
     expect((updates()[0].params.evidence as { items: unknown[] }).items).toHaveLength(2);
   });
 
+  it('refuses the CEO\'s done when wmux can read the task from nowhere', async () => {
+    const { router, updates, donePrFacts } = setup({ daemonTask: null });
+    expect(errorOf(await router.dispatch({ id: 'd7b', method: 'a2a.task.update', params: done() }))).toContain('could not read task t1');
+    expect(donePrFacts).not.toHaveBeenCalled();
+    expect(updates()).toHaveLength(0);
+  });
+
+  it('refuses a PR on a host gh does not serve, before any read', async () => {
+    const { router, updates, donePrFacts } = setup();
+    const res = await router.dispatch({ id: 'd7c', method: 'a2a.task.update', params: done({ message: 'Also https://code.example.org/acme/app/pull/3' }) });
+    expect(errorOf(res)).toContain('https://code.example.org/acme/app/pull/3 is on neither');
+    expect(donePrFacts).not.toHaveBeenCalled();
+    expect(updates()).toHaveLength(0);
+  });
+
   it('checks a PR named only in the done call, and none for a task that names no PR', async () => {
     const quiet = task({ status: { state: 'input-required', timestamp: 'x' } });
     const named = setup({ daemonTask: quiet });

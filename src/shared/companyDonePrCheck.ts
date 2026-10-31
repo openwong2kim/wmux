@@ -226,6 +226,11 @@ export function donePrVerdict(pr: DonePrRef, f: DonePrFacts): DonePrVerdict {
     if (f.reviewDecision !== 'REVIEW_REQUIRED') {
       return block('GitHub blocks the merge for a reason wmux cannot see; check the branch rules');
     }
+    // A required check that never ran shows nowhere but the base branch's
+    // list, so without that list the review cannot be the only reason.
+    if (f.baseRequiredUnread.length > 0) {
+      return block(`GitHub blocks the merge and wmux could not read the base branch's ${f.baseRequiredUnread.join(' or ')} to rule out a required check that never ran`);
+    }
     notes += '; waits on an approving review';
   }
   if (f.baseRequiredUnread.length > 0) notes += `; could not read the base branch's ${f.baseRequiredUnread.join(' or ')}`;
