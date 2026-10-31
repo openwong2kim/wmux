@@ -582,6 +582,46 @@ const BORROWED_SOURCES = [
       '  ThreadManagementService.ts, Orchestrator.ts). wmux file:\n' +
       '  src/daemon/chat/v2/host.ts.',
   },
+  {
+    name: 'Cua Driver',
+    license: 'MIT License',
+    repo: 'https://github.com/trycua/cua',
+    copyright: 'Copyright (c) 2025 Cua AI, Inc.',
+    what:
+      'macOS background input for computer use, adapted into Swift from Cua\n' +
+      'Driver (libs/cua-driver) at commit\n' +
+      'a9902d272655b65180fa713a8b1f2f1c1935e70b:\n' +
+      '- From rust/crates/platform-macos/src/input/skylight.rs: the run-time\n' +
+      '  lookup of the private SkyLight calls, so a call an OS release removed\n' +
+      '  turns its path off; the check that the key-event authentication\n' +
+      '  message exists (macOS 15 and later) and how it is attached; the\n' +
+      '  focus-without-raise event record (without the record that takes focus\n' +
+      '  from the frontmost app); and the key-window records that move key\n' +
+      '  status inside one app, read back before keys are posted. wmux files:\n' +
+      '  native/computer-use-macos/Sources/wmux-computer-use/SkyLight.swift,\n' +
+      '  Background.swift.\n' +
+      '- From rust/crates/platform-macos/src/input/mouse.rs: the background\n' +
+      '  left click (a mouseMoved, a primer click off screen, then the click,\n' +
+      '  with the pid, window-number, gesture and window-location fields) and\n' +
+      '  the stamped wheel scroll. wmux files:\n' +
+      '  native/computer-use-macos/Sources/ComputerUseCore/Background.swift,\n' +
+      '  native/computer-use-macos/Sources/wmux-computer-use/Background.swift.\n' +
+      '- From rust/crates/platform-macos/src/input/keyboard.rs: keys posted to\n' +
+      '  the process with the authentication message, and shortcuts with\n' +
+      '  Command without it so they reach the app\'s menus. wmux file:\n' +
+      '  native/computer-use-macos/Sources/wmux-computer-use/Background.swift.\n' +
+      '\n' +
+      'Cua Driver credits these MIT upstreams for parts of its sources, and\n' +
+      'their notices are kept with it here:\n' +
+      '- yabai (https://github.com/koekeishiya/yabai), Copyright (c) 2019\n' +
+      '  Åsmund Vikane: the focus-without-raise SkyLight event-record sequence\n' +
+      '  in skylight.rs.\n' +
+      '- trope-cua (https://github.com/voctory/trope-cua), Copyright (c) 2026\n' +
+      '  Victor Vannara: Windows background input and cursor overlay, and some\n' +
+      '  cursor-motion values.\n' +
+      '- Interface-Agent (https://github.com/francedot/Interface-Agent),\n' +
+      '  Copyright (c) 2024 Francesco Bonacci: the Windows UI Automation walk.',
+  },
 ];
 lines.push('ADAPTED SOURCES AND IMPLEMENTATION TECHNIQUES');
 lines.push('');

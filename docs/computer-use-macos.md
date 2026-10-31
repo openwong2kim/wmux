@@ -198,9 +198,71 @@ is not re-walked.
   explicitly. A Cmd or Shift the person is physically holding never merges
   into an agent's keystroke. Local-event suppression is set to 0, so the
   person's own mouse is never frozen.
-- Bringing the target forward: every input action (`click` by point or by an
-  index that falls through to the pointer, `scroll`, `type`, `pressKey`,
-  `hotkey`) first brings the target forward when it is not the frontmost app
+- Background input first (`Background.swift`, rules in `ComputerUseCore`
+  `foregroundReason`, unit-tested). The events go to the target process alone,
+  routed to its window, so the user's pointer, frontmost app and Space stay as
+  they were, and the result says `delivery: "background"`:
+  - Click (left, single or double): the window is focused without being raised
+    (the focus event record sent to its process alone, never the record that
+    takes focus from the frontmost app), then a `mouseMoved` at the point, a
+    primer click off screen at (-1, -1) for Chromium's user-activation check,
+    and the click. Every event carries the pid (field 40), the window number
+    (fields 51, 91, 92), a gesture id and the window location, and goes
+    through `SLEventPostToPid` without the key authentication message.
+  - Scroll: a stamped `mouseMoved`, then one wheel event per notch.
+  - Keys: the app's focused window must be the target window. When it is not,
+    key status moves inside that app alone (the key-window event records,
+    then `AXFocusedWindow`), read back before anything is typed. `type` gives
+    the field focus first, by AX or else a background click on it; without an
+    index the app's focused element must take text. Keys carry the key
+    authentication message (macOS 15 and later), except a shortcut with
+    Command, which then reaches the app's menus. Chromium drops a posted key
+    without the message, so a Command shortcut to a Chromium-based app goes
+    as real input.
+  - Before every batch, chunk and notch: the screen is unlocked, the window is
+    still on screen (for keys, only before the first key: posted keys reach
+    the app anyway), and our own input has had no side effect on the user
+    (`ComputerUseCore` `sideEffect`). That means the real pointer has not
+    ended at the point the input went to, the target app has not come to the
+    front, and the Space has not switched to the target window's. The user
+    moving the pointer elsewhere, or switching to another app, does not stop
+    it, and once the user gave real input (HID) since the action began, no
+    such change is taken for ours. The pointer is checked against a `type`
+    focus click once, right after that click. Keys also stop when the target
+    app comes to the front, whoever brought it (the user's typing would go to
+    the window made key), on a password field focused in the target, with or
+    without an index, and on system-wide secure input only while the target
+    is the frontmost app.
+  - A check that fails before anything was posted sends the input as real
+    input instead. Once something was posted (an event, or an event record
+    that moved key status inside the app), the call ends with
+    `window_not_focused` and `delivered_unverified`, and no real input
+    follows, which could do it twice. That includes a background focus click
+    for `type` after which the field did not report focus or the app came
+    forward; the call then says to check the app and type without an index.
+  - After the input, an app that brought itself to the front is put back
+    behind the user's app (not when the user gave real input meanwhile), and key status goes back to the app's window that
+    had it before, on every way out, an error included. The result says `foreground`, with a note, when the app
+    came forward or the real pointer ended at the target point.
+  - It also goes as real input, before anything is posted, with
+    `delivery: "foreground"` and a note saying why, when
+    this macOS lacks the SkyLight calls (the event-record calls stay off on a
+    macOS major whose record layout the helper does not know, and key
+    authentication stays off when a self-test at start finds no valid event
+    record inside a CGEvent), the window is
+    minimized, hidden or on another Space, the click is not a left single or
+    double click, the app reads the real pointer (Tk, LibreOffice), the target
+    is Electron and the input is a scroll, the target is Chromium-based and
+    this macOS has no key authentication (macOS 14), the input is a Command
+    shortcut to a Chromium-based app, the target app is frontmost with another
+    of its windows focused and the input is a click or keys (the user's typing
+    would move to the target window), the target is a terminal that can turn
+    on Secure Keyboard Entry and the input is keys, the field does not take
+    focus in the background (a page Chrome does not expose to AX), or the app
+    came to the front when its window or field was focused.
+- Bringing the target forward, for real input: every input action (`click` by
+  point or by an index that falls through to the pointer, `scroll`, `type`,
+  `pressKey`, `hotkey`) first brings the target forward when it is not the frontmost app
   with the target window focused. The window is un-minimized, the app is
   activated (`NSRunningApplication.activate`, then `kAXFrontmostAttribute`,
   which is what works for a process that is never active itself), the window

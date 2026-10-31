@@ -42,6 +42,23 @@ final class Input: @unchecked Sendable {
     private var heldKeys = Set<CGKeyCode>()
     private var heldButtons: [Int32: CGPoint] = [:]
     private var stopping = false
+    /// Every event posted, plus every press, value, launch and background
+    /// event record that may have reached the app (`noteSent`): Server tells
+    /// from it whether a failed input action sent anything. Bringing a window
+    /// forward is not input and is not counted.
+    private var sentCount = 0
+
+    var sent: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sentCount
+    }
+
+    func noteSent() {
+        lock.lock()
+        sentCount += 1
+        lock.unlock()
+    }
 
     private let source: CGEventSource? = {
         let src = CGEventSource(stateID: .privateState)
@@ -62,6 +79,20 @@ final class Input: @unchecked Sendable {
         defer { lock.unlock() }
         if stopping && !releasing { return false }
         event.post(tap: .cghidEventTap)
+        sentCount += 1
+        return true
+    }
+
+    /// Posts one event to a process (Background.swift), under the same stop
+    /// gate as every other post. Nothing is recorded as held; a release still
+    /// goes out once stopping, so the app is not left with a button or key down.
+    @discardableResult
+    func postToProcess(_ event: CGEvent, pid: pid_t, auth: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if stopping, event.type != .leftMouseUp, event.type != .keyUp { return false }
+        guard SkyLight.post(event, pid: pid, auth: auth) else { return false }
+        sentCount += 1
         return true
     }
 
