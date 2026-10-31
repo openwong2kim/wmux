@@ -16,7 +16,7 @@
 // into acting on an app main never vetted. openApp has no snapshot: it checks
 // the selector before the launch and the launched app after it.
 
-import { ComputerError, withDisposition } from '../../shared/computer/errors';
+import { ComputerError, inputActionError } from '../../shared/computer/errors';
 import {
   BLOCK_REASON_TEXT,
   blockReasonFor,
@@ -339,21 +339,27 @@ export class ComputerService {
    * or `delivered_unverified` when there is none.
    */
   async control(agent: ComputerAgent, params: ControlParams): Promise<ActionResult> {
-    let requested = false;
+    const sent = { requested: false, done: false };
     try {
-      const result = await this.dispatchControl(agent, params, () => { requested = true; });
+      const result = await this.dispatchControl(agent, params, sent);
       return { ...result, disposition: result.verification === 'verified' ? 'delivered' : 'delivered_unverified' };
     } catch (err) {
-      throw withDisposition(err, requested ? 'delivered_unverified' : 'not_delivered');
+      throw inputActionError(err, sent.requested, sent.done);
     }
   }
 
-  private async dispatchControl(agent: ComputerAgent, params: ControlParams, onRequest: () => void): Promise<ActionResult> {
+  private async dispatchControl(
+    agent: ComputerAgent,
+    params: ControlParams,
+    sent: { requested: boolean; done: boolean },
+  ): Promise<ActionResult> {
     const ready = this.ensureReady();
     const helper = {
-      request<M extends HelperMethod>(method: M, p: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']> {
-        onRequest();
-        return ready.request(method, p);
+      async request<M extends HelperMethod>(method: M, p: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']> {
+        sent.requested = true;
+        const result = await ready.request(method, p);
+        sent.done = true;
+        return result;
       },
     };
     // No input without a working emergency stop.
@@ -454,7 +460,7 @@ export class ComputerService {
     try {
       return await this.dispatchOpenApp(agent, params, () => { requested = true; });
     } catch (err) {
-      throw withDisposition(err, requested ? 'delivered_unverified' : 'not_delivered');
+      throw inputActionError(err, requested, false);
     }
   }
 

@@ -250,7 +250,7 @@ export type ActionMethod = 'accessibility' | 'synthetic' | 'clipboard';
  * How the input reached the app. `background`: sent to the target app or
  * window alone, so the user's pointer, frontmost app and Space stay as they
  * were. `foreground`: real input, which brought the app to the front or moved
- * the pointer. A helper that does not report it (Windows today) leaves it out.
+ * the pointer. A helper that does not report it leaves it out.
  */
 export type ActionDelivery = 'background' | 'foreground';
 

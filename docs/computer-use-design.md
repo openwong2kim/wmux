@@ -225,6 +225,10 @@ snapshot is the v1.1 token saver.
   - `delivered_unverified`: input was sent, or may have been (the helper
     timed out or died with the request), and its effect was not read back.
   - `delivered`: sent, and the effect was read back (`verified`).
+  - No protocol bump: `delivery`, `disposition` and `input` are optional, so a
+    released main and a newer helper, or the reverse, still read each other
+    (the skew test in `computerContract.os.test.ts` pins v4.13.0's parser).
+    A bump would make main refuse every helper that reports 2.
   - A posting call that returned without error is not proof of delivery:
     neither OS acknowledges an event it dropped (Windows reports `SendInput`
     success under UIPI). So main sets a result's disposition from its
@@ -234,13 +238,18 @@ snapshot is the v1.1 token saver.
     rate limit), and the pipe on one raised before the service (parameters,
     a protected pane). `HelperProcess` stamps `not_delivered` when the helper
     never got the request and `delivered_unverified` when it timed out or
-    died holding it. Otherwise the helper's own verdict is used, and an error
+    died holding it (a helper that timed out is killed, so it cannot post the
+    input late). Otherwise the helper's own verdict is used, and an error
     with none, from the helper or from a step after it, is
-    `delivered_unverified`. So is an error the MCP tool gets from a broken or
-    timed-out pipe.
+    `delivered_unverified`. Once a request of an action came back done, a
+    later `not_delivered` of the same action is `delivered_unverified`. An
+    error the MCP tool gets from a broken or timed-out pipe is
+    `delivered_unverified` too (a pipe timeout keeps the code `timeout`), and
+    one raised before the tool sent anything is `not_delivered`.
   - The macOS helper counts the events it posts and the presses, values and
     launches that may have reached the app (an AXPress or value that did not
-    answer in time counts, and is not followed by real input). A failed input
+    answer in time counts, and is not followed by real input; a launch counts
+    once macOS took it or may still be making it, not when it refused it). A failed input
     action is `not_delivered` only when that count did not move. Raising or
     focusing a window is not input and is not counted. The Windows helper
     counts the same way: `SendInput` events inserted, messages posted, and

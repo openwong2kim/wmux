@@ -97,8 +97,6 @@ enum OpenApp {
     /// A launch that takes longer may still be under way: an instance of the
     /// bundle that is already running by then is used instead of failing.
     private static func launch(_ url: URL, name: String) async throws -> NSRunningApplication {
-        // Counted before it returns: a launch that times out may still happen.
-        Input.shared.noteSent()
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         config.addsToRecentItems = false
@@ -119,10 +117,14 @@ enum OpenApp {
                 once.run { cont.resume(returning: .failure(HelperError("timeout", "\(name) did not finish launching in time"))) }
             }
         }
+        // Counted once macOS took the launch, or may still be making it: a
+        // launch it refused reached nothing.
+        if case .success = result { Input.shared.noteSent() }
         switch result {
         case .success(let app):
             return app
         case .failure(let error):
+            if error.code == "timeout" { Input.shared.noteSent() }
             if error.code == "timeout", let id = Bundle(url: url)?.bundleIdentifier,
                let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first {
                 return app
