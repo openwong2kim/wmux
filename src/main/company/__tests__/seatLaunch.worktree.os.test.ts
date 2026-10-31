@@ -5,7 +5,7 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { seatLaunches } from '../seatLaunch';
+import { SEAT_STAMP_FILE, seatLaunches } from '../seatLaunch';
 import { TaskWorktreeManager } from '../../worktask/TaskWorktreeManager';
 
 const WS = 'ws-0123abcd-4567-89ab-cdef-0123456789ab';
@@ -17,6 +17,8 @@ let deps: Parameters<typeof seatLaunches>[1];
 
 const g = (cwd: string, ...args: string[]): string => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
 const branches = (): string[] => g(repo, 'branch', '--format=%(refname:short)').split('\n').filter(Boolean).sort();
+/** The meta folder beside a seat worktree, where its stamp is. */
+const metaOf = (worktree: string) => path.join(path.dirname(worktree), '.meta', path.basename(worktree));
 
 const req = (over: Record<string, unknown> = {}) => ({
   workspaceId: WS,
@@ -64,6 +66,20 @@ describe('seatLaunches worktrees', () => {
     expect(brief(1)).not.toContain('Your worktree');
   });
 
+  it('stamps each seat worktree with what it was made for and the commit its branch started at', async () => {
+    const res = await seatLaunches(req(), { ...deps, now: () => 1_700_000_000_000 });
+    if (!res.ok) throw new Error(res.error);
+    const dev1 = res.cwds[1];
+    if (!dev1) throw new Error('dev-1 has no worktree');
+    const stamp = JSON.parse(fs.readFileSync(path.join(metaOf(dev1), SEAT_STAMP_FILE), 'utf8'));
+    expect(stamp).toEqual({
+      v: 1, workspaceId: WS, company: 'checkout', label: 'dev-1', branch: branchOf('dev-1'),
+      baseOid: g(repo, 'rev-parse', 'main'), createdAt: 1_700_000_000_000,
+    });
+    // Nothing of it is in the worktree.
+    expect(g(dev1, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+  });
+
   it('refuses two such seats without a folder or outside a repository, and makes nothing', async () => {
     const plain = path.join(root, 'plain');
     fs.mkdirSync(plain);
@@ -87,5 +103,8 @@ describe('seatLaunches worktrees', () => {
     expect(branches()).toEqual([branchOf('dev-2'), 'main'].sort());
     expect(g(repo, 'worktree', 'list', '--porcelain').match(/^worktree /gm)).toHaveLength(1);
     expect(fs.existsSync(path.join(root, 'data', 'company-briefs', WS))).toBe(false);
+    // The stamp of the worktree it took back went with it.
+    const [hash] = fs.readdirSync(path.join(root, 'company-worktrees'));
+    expect(fs.existsSync(path.join(root, 'company-worktrees', hash, '.meta', 'dev-1-456789ab'))).toBe(false);
   });
 });
