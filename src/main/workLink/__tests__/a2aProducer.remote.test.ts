@@ -58,6 +58,32 @@ describe('work links for tasks sent to another PC', () => {
     expect(store.getByTaskId(RT)).toEqual(before);
   });
 
+  it('goes on to the next link when one link\'s query fails', async () => {
+    const other = `rt-${'c'.repeat(32)}`;
+    await recordSentTask(send(), store);
+    await recordSentTask(send({ taskId: other }), store);
+    let failed: unknown;
+    await reconcileRemoteLinks(async (p) => {
+      failed ??= p.taskId;
+      if (p.taskId === failed) throw new Error('a2a.task.query timed out');
+      return { ok: true, tasks: [{ id: p.taskId, status: { state: 'working' } }] };
+    }, store);
+    const healthy = failed === RT ? other : RT;
+    expect(store.getByTaskId(String(failed))?.a2aState).toBe('submitted');
+    expect(store.getByTaskId(healthy)?.a2aState).toBe('working');
+  });
+
+  it('keeps the link open when the report read gets no answer, and records the report on the next pull', async () => {
+    await recordSentTask(send(), store);
+    const before = store.getByTaskId(RT);
+    const ended = { id: RT, status: { state: 'completed' } };
+    const report = { id: RT, status: { state: 'completed', message: 'Fixed.', evidence: { summary: 'Fixed.', items: [] } } };
+    await reconcileRemoteLinks(async (p) => (p.view === 'state' ? { ok: true, tasks: [ended] } : { ok: false, error: 'timed out' }), store);
+    expect(store.getByTaskId(RT)).toEqual(before);
+    await reconcileRemoteLinks(async (p) => ({ ok: true, tasks: [p.view === 'state' ? ended : report] }), store);
+    expect(store.getByTaskId(RT)).toMatchObject({ a2aState: 'completed', result: { summary: 'Fixed.' } });
+  });
+
   it('is not settled as orphaned when local workspaces close: the peer ends it', async () => {
     await recordSentTask(send(), store);
     expect(await store.abandonOrphaned(() => false)).toBe(0);

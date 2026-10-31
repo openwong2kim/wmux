@@ -5,7 +5,7 @@
 
 import { isTaskState, TERMINAL_STATES, type TaskState } from '../../shared/types';
 import { getWorkLinkStore, type WorkLinkStore, type WorkLinkUpsert } from './workLinkStore';
-import { workLinkResultFromTask, type WorkLinkParty } from '../../shared/workLink';
+import { workLinkResultFromTask, type WorkLink, type WorkLinkParty } from '../../shared/workLink';
 import { isRemoteWorkspaceId, remoteWorkspaceId } from '../../shared/a2aRemoteDelivery';
 
 const isRecord = (v: unknown): v is Record<string, unknown> =>
@@ -164,24 +164,36 @@ export async function reconcileRemoteLinks(query: DaemonTaskQuery, store?: WorkL
     const open = s.list({}).filter((l) => !!l.a2aTaskId && isRemoteWorkspaceId(l.owner.workspaceId)
       && !(l.a2aState && TERMINAL_STATES.includes(l.a2aState)) && l.state !== 'abandoned');
     for (const link of open) {
-      const at = { workspaceId: link.owner.workspaceId, taskId: link.a2aTaskId };
-      // eslint-disable-next-line no-await-in-loop -- a few links, one daemon call each
-      const tasks = queriedTasks(await query({ ...at, view: 'state' }));
-      if (!tasks) continue;
-      if (tasks.length === 0) {
-        // eslint-disable-next-line no-await-in-loop
-        await s.setState(link.id, 'abandoned');
-        continue;
+      try {
+        // eslint-disable-next-line no-await-in-loop -- a few links, one daemon call each
+        await reconcileRemoteLink(link, query, s);
+      } catch {
+        // this link is tried again on the next pull; the others go on
       }
-      const state = stateOfTask(tasks[0]);
-      if (!state || state === link.a2aState) continue;
-      // The report is on the full task.
-      // eslint-disable-next-line no-await-in-loop
-      const full = state === 'completed' || state === 'failed' ? queriedTasks(await query({ ...at, view: 'page' }))?.[0] : undefined;
-      // eslint-disable-next-line no-await-in-loop
-      await recordTaskState(link.a2aTaskId, state, s, full ?? tasks[0]);
     }
   } catch {
     // bookkeeping only: the next pull tries again
   }
+}
+
+/** One link of reconcileRemoteLinks. A query with no answer leaves the link for the next pull. */
+async function reconcileRemoteLink(link: WorkLink, query: DaemonTaskQuery, s: WorkLinkStore): Promise<void> {
+  const at = { workspaceId: link.owner.workspaceId, taskId: link.a2aTaskId };
+  const tasks = queriedTasks(await query({ ...at, view: 'state' }));
+  if (!tasks) return;
+  if (tasks.length === 0) {
+    await s.setState(link.id, 'abandoned');
+    return;
+  }
+  const state = stateOfTask(tasks[0]);
+  if (!state || state === link.a2aState) return;
+  let task: unknown = tasks[0];
+  if (state === 'completed' || state === 'failed') {
+    // The report is on the full task. An ended link is never read again, so
+    // without an answer it waits for the next pull rather than end reportless.
+    const full = queriedTasks(await query({ ...at, view: 'page' }));
+    if (!full) return;
+    task = full[0] ?? task;
+  }
+  await recordTaskState(link.a2aTaskId, state, s, task);
 }
