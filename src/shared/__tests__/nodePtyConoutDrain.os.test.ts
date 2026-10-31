@@ -1,5 +1,5 @@
 // #2398 — real ptys through node-pty's shared conout drain worker
-// (patches/node-pty+1.2.0-beta.15.patch). One worker drains every pty. A pty
+// (patches/node-pty+1.2.0-beta.17.patch). One worker drains every pty. A pty
 // whose reader is paused while it prints megabytes holds back only itself:
 // the others finish meanwhile, each with all of its own output, in order, and
 // none of anyone else's; resumed, the paused one gets all of its output too.

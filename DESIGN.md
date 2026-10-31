@@ -1574,6 +1574,20 @@ leaves the page.
   actions reveal wherever the card shows its hover fill, and keyboard focus on
   the row reveals the same layout. Hovering a nested task row reveals only
   that row's actions, never its owner's. The list never scrolls sideways.
+- **Company row** (owner-approved 2026-10-30): the row menu's **Make
+  company…** opens a dialog (Mission; CEO, a radio list of the workspace's
+  panes in one grouped container, a pane with no agent listed but disabled;
+  optional Standing orders; **Make company** the one primary). A company's
+  menu offers **Open board** (the board tab, see "Pane: terminals and work
+  area"), **Company settings…** (the same dialog, filled in) and
+  **Dissolve company**. Line 2 is the mission after a small muted org-chart
+  glyph where the branch icon sits, never the git line: the row has no branch,
+  PR badge or sync badge, since with panes in different worktrees they are
+  whichever pane reported last. No mission leaves line 2 empty; a needs-you
+  question still takes it. In the roster the coordinator's row comes first
+  with a muted `CEO` after its title, in the agent-kind slot and style; a
+  row's title is its pane label (Rename pane) when it has one, and the trailer
+  keeps live activity, else the coordinate. The company adds no colour.
 - **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
   `treeitem`) with one Tab stop — the row the keyboard was last on, else the
   selected row, else the first. ↑ ↓ Home End move between rows in screen
@@ -1671,8 +1685,8 @@ A pane is a terminal column plus, when it needs one, a work area.
 
 - **Two kinds of surface.** Terminals (local and remote, and the
   placeholders a mirror shows for a slot it cannot draw) keep the pane tab
-  strip and draw in the left column. Browser, editor, preview and diff tabs
-  are work surfaces and draw in the work area on the right. A pane holding only one
+  strip and draw in the left column. Browser, editor, preview, diff and board
+  tabs are work surfaces and draw in the work area on the right. A pane holding only one
   kind draws it across the whole pane under one strip, as before.
 - **One header line.** The work strip sits on the pane header's line, split
   where the body is split: the body's separator continues up through the
@@ -1715,6 +1729,27 @@ A pane is a terminal column plus, when it needs one, a work area.
   with an Open button. The header adds View source, which opens the file
   as text. A change in the page's folder reloads it in place, keeping the
   scroll and the focus.
+- **Board tab** (company mode). One per company workspace, opened from the
+  row menu's Open board beside the CEO's terminal (in the active pane while
+  the seat is vacant). Top to bottom, 16px sides: the workspace name (16px),
+  the mission (`--text-sub`) and the standing orders (muted, three lines at
+  most); then muted 11px headings over `--stroke`-divided rows. **Waiting on
+  you** (jobs to or from the company that need the owner), **Seats** (every
+  pane, the CEO first: status mark, the muted CEO word, the title, the
+  coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
+  needs-you one in `--attention-text`, and a muted `Next:` line), **Handed
+  out** (open jobs sent to other workspaces), **Not on a seat** and **Log**
+  (finished jobs, newest first, the last ten however old). A section with nothing in it is
+  not drawn, Seats aside; a pane with no agent keeps its seat with a muted
+  `No agent in this pane` under its title, and the coordinate gives way
+  before the title in a narrow pane. A seat row focuses its pane. One muted
+  closing line says work sent to other PCs and fan-out workers is not shown
+  yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
+  colour beyond the status marks and needs-you. Dissolve company closes the
+  board tab; a pane holding nothing else keeps it, saying the workspace is no
+  longer a company. A pane with a board can be stashed (the board keeps no
+  state of its own), and while the board is the active tab Fleet still reads
+  the pane by the terminal beside it.
 
 ## The one-boundary rule
 
@@ -2236,6 +2271,8 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-29 | Owner-approved (clarify, after a design critique): one vocabulary and one shortcut notation. Shortcuts are written by one formatter (`displayCombo`): macOS modifier glyphs in Apple's order with no separator (`⇧⌘D`, `⌃B`), Windows and Linux words joined by `+` (`Ctrl+Shift+D`); `Esc` and arrow glyphs on both. A hint that names a key reads the live binding, so a rebound key is shown as rebound. Internal words leave the UI: Surface → tab, A2A → PC messages / messages between PCs, HQ → the bots' main workspace, merge lane → auto-merge, hook bridge → Claude Code hooks, Bypass (schedules) → Full access; raw ids (`bypassPermissions`, pty ids, hook event names, `mcp__name__tool`) are not shown. Commands and labels are sentence case; split commands say the result (Split right / Split down) | The same thing had three names and one shortcut had four spellings, some wrong (Ctrl on macOS, a ⌘ prefix that is really ⌃). Coordinator and Verifier stay: they are the role names on the Bots pages |
 | 2026-10-29 | Owner-approved: one settings page per bot, opened by ⚙ in its chat header, its name pill, or its row in Settings › Bots; the profile popover and the Settings row editor are gone. A status strip, a section nav, form fields saved by one footer Save; actions act at once; a My Hermes bot's page leaves out Work and Connections | A bot's settings lived in two places that disagreed: name and limits only in Settings, engine, models and readiness only in the popover, the job empty in one and the starting job in the other, and a Manage that dumped the owner at the top of Settings. One page with one value per setting removes the disagreement; one Save makes clear when a change is sent, while the acts that were immediate stay so |
 | 2026-10-30 | Owner-approved (old company mode removed): the Toggle Company View and Toggle message feed actions go with the components they opened, which rendered nothing. A key a user saved on either is dropped on load and no Shortcuts row lists it, and Ctrl+Shift+M (Toggle message feed's default) reaches the pane. Amends the 2026-10-28 line that kept a saved Company View key | Both actions opened components that drew nothing, and the components are deleted with the rest of the old company mode; a saved key bound to nothing would only swallow that key |
+| 2026-10-30 | Owner-approved (mockup round 5): company mode's first UI. Make company…, Company settings… and Dissolve company on the workspace row menu; a company row shows its mission instead of the git line and hides the branch, PR badge and sync badge; the coordinator's row leads the roster with a muted CEO word in the agent-kind slot; staff titles come from the pane label | A workspace's branch, PR and sync come from whichever pane reported last, which says nothing when a company's panes work in different worktrees; the mission is what the row is for. The CEO word reuses an existing slot and style, and the pane label is already the name a pane is addressed by |
+| 2026-10-30 | Owner-approved (mockup round 5, board as a tab): company mode's board is a work tab in the company workspace, opened beside the CEO's terminal, not a rail page or sidebar view. Seats are the workspace's panes, so a pane between agent runs keeps its seat and its jobs | The owner rejected a board that took over the sidebar; a work tab keeps the CEO's terminal beside it and expands with ◫. Seating by pane, not by detected agent, keeps a job sent to a restarting pane on that pane |
 
 ### Desktop conversation view
 
@@ -2294,7 +2331,8 @@ no empty reply row or reserved gap under the latest prompt.
   name, e.g. `Codex CLI`, truncating before the title does), and only when the
   row has its own title that is not the agent itself — a `Codex` title beside
   `Codex CLI` would say it twice, and the title slot already is the agent.
-  The trailer no longer repeats the vendor. Shells get nothing.
+  The trailer no longer repeats the vendor. Shells get nothing. A company's
+  coordinator row puts a muted `CEO` in this slot instead (2026-10-30).
   The name stays in the tooltip and accessible name. Never a vendor logo or
   favicon (trademarks; written permission required).
 - **Fan-out nesting:** a task workspace renders under the workspace that fanned

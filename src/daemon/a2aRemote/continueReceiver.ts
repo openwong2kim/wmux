@@ -59,8 +59,8 @@ import { errMsg } from './storeFile';
  * its expiry.
  *
  * Then: approved → `ready`; the manifest (`receiving`), checked against the
- * policy, the request's commit, the caps and the disk; `received` once
- * PR2b's route has every file in staging; `claim` → `starting`, only while
+ * policy, the request's commit, the caps and the disk; `received` once its
+ * intake (`bytes`) has every file in staging; `claim` → `starting`, only while
  * `continueClaimable` and after the pane, policy and root checks again;
  * `started` / `failed` from main. An unclaimed request past its expiry ends
  * `expired` on the sweep. A claimed one is never started again. One main
@@ -115,6 +115,8 @@ export interface ContinueReceiverDeps {
   sessionLive: (sessionId: string) => boolean;
   /** The approval card can be shown. Absent: no card, so every request ends `not-allowed` after its checks. */
   cardAvailable?: () => boolean;
+  /** Where a receiving request's bytes come in (continueBundle.ts). Absent: none come, and a receiving request ends `expired`. */
+  bytes?: ContinueBytesIntake;
   /** This PC's caps, never above the contract's (default: the contract's). */
   limits?: { bytes: number; files: number };
   now?: () => number;
@@ -123,6 +125,19 @@ export interface ContinueReceiverDeps {
   resendCoalesceMs?: number;
   retryMinMs?: number;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
+}
+
+/**
+ * The intake of a request's bytes, told when a request starts receiving (its
+ * manifest taken), when one is decided (its staging goes), after a restart,
+ * and when a paired PC is removed. None of these throws or waits: each
+ * starts its own work, and the intake calls `received` or `receiveFailed`.
+ */
+export interface ContinueBytesIntake {
+  receiving(rec: ContinueRequestRecordV1): void;
+  decided(hostId: HostId, continueId: string): void;
+  recover(): void;
+  forgetHost(hostId: HostId): void;
 }
 
 /** What main needs to start a claimed conversation. */
@@ -140,6 +155,10 @@ export interface ContinueClaim {
    */
   bytes: number;
 }
+
+/** The codes a claimed start ends with when main could not start it: what it found on this PC's checkout or disk. */
+export const CONTINUE_START_FAILURES = ['failed', 'branch-not-found', 'branch-busy', 'head-missing', 'diverged', 'path-too-long', 'no-space'] as const;
+export type ContinueStartFailure = (typeof CONTINUE_START_FAILURES)[number];
 
 export type ContinueStepResult = { ok: true } | { ok: false; error: string };
 export type ContinueClaimResult = { ok: true; claim: ContinueClaim } | { ok: false; error: string };
@@ -253,6 +272,7 @@ export class A2aContinueReceiver {
       void this.serial(() => this.check(hostId, continueId));
     }
     this.sweep();
+    this.deps.bytes?.recover();
   }
 
   /**
@@ -324,9 +344,10 @@ export class A2aContinueReceiver {
     return this.endStart(hostId, continueId, 'started');
   }
 
-  /** Main could not start the claimed conversation. */
-  failed(hostId: HostId, continueId: string): ContinueStepResult {
-    return this.endStart(hostId, continueId, 'failed');
+  /** Main could not start the claimed conversation, and why (`failed` when nothing more precise applies). */
+  failed(hostId: HostId, continueId: string, code: ContinueStartFailure = 'failed'): ContinueStepResult {
+    if (!(CONTINUE_START_FAILURES as readonly string[]).includes(code)) return { ok: false, error: 'not a code a start ends with' };
+    return this.endStart(hostId, continueId, code);
   }
 
   /** A paired PC was removed: what this receiver keeps for it in memory goes too. */
@@ -339,6 +360,7 @@ export class A2aContinueReceiver {
       clearTimeout(t);
       this.retries.delete(k);
     }
+    this.deps.bytes?.forgetHost(hostId);
   }
 
   /** Settle every check, manifest and claim in flight (tests). */
@@ -423,7 +445,7 @@ export class A2aContinueReceiver {
     return undefined;
   }
 
-  private endStart(hostId: HostId, continueId: string, code: 'started' | 'failed'): ContinueStepResult {
+  private endStart(hostId: HostId, continueId: string, code: 'started' | ContinueStartFailure): ContinueStepResult {
     const rec = this.deps.requests.get(hostId, continueId);
     if (!rec || rec.state !== 'starting') return { ok: false, error: 'this request is not starting' };
     return this.finish(hostId, continueId, code) ? { ok: true } : NOT_STORED;
@@ -592,7 +614,10 @@ export class A2aContinueReceiver {
       code = refusal() ?? (room ? undefined : 'no-space');
     }
     if (code) return this.finish(hostId, manifest.continueId, code) ? OK : UNAVAILABLE;
-    return this.step(hostId, manifest.continueId, ['ready'], 'receiving', { manifest }) ? OK : UNAVAILABLE;
+    if (!this.step(hostId, manifest.continueId, ['ready'], 'receiving', { manifest })) return UNAVAILABLE;
+    const taken = this.deps.requests.get(hostId, manifest.continueId);
+    if (taken) this.deps.bytes?.receiving(taken);
+    return OK;
   }
 
   /** This PC takes conversations from `hostId` (and of the request's agent, given one). The parser checked the agent can move. */
@@ -645,6 +670,7 @@ export class A2aContinueReceiver {
     if (!rec) return false;
     this.deps.log('info', `[a2a-remote] continue ${continueId} from ${hostId}: ${code}`);
     this.sendOwed(rec);
+    this.deps.bytes?.decided(hostId, continueId);
     return true;
   }
 

@@ -1,11 +1,24 @@
+import type http from 'node:http';
+import https from 'node:https';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   A2A_REMOTE_BODY_MAX,
   A2A_REMOTE_PROTOCOL,
+  A2A_ROUTES,
   parseInvite,
   parsePeerCredential,
 } from '../../../shared/a2aRemote';
-import { A2A_REQUEST_BODY_MAX, PAIR_BACKOFF_BASE_MS, PAIR_FREE_FAILURES } from '../server';
+import { CONTINUE_BYTES_MAX } from '../../../shared/a2aContinue';
+import {
+  A2A_REQUEST_BODY_MAX,
+  CONTINUE_TRANSFER_MAX_MS,
+  PAIR_BACKOFF_BASE_MS,
+  PAIR_FREE_FAILURES,
+  continueTransferBudgetMs,
+  continueWireMax,
+  extendBodyDeadline,
+  requestBodyMax,
+} from '../server';
 import { disposeAll, makePc, raw, type Pc } from './a2aServerRig';
 
 const JOINER = '33333333-3333-4333-8333-333333333333';
@@ -122,6 +135,47 @@ describe('A2aServer — request edges', () => {
     const res2 = await raw(portOf(pc2), 'GET', '/api/a2a/exposed', { headers: { Authorization: `Bearer ${cred2}` } });
     expect(res2.status).toBe(200);
     expect(res2.json).toMatchObject({ p: '/api/a2a/exposed', peer: { hostId: JOINER, name: 'Joiner' } });
+  });
+
+  it('holds every request body to its deadline, and lets a route give a large one longer', async () => {
+    const handle = vi.fn(async (req: http.IncomingMessage, res: http.ServerResponse, _url: URL, p: string) => {
+      if (p.startsWith(`${A2A_ROUTES.continue}/`)) extendBodyDeadline(req, 10_000);
+      let n = 0;
+      for await (const chunk of req) n += (chunk as Buffer).length;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ n }));
+    });
+    const pc = await makePc('PC A', { deps: { routes: { handle }, bodyTimeoutMs: 300 } });
+    const cred = await pairedCredential(pc);
+    // Half the body now, the rest after the listener's deadline: -1 when the connection was cut.
+    const slow = (p: string): Promise<number> =>
+      new Promise((resolve) => {
+        const req = https.request(
+          { host: '127.0.0.1', port: portOf(pc), method: 'PUT', path: p, headers: { Authorization: `Bearer ${cred}`, 'Content-Length': 20 }, rejectUnauthorized: false, agent: false },
+          (res) => {
+            res.resume();
+            res.on('end', () => resolve(res.statusCode ?? 0));
+          },
+        );
+        req.on('error', () => resolve(-1));
+        req.write(Buffer.alloc(10));
+        setTimeout(() => req.end(Buffer.alloc(10)), 1_000);
+      });
+    expect(await slow(A2A_ROUTES.messages)).toBe(-1);
+    expect(await slow(`${A2A_ROUTES.continue}/ct-x/${'a'.repeat(64)}`)).toBe(200);
+  });
+
+  it('lets a continue upload declare the largest file gzipped, with a budget its size sets', () => {
+    const put = `${A2A_ROUTES.continue}/ct-x/${'a'.repeat(64)}`;
+    expect(requestBodyMax('PUT', put)).toBe(continueWireMax(CONTINUE_BYTES_MAX, 'gzip'));
+    expect(continueWireMax(CONTINUE_BYTES_MAX, 'gzip')).toBeGreaterThan(CONTINUE_BYTES_MAX);
+    expect(continueWireMax(1000, 'identity')).toBe(1000);
+    expect(requestBodyMax('POST', put)).toBe(A2A_REQUEST_BODY_MAX);
+    // 30 s, plus the bytes at 1 Mbit/s; the largest file still fits under the ceiling.
+    expect(continueTransferBudgetMs(0)).toBe(30_000);
+    expect(continueTransferBudgetMs(1_000_000)).toBe(38_000);
+    expect(continueTransferBudgetMs(CONTINUE_BYTES_MAX)).toBeLessThan(CONTINUE_TRANSFER_MAX_MS);
+    expect(continueTransferBudgetMs(10 * CONTINUE_BYTES_MAX)).toBe(CONTINUE_TRANSFER_MAX_MS);
   });
 });
 

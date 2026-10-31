@@ -9,6 +9,7 @@ import type { A2aTaskTransitionPayload } from '../../../shared/a2aEventlog';
 import type { CompletionEvidence } from '../../../shared/types';
 import type { EventEnvelope } from '../../../shared/eventlog';
 import { panePrincipalId } from '../../../shared/principals';
+import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 
 let dir: string;
 const syncOk = (): void => {};
@@ -913,5 +914,67 @@ describe('#1598 receiver cancel through transition', () => {
     await svc.transition({ taskId: id, to: 'failed', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'broke', items: [] } });
     const late = await svc.transition({ taskId: id, to: 'canceled', callerWorkspaceId: 'ws-receiver', evidence: { summary: 'x', items: [] } });
     expect(!late.ok && late.error).toContain('invalid transition failed -> canceled');
+  });
+});
+
+describe('company mode: canceling a company task', () => {
+  async function seedCompanyTask(svc: A2aTaskService): Promise<void> {
+    const created = await svc.createTask({
+      id: 'task-dept',
+      title: 'T',
+      from: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-coord' },
+      to: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-member' },
+      history: [{
+        kind: 'message',
+        messageId: 'msg-1',
+        role: 'user',
+        parts: [{ kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } }],
+      }],
+    });
+    expect(created.ok).toBe(true);
+  }
+
+  it('refuses another pane of the same workspace and allows the creating pane', async () => {
+    const svc = newService(newLog());
+    await seedCompanyTask(svc);
+    const bySibling = await svc.cancelTask({ taskId: 'task-dept', callerWorkspaceId: 'ws-home', callerPaneId: 'pane-member' });
+    expect(!bySibling.ok && bySibling.error).toContain('only the pane that created');
+    const noPane = await svc.cancelTask({ taskId: 'task-dept', callerWorkspaceId: 'ws-home' });
+    expect(noPane.ok).toBe(false);
+    expect(svc.getTask('task-dept')?.status.state).toBe('submitted');
+    const byCreator = await svc.cancelTask({ taskId: 'task-dept', callerWorkspaceId: 'ws-home', callerPaneId: 'pane-coord' });
+    expect(byCreator.ok).toBe(true);
+    expect(svc.getTask('task-dept')?.status.state).toBe('canceled');
+  });
+
+  it('lets the trusted lane cancel without a pane', async () => {
+    const svc = newService(newLog());
+    await seedCompanyTask(svc);
+    const res = await svc.cancelTask({ taskId: 'task-dept', callerWorkspaceId: 'ws-home', trustedLane: true });
+    expect(res.ok).toBe(true);
+  });
+});
+
+describe('company mode: a company task does not end as canceled through an update', () => {
+  it('refuses the receiver pane and lets the trusted lane through', async () => {
+    const svc = newService(newLog());
+    await svc.createTask({
+      id: 'task-dept-u',
+      title: 'T',
+      from: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-coord' },
+      to: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-member' },
+      history: [{
+        kind: 'message',
+        messageId: 'msg-u',
+        role: 'user',
+        parts: [{ kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } }],
+      }],
+    });
+    const byReceiver = await svc.transition({ taskId: 'task-dept-u', to: 'canceled', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-member' } });
+    expect(!byReceiver.ok && byReceiver.error).toContain('only the pane that created');
+    const trusted = await svc.transition({
+      taskId: 'task-dept-u', to: 'canceled', callerWorkspaceId: 'ws-home', trustedLane: true, evidence: { summary: 'stopped by the owner', items: [] },
+    });
+    expect(trusted.ok).toBe(true);
   });
 });

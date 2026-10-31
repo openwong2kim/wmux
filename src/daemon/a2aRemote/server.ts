@@ -20,6 +20,7 @@ import {
   type A2aPairResponse,
   type A2aRemoteErrorCode,
 } from '../../shared/a2aRemote';
+import { CONTINUE_BYTES_MAX } from '../../shared/a2aContinue';
 import type { A2aRemotePairBeginResult, A2aRemotePairStatus, A2aRemoteStatus } from '../../shared/rpc';
 import type { WebA2aPeer, WebA2aRoutes } from '../web/WebTerminalServer';
 import { A2A_REMOTE_CONFIG_CHANGED, type A2aRemoteConfig, type A2aRemoteController } from './controller';
@@ -52,8 +53,36 @@ import { InboundCounter } from '../net/inboundSeen';
  */
 export const A2A_REQUEST_BODY_MAX = 2 * A2A_REMOTE_BODY_MAX + 4096;
 
+/**
+ * The budget of one file of a continued conversation in transfer (an upload
+ * or a pull): 30 s plus the time its bytes take at 1 Mbit/s, at most
+ * CONTINUE_TRANSFER_MAX_MS (a file of CONTINUE_BYTES_MAX needs about 9.5
+ * minutes).
+ */
+export const CONTINUE_TRANSFER_MAX_MS = 10 * 60_000;
+
+export function continueTransferBudgetMs(bytes: number): number {
+  return Math.min(CONTINUE_TRANSFER_MAX_MS, 30_000 + Math.ceil((bytes * 8) / 1_000));
+}
+
+/**
+ * The most bytes one file of a continued conversation of `bytes` may take on
+ * the wire: exactly its size as is; gzipped, its size plus deflate's worst
+ * case on bytes that do not compress (well inside 1/1024 of them) and room
+ * for the gzip header.
+ */
+export function continueWireMax(bytes: number, encoding: 'identity' | 'gzip'): number {
+  return encoding === 'gzip' ? bytes + Math.ceil(bytes / 1024) + 1024 : bytes;
+}
+
 const HEADERS_TIMEOUT_MS = 10_000;
+/** How long a request's body may take to arrive (bodyDeadline); a continue upload's route gives its own longer. */
 const REQUEST_TIMEOUT_MS = 30_000;
+/**
+ * Node's own cut of a request (`requestTimeout`): past the longest a continue
+ * upload may take. Every request is held to its own body deadline instead.
+ */
+const NODE_REQUEST_TIMEOUT_MS = CONTINUE_TRANSFER_MAX_MS + REQUEST_TIMEOUT_MS;
 const KEEP_ALIVE_TIMEOUT_MS = 5_000;
 const HANDSHAKE_TIMEOUT_MS = 10_000;
 const MAX_CONNECTIONS = 64;
@@ -106,6 +135,8 @@ export interface A2aServerDeps {
   now?: () => number;
   /** Test seam; default `loadOrCreateHostIdentity`. */
   loadIdentity?: (opts: HostIdentityOptions) => HostIdentity;
+  /** Test seam: how long a request's body may take; default REQUEST_TIMEOUT_MS. */
+  bodyTimeoutMs?: number;
   log?: A2aServerLog;
 }
 
@@ -419,7 +450,7 @@ export class A2aServer {
       return { error: `tls: ${errMsg(err)}`, code: null };
     }
     server.headersTimeout = HEADERS_TIMEOUT_MS;
-    server.requestTimeout = REQUEST_TIMEOUT_MS;
+    server.requestTimeout = NODE_REQUEST_TIMEOUT_MS;
     server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
     server.maxConnections = MAX_CONNECTIONS;
 
@@ -455,6 +486,9 @@ export class A2aServer {
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     const refuse = (status: number, error: A2aRemoteErrorCode, extra?: Record<string, unknown>): void =>
       sendJson(res, status, { ok: false, error, ...extra });
+
+    // Whatever answers it, its body has this long to arrive (node's own cut is set past a continue upload's).
+    bodyDeadline(req, this.deps.bodyTimeoutMs ?? REQUEST_TIMEOUT_MS);
 
     // Before anything else, on every path: a browser sent this (see the class note).
     if (req.headers['origin'] !== undefined) return refuse(403, 'forbidden');
@@ -662,10 +696,46 @@ function closeServer(server: https.Server): Promise<void> {
 /**
  * The largest body a request may declare, by route: one image for an image
  * upload (`PUT /api/a2a/blobs/:sha256`, which counts what actually arrives
- * too), `A2A_REQUEST_BODY_MAX` for everything else.
+ * too), the largest conversation file gzipped for a continue upload
+ * (`PUT /api/a2a/continue/:continueId/:sha256`, which holds it to its own
+ * manifest entry), `A2A_REQUEST_BODY_MAX` for everything else.
  */
 export function requestBodyMax(method: string | undefined, pathname: string): number {
-  return method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.blobs}/`) ? A2A_REMOTE_IMAGE_LIMITS.IMAGE_MAX_BYTES : A2A_REQUEST_BODY_MAX;
+  if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.blobs}/`)) return A2A_REMOTE_IMAGE_LIMITS.IMAGE_MAX_BYTES;
+  if (method === 'PUT' && pathname.startsWith(`${A2A_ROUTES.continue}/`)) return continueWireMax(CONTINUE_BYTES_MAX, 'gzip');
+  return A2A_REQUEST_BODY_MAX;
+}
+
+/** Each request's body deadline, until its body has all arrived. */
+const bodyDeadlines = new WeakMap<http.IncomingMessage, ReturnType<typeof setTimeout>>();
+
+/**
+ * Cut the connection when `req`'s body has not all arrived `ms` from now:
+ * node's own `requestTimeout` is set past the longest continue upload, so
+ * every request is held to this deadline instead.
+ */
+function bodyDeadline(req: http.IncomingMessage, ms: number): void {
+  const prev = bodyDeadlines.get(req);
+  if (prev) {
+    clearTimeout(prev);
+  } else {
+    const done = (): void => {
+      clearTimeout(bodyDeadlines.get(req));
+      bodyDeadlines.delete(req);
+    };
+    req.once('end', done);
+    req.once('close', done);
+  }
+  const timer = setTimeout(() => {
+    if (!req.complete) req.socket.destroy();
+  }, ms);
+  timer.unref?.();
+  bodyDeadlines.set(req, timer);
+}
+
+/** A route that takes a large body gives it `ms` from now instead: a continue upload, its transfer's budget. */
+export function extendBodyDeadline(req: http.IncomingMessage, ms: number): void {
+  if (bodyDeadlines.has(req)) bodyDeadline(req, ms);
 }
 
 /**

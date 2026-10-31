@@ -168,30 +168,38 @@ export function enqueueSnapshotJob<T>(job: () => Promise<T>, coalesceKey?: strin
  * otherwise build one per pane at the same time.
  */
 export const SMALL_SNAPSHOT_CONCURRENCY = 4;
-let smallSnapshotsRunning = 0;
-const smallSnapshotWaiters: Array<() => void> = [];
+
+/**
+ * A gate that runs at most `concurrency` jobs at once, oldest waiter first,
+ * independent of the queue above and of every other gate.
+ */
+export function createSnapshotLane(concurrency: number): <T>(job: () => Promise<T>) => Promise<T> {
+  let running = 0;
+  const waiters: Array<() => void> = [];
+  return async <T>(job: () => Promise<T>): Promise<T> => {
+    if (running < concurrency) {
+      running++;
+    } else {
+      // A finishing job hands its place straight to the oldest waiter, so the
+      // count stays put and no newcomer can slip in between.
+      await new Promise<void>((resolve) => waiters.push(resolve));
+    }
+    try {
+      return await job();
+    } finally {
+      const next = waiters.shift();
+      if (next) next();
+      else running--;
+    }
+  };
+}
 
 /**
  * Run `job` under the small-ring gate. Independent of the queue above: a job
  * here never waits behind another pane's large snapshot, only behind other
  * small ones.
  */
-export async function runSmallSnapshotJob<T>(job: () => Promise<T>): Promise<T> {
-  if (smallSnapshotsRunning < SMALL_SNAPSHOT_CONCURRENCY) {
-    smallSnapshotsRunning++;
-  } else {
-    // A finishing job hands its place straight to the oldest waiter, so the
-    // count stays put and no newcomer can slip in between.
-    await new Promise<void>((resolve) => smallSnapshotWaiters.push(resolve));
-  }
-  try {
-    return await job();
-  } finally {
-    const next = smallSnapshotWaiters.shift();
-    if (next) next();
-    else smallSnapshotsRunning--;
-  }
-}
+export const runSmallSnapshotJob = createSnapshotLane(SMALL_SNAPSHOT_CONCURRENCY);
 
 export function generateSnapshot(req: SnapshotRequest): Promise<SnapshotOutcome> {
   return enqueueSnapshotJob(() => generateInner(req));

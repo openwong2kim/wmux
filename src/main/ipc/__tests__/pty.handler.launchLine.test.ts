@@ -30,7 +30,7 @@ describe('pty:create launch-line check', () => {
   it('asks about a folder-trust prompt before the startup line, an unreadable screen stopping it too', () => {
     const at = src.indexOf('const verifyTaskLine');
     const body = src.slice(at, src.indexOf('write: (cmd) => {', at));
-    expect(body).toContain("beforeWrite: () => folderTrustLaunchHold(daemonClient, sessionId, 'startup line', { refuseUnknown: true, once: true }),");
+    expect(body).toContain("beforeWrite: () => folderTrustLaunchHold(daemonClient, sessionId, 'startup line', { refuseUnknown: true, once: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }),");
   });
 
   it('re-sends only on the daemon\'s process-checked word that nothing runs in the pane', () => {

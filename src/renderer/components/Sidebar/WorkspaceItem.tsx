@@ -19,13 +19,14 @@ import { usePrefersReducedMotion } from '../ui/MediaPreview';
 import { workspaceHasUsageLimitWaiting } from '../../stores/slices/usageLimitSlice';
 import { workspaceHasAuthLost } from '../../stores/slices/agentAuthSlice';
 import { selectWorkspaceAttentionClasses } from '../../stores/selectors/fleet';
-import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin, IconBookmark } from '../icons';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin, IconBookmark, IconOrgChart } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
+import CompanyDialog from './CompanyDialog';
 import Popover from '../ui/Popover';
 import Button from '../ui/Button';
 import { placePopover } from '../AgentToolbar/placePopover';
@@ -228,11 +229,15 @@ function useGitLineTier(deps: readonly unknown[]) {
  * latest terminal notification. Renders nothing until metadata arrives —
  * zero-config, no reserved blank space.
  */
-function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHover, question, innerTab }: {
+function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHover, question, innerTab, company }: {
   metadata: WorkspaceMetadata;
   /** A needs-you row's question: it takes the git line's place, with the
    *  row's actions at its end. */
   question?: string;
+  /** A company row shows its mission where the git line goes, and no git
+   *  line at all: with panes in different worktrees the branch, PR and sync
+   *  are whichever pane reported last. */
+  company?: { mission?: string };
   /** Tab order of the line's own buttons: reachable only once the row has
    *  keyboard focus (roving tabindex). */
   innerTab?: number;
@@ -250,7 +255,9 @@ function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHove
   const ports = showPorts ? (metadata.listeningPorts ?? []) : [];
   const hasContext = ports.length > 0;
   const note = metadata.lastNotificationText;
-  if (!question && !metadata.gitBranch && !hasContext && !note) return null;
+  const gitBranch = company ? undefined : metadata.gitBranch;
+  const mission = company?.mission;
+  if (!question && !mission && !gitBranch && !hasContext && !note) return null;
   return (
     <>
       {question && (
@@ -259,18 +266,27 @@ function WorkspaceContextLine({ metadata, onPortClick, actions, metaHiddenOnHove
           {actions}
         </div>
       )}
+      {!question && mission && (
+        <div className="flex items-center gap-2 mt-1 text-[11px] leading-4 text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0" data-company-mission>
+          <span className="min-w-0 flex-1 truncate font-sans" title={mission}>
+            <span className="mr-1 inline-flex align-[-2px]" aria-hidden="true"><IconOrgChart size={12} /></span>
+            {mission}
+          </span>
+          {actions}
+        </div>
+      )}
       {/* Git 신호등 행 — 이름 바로 아래 전용 줄(owner 2026-07-20: 행이 위아래로
           두꺼워져도 OK). 브랜치·신호등·PR을 한 줄에, 포트·알림은 다음 줄로. */}
-      {!question && metadata.gitBranch && (
+      {!question && gitBranch && (
         <div ref={lineRef} className="flex items-center gap-2 mt-1 text-[11px] leading-4 tabular-nums text-[color-mix(in_srgb,var(--text-main)_45%,transparent)] min-w-0" data-git-signal-line data-git-line-tier={tier || undefined}>
           <span
             ref={branchRef}
             className="min-w-0 truncate"
-            title={`${t('workspace.gitBranch')}: ${metadata.gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
+            title={`${t('workspace.gitBranch')}: ${gitBranch}${metadata.gitIsWorktree ? ` (${t('workspace.gitWorktree')})` : ''}`}
           >
             {/* #1481 — branch and worktree marks are SVG icons, not ⎇ / ⊕. */}
             <span className="mr-1 inline-flex align-[-2px]" aria-hidden="true"><IconGitBranch size={12} /></span>
-            {metadata.gitBranch}
+            {gitBranch}
             {metadata.gitIsWorktree ? <span className="ml-1 inline-flex align-[-1px]" aria-hidden="true"><IconWorktree size={10} /></span> : null}
           </span>
           {metadata.gitSync && tier < 2 && (
@@ -474,6 +490,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
 
@@ -483,6 +501,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // Sidebar reorder source index lives in the store, not in dataTransfer.
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
   const setWorkspaceColor = useRowStore((s) => s.setWorkspaceColor);
+  const setWorkspaceCompany = useRowStore((s) => s.setWorkspaceCompany);
+  const openCompanyBoard = useRowStore((s) => s.openCompanyBoard);
   // Browser mirror (wmux web /app): no rename, reorder, context menu or row actions.
   const readOnly = useRowStore((s) => s.readOnly);
   const setDraggedWorkspaceIndex = useRowStore((s) => s.setDraggedWorkspaceIndex);
@@ -1160,7 +1180,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // free of margins of its own. `pointer-events` follow visibility. Focus
   // anywhere on the row line reveals the cluster exactly as hover does, and
   // hides the same metadata, so a Tab into the row never overflows the line.
-  const actionsOnGitLine = !!metadata?.gitBranch || !!question;
+  const company = workspace.company;
+  const actionsOnGitLine = (company ? !!company.mission : !!metadata?.gitBranch) || !!question;
   // A nested task row has no width to spare on its name line (78px of text
   // at the 220px minimum): without a branch, its actions get a line of their
   // own, the height its sibling rows' git line takes, so the row never
@@ -1279,6 +1300,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
             tabindex): focus here reveals the same actions hover does, and the
             ring sits on the line, never on the roster below it. */}
         <div
+          ref={rowRef}
           className={`${hover.group} -mx-2.5 -my-2 flex min-w-0 items-start gap-2 px-2.5 py-2`}
           role="treeitem"
           aria-level={taskRow ? 2 : 1}
@@ -1517,7 +1539,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
                 )}
                 </span>
               </div>
-              {(metadata || question) && (
+              {(metadata || question || company?.mission) && (
                 <WorkspaceContextLine
                   metadata={metadata ?? {}}
                   onPortClick={handlePortClick}
@@ -1525,6 +1547,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
                   metaHiddenOnHover={hover.hideOnHover}
                   question={question}
                   innerTab={innerTab}
+                  company={company}
                 />
               )}
               {actionsOnOwnLine && (
@@ -1594,6 +1617,39 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
           >
             {t('workspace.configureProfile')}
           </button>
+          {/* Company mode: a task row rides with its owner, so it is never one. */}
+          {!taskRow && company && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); onSelect(workspaceId); openCompanyBoard(workspaceId); }}
+              data-workspace-action="open-board"
+            >
+              {t('company.openBoard')}
+            </button>
+          )}
+          {!taskRow && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              // The menu button unmounts as the dialog opens; with the row
+              // focused first, the dialog hands focus back to it on close.
+              onClick={() => { rowRef.current?.focus(); setMenuPos(null); setCompanyDialogOpen(true); }}
+              data-workspace-action="company"
+            >
+              {company ? t('company.settingsMenu') : t('company.makeMenu')}
+            </button>
+          )}
+          {!taskRow && company && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+              onClick={() => { setMenuPos(null); setWorkspaceCompany(workspaceId, undefined); }}
+              data-workspace-action="dissolve-company"
+            >
+              {t('company.dissolve')}
+            </button>
+          )}
           <button
             className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
             style={{ color: 'var(--text-main)' }}
@@ -1967,6 +2023,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
       {/* Profile editor modal */}
       {profileModalOpen && (
         <WorkspaceProfileModal workspace={workspace} onClose={() => setProfileModalOpen(false)} />
+      )}
+      {companyDialogOpen && (
+        <CompanyDialog workspace={workspace} onClose={() => setCompanyDialogOpen(false)} />
       )}
     </div>
   );

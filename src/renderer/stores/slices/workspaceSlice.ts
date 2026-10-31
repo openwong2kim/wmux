@@ -37,6 +37,7 @@ import {
 } from '../shadowWorkspace';
 import { clampFileTreeWidth } from '../../utils/fileTreeLayout';
 import { isSleepPreventionMode } from '../../../shared/sleepPrevention';
+import { parseWorkspaceCompany, type WorkspaceCompany } from '../../../shared/company';
 import { clampSidebarWidth, dropOwnerFoldKeys, movePinned, pinnedFirst, pruneTaskGroupExpanded, resolveSidebarSortMode, sortModeMigratedToAttention, unpinNestedTasks } from '../../utils/sidebarLayout';
 import {
   collectLeafIds,
@@ -276,7 +277,7 @@ export interface WorkspaceSlice {
    * cleared ptyIds → new panes spawn their own PTYs) and its PROFILE (env +
    * startup command, re-normalized through the save-boundary secret policy).
    * The clone is named "<name> (copy [N])", inserted right after the source, and
-   * activated. Company role/department membership is intentionally NOT copied.
+   * activated. The company record is intentionally NOT copied.
    * No-op if the id is unknown.
    */
   duplicateWorkspace: (id: string) => void;
@@ -324,6 +325,12 @@ export interface WorkspaceSlice {
    * normalizeWorkspaceColor rather than stored.
    */
   setWorkspaceColor: (id: string, color: WorkspaceColorId | undefined) => void;
+  /**
+   * Make the workspace a company, change its seats, or (undefined) dissolve
+   * it. A workspace that already is one keeps its company id, so tasks and
+   * records that name it still match after the CEO or mission changes.
+   */
+  setWorkspaceCompany: (id: string, company: Omit<WorkspaceCompany, 'v' | 'id'> | undefined) => void;
   /** Mark a workspace as started by another PC (remote spawn); kept for its life. */
   setWorkspaceRemoteSpawnedBy: (id: string, by: A2aRemoteSpawnedBy) => void;
   /** `pin` is the drop target's pin state; omitted keeps the row's own. */
@@ -1041,6 +1048,30 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
     }),
 
+    setWorkspaceCompany: (id, company) => set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === id);
+      if (!ws) return;
+      if (!company) {
+        delete ws.company;
+        // The board goes with the company; a pane holding nothing else keeps
+        // it, and it says the workspace is no longer a company.
+        for (const leaf of getWorkspaceLeafPanes(ws)) {
+          if (leaf.surfaces.every((s) => s.surfaceType === 'board')) continue;
+          leaf.surfaces = leaf.surfaces.filter((s) => s.surfaceType !== 'board');
+          if (!leaf.surfaces.some((s) => s.id === leaf.activeSurfaceId)) leaf.activeSurfaceId = leaf.surfaces[0].id;
+        }
+        return;
+      }
+      const record = parseWorkspaceCompany({
+        v: 1,
+        id: ws.company?.id ?? generateId('co'),
+        coordinatorPaneId: company.coordinatorPaneId,
+        mission: company.mission?.trim(),
+        standingOrders: company.standingOrders?.trim(),
+      });
+      if (record) ws.company = record;
+    }),
+
     setWorkspaceRemoteSpawnedBy: (id, by) => set((state: StoreState) => {
       const ws = state.workspaces.find((w: Workspace) => w.id === id) as RemoteSpawnedWorkspace | undefined;
       if (ws) ws.remoteSpawnedBy = { ...by };
@@ -1330,6 +1361,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // main pushes fresh ones as the panes report.
         if (ws.metadata?.pr !== undefined) delete ws.metadata.pr;
         if (ws.metadata?.gitSync !== undefined) delete ws.metadata.gitSync;
+        // The old company mode stamped these; a company is its own record,
+        // so a saved 'ceo' or 'lead' never comes back as one.
+        const legacy = ws as Workspace & { companyRole?: unknown; companyDeptName?: unknown };
+        delete legacy.companyRole;
+        delete legacy.companyDeptName;
+        const company = parseWorkspaceCompany(ws.company);
+        if (company) ws.company = company;
+        else delete ws.company;
       }
 
       state.workspaces = data.workspaces;

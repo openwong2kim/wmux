@@ -530,6 +530,15 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // caller's pane is server-resolved and depth-1 checked in the handler).
   'a2a.remote.spawn': { capability: 'a2a.execute', riskClass: 'a2a' },
   'a2a.remote.spawnStatus': { capability: 'a2a.read', riskClass: 'a2a' },
+  // Continue on another PC: only main starts a conversation another PC handed over.
+  'a2a.remote.continue.work': { capability: 'wmux.internal' },
+  'a2a.remote.continue.claim': { capability: 'wmux.internal' },
+  'a2a.remote.continue.place': { capability: 'wmux.internal' },
+  'a2a.remote.continue.unplace': { capability: 'wmux.internal' },
+  'a2a.remote.continue.binding': { capability: 'wmux.internal' },
+  'a2a.remote.continue.started': { capability: 'wmux.internal' },
+  'a2a.remote.continue.failed': { capability: 'wmux.internal' },
+  'a2a.remote.continue.state': { capability: 'wmux.internal' },
 
   // --- A2A (agent-to-agent) ---
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },

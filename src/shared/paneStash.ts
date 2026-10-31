@@ -16,11 +16,11 @@ import type { PaneLeaf, StashedPane, Surface } from './types';
  *
  * The daemon ring preserves PTY bytes and nothing else. A browser surface is
  * safe because cold-park already unmounts webviews and restores them from their
- * URL. An editor / diff / git / review surface is NOT: unmounting it drops
+ * URL, and a company board holds nothing but what it reads. An editor / diff / git / review surface is NOT: unmounting it drops
  * unsaved local edits with no ring to replay them from, so the pane is refused
  * rather than quietly losing the user's work.
  */
-export const STASHABLE_SURFACE_TYPES: ReadonlySet<string> = new Set(['terminal', 'browser']);
+export const STASHABLE_SURFACE_TYPES: ReadonlySet<string> = new Set(['terminal', 'browser', 'board']);
 
 export type StashRefusal =
   | { ok: true }

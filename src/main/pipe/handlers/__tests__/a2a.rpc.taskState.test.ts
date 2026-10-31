@@ -399,3 +399,45 @@ describe('a2a.task.update — #1598 orphaned tasks and receiver cancel', () => {
     expect(worker.cancel).not.toHaveBeenCalled();
   });
 });
+
+describe('a2a.task.cancel — the caller pane decides, the worker waits for the verdict', () => {
+  beforeEach(() => {
+    sendToRendererMock.mockReset();
+    vi.mocked(worker.cancel).mockClear();
+  });
+
+  it('forwards the resolved pane to the daemon and leaves the worker running on a refusal', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([{ id: 'pane-member', surfacePtyIds: ['pty-member'] }]);
+    const router = setup(async (method, params) => {
+      calls.push({ method, params });
+      return { ok: false, error: 'a2a.task.cancel: only the pane that created this company task can cancel it' };
+    });
+    const res = await router.dispatch({
+      id: 'c1',
+      method: 'a2a.task.cancel',
+      params: { taskId: 't1', workspaceId: 'ws-home', senderPtyId: 'pty-member', trustedLane: true },
+    });
+    expect(JSON.stringify(res)).toContain('only the pane that created');
+    const cancel = calls.find((c) => c.method === 'a2a.task.cancel');
+    expect(cancel?.params.callerPaneId).toBe('pane-member');
+    // A wire value never makes the caller trusted.
+    expect(cancel?.params.trustedLane).toBeUndefined();
+    expect(worker.cancel).not.toHaveBeenCalled();
+  });
+
+  it('never hands the renderer a committed snapshot the caller supplied', async () => {
+    rendererWithPanes([]);
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string) => (method === 'a2a.task.cancel' ? { ok: true } : []));
+    const router = setup(async () => ({ ok: false, error: 'a2a.task.cancel: task not found: t1' }));
+    await router.dispatch({
+      id: 'c2',
+      method: 'a2a.task.cancel',
+      params: { taskId: 't1', workspaceId: 'ws-a', daemonCommitted: true, committedTask: { id: 't1' } },
+    });
+    const sent = sendToRendererMock.mock.calls.find((c) => c[1] === 'a2a.task.cancel')?.[2] as Record<string, unknown>;
+    expect(sent.daemonCommitted).toBeUndefined();
+    expect(sent.committedTask).toBeUndefined();
+    expect(worker.cancel).toHaveBeenCalledWith('t1');
+  });
+});

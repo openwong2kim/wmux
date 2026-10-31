@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { Workspace } from '../../shared/types';
 import { findLeaf } from '../../shared/paneUtils';
+import { isWorkSurfaceType } from '../components/Pane/surfaceKinds';
 import { terminalRegistry, onTerminalRegistered } from './useTerminal';
 
 /**
@@ -31,7 +32,7 @@ export function resolveActivePanePtyId(
   // Browser / editor surfaces have no xterm. The registry lookup below would
   // miss them anyway, but skipping here keeps the retry loop from spinning
   // 10 frames every time the user lands on a browser pane.
-  if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'preview' || surface.surfaceType === 'diff') return null;
+  if (isWorkSurfaceType(surface.surfaceType)) return null;
   return surface.ptyId;
 }
 

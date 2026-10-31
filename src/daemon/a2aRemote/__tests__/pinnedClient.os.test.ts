@@ -500,3 +500,57 @@ describe('PinnedTlsClient — event stream', () => {
     expect((err as PinnedClientError).code).toBe('protocol');
   });
 });
+
+describe('PinnedTlsClient — streamed download', () => {
+  it('hands the body to its reader as it arrives, and refuses another status before reading', async () => {
+    const { port, seen } = await httpsServer((req, res) => {
+      if (req.url === '/missing') {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end('{"ok":false,"error":"bad-request"}');
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Encoding': 'gzip' });
+      res.write(Buffer.alloc(64 * 1024, 1));
+      setTimeout(() => res.end(Buffer.alloc(64 * 1024, 2)), 50);
+    });
+    const c = client({ port, credential: 'wmuxpeer~id~secret' });
+    const got = await c.getStream('/file', { timeoutMs: 5_000, acceptEncoding: 'gzip' }, async ({ headers, body }) => {
+      let chunks = 0;
+      let size = 0;
+      for await (const chunk of body) {
+        chunks += 1;
+        size += (chunk as Buffer).length;
+      }
+      return { chunks, size, encoding: headers['content-encoding'] };
+    });
+    expect(got.size).toBe(128 * 1024);
+    expect(got.chunks).toBeGreaterThan(1);
+    expect(got.encoding).toBe('gzip');
+    expect(seen[0].headers['accept-encoding']).toBe('gzip');
+    expect(seen[0].headers.authorization).toBe('Bearer wmuxpeer~id~secret');
+
+    const consume = vi.fn(async () => 'read');
+    const err = await c.getStream('/missing', { timeoutMs: 5_000 }, consume).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(PinnedClientError);
+    expect(err).toMatchObject({ code: 'http', status: 404, json: { ok: false, error: 'bad-request' } });
+    expect(consume).not.toHaveBeenCalled();
+  });
+
+  it('cuts a body that outlasts its budget: the read fails, and the call settles as the reader does', async () => {
+    const { port } = await httpsServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+      res.write(Buffer.alloc(1024));
+    });
+    const t0 = Date.now();
+    const got = await client({ port }).getStream('/stalls', { timeoutMs: 300 }, async ({ body }) => {
+      try {
+        for await (const _chunk of body) { /* reads until the cut */ }
+        return 'ended';
+      } catch (err) {
+        return (err as PinnedClientError).code;
+      }
+    });
+    expect(got).toBe('timeout');
+    expect(Date.now() - t0).toBeLessThan(3_000);
+  });
+});

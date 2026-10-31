@@ -26,6 +26,20 @@ function send(files: unknown, opts: { at?: number; isError?: boolean; answered?:
   return `${lines.join('\n')}\n`;
 }
 
+/** A SendUserFile call and its result as Claude Code writes them: `cwd` on both lines, `toolUseResult` on the result. */
+function sendWith(files: string[], cwd: string, toolUseResult: unknown): string {
+  const id = `toolu_${++seq}`;
+  const timestamp = new Date(NOW).toISOString();
+  return `${[JSON.stringify({
+    type: 'assistant', timestamp, cwd,
+    message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'SendUserFile', input: { files, status: 'normal' } }] },
+  }), JSON.stringify({
+    type: 'user', timestamp, cwd,
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: '1 file delivered to user.' }] },
+    ...(toolUseResult === undefined ? {} : { toolUseResult }),
+  })].join('\n')}\n`;
+}
+
 /** A filler line of exactly `bytes` bytes, newline included. */
 function filler(bytes: number): string {
   const head = '{"type":"system","pad":"';
@@ -114,6 +128,79 @@ describe('SentFileIndex', () => {
     expect(await index.sentAt(transcript, '/s/a.png', NOW + SENT_FILE_MAX_AGE_MS + 1)).toBeNull();
     expect(await index.sentAt(transcript, '/s/./a.png', NOW)).toBeNull();
     expect(await index.sentAt(transcript, '/s/b.png', NOW)).toBeNull();
+  });
+
+  it('records a relative send under its absolute path: the validated attachment, else the call line\'s cwd', async () => {
+    const tiny = path.join(dir, 'tiny.png');
+    fs.writeFileSync(transcript, [
+      sendWith(['./tiny.png'], dir, { attachments: [{ path: tiny, isImage: true, pathValidated: true }] }),
+      // No attachments list (older Claude Code): resolved against the call line's cwd.
+      sendWith(['sub/old.png'], dir, undefined),
+    ].join(''));
+    const index = new SentFileIndex();
+    expect(await index.sentAt(transcript, tiny, NOW)).toBe(NOW);
+    expect(await index.sentAt(transcript, './tiny.png', NOW)).toBeNull();
+    expect(await index.sentAt(transcript, path.join(dir, 'sub', 'old.png'), NOW)).toBe(NOW);
+    expect(await index.sentAt(transcript, 'sub/old.png', NOW)).toBeNull();
+  });
+
+  it('grants only the validated attachment path when it differs from an absolute input path', async () => {
+    const asked = path.join(dir, 'asked.png');
+    const sent = path.join(dir, 'real', 'asked.png');
+    fs.writeFileSync(transcript, [
+      sendWith([asked], dir, { attachments: [{ path: sent, pathValidated: true }] }),
+      sendWith([path.join(dir, 'unchecked.png')], dir, { attachments: [{ path: path.join(dir, 'unchecked.png') }] }),
+    ].join(''));
+    const index = new SentFileIndex();
+    expect(await index.sentAt(transcript, asked, NOW)).toBeNull();
+    expect(await index.sentAt(transcript, sent, NOW)).toBe(NOW);
+    // An attachment Claude Code did not mark validated grants nothing.
+    expect(await index.sentAt(transcript, path.join(dir, 'unchecked.png'), NOW)).toBeNull();
+  });
+
+  it('serves the projected path through a symlinked cwd as the attachment it is the same file as', async () => {
+    const real = path.join(dir, 'real');
+    const link = path.join(dir, 'link');
+    fs.mkdirSync(real);
+    // A junction needs no privilege on Windows; elsewhere the type is ignored.
+    fs.symlinkSync(real, link, 'junction');
+    fs.writeFileSync(path.join(real, 'tiny.png'), 'png');
+    // Claude Code ran in the link (`/tmp/...`) and reported the real path (`/private/tmp/...`).
+    fs.writeFileSync(transcript, sendWith(['./tiny.png'], link, {
+      attachments: [{ path: path.join(real, 'tiny.png'), pathValidated: true }],
+    }));
+    const index = new SentFileIndex();
+    // What the projection hands the phone.
+    const projected = path.join(link, 'tiny.png');
+    expect(await index.sentAt(transcript, projected, NOW)).toBe(NOW);
+    // The file opened is the attachment's path, not the requested spelling.
+    expect(await index.grantFor(transcript, projected, NOW, 'SendUserFile')).toEqual({ at: NOW, path: path.join(real, 'tiny.png') });
+    expect(await index.sentAt(transcript, path.join(real, 'tiny.png'), NOW)).toBe(NOW);
+  });
+
+  it('refuses a projected path whose file is not the attachment\'s file', async () => {
+    const sent = path.join(dir, 'tiny.png');
+    const other = path.join(dir, 'other.png');
+    fs.writeFileSync(sent, 'sent');
+    fs.writeFileSync(other, 'other');
+    fs.writeFileSync(transcript, [
+      sendWith([other], dir, { attachments: [{ path: sent, pathValidated: true }] }),
+      sendWith(['./other.png'], dir, { attachments: [{ path: sent, pathValidated: true }] }),
+    ].join(''));
+    const index = new SentFileIndex();
+    expect(await index.sentAt(transcript, other, NOW)).toBeNull();
+    expect(await index.sentAt(transcript, sent, NOW)).toBe(NOW);
+  });
+
+  it('finds a send from a result without attachments under its /tmp respelling on macOS', async () => {
+    fs.writeFileSync(transcript, sendWith(['/tmp/s/a.png'], '/tmp/s', undefined));
+    const mac = new SentFileIndex({ platform: 'darwin' });
+    expect(await mac.sentAt(transcript, '/private/tmp/s/a.png', NOW)).toBe(NOW);
+    expect(await mac.sentAt(transcript, '/tmp/s/a.png', NOW)).toBe(NOW);
+    expect(await new SentFileIndex({ platform: 'linux' }).sentAt(transcript, '/private/tmp/s/a.png', NOW)).toBeNull();
+    // A grant from validated attachments is not respelled.
+    fs.writeFileSync(transcript, sendWith(['/tmp/s/b.png'], '/tmp/s', { attachments: [{ path: '/tmp/s/b.png', pathValidated: true }] }));
+    expect(await new SentFileIndex({ platform: 'darwin' }).sentAt(transcript, '/private/tmp/s/b.png', NOW)).toBeNull();
   });
 
   it('ignores error results, unanswered calls, malformed inputs and calls without a timestamp', async () => {
