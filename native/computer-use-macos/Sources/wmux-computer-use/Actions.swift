@@ -208,10 +208,18 @@ enum Focus {
     }
 }
 
-private func result(_ method: String, verified: Bool, note: String? = nil) -> JSON {
-    var out: JSON = ["method": method, "verification": verified ? "verified" : "unverified"]
+/// `delivery` (protocol ActionDelivery): `background` when the input went to
+/// the app alone, `foreground` when it was real input to the frontmost app.
+private func result(_ method: String, verified: Bool, delivery: String, note: String? = nil) -> JSON {
+    var out: JSON = ["method": method, "verification": verified ? "verified" : "unverified", "delivery": delivery]
     if let note { out["note"] = note }
     return out
+}
+
+/// An accessibility action is background unless the frontmost app changed
+/// while it ran (an app that brings itself forward when pressed).
+private func accessibilityDelivery(since front: pid_t?) -> String {
+    NSWorkspace.shared.frontmostApplication?.processIdentifier == front ? "background" : "foreground"
 }
 
 private func screenPoint(_ snap: Snapshot, index: Int?, point: CGPoint?) throws -> (CGPoint, AXUIElement?) {
@@ -273,10 +281,11 @@ enum Actions {
 
         // Action ladder: a plain left click on a pressable element is AXPress.
         if let element, button == .left, count == 1, mods.isEmpty, AX.actions(element).contains(kAXPressAction) {
+            let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
             if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
                 await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: false)
                 await Overlay.shared.press(at: point)
-                return result("accessibility", verified: false, note: "pressed through accessibility (AXPress)")
+                return result("accessibility", verified: false, delivery: accessibilityDelivery(since: front), note: "pressed through accessibility (AXPress)")
             }
         }
         try await Focus.requirePointer(target, window: snap.window, at: point)
@@ -287,7 +296,7 @@ enum Actions {
         Input.shared.withModifiers(mods) { flags in
             Input.shared.click(at: point, button: button, count: count, flags: flags)
         }
-        return result("synthetic", verified: false)
+        return result("synthetic", verified: false, delivery: "foreground")
     }
 
     static func setValue(_ p: JSON, _ snaps: SnapshotStore) throws -> JSON {
@@ -303,14 +312,15 @@ enum Actions {
         guard AX.isSettable(el, kAXValueAttribute) else {
             throw HelperError("value_not_settable", "element \(index) does not accept a value through accessibility")
         }
+        let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let rc = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
         guard rc == .success else {
             if isGone(rc) { throw HelperError("element_stale", "element \(index) went away") }
             throw HelperError("value_not_settable", "the app refused the value (AXError \(rc.rawValue))")
         }
         let readBack = AX.string(el, kAXValueAttribute)
-        if readBack == value { return result("accessibility", verified: true) }
-        return result("accessibility", verified: false, note: "the value read back differs from what was set")
+        if readBack == value { return result("accessibility", verified: true, delivery: accessibilityDelivery(since: front)) }
+        return result("accessibility", verified: false, delivery: accessibilityDelivery(since: front), note: "the value read back differs from what was set")
     }
 
     static func type(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
@@ -336,7 +346,7 @@ enum Actions {
         let before = focusedValue(target.pid)
         try typeChecked(text, target: target)
         let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
-        return result("synthetic", verified: verified)
+        return result("synthetic", verified: verified, delivery: "foreground")
     }
 
     /// Types `text` in short Unicode chunks (no clipboard), re-checking the
@@ -394,7 +404,7 @@ enum Actions {
             Input.shared.tap(key: code, flags: flags)
             usleep(4_000)
         }
-        return result("synthetic", verified: false)
+        return result("synthetic", verified: false, delivery: "foreground")
     }
 
     static func hotkey(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
@@ -412,7 +422,7 @@ enum Actions {
         Input.shared.withModifiers(mods) { flags in
             Input.shared.tap(key: code, flags: flags.union(KeyCodes.intrinsicFlags(for: key)))
         }
-        return result("synthetic", verified: false)
+        return result("synthetic", verified: false, delivery: "foreground")
     }
 
     static func scroll(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
@@ -441,6 +451,6 @@ enum Actions {
         if sent < amount {
             throw HelperError("window_not_focused", "another window covered the point after \(sent) of \(amount) notches; the rest was not sent")
         }
-        return result("synthetic", verified: false)
+        return result("synthetic", verified: false, delivery: "foreground")
     }
 }

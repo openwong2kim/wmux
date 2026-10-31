@@ -244,17 +244,48 @@ export interface AppState {
 
 export type ActionMethod = 'accessibility' | 'synthetic' | 'clipboard';
 
+/**
+ * How the input reached the app. `background`: sent to the target app or
+ * window alone, so the user's pointer, frontmost app and Space stay as they
+ * were. `foreground`: real input, which brought the app to the front or moved
+ * the pointer. A helper that does not report it (Windows today) leaves it out.
+ */
+export type ActionDelivery = 'background' | 'foreground';
+
 export interface ActionResult {
   method: ActionMethod;
   /** `verified` only when the effect was read back (e.g. value after setValue). */
   verification: 'verified' | 'unverified';
+  delivery?: ActionDelivery;
   note?: string;
 }
+
+/**
+ * Which ways of sending input without real input this macOS has, probed when
+ * the helper starts: the private SkyLight calls behind them change across OS
+ * releases. Whether an action went that way is its result's `delivery`. A
+ * helper that does not report it leaves `input` out.
+ */
+export interface HelperInputCapabilities {
+  /** Pointer events posted to one window of the target process. */
+  backgroundPointer: boolean;
+  /** Giving the target window focus without raising it or changing the frontmost app. */
+  focusWithoutRaise: boolean;
+  /**
+   * Key events that Chromium-based apps accept when posted to the process
+   * (SLSEventAuthenticationMessage, macOS 15 and later). Without it, those
+   * apps drop keys posted to them, so their keys need real input.
+   */
+  keyAuth: boolean;
+}
+
+const HELPER_INPUT_CAPABILITIES = ['backgroundPointer', 'focusWithoutRaise', 'keyAuth'] as const;
 
 export interface HelperCapabilities {
   actions: string[];
   modes: ObservationMode[];
   permissions: { accessibility: boolean; screenRecording: boolean };
+  input?: HelperInputCapabilities;
 }
 
 export interface HelperHello {
@@ -388,6 +419,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isInputCapabilities(value: unknown): value is HelperInputCapabilities {
+  return isRecord(value) && HELPER_INPUT_CAPABILITIES.every((key) => typeof value[key] === 'boolean');
+}
+
 /**
  * Parses one NDJSON line from a helper. Never throws: a malformed line comes
  * back as `invalid` so the caller can decide to kill the helper.
@@ -413,6 +448,11 @@ export function parseHelperLine(line: string): HelperLine {
       !isRecord(caps.permissions)
     ) {
       return { kind: 'invalid', reason: 'malformed hello' };
+    }
+    // Advisory: a malformed set is dropped, not a reason to refuse the helper.
+    if (caps.input !== undefined && !isInputCapabilities(caps.input)) {
+      const { input: _dropped, ...rest } = caps;
+      return { kind: 'hello', hello: { ...value, capabilities: rest } as unknown as HelperHello };
     }
     return { kind: 'hello', hello: value as unknown as HelperHello };
   }

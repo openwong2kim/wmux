@@ -687,7 +687,9 @@ export function capabilitiesForAgent(caps: HelperCapabilities): AgentCapabilitie
         : caps.permissions.accessibility && caps.permissions.screenRecording);
   const actions = caps.actions.filter((a) =>
     (caps.permissions.accessibility || !control.has(a)) && (a !== 'getAppState' || modes.length > 0));
-  return { ...caps, actions, modes, missingPermissions: missing };
+  // No Accessibility, no input at all: background ways of sending it do not apply.
+  const { input, ...rest } = caps;
+  return { ...rest, ...(caps.permissions.accessibility && input ? { input } : {}), actions, modes, missingPermissions: missing };
 }
 
 /** A window the helper reports must belong to the app it reports with it. */

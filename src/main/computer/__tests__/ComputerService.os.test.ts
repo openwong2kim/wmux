@@ -798,6 +798,12 @@ describe('capabilities for the agent', () => {
     expect(out.modes).toEqual(['vision']);
   });
 
+  it('drops the background input capabilities without Accessibility, and keeps them without Screen Recording', () => {
+    const input = { backgroundPointer: true, focusWithoutRaise: true, keyAuth: true };
+    expect(capabilitiesForAgent({ ...caps(false, true), input })).not.toHaveProperty('input');
+    expect(capabilitiesForAgent({ ...caps(true, false), input }).input).toEqual(input);
+  });
+
   it('drops screenshots without Screen Recording, and getAppState with neither', () => {
     expect(capabilitiesForAgent(caps(true, false))).toMatchObject({ missingPermissions: ['screenRecording'], modes: ['ax'] });
     const none = capabilitiesForAgent(caps(false, false));

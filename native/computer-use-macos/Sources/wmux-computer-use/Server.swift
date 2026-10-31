@@ -43,6 +43,7 @@ final class Server {
                 "accessibility": Permission.accessibility.granted,
                 "screenRecording": Permission.screenRecording.granted,
             ],
+            "input": SkyLight.capabilities,
         ]
     }
 

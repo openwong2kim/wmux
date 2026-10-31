@@ -91,6 +91,21 @@ describe('helper protocol', () => {
     expect(parseHelperLine('{"type":"hello","protocolVersion":1}').kind).toBe('invalid');
   });
 
+  it('reads the macOS input capabilities a hello carries, and drops a malformed set', () => {
+    const hello = (input: unknown) => JSON.stringify({
+      type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: '4.13.0',
+      capabilities: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true }, input },
+    });
+    const input = { backgroundPointer: true, focusWithoutRaise: true, keyAuth: false };
+    const parsed = parseHelperLine(hello(input));
+    expect(parsed.kind === 'hello' && parsed.hello.capabilities.input).toEqual(input);
+    for (const bad of [{ backgroundPointer: true, focusWithoutRaise: true }, { ...input, keyAuth: 'yes' }, null]) {
+      const dropped = parseHelperLine(hello(bad));
+      expect(dropped.kind).toBe('hello');
+      expect(dropped.kind === 'hello' && 'input' in dropped.hello.capabilities).toBe(false);
+    }
+  });
+
   it('parses success and error responses', () => {
     expect(parseHelperLine('{"id":3,"ok":true,"result":{"a":1}}')).toEqual({
       kind: 'response',

@@ -204,10 +204,23 @@ snapshot is the v1.1 token saver.
   each keyboard batch, that focus is on the target and the screen is not
   locked, and answers `window_not_focused` when it is not.
 - **Honest results.** Every action returns
-  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", note? }`.
+  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, note? }`.
   `verified` means state was read back, for example the value after
   `setValue`. The tool description tells the agent never to report an
-  unverified action as done.
+  unverified action as done. `delivery` says how the input reached the app:
+  `background` when it went to the target app alone (the user's pointer,
+  frontmost app and Space stay as they were), `foreground` when it was real
+  input to the frontmost app. The macOS helper reports it; the Windows helper
+  leaves it out.
+- **Input capabilities (macOS).** `hello.capabilities.input` is
+  `{ backgroundPointer, focusWithoutRaise, keyAuth }`: which ways of sending
+  input without real input this macOS has, probed when the helper starts,
+  since the private SkyLight calls behind them change across OS releases.
+  Whether an action went that way is its result's `delivery`. `keyAuth` is the
+  key-event authentication Chromium-based apps need for keys posted to their
+  process; it exists from macOS 15, and without it those apps drop such keys.
+  The Windows helper leaves `input` out, and main drops it when Accessibility
+  is not granted.
 
 ## Errors
 
