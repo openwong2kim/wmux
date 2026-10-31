@@ -44,6 +44,15 @@ export const STARTUP_DA1_REPLY = '\x1b[?62;4;9;22c';
  */
 const STARTUP_DA1_SCAN_BYTES = 64;
 
+/**
+ * After an Esc closes a dialog, how often the transcript is read for the turn
+ * end it records (watchDialogCancel), within ESC_INTERRUPT_CONFIRM_MS. Claude
+ * Code wrote it 0.8 s after the Esc in a live capture.
+ */
+const DIALOG_CANCEL_PROBE_MS = 500;
+/** Clock slack between the Esc stamp and the transcript's own timestamp. */
+const DIALOG_CANCEL_SKEW_MS = 1_000;
+
 // eslint-disable-next-line no-control-regex
 const CSI_SEQUENCE = /^\x1b\[[0-?]*[ -/]*[@-~]/;
 // eslint-disable-next-line no-control-regex
@@ -352,6 +361,8 @@ export class DaemonPTYBridge extends EventEmitter {
   private lastEscAt = 0;
   /** The `lastEscAt` an idle title already reported as an interrupt (#2264). */
   private titleEdgeEscAt = 0;
+  /** Pending transcript read after an Esc closed a dialog (watchDialogCancel). */
+  private dialogCancelTimer: ReturnType<typeof setTimeout> | null = null;
   /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
   private lastTitle = '';
   private lastTitleAt = 0;
@@ -626,6 +637,41 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     if (!answered) return;
     this.startAnsweredTurn(wasAwaiting, 'input', promptSubmitted);
+    if (answerKey && isEscapeChunk(keyProbe)) this.watchDialogCancel();
+  }
+
+  /**
+   * A lone Esc closed the dialog the turn was blocked on. Claude Code ends the
+   * turn there (`[Request interrupted by user for tool use]`) with no Stop
+   * hook, and a declined question prints "User declined to answer questions",
+   * not the `Interrupted` row, so nothing on screen confirms it. The pane went
+   * back to running on the answer and stayed there until the next prompt.
+   * The transcript records the end: read it back inside the Esc confirm
+   * window, and an end written after this Esc settles the turn as the
+   * interrupt it is.
+   */
+  private watchDialogCancel(): void {
+    const sessionId = this.sessionId;
+    if (!sessionId || !DaemonPTYBridge.transcriptTurnEndProbe) return;
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    const escAt = this.lastEscAt;
+    const probe = (): void => {
+      this.dialogCancelTimer = null;
+      // A later Esc owns its own read; a title edge may already have reported this one.
+      if (this.sessionId !== sessionId || this.lastEscAt !== escAt || this.titleEdgeEscAt === escAt) return;
+      if (!this.turnOpen && !this.turnSoftClosed) return;
+      const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(sessionId);
+      if (endedAt !== undefined && endedAt >= Math.max(this.turnOpenedAt, escAt - DIALOG_CANCEL_SKEW_MS)) {
+        this.titleEdgeEscAt = escAt;
+        this.closeInterruptedTurn();
+        this.emit('turnInterrupted', { sessionId, agent: this.agentDetector?.getLastAgent() || 'Claude Code' });
+        return;
+      }
+      if (Date.now() - escAt + DIALOG_CANCEL_PROBE_MS < ESC_INTERRUPT_CONFIRM_MS) {
+        this.dialogCancelTimer = setTimeout(probe, DIALOG_CANCEL_PROBE_MS);
+      }
+    };
+    this.dialogCancelTimer = setTimeout(probe, DIALOG_CANCEL_PROBE_MS);
   }
 
   /**
@@ -2661,6 +2707,8 @@ export class DaemonPTYBridge extends EventEmitter {
 
     if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
     this.resizeGuardTimer = null;
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    this.dialogCancelTimer = null;
 
     // AgentDetector subscriptions: without explicit unsubscribe, recovered
     // sessions or repeated setupDataForwarding calls would accumulate
