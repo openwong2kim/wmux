@@ -40,6 +40,8 @@ export interface NativeTerminalCore {
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string) => NativeTransport;
+  /** Windows only (`process-table-v1`). */
+  processTable?(withCommandLines: boolean): Promise<Array<{ pid: number; ppid: number; name: string; created?: number | null; cmdline?: string | null }>>;
 }
 export interface NativeOscBatch { codes: Float64Array; data: string[] }
 export interface NativeOutputInterpreter {
