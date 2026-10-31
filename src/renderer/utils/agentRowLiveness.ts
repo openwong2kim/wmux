@@ -23,20 +23,39 @@ export function clearSurfaceAgentsKnownGone(
   }
 }
 
+/** When each pane's agent process-death edge arrived (see applyProcessExits). */
+const processExitAt = new Map<string, number>();
+
 /**
  * The daemon's agent process-death edge for one pane: the alive=false branch
  * of clearSurfaceAgentsKnownGone, run when the edge arrives instead of on the
  * next 15 s poll. Only the agent that died is dropped: a pane whose detected
- * agent is another kind (a Codex started after the Claude) keeps its row. An
- * unknown pane agent cannot contradict the tracker, as in main's
- * onAgentProcessExit.
+ * agent is another kind (a Codex started after the Claude) keeps its row, and
+ * so does a custom or unknown pane agent, which the edge may not be about (a
+ * late edge from an earlier, standard agent in that pane). The poll still
+ * settles those.
  */
 export function clearSurfaceAgentOnProcessExit(ptyId: string, slug: string | null, at: number): void {
   if (!slug) return;
   const store = useStore.getState();
   const agent = store.surfaceAgent[ptyId];
   if (!agent?.name) return;
-  const paneSlug = agent.slug ?? agentDisplayToSlug(agent.name);
-  if (paneSlug && paneSlug !== slug) return;
+  if ((agent.slug ?? agentDisplayToSlug(agent.name)) !== slug) return;
+  processExitAt.set(ptyId, at);
+  useStore.setState((state) => { state.agentAliveByPtyId[ptyId] = false; });
   store.clearSurfaceAgent(ptyId, store.commandRunningByPtyId[ptyId] === true ? undefined : at);
+}
+
+/**
+ * A liveness snapshot asked for before a pane's death edge arrived may have
+ * read the daemon before the death and still say alive. Mark those panes dead
+ * in it, so the poll neither re-seeds nor re-stamps the row the edge dropped.
+ * A snapshot asked for after the edge is current (a relaunch reads alive
+ * there) and retires the mark.
+ */
+export function applyProcessExits(agentAlive: Record<string, boolean>, requestedAt: number): void {
+  for (const [ptyId, at] of processExitAt) {
+    if (requestedAt < at) agentAlive[ptyId] = false;
+    else processExitAt.delete(ptyId);
+  }
 }

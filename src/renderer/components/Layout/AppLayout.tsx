@@ -116,7 +116,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { noteDaemonConnected, noteDaemonDisconnected, noteDaemonGaveUp, noteDaemonReconnecting, notePaneReattached, notePaneWriteDropped, setDaemonLinkSurfaceResolver, type DaemonPaneRef } from '../../daemon/daemonLinkNotice';
 import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
-import { clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone } from '../../utils/agentRowLiveness';
+import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone } from '../../utils/agentRowLiveness';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import { AgentToolbarStrip } from '../AgentToolbar/ToolbarHost';
@@ -1986,6 +1986,7 @@ export default function AppLayout() {
           if (s.commandRunning !== undefined) commandRunningSnapshot[s.id] = s.commandRunning;
           if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
         }
+        applyProcessExits(agentAliveSnapshot, requestedAt);
         useStore.getState().hydrateSupervision(snapshot);
         useStore.getState().hydrateResume(resumeSnapshot);
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
@@ -2083,6 +2084,7 @@ export default function AppLayout() {
           if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
           if (s.resumeAgentOnScreen !== undefined) onScreenSnapshot[s.id] = s.resumeAgentOnScreen;
         }
+        applyProcessExits(agentAliveSnapshot, requestedAt);
         useStore.getState().hydrateResumeBindings(snapshot);
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);

@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { useStore } from '../../stores';
-import { clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone } from '../agentRowLiveness';
+import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone } from '../agentRowLiveness';
+import { planLiveAgentSeed } from '../../channels/agentCandidateSeed';
 
 // A pane's sidebar agent row exists while surfaceAgent[ptyId] has a name
 // (selectWorkspaceAgentRoster). These pin when the daemon's agent
@@ -13,6 +14,7 @@ describe('agent row liveness', () => {
       state.commandRunningByPtyId = {};
       state.agentAliveByPtyId = {};
     });
+    applyProcessExits({}, Number.POSITIVE_INFINITY); // retire every edge mark
   });
 
   const claudeIn = (ptyId: string) => useStore.getState().setSurfaceAgent(ptyId, 'Claude Code', 'idle', 'claude');
@@ -50,10 +52,45 @@ describe('agent row liveness', () => {
     expect(row('p1')?.name).toBe('Claude Code');
   });
 
-  it('an unknown pane agent cannot contradict the tracker', () => {
+  it('a custom or unknown pane agent keeps its row: the edge may be from an earlier agent there', () => {
     useStore.getState().setSurfaceAgent('p1', 'Some Wrapper', 'idle');
     clearSurfaceAgentOnProcessExit('p1', 'claude', 200);
+    expect(row('p1')?.name).toBe('Some Wrapper');
+    expect(useStore.getState().agentAliveByPtyId.p1).toBeUndefined();
+  });
+
+  it('the edge marks the pane\'s agent dead in the liveness map', () => {
+    claudeIn('p1');
+    useStore.setState((state) => { state.agentAliveByPtyId.p1 = true; });
+    clearSurfaceAgentOnProcessExit('p1', 'claude', 200);
+    expect(useStore.getState().agentAliveByPtyId.p1).toBe(false);
+  });
+
+  it('a poll answer asked for before the edge cannot bring the row back', () => {
+    claudeIn('p1');
+    clearSurfaceAgentOnProcessExit('p1', 'claude', 200);
+    // Serialized before the death: the daemon still said alive, and named the agent.
+    const sessions = [{ id: 'p1', liveAgent: 'claude' }];
+    const alive: Record<string, boolean> = { p1: true };
+    applyProcessExits(alive, 150);
+    expect(alive.p1).toBe(false);
+    clearSurfaceAgentsKnownGone(alive, {}, 150);
+    expect(planLiveAgentSeed(sessions, useStore.getState().surfaceAgent, alive, {})).toEqual([]);
     expect(row('p1')).toBeUndefined();
+  });
+
+  it('a poll answer asked for after the edge is current: a relaunched agent is seeded', () => {
+    claudeIn('p1');
+    clearSurfaceAgentOnProcessExit('p1', 'claude', 200);
+    const alive: Record<string, boolean> = { p1: true };
+    applyProcessExits(alive, 250);
+    expect(alive.p1).toBe(true);
+    expect(planLiveAgentSeed([{ id: 'p1', liveAgent: 'claude' }], useStore.getState().surfaceAgent, alive, {}))
+      .toEqual([{ ptyId: 'p1', slug: 'claude', status: 'idle' }]);
+    // The mark is retired: a later stale-looking stamp no longer applies.
+    const later: Record<string, boolean> = { p1: true };
+    applyProcessExits(later, 100);
+    expect(later.p1).toBe(true);
   });
 
   it('only the edge\'s pane is touched', () => {

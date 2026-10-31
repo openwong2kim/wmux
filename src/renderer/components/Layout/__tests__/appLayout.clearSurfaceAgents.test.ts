@@ -62,6 +62,17 @@ describe('AppLayout clearSurfaceAgents wiring (#1210 / #1228)', () => {
     expect(source).toMatch(/offAgentExit\(\);/);
   });
 
+  it('both polls mark a pane dead in a snapshot asked for before its death edge', () => {
+    const marks = [...source.matchAll(/applyProcessExits\(agentAliveSnapshot, requestedAt\);/g)].map((m) => m.index ?? -1);
+    expect(marks.length).toBe(2);
+    // Before the snapshot is hydrated and before the clear and the seed read it.
+    for (const at of marks) {
+      const hydrate = source.indexOf('hydrateAgentAlive(agentAliveSnapshot);', at);
+      expect(hydrate).toBeGreaterThan(at);
+      expect(source.slice(at, hydrate)).not.toMatch(/\bawait\b|\breturn\b|seedSurfaceAgentsFromProcess|clearSurfaceAgentsKnownGone/);
+    }
+  });
+
   it('the agent-seed filter excludes panes known dead', () => {
     expect(source).toMatch(
       /\)\.filter\(\(id\) => agentAliveSnapshot\[id\] !== false && commandRunningSnapshot\[id\] !== false\);/,
