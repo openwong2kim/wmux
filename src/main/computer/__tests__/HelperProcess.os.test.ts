@@ -48,6 +48,15 @@ function makeHelper(mode: string, extra: Partial<ConstructorParameters<typeof He
   return { helper, requests, releases, configures };
 }
 
+async function dispositionOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await promise;
+    return 'resolved';
+  } catch (err) {
+    return err instanceof ComputerError ? err.disposition : `non-computer error: ${String(err)}`;
+  }
+}
+
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -129,6 +138,25 @@ describe('HelperProcess', () => {
   it('carries a helper error code through', async () => {
     const { helper } = makeHelper('ok');
     expect(await codeOf(helper.request('fail' as never, {} as never))).toBe('element_stale');
+  });
+
+  it('says whether a failed input action may be retried: refused before it was sent, or after', async () => {
+    const scroll = (amount: number) => ({ snapshotId: 's', target: TARGET, index: 1, direction: 'down' as const, amount });
+    const { helper } = makeHelper('ok');
+    expect(await dispositionOf(helper.request('scroll', scroll(1)))).toBe('not_delivered');
+    expect(await dispositionOf(helper.request('scroll', scroll(2)))).toBe('delivered_unverified');
+    // Observation errors carry none.
+    expect(await dispositionOf(helper.request('fail' as never, {} as never))).toBeUndefined();
+    // A helper that never started got nothing.
+    const refused = makeHelper('ok', {
+      verify: async () => { throw new ComputerError('helper_unavailable', 'the computer-use helper failed its code-signature check'); },
+    });
+    expect(await dispositionOf(refused.helper.request('scroll', scroll(1)))).toBe('not_delivered');
+    // One that hung on the request may have sent it.
+    const hung = makeHelper('hang', { timeoutFor: () => 300 });
+    expect(await dispositionOf(hung.helper.request('click', {
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+    }))).toBe('delivered_unverified');
   });
 
   it('refuses a helper that speaks another protocol version (after one retry)', async () => {

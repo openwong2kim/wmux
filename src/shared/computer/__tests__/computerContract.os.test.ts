@@ -117,6 +117,15 @@ describe('helper protocol', () => {
     });
   });
 
+  it('keeps a helper error\'s disposition and drops one it does not know', () => {
+    const error = (disposition: unknown) => {
+      const parsed = parseHelperLine(JSON.stringify({ id: 4, ok: false, error: { code: 'window_not_focused', message: 'x', disposition } }));
+      return parsed.kind === 'response' && !parsed.response.ok ? parsed.response.error : null;
+    };
+    expect(error('delivered_unverified')).toEqual({ code: 'window_not_focused', message: 'x', disposition: 'delivered_unverified' });
+    expect(error('maybe')).toEqual({ code: 'window_not_focused', message: 'x' });
+  });
+
   it('downgrades an unknown helper error code to internal', () => {
     const parsed = parseHelperLine('{"id":4,"ok":false,"error":{"code":"weird","message":"x"}}');
     expect(parsed.kind === 'response' && !parsed.response.ok && parsed.response.error.code).toBe('internal');

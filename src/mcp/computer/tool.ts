@@ -64,9 +64,12 @@ const COMPUTER_SHAPE = {
   amount: z.number().int().min(1).max(50).optional(),
 };
 
-function errorResult(err: unknown): CallToolResult {
+/** `input`: an input action, whose error without a disposition (the pipe timed out or broke) may have been delivered. */
+function errorResult(err: unknown, input = false): CallToolResult {
   const message = err instanceof Error ? err.message : String(err);
-  return { isError: true, content: [{ type: 'text', text: formatComputerError(parseComputerErrorMessage(message)) }] };
+  const payload = parseComputerErrorMessage(message);
+  if (input && !payload.disposition) payload.disposition = 'delivered_unverified';
+  return { isError: true, content: [{ type: 'text', text: formatComputerError(payload) }] };
 }
 
 function textResult(value: unknown): CallToolResult {
@@ -141,7 +144,7 @@ export function createComputerTool(rpc: ComputerRpc) {
           }
         }
       } catch (err) {
-        return errorResult(err);
+        return errorResult(err, isControlAction(input.action));
       }
     },
   });

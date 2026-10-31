@@ -238,6 +238,21 @@ describe('computer MCP tool', () => {
     expect(text).toContain('Do not retry');
   });
 
+  it('gives an input action\'s error its disposition, and one the pipe lost may have been delivered', async () => {
+    enabled.value = true;
+    const errors = [
+      new Error(encodeComputerErrorMessage({ code: 'input_busy', message: 'another agent', disposition: 'not_delivered' })),
+      new Error('rpc timed out'),
+    ];
+    reply = () => { throw errors.shift(); };
+    const client = await connect();
+    const click = () => client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 3 } });
+    const texts = [await click(), await click()].map((res) => (res.content as Array<{ text: string }>)[0].text);
+    await client.close();
+    expect(texts[0]).toContain('[input_busy]: another agent\ndisposition: not_delivered (no input was sent; retrying is safe)');
+    expect(texts[1]).toContain('disposition: delivered_unverified');
+  });
+
   it('sends openApp to computer.act with its app selector', async () => {
     enabled.value = true;
     reply = () => ({ app: { id: 'com.apple.TextEdit', name: 'TextEdit' }, window: null });

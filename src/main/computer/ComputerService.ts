@@ -16,7 +16,7 @@
 // into acting on an app main never vetted. openApp has no snapshot: it checks
 // the selector before the launch and the launched app after it.
 
-import { ComputerError } from '../../shared/computer/errors';
+import { ComputerError, withDisposition } from '../../shared/computer/errors';
 import {
   BLOCK_REASON_TEXT,
   blockReasonFor,
@@ -332,8 +332,30 @@ export class ComputerService {
     return state;
   }
 
+  /**
+   * An input action. Its result's disposition follows its verification (a
+   * call that returned is no proof of delivery); an error before the request
+   * went to the helper is `not_delivered`, and after it the helper's verdict,
+   * or `delivered_unverified` when there is none.
+   */
   async control(agent: ComputerAgent, params: ControlParams): Promise<ActionResult> {
-    const helper = this.ensureReady();
+    let requested = false;
+    try {
+      const result = await this.dispatchControl(agent, params, () => { requested = true; });
+      return { ...result, disposition: result.verification === 'verified' ? 'delivered' : 'delivered_unverified' };
+    } catch (err) {
+      throw withDisposition(err, requested ? 'delivered_unverified' : 'not_delivered');
+    }
+  }
+
+  private async dispatchControl(agent: ComputerAgent, params: ControlParams, onRequest: () => void): Promise<ActionResult> {
+    const ready = this.ensureReady();
+    const helper = {
+      request<M extends HelperMethod>(method: M, p: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']> {
+        onRequest();
+        return ready.request(method, p);
+      },
+    };
     // No input without a working emergency stop.
     if (!this.deps.stopKey.arm()) {
       fail(
@@ -428,6 +450,19 @@ export class ComputerService {
    * the app the helper opened is checked again after.
    */
   async openApp(agent: ComputerAgent, params: { app: string }): Promise<{ app: AppInfo; window: WindowInfo | null }> {
+    let requested = false;
+    try {
+      return await this.dispatchOpenApp(agent, params, () => { requested = true; });
+    } catch (err) {
+      throw withDisposition(err, requested ? 'delivered_unverified' : 'not_delivered');
+    }
+  }
+
+  private async dispatchOpenApp(
+    agent: ComputerAgent,
+    params: { app: string },
+    onLaunch: () => void,
+  ): Promise<{ app: AppInfo; window: WindowInfo | null }> {
     const helper = this.ensureReady();
     if (!this.deps.stopKey.arm()) {
       fail(
@@ -472,6 +507,7 @@ export class ComputerService {
     const now = this.now();
     this.takeInputLock(agent, now);
     this.checkRate(agent.key, now);
+    onLaunch();
     const opened = await helper.request('openApp', { app: params.app });
     this.assertCurrent(generation);
     const reason = blockReasonFor(opened.app, this.deps.blockContext());

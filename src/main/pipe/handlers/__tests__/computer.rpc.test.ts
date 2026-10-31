@@ -197,6 +197,16 @@ describe('computer.rpc', () => {
     expect(openApp).toHaveBeenCalledTimes(1);
   });
 
+  it('stamps an input action refused at the pipe as not_delivered, and passes the service\'s verdict through', async () => {
+    const control = vi.fn(async () => { throw new ComputerError('window_not_focused', 'covered', 'delivered_unverified'); });
+    const { call } = setup({ control } as never);
+    const act = (params: Record<string, unknown>) =>
+      call('computer.act', { action: 'click', snapshotId: 's1', index: 2, senderPtyId: 'pty-a1', ...params }, { clientName: 'c' });
+    expect(await errorOf(act({}))).toEqual({ code: 'window_not_focused', message: 'covered', disposition: 'delivered_unverified' });
+    expect(await errorOf(act({ button: 7 }))).toMatchObject({ code: 'invalid_argument', disposition: 'not_delivered' });
+    expect(control).toHaveBeenCalledTimes(1);
+  });
+
   it('encodes service errors as [code] message and wraps unknown ones as internal', async () => {
     const { call } = setup({
       listApps: vi.fn(async () => { throw new ComputerError('permission_missing', 'accessibility'); }),
@@ -258,7 +268,7 @@ describe('computer.rpc with the real service', () => {
     // A drives; B is held off by A's lock, and told who holds it by name only.
     await call('computer.act', { action: 'click', snapshotId: a.snapshotId, index: 1, senderPtyId: 'pty-a1' }, ctx);
     const busy = await errorOf(call('computer.act', { action: 'click', snapshotId: b.snapshotId, index: 1, senderPtyId: 'pty-a2' }, ctx));
-    expect(busy).toEqual({ code: 'input_busy', message: 'claude-code in workspace "api" is using the desktop' });
+    expect(busy).toEqual({ code: 'input_busy', message: 'claude-code in workspace "api" is using the desktop', disposition: 'not_delivered' });
   });
 });
 
@@ -292,6 +302,7 @@ describe('computer.rpc on a protected browser pane', () => {
     expect(error).toEqual({
       code: 'policy_denied',
       message: "computer use is not available from a protected browser pane: this pane's browser is protected",
+      ...(method === 'computer.act' && { disposition: 'not_delivered' }),
     });
     expect(protection).toHaveBeenCalledWith(method, ctx);
     expect(getService).not.toHaveBeenCalled();

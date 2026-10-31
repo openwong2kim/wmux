@@ -282,10 +282,18 @@ enum Actions {
         // Action ladder: a plain left click on a pressable element is AXPress.
         if let element, button == .left, count == 1, mods.isEmpty, AX.actions(element).contains(kAXPressAction) {
             let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
-            if AXUIElementPerformAction(element, kAXPressAction as CFString) == .success {
+            let rc = AXUIElementPerformAction(element, kAXPressAction as CFString)
+            // cannotComplete: the app did not answer in time (a press that
+            // opens a modal often does), so it may have acted. A real click
+            // now could press twice; any other error refused the press.
+            if rc == .success || rc == .cannotComplete {
+                Input.shared.noteSent()
                 await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: false)
                 await Overlay.shared.press(at: point)
-                return result("accessibility", verified: false, delivery: accessibilityDelivery(since: front), note: "pressed through accessibility (AXPress)")
+                let note = rc == .success
+                    ? "pressed through accessibility (AXPress)"
+                    : "pressed through accessibility (AXPress), which did not answer in time; the app may have acted on it"
+                return result("accessibility", verified: false, delivery: accessibilityDelivery(since: front), note: note)
             }
         }
         try await Focus.requirePointer(target, window: snap.window, at: point)
@@ -314,6 +322,8 @@ enum Actions {
         }
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let rc = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
+        // As for AXPress: an app that did not answer may have taken the value.
+        if rc == .success || rc == .cannotComplete { Input.shared.noteSent() }
         guard rc == .success else {
             if isGone(rc) { throw HelperError("element_stale", "element \(index) went away") }
             throw HelperError("value_not_settable", "the app refused the value (AXError \(rc.rawValue))")

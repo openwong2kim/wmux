@@ -11,7 +11,9 @@
 // implement layer 2 verbatim; bump COMPUTER_PROTOCOL_VERSION on any
 // incompatible change so main restarts or refuses a mismatched helper.
 
-import { isComputerErrorCode, type ComputerErrorPayload } from './errors';
+import { isActionDisposition, isComputerErrorCode, type ActionDisposition, type ComputerErrorPayload } from './errors';
+
+export type { ActionDisposition } from './errors';
 
 // 2: closed key vocabulary, `hotkey` as { modifiers, key }, and `target` on
 // every control request (#1689). No helper ever spoke 1 in a release.
@@ -257,24 +259,27 @@ export interface ActionResult {
   /** `verified` only when the effect was read back (e.g. value after setValue). */
   verification: 'verified' | 'unverified';
   delivery?: ActionDelivery;
+  disposition?: ActionDisposition;
   note?: string;
 }
 
 /**
- * Which ways of sending input without real input this macOS has, probed when
- * the helper starts: the private SkyLight calls behind them change across OS
- * releases. Whether an action went that way is its result's `delivery`. A
- * helper that does not report it leaves `input` out.
+ * Which ways of sending input without real input this machine has, probed
+ * when the helper starts. Each flag means the same on every OS; on macOS the
+ * private SkyLight calls behind them change across releases. Whether an
+ * action went that way is its result's `delivery`. A helper that does not
+ * report it leaves `input` out.
  */
 export interface HelperInputCapabilities {
-  /** Pointer events posted to one window of the target process. */
+  /** Pointer events sent to one window of the target app, the user's pointer left where it is. */
   backgroundPointer: boolean;
   /** Giving the target window focus without raising it or changing the frontmost app. */
   focusWithoutRaise: boolean;
   /**
-   * Key events that Chromium-based apps accept when posted to the process
-   * (SLSEventAuthenticationMessage, macOS 15 and later). Without it, those
-   * apps drop keys posted to them, so their keys need real input.
+   * Key events sent that way reach Chromium-based apps. Without it, those
+   * apps drop such keys, so their keys need real input. On macOS this is the
+   * key-event authentication message (SLSEventAuthenticationMessage, macOS 15
+   * and later).
    */
   keyAuth: boolean;
 }
@@ -464,7 +469,7 @@ export function parseHelperLine(line: string): HelperLine {
     return { kind: 'response', response: { id: value.id, ok: true, result: value.result } };
   }
   if (value.ok === false && isRecord(value.error)) {
-    const { code, message } = value.error;
+    const { code, message, disposition } = value.error;
     return {
       kind: 'response',
       response: {
@@ -473,6 +478,7 @@ export function parseHelperLine(line: string): HelperLine {
         error: {
           code: isComputerErrorCode(code) ? code : 'internal',
           message: typeof message === 'string' ? message : 'helper error',
+          ...(isActionDisposition(disposition) && { disposition }),
         },
       },
     };

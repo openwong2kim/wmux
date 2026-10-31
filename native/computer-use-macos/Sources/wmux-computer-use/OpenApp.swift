@@ -97,6 +97,8 @@ enum OpenApp {
     /// A launch that takes longer may still be under way: an instance of the
     /// bundle that is already running by then is used instead of failing.
     private static func launch(_ url: URL, name: String) async throws -> NSRunningApplication {
+        // Counted before it returns: a launch that times out may still happen.
+        Input.shared.noteSent()
         let config = NSWorkspace.OpenConfiguration()
         config.activates = true
         config.addsToRecentItems = false
