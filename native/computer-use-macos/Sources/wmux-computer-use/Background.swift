@@ -216,13 +216,19 @@ enum Background {
     /// The re-check before every typed chunk and key press: the screen is not
     /// locked, no side effect of ours (check, with the focus click's `point`),
     /// the window still focused in its app, and no password field has focus.
-    /// The window must be on screen only before the first key
+    /// The target app coming to the front stops it whoever caused it. The
+    /// window must be on screen only before the first key
     /// (`beforeFirstKey`): keys posted to the app reach it anyway, and the
     /// user switching Spaces mid-type is no reason to stop. The system-wide
     /// secure-input flag counts only while the target is frontmost.
     static func requireStillSafe(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState, point: CGPoint? = nil,
                                  beforeFirstKey: Bool) throws {
         if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; the rest was not sent") }
+        // Whoever brought it forward, the user's own keys now go to the
+        // window we made key, so ours would interleave with theirs.
+        if cameForward(target.pid, start: start.front, now: NSWorkspace.shared.frontmostApplication?.processIdentifier) {
+            throw Stop(reason: "the target app came to the front")
+        }
         try check(target, windowID, since: start, point: point, requireOnScreen: beforeFirstKey)
         guard AX.element(AX.app(target.pid), kAXFocusedWindowAttribute).flatMap(AX.windowID) == windowID else {
             throw Stop(reason: "the target window is no longer the app's focused window")

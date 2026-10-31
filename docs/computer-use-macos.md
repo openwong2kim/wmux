@@ -227,10 +227,12 @@ is not re-walked.
     front, and the Space has not switched to the target window's. The user
     moving the pointer elsewhere, or switching to another app, does not stop
     it, and once the user gave real input (HID) since the action began, no
-    such change is taken for ours. The pointer is checked against a `type` focus click once, right
-    after that click. Keys also stop on a password field focused in the
-    target, with or without an index, and on system-wide secure input only
-    while the target is the frontmost app.
+    such change is taken for ours. The pointer is checked against a `type`
+    focus click once, right after that click. Keys also stop when the target
+    app comes to the front, whoever brought it (the user's typing would go to
+    the window made key), on a password field focused in the target, with or
+    without an index, and on system-wide secure input only while the target
+    is the frontmost app.
   - A check that fails before anything was posted sends the input as real
     input instead. Once something was posted (an event, or an event record
     that moved key status inside the app), the call ends with

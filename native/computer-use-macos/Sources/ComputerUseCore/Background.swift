@@ -68,7 +68,6 @@ public let secureKeyboardEntryApps: Set<String> = [
     "org.alacritty",
     "com.github.wez.wezterm",
     "co.zeit.hyper",
-    "com.electron.wmux",
 ]
 
 public func secureKeyboardEntryApp(bundleID: String?) -> Bool {
