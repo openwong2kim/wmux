@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { WebglAddon as SharedContextWebglAddon } from '../terminal/sharedWebgl/addon/WebglAddon';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
@@ -664,6 +665,16 @@ export async function attachForWrite(ptyId: string, promote = true): Promise<'un
 // a fast unmount→remount can briefly run two instances on the same ptyId, and
 // the pool's accounting must treat them as distinct slots.
 let webglTokenSeq = 0;
+
+// EXPERIMENTAL (uiSlice.terminalSharedWebgl, default off): every pane draws
+// through one shared WebGL2 context (terminal/sharedWebgl) instead of one of
+// its own. Read when a pane's addon is built, so a change applies to addons
+// built after it. Such a pane holds no context, so it takes no slot in the
+// context pool and is never evicted to the DOM renderer.
+function sharedWebglEnabled(): boolean {
+  return useStore.getState().terminalSharedWebgl === true;
+}
+webglContextPool.setUnbudgeted(sharedWebglEnabled);
 
 // A hidden terminal KEEPS its WebGL context. It gives the context back only
 // when webglContextPool evicts it (LRU, once more terminals want one than the
@@ -1827,7 +1838,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     function loadWebgl() {
       if (webglAddonRef.current) return; // already loaded
       try {
-        const addon = new WebglAddon();
+        const addon: WebglAddon = sharedWebglEnabled()
+          ? new SharedContextWebglAddon({ sharedContext: true })
+          : new WebglAddon();
         addon.onContextLoss(() => {
           // A real GPU driver reset (not our pool eviction): the context is
           // gone. Dispose, drop to xterm's DOM renderer, and free our pool slot

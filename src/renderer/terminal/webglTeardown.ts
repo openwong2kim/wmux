@@ -89,7 +89,14 @@ function ensureRendererRestored(terminal: Terminal): void {
 }
 
 export function teardownWebglAddon(addon: WebglAddon, terminal?: Terminal): void {
-  const gl = (addon as unknown as { _renderer?: { _gl?: WebGL2RenderingContext } })._renderer?._gl;
+  // A shared-context addon (terminal/sharedWebgl) draws through the one
+  // context every such pane shares, and only SharedGlContext may lose it:
+  // losing it here would blank every other pane. Disposing the addon frees
+  // this pane's own GL objects.
+  const shared = (addon as unknown as { usesSharedContext?: boolean }).usesSharedContext === true;
+  const gl = shared
+    ? undefined
+    : (addon as unknown as { _renderer?: { _gl?: WebGL2RenderingContext } })._renderer?._gl;
   try {
     addon.dispose();
   } catch {
