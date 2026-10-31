@@ -577,6 +577,14 @@ describe('parseTranscriptLine — pasted images and ESC interrupts', () => {
     expect(queued({ type: 'queued_command', prompt: '/compact', commandMode: 'bash' })).toEqual([]);
     expect(queued({ type: 'hook_success', content: 'x' })).toEqual([]);
   });
+
+  it('shows a queued prompt with photos, which Claude Code records as content blocks (2.1.312)', () => {
+    const events = parseFixture('queued-image-steer.jsonl');
+    expect(events.map((e) => e.kind)).toEqual(['user_text', 'tool_use', 'user_text']);
+    expect(events[2]).toMatchObject({ id: 'q1', kind: 'user_text', text: '[Image #4] [Image #5] [Image #6] [Image #7]', hasImage: true });
+    // A queued shell command stays off the conversation, as its string form does.
+    expect(events.some((e) => e.id.startsWith('q2'))).toBe(false);
+  });
 });
 
 describe('extractCodeBlocks', () => {

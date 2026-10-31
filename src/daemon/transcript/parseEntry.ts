@@ -117,8 +117,12 @@ export function parseTranscriptLineDetailed(
   if (type === 'attachment' && entry['isSidechain'] !== true) {
     const attachment = asObject(entry['attachment']);
     const prompt = attachment?.['prompt'];
-    if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt' && typeof prompt === 'string' && prompt.trim()) {
-      return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+    if (attachment?.['type'] === 'queued_command' && attachment['commandMode'] === 'prompt') {
+      if (typeof prompt === 'string' && prompt.trim()) {
+        return single({ id: baseId, kind: 'user_text', text: capText(stripNul(prompt)), ...tsOf(ts) }, empty);
+      }
+      // With photos the prompt is content blocks (2.1.312), read as a user entry's.
+      if (Array.isArray(prompt)) return parseUserEntry(entry, prompt, baseId, ts, offsetHint);
     }
     return empty;
   }
