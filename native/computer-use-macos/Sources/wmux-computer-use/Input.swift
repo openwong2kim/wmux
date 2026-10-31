@@ -83,6 +83,18 @@ final class Input: @unchecked Sendable {
         return true
     }
 
+    /// Posts one event to a process (Background.swift), under the same stop
+    /// gate as every other post. Nothing is recorded as held: background
+    /// batches send each down and its up together.
+    @discardableResult
+    func postToProcess(_ event: CGEvent, pid: pid_t, auth: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if stopping { return false }
+        SkyLight.post(event, pid: pid, auth: auth)
+        return true
+    }
+
     private func keyEvent(_ code: CGKeyCode, down: Bool, flags: CGEventFlags) -> CGEvent? {
         let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down)
         e?.flags = flags

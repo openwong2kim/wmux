@@ -1,0 +1,266 @@
+// Background input: events posted to the target process and routed to its
+// window, so the user's pointer, frontmost app and Space stay as they were
+// (protocol ActionDelivery `background`). Actions.swift asks `reason` first
+// and uses real input (Input.swift) when it names one.
+//
+// Adapted from Cua Driver (MIT) libs/cua-driver/rust/crates/platform-macos/src/input/mouse.rs@a9902d27
+// and keyboard.rs@a9902d27.
+
+import AppKit
+import ComputerUseCore
+
+enum Background {
+    static var support: BackgroundSupport {
+        BackgroundSupport(
+            backgroundPointer: SkyLight.backgroundPointer,
+            focusWithoutRaise: SkyLight.focusWithoutRaise,
+            keyAuth: SkyLight.keyAuth
+        )
+    }
+
+    /// Why `input` to `target` goes as real input, or nil when it can go in the background.
+    static func reason(_ input: BackgroundInput, _ target: ControlTarget) -> String? {
+        guard let windowID = CGWindowID(target.windowID) else { return "the window id is not a window number" }
+        let app = NSRunningApplication(processIdentifier: target.pid)
+        let bundle = app?.bundleURL
+        let electron = bundle.map(isElectron) ?? false
+        return foregroundReason(input, support: support, target: BackgroundTarget(
+            windowOnScreen: onScreen(target.pid, windowID),
+            chromium: electron || (bundle.map(isChromium) ?? false),
+            electron: electron,
+            readsPointer: readsPointer(app)
+        ))
+    }
+
+    /// In the on-screen window list: on this Space, not minimized or hidden.
+    static func onScreen(_ pid: pid_t, _ windowID: CGWindowID) -> Bool {
+        guard let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] else { return false }
+        return list.contains {
+            ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID
+                && ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid
+        }
+    }
+
+    private static func isElectron(_ bundle: URL) -> Bool {
+        FileManager.default.fileExists(atPath: bundle.appendingPathComponent("Contents/Frameworks/Electron Framework.framework").path)
+    }
+
+    /// A Chromium browser keeps its helper apps inside its framework
+    /// (`Google Chrome Framework.framework/Helpers`).
+    private static func isChromium(_ bundle: URL) -> Bool {
+        let frameworks = bundle.appendingPathComponent("Contents/Frameworks")
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: frameworks.path)) ?? []
+        return names.contains {
+            $0.hasSuffix(" Framework.framework")
+                && FileManager.default.fileExists(atPath: frameworks.appendingPathComponent($0).appendingPathComponent("Helpers").path)
+        }
+    }
+
+    /// Tk and LibreOffice place a click where the real pointer is, so a
+    /// posted click would land under the user's pointer. Read from the
+    /// bundle and the executable name, which errs toward real input.
+    private static func readsPointer(_ app: NSRunningApplication?) -> Bool {
+        if let bundle = app?.bundleURL {
+            let frameworks = bundle.appendingPathComponent("Contents/Frameworks")
+            for name in ["Tk.framework", "libvclplug_osxlo.dylib"]
+            where FileManager.default.fileExists(atPath: frameworks.appendingPathComponent(name).path) {
+                return true
+            }
+        }
+        let executable = app?.executableURL?.lastPathComponent.lowercased() ?? ""
+        return executable.hasPrefix("python") || executable.hasPrefix("wish")
+    }
+
+    // MARK: What the user sees
+
+    struct UserState: Equatable {
+        let front: pid_t?
+        let pointer: CGPoint
+        let space: UInt64?
+    }
+
+    static func userState() -> UserState {
+        UserState(
+            front: NSWorkspace.shared.frontmostApplication?.processIdentifier,
+            pointer: CGEvent(source: nil)?.location ?? .zero,
+            space: SkyLight.activeSpace()
+        )
+    }
+
+    /// Nothing is posted once the user's frontmost app, pointer or Space has
+    /// changed since the action started.
+    static func requireUnchanged(since start: UserState) throws {
+        let now = userState()
+        let what = now.front != start.front ? "the frontmost app" : now.pointer != start.pointer ? "the pointer" : now.space != start.space ? "the Space" : nil
+        if let what { throw HelperError("window_not_focused", "\(what) changed while the input was being sent in the background; nothing more was sent") }
+    }
+
+    /// After the input: an app that brought itself to the front is put back
+    /// behind the one the user had. Returns a note for the result when it did.
+    static func settle(after start: UserState, pid: pid_t) -> String? {
+        guard let front = start.front, front != pid,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else { return nil }
+        NSRunningApplication(processIdentifier: front)?.activate()
+        return "the app came to the front on its own; the app that was in front was brought back"
+    }
+
+    // MARK: Keyboard focus
+
+    /// The app's focused window is the target window, made so in the app
+    /// alone when it was not: the key-window records (twice at most, since
+    /// they are handled asynchronously), then AXFocusedWindow. Keys posted to
+    /// a process go to its focused window, so text for this window would
+    /// otherwise land in another one of the same app.
+    ///
+    /// Adapted from Cua Driver (MIT) libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs@a9902d27
+    static func focusWindow(_ target: ControlTarget, _ windowID: CGWindowID) async -> Bool {
+        let appEl = AX.app(target.pid)
+        func current() -> CGWindowID? { AX.element(appEl, kAXFocusedWindowAttribute).flatMap(AX.windowID) }
+        func settled() async -> Bool {
+            for _ in 0..<6 {
+                if current() == windowID { return true }
+                try? await Task.sleep(nanoseconds: 40_000_000)
+            }
+            return current() == windowID
+        }
+        if current() == windowID { return true }
+        for _ in 0..<2 where SkyLight.moveWindowKey(from: current(), to: windowID) {
+            if await settled() { return true }
+        }
+        let window = AX.elements(appEl, kAXWindowsAttribute).first { AX.windowID($0) == windowID }
+        if let window, AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, window) == .success {
+            return await settled()
+        }
+        return false
+    }
+
+    /// Gives `el` keyboard focus without bringing its app forward: AX first,
+    /// then a background click on it (a web page in a window that was never
+    /// active takes focus only that way). True once the app reports it focused.
+    static func focus(_ el: AXUIElement, _ target: ControlTarget, _ windowID: CGWindowID) async -> Bool {
+        func focused() -> Bool { AX.element(AX.app(target.pid), kAXFocusedUIElementAttribute).map { CFEqual($0, el) } ?? false }
+        if focused() { return true }
+        AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
+        if focused() { return true }
+        guard reason(.click(button: 0, count: 1), target) == nil,
+              let frame = AX.frame(el), frame.width > 0, frame.height > 0 else { return false }
+        click(pid: target.pid, windowID: windowID, at: CGPoint(x: frame.midX, y: frame.midY), count: 1, flags: [])
+        for _ in 0..<6 {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if focused() { return true }
+        }
+        return false
+    }
+
+    /// The app's focused element takes text (its value is settable).
+    static func focusedFieldTakesText(_ pid: pid_t) -> Bool {
+        guard let el = AX.element(AX.app(pid), kAXFocusedUIElementAttribute) else { return false }
+        return AX.isSettable(el, kAXValueAttribute)
+    }
+
+    /// The re-check before every typed chunk and key press: the screen is not
+    /// locked, the user's frontmost app, pointer and Space are as they were,
+    /// the window is still on screen and focused in its app, and no password
+    /// field has focus.
+    static func requireStillSafe(_ target: ControlTarget, _ windowID: CGWindowID, since start: UserState) throws {
+        if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; the rest was not sent") }
+        try requireUnchanged(since: start)
+        guard onScreen(target.pid, windowID),
+              AX.element(AX.app(target.pid), kAXFocusedWindowAttribute).flatMap(AX.windowID) == windowID else {
+            throw HelperError("window_not_focused", "the target window is no longer the app's focused window on screen; the rest was not sent")
+        }
+        try Focus.refuseSecureInput(target.pid)
+    }
+
+    // MARK: Posting
+
+    private static let source = CGEventSource(stateID: .hidSystemState)
+
+    private static func stamp(_ e: CGEvent, pid: pid_t, windowID: CGWindowID, at point: CGPoint, fields: [(UInt32, Int64)]) {
+        SkyLight.setWindowLocation(e, point)
+        for (field, value) in fields { SkyLight.setField(e, field, value) }
+        SkyLight.setField(e, 51, Int64(windowID))
+        SkyLight.setField(e, 91, Int64(windowID))
+        SkyLight.setField(e, 92, Int64(windowID))
+        SkyLight.setField(e, 40, Int64(pid))
+    }
+
+    /// A left click (one or two) posted to the window: the window is focused
+    /// without raising it first, then the plan's events go in order.
+    static func click(pid: pid_t, windowID: CGWindowID, at point: CGPoint, count: Int, flags: CGEventFlags) {
+        if SkyLight.focusWithoutRaise(windowID) { usleep(50_000) }
+        let group = Int64(Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1) * 1e9)
+        for step in backgroundClickPlan(at: point, count: count) {
+            let type: CGEventType = step.kind == .move ? .mouseMoved : step.kind == .down ? .leftMouseDown : .leftMouseUp
+            guard let e = CGEvent(mouseEventSource: source, mouseType: type, mouseCursorPosition: step.point, mouseButton: .left) else { continue }
+            stamp(e, pid: pid, windowID: windowID, at: step.point,
+                  fields: [(0, step.phase), (1, step.clickState), (3, 0), (7, 3), (58, group)])
+            e.flags = flags
+            Input.shared.postToProcess(e, pid: pid, auth: false)
+            if step.delayAfterMs > 0 { usleep(step.delayAfterMs * 1000) }
+        }
+    }
+
+    /// Scrolls one notch at a time; `shouldContinue` runs before every notch.
+    /// Returns the notches sent.
+    static func scroll(pid: pid_t, windowID: CGWindowID, at point: CGPoint, dx: Int32, dy: Int32, notches: Int,
+                       shouldContinue: () -> Bool) -> Int {
+        // A window that never saw a move keeps a stale hit-test point.
+        if let move = CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left) {
+            stamp(move, pid: pid, windowID: windowID, at: point, fields: [(3, 0), (7, 3)])
+            move.flags = []
+            Input.shared.postToProcess(move, pid: pid, auth: false)
+            usleep(12_000)
+        }
+        var sent = 0
+        for _ in 0..<max(1, notches) {
+            guard shouldContinue() else { return sent }
+            guard let e = CGEvent(scrollWheelEvent2Source: source, units: .line, wheelCount: 2, wheel1: dy, wheel2: dx, wheel3: 0) else { break }
+            e.location = point
+            stamp(e, pid: pid, windowID: windowID, at: point, fields: [])
+            e.flags = []
+            Input.shared.postToProcess(e, pid: pid, auth: false)
+            sent += 1
+            usleep(30_000)
+        }
+        return sent
+    }
+
+    /// Types `text` as Unicode key events (named keys for Enter and Tab),
+    /// posted to the process. `shouldContinue` runs before every chunk.
+    /// Returns how many characters were typed.
+    static func type(pid: pid_t, _ text: String, shouldContinue: () -> Bool) -> Int {
+        var typed = 0
+        for chunk in unicodeChunks(text) {
+            guard shouldContinue() else { return typed }
+            switch chunk {
+            case .key(let name):
+                if let code = KeyCodes.named[name] { tap(pid: pid, key: code, flags: []) }
+            case .text(let s):
+                let units = Array(s.utf16)
+                for down in [true, false] {
+                    guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
+                    e.flags = []
+                    e.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                    Input.shared.postToProcess(e, pid: pid, auth: SkyLight.keyAuth)
+                    usleep(4_000)
+                }
+            }
+            typed += chunk.characterCount
+        }
+        return typed
+    }
+
+    /// One key down and up, the modifiers as flags only. A shortcut with
+    /// Command goes without the authentication message: with it the event
+    /// takes a route that never reaches the app's menus.
+    static func tap(pid: pid_t, key code: CGKeyCode, flags: CGEventFlags) {
+        let auth = SkyLight.keyAuth && !flags.contains(.maskCommand)
+        for down in [true, false] {
+            guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
+            e.flags = flags
+            Input.shared.postToProcess(e, pid: pid, auth: auth)
+            usleep(4_000)
+        }
+    }
+}

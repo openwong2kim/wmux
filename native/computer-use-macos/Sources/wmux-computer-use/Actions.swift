@@ -1,8 +1,11 @@
-// Control actions. Each one first brings its target forward (activates the
-// app, raises the window), then re-checks the target right before sending
-// input (protocol ControlTarget): keyboard batches need the target window in
-// the foreground, pointer batches need the target's window under the point.
-// Otherwise nothing is sent and the answer is `window_not_focused`.
+// Control actions. Each one sends its input in the background when it can
+// (Background.swift: posted to the target window alone, the user's pointer,
+// frontmost app and Space left as they were). Otherwise it brings its target
+// forward (activates the app, raises the window) and sends real input, after
+// re-checking the target right before it (protocol ControlTarget): keyboard
+// batches need the target window in the foreground, pointer batches need the
+// target's window under the point. Otherwise nothing is sent and the answer
+// is `window_not_focused`. The result's `delivery` says which way it went.
 
 import AppKit
 import ApplicationServices
@@ -222,6 +225,20 @@ private func accessibilityDelivery(since front: pid_t?) -> String {
     NSWorkspace.shared.frontmostApplication?.processIdentifier == front ? "background" : "foreground"
 }
 
+/// A background action's result: `foreground` after all when the app
+/// brought itself to the front (it was put back behind the user's app).
+private func backgroundResult(_ verified: Bool = false, since start: Background.UserState, pid: pid_t) -> JSON {
+    if let note = Background.settle(after: start, pid: pid) {
+        return result("synthetic", verified: verified, delivery: "foreground", note: note)
+    }
+    return result("synthetic", verified: verified, delivery: "background")
+}
+
+/// The note on real input that could not go in the background.
+private func realInputNote(_ why: String?) -> String? {
+    why.map { "sent as real input: \($0)" }
+}
+
 private func screenPoint(_ snap: Snapshot, index: Int?, point: CGPoint?) throws -> (CGPoint, AXUIElement?) {
     if let index {
         let el = try snap.element(at: index)
@@ -296,6 +313,20 @@ enum Actions {
                 return result("accessibility", verified: false, delivery: accessibilityDelivery(since: front), note: note)
             }
         }
+        let why = Background.reason(.click(button: Int(button.rawValue), count: count), target)
+        if why == nil, let windowID = CGWindowID(target.windowID) {
+            let start = Background.userState()
+            await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+            // The cursor glide awaited: check again right before posting.
+            try Background.requireUnchanged(since: start)
+            guard Background.onScreen(target.pid, windowID) else {
+                throw HelperError("window_not_focused", "the target window left the screen; nothing was sent")
+            }
+            await Overlay.shared.press(at: point)
+            let flags = mods.reduce(into: CGEventFlags()) { $0.insert($1.flag) }
+            Background.click(pid: target.pid, windowID: windowID, at: point, count: count, flags: flags)
+            return backgroundResult(since: start, pid: target.pid)
+        }
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
         // The cursor glide awaited: check again right before posting.
@@ -304,7 +335,7 @@ enum Actions {
         Input.shared.withModifiers(mods) { flags in
             Input.shared.click(at: point, button: button, count: count, flags: flags)
         }
-        return result("synthetic", verified: false, delivery: "foreground")
+        return result("synthetic", verified: false, delivery: "foreground", note: realInputNote(why))
     }
 
     static func setValue(_ p: JSON, _ snaps: SnapshotStore) throws -> JSON {
@@ -339,6 +370,46 @@ enum Actions {
         try checkTarget(snap, target)
         let text = try p.requireString("text")
         guard !text.isEmpty else { throw HelperError("invalid_argument", "type needs text") }
+        let windowID = CGWindowID(target.windowID)
+        var why = Background.reason(.keys, target)
+        // Focus first, in the background: a background app keeps its own
+        // focused element, and a page's autofocus does not take in a window
+        // that was never active.
+        if why == nil, let windowID {
+            if !(await Background.focusWindow(target, windowID)) {
+                why = "the target window did not take focus in the background"
+            } else if let index = p.int("index") {
+                let el = try snap.element(at: index)
+                if Focus.isSecure(el) { throw HelperError("app_blocked", "that is a password field; wmux does not type into it") }
+                if !(await Background.focus(el, target, windowID)) { why = "element \(index) did not take keyboard focus in the background" }
+            } else if !Background.focusedFieldTakesText(target.pid) {
+                why = "the app has no focused text field to type into in the background"
+            }
+        }
+        if why == nil, let windowID {
+            let start = Background.userState()
+            try Background.requireStillSafe(target, windowID, since: start)
+            await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+            let before = focusedValue(target.pid)
+            var stop: HelperError?
+            let typed = Background.type(pid: target.pid, text) {
+                do {
+                    try Background.requireStillSafe(target, windowID, since: start)
+                    return true
+                } catch let e as HelperError {
+                    stop = e
+                    return false
+                } catch {
+                    return false
+                }
+            }
+            if typed < text.count {
+                let e = stop ?? HelperError("window_not_focused", "focus left the target")
+                throw HelperError(e.code, "\(e.message) (after \(typed) of \(text.count) characters; the rest was not typed)")
+            }
+            let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
+            return backgroundResult(verified, since: start, pid: target.pid)
+        }
         if let index = p.int("index") {
             let el = try snap.element(at: index)
             if Focus.isSecure(el) { throw HelperError("app_blocked", "that is a password field; wmux does not type into it") }
@@ -356,7 +427,7 @@ enum Actions {
         let before = focusedValue(target.pid)
         try typeChecked(text, target: target)
         let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
-        return result("synthetic", verified: verified, delivery: "foreground")
+        return result("synthetic", verified: verified, delivery: "foreground", note: realInputNote(why))
     }
 
     /// Types `text` in short Unicode chunks (no clipboard), re-checking the
@@ -401,8 +472,27 @@ enum Actions {
             throw HelperError("invalid_argument", "\"\(key.prefix(20))\" is not a canonical key name")
         }
         let repeatCount = min(50, max(1, p.int("repeat") ?? 1))
-        try await requireKeyboardForward(snap, target)
         let flags = KeyCodes.intrinsicFlags(for: key)
+        let windowID = CGWindowID(target.windowID)
+        var why = Background.reason(.keys, target)
+        if why == nil, let windowID, !(await Background.focusWindow(target, windowID)) {
+            why = "the target window did not take focus in the background"
+        }
+        if why == nil, let windowID {
+            let start = Background.userState()
+            await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+            for n in 0..<repeatCount {
+                do {
+                    try Background.requireStillSafe(target, windowID, since: start)
+                } catch let e as HelperError {
+                    throw HelperError(e.code, n == 0 ? e.message : "\(e.message) (after \(n) of \(repeatCount) presses; the rest were not sent)")
+                }
+                Background.tap(pid: target.pid, key: code, flags: flags)
+                usleep(4_000)
+            }
+            return backgroundResult(since: start, pid: target.pid)
+        }
+        try await requireKeyboardForward(snap, target)
         for n in 0..<repeatCount {
             if n > 0 {
                 do {
@@ -414,7 +504,7 @@ enum Actions {
             Input.shared.tap(key: code, flags: flags)
             usleep(4_000)
         }
-        return result("synthetic", verified: false, delivery: "foreground")
+        return result("synthetic", verified: false, delivery: "foreground", note: realInputNote(why))
     }
 
     static func hotkey(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
@@ -428,11 +518,24 @@ enum Actions {
         guard let mods = KeyCodes.orderedModifiers((p["modifiers"] as? [String]) ?? []) else {
             throw HelperError("invalid_argument", "modifiers must be ctrl, alt, shift or meta")
         }
+        let windowID = CGWindowID(target.windowID)
+        var why = Background.reason(.keys, target)
+        if why == nil, let windowID, !(await Background.focusWindow(target, windowID)) {
+            why = "the target window did not take focus in the background"
+        }
+        if why == nil, let windowID {
+            let start = Background.userState()
+            await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+            try Background.requireStillSafe(target, windowID, since: start)
+            let flags = mods.reduce(into: KeyCodes.intrinsicFlags(for: key)) { $0.insert($1.flag) }
+            Background.tap(pid: target.pid, key: code, flags: flags)
+            return backgroundResult(since: start, pid: target.pid)
+        }
         try await requireKeyboardForward(snap, target)
         Input.shared.withModifiers(mods) { flags in
             Input.shared.tap(key: code, flags: flags.union(KeyCodes.intrinsicFlags(for: key)))
         }
-        return result("synthetic", verified: false, delivery: "foreground")
+        return result("synthetic", verified: false, delivery: "foreground", note: realInputNote(why))
     }
 
     static func scroll(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
@@ -449,6 +552,18 @@ enum Actions {
         default: throw HelperError("invalid_argument", "direction must be up, down, left or right")
         }
         let (point, _) = try screenPoint(snap, index: p.int("index"), point: try p.point("point"))
+        let why = Background.reason(.scroll, target)
+        if why == nil, let windowID = CGWindowID(target.windowID) {
+            let start = Background.userState()
+            await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+            let sent = Background.scroll(pid: target.pid, windowID: windowID, at: point, dx: dx, dy: dy, notches: amount) {
+                !Session.isLocked && (try? Background.requireUnchanged(since: start)) != nil && Background.onScreen(target.pid, windowID)
+            }
+            if sent < amount {
+                throw HelperError("window_not_focused", "the screen locked, the window left the screen, or the frontmost app, pointer or Space changed after \(sent) of \(amount) notches; the rest was not sent")
+            }
+            return backgroundResult(since: start, pid: target.pid)
+        }
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
         // Re-run the hit-test before every notch (the first one included,
@@ -461,6 +576,6 @@ enum Actions {
         if sent < amount {
             throw HelperError("window_not_focused", "another window covered the point after \(sent) of \(amount) notches; the rest was not sent")
         }
-        return result("synthetic", verified: false, delivery: "foreground")
+        return result("synthetic", verified: false, delivery: "foreground", note: realInputNote(why))
     }
 }

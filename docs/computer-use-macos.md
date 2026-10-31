@@ -198,9 +198,41 @@ is not re-walked.
   explicitly. A Cmd or Shift the person is physically holding never merges
   into an agent's keystroke. Local-event suppression is set to 0, so the
   person's own mouse is never frozen.
-- Bringing the target forward: every input action (`click` by point or by an
-  index that falls through to the pointer, `scroll`, `type`, `pressKey`,
-  `hotkey`) first brings the target forward when it is not the frontmost app
+- Background input first (`Background.swift`, rules in `ComputerUseCore`
+  `foregroundReason`, unit-tested). The events go to the target process alone,
+  routed to its window, so the user's pointer, frontmost app and Space stay as
+  they were, and the result says `delivery: "background"`:
+  - Click (left, single or double): the window is focused without being raised
+    (the focus event record sent to its process alone, never the record that
+    takes focus from the frontmost app), then a `mouseMoved` at the point, a
+    primer click off screen at (-1, -1) for Chromium's user-activation check,
+    and the click. Every event carries the pid (field 40), the window number
+    (fields 51, 91, 92), a gesture id and the window location, and goes
+    through `SLEventPostToPid` without the key authentication message.
+  - Scroll: a stamped `mouseMoved`, then one wheel event per notch.
+  - Keys: the app's focused window must be the target window. When it is not,
+    key status moves inside that app alone (the key-window event records,
+    then `AXFocusedWindow`), read back before anything is typed. `type` gives
+    the field focus first, by AX or else a background click on it; without an
+    index the app's focused element must take text. Keys carry the key
+    authentication message (macOS 15 and later), except a shortcut with
+    Command, which then reaches the app's menus.
+  - Before every batch, chunk and notch: the screen is unlocked, the window is
+    still on screen, and the user's frontmost app, pointer and Space are as
+    they were when the action started. Otherwise nothing more is sent and the
+    call returns `window_not_focused`. An app that brought itself to the front
+    is put back behind the user's app, and the result says `foreground` with a
+    note.
+  - It goes as real input instead, with `delivery: "foreground"` and a note
+    saying why, when this macOS lacks the SkyLight calls, the window is
+    minimized, hidden or on another Space, the click is not a left single or
+    double click, the app reads the real pointer (Tk, LibreOffice), the target
+    is Electron and the input is a scroll, the target is Chromium-based and
+    this macOS has no key authentication (macOS 14), or the field does not
+    take focus in the background (a page Chrome does not expose to AX).
+- Bringing the target forward, for real input: every input action (`click` by
+  point or by an index that falls through to the pointer, `scroll`, `type`,
+  `pressKey`, `hotkey`) first brings the target forward when it is not the frontmost app
   with the target window focused. The window is un-minimized, the app is
   activated (`NSRunningApplication.activate`, then `kAXFrontmostAttribute`,
   which is what works for a process that is never active itself), the window

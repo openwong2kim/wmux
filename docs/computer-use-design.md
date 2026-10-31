@@ -198,11 +198,14 @@ snapshot is the v1.1 token saver.
 - **`click { modifiers }`.** Modifier-down, click and modifier-up go in one
   input batch, and the up events are sent even if the batch fails part-way.
   There is no separate `keyDown` action.
-- **Focus.** Input actions bring the target app forward themselves (helper
-  auto-activation, 2026-10-08), and a pointer action whose point is covered
-  raises the target window first. The helper still re-checks, right before
-  each keyboard batch, that focus is on the target and the screen is not
-  locked, and answers `window_not_focused` when it is not.
+- **Focus.** The macOS helper sends input to the target window in the
+  background when it can, leaving the user's pointer, frontmost app and Space
+  alone (docs/computer-use-macos.md, Input). Otherwise input actions bring the
+  target app forward themselves (helper auto-activation, 2026-10-08), and a
+  pointer action whose point is covered raises the target window first. The
+  helper still re-checks, right before each keyboard batch, that focus is on
+  the target and the screen is not locked, and answers `window_not_focused`
+  when it is not.
 - **Honest results.** Every action returns
   `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, disposition, note? }`.
   `verified` means state was read back, for example the value after
