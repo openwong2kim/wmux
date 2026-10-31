@@ -143,7 +143,7 @@ describe('donePrFacts', () => {
       commits: { nodes: [{ commit: { oid: SHA, statusCheckRollup: { contexts: { totalCount: 3, nodes: [
         { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: '2026-10-30T10:00:00Z', isRequired: true },
         { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-10-30T11:00:00Z', isRequired: true },
-        { __typename: 'StatusContext', context: 'review', state: 'PENDING', startedAt: '2026-10-30T09:00:00Z' },
+        { __typename: 'StatusContext', context: 'review', state: 'PENDING', createdAt: '2026-10-30T09:00:00Z' },
       ] } } } }] },
       reviewThreads: { totalCount: 2, nodes: [{ isResolved: true }, { isResolved: false }] },
       ...over,
@@ -181,6 +181,8 @@ describe('donePrFacts', () => {
     expect(graphql.args.slice(0, 4)).toEqual(['api', 'graphql', '--hostname', 'github.com']);
     expect(graphql.args).toEqual(expect.arrayContaining(['-f', 'owner=Acme', '-f', 'repo=Widgets', '-F', 'number=7']));
     expect(graphql.args.join(' ')).toContain('isRequired(pullRequestNumber: $number)');
+    // One response key, one type: a status's time is read under its own key.
+    expect(graphql.args.join(' ')).not.toContain('startedAt: createdAt');
     expect(rest.map((c) => c.args)).toEqual([
       ['api', '--hostname', 'github.com', 'repos/Acme/Widgets/branches/release%2F4.0'],
       ['api', '--hostname', 'github.com', 'repos/Acme/Widgets/rules/branches/release%2F4.0?per_page=100'],

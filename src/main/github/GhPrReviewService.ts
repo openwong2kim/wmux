@@ -136,7 +136,7 @@ export const DONE_PR_QUERY = `query($owner: String!, $repo: String!, $number: In
                 nodes {
                   __typename
                   ... on CheckRun { name status conclusion startedAt isRequired(pullRequestNumber: $number) }
-                  ... on StatusContext { context state startedAt: createdAt isRequired(pullRequestNumber: $number) }
+                  ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
                 }
               }
             }
@@ -290,8 +290,11 @@ export function mapDonePr(raw: unknown): Omit<DonePrFacts, 'baseRequired' | 'bas
   const contexts = (commit?.statusCheckRollup as { contexts?: unknown } | null | undefined)?.contexts;
   const checkNodes = nodesOf(contexts);
   const checks = checkNodes.flatMap((n): PrCheck[] => {
-    const check = mapRollup([n])[0];
-    return check ? [{ ...check, isRequired: (n as { isRequired?: unknown }).isRequired === true }] : [];
+    const node = n as { createdAt?: unknown; startedAt?: unknown; isRequired?: unknown } | null;
+    // A status reports when it was created under its own key: one response key
+    // cannot be nullable on a check run and non-null on a status.
+    const check = mapRollup([node && node.startedAt === undefined && node.createdAt !== undefined ? { ...node, startedAt: node.createdAt } : n])[0];
+    return check ? [{ ...check, isRequired: node?.isRequired === true }] : [];
   });
   const checksTotal = (contexts as Conn | null | undefined)?.totalCount;
   const threadNodes = nodesOf(pr.reviewThreads);
