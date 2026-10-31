@@ -467,3 +467,29 @@ export const OPENCODE_MAX_SEND_BYTES = Math.floor((OPENCODE_REQUEST_MAX_BYTES - 
 export function openCodeSendBytes(sessionId: string, rawEpoch: string, text: string, requestId: string): number {
   return Buffer.byteLength(JSON.stringify({ action: 'send', sessionId, epoch: rawEpoch, text, requestId }));
 }
+
+const IMAGE_PLACEHOLDER = /\[Image #\d+\]/g;
+const IMAGE_TOKEN = '\u0000img\u0000';
+
+/** Each image token with the whitespace around it dropped, the rest collapsed. */
+function photoShape(text: string): string {
+  return text.split(IMAGE_TOKEN).map((part) => part.trim().replace(/\s+/g, ' ')).join(IMAGE_TOKEN);
+}
+
+/**
+ * Whether a photo row (`user_text` with `hasImage`) is the message the daemon
+ * typed. The typed text holds the upload paths the phone attached, and Claude
+ * Code records each one as an `[Image #N]` placeholder instead, so the exact
+ * text match can never pair them. Each upload path under `uploadsDir` stands in
+ * for one placeholder: N is ignored, the counts must agree, and the whitespace
+ * around a placeholder is not compared (Claude Code drops the space after one).
+ * Callers use it for photo rows only, so a text row keeps the exact match.
+ */
+export function typedPhotoTextMatches(typed: string, rowText: string, uploadsDir: string | undefined): boolean {
+  if (!uploadsDir) return false;
+  const dir = uploadsDir.replace(/[\\/]+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const uploads = new RegExp(`${dir}[\\\\/][^\\s\\u0000]+?\\.(?:png|jpe?g|gif|webp)(?=\\s|$)`, 'gi');
+  const paths = typed.match(uploads)?.length ?? 0;
+  if (paths === 0 || (rowText.match(IMAGE_PLACEHOLDER)?.length ?? 0) !== paths) return false;
+  return photoShape(typed.replace(uploads, IMAGE_TOKEN)) === photoShape(rowText.replace(IMAGE_PLACEHOLDER, IMAGE_TOKEN));
+}
