@@ -60,15 +60,30 @@ describe('ProcessMonitor on the native process table', () => {
     expect(spawn.execFile).not.toHaveBeenCalled();
   });
 
-  it('falls back to tasklist when the call rejects, and stays there', async () => {
+  it('sends a failed read to tasklist, and stays there after three in a row', async () => {
     const { ProcessMonitor } = await load();
-    native.processTable.mockRejectedValue(new Error('snapshot failed'));
+    native.processTable.mockRejectedValueOnce(new Error('snapshot failed'));
     tasklistAnswers('"pwsh.exe","10","Console","1","95,000 K"\n');
     expect([...(await ProcessMonitor.batchCheckAliveDetailed([10])).alive]).toEqual([10]);
     expect(spawn.execFile).toHaveBeenCalledTimes(1);
+
+    native.processTable.mockResolvedValueOnce([{ pid: 10, ppid: 1, name: 'pwsh.exe' }]);
+    await ProcessMonitor.batchCheckAliveDetailed([10]); // native again; resets the count
+    expect(spawn.execFile).toHaveBeenCalledTimes(1);
+
+    native.processTable.mockRejectedValue(new Error('snapshot failed'));
+    for (let i = 0; i < 3; i++) await ProcessMonitor.batchCheckAliveDetailed([10]);
+    expect(native.processTable).toHaveBeenCalledTimes(5);
     await ProcessMonitor.batchCheckAliveDetailed([10]);
-    expect(native.processTable).toHaveBeenCalledTimes(1);
-    expect(spawn.execFile).toHaveBeenCalledTimes(2);
+    expect(native.processTable).toHaveBeenCalledTimes(5); // latched off
+    expect(spawn.execFile).toHaveBeenCalledTimes(5);
+  });
+
+  it('loads the module once', async () => {
+    const { ProcessMonitor } = await load();
+    native.processTable.mockResolvedValue([]);
+    for (let i = 0; i < 3; i++) await ProcessMonitor.batchCheckAliveDetailed([10]);
+    expect(native.load).toHaveBeenCalledTimes(1);
   });
 
   it('falls back when the module lacks the capability', async () => {
@@ -142,7 +157,7 @@ describe('ProcessMonitor on the native process table', () => {
 
     native.processTable.mockRejectedValue(new Error('snapshot failed'));
     tasklistAnswers('"pwsh.exe","100","Console","1","95,000 K"\n');
-    await vi.advanceTimersByTimeAsync(3_000); // fails over to tasklist; cadence resets
+    await vi.advanceTimersByTimeAsync(9_000); // three failed ticks latch tasklist; cadence resets
     const spawned = spawn.execFile.mock.calls.length;
     await vi.advanceTimersByTimeAsync(14_000);
     expect(spawn.execFile.mock.calls.length).toBe(spawned);

@@ -1,4 +1,5 @@
-/** Native code is loaded for an explicit backend selection or Settings availability probe. */
+/** Native code is loaded for an explicit backend selection, a Settings availability probe,
+ *  or the daemon's Windows process table (src/daemon/nativeProcessTable.ts). */
 import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';

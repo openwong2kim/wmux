@@ -6,8 +6,9 @@
  *
  * Independent of the terminal engine: the module is loaded on first use
  * whenever it is packaged with `process-table-v1`, so node-engine users get
- * it too. A missing module or capability, or any failed call, latches the
- * native path off for the daemon's life; callers then keep their spawn path.
+ * it too. A missing module or capability latches the native path off for the
+ * daemon's life, as do MAX_FAILURES failed calls in a row (one failure only
+ * sends that read to the spawn path); callers then keep their spawn path.
  * `WMUX_NATIVE_PROCESS_TABLE=off` forces the spawn path.
  */
 import { loadNativeTerminalCore, reportNativeFallback } from '../shared/nativeTerminalCore';
@@ -17,7 +18,7 @@ export interface NativeProcessRow {
   ppid: number;
   /** Image file name, as tasklist and CIM report it. */
   name: string;
-  /** Epoch ms; absent when the process could not be opened. */
+  /** Epoch ms; absent when it could not be read. */
   created?: number | null;
   /** Absent when unreadable (protected, exited mid-walk) or empty. */
   cmdline?: string | null;
@@ -25,34 +26,43 @@ export interface NativeProcessRow {
 
 type ProcessTable = (withCommandLines: boolean) => Promise<NativeProcessRow[]>;
 
-let failed = false;
+const MAX_FAILURES = 3;
+let table: ProcessTable | null | undefined;
+let failures = 0;
 
-function markFailed(): void {
-  failed = true;
+function latchOff(): void {
+  table = null;
   reportNativeFallback('process-table');
 }
 
-/** The native reader, or undefined when it is not usable here. */
+/** The native reader, or undefined when it is not usable here. Resolved once. */
 export function nativeProcessTable(): ProcessTable | undefined {
-  if (process.platform !== 'win32' || failed || process.env.WMUX_NATIVE_PROCESS_TABLE === 'off') return undefined;
-  try {
-    const table = loadNativeTerminalCore('process-table-v1').processTable;
-    if (typeof table !== 'function') throw new Error('Native terminal core lacks processTable');
-    return table;
-  } catch {
-    markFailed();
-    return undefined;
+  if (table === undefined) {
+    if (process.platform !== 'win32' || process.env.WMUX_NATIVE_PROCESS_TABLE === 'off') {
+      table = null;
+    } else {
+      try {
+        const read = loadNativeTerminalCore('process-table-v1').processTable;
+        if (typeof read !== 'function') throw new Error('Native terminal core lacks processTable');
+        table = read;
+      } catch {
+        latchOff();
+      }
+    }
   }
+  return table ?? undefined;
 }
 
-/** One snapshot, or undefined when the native path is (or just went) unavailable. */
+/** One snapshot, or undefined when the native path is unavailable or this read failed. */
 export async function readNativeProcessTable(withCommandLines: boolean): Promise<NativeProcessRow[] | undefined> {
-  const table = nativeProcessTable();
-  if (!table) return undefined;
+  const read = nativeProcessTable();
+  if (!read) return undefined;
   try {
-    return await table(withCommandLines);
+    const rows = await read(withCommandLines);
+    failures = 0;
+    return rows;
   } catch {
-    markFailed();
+    if (++failures >= MAX_FAILURES && table) latchOff();
     return undefined;
   }
 }

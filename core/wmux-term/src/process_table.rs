@@ -8,6 +8,7 @@
 //! Raw kernel32/ntdll declarations instead of a bindings crate: a handful of
 //! calls and three structs.
 
+use std::collections::HashMap;
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
@@ -20,6 +21,7 @@ const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 /// only QUERY_LIMITED access, unlike reading the target's PEB.
 const PROCESS_COMMAND_LINE_INFORMATION: u32 = 60;
 const SYSTEM_PROCESS_INFORMATION: u32 = 5;
+const ERROR_NO_MORE_FILES: u32 = 18;
 const STATUS_INFO_LENGTH_MISMATCH: i32 = 0xC000_0004_u32 as i32;
 const STATUS_BUFFER_OVERFLOW: i32 = 0x8000_0005_u32 as i32;
 const STATUS_BUFFER_TOO_SMALL: i32 = 0xC000_0023_u32 as i32;
@@ -148,7 +150,7 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
         let times = if with_details {
             creation_times()
         } else {
-            Vec::new()
+            HashMap::new()
         };
         loop {
             let len = entry
@@ -172,14 +174,17 @@ pub fn snapshot(with_details: bool) -> Result<Vec<ProcessRow>, String> {
             if with_details && row.pid != 0 {
                 // Matched on pid and parent: a pid reused between the two
                 // reads has another parent and falls back to its handle.
-                row.created = times
-                    .iter()
-                    .find(|t| t.0 == row.pid && t.1 == row.ppid)
-                    .and_then(|t| t.2);
+                row.created = times.get(&(row.pid, row.ppid)).copied().flatten();
                 read_details(&mut row);
             }
             rows.push(row);
             if Process32NextW(snap.0, &mut entry) == 0 {
+                // Anything but the normal end is a cut-short table: callers
+                // would read every pid past the cut as gone.
+                let error = GetLastError();
+                if error != ERROR_NO_MORE_FILES {
+                    return Err(format!("Process32NextW failed ({error})"));
+                }
                 break;
             }
         }
@@ -194,23 +199,36 @@ fn read_details(row: &mut ProcessRow) {
         return;
     }
     let process = OwnedHandle(raw);
-    if row.created.is_none() {
-        let (mut creation, mut exit, mut kernel, mut user) = Default::default();
-        // SAFETY: four valid FILETIME out-pointers.
+    let (mut creation, mut exit, mut kernel, mut user) = Default::default();
+    // SAFETY: four valid FILETIME out-pointers.
+    let opened =
         if unsafe { GetProcessTimes(process.0, &mut creation, &mut exit, &mut kernel, &mut user) }
             != 0
         {
-            row.created = filetime_to_epoch_ms(creation);
+            filetime_to_epoch_ms(creation)
+        } else {
+            None
+        };
+    match (row.created, opened) {
+        // The pid was reused after the walk: the handle is another process,
+        // so neither its time nor its command line belongs to this row.
+        (Some(listed), Some(now)) if listed != now => {
+            row.created = None;
+            return;
         }
+        (None, now) => row.created = now,
+        _ => {}
     }
     row.cmdline = command_line(process.0);
 }
 
-/// (pid, ppid, created) for every process, from one SystemProcessInformation
-/// read: creation time needs no process handle there. Empty when it fails.
-fn creation_times() -> Vec<(u32, u32, Option<f64>)> {
+/// Creation time by (pid, ppid) for every process, from one
+/// SystemProcessInformation read: it needs no process handle. Empty when the
+/// call fails.
+#[cfg(target_pointer_width = "64")]
+fn creation_times() -> HashMap<(u32, u32), Option<f64>> {
     let Some(query) = nt_query_system() else {
-        return Vec::new();
+        return HashMap::new();
     };
     let mut buffer: Vec<u64> = vec![0; 64 * 1024];
     for _ in 0..4 {
@@ -226,19 +244,30 @@ fn creation_times() -> Vec<(u32, u32, Option<f64>)> {
             )
         };
         if status >= 0 {
-            return parse_process_information(&buffer, bytes as usize);
+            return parse_process_information(&buffer, bytes as usize)
+                .into_iter()
+                .map(|(pid, ppid, created)| ((pid, ppid), created))
+                .collect();
         }
         if status != STATUS_INFO_LENGTH_MISMATCH || needed > 64 << 20 {
-            return Vec::new();
+            return HashMap::new();
         }
         // The table can grow between calls; leave headroom.
         buffer = vec![0; (needed as usize + 64 * 1024).div_ceil(8)];
     }
-    Vec::new()
+    HashMap::new()
+}
+
+/// The record offsets below are the 64-bit layout; elsewhere creation times
+/// come from each process handle alone.
+#[cfg(not(target_pointer_width = "64"))]
+fn creation_times() -> HashMap<(u32, u32), Option<f64>> {
+    HashMap::new()
 }
 
 /// Walk SYSTEM_PROCESS_INFORMATION records. x64 offsets: NextEntryOffset 0,
 /// CreateTime 32, UniqueProcessId 80, InheritedFromUniqueProcessId 88.
+#[cfg(target_pointer_width = "64")]
 fn parse_process_information(buffer: &[u64], bytes: usize) -> Vec<(u32, u32, Option<f64>)> {
     let base = buffer.as_ptr() as *const u8;
     let read_u64 = |at: usize| -> Option<u64> {
@@ -373,8 +402,8 @@ mod tests {
         let me = std::process::id();
         let from_table = creation_times()
             .iter()
-            .find(|t| t.0 == me)
-            .and_then(|t| t.2);
+            .find(|(key, _)| key.0 == me)
+            .and_then(|(_, created)| *created);
         let mut row = ProcessRow {
             pid: me,
             ppid: 0,
@@ -385,6 +414,22 @@ mod tests {
         read_details(&mut row);
         assert!(from_table.is_some());
         assert_eq!(from_table, row.created);
+    }
+
+    #[test]
+    fn a_pid_reused_after_the_walk_gets_no_details() {
+        // The walk saw an earlier process on this pid: the handle's creation
+        // time differs, so the open process's command line is not taken.
+        let mut row = ProcessRow {
+            pid: std::process::id(),
+            ppid: 0,
+            name: "earlier.exe".into(),
+            created: Some(1.0),
+            cmdline: None,
+        };
+        read_details(&mut row);
+        assert_eq!(row.created, None);
+        assert_eq!(row.cmdline, None);
     }
 
     #[test]
