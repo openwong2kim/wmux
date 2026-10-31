@@ -238,6 +238,23 @@ describe('WorktaskCleanupView', () => {
       confirm.mockRestore();
     });
 
+    it('asks in place before removing a seat whose commits are on no branch', async () => {
+      const api = seatApi();
+      api.removeCompanySeat = vi.fn()
+        .mockResolvedValueOnce({ ok: false, reason: 'unpushed' })
+        .mockResolvedValueOnce({ ok: true });
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      act(() => (container.querySelector('[data-cleanup-remove-seat]') as HTMLButtonElement).click());
+      await flush();
+      expect(el('cleanup-seat-remove-confirm-row')?.textContent).toContain(
+        'Its commits are on no branch and only on this PC. Removing the worktree loses them. Remove it anyway?',
+      );
+      act(() => el('cleanup-seat-remove-confirm')!.click());
+      await flush();
+      expect(api.removeCompanySeat.mock.calls).toEqual([[SEAT, false], [SEAT, true]]);
+    });
+
     it('keeps the seat on Cancel, and its branch on the second question\'s cancel', async () => {
       const api = seatApi();
       act(() => root.render(createElement(WorktaskCleanupView)));

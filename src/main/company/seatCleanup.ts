@@ -271,15 +271,28 @@ export async function listCompanySeatLeftovers(deps: SeatCleanupDeps): Promise<C
   return out;
 }
 
+/** HEAD is on no branch and holds commits on no remote ref (not the stamp's
+ *  base): removing the folder would take them with it. */
+async function detachedWorkOnlyHere(dir: string, git: SeatGit): Promise<boolean> {
+  if ((await git(['symbolic-ref', '-q', 'HEAD'], dir)).code === 0) return false;
+  const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], dir);
+  if (head.code === 0 && head.stdout.trim() === readStamp(dir).baseOid) return false;
+  const ahead = await git(['rev-list', '--count', 'HEAD', '--not', '--remotes'], dir);
+  return ahead.code !== 0 || ahead.stdout.trim() !== '0';
+}
+
 /**
  * Remove a listed seat folder on the person's word, by its path (checked
  * against the seat shape), with PhoneWorktreeRemoval's checks: a pane inside
  * refuses, and changes, a lock or a folder git does not know need `force`.
- * Its meta folder goes with it. A `company/<folder>` branch it had checked
- * out is reported for a separate, confirmed delete.
+ * So does a HEAD on no branch with commits only here (`unpushed`): no branch
+ * keeps them once the folder goes. Its meta folder goes with it. A
+ * `company/<folder>` branch it had checked out is reported for a separate,
+ * confirmed delete.
  */
-export async function removeCompanySeat(worktreePath: string, force: boolean, deps: PhoneWorktreeRemoveDeps): Promise<PhoneWorktreeRemoveResult> {
+export async function removeCompanySeat(worktreePath: string, force: boolean, deps: PhoneWorktreeRemoveDeps & { seatGit?: SeatGit }): Promise<PhoneWorktreeRemoveResult> {
   const dir = shapedWorktreeDir(deps.root, worktreePath, COMPANY_SEAT_SHAPE);
+  if (!force && dir && await detachedWorkOnlyHere(dir, deps.seatGit ?? defaultGit)) return { ok: false, reason: 'unpushed' };
   const res = await removeShapedWorktree(worktreePath, force, deps, COMPANY_SEAT_SHAPE);
   if (res.ok && dir) {
     try { await fs.promises.rm(metaDirForWorktree(dir), { recursive: true, force: true }); } catch { /* a stamp with no worktree is never read */ }

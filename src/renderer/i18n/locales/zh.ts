@@ -1501,6 +1501,7 @@ export const zh = {
   'worktask.cleanup.removeRetryFailed': 'worktree 仍然存在（{reason}）。请重试，或使用 git 删除。',
   'worktask.cleanup.seatSwept': '已移除 {count} 个公司席位工作树；它们的工作都在远程仓库上。',
   'worktask.cleanup.seatDeleteBranchConfirm': '同时删除分支 {branch} 吗？仅在本机上的 commit 将随之丢失。',
+  'worktask.cleanup.seatRemoveUnpushedConfirm': '这些 commit 不在任何分支上，仅在本机上。移除工作树会丢失它们。仍要移除吗？',
   'worktask.cleanup.deleteBranch': '删除分支',
   'worktask.cleanup.keepBranch': '保留分支',
   'palette.cmd.projectPrefix': '项目：',

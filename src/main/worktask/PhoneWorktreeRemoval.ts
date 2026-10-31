@@ -24,7 +24,8 @@ import { directoryHold, type DirectoryHold } from '../../shared/directoryHold';
 
 export type PhoneWorktreeRemoveResult =
   | { ok: true; branch?: string; repo?: string }
-  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'error'; error?: string };
+  /** `unpushed`: a company seat with HEAD on no branch and commits on no remote (removeCompanySeat). */
+  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'unpushed' | 'error'; error?: string };
 
 export type PhoneGit = (args: string[], cwd: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
 

@@ -5064,6 +5064,7 @@ export const en = {
   'worktask.cleanup.deleteBranchConfirm': 'Also delete the branch {branch}?',
   'worktask.cleanup.seatSwept': 'Removed {count} company seat worktree(s); all their work is on the remote.',
   'worktask.cleanup.seatDeleteBranchConfirm': 'Also delete the branch {branch}? Commits that are only on this PC go with it.',
+  'worktask.cleanup.seatRemoveUnpushedConfirm': 'Its commits are on no branch and only on this PC. Removing the worktree loses them. Remove it anyway?',
   'worktask.cleanup.deleteBranch': 'Delete branch',
   'worktask.cleanup.keepBranch': 'Keep branch',
 

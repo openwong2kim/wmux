@@ -5022,6 +5022,7 @@ export const pl = {
   'worktask.cleanup.deleteBranchConfirm': 'Usunąć także gałąź {branch}?',
   'worktask.cleanup.seatSwept': 'Usunięto worktree stanowisk firmy: {count}. Cała ich praca jest w zdalnym repozytorium.',
   'worktask.cleanup.seatDeleteBranchConfirm': 'Usunąć także gałąź {branch}? Commity, które są tylko na tym komputerze, znikną razem z nią.',
+  'worktask.cleanup.seatRemoveUnpushedConfirm': 'Jego commity nie są na żadnej gałęzi i istnieją tylko na tym komputerze. Usunięcie worktree je straci. Usunąć mimo to?',
   'worktask.cleanup.deleteBranch': 'Usuń gałąź',
   'worktask.cleanup.keepBranch': 'Zachowaj gałąź',
 

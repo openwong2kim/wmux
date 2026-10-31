@@ -29,7 +29,7 @@ type WorktaskCloseFailure = 'dirty' | 'unpushed' | 'error';
 /** The in-place question a company seat row is asking: remove it although
  *  git refused (`force`), or delete the branch its removal reported. */
 type SeatQuestion =
-  | { worktreePath: string; step: 'force'; reason: 'dirty' | 'locked' | 'unregistered' }
+  | { worktreePath: string; step: 'force'; reason: 'dirty' | 'locked' | 'unregistered' | 'unpushed' }
   | { worktreePath: string; step: 'branch'; repo: string; branch: string };
 
 const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
@@ -328,7 +328,7 @@ export default function WorktaskCleanupView() {
             setSeatQuestion({ worktreePath, step: 'branch', repo: res.repo, branch: res.branch });
             asking = true;
           }
-        } else if (!force && (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered')) {
+        } else if (!force && (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered' || res.reason === 'unpushed')) {
           setSeatQuestion({ worktreePath, step: 'force', reason: res.reason });
           asking = true;
         } else if (res.reason === 'in-use') {
@@ -532,7 +532,9 @@ export default function WorktaskCleanupView() {
                               ? 'worktask.cleanup.removeDirtyConfirm'
                               : question.reason === 'locked'
                                 ? 'worktask.cleanup.removeLockedConfirm'
-                                : 'worktask.cleanup.removeUnregisteredConfirm')}
+                                : question.reason === 'unpushed'
+                                  ? 'worktask.cleanup.seatRemoveUnpushedConfirm'
+                                  : 'worktask.cleanup.removeUnregisteredConfirm')}
                             confirmLabel={t('worktask.cleanup.remove')}
                             cancelLabel={t('common.cancel')}
                             busy={busyTaskId !== null}

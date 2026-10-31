@@ -9,7 +9,7 @@ import path from 'node:path';
 import { shapedWorktreeDir } from '../../worktask/PhoneWorktreeRemoval';
 import { TaskWorktreeManager } from '../../worktask/TaskWorktreeManager';
 import { COMPANY_SEAT_SHAPE, SEAT_SWEEP_MIN_AGE_MS } from '../seatCleanupRule';
-import { listCompanySeatLeftovers, serialSeatSweeps, sweepCompanySeats, type SeatSession } from '../seatCleanup';
+import { listCompanySeatLeftovers, removeCompanySeat, serialSeatSweeps, sweepCompanySeats, type SeatSession } from '../seatCleanup';
 import { seatLaunches } from '../seatLaunch';
 
 const HASH = 'abc123def456';
@@ -179,6 +179,20 @@ describe('the seat sweep', () => {
     expect(await sweep({ keep: [path.join(dev1, 'src')], sessions: [{ id: 's1', spawnCwd: path.join(base, 'elsewhere'), cwd: dev2 }] })).toEqual({ removed: [] });
     expect(await sweep({ now: T0 + 60_000 })).toEqual({ removed: [] });
     expect(fs.existsSync(dev1) && fs.existsSync(dev2)).toBe(true);
+  });
+
+  it('asks before removing a listed seat whose commits are on no branch and only here', async () => {
+    const [dev1, dev2] = await seats();
+    g(dev1, 'checkout', '-q', '--detach');
+    commit(dev1, 'detached.txt');
+    const remove = (dir: string, force: boolean) => removeCompanySeat(dir, force, { root, livePaneCwds: async () => [] });
+    expect(await remove(dev1, false)).toEqual({ ok: false, reason: 'unpushed' });
+    expect(fs.existsSync(path.join(dev1, 'detached.txt'))).toBe(true);
+    expect(await remove(dev1, true)).toMatchObject({ ok: true });
+    expect(fs.existsSync(dev1)).toBe(false);
+    // On no branch but still at the base: nothing of its own to lose.
+    g(dev2, 'checkout', '-q', '--detach');
+    expect(await remove(dev2, false)).toMatchObject({ ok: true });
   });
 
   it('removes nothing until the daemon has recovered its sessions, and answers at once with no seat folder', async () => {

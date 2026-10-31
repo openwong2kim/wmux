@@ -4586,6 +4586,7 @@ export const ko = {
   'worktask.cleanup.deleteBranchConfirm': '{branch} 브랜치도 삭제할까요?',
   'worktask.cleanup.seatSwept': '회사 자리 워크트리 {count}개를 제거했습니다. 작업은 모두 원격에 있습니다.',
   'worktask.cleanup.seatDeleteBranchConfirm': '{branch} 브랜치도 삭제할까요? 이 PC에만 있는 커밋도 함께 사라집니다.',
+  'worktask.cleanup.seatRemoveUnpushedConfirm': '이 커밋들은 어느 브랜치에도 없고 이 PC에만 있습니다. 워크트리를 지우면 함께 사라집니다. 그래도 지울까요?',
   'worktask.cleanup.deleteBranch': '브랜치 삭제',
   'worktask.cleanup.keepBranch': '브랜치 유지',
 
