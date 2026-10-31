@@ -86,6 +86,16 @@ let scratchRow: CompactableLine | null = null;
 let scratchPacked: string | null = null;
 let scratchLength = -1;
 let scratchRowView: Uint32Array = scratch;
+// A row whose cells are read again in the same task is unpacked until the
+// task ends: addon-search walks a whole wrap group again for every row of the
+// group, so per-read decodes and the wrapper around every cell read cost more
+// than the scan itself. A one-pass scan (the autosave dump, wmux's pane
+// search) only fills `readOnce`.
+const HELD_BUDGET_WORDS = 2 * 1024 * 1024; // 8 MiB
+let readOnce = new Set<CompactableLine>();
+let held = new Map<CompactableLine, string>();
+let heldWords = 0;
+let releaseScheduled = false;
 let origGetTrimmedLength: LineMethod | null = null;
 
 function isPacked(line: CompactableLine): boolean {
@@ -305,6 +315,56 @@ function fullScratch(line: CompactableLine): Uint32Array {
   return view;
 }
 
+/** Packs a held row again, unless something changed it while it was held. */
+function release(line: CompactableLine, z: string): void {
+  const d = line._rawData;
+  heldWords -= line.length * 3;
+  if (line._packed !== null || !(d instanceof Uint32Array) || d.length !== line.length * 3) return;
+  const check = scratchView(d.length);
+  decodeCells(z, line.length, check);
+  for (let i = 0; i < d.length; i++) if (check[i] !== d[i]) return;
+  line._packed = z;
+  line._rawData = null;
+  line._cache = '';
+  line._cacheValid = false;
+}
+
+function releaseAll(): void {
+  for (const [line, z] of held) release(line, z);
+  readOnce = new Set();
+  held = new Map();
+  heldWords = 0;
+  releaseScheduled = false;
+}
+
+/** Unpacks a row read for the second time in this task; false leaves it packed. */
+function hold(line: CompactableLine): boolean {
+  const words = line.length * 3;
+  if (!releaseScheduled) {
+    releaseScheduled = true;
+    queueMicrotask(releaseAll);
+  }
+  if (!readOnce.has(line)) {
+    readOnce.add(line);
+    return false;
+  }
+  if (words > HELD_BUDGET_WORDS) return false;
+  // Oldest first out: a wrap group longer than the budget still holds its latest rows.
+  for (const [oldest, z] of held) {
+    if (heldWords + words <= HELD_BUDGET_WORDS) break;
+    held.delete(oldest);
+    release(oldest, z);
+  }
+  const z = line._packed as string;
+  const d = new Uint32Array(words);
+  decodeCells(z, line.length, d);
+  line._rawData = d;
+  line._packed = null;
+  held.set(line, z);
+  heldWords += words;
+  return true;
+}
+
 /**
  * Runs `fn` with the row decoded into a shared scratch array, leaving it
  * packed. `fn` may read only the cells below `limit`.
@@ -478,7 +538,7 @@ export function installScrollbackCompaction(lineClass: { prototype: object }): b
     const read = proto[name] as ((this: CompactableLine, a: unknown, b: unknown) => unknown) | undefined;
     if (typeof read !== 'function') continue;
     proto[name] = function (this: CompactableLine, a: unknown, b: unknown): unknown {
-      if (!isPacked(this)) return read.call(this, a, b);
+      if (!isPacked(this) || hold(this)) return read.call(this, a, b);
       this._rawData = fullScratch(this);
       try {
         return read.call(this, a, b);
@@ -723,4 +783,5 @@ export function detachScrollbackCompaction(term: object): void {
 export function __resetCompactionForTests(): void {
   disabled = false;
   warned = false;
+  releaseAll();
 }

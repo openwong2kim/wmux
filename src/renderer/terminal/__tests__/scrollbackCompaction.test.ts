@@ -168,15 +168,15 @@ describe('scrollback compaction', () => {
     }
   });
 
-  it('a packed row answers every BufferLine method exactly as the original does', () => {
+  it('a packed row answers every BufferLine method exactly as the original does', async () => {
     const r = rng(1234);
     let resizedPacked = 0;
     for (let iter = 0; iter < 400; iter++) {
       const twin = randomLine(r);
       const n = twin.length;
 
-      // Cell reads stay packed. Two packed rows read in turn also check that
-      // the shared decode follows the row being read.
+      // Cell reads leave the rows packed once the task ends. Two packed rows
+      // read in turn also check that the shared decode follows the row being read.
       const cellsA = packedCopy(twin);
       const otherTwin = randomLine(r);
       const cellsB = packedCopy(otherTwin);
@@ -184,6 +184,7 @@ describe('scrollback compaction', () => {
         expect(cellState(cellsA, i)).toEqual(cellState(twin, i));
         if (i < otherTwin.length) expect(cellState(cellsB, i)).toEqual(cellState(otherTwin, i));
       }
+      await Promise.resolve();
       expect([isLineCompacted(cellsA), isLineCompacted(cellsB)]).toEqual([true, true]);
       const packed = packedCopy(twin);
       for (let i = 0; i < n; i++) {
@@ -198,6 +199,7 @@ describe('scrollback compaction', () => {
         expect(packed.getCell(x)?.getAsCharData()).toEqual(twin.getCell(x)?.getAsCharData());
         expect(packed.get(Math.max(0, Math.min(x, n - 1)))).toEqual(twin.get(Math.max(0, Math.min(x, n - 1))));
       }
+      await Promise.resolve();
       expect(isLineCompacted(packed)).toBe(true);
 
       // Read whole rows without inflating them.
@@ -416,11 +418,32 @@ describe('scrollback compaction', () => {
     const { compacted } = compactScrollback(term as unknown as CompactableTerminal);
     expect(search.findNext('absent text')).toBe(false);
     expect(search.findNext('needle')).toBe(true);
+    // Rows the scan reread are unpacked until the task ends.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     const lines = (term as any)._core.buffers.normal.lines;
     let packed = 0;
     for (let i = 0; i < lines.length; i++) if (isLineCompacted(lines.get(i))) packed++;
     expect(packed).toBe(compacted);
     term.dispose();
+  });
+
+  it('a row read again in one task is unpacked until the task ends, then packed unless it changed', async () => {
+    const twin = new LineClass(8);
+    for (let i = 0; i < 8; i++) twin.setCellFromCodepoint(i, 0x61 + i, 1, { fg: i, bg: 0, extended: new ExtendedAttrs() });
+    const kept = packedCopy(twin);
+    const written = packedCopy(twin);
+    for (const line of [kept, written]) {
+      line.getCell(0);
+      expect(isLineCompacted(line)).toBe(true);
+      line.getCell(1);
+      expect(isLineCompacted(line)).toBe(false);
+    }
+    written._data[0] = 0x5a | (1 << 22);
+    await Promise.resolve();
+    expect(isLineCompacted(kept)).toBe(true);
+    expect(lineState(kept)).toEqual(lineState(twin));
+    expect(isLineCompacted(written)).toBe(false);
+    expect(written.translateToString(true)).toBe('Zbcdefgh');
   });
 
   it('a slice that requestIdleCallback runs by its timeout still gets a working budget', async () => {
