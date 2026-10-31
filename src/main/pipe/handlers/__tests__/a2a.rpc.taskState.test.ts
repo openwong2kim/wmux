@@ -442,7 +442,7 @@ describe('a2a.task.cancel — the caller pane decides, the worker waits for the 
   });
 });
 
-describe('a2a.task.update — the company coordinator comes from the pane tree', () => {
+describe('a2a.task.update — the caller pane company seat comes from the pane tree', () => {
   beforeEach(() => sendToRendererMock.mockReset());
 
   const okDaemon = (calls: DaemonCall[]) => async (method: string, params: Record<string, unknown>) => {
@@ -450,34 +450,46 @@ describe('a2a.task.update — the company coordinator comes from the pane tree',
     return { ok: true, task: { id: 't1', status: { state: params.status, timestamp: 'x' }, metadata: { updatedAt: 'x' } } };
   };
   const panes = [
-    { id: 'pane-ceo', surfacePtyIds: ['pty-ceo'], coordinator: true },
-    { id: 'pane-b', surfacePtyIds: ['pty-b'] },
+    { id: 'pane-ceo', surfacePtyIds: ['pty-ceo'], companySeat: 'coordinator' },
+    { id: 'pane-b', surfacePtyIds: ['pty-b'], companySeat: 'staff' },
   ];
   const done = (over: Record<string, unknown>) => ({
     taskId: 't1', workspaceId: 'ws-home', status: 'completed', evidence: { summary: 'checked', items: [] }, ...over,
   });
 
-  it('tells the daemon when the resolved caller pane holds the coordinator seat', async () => {
+  it('tells the daemon the seat of the resolved caller pane', async () => {
     const calls: DaemonCall[] = [];
     rendererWithPanes(panes);
     const router = setup(okDaemon(calls));
     await router.dispatch({ id: 'k1', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo' }) });
+    await router.dispatch({ id: 'k1b', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-b' }) });
     expect(calls[0].params.callerPaneId).toBe('pane-ceo');
-    expect(calls[0].params.callerIsCoordinator).toBe(true);
-    expect(rendererUpdateCalls()[0]).not.toHaveProperty('callerIsCoordinator');
+    expect(calls[0].params.callerCompanySeat).toBe('coordinator');
+    expect(calls[1].params.callerCompanySeat).toBe('staff');
+    expect(rendererUpdateCalls()[0]).not.toHaveProperty('callerCompanySeat');
   });
 
-  it('never takes the flag from the caller', async () => {
+  it('sends no seat for a workspace that is not a company', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([{ id: 'pane-x', surfacePtyIds: ['pty-x'] }]);
+    const router = setup(okDaemon(calls));
+    await router.dispatch({ id: 'k0', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-x' }) });
+    expect(calls[0].params).not.toHaveProperty('callerCompanySeat');
+  });
+
+  it('never takes the seat from the caller', async () => {
     const calls: DaemonCall[] = [];
     rendererWithPanes(panes);
     const router = setup(okDaemon(calls));
-    // Another pane, a caller with no pane, and an unreadable pane tree all claim it.
-    await router.dispatch({ id: 'k2', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-b', callerIsCoordinator: true }) });
-    await router.dispatch({ id: 'k3', method: 'a2a.task.update', params: done({ callerIsCoordinator: true }) });
+    // A staff pane, a caller with no pane, and an unreadable pane tree all claim the coordinator.
+    await router.dispatch({ id: 'k2', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-b', callerCompanySeat: 'coordinator' }) });
+    await router.dispatch({ id: 'k3', method: 'a2a.task.update', params: done({ callerCompanySeat: 'coordinator' }) });
     rendererWithPanes({ error: 'pane gate not ready', retryable: true });
-    await router.dispatch({ id: 'k4', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo', callerIsCoordinator: true }) });
+    await router.dispatch({ id: 'k4', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo', callerCompanySeat: 'coordinator' }) });
     expect(calls).toHaveLength(3);
-    for (const call of calls) expect(call.params).not.toHaveProperty('callerIsCoordinator');
-    for (const sent of rendererUpdateCalls()) expect(sent).not.toHaveProperty('callerIsCoordinator');
+    expect(calls[0].params.callerCompanySeat).toBe('staff');
+    expect(calls[1].params).not.toHaveProperty('callerCompanySeat');
+    expect(calls[2].params).not.toHaveProperty('callerCompanySeat');
+    for (const sent of rendererUpdateCalls()) expect(sent).not.toHaveProperty('callerCompanySeat');
   });
 });

@@ -4,10 +4,11 @@
 // persists (work-links.json, the decision store, the A2A task mirror), so a
 // ticket survives a Moa restart with no store of its own.
 import type { MoaPendingDecision } from '../../../shared/moa';
-import { deriveLinkState, linkWaitsOnRequester, type WorkLink, type WorkLinkOrigin } from '../../../shared/workLink';
+import { deriveLinkState, linkWaitsOnRequester, type PaneLive, type WorkLink, type WorkLinkOrigin } from '../../../shared/workLink';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
 import { isRemoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
-import type { Message, Task } from '../../../shared/types';
+import type { Message, Task, Workspace } from '../../../shared/types';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 
 export type TicketState = 'queued' | 'working' | 'needs-you' | 'done' | 'failed';
 
@@ -42,9 +43,17 @@ export interface FleetTicket {
 /** How long a finished ticket stays listed. */
 export const TICKET_RECENT_MS = 24 * 60 * 60 * 1000;
 
+/** The panes open on this PC, stashed ones included. A pane on another PC
+ *  cannot be seen from here and is taken as there. */
+export function paneLiveIn(workspaces: readonly Workspace[]): PaneLive {
+  const live = new Set<string>();
+  for (const ws of workspaces) for (const leaf of getWorkspaceLeafPanes(ws)) live.add(`${ws.id}\n${leaf.id}`);
+  return (workspaceId, paneId) => isRemoteWorkspaceId(workspaceId) || live.has(`${workspaceId}\n${paneId}`);
+}
+
 /** A WorkLink's derived state in the five ticket words. Abandoned → null (not listed). */
-export function ticketStateOf(link: WorkLink, pendingDecision: boolean): TicketState | null {
-  const { state, reason } = deriveLinkState(link, pendingDecision);
+export function ticketStateOf(link: WorkLink, pendingDecision: boolean, paneLive?: PaneLive): TicketState | null {
+  const { state, reason } = deriveLinkState(link, pendingDecision, paneLive);
   switch (state) {
     case 'queued': return 'queued';
     case 'running': return 'working';
@@ -95,20 +104,22 @@ export interface TicketSources {
   now: number;
   /** How long a finished ticket stays listed; TICKET_RECENT_MS unless given. */
   recentMs?: number;
+  /** Which panes are still there (paneLiveIn): a report to a closed pane needs you. */
+  paneLive?: PaneLive;
 }
 
 /**
  * Every ticket, the ones that need you first, then newest first. Finished
  * tickets older than TICKET_RECENT_MS drop off; abandoned ones never show.
  */
-export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = TICKET_RECENT_MS }: TicketSources): FleetTicket[] {
+export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = TICKET_RECENT_MS, paneLive }: TicketSources): FleetTicket[] {
   const pending = new Set(decisions.map((d) => d.decision.id));
   const out: FleetTicket[] = [];
   for (const link of links) {
     const fromMoa = link.origin === 'moa' || link.origin === 'moa-auto';
     if (!link.a2aTaskId && !fromMoa) continue;
     const decisionIds = link.decisionIds.filter((id) => pending.has(id));
-    const state = ticketStateOf(link, decisionIds.length > 0);
+    const state = ticketStateOf(link, decisionIds.length > 0, paneLive);
     if (!state) continue;
     if ((state === 'done' || state === 'failed') && now - link.updatedAt > recentMs) continue;
     const task = link.a2aTaskId ? a2aTasks[link.a2aTaskId] : undefined;
@@ -128,7 +139,7 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = 
     if (link.owner.paneId) ticket.paneId = link.owner.paneId;
     if (link.agent) ticket.agent = link.agent;
     if (link.a2aTaskId) ticket.a2aTaskId = link.a2aTaskId;
-    const waitingOn = state === 'working' ? linkWaitsOnRequester(link) : null;
+    const waitingOn = state === 'working' ? linkWaitsOnRequester(link, paneLive) : null;
     if (waitingOn) ticket.waitingOn = waitingOn;
     // The report kept on the link first (it outlives the task record), then
     // the task mirror; past both, the detail reads it back from the daemon.

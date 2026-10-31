@@ -311,6 +311,7 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { agentStatesFor } from '../shared/agentStateBatch';
+import { parseCompanySeat } from '../shared/company';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { createChatV2Host } from './chat/v2/host';
 import { registerChatV2Rpc } from './chat/v2/rpc';
@@ -7219,7 +7220,7 @@ function registerRpcHandlers(
     if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
     // Only the app's main process reads the pane tree; take the list from it
     // alone. Anything else leaves it unknown (no relaxation). The same goes
-    // for the other fields main sets (trustedLane, callerIsCoordinator).
+    // for the other fields main sets (trustedLane, callerCompanySeat).
     const firstParty = pipeServer.isFirstParty(ctx.clientId);
     const livePaneIds = firstParty ? normalizeLivePaneIds(p.livePaneIds) : undefined;
     let message: Message | undefined;
@@ -7242,9 +7243,9 @@ function registerRpcHandlers(
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerAddr: { paneId: p.callerPaneId } } : {}),
       ...(p.requirePaneIdentity === true ? { requirePaneIdentity: true } : {}),
       ...(firstParty && p.trustedLane === true ? { trustedLane: true } : {}),
-      // Main's read of the caller's pane (same read as callerPaneId): it holds
-      // its company's coordinator seat, whose done the service accepts.
-      ...(firstParty && p.callerIsCoordinator === true ? { callerIsCoordinator: true } : {}),
+      // Main's read of the caller's pane (same read as callerPaneId): its seat
+      // in its workspace's company, which decides who marks a company task done.
+      ...(firstParty && parseCompanySeat(p.callerCompanySeat) ? { callerCompanySeat: parseCompanySeat(p.callerCompanySeat) } : {}),
       // #1598: main's read of the caller workspace's panes (same read as
       // callerPaneId); lets a verified pane adopt a task whose pane is gone.
       ...(livePaneIds ? { livePaneIds } : {}),

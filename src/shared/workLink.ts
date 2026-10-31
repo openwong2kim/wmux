@@ -510,8 +510,12 @@ export function deriveWorkLinkState(input: WorkLinkDeriveInput): DerivedWorkLink
     : { state: input.state };
 }
 
-/** deriveWorkLinkState over a stored link. */
-export function deriveLinkState(link: WorkLink, pendingDecision: boolean): DerivedWorkLinkState {
+/** Whether a pane is still there. A report to a pane that closed waits on you. */
+export type PaneLive = (workspaceId: string, paneId: string) => boolean;
+
+/** deriveWorkLinkState over a stored link. Without `paneLive` the requester's
+ *  pane is taken as still there (main, which cannot see panes). */
+export function deriveLinkState(link: WorkLink, pendingDecision: boolean, paneLive?: PaneLive): DerivedWorkLinkState {
   return deriveWorkLinkState({
     state: link.state,
     reason: link.reason,
@@ -520,7 +524,7 @@ export function deriveLinkState(link: WorkLink, pendingDecision: boolean): Deriv
     hasPr: !!link.pr,
     prStatus: link.prStatus,
     pendingDecision,
-    requesterPane: !!link.requester?.paneId,
+    requesterPane: !!link.requester?.paneId && (paneLive?.(link.requester.workspaceId, link.requester.paneId) ?? true),
   });
 }
 
@@ -530,8 +534,13 @@ export function deriveLinkState(link: WorkLink, pendingDecision: boolean): Deriv
  * otherwise. Read it beside the derived state: a pending decision still makes
  * the link yours.
  */
-export function linkWaitsOnRequester(link: Pick<WorkLink, 'a2aState' | 'requester'>): { workspaceId: string; paneId: string } | null {
-  return link.a2aState === 'input-required' && link.requester?.paneId
-    ? { workspaceId: link.requester.workspaceId, paneId: link.requester.paneId }
+export function linkWaitsOnRequester(
+  link: Pick<WorkLink, 'a2aState' | 'requester'>,
+  paneLive?: PaneLive,
+): { workspaceId: string; paneId: string } | null {
+  const requester = link.requester;
+  return link.a2aState === 'input-required' && requester?.paneId
+    && (paneLive?.(requester.workspaceId, requester.paneId) ?? true)
+    ? { workspaceId: requester.workspaceId, paneId: requester.paneId }
     : null;
 }

@@ -46,7 +46,7 @@ import {
   validateCompletionEvidence,
 } from '../../shared/completionEvidence';
 import { isVerifiedTaskSender } from '../../shared/a2aReopen';
-import { companyCancelRefusal, companyDoneRefusal, isCompanyTask } from '../../shared/company';
+import { companyCancelRefusal, companyDoneRefusal, isCompanyTask, type CompanySeat } from '../../shared/company';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import type {
   A2aRemoteMarkPayload,
@@ -168,10 +168,11 @@ export interface TransitionInput {
   /** The human's lane or an in-process first-party caller (set by main). */
   trustedLane?: boolean;
   /**
-   * The caller's pane (`callerAddr`) is its workspace's company coordinator,
-   * read by main from the pane tree in the same read as `callerAddr`.
+   * The caller's pane (`callerAddr`) seat in its workspace's company, read by
+   * main from the pane tree in the same read as `callerAddr`; absent outside
+   * a company.
    */
-  callerIsCoordinator?: boolean;
+  callerCompanySeat?: CompanySeat;
   /**
    * Live pane ids of the caller's workspace (stashed included), resolved by
    * main from the pane tree in the same read as `callerAddr` — so it carries
@@ -476,8 +477,9 @@ export class A2aTaskService {
       // A company task is marked done by the company's coordinator, which is
       // not the receiver pane: its done skips this pane check (the workspace
       // check above still holds).
-      const callerIsCoordinator = input.callerIsCoordinator === true && !!input.callerAddr?.paneId;
-      const coordinatorDone = callerIsCoordinator && input.to === 'completed' && isCompanyTask(task.history);
+      // A seat counts only with the pane it was read for.
+      const callerSeat = input.callerCompanySeat && !input.callerAddr?.paneId ? 'staff' : input.callerCompanySeat;
+      const coordinatorDone = callerSeat === 'coordinator' && input.to === 'completed' && isCompanyTask(task.history);
       if (
         !coordinatorDone
         && input.callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== input.callerAddr.paneId
@@ -507,7 +509,7 @@ export class A2aTaskService {
       // A company task is marked done by its coordinator or the human, never by
       // the seat that did the work (it reports with input-required).
       if (input.to === 'completed') {
-        const refusal = companyDoneRefusal(task, { trusted: input.trustedLane === true, coordinator: callerIsCoordinator });
+        const refusal = companyDoneRefusal(task, { trusted: input.trustedLane === true, seat: callerSeat });
         if (refusal) return { ok: false, error: `a2a.task.update: ${refusal}` };
       }
       // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과. 위치는 authz·soft-defer

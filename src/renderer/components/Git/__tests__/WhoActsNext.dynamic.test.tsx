@@ -31,7 +31,7 @@ beforeEach(() => {
     github: { prList: vi.fn(), prDetail: vi.fn(async () => ({ ok: true, detail: { number: 9, comments: [] } })) },
     workLinks: { list, get: vi.fn(), onChanged: vi.fn((cb: (ids: string[]) => void) => { changed = cb; return () => undefined; }) },
   };
-  act(() => useStore.setState({ workspaces: [{ id: 'ws-1', name: 'Widgets WS' }] as never }));
+  act(() => useStore.setState({ workspaces: [{ id: 'ws-1', name: 'Widgets WS', rootPane: { id: 'p-1', type: 'leaf', surfaces: [], activeSurfaceId: '' } }] as never }));
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);

@@ -10,6 +10,7 @@ import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { prUrlParts } from '../../../shared/prDragRef';
 import { whoActsNext } from '../../../shared/prReview';
+import { paneLiveIn } from '../FleetView/fleetTickets';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import type { WorkLink, WorkLinkState } from '../../../shared/workLink';
 import { paneTag } from '../../utils/paneNaming';
@@ -48,7 +49,7 @@ export function WhoActsNext({ url }: { url: string }): React.ReactElement | null
     };
   }, [url]);
 
-  const next = link ? whoActsNext(link) : null;
+  const next = link ? whoActsNext(link, paneLiveIn(workspaces)) : null;
   if (!link || !next) return null;
   let text: string;
   if (next.actor === 'you') {

@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkLink } from '../../../../shared/workLink';
 import type { MoaPendingDecision } from '../../../../shared/moa';
-import type { Task, TaskState } from '../../../../shared/types';
+import type { Task, TaskState, Workspace } from '../../../../shared/types';
 import { PHONE_FLEET_TICKET_RECENT_MS } from '../../../../shared/phoneFleetTickets';
-import { buildFleetTickets, openTicketFor, ticketAttention, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
+import { buildFleetTickets, openTicketFor, paneLiveIn, ticketAttention, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
 
 const NOW = 1_000_000_000_000;
 
@@ -54,6 +54,20 @@ describe('a job reported back to the pane that handed it out', () => {
     expect(ticket.waitingOn).toEqual({ workspaceId: 'ws-1', paneId: 'p-ceo' });
     expect(ticket.result).toBeUndefined();
     expect(ticketAttention(ticket, {})).toBeNull();
+  });
+
+  it('is yours again once the pane it reported to has closed', () => {
+    const elsewhere = { id: 'ws-1', name: 'W', rootPane: { type: 'leaf', id: 'p-dev', surfaces: [], activeSurfaceId: '' } } as unknown as Workspace;
+    const [ticket] = buildFleetTickets({
+      links: [reported], decisions: [], a2aTasks: { 'task-1': task('input-required') }, now: NOW, paneLive: paneLiveIn([elsewhere]),
+    });
+    expect(ticket.state).toBe('needs-you');
+    expect(ticket).not.toHaveProperty('waitingOn');
+    const open = { ...elsewhere, rootPane: { ...elsewhere.rootPane, id: 'p-ceo' } } as Workspace;
+    const [still] = buildFleetTickets({
+      links: [reported], decisions: [], a2aTasks: { 'task-1': task('input-required') }, now: NOW, paneLive: paneLiveIn([open]),
+    });
+    expect(still.waitingOn).toEqual({ workspaceId: 'ws-1', paneId: 'p-ceo' });
   });
 
   it('is yours again while a decision of its waits, and names no pane', () => {

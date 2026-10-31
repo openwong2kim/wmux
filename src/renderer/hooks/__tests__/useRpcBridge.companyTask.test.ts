@@ -116,12 +116,12 @@ describe('a new task to a company pane', () => {
 });
 
 describe('pane.list', () => {
-  it('flags the coordinator pane and no other', async () => {
+  it('gives each pane of a company its seat, and no seat outside one', async () => {
     const rows = (await handleRpcMethod('pane.list', { workspaceId: HOME.id })) as Array<Record<string, unknown>>;
-    expect(rows.find((r) => r.id === 'pane-coord')?.coordinator).toBe(true);
-    expect(rows.find((r) => r.id === 'pane-member')).not.toHaveProperty('coordinator');
+    expect(rows.find((r) => r.id === 'pane-coord')?.companySeat).toBe('coordinator');
+    expect(rows.find((r) => r.id === 'pane-member')?.companySeat).toBe('staff');
     const outside = (await handleRpcMethod('pane.list', { workspaceId: OUTSIDE.id })) as Array<Record<string, unknown>>;
-    expect(outside[0]).not.toHaveProperty('coordinator');
+    expect(outside[0]).not.toHaveProperty('companySeat');
   });
 });
 
@@ -185,7 +185,7 @@ describe('marking a company task done (no daemon)', () => {
     const taskId = await startedTask();
     expect((await update({ taskId, status: 'completed', senderPtyId: 'pty-coord', evidence })).error).toBeDefined();
     // A call that skipped main's router is not the trusted lane.
-    expect((await update({ taskId, status: 'completed', requirePaneIdentity: undefined, evidence })).error)
+    expect((await update({ taskId, status: 'completed', senderPtyId: 'pty-member', requirePaneIdentity: undefined, evidence })).error)
       .toContain('coordinator (CEO) pane or the human');
     const trusted = await update({ taskId, status: 'completed', requirePaneIdentity: false, evidence });
     expect(trusted.ok).toBe(true);
@@ -198,6 +198,14 @@ describe('marking a company task done (no daemon)', () => {
     const res = (await handleRpcMethod('a2a.task.update', { taskId, workspaceId: OUTSIDE.id, status: 'working' })) as Result;
     expect(res.ok).toBe(true);
     const done = (await handleRpcMethod('a2a.task.update', { taskId, workspaceId: OUTSIDE.id, status: 'completed', evidence })) as Result;
+    expect(done.ok).toBe(true);
+  });
+
+  it('lets a pane in no company finish a briefed task it was sent: it has no CEO to report to', async () => {
+    const created = await send({ workspaceId: HOME.id, to: OUTSIDE.id, paneId: 'pane-out', senderPtyId: 'pty-coord', data: BRIEF });
+    const taskId = created.taskId as string;
+    expect((await update({ taskId, workspaceId: OUTSIDE.id, status: 'working', senderPtyId: 'pty-out' })).ok).toBe(true);
+    const done = await update({ taskId, workspaceId: OUTSIDE.id, status: 'completed', senderPtyId: 'pty-out', evidence });
     expect(done.ok).toBe(true);
   });
 });

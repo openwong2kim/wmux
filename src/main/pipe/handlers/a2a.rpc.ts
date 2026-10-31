@@ -10,6 +10,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage } from '../../../shared/types';
+import { parseCompanySeat, type CompanySeat } from '../../../shared/company';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
 import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
 import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask, applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
@@ -80,7 +81,7 @@ const INTERNAL_RENDERER_FIELDS = [
   'reopenPreflight',
   'requirePaneIdentity',
   'livePaneIds',
-  'callerIsCoordinator',
+  'callerCompanySeat',
   'deliveryDeadlineAt',
   'deliveryGuardKey',
   'presetTaskId',
@@ -151,8 +152,8 @@ async function daemonTaskRpc(
 
 type CallerPane =
   /** `livePaneIds`: every pane of the caller's workspace, from the same read;
-   *  `coordinator`: the pane holds its company's coordinator seat. */
-  | { kind: 'resolved'; paneId: string; livePaneIds: string[]; coordinator: boolean }
+   *  `companySeat`: the pane's seat when its workspace is a company. */
+  | { kind: 'resolved'; paneId: string; livePaneIds: string[]; companySeat?: CompanySeat }
   /** No senderPtyId, or one that is not a terminal in the caller's own workspace. */
   | { kind: 'absent' }
   /** The pane tree could not be read: keep the daemon's deferral to the renderer. */
@@ -177,7 +178,8 @@ async function resolveCallerPane(
   for (const pane of panes) {
     const ptys = Array.isArray(pane.surfacePtyIds) ? pane.surfacePtyIds : [];
     if (ptys.includes(senderPtyId)) {
-      return { kind: 'resolved', paneId: pane.id as string, livePaneIds, coordinator: pane.coordinator === true };
+      const companySeat = parseCompanySeat(pane.companySeat);
+      return { kind: 'resolved', paneId: pane.id as string, livePaneIds, ...(companySeat ? { companySeat } : {}) };
     }
   }
   return { kind: 'absent' };
@@ -1293,14 +1295,14 @@ export function registerA2aRpc(
         // cache only, and the durable copy stayed `submitted`.
         // #1598: the same read's pane list lets the daemon tell a gone
         // receiver pane (adoptable by this workspace) from a live one.
-        // The same read says whether the pane is its company's coordinator,
-        // which marks a company task done.
+        // The same read gives the pane's company seat: who marks a company
+        // task done.
         ...(callerPane.kind === 'resolved'
           ? {
             senderPtyId: params.senderPtyId,
             callerPaneId: callerPane.paneId,
             livePaneIds: callerPane.livePaneIds,
-            ...(callerPane.coordinator ? { callerIsCoordinator: true } : {}),
+            ...(callerPane.companySeat ? { callerCompanySeat: callerPane.companySeat } : {}),
           }
           : callerPane.kind === 'unknown' && typeof params.senderPtyId === 'string'
             ? { senderPtyId: params.senderPtyId }

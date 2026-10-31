@@ -45,7 +45,7 @@ import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTi
 import { IconCheck, IconChevron, IconPlus } from '../icons';
 // Read-only: the readers of delegated work and pending decisions.
 import { useMoaDecisions, useWorkLinks } from './useFleetSources';
-import { buildFleetTickets, loadSeenReports, openTicketFor, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
+import { buildFleetTickets, loadSeenReports, openTicketFor, paneLiveIn, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
 import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 import FleetRequestPanel from './FleetRequestPanel';
 import PlanApprovalList from './PlanApprovalList';
@@ -285,8 +285,8 @@ export default function FleetView() {
   const { decisions: moaDecisions } = useMoaDecisions(true);
   const a2aTasks = useStore((s) => s.a2aTasks);
   const tickets = useMemo(
-    () => buildFleetTickets({ links: workLinks, decisions: moaDecisions, a2aTasks, now }),
-    [workLinks, moaDecisions, a2aTasks, now],
+    () => buildFleetTickets({ links: workLinks, decisions: moaDecisions, a2aTasks, now, paneLive: paneLiveIn(workspaces) }),
+    [workLinks, moaDecisions, a2aTasks, now, workspaces],
   );
   const matchesTicket = useCallback((ticket: FleetTicket) => {
     const term = query.trim().toLocaleLowerCase();

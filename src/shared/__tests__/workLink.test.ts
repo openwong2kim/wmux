@@ -229,6 +229,14 @@ describe('a report back to the pane that handed the work out', () => {
     expect(linkWaitsOnRequester(link)).toEqual({ workspaceId: 'ws-co', paneId: 'pane-ceo' });
   });
 
+  it('is yours again once the requester pane has closed', () => {
+    const link = reported({ workspaceId: 'ws-co', paneId: 'pane-ceo' });
+    const closed = () => false;
+    expect(deriveLinkState(link, false, closed)).toEqual({ state: 'needs-you', reason: 'input-required' });
+    expect(linkWaitsOnRequester(link, closed)).toBeNull();
+    expect(deriveLinkState(link, false, () => true)).toEqual({ state: 'running' });
+  });
+
   it('is yours when the requester names no pane, and nobody waits once it moves on', () => {
     const link = reported({ workspaceId: 'ws-hq' });
     expect(deriveLinkState(link, false)).toEqual({ state: 'needs-you', reason: 'input-required' });

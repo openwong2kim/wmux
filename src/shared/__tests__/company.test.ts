@@ -6,6 +6,7 @@ import {
   decideCompanySend,
   companyCancelRefusal,
   companyDoneRefusal,
+  companySeatOf,
   companyOfWorkspace,
   isCompanyTask,
   missingBriefFields,
@@ -197,19 +198,35 @@ describe('companyCancelRefusal', () => {
 describe('companyDoneRefusal', () => {
   const t = { history: [briefMessage] };
 
-  it('refuses the seat that did the work and tells it to report instead', () => {
-    const refusal = companyDoneRefusal(t, { trusted: false, coordinator: false });
+  it('refuses the staff seat that did the work and tells it to report instead', () => {
+    const refusal = companyDoneRefusal(t, { trusted: false, seat: 'staff' });
     expect(refusal).toContain('coordinator (CEO) pane or the human');
     expect(refusal).toContain('input-required');
     expect(refusal).toContain('PR URL');
   });
 
   it('lets the coordinator or the human mark it done', () => {
-    expect(companyDoneRefusal(t, { trusted: false, coordinator: true })).toBeNull();
-    expect(companyDoneRefusal(t, { trusted: true, coordinator: false })).toBeNull();
+    expect(companyDoneRefusal(t, { trusted: false, seat: 'coordinator' })).toBeNull();
+    expect(companyDoneRefusal(t, { trusted: true, seat: 'staff' })).toBeNull();
+  });
+
+  it('lets a receiver in no company finish a briefed task: it has no CEO to report to', () => {
+    expect(companyDoneRefusal(t, { trusted: false, seat: undefined })).toBeNull();
   });
 
   it('leaves ordinary tasks alone', () => {
-    expect(companyDoneRefusal({ history: [plainMessage] }, { trusted: false, coordinator: false })).toBeNull();
+    expect(companyDoneRefusal({ history: [plainMessage] }, { trusted: false, seat: 'staff' })).toBeNull();
+  });
+});
+
+describe('companySeatOf', () => {
+  const company = { v: 1 as const, id: 'co', coordinatorPaneId: 'pane-ceo' };
+
+  it('reads the coordinator and the staff, and nothing outside a company', () => {
+    expect(companySeatOf(company, 'pane-ceo')).toBe('coordinator');
+    expect(companySeatOf(company, 'pane-dev')).toBe('staff');
+    expect(companySeatOf({ ...company, coordinatorPaneId: null }, 'pane-ceo')).toBe('staff');
+    expect(companySeatOf(undefined, 'pane-dev')).toBeUndefined();
+    expect(companySeatOf(company, undefined)).toBeUndefined();
   });
 });

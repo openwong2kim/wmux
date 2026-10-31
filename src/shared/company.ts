@@ -208,18 +208,32 @@ export function companyCancelRefusal(
   return 'only the pane that created this company task can cancel it; the receiver reports failed with evidence instead';
 }
 
+/** A pane's place in its workspace's company: the coordinator, or staff. */
+export type CompanySeat = 'coordinator' | 'staff';
+
+export function parseCompanySeat(v: unknown): CompanySeat | undefined {
+  return v === 'coordinator' || v === 'staff' ? v : undefined;
+}
+
+/** The pane's seat in the company, or undefined when there is no company. */
+export function companySeatOf(company: WorkspaceCompany | undefined, paneId: string | undefined): CompanySeat | undefined {
+  if (!company || !paneId) return undefined;
+  return company.coordinatorPaneId === paneId ? 'coordinator' : 'staff';
+}
+
 /**
  * Why this caller may not mark the task completed, or null when it may. A
  * company task is marked done by the company's coordinator pane (the CEO) or
- * the human, never by the seat that did the work: that seat reports with
- * input-required and the coordinator checks the report. `failed` stays the
- * receiver's.
+ * the human, never by the staff seat that did the work: that seat reports
+ * with input-required and the coordinator checks the report. A receiver in no
+ * company (a brief sent outside one, or to another PC) has no CEO to report
+ * to and finishes the task itself. `failed` stays the receiver's.
  */
 export function companyDoneRefusal(
   task: { history: readonly Message[] },
-  caller: { trusted: boolean; coordinator: boolean },
+  caller: { trusted: boolean; seat: CompanySeat | undefined },
 ): string | null {
-  if (caller.trusted || caller.coordinator || !isCompanyTask(task.history)) return null;
+  if (caller.trusted || caller.seat !== 'staff' || !isCompanyTask(task.history)) return null;
   return 'a company task is marked done by the company\'s coordinator (CEO) pane or the human, not by the seat that did the work; '
     + 'report it with status input-required and a message naming the PR URL, its head commit, what was run and who ran the live check';
 }

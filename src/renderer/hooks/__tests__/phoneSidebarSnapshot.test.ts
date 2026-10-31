@@ -681,7 +681,7 @@ describe('buildPhoneSidebarSnapshot — Fleet tickets', () => {
 
   it('shows a report back to a pane as working, and a question to a pane-less sender as needs-you', () => {
     const snap = build([
-      link('to-pane', { a2aState: 'input-required', requester: { workspaceId: 'a', paneId: 'p-ceo' }, updatedAt: T + 2 }),
+      link('to-pane', { a2aState: 'input-required', requester: { workspaceId: 'a', paneId: 'pa' }, updatedAt: T + 2 }),
       link('to-owner', { a2aState: 'input-required', requester: { workspaceId: 'a' }, updatedAt: T + 1 }),
     ]);
     expect(snap.fleetTickets?.map((t) => [t.id, t.state])).toEqual([['wl-to-owner', 'needs-you'], ['wl-to-pane', 'working']]);

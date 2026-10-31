@@ -7,7 +7,7 @@
 // Logs and bodies from GitHub are untrusted text: shown as text, never markup.
 import { cleanGhOutput } from './ghDeviceLogin';
 import type { DiffFile, DiffHunk } from './diffParse';
-import { linkWaitsOnRequester, type WorkLink, type WorkLinkReason } from './workLink';
+import { linkWaitsOnRequester, type PaneLive, type WorkLink, type WorkLinkReason } from './workLink';
 
 /** A PR's head and mergeability, read fresh with its checks. */
 export interface PrReviewHead {
@@ -294,7 +294,7 @@ export type NextActor =
   | { actor: 'requester'; workspaceId: string; paneId: string }
   | null;
 
-export function whoActsNext(link: Pick<WorkLink, 'state' | 'reason' | 'a2aState' | 'requester'>): NextActor {
+export function whoActsNext(link: Pick<WorkLink, 'state' | 'reason' | 'a2aState' | 'requester'>, paneLive?: PaneLive): NextActor {
   switch (link.state) {
     case 'needs-you':
       return { actor: 'you', reason: link.reason ?? 'other' };
@@ -303,8 +303,10 @@ export function whoActsNext(link: Pick<WorkLink, 'state' | 'reason' | 'a2aState'
     case 'blocked':
       return { actor: 'owner', ...(link.reason ? { reason: link.reason } : {}), working: false };
     case 'running': {
-      const requester = linkWaitsOnRequester(link);
+      const requester = linkWaitsOnRequester(link, paneLive);
       if (requester) return { actor: 'requester', ...requester };
+      // Reported to a pane that has closed since: nobody else will check it.
+      if (linkWaitsOnRequester(link)) return { actor: 'you', reason: 'input-required' };
       return { actor: 'owner', working: true };
     }
     case 'queued':
