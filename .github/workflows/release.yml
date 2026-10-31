@@ -840,9 +840,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Ship the module on every desktop target; engine selection stays Node
-      # until the user opts into Rust in Settings. Forge checks the copied
-      # module and runs a PTY with the packaged executable before making assets.
+      # Ship the module on every desktop target. On Linux it is the engine
+      # when the user has not picked one, and Node runs when it cannot load.
+      # Forge checks the copied module and runs a PTY with the packaged
+      # executable before making assets.
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
 
