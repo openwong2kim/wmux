@@ -38,5 +38,5 @@ export function clearSurfaceAgentOnProcessExit(ptyId: string, slug: string | nul
   if (!agent?.name) return;
   const paneSlug = agent.slug ?? agentDisplayToSlug(agent.name);
   if (paneSlug && paneSlug !== slug) return;
-  clearSurfaceAgentsKnownGone({ [ptyId]: false }, store.commandRunningByPtyId[ptyId] === true ? { [ptyId]: true } : {}, at);
+  store.clearSurfaceAgent(ptyId, store.commandRunningByPtyId[ptyId] === true ? undefined : at);
 }
