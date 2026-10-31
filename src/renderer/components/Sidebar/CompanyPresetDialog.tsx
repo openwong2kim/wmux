@@ -77,6 +77,10 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
   const editSeat = (i: number, patch: Partial<CompanyPresetSeat>) =>
     setSeats((prev) => prev.map((s, j) => (j === i ? { ...s, ...patch } : s)));
 
+  // Main makes the worktrees and briefs before the workspace exists, so the
+  // dialog stays until Make has finished.
+  const close = () => { if (!busy) onClose(); };
+
   const pickFolder = async () => {
     const picked = await window.electronAPI?.dialog?.pickFolder?.();
     if (picked && picked.length > 0) setFolder(picked[0]);
@@ -127,7 +131,7 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
   };
 
   return (
-    <Dialog onClose={onClose} closeOnBackdrop width={600} initialFocusRef={nameRef} zIndexClassName="z-[var(--z-modal-top)]" data-testid="company-preset-dialog">
+    <Dialog onClose={close} closeOnBackdrop width={600} initialFocusRef={nameRef} zIndexClassName="z-[var(--z-modal-top)]" data-testid="company-preset-dialog">
       <DialogHeader
         title={t('companyPreset.title', { preset: t(`companyPreset.${preset.id}.name`) })}
         description={t('companyPreset.description')}
@@ -215,7 +219,7 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
         {failed && <p className="ui-note">{t('companyPreset.failed', { error: failed })}</p>}
       </DialogBody>
       <DialogFooter>
-        <Button size="md" variant="secondary" onClick={onClose}>{t('common.cancel')}</Button>
+        <Button size="md" variant="secondary" disabled={busy} onClick={close}>{t('common.cancel')}</Button>
         <Button size="md" variant={seatsError ? 'secondary' : 'primary'} disabled={!!seatsError || busy} onClick={() => void make()}>
           {t('company.make')}
         </Button>
