@@ -58,6 +58,10 @@ export const IPC = {
   // manual rearm/stop). Always forwarded for badge sync; main also raises an
   // OS toast on guard trips only. Payload: { ptyId, status, reason, restartCount }.
   SUPERVISION_CHANGED: 'supervision:changed',
+  // The daemon's agent process-death edge (the tracker saw the pane's agent
+  // exit with no successor). The renderer drops the pane's agent row on it
+  // instead of waiting for its 15 s liveness poll. Payload: { ptyId, slug }.
+  AGENT_PROCESS_EXIT: 'agent:processExit',
   // X8 — renderer → main invoke channels for the supervision control surface
   // (pane context menu rearm / stop). Renderer-only by design: only the user
   // re-arms a tripped guard, never an external MCP/CLI client. Forwarded to

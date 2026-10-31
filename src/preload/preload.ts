@@ -494,6 +494,14 @@ const electronAPI = {
       ipcRenderer.on(IPC.SUPERVISION_CHANGED, listener);
       return () => { ipcRenderer.removeListener(IPC.SUPERVISION_CHANGED, listener); };
     },
+    // The pane's agent process died (the daemon tracker's death edge; a
+    // successor process is not a death). Drops the pane's agent row.
+    onAgentProcessExit: (callback: (payload: { ptyId: string; slug: string | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId: string; slug: string | null }) =>
+        callback(payload);
+      ipcRenderer.on(IPC.AGENT_PROCESS_EXIT, listener);
+      return () => { ipcRenderer.removeListener(IPC.AGENT_PROCESS_EXIT, listener); };
+    },
     // Fires once per attach when the daemon's SessionPipe ring-buffer
     // flush completes. recoveredBytes is the exact byte count replayed
     // from the daemon's scrollback before the FLUSH_DONE_MARKER. 0 means

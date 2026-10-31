@@ -885,6 +885,19 @@ export interface TrackedAgentState {
   identityEpoch?: number | null;
 }
 
+/**
+ * The `agent.processExit` event a state change broadcasts: the death edge
+ * only. A launch edge, including a successor that replaced the watched
+ * process (`replacedLive`), is no death, so it settles nothing and drops no
+ * agent row.
+ */
+export function agentProcessExitEvent(
+  sessionId: string,
+  state: TrackedAgentState,
+): { type: 'agent.processExit'; sessionId: string; data: { slug: AgentSlug | null } } | null {
+  return state.alive ? null : { type: 'agent.processExit', sessionId, data: { slug: state.slug ?? null } };
+}
+
 export class AgentProcessTracker {
   private readonly states = new Map<string, TrackedAgent>();
   /** The custom agent each pane runs, as a label beside `states`: it never

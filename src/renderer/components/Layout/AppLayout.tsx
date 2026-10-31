@@ -116,6 +116,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { noteDaemonConnected, noteDaemonDisconnected, noteDaemonGaveUp, noteDaemonReconnecting, notePaneReattached, notePaneWriteDropped, setDaemonLinkSurfaceResolver, type DaemonPaneRef } from '../../daemon/daemonLinkNotice';
 import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
+import { clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone } from '../../utils/agentRowLiveness';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import { AgentToolbarStrip } from '../AgentToolbar/ToolbarHost';
@@ -132,28 +133,6 @@ interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   state?: string;
   surfaceId?: string;
   createdAt?: string;
-}
-
-/**
- * #1210 — drop a pane's detected agent identity once we know the TUI is gone.
- * #1463 — `requestedAt` is when the snapshot was asked for: only running
- * evidence older than that is dropped with it, so an agent relaunched while the
- * answer was in flight keeps its stamp. A dead process with a foreground
- * command still running may be a relaunch the tracker has not re-armed for yet,
- * so that case keeps the stamp too.
- */
-function clearSurfaceAgentsKnownGone(
-  agentAlive: Record<string, boolean>,
-  commandRunning: Record<string, boolean>,
-  requestedAt: number,
-): void {
-  const store = useStore.getState();
-  for (const [id, alive] of Object.entries(agentAlive)) {
-    if (alive === false) store.clearSurfaceAgent(id, commandRunning[id] === true ? undefined : requestedAt);
-  }
-  for (const [id, running] of Object.entries(commandRunning)) {
-    if (running === false) store.clearSurfaceAgent(id, requestedAt);
-  }
 }
 
 /** Name panes from the daemon's process truth — see planLiveAgentSeed. */
@@ -2064,10 +2043,16 @@ export default function AppLayout() {
     const offRestarted = window.electronAPI.pty.onRestarted((payload) => {
       useStore.getState().bumpSupervisionRestart(payload.ptyId);
     });
+    // The agent's process-death edge drops its row now; the 15 s poll below
+    // stays the backstop for panes the tracker never attributed.
+    const offAgentExit = window.electronAPI.pty.onAgentProcessExit((payload) => {
+      clearSurfaceAgentOnProcessExit(payload.ptyId, payload.slug, Date.now());
+    });
     return () => {
       offConnected();
       offChanged();
       offRestarted();
+      offAgentExit();
     };
   }, []);
 

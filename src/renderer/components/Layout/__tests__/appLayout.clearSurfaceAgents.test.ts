@@ -46,6 +46,22 @@ describe('AppLayout clearSurfaceAgents wiring (#1210 / #1228)', () => {
     );
   });
 
+  it('the agent process-death edge drops the row without waiting for the poll', () => {
+    // daemon broadcast -> main forward -> preload channel -> AppLayout handler.
+    const read = (rel: string) => readSourceText(path.resolve(process.cwd(), rel));
+    expect(read('src/main/ipc/handlers/pty.handler.ts')).toMatch(
+      /daemonClient\.on\('session:agentProcessExit', onDaemonAgentProcessExit\)/,
+    );
+    expect(read('src/main/ipc/handlers/pty.handler.ts')).toMatch(
+      /send\(IPC\.AGENT_PROCESS_EXIT, \{ ptyId: payload\.sessionId, slug: payload\.slug \?\? null \}\)/,
+    );
+    expect(read('src/preload/preload.ts')).toMatch(/onAgentProcessExit:[\s\S]{0,300}ipcRenderer\.on\(IPC\.AGENT_PROCESS_EXIT, listener\)/);
+    expect(source).toMatch(
+      /window\.electronAPI\.pty\.onAgentProcessExit\(\(payload\) => \{\s*clearSurfaceAgentOnProcessExit\(payload\.ptyId, payload\.slug, Date\.now\(\)\);/,
+    );
+    expect(source).toMatch(/offAgentExit\(\);/);
+  });
+
   it('the agent-seed filter excludes panes known dead', () => {
     expect(source).toMatch(
       /\)\.filter\(\(id\) => agentAliveSnapshot\[id\] !== false && commandRunningSnapshot\[id\] !== false\);/,

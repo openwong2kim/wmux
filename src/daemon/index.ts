@@ -176,7 +176,7 @@ import { listMissionsBatch } from './worktask/missionListBatch';
 import { viewerVisibilityUpdates } from '../shared/viewerVisibilityBatch';
 import { isTaskState, type AgentStatus, type Message, type Task } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
-import { AgentProcessTracker } from './AgentProcessTracker';
+import { AgentProcessTracker, agentProcessExitEvent } from './AgentProcessTracker';
 import { CustomAgentNames } from './customAgentNames';
 import { liveRecoveryHint, markCwdMissing, namedAgentAlive, recordedTurnStillOpen, recordWasMidTurn, screenShowsLiveAgent, sightedRecoveredAgent } from './recoveryHint';
 import { checkWslAgentRunning, reportedAgentForPane, stopWslAgent, WslPidWatcher } from './wslAgentProcess';
@@ -10213,14 +10213,10 @@ async function main(): Promise<void> {
     // crash) sends no Stop, and byte silence no longer clears a hook-governed
     // pane — so without this broadcast the dot would stay lit until the
     // authority TTL. Sent on the death edge only; `alive:true` is the launch
-    // edge and settles nothing.
-    if (!state.alive) {
-      pipeServer.broadcast({
-        type: 'agent.processExit',
-        sessionId,
-        data: { slug: state.slug ?? null },
-      });
-    }
+    // edge and settles nothing. The renderer also drops the pane's agent row
+    // on it.
+    const exitEvent = agentProcessExitEvent(sessionId, state);
+    if (exitEvent) pipeServer.broadcast(exitEvent);
     // A named agent's launch edge is the process evidence that consumes a
     // recovered pane's resume offer (the banner path leaves it to the process
     // or hook tier). Done here, not left to liveRecoveryHint's next read: an
