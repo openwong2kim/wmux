@@ -23,7 +23,8 @@ import { PHONE_WORKTREE_BRANCH_PREFIX, PHONE_WORKTREE_DIR_PREFIX, PHONE_WORKTREE
 import { directoryHold, type DirectoryHold } from '../../shared/directoryHold';
 
 export type PhoneWorktreeRemoveResult =
-  | { ok: true; branch?: string; repo?: string }
+  /** `oid`: a company seat's branch commit at removal (removeCompanySeat). */
+  | { ok: true; branch?: string; repo?: string; oid?: string }
   /** `unpushed`: a company seat with HEAD on no branch and commits on no remote (removeCompanySeat). */
   | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'unpushed' | 'error'; error?: string };
 

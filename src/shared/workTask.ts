@@ -370,5 +370,6 @@ export type CompanySeatSweepResultWire =
 
 /** worktask:remove-phone and worktask:remove-company-seat result (PhoneWorktreeRemoval mirror). */
 export type RemovePhoneWorktreeResultWire =
-  | { ok: true; branch?: string; repo?: string }
+  /** `oid`: a company seat's branch commit at removal, which the branch delete must still find. */
+  | { ok: true; branch?: string; repo?: string; oid?: string }
   | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'unpushed' | 'error'; error?: string };

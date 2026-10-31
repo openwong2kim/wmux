@@ -30,7 +30,7 @@ type WorktaskCloseFailure = 'dirty' | 'unpushed' | 'error';
  *  git refused (`force`), or delete the branch its removal reported. */
 type SeatQuestion =
   | { worktreePath: string; step: 'force'; reason: 'dirty' | 'locked' | 'unregistered' | 'unpushed' }
-  | { worktreePath: string; step: 'branch'; repo: string; branch: string };
+  | { worktreePath: string; step: 'branch'; repo: string; branch: string; oid: string };
 
 const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   'unmaterialized-open': 'worktask.cleanup.cat.unmaterialized',
@@ -323,9 +323,9 @@ export default function WorktaskCleanupView() {
         const res = await api.removeCompanySeat(worktreePath, force);
         if (res.ok) {
           pushToast({ level: 'info', message: t('worktask.cleanup.removed') });
-          if (res.branch && res.repo) {
+          if (res.branch && res.repo && res.oid) {
             // The row stays until this is answered.
-            setSeatQuestion({ worktreePath, step: 'branch', repo: res.repo, branch: res.branch });
+            setSeatQuestion({ worktreePath, step: 'branch', repo: res.repo, branch: res.branch, oid: res.oid });
             asking = true;
           }
         } else if (!force && (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered' || res.reason === 'unpushed')) {
@@ -358,7 +358,7 @@ export default function WorktaskCleanupView() {
       if (remove && api) {
         setBusyTaskId(question.worktreePath);
         try {
-          const deleted = await api.deleteCompanySeatBranch(question.worktreePath, question.repo, question.branch);
+          const deleted = await api.deleteCompanySeatBranch(question.worktreePath, question.repo, question.branch, question.oid);
           if (!deleted.ok) pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: deleted.error ?? '' }) });
         } catch (e) {
           pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: e instanceof Error ? e.message : String(e) }) });

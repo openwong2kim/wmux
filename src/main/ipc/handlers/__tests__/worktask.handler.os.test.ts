@@ -375,15 +375,22 @@ describe('company seat worktrees in the cleanup list', () => {
     }
     expect(existsSync(phone)).toBe(true);
     for (const branch of ['main', 'company/dev-2-456789ab', 'dev-1-456789ab']) {
-      expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo, branch })).toEqual({ ok: false, error: "not this seat's branch" });
+      expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo, branch, oid: 'a'.repeat(40) })).toEqual({ ok: false, error: "not this seat's branch" });
     }
-    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: repo, repo, branch: 'company/dev-1-456789ab' })).toEqual({ ok: false, error: "not this seat's branch" });
+    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: repo, repo, branch: 'company/dev-1-456789ab', oid: 'a'.repeat(40) })).toEqual({ ok: false, error: "not this seat's branch" });
 
     expect(await call(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath: seat, force: false })).toEqual({ ok: false, reason: 'dirty' });
-    const removed = (await call(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath: seat, force: true })) as { ok: boolean; branch?: string; repo?: string };
-    expect(removed).toMatchObject({ ok: true, branch: 'company/dev-1-456789ab' });
+    const removed = (await call(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath: seat, force: true })) as { ok: boolean; branch?: string; repo?: string; oid?: string };
+    expect(removed).toMatchObject({ ok: true, branch: 'company/dev-1-456789ab', oid: gitIn(repo, 'rev-parse', 'company/dev-1-456789ab') });
     expect(existsSync(seat)).toBe(false);
-    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo: removed.repo, branch: removed.branch })).toEqual({ ok: true });
+    // A branch that gained a commit after the question was asked stays.
+    gitIn(repo, 'commit', '-q', '--allow-empty', '-m', 'later');
+    gitIn(repo, 'branch', '-f', 'company/dev-1-456789ab', 'main');
+    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo: removed.repo, branch: removed.branch, oid: removed.oid }))
+      .toEqual({ ok: false, error: 'the branch moved since; it was kept' });
+    expect(gitIn(repo, 'branch', '--format=%(refname:short)')).toContain('company/dev-1-456789ab');
+    const now = gitIn(repo, 'rev-parse', 'company/dev-1-456789ab');
+    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo: removed.repo, branch: removed.branch, oid: now })).toEqual({ ok: true });
     expect(gitIn(repo, 'branch', '--format=%(refname:short)')).toBe('main');
   });
 });

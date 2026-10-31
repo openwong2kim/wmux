@@ -1755,8 +1755,8 @@ const electronAPI = {
         import('../shared/workTask').RemovePhoneWorktreeResultWire
       >,
     /** Only `company/<slug>` of that seat folder. */
-    deleteCompanySeatBranch: (worktreePath: string, repo: string, branch: string) =>
-      ipcRenderer.invoke(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath, repo, branch }) as Promise<{ ok: boolean; error?: string }>,
+    deleteCompanySeatBranch: (worktreePath: string, repo: string, branch: string, oid: string) =>
+      ipcRenderer.invoke(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath, repo, branch, oid }) as Promise<{ ok: boolean; error?: string }>,
     /** Remove the company seat worktrees nothing uses any more; `keep`: every
      *  folder a live, stashed or archived pane is in. */
     sweepCompanySeats: (keep: string[]) =>

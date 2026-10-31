@@ -5,14 +5,13 @@
 // loaded, and after a workspace or an archived workspace goes), never from
 // the list: opening the list removes nothing.
 
-import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { directoryHold as defaultDirectoryHold, type DirectoryHold } from '../../shared/directoryHold';
 import { normalizeWorktreePath } from '../../shared/workTask';
 import { git as defaultGit, type GitResult } from '../git/git';
 import {
-  deleteConfirmedBranch, removeShapedWorktree, shapedWorktreeDir, shapedWorktreeName,
+  removeShapedWorktree, shapedWorktreeDir, shapedWorktreeName,
   type PhoneWorktreeRemoveDeps, type PhoneWorktreeRemoveResult,
 } from '../worktask/PhoneWorktreeRemoval';
 import { sessionHostDir, sessionsStartedIn } from '../worktask/stopSessionsInDir';
@@ -184,25 +183,19 @@ async function mainWorktreeOf(dir: string, git: SeatGit): Promise<string | undef
   return list.code === 0 ? /^worktree (.+)$/m.exec(list.stdout)?.[1] : undefined;
 }
 
-/** The repository's folder name under the root, as preflight derives it. */
-function repoHashOf(repoRoot: string): string {
-  let real: string;
-  try { real = fs.realpathSync(repoRoot); } catch { real = repoRoot; }
-  return crypto.createHash('sha256').update(real).digest('hex').slice(0, 12);
-}
-
 /** Remove one seat folder the rule let go, its meta folder, and then its
  *  branch when seatBranchToDelete allows. */
 async function removeSeat(report: SeatReport, deps: SeatCleanupDeps & { worktrees: TaskWorktreeManager }, log: (m: string) => void): Promise<boolean> {
   const { dir } = report;
   const git = deps.git ?? defaultGit;
   const platform = deps.platform ?? process.platform;
+  // Seat creation took the repository lock by the name the folder is filed
+  // under: the hash of the folder the company was made in, which may be a
+  // linked worktree rather than the repository's main one.
   const repoHash = path.basename(path.dirname(dir));
   const repoRoot = await mainWorktreeOf(dir, git);
-  // Seat creation takes the repository lock by this name: a folder filed
-  // under another repository's is left as it is.
-  if (!repoRoot || repoHashOf(repoRoot) !== repoHash) {
-    log(`kept ${dir}: its repository is not the one its folder is filed under`);
+  if (!repoRoot) {
+    log(`kept ${dir}: its repository cannot be read`);
     return false;
   }
   const removed = await deps.worktrees.removeWorktree(repoRoot, repoHash, dir, async () => {
@@ -306,18 +299,33 @@ export async function removeCompanySeat(worktreePath: string, force: boolean, de
   const dir = shapedWorktreeDir(deps.root, worktreePath, COMPANY_SEAT_SHAPE);
   if (!force && dir && await detachedWorkOnlyHere(dir, deps.seatGit ?? defaultGit)) return { ok: false, reason: 'unpushed' };
   const res = await removeShapedWorktree(worktreePath, force, deps, COMPANY_SEAT_SHAPE);
-  if (res.ok && dir) {
-    try { await fs.promises.rm(metaDirForWorktree(dir), { recursive: true, force: true }); } catch { /* a stamp with no worktree is never read */ }
-  }
-  return res;
+  if (!res.ok || !dir) return res;
+  try { await fs.promises.rm(metaDirForWorktree(dir), { recursive: true, force: true }); } catch { /* a stamp with no worktree is never read */ }
+  if (!res.branch || !res.repo) return res;
+  // The commit the branch question is about: deleteCompanySeatBranch takes
+  // the branch only while it is still there.
+  const at = await (deps.seatGit ?? defaultGit)(['rev-parse', '--verify', '--quiet', `refs/heads/${res.branch}^{commit}`], res.repo);
+  const oid = at.stdout.trim();
+  return at.code === 0 && OID.test(oid) ? { ...res, oid } : { ok: true };
 }
 
 /** Delete a removed seat's branch on the person's word: only
- *  `company/<folder>` of that seat folder. */
-export async function deleteCompanySeatBranch(root: string, worktreePath: string, repo: string, branch: string): Promise<{ ok: boolean; error?: string }> {
+ *  `company/<folder>` of that seat folder, only while no worktree has it
+ *  checked out, and only at `oid`, the commit removeCompanySeat reported. A
+ *  branch that moved since stays. */
+export async function deleteCompanySeatBranch(
+  root: string, worktreePath: string, repo: string, branch: string, oid: string, git: SeatGit = defaultGit,
+): Promise<{ ok: boolean; error?: string }> {
   const folder = shapedWorktreeName(root, worktreePath, COMPANY_SEAT_SHAPE);
   if (!folder || branch !== `${COMPANY_SEAT_BRANCH_PREFIX}${folder}`) return { ok: false, error: "not this seat's branch" };
-  return deleteConfirmedBranch(repo, branch);
+  if (!OID.test(oid)) return { ok: false, error: 'invalid request' };
+  if ((await git(['rev-parse', '--git-dir'], repo)).code !== 0) return { ok: false, error: 'not a repository' };
+  // `update-ref -d` does not ask, as `branch -D` does, whether a worktree has it checked out.
+  const list = await git(['worktree', 'list', '--porcelain'], repo);
+  if (list.code !== 0) return { ok: false, error: list.stderr.trim() || 'the worktrees cannot be read' };
+  if (list.stdout.split(/\r?\n/).includes(`branch refs/heads/${branch}`)) return { ok: false, error: 'a worktree has the branch checked out' };
+  const deleted = await git(['update-ref', '-d', `refs/heads/${branch}`, oid], repo);
+  return deleted.code === 0 ? { ok: true } : { ok: false, error: 'the branch moved since; it was kept' };
 }
 
 /** A sweep's answer: `run` numbers the sweep, so requests that waited for

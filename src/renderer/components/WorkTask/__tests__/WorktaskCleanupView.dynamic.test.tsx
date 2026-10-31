@@ -185,7 +185,7 @@ describe('WorktaskCleanupView', () => {
       }));
       api.removeCompanySeat = vi.fn()
         .mockResolvedValueOnce({ ok: false, reason: 'dirty' })
-        .mockResolvedValueOnce({ ok: true, branch: 'company/dev-1-456789ab', repo: '/repo/.git' });
+        .mockResolvedValueOnce({ ok: true, branch: 'company/dev-1-456789ab', repo: '/repo/.git', oid: 'c'.repeat(40) });
       api.deleteCompanySeatBranch = vi.fn(async () => ({ ok: true }));
       return api;
     };
@@ -232,7 +232,7 @@ describe('WorktaskCleanupView', () => {
       );
       act(() => el('cleanup-seat-branch-confirm')!.click());
       await flush();
-      expect(api.deleteCompanySeatBranch).toHaveBeenCalledWith(SEAT, '/repo/.git', 'company/dev-1-456789ab');
+      expect(api.deleteCompanySeatBranch).toHaveBeenCalledWith(SEAT, '/repo/.git', 'company/dev-1-456789ab', 'c'.repeat(40));
       expect(api.scan).toHaveBeenCalledTimes(2);
       expect(confirm).not.toHaveBeenCalled();
       confirm.mockRestore();

@@ -468,8 +468,10 @@ export function registerWorktaskHandlers(
     IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH,
     wrapHandler(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, async (_event, raw: unknown) => {
       const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
-      if (typeof r.worktreePath !== 'string' || typeof r.repo !== 'string' || typeof r.branch !== 'string') return { ok: false, error: 'invalid request' };
-      return deleteCompanySeatBranch(seatRoot(), r.worktreePath, r.repo, r.branch);
+      if (typeof r.worktreePath !== 'string' || typeof r.repo !== 'string' || typeof r.branch !== 'string' || typeof r.oid !== 'string') {
+        return { ok: false, error: 'invalid request' };
+      }
+      return deleteCompanySeatBranch(seatRoot(), r.worktreePath, r.repo, r.branch, r.oid);
     }),
   );
 

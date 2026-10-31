@@ -126,6 +126,18 @@ describe('the seat sweep', () => {
     expect(g(remote, 'branch', '--list', 'company/dev-1-456789ab')).toContain('company/dev-1-456789ab');
   });
 
+  it('removes the seats of a company made in a linked worktree of the repository', async () => {
+    const linked = path.join(base, 'linked');
+    g(repo, 'worktree', 'add', '-q', '-b', 'side', linked);
+    const res = await seatLaunches({
+      workspaceId: WS, company: 'checkout', ceo: 0, tellSeats: false, folder: linked,
+      seats: [{ label: 'ceo', owns: '', agent: 'claude' }, { label: 'dev-1', owns: '', agent: 'claude' }],
+    }, { dir: path.join(base, 'data'), platform: 'darwin', takenLabels: () => [], now: () => T0, worktrees });
+    if (!res.ok || !res.cwds[1]) throw new Error(res.ok ? 'no worktree' : res.error);
+    expect((await sweep())?.removed).toEqual([res.cwds[1]]);
+    expect(branches()).toEqual(['main', 'side']);
+  });
+
   it('removes a seat that never committed, even with no remote, and its branch', async () => {
     g(repo, 'remote', 'remove', 'origin');
     const [dev1, dev2] = await seats();
