@@ -1010,6 +1010,9 @@ export class DaemonSessionManager extends EventEmitter {
     // buffer — the exact garbling util/outputModeTracker.ts exists to prevent.
     if (params.scrollbackData && params.scrollbackData.length > 0) {
       ringBuffer.write(params.scrollbackData);
+      // The ring holds its own copy. The listeners below capture `params`, so
+      // without this the whole dump would stay alive as long as the session.
+      params.scrollbackData = undefined;
       // #952: the dump repainted the DEAD process's screen, but the fresh
       // process spawned above starts from an empty ConPTY whose absolute
       // coordinates begin at row 1 — any restored rows left in the viewport
