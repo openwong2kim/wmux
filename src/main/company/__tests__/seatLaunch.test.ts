@@ -1,3 +1,4 @@
+// @wmux-lane unit — 'win32' here is a platform value handed to the launch-line builder; nothing runs on Windows.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
