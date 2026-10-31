@@ -25,6 +25,7 @@ import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 import { buildSafeChildEnv, isNestingMarker } from '../shared/envFilter';
+import { claudeFileSendEnv } from '../shared/claudeFileSend';
 import { sanitizeSecretEnv } from '../shared/botSecret';
 import { withoutExeSearchGuard } from '../shared/exeSearch';
 import { CLAUDE_SANDBOXED_ENV } from '../shared/agentFirstRun';
@@ -123,6 +124,8 @@ interface PreparedSpawn {
   hostCwd: string;
   env: Record<string, string>;
   secretEnv: Record<string, string> | null;
+  /** The Claude file send setting at prepare time (shared/claudeFileSend.ts). */
+  claudeFileSend: boolean;
   cols: number;
   rows: number;
   wsl: ResolvedWslCwd | undefined;
@@ -306,6 +309,17 @@ export class DaemonSessionManager extends EventEmitter {
 
   setPaneJob(job: PaneJob): void {
     this.paneJob = job;
+  }
+
+  /**
+   * Whether the Claude file send setting is on (shared/claudeFileSend.ts).
+   * Injected by daemon/index.ts, which reads main's file; asked for every
+   * spawn, recovery included. Default: off.
+   */
+  private claudeFileSend: () => boolean = () => false;
+
+  setClaudeFileSend(fn: () => boolean): void {
+    this.claudeFileSend = fn;
   }
 
   private spawnCwdRefusalOf(prepared: PreparedSpawn): string | null {
@@ -805,7 +819,7 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
-    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, cols, rows, wsl };
+    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, claudeFileSend: this.claudeFileSend(), cols, rows, wsl };
   }
 
   /**
@@ -826,7 +840,11 @@ export class DaemonSessionManager extends EventEmitter {
    * silently demote the pane to mouse-less forever.
    */
   private spawnRequest(prepared: PreparedSpawn, onBackend: (backend: ConptyBackend) => void): SpawnPtyRequest {
-    const { params, cmd, spawnArgs, hostCwd, env, secretEnv, cols, rows, wsl } = prepared;
+    const { params, cmd, spawnArgs, hostCwd, env, secretEnv, claudeFileSend, cols, rows, wsl } = prepared;
+    // The file send variable goes to the process only, like a worker's
+    // secrets: kept out of meta.env, a recovered pane follows the setting as
+    // it is then, not as it was when the pane was first created.
+    const processOnly = { ...claudeFileSendEnv(claudeFileSend), ...(secretEnv ?? {}) };
     return {
       command: cmd,
       args: spawnArgs,
@@ -837,7 +855,7 @@ export class DaemonSessionManager extends EventEmitter {
         cwd: hostCwd,
         // A worker's secrets reach the process only; meta.env below is
         // `env` itself, without them (and without their WSLENV names).
-        env: secretEnv ? withSecretEnv(env, secretEnv, !!wsl || isWslShell(cmd)) : env,
+        env: Object.keys(processOnly).length > 0 ? withSecretEnv(env, processOnly, !!wsl || isWslShell(cmd)) : env,
       },
       useBundledConpty: shouldUseBundledConpty(
         process.platform,
