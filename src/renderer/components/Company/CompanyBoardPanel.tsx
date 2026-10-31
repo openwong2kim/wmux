@@ -104,7 +104,17 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const whereOf = (ticket: FleetTicket): string => (ticket.workspaceId === workspaceId
     ? seatName(ticket.paneId)
     : workspaceNames[ticket.workspaceId] ?? t('fleet.ticket.unknownWorkspace'));
-  const stateWord = (ticket: FleetTicket) => t(`fleet.ticket.state.${ticket.state}`);
+  // A job that reported back waits on the pane that sent it: the CEO, a seat,
+  // or a workspace outside the company.
+  const reportedTo = (ticket: FleetTicket): string | undefined => {
+    const party = ticket.waitingOn;
+    if (!party) return undefined;
+    const name = party.workspaceId !== workspaceId
+      ? workspaceNames[party.workspaceId] ?? t('fleet.ticket.unknownWorkspace')
+      : party.paneId === company?.coordinatorPaneId ? t('company.ceo') : seatName(party.paneId) || workspace?.name || '';
+    return t('company.board.reportedTo', { name });
+  };
+  const stateWord = (ticket: FleetTicket) => reportedTo(ticket) ?? t(`fleet.ticket.state.${ticket.state}`);
   const ticketTitle = (ticket: FleetTicket) => ticket.title || t('fleet.ticket.untitled');
 
   const ticketRow = (ticket: FleetTicket, where: string, detail?: string) => (
@@ -155,6 +165,9 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
               data-board-now={ticket.id}
             >
               {ticketTitle(ticket)}
+              {ticket.waitingOn && (
+                <span className="text-[11px] text-[var(--text-muted)]" data-board-reported>{` · ${reportedTo(ticket)}`}</span>
+              )}
             </span>
           ))}
           {seat.now.length > NOW_SHOWN && (

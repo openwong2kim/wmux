@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { buildCompanyBoard, BOARD_LOG_MAX } from '../companyBoard';
-import type { FleetTicket } from '../../FleetView/fleetTickets';
+import { buildFleetTickets, type FleetTicket } from '../../FleetView/fleetTickets';
 import type { WorkspaceAgentRosterRow } from '../../../stores/selectors/workspaceAgentRoster';
 import type { WorkLink } from '../../../../shared/workLink';
 
@@ -64,5 +64,23 @@ describe('buildCompanyBoard', () => {
     expect(board.needsYou.map((t) => t.id)).toEqual(['out-ask']);
     expect(board.log).toHaveLength(BOARD_LOG_MAX);
     expect(board.log.slice(0, 3).map((t) => t.id)).toEqual(['in-done-9', 'out-done', 'in-done-8']);
+  });
+
+  it('keeps a seat\'s report to the CEO under the seat, out of Waiting on you', () => {
+    const reported = (id: string, requester: WorkLink['requester']): WorkLink => ({
+      id, origin: 'manual', a2aTaskId: `task-${id}`, a2aState: 'input-required', owner: { workspaceId: 'co', paneId: 'dev' },
+      requester, state: 'running', decisionIds: [], createdAt: 0, updatedAt: 0,
+    });
+    const links = [
+      reported('to-ceo', { workspaceId: 'co', paneId: 'ceo' }),
+      // Handed out by a workspace with no pane: the question is the owner's.
+      reported('to-owner', { workspaceId: 'hq' }),
+    ];
+    const tickets = buildFleetTickets({ links, decisions: [], a2aTasks: {}, now: 0, recentMs: Infinity });
+    const board = buildCompanyBoard({ ...base, rows: [row('ceo'), row('dev')], tickets, links });
+    expect(board.needsYou.map((t) => t.id)).toEqual(['to-owner']);
+    const dev = board.seats.find((s) => s.paneId === 'dev');
+    expect(dev?.now.map((t) => t.id)).toEqual(['to-owner', 'to-ceo']);
+    expect(dev?.now.find((t) => t.id === 'to-ceo')?.waitingOn).toEqual({ workspaceId: 'co', paneId: 'ceo' });
   });
 });

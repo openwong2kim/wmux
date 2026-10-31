@@ -431,6 +431,9 @@ export interface WorkLinkDeriveInput {
   prStatus?: WorkLinkPrStatus;
   /** One of the link's decisions is still pending. */
   pendingDecision: boolean;
+  /** A pane handed the work out (the requester names a pane): what the worker
+   *  reports back waits on that pane, not on you. */
+  requesterPane?: boolean;
 }
 
 export interface DerivedWorkLinkState {
@@ -457,7 +460,8 @@ function prPhase(hasPr: boolean, pr: WorkLinkPrStatus | undefined): DerivedWorkL
  *   2. closed by hand                   → abandoned (only a merge revives it)
  *   3. a canceled task                  → abandoned
  *   4. a pending decision               → needs-you (decision)
- *   5. the task's state: input-required → needs-you, submitted → queued,
+ *   5. the task's state: input-required → needs-you (running when a pane
+ *      handed the work out: the report waits on that pane), submitted → queued,
  *      working → running, failed → blocked (task-failed),
  *      completed → the PR's phase (no PR → done; PR not read yet → review;
  *      failing checks / conflict / changes requested → blocked; closed → abandoned)
@@ -472,7 +476,7 @@ export function deriveWorkLinkState(input: WorkLinkDeriveInput): DerivedWorkLink
   if (pendingDecision) return { state: 'needs-you', reason: 'decision' };
   switch (a2aState) {
     case 'input-required':
-      return { state: 'needs-you', reason: 'input-required' };
+      return input.requesterPane ? { state: 'running' } : { state: 'needs-you', reason: 'input-required' };
     case 'submitted':
       return { state: 'queued' };
     case 'working':
@@ -501,5 +505,18 @@ export function deriveLinkState(link: WorkLink, pendingDecision: boolean): Deriv
     hasPr: !!link.pr,
     prStatus: link.prStatus,
     pendingDecision,
+    requesterPane: !!link.requester?.paneId,
   });
+}
+
+/**
+ * The pane a link waits on when the worker reported back (input-required) to
+ * the pane that handed the work out: that pane acts next, not you. Null
+ * otherwise. Read it beside the derived state: a pending decision still makes
+ * the link yours.
+ */
+export function linkWaitsOnRequester(link: Pick<WorkLink, 'a2aState' | 'requester'>): { workspaceId: string; paneId: string } | null {
+  return link.a2aState === 'input-required' && link.requester?.paneId
+    ? { workspaceId: link.requester.workspaceId, paneId: link.requester.paneId }
+    : null;
 }

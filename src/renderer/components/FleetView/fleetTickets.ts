@@ -4,7 +4,7 @@
 // persists (work-links.json, the decision store, the A2A task mirror), so a
 // ticket survives a Moa restart with no store of its own.
 import type { MoaPendingDecision } from '../../../shared/moa';
-import { deriveLinkState, type WorkLink, type WorkLinkOrigin } from '../../../shared/workLink';
+import { deriveLinkState, linkWaitsOnRequester, type WorkLink, type WorkLinkOrigin } from '../../../shared/workLink';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
 import type { Message, Task } from '../../../shared/types';
 
@@ -24,6 +24,9 @@ export interface FleetTicket {
   decisionIds: string[];
   /** The worker's report once the job ended (untrusted text). */
   result?: { summary: string; verification?: string };
+  /** A working job whose worker reported back to the pane that handed it
+   *  out: it waits on that pane (a company's CEO, say), not on you. */
+  waitingOn?: { workspaceId: string; paneId: string };
   a2aTaskId?: string;
   origin: WorkLinkOrigin | 'handoff';
   updatedAt: number;
@@ -116,6 +119,8 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = 
     if (link.owner.paneId) ticket.paneId = link.owner.paneId;
     if (link.agent) ticket.agent = link.agent;
     if (link.a2aTaskId) ticket.a2aTaskId = link.a2aTaskId;
+    const waitingOn = state === 'working' ? linkWaitsOnRequester(link) : null;
+    if (waitingOn) ticket.waitingOn = waitingOn;
     // The report kept on the link first (it outlives the task record), then
     // the task mirror; past both, the detail reads it back from the daemon.
     const kept = link.result ? { summary: link.result.summary, ...(link.result.verification ? { verification: link.result.verification } : {}) } : undefined;
