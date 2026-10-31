@@ -777,6 +777,10 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
+    // The integration scripts bail on WMUX_SHELL_INTEGRATION=0 (a WSL pane
+    // forwards the pane's own value), and then the shell writes no marks.
+    if (shellMarks === 'integrated' && env.WMUX_SHELL_INTEGRATION === '0') shellMarks = 'plain';
+
     return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, cols, rows, wsl, shellMarks };
   }
 

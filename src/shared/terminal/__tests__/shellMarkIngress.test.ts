@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ShellMarkIngress, type ShellMarkState } from '../shellMarkIngress';
 
 const ESC = '\x1b';
@@ -7,7 +7,7 @@ const mark = (kind: string) => `${ESC}]133;${kind}${BEL}`;
 
 /** Feed `parts` as separate reads; returns the joined output. */
 function viaText(ingress: ShellMarkIngress, parts: string[]): string {
-  return parts.map((part) => ingress.scanText(part).text).join('');
+  return parts.map((part) => ingress.apply(part)).join('');
 }
 
 /** Every split of `input` into two reads. */
@@ -70,7 +70,9 @@ describe('ShellMarkIngress transitions', () => {
     expect(ingress.state).toBe('idle');
   });
 
-  it('pwsh writing C twice (an incomplete line): the second C is the program\'s', () => {
+  it('a second C while a command runs is the program\'s', () => {
+    // wmux's pwsh integration writes C only for a line PSReadLine runs, so a
+    // second C before the shell's D;<n> came from the running program.
     const ingress = new ShellMarkIngress();
     const input = mark('C') + mark('C') + mark('D;0') + mark('A') + mark('B');
     expect(viaText(ingress, [input])).toBe(mark('C') + mark('c') + mark('D;0') + mark('A') + mark('B'));
@@ -92,14 +94,18 @@ describe('ShellMarkIngress transitions', () => {
 
   it('changes only the kind byte around multi-byte text and a lone surrogate', () => {
     const input = '한글🙂' + mark('A') + '\ud800' + mark('B') + 'é' + mark('D;0');
-    const { text, lowered } = new ShellMarkIngress('running').scanText(input);
-    expect(text).toBe('한글🙂' + mark('a') + '\ud800' + mark('b') + 'é' + mark('D;0'));
-    expect(lowered).toBe(2);
+    expect(new ShellMarkIngress('running').apply(input)).toBe('한글🙂' + mark('a') + '\ud800' + mark('b') + 'é' + mark('D;0'));
   });
 
-  it('returns the same string when nothing is lowered', () => {
+  it('returns the same string when nothing is lowered, and reports only the first read that lowers', () => {
+    const reported = vi.fn();
+    const ingress = new ShellMarkIngress('running', reported);
     const input = 'out' + mark('D;0') + mark('A') + 'PS> ';
-    expect(new ShellMarkIngress('running').scanText(input)).toEqual({ text: input, lowered: 0 });
+    expect(ingress.apply(input)).toBe(input);
+    expect(reported).not.toHaveBeenCalled();
+    ingress.apply(mark('C') + mark('A'));
+    ingress.apply(mark('A'));
+    expect(reported).toHaveBeenCalledOnce();
   });
 });
 
@@ -134,7 +140,7 @@ describe('ShellMarkIngress across reads', () => {
     const ingress = new ShellMarkIngress('running');
     expect(viaText(ingress, [first])).toBe(first);
     expect(ingress.state).toBe('running');
-    expect(ingress.pending).toBe(true);
+    expect(ingress.wants('no mark here')).toBe(true);
     expect(viaText(ingress, [BEL + mark('A')])).toBe(BEL + mark('a'));
     expect(ingress.state).toBe('running');
   });
@@ -148,11 +154,12 @@ describe('ShellMarkIngress across reads', () => {
     }
   });
 
-  it('a read with no mark in it needs no scan unless one is pending', () => {
+  it('a read with no mark in it needs no scan unless one is part-way through', () => {
     const ingress = new ShellMarkIngress('running');
-    viaText(ingress, ['plain output']);
-    expect(ingress.pending).toBe(false);
+    expect(ingress.wants('plain output')).toBe(false);
+    expect(ingress.wants(`out${ESC}[0m`)).toBe(false);
+    expect(ingress.wants(`out${ESC}]13`)).toBe(true);
     viaText(ingress, [`out${ESC}]13`]);
-    expect(ingress.pending).toBe(true);
+    expect(ingress.wants('plain output')).toBe(true);
   });
 });

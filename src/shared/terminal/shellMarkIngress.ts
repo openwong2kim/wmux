@@ -31,7 +31,13 @@
 //   - No output is held. A mark split across reads is followed through a
 //     carry. A kind byte that was already passed on cannot be changed: a D
 //     whose kind byte ends a read keeps its case, and the state waits for the
-//     bytes after it (a pending D).
+//     bytes after it (a pending D). Readers then take that one foreign D for
+//     the shell's; holding output back to avoid it would delay every read
+//     that ends in a D, and a read ending exactly there is rare.
+//
+// Accepted: a nested shell with its own integration (pwsh, or ssh to a host
+// with OSC 133) writes `D;<int>` too, which reads as the outer shell's command
+// end. From there its marks are read as the shell's, as before #2771.
 //
 // Marks are ASCII, so the scanner reads the decoded text: a mark's UTF-16 code
 // units have the same values as its UTF-8 bytes.
@@ -65,18 +71,15 @@ export class ShellMarkIngress {
   private match: Match = Match.None;
   /** For a pending D: the index of its kind byte in this read, or -1 when it was in an earlier one. */
   private dKind = -1;
+  private reported = false;
 
-  constructor(initial: ShellMarkState = 'idle') {
+  /** `onFirstLowered` runs once, the first time a read has a kind lowered. */
+  constructor(initial: ShellMarkState = 'idle', private readonly onFirstLowered?: () => void) {
     this.current = initial;
   }
 
   get state(): ShellMarkState {
     return this.current;
-  }
-
-  /** A mark is part-way through: the next read must be scanned even without `ESC]133` in it. */
-  get pending(): boolean {
-    return this.match !== Match.None;
   }
 
   /**
@@ -85,7 +88,7 @@ export class ShellMarkIngress {
    * and the state cannot change on it.
    */
   wants(text: string): boolean {
-    if (this.match !== Match.None || text.includes('\u001b]133')) return true;
+    if (this.match !== Match.None || text.includes(OPENER)) return true;
     // `ESC`, `ESC]`, … `ESC]13` at the very end: the rest may come next read.
     // These are the only prefixes to look for: any longer one (`ESC]133`,
     // `ESC]133;`, …) holds the whole opener and matched the `includes` above.
@@ -97,28 +100,13 @@ export class ShellMarkIngress {
   }
 
   /**
-   * Scan one read: returns it with the kind byte of every foreign mark
-   * lowercased, and how many were. With none lowered, `text` comes back as is.
+   * One read in stream order: returns it with the kind byte of every foreign
+   * mark lowercased. With none lowered, `text` itself comes back.
    */
-  scanText(text: string): { text: string; lowered: number } {
-    const parts: string[] = [];
-    let last = 0;
-    const lowered = this.scan(text, (i) => {
-      parts.push(text.slice(last, i), String.fromCharCode(text.charCodeAt(i) | LOWER));
-      last = i + 1;
-    });
-    if (parts.length === 0) return { text, lowered };
-    parts.push(text.slice(last));
-    return { text: parts.join(''), lowered };
-  }
-
-  /** Calls `lower(i)` for each foreign kind byte, in ascending order of `i`. */
-  private scan(text: string, lower: (i: number) => void): number {
-    let lowered = 0;
-    const foreignD = () => {
-      // A D in running that is not `D;<int>`: the program's.
-      if (this.dKind >= 0) { lower(this.dKind); lowered++; }
-    };
+  apply(text: string): string {
+    if (!this.wants(text)) return text;
+    /** Indices of the kind bytes to lowercase, ascending. */
+    const lower: number[] = [];
     for (let i = 0; i < text.length; i++) {
       if (this.match === Match.None) {
         // Outside a mark only an ESC can start one: skip to it.
@@ -130,7 +118,8 @@ export class ShellMarkIngress {
       switch (this.match) {
         case Match.DSemi:
           if (b === 0x3b) { this.match = Match.DDigit; continue; }
-          foreignD();
+          // A D in running that is not `D;<int>`: the program's.
+          if (this.dKind >= 0) lower.push(this.dKind);
           break;
         case Match.DDigit:
         case Match.DMinus:
@@ -144,7 +133,7 @@ export class ShellMarkIngress {
             this.dKind = -1;
             continue;
           }
-          foreignD();
+          if (this.dKind >= 0) lower.push(this.dKind);
           break;
         case Match.Esc:
           if (b === 0x5d) { this.match = Match.Bracket; continue; }
@@ -164,7 +153,7 @@ export class ShellMarkIngress {
           break;
         case Match.Kind:
           this.match = Match.None;
-          if (this.decide(b, i, lower)) lowered++;
+          if (this.decide(b, i)) lower.push(i);
           continue;
         default:
           break;
@@ -178,11 +167,22 @@ export class ShellMarkIngress {
     }
     // The next read cannot change a kind byte this one passed on.
     if (this.match >= Match.DSemi) this.dKind = -1;
-    return lowered;
+    if (lower.length === 0) return text;
+    if (!this.reported) {
+      this.reported = true;
+      this.onFirstLowered?.();
+    }
+    let out = '';
+    let last = 0;
+    for (const i of lower) {
+      out += text.slice(last, i) + String.fromCharCode(text.charCodeAt(i) | LOWER);
+      last = i + 1;
+    }
+    return out + text.slice(last);
   }
 
-  /** The kind byte `b` at index `i`. Returns true when it was lowercased. */
-  private decide(b: number, i: number, lower: (i: number) => void): boolean {
+  /** The kind byte `b` at index `i`. Returns true when it is foreign (to be lowercased). */
+  private decide(b: number, i: number): boolean {
     if (b < 0x41 || b > 0x44) return false; // not A-D (already lowercase, or another kind)
     if (this.current === 'idle') {
       if (b === 0x43) this.current = 'running';
@@ -194,7 +194,6 @@ export class ShellMarkIngress {
       this.dKind = i;
       return false;
     }
-    lower(i);
     return true;
   }
 }

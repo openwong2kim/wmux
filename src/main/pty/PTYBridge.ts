@@ -965,20 +965,11 @@ export class PTYBridge {
     // lowercase kind before any reader sees the chunk, as in the daemon. Only
     // a WSL shell carries wmux's integration here (PTYManager.prepareSpawn);
     // any other shell's marks pass through unread.
-    const marks = wslDistro ? new ShellMarkIngress() : null;
-    let marksLoweredLogged = false;
+    const marks = wslDistro
+      ? new ShellMarkIngress('idle', () => console.log(`[pty] ${ptyId}: program-written OSC 133 marks lowercased (shell command running)`))
+      : null;
     instance.process.onData((raw: string) => {
-      let data = raw;
-      if (marks?.wants(data)) {
-        const scanned = marks.scanText(data);
-        if (scanned.lowered > 0) {
-          data = scanned.text;
-          if (!marksLoweredLogged) {
-            marksLoweredLogged = true;
-            console.log(`[pty] ${ptyId}: program-written OSC 133 marks lowercased (shell command running)`);
-          }
-        }
-      }
+      const data = marks ? marks.apply(raw) : raw;
       // Micro-batch: enqueue this chunk and (re)arm a short flush timer.
       // Middlewares + IPC send are deferred to the flush so a torrent of
       // small chunks collapses into one pass. Backpressure here is what

@@ -71,7 +71,7 @@ const SHELL_C = mark('C');
 const KIMI = mark('A') + 'kimi> ' + mark('B') + mark('C') + 'reply text\r\n';
 const BACK = mark('A') + 'more' + mark('D;0') + mark('A') + 'PS> ' + mark('B');
 // What the prompt log reads from SHELL_C + KIMI + bare D + BACK when every
-// mark is taken for the shell's (main before #2771).
+// mark is taken for the shell's, as on a pane with no scan.
 const PLAIN_TYPES = [
   'command_start', 'prompt_start', 'prompt_end', 'command_start', 'command_end',
   'prompt_start', 'command_end', 'prompt_start', 'prompt_end',
@@ -95,7 +95,7 @@ for (const lane of ['string', 'native'] as const) {
       expect(h.lowered()).toBe(1);
     });
 
-    it('D2: the shell\'s D;0 and A split at every byte return to the prompt, and the state is right at every split', () => {
+    it('D2: the shell\'s D;0 and A split at every byte return to the prompt at every split', () => {
       const tail = mark('D;0') + mark('A');
       for (let at = 0; at <= tail.length; at++) {
         const h = rig(lane);
@@ -140,7 +140,7 @@ for (const lane of ['string', 'native'] as const) {
       }
     });
 
-    it('D3: pwsh writes C twice for an incomplete line; the second is the program\'s', () => {
+    it('D3: a second C before the shell\'s D;<n> is the program\'s', () => {
       const h = rig(lane);
       h.feed(mark('C') + mark('C') + mark('D;0') + mark('A') + mark('B'));
       expect(h.ring.readAll().toString()).toBe(mark('C') + mark('c') + mark('D;0') + mark('A') + mark('B'));

@@ -1976,13 +1976,8 @@ export class DaemonPTYBridge extends EventEmitter {
     // A bridge is built only for a freshly spawned process (a recovered
     // ring holds the dead one's scrollback), so an integrated shell starts at
     // its prompt and an exec unit's program starts running.
-    const marks = shellMarks === 'plain' ? null : new ShellMarkIngress(shellMarks === 'exec' ? 'running' : 'idle');
-    let marksLoweredLogged = false;
-    const noteMarksLowered = (): void => {
-      if (marksLoweredLogged) return;
-      marksLoweredLogged = true;
-      console.log(`[pty] ${sessionId}: program-written OSC 133 marks lowercased (shell command running)`);
-    };
+    const marks = shellMarks === 'plain' ? null : new ShellMarkIngress(shellMarks === 'exec' ? 'running' : 'idle',
+      () => console.log(`[pty] ${sessionId}: program-written OSC 133 marks lowercased (shell command running)`));
 
     // With OSC 133 parsed here, the detector ends the agent on its markers in
     // stream order itself (see the command start/end branch below).
@@ -2411,11 +2406,10 @@ export class DaemonPTYBridge extends EventEmitter {
       // wrote (not the shell) gets a lowercase kind, so the detector, the
       // held chunks, the ring, the interpreter and live data all read the
       // same decision. Only a chunk that can hold a mark is scanned.
-      if (marks?.wants(data)) {
-        const scanned = marks.scanText(data);
-        if (scanned.lowered > 0) {
-          noteMarksLowered();
-          data = scanned.text;
+      if (marks) {
+        const decided = marks.apply(data);
+        if (decided !== data) {
+          data = decided;
           // The native chunk's bytes no longer match: it leaves the zero-copy
           // path. A chunk with only the shell's marks keeps it.
           nativeChunk = undefined;
