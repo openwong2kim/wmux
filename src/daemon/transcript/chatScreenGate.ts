@@ -1,6 +1,19 @@
 import { looksLikeApprovalPrompt } from '../approvals/approvalKeystrokes';
 import { parseTerminalPrompt } from '../approvals/terminalPromptParse';
 import { CLAUDE_IDLE_TITLE, CODEX_RUNNING_TITLE, RUNNING_TITLE } from '../../shared/agentTitleRules';
+import type { ProgramState } from '../programStatus';
+
+/**
+ * The pane's latest window title, and the state its agent reports itself
+ * (OSC 7501) while those reports drive the pane. Claude Code stops putting its
+ * spinner and idle glyphs in the title once its status query is answered, so
+ * the report is the running / finished evidence there; either one counts.
+ */
+export interface TitleEvidence {
+  title: string;
+  at: number;
+  program?: { slug: string; state: ProgramState; at: number };
+}
 
 /**
  * Footer hint of a Claude Code dialog that owns the keyboard: `/model`, the
@@ -61,7 +74,8 @@ export function screenShowsRunningTurn(rows: readonly string[] | null, slug: str
 export const TITLE_FRESH_MS = 3000;
 
 /** Does the current window title show the agent's running spinner, refreshed recently? */
-export function titleShowsRunningTurn(title: { title: string; at: number } | null | undefined, slug: string, now: number): boolean {
+export function titleShowsRunningTurn(title: TitleEvidence | null | undefined, slug: string, now: number): boolean {
+  if (title?.program?.slug === slug && title.program.state === 'working') return true;
   if (!title || title.at <= 0 || now - title.at > TITLE_FRESH_MS) return false;
   const spinner = RUNNING_TITLE.get(slug);
   return !!spinner && spinner.test(title.title);
@@ -72,7 +86,9 @@ export function titleShowsRunningTurn(title: { title: string; at: number } | nul
  * over? Claude swaps its spinner for `✳`; Codex drops the braille frame. A
  * title from before the turn says nothing about it.
  */
-export function titleShowsFinishedTurn(title: { title: string; at: number } | null | undefined, slug: string, since: number): boolean {
+export function titleShowsFinishedTurn(title: TitleEvidence | null | undefined, slug: string, since: number): boolean {
+  const program = title?.program;
+  if (program?.slug === slug && program.at >= since && ['idle', 'done', 'error'].includes(program.state)) return true;
   if (!title || title.at <= 0 || title.at < since) return false;
   if (slug === 'claude') return CLAUDE_IDLE_TITLE.test(title.title);
   if (slug === 'codex') return !CODEX_RUNNING_TITLE.test(title.title);

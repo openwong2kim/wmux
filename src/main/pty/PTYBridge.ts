@@ -467,6 +467,8 @@ export class PTYBridge {
       clearEscapeKey(ptyId);
       settleConfirmedInterrupt(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
     };
+    // This bridge does not answer the OSC 7501 feature query (only the
+    // daemon does), so Claude Code keeps the title glyphs this edge reads.
     const titleTurnEdge = new ClaudeTitleTurnEdge();
 
     // Handle OSC events
