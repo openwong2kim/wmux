@@ -173,12 +173,100 @@ monitors at negative coordinates work.
   `openApp` with `unsupported_action` and skips `configure`: no agent cursor
   or halo on Windows for now.
 
+## Background input
+
+An input action first tries to post its input to the target window alone,
+so the user's cursor, foreground window and focused control stay as they
+were, and several panes can drive different apps at once. Only what is
+refused before anything was posted goes the real way (`SendInput`, next
+section); that result says `delivery: "foreground"`. A posted one says
+`delivery: "background"`.
+
+- **How.** `PostMessage` to one child window of the target: the deepest
+  child at the point (`ChildWindowFromPointEx` from the target window down,
+  skipping invisible, disabled and transparent children), with the point in
+  that child's client coordinates. A click is `WM_MOUSEMOVE`,
+  `WM_LBUTTONDOWN`, `WM_LBUTTONUP`. Text is one `WM_CHAR` per UTF-16 unit
+  (both halves of a surrogate pair); Enter, Tab and other named keys are
+  `WM_KEYDOWN` and `WM_KEYUP` with the scan code and extended bit in
+  `lParam` (the key-up also sets bits 30 and 31), and the app's own
+  `TranslateMessage` makes their characters. Posted messages press nothing
+  system-wide, so they are not recorded as held input.
+- **Covered windows are the point.** The deepest child is looked up inside
+  the target window whoever covers that point on screen, so the
+  "foreground window" and "window under the point" preflights of real input
+  do not apply. The safety checks do: the input desktop, elevation, secret
+  fields, the shutdown gate.
+- **Per action.**
+  - `click`: a single left click with no modifiers, after the UIA ladder
+    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern.
+    Right and middle buttons, double and triple clicks, and modifiers go the
+    real way: posted messages carry no keyboard state, and the rest was not
+    measured.
+  - `type` with an index: the field is clicked first (posted), then the
+    keys go to the window under that click. Always, because Chromium and
+    Electron (`Chrome_RenderWidgetHostHWND`) drop posted keys that no posted
+    click preceded, and ignore them again after any real activation; for
+    other apps it moves focus inside the target without UIA `SetFocus`,
+    which can raise the window. The caret lands where the click puts it,
+    the middle of the field. A trailing `
+` types Enter in the same
+    action.
+  - `type` without an index, `pressKey`, and `hotkey` with no modifiers: the
+    keys go to the target thread's focused window (`GetGUIThreadInfo`), only
+    when it lies inside the target window and is itself a plain text
+    control (UIA Edit or Document) that is not a password field. A thread
+    that is not in front may have no focused window; then, and for
+    Chromium (no field to click), the keys go the real way. A host window
+    (Qt, WPF, XAML) is refused because a windowless password field may have
+    focus inside it.
+  - `hotkey` with modifiers and `scroll`: always the real way (a chord
+    cannot be posted; `WM_MOUSEWHEEL` was not measured).
+  - `setValue` and the UIA click ladder are not input; their results say
+    `background` unless the target window came to the front during the call.
+- **Refused before posting** (`not_delivered`, then real input): the target
+  window is minimized, hidden or cloaked, on another virtual desktop
+  (`IVirtualDesktopManager`; if that call fails it is no reason to refuse),
+  or elevated; nothing of the target's process at the point; the point is
+  on a frame or scroll bar; a popup or menu of the target is on screen at
+  the point (it takes a real click); the window at the point is WPF
+  (`HwndWrapper[…]`), a UWP / WinUI / XAML-island input site or a menu; the
+  field under the click is (or may be) a password field. A `PostMessage`
+  that fails on the first message also counts as nothing posted.
+- **No delivery acknowledgement.** `PostMessage` succeeding is not proof the
+  app acted on it. A posted action is `unverified` (`delivered_unverified`)
+  unless a re-read confirms it: for `type`, the field's UIA value is the
+  value before with exactly the typed text inserted (the same rule as real
+  input, but read from the target field, not the system focus). Clicks and
+  keys are `unverified`.
+- **Our side effects.** The cursor position and the foreground window are
+  read before posting and again at least 60 ms after it. If the cursor now
+  sits on the target point and did not before, or the target window is now
+  in front and was not before, the result is `unverified` with
+  `delivery: "foreground"` and a note, and the input is never sent a second
+  way. The user moving the mouse or switching windows meanwhile is not
+  counted.
+- **Errors.** Once anything was posted, a later failure ends the action with
+  an error and no fallback. Every control error carries a `disposition`:
+  `not_delivered` when no input event, posted message or UIA pattern call
+  went out during the request, `delivered_unverified` otherwise (the same
+  rule as the macOS helper).
+- **Capabilities.** `hello.capabilities.input` is
+  `{ backgroundPointer: true, focusWithoutRaise: false, keyAuth: true }`:
+  posted clicks leave the cursor alone; nothing gives a window focus without
+  the app taking it itself; posted keys reach Chromium-based apps after a
+  posted click on the field.
+- Measured on Windows 11 with Chrome 155, Electron 42 and Notepad
+  (`RichEditD2DPT`): posted clicks move the caret or land as
+  `pointerType: mouse`, posted keys insert text, and the cursor, foreground
+  window and focus stay untouched.
+
 ## Input
 
-- `SendInput` only. Each batch is one `SendInput` call: modifiers down, key
-  down and up, modifiers up; or move, button down and up. So nothing stays
-  held between calls. If Windows inserts fewer events than asked, the helper
-  sends up events for what it tracked at once.
+- Real input is `SendInput` only. Each batch is one `SendInput` call:
+  modifiers down, key down and up, modifiers up; or move, button down and
+  up. So nothing stays held between calls. If Windows inserts fewer events
+  than asked, the helper sends up events for what it tracked at once.
 - Before every batch, and again before every typed chunk, repeated key and
   scroll notch, the helper requires the following. The slow checks
   (password field, focused element) run first; the fast Win32 ones (input

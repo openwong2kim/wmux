@@ -72,6 +72,12 @@ VerQueryValue
 SendInput
 MapVirtualKey
 GetAsyncKeyState
+// Background (posted) input
+PostMessage
+ChildWindowFromPointEx
+ScreenToClient
+GetClientRect
+IVirtualDesktopManager
 OpenInputDesktop
 CloseDesktop
 GetUserObjectInformation

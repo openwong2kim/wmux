@@ -202,7 +202,10 @@ snapshot is the v1.1 token saver.
   auto-activation, 2026-10-08), and a pointer action whose point is covered
   raises the target window first. The helper still re-checks, right before
   each keyboard batch, that focus is on the target and the screen is not
-  locked, and answers `window_not_focused` when it is not.
+  locked, and answers `window_not_focused` when it is not. On Windows an
+  action is first posted to the target window in the background, which
+  needs neither; only what cannot be posted goes this way
+  (`docs/computer-use-windows.md`, Background input).
 - **Honest results.** Every action returns
   `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, disposition, note? }`.
   `verified` means state was read back, for example the value after
@@ -210,8 +213,9 @@ snapshot is the v1.1 token saver.
   unverified action as done. `delivery` says how the input reached the app:
   `background` when it went to the target app alone (the user's pointer,
   frontmost app and Space stay as they were), `foreground` when it was real
-  input to the frontmost app. The macOS helper reports it; the Windows helper
-  leaves it out.
+  input to the frontmost app. Both helpers report it; the Windows helper's
+  background input is `PostMessage` to the target's child window
+  (`docs/computer-use-windows.md`, Background input).
 - **Retry safety.** The result of every snapshot input action and the error
   of every input action (`openApp` included) carry a `disposition`, the same
   on both OSes:
@@ -238,7 +242,9 @@ snapshot is the v1.1 token saver.
     launches that may have reached the app (an AXPress or value that did not
     answer in time counts, and is not followed by real input). A failed input
     action is `not_delivered` only when that count did not move. Raising or
-    focusing a window is not input and is not counted.
+    focusing a window is not input and is not counted. The Windows helper
+    counts the same way: `SendInput` events inserted, messages posted, and
+    UIA pattern calls (one that certainly did not run is taken back).
 - **Input capabilities.** `hello.capabilities.input` is
   `{ backgroundPointer, focusWithoutRaise, keyAuth }`: which ways of sending
   input without real input this machine has, probed when the helper starts.
@@ -249,7 +255,8 @@ snapshot is the v1.1 token saver.
   every OS. Whether an action went that way is its result's `delivery`. On
   macOS the flags come from private SkyLight calls that change across
   releases; `keyAuth` is the key-event authentication message, from
-  macOS 15. The Windows helper leaves `input` out, and main drops it when
+  macOS 15. The Windows helper sends `{ backgroundPointer: true,
+  focusWithoutRaise: false, keyAuth: true }`. Main drops `input` when
   Accessibility is not granted.
 
 ## Errors
