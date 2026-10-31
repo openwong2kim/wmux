@@ -5,6 +5,7 @@
 //
 // Adapted from Cua Driver (MIT) libs/cua-driver/rust/crates/platform-macos/src/input/skylight.rs@a9902d27
 
+import ComputerUseCore
 import CoreGraphics
 import Foundation
 import ObjectiveC
@@ -28,17 +29,24 @@ enum SkyLight {
     static let backgroundPointer = all(["SLEventPostToPid", "SLEventSetIntegerValueField", "CGEventSetWindowLocation"])
 
     /// The focus record sent to the target window's process alone, which
-    /// focuses it without raising it or changing the frontmost app.
-    static let focusWithoutRaise = all(["SLPSPostEventRecordTo", "SLSMainConnectionID", "SLSGetWindowOwner", "SLSGetConnectionPSN"])
+    /// focuses it without raising it or changing the frontmost app. Off on a
+    /// macOS major whose record layout is not known (ComputerUseCore
+    /// recordLayoutKnown).
+    static let focusWithoutRaise = recordLayoutKnown(major: ProcessInfo.processInfo.operatingSystemVersion.majorVersion)
+        && all(["SLPSPostEventRecordTo", "SLSMainConnectionID", "SLSGetWindowOwner", "SLSGetConnectionPSN"])
 
     /// The authentication message Chromium needs on a key event posted to the
     /// process. The class exists on macOS 14, but its factory method only from
-    /// macOS 15, so the class is asked, not just looked up.
+    /// macOS 15, so the class is asked, not just looked up. Off as well when
+    /// the self-test finds no event record inside a CGEvent (recordOffset).
     static let keyAuth: Bool = {
         guard all(["SLEventPostToPid", "SLEventSetAuthenticationMessage"]),
-              let cls = NSClassFromString("SLSEventAuthenticationMessage") else { return false }
-        return (cls as AnyObject).responds(to: NSSelectorFromString("messageWithEventRecord:pid:version:"))
+              let cls = NSClassFromString("SLSEventAuthenticationMessage"),
+              (cls as AnyObject).responds(to: authSelector) else { return false }
+        return recordOffset != nil
     }()
+
+    private static let authSelector = NSSelectorFromString("messageWithEventRecord:pid:version:")
 
     static var capabilities: JSON {
         ["backgroundPointer": backgroundPointer, "focusWithoutRaise": focusWithoutRaise, "keyAuth": keyAuth]
@@ -87,50 +95,102 @@ enum SkyLight {
 
     /// Posts to the process. SkyLight's route is the one Chromium and Catalyst
     /// accept; the public call is the fallback. `auth` attaches the key-event
-    /// authentication message (keys only, macOS 15 and later).
-    static func post(_ e: CGEvent, pid: pid_t, auth: Bool) {
+    /// authentication message (keys only, macOS 15 and later). False, with
+    /// nothing posted, when `auth` was asked for and the message cannot be
+    /// built: the caller treats the event as not sent.
+    @discardableResult
+    static func post(_ e: CGEvent, pid: pid_t, auth: Bool) -> Bool {
         let ptr = pointer(e)
         guard let postToPidFn else {
+            if auth { return false }
             e.postToPid(pid)
-            return
+            return true
         }
-        if auth, keyAuth, let factory = authFactoryFn, let setAuth = setAuthMessageFn,
-           let cls = NSClassFromString("SLSEventAuthenticationMessage"),
-           let record = eventRecord(ptr),
-           let message = factory(cls, NSSelectorFromString("messageWithEventRecord:pid:version:"), record, pid, 0) {
-            setAuth(ptr, message)
+        // The factory returns an autoreleased message; the pool drains it
+        // after the post, so nothing piles up per key.
+        return autoreleasepool {
+            if auth {
+                guard keyAuth, let factory = authFactoryFn, let setAuth = setAuthMessageFn,
+                      let cls = NSClassFromString("SLSEventAuthenticationMessage"),
+                      let record = eventRecord(ptr),
+                      let message = factory(cls, authSelector, record, pid, 0) else { return false }
+                setAuth(ptr, message)
+            }
+            postToPidFn(pid, ptr)
+            return true
         }
-        postToPidFn(pid, ptr)
     }
 
-    /// The SLSEventRecord inside a CGEvent: the first non-null pointer after
-    /// the CFRuntimeBase, probed at the offsets it has had across releases.
-    private static func eventRecord(_ ptr: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
-        for offset in [24, 32, 16] {
-            if let record = ptr.load(fromByteOffset: offset, as: UnsafeMutableRawPointer?.self) { return record }
+    /// The size of an event record, which the record also holds at offset 4.
+    private static let recordSize = 0xF8
+
+    /// Where a CGEvent holds its SLSEventRecord pointer, found once by a
+    /// self-test on an event of our own: the first of the offsets it has had
+    /// across releases that passes validRecord. Nil turns key authentication
+    /// off.
+    private static let recordOffset: Int? = {
+        guard let e = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true) else { return nil }
+        return withExtendedLifetime(e) {
+            let ptr = pointer(e)
+            return [24, 32, 16].first { validRecord(at: $0, in: ptr) != nil }
         }
-        return nil
+    }()
+
+    /// The record pointer at `offset` in the event, or nil. The word is read
+    /// only when it lies inside the event's allocation, and the pointer is
+    /// read through only once it is the start of a heap block at least a
+    /// record long (malloc_size answers 0 for any other address without
+    /// reading it); it then has to hold the record size at offset 4.
+    private static func validRecord(at offset: Int, in ptr: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
+        guard offset >= 0, offset + MemoryLayout<UInt>.size <= malloc_size(ptr),
+              let record = ptr.load(fromByteOffset: offset, as: UnsafeMutableRawPointer?.self),
+              malloc_size(record) >= recordSize,
+              record.load(fromByteOffset: 4, as: UInt32.self) == UInt32(recordSize) else { return nil }
+        return record
+    }
+
+    /// The SLSEventRecord inside a CGEvent, at the self-tested offset and
+    /// validated again for this event.
+    private static func eventRecord(_ ptr: UnsafeMutableRawPointer) -> UnsafeMutableRawPointer? {
+        guard let recordOffset else { return nil }
+        return validRecord(at: recordOffset, in: ptr)
     }
 
     /// An event record addressed to `windowID`.
     private static func record(_ windowID: CGWindowID, kind: UInt8) -> [UInt8] {
-        var record = [UInt8](repeating: 0, count: 0xF8)
-        record[0x04] = 0xF8
+        var record = [UInt8](repeating: 0, count: recordSize)
+        record[0x04] = UInt8(recordSize)
         record[0x08] = kind
         for byte in 0..<4 { record[0x3C + byte] = UInt8((windowID >> (8 * UInt32(byte))) & 0xFF) }
         return record
     }
 
-    /// Sends event records to the process that owns `windowID`, and only to it.
-    private static func send(_ records: [[UInt8]], toOwnerOf windowID: CGWindowID, settleMs: UInt32 = 0) -> Bool {
-        guard let postEventRecordFn, let mainConnectionFn, let windowOwnerFn, let connectionPSNFn else { return false }
-        var owner: UInt32 = 0
-        guard windowOwnerFn(mainConnectionFn(), windowID, &owner) == 0, owner != 0 else { return false }
+    /// The pid that owns `windowID`, from the public window list.
+    private static func ownerPid(_ windowID: CGWindowID) -> pid_t? {
+        guard let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow], windowID) as? [[String: Any]])?.first else { return nil }
+        return (info[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value
+    }
+
+    /// Sends event records to the process that owns `windowID`, and only to
+    /// it. The owner is resolved once and must be `pid`; before every record
+    /// the window must still belong to it, or nothing more goes. Every record
+    /// sent counts as input (Input.noteSent): it can move key status in the
+    /// app. False when a record was not sent or not accepted.
+    private static func send(_ records: [[UInt8]], toOwnerOf windowID: CGWindowID, pid: pid_t, settleMs: UInt32 = 0) -> Bool {
+        guard focusWithoutRaise, let postEventRecordFn, let mainConnectionFn, let windowOwnerFn, let connectionPSNFn else { return false }
+        let connection = mainConnectionFn()
+        func ownerConnection() -> UInt32? {
+            var owner: UInt32 = 0
+            return windowOwnerFn(connection, windowID, &owner) == 0 && owner != 0 ? owner : nil
+        }
+        guard let owner = ownerConnection(), ownerPid(windowID) == pid else { return false }
         var psn = [UInt8](repeating: 0, count: 8)
         guard connectionPSNFn(owner, &psn) == 0 else { return false }
         var ok = true
         for (n, record) in records.enumerated() {
             if n > 0, settleMs > 0 { usleep(settleMs * 1000) }
+            guard ownerConnection() == owner, ownerPid(windowID) == pid else { return false }
+            Input.shared.noteSent()
             ok = psn.withUnsafeBytes { p in record.withUnsafeBytes { r in postEventRecordFn(p.baseAddress!, r.baseAddress!) } } == 0 && ok
         }
         return ok
@@ -142,18 +202,18 @@ enum SkyLight {
     /// stop the user's own typing.
     ///
     /// The record layout is yabai's (MIT), as Cua Driver's skylight.rs uses it.
-    static func focusWithoutRaise(_ windowID: CGWindowID) -> Bool {
+    static func focusWithoutRaise(_ windowID: CGWindowID, pid: pid_t) -> Bool {
         var focus = record(windowID, kind: 0x0D)
         focus[0x8A] = 0x01
-        return send([focus], toOwnerOf: windowID)
+        return send([focus], toOwnerOf: windowID, pid: pid)
     }
 
     /// Moves key status inside one app from `current` to `target` without
     /// activating it, raising a window or touching the pointer: the defocus
     /// record for `current`, the focus record for `target`, then the make-key
-    /// pair for `target`, all to that app alone, 120 ms apart. Whether the app
-    /// acted on them is for the caller to read back.
-    static func moveWindowKey(from current: CGWindowID?, to target: CGWindowID) -> Bool {
+    /// pair for `target`, all to that app (`pid`) alone, 120 ms apart. Whether
+    /// the app acted on them is for the caller to read back.
+    static func moveWindowKey(from current: CGWindowID?, to target: CGWindowID, pid: pid_t) -> Bool {
         var records: [[UInt8]] = []
         if let current {
             var defocus = record(current, kind: 0x0D)
@@ -169,7 +229,7 @@ enum SkyLight {
             for i in 0x20..<0x30 { makeKey[i] = 0xFF }
             records.append(makeKey)
         }
-        return send(records, toOwnerOf: target, settleMs: 120)
+        return send(records, toOwnerOf: target, pid: pid, settleMs: 120)
     }
 
     /// The Space the user is on, or nil when it cannot be read.

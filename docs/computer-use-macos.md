@@ -238,7 +238,10 @@ is not re-walked.
     came forward or the real pointer ended at the target point.
   - It also goes as real input, before anything is posted, with
     `delivery: "foreground"` and a note saying why, when
-    this macOS lacks the SkyLight calls, the window is
+    this macOS lacks the SkyLight calls (the event-record calls stay off on a
+    macOS major whose record layout the helper does not know, and key
+    authentication stays off when a self-test at start finds no valid event
+    record inside a CGEvent), the window is
     minimized, hidden or on another Space, the click is not a left single or
     double click, the app reads the real pointer (Tk, LibreOffice), the target
     is Electron and the input is a scroll, the target is Chromium-based and

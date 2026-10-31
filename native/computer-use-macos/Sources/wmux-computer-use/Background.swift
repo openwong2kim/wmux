@@ -165,7 +165,7 @@ enum Background {
         }
         let previous = current()
         if previous == windowID { return (true, nil) }
-        for _ in 0..<2 where SkyLight.moveWindowKey(from: current(), to: windowID) {
+        for _ in 0..<2 where SkyLight.moveWindowKey(from: current(), to: windowID, pid: target.pid) {
             if await settled() { return (true, previous) }
         }
         let window = AX.elements(appEl, kAXWindowsAttribute).first { AX.windowID($0) == windowID }
@@ -177,9 +177,9 @@ enum Background {
 
     /// Gives key status back to the window that had it in the app before
     /// focusWindow, once the input is done: the same records, the other way.
-    static func restoreKey(_ windowID: CGWindowID, to previous: CGWindowID?) {
+    static func restoreKey(_ windowID: CGWindowID, to previous: CGWindowID?, pid: pid_t) {
         guard let previous, previous != windowID else { return }
-        _ = SkyLight.moveWindowKey(from: windowID, to: previous)
+        _ = SkyLight.moveWindowKey(from: windowID, to: previous, pid: pid)
     }
 
     /// Gives `el` keyboard focus without bringing its app forward: AX first,
@@ -234,7 +234,7 @@ enum Background {
     /// A left click (one or two) posted to the window: the window is focused
     /// without raising it first, then the plan's events go in order.
     static func click(pid: pid_t, windowID: CGWindowID, at point: CGPoint, count: Int, flags: CGEventFlags) {
-        if SkyLight.focusWithoutRaise(windowID) { usleep(50_000) }
+        if SkyLight.focusWithoutRaise(windowID, pid: pid) { usleep(50_000) }
         let group = Int64(Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1) * 1e9)
         for step in backgroundClickPlan(at: point, count: count) {
             let type: CGEventType = step.kind == .move ? .mouseMoved : step.kind == .down ? .leftMouseDown : .leftMouseUp
@@ -284,13 +284,13 @@ enum Background {
                 if let code = KeyCodes.named[name] { tap(pid: pid, key: code, flags: []) }
             case .text(let s):
                 let units = Array(s.utf16)
-                for down in [true, false] {
-                    guard let e = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
+                guard let down = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+                      let up = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { break }
+                for e in [down, up] {
                     e.flags = []
                     e.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
-                    Input.shared.postToProcess(e, pid: pid, auth: SkyLight.keyAuth)
-                    usleep(4_000)
                 }
+                _ = postKey(down: down, up: up, pid: pid, auth: SkyLight.keyAuth)
             }
             typed += chunk.characterCount
         }
@@ -299,14 +299,29 @@ enum Background {
 
     /// One key down and up, the modifiers as flags only. A shortcut with
     /// Command goes without the authentication message: with it the event
-    /// takes a route that never reaches the app's menus.
-    static func tap(pid: pid_t, key code: CGKeyCode, flags: CGEventFlags) {
+    /// takes a route that never reaches the app's menus. False, with nothing
+    /// posted, when the press could not be sent.
+    @discardableResult
+    static func tap(pid: pid_t, key code: CGKeyCode, flags: CGEventFlags) -> Bool {
         let auth = SkyLight.keyAuth && !flags.contains(.maskCommand)
-        for down in [true, false] {
-            guard let e = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: down) else { continue }
-            e.flags = flags
-            Input.shared.postToProcess(e, pid: pid, auth: auth)
-            usleep(4_000)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { return false }
+        down.flags = flags
+        up.flags = flags
+        return postKey(down: down, up: up, pid: pid, auth: auth)
+    }
+
+    /// A key down and its up, posted to the process. A down that went out
+    /// always gets its up: when the up's authentication message cannot be
+    /// built it goes without one, so the app is not left with the key down.
+    /// False, with nothing posted, when the down did not go.
+    private static func postKey(down: CGEvent, up: CGEvent, pid: pid_t, auth: Bool) -> Bool {
+        guard Input.shared.postToProcess(down, pid: pid, auth: auth) else { return false }
+        usleep(4_000)
+        if !Input.shared.postToProcess(up, pid: pid, auth: auth) {
+            Input.shared.postToProcess(up, pid: pid, auth: false)
         }
+        usleep(4_000)
+        return true
     }
 }

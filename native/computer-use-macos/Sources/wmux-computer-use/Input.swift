@@ -42,10 +42,10 @@ final class Input: @unchecked Sendable {
     private var heldKeys = Set<CGKeyCode>()
     private var heldButtons: [Int32: CGPoint] = [:]
     private var stopping = false
-    /// Every event posted, plus every press, value and launch that may have
-    /// reached the app (`noteSent`): Server tells from it whether a failed
-    /// input action sent anything. Bringing a window forward or focusing it
-    /// is not input and is not counted.
+    /// Every event posted, plus every press, value, launch and background
+    /// event record that may have reached the app (`noteSent`): Server tells
+    /// from it whether a failed input action sent anything. Bringing a window
+    /// forward is not input and is not counted.
     private var sentCount = 0
 
     var sent: Int {
@@ -91,7 +91,7 @@ final class Input: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if stopping, event.type != .leftMouseUp, event.type != .keyUp { return false }
-        SkyLight.post(event, pid: pid, auth: auth)
+        guard SkyLight.post(event, pid: pid, auth: auth) else { return false }
         sentCount += 1
         return true
     }

@@ -427,12 +427,12 @@ enum Actions {
                     throw HelperError(e.code, "\(e.message) (after \(typed) of \(text.count) characters; the rest was not typed)")
                 }
                 let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
-                Background.restoreKey(windowID, to: previousKey)
+                Background.restoreKey(windowID, to: previousKey, pid: target.pid)
                 return await backgroundResult(verified, since: start, pid: target.pid, point: focusPoint)
             } catch let stop as Background.Stop {
                 if Input.shared.sent != sentBefore {
                     let back = await Background.settle(after: start, pid: target.pid, point: focusPoint)
-                    Background.restoreKey(windowID, to: previousKey)
+                    Background.restoreKey(windowID, to: previousKey, pid: target.pid)
                     let note = back.map { " (\($0))" } ?? ""
                     // A focus click alone went out: real input now could click
                     // the field again and select a word, so the call ends.
@@ -529,10 +529,10 @@ enum Actions {
                     pressed += 1
                     usleep(4_000)
                 }
-                Background.restoreKey(windowID, to: previousKey)
+                Background.restoreKey(windowID, to: previousKey, pid: target.pid)
                 return await backgroundResult(since: start, pid: target.pid)
             } catch let stop as Background.Stop {
-                if Input.shared.sent != sentBefore { Background.restoreKey(windowID, to: previousKey) }
+                if Input.shared.sent != sentBefore { Background.restoreKey(windowID, to: previousKey, pid: target.pid) }
                 why = try realInputAfter(stop, sentBefore: sentBefore, detail: " (after \(pressed) of \(repeatCount) presses)")
             }
         }
@@ -574,7 +574,7 @@ enum Actions {
                 await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
                 try Background.requireStillSafe(target, windowID, since: start)
                 Background.tap(pid: target.pid, key: code, flags: flags)
-                Background.restoreKey(windowID, to: focus.previous)
+                Background.restoreKey(windowID, to: focus.previous, pid: target.pid)
                 return await backgroundResult(since: start, pid: target.pid)
             } catch let stop as Background.Stop {
                 why = try realInputAfter(stop, sentBefore: sentBefore)
