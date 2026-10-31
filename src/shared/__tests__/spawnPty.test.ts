@@ -138,3 +138,49 @@ describe('spawnPtySync', () => {
     expect(p.kill).toHaveBeenCalledOnce();
   });
 });
+
+describe('spawnPty — console window owner (Windows sign-in pickers)', () => {
+  const hwnd = Buffer.from([0x2a, 0x10, 0, 0, 0, 0, 0, 0]);
+
+  it('makes the host window the owner right after the spawn, before the pid wait', async () => {
+    const p = Object.assign(new DeferredPty(), { setParentWindow: vi.fn(() => true) });
+    const pending = spawnPty(request(p, { parentWindow: () => hwnd }));
+    // Sent while the shell is still starting, so its first window has the owner.
+    expect(p.setParentWindow).toHaveBeenCalledWith(hwnd);
+    p.connect(77);
+    await expect(pending).resolves.toBe(p);
+    expect(p.setParentWindow).toHaveBeenCalledOnce();
+  });
+
+  it('brings the pty up to date when the window was replaced during the pid wait, and sends nothing when it was cleared', async () => {
+    const other = Buffer.from([0x99, 0, 0, 0, 0, 0, 0, 0]);
+    let current: Buffer | null = hwnd;
+    const replaced = Object.assign(new DeferredPty(), { setParentWindow: vi.fn<(handle: Buffer) => boolean>(() => true) });
+    const pending = spawnPty(request(replaced, { parentWindow: () => current }));
+    current = other;
+    replaced.connect(78);
+    await pending;
+    expect(replaced.setParentWindow.mock.calls.map(([b]) => b)).toEqual([hwnd, other]);
+
+    current = hwnd;
+    const cleared = Object.assign(new DeferredPty(), { setParentWindow: vi.fn<(handle: Buffer) => boolean>(() => true) });
+    const pending2 = spawnPty(request(cleared, { parentWindow: () => current }));
+    current = null;
+    cleared.connect(79);
+    await pending2;
+    // The app went away mid-wait: no NULL owner is sent (Windows drops a destroyed one itself).
+    expect(cleared.setParentWindow.mock.calls.map(([b]) => b)).toEqual([hwnd]);
+  });
+
+  it('sends nothing when there is no host window yet', async () => {
+    const ready = { pid: 9, onExit: vi.fn(), kill: vi.fn(), setParentWindow: vi.fn(() => true) };
+    await spawnPty(request(ready, { parentWindow: () => null }));
+    await spawnPty(request(ready));
+    expect(ready.setParentWindow).not.toHaveBeenCalled();
+  });
+
+  it('a pty that cannot take an owner still spawns', async () => {
+    const ready = { pid: 9, onExit: vi.fn(), kill: vi.fn(), setParentWindow: vi.fn(() => { throw new Error('closed'); }) };
+    await expect(spawnPty(request(ready, { parentWindow: () => hwnd }))).resolves.toBe(ready);
+  });
+});

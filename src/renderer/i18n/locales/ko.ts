@@ -3533,6 +3533,8 @@ export const ko = {
   'claudeIntegration.usageReserveDesc': "Claude 계정의 5시간 사용량이 85% 이상이면 그 사용량을 쓰는 무인 작업을 새로 시작하지 않아 마지막 15%를 직접 쓸 수 있게 남깁니다. 예약 실행은 초기화를 기다렸다가 유예 시간 안이면 실행하고, 지나면 놓친 것으로 기록합니다. 봇의 팬아웃도 기다리고, 내 패인의 에이전트가 요청한 팬아웃은 초기화 시각과 함께 거절합니다. Codex와 다른 에이전트는 막지 않으며, 직접 입력하는 것도 막지 않습니다. 기본으로 꺼져 있습니다.",
   'claudeIntegration.resumeOnStart': '시작 시 Claude Code·Codex 판 자동으로 이어가기',
   'claudeIntegration.resumeOnStartDesc': '재시작 후 Claude Code나 Codex를 실행하던 판에 Resume 버튼을 누르지 않아도 이어가기 명령을 입력합니다. 기본값은 꺼짐입니다.',
+  'claudeIntegration.fileSend': 'Claude가 휴대폰으로 파일 보내기',
+  'claudeIntegration.fileSendDesc': "Claude가 wmux 휴대폰 앱으로 파일을 보낼 수 있게 합니다. 켜면 Claude의 Remote Control은 그 파일을 claude.ai에 올리지 못할 수 있습니다. 바꾼 뒤 새로 시작하는 판부터 적용되고, 이미 실행 중인 판은 그대로입니다. 기본값은 꺼짐입니다.",
   'usageLimit.waiting': '대기 중',
   'agentAuth.signedOut': "{agent} 로그인이 풀렸습니다. 다시 로그인할 때까지 실행되지 않습니다.",
   'agentAuth.signInAgain': "다시 로그인",

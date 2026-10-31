@@ -5,9 +5,9 @@
 // `/turns/image` and `/turns/file` serve paths under the pane's spawn cwd and
 // the uploads directory. A file the agent explicitly sent to the user is the
 // one addition: it is served when the transcript bound to THAT pane holds a
-// `SendUserFile` tool_use naming it byte for byte in `input.files[]`, the
-// matching tool_result succeeded, and the call is under 24 hours old. The list
-// always comes from the transcript, never from the request.
+// `SendUserFile` tool_use whose matching tool_result succeeded and names it
+// (see `sentGrantPaths`), and the call is under 24 hours old. The list always
+// comes from the transcript, never from the request.
 //
 // `/turns/image` also serves an image the agent opened with `Read`: the same
 // rules, with `input.file_path` in place of `input.files[]`. Agents write their
@@ -17,7 +17,8 @@
 // they would crowd image grants out of the per-transcript cap. A `Read` counts
 // only when its tool_result carries an image block — what Claude Code returns
 // when it actually loaded the file as an image. The one respelling accepted is
-// macOS's `/tmp/` ↔ `/private/tmp/` prefix, compared as strings.
+// macOS's `/tmp/` ↔ `/private/tmp/` prefix, compared as strings (for a `Read`
+// grant, and for a `SendUserFile` grant from a result without attachments).
 //
 // Why not `parseEntry`: it projects a tool call into a display body (text,
 // possibly truncated), and this needs the structured `input.files` array. The
@@ -102,6 +103,8 @@ interface LineRef {
 interface PendingCall {
   tool: GrantTool;
   files: string[];
+  /** The tool_use line's `cwd`, which a relative `input.files` entry is resolved against. */
+  cwd: string | undefined;
   at: number;
   call: LineRef;
 }
@@ -110,6 +113,13 @@ interface SentGrant {
   at: number;
   call: LineRef;
   result: LineRef;
+  /** A no-attachments `SendUserFile` grant: also found under its `/tmp/` ↔ `/private/tmp/` respelling. */
+  respell?: true;
+}
+
+/** A projected `SendUserFile` path that names one of its call's validated attachments only if it is the same file. */
+interface AliasGrant extends SentGrant {
+  targets: string[];
 }
 
 interface TranscriptIndex {
@@ -129,12 +139,14 @@ interface TranscriptIndex {
   sent: Map<string, SentGrant>;
   /** Path → the newest successful `Read` of it (images only). */
   read: Map<string, SentGrant>;
+  /** Projected path → the newest successful `SendUserFile` call whose attachments it may stand for. */
+  sentAlias: Map<string, AliasGrant>;
 }
 
 function emptyIndex(ino: number, base: number): TranscriptIndex {
   return {
     ino, size: -1, mtimeMs: -1, base, offset: base, headHash: '', tailHash: '',
-    pending: new Map(), sent: new Map(), read: new Map(),
+    pending: new Map(), sent: new Map(), read: new Map(), sentAlias: new Map(),
   };
 }
 
@@ -159,6 +171,96 @@ export function sentFileParts(raw: string, p: path.PlatformPath = path): { dir: 
   const name = p.basename(raw);
   if (!name || name !== segments[segments.length - 1]) return null;
   return { dir: p.dirname(raw), name };
+}
+
+/** `input.files` as the turn projection hands them out (parseEntry): relative entries resolved against the call line's `cwd`. */
+function projectedFiles(call: PendingCall): string[] {
+  const out: string[] = [];
+  for (const file of call.files) {
+    if (path.isAbsolute(file)) out.push(file);
+    else if (call.cwd !== undefined) out.push(path.resolve(call.cwd, file));
+  }
+  return out;
+}
+
+/**
+ * What a successful `SendUserFile` result grants.
+ *
+ * When the result line carries `toolUseResult.attachments` (Claude Code
+ * writes it for every send), only its entries marked `pathValidated: true`
+ * are granted (`paths`), and an attachments list with nothing validated
+ * grants nothing. Those are the paths Claude Code itself resolved, checked
+ * and delivered; `input.files` is the model's string before any of that.
+ *
+ * The phone, though, asks for the projected `input.files` path (parseEntry),
+ * and the two spellings differ whenever the cwd runs through a symlink
+ * (`/tmp` → `/private/tmp`) or Claude Code canonicalizes the path. So each
+ * projected path that is not itself an attachment path is kept as an
+ * `alias`: it is served only when, at serve time, it is the same file as one
+ * of the call's validated attachments, and what is then opened is the
+ * attachment path. Matched by file, not by index: nothing says Claude Code
+ * keeps `attachments` in `input.files` order. An alias whose file is not an
+ * attachment's file grants nothing, so the grant never covers more than the
+ * files Claude Code delivered.
+ *
+ * With no attachments list (an older Claude Code), the input is the only
+ * record: an absolute path counts as written, a relative one is resolved
+ * against the call line's `cwd` (the projection's resolution), and the grant
+ * also answers to the `/tmp/` ↔ `/private/tmp/` respelling, as a `Read`
+ * grant does.
+ *
+ * The attachments list is line-level, so a result line that answers more
+ * than one call cannot say which call it belongs to: such a line grants
+ * nothing when it has an attachments list. Lines without one keep the
+ * per-block grants.
+ */
+function sentGrantPaths(
+  call: PendingCall,
+  entry: Record<string, unknown>,
+  resultsInLine: number,
+): { paths: string[]; aliases: string[]; respell: boolean } {
+  const result = entry['toolUseResult'];
+  const attachments = isObject(result) ? result['attachments'] : undefined;
+  if (Array.isArray(attachments)) {
+    if (resultsInLine !== 1) return { paths: [], aliases: [], respell: false };
+    const paths: string[] = [];
+    for (const item of attachments) {
+      if (!isObject(item) || item['pathValidated'] !== true) continue;
+      const p = item['path'];
+      if (typeof p === 'string' && p.length > 0 && path.isAbsolute(p)) paths.push(p);
+    }
+    const aliases = paths.length > 0 ? projectedFiles(call).filter((p) => !paths.includes(p)) : [];
+    return { paths, aliases, respell: false };
+  }
+  return { paths: projectedFiles(call), aliases: [], respell: true };
+}
+
+/** Record `grant` under `key`, keeping the newest call's and evicting oldest-first past the cap. */
+function putGrant<G extends SentGrant>(grants: Map<string, G>, key: string, grant: G): void {
+  const prev = grants.get(key);
+  if (prev && prev.at > grant.at) return;
+  // Re-inserted so the Map's order stays oldest-first for eviction.
+  grants.delete(key);
+  grants.set(key, grant);
+  if (grants.size > MAX_SENT_PATHS) {
+    const oldest = grants.keys().next();
+    if (!oldest.done) grants.delete(oldest.value);
+  }
+}
+
+/**
+ * Whether `a` and `b` are the same file now: the same real path, or the same
+ * device and inode (an inode of 0 is no answer). Errors read as no.
+ */
+async function sameFile(a: string, b: string): Promise<boolean> {
+  try {
+    const [ra, rb] = await Promise.all([fs.promises.realpath(a), fs.promises.realpath(b)]);
+    if (ra === rb) return true;
+    const [sa, sb] = await Promise.all([fs.promises.stat(a, { bigint: true }), fs.promises.stat(b, { bigint: true })]);
+    return sa.ino !== 0n && sa.dev === sb.dev && sa.ino === sb.ino;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -186,7 +288,10 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
   const type = entry['type'];
   let ref: LineRef | undefined;
   const lineRef = (): LineRef => (ref ??= { offset, length: bytes.length, hash: sha256(bytes) });
-  for (const block of contentBlocks(entry)) {
+  const blocks = contentBlocks(entry);
+  const cwd = typeof entry['cwd'] === 'string' && path.isAbsolute(entry['cwd']) ? entry['cwd'] : undefined;
+  const resultsInLine = type === 'user' ? blocks.filter((b) => b['type'] === 'tool_result').length : 0;
+  for (const block of blocks) {
     const name = block['name'];
     if (type === 'assistant' && block['type'] === 'tool_use' && (name === TOOL_NAME || name === 'Read')) {
       const id = block['id'];
@@ -202,7 +307,7 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
         files = typeof raw === 'string' && READ_IMAGE_EXT.test(raw) ? [raw] : [];
       }
       if (files.length === 0) continue;
-      index.pending.set(id, { tool: name, files, at, call: lineRef() });
+      index.pending.set(id, { tool: name, files, cwd, at, call: lineRef() });
       if (index.pending.size > MAX_PENDING_CALLS) {
         const oldest = index.pending.keys().next();
         if (!oldest.done) index.pending.delete(oldest.value);
@@ -213,18 +318,15 @@ function absorbLine(index: TranscriptIndex, bytes: Buffer, offset: number): void
       index.pending.delete(block['tool_use_id']);
       if (block['is_error'] === true) continue;
       if (call.tool === 'Read' && !hasImageBlock(block['content'])) continue;
-      const grants = call.tool === TOOL_NAME ? index.sent : index.read;
-      for (const file of call.files) {
-        const prev = grants.get(file);
-        if (prev && prev.at > call.at) continue;
-        // Re-inserted so the Map's order stays oldest-first for eviction.
-        grants.delete(file);
-        grants.set(file, { at: call.at, call: call.call, result: lineRef() });
-        if (grants.size > MAX_SENT_PATHS) {
-          const oldest = grants.keys().next();
-          if (!oldest.done) grants.delete(oldest.value);
-        }
+      const base: SentGrant = { at: call.at, call: call.call, result: lineRef() };
+      if (call.tool !== TOOL_NAME) {
+        for (const file of call.files) putGrant(index.read, file, base);
+        continue;
       }
+      const granted = sentGrantPaths(call, entry, resultsInLine);
+      const grant: SentGrant = granted.respell ? { ...base, respell: true } : base;
+      for (const file of granted.paths) putGrant(index.sent, file, grant);
+      for (const alias of granted.aliases) putGrant(index.sentAlias, alias, { ...base, targets: granted.paths });
     }
   }
 }
@@ -338,7 +440,8 @@ export class SentFileIndex {
   }
 
   /**
-   * When `filePath` (compared byte for byte) was sent with a successful
+   * When `filePath` (compared byte for byte with a path the grant was
+   * recorded under, see `sentGrantPaths` and `grantFor`) was sent with a successful
    * `SendUserFile` call in `transcriptPath` no more than 24 hours before
    * `nowMs` — the call's timestamp — or null. The two transcript lines the
    * grant rests on are re-read first; if either changed, the transcript is
@@ -348,28 +451,64 @@ export class SentFileIndex {
     return this.grantedAt(transcriptPath, filePath, nowMs, TOOL_NAME);
   }
 
-  /**
-   * `sentAt` for either granting tool. A `Read` grant is also found under the
-   * `/tmp/` ↔ `/private/tmp/` respelling on macOS (`readGrantSpellings`); when
-   * both spellings hold one, the newest grant still inside the window wins.
-   */
+  /** `grantFor`'s time only. */
   async grantedAt(transcriptPath: string, filePath: string, nowMs: number, tool: GrantTool): Promise<number | null> {
-    const spellings = tool === 'Read' ? readGrantSpellings(filePath, this.platform) : [filePath];
+    return (await this.grantFor(transcriptPath, filePath, nowMs, tool))?.at ?? null;
+  }
+
+  /**
+   * `sentAt` for either granting tool, with the path to open: `filePath`
+   * itself, or for a projected `SendUserFile` path that stands for an
+   * attachment (see `sentGrantPaths`), the attachment's path. A `Read` grant,
+   * and a `SendUserFile` grant from a result with no attachments list, is
+   * also found under the `/tmp/` ↔ `/private/tmp/` respelling on macOS
+   * (`readGrantSpellings`). The newest grant still inside the window wins.
+   */
+  async grantFor(
+    transcriptPath: string,
+    filePath: string,
+    nowMs: number,
+    tool: GrantTool,
+  ): Promise<{ at: number; path: string } | null> {
+    const spellings = readGrantSpellings(filePath, this.platform);
+    const inWindow = (grant: SentGrant): boolean => {
+      const age = nowMs - grant.at;
+      return age <= SENT_FILE_MAX_AGE_MS && age >= -SENT_FILE_CLOCK_SKEW_MS;
+    };
     for (let attempt = 0; attempt < 2; attempt++) {
       const index = await this.refresh(transcriptPath);
       if (!index) return null;
-      const grants = tool === TOOL_NAME ? index.sent : index.read;
-      const candidates = spellings
-        .map((spelling) => grants.get(spelling))
-        .filter((grant): grant is SentGrant => {
-          if (!grant) return false;
-          const age = nowMs - grant.at;
-          return age <= SENT_FILE_MAX_AGE_MS && age >= -SENT_FILE_CLOCK_SKEW_MS;
-        })
-        .sort((a, b) => b.at - a.at);
-      const grant = candidates[0];
-      if (!grant) return null;
-      if (await this.grantStillOnDisk(transcriptPath, grant)) return grant.at;
+      const candidates: Array<{ grant: SentGrant; targets?: string[] }> = [];
+      if (tool === 'Read') {
+        for (const spelling of spellings) {
+          const grant = index.read.get(spelling);
+          if (grant) candidates.push({ grant });
+        }
+      } else {
+        for (const spelling of spellings) {
+          const grant = index.sent.get(spelling);
+          if (grant && (spelling === filePath || grant.respell)) candidates.push({ grant });
+        }
+        const alias = index.sentAlias.get(filePath);
+        if (alias) candidates.push({ grant: alias, targets: alias.targets });
+      }
+      const ordered = candidates.filter((c) => inWindow(c.grant)).sort((a, b) => b.grant.at - a.grant.at);
+      let chosen: { grant: SentGrant; path: string } | null = null;
+      for (const candidate of ordered) {
+        if (!candidate.targets) {
+          chosen = { grant: candidate.grant, path: filePath };
+          break;
+        }
+        for (const target of candidate.targets) {
+          if (await sameFile(filePath, target)) {
+            chosen = { grant: candidate.grant, path: target };
+            break;
+          }
+        }
+        if (chosen) break;
+      }
+      if (!chosen) return null;
+      if (await this.grantStillOnDisk(transcriptPath, chosen.grant)) return { at: chosen.grant.at, path: chosen.path };
       if (this.indexes.get(transcriptPath) === index) this.indexes.delete(transcriptPath);
     }
     return null;

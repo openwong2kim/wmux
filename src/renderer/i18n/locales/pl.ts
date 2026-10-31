@@ -4089,6 +4089,8 @@ export const pl = {
   'claudeIntegration.usageReserveDesc': "Praca bez nadzoru, która zużyłaby 5-godzinne użycie konta Claude, nie startuje, dopóki to użycie wynosi 85% lub więcej, aby ostatnie 15% zostało dla Ciebie. Zaplanowane uruchomienie czeka na reset i rusza wtedy, jeśli mieści się jeszcze w swoim marginesie, w przeciwnym razie jest pominięte; fan-out bota też czeka; fan-out zlecony przez agenta w Twoim panelu jest odrzucany z godziną resetu. Codex i inne agenty nie są wstrzymywane, a to, co wpisujesz, nigdy nie jest wstrzymywane. Domyślnie wyłączone.",
   'claudeIntegration.resumeOnStart': 'Automatycznie wznawiaj panele Claude Code i Codex przy starcie',
   'claudeIntegration.resumeOnStartDesc': 'Po restarcie wpisz polecenie wznowienia w panelach, w których działał Claude Code lub Codex, zamiast czekać na przycisk Wznów. Domyślnie wyłączone.',
+  'claudeIntegration.fileSend': 'Pozwól Claude wysyłać pliki na telefon',
+  'claudeIntegration.fileSendDesc': 'Pozwala Claude wysyłać pliki do aplikacji wmux na telefonie. Własna funkcja Remote Control Claude może wtedy nie przesyłać tych plików do claude.ai. Dotyczy paneli uruchomionych po zmianie; działające panele zostają bez zmian. Domyślnie wyłączone.',
   'usageLimit.waiting': 'Oczekiwanie',
   'agentAuth.signedOut': "{agent} jest wylogowany. Nie zadziała, dopóki nie zalogujesz się ponownie.",
   'agentAuth.signInAgain': "Zaloguj się ponownie",
