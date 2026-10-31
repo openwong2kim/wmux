@@ -24,7 +24,7 @@
     "src/daemon/transcript/chatSkills.ts": 2,
     "src/daemon/transcript/codexCapture.ts": 3,
     "src/daemon/transcript/codexRolloutByCwd.ts": 4,
-    "src/daemon/transcript/deliverChatPrompt.ts": 8,
+    "src/daemon/transcript/deliverChatPrompt.ts": 7,
     "src/daemon/transcript/healResumeBinding.ts": 2,
     "src/daemon/transcript/openCodeIdleSettle.ts": 1,
     "src/daemon/transcript/resumeAvailable.ts": 2,

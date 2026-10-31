@@ -447,6 +447,8 @@ describe('a2a.task.update — the caller pane company seat comes from the pane t
 
   const okDaemon = (calls: DaemonCall[]) => async (method: string, params: Record<string, unknown>) => {
     calls.push({ method, params });
+    // The task read before a done: an ordinary task, so no PR is checked.
+    if (method === 'a2a.task.query') return { ok: true, tasks: [{ id: 't1', history: [] }] };
     return { ok: true, task: { id: 't1', status: { state: params.status, timestamp: 'x' }, metadata: { updatedAt: 'x' } } };
   };
   const panes = [
@@ -463,9 +465,11 @@ describe('a2a.task.update — the caller pane company seat comes from the pane t
     const router = setup(okDaemon(calls));
     await router.dispatch({ id: 'k1', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo' }) });
     await router.dispatch({ id: 'k1b', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-b' }) });
-    expect(calls[0].params.callerPaneId).toBe('pane-ceo');
-    expect(calls[0].params.callerCompanySeat).toBe('coordinator');
-    expect(calls[1].params.callerCompanySeat).toBe('staff');
+    // The coordinator's done first reads the task (the PR check); only the updates matter here.
+    const updates = calls.filter((c) => c.method === 'a2a.task.update');
+    expect(updates[0].params.callerPaneId).toBe('pane-ceo');
+    expect(updates[0].params.callerCompanySeat).toBe('coordinator');
+    expect(updates[1].params.callerCompanySeat).toBe('staff');
     expect(rendererUpdateCalls()[0]).not.toHaveProperty('callerCompanySeat');
   });
 
@@ -474,7 +478,9 @@ describe('a2a.task.update — the caller pane company seat comes from the pane t
     rendererWithPanes([{ id: 'pane-x', surfacePtyIds: ['pty-x'] }]);
     const router = setup(okDaemon(calls));
     await router.dispatch({ id: 'k0', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-x' }) });
-    expect(calls[0].params).not.toHaveProperty('callerCompanySeat');
+    const update = calls.find((c) => c.method === 'a2a.task.update');
+    expect(update?.params.callerPaneId).toBe('pane-x');
+    expect(update?.params).not.toHaveProperty('callerCompanySeat');
   });
 
   it('never takes the seat from the caller', async () => {
@@ -486,10 +492,11 @@ describe('a2a.task.update — the caller pane company seat comes from the pane t
     await router.dispatch({ id: 'k3', method: 'a2a.task.update', params: done({ callerCompanySeat: 'coordinator' }) });
     rendererWithPanes({ error: 'pane gate not ready', retryable: true });
     await router.dispatch({ id: 'k4', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo', callerCompanySeat: 'coordinator' }) });
-    expect(calls).toHaveLength(3);
-    expect(calls[0].params.callerCompanySeat).toBe('staff');
-    expect(calls[1].params).not.toHaveProperty('callerCompanySeat');
-    expect(calls[2].params).not.toHaveProperty('callerCompanySeat');
+    const updates = calls.filter((c) => c.method === 'a2a.task.update');
+    expect(updates).toHaveLength(3);
+    expect(updates[0].params.callerCompanySeat).toBe('staff');
+    expect(updates[1].params).not.toHaveProperty('callerCompanySeat');
+    expect(updates[2].params).not.toHaveProperty('callerCompanySeat');
     for (const sent of rendererUpdateCalls()) expect(sent).not.toHaveProperty('callerCompanySeat');
   });
 });

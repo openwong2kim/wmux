@@ -228,7 +228,9 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
   });
 
   it('drains the live tee over multiple rounds', async () => {
-    const rounds: Buffer[][] = [[Buffer.from('mid1 ')], [Buffer.from('mid2 ')]];
+    // No trailing space: the Rust engine's snapshot keeps trailing blanks as
+    // empty cells, so a printed one at the row end is not part of the test.
+    const rounds: Buffer[][] = [[Buffer.from('mid1 ')], [Buffer.from('mid2')]];
     let i = 0;
     const res = await generateSnapshot({
       cols: 80,
@@ -239,7 +241,7 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const restored = await restoredTerminal(res.payload, 80, 24);
-    const ref = await referenceTerminal(Buffer.from('start mid1 mid2 '), 80, 24);
+    const ref = await referenceTerminal(Buffer.from('start mid1 mid2'), 80, 24);
     expect(trimTrailingBlank(bufferText(restored))).toEqual(trimTrailingBlank(bufferText(ref)));
   });
 

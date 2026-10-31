@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { generateRustSnapshot } from '../src/daemon/RustSnapshot';
-import { snapshotTestTerminal, terminalFingerprint, writeTerminal } from '../src/daemon/snapshotFingerprint';
+import type { Terminal } from '@xterm/headless';
+import { snapshotTestTerminal, writeTerminal } from '../src/daemon/snapshotFingerprint';
 import { generateSnapshot, generateTextSnapshot, type SnapshotRequest } from '../src/daemon/HeadlessSnapshot';
 import { getSnapshotShadowDiagnostics } from '../src/daemon/SnapshotShadow';
 
@@ -26,6 +27,28 @@ const cases = [
   ['hello\x1b[31;', 20],
   [Array.from({ length: 50 }, (_, i) => `\x1b[3${i % 8}mline${i}\x1b[0m`).join('\r\n'), 20],
 ] as const;
+
+/** Modes, cursors and every cell as shown: a blank's foreground, weight,
+ * slant and blink are invisible, and xterm's reflow leaves them at random. */
+function visibleFingerprint(t: Terminal): string {
+  const out: unknown[] = [t.cols, t.rows, t.buffer.active.type, t.modes];
+  for (const buffer of [t.buffer.normal, t.buffer.alternate]) {
+    if (buffer.type === 'alternate' && t.buffer.active.type !== 'alternate') continue;
+    out.push([buffer.type, buffer.baseY, buffer.cursorX, buffer.cursorY]);
+    for (let y = 0; y < buffer.length; y++) {
+      const line = buffer.getLine(y)!;
+      out.push(line.isWrapped);
+      for (let x = 0; x < t.cols; x++) {
+        const c = line.getCell(x)!;
+        const chars = c.getChars() || ' ';
+        out.push([chars, c.getWidth(), c.getBgColor(), c.isBgRGB(), c.isBgPalette(), c.isUnderline(), c.isInverse(), c.isStrikethrough(), c.isOverline(),
+          ...chars.trim() ? [c.getFgColor(), c.isFgRGB(), c.isFgPalette(), c.isBold(), c.isDim(), c.isItalic(), c.isBlink(), c.isInvisible()] : []]);
+      }
+    }
+  }
+  return JSON.stringify(out);
+}
+const terminalFingerprint = visibleFingerprint;
 
 async function main() {
   const results = [];

@@ -60,7 +60,7 @@ async function smoke(resources, runtime = 'electron') {
   try {
     terminal.feed(Buffer.from('packaged snapshot'));
     assert(terminal.textSnapshot(false).rows.some(row => row.text.includes('packaged snapshot')));
-    assert.match(terminal.ansiSnapshot(), /packaged snapshot/);
+    assert.match(Buffer.from(terminal.ansiSnapshot()).toString('utf8'), /packaged snapshot/);
   } finally { terminal.dispose(); }
 
   const ring = new core.NativeRing(4096);

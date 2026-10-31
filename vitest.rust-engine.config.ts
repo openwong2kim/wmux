@@ -35,6 +35,7 @@ const nodeOnly = [
   // Test the opt-in WMUX_RUST_SNAPSHOT path with a stubbed module; the rust
   // engine selects the built module and the text backend instead.
   'src/daemon/__tests__/TextSnapshotBackend.test.ts',
+  'src/daemon/__tests__/AnsiSnapshotBackend.test.ts',
   'src/daemon/__tests__/RustSnapshot.test.ts',
 ];
 // A renamed file would otherwise drop out of this list and back into the run.

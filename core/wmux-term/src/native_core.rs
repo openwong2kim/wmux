@@ -32,6 +32,7 @@ pub fn native_core_capabilities() -> Vec<String> {
         "output-chunk-v1".into(),
         "output-interpreter-v1".into(),
         "ansi-v2".into(),
+        "ansi-v3".into(),
         "console-owner-v1".into(),
     ]
 }
@@ -83,6 +84,305 @@ pub struct NativeTerminal {
     term: Option<Term<VoidListener>>,
     parser: Processor,
     scrollback: u32,
+    /// `feed_xterm` state besides the grid.
+    feed: XtermFeed,
+    /// Why the ANSI snapshot of this stream cannot match xterm's.
+    refusal: Option<&'static str>,
+}
+
+/// The longest unfinished sequence `feed_xterm` holds for its next bytes.
+const MAX_HELD: usize = 256;
+/// The longest unfinished string re-shipped after a snapshot, in UTF-16
+/// units (util/ansiStreamScan.ts MAX_PENDING_TAIL_CHARS).
+const MAX_TAIL_UNITS: usize = 4096;
+
+/// What the ANSI feed tracks besides the grid. Margins, cursor visibility
+/// and the pending input tail follow util/ansiStreamScan.ts, which the xterm
+/// path runs over the same bytes, so both payloads restore the same state.
+#[derive(Default)]
+struct XtermFeed {
+    /// An unfinished escape sequence awaiting its next bytes.
+    held: Vec<u8>,
+    /// The stream ends inside a string (OSC, DCS, SOS, PM, APC): `tail`
+    /// holds it from its introducer, `tail_units` counts it.
+    in_string: bool,
+    tail: Vec<u8>,
+    tail_units: usize,
+    tail_overflow: bool,
+    /// DECSTBM margins in effect (MarginTracker).
+    margins: bool,
+    /// DECTCEM off (CursorVisibilityTracker).
+    cursor_hidden: bool,
+    /// SGR-pixels mouse encoding, ?1016 (SgrMouseEncodingTracker). Alacritty
+    /// does not parse it, so its mode set never carries it.
+    sgr_pixels: bool,
+    /// SGR mouse encoding, ?1006 (SgrMouseEncodingTracker). Alacritty drops
+    /// it on ?1005, which xterm ignores.
+    sgr_mouse: bool,
+    /// xterm's mouse protocol (9, 1000, 1002 or 1003; 0 for none): any of
+    /// their resets turns it off, where Alacritty clears only that mode.
+    mouse: u16,
+    /// The stream so far ends in a printed character, which REP repeats.
+    printed: bool,
+    /// DCH or ICH ran: a half-erased fullwidth glyph may sit next to an
+    /// unrelated cell, so it cannot be repaired from its partner.
+    shifted: bool,
+    /// A control Alacritty parses differently from xterm.
+    divergent: bool,
+}
+
+/// A byte of a printed character (not a C0 control or DEL).
+fn printable(byte: u8) -> bool {
+    byte >= 0x20 && byte != 0x7f
+}
+
+/// ICH, DCH or ECH: `CSI Ps @`, `CSI Ps P`, `CSI Ps X`.
+fn is_restricting(sequence: &[u8]) -> bool {
+    sequence
+        .strip_prefix(b"\x1b[")
+        .and_then(<[u8]>::split_last)
+        .is_some_and(|(last, params)| {
+            matches!(last, b'@' | b'P' | b'X')
+                && params.iter().all(|&b| b.is_ascii_digit() || b == b';')
+        })
+}
+
+/// REP: `CSI Ps b`.
+fn is_rep(sequence: &[u8]) -> bool {
+    sequence
+        .strip_prefix(b"\x1b[")
+        .and_then(|s| s.strip_suffix(b"b"))
+        .is_some_and(|params| params.iter().all(|&b| b.is_ascii_digit() || b == b';'))
+}
+
+/// String terminators as PartialSequenceTracker reads them: BEL, CAN, SUB,
+/// and ESC (ST, or an abort that starts a new sequence).
+fn string_end(data: &[u8]) -> Option<usize> {
+    data.iter()
+        .position(|b| matches!(b, 0x07 | 0x18 | 0x1a | 0x1b))
+}
+
+impl XtermFeed {
+    fn push_tail(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            if self.tail_overflow {
+                return;
+            }
+            if b & 0xc0 != 0x80 {
+                if self.tail_units >= MAX_TAIL_UNITS {
+                    self.tail_overflow = true;
+                    self.tail = Vec::new();
+                    return;
+                }
+                self.tail_units += if b >= 0xf0 { 2 } else { 1 };
+            }
+            self.tail.push(b);
+        }
+    }
+
+    fn start_string(&mut self) {
+        self.in_string = true;
+        self.tail.clear();
+        self.tail_units = 0;
+        self.tail_overflow = false;
+    }
+
+    /// Consume a string's payload from `data[at..]`; returns where scanning
+    /// resumes, or None when the string continues past the data. An ESC as
+    /// the last byte is held: it ends the string only with what follows.
+    fn string_payload(&mut self, data: &mut Vec<u8>, at: usize) -> Option<usize> {
+        match string_end(&data[at..]).map(|end| at + end) {
+            Some(end) if data[end] == 0x1b && end + 1 == data.len() => {
+                self.push_tail(&data[at..end]);
+                self.held = data.split_off(end);
+                None
+            }
+            Some(end) => {
+                self.in_string = false;
+                Some(if data[end] == 0x1b { end } else { end + 1 })
+            }
+            None => {
+                self.push_tail(&data[at..]);
+                None
+            }
+        }
+    }
+
+    fn track(&mut self, sequence: &[u8]) {
+        // C0 controls inside a sequence execute and are not part of it.
+        let filtered: Vec<u8>;
+        let sequence = if sequence[1..].iter().any(|&b| b < 0x20) {
+            filtered = sequence[..1]
+                .iter()
+                .chain(sequence[1..].iter().filter(|&&b| b >= 0x20))
+                .copied()
+                .collect();
+            &filtered[..]
+        } else {
+            sequence
+        };
+        let numeric = |params: &[u8]| params.iter().all(|&b| b.is_ascii_digit() || b == b';');
+        if sequence == b"\x1bc" || sequence == b"\x1b[!p" {
+            self.margins = false;
+        }
+        if sequence == b"\x1bc" {
+            self.sgr_pixels = false;
+            self.sgr_mouse = false;
+            self.mouse = 0;
+        }
+        if sequence == b"\x1b[!p" {
+            self.cursor_hidden = false;
+        }
+        if let Some(params) = sequence
+            .strip_prefix(b"\x1b[")
+            .and_then(|s| s.strip_suffix(b"r"))
+        {
+            if numeric(params) {
+                self.margins = params.iter().any(u8::is_ascii_digit);
+            }
+        }
+        if let Some((&last, params)) = sequence
+            .strip_prefix(b"\x1b[?")
+            .and_then(<[u8]>::split_last)
+        {
+            if matches!(last, b'h' | b'l') && numeric(params) {
+                let set = last == b'h';
+                // Modes by number, as xterm reads them: `01000` is 1000.
+                let modes = params.split(|&b| b == b';').map(|mode| {
+                    std::str::from_utf8(mode)
+                        .ok()
+                        .and_then(|m| m.parse::<u16>().ok())
+                });
+                for mode in modes {
+                    match mode {
+                        Some(25) => self.cursor_hidden = !set,
+                        Some(1016) => self.sgr_pixels = set,
+                        Some(1006) => self.sgr_mouse = set,
+                        Some(protocol @ (9 | 1000 | 1002 | 1003)) => {
+                            self.mouse = if set { protocol } else { 0 };
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    /// Feed `bytes`, giving ED 1 and ED 2 xterm's semantics. An unfinished
+    /// sequence at the end waits in `held` for the bytes that complete it.
+    fn feed(&mut self, parser: &mut Processor, term: &mut Term<VoidListener>, bytes: &[u8]) {
+        let mut data = std::mem::take(&mut self.held);
+        data.extend_from_slice(bytes);
+        self.divergent |= crate::native_serialize::has_c1(&data);
+        let mut from = 0;
+        let mut next = if self.in_string {
+            self.string_payload(&mut data, 0)
+        } else {
+            Some(0)
+        };
+        // Whether the stream so far ends in a printed character (false after
+        // a sequence or string, and at the start of a feed after either).
+        let mut printed = self.printed;
+        while let Some(at) = next {
+            let Some(found) = data[at..].iter().position(|&b| b == 0x1b) else {
+                if at < data.len() {
+                    printed = printable(data[data.len() - 1]);
+                }
+                break;
+            };
+            let at = at + found;
+            if found > 0 {
+                printed = printable(data[at - 1]);
+            }
+            let Some(len) = crate::native_serialize::sequence_len(&data[at..]) else {
+                if data.len() - at <= MAX_HELD {
+                    self.held = data.split_off(at);
+                } else {
+                    self.divergent = true;
+                }
+                break;
+            };
+            let sequence = &data[at..at + len];
+            if sequence == b"\x1b[1J" || sequence == b"\x1b[2J" {
+                parser.advance(term, &data[from..at]);
+                erase_like_xterm(parser, term, sequence[2] == b'2');
+                from = at + len;
+                next = Some(at + len);
+            } else if is_restricting(sequence) {
+                // xterm's ICH, DCH and ECH first restrict the cursor, which
+                // drops a pending wrap; Alacritty keeps it.
+                parser.advance(term, &data[from..at]);
+                let synchronized = parser.sync_timeout().pending_timeout();
+                if synchronized {
+                    parser.stop_sync(term);
+                }
+                term.grid_mut().cursor.input_needs_wrap = false;
+                if synchronized {
+                    parser.advance(term, b"\x1b[?2026h");
+                }
+                self.shifted |= sequence.last() != Some(&b'X');
+                from = at;
+                next = Some(at + len);
+            } else if len == 2 && matches!(sequence[1], b']' | b'P' | b'X' | b'^' | b'_') {
+                self.start_string();
+                self.push_tail(sequence);
+                next = self.string_payload(&mut data, at + len);
+            } else {
+                // xterm forgets the preceding character at any control;
+                // Alacritty repeats whatever was printed last.
+                self.divergent |=
+                    crate::native_serialize::divergent(sequence) || (is_rep(sequence) && !printed);
+                self.track(sequence);
+                next = Some(at + len);
+            }
+            printed = false;
+        }
+        // A held sequence or an unfinished string ends the stream so far.
+        self.printed = printed && self.held.is_empty() && !self.in_string;
+        parser.advance(term, &data[from..]);
+    }
+
+    /// The bytes that leave a replaying parser where this one is: the
+    /// unfinished string or sequence the stream ends inside.
+    fn pending_tail(&self) -> std::result::Result<Vec<u8>, &'static str> {
+        if !self.in_string {
+            return Ok(self.held.clone());
+        }
+        if self.tail_overflow {
+            return Err("partial-tail-overflow");
+        }
+        Ok([self.tail.as_slice(), &self.held].concat())
+    }
+}
+
+/// xterm's ED 1 / ED 2, where Alacritty differs: its ED 2 on the primary
+/// screen scrolls the screen into history, and its ED 1 skips the top row
+/// when the cursor is on the second. The renderer is xterm.
+fn erase_like_xterm(parser: &mut Processor, term: &mut Term<VoidListener>, all: bool) {
+    // A real ESC [ ends any string or sequence in progress; Alacritty
+    // ignores DECSED, so this ends it the same way and does nothing else.
+    parser.advance(term, b"\x1b[?J");
+    // Inside a synchronized update the parser holds bytes back; apply them
+    // first, then re-enter the update (buffering is timing, not state).
+    let synchronized = parser.sync_timeout().pending_timeout();
+    if synchronized {
+        parser.stop_sync(term);
+    }
+    let grid = term.grid_mut();
+    if all {
+        grid.reset_region(..);
+    } else {
+        let cursor = grid.cursor.point;
+        grid.reset_region(..cursor.line);
+        let bg = grid.cursor.template.bg;
+        let end = (cursor.column.0 + 1).min(grid.columns());
+        for cell in &mut grid[cursor.line][..Column(end)] {
+            *cell = bg.into();
+        }
+    }
+    if synchronized {
+        parser.advance(term, b"\x1b[?2026h");
+    }
 }
 
 #[napi]
@@ -104,6 +404,8 @@ impl NativeTerminal {
             term: Some(Term::new(config, &size, VoidListener)),
             parser: Processor::new(),
             scrollback,
+            feed: XtermFeed::default(),
+            refusal: None,
         })
     }
 
@@ -117,6 +419,33 @@ impl NativeTerminal {
         // VoidListener intentionally discards all PTY replies and clipboard events.
         self.parser.advance(term, &bytes);
         Ok(())
+    }
+
+    /// `feed` for an ANSI snapshot replayed by xterm: ED 1 and ED 2 erase as
+    /// xterm does (see erase_like_xterm). Returns whether the snapshot is
+    /// already refused, so the caller can stop parsing: a control Alacritty
+    /// parses differently, or a history past this terminal's cap when the
+    /// request asked for more.
+    #[napi]
+    pub fn feed_xterm(&mut self, bytes: Uint8Array, requested_scrollback: u32) -> Result<bool> {
+        let term = self
+            .term
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        if self.refusal.is_none() {
+            self.feed.feed(&mut self.parser, term, &bytes);
+            if self.feed.divergent {
+                self.refusal = Some("unsupported-state: a control Alacritty parses differently");
+            } else if requested_scrollback > self.scrollback
+                && [term.grid(), term.inactive_grid()]
+                    .iter()
+                    .any(|grid| grid.history_size() >= self.scrollback as usize)
+            {
+                self.refusal =
+                    Some("unsupported-history-limit: history reached the native grid cap");
+            }
+        }
+        Ok(self.refusal.is_some())
     }
 
     /// Replay an immutable native ring copy without a full JS Buffer round trip.
@@ -142,10 +471,38 @@ impl NativeTerminal {
                 "Experiment grid exceeds four million cells",
             ));
         }
-        self.term
+        let term = self
+            .term
             .as_mut()
-            .ok_or_else(|| Error::from_reason("Terminal disposed"))?
-            .resize(size);
+            .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        // Rows a narrower reflow adds above the cursor go into Alacritty's
+        // history even with room below; xterm moves the cursor down instead.
+        let before = |term: &Term<VoidListener>| {
+            [term.grid(), term.inactive_grid()].map(|grid| {
+                let room = grid.cursor.point.line.0 + 1 < grid.screen_lines() as i32;
+                (grid.history_size(), room)
+            })
+        };
+        // vte holds bytes back inside a synchronized update; xterm parsed them
+        // at the old size. Apply them first, then re-enter the update.
+        let synchronized = self.parser.sync_timeout().pending_timeout();
+        if synchronized {
+            self.parser.stop_sync(term);
+        }
+        let start = before(term);
+        term.resize(size);
+        let end = before(term);
+        if synchronized {
+            self.parser.advance(term, b"\x1b[?2026h");
+        }
+        if start
+            .iter()
+            .zip(end.iter())
+            .any(|(&(history, room), &(after, _))| room && after > history)
+        {
+            self.refusal
+                .get_or_insert("unsupported-reflow: a resize scrolled rows xterm keeps on screen");
+        }
         Ok(())
     }
 
@@ -216,19 +573,61 @@ impl NativeTerminal {
         })
     }
 
+    /// `requested_scrollback` above this terminal's own limit means the
+    /// caller capped the history to bound memory: a history that reached the
+    /// cap may have dropped rows the request would have kept.
     #[napi]
-    pub fn ansi_snapshot(&mut self) -> Result<String> {
+    pub fn ansi_snapshot(&mut self, requested_scrollback: Option<u32>) -> Result<Buffer> {
         let term = self
             .term
             .as_mut()
             .ok_or_else(|| Error::from_reason("Terminal disposed"))?;
+        // An unfinished sequence is part of the stream: parse it, then ship it.
+        self.parser.advance(term, &self.feed.held);
+        // Bytes held in a synchronized update count for the checks below.
         let synchronized = self.parser.sync_timeout().pending_timeout();
         self.parser.stop_sync(term);
-        let mut result = crate::native_serialize::serialize(term).map_err(Error::from_reason)?;
+        if let Some(refusal) = self.refusal {
+            return Err(Error::from_reason(refusal));
+        }
+        if requested_scrollback.is_some_and(|requested| requested > self.scrollback)
+            && [term.grid(), term.inactive_grid()]
+                .iter()
+                .any(|grid| grid.history_size() >= self.scrollback as usize)
+        {
+            return Err(Error::from_reason(
+                "unsupported-history-limit: history reached the native grid cap",
+            ));
+        }
+        // xterm's SerializeAddon drops margins: both paths replay raw then.
+        if self.feed.margins {
+            return Err(Error::from_reason("margins"));
+        }
+        let tail = self.feed.pending_tail().map_err(Error::from_reason)?;
+        let mut result = crate::native_serialize::serialize(term, !self.feed.shifted)
+            .map_err(Error::from_reason)?;
+        // Mouse protocol and encoding as xterm's modes tail restores them: the
+        // encoding only while a protocol is on.
+        if self.feed.mouse != 0 {
+            result.push_str(&format!("\x1b[?{}h", self.feed.mouse));
+            if self.feed.sgr_pixels {
+                result.push_str("\x1b[?1016h");
+            } else if self.feed.sgr_mouse {
+                result.push_str("\x1b[?1006h");
+            }
+        }
         if synchronized {
             result.push_str("\x1b[?2026h");
         }
-        Ok(result)
+        // Asserted always: a reflush lands on a client whose cursor may be hidden.
+        result.push_str(if self.feed.cursor_hidden {
+            "\x1b[?25l"
+        } else {
+            "\x1b[?25h"
+        });
+        let mut payload = result.into_bytes();
+        payload.extend_from_slice(&tail);
+        Ok(payload.into())
     }
 
     #[napi]
@@ -767,5 +1166,174 @@ impl NativeRing {
         if self.geometry.len() > 256 {
             self.geometry.drain(..self.geometry.len() - 256);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Size, XtermFeed};
+    use alacritty_terminal::event::VoidListener;
+    use alacritty_terminal::grid::Dimensions;
+    use alacritty_terminal::index::{Column, Line};
+    use alacritty_terminal::term::{Config, Term};
+    use alacritty_terminal::vte::ansi::{Processor, Timeout};
+
+    fn feed_with(chunks: &[&str]) -> (Term<VoidListener>, Processor, XtermFeed) {
+        let mut term = Term::new(Config::default(), &Size { cols: 10, rows: 3 }, VoidListener);
+        let mut parser: Processor = Processor::new();
+        let mut feed = XtermFeed::default();
+        for chunk in chunks {
+            feed.feed(&mut parser, &mut term, chunk.as_bytes());
+        }
+        (term, parser, feed)
+    }
+
+    fn feed(chunks: &[&str]) -> Term<VoidListener> {
+        let (mut term, mut parser, feed) = feed_with(chunks);
+        parser.advance(&mut term, &feed.held);
+        term
+    }
+
+    fn row(term: &Term<VoidListener>, line: i32) -> String {
+        let grid = term.grid();
+        (0..grid.columns())
+            .map(|x| grid[Line(line)][Column(x)].c)
+            .collect::<String>()
+            .trim_end()
+            .to_owned()
+    }
+
+    #[test]
+    fn erase_display_keeps_the_screen_out_of_history() {
+        // Split inside the sequence, as a slice or live chunk boundary can.
+        let term = feed(&["1\r\n2\r\n3\x1b[", "2Jx"]);
+        assert_eq!(term.grid().history_size(), 0);
+        assert_eq!(
+            (row(&term, 0), row(&term, 1), row(&term, 2)),
+            ("".into(), "".into(), " x".into())
+        );
+    }
+
+    #[test]
+    fn erase_above_clears_the_top_row_from_the_second() {
+        let term = feed(&["aaa\r\nbbb\x1b[1;2H\x1b[1J"]);
+        assert_eq!((row(&term, 0), row(&term, 1)), ("  a".into(), "bbb".into()));
+        let term = feed(&["aaa\r\nbbb\x1b[2;2H\x1b[1J"]);
+        assert_eq!((row(&term, 0), row(&term, 1)), ("".into(), "  b".into()));
+    }
+
+    #[test]
+    fn erase_inside_a_synchronized_update_keeps_the_update_open() {
+        let (mut term, mut parser, _) = feed_with(&["a\x1b[?2026hb\x1b[2Jc"]);
+        assert!(parser.sync_timeout().pending_timeout());
+        parser.stop_sync(&mut term);
+        assert_eq!(row(&term, 0), "  c");
+        assert_eq!(term.grid().history_size(), 0);
+    }
+
+    #[test]
+    fn erase_ends_a_string_like_the_real_escape() {
+        let term = feed(&["a\x1b]0;title\x1b[2Jc"]);
+        assert_eq!(row(&term, 0), " c");
+    }
+
+    #[test]
+    fn a_split_divergent_control_is_seen() {
+        let (_, _, feed) = feed_with(&["hello\x1b(", "0q"]);
+        assert!(feed.divergent);
+        let (_, _, feed) = feed_with(&["\x1b]0;\x1b(0 in a title\x07"]);
+        assert!(feed.divergent, "ESC ends the string, then designates");
+        let (_, _, feed) = feed_with(&["\x1b]0;(0 in a title\x07ok"]);
+        assert!(!feed.divergent);
+    }
+
+    #[test]
+    fn the_pending_tail_matches_the_stream_trackers() {
+        let tail = |chunks: &[&str]| {
+            feed_with(chunks)
+                .2
+                .pending_tail()
+                .map(|t| String::from_utf8(t).unwrap())
+        };
+        assert_eq!(tail(&["hi\x1b[31;"]).unwrap(), "\x1b[31;");
+        assert_eq!(tail(&["hi\x1b]0;ti", "tle"]).unwrap(), "\x1b]0;title");
+        assert_eq!(tail(&["hi\x1b]0;title\x1b"]).unwrap(), "\x1b]0;title\x1b");
+        assert_eq!(tail(&["hi\x1b]0;title\x1b", "\\done"]).unwrap(), "");
+        assert_eq!(tail(&["hi\x1b]0;title\x07done"]).unwrap(), "");
+        assert_eq!(
+            tail(&["\x1bP", &"x".repeat(5000)]).unwrap_err(),
+            "partial-tail-overflow"
+        );
+    }
+
+    #[test]
+    fn rep_needs_a_character_printed_right_before() {
+        let divergent = |chunks: &[&str]| feed_with(chunks).2.divergent;
+        assert!(!divergent(&["ab\x1b[3b"]));
+        assert!(
+            !divergent(&["ab", "\x1b[3b"]),
+            "printed in the previous chunk"
+        );
+        assert!(divergent(&["X\r\x1b[3b"]));
+        assert!(divergent(&["X\x1b[31m\x1b[3b"]));
+        assert!(divergent(&["X\x1b[31m", "\x1b[3b"]));
+        assert!(divergent(&["\x1b[3b"]));
+        assert!(divergent(&["X\x1b]0;t\x07\x1b[3b"]));
+    }
+
+    #[test]
+    fn insert_delete_and_erase_drop_a_pending_wrap() {
+        for edit in ["\x1b[X", "\x1b[P", "\x1b[@"] {
+            let (mut term, mut parser, feed) = feed_with(&["abcdefghij", edit, "Z"]);
+            parser.advance(&mut term, &feed.held);
+            assert_eq!(term.grid().cursor.point.line.0, 0, "{edit:?}");
+            assert_eq!(row(&term, 1), "", "{edit:?}");
+        }
+        let (_, _, feed) = feed_with(&["a\x1b[X"]);
+        assert!(!feed.shifted);
+        let (_, _, feed) = feed_with(&["a\x1b[2P"]);
+        assert!(feed.shifted);
+    }
+
+    #[test]
+    fn the_mouse_protocol_follows_xterm() {
+        let mouse = |chunks: &[&str]| {
+            let feed = feed_with(chunks).2;
+            (feed.mouse, feed.sgr_mouse)
+        };
+        assert_eq!(mouse(&["\x1b[?1002h\x1b[?1006h"]), (1002, true));
+        assert_eq!(mouse(&["\x1b[?1002h\x1b[?1000l"]), (0, false));
+        assert_eq!(mouse(&["\x1b[?1003;1000h"]), (1000, false));
+        assert_eq!(mouse(&["\x1b[?1000h\x1b[?1006h\x1b[?1005h"]), (1000, true));
+        assert_eq!(mouse(&["\x1b[?1000h\x1b[?1006h\x1bc"]), (0, false));
+        assert_eq!(mouse(&["\x1b[?100\r0h"]), (1000, false), "embedded C0");
+        assert_eq!(
+            mouse(&["\x1b[?01000;01006h"]),
+            (1000, true),
+            "leading zeros"
+        );
+        assert_eq!(mouse(&["\x1b[?1000h\x1b[?01000l"]), (0, false));
+    }
+
+    #[test]
+    fn margins_and_cursor_follow_the_stream_trackers() {
+        let state = |chunks: &[&str]| {
+            let (_, _, feed) = feed_with(chunks);
+            (feed.margins, feed.cursor_hidden)
+        };
+        assert_eq!(state(&["\x1b[2;4r"]), (true, false));
+        assert_eq!(state(&["\x1b[2;4r\x1b[r"]), (false, false));
+        assert_eq!(state(&["\x1b[2;4r\x1bc"]), (false, false));
+        assert_eq!(state(&["\x1b[?1;25l"]), (false, true));
+        assert_eq!(state(&["\x1b[?25l\x1b[?25h"]), (false, false));
+    }
+
+    #[test]
+    fn the_pixel_mouse_encoding_follows_the_stream_tracker() {
+        let pixels = |chunks: &[&str]| feed_with(chunks).2.sgr_pixels;
+        assert!(pixels(&["\x1b[?1003;1016h"]));
+        assert!(!pixels(&["\x1b[?1016h\x1b[?1016l"]));
+        assert!(!pixels(&["\x1b[?1016h\x1bc"]));
+        assert!(pixels(&["\x1b[?10", "16h"]), "split across chunks");
     }
 }
