@@ -29,9 +29,11 @@ Layout:
 
 - `src/Core`: pure logic with no Win32: tree walking and rendering, the
   sensitive-field rule, the key table, Unicode chunking, screenshot scale,
-  virtual-desktop coordinate normalisation, held-state file validation. The
+  virtual-desktop coordinate normalisation, held-state file validation, the
+  background-input planner (what may be posted, and in which order). The
   unit tests in `tests/` cover this project and run on any OS.
-- `src/Helper`: the executable (UIA, capture, SendInput, the request loop).
+- `src/Helper`: the executable (UIA, capture, SendInput and PostMessage, the
+  request loop).
   Win32 and COM bindings come from CsWin32 with marshalling off, so every COM
   call is an unmanaged function pointer and NativeAOT needs no runtime COM
   interop. FlaUI is not used (its COM interop is not AOT-compatible).
@@ -45,7 +47,8 @@ Layout:
 
 Windows has no TCC-like grant for synthetic input or screen capture. Any
 process of the same user, at the same integrity level, can already call
-`SendInput`, read other windows through UI Automation and capture them. So:
+`SendInput` or `PostMessage`, read other windows through UI Automation and
+capture them. So:
 
 - **The helper is not a privilege boundary.** It does what its stdin says,
   with the user's own rights, and checks nothing about its parent. A process
@@ -351,7 +354,9 @@ section); that result says `delivery: "foreground"`. A posted one says
 ## Performance targets
 
 `getAppState` (ax) ≤ 300 ms on Notepad, Explorer and VS Code; screenshot
-≤ 150 ms; `click` / `type` ≤ 100 ms. CI's smoke run reports first-hello
+≤ 150 ms; `click` / `type` ≤ 100 ms (a posted action includes its 60 ms
+side-effect check; a verified `type` returns as soon as its text reads
+back). CI's smoke run reports first-hello
 latency and Notepad's `getAppState` times in the job summary.
 
 ## Dogfood checklist (Windows agent)
@@ -412,8 +417,11 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
    Notepad shows no stuck Ctrl, Shift, Alt or Win, and
    `%LOCALAPPDATA%\wmux\computer-use\held` holds no files.
 2. **Focus race.** Have the agent type a long paragraph into Notepad and
-   Alt+Tab to another app midway. Typing stops with `window_not_focused`
-   ("after N of M characters"); nothing lands in the other app.
+   Alt+Tab to another app midway. Nothing lands in the other app. Typing
+   posted in the background (result `delivery: "background"`) does not
+   follow focus and finishes in Notepad; typing sent as real input
+   (`delivery: "foreground"`) stops with `window_not_focused` ("after N of M
+   characters").
 3. **Partial batch / crash recovery.** While the agent holds a chord
    (`hotkey` ctrl+shift+…) or types, kill the helper from Task Manager
    (`wmux-computer-use.exe`). The next computer call succeeds, no modifier
@@ -447,6 +455,14 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
 11. **Typing verification.** Type `abc` three times into a Notepad document
     that already contains `abc`; every `verified` matches one new `abc` in
     the file. Report any `verified` without its text landing.
+12. **Background input.** Cover Notepad, then a Chrome or Electron window,
+    with another app. `click` an element and `type` with an index into a
+    text field of each: the text lands, the results say
+    `delivery: "background"`, and the mouse pointer, the window in front and
+    the focused control of the covering app do not change. A right click,
+    a double click, `scroll` and a `hotkey` with modifiers come back
+    `delivery: "foreground"` (real input, as before). The helper's stderr
+    names why a click or typing that could have been posted was not.
 
 ### 4. Explorer windows
 

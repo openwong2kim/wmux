@@ -153,7 +153,13 @@ internal static unsafe class BackgroundInput
     {
         if (plan.Refused)
         {
-            Wire.Log($"{action}: real input, not background ({Background.Describe(plan.Refusal)})");
+            // What the action asks for (a chord, the wheel) is never posted;
+            // log only refusals that depend on the target's state.
+            if (plan.Refusal is not (BackgroundRefusal.Chord or BackgroundRefusal.Scroll or BackgroundRefusal.Button
+                or BackgroundRefusal.MultiClick or BackgroundRefusal.Modifiers))
+            {
+                Wire.Log($"{action}: real input, not background ({Background.Describe(plan.Refusal)})");
+            }
             return BackgroundOutcome.Refused(plan.Refusal);
         }
         // Never act while the lock screen or a secure desktop is up (an error, not a fallback).
