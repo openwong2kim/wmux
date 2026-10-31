@@ -9,11 +9,13 @@
 //      window state is read, so these go straight to real input.
 //   2. The target's state and the window that would receive (Plan).
 //   3. Post: the click, then (for `type` with a field) confirm that the field
-//      took focus before any key is posted, then the keys.
+//      took focus and still covers the clicked point before any key is
+//      posted, then the keys. Every message re-checks its receiver
+//      (PostSequence).
 //   4. Read the effect back, then compare cursor and foreground with before.
-// - A refusal in 1 or 2, or a first post that Windows did not take, posts
-//   nothing (not_delivered), so the action may fall back to real input
-//   (SendInput), the default path.
+// - A refusal in 1 or 2, a receiver that changed or a first post that Windows
+//   did not take posts nothing (not_delivered), so the action may fall back
+//   to real input (SendInput), the default path.
 // - Once a message was posted there is no fallback: the same input must never
 //   arrive twice. PostMessage has no delivery ack, so a post is unverified
 //   until a re-read confirms its effect.
@@ -21,7 +23,8 @@
 //   before, or the foreground window changed to a window of the target
 //   process, the posting caused it: delivered_unverified, never verified,
 //   never a fallback. The user moving their own mouse or switching to
-//   another app is not such a side effect.
+//   another app is not such a side effect, and neither is any change when
+//   the user's own input arrived in between.
 
 namespace WmuxComputerUse.Core;
 
@@ -43,6 +46,8 @@ public enum BackgroundRefusal
     FocusMovingText,
     NoReceiver,
     HitTestFailed,
+    TooManyChildren,
+    DpiMismatch,
     NonClientArea,
     NoFocusedControl,
     PopupAtPoint,
@@ -50,6 +55,7 @@ public enum BackgroundRefusal
     ChromiumNeedsClick,
     NotATextControl,
     SecretField,
+    FocusMoved,
     NothingPosted,
 }
 
@@ -79,7 +85,11 @@ public readonly record struct BackgroundRequest(InputAction Action, int Button =
 /// or no focused element could be read there.
 /// </param>
 /// <param name="HitTestFailed">A window on the way to the receiver did not answer WM_NCHITTEST in time.</param>
-public readonly record struct Receiver(string ClassName, bool InTargetProcess, bool InClientArea = true, bool PopupAtPoint = false, bool TextControl = false, bool Secret = false, bool HitTestFailed = false);
+/// <param name="ChildrenTruncated">A window on the way had more children than the walk reads, so the receiver may be wrong.</param>
+/// <param name="WindowDpi">GetDpiForWindow of the receiver (or of the target window, when it already differs); 0 when unread.</param>
+/// <param name="MonitorDpi">The effective DPI of the monitor at the point; 0 when unread.</param>
+public readonly record struct Receiver(string ClassName, bool InTargetProcess, bool InClientArea = true, bool PopupAtPoint = false, bool TextControl = false, bool Secret = false, bool HitTestFailed = false,
+    bool ChildrenTruncated = false, uint WindowDpi = 96, uint MonitorDpi = 96);
 
 /// <summary>A plan: refused, or post (a click first, then keys, or a click alone, or keys alone).</summary>
 public readonly record struct BackgroundPlan(BackgroundRefusal Refusal, bool ClickFirst, bool Keys)
@@ -91,8 +101,12 @@ public readonly record struct BackgroundPlan(BackgroundRefusal Refusal, bool Cli
 
 public enum Disposition { NotDelivered, DeliveredUnverified, Delivered }
 
-/// <summary>Why a posted action stopped before its keys: the click went in, so it ends delivered_unverified.</summary>
-public enum BackgroundStop { None, FocusUnconfirmed, KeysNotPosted }
+/// <summary>
+/// Why a posted action stopped before its keys: the click went in, so it ends
+/// delivered_unverified. `FieldMoved`: the field had focus but no longer
+/// covers the clicked point (the page scrolled or relaid out).
+/// </summary>
+public enum BackgroundStop { None, FocusUnconfirmed, FieldMoved, KeysNotPosted }
 
 /// <summary>
 /// How an action ended. `FallBack`: nothing was posted, so the foreground
@@ -111,20 +125,37 @@ public readonly record struct BackgroundOutcome(Disposition Disposition, bool Fa
 /// Cursor and foreground as seen before and after posting. `ForegroundAfterInTarget`:
 /// the foreground window after posting belongs to the target process (the
 /// target, a dialog or popup it owns, or another of its windows).
+/// `UserInput`: the user's real input arrived in between (GetLastInputInfo
+/// moved; posted messages never move it), so a change is the user's.
 /// </summary>
-public readonly record struct SideEffectProbe(bool CursorAtPointBefore, bool CursorAtPointAfter, nint ForegroundBefore, nint ForegroundAfter, bool ForegroundAfterInTarget)
+public readonly record struct SideEffectProbe(bool CursorAtPointBefore, bool CursorAtPointAfter, nint ForegroundBefore, nint ForegroundAfter, bool ForegroundAfterInTarget, bool UserInput = false)
 {
-    public bool Ours => (!CursorAtPointBefore && CursorAtPointAfter)
-        || (ForegroundAfter != ForegroundBefore && ForegroundAfterInTarget);
+    public bool Ours => !UserInput
+        && ((!CursorAtPointBefore && CursorAtPointAfter) || (ForegroundAfter != ForegroundBefore && ForegroundAfterInTarget));
 }
+
+/// <summary>The field after the posted click: whether it reports keyboard focus, and whether its fresh frame still covers the clicked point.</summary>
+public readonly record struct FieldCheck(bool Focused, bool AtPoint);
 
 /// <summary>The steps of a posted action; Execute calls them in its fixed order.</summary>
 /// <param name="Click">Posts the click; returns how many messages went in (0: none).</param>
-/// <param name="FocusConfirmed">After the click, before any key: whether the field took keyboard focus.</param>
+/// <param name="FieldAfterClick">After the click, before any key: the field's focus and frame. Gets whether the field had focus before the click (then the helper lets the click settle first, so an old focus does not pass).</param>
 /// <param name="Keys">Posts the keys; returns how many messages went in (0: none). Throws for a failure after its first message.</param>
 /// <param name="ReadBack">Re-reads the effect; true only when it is confirmed.</param>
 /// <param name="Probe">Cursor and foreground compared with before posting.</param>
-public sealed record BackgroundSteps(Func<int>? Click, Func<bool>? FocusConfirmed, Func<int>? Keys, Func<bool> ReadBack, Func<SideEffectProbe> Probe);
+public sealed record BackgroundSteps(Func<int>? Click, Func<bool, FieldCheck>? FieldAfterClick, Func<int>? Keys, Func<bool> ReadBack, Func<SideEffectProbe> Probe)
+{
+    /// <summary>Before the click: whether the field already has keyboard focus.</summary>
+    public Func<bool>? FocusBeforeClick { get; init; }
+
+    /// <summary>Keys without a click: right before posting, whether the focused window is still the receiver.</summary>
+    public Func<bool>? ReceiverStill { get; init; }
+}
+
+/// <summary>How a posted sequence ended (Background.PostSequence).</summary>
+public enum PostEnd { Done, NothingPosted, ReceiverChanged, Refused }
+
+public readonly record struct PostRun(PostEnd End, int Posted);
 
 /// <summary>A child window in z-order, as a real click at the point would test it.</summary>
 public readonly record struct ChildWindow(bool Visible, bool Enabled, bool Transparent, bool ContainsPoint);
@@ -162,31 +193,31 @@ public static class Background
         || className.StartsWith("Chrome_WidgetWin_", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The window classes posted input goes to: measured (Chromium's render
-    /// widget and its Chrome_WidgetWin_* frames, Notepad's RichEditD2DPT) or
-    /// standard Win32 controls that act on their own mouse and key messages
-    /// (Edit, the RichEdit family, Button, ComboBox, ListBox, the list view
-    /// and the tree view). Anything else (WPF, UWP / WinUI / XAML islands,
-    /// Qt, Java, Flutter, SDL, games reading raw input, custom controls) may
-    /// drop posted input without a trace, so it gets real input instead.
-    /// Window class names are case-insensitive.
+    /// The window classes posted input goes to: the measured ones (Chromium's
+    /// render widget and its Chrome_WidgetWin_* frames, Notepad's
+    /// RichEditD2DPT and the RichEdit family) and the plain Edit control.
+    /// Anything else gets real input: common controls such as buttons, list
+    /// and tree views act on clicks through GetMessagePos (the user's real
+    /// cursor), a combo box dropdown takes mouse capture, and WPF, UWP /
+    /// WinUI / XAML islands, Qt, Java, Flutter, SDL, games reading raw input
+    /// or custom controls may drop posted input without a trace. Window
+    /// class names are case-insensitive.
     /// </summary>
     public static bool AcceptsPostedInput(string className)
     {
         if (className.Length == 0) return false;
-        if (className.StartsWith("Chrome_WidgetWin_", StringComparison.OrdinalIgnoreCase)) return true;
+        if (IsChromiumWidget(className)) return true;
         if (className.StartsWith("RichEdit", StringComparison.OrdinalIgnoreCase)) return true; // RichEdit20W, RICHEDIT50W, RichEditD2DPT
-        foreach (var known in PostedInputClasses)
-        {
-            if (string.Equals(className, known, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        return false;
+        return string.Equals(className, "Edit", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static readonly string[] PostedInputClasses =
-    [
-        ChromiumWidgetClass, "Edit", "Button", "ComboBox", "ListBox", "SysListView32", "SysTreeView32",
-    ];
+    /// <summary>
+    /// Posted coordinates are read in the receiver's own DPI: a window that is
+    /// DPI-unaware, or system-aware on a monitor of another DPI, would read
+    /// the helper's physical pixels as logical ones and the click would land
+    /// on another control. Only equal DPIs (both known) are posted.
+    /// </summary>
+    public static bool DpiMatches(uint windowDpi, uint monitorDpi) => windowDpi != 0 && windowDpi == monitorDpi;
 
     /// <summary>
     /// Text a single focus check cannot cover: a Tab (or any other control
@@ -250,7 +281,9 @@ public static class Background
     private static BackgroundRefusal PointerReceiverRefusal(Receiver? r)
     {
         if (r is { HitTestFailed: true }) return BackgroundRefusal.HitTestFailed;
+        if (r is { ChildrenTruncated: true }) return BackgroundRefusal.TooManyChildren;
         if (r is not { } rec || !rec.InTargetProcess) return BackgroundRefusal.NoReceiver;
+        if (!DpiMatches(rec.WindowDpi, rec.MonitorDpi)) return BackgroundRefusal.DpiMismatch;
         if (rec.PopupAtPoint) return BackgroundRefusal.PopupAtPoint;
         if (!rec.InClientArea) return BackgroundRefusal.NonClientArea;
         if (!AcceptsPostedInput(rec.ClassName)) return BackgroundRefusal.UnsupportedFramework;
@@ -284,22 +317,26 @@ public static class Background
                 if (!r.InTargetProcess) return BackgroundPlan.Refuse(BackgroundRefusal.NoFocusedControl);
                 if (IsChromiumWidget(r.ClassName)) return BackgroundPlan.Refuse(BackgroundRefusal.ChromiumNeedsClick);
                 if (!AcceptsPostedInput(r.ClassName)) return BackgroundPlan.Refuse(BackgroundRefusal.UnsupportedFramework);
-                if (r.Secret) return BackgroundPlan.Refuse(BackgroundRefusal.SecretField);
                 if (!r.TextControl) return BackgroundPlan.Refuse(BackgroundRefusal.NotATextControl);
+                if (r.Secret) return BackgroundPlan.Refuse(BackgroundRefusal.SecretField);
                 return new(BackgroundRefusal.None, false, true);
         }
     }
 
     /// <summary>
     /// Runs a plan in the fixed order (see the top of this file). Nothing
-    /// posted counts as a refusal, so the caller may fall back. After a
-    /// posted click whose field did not take focus, no key is posted and
-    /// there is no fallback.
+    /// posted counts as a refusal, so the caller may fall back. With a field,
+    /// its focus is read before the click (an old focus must not pass for
+    /// the click's), and after the click it must report focus and still cover
+    /// the clicked point; otherwise no key is posted and there is no
+    /// fallback. Keys without a click are posted only while the focused
+    /// window is still the receiver; otherwise nothing is posted.
     /// </summary>
     public static BackgroundOutcome Execute(BackgroundPlan plan, BackgroundSteps steps)
     {
         if (plan.Refused) return BackgroundOutcome.Refused(plan.Refusal);
         int posted = 0;
+        bool focusBefore = plan.ClickFirst && plan.Keys && steps.FocusBeforeClick != null && steps.FocusBeforeClick();
         if (plan.ClickFirst)
         {
             posted = steps.Click!();
@@ -307,7 +344,16 @@ public static class Background
         }
         if (plan.Keys)
         {
-            if (plan.ClickFirst && !steps.FocusConfirmed!()) return Stopped(BackgroundStop.FocusUnconfirmed, steps);
+            if (plan.ClickFirst)
+            {
+                var field = steps.FieldAfterClick!(focusBefore);
+                if (!field.Focused) return Stopped(BackgroundStop.FocusUnconfirmed, steps);
+                if (!field.AtPoint) return Stopped(BackgroundStop.FieldMoved, steps);
+            }
+            else if (steps.ReceiverStill != null && !steps.ReceiverStill())
+            {
+                return BackgroundOutcome.Refused(BackgroundRefusal.FocusMoved);
+            }
             int keys = steps.Keys!();
             if (keys == 0)
             {
@@ -371,6 +417,33 @@ public static class Background
         return [];
     }
 
+    /// <summary>
+    /// Posts `messages` in order. Before each one the receiver must still be
+    /// the window that was resolved (same handle, process and thread: a
+    /// handle can be reused, and Chromium recreates its widgets).
+    ///   - Changed before the first: nothing posted (clean not_delivered).
+    ///   - Changed later: stop. No repair: the window that took the downs is
+    ///     gone, and its handle may now be another app's.
+    ///   - A post Windows refuses: the first means nothing posted; a later
+    ///     one stops after Repair (each repair post re-checks the receiver).
+    /// </summary>
+    public static PostRun PostSequence(IReadOnlyList<PostedMessage> messages, Func<bool> receiverValid, Func<PostedMessage, bool> post)
+    {
+        for (int i = 0; i < messages.Count; i++)
+        {
+            if (!receiverValid()) return new(i == 0 ? PostEnd.NothingPosted : PostEnd.ReceiverChanged, i);
+            if (post(messages[i])) continue;
+            if (i == 0) return new(PostEnd.NothingPosted, 0);
+            foreach (var r in Repair(messages, i))
+            {
+                if (!receiverValid()) break;
+                post(r);
+            }
+            return new(PostEnd.Refused, i);
+        }
+        return new(PostEnd.Done, messages.Count);
+    }
+
     /// <summary>Text for a refusal, used in notes and logs.</summary>
     public static string Describe(BackgroundRefusal r) => r switch
     {
@@ -386,6 +459,9 @@ public static class Background
         BackgroundRefusal.FocusMovingText => "the text has a Tab or another control character that can move focus",
         BackgroundRefusal.NoReceiver => "no window of the target process is at that point",
         BackgroundRefusal.HitTestFailed => "a window at that point did not answer a hit test in time",
+        BackgroundRefusal.TooManyChildren => "a window at that point has more child windows than wmux reads",
+        BackgroundRefusal.DpiMismatch => "the window at that point does not use the monitor's DPI, so posted coordinates would land elsewhere",
+        BackgroundRefusal.FocusMoved => "focus moved to another window of the target before the keys were posted",
         BackgroundRefusal.NonClientArea => "the point is on a window frame or scroll bar",
         BackgroundRefusal.NoFocusedControl => "the target has no focused control to post keys to",
         BackgroundRefusal.PopupAtPoint => "a popup or menu of the target is at that point",

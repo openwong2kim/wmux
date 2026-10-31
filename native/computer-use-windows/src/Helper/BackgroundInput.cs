@@ -20,9 +20,12 @@
 
 using Windows.Win32;
 using Windows.Win32.Foundation;
+using Windows.Win32.Graphics.Gdi;
 using Windows.Win32.System.Com;
 using Windows.Win32.System.Variant;
 using Windows.Win32.UI.Accessibility;
+using Windows.Win32.UI.HiDpi;
+using Windows.Win32.UI.Input.KeyboardAndMouse;
 using Windows.Win32.UI.Shell;
 using Windows.Win32.UI.WindowsAndMessaging;
 using WmuxComputerUse.Core;
@@ -39,6 +42,8 @@ internal static unsafe class BackgroundInput
     private const uint HitTestTimeoutMs = 100;
     /// <summary>Cursor within this many pixels of the target point counts as "at the point".</summary>
     private const int CursorTolerance = 2;
+    /// <summary>Children read per window on the way to the receiver; a window with more is refused.</summary>
+    private const int MaxChildren = 512;
     private const int EditControlType = 50004;
     private const int HasKeyboardFocusProperty = 30008;
     private const uint WmNcHitTest = 0x0084;
@@ -50,7 +55,8 @@ internal static unsafe class BackgroundInput
     private static IUIAutomationCondition* hasFocusCondition;
 
     /// <summary>A window that would receive posted messages, and the point in its client coordinates.</summary>
-    private readonly record struct Target(HWND Hwnd, Receiver Info, int ClientX, int ClientY);
+    /// <remarks>`Pid` and `Tid` own the window at resolve time; every post re-checks them (Input.PostMessages).</remarks>
+    private readonly record struct Target(HWND Hwnd, Receiver Info, int ClientX, int ClientY, uint Pid, uint Tid);
 
     // MARK: Actions
 
@@ -64,9 +70,11 @@ internal static unsafe class BackgroundInput
         Target? at = Background.WindowRefusal(window) == BackgroundRefusal.None ? AtPoint(target, x, y, secrecy: false) : null;
         var plan = Background.Plan(window, request, at?.Info);
         return Run("click", plan, target, (x, y),
-            click: () => Input.PostMessages(at!.Value.Hwnd, Background.Click(at.Value.ClientX, at.Value.ClientY)),
-            focusConfirmed: null, keys: null, readBack: () => false);
+            click: () => Post(at!.Value, Background.Click(at.Value.ClientX, at.Value.ClientY)),
+            keys: null, readBack: () => false);
     }
+
+    private static int Post(Target to, IReadOnlyList<PostedMessage> messages) => Input.PostMessages(to.Hwnd, to.Pid, to.Tid, messages);
 
     /// <summary>
     /// Text posted as WM_CHAR (a trailing newline as an Enter press). With a
@@ -92,16 +100,16 @@ internal static unsafe class BackgroundInput
                 : Focused(target);
         }
         var plan = Background.Plan(window, request, receiver?.Info);
-        if (plan.Refused) return Run("type", plan, target, null, null, null, null, () => false);
+        if (plan.Refused) return Run("type", plan, target, null, null, null, () => false);
 
         var to = receiver!.Value;
         Func<string?> value = field != null ? () => ElementValue(field) : () => WindowValue(to.Hwnd);
         var before = value();
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount);
+        var runtimeId = fieldRuntimeId ?? [];
         var outcome = Run("type", plan, target, plan.ClickFirst ? fieldPoint : null,
-            click: () => Input.PostMessages(to.Hwnd, Background.Click(to.ClientX, to.ClientY)),
-            focusConfirmed: field != null ? () => WaitFieldFocus(field, fieldRuntimeId ?? []) : null,
+            click: () => Post(to, Background.Click(to.ClientX, to.ClientY)),
             keys: () =>
             {
                 int posted = 0, typed = 0;
@@ -111,7 +119,7 @@ internal static unsafe class BackgroundInput
                     int n;
                     try
                     {
-                        n = Input.PostMessages(to.Hwnd, messages);
+                        n = Post(to, messages);
                     }
                     catch (HelperError e)
                     {
@@ -127,11 +135,16 @@ internal static unsafe class BackgroundInput
                 }
                 return posted;
             },
-            readBack: () => WaitInserted(value, before, text, total < 64 ? 300 : 1000));
+            readBack: () => WaitInserted(value, before, text, total < 64 ? 300 : 1000),
+            focusBefore: field != null ? () => FieldHasFocus(field, runtimeId) == true : null,
+            fieldAfterClick: field != null && fieldPoint is { } clicked ? focusBefore => FieldAfterClick(field, runtimeId, clicked, focusBefore) : null,
+            receiverStill: field == null ? () => FocusWindow(target) == to.Hwnd : null);
         return outcome.Stop switch
         {
             BackgroundStop.FocusUnconfirmed => throw new HelperError("action_not_supported",
                 $"the click on element {index} was posted, but the field did not report keyboard focus, so nothing was typed. Call getAppState before retrying"),
+            BackgroundStop.FieldMoved => throw new HelperError("action_not_supported",
+                $"the click on element {index} was posted, but the field moved away from the clicked point, so nothing was typed. Call getAppState before retrying"),
             BackgroundStop.KeysNotPosted => throw new HelperError("internal",
                 $"the click on element {index} was posted, but Windows did not take the keys, so nothing was typed. Call getAppState before retrying"),
             _ => outcome,
@@ -147,15 +160,16 @@ internal static unsafe class BackgroundInput
         var window = WindowState(target);
         var receiver = Background.WindowRefusal(window) == BackgroundRefusal.None ? Focused(target) : null;
         var plan = Background.Plan(window, request, receiver?.Info);
-        return Run(action, plan, target, null, null, null,
+        return Run(action, plan, target, null, null,
             keys: () =>
             {
                 var press = KeyMessages(key);
                 var messages = new List<PostedMessage>(press.Count * repeat);
                 for (int n = 0; n < repeat; n++) messages.AddRange(press);
-                return Input.PostMessages(receiver!.Value.Hwnd, messages);
+                return Post(receiver!.Value, messages);
             },
-            readBack: () => false);
+            readBack: () => false,
+            receiverStill: () => FocusWindow(target) == receiver!.Value.Hwnd);
     }
 
     private static List<PostedMessage> KeyMessages(string name)
@@ -165,9 +179,15 @@ internal static unsafe class BackgroundInput
         return Background.Key(spec.Vk, scan, Keys.IsExtended(spec.Vk));
     }
 
-    /// <summary>Refuse (logged, left to the caller's real-input path), or run the steps in Core's order and probe for our side effects.</summary>
+    /// <summary>
+    /// Refuse (logged, left to the caller's real-input path), or run the
+    /// steps in Core's order and probe for our side effects. `focusBefore`
+    /// and `fieldAfterClick` are for a field; `receiverStill` for keys
+    /// without a click.
+    /// </summary>
     private static BackgroundOutcome Run(string action, BackgroundPlan plan, ControlTarget target, (double X, double Y)? point,
-        Func<int>? click, Func<bool>? focusConfirmed, Func<int>? keys, Func<bool> readBack)
+        Func<int>? click, Func<int>? keys, Func<bool> readBack,
+        Func<bool>? focusBefore = null, Func<bool, FieldCheck>? fieldAfterClick = null, Func<bool>? receiverStill = null)
     {
         if (plan.Refused)
         {
@@ -178,6 +198,7 @@ internal static unsafe class BackgroundInput
         InputDesktop.Require();
         bool cursorBefore = CursorAt(point);
         var foregroundBefore = PInvoke.GetForegroundWindow();
+        uint inputBefore = LastInputTick();
         long postedAt = 0;
         Func<int>? Stamped(Func<int>? post) => post == null ? null : () =>
         {
@@ -185,14 +206,19 @@ internal static unsafe class BackgroundInput
             postedAt = Environment.TickCount64;
             return n;
         };
-        var steps = new BackgroundSteps(Stamped(click), focusConfirmed, Stamped(keys), readBack, () =>
+        var steps = new BackgroundSteps(Stamped(click), fieldAfterClick, Stamped(keys), readBack, () =>
         {
             long wait = SettleMs - (Environment.TickCount64 - postedAt);
             if (wait > 0) Sta.Sleep((int)wait);
             var foreground = PInvoke.GetForegroundWindow();
             return new SideEffectProbe(cursorBefore, CursorAt(point), (nint)foregroundBefore.Value, (nint)foreground.Value,
-                foreground != HWND.Null && InTargetProcess(foreground, target));
-        });
+                foreground != HWND.Null && InTargetProcess(foreground, target),
+                UserInput: LastInputTick() != inputBefore);
+        })
+        {
+            FocusBeforeClick = focusBefore,
+            ReceiverStill = receiverStill,
+        };
         var outcome = Background.Execute(plan, steps);
         if (outcome.FallBack) Wire.Log($"{action}: real input, not background ({Background.Describe(outcome.Refusal)})");
         return outcome;
@@ -235,6 +261,16 @@ internal static unsafe class BackgroundInput
         }
     }
 
+    /// <summary>
+    /// GetLastInputInfo's tick: it moves with the user's real input (and
+    /// SendInput), never with posted messages. 0 when it cannot be read.
+    /// </summary>
+    private static uint LastInputTick()
+    {
+        var info = new LASTINPUTINFO { cbSize = (uint)sizeof(LASTINPUTINFO) };
+        return PInvoke.GetLastInputInfo(ref info) ? info.dwTime : 0;
+    }
+
     /// <summary>The window belongs to the target process (a UWP frame counts by its app's pid).</summary>
     private static bool InTargetProcess(HWND hwnd, ControlTarget target) =>
         Win.OwnerPid(hwnd) == target.Pid || Win.EffectivePid(Win.Root(hwnd)) == target.Pid;
@@ -272,20 +308,36 @@ internal static unsafe class BackgroundInput
     {
         var screen = new System.Drawing.Point((int)Math.Round(x), (int)Math.Round(y));
         if (!RectContains(target.Window, screen)) return null;
+        // A window that reads coordinates in another DPI would also answer the
+        // hit tests below in it: refuse before walking.
+        uint monitorDpi = MonitorDpiAt(screen);
+        uint rootDpi = PInvoke.GetDpiForWindow(target.Window);
+        if (!Background.DpiMatches(rootDpi, monitorDpi))
+        {
+            return Resolved(target.Window, new Receiver(Win.ClassName(target.Window), true, WindowDpi: rootDpi, MonitorDpi: monitorDpi), 0, 0);
+        }
         var current = target.Window;
         for (int depth = 0; depth < 32; depth++)
         {
             var handles = new List<HWND>();
             var children = new List<ChildWindow>();
-            for (var c = PInvoke.GetWindow(current, GET_WINDOW_CMD.GW_CHILD); c != HWND.Null && handles.Count < 512; c = PInvoke.GetWindow(c, GET_WINDOW_CMD.GW_HWNDNEXT))
+            bool truncated = false;
+            for (var c = PInvoke.GetWindow(current, GET_WINDOW_CMD.GW_CHILD); c != HWND.Null; c = PInvoke.GetWindow(c, GET_WINDOW_CMD.GW_HWNDNEXT))
             {
+                if (handles.Count == MaxChildren)
+                {
+                    truncated = true;
+                    break;
+                }
                 var exStyle = (WINDOW_EX_STYLE)(uint)PInvoke.GetWindowLongPtr(c, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
                 handles.Add(c);
                 children.Add(new ChildWindow(PInvoke.IsWindowVisible(c), PInvoke.IsWindowEnabled(c),
                     (exStyle & WINDOW_EX_STYLE.WS_EX_TRANSPARENT) != 0, RectContains(c, screen)));
             }
+            // The child a real click hits may be past the cut: post nowhere.
+            if (truncated) return Resolved(current, new Receiver(Win.ClassName(current), false, ChildrenTruncated: true), 0, 0);
             var pick = Background.HitChild(children, i => NcHitTest(handles[i], screen));
-            if (pick is null) return new Target(current, new Receiver(Win.ClassName(current), false, HitTestFailed: true), 0, 0);
+            if (pick is null) return Resolved(current, new Receiver(Win.ClassName(current), false, HitTestFailed: true), 0, 0);
             if (pick < 0) break;
             current = handles[pick.Value];
         }
@@ -298,8 +350,25 @@ internal static unsafe class BackgroundInput
             InTargetProcess: Win.OwnerPid(current) == target.Pid,
             InClientArea: inClient,
             PopupAtPoint: TargetPopupAt(target, screen),
-            Secret: secrecy && WindowIsSecret(current));
-        return new Target(current, info, client.X, client.Y);
+            Secret: secrecy && WindowIsSecret(current),
+            WindowDpi: PInvoke.GetDpiForWindow(current),
+            MonitorDpi: monitorDpi);
+        return Resolved(current, info, client.X, client.Y);
+    }
+
+    /// <summary>A receiver with the process and thread that own it now, re-checked before every post.</summary>
+    private static Target Resolved(HWND hwnd, Receiver info, int clientX, int clientY)
+    {
+        uint tid = PInvoke.GetWindowThreadProcessId(hwnd, out var pid);
+        return new Target(hwnd, info, clientX, clientY, pid, tid);
+    }
+
+    /// <summary>The effective DPI of the monitor at a screen pixel; 0 when it cannot be read.</summary>
+    private static uint MonitorDpiAt(System.Drawing.Point screen)
+    {
+        var monitor = PInvoke.MonitorFromPoint(screen, MONITOR_FROM_FLAGS.MONITOR_DEFAULTTONEAREST);
+        if (monitor.IsNull) return 0;
+        return PInvoke.GetDpiForMonitor(monitor, MONITOR_DPI_TYPE.MDT_EFFECTIVE_DPI, out var dpiX, out _).Succeeded ? dpiX : 0;
     }
 
     /// <summary>
@@ -346,26 +415,35 @@ internal static unsafe class BackgroundInput
     /// </summary>
     private static Target? Focused(ControlTarget target)
     {
-        uint thread = PInvoke.GetWindowThreadProcessId(target.Window);
-        var info = new GUITHREADINFO { cbSize = (uint)sizeof(GUITHREADINFO) };
-        if (thread == 0 || !PInvoke.GetGUIThreadInfo(thread, &info) || info.hwndFocus == HWND.Null) return null;
-        var focus = info.hwndFocus;
+        var focus = FocusWindow(target);
+        if (focus == HWND.Null) return null;
         bool inside = Win.Root(focus) == target.Window && Win.OwnerPid(focus) == target.Pid;
         var className = Win.ClassName(focus);
         // Only a window posted keys may go to is worth the cross-process reads.
         if (!inside || !Background.AcceptsPostedInput(className) || Background.IsChromiumWidget(className))
         {
-            return new Target(focus, new Receiver(className, inside), 0, 0);
+            return Resolved(focus, new Receiver(className, inside), 0, 0);
         }
         var (text, secret) = TextAndFocusSecrecy(focus);
-        return new Target(focus, new Receiver(className, inside, TextControl: text, Secret: secret), 0, 0);
+        return Resolved(focus, new Receiver(className, inside, TextControl: text, Secret: secret), 0, 0);
+    }
+
+    /// <summary>The target thread's focused window right now (GetGUIThreadInfo), or null.</summary>
+    private static HWND FocusWindow(ControlTarget target)
+    {
+        uint thread = PInvoke.GetWindowThreadProcessId(target.Window);
+        var info = new GUITHREADINFO { cbSize = (uint)sizeof(GUITHREADINFO) };
+        if (thread == 0 || !PInvoke.GetGUIThreadInfo(thread, &info)) return HWND.Null;
+        return info.hwndFocus;
     }
 
     /// <summary>
     /// Whether a window's own UIA element is an Edit or Document, and whether
     /// the element with keyboard focus inside it (the window's element or a
     /// descendant) is a password field. No focused element found, or any
-    /// read failing, counts as secret.
+    /// read failing, counts as secret. A window that is not a text control
+    /// is refused anyway, so its tree is not searched (that walk can cover a
+    /// whole large window).
     /// </summary>
     private static (bool Text, bool Secret) TextAndFocusSecrecy(HWND hwnd)
     {
@@ -377,6 +455,7 @@ internal static unsafe class BackgroundInput
             if (el == null) return (false, true);
             int type = (int)el->CurrentControlType;
             bool text = type is EditControlType or Uia.DocumentControlType;
+            if (!text) return (false, true);
             if (el->CurrentHasKeyboardFocus)
             {
                 return (text, Uia.IsSecretElement(el));
@@ -428,27 +507,54 @@ internal static unsafe class BackgroundInput
     }
 
     /// <summary>
-    /// After the posted click: the field reports keyboard focus, either as
-    /// the system's focused element (the foreground path's RuntimeId check)
-    /// or through its own HasKeyboardFocus.
+    /// The field reports keyboard focus, either as the system's focused
+    /// element (the foreground path's RuntimeId check) or through its own
+    /// HasKeyboardFocus. Null when it cannot be read.
     /// </summary>
-    private static bool WaitFieldFocus(IUIAutomationElement* field, int[] runtimeId)
+    private static bool? FieldHasFocus(IUIAutomationElement* field, int[] runtimeId)
     {
+        if (runtimeId.Length > 0 && Uia.FocusedRuntimeId().AsSpan().SequenceEqual(runtimeId)) return true;
+        try
+        {
+            return field->CurrentHasKeyboardFocus;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// After the posted click, before any key: the field reports focus
+    /// (waiting up to FocusWaitMs for the app to handle the click) and its
+    /// fresh frame still contains the clicked point. A field that already
+    /// had focus before the click is read only after a settle, so its old
+    /// focus is not taken for the click's.
+    /// </summary>
+    private static FieldCheck FieldAfterClick(IUIAutomationElement* field, int[] runtimeId, (double X, double Y) point, bool focusBefore)
+    {
+        if (focusBefore) Sta.Sleep(SettleMs);
         long deadline = Environment.TickCount64 + FocusWaitMs;
+        bool focused;
         while (true)
         {
-            if (runtimeId.Length > 0 && Uia.FocusedRuntimeId().AsSpan().SequenceEqual(runtimeId)) return true;
-            try
-            {
-                if (field->CurrentHasKeyboardFocus) return true;
-            }
-            catch (Exception e) when (e is not HelperError)
-            {
-                return false;
-            }
-            if (Environment.TickCount64 >= deadline) return false;
+            var now = FieldHasFocus(field, runtimeId);
+            if (now is null) return new FieldCheck(false, false);
+            focused = now.Value;
+            if (focused || Environment.TickCount64 >= deadline) break;
             Sta.Sleep(15);
         }
+        bool atPoint;
+        try
+        {
+            var frame = Uia.ToRect(field->CurrentBoundingRectangle);
+            atPoint = !frame.IsEmpty && point.X >= frame.X && point.X < frame.X + frame.Width && point.Y >= frame.Y && point.Y < frame.Y + frame.Height;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            atPoint = false;
+        }
+        return new FieldCheck(focused, atPoint);
     }
 
     // MARK: Read-back

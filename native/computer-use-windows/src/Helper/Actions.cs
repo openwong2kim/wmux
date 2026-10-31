@@ -501,8 +501,9 @@ internal static unsafe class Actions
                 throw new HelperError(Uia.IsGone(e.HResult) ? "element_stale" : "value_not_settable", $"element {index}: {Uia.Describe(e)}");
             }
             if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
-            Focus.RequireSemantic(target, el);
+            // Read before the checks, as the click path does.
             bool frontBefore = InFront(target);
+            Focus.RequireSemantic(target, el);
             var bstr = Marshal.StringToBSTR(value);
             try
             {

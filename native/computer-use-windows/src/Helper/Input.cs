@@ -228,31 +228,41 @@ internal static unsafe class Input
     /// button state anywhere, so nothing here is recorded as held; if a key
     /// or button went down without its up, the up (and for a button
     /// WM_CANCELMODE) is posted to the same window once more.
+    ///
+    /// Before every message the receiver must still be the window resolved
+    /// earlier: a live handle owned by `pid` on thread `tid` (between the
+    /// resolve and the post there are slow cross-process UIA reads, and a
+    /// handle can be reused). A change before the first message posts
+    /// nothing; a change later stops the sequence (Core
+    /// Background.PostSequence).
     /// </summary>
-    public static int PostMessages(HWND receiver, IReadOnlyList<PostedMessage> messages)
+    public static int PostMessages(HWND receiver, uint pid, uint tid, IReadOnlyList<PostedMessage> messages)
     {
         lock (Lock)
         {
             if (stopping) throw new HelperError("internal", "the helper is shutting down; nothing was sent");
-            for (int i = 0; i < messages.Count; i++)
-            {
-                var m = messages[i];
-                if (PInvoke.PostMessage(receiver, m.Msg, new WPARAM(m.WParam), new LPARAM(m.LParam)))
+            var run = Core.Background.PostSequence(messages,
+                () => PInvoke.IsWindow(receiver) && SameOwner(receiver, pid, tid),
+                m =>
                 {
+                    if (!PInvoke.PostMessage(receiver, m.Msg, new WPARAM(m.WParam), new LPARAM(m.LParam))) return false;
                     sent++;
-                    continue;
-                }
-                if (i == 0) return 0;
-                // Best effort: a key or button left down by this sequence gets
-                // its up again (and a button WM_CANCELMODE, ending a capture).
-                foreach (var r in Core.Background.Repair(messages, i))
-                {
-                    PInvoke.PostMessage(receiver, r.Msg, new WPARAM(r.WParam), new LPARAM(r.LParam));
-                }
-                throw new HelperError("internal", $"Windows took only {i} of {messages.Count} posted messages (the app's message queue may be full, or its window closed); the rest was not sent. Check the app state before retrying");
-            }
-            return messages.Count;
+                    return true;
+                });
+            return run.End switch
+            {
+                PostEnd.Done => run.Posted,
+                PostEnd.NothingPosted => 0,
+                PostEnd.ReceiverChanged => throw new HelperError("internal", $"the target window closed or was replaced after {run.Posted} of {messages.Count} posted messages; the rest was not sent. Check the app state before retrying"),
+                _ => throw new HelperError("internal", $"Windows took only {run.Posted} of {messages.Count} posted messages (the app's message queue may be full, or its window closed); the rest was not sent. Check the app state before retrying"),
+            };
         }
+    }
+
+    private static bool SameOwner(HWND hwnd, uint pid, uint tid)
+    {
+        uint thread = PInvoke.GetWindowThreadProcessId(hwnd, out var owner);
+        return thread != 0 && thread == tid && owner == pid;
     }
 
     public static void StopPosting()

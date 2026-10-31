@@ -191,7 +191,21 @@ section); that result says `delivery: "foreground"`. A posted one says
   `WS_EX_TRANSPARENT`, contains the point, and does not answer
   `WM_NCHITTEST` with `HTTRANSPARENT` (a group box lets the click through to
   the control behind it). Each hit test gets 100 ms; one that goes
-  unanswered refuses. The point is sent in that child's client coordinates.
+  unanswered refuses, and so does a window with more than 512 children (the
+  one hit may be past the cut). The point is sent in that child's client
+  coordinates, in physical pixels: when the target window or the child
+  does not use the DPI of the monitor at the point (a DPI-unaware window,
+  or a system-aware one on a monitor of another DPI), it would read them as
+  logical pixels and the click would land elsewhere, so that is refused
+  (coordinates are not converted in v1).
+- **The receiver is re-checked before every message.** It is resolved with
+  the process and thread that own it; before each `PostMessage`, under the
+  input lock, the handle must still exist and belong to that process and
+  thread (slow UIA reads run in between, a handle can be reused, and
+  Chromium recreates its widgets on navigation). Changed before the first
+  message: nothing is posted (`not_delivered`, then real input). Changed
+  later: the action stops with an error (`delivered_unverified`), and no up
+  event is sent after it, because the handle may now be another app's.
   A click is `WM_MOUSEMOVE`, `WM_LBUTTONDOWN`, `WM_LBUTTONUP`. Text is one
   `WM_CHAR` per UTF-16 unit (both halves of a surrogate pair); named keys
   are `WM_KEYDOWN` and `WM_KEYUP` with the scan code and extended bit in
@@ -203,15 +217,16 @@ section); that result says `delivery: "foreground"`. A posted one says
   window" and "window under the point" preflights of real input do not
   apply. The safety checks do: the input desktop, elevation, secret fields,
   the shutdown gate.
-- **Which windows.** Only window classes posted input is measured with, or
-  standard Win32 controls that act on their own mouse and key messages:
-  `Chrome_RenderWidgetHostHWND` and `Chrome_WidgetWin_*` (Chrome, Edge,
-  Electron), `RichEditD2DPT` (Notepad), the `RichEdit` family
-  (`RichEdit20W`, `RICHEDIT50W`), `Edit`, `Button`, `ComboBox`, `ListBox`,
-  `SysListView32` and `SysTreeView32` (class names compare
-  case-insensitively). Everything else (WPF, UWP / WinUI / XAML islands,
-  Qt, Java, Flutter, SDL, games reading raw input, custom controls) could
-  drop posted input without a trace, so it gets real input.
+- **Which windows.** Only the window classes posted input is measured with,
+  and the plain edit control: `Chrome_RenderWidgetHostHWND` and
+  `Chrome_WidgetWin_*` (Chrome, Edge, Electron), `RichEditD2DPT`
+  (Notepad), the `RichEdit` family (`RichEdit20W`, `RICHEDIT50W`) and
+  `Edit` (class names compare case-insensitively). Everything else gets
+  real input: buttons, list boxes, list and tree views act on a click
+  through `GetMessagePos` (the user's real cursor), a combo box dropdown
+  takes mouse capture, and WPF, UWP / WinUI / XAML islands, Qt, Java,
+  Flutter, SDL, games reading raw input or custom controls could drop
+  posted input without a trace.
 - **Per action.** Checked first, before any window state is read: what the
   action asks for.
   - `click`: a single left click with no modifiers, after the UIA ladder
@@ -219,25 +234,31 @@ section); that result says `delivery: "foreground"`. A posted one says
     Right and middle buttons, double and triple clicks, and modifiers go the
     real way: posted messages carry no keyboard state, and the rest was not
     measured.
-  - `type` with an index: the field is clicked first (posted), then it must
-    report keyboard focus (it is the system's focused element, or its UIA
-    `HasKeyboardFocus` is true, within 300 ms) before any key is posted, and
-    the keys go to the window under that click. Always clicked, because
+  - `type` with an index: the field's focus is read, the field is clicked
+    (posted), and before any key is posted it must report keyboard focus
+    (it is the system's focused element, or its UIA `HasKeyboardFocus` is
+    true, within 300 ms) and its fresh frame must still contain the clicked
+    point. A field that already had focus before the click is read only
+    after a 60 ms settle, so its old focus is not taken for the click's.
+    The keys go to the window under that click. Always clicked, because
     Chromium and Electron drop posted keys that no posted click preceded,
     and ignore them again after any real activation; for other apps it
     moves focus inside the target without UIA `SetFocus`, which can raise
     the window. The caret lands where the click puts it, the middle of the
-    field. If the field does not report focus, nothing is typed and the
-    action fails (`action_not_supported`, `delivered_unverified`: the click
-    went in), never falling back to real input.
+    field. If the field does not report focus, or moved away from the
+    point, nothing is typed and the action fails (`action_not_supported`,
+    `delivered_unverified`: the click went in), never falling back to real
+    input.
   - `type` without an index, `pressKey`, and `hotkey` with no modifiers: the
     keys go to the target thread's focused window (`GetGUIThreadInfo`), only
     when it lies inside the target window, is one of the classes above and
     not a Chromium window (no field to click), is itself a UIA Edit or
     Document, and the element with keyboard focus inside it (the window's
     own element or a windowless descendant) is found and is not a password
-    field. A thread that is not in front may have no focused window; then
-    the keys go the real way.
+    field. The focused window is read again right before the keys are
+    posted; if it changed, nothing is posted and the keys go the real way.
+    A thread that is not in front may have no focused window; then too the
+    keys go the real way.
   - `type` whose text holds a Tab or any other control character goes the
     real way, which re-checks focus before every chunk: a Tab can move
     focus (to the next field of a page, or through a dialog) so the rest
@@ -246,12 +267,15 @@ section); that result says `delivery: "foreground"`. A posted one says
   - `hotkey` with modifiers and `scroll`: always the real way (a chord
     cannot be posted; `WM_MOUSEWHEEL` was not measured).
   - `setValue` and the UIA click ladder are not input; their results say
-    `background` unless the target window came to the front during the call.
+    `background` unless the target window came to the front during the call
+    (the foreground is read before the call's checks).
 - **Refused before posting** (`not_delivered`, then real input), besides
   the above: the target window is minimized, hidden or cloaked, on another
   virtual desktop (`IVirtualDesktopManager`; if that call fails it is no
   reason to refuse), or elevated; nothing of the target's process at the
-  point; a hit test went unanswered; the point is on a frame or scroll bar;
+  point; a hit test went unanswered; a window on the way has more than 512
+  children; the window at the point does not use the monitor's DPI; the
+  point is on a frame or scroll bar;
   a menu, an owned window (a dropdown, a dialog) or a tool window of the
   target process lies over the point, whatever covers it on screen (it
   takes a real click); the window at the point is not one of the classes
@@ -271,7 +295,10 @@ section); that result says `delivery: "foreground"`. A posted one says
   it opened, another of its windows), the result is `unverified` with
   `delivery: "foreground"` and a note, and the input is never sent a second
   way. The user moving the mouse or switching to another app meanwhile is
-  not counted.
+  not counted, and neither is any change when the user's own input arrived
+  in between (`GetLastInputInfo` moved, which posted messages never do):
+  then the result keeps `background` and a confirmed read-back stays
+  `verified`.
 - **Errors.** Once anything was posted, a later failure ends the action with
   an error and no fallback. If a button-up or key-up is refused after its
   down went in, the up is posted once more (and for a button

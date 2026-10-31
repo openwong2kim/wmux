@@ -77,6 +77,8 @@ PostMessage
 IsWindowEnabled
 ScreenToClient
 GetClientRect
+GetLastInputInfo
+MonitorFromPoint
 IVirtualDesktopManager
 OpenInputDesktop
 CloseDesktop

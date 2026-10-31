@@ -16,22 +16,27 @@ public class BackgroundTests
     {
         bool posted = false, readBack = false;
         Func<int> post = () => { posted = true; return posts; };
-        var outcome = Background.Execute(plan, new BackgroundSteps(post, () => true, post,
+        var outcome = Background.Execute(plan, new BackgroundSteps(post, _ => new FieldCheck(true, true), post,
             () => { readBack = true; return confirmed; },
             () => probe ?? Quiet));
         return (outcome, posted, readBack);
     }
 
     /// <summary>Records the order Execute calls its steps in.</summary>
-    private static (BackgroundOutcome Outcome, List<string> Calls) Trace(BackgroundPlan plan, int clicks = 3, bool focus = true, int keys = 5, bool confirmed = true)
+    private static (BackgroundOutcome Outcome, List<string> Calls) Trace(BackgroundPlan plan, int clicks = 3, bool focus = true, int keys = 5, bool confirmed = true,
+        bool focusBefore = false, bool atPoint = true, bool receiverStill = true)
     {
         var calls = new List<string>();
         var outcome = Background.Execute(plan, new BackgroundSteps(
             () => { calls.Add("click"); return clicks; },
-            () => { calls.Add("focus"); return focus; },
+            before => { calls.Add($"focus(before={before})"); return new FieldCheck(focus, atPoint); },
             () => { calls.Add("keys"); return keys; },
             () => { calls.Add("readBack"); return confirmed; },
-            () => { calls.Add("probe"); return Quiet; }));
+            () => { calls.Add("probe"); return Quiet; })
+        {
+            FocusBeforeClick = () => { calls.Add("focusBefore"); return focusBefore; },
+            ReceiverStill = () => { calls.Add("receiverStill"); return receiverStill; },
+        });
         return (outcome, calls);
     }
 
@@ -53,6 +58,14 @@ public class BackgroundTests
         { "nothing at the point", Normal, LeftClick, null, BackgroundRefusal.NoReceiver },
         { "another process at the point", Normal, LeftClick, Win32Edit with { InTargetProcess = false }, BackgroundRefusal.NoReceiver },
         { "hit test unanswered", Normal, LeftClick, Win32Edit with { HitTestFailed = true }, BackgroundRefusal.HitTestFailed },
+        { "more children than read", Normal, LeftClick, Win32Edit with { ChildrenTruncated = true }, BackgroundRefusal.TooManyChildren },
+        { "DPI-unaware window on a 150% monitor", Normal, LeftClick, Win32Edit with { WindowDpi = 96, MonitorDpi = 144 }, BackgroundRefusal.DpiMismatch },
+        { "system-aware window on another monitor", Normal, FieldTyping, Chromium with { WindowDpi = 120, MonitorDpi = 96 }, BackgroundRefusal.DpiMismatch },
+        { "window DPI unread", Normal, LeftClick, Win32Edit with { WindowDpi = 0, MonitorDpi = 96 }, BackgroundRefusal.DpiMismatch },
+        { "monitor DPI unread", Normal, LeftClick, Win32Edit with { WindowDpi = 96, MonitorDpi = 0 }, BackgroundRefusal.DpiMismatch },
+        { "common control button", Normal, LeftClick, new("Button", true), BackgroundRefusal.UnsupportedFramework },
+        { "combo box", Normal, LeftClick, new("ComboBox", true), BackgroundRefusal.UnsupportedFramework },
+        { "list view", Normal, LeftClick, new("SysListView32", true), BackgroundRefusal.UnsupportedFramework },
         { "frame or scroll bar", Normal, LeftClick, Win32Edit with { InClientArea = false }, BackgroundRefusal.NonClientArea },
         { "popup at the point", Normal, LeftClick, Win32Edit with { PopupAtPoint = true }, BackgroundRefusal.PopupAtPoint },
         { "WPF", Normal, LeftClick, new("HwndWrapper[App;;abc]", true), BackgroundRefusal.UnsupportedFramework },
@@ -67,7 +80,8 @@ public class BackgroundTests
         { "Chromium pressKey", Normal, new(InputAction.PressKey), Chromium, BackgroundRefusal.ChromiumNeedsClick },
         { "Chromium frame pressKey", Normal, new(InputAction.PressKey), new("Chrome_WidgetWin_1", true, TextControl: true), BackgroundRefusal.ChromiumNeedsClick },
         { "unmeasured focused window", Normal, new(InputAction.Type), new("Qt5QWindowIcon", true, TextControl: true), BackgroundRefusal.UnsupportedFramework },
-        { "focused control is not text", Normal, new(InputAction.Type), new("SysListView32", true), BackgroundRefusal.NotATextControl },
+        { "focused control is not text", Normal, new(InputAction.Type), new("Edit", true, TextControl: false), BackgroundRefusal.NotATextControl },
+        { "not text wins over unread secrecy", Normal, new(InputAction.PressKey), new("Edit", true, TextControl: false, Secret: true), BackgroundRefusal.NotATextControl },
         { "focused password field", Normal, new(InputAction.PressKey), Win32Edit with { Secret = true }, BackgroundRefusal.SecretField },
         { "password field under the click", Normal, FieldTyping, Win32Edit with { Secret = true }, BackgroundRefusal.SecretField },
         { "field with no receiver", Normal, FieldTyping, null, BackgroundRefusal.NoReceiver },
@@ -249,15 +263,36 @@ public class BackgroundTests
     public void FieldTypingClicksThenConfirmsFocusThenPostsKeys()
     {
         var (outcome, calls) = Trace(Background.Plan(Normal, FieldTyping, Chromium));
-        Assert.Equal(["click", "focus", "keys", "readBack", "probe"], calls);
+        Assert.Equal(["focusBefore", "click", "focus(before=False)", "keys", "readBack", "probe"], calls);
         Assert.Equal(Disposition.Delivered, outcome.Disposition);
+    }
+
+    [Fact]
+    public void FocusIsReadBeforeTheClickAndHandedToTheCheckAfterIt()
+    {
+        var (_, calls) = Trace(Background.Plan(Normal, FieldTyping, Chromium), focusBefore: true);
+        Assert.Equal(["focusBefore", "click", "focus(before=True)", "keys", "readBack", "probe"], calls);
+    }
+
+    [Fact]
+    public void AnOldFocusOnAFieldThatMovedGetsNoKeysAndNoFallback()
+    {
+        // The field had focus before the click and still does, but its frame
+        // no longer covers the clicked point (the page scrolled): the click
+        // landed elsewhere, so no key goes in.
+        var (outcome, calls) = Trace(Background.Plan(Normal, FieldTyping, Chromium), focusBefore: true, focus: true, atPoint: false);
+        Assert.DoesNotContain("keys", calls);
+        Assert.Equal(BackgroundStop.FieldMoved, outcome.Stop);
+        Assert.Equal(Disposition.DeliveredUnverified, outcome.Disposition);
+        Assert.False(outcome.FallBack);
+        Assert.False(outcome.Verified);
     }
 
     [Fact]
     public void AFieldThatDidNotTakeFocusGetsNoKeysAndNoFallback()
     {
         var (outcome, calls) = Trace(Background.Plan(Normal, FieldTyping, Chromium), focus: false);
-        Assert.Equal(["click", "focus", "probe"], calls);
+        Assert.Equal(["focusBefore", "click", "focus(before=False)", "probe"], calls);
         Assert.Equal(BackgroundStop.FocusUnconfirmed, outcome.Stop);
         Assert.Equal(Disposition.DeliveredUnverified, outcome.Disposition);
         Assert.False(outcome.FallBack);
@@ -277,7 +312,7 @@ public class BackgroundTests
     public void AClickThatWasNotTakenPostsNoKeysAndFallsBack()
     {
         var (outcome, calls) = Trace(Background.Plan(Normal, FieldTyping, Chromium), clicks: 0);
-        Assert.Equal(["click"], calls);
+        Assert.Equal(["focusBefore", "click"], calls);
         Assert.True(outcome.FallBack);
         Assert.Equal(Disposition.NotDelivered, outcome.Disposition);
     }
@@ -286,10 +321,100 @@ public class BackgroundTests
     public void KeysWithoutAFieldNeedNoClickAndNoFocusCheck()
     {
         var (outcome, calls) = Trace(Background.Plan(Normal, new(InputAction.Type, Text: "hi"), Win32Edit));
-        Assert.Equal(["keys", "readBack", "probe"], calls);
+        Assert.Equal(["receiverStill", "keys", "readBack", "probe"], calls);
         Assert.Equal(Disposition.Delivered, outcome.Disposition);
         var (none, _) = Trace(Background.Plan(Normal, new(InputAction.PressKey), Win32Edit), keys: 0);
         Assert.True(none.FallBack);
+    }
+
+    [Fact]
+    public void FocusThatMovedBeforeTheKeysPostsNothingAndFallsBack()
+    {
+        var (outcome, calls) = Trace(Background.Plan(Normal, new(InputAction.PressKey), Win32Edit), receiverStill: false);
+        Assert.Equal(["receiverStill"], calls);
+        Assert.True(outcome.FallBack);
+        Assert.Equal(Disposition.NotDelivered, outcome.Disposition);
+        Assert.Equal(BackgroundRefusal.FocusMoved, outcome.Refusal);
+    }
+
+    [Theory]
+    [InlineData(96u, 96u, true)]
+    [InlineData(144u, 144u, true)]
+    [InlineData(96u, 144u, false)]  // DPI-unaware window on a 150% monitor
+    [InlineData(144u, 96u, false)]  // system-aware at 150% on a 100% monitor
+    [InlineData(0u, 96u, false)]
+    [InlineData(96u, 0u, false)]
+    [InlineData(0u, 0u, false)]
+    public void OnlyEqualKnownDpisArePosted(uint windowDpi, uint monitorDpi, bool matches)
+    {
+        Assert.Equal(matches, Background.DpiMatches(windowDpi, monitorDpi));
+        var plan = Background.Plan(Normal, LeftClick, Win32Edit with { WindowDpi = windowDpi, MonitorDpi = monitorDpi });
+        Assert.Equal(matches ? BackgroundRefusal.None : BackgroundRefusal.DpiMismatch, plan.Refusal);
+    }
+
+    [Theory]
+    [InlineData(true, 100, 200, true)]   // cursor arrived and foreground moved, but the user typed or moved meanwhile
+    [InlineData(false, 100, 200, true)]
+    public void TheUsersOwnInputMeanwhileIsNotOurSideEffect(bool cursorAfter, int frontBefore, int frontAfter, bool afterInTarget)
+    {
+        var probe = new SideEffectProbe(false, cursorAfter, frontBefore, frontAfter, afterInTarget, UserInput: true);
+        Assert.False(probe.Ours);
+        var (outcome, _, _) = Run(Background.Plan(Normal, LeftClick, Win32Edit), confirmed: true, probe: probe);
+        Assert.Equal(Disposition.Delivered, outcome.Disposition);
+        Assert.Equal("background", outcome.Delivery);
+    }
+
+    /// <summary>PostSequence with a receiver that turns invalid before message `invalidAt` and a post that fails at `failAt`.</summary>
+    private static (PostRun Run, List<uint> Posted) Sequence(IReadOnlyList<PostedMessage> messages, int invalidAt = -1, int failAt = -1)
+    {
+        var posted = new List<uint>();
+        int checks = 0, attempts = 0;
+        var run = Background.PostSequence(messages,
+            () => invalidAt < 0 || checks++ < invalidAt,
+            m =>
+            {
+                if (attempts++ == failAt) return false;
+                posted.Add(m.Msg);
+                return true;
+            });
+        return (run, posted);
+    }
+
+    [Fact]
+    public void AnUnchangedReceiverTakesTheWholeSequence()
+    {
+        var (run, posted) = Sequence(Background.Click(1, 1));
+        Assert.Equal(new PostRun(PostEnd.Done, 3), run);
+        Assert.Equal(3, posted.Count);
+    }
+
+    [Fact]
+    public void AReceiverReplacedBeforeTheFirstMessageIsACleanNothingPosted()
+    {
+        var (run, posted) = Sequence(Background.Click(1, 1), invalidAt: 0);
+        Assert.Equal(new PostRun(PostEnd.NothingPosted, 0), run);
+        Assert.Empty(posted);
+    }
+
+    [Fact]
+    public void AReceiverReplacedMidSequenceStopsWithoutRepairingIntoTheNewWindow()
+    {
+        // Gone after the button went down: no up and no WM_CANCELMODE to a
+        // handle that may now be another app's.
+        var (run, posted) = Sequence(Background.Click(1, 1), invalidAt: 2);
+        Assert.Equal(new PostRun(PostEnd.ReceiverChanged, 2), run);
+        Assert.Equal([Background.WmMouseMove, Background.WmLButtonDown], posted);
+    }
+
+    [Fact]
+    public void ARefusedPostAfterTheFirstStopsAndRepairsTheValidReceiver()
+    {
+        var (run, posted) = Sequence(Background.Click(1, 1), failAt: 2);
+        Assert.Equal(new PostRun(PostEnd.Refused, 2), run);
+        Assert.Equal([Background.WmMouseMove, Background.WmLButtonDown, Background.WmLButtonUp, Background.WmCancelMode], posted);
+        var (first, none) = Sequence(Background.Click(1, 1), failAt: 0);
+        Assert.Equal(new PostRun(PostEnd.NothingPosted, 0), first);
+        Assert.Empty(none);
     }
 
     [Fact]
@@ -397,11 +522,11 @@ public class BackgroundTests
     [InlineData("RichEdit20W", true)]
     [InlineData("Edit", true)]
     [InlineData("EDIT", true)]
-    [InlineData("Button", true)]
-    [InlineData("ComboBox", true)]
-    [InlineData("ListBox", true)]
-    [InlineData("SysListView32", true)]
-    [InlineData("SysTreeView32", true)]
+    [InlineData("Button", false)]        // clicks act through GetMessagePos (the real cursor)
+    [InlineData("ComboBox", false)]      // the dropdown takes mouse capture
+    [InlineData("ListBox", false)]
+    [InlineData("SysListView32", false)]
+    [InlineData("SysTreeView32", false)]
     [InlineData("Notepad", false)]
     [InlineData("HwndWrapper[x;;y]", false)]
     [InlineData("Windows.UI.Core.CoreWindow", false)]
