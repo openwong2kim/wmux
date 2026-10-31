@@ -2,6 +2,8 @@ import { isWslShell, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '
 import { buildWslInjection } from '../../shared/wslIntegration';
 import { BASH_INIT } from '../../daemon/shell-integration';
 import { getWmuxDir } from '../../daemon/config';
+import { claudeFileSendEnv } from '../../shared/claudeFileSend';
+import { readClaudeFileSend } from '../../daemon/claudeFileSendSetting';
 import type { IPty } from 'node-pty';
 import type { TerminalPty } from '../../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../../shared/spawnPty';
@@ -363,6 +365,10 @@ export class PTYManager {
     // on its own process (see shared/exeSearch.ts), so cmd.exe in the pane
     // keeps its usual lookup. Same rule as DaemonSessionManager.createSession.
     const env = withoutExeSearchGuard(resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), policy, accountEnv));
+    // Claude file send (shared/claudeFileSend.ts): added after the overlays
+    // and nesting-marker strip, read from the setting at each spawn. Off adds
+    // nothing, so a value the user exported themselves is left alone.
+    Object.assign(env, claudeFileSendEnv(readClaudeFileSend(getWmuxDir())));
     // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄로 남긴다.
     // 침묵이 신고 사건의 실제 원인이었다 — "왜 없지?"를 로그로 즉시 답한다.
     if (policy === 'gated') {

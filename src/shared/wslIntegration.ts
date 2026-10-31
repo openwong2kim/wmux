@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { mergeWslEnv, wslTargetArgs, type WslTarget } from './wsl';
+import { CLAUDE_FILE_SEND_ENV } from './claudeFileSend';
 
 // Per-launch settings only. Never edit ~/.claude/settings.json in either OS.
 // Use the existing bridge in its Windows runtime: this preserves the named-pipe
@@ -499,6 +500,8 @@ fi
     // stopped on "Is this a project you created or one you trust?" (#2231).
     // Only a pane that carries it: an ordinary WSL pane keeps the dialog.
     ...(options.env.CLAUDE_CODE_SANDBOXED ? ['CLAUDE_CODE_SANDBOXED/u'] : []),
+    // The Claude file send setting (shared/claudeFileSend.ts), when it is on.
+    ...(options.env[CLAUDE_FILE_SEND_ENV] ? [`${CLAUDE_FILE_SEND_ENV}/u`] : []),
   ];
   // Ordinary WSL panes keep their Linux profiles: copied Windows config can
   // contain Windows-only notify/MCP/hooks. Only forward the login's vendor.

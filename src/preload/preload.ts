@@ -18,6 +18,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import { START_POLARITY_STORAGE_KEY, resolveStartPolarity, startPaintCss } from '../shared/windowStartPaint';
 import { startLocaleFromArgv } from '../shared/startLocale';
 import { IPC } from '../shared/constants';
+import { CLAUDE_FILE_SEND_IPC } from '../shared/claudeFileSend';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from '../shared/a2aSpawn';
 import type { SleepPreventionMode, SleepWindow } from '../shared/sleepPrevention';
 import { ROOM_EVENT } from '../shared/room';
@@ -2055,6 +2056,11 @@ const electronAPI = {
       get: () => ipcRenderer.invoke(IPC.USAGE_RESERVE_GET) as Promise<{ enabled: boolean }>,
       set: (enabled: boolean) => ipcRenderer.invoke(IPC.USAGE_RESERVE_SET, enabled) as Promise<{ ok: boolean }>,
     },
+  },
+  /** Whether new panes let Claude send files to the phone (shared/claudeFileSend.ts). */
+  claudeFileSend: {
+    get: () => ipcRenderer.invoke(CLAUDE_FILE_SEND_IPC.GET) as Promise<{ enabled: boolean }>,
+    set: (enabled: boolean) => ipcRenderer.invoke(CLAUDE_FILE_SEND_IPC.SET, enabled) as Promise<{ ok: boolean }>,
   },
   // N4 — agents whose sign-in was lost (shared/agentAuthLost), one entry per
   // agent and account; `loginState` asks the agent's own status for an entry

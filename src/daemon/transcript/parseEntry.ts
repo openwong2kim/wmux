@@ -22,6 +22,7 @@
 // The `[]` default is why a future Claude Code entry type cannot leak into the
 // chat as if the agent had said it.
 
+import path from 'node:path';
 import { summarizeActivity } from '../../shared/activitySummary';
 import type {
   AssistantTextEvent,
@@ -154,7 +155,7 @@ export function parseTranscriptLineDetailed(
   const content = message?.['content'];
   const parsed = isUser
     ? parseUserEntry(entry, content, baseId, ts, offsetHint)
-    : parseAssistantEntry(content, baseId, ts, offsetHint);
+    : parseAssistantEntry(content, baseId, ts, offsetHint, typeof entry['cwd'] === 'string' ? entry['cwd'] : undefined);
   if (isAssistant && message?.['stop_reason'] === 'end_turn') {
     for (const event of parsed.events) {
       if (event.kind === 'assistant_text' && !event.thinking) event.turnComplete = true;
@@ -463,6 +464,7 @@ function parseAssistantEntry(
   baseId: string,
   ts: number | undefined,
   offsetHint: number,
+  cwd: string | undefined,
 ): ParsedTranscriptLine {
   const bodies = new Map<string, Map<number, string>>();
   // One entry is one frame; the budget is spent across every body it carries.
@@ -503,7 +505,7 @@ function parseAssistantEntry(
         // given. Kept as the rendered JSON rather than the raw object so the
         // body table stays `string` for every producer and the on-expand fetch
         // has one shape to answer with.
-        ...withBody('input', registerToolBody(id, toolInputText(block?.['input']), offsetHint, bodies, budget)),
+        ...withBody('input', registerToolBody(id, toolInputText(sentFilesResolved(block?.['name'], block?.['input'], cwd)), offsetHint, bodies, budget)),
         ...tsOf(ts),
       };
       out.push(ev);
@@ -810,6 +812,24 @@ export const INLINE_ENTRY_MAX_BYTES = 32 * 1024;
  * way.
  */
 const MAX_BODY_BYTES = 256 * 1024;
+
+/**
+ * A `SendUserFile` input with each relative `files[]` entry resolved against
+ * the call line's `cwd`; any other input unchanged. The phone fetches a sent
+ * file by the path it reads here, and `/turns/image` takes absolute paths
+ * only. The daemon's grant for the send is recorded under the same absolute
+ * path (sentFiles.ts `sentGrantPaths`).
+ */
+function sentFilesResolved(name: unknown, input: unknown, cwd: string | undefined): unknown {
+  if (name !== 'SendUserFile' || cwd === undefined || !path.isAbsolute(cwd)) return input;
+  const obj = asObject(input);
+  const files = obj?.['files'];
+  if (!obj || !Array.isArray(files)) return input;
+  return {
+    ...obj,
+    files: files.map((f) => (typeof f === 'string' && f.length > 0 && !path.isAbsolute(f) ? path.resolve(cwd, f) : f)),
+  };
+}
 
 /** JSON the tool's input, or '' when there is nothing to show. */
 function toolInputText(input: unknown): string {
