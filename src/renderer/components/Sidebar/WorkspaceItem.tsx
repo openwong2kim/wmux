@@ -19,7 +19,7 @@ import { usePrefersReducedMotion } from '../ui/MediaPreview';
 import { workspaceHasUsageLimitWaiting } from '../../stores/slices/usageLimitSlice';
 import { workspaceHasAuthLost } from '../../stores/slices/agentAuthSlice';
 import { selectWorkspaceAttentionClasses } from '../../stores/selectors/fleet';
-import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin, IconBookmark, IconOrgChart } from '../icons';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin, IconBookmark, IconOrgChart, IconGrid } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -53,6 +53,8 @@ interface WorkspaceItemProps {
   workspaceId: string;
   isActive: boolean;
   isMultiview: boolean;
+  /** This workspace's multiview group number (utils/multiviewGroups.ts), when it is in one. */
+  multiviewGroup?: number;
   index: number;
   /** The Ctrl+N digit that reaches this row (see workspaceShortcutNumber), or
    *  undefined when no digit does. */
@@ -468,7 +470,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumber, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, tabStop = false }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, index, shortcutNumber, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, tabStop = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useRowStore(selectWorkspaceById(workspaceId));
@@ -1249,15 +1251,23 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
         }
       }}>
       {/* Color tag rail. Sits inside the row's rounded box, so it reads as part
-          of the row rather than as a separate divider. When the workspace is
-          also in multiview it shifts 2px right, clearing the blue multiview
-          border instead of covering it — the two signals mean different things
-          and must both stay visible. pointer-events-none so it never eats a
-          click or a drag hit-test. */}
+          of the row rather than as a separate divider. pointer-events-none so
+          it never eats a click or a drag hit-test. */}
       {tagColor && (
         <div
           className="absolute top-[3px] bottom-[3px] w-[3px] rounded-full z-[1] pointer-events-none"
-          style={{ left: isMultiview ? 2 : 0, background: tagColor }}
+          style={{ left: 0, background: tagColor }}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Multiview bar: the group on screen also marks its rows with a square
+          bar on the right edge, so the grid's members read as one block down
+          the list. The left edge stays the color tag's. */}
+      {isMultiview && (
+        <div
+          className="absolute top-[3px] bottom-[3px] right-0 w-[3px] z-[1] pointer-events-none bg-[var(--accent-blue)]"
+          data-multiview-bar=""
           aria-hidden="true"
         />
       )}
@@ -1277,7 +1287,6 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
         className={`sidebar-row px-2.5 ${taskRow ? 'sidebar-row-task py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${pulseClass} ${
           isActive ? 'sidebar-row-active' : ''
         }`}
-        style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
@@ -1390,6 +1399,24 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
                 >
                   {displayName}
                 </span>
+                {/* Which multiview group the row is in. Neutral like the pin;
+                    the group on screen reads in the accent, since being on
+                    screen is a state. */}
+                {multiviewGroup !== undefined && (
+                  <span
+                    className={`flex-none inline-flex items-center gap-0.5 rounded-full px-1 text-[10px] leading-[14px] font-semibold tabular-nums bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)] ${
+                      isMultiview ? 'text-[var(--accent-blue)]' : 'text-[var(--text-muted)]'
+                    }`}
+                    role="img"
+                    aria-label={t('sidebar.multiviewGroup', { n: multiviewGroup })}
+                    title={t('sidebar.multiviewGroup', { n: multiviewGroup })}
+                    data-multiview-group={multiviewGroup}
+                    data-multiview-shown={isMultiview ? '' : undefined}
+                  >
+                    <IconGrid size={8} />
+                    {multiviewGroup}
+                  </span>
+                )}
                 {unseen && (
                   <span
                     className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--text-main)]"

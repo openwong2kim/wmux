@@ -1053,6 +1053,8 @@ export interface SessionData {
   surfaceDismissedQuestion?: Record<string, string>;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
+  /** Multiview groups, the one on screen first (renderer/utils/multiviewGroups.ts). Shape-checked on load. */
+  multiviewGroups?: string[][];
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;

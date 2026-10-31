@@ -126,6 +126,7 @@ import {
 } from '../../../shared/ptyRecovery';
 import { isChatV2Covering } from '../ChatV2/coverage';
 import { overlayColors } from '../../utils/titlebarOverlay';
+import { multiviewGroupsForSave } from '../../utils/multiviewGroups';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -497,6 +498,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
       ? { surfaceDismissedQuestion: state.surfaceDismissedQuestion }
       : {}),
     multiviewArrangement: state.multiviewArrangement,
+    multiviewGroups: multiviewGroupsForSave(state),
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,

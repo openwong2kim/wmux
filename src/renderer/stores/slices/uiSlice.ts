@@ -106,6 +106,7 @@ import {
 } from '../../components/Sidebar/attentionBlink';
 import { initialGitPageState, type GitDragContext, type GitHandoffOpen, type GitPageState } from '../../components/Git/gitPageState';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
+import { leaveSavedMultiviewGroups, promoteMultiviewGroup, saveCurrentMultiviewGroup } from '../../utils/multiviewGroups';
 import { DEFAULT_WINDOW_GLASS, type WindowGlassLevel } from '../../utils/windowGlass';
 import {
   normalizeRoleBinding,
@@ -887,7 +888,10 @@ export interface UISlice {
   }) => void;
 
   // ─── Multiview ─────────────────────────────────────────────────────────
+  /** The group on screen (see utils/multiviewGroups.ts). */
   multiviewIds: string[];
+  /** The other groups, each waiting for one of its members to be activated. */
+  multiviewSavedGroups: string[][];
   toggleMultiviewWorkspace: (wsId: string) => void;
   // Close-button primitive. Pure removal, never adds. Use this from the tile
   // X button so a stale-event toggle cannot re-add the workspace.
@@ -2106,6 +2110,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   // ─── Multiview ─────────────────────────────────────────────────────────
   multiviewIds: [] as string[],
+  multiviewSavedGroups: [] as string[][],
 
   multiviewArrangement: 'auto' as MultiviewArrangement,
 
@@ -2125,9 +2130,17 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       // a member). The second case appears as "Ctrl-click does nothing" because
       // AppLayout gates the grid on active ∈ multiviewIds — without reseeding,
       // the new id gets appended to the stale group and the grid stays hidden.
+      // The group that was on screen is saved, not dropped: a workspace in no
+      // group starts another one (multiview groups).
+      if (!state.multiviewIds.includes(state.activeWorkspaceId)) {
+        promoteMultiviewGroup(state, state.activeWorkspaceId);
+      }
       if (state.multiviewIds.length === 0 || !state.multiviewIds.includes(state.activeWorkspaceId)) {
+        saveCurrentMultiviewGroup(state);
         state.multiviewIds = [state.activeWorkspaceId];
       }
+      // A workspace is in one group at a time: joining this one leaves its old one.
+      leaveSavedMultiviewGroups(state, wsId);
       if (!state.multiviewIds.includes(wsId)) {
         state.multiviewIds.push(wsId);
       }

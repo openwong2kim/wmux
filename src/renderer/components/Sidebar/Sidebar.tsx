@@ -11,6 +11,7 @@ import WorkspaceSettleGroup from './WorkspaceSettleGroup';
 import SidebarTaskGroup, { ClosedPaneTaskGroup } from './SidebarTaskGroup';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
+import { multiviewGroupNumbers } from '../../utils/multiviewGroups';
 import WorkspaceItem from './WorkspaceItem';
 import HostWorkspaceList from './HostWorkspaceList';
 import { PcSwitcherTitle } from './PcSwitcher';
@@ -211,6 +212,16 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const toggleMultiviewWorkspace = useStore((s) => s.toggleMultiviewWorkspace);
   const multiviewIds = useStore((s) => s.multiviewIds);
+  const multiviewSavedGroups = useStore((s) => s.multiviewSavedGroups);
+  // The grid is on screen only while the active workspace is one of its tiles.
+  const shownGridIds = useMemo(
+    () => (shownActiveId && multiviewIds.includes(shownActiveId) ? multiviewIds : []),
+    [shownActiveId, multiviewIds],
+  );
+  const multiviewGroupById = useMemo(
+    () => multiviewGroupNumbers(workspaces.map((w) => w.id), multiviewIds, multiviewSavedGroups),
+    [workspaces, multiviewIds, multiviewSavedGroups],
+  );
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -368,7 +379,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     <WorkspaceItem
       workspaceId={id}
       isActive={id === shownActiveId}
-      isMultiview={multiviewIds.includes(id)}
+      isMultiview={shownGridIds.includes(id)}
+      multiviewGroup={multiviewGroupById.get(id)}
       index={workspaces.findIndex((w) => w.id === id)}
       shortcutNumber={workspaceShortcutNumber(numbered.findIndex((w) => w.id === id), numbered.length)}
       onSelect={setActiveWorkspace}
@@ -382,7 +394,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       taskRow
       tabStop={id === tabStopId}
     />
-  ), [tabStopId, shownActiveId, multiviewIds, workspaces, numbered, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
+  ), [tabStopId, shownActiveId, shownGridIds, multiviewGroupById, workspaces, numbered, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   // One top-level node: a task row whose owner is filtered out, or a
   // workspace row with its nested tasks. `inSettleGroup` rows sit out of
@@ -398,7 +410,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         <WorkspaceItem
           workspaceId={ws.id}
           isActive={ws.id === shownActiveId}
-          isMultiview={multiviewIds.includes(ws.id)}
+          isMultiview={shownGridIds.includes(ws.id)}
+          multiviewGroup={multiviewGroupById.get(ws.id)}
           index={workspaces.indexOf(ws)}
           shortcutNumber={workspaceShortcutNumber(numbered.findIndex((w) => w.id === ws.id), numbered.length)}
           onSelect={setActiveWorkspace}

@@ -18,6 +18,7 @@ import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { sanitizeTerminalCursorStyle } from '../../../shared/terminalCursor';
 import { sanitizeImagePasteMode } from '../../../shared/imagePaste';
 import { MULTIVIEW_ARRANGEMENTS } from '../../utils/multiviewGrid';
+import { parseMultiviewGroups, promoteMultiviewGroup, pruneSavedMultiviewGroups } from '../../utils/multiviewGroups';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 import { decUnread } from './notificationSlice';
@@ -136,12 +137,17 @@ export function activateLocalWorkspace(
     parkedWorkspaceIds?: Record<string, true>;
     lastVisibleAt?: Record<string, number>;
     activeRemoteKey?: string | null;
+    multiviewIds?: string[];
+    multiviewSavedGroups?: string[][];
   },
   id: string,
 ): void {
   state.activeWorkspaceId = id; // guard-allow — the one legal assignment (see the guard test)
   clearColdParkEntry(state, id);
   clearRemoteSelection(state);
+  // A member of a saved multiview group brings its grid back, however it was
+  // activated (sidebar, Ctrl+N, a notification, an agent).
+  promoteMultiviewGroup(state, id);
 }
 
 /**
@@ -157,9 +163,13 @@ export function activateLocalWorkspace(
 export function pruneMultiviewMembership(state: {
   workspaces: Workspace[];
   multiviewIds?: string[];
+  multiviewSavedGroups?: string[][];
 }): void {
+  const liveIds = new Set(state.workspaces.map((w) => w.id));
+  // The saved groups fail the same way once one of them is put on screen.
+  pruneSavedMultiviewGroups(state, liveIds);
   if (!state.multiviewIds || state.multiviewIds.length === 0) return;
-  const live = state.multiviewIds.filter((id) => state.workspaces.some((w) => w.id === id));
+  const live = state.multiviewIds.filter((id) => liveIds.has(id));
   state.multiviewIds = live.length <= 1 ? [] : live;
 }
 
@@ -999,7 +1009,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // multiviewIds is intentionally preserved here. AppLayout renders the
       // grid only when activeWorkspaceId is part of multiviewIds, so switching
       // to a non-multiview workspace shows its single view while the saved
-      // group survives — clicking any member restores the grid. Explicit
+      // group survives — clicking any member restores the grid. A member of
+      // another group swaps that group in (activateLocalWorkspace). Explicit
       // disband still works via the ✕ button or Ctrl+Shift+G (clearMultiview).
     }),
 
@@ -1383,8 +1394,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
               && isArchivedLayoutNode(a.tree, 0),
           )
         : [];
-      // The previous session's group cannot describe this one's workspaces.
-      pruneMultiviewMembership(state);
+      // The previous session's grid cannot describe this one's workspaces; its
+      // saved groups can, shape-checked against them. Activation then puts the
+      // active workspace's group back on screen.
+      state.multiviewIds = [];
+      state.multiviewSavedGroups = parseMultiviewGroups(data.multiviewGroups, new Set(state.workspaces.map((w) => w.id)));
       activateLocalWorkspace(state, data.activeWorkspaceId);
       state.sidebarVisible = data.sidebarVisible;
 

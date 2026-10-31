@@ -429,6 +429,7 @@ export const ko = {
   'sidebar.pin': '상단에 고정',
   'sidebar.unpin': '고정 해제',
   'sidebar.bookmarked': "북마크됨",
+  'sidebar.multiviewGroup': "멀티뷰 그룹 {n}",
   'sidebar.bookmark': "북마크",
   'sidebar.unbookmark': "북마크 해제",
   // Workspace settle / snooze (shared/workspaceSettle).

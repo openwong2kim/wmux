@@ -229,6 +229,7 @@ export const zh = {
   'sidebar.pin': '置顶',
   'sidebar.unpin': '取消置顶',
   'sidebar.bookmarked': "已加书签",
+  'sidebar.multiviewGroup': "多视图组 {n}",
   'sidebar.bookmark': "添加书签",
   'sidebar.unbookmark': "移除书签",
   // Workspace settle / snooze (shared/workspaceSettle).
