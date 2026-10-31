@@ -353,6 +353,12 @@ export type WorktaskScanResultWire =
   | { ok: true; scannedRoot: string; entries: WorktaskScanEntryWire[] }
   | { ok: false; error: string; scannedRoot: string; entries: WorktaskScanEntryWire[] };
 
+/** worktask:sweep-company-seats result. `run` numbers the sweep: requests
+ *  that waited for the same one get the same answer. */
+export type CompanySeatSweepResultWire =
+  | { ok: true; run: number; removed: number }
+  | { ok: false; error: string };
+
 /** worktask:remove-phone result (PhoneWorktreeRemoval mirror). */
 export type RemovePhoneWorktreeResultWire =
   | { ok: true; branch?: string; repo?: string }

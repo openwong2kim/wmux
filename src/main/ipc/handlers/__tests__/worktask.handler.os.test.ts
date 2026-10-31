@@ -318,3 +318,14 @@ describe('task:close keepFolder', () => {
     expect(daemon.rpcCalls.some((c) => c.method === 'daemon.listSessions' || c.method === 'daemon.destroySession')).toBe(false);
   });
 });
+
+describe('worktask:sweep-company-seats', () => {
+  it('refuses a malformed keep set, and answers at once when there is no seat folder', async () => {
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    expect(await call(IPC.WORKTASK_SWEEP_COMPANY_SEATS, { keep: ['/a', 1] })).toEqual({ ok: false, error: 'invalid request' });
+    expect(await call(IPC.WORKTASK_SWEEP_COMPANY_SEATS, {})).toEqual({ ok: false, error: 'invalid request' });
+    expect(await call(IPC.WORKTASK_SWEEP_COMPANY_SEATS, { keep: ['/a'] })).toEqual({ ok: true, run: 1, removed: 0 });
+    expect(daemon.rpcCalls.some((c) => c.method === 'daemon.listSessions')).toBe(false);
+  });
+});

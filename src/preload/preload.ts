@@ -1747,6 +1747,12 @@ const electronAPI = {
       >,
     deletePhoneBranch: (repo: string, branch: string) =>
       ipcRenderer.invoke(IPC.WORKTASK_DELETE_PHONE_BRANCH, { repo, branch }) as Promise<{ ok: boolean; error?: string }>,
+    /** Remove the company seat worktrees nothing uses any more; `keep`: every
+     *  folder a live, stashed or archived pane is in. */
+    sweepCompanySeats: (keep: string[]) =>
+      ipcRenderer.invoke(IPC.WORKTASK_SWEEP_COMPANY_SEATS, { keep }) as Promise<
+        import('../shared/workTask').CompanySeatSweepResultWire
+      >,
   },
   dialog: {
     pickFolder: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER) as Promise<string[]>,

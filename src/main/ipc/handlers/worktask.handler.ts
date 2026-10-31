@@ -36,6 +36,8 @@ import { TREE_DESTROY_TIMEOUT_MS, assertNothingRunsIn, destroyedTreeOf, forgetFo
 import { TaskPrService } from '../../worktask/TaskPrService';
 import { WorktaskScanService, type ScanOpenTask } from '../../worktask/WorktaskScanService';
 import { deletePhoneBranch, removePhoneWorktree } from '../../worktask/PhoneWorktreeRemoval';
+import { SEAT_SWEEP_ATTEMPTS, SEAT_SWEEP_RETRY_MS, serialSeatSweeps, sweepCompanySeats } from '../../company/seatCleanup';
+import { seatWorktrees } from '../../company/seatLaunch';
 import { prStatusCache } from '../../metadata/PrStatusCache';
 import { getWmuxHomeDir } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
@@ -146,6 +148,18 @@ export function registerWorktaskHandlers(
     });
   };
 
+  /** The daemon's sessions and whether its start-up recovery is done; null
+   *  when it cannot be asked. A daemon from before the flag answers a bare
+   *  list, recovered. */
+  const recoveredSessions = async () => {
+    const dc = getDaemonClient();
+    if (!dc) return null;
+    const reply = (await dc.rpc('daemon.listSessions', { withRecovery: true })) as unknown;
+    if (Array.isArray(reply)) return { sessions: reply, recoveryDone: true };
+    const r = reply as { sessions?: unknown; recoveryDone?: unknown } | null;
+    return Array.isArray(r?.sessions) ? { sessions: r.sessions, recoveryDone: r.recoveryDone === true } : null;
+  };
+
   // #2388: removals a close left part way (a folder git no longer has as a
   // worktree) are finished once the daemon has recovered its sessions.
   let sweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -154,14 +168,7 @@ export function registerWorktaskHandlers(
       sweepTimer = null;
       void sweepPendingRemovals({
         paths: () => worktrees.pendingRemovalPaths(),
-        sessions: async () => {
-          const dc = getDaemonClient();
-          if (!dc) return null;
-          const reply = (await dc.rpc('daemon.listSessions', { withRecovery: true })) as unknown;
-          if (Array.isArray(reply)) return { sessions: reply, recoveryDone: true };
-          const r = reply as { sessions?: unknown; recoveryDone?: unknown } | null;
-          return Array.isArray(r?.sessions) ? { sessions: r.sessions, recoveryDone: r.recoveryDone === true } : null;
-        },
+        sessions: recoveredSessions,
         // Started there, or working there now (OSC 7): either keeps it.
         startedIn: (folder, sessions) => sessionsStartedIn([folder], {
           listSessions: async () => sessions.flatMap((s) => (typeof s.cwd === 'string' && s.cwd ? [s, { ...s, spawnCwd: s.cwd }] : [s])),
@@ -179,6 +186,17 @@ export function registerWorktaskHandlers(
     sweepTimer.unref?.();
   };
   sweep(1);
+
+  // Company seat worktrees nothing uses any more (company/seatCleanup.ts),
+  // through the seats' own TaskWorktreeManager so a removal and a seat
+  // being made in the same repository take turns.
+  const seatSweeps = serialSeatSweeps((keep) => sweepCompanySeats({
+    root: path.join(getWmuxHomeDir(), 'company-worktrees'),
+    sessions: recoveredSessions,
+    keep,
+    worktrees: seatWorktrees(),
+    log: (message) => console.log(message),
+  }), { attempts: SEAT_SWEEP_ATTEMPTS, delayMs: SEAT_SWEEP_RETRY_MS, log: (message) => console.warn(message) });
 
   // ── task:close ──────────────────────────────────────────────────────
   ipcMain.removeHandler(IPC.TASK_CLOSE);
@@ -421,8 +439,22 @@ export function registerWorktaskHandlers(
     }),
   );
 
+  // ── worktask:sweep-company-seats ─────────────────────────────────────
+  // Asked by the renderer once its saved session is loaded and after a
+  // workspace or an archived workspace goes, with the folders it keeps.
+  ipcMain.removeHandler(IPC.WORKTASK_SWEEP_COMPANY_SEATS);
+  ipcMain.handle(
+    IPC.WORKTASK_SWEEP_COMPANY_SEATS,
+    wrapHandler(IPC.WORKTASK_SWEEP_COMPANY_SEATS, async (_event, raw: unknown) => {
+      const keep = keepSetOf(raw);
+      if (!keep) return { ok: false as const, error: 'invalid request' };
+      return { ok: true as const, ...(await seatSweeps.request(keep)) };
+    }),
+  );
+
   return () => {
     if (sweepTimer) clearTimeout(sweepTimer);
+    seatSweeps.stop();
     setActivePendingRemovals(null);
     ipcMain.removeHandler(IPC.TASK_CLOSE);
     ipcMain.removeHandler(IPC.TASK_CREATE_PR);
@@ -431,7 +463,19 @@ export function registerWorktaskHandlers(
     ipcMain.removeHandler(IPC.WORKTASK_COUNT_PANES);
     ipcMain.removeHandler(IPC.WORKTASK_REMOVE_PHONE);
     ipcMain.removeHandler(IPC.WORKTASK_DELETE_PHONE_BRANCH);
+    ipcMain.removeHandler(IPC.WORKTASK_SWEEP_COMPANY_SEATS);
   };
+}
+
+const KEEP_SET_MAX = 10_000;
+const KEEP_PATH_MAX = 4096;
+
+/** The folders the renderer keeps, or null when the list is malformed: a
+ *  sweep never runs on part of it. */
+function keepSetOf(raw: unknown): string[] | null {
+  const keep = (raw as { keep?: unknown } | null)?.keep;
+  if (!Array.isArray(keep) || keep.length > KEEP_SET_MAX) return null;
+  return keep.every((p): p is string => typeof p === 'string' && p.length > 0 && p.length <= KEEP_PATH_MAX) ? keep : null;
 }
 
 /** The sweep of pending removals waits this long after start, and tries this

@@ -1,11 +1,16 @@
-// The company seat cleanup against real folders: which paths count as a seat
-// worktree.
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+// The company seat cleanup against real folders and real git: which paths
+// count as a seat worktree, and what the sweep removes and keeps, with a bare
+// repository as the remote.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { shapedWorktreeDir } from '../../worktask/PhoneWorktreeRemoval';
-import { COMPANY_SEAT_SHAPE } from '../seatCleanupRule';
+import { TaskWorktreeManager } from '../../worktask/TaskWorktreeManager';
+import { COMPANY_SEAT_SHAPE, SEAT_SWEEP_MIN_AGE_MS } from '../seatCleanupRule';
+import { serialSeatSweeps, sweepCompanySeats, type SeatSession } from '../seatCleanup';
+import { seatLaunches } from '../seatLaunch';
 
 const HASH = 'abc123def456';
 const SLUG = 'dev-1-456789ab';
@@ -57,5 +62,142 @@ describe('the company seat folder shape', () => {
     expect(COMPANY_SEAT_SHAPE.branch(`company/${SLUG}`, SLUG)).toBe(true);
     expect(COMPANY_SEAT_SHAPE.branch('company/dev-2-456789ab', SLUG)).toBe(false);
     expect(COMPANY_SEAT_SHAPE.branch('feature/mine', SLUG)).toBe(false);
+  });
+});
+
+describe('the seat sweep', () => {
+  const WS = 'ws-0123abcd-4567-89ab-cdef-0123456789ab';
+  const T0 = 1_700_000_000_000;
+  const LATER = T0 + SEAT_SWEEP_MIN_AGE_MS + 60_000;
+  let repo: string;
+  let remote: string;
+  let worktrees: TaskWorktreeManager;
+
+  const g = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, encoding: 'utf8' }).trim();
+  const branches = (): string[] => g(repo, 'branch', '--format=%(refname:short)').split('\n').filter(Boolean).sort();
+  const metaOf = (dir: string) => path.join(path.dirname(dir), '.meta', path.basename(dir));
+  const commit = (dir: string, file: string) => {
+    fs.writeFileSync(path.join(dir, file), file);
+    g(dir, 'add', file);
+    g(dir, 'commit', '-q', '-m', file);
+  };
+
+  /** Two seats besides the CEO, made the way a company makes them, at T0. */
+  async function seats(): Promise<[string, string]> {
+    const res = await seatLaunches({
+      workspaceId: WS, company: 'checkout', ceo: 0, tellSeats: false, folder: repo,
+      seats: [{ label: 'ceo', owns: '', agent: 'claude' }, { label: 'dev-1', owns: '', agent: 'claude' }, { label: 'dev-2', owns: '', agent: 'claude' }],
+    }, { dir: path.join(base, 'data'), platform: 'darwin', takenLabels: () => [], now: () => T0, worktrees });
+    if (!res.ok || !res.cwds[1] || !res.cwds[2]) throw new Error(res.ok ? 'a seat has no worktree' : res.error);
+    return [res.cwds[1], res.cwds[2]];
+  }
+
+  const sweep = (over: { keep?: string[]; sessions?: SeatSession[]; recoveryDone?: boolean; now?: number } = {}) => sweepCompanySeats({
+    root,
+    sessions: async () => ({ sessions: over.sessions ?? [], recoveryDone: over.recoveryDone ?? true }),
+    keep: over.keep ?? [],
+    worktrees,
+    now: () => over.now ?? LATER,
+  });
+
+  beforeEach(() => {
+    remote = path.join(base, 'remote.git');
+    repo = path.join(base, 'repo');
+    fs.mkdirSync(repo);
+    g(base, 'init', '-q', '--bare', '-b', 'main', remote);
+    g(repo, 'init', '-q', '-b', 'main');
+    commit(repo, 'a.txt');
+    g(repo, 'remote', 'add', 'origin', remote);
+    g(repo, 'push', '-q', 'origin', 'main');
+    worktrees = new TaskWorktreeManager({ worktreesRoot: root });
+  });
+
+  it('removes a seat whose work is pushed, with its stamp and its branch', async () => {
+    const [dev1, dev2] = await seats();
+    commit(dev1, 'work.txt');
+    g(dev1, 'push', '-q', 'origin', 'HEAD');
+    // dev-2 never committed: it is at origin's main.
+    expect((await sweep())?.removed.sort()).toEqual([dev1, dev2].sort());
+    expect(fs.existsSync(dev1)).toBe(false);
+    expect(fs.existsSync(metaOf(dev1))).toBe(false);
+    expect(branches()).toEqual(['main']);
+    // The remote keeps what was pushed.
+    expect(g(remote, 'branch', '--list', 'company/dev-1-456789ab')).toContain('company/dev-1-456789ab');
+  });
+
+  it('removes a seat that never committed, even with no remote, and its branch', async () => {
+    g(repo, 'remote', 'remove', 'origin');
+    const [dev1, dev2] = await seats();
+    expect((await sweep())?.removed.sort()).toEqual([dev1, dev2].sort());
+    expect(branches()).toEqual(['main']);
+  });
+
+  it('leaves a branch the seat made itself, and deletes its company branch at the base', async () => {
+    const [dev1] = await seats();
+    g(dev1, 'checkout', '-q', '-b', 'feature/mine');
+    commit(dev1, 'mine.txt');
+    g(dev1, 'push', '-q', 'origin', 'feature/mine');
+    expect((await sweep())?.removed).toContain(dev1);
+    expect(branches()).toContain('feature/mine');
+    expect(branches()).not.toContain('company/dev-1-456789ab');
+  });
+
+  it('keeps a seat with an untracked file, and one with a commit only on this PC with its branch', async () => {
+    const [dev1, dev2] = await seats();
+    fs.writeFileSync(path.join(dev1, 'notes.txt'), 'mine');
+    commit(dev2, 'local.txt');
+    expect(await sweep()).toEqual({ removed: [] });
+    expect(fs.readFileSync(path.join(dev1, 'notes.txt'), 'utf8')).toBe('mine');
+    expect(fs.existsSync(path.join(dev2, 'local.txt'))).toBe(true);
+    expect(branches()).toContain('company/dev-2-456789ab');
+  });
+
+  it('keeps a seat the renderer keeps, one a pane works in, and a young one', async () => {
+    const [dev1, dev2] = await seats();
+    expect(await sweep({ keep: [path.join(dev1, 'src')], sessions: [{ id: 's1', spawnCwd: path.join(base, 'elsewhere'), cwd: dev2 }] })).toEqual({ removed: [] });
+    expect(await sweep({ now: T0 + 60_000 })).toEqual({ removed: [] });
+    expect(fs.existsSync(dev1) && fs.existsSync(dev2)).toBe(true);
+  });
+
+  it('removes nothing until the daemon has recovered its sessions, and answers at once with no seat folder', async () => {
+    const [dev1] = await seats();
+    expect(await sweep({ recoveryDone: false })).toBeNull();
+    expect(fs.existsSync(dev1)).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+    const sessions = vi.fn(async () => null);
+    expect(await sweepCompanySeats({ root, sessions, keep: [], worktrees })).toEqual({ removed: [] });
+    expect(sessions).not.toHaveBeenCalled();
+  });
+});
+
+describe('serialSeatSweeps', () => {
+  it('runs one sweep at a time, then one more with the latest keep set for every request that waited', async () => {
+    let release: () => void = () => undefined;
+    const calls: (readonly string[])[] = [];
+    const sweep = vi.fn(async (keep: readonly string[]) => {
+      calls.push(keep);
+      if (calls.length === 1) await new Promise<void>((resolve) => { release = resolve; });
+      return { removed: calls.length === 1 ? ['a'] : ['b', 'c'] };
+    });
+    const sweeps = serialSeatSweeps(sweep, { attempts: 1, delayMs: 0 });
+    const first = sweeps.request(['k1']);
+    const second = sweeps.request(['k2']);
+    const third = sweeps.request(['k3']);
+    release();
+    expect(await first).toEqual({ run: 1, removed: 1 });
+    expect(await second).toEqual({ run: 2, removed: 2 });
+    expect(await third).toEqual({ run: 2, removed: 2 });
+    expect(calls).toEqual([['k1'], ['k3']]);
+  });
+
+  it('tries again while the daemon is not ready, and gives up after its attempts', async () => {
+    const sleep = vi.fn(async () => undefined);
+    const ready = vi.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({ removed: ['a'] });
+    expect(await serialSeatSweeps(ready, { attempts: 3, delayMs: 15_000, sleep }).request([])).toEqual({ run: 1, removed: 1 });
+    expect(sleep).toHaveBeenCalledWith(15_000);
+    const never = vi.fn(async () => null);
+    expect(await serialSeatSweeps(never, { attempts: 3, delayMs: 1, sleep }).request([])).toEqual({ run: 1, removed: 0 });
+    expect(never).toHaveBeenCalledTimes(3);
   });
 });
