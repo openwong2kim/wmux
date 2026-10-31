@@ -4117,6 +4117,8 @@ export const en = {
   'claudeIntegration.usageReserveDesc': "Unattended work that would spend a Claude account's 5-hour usage doesn't start while that usage is at 85% or more, so the last 15% stays for you. A scheduled run waits for the reset and runs then if it is still within its grace, otherwise it is missed; a bot's fan-out waits too; a fan-out asked by an agent in your pane is refused, with the reset time. Codex and other agents are not held, and what you type is never held. Off by default.",
   'claudeIntegration.resumeOnStart': 'Resume Claude Code and Codex panes automatically on start',
   'claudeIntegration.resumeOnStartDesc': 'After a restart, type the resume line into panes that were running Claude Code or Codex instead of waiting for the Resume pill. Off by default.',
+  'claudeIntegration.fileSend': 'Let Claude send files to your phone',
+  'claudeIntegration.fileSendDesc': "Lets Claude send files to the wmux phone app. Claude's own Remote Control may then not upload those files to claude.ai. Applies to panes started after the change; panes already running keep how they started. Off by default.",
   'usageLimit.waiting': 'Waiting',
   'agentAuth.signedOut': "{agent} is signed out. It cannot run until you sign in again.",
   'agentAuth.signInAgain': "Sign in again",

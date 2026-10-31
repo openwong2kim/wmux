@@ -1447,6 +1447,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Ctrl/Cmd+Shift+click opens a new browser tab (#2140). The ptyId
     // identifies the owning workspace (multiview-safe reverse lookup).
     const activateTerminalUrl = (event: MouseEvent, uri: string) => {
+      // #2901: xterm activates a link on mouseup of any button; only a left
+      // click opens one.
+      if (event.button !== 0) return;
       const newTab = (event.ctrlKey || event.metaKey) && event.shiftKey;
       // Shift also extends xterm's selection on that click. Drop it, which also
       // cancels the debounced copy-on-select before it overwrites the clipboard.

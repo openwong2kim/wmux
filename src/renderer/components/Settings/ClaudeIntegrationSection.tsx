@@ -222,6 +222,7 @@ function UsageCard({
           aria-label={t('claudeIntegration.resumeOnStart')}
         />
       </SettingRow>
+      <ClaudeFileSendRow t={t} />
     </SettingsSection>
   );
 }
@@ -302,6 +303,43 @@ export function UsageReserveRow({ t }: { t: (key: string, vars?: Record<string, 
         onCheckedChange={change}
         aria-label={t('claudeIntegration.usageReserve')}
         data-usage-reserve={on === null ? 'unknown' : on ? 'on' : 'off'}
+      />
+    </SettingRow>
+  );
+}
+
+/**
+ * Claude file send: new panes get the variable that lets Claude Code send
+ * files to the phone. Main keeps it; same read-back pattern as the usage
+ * reserve row.
+ */
+export function ClaudeFileSendRow({ t }: { t: (key: string, vars?: Record<string, string | number>) => string }) {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    let live = true;
+    void window.electronAPI?.claudeFileSend?.get().then((r) => { if (live) setOn(r.enabled); }).catch(() => undefined);
+    return () => { live = false; };
+  }, []);
+  const change = (next: boolean) => {
+    setOn(null);
+    void window.electronAPI.claudeFileSend.set(next)
+      .catch(() => undefined)
+      .then(() => window.electronAPI.claudeFileSend.get())
+      .then((r) => setOn(r.enabled))
+      .catch(() => setOn(null));
+  };
+  return (
+    <SettingRow
+      id="claudefilesend"
+      label={t('claudeIntegration.fileSend')}
+      description={t('claudeIntegration.fileSendDesc')}
+    >
+      <Switch
+        checked={on === true}
+        disabled={on === null}
+        onCheckedChange={change}
+        aria-label={t('claudeIntegration.fileSend')}
+        data-claude-file-send={on === null ? 'unknown' : on ? 'on' : 'off'}
       />
     </SettingRow>
   );

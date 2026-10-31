@@ -23,11 +23,13 @@ const nodeOnly = [
   'src/daemon/__tests__/DaemonSessionManager.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.wslSecretEnv.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.secretEnv.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.hostWindow.test.ts',
   'src/daemon/__tests__/spawnCwdRefusal.os.test.ts',
   'src/daemon/__tests__/spawnStartTimeRetry.os.test.ts',
   'src/daemon/__tests__/wslDistroSpawnArgs.os.test.ts',
   'src/daemon/__tests__/createSessionPid.test.ts',
   'src/daemon/__tests__/createSessionPersistence.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.claudeFileSend.test.ts',
   'src/daemon/__tests__/runSnapshotOnce.test.ts',
   // Test the opt-in WMUX_RUST_SNAPSHOT path with a stubbed module; the rust
   // engine selects the built module and the text backend instead.

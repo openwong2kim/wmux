@@ -380,7 +380,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
+          - os: macos-15
             app: out/wmux-darwin-arm64/wmux.app/Contents/MacOS/wmux
           - os: windows-latest
             app: out/wmux-win32-x64/wmux.exe

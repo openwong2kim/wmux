@@ -133,7 +133,7 @@
     "electron-squirrel-startup": "^1.0.1",
     "immer": "^11.1.4",
     "koffi": "^3.1.6",
-    "node-pty": "1.2.0-beta.15",
+    "node-pty": "1.2.0-beta.17",
     "onnxruntime-web": "1.30.0",
     "pdfjs-dist": "6.3.289",
     "playwright-core": "^1.58.2",

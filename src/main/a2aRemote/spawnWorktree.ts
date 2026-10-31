@@ -180,8 +180,8 @@ function branchFor(spawnId: string): string {
 
 export type Git = (args: string[], pre?: string[], at?: string) => Promise<GitOut>;
 
-/** git with the worker hardening, in `repo` (or `at`); `pre`: further `-c` options, after the safe ones. */
-export function gitRunner(repo: string, opts: SpawnWorktreeOptions): Git {
+/** git with the worker hardening, in `repo` (or `at`); `pre`: further `-c` options, after the safe ones. `timeoutMs`: each call's limit (default GIT_TIMEOUT_MS). */
+export function gitRunner(repo: string, opts: SpawnWorktreeOptions & { timeoutMs?: number }): Git {
   const env = workerGitEnv({ ...getExecEnv(), ...(opts.env ?? {}) });
   const gitExe = resolveExecutable('git', { env });
   const safe = workerGitSafeArgs(path.resolve(opts.noHooksDir ?? path.join(getWmuxHomeDir(), 'factory', 'no-hooks')));
@@ -190,7 +190,7 @@ export function gitRunner(repo: string, opts: SpawnWorktreeOptions): Git {
       const { stdout, stderr } = await execFileAsync(gitExe, [...safe, ...pre, '-C', at, ...args], {
         cwd: at,
         env,
-        timeout: GIT_TIMEOUT_MS,
+        timeout: opts.timeoutMs ?? GIT_TIMEOUT_MS,
         windowsHide: true,
         maxBuffer: 16 * 1024 * 1024,
       });
@@ -218,7 +218,7 @@ async function removeWorktree(git: Git, root: string, worktreePath: string, bran
  * comparable string. Keys of `except` (the new branch's own `branch.<name>.*`,
  * which git may write for it) are left out.
  */
-function ownConfig(stdout: string, except?: string): string {
+export function ownConfig(stdout: string, except?: string): string {
   const own = except ? `branch.${except.toLowerCase()}.` : undefined;
   return parseGitConfigList(stdout)
     .filter((e) => e.scope === 'local' && !(own && e.key.startsWith(own)))
@@ -228,7 +228,7 @@ function ownConfig(stdout: string, except?: string): string {
 
 /** Every filter driver name in `git config -z --list --show-scope` output,
  *  as written: a subsection keeps its case and may hold dots. */
-function filterDriverNames(stdout: string): string[] {
+export function filterDriverNames(stdout: string): string[] {
   const names = new Set<string>();
   const parts = stdout.split('\0');
   for (let i = 0; i + 1 < parts.length; i += 2) {
@@ -242,19 +242,19 @@ function filterDriverNames(stdout: string): string[] {
 
 /** A `path.relative` result that stays at or below its base (a name like
  *  `..foo` is below it). */
-function isBelow(rel: string): boolean {
+export function isBelow(rel: string): boolean {
   return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 }
 
 /** The OS realpath: on Windows it expands 8.3 short names, as the root it is compared with was. */
-async function realpathOrNull(p: string): Promise<string | null> {
+export async function realpathOrNull(p: string): Promise<string | null> {
   return new Promise((resolve) => fs.realpath.native(p, (err, real) => resolve(err ? null : real)));
 }
 
-function samePath(a: string, b: string): boolean {
+export function samePath(a: string, b: string): boolean {
   return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
-function isDirectory(p: string): boolean {
+export function isDirectory(p: string): boolean {
   try { return fs.statSync(p).isDirectory(); } catch { return false; }
 }

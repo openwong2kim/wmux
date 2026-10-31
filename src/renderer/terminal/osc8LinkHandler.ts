@@ -61,6 +61,9 @@ export function createOsc8LinkHandler(
   return {
     allowNonHttpProtocols: false,
     activate(event, uri) {
+      // #2901: xterm activates on mouseup of any button. Check before the
+      // dialog, so a right or middle click does not raise it either.
+      if (event.button !== 0) return;
       // The dialog and the activation use the same normalized string, so what
       // the user approves is exactly what opens.
       const href = normalizeOsc8Uri(uri);
