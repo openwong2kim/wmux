@@ -459,6 +459,29 @@ describe('Codex steer and next-turn keys (codex-cli 0.162.1)', () => {
     expect(keys(f)).toEqual(['\x1b[200~next\x1b[201~', '\t']);
   });
 
+  it('a steer of a `!` or `/` command waits for the turn to end, then goes in with Enter', async () => {
+    for (const text of ['!git status', '/compact']) {
+      const f = fixture(); f.state.slug = 'codex'; f.state.status = 'running'; f.deps.steer = true;
+      f.show(screen('• Working (2s • esc to interrupt)'));
+      expect(await deliverChatPrompt('conversation-1', text, f.deps)).toBe('busy');
+      expect(f.write).not.toHaveBeenCalled();
+      f.state.status = 'idle'; f.show(screen('• Done.'));
+      expect(await deliverChatPrompt('conversation-1', text, f.deps)).toBe('sent');
+      expect(keys(f)).toEqual([`\x1b[200~${text}\x1b[201~`, '\r']);
+    }
+  });
+
+  it('a Tab while the title says Codex still works is reported as taken mid-turn', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle';
+    f.show(screen('• Done.'));
+    f.deps.readTitle = () => ({ title: '⠼ Rust review | wmux', at: Date.now() });
+    const submits: (boolean | undefined)[] = [];
+    f.deps.onWrite = (stage, queued) => { if (stage === 'submit') submits.push(queued); };
+    expect(await deliverChatPrompt('conversation-1', 'then the docs', f.deps)).toBe('sent');
+    expect(keys(f)).toEqual(['\x1b[200~then the docs\x1b[201~', '\t']);
+    expect(submits).toEqual([true]);
+  });
+
   it('a `!` shell command or a `/` command keeps Enter, which Tab would not submit, and waits for the turn to end', async () => {
     for (const text of ['  !git status', '/compact']) {
       const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle'; f.deps.idleOnly = true;

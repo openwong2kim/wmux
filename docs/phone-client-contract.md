@@ -2414,7 +2414,7 @@ final anyway):
 | `deliver` | When it is typed |
 | --- | --- |
 | `next-turn` | After the running turn ends, one item per ended turn, as above. The default. On Codex it is submitted with Tab, which Codex queues for the next turn if one started meanwhile; a `!` shell command or a `/` command, which Tab does not submit, keeps Enter |
-| `steer` | Claude and Codex: as soon as the pane allows, **during** the running turn. On Claude it goes into Claude's own composer queue, which applies it at the next tool boundary, exactly like a message typed into a running Claude in Terminal. On Codex it is submitted with Enter, which Codex applies to the running turn (codex-cli 0.162.1) |
+| `steer` | Claude and Codex: as soon as the pane allows, **during** the running turn. On Claude it goes into Claude's own composer queue, which applies it at the next tool boundary, exactly like a message typed into a running Claude in Terminal. On Codex it is submitted with Enter, which Codex applies to the running turn (codex-cli 0.162.1); a `!` shell command or a `/` command waits for the turn's end instead |
 
 On an OpenCode pane, `steer` behaves as `next-turn`, and the item
 reads `deliver:"next-turn"` everywhere (send answer, `/turns`, SSE, the PATCH
