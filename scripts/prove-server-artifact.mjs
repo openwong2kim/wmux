@@ -11,7 +11,9 @@
 //   3. starts the daemon through the shipped CLI (`wmux daemon start`);
 //   4. checks the daemon reports rust as requested and effective;
 //   5. opens a shell session in the daemon and reads its prompt back from the
-//      session's screen text, then ends the session and stops the daemon.
+//      session's screen text, then ends the session and stops the daemon;
+//   6. saves `{"engine": "node"}` the way a server user switches back, starts
+//      the daemon again and checks it reports node as requested and effective.
 import { execFileSync, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
@@ -112,5 +114,20 @@ try {
   console.log(JSON.stringify({ serverArtifactProof: 'ok', arch: process.arch, node: process.version, terminalCore }));
 } finally {
   // A failed stop is reported without hiding the error that may have led here.
+  try { wmux('daemon', 'stop'); } catch (err) { console.error(`wmux daemon stop: ${err.message}`); process.exitCode = 1; }
+}
+
+// The switch back to Node that the server docs give: a saved choice wins over the default.
+fs.mkdirSync(wmuxDir, { recursive: true });
+fs.writeFileSync(path.join(wmuxDir, 'terminal-core.json'), `${JSON.stringify({ engine: 'node' })}\n`);
+const restarted = JSON.parse(wmux('daemon', 'start', '--json'));
+try {
+  const token = fs.readFileSync(path.join(wmuxDir, 'daemon-auth-token'), 'utf8').trim();
+  const { terminalCore } = await rpc(restarted.pipeName, token, 'daemon.ping', { includeTerminalCore: true });
+  if (terminalCore?.requested !== 'node' || terminalCore.effective !== 'node' || terminalCore.environmentOverride !== false) {
+    throw new Error(`the daemon does not follow a saved node choice: ${JSON.stringify(terminalCore)}`);
+  }
+  console.log(JSON.stringify({ serverArtifactSavedChoice: 'ok', terminalCore }));
+} finally {
   try { wmux('daemon', 'stop'); } catch (err) { console.error(`wmux daemon stop: ${err.message}`); process.exitCode = 1; }
 }

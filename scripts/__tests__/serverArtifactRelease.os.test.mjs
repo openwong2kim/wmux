@@ -131,9 +131,13 @@ describe('release.yml server artifacts', () => {
     const wrapper = read('scripts', 'prove-server-artifact.sh');
     expect(wrapper).toMatch(/\nIMAGE=debian:11-slim@sha256:[0-9a-f]{64}\n/);
     const proof = read('scripts', 'prove-server-artifact.mjs');
-    // Rust is the default: the proof saves no engine choice to reach it.
-    expect(proof).not.toContain('writeFileSync');
+    // Rust is the default: the proof starts with no engine choice saved, then
+    // checks the saved node choice the server docs give to switch back.
+    expect(proof).toContain("if (fs.existsSync(path.join(wmuxDir, 'terminal-core.json'))) {");
+    expect(proof).not.toContain("engine: 'rust'");
     expect(proof).toContain("terminalCore.effective !== 'rust'");
+    expect(proof).toContain("JSON.stringify({ engine: 'node' })");
+    expect(proof).toContain("terminalCore.effective !== 'node'");
     expect(proof).not.toContain('WMUX_TERMINAL_CORE:');
   });
 

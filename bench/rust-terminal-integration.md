@@ -153,7 +153,9 @@ WMUX_DATA_SUFFIX=-rust-test WMUX_TERMINAL_CORE=rust node dist/daemon-bundle/inde
 
 The desktop picker lives in **Settings → Terminal → Performance → Terminal engine**.
 It saves `engine: "node" | "rust"` in `~/.wmux{suffix}/terminal-core.json`, shared
-by the daemon and local Electron PTY host. Node remains the default. The picker
+by the daemon and local Electron PTY host. With nothing saved, Rust is the
+default on Windows, macOS and Linux when the module loads, and Node otherwise
+(`defaultTerminalEngine`). The picker
 shows the current host's effective backend separately from the saved choice,
 disables Rust when the combined native module cannot load, and displays load
 fallbacks. Settings search also finds Rust, Node, PTY and memory.
@@ -305,8 +307,9 @@ exercise snapshots and output interpretation, and drain a real PTY into a frozen
 ring. Windows uses the package's ConPTY DLL. Failure stops packaging before makers
 create installers. This smoke never starts a daemon or changes user settings.
 
-Including the module does not enable Rust: Node stays the default, and switching
-still requires an explicit saved choice and a host restart. The packaging smoke
+Including the module is what makes Rust the default on Windows, macOS and Linux
+(`defaultTerminalEngine`); a saved choice still wins, and switching takes a host
+restart. The packaging smoke
 does not replace interactive signed-app, team-session or long-soak qualification.
 
 ## Reproduce validation
