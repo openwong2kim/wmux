@@ -41,6 +41,7 @@ import type { AgentStatus } from '../../shared/types';
 import type { AgentSignal } from '../../shared/hooks/signal-types';
 import { canSeedHookIdentity } from '../../shared/hooks/detectorIdentity';
 import type { ApprovalScreenReader } from '../../shared/approvalScreen';
+import { ShellMarkIngress } from '../../shared/terminal/shellMarkIngress';
 
 // How long after an AgentDetector event to suppress the ActivityMonitor idle
 // fallback notification. Prevents double-firing when both signals agree
@@ -960,7 +961,15 @@ export class PTYBridge {
       }
     });
 
-    instance.process.onData((data: string) => {
+    // #2771 — a mark the running program wrote (not the shell) gets a
+    // lowercase kind before any reader sees the chunk, as in the daemon. Only
+    // a WSL shell carries wmux's integration here (PTYManager.prepareSpawn);
+    // any other shell's marks pass through unread.
+    const marks = wslDistro
+      ? new ShellMarkIngress('idle', () => console.log(`[pty] ${ptyId}: program-written OSC 133 marks lowercased (shell command running)`))
+      : null;
+    instance.process.onData((raw: string) => {
+      const data = marks ? marks.apply(raw) : raw;
       // Micro-batch: enqueue this chunk and (re)arm a short flush timer.
       // Middlewares + IPC send are deferred to the flush so a torrent of
       // small chunks collapses into one pass. Backpressure here is what

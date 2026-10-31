@@ -95,7 +95,7 @@ import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
-import { decideCompanySend, companyCancelRefusal } from '../../shared/company';
+import { decideCompanySend, companyCancelRefusal, companyDoneRefusal, companySeatOf, isCompanyTask } from '../../shared/company';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import type { MoaPendingDecision } from '../../shared/moa';
@@ -2163,6 +2163,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
         active: !isStashed && l.id === ws.activePaneId,
         // Explicit boolean on every row — see surface.list.
         stashed: isStashed,
+        // The pane's seat when the workspace is a company (the coordinator is
+        // shown as the CEO). Main reads it to decide who marks a company task done.
+        ...(ws.company ? { companySeat: companySeatOf(ws.company, l.id) } : {}),
         // The human sees "session ended" in the roster; an agent polling this
         // list must be able to see the same thing, or it will keep addressing a
         // pane whose session is gone.
@@ -3637,6 +3640,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       targetPaneId: toAnchor?.paneId ?? null,
       senderPtyId,
       operator: params.operatorOrigin === true,
+      execute: executeRequested,
       data: params.data,
     });
     if (companyDecision.kind === 'refuse') return { error: `a2a.task.send: ${companyDecision.error}` };
@@ -3919,6 +3923,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     const rawCallerPtyIdUpdate = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
     const callerPtyIdUpdate = isTerminalPtyInLeaves(callerLeavesUpdate, rawCallerPtyIdUpdate) ? rawCallerPtyIdUpdate : '';
     const callerAddrUpdate = resolveSenderPaneAddress(callerLeavesUpdate, callerPtyIdUpdate);
+    // The caller pane's company seat: who marks a company task done
+    // (shared/company.ts companyDoneRefusal).
+    const callerSeat = companySeatOf(callerWsUpdate?.company, callerAddrUpdate?.paneId);
 
     // ── Apply the status transition ──
     // envelope PR4(§6.M C6): main이 데몬 A2aTaskService에 이미 커밋한 전이는
@@ -3945,6 +3952,16 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           trusted: params.requirePaneIdentity !== true,
         });
         if (refusal) return { error: `a2a.task.update: ${refusal}` };
+        // A company task is marked done by its coordinator or the human. Main
+        // sets requirePaneIdentity on every call it routes (false: its trusted
+        // lane); a call that skips the router is not trusted here, as in the
+        // daemon.
+        const doneTarget = nextState === 'completed' ? store.getTask(taskId) : undefined;
+        const doneRefusal = doneTarget && companyDoneRefusal(doneTarget, {
+          trusted: params.requirePaneIdentity === false,
+          seat: callerSeat,
+        });
+        if (doneRefusal) return { error: `a2a.task.update: ${doneRefusal}` };
         const result = store.updateTaskStatus(
           taskId, nextState, workspaceId, callerAddrUpdate, undefined, evidence, params.requirePaneIdentity === true,
         );
@@ -3971,7 +3988,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const adoptedOrphan = !!callerWsUpdate && !!callerAddrUpdate && isReceiverPaneGone(
         task.metadata.to, workspaceId, callerLeavesUpdate.map((l) => l.id),
       );
-      const paneRole = resolvePaneRole(task.metadata, callerAddrUpdate) ?? (adoptedOrphan ? 'agent' : null);
+      // The coordinator that marked a company task done speaks to its receiver.
+      const coordinatorDone = nextState === 'completed' && callerSeat === 'coordinator' && isCompanyTask(task.history);
+      const paneRole = resolvePaneRole(task.metadata, callerAddrUpdate)
+        ?? (adoptedOrphan ? 'agent' : coordinatorDone ? 'user' : null);
       // A fully pane-anchored same-ws task only admits its from/to panes (mirror
       // of the reply branch). A verified non-participant pane is rejected rather
       // than defaulting to the ws-level 'user' role. (A status-only update from a

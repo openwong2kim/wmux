@@ -39,7 +39,7 @@ export interface NativeTerminalCore {
   NativeRing: new (capacity: number) => NativeRingStorage;
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
-  NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string) => NativeTransport;
+  NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
 }
 export interface NativeOscBatch { codes: Float64Array; data: string[] }
 export interface NativeOutputInterpreter {
@@ -58,6 +58,8 @@ export interface NativeTransport {
   readChunk?(paused?: boolean): Omit<ReturnType<NativeTransport['read']>, 'data'> & { chunk: NativeOutputChunk; bytesRead: number };
   write(data: Uint8Array): void;
   clear(): void;
+  /** Absent on a module built before it (see shared/conptyParentWindow.ts). */
+  setParentWindow?(handle: Uint8Array): boolean;
   resize(cols: number, rows: number): void;
   kill(signal?: number): void;
   close(): void;

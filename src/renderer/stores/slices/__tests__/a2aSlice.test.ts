@@ -4,6 +4,7 @@ import { immer } from 'zustand/middleware/immer';
 import { createA2aSlice, type A2aSlice } from '../a2aSlice';
 import type { Message, CompletionEvidence } from '../../../../shared/types';
 import type { PaneAddress } from '../../../hooks/a2aAddressing';
+import { COMPANY_BRIEF_KIND } from '../../../../shared/company';
 
 type TestState = A2aSlice;
 
@@ -234,6 +235,17 @@ describe('a2aSlice — updateTaskStatus transitions (P3 message clarity)', () =>
     const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/terminal state/);
+  });
+
+  it('allows input-required -> completed (a report accepted as done)', () => {
+    store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
+    store.getState().updateTaskStatus(taskId, 'input-required', 'ws-receiver');
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, {
+      summary: 'checked',
+      items: [{ kind: 'inspection', status: 'unverified', summary: 'read the report' }],
+    });
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('completed');
   });
 
   it('keeps the receiver-permission gate ahead of the transition check', () => {
@@ -683,5 +695,56 @@ describe('a2aSlice — #1598 orphaned receiver pane + receiver cancel', () => {
     const ok = store.getState().updateTaskStatus(taskId, 'canceled', 'ws-receiver', undefined, undefined, { summary: 'superseded', items: [] });
     expect(ok.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status.state).toBe('canceled');
+  });
+});
+
+describe('a2aSlice — company mode: the coordinator marks a seat\'s task done', () => {
+  const leaf = (id: string) => ({ type: 'leaf', id, surfaces: [], activeSurfaceId: '' });
+  const coordinator: PaneAddress = { ptyId: 'pty-ceo', paneId: 'pane-ceo', surfaceId: 'surf-ceo' };
+  const sibling: PaneAddress = { ptyId: 'pty-m2', paneId: 'pane-m2', surfaceId: 'surf-m2' };
+  const evidence: CompletionEvidence = { summary: 'checked the report', items: [{ kind: 'inspection', status: 'unverified', summary: 'PR head read' }] };
+  const brief: Message = {
+    kind: 'message',
+    messageId: 'msg-brief',
+    role: 'user',
+    parts: [{ kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } }],
+  };
+
+  function seed(history: Message[], coordinatorPaneId: string | null = 'pane-ceo') {
+    const store = createTestStore([{
+      id: 'ws-home',
+      rootPane: { type: 'branch', id: 'b', children: [leaf('pane-ceo'), leaf('pane-m1'), leaf('pane-m2')], sizes: [34, 33, 33], direction: 'horizontal' },
+      company: { v: 1, id: 'co', coordinatorPaneId },
+    }]);
+    // A lateral brief: one staff pane to another, so the coordinator is neither party.
+    const taskId = store.getState().createA2aTask({
+      title: 'T',
+      from: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-m2' },
+      to: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-m1' },
+      history,
+      artifacts: [],
+    });
+    store.getState().updateTaskStatus(taskId, 'working', 'ws-home');
+    return { store, taskId };
+  }
+
+  it('passes the pane gate for the coordinator\'s done only', () => {
+    const { store, taskId } = seed([brief]);
+    expect(store.getState().updateTaskStatus(taskId, 'input-required', 'ws-home', coordinator).error)
+      .toMatch(/not the addressed receiver pane/);
+    expect(store.getState().updateTaskStatus(taskId, 'completed', 'ws-home', sibling, undefined, evidence).error)
+      .toMatch(/not the addressed receiver pane/);
+    const done = store.getState().updateTaskStatus(taskId, 'completed', 'ws-home', coordinator, undefined, evidence);
+    expect(done.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('completed');
+  });
+
+  it('keeps the pane gate for an ordinary task and while the seat is vacant', () => {
+    const plain = seed([makeMessage('hello')]);
+    expect(plain.store.getState().updateTaskStatus(plain.taskId, 'completed', 'ws-home', coordinator, undefined, evidence).error)
+      .toMatch(/not the addressed receiver pane/);
+    const vacant = seed([brief], null);
+    expect(vacant.store.getState().updateTaskStatus(vacant.taskId, 'completed', 'ws-home', coordinator, undefined, evidence).error)
+      .toMatch(/not the addressed receiver pane/);
   });
 });

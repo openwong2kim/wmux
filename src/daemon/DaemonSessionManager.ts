@@ -129,6 +129,8 @@ interface PreparedSpawn {
   cols: number;
   rows: number;
   wsl: ResolvedWslCwd | undefined;
+  /** #2771 — how the pane's process writes OSC 133 marks (DaemonPTYBridge.setupDataForwarding). */
+  shellMarks: 'exec' | 'integrated' | 'plain';
 }
 
 /**
@@ -377,7 +379,7 @@ export class DaemonSessionManager extends EventEmitter {
       else declined++;
     }
     if (declined > 0) {
-      console.log(`[DaemonSessionManager] host window: ${declined} session(s) cannot take a console owner (only node-pty on the bundled ConPTY can)`);
+      console.log(`[DaemonSessionManager] host window: ${declined} session(s) cannot take a console owner (only a pty on the bundled ConPTY can)`);
     }
     return reached;
   }
@@ -761,6 +763,9 @@ export class DaemonSessionManager extends EventEmitter {
     dropMissingAccountDirs(params.id, env, (message) => console.warn(message));
 
     let spawnArgs: string[] = isWslDistroSpawnArgs(cmd, params.args) ? [...params.args] : [];
+    // An exec unit runs a program with no shell prompt; a shell given wmux's
+    // integration marks every prompt.
+    let shellMarks: PreparedSpawn['shellMarks'] = params.exec ? 'exec' : 'plain';
     if (wsl) {
       const injection = buildWslInjection({ target: wsl.target, cwd, env,
         integrationDir: getWmuxDir(), bashInit: BASH_INIT,
@@ -769,6 +774,7 @@ export class DaemonSessionManager extends EventEmitter {
       });
       spawnArgs = injection.args;
       Object.assign(env, injection.env);
+      if (!params.exec) shellMarks = 'integrated';
     } else if (params.exec) {
       // X8 exec unit: the command IS the pane process — no interactive
       // shell session, so OSC 133 injection is skipped (no prompt to mark,
@@ -811,6 +817,7 @@ export class DaemonSessionManager extends EventEmitter {
           for (const [k, v] of Object.entries(injection.env)) {
             env[k] = v;
           }
+          shellMarks = 'integrated';
         }
       } catch (err) {
         // Integration install failure must not break session creation.
@@ -819,7 +826,11 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
-    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, claudeFileSend: this.claudeFileSend(), cols, rows, wsl };
+    // The integration scripts bail on WMUX_SHELL_INTEGRATION=0 (a WSL pane
+    // forwards the pane's own value), and then the shell writes no marks.
+    if (shellMarks === 'integrated' && env.WMUX_SHELL_INTEGRATION === '0') shellMarks = 'plain';
+
+    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, claudeFileSend: this.claudeFileSend(), cols, rows, wsl, shellMarks };
   }
 
   /**
@@ -911,7 +922,7 @@ export class DaemonSessionManager extends EventEmitter {
     conptyBackend: ConptyBackend,
     spawnMark: bigint | null,
   ): DaemonSession {
-    const { params, cfg, cmd, cwd, env, cols, rows, wsl } = prepared;
+    const { params, cfg, cmd, cwd, env, cols, rows, wsl, shellMarks } = prepared;
     // The Rust core puts each pane in its own kill-on-close job already.
     if (ptyBackend(ptyProcess) === 'node') this.paneJob?.contain(ptyProcess.pid, spawnMark);
     const now = new Date().toISOString();
@@ -1227,7 +1238,7 @@ export class DaemonSessionManager extends EventEmitter {
       () => console.log(`[DaemonSessionManager] session ${params.id}: answered the bundled ConPTY startup DA1`),
     );
     if (isWslShell(cmd) || isWslDistroSpawnArgs(cmd, params.args)) bridge.markWslDistro();
-    bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog);
+    bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog, shellMarks);
 
     // #646: stamp the pid's OS creation time so later reaping paths can tell
     // OUR shell from whatever process inherits the pid after recycling. If the

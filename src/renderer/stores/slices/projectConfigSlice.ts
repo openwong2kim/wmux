@@ -40,6 +40,9 @@ export interface ProjectPaneSeed {
    * command.
    */
   role?: string;
+  /** The pane's name (#tag), set through the same MetadataStore IPC as a
+   *  rename. A company preset's seat names its pane this way. */
+  label?: string;
   /**
    * U-PERM: the EFFECTIVE unattended permission-restore decision — the leaf's
    * `restorePermissionMode` intent AND the project's explicit unattended consent

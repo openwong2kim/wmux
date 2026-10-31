@@ -20,6 +20,10 @@ const STATE_COLOR: Record<TicketState, string> = {
 
 export const ticketKey = (id: string) => `ticket:${id}`;
 
+/** The state word; a working job that reported back waits on its sender. */
+const stateWord = (ticket: FleetTicket, t: T) =>
+  t(ticket.waitingOn ? 'fleet.ticket.waitingOnSender' : `fleet.ticket.state.${ticket.state}`);
+
 interface TicketRowProps {
   ticket: FleetTicket;
   assignee: string;
@@ -34,7 +38,7 @@ interface TicketRowProps {
 
 function TicketRowImpl({ ticket, assignee, focused, now, onFocus, onSelect, onJump, t }: TicketRowProps) {
   const title = ticket.title || t('fleet.ticket.untitled');
-  const state = t(`fleet.ticket.state.${ticket.state}`);
+  const state = stateWord(ticket, t);
   return (
     <button
       type="button"
@@ -151,7 +155,7 @@ export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecisi
       <div className="wmux-fleet-ticket-head">
         <span className="wmux-fleet-status" style={{ color: STATE_COLOR[ticket.state] }}>
           <span aria-hidden="true" className="wmux-fleet-dot" />
-          <span>{t(`fleet.ticket.state.${ticket.state}`)}</span>
+          <span>{stateWord(ticket, t)}</span>
         </span>
         <span className="truncate">{assignee}</span>
       </div>
