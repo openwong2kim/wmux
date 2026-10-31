@@ -1,5 +1,5 @@
 // #2398 — node-pty's shared conout drain worker itself
-// (lib/worker/conoutSocketWorker.js, patches/node-pty+1.2.0-beta.15.patch),
+// (lib/worker/conoutSocketWorker.js, patches/node-pty+1.2.0-beta.17.patch),
 // run as a real Worker against fake conout named pipes. The parent's side of
 // the protocol, with the Worker swapped for a fake: nodePtyConoutDrain.test.ts;
 // real ptys: nodePtyConoutDrain.os.test.ts.

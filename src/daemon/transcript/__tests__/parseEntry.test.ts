@@ -682,6 +682,23 @@ describe('parseTranscriptLine — tool bodies', () => {
     expect(ev.input?.srcOffset).toBe(0);
   });
 
+  it('hands out a relative SendUserFile path resolved against the call line\'s cwd', () => {
+    const cwd = path.resolve('/work/repo');
+    const sendLine = (input: unknown, name = 'SendUserFile') => line({
+      type: 'assistant', uuid: 'a-2', cwd,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-2', name, input }] },
+    });
+    const filesOf = (raw: string): unknown => {
+      const [ev] = parseTranscriptLine(raw, 0);
+      if (ev.kind !== 'tool_use') throw new Error('expected tool_use');
+      return (JSON.parse(ev.input?.inline ?? '{}') as { files?: unknown }).files;
+    };
+    const abs = path.resolve('/elsewhere/b.png');
+    expect(filesOf(sendLine({ files: ['./tiny.png', abs], status: 'normal' }))).toEqual([path.join(cwd, 'tiny.png'), abs]);
+    // Only SendUserFile is rewritten.
+    expect(filesOf(sendLine({ files: ['./tiny.png'] }, 'Other'))).toEqual(['./tiny.png']);
+  });
+
   it('carries a small tool output inline', () => {
     const [ev] = parseTranscriptLine(resultEntry('total 0\ndrwxr-xr-x'), 0);
     if (ev.kind !== 'tool_result') throw new Error('expected tool_result');

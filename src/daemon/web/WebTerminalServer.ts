@@ -7044,10 +7044,14 @@ export class WebTerminalServer {
    * with the call's time; or null.
    *
    * The match is on `raw` as the request spelled it, byte for byte against the
-   * transcript's `input.files[]` (or `input.file_path`); `sentFileParts`
+   * path the grant was recorded under (`SendUserFile`: the result's validated
+   * `attachments[].path`, see sentFiles.ts; `Read`: `input.file_path`); `sentFileParts`
    * separately refuses `.`/`..` segments and doubled separators. A `Read`
-   * grant also matches macOS's `/tmp/` ↔ `/private/tmp/` respelling, as a
-   * string. Only the PARENT is resolved: the last
+   * grant (and a SendUserFile grant from a result without attachments) also
+   * matches macOS's `/tmp/` ↔ `/private/tmp/` respelling, as a string. A
+   * projected SendUserFile path that is the same file as one of the call's
+   * validated attachments opens that attachment's path. Only the PARENT is
+   * resolved: the last
    * component is opened as named, so `openResolvedFile` refuses it when it is a
    * symlink and checks the handle is the regular file it looked up.
    *
@@ -7061,13 +7065,18 @@ export class WebTerminalServer {
     tool: GrantTool,
   ): Promise<{ real: string; name: string; sentAt: number } | null> {
     if (!isLocalClientPath(raw)) return null;
-    const parts = sentFileParts(raw);
-    if (!parts) return null;
+    if (!sentFileParts(raw)) return null;
     const projector = this.deps.projector?.() ?? null;
     const before = projector?.sentFileBinding(sessionId) ?? null;
     if (!projector || !before) return null;
-    const sentAt = await this.sentFiles.grantedAt(before.transcriptPath, raw, this.now(), tool);
-    if (sentAt === null) return null;
+    const grant = await this.sentFiles.grantFor(before.transcriptPath, raw, this.now(), tool);
+    if (grant === null) return null;
+    // What is opened is the granted path: `raw` itself, or the attachment a
+    // projected SendUserFile path was found to be the same file as.
+    if (!isLocalClientPath(grant.path)) return null;
+    const parts = sentFileParts(grant.path);
+    if (!parts) return null;
+    const sentAt = grant.at;
     const after = projector.sentFileBinding(sessionId);
     if (
       !after ||

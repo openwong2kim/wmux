@@ -28,8 +28,9 @@ the staged copy exists). It also makes `Contents/Resources/AppIcon.icns` from
 `Support/Info.plist`), so the helper has an icon in the Privacy lists of
 System Settings; the signature seals it.
 
-The package targets Swift tools 5.9 / Swift 5 mode because the release runner
-(`macos-14`) ships Xcode 15.
+The package targets Swift tools 5.9 / Swift 5 mode. It was set for the old
+`macos-14` release runner (Xcode 15); the `macos-15` runner's newer Xcode still
+builds that mode.
 
 Sources:
 
