@@ -24,11 +24,15 @@ enum Background {
         let app = NSRunningApplication(processIdentifier: target.pid)
         let bundle = app?.bundleURL
         let electron = bundle.map(isElectron) ?? false
+        let frontmost = NSWorkspace.shared.frontmostApplication?.processIdentifier == target.pid
         return foregroundReason(input, support: support, target: BackgroundTarget(
             windowOnScreen: onScreen(target.pid, windowID),
             chromium: electron || (bundle.map(isChromium) ?? false),
             electron: electron,
-            readsPointer: readsPointer(app)
+            readsPointer: readsPointer(app),
+            frontmost: frontmost,
+            focusedWindow: !frontmost || AX.element(AX.app(target.pid), kAXFocusedWindowAttribute).flatMap(AX.windowID) == windowID,
+            secureEntry: secureKeyboardEntryApp(bundleID: app?.bundleIdentifier)
         ))
     }
 

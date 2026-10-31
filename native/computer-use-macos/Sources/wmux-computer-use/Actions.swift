@@ -384,7 +384,7 @@ enum Actions {
         let text = try p.requireString("text")
         guard !text.isEmpty else { throw HelperError("invalid_argument", "type needs text") }
         let windowID = CGWindowID(target.windowID)
-        var why = Background.reason(.keys, target)
+        var why = Background.reason(.keys(command: false), target)
         if why == nil, let windowID {
             let start = Background.userState()
             let sentBefore = Input.shared.sent
@@ -508,7 +508,7 @@ enum Actions {
         let repeatCount = min(50, max(1, p.int("repeat") ?? 1))
         let flags = KeyCodes.intrinsicFlags(for: key)
         let windowID = CGWindowID(target.windowID)
-        var why = Background.reason(.keys, target)
+        var why = Background.reason(.keys(command: flags.contains(.maskCommand)), target)
         if why == nil, let windowID {
             let start = Background.userState()
             let sentBefore = Input.shared.sent
@@ -562,8 +562,9 @@ enum Actions {
         guard let mods = KeyCodes.orderedModifiers((p["modifiers"] as? [String]) ?? []) else {
             throw HelperError("invalid_argument", "modifiers must be ctrl, alt, shift or meta")
         }
+        let flags = mods.reduce(into: KeyCodes.intrinsicFlags(for: key)) { $0.insert($1.flag) }
         let windowID = CGWindowID(target.windowID)
-        var why = Background.reason(.keys, target)
+        var why = Background.reason(.keys(command: flags.contains(.maskCommand)), target)
         if why == nil, let windowID {
             let start = Background.userState()
             let sentBefore = Input.shared.sent
@@ -572,7 +573,6 @@ enum Actions {
                 guard focus.ok else { throw Background.Stop(reason: "the target window did not take focus in the background") }
                 await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
                 try Background.requireStillSafe(target, windowID, since: start)
-                let flags = mods.reduce(into: KeyCodes.intrinsicFlags(for: key)) { $0.insert($1.flag) }
                 Background.tap(pid: target.pid, key: code, flags: flags)
                 Background.restoreKey(windowID, to: focus.previous)
                 return await backgroundResult(since: start, pid: target.pid)

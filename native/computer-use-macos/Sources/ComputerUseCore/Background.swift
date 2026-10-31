@@ -28,12 +28,22 @@ public struct BackgroundTarget: Equatable {
     public var electron: Bool
     /// The toolkit places a click where the real pointer is (Tk, LibreOffice).
     public var readsPointer: Bool
+    /// The target app is the user's frontmost app.
+    public var frontmost: Bool
+    /// The target window is its app's focused window.
+    public var focusedWindow: Bool
+    /// A terminal that can turn on Secure Keyboard Entry (secureKeyboardEntryApp).
+    public var secureEntry: Bool
 
-    public init(windowOnScreen: Bool, chromium: Bool, electron: Bool, readsPointer: Bool) {
+    public init(windowOnScreen: Bool, chromium: Bool, electron: Bool, readsPointer: Bool,
+                frontmost: Bool = false, focusedWindow: Bool = true, secureEntry: Bool = false) {
         self.windowOnScreen = windowOnScreen
         self.chromium = chromium
         self.electron = electron
         self.readsPointer = readsPointer
+        self.frontmost = frontmost
+        self.focusedWindow = focusedWindow
+        self.secureEntry = secureEntry
     }
 }
 
@@ -41,7 +51,37 @@ public enum BackgroundInput: Equatable {
     /// `button` 0 is left.
     case click(button: Int, count: Int)
     case scroll
-    case keys
+    /// `command`: the keys carry the Command modifier (a shortcut).
+    case keys(command: Bool)
+}
+
+/// Terminals that can turn on Secure Keyboard Entry. Their keys go as real
+/// input, where the secure-input check applies; posted keys would skip it.
+/// Read from the bundle id, which errs toward real input.
+public let secureKeyboardEntryApps: Set<String> = [
+    "com.apple.Terminal",
+    "com.googlecode.iterm2",
+    "com.mitchellh.ghostty",
+    "dev.warp.Warp-Stable",
+    "dev.warp.Warp",
+    "net.kovidgoyal.kitty",
+    "org.alacritty",
+    "com.github.wez.wezterm",
+    "co.zeit.hyper",
+    "com.electron.wmux",
+]
+
+public func secureKeyboardEntryApp(bundleID: String?) -> Bool {
+    bundleID.map(secureKeyboardEntryApps.contains) ?? false
+}
+
+/// The macOS major versions whose event-record layout (the 0xF8-byte record
+/// SLPSPostEventRecordTo takes, and the one inside a CGEvent) the helper
+/// knows. On any other major the record path stays off.
+public let knownRecordLayoutMajors: Set<Int> = [14, 15, 26]
+
+public func recordLayoutKnown(major: Int) -> Bool {
+    knownRecordLayoutMajors.contains(major)
 }
 
 /// Nil when the input can go to the target alone; otherwise why it goes as
@@ -49,6 +89,16 @@ public enum BackgroundInput: Equatable {
 public func foregroundReason(_ input: BackgroundInput, support: BackgroundSupport, target: BackgroundTarget) -> String? {
     guard support.backgroundPointer else { return "this macOS lacks the calls background input needs" }
     guard target.windowOnScreen else { return "the window is not on screen on this Space (minimized, hidden or on another Space)" }
+    switch input {
+    case .click, .keys:
+        // Focusing the target window would take key status from the window
+        // the user is typing in, and the user's keys would go to the target.
+        guard !target.frontmost || target.focusedWindow else {
+            return "the app is in front with another of its windows focused, and the user's typing would move to this one"
+        }
+    case .scroll:
+        break
+    }
     switch input {
     case let .click(button, count):
         guard support.focusWithoutRaise else { return "this macOS lacks the call that focuses a window without raising it" }
@@ -58,7 +108,9 @@ public func foregroundReason(_ input: BackgroundInput, support: BackgroundSuppor
     case .scroll:
         guard !target.electron else { return "Electron apps do not scroll from background events" }
         guard !target.readsPointer else { return "the app places the scroll where the real pointer is" }
-    case .keys:
+    case let .keys(command):
+        guard !target.secureEntry else { return "the app can turn on Secure Keyboard Entry, so its keys go where secure input is checked" }
+        guard !(command && target.chromium) else { return "Chromium-based apps drop a posted Command shortcut" }
         guard support.keyAuth || !target.chromium else {
             return "Chromium-based apps need key authentication, which macOS has from version 15"
         }

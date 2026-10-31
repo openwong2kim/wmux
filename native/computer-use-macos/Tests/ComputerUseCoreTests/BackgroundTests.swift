@@ -7,7 +7,7 @@ final class BackgroundTests: XCTestCase {
     private let plainWindow = BackgroundTarget(windowOnScreen: true, chromium: false, electron: false, readsPointer: false)
 
     func testEverythingGoesInTheBackgroundWhenTheCallsAndTheWindowAllowIt() {
-        for input in [BackgroundInput.click(button: 0, count: 1), .click(button: 0, count: 2), .scroll, .keys] {
+        for input in [BackgroundInput.click(button: 0, count: 1), .click(button: 0, count: 2), .scroll, .keys(command: false)] {
             XCTAssertNil(foregroundReason(input, support: all, target: plainWindow), "\(input)")
         }
     }
@@ -15,14 +15,14 @@ final class BackgroundTests: XCTestCase {
     func testMissingCallsOrAWindowOffThisSpaceGoAsRealInput() {
         var noCalls = all
         noCalls.backgroundPointer = false
-        XCTAssertNotNil(foregroundReason(.keys, support: noCalls, target: plainWindow))
+        XCTAssertNotNil(foregroundReason(.keys(command: false), support: noCalls, target: plainWindow))
         var noFocus = all
         noFocus.focusWithoutRaise = false
         XCTAssertNotNil(foregroundReason(.click(button: 0, count: 1), support: noFocus, target: plainWindow))
-        XCTAssertNil(foregroundReason(.keys, support: noFocus, target: plainWindow))
+        XCTAssertNil(foregroundReason(.keys(command: false), support: noFocus, target: plainWindow))
         var minimized = plainWindow
         minimized.windowOnScreen = false
-        for input in [BackgroundInput.click(button: 0, count: 1), .scroll, .keys] {
+        for input in [BackgroundInput.click(button: 0, count: 1), .scroll, .keys(command: false)] {
             XCTAssertNotNil(foregroundReason(input, support: all, target: minimized), "\(input)")
         }
     }
@@ -37,7 +37,7 @@ final class BackgroundTests: XCTestCase {
         tk.readsPointer = true
         XCTAssertNotNil(foregroundReason(.click(button: 0, count: 1), support: all, target: tk))
         XCTAssertNotNil(foregroundReason(.scroll, support: all, target: tk))
-        XCTAssertNil(foregroundReason(.keys, support: all, target: tk))
+        XCTAssertNil(foregroundReason(.keys(command: false), support: all, target: tk))
     }
 
     func testElectronScrollsAsRealInput() {
@@ -50,9 +50,50 @@ final class BackgroundTests: XCTestCase {
         var macOS14 = all
         macOS14.keyAuth = false
         let chrome = BackgroundTarget(windowOnScreen: true, chromium: true, electron: false, readsPointer: false)
-        XCTAssertNotNil(foregroundReason(.keys, support: macOS14, target: chrome))
-        XCTAssertNil(foregroundReason(.keys, support: macOS14, target: plainWindow))
-        XCTAssertNil(foregroundReason(.keys, support: all, target: chrome))
+        XCTAssertNotNil(foregroundReason(.keys(command: false), support: macOS14, target: chrome))
+        XCTAssertNil(foregroundReason(.keys(command: false), support: macOS14, target: plainWindow))
+        XCTAssertNil(foregroundReason(.keys(command: false), support: all, target: chrome))
+    }
+
+    func testAnotherFocusedWindowOfTheFrontmostAppKeepsClicksAndKeysInTheForeground() {
+        var front = plainWindow
+        front.frontmost = true
+        front.focusedWindow = false
+        XCTAssertNotNil(foregroundReason(.keys(command: false), support: all, target: front))
+        XCTAssertNotNil(foregroundReason(.click(button: 0, count: 1), support: all, target: front))
+        // A scroll sends no focus record, so it still goes in the background.
+        XCTAssertNil(foregroundReason(.scroll, support: all, target: front))
+        // The target window focused in the frontmost app, or a background app: background.
+        front.focusedWindow = true
+        XCTAssertNil(foregroundReason(.keys(command: false), support: all, target: front))
+        var behind = plainWindow
+        behind.focusedWindow = false
+        XCTAssertNil(foregroundReason(.keys(command: false), support: all, target: behind))
+    }
+
+    func testCommandShortcutsToChromiumGoAsRealInput() {
+        let chrome = BackgroundTarget(windowOnScreen: true, chromium: true, electron: false, readsPointer: false)
+        let electron = BackgroundTarget(windowOnScreen: true, chromium: true, electron: true, readsPointer: false)
+        XCTAssertNotNil(foregroundReason(.keys(command: true), support: all, target: chrome))
+        XCTAssertNotNil(foregroundReason(.keys(command: true), support: all, target: electron))
+        XCTAssertNil(foregroundReason(.keys(command: false), support: all, target: chrome))
+        XCTAssertNil(foregroundReason(.keys(command: true), support: all, target: plainWindow))
+    }
+
+    func testTerminalsThatCanTurnOnSecureEntryGetRealKeys() {
+        XCTAssertTrue(secureKeyboardEntryApp(bundleID: "com.apple.Terminal"))
+        XCTAssertTrue(secureKeyboardEntryApp(bundleID: "com.googlecode.iterm2"))
+        XCTAssertFalse(secureKeyboardEntryApp(bundleID: "com.apple.TextEdit"))
+        XCTAssertFalse(secureKeyboardEntryApp(bundleID: nil))
+        var terminal = plainWindow
+        terminal.secureEntry = true
+        XCTAssertNotNil(foregroundReason(.keys(command: false), support: all, target: terminal))
+        XCTAssertNil(foregroundReason(.click(button: 0, count: 1), support: all, target: terminal))
+    }
+
+    func testTheRecordPathIsOnlyForKnownMacOSMajors() {
+        for major in [14, 15, 26] { XCTAssertTrue(recordLayoutKnown(major: major), "\(major)") }
+        for major in [13, 16, 27] { XCTAssertFalse(recordLayoutKnown(major: major), "\(major)") }
     }
 
     func testTheClickPlanPrimesOffScreenThenClicksTheTarget() {

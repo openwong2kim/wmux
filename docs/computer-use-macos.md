@@ -216,7 +216,9 @@ is not re-walked.
     the field focus first, by AX or else a background click on it; without an
     index the app's focused element must take text. Keys carry the key
     authentication message (macOS 15 and later), except a shortcut with
-    Command, which then reaches the app's menus.
+    Command, which then reaches the app's menus. Chromium drops a posted key
+    without the message, so a Command shortcut to a Chromium-based app goes
+    as real input.
   - Before every batch, chunk and notch: the screen is unlocked, the window is
     still on screen, and our own input has had no side effect on the user
     (`ComputerUseCore` `sideEffect`). That means the real pointer has not
@@ -240,7 +242,11 @@ is not re-walked.
     minimized, hidden or on another Space, the click is not a left single or
     double click, the app reads the real pointer (Tk, LibreOffice), the target
     is Electron and the input is a scroll, the target is Chromium-based and
-    this macOS has no key authentication (macOS 14), the field does not take
+    this macOS has no key authentication (macOS 14), the input is a Command
+    shortcut to a Chromium-based app, the target app is frontmost with another
+    of its windows focused and the input is a click or keys (the user's typing
+    would move to the target window), the target is a terminal that can turn
+    on Secure Keyboard Entry and the input is keys, the field does not take
     focus in the background (a page Chrome does not expose to AX), or the app
     came to the front when its window or field was focused.
 - Bringing the target forward, for real input: every input action (`click` by
