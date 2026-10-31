@@ -147,6 +147,7 @@ export function createDefaultConfig(): DaemonConfig {
       // (e.g. a running build) never hits this.
       detachedTtlHours: 8,
       hibernateIdleHours: 24,
+      ringCompression: false,
     },
     // Channel retention — the trash empties itself after 30 days (it only
     // finishes deletions a human started), while auto-trashing archived
@@ -487,6 +488,7 @@ export function loadConfig(): DaemonConfig {
       typeof hibernateIdleHours === 'number' && Number.isFinite(hibernateIdleHours) && hibernateIdleHours >= 0
         ? Math.min(hibernateIdleHours, HIBERNATE_IDLE_CAP_HOURS)
         : defaults.session.hibernateIdleHours;
+    config.session.ringCompression = config.session.ringCompression === true;
     // app-weight P1 idle-CPU knobs — same per-field backfill + clamp.
     config.daemon.livenessIntervalSec = clampLifecycle(
       config.daemon.livenessIntervalSec, defaults.daemon.livenessIntervalSec!,
