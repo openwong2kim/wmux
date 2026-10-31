@@ -29,7 +29,7 @@ const input = {
   ceo: 0,
   seats: [
     { label: 'researcher', owns: 'Research', command: 'claude "$(cat \'/b/researcher.md\')"' },
-    { label: 'dev-1', owns: '', command: 'claude' },
+    { label: 'dev-1', owns: '', command: 'claude', cwd: '/wt/dev-1' },
     { label: 'notes', owns: '', command: null },
   ],
 };
@@ -45,7 +45,7 @@ describe('workspaceSlice.addCompanyWorkspace', () => {
     expect(ws.activePaneId).toBe(leaves[0].id);
     expect(leaves.map((l) => s.getState().projectPaneSeed[l.id])).toEqual([
       { label: 'researcher', command: input.seats[0].command, cwd: '/repo/checkout', role: 'Research' },
-      { label: 'dev-1', command: 'claude', cwd: '/repo/checkout' },
+      { label: 'dev-1', command: 'claude', cwd: '/wt/dev-1' },
       { label: 'notes', cwd: '/repo/checkout' },
     ]);
   });

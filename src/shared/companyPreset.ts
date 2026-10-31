@@ -36,7 +36,8 @@ export interface CompanyWorkspaceInput {
   mission?: string;
   standingOrders?: string;
   ceo: number;
-  seats: { label: string; owns: string; command: string | null }[];
+  /** `cwd`: the seat's own worktree; absent, the seat starts in `cwd` above. */
+  seats: { label: string; owns: string; command: string | null; cwd?: string }[];
 }
 
 /** Seats a preset may hold: the CEO and up to five more. */
@@ -103,6 +104,15 @@ export function freeSeatLabels(labels: readonly string[], taken: Iterable<string
   });
 }
 
+/**
+ * The seats that work in a worktree of their own: every seat but the CEO that
+ * starts an agent. Agents sharing one checkout overwrite each other's
+ * changes; the CEO plans and checks and works in the folder itself.
+ */
+export function ownWorktreeSeats(seats: readonly { agent?: string }[], ceo: number): number[] {
+  return seats.flatMap((seat, i) => (i !== ceo && seat.agent ? [i] : []));
+}
+
 /** Why the seats cannot be made, or null: a missing or bad label, two seats
  *  with one name, too many seats, or no CEO seat. */
 export function companySeatsError(seats: readonly CompanyPresetSeat[], ceo: number): string | null {
@@ -123,8 +133,9 @@ export interface SeatBriefInput {
   company: string;
   mission?: string;
   standingOrders?: string;
-  /** Every seat as made (labels after suffixing), CEO included. */
-  seats: readonly { label: string; owns: string }[];
+  /** Every seat as made (labels after suffixing), CEO included, with the
+   *  worktree and branch of a seat that has its own. */
+  seats: readonly { label: string; owns: string; worktree?: { path: string; branch: string } }[];
   ceo: number;
   /** The seat this brief is for. */
   seat: number;
@@ -151,8 +162,10 @@ export function seatBrief(input: SeatBriefInput): string {
   if (input.mission?.trim()) lines.push(`Mission: ${input.mission.trim()}`);
   if (input.standingOrders?.trim()) lines.push(`Standing orders: ${input.standingOrders.trim()}`);
   if (input.seat === input.ceo) {
-    const staff = input.seats.filter((_, i) => i !== input.ceo)
-      .map((s) => (s.owns.trim() ? `#${s.label} (owns ${s.owns.trim()})` : `#${s.label}`));
+    const staff = input.seats.filter((_, i) => i !== input.ceo).map((s) => {
+      const notes = [s.owns.trim() && `owns ${s.owns.trim()}`, s.worktree && `branch ${s.worktree.branch}`].filter(Boolean);
+      return notes.length > 0 ? `#${s.label} (${notes.join('; ')})` : `#${s.label}`;
+    });
     if (staff.length > 0) {
       lines.push('You run the company: plan the work, hand it to your seats and check what comes back. Do not do a seat\'s work yourself.');
       lines.push(`Your seats: ${staff.join(', ')}.`);
@@ -164,6 +177,9 @@ export function seatBrief(input: SeatBriefInput): string {
     }
     lines.push('Wait for the owner\'s first request.');
   } else {
+    if (me.worktree) {
+      lines.push(`Your worktree is ${me.worktree.path}, on branch ${me.worktree.branch}. Work and commit only there, and open your pull request from that branch.`);
+    }
     lines.push(`Take briefs from #${ceo.label}. When one arrives, do the work, then report back on the task with a2a_task_update and evidence.`);
     lines.push('Wait for a brief.');
   }

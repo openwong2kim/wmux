@@ -1590,21 +1590,25 @@ leaves the page.
   keeps live activity, else the coordinate. The company adds no colour.
 - **Company presets** (owner-approved 2026-10-31, mockup round 6): the
   titlebar + menu lists them under a muted **Company** heading, below the
-  layout presets, as label + description rows like theirs (CEO +
-  researcher + 3 devs, Lead + reviewer). A pick swaps the menu for a dialog: Name and Folder
-  side by side, Mission, Standing orders (filled from the preset), then the
-  seats as a table (a CEO radio, Seat, Owns, Agent; an agent that is not
-  installed is listed but disabled), a **Tell each agent its seat** checkbox,
-  on by default, and **Make company** the one primary. A bad or repeated
-  seat name says why under the table and disables the primary. Making it
-  opens a new workspace with the CEO's pane on the left at half the width and
-  the other seats stacked top to bottom on the right, each pane named after
-  its seat (a name another pane answers to gets `-2`, `-3`…), carrying what
-  it owns, started with its agent, and the CEO seated before any agent is
-  up. With the checkbox on, each agent's first message is its seat: its
-  name, what it owns, the mission and standing orders, who it reports to,
-  and for the CEO the other seats and the brief a task to them needs. The
-  board is not opened for it; the row menu opens it.
+  layout presets, as label + description rows like theirs
+  (CEO + researcher + 3 devs, Lead + reviewer). A pick swaps the menu for a
+  dialog: Name and Folder side by side, Mission, Standing orders (filled
+  from the preset), then the seats as a table (a CEO radio, Seat, Owns,
+  Agent; an agent that is not installed is listed but disabled), a **Tell
+  each agent its seat** checkbox, on by default, and **Make company** the
+  one primary. A bad or repeated seat name, or two agent seats besides the
+  CEO with no folder, says why under the table and disables the primary.
+  Making it opens a new workspace with the CEO's pane on the left at half
+  the width and the other seats stacked top to bottom on the right, each
+  pane named after its seat (a name another pane answers to gets `-2`,
+  `-3`…), carrying what it owns, started with its agent, and the CEO seated
+  before any agent is up. Every seat but the CEO that starts an agent works
+  in its own worktree of the folder's repository, on its own branch from
+  origin's default branch; the CEO works in the folder. With the checkbox
+  on, each agent's first message is its seat: its name, what it owns, the
+  mission and standing orders, who it reports to, its worktree and branch,
+  and for the CEO the other seats with their branches and the brief a task
+  to them needs. The board is not opened for it; the row menu opens it.
 - **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
   `treeitem`) with one Tab stop — the row the keyboard was last on, else the
   selected row, else the first. ↑ ↓ Home End move between rows in screen

@@ -548,10 +548,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         };
         input.seats.forEach((seat, i) => {
           const owns = seat.owns.trim();
+          const cwd = seat.cwd ?? input.cwd;
           state.projectPaneSeed[leaves[i].id] = {
             label: seat.label,
             ...(seat.command ? { command: seat.command } : {}),
-            ...(input.cwd ? { cwd: input.cwd } : {}),
+            ...(cwd ? { cwd } : {}),
             ...(owns ? { role: owns } : {}),
           };
         });

@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { generateId } from '../../../shared/types';
 import { agentSlugToDisplay, isAgentSlug, type AgentSlug } from '../../../shared/agentIdentity';
-import { companySeatsError, type CompanyPreset, type CompanyPresetSeat } from '../../../shared/companyPreset';
+import { companySeatsError, ownWorktreeSeats, type CompanyPreset, type CompanyPresetSeat } from '../../../shared/companyPreset';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { displayPath } from '../../utils/displayPath';
@@ -68,7 +68,9 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
 
   const trimmed = useMemo(() => seats.map((s) => ({ ...s, label: s.label.trim(), owns: s.owns.trim() })), [seats]);
   const installed = (agent: AgentSlug) => agents.some((a) => a.agent === agent && a.installed);
-  const seatsError = companySeatsError(trimmed, ceo) ?? (trimmed.some((s) => s.agent && !installed(s.agent)) ? 'agent' : null);
+  const seatsError = companySeatsError(trimmed, ceo)
+    ?? (trimmed.some((s) => s.agent && !installed(s.agent)) ? 'agent' : null)
+    ?? (!folder && ownWorktreeSeats(trimmed, ceo).length > 1 ? 'folder' : null);
   const folderName = folder?.split(/[/\\]/).filter(Boolean).pop();
   const companyName = name.trim() || folderName || t('companyPreset.defaultName');
 
@@ -94,6 +96,7 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
       standingOrders,
       ceo,
       tellSeats,
+      ...(folder ? { folder } : {}),
       seats: trimmed.map((s) => ({ label: s.label, owns: s.owns, ...(s.agent ? { agent: s.agent } : {}) })),
     }).catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }));
     if (!open.current) return;
@@ -109,7 +112,10 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
       mission,
       standingOrders,
       ceo,
-      seats: trimmed.map((s, i) => ({ label: res.labels[i], owns: s.owns, command: res.commands[i] ?? null })),
+      seats: trimmed.map((s, i) => {
+        const cwd = res.cwds[i];
+        return { label: res.labels[i], owns: s.owns, command: res.commands[i] ?? null, ...(cwd ? { cwd } : {}) };
+      }),
     });
     setBusy(false);
     if (!ok) {
