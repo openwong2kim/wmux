@@ -1,4 +1,5 @@
-/** Native code is loaded for an explicit backend selection or Settings availability probe. */
+/** Native code is loaded for an explicit backend selection, a Settings availability probe,
+ *  or the daemon's Windows process table (src/daemon/nativeProcessTable.ts). */
 import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -40,6 +41,8 @@ export interface NativeTerminalCore {
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
+  /** Windows only (`process-table-v1`). */
+  processTable?(withCommandLines: boolean): Promise<Array<{ pid: number; ppid: number; name: string; created?: number | null; cmdline?: string | null }>>;
 }
 export interface NativeOscBatch { codes: Float64Array; data: string[] }
 export interface NativeOutputInterpreter {
