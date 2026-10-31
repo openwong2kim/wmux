@@ -1285,14 +1285,17 @@ export function registerA2aRpc(
       const task = tasks.find((t) => isRecord(t) && t.id === taskId);
       return isRecord(task) ? task : null;
     };
-    const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.query', query, { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS });
+    const [gate, fromRenderer] = await Promise.all([
+      daemonTaskRpc(getDaemonClient, 'a2a.task.query', query, { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS }),
+      sendToRenderer(getWindow, 'a2a.task.query', query).then(pick, () => null),
+    ]);
     const fromDaemon = gate.kind === 'ok' ? pick(gate.result) : null;
-    if (fromDaemon) return fromDaemon;
-    try {
-      return pick(await sendToRenderer(getWindow, 'a2a.task.query', query));
-    } catch {
-      return null;
+    // As in a2a.task.query: replies live in the renderer's history only, and a
+    // remote task's history grows in the daemon.
+    if (fromDaemon && fromRenderer && !isRemoteTaskId(taskId) && Array.isArray(fromRenderer.history)) {
+      return { ...fromDaemon, history: fromRenderer.history };
     }
+    return fromDaemon ?? fromRenderer;
   }
 
   /**
