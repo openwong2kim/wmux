@@ -292,11 +292,12 @@ export class A2aTaskService {
 
   /** Re-seed the remote-state dedupe from a replayed transition/cancel. */
   private restoreRemoteState(payload: unknown): void {
-    const p = payload as { kind?: unknown; taskId?: unknown; to?: unknown; remoteMessageId?: unknown } | null;
+    const p = payload as { kind?: unknown; taskId?: unknown; to?: unknown; remoteMessageId?: unknown; remoteAsked?: unknown } | null;
     if (!p || typeof p.taskId !== 'string' || typeof p.remoteMessageId !== 'string') return;
     if (!this.tasks.has(p.taskId)) return;
     if (p.kind === 'task.transition' && typeof p.to === 'string') {
-      this.recordRemoteState(p.taskId, p.remoteMessageId, p.to as TaskState);
+      // A report keys on the state the peer asked for, so its redelivery stays a duplicate.
+      this.recordRemoteState(p.taskId, p.remoteMessageId, p.remoteAsked === 'completed' ? 'completed' : p.to as TaskState);
     } else if (p.kind === 'task.cancel') {
       this.recordRemoteState(p.taskId, p.remoteMessageId, 'canceled');
     }
@@ -328,10 +329,20 @@ export class A2aTaskService {
       };
       task.metadata.updatedAt = t.timestamp;
       if (t.remoteMessageId) {
-        addInboxItem(task, t.remoteMessageId, 'state', t.to);
+        // The peer's `completed` held here as a report: its item says completed.
+        const report = t.remoteAsked === 'completed' && t.to === 'input-required';
+        addInboxItem(task, t.remoteMessageId, 'state', report ? 'completed' : t.to, report);
         // The peer told us this state: nothing to tell it back.
         const m = remoteMarkerOf(task);
-        if (m) m.stateSync = t.to;
+        if (m) {
+          m.stateSync = t.to;
+          // The peer's latest state replaces a report it made earlier.
+          if (report) m.reported = t.remoteMessageId;
+          else delete m.reported;
+        }
+        // Every report stays in the history: a later one replaces the status.
+        const reportMessage = report ? t.message : undefined;
+        if (reportMessage && !task.history.some((h) => h.messageId === reportMessage.messageId)) task.history.push(reportMessage);
       }
       return;
     }
@@ -997,6 +1008,11 @@ export class A2aTaskService {
    *
    * Keyed by the peer's `messageId`: the same id asking for the same state is a
    * duplicate, a different state a conflict.
+   *
+   * On a company task this host sent, the peer's `completed` is committed as
+   * `input-required` (`remoteAsked: 'completed'`), with its message and
+   * evidence: a report this host marks done (transition). The dedupe, the
+   * graph check and the evidence verdict read the asked state.
    */
   applyRemoteState(input: {
     taskId: string;
@@ -1043,15 +1059,27 @@ export class A2aTaskService {
       if (task.metadata.to.workspaceId !== remoteWs) {
         return { ok: false, error: 'a2a.remote.state: only the receiver may move this task' };
       }
+      const current = task.status.state;
+      // A company task's `completed` is held here as a report (input-required)
+      // until this host marks it done. Every check below reads the state the
+      // peer asked for, not the one committed.
+      const report = input.to === 'completed' && isCompanyTask(task.history);
       // A receiver's `failed` is taken from any open state: the peer ends the
       // task on its side (e.g. a person rejected it while it was still
       // `submitted`, which has no graph edge to `failed`), and our copy must
-      // not stay open behind it.
-      if (input.to !== 'failed' && !validateTransition(task.status.state, input.to)) {
-        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      // not stay open behind it. `completed` and `input-required` are taken
+      // from `submitted` too: only the latest state is synced, so a fast peer
+      // can skip `working`. After a report, the peer asking a question
+      // replaces it.
+      const allowed = input.to === 'failed'
+        || validateTransition(current, input.to)
+        || (current === 'submitted' && (input.to === 'completed' || input.to === 'input-required'))
+        || (current === 'input-required' && input.to === 'input-required' && remoteMarkerOf(task)?.reported !== undefined);
+      if (!allowed) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
-      if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
-        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      if ((TERMINAL_STATES as readonly string[]).includes(current)) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
       const terminal = input.to === 'completed' || input.to === 'failed';
       const summary = input.summary?.trim() || `${input.to} on the remote host (evidence stays there)`;
@@ -1068,12 +1096,13 @@ export class A2aTaskService {
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
-        to: input.to,
+        to: report ? 'input-required' : input.to,
         timestamp,
         ...(message ? { message } : {}),
         ...(evidence ? { forced: 'remote_state' as const, evidence } : {}),
         ...(verdict?.ok ? { verifiedItemCount: verdict.verifiedItemCount } : {}),
         remoteMessageId: input.messageId,
+        ...(report ? { remoteAsked: 'completed' as const } : {}),
       };
       const committed = await this.log.append(this.envelope(payload, remoteWs, this.derivePrincipalId(task, 'to', remoteWs)));
       if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };
@@ -1288,11 +1317,13 @@ function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined 
 }
 
 /** Owe the local pane one delivery for a reply/state the peer sent (idempotent). */
-function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState): void {
+function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState, reported = false): void {
   const marker = remoteMarkerOf(task);
   if (!marker) return;
   const inbox = marker.inbox ?? (marker.inbox = []);
-  if (!inbox.some((i) => i.messageId === messageId)) inbox.push({ messageId, kind, ...(state ? { state } : {}), delivered: false });
+  if (!inbox.some((i) => i.messageId === messageId)) {
+    inbox.push({ messageId, kind, ...(state ? { state } : {}), ...(reported ? { reported: true as const } : {}), delivered: false });
+  }
 }
 
 /** The text parts of a history's first message, joined — the "body" a remote id dedupes on. */
