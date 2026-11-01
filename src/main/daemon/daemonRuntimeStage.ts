@@ -46,42 +46,75 @@ export function stagedDaemonScripts(stageRoot: string): string[] {
     .filter((p) => fs.existsSync(p));
 }
 
+/** The copy of each build in progress, shared by every spawn that asks while it runs. */
+const copies = new Map<string, Promise<void>>();
+
 /**
  * Copies `appDir` (the folder holding wmux.exe) to `stageRoot\<key>` unless
- * that copy exists, then removes the other copies no running process holds.
- * Returns null when the copy cannot be made: the caller runs the daemon from
- * the install, as before.
+ * that copy exists, and removes the other copies no running process holds.
+ * Everything that touches the ~450 MB tree is async, so the main thread is
+ * free while it runs. Resolves null when the copy cannot be made: the caller
+ * runs the daemon from the install, as before.
  */
-export function stageDaemonRuntime(opts: {
+export async function stageDaemonRuntime(opts: {
   appDir: string;
   exeName: string;
   stageRoot: string;
   version: string;
   warn?: (msg: string) => void;
-}): StagedDaemon | null {
+  log?: (msg: string) => void;
+  /** Test seam: copies a folder. fs.promises.cp by default. */
+  copy?: (from: string, to: string) => Promise<void>;
+}): Promise<StagedDaemon | null> {
   const warn = opts.warn ?? (() => { /* silent */ });
-  let partial: string | null = null;
   try {
     const source = path.join(opts.appDir, ...SCRIPT);
     const dir = path.join(opts.stageRoot, stageKey(opts.version, fs.statSync(source).mtimeMs));
-    const staged = (): StagedDaemon => ({ script: path.join(dir, ...SCRIPT), nodePath: path.join(dir, opts.exeName), dir });
+    const staged: StagedDaemon = { script: path.join(dir, ...SCRIPT), nodePath: path.join(dir, opts.exeName), dir };
+    let copied: Promise<void> = Promise.resolve();
     // A prune that removed wmux.exe but not the folder leaves a copy that cannot run.
-    if (!fs.existsSync(staged().script) || !fs.existsSync(staged().nodePath)) {
-      // Copied under a temporary name and renamed, so a half copy is never run.
-      partial = `${dir}.partial-${process.pid}`;
-      fs.rmSync(partial, { recursive: true, force: true });
-      fs.cpSync(opts.appDir, partial, { recursive: true });
-      fs.rmSync(dir, { recursive: true, force: true });
-      fs.renameSync(partial, dir);
-      partial = null;
+    if (!fs.existsSync(staged.script) || !fs.existsSync(staged.nodePath)) {
+      const running = copies.get(dir);
+      if (running) {
+        copied = running;
+      } else {
+        copied = copyStage(opts, staged).finally(() => copies.delete(dir));
+        copies.set(dir, copied);
+      }
     }
-    pruneStages(opts.stageRoot, path.basename(dir), opts.exeName);
-    return staged();
+    // The old copies go while this one is made; the prune skips it and any partial copy.
+    await Promise.all([copied, pruneStages(opts.stageRoot, path.basename(dir), opts.exeName)]);
+    return staged;
   } catch (err) {
-    if (partial) { try { fs.rmSync(partial, { recursive: true, force: true }); } catch { /* left for the next spawn */ } }
     warn(`[launcher] could not copy the daemon runtime out of the install (${err instanceof Error ? err.message : String(err)}); running it from the install`);
     return null;
   }
+}
+
+/**
+ * Copied under a temporary name and renamed only once the copy holds the
+ * files the daemon runs from, so a half copy is never run. A failed copy is
+ * removed.
+ */
+async function copyStage(
+  opts: { appDir: string; log?: (msg: string) => void; copy?: (from: string, to: string) => Promise<void> },
+  staged: StagedDaemon,
+): Promise<void> {
+  const partial = `${staged.dir}.partial-${process.pid}`;
+  const started = Date.now();
+  try {
+    await fs.promises.rm(partial, { recursive: true, force: true });
+    await (opts.copy ?? ((from, to) => fs.promises.cp(from, to, { recursive: true })))(opts.appDir, partial);
+    for (const file of [staged.script, staged.nodePath]) {
+      await fs.promises.access(path.join(partial, path.relative(staged.dir, file)));
+    }
+    await fs.promises.rm(staged.dir, { recursive: true, force: true });
+    await fs.promises.rename(partial, staged.dir);
+  } catch (err) {
+    await fs.promises.rm(partial, { recursive: true, force: true }).catch(() => { /* left for the next spawn */ });
+    throw err;
+  }
+  opts.log?.(`[launcher] copied the daemon runtime to ${staged.dir} in ${Date.now() - started} ms`);
 }
 
 /**
@@ -89,12 +122,14 @@ export function stageDaemonRuntime(opts: {
  * a copy whose daemon still runs keeps its wmux.exe and is left whole rather
  * than half deleted (renaming its folder would succeed, so that is no test).
  */
-function pruneStages(stageRoot: string, keep: string, exeName: string): void {
-  for (const name of fs.readdirSync(stageRoot)) {
+async function pruneStages(stageRoot: string, keep: string, exeName: string): Promise<void> {
+  let names: string[];
+  try { names = await fs.promises.readdir(stageRoot); } catch { return; }
+  for (const name of names) {
     if (name === keep || name.includes('.partial-')) continue;
     const full = path.join(stageRoot, name);
-    try { fs.rmSync(path.join(full, exeName), { force: true }); } catch { continue; }
-    try { fs.rmSync(full, { recursive: true, force: true }); } catch { /* retried on the next spawn */ }
+    try { await fs.promises.rm(path.join(full, exeName), { force: true }); } catch { continue; }
+    try { await fs.promises.rm(full, { recursive: true, force: true }); } catch { /* retried on the next spawn */ }
   }
 }
 

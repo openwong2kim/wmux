@@ -97,7 +97,7 @@ export interface DaemonLauncherDeps {
    * run the daemon from (main/daemon/daemonRuntimeStage.ts), so a reinstall
    * does not kill it. Null: run it from the install.
    */
-  stageDaemonRuntime?(): { script: string; nodePath: string; dir: string } | null;
+  stageDaemonRuntime?(): Promise<{ script: string; nodePath: string; dir: string } | null>;
   /**
    * Diagnostic logging for the spawn/reuse/recovery chain — candidate paths
    * tried, PID found, recovery decisions. Omit to get the historical
@@ -858,7 +858,10 @@ export function daemonProcessArgs(daemonScript: string): string[] {
   return [...DAEMON_V8_FLAGS, daemonScript];
 }
 
-function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
+function spawnDaemon(
+  deps: DaemonLauncherDeps,
+  staged: { script: string; nodePath: string; dir: string } | null,
+): Promise<number> {
   deps.markBoot?.('daemon-spawn-start');
   return new Promise((resolve, reject) => {
     // Set once pollDaemonReady starts below. The 'error' handler needs this
@@ -874,7 +877,6 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     const candidates = deps.resolveDaemonScriptCandidates();
     (deps.log ?? console.log)(`[launcher] Daemon script candidates:`, candidates);
     (deps.log ?? console.log)(`[launcher] Exists:`, candidates.map(c => fs.existsSync(c)));
-    const staged = deps.stageDaemonRuntime?.() ?? null;
     const daemonScript = staged?.script ?? candidates.find(c => fs.existsSync(c));
     if (!daemonScript) {
       reject(new Error(`Daemon script not found in: ${candidates.join(', ')}. Run 'npm run build:daemon' first.`));
@@ -1724,6 +1726,11 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
     }
   }
 
+  // The first spawn of a build waits here for its copy outside the install.
+  // Before the stale-file check below, so a daemon that another starter
+  // brought up meanwhile is found there and reused.
+  const staged = (await deps.stageDaemonRuntime?.()) ?? null;
+
   // 3. Clean stale files before spawning — prevents new daemon from seeing
   //    zombie lock/pipe state left by a crashed predecessor.
   (deps.log ?? console.log)('[launcher] No running daemon found. Cleaning stale files...');
@@ -1758,7 +1765,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
 
   let pid: number;
   try {
-    pid = await spawnDaemon(deps);
+    pid = await spawnDaemon(deps, staged);
   } catch (err) {
     if ((err as NodeJS.ErrnoException | undefined)?.code === 'EDAEMON_ALREADY_RUNNING') {
       // The daemon we spawned yielded to a live daemon already owning the
