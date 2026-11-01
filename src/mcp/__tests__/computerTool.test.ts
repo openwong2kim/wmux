@@ -129,7 +129,7 @@ describe('computer MCP tool', () => {
     const windows: WindowInfo[] = apps.map((a) => ({ id: `w${a.pid}`, appId: a.id, pid: a.pid, title: `${a.name} secret`, bounds: { x: 0, y: 0, width: 10, height: 10 } }));
     const helper: HelperLike = {
       request: (async (method: HelperMethod, params: Record<string, unknown>) => {
-        const i = apps.findIndex((a) => a.name === params.app || a.id === params.app);
+        const i = apps.findIndex((a) => a.name === params.app || a.id === params.app || `pid:${a.pid}` === params.app);
         if (method === 'listApps') return { apps };
         if (method === 'listWindows') return { windows };
         if (method === 'resolveTarget') return { app: apps[i], window: windows[i] };

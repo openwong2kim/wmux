@@ -68,7 +68,7 @@ function controllableHelper(defer: boolean | undefined, os: HelperHello['os']) {
   const helper: HelperLike = {
     hello,
     request: (async (method: HelperMethod, params: Record<string, unknown>) => {
-      const found = APPS[params.app as string] ?? Object.values(APPS).find((a) => a.id === params.app);
+      const found = APPS[params.app as string] ?? Object.values(APPS).find((a) => a.id === params.app || `pid:${a.pid}` === params.app);
       const app = (): AppInfo => {
         if (!found) throw new ComputerError('app_not_found', 'no such app');
         return found;

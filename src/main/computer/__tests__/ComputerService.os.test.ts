@@ -40,7 +40,7 @@ function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>, 
           if (!target) throw new ComputerError('app_not_found', 'no such app');
           return target;
         case 'getAppState': {
-          const found = Object.values(apps).find((t) => t.app.id === params.app)!;
+          const found = Object.values(apps).find((t) => t.app.id === params.app || `pid:${t.app.pid}` === params.app)!;
           const state: AppState = {
             snapshotId: `s${++snapshotSeq}`,
             app: found.app,
@@ -996,5 +996,55 @@ describe('settings push', () => {
     await service.capabilities().catch(() => undefined);
     await service.reconfigure();
     expect(reconfigure).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ComputerService — a second instance of an app', () => {
+  it('observes the instance resolveTarget picked, by pid, while another instance is the active one', async () => {
+    // Two processes of one app, as a scratch-profile Chrome beside the user's
+    // own: the same app id, the user's instance active.
+    const active: AppInfo = { id: 'com.google.Chrome', name: 'Google Chrome', pid: 20, path: '/Applications/Google Chrome.app', bundleId: 'com.google.Chrome', frontmost: true };
+    const second: AppInfo = { ...active, pid: 21, frontmost: false };
+    const instances = [active, second];
+    const calls: Array<{ method: HelperMethod; params: Record<string, unknown> }> = [];
+    // As both helpers resolve a selector: `pid:N` names that process, an app
+    // id the active instance.
+    const pick = (selector: unknown): AppInfo => {
+      const app = typeof selector === 'string' && selector.startsWith('pid:')
+        ? instances.find((a) => `pid:${a.pid}` === selector)
+        : instances.find((a) => a.id === selector && a.frontmost);
+      if (!app) throw new ComputerError('app_not_found', 'no such app');
+      return app;
+    };
+    const helper: HelperLike = {
+      request: (async (method: HelperMethod, params: Record<string, unknown>) => {
+        calls.push({ method, params });
+        if (method === 'capabilities') return { actions: ['getAppState'], modes: ['ax'], permissions: { accessibility: true, screenRecording: false } };
+        const app = pick(params.app);
+        const window = win(app);
+        if (method === 'resolveTarget') return { app, window };
+        if (method === 'getAppState') {
+          if (params.window !== window.id) throw new ComputerError('window_not_found', `${app.name} has no window matching "${String(params.window)}"`);
+          const state: AppState = { snapshotId: 's1', app, window, tree: '0 window', screenshotStatus: { status: 'skipped' } };
+          return state;
+        }
+        throw new Error(`unexpected ${method}`);
+      }) as HelperLike['request'],
+      abort: vi.fn(),
+      dispose: vi.fn(),
+    };
+    const service = new ComputerService({
+      isEnabled: () => true,
+      askPerApp: () => false,
+      createHelper: () => helper,
+      requestConsent: vi.fn(async () => 'approved' as const),
+      stopKey: fakeStopKey(),
+      blockContext: () => ({ selfPids: new Set([1]) }),
+      now: () => 1_000_000,
+      platform: 'darwin',
+    });
+    const state = await service.getAppState(AGENT_A, { app: 'pid:21' });
+    expect(state.window.pid).toBe(21);
+    expect(calls.filter((c) => c.method === 'getAppState').map((c) => c.params.app)).toEqual(['pid:21']);
   });
 });
