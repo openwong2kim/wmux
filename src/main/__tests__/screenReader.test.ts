@@ -1,9 +1,20 @@
 // @wmux-lane unit
 // The platform is a parameter here ("win32" is data), never process.platform.
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+
+const exec = vi.hoisted(() => ({ calls: [] as Array<{ cmd: string; args: readonly string[] }>, err: null as Error | null, out: '' }));
+vi.mock('child_process', () => ({
+  execFile: (cmd: string, args: readonly string[], _opts: unknown, cb: (err: Error | null, stdout: string) => void) => {
+    exec.calls.push({ cmd, args });
+    cb(exec.err, exec.out);
+  },
+}));
+
 import {
   createScreenReaderMonitor,
   includesScreenReader,
+  listProcessNames,
   parseProcessNames,
   screenReaderForcedForTest,
   type ScreenReaderMonitorDeps,
@@ -36,6 +47,25 @@ describe('parseProcessNames', () => {
   });
 });
 
+describe('listProcessNames', () => {
+  it('runs tasklist by its System32 path on Windows, never a bare name', async () => {
+    exec.calls = [];
+    exec.err = null;
+    exec.out = '"nvda.exe","4","Console","1","10,000 K"\r\n';
+    expect(await listProcessNames('win32')).toEqual(['nvda.exe']);
+    const cmd = exec.calls[0]?.cmd ?? '';
+    expect(path.win32.isAbsolute(cmd)).toBe(true);
+    expect(cmd).toMatch(/[\\/]System32[\\/]tasklist\.exe$/);
+  });
+
+  it('answers null, not an empty list, when the list cannot be read', async () => {
+    exec.err = new Error('spawn failed');
+    exec.out = '';
+    expect(await listProcessNames('darwin')).toBeNull();
+    exec.err = null;
+  });
+});
+
 describe('screenReaderForcedForTest', () => {
   it('forces the state on for an isolated instance only', () => {
     expect(screenReaderForcedForTest({ WMUX_TEST_SCREEN_READER: '1' }, '-verify-a1')).toBe(true);
@@ -44,26 +74,28 @@ describe('screenReaderForcedForTest', () => {
   });
 });
 
-function rig(init: { support: boolean; running: string[] }) {
+function rig(init: { support: boolean; running: string[] | null }, extra: Partial<ScreenReaderMonitorDeps> = {}) {
   const state = { ...init };
   let supportChanged: (enabled: boolean) => void = () => undefined;
   const timers: Array<() => void> = [];
+  const intervals: number[] = [];
   const listProcesses = vi.fn(async () => state.running);
-  const cleared = vi.fn();
+  const cleared = vi.fn((handle: unknown) => { timers[(handle as number) - 1] = () => undefined; });
   const deps: ScreenReaderMonitorDeps = {
     platform: 'darwin',
     accessibilitySupport: () => state.support,
     onAccessibilitySupportChanged: (fn) => { supportChanged = fn; },
     listProcesses,
-    setInterval: (fn) => { timers.push(fn); return timers.length; },
+    setInterval: (fn, ms) => { timers.push(fn); intervals.push(ms); return timers.length; },
     clearInterval: cleared,
+    ...extra,
   };
   const monitor = createScreenReaderMonitor(deps);
   const changes: boolean[] = [];
   monitor.onChange((on) => changes.push(on));
   const settle = () => new Promise((r) => setTimeout(r, 0));
   return {
-    state, monitor, changes, listProcesses, timers, cleared, settle,
+    state, monitor, changes, listProcesses, timers, intervals, cleared, settle,
     supportTurns: async (enabled: boolean) => { state.support = enabled; supportChanged(enabled); await settle(); },
     tick: async () => { for (const t of [...timers]) t(); await settle(); },
   };
@@ -113,6 +145,33 @@ describe('createScreenReaderMonitor', () => {
     expect(r.monitor.isOn()).toBe(false);
     expect(r.cleared).toHaveBeenCalled();
     expect(r.listProcesses.mock.calls.length).toBe(reads);
+  });
+
+  it('keeps the state when the process list cannot be read', async () => {
+    const r = rig({ support: true, running: ['VoiceOver'] });
+    r.monitor.start();
+    await r.settle();
+    r.state.running = null;
+    await r.tick();
+    expect(r.monitor.isOn()).toBe(true);
+    r.state.running = [];
+    await r.tick();
+    expect(r.changes).toEqual([true, false]);
+  });
+
+  it('reads less often while none is found when asked to (Windows), and every poll while one is', async () => {
+    const r = rig({ support: true, running: [] }, { platform: 'win32', pollMs: 5_000, idlePollMs: 30_000 });
+    r.monitor.start();
+    await r.settle();
+    expect(r.intervals).toEqual([30_000]);
+    r.state.running = ['NVDA.EXE'];
+    await r.tick();
+    expect(r.monitor.isOn()).toBe(true);
+    expect(r.intervals).toEqual([30_000, 5_000]);
+    r.state.running = [];
+    await r.tick();
+    expect(r.intervals).toEqual([30_000, 5_000, 30_000]);
+    expect(r.cleared).toHaveBeenCalledTimes(2);
   });
 
   it('lets the newest read decide when an older one answers last', async () => {

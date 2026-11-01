@@ -14,6 +14,7 @@
 // to Electron.
 
 import { execFile } from 'child_process';
+import path from 'path';
 
 /** Process names of the screen readers wmux recognizes, per platform. The
  *  Windows names are unverified on a Windows machine so far. */
@@ -25,6 +26,11 @@ export const SCREEN_READER_PROCESSES: Readonly<Partial<Record<NodeJS.Platform, r
 
 /** How often the process list is read while Chromium's support is on. */
 export const SCREEN_READER_POLL_MS = 5_000;
+
+/** Windows, while no screen reader is found: each read spawns tasklist.exe,
+ *  which is not cheap (daemon/ProcessMonitor.ts), and support that another
+ *  program turned on can stay on all session. */
+export const SCREEN_READER_IDLE_POLL_MS_WIN32 = 30_000;
 
 /** Whether `running` (process names) includes a screen reader of `platform`.
  *  Windows names compare without case. */
@@ -46,16 +52,18 @@ export function parseProcessNames(platform: NodeJS.Platform, output: string): st
   return lines.map((l) => /^"([^"]*)"/.exec(l)?.[1] ?? '').filter(Boolean);
 }
 
-/** The running processes' names; empty when they cannot be read. */
-export function listProcessNames(platform: NodeJS.Platform): Promise<string[]> {
+/** The running processes' names; null when they cannot be read. tasklist by
+ *  its System32 path: Windows looks in the current folder first for a bare
+ *  name. */
+export function listProcessNames(platform: NodeJS.Platform): Promise<string[] | null> {
   const [cmd, args] = platform === 'win32'
-    ? ['tasklist', ['/FO', 'CSV', '/NH']]
+    ? [path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tasklist.exe'), ['/FO', 'CSV', '/NH']]
     : platform === 'darwin'
       ? ['ps', ['-axco', 'comm=']]
       : ['ps', ['-eo', 'comm=']];
   return new Promise((resolve) => {
     execFile(cmd, args, { timeout: 5_000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-      resolve(err ? [] : parseProcessNames(platform, String(stdout)));
+      resolve(err ? null : parseProcessNames(platform, String(stdout)));
     });
   });
 }
@@ -72,10 +80,13 @@ export interface ScreenReaderMonitorDeps {
   accessibilitySupport: () => boolean;
   /** Registers for Chromium's support turning on or off. */
   onAccessibilitySupportChanged: (fn: (enabled: boolean) => void) => void;
-  listProcesses: () => Promise<string[]>;
+  /** Null when the list cannot be read: the state stays as it was. */
+  listProcesses: () => Promise<string[] | null>;
   /** Test-only: report a screen reader as on, whatever runs. */
   forceOn?: boolean;
   pollMs?: number;
+  /** The interval while no screen reader is found; pollMs when absent. */
+  idlePollMs?: number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
 }
@@ -100,6 +111,7 @@ export function createScreenReaderMonitor(deps: ScreenReaderMonitorDeps): Screen
   const listeners = new Set<(on: boolean) => void>();
   let on = deps.forceOn === true;
   let timer: unknown = null;
+  let timerMs = 0;
   let started = false;
   let generation = 0;
 
@@ -112,6 +124,14 @@ export function createScreenReaderMonitor(deps: ScreenReaderMonitorDeps): Screen
     if (timer !== null) clearTimer(timer);
     timer = null;
   };
+  // At the interval the current state asks for.
+  const poll = () => {
+    const ms = on ? deps.pollMs ?? SCREEN_READER_POLL_MS : deps.idlePollMs ?? deps.pollMs ?? SCREEN_READER_POLL_MS;
+    if (timer !== null && timerMs === ms) return;
+    stopPolling();
+    timerMs = ms;
+    timer = setTimer(() => { void refresh(); }, ms);
+  };
   const refresh = async () => {
     if (deps.forceOn) return set(true);
     const run = ++generation;
@@ -119,11 +139,15 @@ export function createScreenReaderMonitor(deps: ScreenReaderMonitorDeps): Screen
       stopPolling();
       return set(false);
     }
-    if (timer === null && started) timer = setTimer(() => { void refresh(); }, deps.pollMs ?? SCREEN_READER_POLL_MS);
-    const running = includesScreenReader(deps.platform, await deps.listProcesses());
+    if (started) poll();
+    const names = await deps.listProcesses();
     // A newer read started meanwhile (the support changed): it decides.
     if (run !== generation) return;
-    set(running);
+    // One failed read is not a screen reader quitting: every pane would drop
+    // its accessibility tree and build it again 5 s later.
+    if (names === null) return;
+    set(includesScreenReader(deps.platform, names));
+    if (started) poll();
   };
 
   return {
