@@ -2,7 +2,7 @@
 // the full task only on request, and every shape within one result. The raw
 // RPC returned every task with its whole history and outgrew the 64 KiB cap.
 import { describe, expect, it } from 'vitest';
-import { TASK_PREVIEW_CHARS, TASK_QUERY_CAP_BYTES, applyTaskQueryView, shapeTaskQueryResult } from '../a2aTaskQueryView';
+import { TASK_PREVIEW_CHARS, TASK_QUERY_CAP_BYTES, applyTaskQueryView, shapeTaskQueryResult, summarizeTask } from '../a2aTaskQueryView';
 import { DEFAULT_RESULT_CAP_BYTES } from '../../mcp/resultCap';
 
 type View = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -99,6 +99,19 @@ describe('shapeTaskQueryResult — listing', () => {
     expect(Buffer.byteLength(JSON.stringify(page, null, 2), 'utf8')).toBeLessThanOrEqual(900);
     expect(typeof page.nextCursor).toBe('string');
     expect(shape(raw, { capBytes: 50 })).toHaveProperty('error');
+  });
+});
+
+describe('summarizeTask — a report from another PC', () => {
+  const sent = (remote: Record<string, unknown>) => ({ ...task('rt-1', 1, ['go']), metadata: { ...task('rt-1', 1, ['go']).metadata, remote } });
+
+  it('says remoteReported only when the marker holds a report, never its id', () => {
+    const report = summarizeTask(sent({ direction: 'outbound', remoteDeliveredAt: 'x', reported: 'peer-msg-7' }));
+    expect(report).toMatchObject({ remoteReceipt: 'delivered', remoteReported: true });
+    expect(JSON.stringify(report)).not.toContain('peer-msg-7');
+    expect(summarizeTask(sent({ direction: 'outbound', remoteDeliveredAt: 'x' }))).not.toHaveProperty('remoteReported');
+    expect(summarizeTask(sent({ direction: 'outbound', reported: true }))).not.toHaveProperty('remoteReported');
+    expect(summarizeTask(task('t1', 1, ['go']))).not.toHaveProperty('remoteReported');
   });
 });
 

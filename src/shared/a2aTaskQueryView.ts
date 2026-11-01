@@ -126,6 +126,8 @@ export function summarizeTask(task: Rec): Rec {
     ...(isRec(meta.remote) && (meta.remote.remoteReadAt || meta.remote.remoteDeliveredAt)
       ? { remoteReceipt: meta.remote.remoteReadAt ? 'read' : 'delivered' }
       : {}),
+    // A company task another PC finished: a report to check and mark done here, not a question.
+    ...(isRec(meta.remote) && str(meta.remote.reported) ? { remoteReported: true } : {}),
     // A remote task: the other PC received every reply and state change this side sent on it.
     ...(isRec(meta.remote) && str(meta.remote.replyDeliveredAt) ? { replyDeliveredAt: meta.remote.replyDeliveredAt } : {}),
     ...(last !== undefined && {

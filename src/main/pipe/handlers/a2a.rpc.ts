@@ -1343,6 +1343,8 @@ export function registerA2aRpc(
     const prs = donePrRefs({
       history,
       statusMessage: isRecord(status) ? status.message : undefined,
+      // The report's own evidence: a PR only it names is checked too.
+      statusEvidence: isRecord(status) ? status.evidence : undefined,
       message: params.message,
       evidence,
     });
