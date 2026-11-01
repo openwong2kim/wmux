@@ -9,7 +9,7 @@
 // existing kinds stay byte for byte.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneBranch, PaneLeaf, Surface, Task, Workspace } from '../../../shared/types';
-import { COMPANY_HOLD_KEY, COMPANY_HOLD_REASON_TEXT, companyBlockerEndedLine, type CompanyHoldMarker } from '../../../shared/companyHold';
+import { COMPANY_HOLD_KEY, COMPANY_HOLD_REASON_TEXT, companyBlockerEndedLine, companyHoldWithholds, type CompanyHoldMarker } from '../../../shared/companyHold';
 import { useStore } from '../../stores';
 import { buildA2aNudge, handleRpcMethod } from '../useRpcBridge';
 
@@ -241,5 +241,60 @@ describe('a2a.task.send — a send held for its blockers is not announced', () =
     const flagOnly = await send({ heldForBlockers: true });
     expect(createdEvents(flagOnly.taskId!)).toHaveLength(1);
     expect(gate).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('a held send\'s renderer copy, before and after its release delivery', () => {
+  const heldSend = async (): Promise<string> => {
+    const r = (await handleRpcMethod('a2a.task.send', {
+      workspaceId: WS, to: WS, paneId: 'pane-dev', senderPtyId: CEO_PTY, message: 'build it', title: 'Build it', data: BRIEF,
+      silent: true, heldForBlockers: true,
+    })) as { taskId: string };
+    return r.taskId;
+  };
+  const copy = (id: string): Task => useStore.getState().getTask(id)!;
+  const receiver = { workspaceId: WS, paneId: 'pane-dev' };
+  const reply = (taskId: string, extra: Record<string, unknown> = {}) =>
+    handleRpcMethod('a2a.task.send', { workspaceId: WS, taskId, message: 'one more thing', senderPtyId: CEO_PTY, ...extra }) as Promise<{ ok?: boolean; delivery?: Record<string, unknown> }>;
+  /** What the daemon holds for it once released: the bridge marked the attempt. */
+  const releasedSnapshot = (id: string): Task => ({
+    ...copy(id),
+    metadata: { ...copy(id).metadata, [COMPANY_HOLD_KEY]: { blockedBy: ['task-a'], waitingOn: [], releasedAt: 'r', attempted: true } },
+  });
+
+  it('carries a provisional marker that keeps it from its receiver, until the release delivery writes it', async () => {
+    const id = await heldSend();
+    expect(copy(id).metadata[COMPANY_HOLD_KEY]).toEqual({ blockedBy: ['task-a'], waitingOn: ['task-a'] });
+    // The daemon-away fallback hides it from the receiving side, not from its sender.
+    expect(companyHoldWithholds(copy(id), receiver)).toBe(true);
+    expect(companyHoldWithholds(copy(id), { workspaceId: WS, paneId: 'pane-ceo' })).toBe(false);
+    expect(await deliver(releasedSnapshot(id))).toEqual({ ok: true, delivered: true, ptyId: DEV_PTY });
+    expect(copy(id).metadata[COMPANY_HOLD_KEY]).toEqual({ blockedBy: ['task-a'], waitingOn: [], releasedAt: 'r', delivered: true, ptyId: DEV_PTY });
+    expect(companyHoldWithholds(copy(id), receiver)).toBe(false);
+    // The copy now says it was delivered: a repeat is a duplicate.
+    expect(await deliver(releasedSnapshot(id))).toEqual({ ok: true, delivered: true, duplicate: true });
+  });
+
+  it('a message on it is kept on the task with no write and no event, then goes as usual once delivered', async () => {
+    const id = await heldSend();
+    const held = await reply(id);
+    expect(held.delivery).toMatchObject({ stored: true, notified: false, reason: 'blocked' });
+    expect(gate).not.toHaveBeenCalled();
+    expect(copy(id).history).toHaveLength(2);
+    expect(publishA2aTaskMock.mock.calls.filter((c) => c[2] === id)).toEqual([]);
+    await deliver(releasedSnapshot(id));
+    const after = await reply(id);
+    expect(after.delivery).toMatchObject({ notified: true });
+    expect(written.map((w) => w.pty)).toEqual([DEV_PTY, DEV_PTY]);
+  });
+
+  it('main\'s held flag on a reply keeps the message off the pane even when this copy has no marker', async () => {
+    useStore.getState().createA2aTask({
+      id: 'task-f1', title: 'x', from: { workspaceId: WS, name: 'Co', paneId: 'pane-ceo' }, to: { workspaceId: WS, name: 'Co', paneId: 'pane-dev' },
+      history: heldTask('task-f1').history, artifacts: [],
+    });
+    expect((await reply('task-f1', { silent: true, heldForBlockers: true })).delivery).toMatchObject({ reason: 'blocked' });
+    expect(gate).not.toHaveBeenCalled();
+    expect(publishA2aTaskMock.mock.calls.filter((c) => c[2] === 'task-f1')).toEqual([]);
   });
 });

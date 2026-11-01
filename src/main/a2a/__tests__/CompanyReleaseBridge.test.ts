@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { COMPANY_HOLD_KEY, companyHoldOf, type A2aCompanyMarkParams, type CompanyHoldMarker } from '../../../shared/companyHold';
+import { COMPANY_HOLD_KEY, companyHoldOf, type A2aCompanyMarkParams, type CompanyBlockerEnd, type CompanyHoldMarker } from '../../../shared/companyHold';
 import type { Task } from '../../../shared/types';
 import {
   COMPANY_BRIDGE_NO_AGENT_TRIES,
@@ -322,5 +322,23 @@ describe('CompanyReleaseBridge — CEO lines', () => {
     expect(companyCeoEventsOf(task).map((e) => e.key)).toEqual(['task-c|ended|task-b|canceled']);
     expect(companyCeoEventsOf(companyTask('task-d', released({ held: 'pane-missing' }))).map((e) => e.key)).toEqual(['task-d|held|pane-missing']);
     expect(companyCeoEventsOf(companyTask('task-e', released({ delivered: true, held: 'no-agent' })))).toEqual([]);
+  });
+
+  it('tells the CEO again when a reopened blocker ends again, by when it ended', async () => {
+    const endedAt = (at: string): CompanyBlockerEnd => ({ id: 'task-a', state: 'failed', at } as CompanyBlockerEnd);
+    daemon.tasks.set('task-c', companyTask('task-c', { blockedBy: ['task-a'], waitingOn: ['task-a'], blockerEnded: [endedAt('2026-11-01T01:00:00.000Z')] }));
+    const b = bridge();
+    await pull(b);
+    await pull(b);
+    expect(ceoLines()).toHaveLength(1);
+    // task-a was reopened, then failed again: the daemon notes the new end.
+    companyHoldOf(daemon.tasks.get('task-c'))!.blockerEnded = [endedAt('2026-11-01T02:00:00.000Z')];
+    await pull(b);
+    await pull(b);
+    expect(ceoLines()).toHaveLength(2);
+    expect(companyCeoEventsOf(daemon.tasks.get('task-c')!)[0].key).toBe('task-c|ended|task-a|failed|2026-11-01T02:00:00.000Z');
+    // An end with no time keeps the earlier key.
+    expect(companyCeoEventsOf(companyTask('task-x', { blockedBy: ['task-a'], waitingOn: ['task-a'], blockerEnded: [{ id: 'task-a', state: 'failed' }] }))[0].key)
+      .toBe('task-x|ended|task-a|failed');
   });
 });
