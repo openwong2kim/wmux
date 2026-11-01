@@ -51,4 +51,9 @@ describe('clean copy — copy entry point wiring (source-level)', () => {
     const autoCopy = mirror.slice(mirror.indexOf('createAutoSelectionCopy({'), mirror.indexOf('});', mirror.indexOf('createAutoSelectionCopy({')));
     expect(autoCopy).not.toMatch(/resolve:/);
   });
+
+  it('passes the pane ptyId at the context-menu Copy and the document-level copy shortcut', () => {
+    expect(read('../components/Terminal/Terminal.tsx')).toMatch(/void copySelectionWithFeedback\(terminalRef\.current, ctxMenu\.selectedText, \{ ptyId: ptyId \?\? undefined \}\);/);
+    expect(read('useTerminalCopyShortcut.ts')).toMatch(/target\.selection,\s*\n\s*\{ ptyId: target\.ptyId \},/);
+  });
 });
