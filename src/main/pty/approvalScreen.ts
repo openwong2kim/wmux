@@ -2,6 +2,7 @@
 // requires interactive choices at the bottom; a quoted question alone is not
 // evidence that the agent is currently asking for permission.
 import { parseTerminalPrompt } from '../../daemon/approvals/terminalPromptParse';
+import { screenReaderKeyRow } from '../../daemon/approvals/screenReaderKeyRow';
 import { readFolderTrustScreen } from '../../daemon/approvals/approvalKeystrokes';
 
 export interface ScreenApproval {
@@ -19,9 +20,21 @@ export function claudeScreenApproval(rows: readonly string[]): ScreenApproval | 
   // Unnumbered Yes/No choices, `No, exit` first. A narrow pane wraps the
   // question, so its fixed start is also the text: a resize is no new dialog.
   const trust = 'Quick safety check:';
-  return choiceDialog(rows, /^Quick safety check:/, /^Enter to confirm · Esc to cancel$/)
-    ? { text: trust, message: 'Project trust prompt' } : null;
+  if (choiceDialog(rows, /^Quick safety check:/, /^Enter to confirm · Esc to cancel$/)) return { text: trust, message: 'Project trust prompt' };
+  // Claude Code's screen-reader layout ends every dialog with a key row and
+  // draws no cursor (screenReaderKeyRow). Its trust dialog is read like the
+  // input guard reads it; any other dialog there owns the keys too, whether
+  // or not a reader above names it. Its text is its question row.
+  const key = screenReaderKeyRow(rows);
+  if (!key) return null;
+  if (key.keys === 'y/n' && readFolderTrustScreen(rows) !== null) return { text: trust, message: 'Project trust prompt' };
+  const question = key.lines.slice(Math.max(0, key.at - SR_QUESTION_REACH), key.at).reverse()
+    .map((row) => row.trim().replace(/^> /, '')).find((row) => row.endsWith('?'));
+  return { text: (question ?? key.lines[key.at]!.trim()).replace(/\s+/g, ''), message: 'Approval requested' };
 }
+
+/** How far above a screen-reader key row its question may be: past nine options, each broken over two rows. */
+const SR_QUESTION_REACH = 20;
 
 /** A dialog's choice rows: `option` is one choice, `selected` marks exactly
  *  one of them, and every `required` choice must be offered. */
