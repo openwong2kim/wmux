@@ -388,6 +388,24 @@ describe('HookIngest → external sessions', () => {
     expect(registry.list()).toMatchObject([{ state: 'ended' }]);
   });
 
+  it('a pane opened at the session\'s folder leaves its session end on the external row', () => {
+    // "Open a wmux pane here": a new shell-only pane at exactly that folder.
+    const sessions: HookIngestSession[] = [];
+    const registry = new ExternalSessionRegistry();
+    const ingest = new HookIngest({
+      listLiveSessions: () => sessions,
+      emitAgentEvent: () => undefined,
+      applyResumeBinding: () => undefined,
+      onUnroutedSignal: (s) => registry.note(s),
+      shellAtPromptFor: () => true,
+      now: () => 10_000,
+    });
+    ingest.handle(signal({ kind: 'agent.user_prompt_submit', payload: { prompt: 'hi' } }));
+    sessions.push({ id: 'pty-new', cwd: '/repo', env: { WMUX_WORKSPACE_ID: 'ws-1' } });
+    expect(ingest.handle(signal({ kind: 'agent.session_end' }))).toEqual({ ok: false, reason: 'no-workspace-match' });
+    expect(registry.list()).toMatchObject([{ agentSessionId: SID, state: 'ended' }]);
+  });
+
   it('an invalid envelope reaches nothing', () => {
     const { ingest, registry } = ingestWith([]);
     expect(ingest.handle({ kind: 'agent.stop', agent: 'claude', cwd: '/repo', payload: {}, ts: 1, where: { kind: 'bogus' } }))

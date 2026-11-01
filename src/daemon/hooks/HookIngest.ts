@@ -60,6 +60,7 @@ import {
   type HookSignalResponse,
 } from '../../shared/hooks/signal-types';
 import { ENV_KEYS, isBrainPty } from '../../shared/constants';
+import { promptLineState, type PromptLineEvent } from '../../shared/promptLineState';
 import { hasCriticalRiskIn } from '../../shared/criticalPatterns';
 // Pure regex/lookup module (no electron), already imported by src/daemon/index.ts.
 import { agentDisplayToSlug, agentStatusToSignalKind, type AgentEventStatus } from '../../main/pty/AgentDetector';
@@ -249,6 +250,12 @@ export interface HookIngestDeps {
    * only the entrypoint decides (see foreignProcessReason).
    */
   agentPidFor?: (ptyId: string) => number | undefined;
+  /**
+   * The pane's shell is known to sit at its prompt, so nothing runs in the
+   * pane for a hook to come from (shellAtPrompt). Optional: without it a
+   * guessed first bind takes the pane as before.
+   */
+  shellAtPromptFor?: (ptyId: string) => boolean;
   /**
    * Fresh liveness of a pid, read now rather than from the tracker's cache
    * (whose `alive` lags a real exit by up to one ProcessMonitor poll). Asked
@@ -503,6 +510,22 @@ export function identifiedAgentPid(
   return tracked?.alive && tracked.slug ? pid : undefined;
 }
 
+/**
+ * Whether a pane's shell sits at its prompt, read from its OSC 133 marks: back
+ * at the prompt after a command (PromptEventLog.commandRunningIfKnown), or,
+ * while that is unknown, at its first prompt with no line read
+ * (promptLineState). False when the marks cannot tell: no shell integration,
+ * or output after a prompt that a shell without command-start also writes
+ * while a program runs.
+ */
+export function shellAtPrompt(
+  log: { commandRunningIfKnown(): boolean | undefined; snapshot(): readonly PromptLineEvent[] },
+  totalBytesWritten: number,
+): boolean {
+  const running = log.commandRunningIfKnown();
+  return running === undefined ? promptLineState(log.snapshot(), totalBytesWritten) === 'idle-at-prompt' : !running;
+}
+
 function normalizeCwd(p: string): string {
   let out = p.replace(/\\/g, '/');
   if (/^[A-Z]:\//.test(out)) {
@@ -529,10 +552,10 @@ function mostRecent(sessions: HookIngestSession[]): HookIngestSession | null {
 }
 
 /** What the daemon knows about each pane's own agent process. */
-export type RouteProof = Pick<HookIngestDeps, 'agentPidFor' | 'liveAgentFor'>;
+export type RouteProof = Pick<HookIngestDeps, 'agentPidFor' | 'liveAgentFor' | 'shellAtPromptFor'>;
 
 /** Why a guessed route did not take a candidate pane. */
-export type RouteDropReason = 'bound-to-another-session' | 'cwd-not-exact';
+export type RouteDropReason = 'bound-to-another-session' | 'cwd-not-exact' | 'shell-at-prompt';
 
 export interface RouteResult {
   sessionId: string | null;
@@ -606,7 +629,9 @@ export function routeSignal(
  * the longest-prefix ones) can take it:
  *   c. the agent switched: the pane is bound to another agent, and the one
  *      running there now is the signal's;
- *   d. a first bind: the pane has no binding and its cwd matches exactly.
+ *   d. a first bind: the pane has no binding, its cwd matches exactly, and
+ *      its shell is not known to sit at its prompt with no live agent
+ *      (shellAtPromptFor): a pane that runs nothing cannot be the hook's.
  * Anything else is refused, so a session outside the pane can neither rebind
  * nor light it, and an ancestor-folder pane is reached only by a or b.
  *
@@ -618,6 +643,14 @@ export function routeSignal(
  * bridge sends no pid. Passing WMUX_PTY_ID and WMUX_WORKSPACE_ID through (tmux
  * `update-environment`, ssh `SendEnv`) makes those hooks exact. A tracker
  * still holding a just-exited agent's pid heals on the next prompt.
+ *
+ * Those first binds hold because the pane runs a command (`tmux attach`,
+ * `ssh`, the agent itself), and a shell with wmux's integration marks it. One
+ * is given up: a command that writes its own OSC 133 command end (ssh to a
+ * host whose shell has OSC 133 integration) reads as the shell back at its
+ * prompt, so its session stays outside wmux until the env is passed through.
+ * A pane with no integration (cmd.exe, fish, WMUX_SHELL_INTEGRATION=0) tells
+ * nothing and keeps the first bind.
  */
 function verifyGuessedRoute(
   signal: AgentSignal,
@@ -635,14 +668,15 @@ function verifyGuessedRoute(
     const bound = s.resumeBinding;
     return !!bound?.sessionId && bound.agent !== signal.agent && proof.liveAgentFor?.(s.id) === signal.agent;
   });
-  const firstBind = byCwd.exact ? byCwd.sessions.filter((s) => !s.resumeBinding?.sessionId) : [];
+  const idleShell = (s: HookIngestSession) => proof.liveAgentFor?.(s.id) === undefined && proof.shellAtPromptFor?.(s.id) === true;
+  const firstBind = byCwd.exact ? byCwd.sessions.filter((s) => !s.resumeBinding?.sessionId && !idleShell(s)) : [];
   const picked = mostRecent(bySwitch) ?? mostRecent(firstBind);
   if (picked) return { sessionId: picked.id, drops: [] };
   return {
     sessionId: null,
     drops: byCwd.sessions.map((s) => ({
       sessionId: s.id,
-      reason: s.resumeBinding?.sessionId ? 'bound-to-another-session' as const : 'cwd-not-exact' as const,
+      reason: s.resumeBinding?.sessionId ? 'bound-to-another-session' as const : byCwd.exact ? 'shell-at-prompt' as const : 'cwd-not-exact' as const,
     })),
   };
 }
