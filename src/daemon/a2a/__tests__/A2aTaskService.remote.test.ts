@@ -8,6 +8,7 @@ import { A2aTaskService, REMOTE_STATE_IDS_MAX, statusMessageFromWire } from '../
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
+import { panePrincipalId } from '../../../shared/principals';
 import type { Message } from '../../../shared/types';
 
 let dir: string;
@@ -548,6 +549,121 @@ describe('A2aTaskService — a company task\'s remote completion is held as a re
       expect((await svc.applyRemoteState({ taskId: 'rt-a', linkId: LINK, messageId: `a-${to}`, to })).ok).toBe(false);
     }
     expect(svc.getTask('rt-a')!.status.state).toBe('completed');
+  });
+});
+
+describe('A2aTaskService — the sending PC marks a remote company task\'s report done', () => {
+  const DONE_EVIDENCE = { summary: 'PR checked', items: [{ kind: 'inspection' as const, status: 'unverified' as const, summary: 'PR head read' }] };
+  const CEO = { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator' as const };
+  const records = (log: AppendOnlyLog) => log.readAllRecords().filter((r) => r.domain === 'a2a');
+
+  /** A company task the peer reported done (s2), held here as input-required. */
+  async function reported(svc: A2aTaskService, id = 'rt-co'): Promise<void> {
+    await companyOutbound(svc, id);
+    await svc.applyRemoteState({ taskId: id, linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: id, linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged' });
+    expect(svc.getTask(id)!.status.state).toBe('input-required');
+  }
+
+  it('the sending pane in the coordinator seat marks it done, stamped as that pane; a retry is the cached result', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await reported(svc);
+    // The evidence gate holds as for any completion.
+    const bare = await svc.transition({ taskId: 'rt-co', to: 'completed', ...CEO });
+    expect(!bare.ok && bare.error).toContain('completion_evidence_missing');
+
+    const done = await svc.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k1' });
+    expect(done.ok).toBe(true);
+    expect(svc.getTask('rt-co')!.status).toMatchObject({ state: 'completed', evidence: DONE_EVIDENCE });
+    const last = records(log).at(-1)!;
+    expect(last.payload).toMatchObject({ kind: 'task.transition', to: 'completed' });
+    expect(last.payload).not.toHaveProperty('remoteMessageId');
+    expect(last.authContext?.verifiedWorkspaceId).toBe('ws-local');
+    expect(last.authContext?.principalId).toBe(panePrincipalId('ws-local', 'pane-ceo'));
+
+    // The same key returns the first result, live and after a restart, appending nothing.
+    const count = records(log).length;
+    expect(await svc.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k1' })).toMatchObject({ ok: true });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(await restored.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k1' }))
+      .toMatchObject({ ok: true, task: { status: { state: 'completed' } } });
+    // A new done is refused: the task has ended.
+    expect((await restored.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k2' })).ok).toBe(false);
+    expect(records(log)).toHaveLength(count);
+
+    // The peer's report redelivered is still a duplicate; a new completed meets an ended task.
+    expect(await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged' }))
+      .toMatchObject({ ok: true, duplicate: true });
+    expect((await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's3', to: 'completed' })).ok).toBe(false);
+    expect(restored.getTask('rt-co')!.status.state).toBe('completed');
+  });
+
+  it('the trusted lane marks it done for the sending workspace only', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await reported(svc);
+    const elsewhere = await svc.transition({ taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-other', trustedLane: true, evidence: DONE_EVIDENCE });
+    expect(!elsewhere.ok && elsewhere.error).toContain('is not the receiver');
+    const done = await svc.transition({ taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-local', trustedLane: true, evidence: DONE_EVIDENCE });
+    expect(done.ok).toBe(true);
+    // As for a local trusted completion: the receiver side's principal, here the sending workspace (no receiver pane on this PC).
+    expect(records(log).at(-1)!.authContext?.principalId).toBe('ws-local');
+  });
+
+  it('refuses a staff seat, another pane, another workspace\'s coordinator and a seat with no resolved pane', async () => {
+    const svc = newService(newLog());
+    await reported(svc);
+    const callers = [
+      { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'staff' as const },
+      { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-other' }, callerCompanySeat: 'coordinator' as const },
+      { callerWorkspaceId: 'ws-ops', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator' as const },
+      { callerWorkspaceId: 'ws-local', callerCompanySeat: 'coordinator' as const },
+      { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' } },
+    ];
+    for (const caller of callers) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      const res = await svc.transition({ taskId: 'rt-co', to: 'completed', ...caller, evidence: DONE_EVIDENCE });
+      expect(!res.ok && res.error).toContain('is not the receiver');
+    }
+    expect(svc.getTask('rt-co')!.status.state).toBe('input-required');
+  });
+
+  it('refuses the done on anything but a report, and any other state on a report', async () => {
+    const svc = newService(newLog());
+    // Still working on the peer.
+    await companyOutbound(svc, 'rt-w');
+    await svc.applyRemoteState({ taskId: 'rt-w', linkId: LINK, messageId: 'w1', to: 'working' });
+    // A real question from the peer, not a report.
+    await companyOutbound(svc, 'rt-q');
+    await svc.applyRemoteState({ taskId: 'rt-q', linkId: LINK, messageId: 'q1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-q', linkId: LINK, messageId: 'q2', to: 'input-required', message: 'Which branch?' });
+    for (const id of ['rt-w', 'rt-q']) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      const res = await svc.transition({ taskId: id, to: 'completed', ...CEO, evidence: DONE_EVIDENCE });
+      expect(!res.ok && res.error).toContain('only on its report');
+    }
+    expect(svc.getTask('rt-w')!.status.state).toBe('working');
+    expect(svc.getTask('rt-q')!.status.state).toBe('input-required');
+
+    // On a report, the sending pane moves nothing but the done.
+    await reported(svc);
+    for (const to of ['working', 'input-required', 'failed'] as const) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      const res = await svc.transition({ taskId: 'rt-co', to, ...CEO, evidence: { summary: 'x', items: [] } });
+      expect(!res.ok && res.error).toContain('only on its report');
+    }
+    expect(svc.getTask('rt-co')!.status.state).toBe('input-required');
+
+    // A remote task outside a company keeps the receiver-only rule.
+    await outbound(svc, 'rt-plain');
+    await svc.applyRemoteState({ taskId: 'rt-plain', linkId: LINK, messageId: 'p1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-plain', linkId: LINK, messageId: 'p2', to: 'input-required' });
+    const plain = await svc.transition({
+      taskId: 'rt-plain', to: 'completed', callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-l' }, callerCompanySeat: 'coordinator', evidence: DONE_EVIDENCE,
+    });
+    expect(!plain.ok && plain.error).toContain('is not the receiver');
   });
 });
 

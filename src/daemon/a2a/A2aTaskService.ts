@@ -56,7 +56,7 @@ import type {
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
 import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
-import { localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
@@ -475,8 +475,19 @@ export class A2aTaskService {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.update: task not found: ${input.taskId}` };
 
+      // A company task this PC sent to another PC is marked done here, on the
+      // report that PC made: by the pane that sent it, in the coordinator seat,
+      // or by the trusted lane, for the sending workspace. The state it must
+      // be in is checked after the idempotency hit, so a retried done returns
+      // its first result.
+      const sender = task.metadata.from;
+      const remoteDone = isRemoteWorkspaceId(task.metadata.to.workspaceId)
+        && input.callerWorkspaceId === sender.workspaceId
+        && (input.trustedLane === true
+          || (input.callerCompanySeat === 'coordinator' && !!input.callerAddr?.paneId && input.callerAddr.paneId === sender.paneId))
+        && isCompanyTask(task.history);
       // 권한: 수신자 workspace만 상태 갱신 가능(a2aSlice 현행 계약).
-      if (task.metadata.to.workspaceId !== input.callerWorkspaceId) {
+      if (!remoteDone && task.metadata.to.workspaceId !== input.callerWorkspaceId) {
         return { ok: false, error: `a2a.task.update: caller ${input.callerWorkspaceId} is not the receiver` };
       }
       // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
@@ -529,6 +540,12 @@ export class A2aTaskService {
       // transition으로 변질되지 않게). 정당한 재시도는 동일 입력이라 authz를 항상 재통과.
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'transition');
       if (cached) return cached as TransitionOk;
+      if (remoteDone && !(input.to === 'completed' && task.status.state === 'input-required' && remoteMarkerOf(task)?.reported !== undefined)) {
+        return {
+          ok: false,
+          error: 'a2a.task.update: a task sent to another PC is marked done here only on its report (input-required after that PC completed it)',
+        };
+      }
       // VALID_TRANSITIONS 데몬측 강제(성공 종단='completed').
       if (!validateTransition(task.status.state, input.to)) {
         const from = task.status.state;
