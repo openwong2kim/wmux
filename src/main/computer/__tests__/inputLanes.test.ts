@@ -1,3 +1,6 @@
+// @wmux-lane unit
+// Pure functions: "win32" is only the helper OS passed to foregroundCertain,
+// never process.platform, so the machine running it cannot change the result.
 import { describe, expect, it } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain, textMovesFocus } from '../inputLanes';
@@ -132,8 +135,8 @@ describe('PidLanes', () => {
   });
 });
 
-describe('foregroundCertain (mirrors Core Background.ActionRefusal)', () => {
-  // One row per row of Core Background.ActionRefusal, plus openApp (main only).
+describe('foregroundCertain', () => {
+  // Windows: one row per row of Core Background.ActionRefusal, plus openApp (main only).
   it.each([
     ['scroll: always', { action: 'scroll' as const }, true],
     ['click: right button', { action: 'click' as const, button: 'right' as const }, true],
@@ -153,8 +156,31 @@ describe('foregroundCertain (mirrors Core Background.ActionRefusal)', () => {
     ['pressKey: never', { action: 'pressKey' as const }, false],
     ['setValue: never (a UIA call)', { action: 'setValue' as const }, false],
     ['openApp: always (main only)', { action: 'openApp' as const }, true],
-  ])('%s', (_row, req, expected) => {
-    expect(foregroundCertain(req)).toBe(expected);
+  ])('win32 %s', (_row, req, expected) => {
+    expect(foregroundCertain(req, 'win32')).toBe(expected);
+  });
+
+  // macOS: the rows of the helper's foregroundReason that depend on the
+  // action alone, plus openApp (main only). Everything else goes with
+  // `refuse`; the helper answers needs_foreground when the target needs it.
+  it.each([
+    ['openApp: always (main only)', { action: 'openApp' as const }, true],
+    ['click: right button', { action: 'click' as const, button: 'right' as const }, true],
+    ['click: middle button', { action: 'click' as const, button: 'middle' as const }, true],
+    ['click: triple', { action: 'click' as const, clickCount: 3 }, true],
+    ['click: plain left', { action: 'click' as const }, false],
+    ['click: double', { action: 'click' as const, clickCount: 2 }, false],
+    ['click: modifiers', { action: 'click' as const, modifiers: ['meta' as const] }, false],
+    ['scroll: the helper decides', { action: 'scroll' as const }, false],
+    ['hotkey: with modifiers', { action: 'hotkey' as const, modifiers: ['meta' as const] }, false],
+    ['hotkey: without modifiers', { action: 'hotkey' as const, modifiers: [] }, false],
+    ['type: plain text', { action: 'type' as const, text: 'hello' }, false],
+    ['type: a Tab', { action: 'type' as const, text: 'user\tpass' }, false],
+    ['type: an inner newline', { action: 'type' as const, text: 'a\nb' }, false],
+    ['pressKey: never', { action: 'pressKey' as const }, false],
+    ['setValue: never (an AX call)', { action: 'setValue' as const }, false],
+  ])('darwin %s', (_row, req, expected) => {
+    expect(foregroundCertain(req, 'darwin')).toBe(expected);
   });
 
   it.each([
