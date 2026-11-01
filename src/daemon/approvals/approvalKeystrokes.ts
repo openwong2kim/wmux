@@ -66,6 +66,7 @@
 import { agentRow, type AgentDialogFamily } from '../../shared/agentIdentity';
 import { ESCAPE_WIN32 } from '../../shared/win32InputKeys';
 import { CODEX_TRUST_HEADLINE, TRUST_HEADLINE } from '../../shared/folderTrustWording';
+import { screenReaderKeyRow } from './terminalPromptParse';
 
 /** The two byte sequences for one agent. Single presses — never a CR chaser. */
 export interface ApprovalKeystrokes {
@@ -331,6 +332,49 @@ function trustDialogBlock(rows: readonly string[]): TrustRow[] | null {
   return null;
 }
 
+/** A choice in Claude Code's screen-reader layout: its key letter, a dot, the label; no cursor. */
+const SR_TRUST_CHOICE = /^([a-z])\. (.+)$/;
+/** The title row over Claude Code's screen-reader trust dialog. */
+const SR_TRUST_TITLE = /^Permission Required: Accessing workspace:$/;
+/** How the screen-reader trust dialog's key row starts, typed key or not. */
+const SR_YES_NO_START = /^Enter y\/n:/;
+
+/** Does a trust question start above row `end`, joined over up to TRUST_QUESTION_ROWS rows before it? */
+function trustQuestionAbove(texts: readonly string[], end: number): boolean {
+  for (let q = end - 1; q >= 0; q--) {
+    const question = texts.slice(q, Math.min(q + TRUST_QUESTION_ROWS, end)).join(' ');
+    if (TRUST_HEADLINE.test(question) || CODEX_TRUST_HEADLINE.test(question)) return true;
+  }
+  return false;
+}
+
+/**
+ * Claude Code's screen-reader trust dialog (fixtures/screen-reader/): 'trust'
+ * when it reads whole, 'unreadable' when its question or title is on screen
+ * over an `Enter y/n:` row but it does not, null when neither is on screen.
+ */
+function readScreenReaderTrust(rows: readonly string[]): 'trust' | 'unreadable' | null {
+  const texts = rows.map((row) => row.trim());
+  const keyAt = texts.findLastIndex((text) => SR_YES_NO_START.test(text));
+  if (keyAt < 0) return null;
+  if (!texts.slice(0, keyAt).some((text) => SR_TRUST_TITLE.test(text)) && !trustQuestionAbove(texts, keyAt)) return null;
+  const key = screenReaderKeyRow(rows);
+  if (key?.keys !== 'y/n') return 'unreadable';
+  const lines = key.lines.map((line) => line.trim());
+  const choices: { key: string; label: string }[] = [];
+  let first = key.at;
+  for (; first > 0; first--) {
+    const [, letter, label] = SR_TRUST_CHOICE.exec(lines[first - 1] ?? '') ?? [];
+    if (letter === undefined || label === undefined) break;
+    choices.push({ key: letter, label });
+  }
+  const keys = choices.map((choice) => choice.key).sort().join('');
+  return keys === 'ny'
+    && choices.filter((choice) => TRUST_GRANT_LABEL.test(choice.label)).length === 1
+    && choices.filter((choice) => TRUST_DECLINE_LABEL.test(choice.label)).length === 1
+    && trustQuestionAbove(lines, first) ? 'trust' : 'unreadable';
+}
+
 /**
  * Is an agent's folder-trust dialog the live dialog at the bottom of the
  * screen? Answering it decides whether the agent may read, edit and run files
@@ -352,13 +396,28 @@ function trustDialogBlock(rows: readonly string[]): TrustRow[] | null {
  *               - a choice a narrow pane cut with "…" counts only as the start
  *                 of a known label or of its suffix, and only beside at least
  *                 one other choice.
+ *               Read first, Claude Code's screen-reader layout, which has no
+ *               cursor (screenReaderKeyRow):
+ *               - an `Enter y/n:` key row at the bottom of the grid, with a
+ *                 typed key after its colon or none (the dialog stays up until
+ *                 Enter);
+ *               - directly above it the choices `y.` and `n.`, one granting
+ *                 and one declining, each whole on its row;
+ *               - above them the trust question, with any rows between.
  *   unreadable  a trust question over numbered choices all cut with "…", at
  *               least one too early to say which label it is (Gemini CLI and
- *               Qwen Code at 18 columns: "› 1. Trus…"). Not a recognisable
- *               dialog, but not proof of its absence either.
+ *               Qwen Code at 18 columns: "› 1. Trus…"); or a trust question, or
+ *               the screen-reader title `Permission Required: Accessing
+ *               workspace:`, over an `Enter y/n:` row, in a screen that does
+ *               not read as that layout: a label unknown, cut or broken onto
+ *               two rows, keys other than y and n, output under the key row,
+ *               more typed than one key. Not a recognisable dialog, but not
+ *               proof of its absence either.
  *   null        neither.
  */
 export function readFolderTrustScreen(rows: readonly string[]): 'trust' | 'unreadable' | null {
+  const screenReader = readScreenReaderTrust(rows);
+  if (screenReader) return screenReader;
   const block = trustDialogBlock(rows);
   if (!block) return null;
   const choices = block.filter(isChoice);
