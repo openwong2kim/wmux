@@ -480,7 +480,10 @@ export function hookSetStatus(settings: Record<string, unknown>): { profile: Hoo
  */
 export function detectProfile(settings: Record<string, unknown>): HookProfile {
   const installed = installedSpecsIn(settings);
-  const allSignals = SIGNAL_SPECS.every((spec) => installed.has(specKey(spec)));
+  // SessionEnd joined the signals later: a signals-only install made before it
+  // lacks it and must still read as signals-only, or the update would bring
+  // the gate back. The update then adds SessionEnd like any missing signal.
+  const allSignals = SIGNAL_SPECS.every((spec) => spec.event === 'SessionEnd' || installed.has(specKey(spec)));
   const gate = installed.has(specKey(PERMISSION_GATE_SPEC));
   return allSignals && !gate ? 'signals-only' : 'full';
 }

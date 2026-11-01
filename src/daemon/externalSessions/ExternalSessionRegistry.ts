@@ -88,6 +88,9 @@ interface Entry {
   permissionAgentId?: string;
   /** The subagent a needs-you row waits on; undefined for the lead. */
   pendingAgentId?: string;
+  /** Ended by SessionEnd: a late signal from the same session (its Stop losing
+   *  the race to the exit) must not bring the row back. */
+  closed?: boolean;
   /** When the latest prompt was submitted: an interrupted turn's Stop older than it is stale. */
   lastPromptAt?: number;
 }
@@ -215,6 +218,11 @@ export class ExternalSessionRegistry {
   private apply(entry: Entry, signal: AgentSignal): void {
     const s = entry.session;
     const payload = signal.payload;
+    if (entry.closed) {
+      // Only a resumed session reopens a row SessionEnd closed.
+      if (signal.kind !== 'agent.session_start' && signal.kind !== 'agent.user_prompt_submit') return;
+      entry.closed = false;
+    }
     switch (signal.kind) {
       case 'agent.session_start':
         // A new, resumed or cleared session waits at its prompt; `compact`
@@ -259,11 +267,18 @@ export class ExternalSessionRegistry {
         this.setState(entry, 'idle');
         return;
       case 'agent.subagent_stop':
-        // The lead is still mid-turn; only a row the TTLs had ended changes.
+        // The lead is still mid-turn; only a row the TTLs had ended changes,
+        // or an approval its own subagent asked for: a subagent whose tool was
+        // denied can stop without running another tool to release it.
         if (s.state === 'ended') this.setState(entry, 'running');
+        else if (s.state === 'needs-you' && s.pendingKind === 'approval'
+          && entry.pendingAgentId !== undefined && subagentId(payload) === entry.pendingAgentId) {
+          this.setState(entry, 'running');
+        }
         return;
       case 'agent.session_end':
         this.end(entry, this.now());
+        entry.closed = true;
         return;
     }
   }

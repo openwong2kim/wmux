@@ -986,6 +986,19 @@ describe('hook profile (#970)', () => {
     expect(allHookCommands().some((c) => c.includes(GATE))).toBe(false);
   });
 
+  it('★ a signals-only install from before SessionEnd stays signals-only and gains SessionEnd, never the gate', () => {
+    installHooks(paths(), 'signals-only');
+    const settings = readSettings();
+    delete (settings.hooks as Record<string, unknown>)['SessionEnd'];
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf8');
+    expect(detectProfile(readSettings())).toBe('signals-only');
+    updateHooks(paths());
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(false);
+    expect(Object.keys(readSettings().hooks as Record<string, unknown>)).toContain('SessionEnd');
+    installHooks(paths());
+    expect(allHookCommands().some((c) => c.includes(GATE))).toBe(false);
+  });
+
   it('treats a PARTIAL install as broken-full and repairs it, gate included', () => {
     installHooks(paths(), 'signals-only');
     const settings = readSettings();

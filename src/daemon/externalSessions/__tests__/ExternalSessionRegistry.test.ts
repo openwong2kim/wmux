@@ -118,6 +118,29 @@ describe('ExternalSessionRegistry', () => {
     expect(f.one().state).toBe('idle');
   });
 
+  it('a late Stop after SessionEnd does not bring the row back; a resume does', () => {
+    const f = setup();
+    f.registry.note(signal({ kind: 'agent.user_prompt_submit', payload: { prompt: 'go' } }));
+    f.registry.note(signal({ kind: 'agent.session_end', payload: {} }));
+    expect(f.one().state).toBe('ended');
+    f.registry.note(signal({ kind: 'agent.stop', payload: {} }));
+    expect(f.one().state).toBe('ended');
+    f.registry.note(signal({ kind: 'agent.session_start', payload: { source: 'resume' } }));
+    expect(f.one().state).toBe('idle');
+  });
+
+  it("a subagent's permission dialog clears when that subagent stops without another tool", () => {
+    const f = setup();
+    const sub = { agent_id: 'a1', agent_type: 'general' };
+    f.registry.note(signal({ kind: 'agent.awaiting_input', payload: { hook_event_name: 'PermissionRequest', tool_name: 'Bash', ...sub } }));
+    f.registry.note(signal({ kind: 'agent.awaiting_input', payload: { hook_event_name: 'Notification', notification_type: 'permission_prompt' } }));
+    // Another subagent stopping does not answer it.
+    f.registry.note(signal({ kind: 'agent.subagent_stop', payload: { agent_id: 'a2', agent_type: 'general' } }));
+    expect(f.one().state).toBe('needs-you');
+    f.registry.note(signal({ kind: 'agent.subagent_stop', payload: { ...sub } }));
+    expect(f.one().state).toBe('running');
+  });
+
   it("a subagent's permission dialog clears once that subagent runs a tool again", () => {
     const f = setup();
     const sub = { agent_id: 'a1', agent_type: 'general' };

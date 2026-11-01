@@ -585,6 +585,13 @@ async function main() {
 
   // Endpoints to try, daemon first (see resolveTargets). No token for either
   // endpoint means wmux has never run for this user — drop as before.
+  // SessionEnd only ends a session outside wmux: a pane's agent is ended by
+  // its pane, and the pane is usually gone by the time this hook runs.
+  if (hookName === 'SessionEnd' && process.env.WMUX_PTY_ID) {
+    logEvent('skip-session-end-in-pane', {});
+    return;
+  }
+
   // SessionEnd is the daemon's alone: main has no external sessions.
   const targets = resolveTargets()
     .filter((t) => hookName !== 'SessionEnd' || t.name === 'daemon');

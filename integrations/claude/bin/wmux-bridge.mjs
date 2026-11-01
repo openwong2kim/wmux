@@ -1304,6 +1304,13 @@ async function main() {
   // endpoint means wmux has never run for this user — drop as before.
   // Context mode is MAIN-only like the gate: the daemon has no brain lane and
   // would answer `ok` with no context, silently dropping the pointer.
+  // SessionEnd only ends a session outside wmux: a pane's agent is ended by
+  // its pane, and the pane is usually gone by the time this hook runs.
+  if (hookName === 'SessionEnd' && process.env.WMUX_PTY_ID) {
+    logEvent('skip-session-end-in-pane', {});
+    return;
+  }
+
   // SessionEnd is the daemon's alone: main has no external sessions.
   const targets = resolveTargets(gateMode || contextMode)
     .filter((t) => hookName !== 'SessionEnd' || t.name === 'daemon');
