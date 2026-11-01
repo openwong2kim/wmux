@@ -231,7 +231,7 @@ import { resyncAfterResubscribe, serialResync, type DaemonSessionRow } from './n
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
-import { CompanyReleaseBridge } from './a2a/CompanyReleaseBridge';
+import { CompanyReleaseBridge, type CompanyReleaseMark } from './a2a/CompanyReleaseBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
 import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
@@ -843,8 +843,10 @@ let remoteInboxBridge: RemoteInboxBridge | null = null;
 let remoteA2aBridge: RemoteA2aBridge | null = null;
 // Company mode: delivers tasks the daemon released from their blockers; one per connection.
 let companyReleaseBridge: CompanyReleaseBridge | null = null;
-// The CEO lines told, kept across daemon reconnects.
+// The CEO lines told, the deliveries running and the marks not taken yet, kept across daemon reconnects.
 const companyCeoLinesTold = new Set<string>();
+const companyDeliveriesInFlight = new Set<string>();
+const companyPendingMarks = new Map<string, CompanyReleaseMark>();
 let remoteSpawnCoordinator: RemoteSpawnCoordinator | null = null;
 let continueStarter: ContinueStarter | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
@@ -2666,6 +2668,8 @@ app.on('ready', async () => {
         daemon: client,
         sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
         told: companyCeoLinesTold,
+        inFlight: companyDeliveriesInFlight,
+        pendingMarks: companyPendingMarks,
         log: (level, msg) => logLine(level, 'a2a-company', msg),
       });
       companyReleaseBridge.start();

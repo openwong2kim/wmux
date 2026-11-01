@@ -66,12 +66,21 @@ export interface CompanyReleaseBridgeDeps {
   sendToRenderer: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
   /** CEO lines already told, by event key; pass one set to keep it across reconnects. */
   told?: Set<string>;
+  /**
+   * Deliveries still running and marks the daemon has not taken; pass one of
+   * each to keep them across reconnects: a write a stopped bridge started is
+   * not judged unconfirmed while it runs, and its mark is retried.
+   */
+  inFlight?: Set<string>;
+  pendingMarks?: Map<string, CompanyReleaseMark>;
   backstopMs?: number;
   now?: () => number;
   log?: (level: 'info' | 'warn', msg: string) => void;
 }
 
-type Mark = { attempted: false } | { delivered: true; ptyId?: string } | { held: CompanyHoldReason };
+/** A mark main records on a task once a delivery has an outcome. */
+export type CompanyReleaseMark = { attempted: false } | { delivered: true; ptyId?: string } | { held: CompanyHoldReason };
+type Mark = CompanyReleaseMark;
 
 /** One thing the CEO is told about a held task. */
 export type CompanyCeoEvent =
@@ -82,9 +91,9 @@ export class CompanyReleaseBridge {
   private readonly deps: CompanyReleaseBridgeDeps;
   private readonly now: () => number;
   private readonly told: Set<string>;
-  private readonly inFlight = new Set<string>();
+  private readonly inFlight: Set<string>;
   /** A mark the daemon did not take yet: retried before anything else, never re-delivered. */
-  private readonly pendingMarks = new Map<string, Mark>();
+  private readonly pendingMarks: Map<string, Mark>;
   private readonly retry = new Map<string, { at: number; delayMs: number }>();
   /** "No agent in the pane" answers per task since the first one; a delivery or any other answer starts them again. */
   private readonly noAgent = new Map<string, { count: number; since: number }>();
@@ -103,6 +112,8 @@ export class CompanyReleaseBridge {
     this.deps = deps;
     this.now = deps.now ?? Date.now;
     this.told = deps.told ?? new Set<string>();
+    this.inFlight = deps.inFlight ?? new Set<string>();
+    this.pendingMarks = deps.pendingMarks ?? new Map<string, Mark>();
   }
 
   start(): void {

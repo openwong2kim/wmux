@@ -6,6 +6,7 @@ import {
   COMPANY_BRIDGE_RETRY_MIN_MS,
   CompanyReleaseBridge,
   companyCeoEventsOf,
+  type CompanyReleaseMark,
 } from '../CompanyReleaseBridge';
 
 function companyTask(id: string, marker: CompanyHoldMarker, over: { paneId?: string | null } = {}): Task {
@@ -287,6 +288,37 @@ describe('CompanyReleaseBridge — CEO lines', () => {
     await pull(b);
     expect(ceoLines()).toEqual([expect.objectContaining({ kind: 'blocker-ended', blocker: { id: 'task-a', state: 'failed' } })]);
     expect(writes()).toHaveLength(0);
+  });
+
+  it('a write a stopped bridge started is left to finish, and its mark goes through the next connection', async () => {
+    daemon.tasks.set('task-c', companyTask('task-c', released()));
+    let land!: (answer: unknown) => void;
+    deliverAnswers.push(new Promise((resolve) => { land = resolve; }));
+    let gone = false;
+    const oldClient = {
+      a2aCompanyPending: () => daemon.a2aCompanyPending(),
+      a2aCompanyHeld: () => daemon.a2aCompanyHeld(),
+      a2aCompanyMark: async (params: A2aCompanyMarkParams) => {
+        if (gone) throw new Error('pipe closed');
+        return daemon.a2aCompanyMark(params);
+      },
+    };
+    const inFlight = new Set<string>();
+    const pendingMarks = new Map<string, CompanyReleaseMark>();
+    const first = new CompanyReleaseBridge({ daemon: oldClient, sendToRenderer: renderer, now: () => clock, inFlight, pendingMarks });
+    await first.trigger();
+    await vi.waitFor(() => expect(writes()).toHaveLength(1), { timeout: 5_000 });
+    first.stop();
+    gone = true;
+    const next = new CompanyReleaseBridge({ daemon, sendToRenderer: renderer, now: () => clock, inFlight, pendingMarks });
+    await pull(next);
+    // Still being written: not judged unconfirmed, not written again.
+    expect(marksOf('task-c')).toEqual([{ attempted: true }]);
+    land({ ok: true, delivered: true, ptyId: 'pty-dev' });
+    await first.whenIdle();
+    await pull(next);
+    expect(marksOf('task-c')).toEqual([{ attempted: true }, { delivered: true, ptyId: 'pty-dev' }]);
+    expect(writes()).toHaveLength(1);
   });
 
   it('remembers what it told across reconnects when given one set, and repeats once without it', async () => {
