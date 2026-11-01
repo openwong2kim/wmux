@@ -599,7 +599,7 @@ const BORROWED_SOURCES = [
       '  from the frontmost app); and the key-window records that move key\n' +
       '  status inside one app, read back before keys are posted. wmux files:\n' +
       '  native/computer-use-macos/Sources/wmux-computer-use/SkyLight.swift,\n' +
-      '  Background.swift.\n' +
+      '  native/computer-use-macos/Sources/wmux-computer-use/Background.swift.\n' +
       '- From rust/crates/platform-macos/src/input/mouse.rs: the background\n' +
       '  left click (a mouseMoved, a primer click off screen, then the click,\n' +
       '  with the pid, window-number, gesture and window-location fields) and\n' +
