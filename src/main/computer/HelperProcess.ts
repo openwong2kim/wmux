@@ -23,7 +23,7 @@
 //     outlives wmux.
 
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { ComputerError } from '../../shared/computer/errors';
+import { ComputerError, withDisposition } from '../../shared/computer/errors';
 import {
   COMPUTER_PROTOCOL_VERSION,
   HELPER_IDLE_EXIT_MS,
@@ -202,6 +202,7 @@ export class HelperProcess {
 
   request<M extends HelperMethod>(method: M, params: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']> {
     const generation = this.abortGeneration;
+    let written = false;
     const assertCurrent = () => {
       if (generation !== this.abortGeneration) throw new ComputerError('aborted', 'stopped by the user');
     };
@@ -231,13 +232,20 @@ export class HelperProcess {
       const sent = method === 'releaseInput' && this.heldInput
         ? mergeRelease(this.heldInput, params as ReleaseInputParams)
         : params;
+      written = true;
       const result = (await this.send(running, method, sent)) as HelperMethods[M]['result'];
       if (method === 'releaseInput' && (result as { released?: unknown })?.released === true) this.markReleased();
       return result;
     };
     const result = this.queue.then(run, run);
     this.queue = result.catch(() => undefined);
-    return result;
+    if (!isControlAction(method)) return result;
+    // An input action's error says whether it may be retried: nothing went
+    // out before the request was written; after that the helper says, or it
+    // died or timed out and the input may have gone.
+    return result.catch((err: unknown) => {
+      throw withDisposition(err, written ? 'delivered_unverified' : 'not_delivered');
+    });
   }
 
   /**
@@ -522,7 +530,8 @@ export class HelperProcess {
     if (parsed.response.ok) {
       pending.resolve(parsed.response.result);
     } else {
-      pending.reject(new ComputerError(parsed.response.error.code, parsed.response.error.message));
+      const { code, message, disposition } = parsed.response.error;
+      pending.reject(new ComputerError(code, message, disposition));
     }
   }
 

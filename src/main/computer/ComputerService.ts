@@ -16,7 +16,7 @@
 // into acting on an app main never vetted. openApp has no snapshot: it checks
 // the selector before the launch and the launched app after it.
 
-import { ComputerError } from '../../shared/computer/errors';
+import { ComputerError, inputActionError } from '../../shared/computer/errors';
 import {
   BLOCK_REASON_TEXT,
   blockReasonFor,
@@ -332,8 +332,36 @@ export class ComputerService {
     return state;
   }
 
+  /**
+   * An input action. Its result's disposition follows its verification (a
+   * call that returned is no proof of delivery); an error before the request
+   * went to the helper is `not_delivered`, and after it the helper's verdict,
+   * or `delivered_unverified` when there is none.
+   */
   async control(agent: ComputerAgent, params: ControlParams): Promise<ActionResult> {
-    const helper = this.ensureReady();
+    const sent = { requested: false, done: false };
+    try {
+      const result = await this.dispatchControl(agent, params, sent);
+      return { ...result, disposition: result.verification === 'verified' ? 'delivered' : 'delivered_unverified' };
+    } catch (err) {
+      throw inputActionError(err, sent.requested, sent.done);
+    }
+  }
+
+  private async dispatchControl(
+    agent: ComputerAgent,
+    params: ControlParams,
+    sent: { requested: boolean; done: boolean },
+  ): Promise<ActionResult> {
+    const ready = this.ensureReady();
+    const helper = {
+      async request<M extends HelperMethod>(method: M, p: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']> {
+        sent.requested = true;
+        const result = await ready.request(method, p);
+        sent.done = true;
+        return result;
+      },
+    };
     // No input without a working emergency stop.
     if (!this.deps.stopKey.arm()) {
       fail(
@@ -428,6 +456,19 @@ export class ComputerService {
    * the app the helper opened is checked again after.
    */
   async openApp(agent: ComputerAgent, params: { app: string }): Promise<{ app: AppInfo; window: WindowInfo | null }> {
+    let requested = false;
+    try {
+      return await this.dispatchOpenApp(agent, params, () => { requested = true; });
+    } catch (err) {
+      throw inputActionError(err, requested, false);
+    }
+  }
+
+  private async dispatchOpenApp(
+    agent: ComputerAgent,
+    params: { app: string },
+    onLaunch: () => void,
+  ): Promise<{ app: AppInfo; window: WindowInfo | null }> {
     const helper = this.ensureReady();
     if (!this.deps.stopKey.arm()) {
       fail(
@@ -472,6 +513,7 @@ export class ComputerService {
     const now = this.now();
     this.takeInputLock(agent, now);
     this.checkRate(agent.key, now);
+    onLaunch();
     const opened = await helper.request('openApp', { app: params.app });
     this.assertCurrent(generation);
     const reason = blockReasonFor(opened.app, this.deps.blockContext());
@@ -687,7 +729,9 @@ export function capabilitiesForAgent(caps: HelperCapabilities): AgentCapabilitie
         : caps.permissions.accessibility && caps.permissions.screenRecording);
   const actions = caps.actions.filter((a) =>
     (caps.permissions.accessibility || !control.has(a)) && (a !== 'getAppState' || modes.length > 0));
-  return { ...caps, actions, modes, missingPermissions: missing };
+  // No Accessibility, no input at all: background ways of sending it do not apply.
+  const { input, ...rest } = caps;
+  return { ...rest, ...(caps.permissions.accessibility && input ? { input } : {}), actions, modes, missingPermissions: missing };
 }
 
 /** A window the helper reports must belong to the app it reports with it. */

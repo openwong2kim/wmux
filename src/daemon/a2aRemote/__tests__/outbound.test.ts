@@ -4,17 +4,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { A2A_REMOTE_STATE_ENVELOPE_MAX, A2A_REMOTE_STATE_EVIDENCE_MAX } from '../../../shared/a2aRemote';
+import type { Task } from '../../../shared/types';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
 import { LinkStore } from '../linkStore';
 import { OutboxStore } from '../outboxStore';
-import { aliasTable, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteTask, stateMessageId, syncRemoteTask, type OutboundDeps } from '../outbound';
+import { aliasTable, linkAlias, listRemoteTargets, sendRemoteReply, sendRemoteState, sendRemoteTask, stateMessageId, syncRemoteTask, type OutboundDeps, type StateDeps } from '../outbound';
 
 const HOST = '11111111-1111-4111-8111-111111111111';
 
 let dir: string;
 let links: LinkStore;
+let log: AppendOnlyLog;
 let tasks: A2aTaskService;
 let outbox: OutboxStore;
 let deps: OutboundDeps;
@@ -24,7 +26,7 @@ beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-outbound-'));
   links = new LinkStore({ dir, scheduleHarden: () => undefined });
   outbox = new OutboxStore({ dir, scheduleHarden: () => undefined });
-  const log = new AppendOnlyLog({ dir: path.join(dir, 'log'), fsync: () => undefined });
+  log = new AppendOnlyLog({ dir: path.join(dir, 'log'), fsync: () => undefined });
   log.open();
   tasks = new A2aTaskService({ log, origin: { machineId: 'm', daemonEpoch: 1 } });
   n = 0;
@@ -275,6 +277,57 @@ describe('sendRemoteReply / sendRemoteState', () => {
     // The outgoing message is peer text already: no escape sequences.
     expect(sent.message?.includes('\u001b')).toBe(false);
     expect(sent.evidence!.items.length).toBeLessThan(10);
+  });
+
+  it('a task this PC sent tells the peer no state but a cancel, also after a restart', async () => {
+    const states = (taskId: string) => outbox.pending(HOST).filter((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
+    // Failed here (the other PC refused it): only the receiver moves a task there.
+    const { id: refused } = await outboundTask();
+    expect(await tasks.forceFailRemote({ taskId: refused, reason: 'refused', forced: 'remote_refused' })).toMatchObject({ ok: true, failed: true });
+    expect(await syncRemoteTask(deps, refused)).toEqual({ ok: true, queued: 0 });
+    // A restart replays the ledger; the sync still owes the peer nothing.
+    const restarted = new A2aTaskService({ log, origin: { machineId: 'm', daemonEpoch: 2 } });
+    restarted.restoreFromLog();
+    expect(await syncRemoteTask({ ...deps, taskService: restarted }, refused)).toEqual({ ok: true, queued: 0 });
+    expect(states(refused)).toEqual([]);
+
+    // Completed here while the peer was last told another state: nothing goes, nothing is recorded as told.
+    const linkId = activeLink({ outbound: true, inbound: true }, 'codex', 'pane-c');
+    const task: Task = {
+      kind: 'task',
+      id: remoteTaskId(linkId, 'sent-1'),
+      status: { state: 'completed', timestamp: '2026-11-01T00:00:00.000Z' },
+      history: [{ kind: 'message', messageId: 'sent-1', role: 'user', parts: [{ kind: 'text', text: 'ship it' }] }],
+      artifacts: [],
+      metadata: {
+        title: 't',
+        from: FROM,
+        to: { workspaceId: `remote:${linkId}`, name: 'pc-b/ws-b/codex' },
+        createdAt: '2026-11-01T00:00:00.000Z',
+        updatedAt: '2026-11-01T00:00:00.000Z',
+        remote: { v: 1, linkId, hostId: HOST, messageId: 'sent-1', direction: 'outbound', kind: 'pane', stateSync: 'input-required' },
+      },
+    };
+    const marks: unknown[] = [];
+    const fake: StateDeps = {
+      linkStore: links,
+      outbox,
+      taskService: {
+        getTask: () => task,
+        markRemote: async (input) => {
+          marks.push(input);
+          return { ok: true as const, task };
+        },
+      },
+    };
+    expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 0 });
+    expect(marks).toEqual([]);
+    expect(states(task.id)).toEqual([]);
+    // Canceled here: the cancel goes.
+    task.status = { state: 'canceled', timestamp: '2026-11-01T00:00:01.000Z' };
+    expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 1 });
+    expect(states(task.id).map((r) => r.envelope.state)).toEqual(['canceled']);
+    expect(marks).toEqual([{ taskId: task.id, stateSync: 'canceled' }]);
   });
 
   it('nothing is queued on a revoked link', async () => {

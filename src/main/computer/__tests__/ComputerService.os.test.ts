@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
-import { SNAPSHOT_TTL_MS, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
+import { SNAPSHOT_TTL_MS, type ActionResult, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
 import { ApprovalQueue } from '../../mcp/ApprovalQueue';
 import type { PluginTrustStore } from '../../mcp/PluginTrustStore';
 import { createComputerConsentRequester } from '../computerConsent';
@@ -101,6 +101,15 @@ function makeService(opts: {
 
 const AGENT_A: ComputerAgent = { key: 'agent-a', label: 'agent-a' };
 const AGENT_B: ComputerAgent = { key: 'agent-b', label: 'agent-b' };
+
+/** The disposition of an input action's result, or of its error. */
+async function dispositionOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    return ((await promise) as ActionResult).disposition;
+  } catch (err) {
+    return err instanceof ComputerError ? err.disposition : `non-computer error: ${String(err)}`;
+  }
+}
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
@@ -226,6 +235,27 @@ describe('ComputerService', () => {
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: 'nope', index: 1 }))).toBe('snapshot_unknown');
     const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
     expect(await codeOf(service.control(AGENT_B, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('snapshot_unknown');
+  });
+
+  it('says whether an input action may be retried: refused before the helper, after it, or done', async () => {
+    const { service, helperRef } = makeService();
+    expect(await dispositionOf(service.control(AGENT_A, { action: 'click', snapshotId: 'nope', index: 1 }))).toBe('not_delivered');
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const answers: Array<() => unknown> = [
+      () => ({ method: 'accessibility', verification: 'verified' }),
+      // A result follows its verification, whatever the helper says.
+      () => ({ method: 'synthetic', verification: 'unverified', disposition: 'delivered' }),
+      () => { throw new ComputerError('window_not_focused', 'covered', 'not_delivered'); },
+      () => { throw new ComputerError('window_not_focused', 'covered'); },
+    ];
+    const observe = helperRef.request;
+    helperRef.request = (async (method: HelperMethod, params: never) =>
+      method === 'click' ? answers.shift()?.() : observe(method, params)) as typeof helperRef.request;
+    const click = () => service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 });
+    expect(await dispositionOf(click())).toBe('delivered');
+    expect(await dispositionOf(click())).toBe('delivered_unverified');
+    expect(await dispositionOf(click())).toBe('not_delivered');
+    expect(await dispositionOf(click())).toBe('delivered_unverified');
   });
 
   it('expires snapshots', async () => {
@@ -754,6 +784,9 @@ describe('openApp', () => {
   it('refuses after the fact when the opened app turns out to be blocked', async () => {
     const { service } = openAppService({ opens: passwords });
     expect(await codeOf(service.openApp(AGENT_A, { app: 'Keys' }))).toBe('app_blocked');
+    // It was launched before that, so the refusal may not be retried blindly.
+    expect(await dispositionOf(service.openApp(AGENT_A, { app: 'Keys' }))).toBe('delivered_unverified');
+    expect(await dispositionOf(service.openApp(AGENT_A, { app: '1Password' }))).toBe('not_delivered');
   });
 
   it('asks consent like other control actions while askPerApp is on', async () => {
@@ -796,6 +829,12 @@ describe('capabilities for the agent', () => {
     expect(out.missingPermissions).toEqual(['accessibility']);
     expect(out.actions).toEqual(['capabilities', 'listApps', 'listWindows', 'getAppState']);
     expect(out.modes).toEqual(['vision']);
+  });
+
+  it('drops the background input capabilities without Accessibility, and keeps them without Screen Recording', () => {
+    const input = { backgroundPointer: true, focusWithoutRaise: true, keyAuth: true };
+    expect(capabilitiesForAgent({ ...caps(false, true), input })).not.toHaveProperty('input');
+    expect(capabilitiesForAgent({ ...caps(true, false), input }).input).toEqual(input);
   });
 
   it('drops screenshots without Screen Recording, and getAppState with neither', () => {

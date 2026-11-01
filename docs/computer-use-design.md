@@ -9,10 +9,11 @@ macOS**, the way wmux already lets them drive a browser over CDP.
 
 ## Code-origin rule
 
-Same rule as `docs/chat-view-oss-research-2026-09-24.md`: other projects are
-referenced for behaviour, protocol shape and UX only. No source, tests or
-assets are copied, translated or adapted. AGPL components are not even read
-for design (trycua `som`, `cua-perception`).
+Other projects are referenced for behaviour, protocol shape and UX. Code may be
+adapted only from permissively licensed projects the owner approved (Cua
+Driver, MIT): each adapted file names its source and commit in a header
+comment, and the license text goes into `THIRD_PARTY_NOTICES.md`. AGPL
+components are not even read for design (trycua `som`, `cua-perception`).
 
 ## Shape
 
@@ -202,12 +203,73 @@ snapshot is the v1.1 token saver.
   auto-activation, 2026-10-08), and a pointer action whose point is covered
   raises the target window first. The helper still re-checks, right before
   each keyboard batch, that focus is on the target and the screen is not
-  locked, and answers `window_not_focused` when it is not.
+  locked, and answers `window_not_focused` when it is not. On Windows an
+  action is first posted to the target window in the background, which
+  does not need the target to be in front or focused; the screen must still
+  be unlocked (the helper checks the input desktop before it posts). Only what
+  cannot be posted goes this way (`docs/computer-use-windows.md`, Background
+  input).
 - **Honest results.** Every action returns
-  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", note? }`.
+  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, disposition, note? }`.
   `verified` means state was read back, for example the value after
   `setValue`. The tool description tells the agent never to report an
-  unverified action as done.
+  unverified action as done. `delivery` says how the input reached the app:
+  `background` when it went to the target app alone (the user's pointer,
+  frontmost app and Space stay as they were), `foreground` when it was real
+  input to the frontmost app. Both helpers report it; the Windows helper's
+  background input is `PostMessage` to the target's child window
+  (`docs/computer-use-windows.md`, Background input).
+- **Retry safety.** The result of every snapshot input action and the error
+  of every input action (`openApp` included) carry a `disposition`, the same
+  on both OSes:
+  - `not_delivered`: refused before any input was sent. Only this one is safe
+    to retry, and only after a `not_delivered` refusal may a helper fall back
+    to another way of sending the same input.
+  - `delivered_unverified`: input was sent, or may have been (the helper
+    timed out or died with the request), and its effect was not read back.
+  - `delivered`: sent, and the effect was read back (`verified`).
+  - No protocol bump: `delivery`, `disposition` and `input` are optional, so a
+    released main and a newer helper, or the reverse, still read each other
+    (the skew test in `computerContract.os.test.ts` pins v4.13.0's parser).
+    A bump would make main refuse every helper that reports 2.
+  - A posting call that returned without error is not proof of delivery:
+    neither OS acknowledges an event it dropped (Windows reports `SendInput`
+    success under UIPI). So main sets a result's disposition from its
+    `verification` alone.
+  - Who stamps an error: `ComputerService` stamps `not_delivered` on one
+    raised before its request went to the helper (consent, the lock, the
+    rate limit), and the pipe on one raised before the service (parameters,
+    a protected pane). `HelperProcess` stamps `not_delivered` when the helper
+    never got the request and `delivered_unverified` when it timed out or
+    died holding it (a helper that timed out is killed, so it cannot post the
+    input late). Otherwise the helper's own verdict is used, and an error
+    with none, from the helper or from a step after it, is
+    `delivered_unverified`. Once a request of an action came back done, a
+    later `not_delivered` of the same action is `delivered_unverified`. An
+    error the MCP tool gets from a broken or timed-out pipe is
+    `delivered_unverified` too (a pipe timeout keeps the code `timeout`), and
+    one raised before the tool sent anything is `not_delivered`.
+  - The macOS helper counts the events it posts and the presses, values and
+    launches that may have reached the app (an AXPress or value that did not
+    answer in time counts, and is not followed by real input; a launch counts
+    once macOS took it or may still be making it, not when it refused it). A failed input
+    action is `not_delivered` only when that count did not move. Raising or
+    focusing a window is not input and is not counted. The Windows helper
+    counts the same way: `SendInput` events inserted, messages posted, and
+    UIA pattern calls (one that certainly did not run is taken back).
+- **Input capabilities.** `hello.capabilities.input` is
+  `{ backgroundPointer, focusWithoutRaise, keyAuth }`: which ways of sending
+  input without real input this machine has, probed when the helper starts.
+  `backgroundPointer`: pointer events sent to one window of the target app,
+  the user's pointer left where it is. `focusWithoutRaise`: the target window
+  given focus without raising it or changing the frontmost app. `keyAuth`:
+  keys sent that way reach Chromium-based apps. Each flag means the same on
+  every OS. Whether an action went that way is its result's `delivery`. On
+  macOS the flags come from private SkyLight calls that change across
+  releases; `keyAuth` is the key-event authentication message, from
+  macOS 15. The Windows helper sends `{ backgroundPointer: true,
+  focusWithoutRaise: false, keyAuth: true }`. Main drops `input` when
+  Accessibility is not granted.
 
 ## Errors
 
@@ -228,7 +290,10 @@ helpers never send them. `helper_unavailable` is kept for a helper that is
 missing, damaged or failed to start, which is the case that needs a reinstall.
 
 Errors are classified by stable identifiers (HRESULTs, AXError values), never
-by localized message text.
+by localized message text. An input action's error also carries its
+`disposition` (Retry safety, above): it crosses the pipe as
+`[code] message [disposition:<value>]`, so a parser that predates it still
+reads the code, and the MCP error text gives it a line of its own.
 
 ## Safety
 
@@ -463,6 +528,9 @@ Behaviour and UX only:
 - stablyai/orca: `docs/site/content/docs/cli/computer-use.mdx`
 - trycua/cua `libs/cua-driver` (MIT core): action-result contract, background
   delivery notes
+- vercel-labs/agent-desktop (Apache-2.0): the three delivery outcomes (not
+  delivered, delivered but unverified, delivered), never trusting an input
+  API's success as proof, and holding the input lock only around the real send
 - openclaw/Peekaboo: snapshot-bound element IDs, permission onboarding
 - CursorTouch/Windows-MCP: UIA control-type filtering and caching
 - mediar-ai/terminator: pre-action checks, click result reporting

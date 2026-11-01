@@ -56,7 +56,7 @@ import type {
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
 import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
-import { localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
@@ -292,11 +292,12 @@ export class A2aTaskService {
 
   /** Re-seed the remote-state dedupe from a replayed transition/cancel. */
   private restoreRemoteState(payload: unknown): void {
-    const p = payload as { kind?: unknown; taskId?: unknown; to?: unknown; remoteMessageId?: unknown } | null;
+    const p = payload as { kind?: unknown; taskId?: unknown; to?: unknown; remoteMessageId?: unknown; remoteAsked?: unknown } | null;
     if (!p || typeof p.taskId !== 'string' || typeof p.remoteMessageId !== 'string') return;
     if (!this.tasks.has(p.taskId)) return;
     if (p.kind === 'task.transition' && typeof p.to === 'string') {
-      this.recordRemoteState(p.taskId, p.remoteMessageId, p.to as TaskState);
+      // A report keys on the state the peer asked for, so its redelivery stays a duplicate.
+      this.recordRemoteState(p.taskId, p.remoteMessageId, p.remoteAsked === 'completed' ? 'completed' : p.to as TaskState);
     } else if (p.kind === 'task.cancel') {
       this.recordRemoteState(p.taskId, p.remoteMessageId, 'canceled');
     }
@@ -328,10 +329,24 @@ export class A2aTaskService {
       };
       task.metadata.updatedAt = t.timestamp;
       if (t.remoteMessageId) {
-        addInboxItem(task, t.remoteMessageId, 'state', t.to);
+        // The peer's `completed` held here as a report: its item says completed.
+        const report = t.remoteAsked === 'completed' && t.to === 'input-required';
+        addInboxItem(task, t.remoteMessageId, 'state', report ? 'completed' : t.to, report);
         // The peer told us this state: nothing to tell it back.
         const m = remoteMarkerOf(task);
-        if (m) m.stateSync = t.to;
+        if (m) {
+          m.stateSync = t.to;
+          // The peer's latest state replaces a report it made earlier.
+          if (report) m.reported = t.remoteMessageId;
+          else delete m.reported;
+        }
+        // Every report stays in the history: a later one replaces the status.
+        const reportMessage = report ? t.message : undefined;
+        if (reportMessage && !task.history.some((h) => h.messageId === reportMessage.messageId)) task.history.push(reportMessage);
+      } else {
+        // A state set on this PC (the done on a report, a forced end) ends the report.
+        const m = remoteMarkerOf(task);
+        if (m) delete m.reported;
       }
       return;
     }
@@ -464,8 +479,17 @@ export class A2aTaskService {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.update: task not found: ${input.taskId}` };
 
+      // A company task this PC sent to another PC is marked done here, on the
+      // report that PC made: by the sending workspace's coordinator (a resolved
+      // pane in that seat now, as for a local seat's report) or by the trusted
+      // lane for that workspace. The state it must be in is checked after the
+      // idempotency hit, so a retried done returns its first result.
+      const remoteDone = isRemoteWorkspaceId(task.metadata.to.workspaceId)
+        && input.callerWorkspaceId === task.metadata.from.workspaceId
+        && (input.trustedLane === true || (input.callerCompanySeat === 'coordinator' && !!input.callerAddr?.paneId))
+        && isCompanyTask(task.history);
       // 권한: 수신자 workspace만 상태 갱신 가능(a2aSlice 현행 계약).
-      if (task.metadata.to.workspaceId !== input.callerWorkspaceId) {
+      if (!remoteDone && task.metadata.to.workspaceId !== input.callerWorkspaceId) {
         return { ok: false, error: `a2a.task.update: caller ${input.callerWorkspaceId} is not the receiver` };
       }
       // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
@@ -518,6 +542,12 @@ export class A2aTaskService {
       // transition으로 변질되지 않게). 정당한 재시도는 동일 입력이라 authz를 항상 재통과.
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'transition');
       if (cached) return cached as TransitionOk;
+      if (remoteDone && !(input.to === 'completed' && task.status.state === 'input-required' && remoteMarkerOf(task)?.reported !== undefined)) {
+        return {
+          ok: false,
+          error: 'a2a.task.update: a task sent to another PC is marked done here only on its report (input-required after that PC completed it)',
+        };
+      }
       // VALID_TRANSITIONS 데몬측 강제(성공 종단='completed').
       if (!validateTransition(task.status.state, input.to)) {
         const from = task.status.state;
@@ -914,7 +944,8 @@ export class A2aTaskService {
    * rejected (or that expired), or its link ended. Like
    * failTasksForWorkspaceRemoved this bypasses VALID_TRANSITIONS and the
    * evidence gate (submitted -> failed is not a graph edge), and the receiver
-   * authz: either side ends its own copy. An ended task is left as it is.
+   * authz: either side ends its own copy. An ended task is left as it is, and
+   * so is a report the peer made (it finished the task there).
    */
   forceFailRemote(input: {
     taskId: string;
@@ -925,6 +956,7 @@ export class A2aTaskService {
       const task = this.tasks.get(input.taskId);
       if (!task || !remoteMarkerOf(task)) return { ok: false, error: `a2a.remote.fail: remote task not found: ${input.taskId}` };
       if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, task, failed: false };
+      if (remoteMarkerOf(task)?.reported !== undefined) return { ok: true, task, failed: false };
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
@@ -997,6 +1029,11 @@ export class A2aTaskService {
    *
    * Keyed by the peer's `messageId`: the same id asking for the same state is a
    * duplicate, a different state a conflict.
+   *
+   * On a company task this host sent, the peer's `completed` is committed as
+   * `input-required` (`remoteAsked: 'completed'`), with its message and
+   * evidence: a report this host marks done (transition). The dedupe, the
+   * graph check and the evidence verdict read the asked state.
    */
   applyRemoteState(input: {
     taskId: string;
@@ -1043,15 +1080,27 @@ export class A2aTaskService {
       if (task.metadata.to.workspaceId !== remoteWs) {
         return { ok: false, error: 'a2a.remote.state: only the receiver may move this task' };
       }
+      const current = task.status.state;
+      // A company task's `completed` is held here as a report (input-required)
+      // until this host marks it done. Every check below reads the state the
+      // peer asked for, not the one committed.
+      const report = input.to === 'completed' && isCompanyTask(task.history);
       // A receiver's `failed` is taken from any open state: the peer ends the
       // task on its side (e.g. a person rejected it while it was still
       // `submitted`, which has no graph edge to `failed`), and our copy must
-      // not stay open behind it.
-      if (input.to !== 'failed' && !validateTransition(task.status.state, input.to)) {
-        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      // not stay open behind it. `completed` and `input-required` are taken
+      // from `submitted` too: only the latest state is synced, so a fast peer
+      // can skip `working`. After a report, the peer asking a question
+      // replaces it.
+      const allowed = input.to === 'failed'
+        || validateTransition(current, input.to)
+        || (current === 'submitted' && (input.to === 'completed' || input.to === 'input-required'))
+        || (current === 'input-required' && input.to === 'input-required' && remoteMarkerOf(task)?.reported !== undefined);
+      if (!allowed) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
-      if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
-        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      if ((TERMINAL_STATES as readonly string[]).includes(current)) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
       const terminal = input.to === 'completed' || input.to === 'failed';
       const summary = input.summary?.trim() || `${input.to} on the remote host (evidence stays there)`;
@@ -1068,12 +1117,13 @@ export class A2aTaskService {
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
-        to: input.to,
+        to: report ? 'input-required' : input.to,
         timestamp,
         ...(message ? { message } : {}),
         ...(evidence ? { forced: 'remote_state' as const, evidence } : {}),
         ...(verdict?.ok ? { verifiedItemCount: verdict.verifiedItemCount } : {}),
         remoteMessageId: input.messageId,
+        ...(report ? { remoteAsked: 'completed' as const } : {}),
       };
       const committed = await this.log.append(this.envelope(payload, remoteWs, this.derivePrincipalId(task, 'to', remoteWs)));
       if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };
@@ -1288,11 +1338,13 @@ function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined 
 }
 
 /** Owe the local pane one delivery for a reply/state the peer sent (idempotent). */
-function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState): void {
+function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState, reported = false): void {
   const marker = remoteMarkerOf(task);
   if (!marker) return;
   const inbox = marker.inbox ?? (marker.inbox = []);
-  if (!inbox.some((i) => i.messageId === messageId)) inbox.push({ messageId, kind, ...(state ? { state } : {}), delivered: false });
+  if (!inbox.some((i) => i.messageId === messageId)) {
+    inbox.push({ messageId, kind, ...(state ? { state } : {}), ...(reported ? { reported: true as const } : {}), delivered: false });
+  }
 }
 
 /** The text parts of a history's first message, joined — the "body" a remote id dedupes on. */

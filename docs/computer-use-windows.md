@@ -29,9 +29,11 @@ Layout:
 
 - `src/Core`: pure logic with no Win32: tree walking and rendering, the
   sensitive-field rule, the key table, Unicode chunking, screenshot scale,
-  virtual-desktop coordinate normalisation, held-state file validation. The
+  virtual-desktop coordinate normalisation, held-state file validation, the
+  background-input planner (what may be posted, and in which order). The
   unit tests in `tests/` cover this project and run on any OS.
-- `src/Helper`: the executable (UIA, capture, SendInput, the request loop).
+- `src/Helper`: the executable (UIA, capture, SendInput and PostMessage, the
+  request loop).
   Win32 and COM bindings come from CsWin32 with marshalling off, so every COM
   call is an unmanaged function pointer and NativeAOT needs no runtime COM
   interop. FlaUI is not used (its COM interop is not AOT-compatible).
@@ -45,7 +47,8 @@ Layout:
 
 Windows has no TCC-like grant for synthetic input or screen capture. Any
 process of the same user, at the same integrity level, can already call
-`SendInput`, read other windows through UI Automation and capture them. So:
+`SendInput` or `PostMessage`, read other windows through UI Automation and
+capture them. So:
 
 - **The helper is not a privilege boundary.** It does what its stdin says,
   with the user's own rights, and checks nothing about its parent. A process
@@ -173,12 +176,157 @@ monitors at negative coordinates work.
   `openApp` with `unsupported_action` and skips `configure`: no agent cursor
   or halo on Windows for now.
 
+## Background input
+
+An input action first tries to post its input to the target window alone,
+so the user's cursor, foreground window and focused control stay as they
+were, and several panes can drive different apps at once. Only what is
+refused before anything was posted goes the real way (`SendInput`, next
+section); that result says `delivery: "foreground"`. A posted one says
+`delivery: "background"`.
+
+- **How.** `PostMessage` to one child window of the target: the child a real
+  click at the point would hit. From the target window down, that is the
+  topmost child in z-order that is visible, enabled, not
+  `WS_EX_TRANSPARENT`, contains the point, and does not answer
+  `WM_NCHITTEST` with `HTTRANSPARENT` (a group box lets the click through to
+  the control behind it). Each hit test gets 100 ms; one that goes
+  unanswered refuses, and so does a window with more than 512 children (the
+  one hit may be past the cut). The point is sent in that child's client
+  coordinates, in physical pixels: when the target window or the child
+  does not use the DPI of the monitor at the point (a DPI-unaware window,
+  or a system-aware one on a monitor of another DPI), it would read them as
+  logical pixels and the click would land elsewhere, so that is refused
+  (coordinates are not converted in v1).
+- **The receiver is re-checked before every message.** It is resolved with
+  the process and thread that own it; before each `PostMessage`, under the
+  input lock, the handle must still exist and belong to that process and
+  thread (slow UIA reads run in between, a handle can be reused, and
+  Chromium recreates its widgets on navigation). Changed before the first
+  message: nothing is posted (`not_delivered`, then real input). Changed
+  later: the action stops with an error (`delivered_unverified`), and no up
+  event is sent after it, because the handle may now be another app's.
+  A click is `WM_MOUSEMOVE`, `WM_LBUTTONDOWN`, `WM_LBUTTONUP`. Text is one
+  `WM_CHAR` per UTF-16 unit (both halves of a surrogate pair); named keys
+  are `WM_KEYDOWN` and `WM_KEYUP` with the scan code and extended bit in
+  `lParam` (the key-up also sets bits 30 and 31), and the app's own
+  `TranslateMessage` makes their characters. Posted messages press nothing
+  system-wide, so they are not recorded as held input.
+- **Covered windows are the point.** The child is looked up inside the
+  target window whoever covers that point on screen, so the "foreground
+  window" and "window under the point" preflights of real input do not
+  apply. The safety checks do: the input desktop, elevation, secret fields,
+  the shutdown gate.
+- **Which windows.** Only the window classes posted input is measured with,
+  and the plain edit control: `Chrome_RenderWidgetHostHWND` and
+  `Chrome_WidgetWin_*` (Chrome, Edge, Electron), `RichEditD2DPT`
+  (Notepad), the `RichEdit` family (`RichEdit20W`, `RICHEDIT50W`) and
+  `Edit` (class names compare case-insensitively). UIA reports a plain
+  `Edit`'s keyboard focus only while its window is in front, so for it the
+  focus checks below also accept its own thread's focused window
+  (`GetGUIThreadInfo`) being that `Edit`, re-read right before the keys; it
+  is a password field when its UIA element says so or it has `ES_PASSWORD`
+  (unreadable counts as one). Everything else gets
+  real input: buttons, list boxes, list and tree views act on a click
+  through `GetMessagePos` (the user's real cursor), a combo box dropdown
+  takes mouse capture, and WPF, UWP / WinUI / XAML islands, Qt, Java,
+  Flutter, SDL, games reading raw input or custom controls could drop
+  posted input without a trace.
+- **Per action.** Checked first, before any window state is read: what the
+  action asks for.
+  - `click`: a single left click with no modifiers, after the UIA ladder
+    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern.
+    Right and middle buttons, double and triple clicks, and modifiers go the
+    real way: posted messages carry no keyboard state, and the rest was not
+    measured.
+  - `type` with an index: the field's focus is read, the field is clicked
+    (posted), and before any key is posted it must report keyboard focus
+    (it is the system's focused element, or its UIA `HasKeyboardFocus` is
+    true, within 300 ms) and its fresh frame must still contain the clicked
+    point. A field that already had focus before the click is read only
+    after a 60 ms settle, so its old focus is not taken for the click's.
+    The keys go to the window under that click. Always clicked, because
+    Chromium and Electron drop posted keys that no posted click preceded,
+    and ignore them again after any real activation; for other apps it
+    moves focus inside the target without UIA `SetFocus`, which can raise
+    the window. The caret lands where the click puts it, the middle of the
+    field. If the field does not report focus, or moved away from the
+    point, nothing is typed and the action fails (`action_not_supported`,
+    `delivered_unverified`: the click went in), never falling back to real
+    input.
+  - `type` without an index, `pressKey`, and `hotkey` with no modifiers: the
+    keys go to the target thread's focused window (`GetGUIThreadInfo`), only
+    when it lies inside the target window, is one of the classes above and
+    not a Chromium window (no field to click), is itself a UIA Edit or
+    Document, and the element with keyboard focus inside it (the window's
+    own element or a windowless descendant) is found and is not a password
+    field. The focused window is read again right before the keys are
+    posted; if it changed, nothing is posted and the keys go the real way.
+    A thread that is not in front may have no focused window; then too the
+    keys go the real way.
+  - `type` whose text holds a Tab or any other control character goes the
+    real way, which re-checks focus before every chunk: a Tab can move
+    focus (to the next field of a page, or through a dialog) so the rest
+    would land where no check was made. Only one trailing newline is
+    posted: a trailing `\n` (backslash, n) types Enter in the same action.
+  - `hotkey` with modifiers and `scroll`: always the real way (a chord
+    cannot be posted; `WM_MOUSEWHEEL` was not measured).
+  - `setValue` and the UIA click ladder are not input; their results say
+    `background` unless the target window came to the front during the call
+    (the foreground is read before the call's checks).
+- **Refused before posting** (`not_delivered`, then real input), besides
+  the above: the target window is minimized, hidden or cloaked, on another
+  virtual desktop (`IVirtualDesktopManager`; if that call fails it is no
+  reason to refuse), or elevated; nothing of the target's process at the
+  point; a hit test went unanswered; a window on the way has more than 512
+  children; the window at the point does not use the monitor's DPI; the
+  point is on a frame or scroll bar;
+  a menu, an owned window (a dropdown, a dialog) or a tool window of the
+  target process lies over the point, whatever covers it on screen (it
+  takes a real click); the window at the point is not one of the classes
+  above; the field under the click is (or may be) a password field. A
+  `PostMessage` that fails on the first message also counts as nothing
+  posted.
+- **No delivery acknowledgement.** `PostMessage` succeeding is not proof the
+  app acted on it. A posted action is `unverified` (`delivered_unverified`)
+  unless a re-read confirms it: for `type`, the field's UIA value is the
+  value before with exactly the typed text inserted (the same rule as real
+  input, but read from the target field, not the system focus). Clicks and
+  keys are `unverified`.
+- **Our side effects.** The cursor position and the foreground window are
+  read before posting and again at least 60 ms after it. If the cursor now
+  sits on the target point and did not before, or the foreground window
+  changed to a window of the target's process (the target, a dialog or popup
+  it opened, another of its windows), the result is `unverified` with
+  `delivery: "foreground"` and a note, and the input is never sent a second
+  way. The user moving the mouse or switching to another app meanwhile is
+  not counted, and neither is any change when the user's own input arrived
+  in between (`GetLastInputInfo` moved, which posted messages never do):
+  then the result keeps `background` and a confirmed read-back stays
+  `verified`.
+- **Errors.** Once anything was posted, a later failure ends the action with
+  an error and no fallback. If a button-up or key-up is refused after its
+  down went in, the up is posted once more (and for a button
+  `WM_CANCELMODE`, which ends a capture or drag the app started). Every
+  control error carries a `disposition`: `not_delivered` when no input
+  event, posted message or UIA pattern call went out during the request,
+  `delivered_unverified` otherwise (the same rule as the macOS helper).
+- **Capabilities.** `hello.capabilities.input` is
+  `{ backgroundPointer: true, focusWithoutRaise: false, keyAuth: true }`:
+  posted clicks leave the cursor alone; nothing gives a window focus without
+  the app taking it itself; posted keys reach Chromium-based apps after a
+  posted click on the field.
+- Measured on Windows 11 with Chrome 155, Electron 42 and Notepad
+  (`RichEditD2DPT`): posted clicks move the caret or land as
+  `pointerType: mouse`, posted keys insert text, and the cursor, foreground
+  window and focus stay untouched.
+
 ## Input
 
-- `SendInput` only. Each batch is one `SendInput` call: modifiers down, key
-  down and up, modifiers up; or move, button down and up. So nothing stays
-  held between calls. If Windows inserts fewer events than asked, the helper
-  sends up events for what it tracked at once.
+- Real input is `SendInput` only. Each batch is one `SendInput` call:
+  modifiers down, key down and up, modifiers up; or move, button down and
+  up. So nothing stays held between calls. If Windows inserts fewer events
+  than asked, the helper sends up events for what it tracked at once.
 - Before every batch, and again before every typed chunk, repeated key and
   scroll notch, the helper requires the following. The slow checks
   (password field, focused element) run first; the fast Win32 ones (input
@@ -263,7 +411,9 @@ monitors at negative coordinates work.
 ## Performance targets
 
 `getAppState` (ax) ≤ 300 ms on Notepad, Explorer and VS Code; screenshot
-≤ 150 ms; `click` / `type` ≤ 100 ms. CI's smoke run reports first-hello
+≤ 150 ms; `click` / `type` ≤ 100 ms (a posted action includes its 60 ms
+side-effect check; a verified `type` returns as soon as its text reads
+back). CI's smoke run reports first-hello
 latency and Notepad's `getAppState` times in the job summary.
 
 ## Dogfood checklist (Windows agent)
@@ -324,8 +474,11 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
    Notepad shows no stuck Ctrl, Shift, Alt or Win, and
    `%LOCALAPPDATA%\wmux\computer-use\held` holds no files.
 2. **Focus race.** Have the agent type a long paragraph into Notepad and
-   Alt+Tab to another app midway. Typing stops with `window_not_focused`
-   ("after N of M characters"); nothing lands in the other app.
+   Alt+Tab to another app midway. Nothing lands in the other app. Typing
+   posted in the background (result `delivery: "background"`) does not
+   follow focus and finishes in Notepad; typing sent as real input
+   (`delivery: "foreground"`) stops with `window_not_focused` ("after N of M
+   characters").
 3. **Partial batch / crash recovery.** While the agent holds a chord
    (`hotkey` ctrl+shift+…) or types, kill the helper from Task Manager
    (`wmux-computer-use.exe`). The next computer call succeeds, no modifier
@@ -359,6 +512,14 @@ node native\computer-use-windows\probe.mjs <exe> getAppState '{"app":"notepad","
 11. **Typing verification.** Type `abc` three times into a Notepad document
     that already contains `abc`; every `verified` matches one new `abc` in
     the file. Report any `verified` without its text landing.
+12. **Background input.** Cover Notepad, then a Chrome or Electron window,
+    with another app. `click` an element and `type` with an index into a
+    text field of each: the text lands, the results say
+    `delivery: "background"`, and the mouse pointer, the window in front and
+    the focused control of the covering app do not change. A right click,
+    a double click, `scroll` and a `hotkey` with modifiers come back
+    `delivery: "foreground"` (real input, as before). The helper's stderr
+    names why a click or typing that could have been posted was not.
 
 ### 4. Explorer windows
 
