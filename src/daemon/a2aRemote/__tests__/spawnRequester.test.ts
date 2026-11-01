@@ -321,6 +321,8 @@ describe('the asker\'s name for the agent (label)', () => {
   it('becomes the link\'s remote label and the first task\'s alias, across a restart, and is never sent', async () => {
     const id = askOk({ label: 'Parser seat' });
     expect(JSON.stringify(sent)).not.toContain('Parser seat');
+    // This PC's own list names the pending agent by it.
+    expect(stateOf(id)).toMatchObject({ label: 'Parser seat', state: 'sent' });
     expect(Object.keys(sent[0].env.spawn ?? {}).sort()).toEqual(['agent', 'expiresAt', 'folder', 'from', 'spawnId', 'text', 'v']);
     store = new SpawnOutgoingStore({ dir: path.join(dir, 'a2a'), scheduleHarden: quiet, now: () => clock });
     asks = make();
@@ -334,6 +336,7 @@ describe('the asker\'s name for the agent (label)', () => {
 
   it('without one, the alias reads the other PC\'s ids as before', async () => {
     const id = askOk();
+    expect(stateOf(id)).not.toHaveProperty('label');
     const result = started(id);
     expect(await asks.onResult(B, result)).toBe(true);
     const linkId = asSpawnLinkId(result.linkId)!;

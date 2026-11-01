@@ -317,7 +317,7 @@ export class A2aSpawnRequester {
     return {
       hostId: rec.hostId, ...(hostName ? { hostName } : {}), spawnId: rec.spawnId, agent: rec.agent, rootId: rec.rootId,
       ...(rec.sub ? { sub: rec.sub } : {}),
-      from: { kind: 'pane', workspaceId: rec.from.workspaceId, paneId: rec.from.paneId },
+      from: { kind: 'pane', workspaceId: rec.from.workspaceId, paneId: rec.from.paneId }, ...(rec.label ? { label: rec.label } : {}),
       state: rec.state, ...(rec.code ? { code: rec.code } : {}), ...(rec.linkId ? { linkId: rec.linkId } : {}),
       createdAt: rec.createdAt, updatedAt: rec.updatedAt, expiresAt: rec.expiresAt,
     };

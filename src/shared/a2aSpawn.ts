@@ -409,6 +409,8 @@ export interface A2aSpawnOutgoingSummary {
   sub?: string;
   /** The pane here that gets the replies. */
   from: A2aSpawnFromV1;
+  /** This PC's name for the agent it asked for (`A2aSpawnAskInput.label`). */
+  label?: string;
   state: A2aSpawnOutgoingState;
   code?: A2aSpawnCode;
   linkId?: string;
