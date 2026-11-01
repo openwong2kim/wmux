@@ -343,6 +343,10 @@ export class A2aTaskService {
         // Every report stays in the history: a later one replaces the status.
         const reportMessage = report ? t.message : undefined;
         if (reportMessage && !task.history.some((h) => h.messageId === reportMessage.messageId)) task.history.push(reportMessage);
+      } else {
+        // A state set on this PC (the done on a report, a forced end) ends the report.
+        const m = remoteMarkerOf(task);
+        if (m) delete m.reported;
       }
       return;
     }
@@ -476,15 +480,13 @@ export class A2aTaskService {
       if (!task) return { ok: false, error: `a2a.task.update: task not found: ${input.taskId}` };
 
       // A company task this PC sent to another PC is marked done here, on the
-      // report that PC made: by the pane that sent it, in the coordinator seat,
-      // or by the trusted lane, for the sending workspace. The state it must
-      // be in is checked after the idempotency hit, so a retried done returns
-      // its first result.
-      const sender = task.metadata.from;
+      // report that PC made: by the sending workspace's coordinator (a resolved
+      // pane in that seat now, as for a local seat's report) or by the trusted
+      // lane for that workspace. The state it must be in is checked after the
+      // idempotency hit, so a retried done returns its first result.
       const remoteDone = isRemoteWorkspaceId(task.metadata.to.workspaceId)
-        && input.callerWorkspaceId === sender.workspaceId
-        && (input.trustedLane === true
-          || (input.callerCompanySeat === 'coordinator' && !!input.callerAddr?.paneId && input.callerAddr.paneId === sender.paneId))
+        && input.callerWorkspaceId === task.metadata.from.workspaceId
+        && (input.trustedLane === true || (input.callerCompanySeat === 'coordinator' && !!input.callerAddr?.paneId))
         && isCompanyTask(task.history);
       // 권한: 수신자 workspace만 상태 갱신 가능(a2aSlice 현행 계약).
       if (!remoteDone && task.metadata.to.workspaceId !== input.callerWorkspaceId) {

@@ -612,12 +612,27 @@ describe('A2aTaskService — the sending PC marks a remote company task\'s repor
     expect(records(log).at(-1)!.authContext?.principalId).toBe('ws-local');
   });
 
-  it('refuses a staff seat, another pane, another workspace\'s coordinator and a seat with no resolved pane', async () => {
+  it('the workspace\'s coordinator now, after the CEO seat moved to another pane, marks it done as its own pane', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await reported(svc);
+    const done = await svc.transition({
+      taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-new-ceo' }, callerCompanySeat: 'coordinator', evidence: DONE_EVIDENCE,
+    });
+    expect(done.ok).toBe(true);
+    expect(records(log).at(-1)!.authContext?.principalId).toBe(panePrincipalId('ws-local', 'pane-new-ceo'));
+    // The done ends the report, live and after a replay.
+    expect((svc.getTask('rt-co')!.metadata.remote as { reported?: string }).reported).toBeUndefined();
+    const replayed = newService(log);
+    replayed.restoreFromLog();
+    expect((replayed.getTask('rt-co')!.metadata.remote as { reported?: string }).reported).toBeUndefined();
+  });
+
+  it('refuses a staff seat, another workspace\'s coordinator and a seat with no resolved pane', async () => {
     const svc = newService(newLog());
     await reported(svc);
     const callers = [
       { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'staff' as const },
-      { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-other' }, callerCompanySeat: 'coordinator' as const },
       { callerWorkspaceId: 'ws-ops', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator' as const },
       { callerWorkspaceId: 'ws-local', callerCompanySeat: 'coordinator' as const },
       { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' } },
