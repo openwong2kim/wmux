@@ -42,7 +42,12 @@ export function cleanCopyText(selection: string, replies: readonly AgentReply[])
   const { projection, map, at } = found;
   const spanMap = map.slice(at, at + needle.length);
   if (!sameSpacing(projection, spanMap, shown, shownMap)) return null;
-  return projection.slice(spanMap[0], spanMap[spanMap.length - 1] + 1);
+  // A selection begun left of an indented line (from the margin) takes the
+  // line's own indentation, so a code span keeps its relative indentation.
+  let start = spanMap[0];
+  const lineStart = projection.lastIndexOf('\n', start - 1) + 1;
+  if (/^[^\S\n]+$/u.test(projection.slice(lineStart, start)) && /^[^\S\n]/u.test(shown)) start = lineStart;
+  return projection.slice(start, spanMap[spanMap.length - 1] + 1);
 }
 
 /** Whether the selection spaces the matched characters as the reply does,
@@ -63,9 +68,11 @@ function sameSpacing(projection: string, spanMap: readonly number[], shown: stri
 }
 
 // What the selection holds besides the reply's own text, as Claude Code 2.1.316
-// draws it: the reply marker at the start of the reply's first row, and the bar
-// it puts in place of a blockquote's `>` (on every row, wrapped rows too).
-const DECORATION = /^[^\S\n]*(?:⏺|▎)/gmu;
+// draws it: the reply marker at the start of the reply's first row (⏺ on
+// macOS; ● elsewhere, as the repo's other Claude screen readers accept), and
+// the bar it puts in place of a blockquote's `>` (on every row, wrapped rows
+// too).
+const DECORATION = /^[^\S\n]*(?:⏺|●|▎)/gmu;
 
 /** `text` without whitespace, and where each of its characters sits in `text`. */
 function whitespaceFreeKey(text: string): { key: string; map: number[] } {
@@ -98,16 +105,31 @@ function projectProse(text: string): string {
     .join('\n');
 }
 
+const CODE_SPAN = /(`+)([^`]|[^`].*?[^`])\1(?!`)/gu;
+// One placeholder character per code span (supplementary private use), so
+// emphasis around a code span (**`npm test`**) loses its markers too.
+const SPAN_BASE = 0xf0000;
+const HAS_SPAN_CHAR = /[\u{F0000}-\u{FFFFD}]/u;
+
 /** Inline markdown on one line: code spans keep their content as it is, the
  *  rest loses the emphasis markers and shows a link as `text (url)`. */
 function projectInline(line: string): string {
-  let out = '';
-  let last = 0;
-  for (const m of line.matchAll(/(`+)([^`]|[^`].*?[^`])\1(?!`)/gu)) {
-    out += projectText(line.slice(last, m.index)) + m[2];
-    last = m.index + m[0].length;
+  if (HAS_SPAN_CHAR.test(line)) {
+    // The line already holds a placeholder character: span by span instead.
+    let out = '';
+    let last = 0;
+    for (const m of line.matchAll(CODE_SPAN)) {
+      out += projectText(line.slice(last, m.index)) + m[2];
+      last = m.index + m[0].length;
+    }
+    return out + projectText(line.slice(last));
   }
-  return out + projectText(line.slice(last));
+  const spans: string[] = [];
+  const held = line.replace(CODE_SPAN, (_m, _ticks: string, body: string) => String.fromCodePoint(SPAN_BASE + spans.push(body) - 1));
+  return [...projectText(held)].map((ch) => {
+    const i = (ch.codePointAt(0) ?? 0) - SPAN_BASE;
+    return i >= 0 && i < spans.length ? spans[i] : ch;
+  }).join('');
 }
 
 function projectText(text: string): string {

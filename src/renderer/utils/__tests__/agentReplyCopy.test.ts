@@ -85,6 +85,23 @@ describe('cleanCopyText: a span of one reply', () => {
     expect(copy('inline.60', 'Run', 'exit.')).toBe('Run npm test -- --run and then git status before exit.');
   });
 
+  it('a code span begun from the margin of an indented line keeps its relative indentation', () => {
+    const replies: AgentReply[] = [[{ kind: 'code', body: 'def f():\n    a = 1\n    if a:\n        return a' }]];
+    expect(cleanCopyText('      a = 1\n      if a:\n          return a', replies)).toBe('    a = 1\n    if a:\n        return a');
+    // Begun on the text itself: the selection starts there, and so does the copy.
+    expect(cleanCopyText('a = 1\n      if a:\n          return a', replies)).toBe('a = 1\n    if a:\n        return a');
+  });
+
+  it('the reply marker other platforms draw (●) is not part of the copy', () => {
+    const replies: AgentReply[] = [[{ kind: 'prose', text: 'Here is the plan.\nThen run it.' }]];
+    expect(cleanCopyText('● Here is the plan.\n  Then run it.', replies)).toBe('Here is the plan.\nThen run it.');
+  });
+
+  it('bold around a code span loses both markers', () => {
+    const replies: AgentReply[] = [[{ kind: 'prose', text: 'And **`npm test`** runs it.\nDone.' }]];
+    expect(cleanCopyText('And npm test runs it.\n  Done.', replies)).toBe('And npm test runs it.\nDone.');
+  });
+
   it('headings copy without their #', () => {
     expect(copy('headings.60', '⏺', 'third.')).toBe(
       'Top heading\n\nIntro line.\n\nSecond heading\n\nBody under second.\n\nThird heading\n\nBody under third.',
