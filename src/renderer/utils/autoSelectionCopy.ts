@@ -15,9 +15,14 @@
  * unit-tested without pulling in xterm + Electron + DOM.
  */
 
+import { createCopySequence } from './cleanCopyResolve';
+
 export interface AutoSelectionCopyDeps {
   /** Bridge to `window.clipboardAPI.writeText` (or any equivalent). */
   write: (text: string) => Promise<unknown>;
+  /** Turns the selection into the text to write (a clean copy), after the
+   *  debounce. Absent: the selection as it is. */
+  resolve?: (selection: string) => Promise<string>;
   /** Debounce window in ms. Defaults to 150. */
   debounceMs?: number;
   /**
@@ -31,7 +36,7 @@ export interface AutoSelectionCopyDeps {
 export interface AutoSelectionCopyHandle {
   /** Call from the terminal's onSelectionChange callback. */
   onSelection: (selection: string) => void;
-  /** Cancel any pending debounced write. Call on unmount. */
+  /** Cancel any pending debounced write, or a resolution still running. Call on unmount. */
   dispose: () => void;
 }
 
@@ -43,19 +48,30 @@ export function createAutoSelectionCopy(deps: AutoSelectionCopyDeps): AutoSelect
   const clearT = deps.clearTimeoutFn ?? ((h) => clearTimeout(h));
 
   let pending: ReturnType<typeof setTimeout> | null = null;
+  // A resolution still running when a newer one starts, or after dispose(),
+  // writes nothing.
+  const startCopy = createCopySequence();
+
+  const write = (text: string): void => {
+    void deps.write(text).catch(() => {
+      // Silent — explicit copy paths still surface errors when retried.
+    });
+  };
 
   const onSelection = (selection: string): void => {
     if (pending) clearT(pending);
     pending = setT(() => {
       pending = null;
       if (!selection || selection.length === 0) return;
-      void deps.write(selection).catch(() => {
-        // Silent — explicit copy paths still surface errors when retried.
-      });
+      if (!deps.resolve) { write(selection); return; }
+      const isCurrent = startCopy();
+      // resolve never rejects; the catch only keeps a broken one silent.
+      void deps.resolve(selection).then((text) => { if (isCurrent()) write(text); }).catch(() => undefined);
     }, debounceMs);
   };
 
   const dispose = (): void => {
+    startCopy();
     if (pending) {
       clearT(pending);
       pending = null;
