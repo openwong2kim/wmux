@@ -118,6 +118,8 @@ export function seatAsksOf({ workspaceId, coordinatorPaneId, requests, hosts, no
     const pending = r.state === 'sent' || r.state === 'waiting';
     const updatedAt = Date.parse(r.updatedAt);
     if (!pending && !(now - updatedAt < ENDED_ASK_SHOWN_MS)) continue;
+    // An ask that ran out of time here carries no code of its own.
+    const code: A2aSpawnCode = r.code ?? (r.state === 'expired' ? 'expired' : 'failed');
     out.push({
       spawnId: r.spawnId,
       ...(r.label ? { label: r.label } : {}),
@@ -125,8 +127,7 @@ export function seatAsksOf({ workspaceId, coordinatorPaneId, requests, hosts, no
       pc: pcNameOf(hosts, r.hostId, r.hostName),
       online: hosts.some((h) => h.hostId === r.hostId && h.state === 'connected'),
       pending,
-      // An ask that ran out of time here carries no code of its own.
-      ...(pending ? {} : { code: r.code ?? (r.state === 'expired' ? 'expired' : 'failed') }),
+      ...(pending ? {} : { code }),
       createdAt: Date.parse(r.createdAt),
       updatedAt,
       expiresAt: Date.parse(r.expiresAt),

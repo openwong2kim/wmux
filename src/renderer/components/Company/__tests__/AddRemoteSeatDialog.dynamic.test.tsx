@@ -168,7 +168,7 @@ describe('AddRemoteSeatDialog', () => {
     spawnAsk.mockResolvedValue({ ok: true, online: true, spawn: {} as never });
     await render();
     const bare = ['xK9mQ2pL7vR4nT8wZ3yB6c', 'F1hJ5'].join('');
-    type('add-remote-seat-owns', `deploys with Bearer ${bare}`);
+    type('add-remote-seat-owns', `deploys with Bearer ${bare} on Fridays`);
     const before = text()!;
     expect(before).toContain(bare);
     expect(q('add-remote-seat-will-mask')).not.toBeNull();
