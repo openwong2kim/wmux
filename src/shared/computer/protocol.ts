@@ -338,7 +338,10 @@ export interface ControlTarget {
  * call, no focus request. If anything went out before it found it needs the
  * foreground, it ends as it would today (an error with
  * `delivered_unverified`, or an unverified result), never `needs_foreground`:
- * main's re-send in `allow` mode would send the same input twice.
+ * main's re-send in `allow` mode would send the same input twice. On macOS an
+ * accessibility focus attribute set (AXFocusedWindow, AXFocused) is not
+ * counted as sent: it is no input, and the re-send only sets the same focus
+ * again.
  */
 export type ForegroundMode = 'allow' | 'refuse';
 

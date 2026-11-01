@@ -281,13 +281,16 @@ is not re-walked.
   reason found before anything is posted (the list above) and a check that
   fails before anything was posted. The decision is Core `afterStop`: only
   a sent counter unchanged since the action began (key-window event records
-  count, and key status going back is counted before the answer is chosen)
-  becomes `needs_foreground`; a stop after posting started (no focus after
+  count, and key status going back is counted before the answer is chosen;
+  an accessibility focus attribute set, `AXFocusedWindow` or `AXFocused`,
+  does not, since the re-send only sets the same focus again) becomes
+  `needs_foreground`; a stop after posting started (no focus after
   the focus click, the window left the screen mid-scroll, the app came
   forward mid-typing) keeps its own answer, `window_not_focused` with
   `delivered_unverified`. `setValue` and the `AXPress` step of `click` are
-  accessibility calls, not input, and raise no window, so `refuse` changes
-  nothing for them; `setValue` accepts the param.
+  accessibility calls, not input, and the helper raises no window for them,
+  so `refuse` changes nothing for them (an app that comes forward on a press
+  is reported as `delivery: "foreground"`); `setValue` accepts the param.
 - Bringing the target forward, for real input: every input action (`click` by
   point or by an index that falls through to the pointer, `scroll`, `type`,
   `pressKey`, `hotkey`) first brings the target forward when it is not the frontmost app
