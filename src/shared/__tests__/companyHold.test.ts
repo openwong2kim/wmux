@@ -42,6 +42,12 @@ describe('companyHoldAtCreate', () => {
     });
   });
 
+  it('with a release time (a send held for its blockers): kept and released when every blocker completed', () => {
+    expect(companyHoldAtCreate({ blockedBy: ['done', 'done'] }, stateOf, 't0')).toEqual({ blockedBy: ['done'], waitingOn: [], releasedAt: 't0' });
+    expect(companyHoldAtCreate({ blockedBy: ['done', 'open'] }, stateOf, 't0')).toEqual({ blockedBy: ['done', 'open'], waitingOn: ['open'] });
+    expect(companyHoldAtCreate({ blockedBy: [] }, stateOf, 't0')).toBeNull();
+  });
+
   it('skips empty ids', () => {
     expect(companyHoldAtCreate({ blockedBy: ['', 'open'] }, stateOf)).toEqual({ blockedBy: ['open'], waitingOn: ['open'] });
   });

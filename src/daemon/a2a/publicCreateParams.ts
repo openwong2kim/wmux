@@ -8,8 +8,15 @@ import type { CreateTaskInput } from './A2aTaskService';
  * cross-host inbound path, inside the daemon, creates a remote task), and an
  * `rt-` id is refused so no plain task can sit on a remote task's id and turn
  * the real one into a conflict.
+ *
+ * `holdForBlockers: true` passes only from the app's main process
+ * (`firstParty`): it sends it for a company task it held back for its
+ * blockers.
  */
-export function parsePublicCreateTask(p: Record<string, unknown>): { ok: true; input: CreateTaskInput } | { ok: false; error: string } {
+export function parsePublicCreateTask(
+  p: Record<string, unknown>,
+  opts: { firstParty?: boolean } = {},
+): { ok: true; input: CreateTaskInput } | { ok: false; error: string } {
   const from = p.from as CreateTaskInput['from'] | undefined;
   const to = p.to as CreateTaskInput['to'] | undefined;
   if (!from?.workspaceId || !to?.workspaceId || typeof p.title !== 'string') {
@@ -24,6 +31,7 @@ export function parsePublicCreateTask(p: Record<string, unknown>): { ok: true; i
       from,
       to,
       ...(Array.isArray(p.history) ? { history: p.history as Message[] } : {}),
+      ...(opts.firstParty === true && p.holdForBlockers === true ? { holdForBlockers: true as const } : {}),
     },
   };
 }

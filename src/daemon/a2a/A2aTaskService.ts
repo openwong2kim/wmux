@@ -146,6 +146,12 @@ export interface CreateTaskInput {
   artifacts?: Artifact[];
   /** Cross-host A2A: stored as `metadata.remote` (and replayed with the task). */
   remote?: A2aRemoteTaskMarkerV1;
+  /**
+   * Company mode, set by main only: the sender held this task back for its
+   * blockers, so it always gets a hold marker, released at create when every
+   * blocker has completed meanwhile (companyHoldAtCreate).
+   */
+  holdForBlockers?: true;
 }
 
 export interface CreateTaskOptions {
@@ -478,7 +484,11 @@ export class A2aTaskService {
       // in the create payload, so a replay takes it as decided here.
       const local = !input.remote && !isRemoteWorkspaceId(input.from.workspaceId) && !isRemoteWorkspaceId(input.to.workspaceId);
       const hold = local
-        ? companyHoldAtCreate(companyBriefOfHistory(input.history ?? []), (blockerId) => this.tasks.get(blockerId)?.status.state)
+        ? companyHoldAtCreate(
+          companyBriefOfHistory(input.history ?? []),
+          (blockerId) => this.tasks.get(blockerId)?.status.state,
+          input.holdForBlockers ? nowIso : undefined,
+        )
         : null;
       const metadata: WmuxTaskMetadata = {
         title: input.title,

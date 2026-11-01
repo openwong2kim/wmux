@@ -7224,12 +7224,13 @@ function registerRpcHandlers(
   // 데몬 로그, 렌더러 a2aSlice는 캐시로 강등. a2aTaskService가 null(로그 개방 실패)
   // 이면 렌더러-only로 degrade한다 — A2A는 역사적으로 best-effort 비내구(a2aSlice
   // 30분 GC)라 로그 부재가 파국이 아니다.
-  pipeServer.onRpc('a2a.task.create', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.create', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.create: task log unavailable' };
     // 초기 히스토리(첫 메시지)는 생성 envelope에 실려 내구화된다. 이후 증분
     // 히스토리(reply) 내구화는 §6.F 몫 — 전이·생성·취소가 이 PR의 로그 정본.
     // A caller's `remote` marker never passes, and an rt- id is refused.
-    const parsed = parsePublicCreateTask(rawParams as Record<string, unknown>);
+    // `holdForBlockers` is taken from main only (a company task it held back).
+    const parsed = parsePublicCreateTask(rawParams as Record<string, unknown>, { firstParty: pipeServer.isFirstParty(ctx.clientId) });
     if (!parsed.ok) return parsed;
     return a2aTaskService.createTask(parsed.input);
   });

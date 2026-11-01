@@ -545,3 +545,58 @@ describe('company hold: the receiving side does not have a waiting task yet', ()
     expect((await svc.transition({ taskId: 'C', to: 'working', callerWorkspaceId: WS, callerAddr: { paneId: 'pane-s1' } })).ok).toBe(true);
   });
 });
+
+describe('company hold: a send main held for its blockers (holdForBlockers)', () => {
+  async function heldSend(svc: A2aTaskService, id: string, blockedBy: string[]) {
+    const res = await svc.createTask({
+      id,
+      title: id,
+      from: { workspaceId: WS, name: 'Co', paneId: 'pane-ceo' },
+      to: { workspaceId: WS, name: 'Co', paneId: 'pane-s1' },
+      history: [brief(blockedBy)],
+      holdForBlockers: true,
+    });
+    expect(res.ok).toBe(true);
+    return res;
+  }
+
+  it('every blocker completed meanwhile: released at create and listed pending, the same after a restore', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await assign(svc, 'A');
+    await assign(svc, 'B');
+    await complete(svc, 'A');
+    await complete(svc, 'B');
+    const res = await heldSend(svc, 'C', ['A', 'B']);
+    const created = res.ok ? res.task.metadata.createdAt : '';
+    expect(holdOf(svc, 'C')).toEqual({ blockedBy: ['A', 'B'], waitingOn: [], releasedAt: created });
+    expect(svc.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+    expect(svc.listCompanyHeld()).toEqual([]);
+    expect(companyMarks(log, 'C')).toEqual([]);
+
+    const again = newService(log);
+    again.restoreFromLog();
+    expect(holdOf(again, 'C')).toEqual(holdOf(svc, 'C'));
+    expect(again.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+  });
+
+  it('one blocker still open: waiting as before', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await assign(svc, 'B');
+    await complete(svc, 'A');
+    await heldSend(svc, 'C', ['A', 'B']);
+    expect(holdOf(svc, 'C')).toEqual({ blockedBy: ['A', 'B'], waitingOn: ['B'] });
+    expect(svc.listCompanyPending()).toEqual([]);
+  });
+
+  it('no flag and every blocker completed: no marker; the flag without blockers: no marker', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await complete(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    expect(svc.getTask('C')?.metadata.companyHold).toBeUndefined();
+    await heldSend(svc, 'D', []);
+    expect(svc.getTask('D')?.metadata.companyHold).toBeUndefined();
+  });
+});

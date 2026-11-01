@@ -136,14 +136,21 @@ export function companyBriefOfHistory(history: readonly Message[]): CompanyBrief
  * one is satisfied already; any other (open, ended or unknown) is waited on,
  * and one that ended failed or canceled is noted in `blockerEnded`. Null when
  * nothing is waited on: the task is not held at all.
+ *
+ * `releasedAt` (the create time) is for a task its sender already held back
+ * for its blockers (`holdForBlockers` on the create): it keeps a marker even
+ * when every blocker has completed meanwhile, released at that time, so it is
+ * delivered through the pending list like any released task. It still has
+ * no marker without blockers.
  */
 export function companyHoldAtCreate(
   brief: Pick<CompanyBriefV1, 'blockedBy'> | null | undefined,
   stateOf: (taskId: string) => TaskState | undefined,
+  releasedAt?: string,
 ): CompanyHoldMarker | null {
   const blockedBy = [...new Set((brief?.blockedBy ?? []).filter((id) => typeof id === 'string' && id.length > 0))];
   const waitingOn = blockedBy.filter((id) => stateOf(id) !== 'completed');
-  if (waitingOn.length === 0) return null;
+  if (waitingOn.length === 0) return releasedAt !== undefined && blockedBy.length > 0 ? { blockedBy, waitingOn, releasedAt } : null;
   const blockerEnded: CompanyBlockerEnd[] = [];
   for (const id of waitingOn) {
     const state = stateOf(id);
