@@ -12,7 +12,7 @@ import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage, type Message, type Task } from '../../../shared/types';
 import { COMPANY_BRIEF_KIND, COMPANY_RENDERER_METHOD, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
-import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, companyHoldOf, companyWaitingLine } from '../../../shared/companyHold';
+import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyHoldOf, companyHoldWithholds, companyWaitingLine } from '../../../shared/companyHold';
 import { configuredForge, forgeHosts } from '../../../shared/forgeHosts';
 import {
   DONE_PR_CHECK_MAX,
@@ -171,6 +171,41 @@ function taskQueryCallerParams(caller: TaskQueryCaller): Record<string, unknown>
     ...(caller.paneId ? { callerPaneId: caller.paneId } : {}),
     ...(caller.trusted ? { trustedLane: true } : {}),
   };
+}
+
+/** The ids a daemon a2a.task.query kept from this caller (`withheld`): its renderer copies go too. */
+function withheldIdsOf(result: Record<string, unknown>): Set<string> {
+  return new Set(Array.isArray(result.withheld) ? result.withheld.filter((id): id is string => typeof id === 'string') : []);
+}
+
+/**
+ * True for a renderer copy of a task the daemon would keep from this caller
+ * (used when the daemon is not there to say so). Only a full task carries the
+ * marker; a copy without it passes.
+ */
+function copyWithheld(task: unknown, workspaceId: string, caller: TaskQueryCaller): boolean {
+  return isRecord(task) && isRecord(task.metadata) && isRecord(task.metadata.to)
+    && companyHoldWithholds(task as unknown as Task, { workspaceId, ...caller });
+}
+
+/**
+ * A merged task row with the daemon's company hold on it, whatever the row's
+ * age: the daemon is the hold's record, and the renderer's copy never has it.
+ */
+function withDaemonHold(row: Record<string, unknown>, daemonRow: Record<string, unknown>, summaries: boolean): Record<string, unknown> {
+  if (summaries) {
+    const hold = Object.fromEntries((['waitingOn', 'held'] as const).filter((k) => daemonRow[k] !== undefined).map((k) => [k, daemonRow[k]]));
+    return Object.keys(hold).length > 0 ? { ...row, ...hold } : row;
+  }
+  const daemonMeta = isRecord(daemonRow.metadata) ? daemonRow.metadata : {};
+  if (daemonMeta[COMPANY_HOLD_KEY] === undefined) return row;
+  return { ...row, metadata: { ...(isRecord(row.metadata) ? row.metadata : {}), [COMPANY_HOLD_KEY]: daemonMeta[COMPANY_HOLD_KEY] } };
+}
+
+/** The pane of `panes` that holds `ptyId`, or undefined. */
+function paneOfPty(panes: ReadonlyArray<Record<string, unknown>>, ptyId: string): string | undefined {
+  const pane = panes.find((p) => Array.isArray(p.surfacePtyIds) && p.surfacePtyIds.includes(ptyId));
+  return pane ? (pane.id as string) : undefined;
 }
 
 async function daemonTaskRpc(
@@ -1229,10 +1264,23 @@ export function registerA2aRpc(
       return { error: 'a2a.task.query: state view requires taskId' };
     }
     if (params.view !== 'page' && !stateOnly) delete params.view;
-    if (paged && typeof params.workspaceId === 'string' && params.workspaceId) {
-      const panes = await readWorkspacePanes(getWindow, params.workspaceId);
-      if (panes) params.livePaneIds = panes.map((pane) => pane.id as string);
-    }
+    // A company task still waiting on a blocker is kept from its receiving
+    // side (shared/companyHold.ts): the daemon needs the caller's pane, and the
+    // human sees every task. The MCP tool sends no senderPtyId, so the pane
+    // comes from the caller's pane claim, else its envelope's pty.
+    const queryWs = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    const operatorRead = ctx?.operator === true;
+    const claim = ctx?.workspaceClaim;
+    const callerPty = operatorRead ? undefined : (claim?.kind === 'bound' ? claim.ptyId : undefined) ?? ctx?.callerPtyId;
+    const panes = queryWs && (paged || callerPty) ? await readWorkspacePanes(getWindow, queryWs) : null;
+    if (paged && panes) params.livePaneIds = panes.map((pane) => pane.id as string);
+    const callerPaneId = callerPty && panes ? paneOfPty(panes, callerPty) : undefined;
+    const caller: TaskQueryCaller = { ...(callerPaneId ? { paneId: callerPaneId } : {}), ...(operatorRead ? { trusted: true as const } : {}) };
+    // No daemon to say what it keeps from this caller: the renderer's full
+    // copies are checked here. A summary row carries no marker (accepted gap).
+    const withoutWithheldCopies = (res: unknown): unknown => (isRecord(res) && Array.isArray(res.tasks)
+      ? { ...res, tasks: res.tasks.filter((t) => !copyWithheld(t, queryWs, caller)) }
+      : res);
     const taskId = pagedTaskId(params);
     const summaries = paged && !taskId;
     const shape = (result: unknown): unknown => stateOnly && isRecord(result) && Array.isArray(result.tasks)
@@ -1258,6 +1306,7 @@ export function registerA2aRpc(
     // 상태 전용 조회는 독립된 두 저장소를 동시에 읽는다. 오류는 기존 폴백으로 처리한다.
     const stateGate = stateOnly ? daemonTaskRpc(getDaemonClient, 'a2a.task.query', {
       workspaceId: params.workspaceId, view: 'state', taskId: params.taskId,
+      ...taskQueryCallerParams(caller),
       ...(typeof params.role === 'string' ? { role: params.role } : {}),
       ...(typeof params.updatedSince === 'string' && Number.isFinite(Date.parse(params.updatedSince))
         ? { updatedSince: new Date(params.updatedSince).toISOString() } : {}),
@@ -1294,8 +1343,11 @@ export function registerA2aRpc(
       ...(updatedSince ? { updatedSince } : {}),
       ...(paged ? { view: 'page', ...(taskId ? { taskId } : {}) } : {}),
       ...(params.livePaneIds ? { livePaneIds: params.livePaneIds } : {}),
+      ...taskQueryCallerParams(caller),
     }, paged ? { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS } : {}));
-    if (gate.kind !== 'ok') return shape(rendererRes);
+    if (gate.kind !== 'ok') return shape(withoutWithheldCopies(rendererRes));
+    // The tasks the daemon kept from this caller: the renderer's copies go too.
+    const withheld = withheldIdsOf(gate.result);
     const rawDaemonTasks = Array.isArray(gate.result.tasks) ? (gate.result.tasks as Array<Record<string, unknown>>) : [];
     // A daemon from before the paged view ignores it and sends full tasks
     // (they carry metadata; a summary row does not): summarize them here so
@@ -1307,7 +1359,8 @@ export function registerA2aRpc(
     if (!rendererOk) {
       return shape({ workspaceId: params.workspaceId, tasks: daemonTasks });
     }
-    const rendererTasks = (rendererRes as { tasks: Array<Record<string, unknown>> }).tasks;
+    const rendererTasks = (rendererRes as { tasks: Array<Record<string, unknown>> }).tasks
+      .filter((t) => !withheld.has(t.id as string));
     const daemonById = new Map(daemonTasks.map((t) => [t.id, t]));
     const merged = rendererTasks.map((rt) => {
       const dt = daemonById.get(rt.id);
@@ -1318,12 +1371,12 @@ export function registerA2aRpc(
       // 데몬 정본이 렌더러 캐시보다 최신이면(렌더러가 daemonCommitted 미적용) status/
       // updatedAt을 데몬 값으로 덮되 렌더러 전용 증분(history·artifacts)은 보존.
       if (updatedAtOf(dt) > updatedAtOf(rt)) {
-        if (summaries) return { ...rt, state: dt.state, updatedAt: dt.updatedAt };
+        if (summaries) return withDaemonHold({ ...rt, state: dt.state, updatedAt: dt.updatedAt }, dt, true);
         const rtMeta = isRecord(rt.metadata) ? rt.metadata : {};
         const dtMeta = isRecord(dt.metadata) ? dt.metadata : {};
-        return { ...rt, status: dt.status, metadata: { ...rtMeta, updatedAt: dtMeta.updatedAt } };
+        return withDaemonHold({ ...rt, status: dt.status, metadata: { ...rtMeta, updatedAt: dtMeta.updatedAt } }, dt, false);
       }
-      return rt;
+      return withDaemonHold(rt, dt, summaries);
     });
     const seen = new Set(rendererTasks.map((t) => t.id));
     merged.push(...daemonTasks.filter((t) => !seen.has(t.id)));
@@ -1334,8 +1387,12 @@ export function registerA2aRpc(
     return shape({ ...(rendererRes as Record<string, unknown>), tasks: finalTasks });
   });
 
-  /** One task in full: the daemon's copy, else the renderer's; null when neither has it. */
-  async function readFullTask(workspaceId: string, taskId: string): Promise<Record<string, unknown> | null> {
+  /**
+   * One task in full: the daemon's copy, else the renderer's; null when neither
+   * has it, or when it is kept from `caller` (a company task still waiting on a
+   * blocker, read from its receiving side).
+   */
+  async function readFullTask(workspaceId: string, taskId: string, caller: TaskQueryCaller = {}): Promise<Record<string, unknown> | null> {
     const query = { workspaceId, view: 'page', taskId };
     const pick = (res: unknown): Record<string, unknown> | null => {
       const tasks: unknown[] = isRecord(res) && Array.isArray(res.tasks) ? res.tasks : [];
@@ -1343,9 +1400,10 @@ export function registerA2aRpc(
       return isRecord(task) ? task : null;
     };
     const [gate, fromRenderer] = await Promise.all([
-      daemonTaskRpc(getDaemonClient, 'a2a.task.query', query, { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS }),
+      daemonTaskRpc(getDaemonClient, 'a2a.task.query', { ...query, ...taskQueryCallerParams(caller) }, { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS }),
       sendToRenderer(getWindow, 'a2a.task.query', query).then(pick, () => null),
     ]);
+    if (gate.kind === 'ok' ? withheldIdsOf(gate.result).has(taskId) : copyWithheld(fromRenderer, workspaceId, caller)) return null;
     const fromDaemon = gate.kind === 'ok' ? pick(gate.result) : null;
     // As in a2a.task.query: replies live in the renderer's history only, and a
     // remote task's history grows in the daemon.
@@ -1467,14 +1525,14 @@ export function registerA2aRpc(
    * Evidence that is missing or not shaped is left to the daemon's evidence
    * gate, which refuses it; nothing is read for it.
    */
-  async function companyDonePrRefusal(params: Record<string, unknown>, seat: CompanySeat | undefined): Promise<string | null> {
+  async function companyDonePrRefusal(params: Record<string, unknown>, seat: CompanySeat | undefined, callerPaneId?: string): Promise<string | null> {
     const budgetEnd = Date.now() + DONE_CHECK_BUDGET_MS;
     const evidence = params.evidence;
     const items = isRecord(evidence) ? evidence.items : undefined;
     if (!isRecord(evidence) || typeof evidence.summary !== 'string' || !Array.isArray(items)) return null;
     const { taskId, workspaceId } = params;
     if (typeof taskId !== 'string' || !taskId || typeof workspaceId !== 'string' || !workspaceId) return null;
-    const task = await readFullTask(workspaceId, taskId);
+    const task = await readFullTask(workspaceId, taskId, callerPaneId ? { paneId: callerPaneId } : {});
     // The CEO's done waits on the check, so a task wmux cannot read is not let through.
     if (!task) return seat === 'coordinator' ? `a2a.task.update: wmux could not read task ${taskId} to check the PRs it names; retry` : null;
     const history: unknown[] = Array.isArray(task.history) ? task.history : [];
@@ -1562,7 +1620,11 @@ export function registerA2aRpc(
       // daemon anyway.
       if (params.status === 'completed' && !trustedLane
         && !(callerPane.kind === 'resolved' && callerPane.companySeat === 'staff')) {
-        const refused = await companyDonePrRefusal(params, callerPane.kind === 'resolved' ? callerPane.companySeat : undefined);
+        const refused = await companyDonePrRefusal(
+          params,
+          callerPane.kind === 'resolved' ? callerPane.companySeat : undefined,
+          callerPane.kind === 'resolved' ? callerPane.paneId : undefined,
+        );
         if (refused) return { error: refused };
       }
       const gate = await daemonTaskRpc(getDaemonClient, 'a2a.task.update', {
