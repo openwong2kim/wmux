@@ -1327,6 +1327,10 @@ export class HookIngest {
       return { ok: false, reason: 'no-workspace-match' };
     }
 
+    // A session end only ends an external session's row. A pane follows its
+    // own process, so a routed one changes nothing about it.
+    if (signal.kind === 'agent.session_end') return { ok: true };
+
     // #1823: a Claude-bridge signal carrying a Codex rollout (a Codex hook
     // pointed at the Claude bridge) contradicts itself. Dropped before it can
     // mark the pane hook-governed for claude or bind a `claude --resume` to a

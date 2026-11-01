@@ -249,6 +249,16 @@ describe('ExternalSessionRegistry', () => {
     expect(byId()).toEqual(['idle', 'needs-you', 'running']);
   });
 
+  it('SessionEnd ends the row, needs-you included; an unknown session makes no row', () => {
+    const f = setup();
+    f.registry.note(signal({ kind: 'agent.session_end', agentSessionId: SID2 }));
+    expect(f.registry.list()).toEqual([]);
+    f.registry.note(signal({ kind: 'agent.awaiting_input', payload: { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' } }));
+    f.registry.note(signal({ kind: 'agent.session_end', payload: { reason: 'prompt_input_exit' } }));
+    expect(f.one()).toMatchObject({ state: 'ended', endedAt: 1_000_000 });
+    expect(f.one()).not.toHaveProperty('pendingKind');
+  });
+
   it('ends a session whose agent process died, and an older conversation of the same process', () => {
     const alive = new Set([4242]);
     const f = setup({ running: (pid) => alive.has(pid) });
@@ -335,6 +345,24 @@ describe('HookIngest → external sessions', () => {
     }]);
     ingest.handle(signal({ kind: 'agent.stop', cwd: '/repo' }));
     expect(registry.list()).toMatchObject([{ agentSessionId: SID, state: 'idle' }]);
+  });
+
+  it('a routed session end is answered ok and reaches no pane; an unrouted one ends the row', () => {
+    const emitted: unknown[] = [];
+    const registry = new ExternalSessionRegistry();
+    const ingest = new HookIngest({
+      listLiveSessions: () => [{ id: 'pty-a', cwd: '/repo', env: {} }],
+      emitAgentEvent: (_id, e) => { emitted.push(e); },
+      applyResumeBinding: () => undefined,
+      onUnroutedSignal: (s) => registry.note(s),
+      now: () => 10_000,
+    });
+    expect(ingest.handle(signal({ kind: 'agent.session_end', ptyId: 'pty-a' }))).toEqual({ ok: true });
+    expect(emitted).toEqual([]);
+
+    ingest.handle(signal({ kind: 'agent.user_prompt_submit', cwd: '/other', payload: { prompt: 'hi' } }));
+    expect(ingest.handle(signal({ kind: 'agent.session_end', cwd: '/other' }))).toEqual({ ok: false, reason: 'no-workspace-match' });
+    expect(registry.list()).toMatchObject([{ state: 'ended' }]);
   });
 
   it('an invalid envelope reaches nothing', () => {

@@ -82,8 +82,11 @@ GLOBAL FLAGS
  *  `StopFailure` is the other half of that turn: Claude Code fires it INSTEAD
  *  of `Stop` when the turn ends on an API error, so a pane the turn-start hook
  *  lit had no turn-end signal at all on that path and kept its amber dot until
- *  the agent process died. Same once-per-turn cost class. */
-const HOOK_EVENTS = ['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'UserPromptSubmit'] as const;
+ *  the agent process died. Same once-per-turn cost class.
+ *
+ *  `SessionEnd` fires once when a session closes. It ends a session running
+ *  outside wmux where no process can be checked (Linux, Windows). */
+const HOOK_EVENTS = ['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'SessionEnd', 'UserPromptSubmit'] as const;
 
 /**
  * AskUserQuestion-scoped hook pair that drives the in-app approval card:

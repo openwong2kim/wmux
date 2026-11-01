@@ -68,7 +68,13 @@ export type AgentSignalKind =
   // completion: nothing finished and the operator has to retry. Without it a
   // hook-governed pane sat amber until the agent process died or the
   // 30-minute hook-authority TTL lapsed, because a failed turn fires no Stop.
-  | 'agent.stop_failure';
+  | 'agent.stop_failure'
+  // Claude Code's `SessionEnd`: the session closed (exit, /clear, logout).
+  // Only an external session uses it, as its end where no pid can be checked
+  // (Linux, Windows); a pane has its own process lifecycle, so the daemon
+  // answers a routed one with ok and nothing else. Bridges send it to the
+  // daemon only.
+  | 'agent.session_end';
 
 /**
  * SLUG-form agent identifiers, and the slug → display name lookup.
@@ -252,7 +258,8 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
     v['kind'] !== 'agent.awaiting_permission' &&
     v['kind'] !== 'agent.permission_answered' &&
     v['kind'] !== 'agent.tool_started' &&
-    v['kind'] !== 'agent.stop_failure'
+    v['kind'] !== 'agent.stop_failure' &&
+    v['kind'] !== 'agent.session_end'
   ) return false;
   if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;
   if (typeof v['cwd'] !== 'string' || v['cwd'].length === 0) return false;

@@ -128,6 +128,8 @@ export class ExternalSessionRegistry {
     const id = `${signal.agent}:${agentSessionId}`;
     let entry = this.entries.get(id);
     if (!entry) {
+      // The end of a session never seen: nothing to show.
+      if (signal.kind === 'agent.session_end') return;
       this.makeRoom();
       entry = {
         session: {
@@ -259,6 +261,9 @@ export class ExternalSessionRegistry {
       case 'agent.subagent_stop':
         // The lead is still mid-turn; only a row the TTLs had ended changes.
         if (s.state === 'ended') this.setState(entry, 'running');
+        return;
+      case 'agent.session_end':
+        this.end(entry, this.now());
         return;
     }
   }

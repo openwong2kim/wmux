@@ -92,6 +92,9 @@ const HOOK_TO_KIND = {
   Stop: 'agent.stop',
   SubagentStop: 'agent.subagent_stop',
   SessionStart: 'agent.session_start',
+  // The session closed. Ends an external session's row where no pid can be
+  // checked; sent to the daemon only (main has no use for it).
+  SessionEnd: 'agent.session_end',
   // Turn START. Registered by hooks.json (plugin path), `wmux setup-hooks`
   // (plugin-less path) and the deck brain's generated profile alike, so an
   // ordinary pane goes 'running' the moment a prompt is submitted instead of
@@ -1301,7 +1304,9 @@ async function main() {
   // endpoint means wmux has never run for this user — drop as before.
   // Context mode is MAIN-only like the gate: the daemon has no brain lane and
   // would answer `ok` with no context, silently dropping the pointer.
-  const targets = resolveTargets(gateMode || contextMode);
+  // SessionEnd is the daemon's alone: main has no external sessions.
+  const targets = resolveTargets(gateMode || contextMode)
+    .filter((t) => hookName !== 'SessionEnd' || t.name === 'daemon');
   if (targets.length === 0) {
     logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     return;

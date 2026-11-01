@@ -50,6 +50,9 @@ const HOOK_TO_KIND = {
   Stop: 'agent.stop',
   SubagentStop: 'agent.subagent_stop',
   SessionStart: 'agent.session_start',
+  // The session closed. Ends an external session's row where no pid can be
+  // checked; sent to the daemon only (main has no use for it).
+  SessionEnd: 'agent.session_end',
 };
 
 // AskUserQuestion completing means the user answered it on this machine, so
@@ -582,7 +585,9 @@ async function main() {
 
   // Endpoints to try, daemon first (see resolveTargets). No token for either
   // endpoint means wmux has never run for this user — drop as before.
-  const targets = resolveTargets();
+  // SessionEnd is the daemon's alone: main has no external sessions.
+  const targets = resolveTargets()
+    .filter((t) => hookName !== 'SessionEnd' || t.name === 'daemon');
   if (targets.length === 0) {
     logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     return;
