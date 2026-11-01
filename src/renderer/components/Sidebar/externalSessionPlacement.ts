@@ -7,7 +7,7 @@
  * without a store.
  */
 import type { ExternalSession, ExternalSessionState, ExternalSessionWhere } from '../../../shared/externalSessions';
-import type { Workspace } from '../../../shared/types';
+import type { AgentStatus, Workspace } from '../../../shared/types';
 import { isAtOrUnder } from '../FileTree/FileTreePanel';
 import { quotePosixPath } from '../../../shared/imagePaste';
 
@@ -50,6 +50,13 @@ export function matchExternalWorkspace(cwd: string, workspaces: readonly Placeme
     }
   }
   return best;
+}
+
+/** The status mark a session draws: the sidebar's own marks, an ended one none (like idle). */
+export function externalAgentStatus(state: ExternalSessionState): AgentStatus {
+  if (state === 'needs-you') return 'awaiting_input';
+  if (state === 'running') return 'running';
+  return 'idle';
 }
 
 const STATE_RANK: Record<ExternalSessionState, number> = { 'needs-you': 0, running: 1, idle: 2, ended: 3 };
