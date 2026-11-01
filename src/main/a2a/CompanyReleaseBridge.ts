@@ -368,7 +368,8 @@ export class CompanyReleaseBridge {
 /**
  * What the CEO is told about one task from `a2a.company.held`: it is held for
  * a person (its reason), and each blocker it still waits on that ended
- * failed or canceled. Each has a key naming the task first.
+ * failed or canceled (each end once, by when it ended). Each has a key naming
+ * the task first.
  */
 export function companyCeoEventsOf(task: Task): CompanyCeoEvent[] {
   const marker = companyHoldOf(task);
@@ -379,7 +380,9 @@ export function companyCeoEventsOf(task: Task): CompanyCeoEvent[] {
   }
   for (const ended of marker.blockerEnded ?? []) {
     if (!marker.waitingOn.includes(ended.id)) continue;
-    events.push({ key: `${task.id}|ended|${ended.id}|${ended.state}`, kind: 'blocker-ended', blocker: ended });
+    // When it ended, so a blocker that ends again after a reopen is told again.
+    const at = 'at' in ended && typeof ended.at === 'string' && ended.at ? `|${ended.at}` : '';
+    events.push({ key: `${task.id}|ended|${ended.id}|${ended.state}${at}`, kind: 'blocker-ended', blocker: ended });
   }
   return events;
 }
