@@ -87,7 +87,7 @@ export default function ContinueInAgentDialog({ ptyId, workspaceId, paneId, cwd,
                 disabled={note === undefined}
                 title={t('usageLimit.continueInAgentHint')}
                 onClick={() => {
-                  void continueInAgent({ heldPtyId: ptyId, fromAgent, agent: s.agent, workspaceId, paneId, ...(cwd ? { cwd } : {}), ...(note ? { note } : {}) })
+                  void continueInAgent({ heldPtyId: ptyId, fromAgent, agent: s.agent, workspaceId, paneId, ...(cwd ? { cwd } : {}), ...(note ? { note, head: facts?.head } : {}) })
                     .catch((err: unknown) => { console.warn('[handoff] continue in agent failed', err); });
                   onClose();
                 }}

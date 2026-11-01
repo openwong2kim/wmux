@@ -635,6 +635,10 @@ export const IPC = {
   // dismiss, resume now) relayed to the daemon, which owns the state.
   USAGE_LIMIT_CHANGED: 'usageLimit:changed',
   USAGE_LIMIT_LIST: 'usageLimit:list',
+  // Each pane's 5-hour window from its statusline (Record<ptyId, PaneUsageWindow>):
+  // main → renderer push of the whole map, and the renderer's boot read.
+  USAGE_LIMIT_WINDOWS: 'usageLimit:windows',
+  USAGE_LIMIT_WINDOWS_LIST: 'usageLimit:windowsList',
   // N4 — an agent's lost sign-in (shared/agentAuthLost): main's entries, and the status check behind [Sign in again].
   AGENT_AUTH_LOST_CHANGED: 'agentAuth:lostChanged',
   AGENT_AUTH_LOST_LIST: 'agentAuth:lostList',

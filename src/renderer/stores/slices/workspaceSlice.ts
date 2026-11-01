@@ -2,7 +2,7 @@ import { isPhoneWorkspaceId, PHONE_WORKSPACE_REQUEST_LIMIT } from '../../../shar
 import type { StateCreator } from 'zustand';
 import { sanitizeClaudeEffort } from '../../../shared/claudeModels';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type SurfaceHandoff, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeStarPromptState } from '../../../shared/starPrompt';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { overridesFromDisabledCombos, sanitizeShortcutOverrides } from '../../../shared/keymap';
@@ -1295,6 +1295,18 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
               const recovery = normalizeDeadPaneRecovery(s.pendingRecovery);
               if (recovery) s.pendingRecovery = recovery;
               else delete s.pendingRecovery;
+            }
+            // A handoff record read from disk: times that are numbers, a hex
+            // commit, or no record at all.
+            if (s.handoff !== undefined) {
+              const h = s.handoff as Partial<SurfaceHandoff> | null;
+              if (!h || !Number.isFinite(h.at) || !Number.isFinite(h.resetsAt)) delete s.handoff;
+              else s.handoff = {
+                at: h.at as number,
+                resetsAt: h.resetsAt as number,
+                ...(typeof h.head === 'string' && /^[0-9a-f]{7,64}$/i.test(h.head) ? { head: h.head } : {}),
+                ...(typeof h.noteHead === 'string' && h.noteHead ? { noteHead: h.noteHead.slice(0, 200) } : {}),
+              };
             }
           }
         } else {

@@ -10,8 +10,9 @@ vi.mock('../../hooks/useTerminal', () => ({ terminalRegistry: registry }));
 
 import { useStore } from '../../stores';
 import { deliberateSleep } from '../../../test-utils/waitFor';
-import { continueInAgent, unsentDraftOf } from '../continueInAgent';
+import { bringBack, bringBackAt, bringBackNote, continueInAgent, findBringBackPair, unsentDraftOf } from '../continueInAgent';
 import { everyAccountOutUntil } from '../../components/Pane/usageLimitPresentation';
+import { handedOffPtyIds } from '../../hooks/useUsageLimitBridge';
 
 const write = vi.fn();
 const snapshot = vi.fn();
@@ -236,5 +237,97 @@ describe('everyAccountOutUntil', () => {
     expect(everyAccountOutUntil([out('a', 5_000), { accountId: 'b', vendor: 'claude', verdict: { usable: true, remaining: 0.5, availableAtMs: null } }], 'claude', 1_000)).toBeUndefined();
     expect(everyAccountOutUntil([out('a', 5_000)], 'codex', 1_000)).toBeUndefined();
     expect(everyAccountOutUntil([], 'claude', 1_000)).toBeUndefined();
+  });
+});
+
+describe('back after the reset', () => {
+  const NOW = Date.now();
+  const RESET = NOW + 2 * 3600_000;
+  const surfaces = () => [
+    { id: 's-held', ptyId: 'pty-held', title: 'claude', cwd: '/repo' },
+    { id: 's-new', ptyId: 'pty-new', title: 'Codex CLI', cwd: '/repo' },
+  ];
+  const seed = (extra: Record<string, unknown> = {}) => useStore.setState({
+    workspaces: [{ id: 'ws-1', name: 'w', activePaneId: 'pane-1', rootPane: { type: 'leaf', id: 'pane-1', surfaces: surfaces(), activeSurfaceId: 's-new' } }],
+    usageLimits: {},
+    usageWindows: { 'pty-held': { pct: 91, resetsAt: RESET } },
+    surfaceAgent: { 'pty-held': { name: 'Claude Code', status: 'idle', slug: 'claude' }, 'pty-new': { name: 'codex', status: 'idle', slug: 'codex' } },
+    ...extra,
+  } as never);
+
+  it('a handoff close to the limit is recorded on the source tab; from the reset, the note from the other agent is typed back unsent', async () => {
+    seed();
+    snapshot.mockResolvedValue(null);
+    openTerminalTab.mockResolvedValue({ workspaceId: 'ws-1', ptyId: 'pty-new' });
+    expect(await continueInAgent({ heldPtyId: 'pty-held', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', cwd: '/repo', note: 'n', head: 'abc1234' })).toBe(true);
+    // Found from either tab; back at the reset recorded at the handoff.
+    const pair = findBringBackPair(useStore.getState(), 'pty-new')!;
+    expect(pair.source.id).toBe('s-held');
+    expect(pair.source.handoff).toMatchObject({ resetsAt: RESET, head: 'abc1234', noteHead: 'n' });
+    expect(findBringBackPair(useStore.getState(), 'pty-held')?.other.id).toBe('s-new');
+    expect(bringBackAt(pair, useStore.getState())).toBe(RESET);
+
+    // The other agent's transcript: the handoff note, a later request, a commit, its reply.
+    snapshot.mockResolvedValue({ events: [
+      { kind: 'user_text', text: 'also relay downstream' },
+      // The note as it was sent there (first, or later when the owner asked something first).
+      { kind: 'user_text', text: 'n' },
+      { kind: 'tool_use', toolUseId: 't', name: 'Bash', argSummary: 'git commit -m relay', input: { n: 0, bytes: 30, inline: '{"command":"git commit -m relay"}' } },
+      { kind: 'tool_result', ok: true, toolUseId: 't', bytes: 40, output: { n: 0, bytes: 40, inline: '[feat/x 3a91c2e] relay downstream' } },
+      { kind: 'assistant_text', text: 'Relayed.' },
+    ] });
+    diffRead.mockResolvedValue({ ok: true, numstat: [{ path: 'src/relay.ts', additions: 12, deletions: 0 }], snapshot: { targetRepoPath: '/repo', targetBranch: 'feat/x', targetHeadOid: 'def5678' } });
+    const note = await bringBackNote(pair);
+    // Changes are counted from the commit checked out at the handoff.
+    expect(diffRead).toHaveBeenLastCalledWith('/repo', 'abc1234', 'since');
+    expect(note).toContain('Codex CLI carried on this work in repo, on branch feat/x.');
+    expect(note).toContain('Asked there: also relay downstream');
+    expect(note).toContain('Commits: 3a91c2e relay downstream');
+    expect(note).toContain('src/relay.ts (+12 −0)');
+
+    write.mockReset();
+    registry.set('pty-held', fakeTerm(['❯ ']));
+    expect(await bringBack(pair, note, {}, 2_000)).toBe(true);
+    const typed = write.mock.calls.map((c) => c[1]).join('');
+    expect(write.mock.calls.every((c) => c[0] === 'pty-held')).toBe(true);
+    expect(typed.startsWith('\x1b[200~') && typed.endsWith('\x1b[201~')).toBe(true);
+    expect(typed).not.toMatch(/\r$/);
+    // The source tab is shown, and the offer is gone.
+    const pane = (useStore.getState().workspaces[0].rootPane as { activeSurfaceId: string });
+    expect(pane.activeSurfaceId).toBe('s-held');
+    expect(findBringBackPair(useStore.getState(), 'pty-held')).toBeNull();
+  });
+
+  it('a handoff from a held pane waits for its limit, and stops it carrying on by itself at the reset', async () => {
+    const update = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('electronAPI', { pty: { write }, chat: { snapshot }, diff: { read: diffRead }, usageLimit: { update } });
+    seed({ usageWindows: {}, usageLimits: { 'pty-held': { ptyId: 'pty-held', provider: 'claude', detectedAt: NOW, resetsAt: RESET, source: 'hook', autoResume: true } } });
+    snapshot.mockResolvedValue(null);
+    openTerminalTab.mockResolvedValue({ workspaceId: 'ws-1', ptyId: 'pty-new' });
+    expect(await continueInAgent({ heldPtyId: 'pty-held', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', note: 'n' })).toBe(true);
+    expect(update).toHaveBeenCalledWith('pty-held', { autoResume: false });
+    const pair = findBringBackPair(useStore.getState(), 'pty-held')!;
+    // The reset the pane still shows wins over the one recorded.
+    useStore.setState({ usageLimits: { 'pty-held': { ptyId: 'pty-held', provider: 'claude', detectedAt: NOW, resetsAt: RESET + 60_000, source: 'hook' } } } as never);
+    expect(bringBackAt(pair, useStore.getState())).toBe(RESET + 60_000);
+    // Not at a limit: no record, so nothing to bring back.
+    seed({ usageWindows: {} });
+    expect(await continueInAgent({ heldPtyId: 'pty-held', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', note: 'n' })).toBe(true);
+    expect(findBringBackPair(useStore.getState(), 'pty-held')).toBeNull();
+    // A limit whose reset already passed (kept until dismissed) has nothing to wait for: no record either.
+    seed({ usageWindows: {}, usageLimits: { 'pty-held': { ptyId: 'pty-held', provider: 'claude', detectedAt: NOW - 6 * 3600_000, resetsAt: NOW - 3600_000, source: 'hook' } } });
+    expect(await continueInAgent({ heldPtyId: 'pty-held', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', note: 'n' })).toBe(true);
+    expect(findBringBackPair(useStore.getState(), 'pty-held')).toBeNull();
+  });
+
+  it('a held pane nobody decided for is turned off too, and the global setting never arms a tab whose work went on elsewhere', async () => {
+    const update = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('electronAPI', { pty: { write }, chat: { snapshot }, diff: { read: diffRead }, usageLimit: { update } });
+    seed({ usageWindows: {}, usageLimits: { 'pty-held': { ptyId: 'pty-held', provider: 'claude', detectedAt: NOW, resetsAt: RESET, source: 'hook' } } });
+    snapshot.mockResolvedValue(null);
+    openTerminalTab.mockResolvedValue({ workspaceId: 'ws-1', ptyId: 'pty-new' });
+    expect(await continueInAgent({ heldPtyId: 'pty-held', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', note: 'n' })).toBe(true);
+    expect(update).toHaveBeenCalledWith('pty-held', { autoResume: false });
+    expect([...handedOffPtyIds(useStore.getState().workspaces)]).toEqual(['pty-held']);
   });
 });
