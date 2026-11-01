@@ -102,6 +102,7 @@ import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
 import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
 import { FANOUT_LIVE_TASK_CAP, getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
+import { callerPaneRunsBypass, inheritWorkerMode, type FanoutWorkerModeSource } from '../../worktask/fanoutInheritedMode';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 import { loadFanoutPresets } from '../../worktask/fanoutPresets';
 import { loadCustomAgents } from '../../worktask/customAgents';
@@ -1824,7 +1825,20 @@ export function registerFanOutRpc(
     // A bot's workers run unattended in the preset's mode, whatever the
     // operator's fan-out setting is.
     const botPresetMode = bot && botPresetName ? botFanoutPreset(botPresetName)?.permissionMode : undefined;
-    const workerMode = botPresetMode ?? (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+    // A pane caller whose own Claude runs in bypass hands bypass to its
+    // workers; any other parent mode keeps the setting. Only the pane that
+    // asked (senderPtyId) — never a brain's anchor pane, which it can focus —
+    // and only as the daemon reports it, never from the request.
+    const settingMode = (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+    const inherited = botPresetMode === undefined && !commanderWorkspaceId && senderPtyId
+      ? inheritWorkerMode(settingMode, await callerPaneRunsBypass(senderPtyId, daemonRpc))
+      : null;
+    const workerMode = botPresetMode ?? inherited?.mode ?? settingMode;
+    const workerModeSource: FanoutWorkerModeSource =
+      botPresetMode !== undefined ? 'bot-preset' : inherited?.source ?? 'setting';
+    if (workerModeSource === 'inherited-caller-pane') {
+      console.info(`[fanout.rpc] fan-out ${key}: workers launch in bypassPermissions, inherited bypass from the calling pane ${senderPtyId}`);
+    }
     // A bot has no pane: it fans out in the repository its profile names,
     // which must still be a git repository root.
     const botRepoPath = bot ? botProfile?.repo?.repoPath ?? '' : '';
@@ -2013,7 +2027,7 @@ export function registerFanOutRpc(
                   : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
                 // Only when a task can actually run claude: the flags are claude-only.
                 (agentChoices.length === 0 || agentChoices.some((c) => c.agent === 'claude')
-                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, [])}`
+                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, [])}${workerModeSource === 'inherited-caller-pane' ? ' (inherited bypass from the calling pane)' : ''}`
                   : ''),
               // The roles again, as data. The preview prints the role NAME, but
               // what a role resolves to — agent, model, extra args — lives in the
@@ -2114,6 +2128,7 @@ export function registerFanOutRpc(
             ),
             approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
             workerPermissionMode: workerMode,
+            ...(workerModeSource === 'inherited-caller-pane' ? { workerPermissionModeSource: workerModeSource } : {}),
             ...(presetName ? { preset: presetName } : {}),
             ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
           });
@@ -2155,6 +2170,7 @@ export function registerFanOutRpc(
               promptSha256: [],
               approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
               workerPermissionMode: workerMode,
+              ...(workerModeSource === 'inherited-caller-pane' ? { workerPermissionModeSource: workerModeSource } : {}),
               ...(presetName ? { preset: presetName } : {}),
               ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
               ...(outputBatchDir ? { outputBatchDir } : {}),
