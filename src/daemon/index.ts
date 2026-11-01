@@ -314,6 +314,7 @@ import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexShar
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { agentStatesFor } from '../shared/agentStateBatch';
 import { parseCompanySeat } from '../shared/company';
+import { A2A_COMPANY_RPC, isCompanyHoldReason } from '../shared/companyHold';
 import { ChatSessionService } from './chat/ChatSessionService';
 import { createChatV2Host } from './chat/v2/host';
 import { registerChatV2Rpc } from './chat/v2/rpc';
@@ -7332,6 +7333,34 @@ function registerRpcHandlers(
     // view: 'page' → summaries, or the one named task in full: a list reply
     // must stay far below the 1 MiB control-line cap of DaemonClient.
     return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p) };
+  });
+
+  // Company mode: tasks held on their blockers (shared/companyHold.ts). Main
+  // pulls the released ones it owes a delivery and records each attempt and
+  // its outcome; the held list is for the board and the CEO.
+  pipeServer.onRpc(A2A_COMPANY_RPC.pending, async () => ({ tasks: a2aTaskService?.listCompanyPending() ?? [] }));
+  pipeServer.onRpc(A2A_COMPANY_RPC.held, async () => ({ tasks: a2aTaskService?.listCompanyHeld() ?? [] }));
+  pipeServer.onRpc(A2A_COMPANY_RPC.mark, async (rawParams) => {
+    if (!a2aTaskService) return { ok: false, error: 'a2a.company.mark: task log unavailable' };
+    const p = rawParams as Record<string, unknown>;
+    const taskId = typeof p.taskId === 'string' ? p.taskId : '';
+    if (!taskId) return { ok: false, error: 'bad-request: taskId is required' };
+    if ([p.attempted, p.delivered, p.held].filter((v) => v !== undefined).length !== 1) {
+      return { ok: false, error: 'bad-request: give exactly one of attempted, delivered, held' };
+    }
+    if (p.attempted !== undefined && typeof p.attempted !== 'boolean') return { ok: false, error: 'bad-request: attempted must be a boolean' };
+    if (p.delivered !== undefined && p.delivered !== true) return { ok: false, error: 'bad-request: delivered must be true' };
+    if (p.held !== undefined && !isCompanyHoldReason(p.held)) return { ok: false, error: 'bad-request: unknown held reason' };
+    if (p.ptyId !== undefined && (p.delivered !== true || typeof p.ptyId !== 'string' || !p.ptyId)) {
+      return { ok: false, error: 'bad-request: ptyId goes with delivered, as a non-empty string' };
+    }
+    return a2aTaskService.markCompany({
+      taskId,
+      ...(typeof p.attempted === 'boolean' ? { attempted: p.attempted } : {}),
+      ...(p.delivered === true ? { delivered: true as const } : {}),
+      ...(typeof p.ptyId === 'string' ? { ptyId: p.ptyId } : {}),
+      ...(isCompanyHoldReason(p.held) ? { held: p.held } : {}),
+    });
   });
 
   // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────

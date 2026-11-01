@@ -48,7 +48,16 @@ import {
 import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { companyCancelRefusal, companyDoneRefusal, isCompanyTask, type CompanySeat } from '../../shared/company';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
-import { COMPANY_HOLD_KEY, companyBriefOfHistory, companyHoldAtCreate, companyHoldOf, type CompanyHoldMarker } from '../../shared/companyHold';
+import {
+  COMPANY_HOLD_KEY,
+  companyBriefOfHistory,
+  companyHoldAtCreate,
+  companyHoldOf,
+  companyHoldPhase,
+  isCompanyHoldReason,
+  type CompanyHoldMarker,
+  type CompanyHoldReason,
+} from '../../shared/companyHold';
 import type {
   A2aCompanyMarkPayload,
   A2aRemoteMarkPayload,
@@ -1165,6 +1174,73 @@ export class A2aTaskService {
   // ── company: tasks held on their blockers ──────────────────────────
 
   /**
+   * Record main's delivery of a released company task
+   * (`A2A_COMPANY_RPC.mark`): `attempted` (only while the task is still owed),
+   * `delivered` (final; also taken on a held task, which a person had sent)
+   * or a `held` reason (ignored once delivered). Refused on a task without a
+   * hold marker, an ended task and a task still waiting on a blocker. A mark
+   * that changes nothing appends nothing. `updatedAt` is left alone: this is
+   * delivery bookkeeping, as in markRemote.
+   */
+  markCompany(input: {
+    taskId: string;
+    attempted?: boolean;
+    delivered?: true;
+    ptyId?: string;
+    held?: CompanyHoldReason;
+  }): Promise<{ ok: true; task: Task } | OpErr> {
+    return this.withTaskLock<{ ok: true; task: Task } | OpErr>(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      const marker = companyHoldOf(task);
+      if (!task || !marker) return { ok: false, error: `a2a.company.mark: no held company task ${input.taskId}` };
+      if (isTaskEnded(task)) return { ok: false, error: `a2a.company.mark: task ${input.taskId} has ended` };
+      if (marker.waitingOn.length > 0) {
+        return { ok: false, error: `a2a.company.mark: task ${input.taskId} is still waiting on ${marker.waitingOn.join(', ')}` };
+      }
+      let change: Pick<A2aCompanyMarkPayload, 'attempted' | 'delivered' | 'ptyId' | 'held'>;
+      if (input.delivered === true) {
+        if (marker.delivered) return { ok: true, task };
+        change = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}) };
+      } else if (input.held !== undefined) {
+        if (marker.delivered || marker.held === input.held) return { ok: true, task };
+        change = { held: input.held };
+      } else if (input.attempted !== undefined) {
+        // An attempt only matters while the task is still owed.
+        if (marker.delivered || marker.held || (marker.attempted === true) === input.attempted) return { ok: true, task };
+        change = { attempted: input.attempted };
+      } else {
+        return { ok: false, error: 'a2a.company.mark: nothing to mark' };
+      }
+      if (!(await this.appendCompanyMark(task, change))) {
+        return { ok: false, error: 'a2a.company.mark: daemon log append failed (uncommitted)' };
+      }
+      return { ok: true, task };
+    });
+  }
+
+  /**
+   * Released company tasks owed a delivery: not delivered, not held, not
+   * ended. One marked `attempted` is listed too: main holds it as
+   * `delivery-unconfirmed` and never writes it again on its own.
+   */
+  listCompanyPending(): Task[] {
+    return [...this.tasks.values()].filter((t) => {
+      const marker = companyHoldOf(t);
+      return !!marker && !isTaskEnded(t) && companyHoldPhase(marker) === 'owed';
+    });
+  }
+
+  /** Company tasks not ended that still wait on a blocker, or are held for a person. */
+  listCompanyHeld(): Task[] {
+    return [...this.tasks.values()].filter((t) => {
+      const marker = companyHoldOf(t);
+      if (!marker || isTaskEnded(t)) return false;
+      const phase = companyHoldPhase(marker);
+      return phase === 'waiting' || phase === 'held';
+    });
+  }
+
+  /**
    * After `blockerId` committed a state: settle every open task held on it,
    * each under its own lock. Called once the blocker's lock is released, so
    * this never holds two task locks at once. A failure here leaves the mark
@@ -1479,5 +1555,22 @@ function applyCompanyMark(marker: CompanyHoldMarker, c: A2aCompanyMarkPayload): 
     const { id, state } = c.blockerEnded;
     if (!marker.waitingOn.includes(id) || (state !== 'failed' && state !== 'canceled')) return;
     marker.blockerEnded = [...(marker.blockerEnded ?? []).filter((e) => e.id !== id), { id, state }];
+    return;
+  }
+  if (c.attempted !== undefined) {
+    if (c.attempted) marker.attempted = true;
+    else delete marker.attempted;
+    return;
+  }
+  if (c.delivered === true) {
+    marker.delivered = true;
+    delete marker.attempted;
+    delete marker.held;
+    if (c.ptyId) marker.ptyId = c.ptyId;
+    return;
+  }
+  if (isCompanyHoldReason(c.held)) {
+    marker.held = c.held;
+    delete marker.attempted;
   }
 }

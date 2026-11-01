@@ -260,3 +260,98 @@ describe('company hold: release', () => {
     expect(holdOf(svc, 'C')?.waitingOn).toEqual(['A']);
   });
 });
+
+describe('company hold: marks from main', () => {
+  async function released(log: AppendOnlyLog) {
+    const svc = newService(log);
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await complete(svc, 'A');
+    return svc;
+  }
+
+  it('attempted, then delivered with the pty written to', async () => {
+    const log = newLog();
+    const svc = await released(log);
+    expect(svc.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+    expect((await svc.markCompany({ taskId: 'C', attempted: true })).ok).toBe(true);
+    expect(holdOf(svc, 'C')?.attempted).toBe(true);
+    // Still listed: main sees the attempt and never writes it again on its own.
+    expect(svc.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+    expect((await svc.markCompany({ taskId: 'C', delivered: true, ptyId: 'pty-7' })).ok).toBe(true);
+    expect(holdOf(svc, 'C')).toMatchObject({ delivered: true, ptyId: 'pty-7' });
+    expect(holdOf(svc, 'C')?.attempted).toBeUndefined();
+    expect(phaseOf(svc, 'C')).toBe('delivered');
+    expect(svc.listCompanyPending()).toEqual([]);
+    expect(svc.listCompanyHeld()).toEqual([]);
+  });
+
+  it('a refused write clears the attempt, and the task is owed again', async () => {
+    const svc = await released(newLog());
+    await svc.markCompany({ taskId: 'C', attempted: true });
+    expect((await svc.markCompany({ taskId: 'C', attempted: false })).ok).toBe(true);
+    expect(holdOf(svc, 'C')?.attempted).toBeUndefined();
+    expect(svc.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+  });
+
+  it('held leaves the pending list for the held list; a person can still have it delivered', async () => {
+    const svc = await released(newLog());
+    await svc.markCompany({ taskId: 'C', attempted: true });
+    expect((await svc.markCompany({ taskId: 'C', held: 'no-agent' })).ok).toBe(true);
+    expect(holdOf(svc, 'C')).toMatchObject({ held: 'no-agent' });
+    expect(holdOf(svc, 'C')?.attempted).toBeUndefined();
+    expect(svc.listCompanyPending()).toEqual([]);
+    expect(svc.listCompanyHeld().map((t) => t.id)).toEqual(['C']);
+    // An attempt does not matter on a held task.
+    await svc.markCompany({ taskId: 'C', attempted: true });
+    expect(holdOf(svc, 'C')?.attempted).toBeUndefined();
+    expect((await svc.markCompany({ taskId: 'C', delivered: true })).ok).toBe(true);
+    expect(holdOf(svc, 'C')?.held).toBeUndefined();
+    expect(svc.listCompanyHeld()).toEqual([]);
+  });
+
+  it('retries append nothing, and delivered is final', async () => {
+    const log = newLog();
+    const svc = await released(log);
+    const before = companyMarks(log, 'C').length;
+    await svc.markCompany({ taskId: 'C', attempted: true });
+    await svc.markCompany({ taskId: 'C', attempted: true });
+    await svc.markCompany({ taskId: 'C', delivered: true, ptyId: 'pty-1' });
+    await svc.markCompany({ taskId: 'C', delivered: true, ptyId: 'pty-1' });
+    const late = await svc.markCompany({ taskId: 'C', held: 'pane-missing' });
+    expect(late.ok).toBe(true);
+    expect(holdOf(svc, 'C')?.held).toBeUndefined();
+    expect(companyMarks(log, 'C')).toHaveLength(before + 2);
+  });
+
+  it('refuses a task still waiting, an ended task, and one that was never held', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await assign(svc, 'free');
+    const waiting = await svc.markCompany({ taskId: 'C', attempted: true });
+    expect(!waiting.ok && waiting.error).toContain('still waiting on A');
+    const never = await svc.markCompany({ taskId: 'free', delivered: true });
+    expect(!never.ok && never.error).toContain('no held company task');
+    await complete(svc, 'A');
+    expect((await svc.cancelTask({ taskId: 'C', callerWorkspaceId: WS, callerPaneId: 'pane-ceo' })).ok).toBe(true);
+    const ended = await svc.markCompany({ taskId: 'C', delivered: true });
+    expect(!ended.ok && ended.error).toContain('has ended');
+  });
+
+  it('lists: a waiting task is held, not pending; ended tasks are never listed', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await assign(svc, 'B');
+    await assign(svc, 'C', ['A']);
+    await assign(svc, 'D', ['B']);
+    expect(svc.listCompanyHeld().map((t) => t.id).sort()).toEqual(['C', 'D']);
+    expect(svc.listCompanyPending()).toEqual([]);
+    await fail(svc, 'B');
+    // D stays held on a blocker that failed; it is not owed a delivery.
+    expect(svc.listCompanyHeld().map((t) => t.id).sort()).toEqual(['C', 'D']);
+    expect(svc.listCompanyPending()).toEqual([]);
+    expect((await svc.cancelTask({ taskId: 'D', callerWorkspaceId: WS, callerPaneId: 'pane-ceo' })).ok).toBe(true);
+    expect(svc.listCompanyHeld().map((t) => t.id)).toEqual(['C']);
+  });
+});
