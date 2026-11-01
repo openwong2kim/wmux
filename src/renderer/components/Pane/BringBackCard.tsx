@@ -45,9 +45,12 @@ export default function BringBackCard({ pair, anchor, triggerRef, onClose }: {
   // Read once on open, so the note previewed is the one typed in. The pair is
   // rebuilt on every render; its two tabs are what matter.
   const pairRef = useRef(pair);
-  pairRef.current = pair;
   const otherRef = useRef(other);
-  otherRef.current = other;
+  // Written after a committed render, never during one; declared before the read below.
+  useEffect(() => {
+    pairRef.current = pair;
+    otherRef.current = other;
+  });
   const otherPtyId = pair.other.ptyId;
   const sourceId = pair.source.id;
   useEffect(() => {
