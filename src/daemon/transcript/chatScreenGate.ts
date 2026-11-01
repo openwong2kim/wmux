@@ -1,5 +1,5 @@
 import { looksLikeApprovalPrompt } from '../approvals/approvalKeystrokes';
-import { parseTerminalPrompt } from '../approvals/terminalPromptParse';
+import { parseTerminalPrompt, screenReaderKeyRow, showsScreenReaderKeyRow } from '../approvals/terminalPromptParse';
 import { CLAUDE_IDLE_TITLE, CODEX_RUNNING_TITLE, RUNNING_TITLE } from '../../shared/agentTitleRules';
 
 /**
@@ -20,10 +20,13 @@ const DIALOG_FOOTER_ROW = /\bEsc to (?:cancel|exit|close|go back|dismiss)\b/i;
  * Biased to refuse, like the approval press check: an unreadable screen is no
  * evidence of a free composer, and a false positive costs one trip to
  * Terminal, while a false negative presses Enter in a dialog nobody saw.
+ * Claude Code's screen-reader layout counts by its key row, anywhere.
  */
 export function screenBlocksChatSend(rows: readonly string[] | null): boolean {
   if (!rows || rows.every((row) => !row.trim())) return true;
-  return looksLikeApprovalPrompt(rows) || rows.some((row) => DIALOG_FOOTER_ROW.test(row));
+  return looksLikeApprovalPrompt(rows)
+    || rows.some((row) => DIALOG_FOOTER_ROW.test(row))
+    || showsScreenReaderKeyRow(rows);
 }
 
 /**
@@ -96,8 +99,8 @@ const PROCEED_QUESTION_ROW = /\bDo you want to proceed\b/i;
 
 /**
  * Does a READABLE, non-blank grid still show a Claude Code permission or select
- * dialog: the `Do you want to proceed?` line, a `❯ <n>.` cursor option row, or
- * the `Esc to cancel…` footer?
+ * dialog: the `Do you want to proceed?` line, a `❯ <n>.` cursor option row,
+ * the `Esc to cancel…` footer, or a screen-reader layout key row?
  *
  * The awaiting-state verifier clears a pane only when this is false on two
  * reads in a row. It is deliberately the same row tests as
@@ -107,7 +110,8 @@ const PROCEED_QUESTION_ROW = /\bDo you want to proceed\b/i;
  */
 export function screenShowsAgentDialog(rows: readonly string[]): boolean {
   return looksLikeApprovalPrompt(rows)
-    || rows.some((row) => DIALOG_FOOTER_ROW.test(row) || PROCEED_QUESTION_ROW.test(row));
+    || rows.some((row) => DIALOG_FOOTER_ROW.test(row) || PROCEED_QUESTION_ROW.test(row))
+    || showsScreenReaderKeyRow(rows);
 }
 
 /**
@@ -120,10 +124,10 @@ export function screenShowsAgentDialog(rows: readonly string[]): boolean {
  * right under the options, nothing below it), or, for the other select
  * dialogs (AskUserQuestion, `/model`), when the last non-blank row is an
  * `Esc to …` footer or a cursor option row sits among the last few non-blank
- * rows.
+ * rows, or when a screen-reader layout key row closes the screen.
  */
 export function screenShowsActiveDialog(rows: readonly string[]): boolean {
-  if (parseTerminalPrompt(rows)?.active) return true;
+  if (parseTerminalPrompt(rows)?.active || screenReaderKeyRow(rows) !== null) return true;
   const tail = rows.filter((row) => row.trim().length > 0).slice(-ACTIVE_DIALOG_TAIL_ROWS);
   const last = tail[tail.length - 1];
   if (last !== undefined && DIALOG_FOOTER_ROW.test(last)) return true;
