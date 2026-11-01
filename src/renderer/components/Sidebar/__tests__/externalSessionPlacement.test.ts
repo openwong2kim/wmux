@@ -9,6 +9,9 @@ import {
   workspaceFolder,
 } from '../externalSessionPlacement';
 import type { ExternalSession } from '../../../../shared/externalSessions';
+import type { Workspace } from '../../../../shared/types';
+import { selectExternalPlacement } from '../../../stores/selectors/externalSessions';
+import { formatShadowWorkspaceId } from '../../../../shared/pcRail';
 
 function session(id: string, cwd: string, patch: Partial<ExternalSession> = {}): ExternalSession {
   return {
@@ -133,5 +136,34 @@ describe('externalWhereShort', () => {
     expect(externalWhereShort({ kind: 'ssh', label: '10.0.0.4' })).toBe('ssh 10.0.0.4');
     expect(externalWhereShort({ kind: 'unknown', wslDistro: 'Ubuntu' })).toBe('WSL Ubuntu');
     expect(externalWhereShort({ kind: 'unknown' })).toBeUndefined();
+  });
+});
+
+describe('selectExternalPlacement', () => {
+  const ws = (id: string, startupCwd?: string, cwd?: string) =>
+    ({ id, ...(startupCwd ? { profile: { startupCwd } } : {}), ...(cwd ? { metadata: { cwd } } : {}) }) as unknown as Workspace;
+  const state = (patch: Record<string, unknown>) => ({
+    externalSessions: [session('s', '/code/api/src', { state: 'needs-you' })],
+    workspaces: [ws('api', '/code/api')],
+    fanoutOrigin: {},
+    readOnly: false,
+    ...patch,
+  }) as unknown as Parameters<typeof selectExternalPlacement>[0];
+
+  it('places by the workspace folder', () => {
+    expect(selectExternalPlacement(state({})).byWorkspace.api?.map((s) => s.id)).toEqual(['s']);
+  });
+
+  it('never matches another computer’s shadow workspace', () => {
+    const shadow = formatShadowWorkspaceId('host-1', 'api')!;
+    const placed = selectExternalPlacement(state({ workspaces: [ws(shadow, '/code/api')] }));
+    expect(placed.byWorkspace[shadow]).toBeUndefined();
+    expect(placed.outside.map((s) => s.id)).toEqual(['s']);
+  });
+
+  it('places nothing in a read-only view (another computer’s list, the web mirror)', () => {
+    const placed = selectExternalPlacement(state({ readOnly: true }));
+    expect(placed.byWorkspace).toEqual({});
+    expect(placed.outside).toEqual([]);
   });
 });
