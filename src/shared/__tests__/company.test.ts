@@ -8,6 +8,7 @@ import {
   REMOTE_SEAT_FINISH_LINE,
   companyBriefOf,
   companyCancelRefusal,
+  companyHireNotice,
   companyDoneRefusal,
   companySeatOf,
   companyOfWorkspace,
@@ -323,5 +324,26 @@ describe('remoteSeatIntro', () => {
     const text = remoteSeatIntro(full);
     expect(text).not.toContain(COMPANY_BRIEF_KIND);
     for (const heading of ['Goal:', 'Scope:', 'Acceptance:', 'Verify:', 'Report:']) expect(text).not.toContain(heading);
+  });
+});
+
+describe('companyHireNotice', () => {
+  it('names the seat, what it owns and its branch', () => {
+    expect(companyHireNotice({ label: 'dev-4', owns: 'Windows checks', branch: 'company/dev-4-456789ab' }))
+      .toBe('wmux: #dev-4 joined the company (owns Windows checks; branch company/dev-4-456789ab). Brief it like your other seats.');
+  });
+
+  it('leaves out each part there is none of, and the brackets when both are gone', () => {
+    expect(companyHireNotice({ label: 'dev-4', owns: 'Windows checks' }))
+      .toBe('wmux: #dev-4 joined the company (owns Windows checks). Brief it like your other seats.');
+    expect(companyHireNotice({ label: 'dev-4', branch: 'company/dev-4-456789ab' }))
+      .toBe('wmux: #dev-4 joined the company (branch company/dev-4-456789ab). Brief it like your other seats.');
+    expect(companyHireNotice({ label: 'dev-4', owns: '  ', branch: '' }))
+      .toBe('wmux: #dev-4 joined the company. Brief it like your other seats.');
+  });
+
+  it('keeps the line one line, with no stop doubled inside the brackets', () => {
+    expect(companyHireNotice({ label: 'dev-4', owns: 'Payments\nand refunds.' }))
+      .toBe('wmux: #dev-4 joined the company (owns Payments and refunds). Brief it like your other seats.');
   });
 });
