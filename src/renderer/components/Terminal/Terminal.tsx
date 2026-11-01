@@ -354,9 +354,9 @@ export default function TerminalComponent({ chatView = false, ptyId: externalPty
       // main may throw on failure (size / lock / invalid type); the helper
       // surfaces an error toast and keeps the selection so the user can
       // retry rather than silently losing the copy attempt.
-      void copySelectionWithFeedback(terminalRef.current, ctxMenu.selectedText);
+      void copySelectionWithFeedback(terminalRef.current, ctxMenu.selectedText, { ptyId: ptyId ?? undefined });
     }
-  }, [ctxMenu, terminalRef]);
+  }, [ctxMenu, terminalRef, ptyId]);
 
   const handlePaste = useCallback(() => {
     if (!ptyId) return;

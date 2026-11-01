@@ -213,12 +213,18 @@ export function EmptyLeafFunnel() {
                   {
                     workspaceId: wsId,
                     cwd: startupCwd,
+                    // A WSL session's folder: a WSL shell in its distro.
+                    ...(projectSeed?.wslDistro ? { shell: 'wsl.exe', wslDistro: projectSeed.wslDistro } : {}),
                     ...bootstrapOptions,
                     ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
                   },
                   useStore.getState().defaultShell,
                 ),
-                activeWorkspace.profile,
+                // The profile's pane command was written for the workspace's own
+                // shell; a WSL shell opened for a WSL session does not run it.
+                projectSeed?.wslDistro && activeWorkspace.profile
+                  ? { ...activeWorkspace.profile, defaultPaneCommand: undefined }
+                  : activeWorkspace.profile,
               ),
               seedRoleBinding,
               seedRoleName,

@@ -365,6 +365,19 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
 }
 
 /**
+ * The Claude bridge a WSL pane's hook runs, or null when it is missing: the
+ * same lookup, so the global WSL hook (shared/wslGlobalHook.ts) and a pane's
+ * hook always run the same file — one outside app.asar, which Linux can open.
+ */
+export function findWslClaudeBridge(startDir: string): string | null {
+  try {
+    return findBridge(startDir);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * #1730 — the daemon keeps this file in its data dir exactly while the
  * permission gate can be answered; the WSL hook checks it before paying for a
  * Windows process (WSL_HOOK). It carries no authority: the daemon still decides.

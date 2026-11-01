@@ -17,7 +17,8 @@
  */
 
 import { isReceiverPaneGone, normalizeLivePaneIds } from './a2aOrphanedTask';
-import { TERMINAL_STATES } from './types';
+import { companyHoldOf, companyHoldPhase } from './companyHold';
+import { TERMINAL_STATES, type Task } from './types';
 
 /** Byte budget for one result: the MCP tool result cap (DEFAULT_RESULT_CAP_BYTES). */
 export const TASK_QUERY_CAP_BYTES = 64 * 1024;
@@ -101,6 +102,19 @@ function preview(text: string): string {
     : `${chars.slice(0, TASK_PREVIEW_CHARS).join('')}…`;
 }
 
+/**
+ * Why a company task waits (shared/companyHold.ts): the blockers it still
+ * waits on (`waitingOn`), or, released and not delivered, the reason it is
+ * held for a person (`held`). Nothing for any other task.
+ */
+export function companyHoldFields(task: Rec): Rec {
+  const hold = isRec(task.metadata) ? companyHoldOf(task as unknown as Pick<Task, 'metadata'>) : undefined;
+  if (!hold) return {};
+  const phase = companyHoldPhase(hold);
+  if (phase === 'waiting') return { waitingOn: [...hold.waitingOn] };
+  return phase === 'held' && hold.held ? { held: hold.held } : {};
+}
+
 /** One task as a summary line: identity, parties, timing, and a short look at the latest message. */
 export function summarizeTask(task: Rec): Rec {
   const meta = isRec(task.metadata) ? task.metadata : {};
@@ -130,6 +144,8 @@ export function summarizeTask(task: Rec): Rec {
     ...(isRec(meta.remote) && str(meta.remote.reported) ? { remoteReported: true } : {}),
     // A remote task: the other PC received every reply and state change this side sent on it.
     ...(isRec(meta.remote) && str(meta.remote.replyDeliveredAt) ? { replyDeliveredAt: meta.remote.replyDeliveredAt } : {}),
+    // A company task held on its blockers: what it waits on, or why it waits for a person.
+    ...companyHoldFields(task),
     ...(last !== undefined && {
       lastMessage: {
         ...(isRec(last) && str(last.role) !== undefined && { role: last.role }),

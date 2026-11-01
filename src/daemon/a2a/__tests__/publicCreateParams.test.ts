@@ -25,3 +25,17 @@ describe('public a2a.task.create parsing', () => {
     expect(parsePublicCreateTask({ title: 'T' })).toMatchObject({ ok: false, error: expect.stringContaining('required') });
   });
 });
+
+describe('holdForBlockers on a2a.task.create', () => {
+  it('passes from the app\'s main process only', () => {
+    const main = parsePublicCreateTask({ ...base, holdForBlockers: true }, { firstParty: true });
+    expect(main.ok && main.input.holdForBlockers).toBe(true);
+    for (const res of [
+      parsePublicCreateTask({ ...base, holdForBlockers: true }),
+      parsePublicCreateTask({ ...base, holdForBlockers: true }, { firstParty: false }),
+      parsePublicCreateTask({ ...base, holdForBlockers: 'yes' }, { firstParty: true }),
+    ]) {
+      expect(res.ok && 'holdForBlockers' in res.input).toBe(false);
+    }
+  });
+});

@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   externalAttachCommand,
+  externalSessionWslDistro,
   externalWhereShort,
   matchExternalWorkspace,
   placeExternalSessions,
@@ -26,6 +27,51 @@ function session(id: string, cwd: string, patch: Partial<ExternalSession> = {}):
     ...patch,
   };
 }
+
+describe('matchExternalWorkspace: a session in WSL', () => {
+  const workspaces = [
+    { id: 'share', folder: '\\\\wsl.localhost\\Ubuntu\\home\\dev\\app' },
+    { id: 'legacy', folder: '\\\\wsl$\\Debian\\srv' },
+    { id: 'linux', folder: '/home/dev' },
+    { id: 'win', folder: 'C:\\code' },
+  ];
+
+  it('a workspace on the distro\'s \\\\wsl.localhost or \\\\wsl$ share holds it; the deepest folder wins', () => {
+    expect(matchExternalWorkspace('/home/dev/app/src', workspaces, 'Ubuntu')).toBe('share');
+    expect(matchExternalWorkspace('/home/dev/app/src', workspaces, 'ubuntu')).toBe('share');
+    expect(matchExternalWorkspace('/srv/site', workspaces, 'Debian')).toBe('legacy');
+    expect(matchExternalWorkspace('/srv', [{ id: 'fwd', folder: '//wsl$/Debian/srv/' }], 'Debian')).toBe('fwd');
+  });
+
+  it('another distro\'s share never holds it; a session outside WSL matches a share only by its UNC path', () => {
+    expect(matchExternalWorkspace('/home/dev/app', workspaces, 'Debian')).toBe('linux');
+    expect(matchExternalWorkspace('/srv/site', workspaces, 'Ubuntu')).toBeUndefined();
+    expect(matchExternalWorkspace('/home/dev/app', workspaces)).toBe('linux');
+    // A Windows agent started inside the share keeps matching the workspace opened on it.
+    expect(matchExternalWorkspace('\\\\wsl.localhost\\Ubuntu\\home\\dev\\app\\src', workspaces)).toBe('share');
+  });
+
+  it('a workspace opened in a WSL pane (its folder is the Linux path) holds it as before', () => {
+    expect(matchExternalWorkspace('/home/dev/tools', workspaces, 'Ubuntu')).toBe('linux');
+  });
+
+  it('placement passes the session\'s distro', () => {
+    const wsl = session('w', '/home/dev/app', { where: { kind: 'unknown', wslDistro: 'Ubuntu' } });
+    expect(placeExternalSessions([wsl], workspaces).byWorkspace.share).toEqual([wsl]);
+    // A distro with a UNC cwd (not a Linux folder) is matched by that UNC path.
+    const unc = session('u', '\\\\wsl.localhost\\Ubuntu\\home\\dev\\app', { where: { kind: 'unknown', wslDistro: 'Ubuntu' } });
+    expect(placeExternalSessions([unc], workspaces).byWorkspace.share).toEqual([unc]);
+  });
+
+  it('externalSessionWslDistro: only a valid distro at a Linux folder', () => {
+    const base = session('w', '/home/dev/app', { where: { kind: 'unknown', wslDistro: 'Ubuntu' } });
+    expect(externalSessionWslDistro(base)).toBe('Ubuntu');
+    expect(externalSessionWslDistro({ ...base, cwd: 'C:\\code' })).toBeUndefined();
+    expect(externalSessionWslDistro({ ...base, cwd: '~/app' })).toBeUndefined();
+    expect(externalSessionWslDistro({ ...base, where: { kind: 'unknown', wslDistro: '-d x' } })).toBeUndefined();
+    expect(externalSessionWslDistro({ ...base, where: { kind: 'unknown' } })).toBeUndefined();
+  });
+});
 
 describe('matchExternalWorkspace', () => {
   const workspaces = [

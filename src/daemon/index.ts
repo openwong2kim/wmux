@@ -171,6 +171,7 @@ import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
 // (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
 import { A2aTaskService, statusMessageFromWire } from './a2a/A2aTaskService';
 import { parsePublicCreateTask } from './a2a/publicCreateParams';
+import { registerCompanyHoldRpc } from './a2a/companyHoldRpc';
 import { WorkTaskService } from './worktask/WorkTaskService';
 import { listMissionsBatch } from './worktask/missionListBatch';
 import { viewerVisibilityUpdates } from '../shared/viewerVisibilityBatch';
@@ -7239,12 +7240,13 @@ function registerRpcHandlers(
   // 데몬 로그, 렌더러 a2aSlice는 캐시로 강등. a2aTaskService가 null(로그 개방 실패)
   // 이면 렌더러-only로 degrade한다 — A2A는 역사적으로 best-effort 비내구(a2aSlice
   // 30분 GC)라 로그 부재가 파국이 아니다.
-  pipeServer.onRpc('a2a.task.create', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.create', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.create: task log unavailable' };
     // 초기 히스토리(첫 메시지)는 생성 envelope에 실려 내구화된다. 이후 증분
     // 히스토리(reply) 내구화는 §6.F 몫 — 전이·생성·취소가 이 PR의 로그 정본.
     // A caller's `remote` marker never passes, and an rt- id is refused.
-    const parsed = parsePublicCreateTask(rawParams as Record<string, unknown>);
+    // `holdForBlockers` is taken from main only (a company task it held back).
+    const parsed = parsePublicCreateTask(rawParams as Record<string, unknown>, { firstParty: pipeServer.isFirstParty(ctx.clientId) });
     if (!parsed.ok) return parsed;
     return a2aTaskService.createTask(parsed.input);
   });
@@ -7335,20 +7337,33 @@ function registerRpcHandlers(
     });
   });
 
-  pipeServer.onRpc('a2a.task.query', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.query', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.query: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
     const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
     if (!workspaceId) return { ok: false, error: 'a2a.task.query: workspaceId is required' };
+    // Main's read of the caller's pane, or its own lane (as on a2a.task.update).
+    // A company task still waiting on a blocker is left out for its receiving
+    // side; without a pane the caller counts as that side.
+    const firstParty = pipeServer.isFirstParty(ctx.clientId);
+    const caller = {
+      ...(firstParty && typeof p.callerPaneId === 'string' && p.callerPaneId ? { paneId: p.callerPaneId } : {}),
+      ...(firstParty && p.trustedLane === true ? { trusted: true } : {}),
+    };
     const tasks = a2aTaskService.queryTasks(workspaceId, {
       ...(typeof p.status === 'string' && isTaskState(p.status) ? { status: p.status } : {}),
       ...(p.role === 'user' || p.role === 'agent' ? { role: p.role } : {}),
       ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
-    });
+    }, caller);
+    // The ids left out, so main drops its renderer's copies of them too.
+    const withheld = a2aTaskService.withheldTaskIds(workspaceId, caller);
     // view: 'page' → summaries, or the one named task in full: a list reply
     // must stay far below the 1 MiB control-line cap of DaemonClient.
-    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p) };
+    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p), ...(withheld.length > 0 ? { withheld } : {}) };
   });
+
+  // Company mode: tasks held on their blockers (main's delivery RPCs).
+  registerCompanyHoldRpc(pipeServer, a2aTaskService);
 
   // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────
   // start/close/list. 신원은 a2a.channel.* 변이와 동일 규율(stampCaller로
