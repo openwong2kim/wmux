@@ -231,6 +231,7 @@ import { resyncAfterResubscribe, serialResync, type DaemonSessionRow } from './n
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
+import { CompanyReleaseBridge } from './a2a/CompanyReleaseBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
 import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
@@ -840,6 +841,10 @@ let daemonNotificationRouter: DaemonNotificationRouter | null = null;
 let remoteInboxBridge: RemoteInboxBridge | null = null;
 // Cross-host A2A: hands remote tasks/replies the daemon holds to the renderer.
 let remoteA2aBridge: RemoteA2aBridge | null = null;
+// Company mode: delivers tasks the daemon released from their blockers; one per connection.
+let companyReleaseBridge: CompanyReleaseBridge | null = null;
+// The CEO lines told, kept across daemon reconnects.
+const companyCeoLinesTold = new Set<string>();
 let remoteSpawnCoordinator: RemoteSpawnCoordinator | null = null;
 let continueStarter: ContinueStarter | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
@@ -1323,6 +1328,7 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
   getDaemonClient: () => daemonClient,
   // Cross-host A2A: a remote pane's alias and rt- tasks go through the daemon's outbox.
   remote: daemonRemoteA2aRpcDeps(() => daemonClient),
+  companyRelease: () => companyReleaseBridge,
 });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
@@ -2653,6 +2659,16 @@ app.on('ready', async () => {
       });
       remoteA2aBridge.start();
       setA2aRemoteBridge(remoteA2aBridge);
+      // Company tasks released from their blockers, pulled on every (re)connect,
+      // after each task ends (a2a.rpc) and on a backstop.
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = new CompanyReleaseBridge({
+        daemon: client,
+        sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        told: companyCeoLinesTold,
+        log: (level, msg) => logLine(level, 'a2a-company', msg),
+      });
+      companyReleaseBridge.start();
       // Remote spawn (this PC starts an agent another PC asked for): cards and starts.
       remoteSpawnCoordinator?.stop();
       const spawnBridge = remoteA2aBridge;
@@ -2726,6 +2742,8 @@ app.on('ready', async () => {
       remoteInboxBridge = null;
       remoteA2aBridge?.stop();
       remoteA2aBridge = null;
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = null;
       remoteSpawnCoordinator?.stop();
       remoteSpawnCoordinator = null;
       continueStarter?.stop();

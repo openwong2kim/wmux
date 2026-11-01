@@ -66,6 +66,7 @@ type Daemon = {
 
 let daemon: Daemon;
 let connected: boolean;
+let daemonCancel: Record<string, unknown> = { ok: true };
 
 const dc = {
   rpc: async (method: string, params: Record<string, unknown>) => {
@@ -95,6 +96,7 @@ const dc = {
       };
       return { ok: true, taskId: params.id, task: created };
     }
+    if (method === 'a2a.task.cancel') return daemonCancel;
     return { ok: true };
   },
 } as unknown as DaemonClient;
@@ -316,5 +318,19 @@ describe('a2a.task.send — a task with an open blocker is held, durably', () =>
     const res = await send(sendParams(['task-b']));
     expect(res.error).toContain('could not keep it on hold (the wmux daemon did not record the hold)');
     expect(rendererCalls('a2a.company.discard')).toEqual([{ taskId: NEW_ID }]);
+  });
+});
+
+describe('a2a.task.update / a2a.task.cancel — a task that ends pulls the company release bridge', () => {
+  it('pulls after a committed completed, failed or canceled, and not after working', async () => {
+    const router = setup();
+    for (const status of ['working', 'completed', 'failed']) {
+      // eslint-disable-next-line no-await-in-loop -- one commit at a time
+      await router.dispatch({ id: status, method: 'a2a.task.update', params: { taskId: 'task-a', workspaceId: WS, status } }, { operator: true });
+    }
+    expect(pullNow).toHaveBeenCalledTimes(2);
+    daemonCancel = { ok: true, task: { id: 'task-a', status: { state: 'canceled' }, metadata: { updatedAt: 'z' } } };
+    await router.dispatch({ id: 'c', method: 'a2a.task.cancel', params: { taskId: 'task-a', workspaceId: WS } }, { operator: true });
+    expect(pullNow).toHaveBeenCalledTimes(3);
   });
 });

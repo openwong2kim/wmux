@@ -1609,6 +1609,11 @@ export function registerA2aRpc(
         if (cancelWorker) claudeWorker.cancel(cancelWorker);
         // Work link (best-effort): the daemon's committed state is the truth.
         void recordTaskState(params.taskId, stateOfTask(gate.result.task), undefined, gate.result.task);
+        // The daemon settled the company tasks waiting on this one before it
+        // answered: a released one is delivered, a stranded one told to the CEO.
+        if (params.status === 'completed' || params.status === 'failed' || params.status === 'canceled') {
+          opts.companyRelease?.()?.pullNow();
+        }
         const applied = await sendToRenderer(getWindow, 'a2a.task.update', {
           ...params,
           daemonCommitted: true,
@@ -1865,6 +1870,8 @@ export function registerA2aRpc(
         committed && isRecord(committed.status) ? committed.status.state : undefined;
       if (committedState === 'canceled') {
         void recordTaskState(taskId, 'canceled');
+        // A company task waiting on this one stays held; its CEO is told.
+        opts.companyRelease?.()?.pullNow();
         const applied = await sendToRenderer(getWindow, 'a2a.task.cancel', {
           ...forward,
           daemonCommitted: true,
