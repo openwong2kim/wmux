@@ -1003,9 +1003,11 @@ export function getPipeName(): string {
   if (process.platform === 'win32') {
     // Use os.userInfo() instead of process.env.USERNAME — env vars may not
     // be inherited by MCP subprocesses spawned by Claude Code
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux${dataSuffix()}-${username}`;
   }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux${dataSuffix()}.sock`;
 }
@@ -1018,9 +1020,11 @@ export function getPipeName(): string {
 // dev-suffixed app's shims can never join the production broker.
 export function getMcpBrokerPipeName(): string {
   if (process.platform === 'win32') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-mcpb${dataSuffix()}-${username}`;
   }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux-mcpb${dataSuffix()}.sock`;
 }
@@ -1193,6 +1197,7 @@ export function getWmuxHomeDir(): string {
 /** 데몬 제어 소켓/파이프 기본 경로. */
 export function getDaemonSocketPath(): string {
   if (process.platform === 'win32') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
   }
@@ -1202,6 +1207,7 @@ export function getDaemonSocketPath(): string {
 /** P7 이전(구버전)의 데몬 제어 소켓 경로 — 폴백/마이그레이션 판정용.
  * 구버전 코드와 동일하게 os.homedir() 기반으로 계산해야 문자열이 일치한다. */
 export function getLegacyDaemonSocketPath(): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '';
   return `${home}/.wmux-daemon${dataSuffix()}.sock`;
 }
@@ -1216,6 +1222,7 @@ export function getSessionSocketPath(sessionId: string): string {
 
 /** P7 이전(구버전)의 세션 소켓 경로 — 구데몬 연결 폴백용(os.homedir() 기반). */
 export function getLegacySessionSocketPath(sessionId: string): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '';
   return `${home}/.wmux-session-${sessionId}.sock`;
 }
