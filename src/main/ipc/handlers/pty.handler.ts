@@ -45,6 +45,7 @@ import { getWorkerGateways, watchWorkerGatewaySessions, workerGatewaySandbox, ty
 import { probeBotExecSupport } from '../../factory/botExecSandbox';
 import { resolveClaudeExecutable } from '../../claude/resolveClaudeExecutable';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
+import { reconnectSessionPipe } from './reconnectSessionPipe';
 import { verifyLaunchLine, type LaunchLineRead } from './verifyLaunchLine';
 import { LAUNCH_PROBE_CONFIRM_TIMEOUT_MS } from '../../worktask/fanoutLaunchProbe';
 import { launchPresenceAllowsResend, type LaunchPresenceVerdict } from '../../../daemon/launchPresence';
@@ -1713,18 +1714,9 @@ export function registerPTYHandlers(
         // mac만 안 됨"의 정체). 여기서 seed하면 전 플랫폼에서 즉시 복원된다.
         if (session.cwd) updateCwd(id, session.cwd);
 
-        // Set up data forwarding BEFORE attachSession, not after. attachSession
-        // makes the daemon replay the session's historical screen (the recovered
-        // RingBuffer) the instant the pipe connects — for an IDLE recovered pane
-        // (a shell sitting at its prompt) that replay is the ONLY paint it will
-        // get, because no new output is coming. Registering the handler after
-        // attach+connect (the old order) left a window where DaemonClient could
-        // read+emit that replay before a handler existed, dropping it — the pane
-        // then sat blank until a focus/reveal forced a resync. At boot with many
-        // recovered sessions the busy event loop made losing that race likely
-        // (dogfood: a recovered pane blank until clicked). Registering first
-        // closes the window; replace-semantics keep a repeat reconnect from
-        // stacking a duplicate. Routed through the per-id helper so a stale
+        // This reconnect's session:data forwarder. Installed by
+        // reconnectSessionPipe before the attach (the replay must land on a
+        // registered handler); routed through the per-id helper so a stale
         // listener (from a prior create with the same id, or an earlier
         // reconnect) is swapped, not duplicated.
         const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
@@ -1733,27 +1725,12 @@ export function registerPTYHandlers(
           const text = decodeSessionData(id, payload.data);
           if (text) dataBatcher.push(id, text, payload.replay);
         };
-        setSessionDataListener(id, onSessionData);
-
-        // Reconnect is an explicit fresh-attach intent — pass forceFresh
-        // so a stale sessionPipes entry (left over from a prior daemon
-        // pipe replacement) is torn down rather than silently reused.
-        // Without this, attach+connect can return success while the
-        // underlying socket is moments away from receiving its close
-        // event, and every subsequent write silently disappears.
-        // #2398 — the attach promotes only as `action` says: a daemon that
-        // restarted since the list holds a WSL session as a pending recovery
-        // again, and a caller that may not start it leaves it pending (held).
-        const attached = await daemonClient.rpc('daemon.attachSession', { id, promote: action === 'promote' || action === 'join' }) as { pending?: boolean } | undefined;
-        if (attached?.pending) return held('pending again at attach');
-        await daemonClient.connectSessionPipe(id, { forceFresh: true });
-
-        // Health probe: confirm the freshly connected pipe is actually
-        // writable before reporting success. A truthy reconnect that
-        // points at a dead socket is the exact shape of the input-mute
-        // bug we're trying to prevent here.
-        const probeOk = daemonClient.isSessionPipeWritable(id);
-        if (!probeOk) {
+        const pipe = await reconnectSessionPipe(daemonClient, id, {
+          promote: action === 'promote' || action === 'join',
+          installListener: () => setSessionDataListener(id, onSessionData),
+        });
+        if (pipe.kind === 'pending') return held('pending again at attach');
+        if (pipe.kind === 'not-writable') {
           // RCA A1 — transient failure: the session is alive in the daemon but
           // the freshly-attached pipe is not writable yet (forceFresh tears the
           // old socket down asynchronously; the daemon-side close can arrive a

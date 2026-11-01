@@ -77,24 +77,32 @@ describe('PTY_RECONNECT reports the session geometry (#1847)', () => {
  * above we assert it at the source level.
  */
 describe('PTY_RECONNECT registers session:data before attachSession (source-level lock)', () => {
-  const listenerIdx = RECONNECT.indexOf('setSessionDataListener(id, onSessionData)');
-  const attachIdx = RECONNECT.indexOf("daemon.attachSession', { id");
+  // The attach itself lives in reconnectSessionPipe.ts; the handler hands it
+  // the listener install.
+  const PIPE = readFileSync(
+    path.resolve(process.cwd(), 'src/main/ipc/handlers/reconnectSessionPipe.ts'),
+    'utf8',
+  );
+  const installIdx = PIPE.indexOf('opts.installListener()');
+  const attachIdx = PIPE.indexOf("daemon.attachSession', { id");
 
-  it('registers the session:data handler in the reconnect path', () => {
-    expect(listenerIdx).toBeGreaterThan(-1);
+  it('the handler installs its session:data handler through the pipe step', () => {
+    expect(RECONNECT).toMatch(/installListener: \(\) => setSessionDataListener\(id, onSessionData\)/);
   });
 
-  it('calls attachSession in the reconnect path', () => {
+  it('calls attachSession in the reconnect pipe step', () => {
     expect(attachIdx).toBeGreaterThan(-1);
   });
 
-  it('registers the handler BEFORE attachSession (closes the replay-drop window)', () => {
-    expect(listenerIdx).toBeLessThan(attachIdx);
+  it('installs the handler BEFORE attachSession (closes the replay-drop window)', () => {
+    expect(installIdx).toBeGreaterThan(-1);
+    expect(installIdx).toBeLessThan(attachIdx);
   });
 
-  it('does not re-register the handler a second time after attach (no duplicate)', () => {
+  it('does not register the handler a second time (no duplicate)', () => {
     const matches = RECONNECT.match(/setSessionDataListener\(id, onSessionData\)/g) ?? [];
     expect(matches.length).toBe(1);
+    expect(PIPE.match(/opts\.installListener\(\)/g)?.length).toBe(1);
   });
 });
 
@@ -117,7 +125,7 @@ describe('PTY_RECONNECT promotes a cap-skipped session instead of declaring it d
   it('a suspended entry goes down the promote branch, before any attach', () => {
     const suspendedAt = RECONNECT.indexOf("if (session.state === 'suspended')");
     const promoteAt = RECONNECT.indexOf("daemonClient.rpc('daemon.promoteSession', { id", suspendedAt);
-    const attachAt = RECONNECT.indexOf("daemon.attachSession', { id");
+    const attachAt = RECONNECT.indexOf('await reconnectSessionPipe(daemonClient, id');
     expect(suspendedAt).toBeGreaterThan(-1);
     expect(promoteAt).toBeGreaterThan(suspendedAt);
     expect(attachAt).toBeGreaterThan(promoteAt);
