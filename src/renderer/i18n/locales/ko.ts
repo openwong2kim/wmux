@@ -5866,4 +5866,7 @@ export const ko = {
   'remoteSpawn.code.declined': "{pc}에서 거절했습니다",
   'remoteSpawn.code.app-not-ready': "{pc}의 wmux가 준비되지 않았습니다",
   'remoteSpawn.code.failed': "{pc}에서 에이전트를 시작하지 못했습니다",
+  'a11y.agent.needsYou': '{tag} {agent}: 확인이 필요합니다',
+  'a11y.agent.finished': '{tag} {agent}: 끝났습니다',
+  'a11y.agent.error': '{tag} {agent}: 오류로 멈췄습니다',
 } as const;

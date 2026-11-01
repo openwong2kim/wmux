@@ -3,8 +3,9 @@
 // Main decides (main/screenReader.ts: Chromium's accessibility support and a
 // running screen-reader process). This module asks once at start and then
 // follows main's change events. What behaves differently for screen-reader
-// users reads it here: xterm's screen-reader mode, the agents' launch flags
-// and the agent-state announcer. Off until main says otherwise.
+// users in the renderer reads it here: xterm's screen-reader mode and the
+// agent-state announcer (the agents' launch flags are main's,
+// isScreenReaderOn). Off until main says otherwise.
 
 import { useSyncExternalStore } from 'react';
 
