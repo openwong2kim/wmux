@@ -14,6 +14,9 @@ vi.mock('child_process', () => ({
 import {
   createScreenReaderMonitor,
   includesScreenReader,
+  SCREEN_READER_POLL_MS,
+  SCREEN_READER_SUPPORT_BURST_MS,
+  SCREEN_READER_SUPPORT_BURST_READS,
   listProcessNames,
   parseProcessNames,
   screenReaderForcedForTest,
@@ -77,16 +80,23 @@ describe('screenReaderForcedForTest', () => {
 function rig(init: { support: boolean; running: string[] | null }, extra: Partial<ScreenReaderMonitorDeps> = {}) {
   const state = { ...init };
   let supportChanged: (enabled: boolean) => void = () => undefined;
+  let signal: () => void = () => undefined;
   const timers: Array<() => void> = [];
+  const live = new Set<number>();
   const intervals: number[] = [];
   const listProcesses = vi.fn(async () => state.running);
-  const cleared = vi.fn((handle: unknown) => { timers[(handle as number) - 1] = () => undefined; });
+  const supportReads = vi.fn(() => state.support);
+  const cleared = vi.fn((handle: unknown) => {
+    timers[(handle as number) - 1] = () => undefined;
+    live.delete(handle as number);
+  });
   const deps: ScreenReaderMonitorDeps = {
     platform: 'darwin',
-    accessibilitySupport: () => state.support,
+    accessibilitySupport: supportReads,
     onAccessibilitySupportChanged: (fn) => { supportChanged = fn; },
+    onAccessibilitySignal: (fn) => { signal = fn; },
     listProcesses,
-    setInterval: (fn, ms) => { timers.push(fn); intervals.push(ms); return timers.length; },
+    setInterval: (fn, ms) => { timers.push(fn); intervals.push(ms); live.add(timers.length); return timers.length; },
     clearInterval: cleared,
     ...extra,
   };
@@ -95,8 +105,11 @@ function rig(init: { support: boolean; running: string[] | null }, extra: Partia
   monitor.onChange((on) => changes.push(on));
   const settle = () => new Promise((r) => setTimeout(r, 0));
   return {
-    state, monitor, changes, listProcesses, timers, intervals, cleared, settle,
+    state, monitor, changes, listProcesses, supportReads, timers, intervals, cleared, settle,
+    /** Intervals of the timers still running. */
+    liveIntervals: () => [...live].map((h) => intervals[h - 1]),
     supportTurns: async (enabled: boolean) => { state.support = enabled; supportChanged(enabled); await settle(); },
+    signal: async () => { signal(); await settle(); },
     tick: async () => { for (const t of [...timers]) t(); await settle(); },
   };
 }
@@ -108,7 +121,8 @@ describe('createScreenReaderMonitor', () => {
     await r.settle();
     expect(r.monitor.isOn()).toBe(false);
     expect(r.listProcesses).not.toHaveBeenCalled();
-    expect(r.timers).toHaveLength(0);
+    // Only the bounded burst of support reads that starting arms.
+    expect(r.liveIntervals()).toEqual([SCREEN_READER_SUPPORT_BURST_MS]);
   });
 
   it('stays off when accessibility is on for another reason (no screen-reader process)', async () => {
@@ -126,7 +140,8 @@ describe('createScreenReaderMonitor', () => {
     r.state.running = ['VoiceOver'];
     await r.supportTurns(true);
     expect(r.monitor.isOn()).toBe(true);
-    expect(r.timers).toHaveLength(1);
+    // The process poll took over from the burst.
+    expect(r.liveIntervals()).toEqual([SCREEN_READER_POLL_MS]);
     r.state.running = [];
     await r.tick();
     expect(r.monitor.isOn()).toBe(false);
@@ -186,6 +201,109 @@ describe('createScreenReaderMonitor', () => {
     await r.settle();
     expect(r.monitor.isOn()).toBe(false);
     expect(r.changes).toEqual([]);
+  });
+
+  // Windows under Narrator: Chromium raises its own mode and the support flag
+  // turns true with no accessibility-support-changed event (Electron 42).
+  it('turns on when the support flips with no event, within the burst after starting', async () => {
+    const r = rig({ support: false, running: ['explorer.exe', 'Narrator.exe'] }, { platform: 'win32', idlePollMs: 30_000 });
+    r.monitor.start();
+    await r.settle();
+    expect(r.monitor.isOn()).toBe(false);
+    r.state.support = true; // no event
+    await r.tick();
+    expect(r.monitor.isOn()).toBe(true);
+    expect(r.liveIntervals()).toEqual([SCREEN_READER_POLL_MS]);
+  });
+
+  it('turns on when the support flips with no event after a later signal (a window asked for its tree)', async () => {
+    const r = rig({ support: false, running: ['Narrator.exe'] }, { platform: 'win32' });
+    r.monitor.start();
+    await r.settle();
+    for (let i = 0; i < SCREEN_READER_SUPPORT_BURST_READS; i += 1) await r.tick();
+    expect(r.liveIntervals()).toEqual([]);
+    r.state.support = true; // flips between bursts, no event
+    await r.tick();
+    expect(r.monitor.isOn()).toBe(false);
+    await r.signal();
+    expect(r.monitor.isOn()).toBe(true);
+  });
+
+  it('bounds the burst: reads end a full burst after the last signal, and none run between bursts', async () => {
+    const r = rig({ support: false, running: [] });
+    r.monitor.start();
+    await r.settle();
+    for (let i = 0; i < 5; i += 1) await r.tick();
+    await r.signal(); // mid-burst: re-arms it, on the same timer
+    const afterSignal = r.supportReads.mock.calls.length;
+    for (let i = 0; i < SCREEN_READER_SUPPORT_BURST_READS + 10; i += 1) await r.tick();
+    expect(r.supportReads.mock.calls.length - afterSignal).toBe(SCREEN_READER_SUPPORT_BURST_READS);
+    expect(r.liveIntervals()).toEqual([]);
+    expect(r.intervals.filter((ms) => ms === SCREEN_READER_SUPPORT_BURST_MS)).toHaveLength(1);
+    // The next signal arms a new burst.
+    await r.signal();
+    expect(r.liveIntervals()).toEqual([SCREEN_READER_SUPPORT_BURST_MS]);
+    expect(r.listProcesses).not.toHaveBeenCalled();
+  });
+
+  it('turns on when the flip comes just after a burst that a mid-burst signal re-armed', async () => {
+    const r = rig({ support: false, running: ['Narrator.exe'] }, { platform: 'win32' });
+    r.monitor.start();
+    await r.settle();
+    for (let i = 0; i < SCREEN_READER_SUPPORT_BURST_READS - 1; i += 1) await r.tick();
+    await r.signal(); // late in the first burst
+    await r.tick();
+    r.state.support = true; // after the first burst would have ended, no event
+    await r.tick();
+    expect(r.monitor.isOn()).toBe(true);
+  });
+
+  it('arms no burst where no signals are wired (the event is the signal there)', async () => {
+    const listProcesses = vi.fn(async () => [] as string[]);
+    const intervals: number[] = [];
+    const monitor = createScreenReaderMonitor({
+      platform: 'darwin',
+      accessibilitySupport: () => false,
+      onAccessibilitySupportChanged: () => undefined,
+      listProcesses,
+      setInterval: (_fn, ms) => { intervals.push(ms); return intervals.length; },
+      clearInterval: () => undefined,
+    });
+    monitor.start();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(intervals).toEqual([]);
+  });
+
+  it('registers its listeners once across a stop and a later start', () => {
+    const onAccessibilitySupportChanged = vi.fn();
+    const onAccessibilitySignal = vi.fn();
+    const monitor = createScreenReaderMonitor({
+      platform: 'win32',
+      accessibilitySupport: () => false,
+      onAccessibilitySupportChanged,
+      onAccessibilitySignal,
+      listProcesses: async () => [],
+      setInterval: () => 1,
+      clearInterval: () => undefined,
+    });
+    monitor.start();
+    monitor.stop();
+    monitor.start();
+    expect(onAccessibilitySupportChanged).toHaveBeenCalledTimes(1);
+    expect(onAccessibilitySignal).toHaveBeenCalledTimes(1);
+  });
+
+  it('a signal does nothing while the support is on and watched, and stops with the monitor', async () => {
+    const r = rig({ support: true, running: [] });
+    r.monitor.start();
+    await r.settle();
+    const reads = r.listProcesses.mock.calls.length;
+    await r.signal();
+    expect(r.listProcesses.mock.calls.length).toBe(reads);
+    expect(r.liveIntervals()).toEqual([SCREEN_READER_POLL_MS]);
+    r.monitor.stop();
+    await r.signal();
+    expect(r.liveIntervals()).toEqual([]);
   });
 
   it('is on without reading anything when forced for a test', async () => {

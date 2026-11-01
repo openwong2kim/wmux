@@ -10,6 +10,30 @@
 // AND a known screen-reader process runs. The process list is read when the
 // support turns on and every few seconds while it stays on, never otherwise.
 //
+// Seeing the support turn on. Electron emits `accessibility-support-changed`
+// from one place on Windows (shell/browser/native_window_views_win.cc): a
+// WM_GETOBJECT for OBJID_CLIENT (an MSAA client), once per window, and only
+// while Chromium's mode is not yet complete. Narrator is a UI Automation
+// client: Chromium answers its UiaRootObjectId request itself, then its own
+// assistive-tech discovery raises the mode to complete
+// (content/browser/accessibility/browser_accessibility_state_impl_win.cc).
+// The support flag turns true and no event fires (measured with Electron
+// 42.11.18 under Narrator). That flip itself has no JS event, so:
+//   1. Signals that an assistive client is at work: the event; a WM_GETOBJECT
+//      for the tree reaching a wmux top-level window (Narrator asks through
+//      UIA, NVDA or JAWS through MSAA/IA2; a client that only queries a child
+//      window is not seen here); a wmux window gaining focus; the monitor
+//      starting.
+//   2. After a signal, while the support is off, a bounded burst of reads of
+//      the flag (an in-process getter, nothing spawned): every
+//      SCREEN_READER_SUPPORT_BURST_MS until SCREEN_READER_SUPPORT_BURST_READS
+//      reads have passed since the LAST signal (10 s), ended early once the
+//      flag is on. Chromium raises the mode on a thread-pool task shortly
+//      after the client's first queries, so the flag is read for a while
+//      after a signal rather than once. At most two reads a second, and none
+//      once 10 s pass with no signal.
+// Windows only (screenReaderService.ts): elsewhere the event is the signal.
+//
 // Pure apart from the injected dependencies; screenReaderService.ts wires it
 // to Electron.
 
@@ -31,6 +55,13 @@ export const SCREEN_READER_POLL_MS = 5_000;
  *  which is not cheap (daemon/ProcessMonitor.ts), and support that another
  *  program turned on can stay on all session. */
 export const SCREEN_READER_IDLE_POLL_MS_WIN32 = 30_000;
+
+/** After a signal while Chromium's support is off, the support flag is read
+ *  every SCREEN_READER_SUPPORT_BURST_MS until SCREEN_READER_SUPPORT_BURST_READS
+ *  reads have passed since the last signal (10 s), and the burst ends once
+ *  the flag is on. */
+export const SCREEN_READER_SUPPORT_BURST_MS = 500;
+export const SCREEN_READER_SUPPORT_BURST_READS = 20;
 
 /** Whether `running` (process names) includes a screen reader of `platform`.
  *  Windows names compare without case. */
@@ -78,8 +109,12 @@ export interface ScreenReaderMonitorDeps {
   platform: NodeJS.Platform;
   /** Chromium's accessibility support now. */
   accessibilitySupport: () => boolean;
-  /** Registers for Chromium's support turning on or off. */
+  /** Registers for Chromium's support turning on or off. Not every change
+   *  fires it (see the header), so the flag is also read on its own. */
   onAccessibilitySupportChanged: (fn: (enabled: boolean) => void) => void;
+  /** Registers for signals that an assistive client may be at work (a window
+   *  asked for its accessibility tree, a window gained focus). */
+  onAccessibilitySignal?: (fn: () => void) => void;
   /** Null when the list cannot be read: the state stays as it was. */
   listProcesses: () => Promise<string[] | null>;
   /** Test-only: report a screen reader as on, whatever runs. */
@@ -87,6 +122,8 @@ export interface ScreenReaderMonitorDeps {
   pollMs?: number;
   /** The interval while no screen reader is found; pollMs when absent. */
   idlePollMs?: number;
+  supportBurstMs?: number;
+  supportBurstReads?: number;
   setInterval?: (fn: () => void, ms: number) => unknown;
   clearInterval?: (handle: unknown) => void;
 }
@@ -113,6 +150,7 @@ export function createScreenReaderMonitor(deps: ScreenReaderMonitorDeps): Screen
   let timer: unknown = null;
   let timerMs = 0;
   let started = false;
+  let registered = false;
   let generation = 0;
 
   const set = (next: boolean) => {
@@ -123,6 +161,14 @@ export function createScreenReaderMonitor(deps: ScreenReaderMonitorDeps): Screen
   const stopPolling = () => {
     if (timer !== null) clearTimer(timer);
     timer = null;
+  };
+  // The bounded burst of support reads after a signal (see the header).
+  let burst: unknown = null;
+  let burstLeft = 0;
+  const stopBurst = () => {
+    if (burst !== null) clearTimer(burst);
+    burst = null;
+    burstLeft = 0;
   };
   // At the interval the current state asks for.
   const poll = () => {
@@ -139,6 +185,8 @@ export function createScreenReaderMonitor(deps: ScreenReaderMonitorDeps): Screen
       stopPolling();
       return set(false);
     }
+    // On, and the process poll below takes over from a burst.
+    stopBurst();
     if (started) poll();
     const names = await deps.listProcesses();
     // A newer read started meanwhile (the support changed): it decides.
@@ -150,16 +198,49 @@ export function createScreenReaderMonitor(deps: ScreenReaderMonitorDeps): Screen
     if (started) poll();
   };
 
+  const onSignal = () => {
+    if (!started || deps.forceOn) return;
+    if (deps.accessibilitySupport()) {
+      // Already on but not being watched: the flip happened between bursts.
+      if (timer === null) void refresh();
+      return;
+    }
+    // A signal during a burst re-arms it: the reads end a full burst after
+    // the last signal, whichever signal the flip follows.
+    burstLeft = deps.supportBurstReads ?? SCREEN_READER_SUPPORT_BURST_READS;
+    if (burst !== null) return;
+    burst = setTimer(() => {
+      burstLeft -= 1;
+      if (deps.accessibilitySupport()) {
+        stopBurst();
+        void refresh();
+        return;
+      }
+      if (burstLeft <= 0) stopBurst();
+    }, deps.supportBurstMs ?? SCREEN_READER_SUPPORT_BURST_MS);
+  };
+
   return {
     start() {
       if (started) return;
       started = true;
-      deps.onAccessibilitySupportChanged(() => { if (started) void refresh(); });
+      // Registered once: a stop and a later start reuse them (both check
+      // `started`).
+      if (!registered) {
+        registered = true;
+        deps.onAccessibilitySupportChanged(() => { if (started) void refresh(); });
+        deps.onAccessibilitySignal?.(onSignal);
+      }
       void refresh();
+      // Starting is a signal too, where signals are wired: a screen reader
+      // that already runs flips the flag once the first window is queried,
+      // which may come with no event.
+      if (deps.onAccessibilitySignal) onSignal();
     },
     stop() {
       started = false;
       stopPolling();
+      stopBurst();
     },
     isOn: () => on,
     onChange(fn) {
