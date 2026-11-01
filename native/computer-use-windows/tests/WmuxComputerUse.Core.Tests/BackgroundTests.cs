@@ -338,6 +338,67 @@ public class BackgroundTests
     }
 
     [Theory]
+    [InlineData(false, "Edit", 7, 7, true)]           // UIA silent in the background; the thread's focus is the Edit
+    [InlineData(null, "EDIT", 7, 7, true)]
+    [InlineData(false, "Edit", 8, 7, false)]          // the thread's focus is another window
+    [InlineData(false, "Edit", 0, 7, false)]          // the thread has no focused window
+    [InlineData(false, "Edit", 0, 0, false)]          // no receiver handle
+    [InlineData(false, "RichEditD2DPT", 7, 7, false)] // only the plain Edit is judged by its thread
+    [InlineData(null, Background.ChromiumWidgetClass, 7, 7, null)]
+    [InlineData(true, "RichEdit20W", 8, 7, true)]     // UIA's answer still counts
+    public void APlainEditHasFocusWhenItsThreadsFocusedWindowIsTheReceiver(bool? uia, string className, int threadFocus, int receiver, bool? focused)
+    {
+        Assert.Equal(focused, Background.FieldFocused(uia, className, threadFocus, receiver));
+    }
+
+    [Fact]
+    public void AClickedEditThatLostItsThreadFocusGetsNoKeys()
+    {
+        bool keys = false;
+        var outcome = Background.Execute(Background.Plan(Normal, FieldTyping, Win32Edit), new BackgroundSteps(
+            () => 3, _ => new FieldCheck(true, true), () => { keys = true; return 2; }, () => true, () => Quiet)
+        {
+            ClickedReceiverFocused = () => false,
+        });
+        Assert.False(keys);
+        Assert.Equal(BackgroundStop.FocusUnconfirmed, outcome.Stop);
+        Assert.Equal(Disposition.DeliveredUnverified, outcome.Disposition);
+        Assert.False(outcome.FallBack);
+    }
+
+    [Fact]
+    public void AClickedEditStillFocusedRightBeforeTheKeysGetsThem()
+    {
+        var calls = new List<string>();
+        var outcome = Background.Execute(Background.Plan(Normal, FieldTyping, Win32Edit), new BackgroundSteps(
+            () => { calls.Add("click"); return 3; }, _ => { calls.Add("focus"); return new FieldCheck(true, true); },
+            () => { calls.Add("keys"); return 2; }, () => true, () => Quiet)
+        {
+            ClickedReceiverFocused = () => { calls.Add("threadFocus"); return true; },
+        });
+        Assert.Equal(["click", "focus", "threadFocus", "keys"], calls);
+        Assert.Equal(Disposition.Delivered, outcome.Disposition);
+    }
+
+    [Theory]
+    [InlineData(false, 0x50010004u, false)] // WS_CHILD | WS_VISIBLE | ES_MULTILINE
+    [InlineData(false, 0x50010020u, true)]  // ES_PASSWORD
+    [InlineData(true, 0x50010004u, true)]   // UIA says password (or could not tell)
+    [InlineData(false, null, true)]         // the style could not be read
+    public void APlainEditIsSecretByItsUiaElementOrItsPasswordStyle(bool uiaSecret, uint? style, bool secret)
+    {
+        Assert.Equal(secret, Background.EditSecret(uiaSecret, style));
+    }
+
+    [Fact]
+    public void APasswordStyleEditGetsNoBackgroundKeys()
+    {
+        var edit = Win32Edit with { Secret = Background.EditSecret(false, 0x50010020u) };
+        Assert.Equal(BackgroundRefusal.SecretField, Background.Plan(Normal, new(InputAction.PressKey), edit).Refusal);
+        Assert.Equal(BackgroundRefusal.SecretField, Background.Plan(Normal, FieldTyping, edit).Refusal);
+    }
+
+    [Theory]
     [InlineData(96u, 96u, true)]
     [InlineData(144u, 144u, true)]
     [InlineData(96u, 144u, false)]  // DPI-unaware window on a 150% monitor

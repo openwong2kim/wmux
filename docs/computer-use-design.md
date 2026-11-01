@@ -205,8 +205,10 @@ snapshot is the v1.1 token saver.
   each keyboard batch, that focus is on the target and the screen is not
   locked, and answers `window_not_focused` when it is not. On Windows an
   action is first posted to the target window in the background, which
-  needs neither; only what cannot be posted goes this way
-  (`docs/computer-use-windows.md`, Background input).
+  does not need the target to be in front or focused; the screen must still
+  be unlocked (the helper checks the input desktop before it posts). Only what
+  cannot be posted goes this way (`docs/computer-use-windows.md`, Background
+  input).
 - **Honest results.** Every action returns
   `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, disposition, note? }`.
   `verified` means state was read back, for example the value after
