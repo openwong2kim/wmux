@@ -470,3 +470,78 @@ describe('company hold: replay', () => {
     expect(again.getTask('nobody')).toBeUndefined();
   });
 });
+
+describe('company hold: the receiving side does not have a waiting task yet', () => {
+  const ids = (tasks: { id: string }[]) => tasks.map((t) => t.id).sort();
+
+  it('a query from the receiving side leaves it out; its sender and the human still see it with the marker', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    // The seat it is for, another seat, and a caller whose pane is unknown.
+    for (const caller of [{ paneId: 'pane-s1' }, { paneId: 'pane-s2' }, {}]) {
+      expect(ids(svc.queryTasks(WS, {}, caller))).toEqual(['A']);
+      expect(svc.withheldTaskIds(WS, caller)).toEqual(['C']);
+    }
+    expect(svc.queryTasks(WS, { role: 'agent' }, { paneId: 'pane-s1' }).map((t) => t.id)).toEqual(['A']);
+    const fromCeo = svc.queryTasks(WS, {}, { paneId: 'pane-ceo' }).find((t) => t.id === 'C');
+    expect(fromCeo?.metadata.companyHold).toEqual({ blockedBy: ['A'], waitingOn: ['A'] });
+    expect(svc.withheldTaskIds(WS, { paneId: 'pane-ceo' })).toEqual([]);
+    expect(ids(svc.queryTasks(WS, {}, { trusted: true }))).toEqual(['A', 'C']);
+  });
+
+  it('once released the receiver sees it as any other task', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await complete(svc, 'A');
+    expect(ids(svc.queryTasks(WS, {}, { paneId: 'pane-s1' }))).toEqual(['A', 'C']);
+    expect(svc.withheldTaskIds(WS, { paneId: 'pane-s1' })).toEqual([]);
+  });
+
+  it('across workspaces: the sending workspace sees it, the receiving one does not', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    const res = await svc.createTask({
+      id: 'X',
+      title: 'X',
+      from: { workspaceId: 'ws-out', name: 'Out', paneId: 'pane-o' },
+      to: { workspaceId: WS, name: 'Co', paneId: 'pane-ceo' },
+      history: [brief(['A'])],
+    });
+    expect(res.ok).toBe(true);
+    expect(ids(svc.queryTasks('ws-out', {}, {}))).toEqual(['X']);
+    expect(ids(svc.queryTasks(WS, {}, { paneId: 'pane-ceo' }))).toEqual(['A']);
+  });
+
+  it('a state move from the receiving side is refused; the sender can still cancel it', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await assign(svc, 'Atask123456');
+    await assign(svc, 'C', ['Atask123456']);
+    for (const to of ['working', 'input-required', 'failed'] as const) {
+      // eslint-disable-next-line no-await-in-loop -- one at a time
+      const res = await svc.transition({
+        taskId: 'C', to, callerWorkspaceId: WS, callerAddr: { paneId: 'pane-s1' }, callerCompanySeat: 'staff', evidence: { summary: 'x', items: [] },
+      });
+      expect(!res.ok && res.error).toBe('a2a.task.update: this task waits on Atask123; it is not yours until it completes');
+    }
+    // No pane: refused too, before any deferral.
+    const noPane = await svc.transition({ taskId: 'C', to: 'working', callerWorkspaceId: WS, callerHasPaneIdentity: true });
+    expect(!noPane.ok && noPane.error).toContain('it is not yours until it completes');
+    expect(svc.getTask('C')?.status.state).toBe('submitted');
+    expect((await svc.cancelTask({ taskId: 'C', callerWorkspaceId: WS, callerPaneId: 'pane-ceo' })).ok).toBe(true);
+    expect(svc.getTask('C')?.status.state).toBe('canceled');
+  });
+
+  it('the receiver moves it once released, and the human lane at any time', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await assign(svc, 'B');
+    await assign(svc, 'C', ['A']);
+    await assign(svc, 'D', ['B']);
+    expect((await svc.transition({ taskId: 'D', to: 'working', callerWorkspaceId: WS, trustedLane: true })).ok).toBe(true);
+    await complete(svc, 'A');
+    expect((await svc.transition({ taskId: 'C', to: 'working', callerWorkspaceId: WS, callerAddr: { paneId: 'pane-s1' } })).ok).toBe(true);
+  });
+});

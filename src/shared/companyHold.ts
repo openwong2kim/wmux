@@ -19,6 +19,11 @@
 //      was refused and nothing was written: it is listed again), or a `held`
 //      reason.
 //
+// While a task waits on a blocker it is not its receiver's yet: a query from
+// its receiving side leaves it out, as if it had not been sent, and a state
+// move from there is refused (companyHoldWithholds). Its sender and the human
+// still see it, and the sender can still cancel it.
+//
 // `delivered` is final. A `held` task waits for a person; `delivered` is
 // still taken on it (the person had it sent), `attempted` is ignored on it.
 // A blocker that ends failed or canceled keeps the task held and is noted in
@@ -31,7 +36,9 @@
 //
 // Pure module: no node:* imports (the renderer imports it).
 
+import { isVerifiedTaskSender } from './a2aReopen';
 import { COMPANY_BRIEF_KIND, companyBriefOf, type CompanyBriefV1 } from './company';
+import { shortTaskId } from './moaHandoff';
 import type { Message, Task, TaskState } from './types';
 
 /** A task waits on at most this many others. */
@@ -96,6 +103,22 @@ export function companyHoldPhase(marker: CompanyHoldMarker): CompanyHoldPhase {
   if (marker.delivered) return 'delivered';
   if (marker.held) return 'held';
   return 'owed';
+}
+
+/**
+ * True when the task is kept from this caller because it still waits on a
+ * blocker: the caller is on its receiving side (its receiver workspace) and
+ * is neither its verified sender (in a company workspace that is the sender's
+ * own pane) nor the human. A caller whose pane is unknown is kept out.
+ */
+export function companyHoldWithholds(
+  task: Pick<Task, 'metadata'>,
+  caller: { workspaceId: string; paneId?: string; trusted?: boolean },
+): boolean {
+  const hold = companyHoldOf(task);
+  if (!hold || hold.waitingOn.length === 0 || caller.trusted === true) return false;
+  if (task.metadata.to.workspaceId !== caller.workspaceId) return false;
+  return !isVerifiedTaskSender(task.metadata, caller.workspaceId, caller.paneId);
 }
 
 /** The complete brief the task's first message carries, or null. */
@@ -176,6 +199,11 @@ export const COMPANY_BLOCKED_BY_REFUSAL = Object.freeze({
   remoteTask:
     'a task sent to another PC cannot wait on other tasks yet; send it once its blockers are completed',
 });
+
+/** Why the receiving side may not move a task that still waits on a blocker. */
+export function companyWaitingRefusal(waitingOn: readonly string[]): string {
+  return `this task waits on ${waitingOn.map(shortTaskId).join(', ')}; it is not yours until ${waitingOn.length === 1 ? 'it completes' : 'they complete'}`;
+}
 
 /** Each hold reason in plain words: "<task> is held: <text>". */
 export const COMPANY_HOLD_REASON_TEXT: Readonly<Record<CompanyHoldReason, string>> = Object.freeze({

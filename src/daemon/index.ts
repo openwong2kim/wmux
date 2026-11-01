@@ -7320,19 +7320,29 @@ function registerRpcHandlers(
     });
   });
 
-  pipeServer.onRpc('a2a.task.query', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.query', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.query: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
     const workspaceId = typeof p.workspaceId === 'string' ? p.workspaceId : '';
     if (!workspaceId) return { ok: false, error: 'a2a.task.query: workspaceId is required' };
+    // Main's read of the caller's pane, or its own lane (as on a2a.task.update).
+    // A company task still waiting on a blocker is left out for its receiving
+    // side; without a pane the caller counts as that side.
+    const firstParty = pipeServer.isFirstParty(ctx.clientId);
+    const caller = {
+      ...(firstParty && typeof p.callerPaneId === 'string' && p.callerPaneId ? { paneId: p.callerPaneId } : {}),
+      ...(firstParty && p.trustedLane === true ? { trusted: true } : {}),
+    };
     const tasks = a2aTaskService.queryTasks(workspaceId, {
       ...(typeof p.status === 'string' && isTaskState(p.status) ? { status: p.status } : {}),
       ...(p.role === 'user' || p.role === 'agent' ? { role: p.role } : {}),
       ...(typeof p.updatedSince === 'string' && p.updatedSince ? { updatedSince: p.updatedSince } : {}),
-    });
+    }, caller);
+    // The ids left out, so main drops its renderer's copies of them too.
+    const withheld = a2aTaskService.withheldTaskIds(workspaceId, caller);
     // view: 'page' → summaries, or the one named task in full: a list reply
     // must stay far below the 1 MiB control-line cap of DaemonClient.
-    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p) };
+    return { ok: true, workspaceId, tasks: applyTaskQueryView(tasks, p), ...(withheld.length > 0 ? { withheld } : {}) };
   });
 
   // Company mode: tasks held on their blockers (shared/companyHold.ts). Main

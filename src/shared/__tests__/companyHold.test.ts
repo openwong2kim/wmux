@@ -9,7 +9,9 @@ import {
   companyHoldAtCreate,
   companyHoldOf,
   companyHoldPhase,
+  companyHoldWithholds,
   companyWaitingLine,
+  companyWaitingRefusal,
   isCompanyHoldReason,
 } from '../companyHold';
 import type { Message, TaskState } from '../types';
@@ -85,5 +87,29 @@ describe('texts', () => {
     expect(companyBlockerEndedLine('C', { id: 'A', state: 'failed' })).toMatch(/^C stays on hold: its blocker A failed/);
     expect(isCompanyHoldReason('delivery-unconfirmed')).toBe(true);
     expect(isCompanyHoldReason('occupant-changed')).toBe(false);
+  });
+});
+
+describe('companyHoldWithholds', () => {
+  const task = (hold: unknown, from = { workspaceId: 'ws', paneId: 'ceo' }, to = { workspaceId: 'ws', paneId: 's1' }) =>
+    ({ metadata: { title: 't', from: { ...from, name: 'n' }, to: { ...to, name: 'n' }, createdAt: '', updatedAt: '', companyHold: hold } }) as never;
+  const waiting = { blockedBy: ['a'], waitingOn: ['a'] };
+
+  it('keeps a waiting task from its receiving side only', () => {
+    expect(companyHoldWithholds(task(waiting), { workspaceId: 'ws', paneId: 's1' })).toBe(true);
+    expect(companyHoldWithholds(task(waiting), { workspaceId: 'ws' })).toBe(true);
+    expect(companyHoldWithholds(task(waiting), { workspaceId: 'ws', paneId: 'ceo' })).toBe(false);
+    expect(companyHoldWithholds(task(waiting), { workspaceId: 'ws', paneId: 's1', trusted: true })).toBe(false);
+    expect(companyHoldWithholds(task(waiting, { workspaceId: 'ws-out', paneId: 'o' }), { workspaceId: 'ws-out' })).toBe(false);
+    expect(companyHoldWithholds(task(waiting, { workspaceId: 'ws-out', paneId: 'o' }), { workspaceId: 'ws', paneId: 's1' })).toBe(true);
+  });
+
+  it('keeps nothing once released, or without a hold', () => {
+    expect(companyHoldWithholds(task({ blockedBy: ['a'], waitingOn: [], releasedAt: 't' }), { workspaceId: 'ws', paneId: 's1' })).toBe(false);
+    expect(companyHoldWithholds(task(undefined), { workspaceId: 'ws', paneId: 's1' })).toBe(false);
+  });
+
+  it('names the blockers by their short ids', () => {
+    expect(companyWaitingRefusal(['task-abcdef123', 'task-99887766x'])).toBe('this task waits on abcdef12, 99887766; it is not yours until they complete');
   });
 });

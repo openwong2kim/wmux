@@ -54,6 +54,8 @@ import {
   companyHoldAtCreate,
   companyHoldOf,
   companyHoldPhase,
+  companyHoldWithholds,
+  companyWaitingRefusal,
   isCompanyHoldReason,
   type CompanyHoldMarker,
   type CompanyHoldReason,
@@ -229,6 +231,16 @@ export interface QueryFilters {
   status?: TaskState;
   role?: 'user' | 'agent';
   updatedSince?: string;
+}
+
+/**
+ * Who asks a query, as main resolved it: the caller's pane, or the human's
+ * lane (`trusted`). A company task still waiting on a blocker is left out
+ * for its receiving side (companyHoldWithholds).
+ */
+export interface QueryCaller {
+  paneId?: string;
+  trusted?: boolean;
 }
 
 /** Peer state message ids remembered per task (dedupe window). */
@@ -522,6 +534,16 @@ export class A2aTaskService {
       // 권한: 수신자 workspace만 상태 갱신 가능(a2aSlice 현행 계약).
       if (!remoteDone && task.metadata.to.workspaceId !== input.callerWorkspaceId) {
         return { ok: false, error: `a2a.task.update: caller ${input.callerWorkspaceId} is not the receiver` };
+      }
+      // A company task still waiting on a blocker is not its receiver's yet;
+      // its sender and the human may still move it.
+      const hold = companyHoldOf(task);
+      if (hold && companyHoldWithholds(task, {
+        workspaceId: input.callerWorkspaceId,
+        ...(input.callerAddr?.paneId ? { paneId: input.callerAddr.paneId } : {}),
+        trusted: input.trustedLane === true,
+      })) {
+        return { ok: false, error: `a2a.task.update: ${companyWaitingRefusal(hold.waitingOn)}` };
       }
       // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
       // 수신 페인에 핀됐으면(to.paneId) 그 페인이어야 한다. callerAddr 부재(헤드리스
@@ -1348,12 +1370,17 @@ export class A2aTaskService {
     return this.tasks.get(taskId);
   }
 
-  queryTasks(workspaceId: string, filters?: QueryFilters): Task[] {
+  /**
+   * `caller` given: a company task still waiting on a blocker is left out
+   * when the caller is on its receiving side (see QueryCaller).
+   */
+  queryTasks(workspaceId: string, filters?: QueryFilters, caller?: QueryCaller): Task[] {
     const out: Task[] = [];
     for (const task of this.tasks.values()) {
       const isSender = task.metadata.from.workspaceId === workspaceId;
       const isReceiver = task.metadata.to.workspaceId === workspaceId;
       if (!isSender && !isReceiver) continue;
+      if (caller && companyHoldWithholds(task, { workspaceId, ...caller })) continue;
       if (filters?.role === 'user' && !isSender) continue;
       if (filters?.role === 'agent' && !isReceiver) continue;
       if (filters?.status && task.status.state !== filters.status) continue;
@@ -1362,6 +1389,14 @@ export class A2aTaskService {
       out.push(task);
     }
     return out;
+  }
+
+  /**
+   * Ids of the tasks a query from `caller` in `workspaceId` leaves out (any
+   * filter aside): main drops its own cached copies of them.
+   */
+  withheldTaskIds(workspaceId: string, caller: QueryCaller): string[] {
+    return [...this.tasks.values()].filter((t) => companyHoldWithholds(t, { workspaceId, ...caller })).map((t) => t.id);
   }
 
   /** 관측용(테스트/디버그): 현재 projection 태스크 수. */
