@@ -4235,6 +4235,7 @@ export const pl = {
   'usageLimit.backStay': "Zostań w {agent}",
   'usageLimit.backBring': "Przywróć do {agent}",
   'usageLimit.backFooter': "Notatka zostanie wpisana w kartę {agent}, która przejdzie na wierzch. Nic nie zostanie wysłane, dopóki nie naciśniesz Enter.",
+  'usageLimit.handoffStopsResume': "Przekazanie wyłącza automatyczne wznowienie w tym panelu: praca zostaje w nowej karcie, dopóki jej nie przywrócisz.",
   'usageLimit.openCard': 'Opcje limitu użycia',
   'agentStall.label': 'Chyba utknął',
   'agentStall.chipTitle': 'Brak postępu w transkrypcji i brak działającego narzędzia od {minutes} min',

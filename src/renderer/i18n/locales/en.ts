@@ -4292,6 +4292,7 @@ export const en = {
   'usageLimit.backStay': "Stay in {agent}",
   'usageLimit.backBring': "Bring back to {agent}",
   'usageLimit.backFooter': "The note is typed into the {agent} tab, which comes to the front. Nothing is sent until you press Enter.",
+  'usageLimit.handoffStopsResume': "Handing off turns off Resume automatically for this pane: the work stays in the new tab until you bring it back.",
   'usageLimit.openCard': 'Usage limit options',
   'agentStall.label': 'Seems stuck',
   'agentStall.chipTitle': 'No transcript progress and no tool running for {minutes} min',

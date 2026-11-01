@@ -6,7 +6,8 @@
 //   - Continue on another account, with 2+ accounts, and the opt-in "Always
 //     switch automatically" (the vendor's switch-by-quota setting);
 //   - Continue in another agent that is installed and signed in: a new tab
-//     with the handoff typed in, not sent (utils/continueInAgent.ts), the
+//     with the handoff typed in, not sent (utils/continueInAgent.ts), which
+//     turns this pane's Resume automatically off (one line says so), the
 //     note previewed here with its length, an unsent draft carried only when
 //     the owner ticks it;
 //   - Continue on another PC that lets this one start an agent there: the
@@ -251,6 +252,9 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, n
               );
             })}
           </div>
+          {limit && (
+            <p className="mt-2 text-[12px] text-[var(--text-muted)]" data-usage-limit-card-handoff-resume>{t('usageLimit.handoffStopsResume')}</p>
+          )}
           {note !== undefined && (
             <>
               {facts?.draft && (

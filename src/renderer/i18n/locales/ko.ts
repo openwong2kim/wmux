@@ -3706,6 +3706,7 @@ export const ko = {
   'usageLimit.backStay': "{agent}에 두기",
   'usageLimit.backBring': "{agent}로 다시 가져오기",
   'usageLimit.backFooter': "노트는 {agent} 탭에 입력되고 그 탭이 앞으로 옵니다. Enter를 누르기 전에는 아무것도 보내지 않습니다.",
+  'usageLimit.handoffStopsResume': "넘기면 이 판의 자동 재개가 꺼집니다. 다시 가져올 때까지 작업은 새 탭에서 이어집니다.",
   'usageLimit.openCard': '사용량 한도 옵션',
   'agentStall.label': '멈춘 듯함',
   'agentStall.chipTitle': '{minutes}분째 기록도 없고 실행 중인 도구도 없습니다',

@@ -153,6 +153,8 @@ describe('usage-limit card', () => {
     await render();
     // Never the agent that is out.
     expect(q('[data-usage-limit-card-agent="claude"]')).toBeNull();
+    // Handing off a held pane turns its automatic resume off, and the card says so.
+    expect(q('[data-usage-limit-card-handoff-resume]')!.textContent).toBe('Handing off turns off Resume automatically for this pane: the work stays in the new tab until you bring it back.');
     // The note it types in, previewed with its length; the unsent draft only once ticked.
     const memo = q('[data-handoff-note]')!;
     expect(memo.textContent).toContain('\nAsked: fix the login bug\n');
@@ -317,6 +319,8 @@ describe('usage-limit card', () => {
     expect(q('[data-usage-limit-card-action="always-switch"]')).toBeNull();
     expect(q('[data-usage-limit-card-agent="codex"]')).not.toBeNull();
     expect(q('[data-usage-limit-card-near-footer]')).not.toBeNull();
+    // Nothing is held, so nothing to turn off.
+    expect(q('[data-usage-limit-card-handoff-resume]')).toBeNull();
     await act(async () => q<HTMLButtonElement>('[data-usage-limit-card-agent="codex"]')!.click());
     expect(continueInAgent).toHaveBeenCalledWith(expect.objectContaining({ heldPtyId: 'pty-1', agent: 'codex', fromAgent: 'Claude Code' }));
   });
