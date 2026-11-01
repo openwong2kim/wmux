@@ -88,7 +88,6 @@ beforeEach(() => {
     a2aRemote: {
       spawnAsk,
       spawnOutgoing: () => Promise.resolve(outgoing),
-      status: () => Promise.resolve({ name: 'MacBook Air' }),
       onLinkEvent: () => () => undefined,
     },
   };
@@ -145,8 +144,8 @@ describe('AddRemoteSeatDialog', () => {
     pick('add-remote-seat-hours', '4');
     type('add-remote-seat-owns', 'Windows checks');
     const intro = remoteSeatIntro({
-      name: 'desk-dev-2', company: 'Acme', mission: 'Ship it', pc: 'DESK', owns: 'Windows checks',
-      ceo: 'pm', ceoPc: 'MacBook Air', standingOrders: 'Live check first.',
+      name: 'desk-dev-2', company: 'Acme', mission: 'Ship it', owns: 'Windows checks',
+      ceo: 'pm', standingOrders: 'Live check first.',
     });
     expect(text()).toBe(intro);
     expect(q<HTMLTextAreaElement>('add-remote-seat-text')?.readOnly).toBe(true);

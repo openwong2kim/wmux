@@ -132,13 +132,9 @@ export interface RemoteSeatIntroInput {
   name: string;
   company: string;
   mission?: string;
-  /** This PC's name for the PC the seat runs on. */
-  pc: string;
   owns?: string;
   /** The CEO pane's name on this PC. */
   ceo: string;
-  /** This PC's own name, when it is known. */
-  ceoPc?: string;
   standingOrders?: string;
 }
 
@@ -146,20 +142,20 @@ export interface RemoteSeatIntroInput {
  * The first message a seat on another PC gets, sent with the ask that starts
  * it: who it is and for which company, what it owns, who its CEO is, that
  * briefs come as tasks with the five brief fields, how it finishes one
- * (REMOTE_SEAT_FINISH_LINE), and the standing orders. It holds no brief.
+ * (REMOTE_SEAT_FINISH_LINE), and the standing orders. It holds no brief, and
+ * no PC names: the send masks a host name such as `name.local`.
  */
 export function remoteSeatIntro(input: RemoteSeatIntroInput): string {
   const mission = input.mission?.trim();
   const owns = input.owns?.trim().replace(/\.+$/, '');
-  const ceoPc = input.ceoPc?.trim();
   const orders = input.standingOrders?.trim();
   const headings = BRIEF_FIELDS.map((f) => BRIEF_HEADINGS[f]);
   const lines = [
-    `You are ${input.name.trim()}, a seat of the company "${input.company.trim()}"${mission ? ` (mission: ${mission})` : ''}, on ${input.pc.trim()}.`,
+    `You are ${input.name.trim()}, a seat of the company "${input.company.trim()}"${mission ? ` (mission: ${mission})` : ''}.`,
   ];
   if (owns) lines.push(`You own: ${owns}.`);
   lines.push(
-    `Your CEO is ${input.ceo.trim()}${ceoPc ? ` on ${ceoPc}` : ''}; its briefs come here as tasks with `
+    `Your CEO is ${input.ceo.trim()} on the PC that started you; its briefs come here as tasks with `
     + `${headings.slice(0, -1).join(', ')} and ${headings[headings.length - 1]}.`,
   );
   lines.push(`Each brief ends with how to finish it: ${REMOTE_SEAT_FINISH_LINE}`);

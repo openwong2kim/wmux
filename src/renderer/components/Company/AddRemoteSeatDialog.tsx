@@ -76,17 +76,6 @@ export default function AddRemoteSeatDialog({ workspaceId, onClose }: { workspac
     void read();
     return window.electronAPI?.a2aRemote?.onLinkEvent?.(() => void read());
   }, [read]);
-  // This PC's own name, for the line naming the CEO.
-  const [thisPc, setThisPc] = useState('');
-  useEffect(() => {
-    let live = true;
-    window.electronAPI?.a2aRemote?.status?.().then(
-      (s) => { if (live && typeof s?.name === 'string') setThisPc(s.name.trim()); },
-      () => undefined,
-    );
-    return () => { live = false; };
-  }, []);
-
   const askable = useMemo(() => (list?.places ?? []).filter((p) => spawnAskBlock(p) === null), [list]);
   const [hostId, setHostId] = useState('');
   const place = askable.find((p) => p.hostId === hostId) ?? askable[0];
@@ -128,10 +117,8 @@ export default function AddRemoteSeatDialog({ workspaceId, onClose }: { workspac
       name,
       company: workspace.name,
       ...(company?.mission ? { mission: company.mission } : {}),
-      pc,
       owns,
       ceo: ceoName,
-      ...(thisPc ? { ceoPc: thisPc } : {}),
       ...(company?.standingOrders ? { standingOrders: company.standingOrders } : {}),
     })
     : '';

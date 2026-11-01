@@ -242,7 +242,8 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
         <span className="flex min-w-0 items-center gap-1.5">
           <StatusMarkView status={status} quiet label={t(AGENT_STATUS_ICON[status].labelKey)} />
           <span className="min-w-0 truncate font-semibold text-[var(--text-main)]">{seat.name}</span>
-          <span className="min-w-0 shrink-[4] truncate text-[11px] text-[var(--text-muted)]">{t('company.board.onPc', { pc: seat.pc })}</span>
+          {/* A long PC name takes only the room the seat's name leaves. */}
+          <span className="min-w-0 flex-1 basis-0 truncate text-[11px] text-[var(--text-muted)]">{t('company.board.onPc', { pc: seat.pc })}</span>
         </span>
         <span className="flex flex-col gap-0.5 pl-[16px]">{jobLines(seat)}</span>
       </div>
@@ -269,7 +270,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
             <StatusMarkView status="idle" quiet />
           )}
           <span className="min-w-0 truncate font-semibold text-[var(--text-sub)]">{name}</span>
-          <span className="min-w-0 shrink-[4] truncate text-[11px] text-[var(--text-muted)]">{t('company.board.onPc', { pc: ask.pc })}</span>
+          <span className="min-w-0 flex-1 basis-0 truncate text-[11px] text-[var(--text-muted)]">{t('company.board.onPc', { pc: ask.pc })}</span>
         </span>
         <span className="truncate pl-[16px] text-[11px] text-[var(--text-muted)]" data-board-ask-line>{line}</span>
       </div>
