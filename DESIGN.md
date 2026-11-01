@@ -1580,7 +1580,8 @@ leaves the page.
   optional Standing orders; **Make company** the one primary). A company's
   menu offers **Open board** (the board tab, see "Pane: terminals and work
   area"), **Company settings…** (the same dialog, filled in), **Add a seat
-  on another PC…** (below) and **Dissolve company**. Line 2 is the mission
+  on this PC…** and **Add a seat on another PC…** (both below) and
+  **Dissolve company**. Line 2 is the mission
   after a small muted org-chart glyph where the branch icon sits, never the
   git line: the row has no branch, PR badge or sync badge, since with panes
   in different worktrees they are
@@ -1609,6 +1610,27 @@ leaves the page.
   `Ask <PC>`, the one primary. With no PC to ask, each paired PC's reason
   shows, with Open Remote page (secondary) and no primary. While the CEO seat is
   vacant the menu item is disabled and says why, and the board has no link.
+  **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan), right
+  before the other-PC item and also a link at the end of the board's Seats,
+  adds a staff seat here the way a preset makes one. One dialog: the title,
+  then `Starts an agent for <company> on this PC. It takes briefs from <CEO>,
+  the CEO.` Name (the pane-label rules, the first free `dev`, `dev-2`… by
+  default; a name another pane carries is refused, never suffixed) and Agent
+  (the installed agents a preset offers, Claude Code by default) side by
+  side; Owns (optional); then a read-only **Works in** line, a muted label
+  over `--text-sub`: the seat's own worktree of the company folder on a new
+  branch when that folder is a git repository, else the company folder. A
+  seat that would share a folder that is not a repository with another
+  staff agent gets a note saying so and cannot be added. A refusal keeps the
+  form and says why, as the other-PC dialog does; at the pane cap the
+  split's own message shows. Cancel and **Add seat**, the one primary. The
+  company comes forward and the seat opens as a new pane below its last
+  staff pane (right of the CEO when it has none), named and started like a
+  preset seat with its brief as the agent's first prompt. Once that agent
+  is up, the CEO pane gets one line through the gated delivery, never
+  before: `wmux: #<name> joined the company (owns <what>; branch <branch>).
+  Brief it like your other seats.` While the CEO seat is vacant the menu
+  item is disabled and says why, and the board has no link.
 - **Company presets** (owner-approved 2026-10-31, mockup round 6): the
   titlebar + menu lists them under a muted **Company** heading, below the
   layout presets, as label + description rows like theirs
@@ -1807,9 +1829,10 @@ A pane is a terminal column plus, when it needs one, a work area.
     asked name in `--text-sub`, `on <PC>` and a muted `Waiting for <PC> to
     approve · asked <age>` (or `<PC> is offline; the ask waits until
     <time>`); an ask that ended without a seat stays a day as a muted
-    `Not started: <why> · <age>`. While the company has a CEO pane, a quiet
-    underlined text link, **Add a seat on another PC…** (`--text-sub`, a
-    `--line` underline), ends Seats.
+    `Not started: <why> · <age>`. While the company has a CEO pane, quiet
+    underlined text links (`--text-sub`, a `--line` underline) end Seats:
+    **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan; see
+    "Company row") and, beside it, **Add a seat on another PC…**.
 
 ## The one-boundary rule
 

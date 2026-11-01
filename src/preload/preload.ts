@@ -1619,6 +1619,9 @@ const electronAPI = {
   company: {
     seatLaunches: (req: import('../main/company/seatLaunch').SeatLaunchRequest) =>
       ipcRenderer.invoke(IPC.COMPANY_SEAT_LAUNCHES, req) as Promise<import('../main/company/seatLaunch').SeatLaunchResult>,
+    // One seat added to a company that already runs.
+    hireSeat: (req: import('../main/company/seatLaunch').HireSeatRequest) =>
+      ipcRenderer.invoke(IPC.COMPANY_HIRE_SEAT, req) as Promise<import('../main/company/seatLaunch').HireSeatResult>,
   },
   // Fleet's Plan card: Claude's plan dialogs and the answer to one (main window only).
   planApprovals: {
