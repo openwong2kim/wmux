@@ -1579,15 +1579,36 @@ leaves the page.
   panes in one grouped container, a pane with no agent listed but disabled;
   optional Standing orders; **Make company** the one primary). A company's
   menu offers **Open board** (the board tab, see "Pane: terminals and work
-  area"), **Company settings…** (the same dialog, filled in) and
-  **Dissolve company**. Line 2 is the mission after a small muted org-chart
-  glyph where the branch icon sits, never the git line: the row has no branch,
-  PR badge or sync badge, since with panes in different worktrees they are
+  area"), **Company settings…** (the same dialog, filled in), **Add a seat
+  on another PC…** (below) and **Dissolve company**. Line 2 is the mission
+  after a small muted org-chart glyph where the branch icon sits, never the
+  git line: the row has no branch, PR badge or sync badge, since with panes
+  in different worktrees they are
   whichever pane reported last. No mission leaves line 2 empty; a needs-you
   question still takes it. In the roster the coordinator's row comes first
   with a muted `CEO` after its title, in the agent-kind slot and style; a
   row's title is its pane label (Rename pane) when it has one, and the trailer
   keeps live activity, else the coordinate. The company adds no colour.
+  **Add a seat on another PC…** (owner-approved 2026-11-01, mockup round for
+  other-PC seats), also the link that ends the board's Seats, is the Remote
+  page's Start an agent… for the company, with the replies going to the CEO
+  pane. One dialog: the title, then `Asks that PC to start an agent for
+  <company>. Its replies come to <CEO>, the CEO.` Fields two to a row: PC
+  (the paired PCs this one may ask, each marked online or offline) and Agent;
+  Folder (one that PC lists) and Subfolder (optional); Name (the pane-label
+  rules, a free `<pc>-dev` by default; it names that agent here) and Wait for
+  that PC; then Owns (optional) and the First message, read-only and sent
+  exactly as shown: who the seat is, for which company and on which PC, what
+  it owns, who its CEO is, that briefs come as tasks with Goal, Scope,
+  Acceptance, Verify and Report, how it finishes one, and the standing
+  orders. The Remote page's rules hold: an offline PC gets the note on how
+  long the ask waits, a message the final pass would change is shown changed
+  and goes on the next Send, a refusal keeps the form and says why. The
+  footer's muted hint says that PC asks its owner first unless it always
+  allows this one, and the agent works in its own worktree there; Cancel and
+  `Ask <PC>`, the one primary. With no PC to ask, each paired PC's reason
+  shows, with Open Remote page (secondary) and no primary. While the CEO seat is
+  vacant the menu item is disabled and says why, and the board has no link.
 - **Company presets** (owner-approved 2026-10-31, mockup round 6): the
   titlebar + menu lists them under a muted **Company** heading, below the
   layout presets, as label + description rows like theirs
@@ -1758,9 +1779,10 @@ A pane is a terminal column plus, when it needs one, a work area.
   you** (jobs to or from the company that need the owner), **Seats** (every
   pane, the CEO first: status mark, the muted CEO word, the title, the
   coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
-  needs-you one in `--attention-text`, and a muted `Next:` line), **Handed
-  out** (open jobs sent to other workspaces, or to panes on other PCs, named
-  by their alias), **Not on a seat** and **Log**
+  needs-you one in `--attention-text`, and a muted `Next:` line; then the
+  company's seats on other PCs, see below), **Handed out** (open jobs sent to
+  other workspaces, or to panes on other PCs that are not the company's
+  seats, named by their alias), **Not on a seat** and **Log**
   (finished jobs, newest first, the last ten however old). A section with nothing in it is
   not drawn, Seats aside; a pane with no agent keeps its seat with a muted
   `No agent in this pane` under its title, and the coordinate gives way
@@ -1771,6 +1793,23 @@ A pane is a terminal column plus, when it needs one, a work area.
   longer a company. A pane with a board can be stashed (the board keeps no
   state of its own), and while the board is the active tab Fleet still reads
   the pane by the terminal beside it.
+  - **Seats on other PCs** (owner-approved 2026-11-01, mockup round for
+    other-PC seats). A seat on another PC is every active link from the CEO
+    pane to a pane on a paired PC that this side may send work over; nothing
+    is stored for it, and a link that ends drops it (its open jobs go back to
+    Handed out). After the panes, one row each: status mark (running while it
+    holds an open job, else idle), the name in the title weight (the link's
+    label), muted `on <PC>` where a pane shows its coordinate, then its open
+    jobs and `Next:` as for a pane. A job it reported back reads as the muted
+    `Reported to CEO`, never needs-you, and Waiting on you and Log name its
+    jobs by the seat. The row is not a button: there is no pane here to
+    focus. An ask the CEO pane made follows with a dashed muted ring, the
+    asked name in `--text-sub`, `on <PC>` and a muted `Waiting for <PC> to
+    approve · asked <age>` (or `<PC> is offline; the ask waits until
+    <time>`); an ask that ended without a seat stays a day as a muted
+    `Not started: <why> · <age>`. While the company has a CEO pane, a quiet
+    underlined text link, **Add a seat on another PC…** (`--text-sub`, a
+    `--line` underline), ends Seats.
 
 ## The one-boundary rule
 
