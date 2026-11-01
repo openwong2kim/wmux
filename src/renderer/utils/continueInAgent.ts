@@ -16,7 +16,7 @@ import type { TranscriptPage, TurnEvent } from '../../shared/transcript/turnEven
 import { chatComposerDraft } from '../components/Chat/chatDrafts';
 import { openTerminalTab } from './accountLogin';
 import { pastePtyChunked } from './clipboardChunk';
-import { handoffNoteText, transcriptHandoff, type HandoffFacts, type TranscriptHandoff } from './handoffNote';
+import { handoffNoteText, transcriptHandoff, type HandoffFacts } from './handoffNote';
 
 /** How long the new agent has to show its prompt. */
 export const AGENT_READY_TIMEOUT_MS = 60_000;
@@ -34,16 +34,15 @@ const inFlight = new Set<string>();
 /** Older transcript pages read back looking for the first request and earlier files. */
 const HANDOFF_PAGES_MAX = 8;
 
-/** The pane's conversation, from `chat.snapshot` (any agent the daemon
- *  projects): the tail page, then older pages (bounded) for the first request
- *  and files written earlier. */
-async function conversationOf(ptyId: string, cwd: string | undefined): Promise<TranscriptHandoff> {
-  const empty: TranscriptHandoff = { requests: [], reply: null, filesTouched: [], planFiles: [] };
+/** The pane's conversation events, from `chat.snapshot` (any agent the
+ *  daemon projects), oldest first: the tail page, then older pages (bounded)
+ *  for the first request and files written earlier. */
+async function conversationOf(ptyId: string): Promise<TurnEvent[]> {
   const snapshot = window.electronAPI?.chat?.snapshot;
-  if (!snapshot) return empty;
+  if (!snapshot) return [];
   try {
     let page = await snapshot(ptyId);
-    if (!page) return empty;
+    if (!page) return [];
     const pages: TurnEvent[][] = [page.events];
     for (let n = 0; page.hasMore && n < HANDOFF_PAGES_MAX; n++) {
       const older: TranscriptPage | null = await snapshot(ptyId, page.cursor.headOffset).catch(() => null);
@@ -51,22 +50,26 @@ async function conversationOf(ptyId: string, cwd: string | undefined): Promise<T
       page = older;
       pages.unshift(page.events);
     }
-    return transcriptHandoff(pages.flat(), cwd);
+    return pages.flat();
   } catch {
-    return empty;
+    return [];
   }
 }
 
-/** The branch and uncommitted changes of `cwd` (the pane's folder). */
-async function gitOf(ptyId: string, cwd: string | undefined): Promise<Pick<HandoffFacts, 'repo' | 'branch' | 'files'>> {
+/** The branch and uncommitted changes of `cwd` (the pane's folder), and the
+ *  repository's top folder, which git's paths are given from. */
+async function gitOf(ptyId: string, cwd: string | undefined): Promise<Pick<HandoffFacts, 'repo' | 'branch' | 'files'> & { root: string | null }> {
   const reported = useStore.getState().surfaceGitBranch[ptyId] ?? null;
   const folder = cwd ? baseName(cwd) : null;
-  if (!cwd) return { repo: null, branch: reported, files: [] };
+  if (!cwd) return { repo: null, branch: reported, files: [], root: null };
   try {
     const diff = await window.electronAPI?.diff?.read?.(cwd, '', 'workspace');
-    if (diff?.ok) return { repo: baseName(diff.snapshot.targetRepoPath) || folder, branch: diff.snapshot.targetBranch || reported, files: diff.numstat };
+    if (diff?.ok) {
+      const root = diff.snapshot.targetRepoPath || null;
+      return { repo: (root && baseName(root)) || folder, branch: diff.snapshot.targetBranch || reported, files: diff.numstat, root };
+    }
   } catch { /* not a repository, or unreadable: the branch the pane reported */ }
-  return { repo: folder, branch: reported, files: [] };
+  return { repo: folder, branch: reported, files: [], root: null };
 }
 
 /** A path's last part (either separator), or null. */
@@ -97,7 +100,9 @@ export function unsentDraftOf(ptyId: string): string | null {
 
 /** Everything the handoff note is built from, for the held pane `ptyId`. */
 export async function handoffFacts(ptyId: string, cwd: string | undefined): Promise<HandoffFacts> {
-  const [conversation, git] = await Promise.all([conversationOf(ptyId, cwd), gitOf(ptyId, cwd)]);
+  const [events, { root, ...git }] = await Promise.all([conversationOf(ptyId), gitOf(ptyId, cwd)]);
+  // Below the repository's top folder, as git gives the uncommitted files.
+  const conversation = transcriptHandoff(events, root ?? cwd);
   const transcriptPath = useStore.getState().resumeBindingByPtyId[ptyId]?.transcriptPath ?? null;
   return { ...conversation, ...git, transcriptPath, draft: unsentDraftOf(ptyId) };
 }

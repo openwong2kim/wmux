@@ -22,7 +22,7 @@ export interface HandoffFacts {
   requests: string[];
   /** The agent's last reply, as prose. */
   reply: string | null;
-  /** Files the agent wrote or patched, oldest first, below the folder when they are inside it. */
+  /** Files the agent wrote or patched, the latest first, below the repository's folder when inside it. */
   filesTouched: string[];
   /** The written files that are plans or todo lists. */
   planFiles: string[];
@@ -65,30 +65,32 @@ const PATH_ARG_RE = /"(?:file_path|notebook_path|filePath)"\s*:\s*"((?:[^"\\]|\\
  *  line; inside a script's string literal (Codex CLI 0.163's `exec` tool
  *  calling `tools.apply_patch`), after a written `\n` and with its
  *  backslashes doubled. */
-const PATCH_FILE_RE = /^\*\*\* (?:Add|Update) File: (.+)$/gm;
-const QUOTED_PATCH_FILE_RE = /(?<!\\)\\n\*\*\* (?:Add|Update) File: (.+?)(?=(?<!\\)\\n|")/g;
+const PATCH_FILE_RE = /^\*\*\* (?:Add File|Update File|Move to): (.+)$/gm;
+const QUOTED_PATCH_FILE_RE = /(?<!\\)\\n\*\*\* (?:Add File|Update File|Move to): (.+?)(?=(?<!\\)\\n|")/g;
 /** A plan or todo file: under a plans/todos folder, or named for one. */
 const PLAN_FILE_RE = /(?:^|[\\/])(?:plans?|todos?)[\\/][^\\/]+$|(?:^|[\\/])[^\\/]*(?:plan|todo)[^\\/]*\.(?:md|txt)$/i;
 
 /** A string literal's escapes taken out: a doubled backslash becomes one, `\"` becomes `"`. */
 const unescape = (s: string): string => s.replace(/\\(.)/g, '$1');
 
-/** `path` below `cwd` when it is inside it, else as given. */
+/** `path` below `cwd`, with `/` separators as git gives them, when it is
+ *  inside it; else as given. Either separator, on either side. */
 function belowFolder(path: string, cwd: string | undefined): string {
   if (!cwd) return path;
-  const base = cwd.replace(/[\\/]+$/, '');
+  const base = cwd.replace(/\\/g, '/').replace(/\/+$/, '');
+  const p = path.replace(/\\/g, '/');
   if (!base) return path;
   // A Windows drive letter is case-insensitive; a POSIX path is not.
-  const inside = /^[A-Za-z]:/.test(base) ? path.toLowerCase().startsWith(base.toLowerCase()) : path.startsWith(base);
-  const sep = path.charAt(base.length);
-  return inside && (sep === '/' || sep === '\\') && path.length > base.length + 1 ? path.slice(base.length + 1) : path;
+  const inside = /^[A-Za-z]:/.test(base) ? p.toLowerCase().startsWith(`${base.toLowerCase()}/`) : p.startsWith(`${base}/`);
+  return inside && p.length > base.length + 1 ? p.slice(base.length + 1) : path;
 }
 
 /**
- * The owner's requests, the agent's last reply and the files it wrote, from
- * a transcript's events in file order (several pages joined, oldest first).
- * wmux's own continue message (sent at a usage-limit reset) is not a request.
- * Paths are given below `cwd` when they are inside it.
+ * The owner's requests, the agent's last reply and the files it wrote (the
+ * latest written first), from a transcript's events in file order (several
+ * pages joined, oldest first). wmux's own continue message (sent at a
+ * usage-limit reset) is not a request. Paths are given below `cwd` (the
+ * repository's top folder, else the pane's) when they are inside it.
  */
 export function transcriptHandoff(events: readonly TurnEvent[], cwd?: string): TranscriptHandoff {
   const requests: string[] = [];
@@ -108,24 +110,36 @@ export function transcriptHandoff(events: readonly TurnEvent[], cwd?: string): T
       if (WRITE_TOOL_RE.test(e.name)) {
         for (const m of input.matchAll(PATH_ARG_RE)) written.push(belowFolder(unescape(m[1]), cwd));
       }
-      if (input.includes('*** Begin Patch')) {
-        for (const m of input.matchAll(PATCH_FILE_RE)) written.push(belowFolder(m[1].trim(), cwd));
+      // Only a patch handed to apply_patch (the tool, or a script or shell calling it).
+      if (input.includes('*** Begin Patch') && (/apply_patch/.test(e.name) || input.includes('apply_patch'))) {
+        for (const m of input.matchAll(PATCH_FILE_RE)) {
+          // The input is only a head when it is long: a header at its very end may be cut.
+          if (e.input.truncated && (m.index ?? 0) + m[0].length >= input.length) continue;
+          written.push(belowFolder(m[1].trim(), cwd));
+        }
         for (const m of input.matchAll(QUOTED_PATCH_FILE_RE)) written.push(belowFolder(unescape(m[1].trim()), cwd));
       }
     }
   }
-  const filesTouched = [...new Set(written)];
+  // Each file once, at its latest write.
+  const filesTouched = [...new Set(written.reverse())];
   return { requests, reply, filesTouched, planFiles: filesTouched.filter((p) => PLAN_FILE_RE.test(p)) };
 }
 
+/** The first `max` characters, never ending on half of a surrogate pair. */
 function first(text: string, max: number): string {
   const s = text.trim();
-  return s.length > max ? `${s.slice(0, max).trimEnd()}…` : s;
+  if (s.length <= max) return s;
+  const end = /[\uD800-\uDBFF]/.test(s.charAt(max - 1)) ? max - 1 : max;
+  return `${s.slice(0, end).trimEnd()}…`;
 }
 
+/** The last `max` characters, never starting on half of a surrogate pair. */
 function last(text: string, max: number): string {
   const s = text.trim();
-  return s.length > max ? `…${s.slice(-max).trimStart()}` : s;
+  if (s.length <= max) return s;
+  const start = /[\uDC00-\uDFFF]/.test(s.charAt(s.length - max)) ? s.length - max + 1 : s.length - max;
+  return `…${s.slice(start).trimStart()}`;
 }
 
 const counts = (f: DiffNumstat): string => (f.additions === null ? 'bin' : `+${f.additions} −${f.deletions ?? 0}`);
@@ -133,8 +147,8 @@ const counts = (f: DiffNumstat): string => (f.additions === null ? 'bin' : `+${f
 /**
  * The note typed into the agent taking over `fromAgent`'s work: where and on
  * which branch, what was asked (the first request and the latest), the end of
- * the last reply, the files touched (with their uncommitted line counts; the
- * uncommitted files when the transcript names none), the transcript, and the
+ * the last reply, the files touched, the latest first (with their uncommitted
+ * line counts; the uncommitted files when the transcript names none), the transcript, and the
  * unsent draft when the owner chose to carry it. Free text is masked for keys
  * and tokens.
  */
@@ -143,7 +157,8 @@ export function handoffNoteText(fromAgent: string, facts: Partial<HandoffFacts> 
   const lines = [facts?.branch
     ? t('handoff.note.headBranch', { agent: fromAgent, place, branch: facts.branch })
     : t('handoff.note.head', { agent: fromAgent, place })];
-  const quote = (text: string, max: number, from: typeof first) => redactSecrets(from(text, max));
+  // Masked whole before it is cut, so a cut never leaves part of a key unrecognised.
+  const quote = (text: string, max: number, from: typeof first) => from(redactSecrets(text), max);
 
   const requests = (facts?.requests ?? []).filter((r) => r.trim());
   if (requests.length) lines.push(t('handoff.note.asked', { text: quote(requests[0], NOTE_REQUEST_MAX, first) }));
@@ -157,7 +172,7 @@ export function handoffNoteText(fromAgent: string, facts: Partial<HandoffFacts> 
     const named = touched.length
       ? touched.map((p) => { const f = byPath.get(p); return f ? `${p} (${counts(f)})` : p; })
       : changed.map((f) => `${f.path} (${counts(f)})`);
-    const shown = named.slice(-NOTE_FILES_MAX).join(', ');
+    const shown = named.slice(0, NOTE_FILES_MAX).join(', ');
     const more = named.length > NOTE_FILES_MAX ? `, ${t('usageLimit.handoffMoreFiles', { count: named.length - NOTE_FILES_MAX })}` : '';
     lines.push(t(touched.length ? 'handoff.note.filesTouched' : 'handoff.note.filesChanged', { files: `${shown}${more}` }));
   }

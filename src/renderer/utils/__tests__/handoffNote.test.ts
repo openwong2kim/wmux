@@ -42,25 +42,38 @@ describe('transcriptHandoff', () => {
     const expected = {
       requests: ['keep open tasks past the GC', 'then wire blockedBy'],
       reply: 'The board keeps open tasks. Next is blockedBy.',
-      filesTouched: ['src/board.ts', 'plans/board.md'],
+      // The latest written first.
+      filesTouched: ['plans/board.md', 'src/board.ts'],
       planFiles: ['plans/board.md'],
     };
     expect(transcriptHandoff(parse(CLAUDE, parseTranscriptLineDetailed), '/work/app')).toEqual(expected);
     expect(transcriptHandoff(parse(CODEX, parseCodexLineDetailed), '/work/app/')).toEqual(expected);
     // Outside the folder, a path stays absolute.
-    expect(transcriptHandoff(parse(CLAUDE, parseTranscriptLineDetailed), '/elsewhere').filesTouched).toEqual(['/work/app/src/board.ts', '/work/app/plans/board.md']);
+    expect(transcriptHandoff(parse(CLAUDE, parseTranscriptLineDetailed), '/elsewhere').filesTouched).toEqual(['/work/app/plans/board.md', '/work/app/src/board.ts']);
   });
 
   it('reads the files Codex CLI 0.163 patches from its exec script, where the patch is a string literal', () => {
     // As the rollout records it: `exec` runs a script that calls tools.apply_patch.
     const script = (body: string) => ({ timestamp: at, type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_9', name: 'exec', input: body } });
     const events = parse([
-      script('const patch = "*** Begin Patch\\n*** Add File: /work/app/b.md\\n+from codex\\n*** Update File: C:\\\\work\\\\app\\\\new.ts\\n@@\\n-a\\n+b\\n*** End Patch";\ntext(await tools.apply_patch(patch));\n'),
-      // A script that only reads names no file.
+      script('const patch = "*** Begin Patch\\n*** Add File: /work/app/b.md\\n+from codex\\n*** Update File: C:\\\\work\\\\app\\\\src\\\\new.ts\\n@@\\n-a\\n+b\\n*** End Patch";\ntext(await tools.apply_patch(patch));\n'),
+      // A script that only reads names no file, nor does a patch it only prints.
       script('text(await tools.exec_command({ cmd: "cat /work/app/src/other.ts" }));\n'),
+      script('text("*** Begin Patch\\n*** Add File: /work/app/fake.md\\n*** End Patch");\n'),
     ], parseCodexLineDetailed);
-    expect(transcriptHandoff(events, '/work/app').filesTouched).toEqual(['b.md', 'C:\\work\\app\\new.ts']);
-    expect(transcriptHandoff(events, 'C:\\work\\app').filesTouched).toEqual(['/work/app/b.md', 'new.ts']);
+    expect(transcriptHandoff(events, '/work/app').filesTouched).toEqual(['C:\\work\\app\\src\\new.ts', 'b.md']);
+    // A Windows folder, either separator: below it, with git's `/`.
+    expect(transcriptHandoff(events, 'C:\\work\\app').filesTouched).toEqual(['src/new.ts', '/work/app/b.md']);
+    expect(transcriptHandoff(events, 'c:/work/app/').filesTouched).toEqual(['src/new.ts', '/work/app/b.md']);
+  });
+
+  it('reads a rename under its new name, and drops a header the inline head cut short', () => {
+    const patch = (inline: string, truncated?: true): TurnEvent => ({ id: inline.slice(-8), kind: 'tool_use', toolUseId: 't', name: 'apply_patch', argSummary: '', input: { n: 0, bytes: 9000, inline, ...(truncated ? { truncated } : {}) } });
+    const events = [
+      patch('*** Begin Patch\n*** Update File: /work/app/old.ts\n*** Move to: /work/app/new.ts\n@@\n-a\n+b\n*** End Patch'),
+      patch('*** Begin Patch\n*** Update File: /work/app/a.ts\n@@\n+x\n*** Update File: /work/app/lo', true),
+    ];
+    expect(transcriptHandoff(events, '/work/app').filesTouched).toEqual(['a.ts', 'new.ts', 'old.ts']);
   });
 });
 
@@ -102,8 +115,12 @@ describe('handoffNoteText', () => {
     expect(note).toContain('Latest request: use the key [redacted]');
     expect(note).not.toMatch(/sk-ant-|ghp_/);
     expect(note).toMatch(/\nLast reply: …y+ pushed with \[redacted\]\n/);
-    expect(note).toContain(`Files touched: src/f3.ts, src/f4.ts, src/f5.ts, src/f6.ts, src/f7.ts, src/f8.ts, src/f9.ts, src/f10.ts, …and 3 more\n`);
+    expect(note).toContain(`Files touched: src/f0.ts, src/f1.ts, src/f2.ts, src/f3.ts, src/f4.ts, src/f5.ts, src/f6.ts, src/f7.ts, …and 3 more\n`);
     expect(note.length).toBeLessThan(1200);
+    // A key across the cut is masked before the cut; a cut never splits a surrogate pair.
+    const edge = handoffNoteText('Claude Code', { requests: [`${'x'.repeat(NOTE_REQUEST_MAX - 10)} sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123`, `${'z'.repeat(NOTE_REQUEST_MAX - 1)}😀 tail`] });
+    expect(edge).not.toContain('sk-ant');
+    expect(edge).toContain(`Latest request: ${'z'.repeat(NOTE_REQUEST_MAX - 1)}…\n`);
     expect(handoffNoteText('Claude Code', { files: [{ path: 'img.png', additions: null, deletions: null }] })).toContain('\nUncommitted changes: img.png (bin)\n');
   });
 });

@@ -9,7 +9,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { agentRow } from '../../../shared/agentIdentity';
-import { getAgentSetupState, refreshAgentStatus, useAgentSetup } from '../../utils/agentSetupRuns';
+import { refreshAgentStatus, useAgentSetup } from '../../utils/agentSetupRuns';
 import { continueInAgent, handoffFacts } from '../../utils/continueInAgent';
 import { handoffNoteText, type HandoffFacts } from '../../utils/handoffNote';
 import { IconRobot } from '../icons';
@@ -55,8 +55,9 @@ export default function ContinueInAgentDialog({ ptyId, workspaceId, paneId, cwd,
   const [facts, setFacts] = useState<HandoffFacts | null>(null);
   const [carryDraft, setCarryDraft] = useState(false);
 
-  // Probed once; later opens reuse what that found.
-  useEffect(() => { if (!getAgentSetupState().statuses) void refreshAgentStatus(); }, []);
+  // Asked again on every open: an agent installed or signed in since the last
+  // probe is offered. The last answer shows meanwhile.
+  useEffect(() => { void refreshAgentStatus(); }, []);
   // Gathered on open, so the note previewed is the one typed in.
   useEffect(() => {
     let live = true;
@@ -92,7 +93,7 @@ export default function ContinueInAgentDialog({ ptyId, workspaceId, paneId, cwd,
             ))}
           </div>
         )}
-        {setup.statuses && targets.length === 0 && (
+        {setup.statuses && !setup.checking && targets.length === 0 && (
           <p className="text-[12px] text-[var(--text-sub)]" data-continue-in-agent-none>{t('handoff.noAgent')}</p>
         )}
         {facts?.draft && (
