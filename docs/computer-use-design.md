@@ -317,12 +317,23 @@ snapshot is the v1.1 token saver.
     per-action order on one app; interleaving of whole action batches
     between two agents on the same app is out of scope.
   - Foreground-certain actions are sent with `foreground: 'allow'`: after
-    their slot they take the lease, at once or `input_busy`. They are, row
-    for row the Windows helper's own refusals: scroll, a button other than
-    left, a click with modifiers or more than one click, a hotkey with
-    modifiers, and `type` text with a control character other than one
-    trailing newline; plus `openApp`, which has no target app before the
-    launch and takes the lease only. `setValue` is a UIA call, not input.
+    their slot they take the lease, at once or `input_busy`. Which actions
+    those are follows the helper's OS (`foregroundCertain(req, os)`), so
+    each list is its own helper's refusals that depend on the action alone:
+    - Windows, row for row the Windows helper's own refusals: scroll, a
+      button other than left, a click with modifiers or more than one
+      click, a hotkey with modifiers, and `type` text with a control
+      character other than one trailing newline.
+    - macOS, the rows of the macOS helper's `foregroundReason` that depend
+      on the action alone: a button other than left, and more than two
+      clicks. A scroll, a double click, a click or hotkey with modifiers
+      and any `type` text go with `refuse`; the helper answers
+      `needs_foreground` when the target needs real input for them (an
+      Electron scroll, a Command shortcut to a Chromium-based app, a
+      window off screen, and the other cases of
+      `docs/computer-use-macos.md`, Input).
+    - Both: `openApp`, which has no target app before the launch and takes
+      the lease only. `setValue` is a UIA or AX call, not input.
   - Everything else is sent with `foreground: 'refuse'`. A helper that
     cannot post it answers `needs_foreground`, and only when nothing was
     sent for that action (no event, posted message, pattern call or focus
@@ -352,10 +363,9 @@ snapshot is the v1.1 token saver.
     assume it runs one request at a time; the Windows helper's server loop
     is single-threaded and also refuses (`internal`, nothing sent) a
     request that arrives while another is in flight.
-  - A helper whose hello lacks `input.deferForeground: true` (the macOS
-    helper today, and older Windows helpers) gets no lanes: every input
-    action takes the lease, exactly as before. The helper process itself
-    still runs one request at a time.
+  - A helper whose hello lacks `input.deferForeground: true` (an older
+    helper) gets no lanes: every input action takes the lease, exactly as
+    before. The helper process itself still runs one request at a time.
 
 ## Errors
 
