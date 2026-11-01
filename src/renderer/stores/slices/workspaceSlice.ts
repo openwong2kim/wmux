@@ -291,7 +291,7 @@ export interface WorkspaceSlice {
    * The new pane's id, or false: no company with a CEO pane, or the pane cap
    * (splitPane says so).
    */
-  hireCompanySeat: (workspaceId: string, seat: { label: string; owns: string; command: string; cwd?: string }) => string | false;
+  hireCompanySeat: (workspaceId: string, seat: { label: string; owns: string; command: string; cwd?: string; env?: Record<string, string> }) => string | false;
   /**
    * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
    * cleared ptyIds → new panes spawn their own PTYs) and its PROFILE (env +
@@ -599,6 +599,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           label: seat.label,
           command: seat.command,
           ...(seat.cwd ? { cwd: seat.cwd } : {}),
+          ...(seat.env ? { env: seat.env } : {}),
           ...(owns ? { role: owns } : {}),
         };
       });

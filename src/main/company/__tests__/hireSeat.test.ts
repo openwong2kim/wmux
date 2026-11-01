@@ -12,7 +12,7 @@ let dir: string;
 let deps: Parameters<typeof hireSeat>[1];
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-hire-seat-'));
-  deps = { dir, platform: 'darwin', takenLabels: () => ['ceo', 'Researcher'], now: () => NOW };
+  deps = { dir, platform: 'darwin', takenLabels: () => ['ceo', 'Researcher'], now: () => NOW, env: {} };
 });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -35,7 +35,7 @@ describe('hireSeat', () => {
   it('starts the agent with its brief where the panes start when the company has no folder and no other agent seat', async () => {
     const res = await hireSeat(req(), deps);
     const file = path.join(dir, 'company-briefs', 'ws-1', `hire-dev-${NOW}.md`);
-    expect(res).toEqual({ ok: true, label: 'dev', command: `claude "$(cat '${file}')"`, cwd: null });
+    expect(res).toEqual({ ok: true, label: 'dev', command: `claude "$(cat '${file}')"`, cwd: null, env: { CLAUDE_CODE_SANDBOXED: '1' } });
     const brief = fs.readFileSync(file, 'utf8');
     expect(brief).toContain('You are #dev in the company "checkout" in wmux. Your CEO is #ceo.');
     expect(brief).toContain('You own: Payments.');
@@ -43,6 +43,11 @@ describe('hireSeat', () => {
     expect(brief).toContain('Standing orders: Live check first.');
     expect(brief).toContain('Take briefs from #ceo.');
     expect(brief).not.toContain('Your worktree');
+  });
+
+  it('starts with no first-run env when the owner turned the first-run handling off', async () => {
+    const res = await hireSeat(req(), { ...deps, env: { WMUX_AGENT_FIRST_RUN: 'off' } });
+    expect(res.ok && res.env).toBe(undefined);
   });
 
   it('writes beside the briefs a preset left, and never over one', async () => {

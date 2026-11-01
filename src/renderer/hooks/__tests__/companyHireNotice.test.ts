@@ -77,6 +77,17 @@ describe('watchHireNotice', () => {
     expect(gatedSubmit).toHaveBeenCalledTimes(1);
   });
 
+  it('waits while the seat\'s agent shows a question or a permission screen, and sends once it is past it', async () => {
+    useStore.setState({ workspaces: [company(startedSeat())] });
+    watch();
+    useStore.getState().setSurfaceAgent(SEAT_PTY, 'Claude Code', 'awaiting_input', 'claude');
+    await flush();
+    expect(gatedSubmit).not.toHaveBeenCalled();
+    useStore.getState().setSurfaceAgent(SEAT_PTY, 'Claude Code', 'running', 'claude');
+    await flush();
+    expect(gatedSubmit).toHaveBeenCalledTimes(1);
+  });
+
   it('sends nothing once the seat\'s pane has closed', async () => {
     useStore.setState({ workspaces: [company(startedSeat())] });
     watch();

@@ -213,6 +213,7 @@ export function EmptyLeafFunnel() {
                   {
                     workspaceId: wsId,
                     cwd: startupCwd,
+                    ...(projectSeed?.env ? { env: projectSeed.env } : {}),
                     ...bootstrapOptions,
                     ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
                   },

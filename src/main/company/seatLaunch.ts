@@ -12,6 +12,7 @@ import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { agentLauncherStem, agentRow, isAgentSlug } from '../../shared/agentIdentity';
+import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
 import { companySeatsError, freeSeatLabels, ownWorktreeSeats, seatBrief } from '../../shared/companyPreset';
 import { normalizePaneLabel, paneLabelShapeError } from '../../shared/paneLabelRules';
 import { PANE_METADATA_LABEL_MAX } from '../../shared/types';
@@ -78,7 +79,9 @@ export interface HireSeatRequest {
 
 export type HireSeatResult =
   /** `cwd`: the seat's own worktree, else the company folder, else null (where panes start). */
-  | { ok: true; label: string; command: string; cwd: string | null; branch?: string }
+  /** `env`: what the seat's pane starts with so its agent skips the first-run
+   *  screens in a folder wmux made (absent when there is none, or it is off). */
+  | { ok: true; label: string; command: string; cwd: string | null; branch?: string; env?: Record<string, string> }
   | { ok: false; error: string };
 
 export interface SeatLaunchDeps {
@@ -88,6 +91,8 @@ export interface SeatLaunchDeps {
   takenLabels?: () => Iterable<string>;
   now?: () => number;
   worktrees?: TaskWorktreeManager;
+  /** Read for the first-run opt-out (agentFirstRun.ts); process.env when absent. */
+  env?: NodeJS.ProcessEnv;
 }
 
 // Not the fan-out root: a folder there with no open task reads as a leftover
@@ -323,12 +328,16 @@ export async function hireSeat(req: unknown, deps: SeatLaunchDeps = {}): Promise
     fs.writeFileSync(file, seatBrief({
       company: r.company.trim(), mission: r.mission, standingOrders: r.standingOrders, seats, ceo: 0, seat: seats.length - 1,
     }), { encoding: 'utf8', flag: 'wx' });
+    // As a remote start's pane: the agent was asked for here, so it does not
+    // stop on the first-run screens in a folder wmux just made.
+    const env = firstRunEnvForAgent(agentLauncherStem(row), deps.env);
     return {
       ok: true,
       label,
       command: buildInitialCommand(agentLauncherStem(row), file, deps.platform),
       cwd: made?.path ?? r.folder ?? null,
       ...(made ? { branch: made.branch } : {}),
+      ...(Object.keys(env).length > 0 ? { env } : {}),
     };
   } catch (err) {
     return await fail(`could not add the seat: ${err instanceof Error ? err.message : String(err)}`);

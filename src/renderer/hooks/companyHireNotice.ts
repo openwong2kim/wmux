@@ -1,7 +1,9 @@
 // "Add a seat on this PC…": the CEO hears of the new seat in one line
 // (shared/company.ts companyHireNotice) once the seat's agent is up. Never
 // before: a brief to a pane with no agent is only stored, so an early line
-// would send the CEO into a brief its seat never gets.
+// would send the CEO into a brief its seat never gets. Not while the seat's
+// agent waits on a question or a permission screen either (its first-run
+// folder check, say): a brief to it is held there, not delivered.
 //
 // The line goes through the delivery gate with the typing hold (it never
 // answers an approval prompt and waits while someone types), and only while
@@ -54,7 +56,8 @@ export function watchHireNotice(seat: HireNoticeWatch): () => void {
       stop();
       return;
     }
-    if (!agentPty(leaf, state.surfaceAgent)) return;
+    const seatPty = agentPty(leaf, state.surfaceAgent);
+    if (!seatPty || state.surfaceAgent[seatPty]?.status === 'awaiting_input') return;
     const ceoLeaf = leaves.find((l) => l.id === ws.company?.coordinatorPaneId);
     const ceoPty = ceoLeaf ? agentPty(ceoLeaf, state.surfaceAgent) : null;
     if (!ceoPty || eligibility(ceoPty) !== 'write') return;
