@@ -112,6 +112,8 @@ export function companyHoldFields(task: Rec): Rec {
   if (!hold) return {};
   const phase = companyHoldPhase(hold);
   if (phase === 'waiting') return { waitingOn: [...hold.waitingOn] };
+  // Released and not started to its seat: it waits for a free working slot (or the next pull).
+  if (phase === 'owed' && !hold.attempted) return { queued: true };
   return phase === 'held' && hold.held ? { held: hold.held } : {};
 }
 
