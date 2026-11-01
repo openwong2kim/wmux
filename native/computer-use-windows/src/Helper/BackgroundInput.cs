@@ -108,6 +108,10 @@ internal static unsafe class BackgroundInput
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount);
         var runtimeId = fieldRuntimeId ?? [];
+        // A plain Edit's focus is also read from its own thread: UIA reports
+        // it only while the window is in front.
+        bool plainEdit = Background.IsPlainEdit(to.Info.ClassName);
+        Func<bool?> fieldFocus = () => Background.FieldFocused(FieldHasFocus(field, runtimeId), to.Info.ClassName, (nint)ThreadFocus(to.Tid).Value, (nint)to.Hwnd.Value);
         var outcome = Run("type", plan, target, plan.ClickFirst ? fieldPoint : null,
             click: () => Post(to, Background.Click(to.ClientX, to.ClientY)),
             keys: () =>
@@ -136,9 +140,10 @@ internal static unsafe class BackgroundInput
                 return posted;
             },
             readBack: () => WaitInserted(value, before, text, total < 64 ? 300 : 1000),
-            focusBefore: field != null ? () => FieldHasFocus(field, runtimeId) == true : null,
-            fieldAfterClick: field != null && fieldPoint is { } clicked ? focusBefore => FieldAfterClick(field, runtimeId, clicked, focusBefore) : null,
-            receiverStill: field == null ? () => FocusWindow(target) == to.Hwnd : null);
+            focusBefore: field != null ? () => fieldFocus() == true : null,
+            fieldAfterClick: field != null && fieldPoint is { } clicked ? focusBefore => FieldAfterClick(field, fieldFocus, clicked, focusBefore) : null,
+            receiverStill: field == null ? () => FocusWindow(target) == to.Hwnd : null,
+            clickedReceiverFocused: field != null && plainEdit ? () => ThreadFocus(to.Tid) == to.Hwnd : null);
         return outcome.Stop switch
         {
             BackgroundStop.FocusUnconfirmed => throw new HelperError("action_not_supported",
@@ -187,7 +192,8 @@ internal static unsafe class BackgroundInput
     /// </summary>
     private static BackgroundOutcome Run(string action, BackgroundPlan plan, ControlTarget target, (double X, double Y)? point,
         Func<int>? click, Func<int>? keys, Func<bool> readBack,
-        Func<bool>? focusBefore = null, Func<bool, FieldCheck>? fieldAfterClick = null, Func<bool>? receiverStill = null)
+        Func<bool>? focusBefore = null, Func<bool, FieldCheck>? fieldAfterClick = null, Func<bool>? receiverStill = null,
+        Func<bool>? clickedReceiverFocused = null)
     {
         if (plan.Refused)
         {
@@ -218,6 +224,7 @@ internal static unsafe class BackgroundInput
         {
             FocusBeforeClick = focusBefore,
             ReceiverStill = receiverStill,
+            ClickedReceiverFocused = clickedReceiverFocused,
         };
         var outcome = Background.Execute(plan, steps);
         if (outcome.FallBack) Wire.Log($"{action}: real input, not background ({Background.Describe(outcome.Refusal)})");
@@ -345,12 +352,15 @@ internal static unsafe class BackgroundInput
         if (!PInvoke.ScreenToClient(current, ref client)) return null;
         bool inClient = PInvoke.GetClientRect(current, out var rect)
             && client.X >= rect.left && client.X < rect.right && client.Y >= rect.top && client.Y < rect.bottom;
+        var className = Win.ClassName(current);
         var info = new Receiver(
-            ClassName: Win.ClassName(current),
+            ClassName: className,
             InTargetProcess: Win.OwnerPid(current) == target.Pid,
             InClientArea: inClient,
             PopupAtPoint: TargetPopupAt(target, screen),
-            Secret: secrecy && WindowIsSecret(current),
+            Secret: secrecy && (Background.IsPlainEdit(className)
+                ? Background.EditSecret(WindowIsSecret(current), WindowStyle(current))
+                : WindowIsSecret(current)),
             WindowDpi: PInvoke.GetDpiForWindow(current),
             MonitorDpi: monitorDpi);
         return Resolved(current, info, client.X, client.Y);
@@ -424,17 +434,26 @@ internal static unsafe class BackgroundInput
         {
             return Resolved(focus, new Receiver(className, inside), 0, 0);
         }
-        var (text, secret) = TextAndFocusSecrecy(focus);
+        var (text, secret) = TextAndFocusSecrecy(focus, className);
         return Resolved(focus, new Receiver(className, inside, TextControl: text, Secret: secret), 0, 0);
     }
 
     /// <summary>The target thread's focused window right now (GetGUIThreadInfo), or null.</summary>
-    private static HWND FocusWindow(ControlTarget target)
+    private static HWND FocusWindow(ControlTarget target) => ThreadFocus(PInvoke.GetWindowThreadProcessId(target.Window));
+
+    /// <summary>A thread's focused window right now (GetGUIThreadInfo), or null.</summary>
+    private static HWND ThreadFocus(uint thread)
     {
-        uint thread = PInvoke.GetWindowThreadProcessId(target.Window);
         var info = new GUITHREADINFO { cbSize = (uint)sizeof(GUITHREADINFO) };
         if (thread == 0 || !PInvoke.GetGUIThreadInfo(thread, &info)) return HWND.Null;
         return info.hwndFocus;
+    }
+
+    /// <summary>A window's GWL_STYLE, or null when it cannot be read (a live window always has some style bits).</summary>
+    private static uint? WindowStyle(HWND hwnd)
+    {
+        var style = (uint)PInvoke.GetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_STYLE);
+        return style == 0 ? null : style;
     }
 
     /// <summary>
@@ -443,9 +462,11 @@ internal static unsafe class BackgroundInput
     /// descendant) is a password field. No focused element found, or any
     /// read failing, counts as secret. A window that is not a text control
     /// is refused anyway, so its tree is not searched (that walk can cover a
-    /// whole large window).
+    /// whole large window). A plain Edit is the thread's focused window here,
+    /// has no windowless children, and UIA does not report its focus in the
+    /// background, so its own element and its ES_PASSWORD style decide.
     /// </summary>
-    private static (bool Text, bool Secret) TextAndFocusSecrecy(HWND hwnd)
+    private static (bool Text, bool Secret) TextAndFocusSecrecy(HWND hwnd, string className)
     {
         IUIAutomationElement* el = null;
         IUIAutomationElement* focused = null;
@@ -456,6 +477,7 @@ internal static unsafe class BackgroundInput
             int type = (int)el->CurrentControlType;
             bool text = type is EditControlType or Uia.DocumentControlType;
             if (!text) return (false, true);
+            if (Background.IsPlainEdit(className)) return (text, Background.EditSecret(Uia.IsSecretElement(el), WindowStyle(hwnd)));
             if (el->CurrentHasKeyboardFocus)
             {
                 return (text, Uia.IsSecretElement(el));
@@ -531,14 +553,14 @@ internal static unsafe class BackgroundInput
     /// had focus before the click is read only after a settle, so its old
     /// focus is not taken for the click's.
     /// </summary>
-    private static FieldCheck FieldAfterClick(IUIAutomationElement* field, int[] runtimeId, (double X, double Y) point, bool focusBefore)
+    private static FieldCheck FieldAfterClick(IUIAutomationElement* field, Func<bool?> fieldFocus, (double X, double Y) point, bool focusBefore)
     {
         if (focusBefore) Sta.Sleep(SettleMs);
         long deadline = Environment.TickCount64 + FocusWaitMs;
         bool focused;
         while (true)
         {
-            var now = FieldHasFocus(field, runtimeId);
+            var now = fieldFocus();
             if (now is null) return new FieldCheck(false, false);
             focused = now.Value;
             if (focused || Environment.TickCount64 >= deadline) break;

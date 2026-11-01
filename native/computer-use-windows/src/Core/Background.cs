@@ -150,6 +150,13 @@ public sealed record BackgroundSteps(Func<int>? Click, Func<bool, FieldCheck>? F
 
     /// <summary>Keys without a click: right before posting, whether the focused window is still the receiver.</summary>
     public Func<bool>? ReceiverStill { get; init; }
+
+    /// <summary>
+    /// With a field, after the focus check and right before the keys: whether
+    /// the target thread's focused window is still the clicked one (a plain
+    /// Edit, whose focus is read from its thread). False posts no key.
+    /// </summary>
+    public Func<bool>? ClickedReceiverFocused { get; init; }
 }
 
 /// <summary>How a posted sequence ended (Background.PostSequence).</summary>
@@ -210,6 +217,36 @@ public static class Background
         if (className.StartsWith("RichEdit", StringComparison.OrdinalIgnoreCase)) return true; // RichEdit20W, RICHEDIT50W, RichEditD2DPT
         return string.Equals(className, "Edit", StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>ES_PASSWORD: an Edit control that masks what is typed.</summary>
+    public const uint EsPassword = 0x0020;
+
+    /// <summary>
+    /// The plain Win32 Edit control. UIA reports its keyboard focus only while
+    /// its window is in front, so in the background its focus is read from
+    /// its own thread (GetGUIThreadInfo's hwndFocus).
+    /// </summary>
+    public static bool IsPlainEdit(string className) => string.Equals(className, "Edit", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Whether the clicked field has keyboard focus: UIA says so (the system's
+    /// focused element or the field's HasKeyboardFocus), or, for a plain Edit
+    /// only, its thread's focused window is the receiver itself. Null when
+    /// UIA could not be read and the thread does not confirm it.
+    /// </summary>
+    public static bool? FieldFocused(bool? uia, string receiverClass, nint threadFocus, nint receiver)
+    {
+        if (uia == true) return true;
+        if (IsPlainEdit(receiverClass) && receiver != 0 && threadFocus == receiver) return true;
+        return uia;
+    }
+
+    /// <summary>
+    /// A plain Edit is secret when its UIA element is (or may be) a password
+    /// field or its window has ES_PASSWORD. A style that could not be read
+    /// (null) counts as secret.
+    /// </summary>
+    public static bool EditSecret(bool uiaSecret, uint? style) => uiaSecret || style is not { } s || (s & EsPassword) != 0;
 
     /// <summary>
     /// Posted coordinates are read in the receiver's own DPI: a window that is
@@ -328,7 +365,8 @@ public static class Background
     /// posted counts as a refusal, so the caller may fall back. With a field,
     /// its focus is read before the click (an old focus must not pass for
     /// the click's), and after the click it must report focus and still cover
-    /// the clicked point; otherwise no key is posted and there is no
+    /// the clicked point (a plain Edit must also still be its thread's focused
+    /// window right before the keys); otherwise no key is posted and there is no
     /// fallback. Keys without a click are posted only while the focused
     /// window is still the receiver; otherwise nothing is posted.
     /// </summary>
@@ -349,6 +387,7 @@ public static class Background
                 var field = steps.FieldAfterClick!(focusBefore);
                 if (!field.Focused) return Stopped(BackgroundStop.FocusUnconfirmed, steps);
                 if (!field.AtPoint) return Stopped(BackgroundStop.FieldMoved, steps);
+                if (steps.ClickedReceiverFocused != null && !steps.ClickedReceiverFocused()) return Stopped(BackgroundStop.FocusUnconfirmed, steps);
             }
             else if (steps.ReceiverStill != null && !steps.ReceiverStill())
             {

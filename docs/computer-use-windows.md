@@ -221,7 +221,12 @@ section); that result says `delivery: "foreground"`. A posted one says
   and the plain edit control: `Chrome_RenderWidgetHostHWND` and
   `Chrome_WidgetWin_*` (Chrome, Edge, Electron), `RichEditD2DPT`
   (Notepad), the `RichEdit` family (`RichEdit20W`, `RICHEDIT50W`) and
-  `Edit` (class names compare case-insensitively). Everything else gets
+  `Edit` (class names compare case-insensitively). UIA reports a plain
+  `Edit`'s keyboard focus only while its window is in front, so for it the
+  focus checks below also accept its own thread's focused window
+  (`GetGUIThreadInfo`) being that `Edit`, re-read right before the keys; it
+  is a password field when its UIA element says so or it has `ES_PASSWORD`
+  (unreadable counts as one). Everything else gets
   real input: buttons, list boxes, list and tree views act on a click
   through `GetMessagePos` (the user's real cursor), a combo box dropdown
   takes mouse capture, and WPF, UWP / WinUI / XAML islands, Qt, Java,
