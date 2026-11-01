@@ -46,6 +46,7 @@ import { probeBotExecSupport } from '../../factory/botExecSandbox';
 import { resolveClaudeExecutable } from '../../claude/resolveClaudeExecutable';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { reconnectSessionPipe } from './reconnectSessionPipe';
+import { createSessionResync, type SessionResync } from './sessionResync';
 import { verifyLaunchLine, type LaunchLineRead } from './verifyLaunchLine';
 import { LAUNCH_PROBE_CONFIRM_TIMEOUT_MS } from '../../worktask/fanoutLaunchProbe';
 import { launchPresenceAllowsResend, type LaunchPresenceVerdict } from '../../../daemon/launchPresence';
@@ -463,6 +464,25 @@ export function registerPTYHandlers(
   // (reconnectSessionPipe.ts). Per registration, so a new daemon generation
   // starts empty; a death, a supervised restart or a dispose drops the id.
   const createAttachedPipes = new Set<string>();
+
+  // The startup line's "the shell spoke" signal (scheduleInitialCommand's
+  // onFirstData), per session until it fires. Whichever data listener the
+  // session has (the create's, or a reconnect's after it) delivers it, so a
+  // reconnect can replace the create-time listener — and release the create's
+  // scope with it — without the startup line missing the shell's first output.
+  const firstOutputHooks = new Map<string, () => void>();
+  function noteFirstOutput(sessionId: string): void {
+    const hook = firstOutputHooks.get(sessionId);
+    if (!hook) return;
+    firstOutputHooks.delete(sessionId);
+    hook();
+  }
+
+  // One live-pipe re-flush per session, shared by pty:resync and pty:reconnect
+  // (sessionResync.ts). Per registration, like the stream scanners it arms;
+  // made on first use, by the daemon-mode paths that hold the client.
+  let sessionResync: SessionResync | null = null;
+  const resyncOf = (client: DaemonClient): SessionResync => (sessionResync ??= createSessionResync(client));
 
   /** Register (or replace) the per-session data handler for `sessionId`. */
   function setSessionDataListener(sessionId: string, handler: SessionDataHandler): void {
@@ -922,9 +942,10 @@ export function registerPTYHandlers(
       // Forward session data to renderer. Routed through the per-id helper so
       // a stale listener (from a prior create with the same id, or a reconnect)
       // is removed before the new one is attached.
+      firstOutputHooks.set(sessionId, initialCmd.onFirstData);
       const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
         if (payload.sessionId !== sessionId) return;
-        initialCmd.onFirstData();
+        noteFirstOutput(sessionId);
         // P1-3: decode (stateful, upstream of batching) then micro-batch —
         // the batcher's send does the window-alive check at flush time.
         const text = decodeSessionData(sessionId, payload.data);
@@ -1418,6 +1439,7 @@ export function registerPTYHandlers(
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
       createAttachedPipes.delete(id);
+      firstOutputHooks.delete(id);
       sessionDecoders.delete(id);
       forgetPtyShell(id);
       forgetFolderTrustPane(id);
@@ -1731,6 +1753,8 @@ export function registerPTYHandlers(
         // reconnect) is swapped, not duplicated.
         const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
           if (payload.sessionId !== id) return;
+          // A startup line still waiting for the shell's first output.
+          noteFirstOutput(id);
           // P1-3: same decode-then-batch as the create path.
           const text = decodeSessionData(id, payload.data);
           if (text) dataBatcher.push(id, text, payload.replay);
@@ -1741,6 +1765,7 @@ export function registerPTYHandlers(
         const pipe = await reconnectSessionPipe(daemonClient, id, {
           promote: action === 'promote' || action === 'join',
           ownsCreatePipe,
+          resync: resyncOf(daemonClient),
           installListener: () => setSessionDataListener(id, onSessionData),
         });
         if (pipe.kind === 'pending') return held('pending again at attach');
@@ -1844,40 +1869,9 @@ export function registerPTYHandlers(
         return { success: false, code: 'serialize-unavailable', reason: snap.reason, transient: false };
       }
 
-      // Live session — the re-flush rides the existing connected socket.
-      if (!daemonClient.isSessionPipeWritable(id)) {
-        // Pipe not (yet) writable — the socket may be mid-replacement. Retry.
-        return { success: false, code: 'pipe-not-writable', transient: true };
-      }
-      if (!daemonClient.armSessionResync(id)) {
-        // No live scanner (pipe absent or still doing its initial flush). Retry.
-        return { success: false, code: 'pipe-not-writable', transient: true };
-      }
-      try {
-        // Extended timeout (Codex round-2 P2): the reflush legitimately waits
-        // behind the global snapshot slot under concurrent reveals — the
-        // default 10s RPC ceiling would disarm the scanner and tear the
-        // socket via reconnect while the daemon still writes the in-band
-        // replay. Must stay below the renderer's 32s resync-abort ceiling.
-        const res = await daemonClient.rpc('daemon.resyncSession', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
-          mode: 'snapshot' | 'raw';
-        };
-        // The scanner disarms itself when it consumes the in-band RESYNC_BEGIN
-        // the daemon just wrote, so no disarm is needed on the success path.
-        return { success: true, mode: res.mode };
-      } catch (err) {
-        // RPC failed AFTER arming — the scanner is still watching for a BEGIN
-        // marker that will now never come. Disarm so it doesn't misclassify a
-        // future coincidental byte run (harmless but must not linger).
-        daemonClient.disarmSessionResync(id);
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('Unknown method')) {
-          // Pre-PR-B daemon: no daemon.resyncSession. Renderer degrades to the
-          // classic pty:reconnect. Permanent for THIS daemon build.
-          return { success: false, code: 'legacy-daemon', transient: false };
-        }
-        return { success: false, code: 'rpc-error', reason: msg, transient: true };
-      }
+      // Live session — the re-flush rides the existing connected socket,
+      // joined with one already running for it (a mount reconnect's).
+      return await resyncOf(daemonClient)(id, scrollback);
     } catch (err) {
       // listSessions / serializeSession threw (timeout, ECONNRESET, or a legacy
       // daemon missing serializeSession). No scanner was armed on this path.
@@ -1958,6 +1952,7 @@ export function registerPTYHandlers(
       }
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
       createAttachedPipes.delete(payload.sessionId);
+      firstOutputHooks.delete(payload.sessionId);
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);

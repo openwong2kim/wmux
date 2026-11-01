@@ -21,16 +21,14 @@
  * Terminal missed is replayed over it by the daemon's live re-flush.
  */
 import type { DaemonClient } from '../../DaemonClient';
-import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
+import { SNAPSHOT_MAX_SCROLLBACK } from '../../../shared/terminal/attachSnapshot';
+import type { SessionResync } from './sessionResync';
 
-export type ReconnectPipeClient = Pick<
-  DaemonClient,
-  'rpc' | 'connectSessionPipe' | 'isSessionPipeWritable' | 'armSessionResync' | 'disarmSessionResync' | 'sessionPipeFlushPending'
->;
+export type ReconnectPipeClient = Pick<DaemonClient, 'rpc' | 'connectSessionPipe' | 'isSessionPipeWritable' | 'sessionPipeFlushPending'>;
 
 export type ReconnectPipeOutcome =
   /** The create-time pipe and listener kept; the screen replayed over them. */
-  | { kind: 'kept'; replay: 'reflush' | 'initial-flush' | 'reflush-in-flight' }
+  | { kind: 'kept'; replay: 'reflush' | 'initial-flush' }
   /** A fresh daemon attach and a fresh main-side socket. */
   | { kind: 'attached' }
   /** The daemon holds the session as a pending recovery again (#2398). */
@@ -48,6 +46,8 @@ export interface ReconnectPipeOptions {
    * death or a dispose clears it.
    */
   ownsCreatePipe: boolean;
+  /** The session re-flush shared with pty:resync (sessionResync.ts). */
+  resync: SessionResync;
   /** Install this reconnect's session:data forwarder (replace semantics). */
   installListener: () => void;
 }
@@ -58,7 +58,7 @@ export async function reconnectSessionPipe(
   opts: ReconnectPipeOptions,
 ): Promise<ReconnectPipeOutcome> {
   if (opts.ownsCreatePipe) {
-    const kept = await keepCreatePipe(client, id);
+    const kept = await keepCreatePipe(client, id, opts);
     if (kept) return kept;
   }
 
@@ -96,34 +96,32 @@ export async function reconnectSessionPipe(
 }
 
 /**
- * Keep the pipe pty:create attached, with its listener, and replay the screen
- * over it. Null when there is no live create-time pipe to keep: a full attach
- * is then the only way to a working pipe.
+ * Keep the pipe pty:create attached and replay the screen over it. Null when
+ * there is no live create-time pipe to keep: a full attach is then the only
+ * way to a working pipe.
  */
-async function keepCreatePipe(client: ReconnectPipeClient, id: string): Promise<ReconnectPipeOutcome | null> {
+async function keepCreatePipe(
+  client: ReconnectPipeClient,
+  id: string,
+  opts: ReconnectPipeOptions,
+): Promise<ReconnectPipeOutcome | null> {
   // main saw the socket close: the daemon stopped that pipe.
   if (!client.isSessionPipeWritable(id)) return null;
-  // The attach flush is still on its way to the listener the create installed,
-  // and the renderer registered its own before reconnecting: that flush is
-  // the replay.
-  if (client.sessionPipeFlushPending(id)) return { kind: 'kept', replay: 'initial-flush' };
-  // A scanner that cannot watch for the re-flush marker (it is discarding an
-  // oversized replay) cannot take one.
-  if (!client.armSessionResync(id)) return null;
-  try {
-    // Same call and bound as pty:resync, over the same live pipe: the socket
-    // stays up, so input keeps flowing while the screen is replayed.
-    await client.rpc('daemon.resyncSession', { id }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS });
-    // The scanner disarms itself on the in-band RESYNC_BEGIN.
-    return { kind: 'kept', replay: 'reflush' };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    // Another re-flush (a pane reveal's pty:resync) holds the pipe: its replay
-    // paints this Terminal too, and the scanner watch belongs to it.
-    if (msg.includes('RESYNC_BUSY')) return { kind: 'kept', replay: 'reflush-in-flight' };
-    client.disarmSessionResync(id);
-    // The daemon has no flushed client on this pipe (stopped, its close not
-    // seen here yet), or no re-flush to give: nothing live to keep.
-    return null;
-  }
+  // This reconnect's listener takes over from the create-time one, as after
+  // a full attach (the startup line hears the shell's first output through
+  // either). The pipe stays, so nothing is in flight to lose.
+  opts.installListener();
+  // The attach flush is still on its way to main's listener, and the renderer
+  // registered its own before reconnecting: that flush is the replay. (A
+  // re-flush in progress also reads as a pending flush; it is joined below.)
+  if (client.sessionPipeFlushPending(id) && !opts.resync.inFlight(id)) return { kind: 'kept', replay: 'initial-flush' };
+  // The same live re-flush a reveal asks for, joined if one is running, at
+  // the attach flush's scrollback bound (it replaces that flush). The socket
+  // stays up, so input keeps flowing while the screen is replayed.
+  const res = await opts.resync(id, SNAPSHOT_MAX_SCROLLBACK);
+  if (res.success) return { kind: 'kept', replay: 'reflush' };
+  // No live scanner on the pipe, no re-flush the daemon could give (it has no
+  // flushed client on this pipe: stopped, its close not seen here yet), or no
+  // such RPC: nothing live to keep.
+  return null;
 }

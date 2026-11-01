@@ -15,16 +15,23 @@
  *
  * The fakes model only that: a socket whose bytes reach the daemon a few ms
  * after write() and are dropped if either end is torn down first, a daemon
- * whose attach replaces the pipe, and main's single per-session listener slot.
- * The create below mirrors pty.handler's daemon create path.
+ * whose attach replaces the pipe and whose live re-flush holds the pipe for a
+ * while (RESYNC_BUSY meanwhile, its RESYNC_BEGIN read as live output unless
+ * main's scanner was armed for it), and main's single per-session listener
+ * slot. The create and the listeners below mirror pty.handler's daemon create
+ * and reconnect paths, the first-output hook included.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reconnectSessionPipe, type ReconnectPipeClient } from '../reconnectSessionPipe';
+import { createSessionResync, type SessionResync } from '../sessionResync';
 import { scheduleInitialCommand } from '../scheduleInitialCommand';
+import { deliberateSleep } from '../../../../test-utils/waitFor';
 
 const ID = 'daemon-test-session';
 /** How long a written byte takes to reach the daemon over the session pipe. */
 const TRANSPORT_MS = 5;
+/** How long a daemon re-flush holds the pipe before its RESYNC_BEGIN reaches main. */
+const REFLUSH_BEGIN_MS = 3;
 
 type DataEvent = { sessionId: string; data: Buffer; replay: boolean };
 
@@ -41,6 +48,12 @@ class FakeSocket {
   }
 }
 
+type WorldClient = ReconnectPipeClient & {
+  writeToSession(id: string, data: string): boolean;
+  armSessionResync(id: string): boolean;
+  disarmSessionResync(id: string): void;
+};
+
 class World {
   /** What the daemon wrote into the PTY. */
   ptyInput = '';
@@ -52,18 +65,34 @@ class World {
   scanner: 'accumulating' | 'live' = 'live';
   armed = false;
   armRefused = false;
+  /** Re-flush markers that reached the terminal as live output. */
+  leakedMarkers = 0;
   /** main's per-session data listener slot (sessionDataDispatcher). */
   listener: ((p: DataEvent) => void) | null = null;
+  /** pty.handler's firstOutputHooks entry for ID. */
+  firstOutputHook: (() => void) | null = null;
   attaches = 0;
-  resyncs = 0;
+  resyncCalls = 0;
   disarms = 0;
-  resyncError: string | null = null;
+  readonly client: WorldClient;
+  readonly resync: SessionResync;
+
+  constructor() {
+    this.client = this.makeClient();
+    this.resync = createSessionResync(this.client);
+  }
+
+  noteFirstOutput(): void {
+    const hook = this.firstOutputHook;
+    this.firstOutputHook = null;
+    hook?.();
+  }
 
   private emit(data: string, replay: boolean): void {
     this.listener?.({ sessionId: ID, data: Buffer.from(data), replay });
   }
 
-  /** The daemon's flush (attach-time, or a re-flush) reaching main's socket. */
+  /** The daemon's attach flush reaching main's socket. */
   private flushTo(socket: FakeSocket): void {
     this.scanner = 'accumulating';
     setTimeout(() => {
@@ -71,81 +100,98 @@ class World {
       this.emit(this.ring, true);
       this.scanner = 'live';
       socket.server.flushed = true;
-      socket.server.reflushing = false;
     }, 1);
   }
 
-  readonly client: ReconnectPipeClient & {
-    writeToSession(id: string, data: string): boolean;
-    armSessionResync(id: string): boolean;
-    disarmSessionResync(id: string): void;
-    sessionPipeFlushPending(id: string): boolean;
-  } = {
-    rpc: async (method: string, params: Record<string, unknown> = {}) => {
-      expect(params.id).toBe(ID);
-      if (method === 'daemon.attachSession') {
-        this.attaches++;
-        // daemon.attachSession stops the session's existing pipe.
-        if (this.server) {
-          const old = this.server;
-          old.alive = false;
-          // main sees the close a tick later (until then writeToSession says true).
-          setTimeout(() => { if (this.socket?.server === old) { this.socket.alive = false; this.socket = null; } }, 1);
+  private async reflush(): Promise<{ mode: 'raw' }> {
+    this.resyncCalls++;
+    const socket = this.socket;
+    if (!socket || !socket.server.alive) throw new Error(`NO_PIPE: session ${ID} has no flushed client pipe`);
+    const server = socket.server;
+    if (server.reflushing) throw new Error('RESYNC_BUSY: a re-flush is already in progress');
+    if (!server.flushed) throw new Error(`NO_PIPE: session ${ID} has no flushed client pipe`);
+    server.reflushing = true;
+    server.flushed = false;
+    await deliberateSleep(REFLUSH_BEGIN_MS, 'the fake daemon holding the pipe for its re-flush (fake timers drive it)');
+    // RESYNC_BEGIN reaches main's scanner: armed, it starts a replay;
+    // unarmed, the marker and the replay are shown as live output.
+    if (this.armed) {
+      this.armed = false;
+      this.scanner = 'accumulating';
+    } else {
+      this.leakedMarkers++;
+    }
+    await deliberateSleep(1, 'the fake replay on its way to main (fake timers drive it)');
+    this.emit(this.ring, true);
+    this.scanner = 'live';
+    server.flushed = true;
+    server.reflushing = false;
+    return { mode: 'raw' };
+  }
+
+  private makeClient(): WorldClient {
+    return {
+      rpc: async (method: string, params: Record<string, unknown> = {}) => {
+        expect(params.id).toBe(ID);
+        if (method === 'daemon.attachSession') {
+          this.attaches++;
+          // daemon.attachSession stops the session's existing pipe.
+          if (this.server) {
+            const old = this.server;
+            old.alive = false;
+            // main sees the close a tick later (until then writeToSession says true).
+            setTimeout(() => {
+              if (this.socket?.server === old) {
+                this.socket.alive = false;
+                this.socket = null;
+              }
+            }, 1);
+          }
+          this.server = { alive: true, flushed: false, reflushing: false };
+          return { ok: true };
         }
-        this.server = { alive: true, flushed: false, reflushing: false };
-        return { ok: true };
-      }
-      if (method === 'daemon.resyncSession') {
-        this.resyncs++;
-        if (this.resyncError) throw new Error(this.resyncError);
-        const socket = this.socket;
-        if (!socket || !socket.server.alive || !socket.server.flushed) throw new Error('RESYNC_UNAVAILABLE: no flushed client on session pipe');
-        socket.server.reflushing = true;
-        this.armed = false;
+        if (method === 'daemon.resyncSession') return this.reflush();
+        throw new Error(`unexpected rpc ${method}`);
+      },
+      connectSessionPipe: async (_id: string, opts?: { forceFresh?: boolean }) => {
+        const existing = this.socket;
+        if (existing && existing.alive && !opts?.forceFresh) return;
+        if (existing) existing.alive = false;
+        if (!this.server) throw new Error('no session pipe');
+        const socket = new FakeSocket(this, this.server);
+        this.socket = socket;
         this.flushTo(socket);
-        return { mode: 'raw' };
-      }
-      throw new Error(`unexpected rpc ${method}`);
-    },
-    connectSessionPipe: async (_id: string, opts?: { forceFresh?: boolean }) => {
-      const existing = this.socket;
-      if (existing && existing.alive && !opts?.forceFresh) return;
-      if (existing) existing.alive = false;
-      if (!this.server) throw new Error('no session pipe');
-      const socket = new FakeSocket(this, this.server);
-      this.socket = socket;
-      this.flushTo(socket);
-    },
-    isSessionPipeWritable: () => !!this.socket && this.socket.alive,
-    writeToSession: (_id: string, data: string) => {
-      if (!this.socket || !this.socket.alive) return false;
-      this.socket.write(data);
-      return true;
-    },
-    armSessionResync: () => {
-      if (this.scanner !== 'live' || this.armRefused) return false;
-      this.armed = true;
-      return true;
-    },
-    disarmSessionResync: () => { this.disarms++; this.armed = false; },
-    sessionPipeFlushPending: () => !!this.socket && this.scanner === 'accumulating',
-  };
+      },
+      isSessionPipeWritable: () => !!this.socket && this.socket.alive,
+      writeToSession: (_id: string, data: string) => {
+        if (!this.socket || !this.socket.alive) return false;
+        this.socket.write(data);
+        return true;
+      },
+      armSessionResync: () => {
+        if (this.scanner !== 'live' || this.armRefused) return false;
+        this.armed = true;
+        return true;
+      },
+      disarmSessionResync: () => {
+        this.disarms++;
+        this.armed = false;
+      },
+      sessionPipeFlushPending: () => !!this.socket && this.scanner === 'accumulating',
+    };
+  }
 }
 
 /** pty.handler's daemon create: attach, connect, schedule the line, listen. */
-async function create(world: World, line: string): Promise<{ painted: string[] }> {
-  const painted: string[] = [];
+async function create(world: World, line: string): Promise<void> {
   await world.client.rpc('daemon.attachSession', { id: ID });
   await world.client.connectSessionPipe(ID);
   const initialCmd = scheduleInitialCommand(line, {
     write: (cmd) => world.client.writeToSession(ID, cmd + '\r'),
     settleMs: 10,
   });
-  world.listener = (p) => {
-    initialCmd.onFirstData();
-    painted.push(p.data.toString());
-  };
-  return { painted };
+  world.firstOutputHook = initialCmd.onFirstData;
+  world.listener = () => world.noteFirstOutput();
 }
 
 /** The Terminal that mounts on the created session: pty:reconnect's pipe step. */
@@ -154,7 +200,13 @@ async function mountReattach(world: World, ownsCreatePipe = true): Promise<{ pai
   const outcome = await reconnectSessionPipe(world.client, ID, {
     promote: true,
     ownsCreatePipe,
-    installListener: () => { world.listener = (p) => painted.push(p.data.toString()); },
+    resync: world.resync,
+    installListener: () => {
+      world.listener = (p) => {
+        world.noteFirstOutput();
+        painted.push(p.data.toString());
+      };
+    },
   });
   return { painted, kind: outcome.kind };
 }
@@ -174,8 +226,9 @@ describe('a Terminal adopting a pane main created keeps the create-time session 
     await vi.advanceTimersByTimeAsync(1); // the attach flush: the shell's first output
     await vi.advanceTimersByTimeAsync(10); // settle → the line is written into the pipe
     expect(world.ptyInput).toBe(''); // still in flight
-    await mountReattach(world); // the Terminal mounts on the session
+    const mount = mountReattach(world); // the Terminal mounts on the session
     await vi.advanceTimersByTimeAsync(50);
+    await mount;
     expect(world.ptyInput).toBe('claude\r');
   });
 
@@ -183,32 +236,75 @@ describe('a Terminal adopting a pane main created keeps the create-time session 
     await create(world, '');
     await vi.advanceTimersByTimeAsync(5);
     expect(world.client.writeToSession(ID, 'x')).toBe(true);
-    await mountReattach(world);
+    const mount = mountReattach(world);
     await vi.advanceTimersByTimeAsync(50);
+    await mount;
     expect(world.ptyInput).toBe('x');
   });
 
-  it('the shell output still tells the launch line it spoke when the Terminal mounts first', async () => {
-    // The mount lands before the attach flush: the create-time listener is the
-    // one that must hear the shell's first output, or the line waits for the
-    // 3 s no-output fallback.
+  it('the startup line still hears the shell first speak when the Terminal mounts first', async () => {
+    // The mount lands before the attach flush, so the reconnect's listener is
+    // the one that sees the shell's first output; without the hook the line
+    // would wait for the 3 s no-output fallback.
     await create(world, 'claude');
-    await mountReattach(world);
+    const mount = mountReattach(world);
     await vi.advanceTimersByTimeAsync(100);
+    await mount;
     expect(world.ptyInput).toBe('claude\r');
   });
 
-  it('the mounting Terminal still gets the screen, replayed over the same pipe', async () => {
-    const created = await create(world, '');
+  it('the mounting Terminal gets the screen, replayed over the same pipe', async () => {
+    await create(world, '');
     await vi.advanceTimersByTimeAsync(5);
     const socketBefore = world.socket;
-    await mountReattach(world);
-    await vi.advanceTimersByTimeAsync(5);
+    const mount = mountReattach(world);
+    await vi.advanceTimersByTimeAsync(10);
+    const re = await mount;
+    expect(re.kind).toBe('kept');
     expect(world.attaches).toBe(1);
     expect(world.socket).toBe(socketBefore);
-    expect(world.resyncs).toBe(1);
-    // main's one listener forwards to the renderer; the re-flush rode it.
-    expect(created.painted).toEqual(['PS> ', 'PS> ']);
+    expect(world.resyncCalls).toBe(1);
+    expect(re.painted).toEqual(['PS> ']);
+    expect(world.leakedMarkers).toBe(0);
+  });
+});
+
+describe('the mount re-flush and a reveal re-flush of the same pane are one', () => {
+  let world: World;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    world = new World();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('a reveal asking while the mount re-flush runs joins it', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const mount = mountReattach(world);
+    await vi.advanceTimersByTimeAsync(1);
+    const reveal = world.resync(ID, 1000); // pty:resync
+    await vi.advanceTimersByTimeAsync(20);
+    expect((await mount).kind).toBe('kept');
+    expect(await reveal).toEqual({ success: true, mode: 'raw' });
+    expect(world.resyncCalls).toBe(1);
+    expect(world.disarms).toBe(0);
+    expect(world.leakedMarkers).toBe(0);
+  });
+
+  it('a Terminal mounting while a reveal re-flush runs joins it, keeping the pipe', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const reveal = world.resync(ID, 1000);
+    await vi.advanceTimersByTimeAsync(REFLUSH_BEGIN_MS + 0.5); // its BEGIN is in: replay accumulating
+    const mount = mountReattach(world);
+    await vi.advanceTimersByTimeAsync(20);
+    expect((await mount).kind).toBe('kept');
+    expect((await reveal).success).toBe(true);
+    expect(world.resyncCalls).toBe(1);
+    expect(world.attaches).toBe(1);
+    expect(world.leakedMarkers).toBe(0);
   });
 });
 
@@ -228,7 +324,7 @@ describe('a reconnect with no live create-time pipe to keep attaches afresh', ()
     const re = await mountReattach(world, false);
     expect(re.kind).toBe('attached');
     expect(world.attaches).toBe(2);
-    expect(world.resyncs).toBe(0);
+    expect(world.resyncCalls).toBe(0);
   });
 
   it('a create-time pipe that has closed', async () => {
@@ -251,6 +347,7 @@ describe('a reconnect with no live create-time pipe to keep attaches afresh', ()
     const re = await mountReattach(world);
     expect(re.kind).toBe('attached');
     expect(world.disarms).toBe(1);
+    expect(world.armed).toBe(false);
     expect(world.attaches).toBe(2);
   });
 
@@ -261,15 +358,5 @@ describe('a reconnect with no live create-time pipe to keep attaches afresh', ()
     const re = await mountReattach(world);
     expect(re.kind).toBe('attached');
     expect(world.attaches).toBe(2);
-  });
-
-  it('keeps the pipe when a re-flush is already on its way (busy), and leaves its watch armed', async () => {
-    await create(world, '');
-    await vi.advanceTimersByTimeAsync(5);
-    world.resyncError = 'RESYNC_BUSY: a re-flush is already in progress';
-    const re = await mountReattach(world);
-    expect(re.kind).toBe('kept');
-    expect(world.disarms).toBe(0);
-    expect(world.attaches).toBe(1);
   });
 });

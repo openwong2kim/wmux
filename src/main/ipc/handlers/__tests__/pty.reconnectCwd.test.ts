@@ -99,10 +99,13 @@ describe('PTY_RECONNECT registers session:data before attachSession (source-leve
     expect(installIdx).toBeLessThan(attachIdx);
   });
 
-  it('does not register the handler a second time (no duplicate)', () => {
+  it('installs the handler once per path (no duplicate)', () => {
     const matches = RECONNECT.match(/setSessionDataListener\(id, onSessionData\)/g) ?? [];
     expect(matches.length).toBe(1);
-    expect(PIPE.match(/opts\.installListener\(\)/g)?.length).toBe(1);
+    // One install on the attach path, one where the create-time pipe is kept.
+    expect(PIPE.match(/opts\.installListener\(\)/g)?.length).toBe(2);
+    const keepAt = PIPE.indexOf('async function keepCreatePipe');
+    expect(PIPE.indexOf('opts.installListener()', keepAt)).toBeGreaterThan(keepAt);
   });
 });
 
@@ -162,5 +165,20 @@ describe('PTY_RECONNECT keeps only a pipe the create attached (source-level lock
     expect(SRC).toMatch(/disconnectSessionPipe\(payload\.sessionId\)\.catch\(\(\) => \{\}\);\s*createAttachedPipes\.delete\(payload\.sessionId\);/);
     expect(SRC).toMatch(/onDaemonSessionRestarted = \(payload\) => \{[\s\S]{0,400}?createAttachedPipes\.delete\(payload\.sessionId\);/);
     expect(SRC).toMatch(/await daemonClient\.disconnectSessionPipe\(id\);\s*createAttachedPipes\.delete\(id\);/);
+  });
+
+  it('the startup line hears the shell first speak through whichever listener the session has', () => {
+    expect(SRC).toMatch(/firstOutputHooks\.set\(sessionId, initialCmd\.onFirstData\);/);
+    expect(SRC).toMatch(/if \(payload\.sessionId !== sessionId\) return;\s*noteFirstOutput\(sessionId\);/);
+    expect(RECONNECT).toMatch(/if \(payload\.sessionId !== id\) return;[\s\S]{0,120}?noteFirstOutput\(id\);/);
+    // The create listener no longer calls the startup line directly.
+    expect(SRC).not.toMatch(/return;\s*initialCmd\.onFirstData\(\);/);
+  });
+
+  it('pty:resync and the reconnect share one re-flush per session', () => {
+    expect(RECONNECT).toMatch(/resync: resyncOf\(daemonClient\),/);
+    expect(RECONNECT).toMatch(/return await resyncOf\(daemonClient\)\(id, scrollback\);/);
+    // Only the shared helper calls the daemon's re-flush.
+    expect(SRC).not.toMatch(/rpc\('daemon\.resyncSession'/);
   });
 });
