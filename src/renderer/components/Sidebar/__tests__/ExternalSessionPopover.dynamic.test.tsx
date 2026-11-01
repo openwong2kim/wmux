@@ -45,7 +45,7 @@ function render(s: ExternalSession, inWorkspace = true) {
       onHide: vi.fn(),
     }));
   });
-  return document.querySelector<HTMLElement>('[data-external-session-card]')!;
+  return document.querySelector('[data-external-session-card]') as HTMLElement;
 }
 
 const action = (card: HTMLElement, name: string) => card.querySelector<HTMLButtonElement>(`[data-external-session-action="${name}"]`);

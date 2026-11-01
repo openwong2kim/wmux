@@ -155,7 +155,8 @@ describe('selectExternalPlacement', () => {
   });
 
   it('never matches another computer’s shadow workspace', () => {
-    const shadow = formatShadowWorkspaceId('host-1', 'api')!;
+    const shadow = formatShadowWorkspaceId('host-1', 'api') ?? '';
+    expect(shadow).not.toBe('');
     const placed = selectExternalPlacement(state({ workspaces: [ws(shadow, '/code/api')] }));
     expect(placed.byWorkspace[shadow]).toBeUndefined();
     expect(placed.outside.map((s) => s.id)).toEqual(['s']);
