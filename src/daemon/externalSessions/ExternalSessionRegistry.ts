@@ -207,9 +207,10 @@ export class ExternalSessionRegistry {
         s.title ??= externalText(payload['prompt'], EXTERNAL_SESSION_LIMITS.title);
         this.setState(entry, 'running');
         return;
+      // The PreToolUse gate (awaiting_permission) fires for every tool call;
+      // nothing waits on it here.
       case 'agent.activity':
       case 'agent.tool_started':
-      // The PreToolUse gate fires for every tool call; nothing waits on it here.
       case 'agent.awaiting_permission': {
         const line = toolLine(payload, EXTERNAL_SESSION_LIMITS.lastActivity);
         if (line) s.lastActivity = line;

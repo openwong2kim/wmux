@@ -120,9 +120,9 @@ describe('ExternalSessionRegistry', () => {
     f.registry.note(signal({ kind: 'agent.activity', payload: { tool_name: 'Bash', agent_id: 'a', agent_type: 't', tool_input: { command: long } } }));
     const s = f.one();
     expect(s.title?.startsWith('red title line two ')).toBe(true);
-    expect(s.title!.length).toBeLessThanOrEqual(EXTERNAL_SESSION_LIMITS.title);
-    expect(s.pendingQuestion!.length).toBeLessThanOrEqual(EXTERNAL_SESSION_LIMITS.pendingQuestion);
-    expect(s.lastActivity!.length).toBeLessThanOrEqual(EXTERNAL_SESSION_LIMITS.lastActivity);
+    expect(s.title?.length).toBeLessThanOrEqual(EXTERNAL_SESSION_LIMITS.title);
+    expect(s.pendingQuestion?.length).toBeLessThanOrEqual(EXTERNAL_SESSION_LIMITS.pendingQuestion);
+    expect(s.lastActivity?.length).toBeLessThanOrEqual(EXTERNAL_SESSION_LIMITS.lastActivity);
     expect(s.where).toEqual({ kind: 'tmux', session: 'work', window: '2' });
     for (const text of [s.title, s.pendingQuestion, s.lastActivity, s.where.session]) {
       // eslint-disable-next-line no-control-regex -- asserting none survive
@@ -282,7 +282,7 @@ describe('HookIngest → external sessions', () => {
       id: 'pty-a',
       cwd: '/repo',
       env: {},
-      resumeBinding: { agent: 'claude', sessionId: SID2, cwd: '/repo', ts: 1 },
+      resumeBinding: { agent: 'claude', sessionId: SID2 },
     }]);
     ingest.handle(signal({ kind: 'agent.stop', cwd: '/repo' }));
     expect(registry.list()).toMatchObject([{ agentSessionId: SID, state: 'idle' }]);
