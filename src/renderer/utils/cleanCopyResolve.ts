@@ -13,6 +13,15 @@ export const CLEAN_COPY_TIMEOUT_MS = 300;
 const MAX_SELECTION_CHARS = 64 * 1024;
 /** Only the latest replies: a selection is almost always from the screen. */
 const MAX_REPLIES = 20;
+/** A pane whose transcript read came back empty is not asked again this soon,
+ *  so copying from a plain shell costs no IPC. */
+const NO_TRANSCRIPT_MS = 10_000;
+const noTranscriptAt = new Map<string, number>();
+
+/** Test seam: forget which panes had no transcript. */
+export function forgetNoTranscript(): void {
+  noTranscriptAt.clear();
+}
 // eslint-disable-next-line no-control-regex -- a code block's inline marker is NUL-delimited
 const CODE_MARKER = /\u0000code:(\d+)\u0000/;
 
@@ -27,8 +36,9 @@ function defaultDeps(): CleanCopyDeps | null {
   return { snapshot: (id, before) => chat.snapshot(id, before), codeBlock: (args) => chat.codeBlock(args) };
 }
 
-/** One reply's parts, or null when a code body is cut, unaddressable or unfetchable. */
-async function replyOf(ptyId: string, event: AssistantTextEvent, deps: CleanCopyDeps): Promise<AgentReply | null> {
+/** One reply's parts, or null when a code body is cut, unaddressable or
+ *  unfetchable, or the copy stopped waiting (`live` false): no more fetches. */
+async function replyOf(ptyId: string, event: AssistantTextEvent, deps: CleanCopyDeps, live: () => boolean): Promise<AgentReply | null> {
   // split with a capture group: odd indexes are the block numbers.
   const pieces = event.text.split(CODE_MARKER);
   try {
@@ -36,6 +46,7 @@ async function replyOf(ptyId: string, event: AssistantTextEvent, deps: CleanCopy
       if (i % 2 === 0) return piece ? { kind: 'prose', text: piece } : null;
       const block = event.codeBlocks?.find((b) => b.n === Number(piece));
       if (!block || block.truncated || block.srcOffset === undefined) throw new Error('body incomplete');
+      if (!live()) throw new Error('copy no longer waiting');
       const result = await deps.codeBlock({ ptyId, srcOffset: block.srcOffset, n: block.n, eventId: event.id });
       if (!result) throw new Error('body unavailable');
       return block.lang ? { kind: 'code', body: result.body, lang: block.lang } : { kind: 'code', body: result.body };
@@ -46,13 +57,18 @@ async function replyOf(ptyId: string, event: AssistantTextEvent, deps: CleanCopy
   }
 }
 
-async function cleanOrRaw(ptyId: string, selection: string, deps: CleanCopyDeps): Promise<string> {
+async function cleanOrRaw(ptyId: string, selection: string, deps: CleanCopyDeps, live: () => boolean): Promise<string> {
   const page = await deps.snapshot(ptyId);
-  if (!page) return selection;
+  if (!page) {
+    noTranscriptAt.set(ptyId, Date.now());
+    return selection;
+  }
+  noTranscriptAt.delete(ptyId);
+  if (!live()) return selection;
   const events = page.events
     .filter((e): e is AssistantTextEvent => e.kind === 'assistant_text' && !e.thinking && !e.folded)
     .slice(-MAX_REPLIES);
-  const replies = await Promise.all(events.map((e) => replyOf(ptyId, e, deps)));
+  const replies = await Promise.all(events.map((e) => replyOf(ptyId, e, deps, live)));
   return cleanCopyText(selection, replies.filter((r): r is AgentReply => r !== null)) ?? selection;
 }
 
@@ -67,13 +83,19 @@ export async function resolveCopyText(
   deps: CleanCopyDeps | null = defaultDeps(),
 ): Promise<string> {
   if (!ptyId || !deps || !selection || selection.length > MAX_SELECTION_CHARS) return selection;
+  const none = noTranscriptAt.get(ptyId);
+  if (none !== undefined && Date.now() - none < NO_TRANSCRIPT_MS) return selection;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<string>((resolve) => { timer = setTimeout(() => resolve(selection), CLEAN_COPY_TIMEOUT_MS); });
+  // Past the cap the copy writes the selection; the reads still running
+  // start no more fetches.
+  let waiting = true;
+  const timeout = new Promise<string>((resolve) => { timer = setTimeout(() => { waiting = false; resolve(selection); }, CLEAN_COPY_TIMEOUT_MS); });
   try {
-    return await Promise.race([cleanOrRaw(ptyId, selection, deps), timeout]);
+    return await Promise.race([cleanOrRaw(ptyId, selection, deps, () => waiting), timeout]);
   } catch {
     return selection;
   } finally {
+    waiting = false;
     clearTimeout(timer);
   }
 }
@@ -90,3 +112,8 @@ export function createCopySequence(): () => () => boolean {
     return () => mine === latest;
   };
 }
+
+/** The one sequence every copy shares (the explicit copies, copy-on-select,
+ *  every pane): a copy that resolves after any newer copy started writes
+ *  nothing, so the clipboard ends with the newest. */
+export const startCopy = createCopySequence();

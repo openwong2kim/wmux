@@ -31,7 +31,7 @@ import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { agentSelectsOnDrag, installPlainDragSelect, installWheelClearsSelectionHint, mouseOwnedHintApplies } from '../utils/plainDragSelect';
 import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
-import { createCopySequence, resolveCopyText } from '../utils/cleanCopyResolve';
+import { resolveCopyText, startCopy } from '../utils/cleanCopyResolve';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
 import {
   createReplayMute, getTerminalReplayMute, disposeTerminalReplayMute,
@@ -799,10 +799,6 @@ function showMouseOwnedHintToast(keys: { mac: string; other: string } = MOUSE_OW
   mouseOwnedToastTimer = setTimeout(() => { node.style.opacity = '0'; }, visibleMs);
 }
 
-// Newest explicit copy wins: a slow clean-copy resolution never writes over a
-// copy that started after it.
-const startExplicitCopy = createCopySequence();
-
 /**
  * Centralized async copy helper. main may now `throw` on validation/size/lock
  * failures (clipboard.handler), so renderer must await + catch to surface the
@@ -823,7 +819,8 @@ export function copySelectionWithFeedback(
   const ptyId = options?.ptyId;
   return runCopyWithFeedback(selection, {
     resolve: ptyId ? (text) => resolveCopyText(ptyId, text) : undefined,
-    isCurrent: startExplicitCopy(),
+    // Newest copy wins, explicit or copy-on-select (cleanCopyResolve startCopy).
+    isCurrent: startCopy(),
     write: (text) => window.clipboardAPI.writeText(text),
     // `keepSelection` leaves the highlight in place after a successful copy.
     // The right-click copy path uses this so the selection survives the

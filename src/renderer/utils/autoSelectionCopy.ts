@@ -15,7 +15,7 @@
  * unit-tested without pulling in xterm + Electron + DOM.
  */
 
-import { createCopySequence } from './cleanCopyResolve';
+import { startCopy } from './cleanCopyResolve';
 
 export interface AutoSelectionCopyDeps {
   /** Bridge to `window.clipboardAPI.writeText` (or any equivalent). */
@@ -48,9 +48,10 @@ export function createAutoSelectionCopy(deps: AutoSelectionCopyDeps): AutoSelect
   const clearT = deps.clearTimeoutFn ?? ((h) => clearTimeout(h));
 
   let pending: ReturnType<typeof setTimeout> | null = null;
-  // A resolution still running when a newer one starts, or after dispose(),
+  // A resolution still running when any newer copy starts (startCopy is
+  // shared with the explicit copies), or after this handle's dispose(),
   // writes nothing.
-  const startCopy = createCopySequence();
+  let epoch = 0;
 
   const write = (text: string): void => {
     void deps.write(text).catch(() => {
@@ -65,13 +66,14 @@ export function createAutoSelectionCopy(deps: AutoSelectionCopyDeps): AutoSelect
       if (!selection || selection.length === 0) return;
       if (!deps.resolve) { write(selection); return; }
       const isCurrent = startCopy();
+      const mine = epoch;
       // resolve never rejects; the catch only keeps a broken one silent.
-      void deps.resolve(selection).then((text) => { if (isCurrent()) write(text); }).catch(() => undefined);
+      void deps.resolve(selection).then((text) => { if (isCurrent() && mine === epoch) write(text); }).catch(() => undefined);
     }, debounceMs);
   };
 
   const dispose = (): void => {
-    startCopy();
+    epoch++;
     if (pending) {
       clearT(pending);
       pending = null;

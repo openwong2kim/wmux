@@ -107,6 +107,18 @@ describe('runCopyWithFeedback — clean copy', () => {
     expect(deps.onSuccess).toHaveBeenCalledTimes(1);
   });
 
+  it('a copy that starts during the write keeps its selection', async () => {
+    let current = true;
+    const deps = makeDeps({
+      resolve: async () => 'clean',
+      isCurrent: () => current,
+      write: vi.fn(async () => { current = false; }), // copy-on-select of a new selection started
+    });
+    await runCopyWithFeedback('old', deps);
+    expect(deps.write).toHaveBeenCalledWith('clean');
+    expect(deps.clearSelection).not.toHaveBeenCalled();
+  });
+
   it('a copy superseded while it resolved writes nothing and shows no toast', async () => {
     let finish!: (text: string) => void;
     let current = true;

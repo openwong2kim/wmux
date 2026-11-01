@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { startCopy } from '../cleanCopyResolve';
 import { createAutoSelectionCopy } from '../autoSelectionCopy';
 
 describe('createAutoSelectionCopy', () => {
@@ -155,6 +156,21 @@ describe('createAutoSelectionCopy', () => {
     await vi.advanceTimersByTimeAsync(0);
 
     expect(write.mock.calls).toEqual([['second clean']]);
+  });
+
+  it('a copy started anywhere else meanwhile (an explicit copy) stops it from writing', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    let finish!: (text: string) => void;
+    const resolve = () => new Promise<string>((r) => { finish = r; });
+    const handle = createAutoSelectionCopy({ write, resolve, debounceMs: 50 });
+
+    handle.onSelection('sel');
+    await vi.advanceTimersByTimeAsync(50);
+    startCopy(); // e.g. Cmd+C in this pane or another
+    finish('sel clean');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(write).not.toHaveBeenCalled();
   });
 
   it('dispose() stops a resolution still running from writing', async () => {

@@ -45,7 +45,8 @@ export async function runCopyWithFeedback(
     const text = deps.resolve ? await deps.resolve(selection) : selection;
     if (deps.isCurrent && !deps.isCurrent()) return;
     await deps.write(text);
-    deps.clearSelection();
+    // A copy that started during the write owns the selection now.
+    if (!deps.isCurrent || deps.isCurrent()) deps.clearSelection();
     deps.onSuccess();
   } catch {
     // Keep the selection — the user can retry the copy.

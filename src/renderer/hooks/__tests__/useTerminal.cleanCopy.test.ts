@@ -15,10 +15,9 @@ describe('clean copy — copy entry point wiring (source-level)', () => {
   const helper = src.slice(src.indexOf('export function copySelectionWithFeedback('), src.indexOf('const RIGHT_CLICK_PASTE_SUPPRESS_MS'));
 
   it('copySelectionWithFeedback resolves through the pane only when given a ptyId, newest copy winning', () => {
-    expect(src).toMatch(/const startExplicitCopy = createCopySequence\(\);/);
     expect(helper).toMatch(/options\?: \{ keepSelection\?: boolean; ptyId\?: string \}/);
     expect(helper).toMatch(/resolve: ptyId \? \(text\) => resolveCopyText\(ptyId, text\) : undefined,/);
-    expect(helper).toMatch(/isCurrent: startExplicitCopy\(\),/);
+    expect(helper).toMatch(/isCurrent: startCopy\(\),/);
   });
 
   it('passes the pane ptyId at the Cmd+C, Ctrl+C and Ctrl+Shift+C copies', () => {

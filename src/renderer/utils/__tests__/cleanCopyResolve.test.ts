@@ -4,7 +4,7 @@ import type { AssistantTextEvent, CodeBlockRef, TranscriptPage, TurnEvent } from
 const cleanCopyText = vi.fn();
 vi.mock('../agentReplyCopy', () => ({ cleanCopyText: (...args: unknown[]) => cleanCopyText(...args) }));
 
-import { CLEAN_COPY_TIMEOUT_MS, createCopySequence, resolveCopyText, type CleanCopyDeps } from '../cleanCopyResolve';
+import { CLEAN_COPY_TIMEOUT_MS, createCopySequence, forgetNoTranscript, resolveCopyText, type CleanCopyDeps } from '../cleanCopyResolve';
 
 const NUL = '\u0000';
 
@@ -39,6 +39,7 @@ function repliesSeen(): unknown[] {
 }
 
 beforeEach(() => {
+  forgetNoTranscript();
   cleanCopyText.mockReset();
   cleanCopyText.mockReturnValue('CLEAN');
 });
@@ -93,6 +94,29 @@ describe('resolveCopyText — raw fallbacks', () => {
       const result = resolveCopyText('p1', 'sel', d);
       await vi.advanceTimersByTimeAsync(CLEAN_COPY_TIMEOUT_MS);
       expect(await result).toBe('sel');
+    });
+
+    it('starts no code-body fetch once the cap has passed', async () => {
+      let answer!: (p: TranscriptPage) => void;
+      const d = deps([]);
+      d.snapshot.mockReturnValue(new Promise((r) => { answer = r; }));
+      const result = resolveCopyText('p1', 'sel', d);
+      await vi.advanceTimersByTimeAsync(CLEAN_COPY_TIMEOUT_MS);
+      expect(await result).toBe('sel');
+      answer(page([reply('a', `x${NUL}code:0${NUL}`, [{ n: 0, lines: 1, srcOffset: 5 }])]));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(d.codeBlock).not.toHaveBeenCalled();
+    });
+
+    it('does not ask a pane without a transcript again for a while', async () => {
+      const d = deps([]);
+      d.snapshot.mockResolvedValue(null);
+      expect(await resolveCopyText('p1', 'sel', d)).toBe('sel');
+      expect(await resolveCopyText('p1', 'sel', d)).toBe('sel');
+      expect(d.snapshot).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await resolveCopyText('p1', 'sel', d);
+      expect(d.snapshot).toHaveBeenCalledTimes(2);
     });
 
     it('counts the code bodies inside the same cap', async () => {
