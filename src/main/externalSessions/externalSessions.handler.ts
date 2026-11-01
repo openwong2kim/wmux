@@ -11,9 +11,17 @@ import {
   type ExternalSession,
 } from '../../shared/externalSessions';
 import type { DaemonClient } from '../DaemonClient';
+import { isAgentSlug } from '../../shared/agentIdentity';
 
 const STATES = new Set(['running', 'needs-you', 'idle', 'ended']);
 const ID_MAX = 256;
+const OPTIONAL_TEXT = ['title', 'pendingQuestion', 'lastActivity'] as const;
+const WHERE_TEXT = ['session', 'window', 'label', 'wslDistro'] as const;
+
+/** Absent, or a string: the renderer reads these as text. */
+function optionalText(obj: Record<string, unknown>, keys: readonly string[]): boolean {
+  return keys.every((k) => obj[k] === undefined || typeof obj[k] === 'string');
+}
 
 /** The daemon's rows, shape-checked before they cross into the renderer; a malformed row is dropped. */
 export function parseExternalSessions(data: unknown): ExternalSession[] | null {
@@ -22,10 +30,12 @@ export function parseExternalSessions(data: unknown): ExternalSession[] | null {
     if (!row || typeof row !== 'object') return false;
     const r = row as Record<string, unknown>;
     const where = r['where'] as Record<string, unknown> | null | undefined;
-    return typeof r['id'] === 'string' && typeof r['agent'] === 'string' && typeof r['agentSessionId'] === 'string'
+    // An agent this app does not know (a newer daemon) has no name to show.
+    return typeof r['id'] === 'string' && isAgentSlug(r['agent']) && typeof r['agentSessionId'] === 'string'
       && typeof r['cwd'] === 'string' && typeof r['state'] === 'string' && STATES.has(r['state'])
       && typeof r['lastSignalAt'] === 'number' && typeof r['startedAt'] === 'number'
-      && !!where && typeof where === 'object' && typeof where['kind'] === 'string';
+      && optionalText(r, OPTIONAL_TEXT)
+      && !!where && typeof where === 'object' && typeof where['kind'] === 'string' && optionalText(where, WHERE_TEXT);
   });
 }
 
