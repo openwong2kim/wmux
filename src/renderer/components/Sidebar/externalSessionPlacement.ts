@@ -10,6 +10,7 @@ import type { ExternalSession, ExternalSessionState, ExternalSessionWhere } from
 import type { AgentStatus, Workspace } from '../../../shared/types';
 import { isAtOrUnder } from '../FileTree/FileTreePanel';
 import { quotePosixPath } from '../../../shared/imagePaste';
+import { isValidWslDistroName } from '../../../shared/wslDistro';
 
 /**
  * The folder a workspace stands for: the one it was opened on, else its live
@@ -83,14 +84,29 @@ export function placeExternalSessions(
 /**
  * The command that attaches to the session from another terminal: only when
  * the session runs inside tmux or screen and its session name is known.
+ * A WSL session gets a command for a Windows shell (see wslAttachCommand).
  * Anything else (an ssh login, a terminal app) has nothing to attach to.
  */
 export function externalAttachCommand(where: ExternalSessionWhere): string | undefined {
   const session = where.session?.trim();
   if (!session) return undefined;
+  if (where.kind !== 'tmux' && where.kind !== 'screen') return undefined;
+  if (where.wslDistro !== undefined) return wslAttachCommand(where.kind, where.wslDistro, session);
   if (where.kind === 'tmux') return `tmux attach -t ${quotePosixPath(session)}`;
-  if (where.kind === 'screen') return `screen -r ${quotePosixPath(session)}`;
-  return undefined;
+  return `screen -r ${quotePosixPath(session)}`;
+}
+
+/**
+ * A session inside WSL is attached to from a Windows shell, so the command
+ * goes through wsl.exe. --exec skips the Linux shell, which leaves only the
+ * Windows shell's quoting: a name with characters that cmd or PowerShell would
+ * expand gets no command rather than a wrong one.
+ */
+function wslAttachCommand(kind: 'tmux' | 'screen', distro: string, session: string): string | undefined {
+  if (!isValidWslDistroName(distro) || /["$`%]/.test(session)) return undefined;
+  const name = /^[\w.:@+-]+$/.test(session) ? session : `"${session}"`;
+  const tool = kind === 'tmux' ? `tmux attach -t ${name}` : `screen -r ${name}`;
+  return `wsl.exe -d ${distro.includes(' ') ? `"${distro}"` : distro} --exec ${tool}`;
 }
 
 /**

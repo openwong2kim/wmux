@@ -112,6 +112,21 @@ describe('externalAttachCommand', () => {
     expect(externalAttachCommand({ kind: 'tmux', session: "my work's" })).toBe(`tmux attach -t 'my work'\\''s'`);
   });
 
+  it('goes through wsl.exe for a session inside a WSL distro', () => {
+    expect(externalAttachCommand({ kind: 'tmux', session: 'api', wslDistro: 'Ubuntu-24.04' }))
+      .toBe('wsl.exe -d Ubuntu-24.04 --exec tmux attach -t api');
+    expect(externalAttachCommand({ kind: 'tmux', session: 'my work', wslDistro: 'Ubuntu' }))
+      .toBe('wsl.exe -d Ubuntu --exec tmux attach -t "my work"');
+    expect(externalAttachCommand({ kind: 'screen', session: 'build', wslDistro: 'Dev Box' }))
+      .toBe('wsl.exe -d "Dev Box" --exec screen -r build');
+  });
+
+  it('offers no WSL command the Windows shell would expand or a bad distro name', () => {
+    expect(externalAttachCommand({ kind: 'tmux', session: '$HOME', wslDistro: 'Ubuntu' })).toBeUndefined();
+    expect(externalAttachCommand({ kind: 'tmux', session: 'a%PATH%', wslDistro: 'Ubuntu' })).toBeUndefined();
+    expect(externalAttachCommand({ kind: 'tmux', session: 'api', wslDistro: 'Ubuntu & calc' })).toBeUndefined();
+  });
+
   it('has none without a session name', () => {
     expect(externalAttachCommand({ kind: 'tmux' })).toBeUndefined();
     expect(externalAttachCommand({ kind: 'screen', session: '  ' })).toBeUndefined();
