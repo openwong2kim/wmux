@@ -50,6 +50,7 @@ import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import { useRoomSync } from '../../hooks/useRoomSync';
+import { useExternalSessionsSync } from '../../hooks/useExternalSessionsSync';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { FocusManager } from './LayoutLogicMounts';
@@ -798,6 +799,7 @@ export default function AppLayout() {
   useUiScaleSync(uiScale);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   useRoomSync();
+  useExternalSessionsSync();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);

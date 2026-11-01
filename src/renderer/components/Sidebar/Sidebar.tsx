@@ -15,6 +15,7 @@ import WorkspaceItem from './WorkspaceItem';
 import HostWorkspaceList from './HostWorkspaceList';
 import { PcSwitcherTitle } from './PcSwitcher';
 import OrphanSessions from './OrphanSessions';
+import ExternalSessionsGroup from './ExternalSessionsGroup';
 import AgentNotReadyRow from './AgentNotReadyRow';
 import StarPromptRow from './StarPromptRow';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
@@ -626,6 +627,10 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           </WorkspaceSettleGroup>
         ))}
         </div>
+
+        {/* Agents started outside wmux whose folder no workspace holds
+            (placement B, 2026-11-01). Empty → invisible. */}
+        {!readOnly && <ExternalSessionsGroup />}
 
         {/* #1011 — put-away workspaces: configuration snapshots, one click
             back to live. Collapsed by default; empty → invisible. */}
