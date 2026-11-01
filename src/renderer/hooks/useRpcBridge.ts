@@ -95,7 +95,7 @@ import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
-import { decideCompanySend, companyCancelRefusal, companyDoneRefusal, companySeatOf, isCompanyTask } from '../../shared/company';
+import { COMPANY_RENDERER_METHOD, decideCompanySend, companyCancelRefusal, companyDoneRefusal, companySeatOf, isCompanyTask } from '../../shared/company';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import type { MoaPendingDecision } from '../../shared/moa';
@@ -3239,6 +3239,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
   }
 
   if (method === A2A_REMOTE_NOTIFY_METHOD) return handleRemoteNotify(params);
+
+  // Company mode, main only: a task stored with no delivery while it waits on
+  // its blockers, whose hold the daemon did not keep. Main fails the send, so
+  // the copy here goes too: nothing would ever deliver it.
+  if (method === COMPANY_RENDERER_METHOD.discard) {
+    const taskId = typeof params.taskId === 'string' ? params.taskId : '';
+    const task = taskId ? useStore.getState().getTask(taskId) : undefined;
+    if (!task || !isCompanyTask(task.history)) return { ok: false, error: `${method}: no company task ${taskId}` };
+    useStore.setState((s) => { delete s.a2aTasks[taskId]; });
+    return { ok: true };
+  }
 
   if (method === 'a2a.task.send') {
     if (params.remoteMarker !== undefined || params.remoteFrom !== undefined) return handleRemoteTaskSend(params);

@@ -10,8 +10,9 @@ import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
 import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
-import { validateMessage, type Message } from '../../../shared/types';
-import { COMPANY_BRIEF_KIND, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
+import { validateMessage, type Message, type Task } from '../../../shared/types';
+import { COMPANY_BRIEF_KIND, COMPANY_RENDERER_METHOD, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
+import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, companyHoldOf, companyWaitingLine } from '../../../shared/companyHold';
 import { configuredForge, forgeHosts } from '../../../shared/forgeHosts';
 import {
   DONE_PR_CHECK_MAX,
@@ -148,6 +149,29 @@ function taskUpdatedAt(t: Record<string, unknown>): string {
 
 /** Daemon deadline for a paged a2a.task.query (see the handler). */
 const PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS = 3_000;
+
+/**
+ * The task ids a new task's company brief waits on (`blockedBy`), without
+ * repeats or empty ids, in the order asked: the same list the daemon derives
+ * the task's hold from (shared/companyHold.ts companyHoldAtCreate).
+ */
+function blockedByOf(data: unknown): string[] {
+  return [...new Set((companyBriefOf(data)?.blockedBy ?? []).filter((id) => id.length > 0))];
+}
+
+/**
+ * Who reads the daemon's tasks, as its a2a.task.query takes it: a company task
+ * that still waits on a blocker is kept from its receiving side unless the
+ * caller is its sender's pane or the human (shared/companyHold.ts).
+ */
+type TaskQueryCaller = { paneId?: string; trusted?: true };
+
+function taskQueryCallerParams(caller: TaskQueryCaller): Record<string, unknown> {
+  return {
+    ...(caller.paneId ? { callerPaneId: caller.paneId } : {}),
+    ...(caller.trusted ? { trustedLane: true } : {}),
+  };
+}
 
 async function daemonTaskRpc(
   getDaemonClient: (() => DaemonClient | null) | undefined,
@@ -309,6 +333,14 @@ export interface RemoteA2aRpcDeps {
 }
 
 /**
+ * What the a2a handlers ask of main's CompanyReleaseBridge: pull the released
+ * company tasks now (a task just ended, or a hold was released at create).
+ */
+export interface CompanyReleaseHook {
+  pullNow(): void;
+}
+
+/**
  * One paired PC that a2a.discover cannot list as an agent yet: a count and a
  * line saying which step is missing. Never names a pane or carries an id.
  */
@@ -376,6 +408,8 @@ export function registerA2aRpc(
     remote?: RemoteA2aRpcDeps;
     /** The gh reads of a company task's done check; tests inject one. */
     prReview?: Pick<GhPrReviewService, 'donePrFacts'>;
+    /** Main's CompanyReleaseBridge of the moment (one per daemon connection), or null. */
+    companyRelease?: () => CompanyReleaseHook | null;
   } = {},
 ): void {
   const getDaemonClient = opts.getDaemonClient;
@@ -407,6 +441,9 @@ export function registerA2aRpc(
   ): Promise<unknown> {
     const alias = params.to as string;
     if (params.execute === true) return { error: 'a2a.task.send: execute is not available for a remote pane (message only)' };
+    // A task held on its blockers waits on this PC's daemon record; a task to
+    // another PC has no such hold yet (v1).
+    if (blockedByOf(params.data).length > 0) return { error: `a2a.task.send: ${COMPANY_BLOCKED_BY_REFUSAL.remoteTask}` };
     // An alias must name exactly one link: never pick one of several silently.
     if (matches.length > 1) {
       return { error: `a2a.task.send: "${alias}" names ${matches.length} links; send to the exact alias a2a_discover lists for the one you mean (a repeated name gets a #2, #3 suffix)` };
@@ -1319,6 +1356,110 @@ export function registerA2aRpc(
   }
 
   /**
+   * Company mode: the blockers a new task's brief names, judged against the
+   * daemon's record only (the renderer's store is empty after a restart, and a
+   * task the daemon does not hold would never release the hold). The company
+   * is the sender's workspace: a brief to a staff seat is always sent from
+   * inside its company. A completed blocker is satisfied already; the open
+   * ones are returned, to be waited on. Refused: too many, a task on another
+   * PC, one the daemon does not know (or ended over 30 minutes ago), one that
+   * is not a company task of this workspace, and one that failed or was
+   * canceled.
+   */
+  async function judgeCompanyBlockers(
+    blockedBy: string[],
+    workspaceId: string,
+    caller: TaskQueryCaller,
+  ): Promise<{ open: string[] } | { error: string }> {
+    if (blockedBy.length > COMPANY_BLOCKERS_MAX) return { error: COMPANY_BLOCKED_BY_REFUSAL.tooMany(blockedBy.length) };
+    const remoteId = blockedBy.find((id) => isRemoteTaskId(id));
+    if (remoteId) return { error: COMPANY_BLOCKED_BY_REFUSAL.remoteBlocker(remoteId) };
+    const reads = await Promise.all(blockedBy.map((taskId) => daemonTaskRpc(
+      getDaemonClient,
+      'a2a.task.query',
+      { workspaceId, view: 'page', taskId, ...taskQueryCallerParams(caller) },
+      { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS },
+    )));
+    const open: string[] = [];
+    for (const [i, id] of blockedBy.entries()) {
+      const gate = reads[i];
+      // Not a refusal: a hold needs the daemon, and it did not answer.
+      if (gate.kind !== 'ok') return { error: `wmux could not read task ${id} to check blockedBy; retry` };
+      const tasks: unknown[] = Array.isArray(gate.result.tasks) ? gate.result.tasks : [];
+      const task = tasks.find((t) => isRecord(t) && t.id === id);
+      if (!isRecord(task)) return { error: COMPANY_BLOCKED_BY_REFUSAL.unknown(id) };
+      const meta = isRecord(task.metadata) ? task.metadata : {};
+      const to = isRecord(meta.to) ? meta.to : {};
+      if (isRemoteWorkspaceId(to.workspaceId)) return { error: COMPANY_BLOCKED_BY_REFUSAL.remoteBlocker(id) };
+      const history: unknown[] = Array.isArray(task.history) ? task.history : [];
+      const first = history[0];
+      const companyTask = isRecord(first) && Array.isArray(first.parts) && isCompanyTask(history as Message[]);
+      if (!companyTask || to.workspaceId !== workspaceId) return { error: COMPANY_BLOCKED_BY_REFUSAL.otherCompany(id) };
+      const state = isRecord(task.status) ? task.status.state : undefined;
+      if (state === 'failed' || state === 'canceled') return { error: COMPANY_BLOCKED_BY_REFUSAL.ended(id, state) };
+      if (state !== 'completed') open.push(id);
+    }
+    return { open };
+  }
+
+  /**
+   * The end of a send the renderer stored with no delivery because its
+   * blockers were still open. The hold must be durable: when the daemon did
+   * not create the task with its hold, the renderer's copy is dropped and the
+   * send fails (a hold nothing keeps would be stored and never sent). The
+   * daemon decides the hold from the blockers' states at create, so the
+   * receipt names what it waits on. One whose last blocker completed after the
+   * check is released at create, and main's bridge writes it to its pane: the
+   * bridge is the only path a held task is delivered by.
+   */
+  async function finishHeldSend(
+    result: Record<string, unknown>,
+    mirror: DaemonTaskGate | undefined,
+    workLink: ReturnType<typeof workLinkFromSentTask>,
+    silentAsked: boolean,
+  ): Promise<unknown> {
+    const taskId = result.taskId as string;
+    const created = mirror?.kind === 'ok' && isRecord(mirror.result.task) && isRecord(mirror.result.task.metadata)
+      ? (mirror.result.task as unknown as Task)
+      : undefined;
+    const hold = companyHoldOf(created);
+    if (!hold) {
+      await sendToRenderer(getWindow, COMPANY_RENDERER_METHOD.discard, { taskId }).catch(() => undefined);
+      const why = mirror?.kind === 'reject'
+        ? mirror.error
+        : mirror?.kind === 'ok' ? 'the wmux daemon did not record the hold' : 'the wmux daemon did not answer';
+      return {
+        error: `a2a.task.send: the task waits on blockedBy, and wmux could not keep it on hold (${why}); nothing was stored, send it again`,
+      };
+    }
+    void recordSentTask(workLink);
+    if (hold.waitingOn.length === 0) {
+      opts.companyRelease?.()?.pullNow();
+      return {
+        ...result,
+        silent: silentAsked,
+        delivery: {
+          stored: true,
+          notified: false,
+          reason: 'released',
+          hint: 'Its blockers completed while it was being sent; wmux writes it to its pane next.',
+        },
+      };
+    }
+    return {
+      ...result,
+      silent: silentAsked,
+      delivery: {
+        stored: true,
+        notified: false,
+        reason: 'blocked',
+        waitingOn: hold.waitingOn,
+        hint: `${companyWaitingLine(hold.waitingOn)}. wmux writes it to its pane once they complete. To change what it waits on, cancel it and send it again.`,
+      },
+    };
+  }
+
+  /**
    * A company task's done waits on wmux's own read of every GitHub PR the task
    * names (shared/companyDonePrCheck.ts). Returns the refusal, or null with
    * each passing PR added to `params.evidence` as a verified inspection. A
@@ -1530,6 +1671,28 @@ export function registerA2aRpc(
       // A remote end's id never names a local workspace: no active link, no send.
       if (isRemoteWorkspaceId(params.to)) return { error: `a2a.task.send: "${params.to}" is not an active link to another PC` };
     }
+    // Company mode: a new task whose brief waits on other tasks. Its blockers
+    // are judged before anything is stored. While one is still open the task
+    // is stored with no delivery and held in the daemon, and main writes it to
+    // its pane once the last one completes (CompanyReleaseBridge).
+    const blockedBy = params.taskId ? [] : blockedByOf(params.data);
+    let waitingOn: string[] = [];
+    if (blockedBy.length > 0) {
+      const senderWs = ctx?.commanderWorkspace ?? (typeof params.workspaceId === 'string' ? params.workspaceId : '');
+      // Read as the sender: a blocker still waiting on its own blockers is
+      // kept from everyone but its sender's pane and the human.
+      const senderPane = ctx?.operator === true ? null : await resolveCallerPane(getWindow, senderWs, params.senderPtyId);
+      const judged = await judgeCompanyBlockers(blockedBy, senderWs, senderPane === null
+        ? { trusted: true }
+        : senderPane.kind === 'resolved' ? { paneId: senderPane.paneId } : {});
+      if ('error' in judged) return { error: `a2a.task.send: ${judged.error}` };
+      waitingOn = judged.open;
+      // A background worker would start the task now.
+      if (waitingOn.length > 0 && params.execute === true) {
+        return { error: 'a2a.task.send: a task that waits on blockedBy goes to its pane once they complete; send it without execute' };
+      }
+    }
+    const held = waitingOn.length > 0;
     // Forward the VALIDATED commander binding (RpcRouter set it from the
     // per-spawn token; never read from the wire, so any caller-supplied value
     // is dropped first). The renderer's reply-delivery guards need it: an
@@ -1568,6 +1731,8 @@ export function registerA2aRpc(
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
       sendParams.workspaceId = ctx.commanderWorkspace;
     }
+    // Stored with no delivery; the addressed pane is pinned on the task as usual.
+    if (held) sendParams.silent = true;
     // A NEW execute send's reply is held until the user answers the approval
     // prompt, which the 5 s bridge default gave up on long before (#1462). The
     // renderer bounds that prompt against this same value, so it always
@@ -1601,18 +1766,25 @@ export function registerA2aRpc(
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.
+    let mirror: DaemonTaskGate | undefined;
+    let workLink: ReturnType<typeof workLinkFromSentTask> = null;
     if (isRecord(result) && result.ok === true && isRecord(result.task) && !params.taskId) {
       // Work link (best-effort, never awaited): read before `task` is stripped.
       // A commander brain's send is a Moa delegation (docs/work-links.md).
-      void recordSentTask(workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace, workLinkId }));
+      workLink = workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace, workLinkId });
+      // A held task's link waits until the daemon has kept its hold (below).
+      if (!held) void recordSentTask(workLink);
       const t = result.task as { id?: unknown; metadata?: { title?: unknown; from?: unknown; to?: unknown }; history?: unknown };
       if (typeof t.id === 'string' && isRecord(t.metadata)) {
-        const mirror = await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
+        mirror = await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
           id: t.id,
           title: t.metadata.title,
           from: t.metadata.from,
           to: t.metadata.to,
           ...(Array.isArray(t.history) ? { history: t.history } : {}),
+          // The daemon keeps a marker even when every blocker completes before
+          // it creates the task, so the bridge is what delivers it.
+          ...(held ? { holdForBlockers: true } : {}),
         });
         // C(패널): 미러-생성 실패는 조용한 비내구 태스크가 된다(렌더러엔 있고 데몬엔
         // 없음 → 재시작 미생존). 이후 전이는 'task not found'로 렌더러 폴백해 수렴하나,
@@ -1626,6 +1798,9 @@ export function registerA2aRpc(
       }
       // 내부 운반 필드 제거 — 파이프 호출자 응답 계약 불변.
       delete (result as Record<string, unknown>).task;
+    }
+    if (held && isRecord(result) && result.ok === true && typeof result.taskId === 'string') {
+      return finishHeldSend(result, mirror, workLink, params.silent === true);
     }
     // A reply that reopened an ended task moves its link back with it.
     if (params.taskId && isRecord(result) && result.ok === true) {
