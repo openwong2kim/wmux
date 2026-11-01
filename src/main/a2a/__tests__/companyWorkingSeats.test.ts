@@ -79,14 +79,18 @@ describe('companyWorkingSeats', () => {
     expect(names([company('ws-a', deferred, [task('t1', 'ws-a', 'dev-1')])])).toEqual([]);
   });
 
-  it('counts a task with a hold only once it is delivered', () => {
+  it('counts a task with a hold once a write to its seat started', () => {
     const waiting = task('t1', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: ['x'], waitingOn: ['x'] } });
     const owed = task('t2', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: [], waitingOn: [], releasedAt: 'r' } });
-    const attempted = task('t3', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: [], waitingOn: [], releasedAt: 'r', attempted: true } });
-    const held = task('t4', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: ['x'], waitingOn: [], releasedAt: 'r', held: 'no-agent' } });
-    expect(names([company('ws-a', panes, [waiting, owed, attempted, held])])).toEqual([]);
+    const noAgent = task('t4', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: ['x'], waitingOn: [], releasedAt: 'r', held: 'no-agent' } });
+    const paneMissing = task('t6', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: [], waitingOn: [], releasedAt: 'r', held: 'pane-missing' } });
+    expect(names([company('ws-a', panes, [waiting, owed, noAgent, paneMissing])])).toEqual([]);
     const delivered = task('t5', 'ws-a', 'dev-1', 'working', { hold: { blockedBy: ['x'], waitingOn: [], releasedAt: 'r', delivered: true } });
     expect(names([company('ws-a', panes, [waiting, delivered])])).toEqual(['#dev-1']);
+    const attempted = task('t3', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: [], waitingOn: [], releasedAt: 'r', attempted: true } });
+    expect(names([company('ws-a', panes, [owed, attempted])])).toEqual(['#dev-1']);
+    const unconfirmed = task('t7', 'ws-a', 'dev-1', 'submitted', { hold: { blockedBy: [], waitingOn: [], releasedAt: 'r', attempted: true, held: 'delivery-unconfirmed' } });
+    expect(names([company('ws-a', panes, [owed, unconfirmed])])).toEqual(['#dev-1']);
   });
 
   it('counts neither the CEO, a pane outside a company, a plain task nor a task with another PC', () => {

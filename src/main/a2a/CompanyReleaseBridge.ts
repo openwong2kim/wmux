@@ -2,6 +2,7 @@ import { isRemoteTaskId } from '../../shared/a2aRemote';
 import { missKindOf } from '../../shared/a2aRemoteDelivery';
 import { COMPANY_RENDERER_METHOD, isCompanyTask, parseCompanySeat } from '../../shared/company';
 import {
+  companyHoldNotGiven,
   companyHoldOf,
   companyHoldPhase,
   type A2aCompanyMarkParams,
@@ -456,8 +457,10 @@ export const COMPANY_SEAT_READ_TIMEOUT_MS = 3_000;
 /**
  * The working staff seats on this PC: a staff pane (not the CEO) whose agent
  * is alive and that holds at least one open company task (`submitted` or
- * `working`) that was written to it. A task with a hold marker counts only
- * once delivered: one still waiting, owed or held is not its seat's work yet.
+ * `working`) that was written to it. A task with a hold marker counts once a
+ * write to its seat started (companyHoldNotGiven): delivered, attempted, or
+ * held as `delivery-unconfirmed`, whose write may have landed. One still
+ * waiting, owed or held with nothing written is not its seat's work yet.
  * A seat counts once however many tasks it holds. Every company on the PC
  * shares the count. Pure.
  */
@@ -494,7 +497,7 @@ function workingPaneOf(task: unknown, workspaceId: string): string | undefined {
   const first = history[0];
   if (!isRecord(first) || !Array.isArray(first.parts) || !isCompanyTask(history as Message[])) return undefined;
   const hold = companyHoldOf(task as unknown as Task);
-  if (hold && companyHoldPhase(hold) !== 'delivered') return undefined;
+  if (hold && companyHoldNotGiven(hold)) return undefined;
   return to.paneId;
 }
 
