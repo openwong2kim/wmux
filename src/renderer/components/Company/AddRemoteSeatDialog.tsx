@@ -95,12 +95,13 @@ export default function AddRemoteSeatDialog({ workspaceId, onClose }: { workspac
 
   const pc = place ? placeName(place) : '';
   // Names a new seat may not take: pane labels, and the company's seats on
-  // other PCs, started or still asked for.
+  // other PCs, started or still asked for. An expired ask counts while it is
+  // listed: a late `started` still makes it a seat under its name.
   const taken = useMemo(() => {
     const out = new Set(Object.values(paneLabel).map(normalizePaneLabel));
     for (const seat of remoteSeatsOf({ workspaceId, coordinatorPaneId: ceoPaneId, links: remoteLinks, hosts: remoteHosts })) out.add(normalizePaneLabel(seat.name));
     for (const r of list?.requests ?? []) {
-      if (r.label && (r.state === 'sent' || r.state === 'waiting')) out.add(normalizePaneLabel(r.label));
+      if (r.label && (r.state === 'sent' || r.state === 'waiting' || r.state === 'expired')) out.add(normalizePaneLabel(r.label));
     }
     return out;
   }, [paneLabel, workspaceId, ceoPaneId, remoteLinks, remoteHosts, list]);

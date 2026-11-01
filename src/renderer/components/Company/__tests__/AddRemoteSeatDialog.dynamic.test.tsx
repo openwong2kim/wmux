@@ -206,6 +206,21 @@ describe('AddRemoteSeatDialog', () => {
     expect(send()?.disabled).toBe(false);
   });
 
+  it('keeps the name of an ask that may still start: waiting, or expired but still listed', async () => {
+    const ask = (label: string, state: 'waiting' | 'expired' | 'refused') => ({
+      hostId: DESK, spawnId: `sp-${label}`, agent: 'claude', rootId: 'web', from: { workspaceId: 'ws-co', paneId: 'p1' },
+      label, state, createdAt: '2026-11-01T00:00:00.000Z', updatedAt: '2026-11-01T00:00:00.000Z',
+    }) as A2aSpawnOutgoingList['requests'][number];
+    outgoing = { requests: [ask('builder', 'waiting'), ask('linux', 'expired'), ask('tester', 'refused')], places: [desk] };
+    await render();
+    for (const name of ['builder', 'linux']) {
+      type('add-remote-seat-name', name);
+      expect(q('add-remote-seat-name-error'), name).not.toBeNull();
+    }
+    type('add-remote-seat-name', 'tester');
+    expect(q('add-remote-seat-name-error')).toBeNull();
+  });
+
   it('asks nothing while the CEO seat is vacant', async () => {
     act(() => useStore.setState({ workspaces: [company(null)] }));
     await render();
