@@ -174,12 +174,19 @@ export async function sendRemoteTask(deps: OutboundDeps, input: A2aRemoteSendTas
   const messageId = mint(deps);
   const taskId = remoteTaskId(link.linkId, messageId);
   const marker: A2aRemoteTaskMarkerV1 = { v: 1, linkId: link.linkId, hostId: link.remote.hostId, messageId, direction: 'outbound', kind: link.local.kind };
+  const first = ledgerMessage(messageId, 'user', att.text, att.images);
+  // A company brief stays on this PC's copy, right after the text, so the
+  // company's rules apply here. The envelope below carries the text only.
+  if (input.brief) {
+    const at = first.parts[0]?.kind === 'text' ? 1 : 0;
+    first.parts.splice(at, 0, { kind: 'data', data: { ...input.brief }, metadata: { mimeType: 'application/json' } });
+  }
   const created = await deps.taskService.createTask({
     id: taskId,
     title: input.title || att.text.slice(0, 100) || countImages(att.images.length),
     from: { ...input.from },
     to: { workspaceId: remoteWorkspaceId(link.linkId), name: deps.aliasFor(link) },
-    history: [ledgerMessage(messageId, 'user', att.text, att.images)],
+    history: [first],
     remote: marker,
   });
   if (!created.ok) return { ok: false, error: created.error };

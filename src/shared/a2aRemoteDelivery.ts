@@ -9,6 +9,7 @@
 // Pure module: no node:* imports (the renderer imports it).
 
 import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
+import type { CompanyBriefV1 } from './company';
 import type { GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
 
@@ -187,6 +188,12 @@ export interface A2aRemoteSendTaskInput {
   text: string;
   /** Absolute paths of images to attach (`images.1`); read from the sender pane's folders only. */
   images?: string[];
+  /**
+   * A company task from the CEO pane: its brief, kept on this PC's copy only
+   * (the first message's data part). The other PC gets `text`, which main
+   * already wrote the brief into.
+   */
+  brief?: CompanyBriefV1;
 }
 
 export interface A2aRemoteReplyInput {
