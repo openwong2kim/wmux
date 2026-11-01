@@ -228,8 +228,9 @@ it is linked to, the way it briefs a staff pane on this PC:
   `remoteReported: true`.
 - **Done is marked here.** The CEO pane, or the owner, marks the report
   completed on this PC. wmux first checks every GitHub PR the task names,
-  the report's evidence included, as for a seat on this PC. Nothing is sent
-  back: the other PC's copy is already completed.
+  the report's evidence included (its summaries and locations, not command
+  output), as for a seat on this PC. Nothing is sent back: the other PC's
+  copy is already completed.
 - **A report outlasts the link.** If the link ends (the other pane closes or
   someone revokes it), open tasks on it fail, but a report stays as it is
   until it is marked done here.
