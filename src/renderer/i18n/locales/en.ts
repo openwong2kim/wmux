@@ -433,6 +433,7 @@ export const en = {
   'sidebar.pin': 'Pin to top',
   'sidebar.unpin': 'Unpin',
   'sidebar.bookmarked': "Bookmarked",
+  'sidebar.multiviewGroup': "Multiview group {n}",
   'sidebar.bookmark': "Bookmark",
   'sidebar.unbookmark': "Remove bookmark",
   // Workspace settle / snooze (shared/workspaceSettle).

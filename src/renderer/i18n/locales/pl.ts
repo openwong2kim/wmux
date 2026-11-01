@@ -438,6 +438,7 @@ export const pl = {
   'sidebar.pin': 'Przypnij na górze',
   'sidebar.unpin': 'Odepnij',
   'sidebar.bookmarked': "Dodano do zakładek",
+  'sidebar.multiviewGroup': "Grupa widoku wielokrotnego {n}",
   'sidebar.bookmark': "Dodaj do zakładek",
   'sidebar.unbookmark': "Usuń z zakładek",
   // Workspace settle / snooze (shared/workspaceSettle).
