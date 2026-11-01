@@ -435,6 +435,11 @@ export interface A2aSpawnAskInput {
    * so a retry after an unclear failure starts nothing twice. Never sent.
    */
   requestKey?: string;
+  /**
+   * The name this PC gives the started agent: its link's remote label, so
+   * the alias reads `<PC>/<workspace>/<label>`. Never sent.
+   */
+  label?: string;
 }
 
 /**
@@ -450,6 +455,8 @@ export interface A2aSpawnUiAsk {
   end: { workspaceId: string; paneId: string };
   /** Minted once per dialog and reused on a retry (`A2aSpawnAskInput.requestKey`). */
   requestKey?: string;
+  /** The name this PC gives the started agent (`A2aSpawnAskInput.label`). */
+  label?: string;
 }
 
 /**

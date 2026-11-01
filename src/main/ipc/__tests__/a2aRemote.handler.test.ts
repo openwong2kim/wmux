@@ -159,6 +159,21 @@ describe('a2aRemote spawn ask', () => {
     await expect(invoke(IPC.A2A_REMOTE_SPAWN_ASK, { ...ask, requestKey: 'bad key!' })).resolves.toMatchObject({ ok: false, error: 'bad-request' });
     expect(client.a2aSpawnAsk).not.toHaveBeenCalled();
   });
+
+  it('passes the name for the started agent on when it is text, and leaves any other value out', async () => {
+    const client = { ...fakeClient(), a2aSpawnAsk: vi.fn(async () => ({ ok: true })) } as unknown as DaemonClient;
+    cleanups.push(registerA2aRemoteHandlers(client));
+    await invoke(IPC.A2A_REMOTE_SNAPSHOT, { workspaces: [{ id: 'w1', name: 'API', panes: [{ paneId: 'p1' }] }] });
+    const ask = { hostId: 'h', agent: 'claude', folder: { root: 'web' }, text: 'go', end: { workspaceId: 'w1', paneId: 'p1' } };
+    await invoke(IPC.A2A_REMOTE_SPAWN_ASK, { ...ask, label: 'Parser seat' });
+    expect(client.a2aSpawnAsk).toHaveBeenLastCalledWith({
+      pc: 'h', agent: 'claude', folder: { root: 'web' }, text: 'go', from: { kind: 'pane', workspaceId: 'w1', paneId: 'p1' }, callerKey: 'p1', label: 'Parser seat',
+    });
+    await invoke(IPC.A2A_REMOTE_SPAWN_ASK, { ...ask, label: { name: 'x' } });
+    expect(client.a2aSpawnAsk).toHaveBeenLastCalledWith({
+      pc: 'h', agent: 'claude', folder: { root: 'web' }, text: 'go', from: { kind: 'pane', workspaceId: 'w1', paneId: 'p1' }, callerKey: 'p1',
+    });
+  });
 });
 
 describe('a2aRemote spawn policy', () => {
