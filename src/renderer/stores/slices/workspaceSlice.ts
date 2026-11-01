@@ -282,6 +282,17 @@ export interface WorkspaceSlice {
    */
   addCompanyWorkspace: (input: CompanyWorkspaceInput) => boolean;
   /**
+   * "Add a seat on this PC…": a pane for a seat main has made (hireSeat), split
+   * from the company's last staff pane (the CEO's when it has none) and
+   * seeded with its name, what it owns, its launch line and folder, so the
+   * pane funnel names it and starts its agent as it does a preset seat's. The
+   * company comes forward first: the funnel starts only the active
+   * workspace's panes, and the split then moves the focus to the new pane.
+   * The new pane's id, or false: no company with a CEO pane, or the pane cap
+   * (splitPane says so).
+   */
+  hireCompanySeat: (workspaceId: string, seat: { label: string; owns: string; command: string; cwd?: string }) => string | false;
+  /**
    * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
    * cleared ptyIds → new panes spawn their own PTYs) and its PROFILE (env +
    * startup command, re-normalized through the save-boundary secret policy).
@@ -565,6 +576,33 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         activateLocalWorkspace(state, ws.id);
       });
       return true;
+    },
+
+    hireCompanySeat: (workspaceId, seat) => {
+      const ws = get().workspaces.find((w: Workspace) => w.id === workspaceId);
+      const ceo = ws?.company?.coordinatorPaneId;
+      if (!ws || !ceo) return false;
+      const leaves = collectLeafPanes(ws.rootPane);
+      const staff = leaves.filter((l) => l.id !== ceo);
+      const target = staff[staff.length - 1] ?? leaves.find((l) => l.id === ceo);
+      if (!target) return false;
+      set((state: StoreState) => {
+        activateLocalWorkspace(state, workspaceId);
+      });
+      // Staff stack below one another, right of the CEO, as a preset lays them out.
+      const paneId = get().splitPane(target.id, staff.length > 0 ? 'vertical' : 'horizontal', workspaceId);
+      if (!paneId) return false;
+      // Same tick as the split: the funnel runs after this returns.
+      const owns = seat.owns.trim();
+      set((state: StoreState) => {
+        state.projectPaneSeed[paneId] = {
+          label: seat.label,
+          command: seat.command,
+          ...(seat.cwd ? { cwd: seat.cwd } : {}),
+          ...(owns ? { role: owns } : {}),
+        };
+      });
+      return paneId;
     },
 
     // #1011 — Active → Archived → Deleted. Archiving snapshots the
