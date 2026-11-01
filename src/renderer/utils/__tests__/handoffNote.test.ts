@@ -136,11 +136,13 @@ describe('bringing the work back', () => {
     { timestamp: at, type: 'response_item', payload: { type: 'function_call_output', call_id: 'c2', output: '[main (root-commit) 7d04b18c9e] relay downstream\n 1 file changed' } },
     { timestamp: at, type: 'event_msg', payload: { type: 'agent_message', message: 'Relayed. Export to markdown is still open.' } },
   ];
-  /** Claude Code: a Bash commit and the same summary line quoted back in prose (not a commit). */
+  /** Claude Code: a Bash commit, the same summary line quoted back in prose, and printed by a command that commits nothing. */
   const CLAUDE_AFTER = [
     { type: 'assistant', uuid: 'a1', timestamp: at, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'git commit -m x' } }] } },
     { type: 'user', uuid: 'r1', timestamp: at, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '[feat/board 3a91c2e] board: blockedBy' }] } },
     { type: 'assistant', uuid: 'a2', timestamp: at, message: { role: 'assistant', content: [{ type: 'text', text: '[feat/board 9999999] not a real commit' }] } },
+    { type: 'assistant', uuid: 'a3', timestamp: at, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_2', name: 'Bash', input: { command: 'cat old-log.txt' } }] } },
+    { type: 'user', uuid: 'r2', timestamp: at, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_2', content: '[main 8888888] from a log file' }] } },
   ];
 
   it('reads the commits an agent made from what its shell printed, once each', () => {

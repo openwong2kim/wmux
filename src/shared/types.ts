@@ -34,6 +34,8 @@ export interface SurfaceHandoff {
   resetsAt: number;
   /** The commit checked out at the handoff: the other agent's changes are counted from it. */
   head?: string;
+  /** The handoff note's first line: the request there that carries the note is not the owner's. */
+  noteHead?: string;
 }
 
 export interface Surface {

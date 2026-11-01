@@ -23,8 +23,8 @@ import { openTerminalTab } from './accountLogin';
 import { pastePtyChunked } from './clipboardChunk';
 import { updateUsageLimit } from '../hooks/useUsageLimitBridge';
 import { closeTabNow } from '../components/Pane/CloseTabConfirm';
-import { nearLimitWindow, USAGE_LIMIT_UNKNOWN_HOLD_MS } from '../../shared/usageLimit';
-import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
+import { nearLimitWindow, usageLimitHolds, USAGE_LIMIT_UNKNOWN_HOLD_MS } from '../../shared/usageLimit';
+import { getLeafPanes } from '../../shared/paneUtils';
 import { bringBackNoteText, handoffNoteText, transcriptCommits, transcriptHandoff, type BringBackFacts, type HandoffFacts } from './handoffNote';
 
 /** How long the new agent has to show its prompt. */
@@ -74,7 +74,9 @@ async function gitOf(ptyId: string, cwd: string | undefined, since?: string | nu
   const folder = cwd ? baseName(cwd) : null;
   if (!cwd) return { repo: null, branch: reported, files: [], head: null, root: null };
   try {
-    const diff = await window.electronAPI?.diff?.read?.(cwd, since ?? '', since ? 'since' : 'workspace');
+    let diff = await window.electronAPI?.diff?.read?.(cwd, since ?? '', since ? 'since' : 'workspace');
+    // Too large since then (or unreadable): the uncommitted changes still name the place and the files.
+    if (since && !diff?.ok) diff = await window.electronAPI?.diff?.read?.(cwd, '', 'workspace');
     if (diff?.ok) {
       const root = diff.snapshot.targetRepoPath || null;
       return { repo: (root && baseName(root)) || folder, branch: diff.snapshot.targetBranch || reported, files: diff.numstat, head: diff.snapshot.targetHeadOid || null, root };
@@ -118,15 +120,18 @@ export async function handoffFacts(ptyId: string, cwd: string | undefined): Prom
   return { ...conversation, ...git, transcriptPath, draft: unsentDraftOf(ptyId) };
 }
 
-/** What the agent in `ptyId` did since it took the work over: its requests
- *  after the handoff note (the first one), the commits it made, the files it
- *  wrote with their line counts since `head` (the commit checked out at the
- *  handoff), and its last reply. */
-export async function bringBackFacts(ptyId: string, cwd: string | undefined, head: string | null | undefined): Promise<BringBackFacts> {
-  const [events, { root, repo, branch, files }] = await Promise.all([conversationOf(ptyId), gitOf(ptyId, cwd, head)]);
+/** What the agent in `ptyId` did since it took the work over: the owner's
+ *  requests (not the one carrying the handoff note), the commits it made, the
+ *  files it wrote with their line counts since the commit checked out at the
+ *  handoff, and its last reply. */
+export async function bringBackFacts(ptyId: string, cwd: string | undefined, handoff: Pick<SurfaceHandoff, 'head' | 'noteHead'>): Promise<BringBackFacts> {
+  const [events, { root, repo, branch, files }] = await Promise.all([conversationOf(ptyId), gitOf(ptyId, cwd, handoff.head)]);
   const { requests, reply, filesTouched } = transcriptHandoff(events, root ?? cwd);
   const transcriptPath = useStore.getState().resumeBindingByPtyId[ptyId]?.transcriptPath ?? null;
-  return { repo, branch, files, requests: requests.slice(1), reply, filesTouched, commits: transcriptCommits(events), transcriptPath };
+  // The request that carried the handoff note is wmux's words, not the owner's.
+  const noteHead = handoff.noteHead?.trim();
+  const own = noteHead ? requests.filter((r) => !r.trim().startsWith(noteHead)) : requests.slice(1);
+  return { repo, branch, files, requests: own, reply, filesTouched, commits: transcriptCommits(events), transcriptPath };
 }
 
 /** True when `ptyId`'s terminal is mounted and takes a bracketed paste. An
@@ -202,13 +207,16 @@ export async function continueInAgent(req: {
 /** The record of a handoff from `ptyId` when it is at or close to its usage
  *  limit (when that limit resets, the work can come back), else null. A
  *  limit with no known reset is held at most USAGE_LIMIT_UNKNOWN_HOLD_MS. */
-export function handoffRecord(ptyId: string, head: string | null | undefined, now = Date.now()): SurfaceHandoff | null {
+export function handoffRecord(ptyId: string, opts: { head?: string | null; note?: string }, now = Date.now()): SurfaceHandoff | null {
   const state = useStore.getState();
-  const limit = state.usageLimits[ptyId];
+  // Only a limit that still holds: one whose reset has passed (kept until it is
+  // dismissed) has nothing left to wait for.
+  const limit = usageLimitHolds(state.usageLimits[ptyId], now) ? state.usageLimits[ptyId] : undefined;
   const resetsAt = limit
     ? (limit.resetsAt ?? limit.detectedAt + USAGE_LIMIT_UNKNOWN_HOLD_MS)
     : nearLimitWindow(state.usageWindows[ptyId], now)?.resetsAt;
-  return resetsAt === undefined ? null : { at: now, resetsAt, ...(head ? { head } : {}) };
+  const noteHead = opts.note?.split('\n')[0].trim().slice(0, 200);
+  return resetsAt === undefined ? null : { at: now, resetsAt, ...(opts.head ? { head: opts.head } : {}), ...(noteHead ? { noteHead } : {}) };
 }
 
 async function handOff(req: Parameters<typeof continueInAgent>[0], timeoutMs: number): Promise<boolean> {
@@ -228,11 +236,9 @@ async function handOff(req: Parameters<typeof continueInAgent>[0], timeoutMs: nu
     target: { workspaceId: req.workspaceId, paneId: req.paneId },
   });
   if (!tab) return false;
-  const record = handoffRecord(req.heldPtyId, head);
-  useStore.getState().linkContinuedSurfaces(req.heldPtyId, tab.ptyId, record ?? undefined);
-  // The work goes on over there: a held pane must not also carry on by
-  // itself at the reset. Bringing it back is the owner's call.
-  if (useStore.getState().usageLimits[req.heldPtyId]?.autoResume === true) void updateUsageLimit(req.heldPtyId, { autoResume: false });
+  // Read now, at the handoff; kept only once the note is in the other agent.
+  const record = handoffRecord(req.heldPtyId, { head, note });
+  useStore.getState().linkContinuedSurfaces(req.heldPtyId, tab.ptyId);
   const ready = await agentReady(tab.ptyId, req.agent, timeoutMs);
   const term = terminalRegistry.get(tab.ptyId);
   if (!ready || !term || !takesBracketedPaste(tab.ptyId) || onLaunchScreen(tab.ptyId)) {
@@ -241,6 +247,12 @@ async function handOff(req: Parameters<typeof continueInAgent>[0], timeoutMs: nu
   }
   await pastePtyChunked((d) => window.electronAPI.pty.write(tab.ptyId, d), note, { bracketedPasteMode: true });
   term.focus();
+  if (record) useStore.getState().linkContinuedSurfaces(req.heldPtyId, tab.ptyId, record);
+  // The work goes on over there: a held pane must not also carry on by
+  // itself at the reset (nor be armed later by the global setting, see
+  // useUsageLimitBridge). Bringing it back is the owner's call.
+  const held = useStore.getState().usageLimits[req.heldPtyId];
+  if (held && held.autoResume !== false) void updateUsageLimit(req.heldPtyId, { autoResume: false });
   return true;
 }
 
@@ -256,9 +268,10 @@ export interface BringBackPair {
 /** The pair `ptyId` belongs to, as the source tab or as the tab the work went on in. */
 export function findBringBackPair(state: Pick<ReturnType<typeof useStore.getState>, 'workspaces'>, ptyId: string): BringBackPair | null {
   for (const ws of state.workspaces) {
-    // Read on every chip render: a workspace without its tree yet is skipped, not thrown on.
+    // Read on every chip render: a workspace without its tree yet is skipped,
+    // not thrown on. Shown panes only: a stashed tab has no terminal to type into.
     if (!ws.rootPane) continue;
-    const panes = getWorkspaceLeafPanes(ws);
+    const panes = getLeafPanes(ws.rootPane);
     const tab = panes.flatMap((p) => p.surfaces).find((s) => s.ptyId === ptyId);
     if (!tab) continue;
     const sourceId = tab.handoff ? tab.id : tab.continuedFrom;
@@ -273,10 +286,10 @@ export function findBringBackPair(state: Pick<ReturnType<typeof useStore.getStat
   return null;
 }
 
-/** When the work can come back to the source tab: its limit's reset (the one
- *  it still shows, else the one recorded at the handoff). */
+/** When the work can come back to the source tab: the reset recorded at the
+ *  handoff, or a later one its limit shows now (it hit the limit again since). */
 export function bringBackAt(pair: BringBackPair, state: Pick<ReturnType<typeof useStore.getState>, 'usageLimits'>): number {
-  return state.usageLimits[pair.source.ptyId]?.resetsAt ?? pair.source.handoff.resetsAt;
+  return Math.max(pair.source.handoff.resetsAt, state.usageLimits[pair.source.ptyId]?.resetsAt ?? 0);
 }
 
 /** Holds source ptyIds with a bring-back under way, so a second click types nothing twice. */
@@ -306,6 +319,8 @@ export async function bringBack(pair: BringBackPair, note: string, opts: { close
       useStore.getState().pushToast({ level: 'warn', message: t('usageLimit.continueInAgentNotReady', { agent: name }) });
       return false;
     }
+    // Left where it is while this waited (Stay, or ×): nothing is typed or closed.
+    if (!findBringBackPair(useStore.getState(), ptyId)) return false;
     await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), note, { bracketedPasteMode: true });
     term.focus();
     useStore.getState().clearSurfaceHandoff(pair.source.id);
@@ -321,5 +336,5 @@ export async function bringBack(pair: BringBackPair, note: string, opts: { close
 export async function bringBackNote(pair: BringBackPair): Promise<string> {
   const otherSlug = useStore.getState().surfaceAgent[pair.other.ptyId]?.slug;
   const byAgent = (otherSlug && agentRow(otherSlug)?.display) || otherSlug || pair.other.title || t('surface.terminal');
-  return bringBackNoteText(byAgent, await bringBackFacts(pair.other.ptyId, pair.other.cwd ?? pair.source.cwd, pair.source.handoff.head));
+  return bringBackNoteText(byAgent, await bringBackFacts(pair.other.ptyId, pair.other.cwd ?? pair.source.cwd, pair.source.handoff));
 }

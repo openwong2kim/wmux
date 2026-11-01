@@ -32,6 +32,7 @@ import BringBackCard from './BringBackCard';
 import RemoteSpawnAskDialog from '../Remote/RemoteSpawnAskDialog';
 import { formatResetClock, nearLimitWindow } from '../../../shared/usageLimit';
 import { bringBackAt, findBringBackPair } from '../../utils/continueInAgent';
+import { agentRow } from '../../../shared/agentIdentity';
 
 /** Re-render every 30s while `active`, so countdowns stay current. */
 export function useUsageLimitNow(active: boolean): number {
@@ -71,7 +72,10 @@ export default function UsageLimitChip({ ptyId, compact, readOnly = false, works
   const pair = handoff && ptyId ? findBringBackPair(useStore.getState(), ptyId) : null;
   const backAt = pair ? bringBackAt(pair, useStore.getState()) : undefined;
   const back = !readOnly && pair && backAt !== undefined && now >= backAt ? pair : null;
-  const near = !limit && !back ? nearLimitWindow(usageWindow, now) : null;
+  // Only while the pane runs an agent whose 5-hour usage wmux reads: the
+  // window outlives the agent in its pane (a shell, or another agent, after it).
+  const readsUsage = useStore((s) => (ptyId ? !!agentRow(s.surfaceAgent[ptyId]?.slug)?.usageReserve : false));
+  const near = !limit && !back && readsUsage ? nearLimitWindow(usageWindow, now) : null;
   // Another Claude account can take the conversation over while this one waits.
   const continueAccount = usePaneContinueOnAccount({ ptyId, allowed: (!!limit || !!near) && !readOnly, workspaceId });
   const reloadContinueAccount = continueAccount.reload;

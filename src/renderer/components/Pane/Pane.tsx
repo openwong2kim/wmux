@@ -54,6 +54,7 @@ import { toastFolderTrustLaunchRefusal } from '../../utils/folderTrustLaunchToas
 import { FOLDER_TRUST_UNREADABLE_REFUSAL } from '../../../shared/folderTrustWording';
 import { nearLimitWindow } from '../../../shared/usageLimit';
 import { bringBackAt, findBringBackPair } from '../../utils/continueInAgent';
+import { agentRow } from '../../../shared/agentIdentity';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -857,7 +858,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // The chip's other states take its room too: close to the limit, or back after a handoff.
   const hasUsageLimit = useStore((s) => {
     if (!stripPtyId) return false;
-    if (s.usageLimits[stripPtyId] || nearLimitWindow(s.usageWindows[stripPtyId], Date.now())) return true;
+    if (s.usageLimits[stripPtyId]) return true;
+    if (agentRow(s.surfaceAgent[stripPtyId]?.slug)?.usageReserve && nearLimitWindow(s.usageWindows[stripPtyId], Date.now())) return true;
     const pair = findBringBackPair(s, stripPtyId);
     return !!pair && Date.now() >= bringBackAt(pair, s);
   });

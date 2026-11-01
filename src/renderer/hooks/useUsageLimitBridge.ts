@@ -2,6 +2,8 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../../shared/usageLimit';
 import { nextUsageLimitWaitingChange } from '../stores/slices/usageLimitSlice';
+import { getLeafPanes } from '../../shared/paneUtils';
+import type { Workspace } from '../../shared/types';
 
 // ─── Usage-limit bridge ──────────────────────────────────────────────────────
 //
@@ -42,6 +44,16 @@ export function planUsageLimitAutoResume(
     out.push(limit.ptyId);
   }
   for (const key of applied) if (!live.has(key)) applied.delete(key);
+  return out;
+}
+
+/** The ptyIds of tabs holding a handoff record (Surface.handoff). */
+export function handedOffPtyIds(workspaces: readonly Pick<Workspace, 'rootPane'>[]): Set<string> {
+  const out = new Set<string>();
+  for (const ws of workspaces) {
+    if (!ws.rootPane) continue;
+    for (const pane of getLeafPanes(ws.rootPane)) for (const s of pane.surfaces) if (s.handoff && s.ptyId) out.add(s.ptyId);
+  }
   return out;
 }
 
@@ -93,7 +105,11 @@ export function useUsageLimitBridge(): void {
     const applied = new Set<string>();
     const apply = (state: ReturnType<typeof useStore.getState>) => {
       if (!state.sessionSettingsLoaded) return;
+      // A tab whose work went on in another agent is never armed by the
+      // global setting: the work comes back only when the owner brings it.
+      const handedOff = handedOffPtyIds(state.workspaces);
       for (const ptyId of planUsageLimitAutoResume(state.usageLimits, state.usageLimitAutoResume, applied)) {
+        if (handedOff.has(ptyId)) continue;
         const limit = state.usageLimits[ptyId];
         // Claimed up front so an overlapping pass does not send twice; a send
         // the daemon did not apply gives the claim back, so the next pass retries.

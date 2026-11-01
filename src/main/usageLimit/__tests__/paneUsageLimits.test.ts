@@ -55,6 +55,6 @@ describe('paneUsageLimits', () => {
     expect(nearLimitWindow(windows.b, reset * 1000)).toBeNull();
     expect(paneUsageWindows(reset * 1000)).toEqual({});
     forgetPaneUsage('b');
-    expect(Object.keys(paneUsageWindows(now))).toEqual(['c', 'a']);
+    expect(Object.keys(paneUsageWindows(now))).toEqual(['a', 'c']);
   });
 });

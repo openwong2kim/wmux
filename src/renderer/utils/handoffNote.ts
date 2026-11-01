@@ -150,14 +150,16 @@ export function transcriptHandoff(events: readonly TurnEvent[], cwd?: string): T
 
 /**
  * The commits an agent made, oldest first, each once: read from what its
- * tool calls returned (a shell running `git commit` prints its summary line).
+ * commit calls returned (a shell running `git commit` prints its summary line).
  * A result cut short shows only its head, so a commit printed past it is not
  * seen.
  */
 export function transcriptCommits(events: readonly TurnEvent[]): TranscriptCommit[] {
+  // Only the results of calls that ran a commit: other output can print the same shape.
+  const committing = new Set(events.flatMap((e) => (e.kind === 'tool_use' && /\bcommit\b/.test(e.input?.inline ?? e.argSummary) ? [e.toolUseId] : [])));
   const out = new Map<string, TranscriptCommit>();
   for (const e of events) {
-    if (e.folded || e.kind !== 'tool_result' || !e.ok || !e.output?.inline) continue;
+    if (e.folded || e.kind !== 'tool_result' || !e.ok || !e.output?.inline || !committing.has(e.toolUseId)) continue;
     for (const m of e.output.inline.matchAll(COMMIT_LINE_RE)) {
       const sha = m[1].slice(0, 7);
       if (!out.has(sha)) out.set(sha, { sha, subject: m[2].trim() });

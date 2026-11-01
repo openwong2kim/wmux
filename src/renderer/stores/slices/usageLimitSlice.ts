@@ -79,9 +79,13 @@ export const createUsageLimitSlice: StateCreator<
   usageWindows: {},
 
   setUsageWindows: (windows) => set((draft: StoreState) => {
+    // An unchanged window keeps its object, so a pane's selector sees no change.
+    const prev = draft.usageWindows;
     const next: Record<string, PaneUsageWindow> = {};
     for (const [ptyId, w] of Object.entries(windows ?? {})) {
-      if (w && Number.isFinite(w.pct) && Number.isFinite(w.resetsAt)) next[ptyId] = { pct: w.pct, resetsAt: w.resetsAt };
+      if (!w || !Number.isFinite(w.pct) || !Number.isFinite(w.resetsAt)) continue;
+      const was = prev[ptyId];
+      next[ptyId] = was && was.pct === w.pct && was.resetsAt === w.resetsAt ? was : { pct: w.pct, resetsAt: w.resetsAt };
     }
     draft.usageWindows = next;
   }),

@@ -98,10 +98,11 @@ export function notePaneUsageSample(ptyId: string, update: UsageUpdate, configDi
   onWindows?.();
 }
 
-/** Each reporting pane's 5-hour window, while it has not reset. */
+/** Each reporting pane's 5-hour window, while it has not reset, in ptyId order
+ *  (so the same windows always serialize the same). */
 export function paneUsageWindows(now = Date.now()): Record<string, PaneUsageWindow> {
   const out: Record<string, PaneUsageWindow> = {};
-  for (const [ptyId, key] of paneConfig) {
+  for (const [ptyId, key] of [...paneConfig].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     const w = configWindow.get(key);
     if (w && w.resetEpochSec * 1000 > now) out[ptyId] = { pct: w.pct, resetsAt: w.resetEpochSec * 1000 };
   }
