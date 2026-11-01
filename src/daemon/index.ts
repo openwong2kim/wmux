@@ -233,7 +233,7 @@ import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResume
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, agentRow, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
-import { DIALOG_RECHECK_MS, HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
+import { DIALOG_RECHECK_MS, HookIngest, identifiedAgentPid, shellAtPrompt, type HookArbitration } from './hooks/HookIngest';
 import { ExternalSessionRegistry } from './externalSessions/ExternalSessionRegistry';
 import { EXTERNAL_SESSIONS_CHANGED_EVENT, EXTERNAL_SESSIONS_RPC } from '../shared/externalSessions';
 import { DetectionAgreementLog } from './diagnostics/detectionAgreementLog';
@@ -5424,6 +5424,10 @@ function registerRpcHandlers(
       },
       // HookIngest re-reads the tracked pid's liveness on a mismatch.
       agentPidFor: (id) => identifiedAgentPid(agentProcessTracker.identityFor(id), agentProcessTracker.pidFor(id)),
+      shellAtPromptFor: (id) => {
+        const pane = sessionManager.getSession(id);
+        return !!pane && shellAtPrompt(pane.promptLog, pane.ringBuffer.totalBytesWritten);
+      },
       isPidRunning: (pid) => {
         try {
           process.kill(pid, 0);
