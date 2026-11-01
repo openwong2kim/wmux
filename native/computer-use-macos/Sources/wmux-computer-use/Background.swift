@@ -184,10 +184,16 @@ enum Background {
     }
 
     /// Gives key status back to the window that had it in the app before
-    /// focusWindow, once the input is done: the same records, the other way.
+    /// focusWindow, once the input is done: the same records, the other way,
+    /// or AXFocusedWindow when the records cannot be sent (focusWindow then
+    /// made the window key that way).
     static func restoreKey(_ windowID: CGWindowID, to previous: CGWindowID?, pid: pid_t) {
         guard let previous, previous != windowID else { return }
-        _ = SkyLight.moveWindowKey(from: windowID, to: previous, pid: pid)
+        if SkyLight.moveWindowKey(from: windowID, to: previous, pid: pid) { return }
+        let appEl = AX.app(pid)
+        if let window = AX.elements(appEl, kAXWindowsAttribute).first(where: { AX.windowID($0) == previous }) {
+            AXUIElementSetAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, window)
+        }
     }
 
     /// Gives `el` keyboard focus without bringing its app forward: AX first,

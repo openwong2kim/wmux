@@ -244,7 +244,8 @@ is not re-walked.
     forward; the call then says to check the app and type without an index.
   - After the input, an app that brought itself to the front is put back
     behind the user's app (not when the user gave real input meanwhile), and key status goes back to the app's window that
-    had it before, on every way out, an error included. The result says `foreground`, with a note, when the app
+    had it before (by the key-window records, or `AXFocusedWindow` when they
+    cannot be sent), on every way out, an error included. The result says `foreground`, with a note, when the app
     came forward or the real pointer ended at the target point.
   - It also goes as real input, before anything is posted, with
     `delivery: "foreground"` and a note saying why, when
