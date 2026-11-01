@@ -93,7 +93,9 @@ let scratchRowView: Uint32Array = scratch;
 // search) only fills `readOnce`.
 const HELD_BUDGET_WORDS = 2 * 1024 * 1024; // 8 MiB
 let readOnce = new Set<CompactableLine>();
-let held = new Map<CompactableLine, string>();
+// Each held row keeps its packed form and its length when it was unpacked:
+// the packed header (trimmed length, shrink bound) is valid only at that length.
+let held = new Map<CompactableLine, { z: string; words: number }>();
 let heldWords = 0;
 let releaseScheduled = false;
 let origGetTrimmedLength: LineMethod | null = null;
@@ -315,11 +317,12 @@ function fullScratch(line: CompactableLine): Uint32Array {
   return view;
 }
 
-/** Packs a held row again, unless something changed it while it was held. */
-function release(line: CompactableLine, z: string): void {
+/** Packs a held row again, unless something changed it (its cells or its length) while it was held. */
+function release(line: CompactableLine, { z, words }: { z: string; words: number }): void {
   const d = line._rawData;
-  heldWords -= line.length * 3;
-  if (line._packed !== null || !(d instanceof Uint32Array) || d.length !== line.length * 3) return;
+  heldWords -= words;
+  if (line.length * 3 !== words) return;
+  if (line._packed !== null || !(d instanceof Uint32Array) || d.length !== words) return;
   const check = scratchView(d.length);
   decodeCells(z, line.length, check);
   for (let i = 0; i < d.length; i++) if (check[i] !== d[i]) return;
@@ -330,7 +333,7 @@ function release(line: CompactableLine, z: string): void {
 }
 
 function releaseAll(): void {
-  for (const [line, z] of held) release(line, z);
+  for (const [line, entry] of held) release(line, entry);
   readOnce = new Set();
   held = new Map();
   heldWords = 0;
@@ -350,17 +353,17 @@ function hold(line: CompactableLine): boolean {
   }
   if (words > HELD_BUDGET_WORDS) return false;
   // Oldest first out: a wrap group longer than the budget still holds its latest rows.
-  for (const [oldest, z] of held) {
+  for (const [oldest, entry] of held) {
     if (heldWords + words <= HELD_BUDGET_WORDS) break;
     held.delete(oldest);
-    release(oldest, z);
+    release(oldest, entry);
   }
   const z = line._packed as string;
   const d = new Uint32Array(words);
   decodeCells(z, line.length, d);
   line._rawData = d;
   line._packed = null;
-  held.set(line, z);
+  held.set(line, { z, words });
   heldWords += words;
   return true;
 }
