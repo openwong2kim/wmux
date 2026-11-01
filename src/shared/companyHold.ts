@@ -39,7 +39,7 @@
 import { isVerifiedTaskSender } from './a2aReopen';
 import { COMPANY_BRIEF_KIND, companyBriefOf, type CompanyBriefV1 } from './company';
 import { shortTaskId } from './moaHandoff';
-import type { Message, Task, TaskState } from './types';
+import type { Message, Task, TaskState, TaskStatus } from './types';
 
 /** A task waits on at most this many others. */
 export const COMPANY_BLOCKERS_MAX = 8;
@@ -60,6 +60,11 @@ export function isCompanyHoldReason(v: unknown): v is CompanyHoldReason {
 export interface CompanyBlockerEnd {
   id: string;
   state: 'failed' | 'canceled';
+  /**
+   * When it ended (the blocker's status time): a blocker that ends again
+   * after a reopen is a new end. Absent on a note written before it was kept.
+   */
+  at?: string;
 }
 
 /** What the daemon keeps under `Task.metadata.companyHold` for a held task. */
@@ -85,6 +90,8 @@ export interface CompanyHoldMarker {
 /**
  * Where a held task stands: `waiting` on a blocker, `owed` a delivery
  * (released; it may carry `attempted`), `delivered`, or `held` for a person.
+ * A delivered task is `delivered` whatever its `waitingOn` says: it is its
+ * seat's already.
  */
 export type CompanyHoldPhase = 'waiting' | 'owed' | 'delivered' | 'held';
 
@@ -99,8 +106,8 @@ export function companyHoldOf(task: Pick<Task, 'metadata'> | undefined): Company
 }
 
 export function companyHoldPhase(marker: CompanyHoldMarker): CompanyHoldPhase {
-  if (marker.waitingOn.length > 0) return 'waiting';
   if (marker.delivered) return 'delivered';
+  if (marker.waitingOn.length > 0) return 'waiting';
   if (marker.held) return 'held';
   return 'owed';
 }
@@ -116,7 +123,7 @@ export function companyHoldWithholds(
   caller: { workspaceId: string; paneId?: string; trusted?: boolean },
 ): boolean {
   const hold = companyHoldOf(task);
-  if (!hold || hold.waitingOn.length === 0 || caller.trusted === true) return false;
+  if (!hold || companyHoldPhase(hold) !== 'waiting' || caller.trusted === true) return false;
   if (task.metadata.to.workspaceId !== caller.workspaceId) return false;
   return !isVerifiedTaskSender(task.metadata, caller.workspaceId, caller.paneId);
 }
@@ -129,13 +136,20 @@ export function companyBriefOfHistory(history: readonly Message[]): CompanyBrief
   return part?.kind === 'data' ? companyBriefOf(part.data) : null;
 }
 
+/** The brief's blockers, without repeats or empty ids, in the order asked. */
+export function companyBlockersOf(brief: Pick<CompanyBriefV1, 'blockedBy'> | null | undefined): string[] {
+  return [...new Set((brief?.blockedBy ?? []).filter((id) => typeof id === 'string' && id.length > 0))];
+}
+
 /**
  * The hold a new company task starts with, from its brief's `blockedBy` and
- * the state of each task known now (`stateOf` answers undefined for one it
- * does not know). Blockers lose repeats and keep the order asked. A completed
+ * the status of each task known now (`statusOf` answers its status, or just
+ * its state, and undefined for one it does not know). Blockers lose repeats
+ * and keep the order asked. A completed
  * one is satisfied already; any other (open, ended or unknown) is waited on,
- * and one that ended failed or canceled is noted in `blockerEnded`. Null when
- * nothing is waited on: the task is not held at all.
+ * and one that ended failed or canceled is noted in `blockerEnded` (with its
+ * time when the status gives one). Null when nothing is waited on: the task
+ * is not held at all.
  *
  * `releasedAt` (the create time) is for a task its sender already held back
  * for its blockers (`holdForBlockers` on the create): it keeps a marker even
@@ -145,16 +159,20 @@ export function companyBriefOfHistory(history: readonly Message[]): CompanyBrief
  */
 export function companyHoldAtCreate(
   brief: Pick<CompanyBriefV1, 'blockedBy'> | null | undefined,
-  stateOf: (taskId: string) => TaskState | undefined,
+  statusOf: (taskId: string) => TaskState | Pick<TaskStatus, 'state' | 'timestamp'> | undefined,
   releasedAt?: string,
 ): CompanyHoldMarker | null {
-  const blockedBy = [...new Set((brief?.blockedBy ?? []).filter((id) => typeof id === 'string' && id.length > 0))];
-  const waitingOn = blockedBy.filter((id) => stateOf(id) !== 'completed');
+  const read = (id: string): { state?: TaskState; timestamp?: string } => {
+    const status = statusOf(id);
+    return typeof status === 'string' ? { state: status } : (status ?? {});
+  };
+  const blockedBy = companyBlockersOf(brief);
+  const waitingOn = blockedBy.filter((id) => read(id).state !== 'completed');
   if (waitingOn.length === 0) return releasedAt !== undefined && blockedBy.length > 0 ? { blockedBy, waitingOn, releasedAt } : null;
   const blockerEnded: CompanyBlockerEnd[] = [];
   for (const id of waitingOn) {
-    const state = stateOf(id);
-    if (state === 'failed' || state === 'canceled') blockerEnded.push({ id, state });
+    const { state, timestamp } = read(id);
+    if (state === 'failed' || state === 'canceled') blockerEnded.push({ id, state, ...(timestamp ? { at: timestamp } : {}) });
   }
   return { blockedBy, waitingOn, ...(blockerEnded.length > 0 ? { blockerEnded } : {}) };
 }
@@ -205,6 +223,10 @@ export const COMPANY_BLOCKED_BY_REFUSAL = Object.freeze({
     `blockedBy names ${id}, a task sent to another PC; for now a task waits only on tasks on this PC`,
   remoteTask:
     'a task sent to another PC cannot wait on other tasks yet; send it once its blockers are completed',
+  self: (id: string): string =>
+    `blockedBy names this task itself (${id}); a task cannot wait on itself`,
+  gone: (id: string): string =>
+    `blockedBy names ${id}, which wmux no longer holds (it ended more than 30 minutes ago); if it completed, send this task again without it, otherwise send that work again and wait on the new task`,
   malformed:
     'blockedBy must be a list of task ids (each a non-empty string), such as ["task-1", "task-2"]; leave it out when the task waits on nothing',
 });

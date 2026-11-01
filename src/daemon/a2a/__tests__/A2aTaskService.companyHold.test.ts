@@ -7,7 +7,7 @@ import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { A2aTaskService, type A2aLogLike } from '../A2aTaskService';
 import type { A2aCompanyMarkPayload } from '../../../shared/a2aEventlog';
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
-import { companyHoldOf, companyHoldPhase } from '../../../shared/companyHold';
+import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, companyHoldOf, companyHoldPhase } from '../../../shared/companyHold';
 import { makeEnvelope, type EventEnvelopeDraft } from '../../../shared/eventlog';
 import type { CompletionEvidence, Message } from '../../../shared/types';
 
@@ -82,6 +82,7 @@ function companyMarks(log: A2aLogLike, taskId: string): A2aCompanyMarkPayload[] 
 }
 
 const holdOf = (svc: A2aTaskService, id: string) => companyHoldOf(svc.getTask(id));
+const endedAt = (svc: A2aTaskService, id: string) => svc.getTask(id)?.status.timestamp;
 const phaseOf = (svc: A2aTaskService, id: string) => {
   const hold = holdOf(svc, id);
   return hold ? companyHoldPhase(hold) : undefined;
@@ -125,7 +126,7 @@ describe('company hold: at create', () => {
     await assign(svc, 'A');
     await fail(svc, 'A');
     await assign(svc, 'C', ['A']);
-    expect(holdOf(svc, 'C')).toEqual({ blockedBy: ['A'], waitingOn: ['A'], blockerEnded: [{ id: 'A', state: 'failed' }] });
+    expect(holdOf(svc, 'C')).toEqual({ blockedBy: ['A'], waitingOn: ['A'], blockerEnded: [{ id: 'A', state: 'failed', at: endedAt(svc, 'A') }] });
   });
 
   it('rides in the create payload', async () => {
@@ -220,7 +221,7 @@ describe('company hold: release', () => {
     expect((await svc.cancelTask({ taskId: 'B', callerWorkspaceId: WS, callerPaneId: 'pane-ceo' })).ok).toBe(true);
     const hold = holdOf(svc, 'C');
     expect(hold?.waitingOn).toEqual(['A', 'B']);
-    expect(hold?.blockerEnded).toEqual([{ id: 'A', state: 'failed' }, { id: 'B', state: 'canceled' }]);
+    expect(hold?.blockerEnded).toEqual([{ id: 'A', state: 'failed', at: endedAt(svc, 'A') }, { id: 'B', state: 'canceled', at: endedAt(svc, 'B') }]);
     expect(phaseOf(svc, 'C')).toBe('waiting');
     expect(svc.getTask('C')?.status.state).toBe('submitted');
     expect(companyMarks(log, 'C')).toHaveLength(2);
@@ -231,7 +232,7 @@ describe('company hold: release', () => {
     await assign(svc, 'A');
     await assign(svc, 'C', ['A']);
     await fail(svc, 'A');
-    expect(holdOf(svc, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed' }]);
+    expect(holdOf(svc, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed', at: endedAt(svc, 'A') }]);
     const reopened = await svc.reopenTask({ taskId: 'A', callerWorkspaceId: WS, callerPaneId: 'pane-ceo' });
     expect(reopened.ok && reopened.reopened).toBe(true);
     await complete(svc, 'A');
@@ -246,7 +247,7 @@ describe('company hold: release', () => {
     await assign(svc, 'A', undefined, { workspaceId: 'ws-gone', paneId: 'pane-x' });
     await assign(svc, 'C', ['A']);
     expect(await svc.failTasksForWorkspaceRemoved('ws-gone', 'workspace closed')).toBe(1);
-    expect(holdOf(svc, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed' }]);
+    expect(holdOf(svc, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed', at: endedAt(svc, 'A') }]);
   });
 
   it('leaves an ended dependent alone', async () => {
@@ -406,7 +407,7 @@ describe('company hold: replay', () => {
     expect(holdOf(again, 'C')?.waitingOn).toEqual([]);
     expect(holdOf(again, 'C')?.releasedAt).toBe(again.getTask('A')?.status.timestamp);
     expect(again.listCompanyPending().map((t) => t.id)).toEqual(['C']);
-    expect(holdOf(again, 'D')?.blockerEnded).toEqual([{ id: 'B', state: 'failed' }]);
+    expect(holdOf(again, 'D')?.blockerEnded).toEqual([{ id: 'B', state: 'failed', at: endedAt(again, 'B') }]);
     // The same answer on every restore.
     expect(holdOf(restored(inner), 'C')).toEqual(holdOf(again, 'C'));
   });
@@ -598,5 +599,134 @@ describe('company hold: a send main held for its blockers (holdForBlockers)', ()
     expect(svc.getTask('C')?.metadata.companyHold).toBeUndefined();
     await heldSend(svc, 'D', []);
     expect(svc.getTask('D')?.metadata.companyHold).toBeUndefined();
+  });
+});
+
+describe('company hold: review fixes', () => {
+  it('D1: a delivered task is never read as waiting, even when a lost drop and a compacted log leave a blocker in waitingOn', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await complete(svc, 'A');
+    await svc.markCompany({ taskId: 'C', attempted: true });
+    await svc.markCompany({ taskId: 'C', delivered: true, ptyId: 'pty-c' });
+    // The log as a compaction could leave it: A's records and C's drop are gone.
+    const compacted: A2aLogLike = {
+      append: (draft) => log.append(draft),
+      readAllRecords: () => log.readAllRecords().filter((r) => {
+        const p = r.payload as { kind?: string; taskId?: string; task?: { id?: string }; drop?: string };
+        return p.taskId !== 'A' && p.task?.id !== 'A' && p.drop === undefined;
+      }),
+    };
+    const again = newService(compacted);
+    again.restoreFromLog();
+    expect(holdOf(again, 'C')).toMatchObject({ waitingOn: ['A'], delivered: true });
+    expect(phaseOf(again, 'C')).toBe('delivered');
+    expect(again.queryTasks(WS, {}, { paneId: 'pane-s1' }).map((t) => t.id)).toEqual(['C']);
+    expect(again.withheldTaskIds(WS, { paneId: 'pane-s1' })).toEqual([]);
+    expect(again.listCompanyHeld()).toEqual([]);
+    expect((await again.markCompany({ taskId: 'C', delivered: true })).ok).toBe(true);
+    expect((await again.transition({ taskId: 'C', to: 'working', callerWorkspaceId: WS, callerAddr: { paneId: 'pane-s1' } })).ok).toBe(true);
+  });
+
+  it('D2: a held send naming a blocker the daemon no longer has is refused; without the flag it is held as before', async () => {
+    let clock = Date.parse('2026-11-01T00:00:00.000Z');
+    const svc = newService(newLog(), () => clock);
+    await assign(svc, 'A');
+    await complete(svc, 'A');
+    clock += 31 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('A')).toBeUndefined();
+    const res = await svc.createTask({
+      id: 'C', title: 'C', from: { workspaceId: WS, name: 'Co', paneId: 'pane-ceo' }, to: { workspaceId: WS, name: 'Co', paneId: 'pane-s1' },
+      history: [brief(['A'])], holdForBlockers: true,
+    });
+    expect(!res.ok && res.error).toBe(`a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.gone('A')}`);
+    expect(svc.getTask('C')).toBeUndefined();
+    await assign(svc, 'D', ['A']);
+    expect(holdOf(svc, 'D')?.waitingOn).toEqual(['A']);
+  });
+
+  it('D4: a drop the log refused is picked up by the next list, in memory', async () => {
+    const inner = newLog();
+    const lossy: A2aLogLike = {
+      append: (draft) => ((draft.payload as { drop?: string }).drop !== undefined ? Promise.resolve(false) : inner.append(draft)),
+      readAllRecords: () => inner.readAllRecords(),
+    };
+    const svc = newService(lossy);
+    await assign(svc, 'A');
+    await assign(svc, 'B');
+    await assign(svc, 'C', ['A']);
+    await assign(svc, 'D', ['B']);
+    await complete(svc, 'A');
+    await fail(svc, 'B');
+    expect(holdOf(svc, 'C')?.waitingOn).toEqual(['A']);
+    expect(svc.listCompanyHeld().map((t) => t.id)).toEqual(['D']);
+    expect(holdOf(svc, 'C')).toMatchObject({ waitingOn: [], releasedAt: endedAt(svc, 'A') });
+    expect(svc.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+    expect(companyMarks(inner, 'C')).toEqual([]);
+    expect((await svc.markCompany({ taskId: 'C', attempted: true })).ok).toBe(true);
+  });
+
+  it('D5: more blockers than the limit, or the task itself, are refused for any caller', async () => {
+    const svc = newService(newLog());
+    const nine = Array.from({ length: COMPANY_BLOCKERS_MAX + 1 }, (_, i) => `t${i}`);
+    const tooMany = await svc.createTask({
+      id: 'C', title: 'C', from: { workspaceId: WS, name: 'Co', paneId: 'pane-ceo' }, to: { workspaceId: WS, name: 'Co', paneId: 'pane-s1' },
+      history: [brief(nine)],
+    });
+    expect(!tooMany.ok && tooMany.error).toBe(`a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.tooMany(COMPANY_BLOCKERS_MAX + 1)}`);
+    // Repeats count once.
+    await assign(svc, 'D', [...nine.slice(0, COMPANY_BLOCKERS_MAX), 't0']);
+    expect(holdOf(svc, 'D')?.blockedBy).toHaveLength(COMPANY_BLOCKERS_MAX);
+    const self = await svc.createTask({
+      id: 'E', title: 'E', from: { workspaceId: WS, name: 'Co', paneId: 'pane-ceo' }, to: { workspaceId: WS, name: 'Co', paneId: 'pane-s1' },
+      history: [brief(['E'])],
+    });
+    expect(!self.ok && self.error).toBe(`a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.self('E')}`);
+    expect(svc.getTask('C')).toBeUndefined();
+    expect(svc.getTask('E')).toBeUndefined();
+  });
+
+  it('D6: each end of a blocker is noted with its time; an end after a reopen is a new note', async () => {
+    let clock = Date.parse('2026-11-01T00:00:00.000Z');
+    const log = newLog();
+    const svc = newService(log, () => clock);
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await fail(svc, 'A');
+    const first = endedAt(svc, 'A');
+    expect(holdOf(svc, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed', at: first }]);
+    clock += 60_000;
+    await svc.reopenTask({ taskId: 'A', callerWorkspaceId: WS, callerPaneId: 'pane-ceo' });
+    await fail(svc, 'A');
+    const second = endedAt(svc, 'A');
+    expect(second).not.toBe(first);
+    expect(holdOf(svc, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed', at: second }]);
+    expect(companyMarks(log, 'C').map((m) => m.blockerEnded?.at)).toEqual([first, second]);
+  });
+
+  it('D6: a note written without its time still replays', async () => {
+    const inner = newLog();
+    // An older build: its notes carry no time.
+    const older: A2aLogLike = {
+      append: (draft) => {
+        const p = draft.payload as { blockerEnded?: { at?: string } };
+        if (p.blockerEnded) delete p.blockerEnded.at;
+        return inner.append(draft);
+      },
+      readAllRecords: () => inner.readAllRecords(),
+    };
+    const svc = newService(older);
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await fail(svc, 'A');
+    expect(holdOf(svc, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed' }]);
+    const again = newService(inner);
+    again.restoreFromLog();
+    expect(holdOf(again, 'C')).toMatchObject({ waitingOn: ['A'] });
+    // Restore reads the old note, then notes the end again with its time.
+    expect(holdOf(again, 'C')?.blockerEnded).toEqual([{ id: 'A', state: 'failed', at: endedAt(again, 'A') }]);
   });
 });

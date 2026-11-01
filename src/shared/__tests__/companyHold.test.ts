@@ -5,6 +5,7 @@ import {
   COMPANY_BLOCKED_BY_REFUSAL,
   COMPANY_BLOCKERS_MAX,
   companyBlockerEndedLine,
+  companyBlockersOf,
   companyBriefOfHistory,
   companyHoldAtCreate,
   companyHoldOf,
@@ -17,7 +18,7 @@ import {
 import type { Message, TaskState } from '../types';
 
 const states: Record<string, TaskState> = { open: 'working', done: 'completed', broke: 'failed', dropped: 'canceled' };
-const stateOf = (id: string): TaskState | undefined => states[id];
+const stateOf = (id: string): { state: TaskState; timestamp: string } | undefined => (states[id] ? { state: states[id], timestamp: `t-${id}` } : undefined);
 
 describe('companyHoldAtCreate', () => {
   it('dedupes the blockers in the order asked and drops the completed ones', () => {
@@ -38,7 +39,7 @@ describe('companyHoldAtCreate', () => {
     expect(companyHoldAtCreate({ blockedBy: ['broke', 'dropped', 'open'] }, stateOf)).toEqual({
       blockedBy: ['broke', 'dropped', 'open'],
       waitingOn: ['broke', 'dropped', 'open'],
-      blockerEnded: [{ id: 'broke', state: 'failed' }, { id: 'dropped', state: 'canceled' }],
+      blockerEnded: [{ id: 'broke', state: 'failed', at: 't-broke' }, { id: 'dropped', state: 'canceled', at: 't-dropped' }],
     });
   });
 
@@ -46,6 +47,14 @@ describe('companyHoldAtCreate', () => {
     expect(companyHoldAtCreate({ blockedBy: ['done', 'done'] }, stateOf, 't0')).toEqual({ blockedBy: ['done'], waitingOn: [], releasedAt: 't0' });
     expect(companyHoldAtCreate({ blockedBy: ['done', 'open'] }, stateOf, 't0')).toEqual({ blockedBy: ['done', 'open'], waitingOn: ['open'] });
     expect(companyHoldAtCreate({ blockedBy: [] }, stateOf, 't0')).toBeNull();
+  });
+
+  it('takes a bare state too, and then notes an end without its time', () => {
+    expect(companyHoldAtCreate({ blockedBy: ['broke', 'done'] }, (id) => states[id])).toEqual({
+      blockedBy: ['broke', 'done'],
+      waitingOn: ['broke'],
+      blockerEnded: [{ id: 'broke', state: 'failed' }],
+    });
   });
 
   it('skips empty ids', () => {
@@ -117,5 +126,21 @@ describe('companyHoldWithholds', () => {
 
   it('names the blockers by their short ids', () => {
     expect(companyWaitingRefusal(['task-abcdef123', 'task-99887766x'])).toBe('this task waits on abcdef12, 99887766; it is not yours until they complete');
+  });
+});
+
+describe('review fixes', () => {
+  it('D1: delivered wins over a waitingOn a lost drop left behind', () => {
+    const marker = { blockedBy: ['a'], waitingOn: ['a'], delivered: true as const };
+    expect(companyHoldPhase(marker)).toBe('delivered');
+    const task = { metadata: { title: 't', from: { workspaceId: 'ws', paneId: 'ceo', name: 'n' }, to: { workspaceId: 'ws', paneId: 's1', name: 'n' }, createdAt: '', updatedAt: '', companyHold: marker } } as never;
+    expect(companyHoldWithholds(task, { workspaceId: 'ws', paneId: 's1' })).toBe(false);
+  });
+
+  it('D5: blockers are counted without repeats or empty ids; the refusal texts name the task', () => {
+    expect(companyBlockersOf({ blockedBy: ['a', '', 'b', 'a'] })).toEqual(['a', 'b']);
+    expect(companyBlockersOf(null)).toEqual([]);
+    expect(COMPANY_BLOCKED_BY_REFUSAL.self('t-9')).toContain('itself (t-9)');
+    expect(COMPANY_BLOCKED_BY_REFUSAL.gone('t-3')).toContain('t-3, which wmux no longer holds');
   });
 });

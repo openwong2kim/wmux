@@ -49,7 +49,10 @@ import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { companyCancelRefusal, companyDoneRefusal, isCompanyTask, type CompanySeat } from '../../shared/company';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
 import {
+  COMPANY_BLOCKED_BY_REFUSAL,
+  COMPANY_BLOCKERS_MAX,
   COMPANY_HOLD_KEY,
+  companyBlockersOf,
   companyBriefOfHistory,
   companyHoldAtCreate,
   companyHoldOf,
@@ -482,13 +485,19 @@ export class A2aTaskService {
       // A company task on this PC whose brief names blockers not completed
       // yet is held until they are (shared/companyHold.ts). The marker rides
       // in the create payload, so a replay takes it as decided here.
+      const brief = companyBriefOfHistory(input.history ?? []);
+      const blockers = companyBlockersOf(brief);
+      if (blockers.length > COMPANY_BLOCKERS_MAX) {
+        return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.tooMany(blockers.length)}` };
+      }
+      if (blockers.includes(id)) return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.self(id)}` };
       const local = !input.remote && !isRemoteWorkspaceId(input.from.workspaceId) && !isRemoteWorkspaceId(input.to.workspaceId);
+      // Main checked these blockers a moment ago: one gone since ended long
+      // ago and was evicted, and a hold on it would never release.
+      const gone = local && input.holdForBlockers ? blockers.find((b) => !this.tasks.has(b)) : undefined;
+      if (gone !== undefined) return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.gone(gone)}` };
       const hold = local
-        ? companyHoldAtCreate(
-          companyBriefOfHistory(input.history ?? []),
-          (blockerId) => this.tasks.get(blockerId)?.status.state,
-          input.holdForBlockers ? nowIso : undefined,
-        )
+        ? companyHoldAtCreate(brief, (blockerId) => this.tasks.get(blockerId)?.status, input.holdForBlockers ? nowIso : undefined)
         : null;
       const metadata: WmuxTaskMetadata = {
         title: input.title,
@@ -1229,7 +1238,7 @@ export class A2aTaskService {
       const marker = companyHoldOf(task);
       if (!task || !marker) return { ok: false, error: `a2a.company.mark: no held company task ${input.taskId}` };
       if (isTaskEnded(task)) return { ok: false, error: `a2a.company.mark: task ${input.taskId} has ended` };
-      if (marker.waitingOn.length > 0) {
+      if (companyHoldPhase(marker) === 'waiting') {
         return { ok: false, error: `a2a.company.mark: task ${input.taskId} is still waiting on ${marker.waitingOn.join(', ')}` };
       }
       let change: Pick<A2aCompanyMarkPayload, 'attempted' | 'delivered' | 'ptyId' | 'held'>;
@@ -1256,17 +1265,23 @@ export class A2aTaskService {
   /**
    * Released company tasks owed a delivery: not delivered, not held, not
    * ended. One marked `attempted` is listed too: main holds it as
-   * `delivery-unconfirmed` and never writes it again on its own.
+   * `delivery-unconfirmed` and never writes it again on its own. Each hold is
+   * first brought in line with its blockers (reconcileHoldsWithBlockers).
    */
   listCompanyPending(): Task[] {
+    this.reconcileHoldsWithBlockers();
     return [...this.tasks.values()].filter((t) => {
       const marker = companyHoldOf(t);
       return !!marker && !isTaskEnded(t) && companyHoldPhase(marker) === 'owed';
     });
   }
 
-  /** Company tasks not ended that still wait on a blocker, or are held for a person. */
+  /**
+   * Company tasks not ended that still wait on a blocker, or are held for a
+   * person. Each hold is first brought in line with its blockers.
+   */
   listCompanyHeld(): Task[] {
+    this.reconcileHoldsWithBlockers();
     return [...this.tasks.values()].filter((t) => {
       const marker = companyHoldOf(t);
       if (!marker || isTaskEnded(t)) return false;
@@ -1276,16 +1291,33 @@ export class A2aTaskService {
   }
 
   /**
-   * After replay, before eviction, in memory: bring each open held task in
-   * line with the projection. A blocker shown completed is dropped (its drop
-   * mark was lost to a crash), the last one releasing the task at its
-   * completion time; one shown failed or canceled is noted. Then a released
-   * task left `attempted` (main was writing it and never confirmed) is held
-   * as `delivery-unconfirmed`: a person decides, and it is never written
-   * again on its own. Nothing is appended: the log keeps every blocker's end,
-   * so each restore derives the same result.
+   * After replay, before eviction: bring each hold in line with its
+   * blockers (reconcileHoldsWithBlockers), then hold a released task left
+   * `attempted` (main was writing it and never confirmed) as
+   * `delivery-unconfirmed`: a person decides, and it is never written again
+   * on its own. In memory only: the log keeps every blocker's end, so each
+   * restore derives the same result.
    */
   private reconcileCompanyHolds(): void {
+    this.reconcileHoldsWithBlockers();
+    for (const task of this.tasks.values()) {
+      const marker = companyHoldOf(task);
+      if (!marker || isTaskEnded(task)) continue;
+      if (marker.attempted && companyHoldPhase(marker) === 'owed') {
+        applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, held: 'delivery-unconfirmed', timestamp: task.metadata.updatedAt });
+      }
+    }
+  }
+
+  /**
+   * In memory, nothing appended: bring each open held task in line with the
+   * blockers the projection shows ended, oldest end first. A completed one is
+   * dropped (its drop mark was lost: a crash, or a log that refused it), the
+   * last one releasing the task at its completion time; one that failed or
+   * was canceled is noted. Run on restore and before each company list, so
+   * a lost mark costs one pull of main's bridge, not a daemon restart.
+   */
+  private reconcileHoldsWithBlockers(): void {
     for (const task of this.tasks.values()) {
       const marker = companyHoldOf(task);
       if (!marker || isTaskEnded(task)) continue;
@@ -1294,17 +1326,26 @@ export class A2aTaskService {
         .filter((b): b is Task => !!b && isTaskEnded(b))
         .sort((a, b) => a.status.timestamp.localeCompare(b.status.timestamp));
       for (const blocker of blockers) {
-        const { state, timestamp } = blocker.status;
-        if (state === 'completed') {
-          applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, drop: blocker.id, timestamp });
-        } else if ((state === 'failed' || state === 'canceled') && !marker.blockerEnded?.some((e) => e.id === blocker.id && e.state === state)) {
-          applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, blockerEnded: { id: blocker.id, state }, timestamp });
-        }
-      }
-      if (marker.attempted && companyHoldPhase(marker) === 'owed') {
-        applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, held: 'delivery-unconfirmed', timestamp: task.metadata.updatedAt });
+        const change = this.holdChangeFor(marker, blocker.id);
+        if (change) applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, ...change, timestamp: blocker.status.timestamp });
       }
     }
+  }
+
+  /**
+   * The change a hold owes for one blocker it waits on, from the blocker's
+   * status in the projection: a drop when it completed, a note when it ended
+   * failed or canceled and that end is not noted yet (an end after a reopen
+   * is a new one), else none.
+   */
+  private holdChangeFor(marker: CompanyHoldMarker, blockerId: string): Pick<A2aCompanyMarkPayload, 'drop' | 'blockerEnded'> | undefined {
+    if (!marker.waitingOn.includes(blockerId)) return undefined;
+    const status = this.tasks.get(blockerId)?.status;
+    const state = status?.state;
+    if (state === 'completed') return { drop: blockerId };
+    if (!status || (state !== 'failed' && state !== 'canceled')) return undefined;
+    const noted = marker.blockerEnded?.some((e) => e.id === blockerId && e.state === state && e.at === status.timestamp);
+    return noted ? undefined : { blockerEnded: { id: blockerId, state, at: status.timestamp } };
   }
 
   /**
@@ -1340,13 +1381,8 @@ export class A2aTaskService {
     for (const blockerId of [...(companyHoldOf(task)?.waitingOn ?? [])]) {
       if (only !== undefined && blockerId !== only) continue;
       const marker = companyHoldOf(task);
-      if (!marker || isTaskEnded(task) || !marker.waitingOn.includes(blockerId)) continue;
-      const state = this.tasks.get(blockerId)?.status.state;
-      let change: Pick<A2aCompanyMarkPayload, 'drop' | 'blockerEnded'> | undefined;
-      if (state === 'completed') change = { drop: blockerId };
-      else if ((state === 'failed' || state === 'canceled') && !marker.blockerEnded?.some((e) => e.id === blockerId && e.state === state)) {
-        change = { blockerEnded: { id: blockerId, state } };
-      }
+      if (!marker || isTaskEnded(task)) continue;
+      const change = this.holdChangeFor(marker, blockerId);
       if (!change) continue;
       // eslint-disable-next-line no-await-in-loop -- one mark per blocker, in order
       if (!(await this.appendCompanyMark(task, change))) return;
@@ -1632,9 +1668,10 @@ function applyCompanyMark(marker: CompanyHoldMarker, c: A2aCompanyMarkPayload): 
     return;
   }
   if (c.blockerEnded) {
-    const { id, state } = c.blockerEnded;
+    // A note written before `at` was kept reads without it.
+    const { id, state, at } = c.blockerEnded;
     if (!marker.waitingOn.includes(id) || (state !== 'failed' && state !== 'canceled')) return;
-    marker.blockerEnded = [...(marker.blockerEnded ?? []).filter((e) => e.id !== id), { id, state }];
+    marker.blockerEnded = [...(marker.blockerEnded ?? []).filter((e) => e.id !== id), { id, state, ...(typeof at === 'string' ? { at } : {}) }];
     return;
   }
   if (c.attempted !== undefined) {
