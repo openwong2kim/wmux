@@ -8,6 +8,7 @@ import { hashbangLf } from './scripts/lib/vitest-hashbang-lf.mjs';
 // Run by .github/workflows/rust-engine-daemon.yml after `npm run build:terminal-core`:
 //
 //   WMUX_TERMINAL_CORE=rust WMUX_REQUIRE_RUST_CORE=1 \
+//   WMUX_TERMINAL_CORE_MODULE="$PWD/core/wmux-term/dist/native-core/index.cjs" \
 //     npx vitest run --config vitest.rust-engine.config.ts
 //
 // src/test-utils/requireRustEngine.ts fails the run when the native module

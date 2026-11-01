@@ -24,6 +24,20 @@ const FOLDER_MAX = 4096;
 const TEXT_MAX = { company: 200, owns: 200, mission: 2000, standingOrders: 8000 } as const;
 /** Brief folders older than this are removed when the next company is made. */
 export const SEAT_BRIEF_KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+/** Written to each seat worktree's meta folder (`<repoHash>/.meta/<slug>`). */
+export const SEAT_STAMP_FILE = 'seat.json';
+
+/** What a seat worktree was made for, read back by its cleanup (seatCleanup.ts). */
+export interface SeatStamp {
+  v: 1;
+  workspaceId: string;
+  company: string;
+  label: string;
+  branch: string;
+  /** The commit `branch` was made at; absent when it could not be read. */
+  baseOid?: string;
+  createdAt: number;
+}
 
 export interface SeatLaunchRequest {
   workspaceId: string;
@@ -53,9 +67,10 @@ export interface SeatLaunchDeps {
 }
 
 // Not the fan-out root: a folder there with no open task reads as a leftover
-// to the worktree scan.
+// to the worktree scan. One instance, shared with the seat cleanup, so both
+// go through the same per-repository lock.
 let companyWorktrees: TaskWorktreeManager | undefined;
-function seatWorktrees(): TaskWorktreeManager {
+export function seatWorktrees(): TaskWorktreeManager {
   companyWorktrees ??= new TaskWorktreeManager({ onCreated: ensureSecretHook, worktreesRoot: path.join(getWmuxHomeDir(), 'company-worktrees') });
   return companyWorktrees;
 }
@@ -64,6 +79,17 @@ const isText = (v: unknown, max: number): v is string => typeof v === 'string' &
 
 function labelsInUse(): string[] {
   return metadataStore.snapshot().entries.flatMap((e) => (e.metadata.label ? [e.metadata.label] : []));
+}
+
+/** Best effort: a seat without a stamp is cleaned up by the same rules, only
+ *  without its base commit. */
+function writeSeatStamp(metaDir: string, stamp: SeatStamp): void {
+  try {
+    fs.mkdirSync(metaDir, { recursive: true });
+    fs.writeFileSync(path.join(metaDir, SEAT_STAMP_FILE), JSON.stringify(stamp), 'utf8');
+  } catch {
+    // the seat works without it
+  }
 }
 
 /** Remove brief folders nobody will read again: their agents started long ago. */
@@ -89,8 +115,9 @@ function pruneOldBriefs(root: string, now: number): void {
  * for a seat with no agent, the bare launcher when the seats are not told,
  * and otherwise the launcher with the seat's brief file as its first prompt.
  * The briefs name the final labels and each seat's worktree. Files are
- * `<wmux data dir>/company-briefs/<workspaceId>/seat-<n>.md`. A failure
- * removes the worktrees and briefs already made.
+ * `<wmux data dir>/company-briefs/<workspaceId>/seat-<n>.md`. Each worktree
+ * gets a stamp (SEAT_STAMP_FILE) in its meta folder. A failure removes the
+ * worktrees, their stamps and the briefs already made.
  */
 export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Promise<SeatLaunchResult> {
   if (!req || typeof req !== 'object') return { ok: false, error: 'bad request' };
@@ -117,12 +144,13 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
   const root = path.join(deps.dir ?? getWmuxDir(), 'company-briefs');
   const folder = path.join(root, r.workspaceId);
   const worktrees = deps.worktrees ?? seatWorktrees();
-  const created: { repoRoot: string; repoHash: string; path: string; branch: string; oid?: string }[] = [];
+  const created: { repoRoot: string; repoHash: string; path: string; branch: string; oid?: string; metaDir: string }[] = [];
   let madeFolder = false;
   const undo = async () => {
     for (const w of created.reverse()) {
       await worktrees.removeWorktree(w.repoRoot, w.repoHash, w.path, undefined, { force: true });
       if (w.oid) await worktrees.deleteBranchIfAt(w.repoRoot, w.repoHash, w.branch, w.oid);
+      try { fs.rmSync(w.metaDir, { recursive: true, force: true }); } catch { /* a stamp with no worktree is never read */ }
     }
     if (madeFolder) {
       try { fs.rmSync(folder, { recursive: true, force: true }); } catch { /* left for the prune */ }
@@ -160,7 +188,11 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
         if (base.error) return await fail(base.error);
         const wt = await worktrees.createWorktree(pf.plan, base.oid);
         if (!wt.ok) return await fail(wt.error);
-        created.push({ repoRoot: pf.plan.repoRoot, repoHash: pf.plan.repoHash, path: wt.worktreePath, branch: wt.branch, oid: wt.branchOid });
+        created.push({ repoRoot: pf.plan.repoRoot, repoHash: pf.plan.repoHash, path: wt.worktreePath, branch: wt.branch, oid: wt.branchOid, metaDir: pf.plan.metaDir });
+        writeSeatStamp(pf.plan.metaDir, {
+          v: 1, workspaceId: r.workspaceId, company: r.company.trim(), label: labels[i], branch: wt.branch,
+          ...(wt.branchOid ? { baseOid: wt.branchOid } : {}), createdAt: (deps.now ?? Date.now)(),
+        });
         made[i].worktree = { path: wt.worktreePath, branch: wt.branch };
       }
     }

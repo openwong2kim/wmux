@@ -70,5 +70,7 @@ describe('company presets', () => {
     const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
     expect(ceo).toContain('A seat reports finished work with status input-required.');
     expect(ceo).toContain('status completed and evidence. Only you or the owner can.');
+    expect(ceo).toContain('wmux checks every PR it names (its current head, required checks and open review threads) and refuses until they pass.');
+    expect(dev).not.toContain('wmux checks every PR');
   });
 });

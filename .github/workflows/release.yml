@@ -79,8 +79,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Ship the module on every desktop target; engine selection stays Node
-      # until the user opts into Rust in Settings. Forge checks the copied
+      # Ship the module on every desktop target. With no saved engine choice,
+      # defaultTerminalEngine (src/shared/terminalCoreSettings.ts) decides
+      # whether it runs; Node runs when it cannot load. Forge checks the copied
       # module and runs a PTY with the packaged executable before making assets.
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
@@ -522,8 +523,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Ship the module on every desktop target; engine selection stays Node
-      # until the user opts into Rust in Settings. Forge checks the copied
+      # Ship the module on every desktop target. With no saved engine choice,
+      # defaultTerminalEngine (src/shared/terminalCoreSettings.ts) decides
+      # whether it runs; Node runs when it cannot load. Forge checks the copied
       # module and runs a PTY with the packaged executable before making assets.
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
@@ -807,8 +809,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Ship the module on every desktop target; engine selection stays Node
-      # until the user opts into Rust in Settings. Forge checks the copied
+      # Ship the module on every desktop target. With no saved engine choice,
+      # defaultTerminalEngine (src/shared/terminalCoreSettings.ts) decides
+      # whether it runs; Node runs when it cannot load. Forge checks the copied
       # module and runs a PTY with the packaged executable before making assets.
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal

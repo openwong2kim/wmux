@@ -13,6 +13,8 @@ export interface ChatDeliveryDeps extends ScheduledPromptDeliveryDeps {
   readScreen: () => Promise<ChatScreenRows | null>;
   /** Never type into a running turn (the daemon queue delivers after the turn ends). */
   idleOnly?: boolean;
+  /** The queue's "send now": type it into the running turn when one runs. */
+  steer?: boolean;
   /** Why a `blocked` answer came from the screen: a dialog on it, or no composer at all. */
   onScreenHold?: (why: 'dialog' | 'no-composer') => void;
   /** The pane's latest window title and when it was set (`at` 0 = never). */
@@ -59,22 +61,35 @@ export async function deliverChatPrompt(
   if (attachments.length && !claudeEmpty) return 'unconfirmed';
   // Codex's empty composer is a known placeholder. A draft, menu, picker or
   // unknown CLI layout cannot inherit permission from an idle status.
-  if (initial.slug === 'codex') {
-    if (!codexComposerEmpty(rows)) return 'unconfirmed';
-    // A hook's idle can arrive while Codex keeps working (compaction, a follow-up
-    // step), and a transcript scrolled back hides the `esc to interrupt` row. The
-    // spinner Codex keeps in the window title is the evidence that survives both:
-    // Enter now would land in the running turn, not start the next one.
+  let codex: CodexSubmit | undefined;
+  // A hook's idle can arrive while Codex keeps working (compaction, a follow-up
+  // step), and a transcript scrolled back hides the `esc to interrupt` row. The
+  // spinner Codex keeps in the window title is the evidence that survives both:
+  // a prompt now would land in the running turn, not start the next one.
+  const titleRunning = (): boolean => {
     let title: { title: string; at: number } | null = null;
     try { title = deps.readTitle?.() ?? null; } catch { /* no title = no title evidence */ }
-    if (titleShowsRunningTurn(title, initial.slug, Date.now())) return 'busy';
+    return titleShowsRunningTurn(title, initial.slug, Date.now());
+  };
+  if (initial.slug === 'codex') {
+    if (!codexComposerEmpty(rows)) {
+      // Mid-turn, a steer waits out a draft or a passing screen, as Claude's does.
+      if (!deps.steer || initial.status !== 'running') return 'unconfirmed';
+      if (codexComposerVisible(rows)) return 'busy';
+      deps.onScreenHold?.('no-composer');
+      return 'blocked';
+    }
+    codex = codexSubmit(text, deps);
+    if (!codex.acceptRunning && titleRunning()) return 'busy';
   }
   let keyboardOwned = true;
   const result = await deliverScheduledPrompt(initial.slug, initial.incarnationId, text, {
     ...deps,
-    // Codex submits bracketed multiline paste with one Enter. Claude's existing
-    // double-Enter behavior is retained by the scheduler's default.
-    ...(initial.slug === 'codex' ? { submitKeys: '\r' } : {}),
+    // Codex submits bracketed multiline paste with one key (codexSubmit).
+    // Claude's existing double-Enter behavior is retained by the scheduler's default.
+    // A turn the title shows at the submit write took the prompt mid-turn too.
+    ...(codex ? { ...codex, onWrite: (stage: 'paste' | 'submit', queued?: boolean) =>
+      deps.onWrite?.(stage, stage === 'submit' ? !!queued || titleRunning() : queued) } : {}),
     // Claude queues a prompt submitted mid-turn, exactly as typed in Terminal.
     ...(claudeEmpty && !deps.idleOnly ? { acceptRunning: true } : {}),
     ...(attachments.length ? { leadingPastes: attachments.map(quoteImagePathForPty) } : {}),
@@ -96,6 +111,26 @@ export async function deliverChatPrompt(
   });
   // The screen gate above already holds a folder-trust dialog as a dialog.
   return result === 'folder_trust' ? 'blocked' : result;
+}
+
+type CodexSubmit = { submitKeys: '\r' | '\t'; acceptRunning?: true };
+
+/**
+ * How a prompt goes into Codex, measured on codex-cli 0.162.1 (its composer
+ * reads keys the same way from 0.156): Enter typed mid-turn goes into the
+ * running turn, while Tab queues the prompt during a turn and submits it like
+ * Enter when none runs. So only a steer takes Enter into a running turn, and
+ * everything else takes Tab: a send during a turn is queued by Codex itself,
+ * and a queued message for the next turn cannot land in a turn that started
+ * after the idle check. Tab does not submit a `!` shell command, and completes
+ * a `/` command in its popup instead of running it: those keep Enter, and wait
+ * for the turn to end, a steer too (Enter would type the text into the turn,
+ * or run the command mid-turn).
+ */
+function codexSubmit(text: string, deps: ChatDeliveryDeps): CodexSubmit {
+  if (/^[!/]/.test(text.trimStart())) return { submitKeys: '\r' };
+  if (deps.steer) return { submitKeys: '\r', acceptRunning: true };
+  return deps.idleOnly ? { submitKeys: '\t' } : { submitKeys: '\t', acceptRunning: true };
 }
 
 /** The rule under Claude's prompt row (and over it, unlabeled). */

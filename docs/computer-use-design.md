@@ -9,10 +9,11 @@ macOS**, the way wmux already lets them drive a browser over CDP.
 
 ## Code-origin rule
 
-Same rule as `docs/chat-view-oss-research-2026-09-24.md`: other projects are
-referenced for behaviour, protocol shape and UX only. No source, tests or
-assets are copied, translated or adapted. AGPL components are not even read
-for design (trycua `som`, `cua-perception`).
+Other projects are referenced for behaviour, protocol shape and UX. Code may be
+adapted only from permissively licensed projects the owner approved (Cua
+Driver, MIT): each adapted file names its source and commit in a header
+comment, and the license text goes into `THIRD_PARTY_NOTICES.md`. AGPL
+components are not even read for design (trycua `som`, `cua-perception`).
 
 ## Shape
 
@@ -587,6 +588,9 @@ Behaviour and UX only:
 - stablyai/orca: `docs/site/content/docs/cli/computer-use.mdx`
 - trycua/cua `libs/cua-driver` (MIT core): action-result contract, background
   delivery notes
+- vercel-labs/agent-desktop (Apache-2.0): the three delivery outcomes (not
+  delivered, delivered but unverified, delivered), never trusting an input
+  API's success as proof, and holding the input lock only around the real send
 - openclaw/Peekaboo: snapshot-bound element IDs, permission onboarding
 - CursorTouch/Windows-MCP: UIA control-type filtering and caching
 - mediar-ai/terminator: pre-action checks, click result reporting

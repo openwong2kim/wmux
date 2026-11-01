@@ -153,7 +153,9 @@ WMUX_DATA_SUFFIX=-rust-test WMUX_TERMINAL_CORE=rust node dist/daemon-bundle/inde
 
 The desktop picker lives in **Settings → Terminal → Performance → Terminal engine**.
 It saves `engine: "node" | "rust"` in `~/.wmux{suffix}/terminal-core.json`, shared
-by the daemon and local Electron PTY host. Node remains the default. The picker
+by the daemon and local Electron PTY host. With nothing saved, Rust is the
+default on Windows, macOS and Linux when the module loads, and Node otherwise
+(`defaultTerminalEngine`). The picker
 shows the current host's effective backend separately from the saved choice,
 disables Rust when the combined native module cannot load, and displays load
 fallbacks. Settings search also finds Rust, Node, PTY and memory.
@@ -173,7 +175,10 @@ unreachable daemons display an unknown current engine rather than guessing.
 Use a new isolated daemon for benchmarks. Without a saved Rust choice or
 `WMUX_TERMINAL_CORE=rust`, node-pty and the JS ring remain selected.
 `WMUX_TERMINAL_CORE_MODULE` can name an absolute module path; otherwise the
-loader checks packaged `wmux-native` resources and the local build. The older
+loader looks only where wmux installs it: packaged `wmux-native` resources, or
+beside the bundle (the server runtime, and the `dist/wmux-native` that
+`npm run build:terminal-core` stages for `dist/` bundles). A checkout's
+`core/wmux-term/dist/native-core` build is used only when named. The older
 `WMUX_RUST_SNAPSHOT_MODULE` remains available for snapshot-only experiments.
 
 `WMUX_RUST_SNAPSHOT` independently overrides snapshot selection: `text`, `shadow`,
@@ -305,8 +310,9 @@ exercise snapshots and output interpretation, and drain a real PTY into a frozen
 ring. Windows uses the package's ConPTY DLL. Failure stops packaging before makers
 create installers. This smoke never starts a daemon or changes user settings.
 
-Including the module does not enable Rust: Node stays the default, and switching
-still requires an explicit saved choice and a host restart. The packaging smoke
+Including the module is what makes Rust the default on Windows, macOS and Linux
+(`defaultTerminalEngine`); a saved choice still wins, and switching takes a host
+restart. The packaging smoke
 does not replace interactive signed-app, team-session or long-soak qualification.
 
 ## Reproduce validation

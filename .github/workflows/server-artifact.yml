@@ -71,8 +71,8 @@ jobs:
         run: bash scripts/build-server-artifact-container.sh "$ARCH" out/server
 
       # The tarball as shipped, extracted into a fresh home on Debian 11 and
-      # started through its own CLI with the rust engine picked in
-      # ~/.wmux/terminal-core.json: the daemon must run a shell on it.
+      # started through its own CLI with no engine saved: the daemon must run
+      # a shell on the rust engine, its default.
       - name: Prove the artifact on the rust engine
         env:
           ARCH: ${{ matrix.arch }}

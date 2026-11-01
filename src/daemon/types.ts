@@ -262,6 +262,9 @@ export interface DaemonConfig {
      * `.buf` dump + sessions.json snapshot (crash-recovery freshness bound).
      */
     livenessIntervalSec?: number;
+    /** The liveness sweep's cadence while the native process table serves it
+     *  (Windows, no spawn): default 3 s, clamped 2–120 s. */
+    nativeLivenessIntervalSec?: number;
     snapshotIntervalSec?: number;
   };
   session: {

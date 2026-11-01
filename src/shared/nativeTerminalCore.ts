@@ -1,4 +1,5 @@
-/** Native code is loaded for an explicit backend selection or Settings availability probe. */
+/** Native code is loaded for an explicit backend selection, a Settings availability probe,
+ *  or the daemon's Windows process table (src/daemon/nativeProcessTable.ts). */
 import path from 'node:path';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -40,6 +41,8 @@ export interface NativeTerminalCore {
   NativeOutputDecoder?: new () => { feed(bytes: Uint8Array, finish: boolean): NativeOutputChunk };
   NativeOutputInterpreter?: new () => NativeOutputInterpreter;
   NativeTransport: new (command: string, args: string[], cwd: string, env: Record<string, string>, cols: number, rows: number, wake: () => void, conptyDll?: string, parentWindow?: Uint8Array) => NativeTransport;
+  /** Windows only (`process-table-v1`). */
+  processTable?(withCommandLines: boolean): Promise<Array<{ pid: number; ppid: number; name: string; created?: number | null; cmdline?: string | null }>>;
 }
 export interface NativeOscBatch { codes: Float64Array; data: string[] }
 export interface NativeOutputInterpreter {
@@ -68,6 +71,13 @@ const requireNative = createRequire(path.join(process.cwd(), 'wmux-core-loader.c
 let cached: { file: string; module: NativeTerminalCore } | undefined;
 const failures = new Set<string>();
 
+/**
+ * The module named by WMUX_TERMINAL_CORE_MODULE (absolute), else the first one
+ * found where wmux installs it: the packaged app's resources, or beside the
+ * bundle (the server runtime, and `npm run build:terminal-core`'s
+ * dist/wmux-native for dist bundles). Nothing is looked up from the working
+ * directory; a checkout's own build is named with the variable.
+ */
 export function nativeCorePath(): string {
   const override = process.env.WMUX_TERMINAL_CORE_MODULE ?? process.env.WMUX_RUST_SNAPSHOT_MODULE;
   if (override) {
@@ -79,7 +89,6 @@ export function nativeCorePath(): string {
     ...(resources ? [path.join(resources, 'wmux-native/index.cjs')] : []),
     path.join(__dirname, '../wmux-native/index.cjs'),
     path.join(__dirname, 'wmux-native/index.cjs'),
-    path.resolve('core/wmux-term/dist/native-core/index.cjs'),
   ];
   return candidates.find(p => fs.existsSync(p)) ?? candidates[0];
 }

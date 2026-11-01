@@ -494,6 +494,14 @@ const electronAPI = {
       ipcRenderer.on(IPC.SUPERVISION_CHANGED, listener);
       return () => { ipcRenderer.removeListener(IPC.SUPERVISION_CHANGED, listener); };
     },
+    // The pane's agent process died (the daemon tracker's death edge; a
+    // successor process is not a death). Drops the pane's agent row.
+    onAgentProcessExit: (callback: (payload: { ptyId: string; slug: string | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId: string; slug: string | null }) =>
+        callback(payload);
+      ipcRenderer.on(IPC.AGENT_PROCESS_EXIT, listener);
+      return () => { ipcRenderer.removeListener(IPC.AGENT_PROCESS_EXIT, listener); };
+    },
     // Fires once per attach when the daemon's SessionPipe ring-buffer
     // flush completes. recoveredBytes is the exact byte count replayed
     // from the daemon's scrollback before the FLUSH_DONE_MARKER. 0 means
@@ -1718,11 +1726,14 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.TASK_CREATE_PR, { taskId, verifiedWorkspaceId }) as Promise<
         import('../shared/workTask').CreatePrResultWire
       >,
+    /** `keep`: every folder a live, stashed or archived pane is in; without
+     *  it no company seat folder is listed. */
     scan: (
       verifiedWorkspaceId: string,
       knownOpen?: Array<{ taskId: string; title: string; worktreePath?: string }>,
+      keep?: string[],
     ) =>
-      ipcRenderer.invoke(IPC.WORKTASK_SCAN, { verifiedWorkspaceId, knownOpen }) as Promise<
+      ipcRenderer.invoke(IPC.WORKTASK_SCAN, { verifiedWorkspaceId, knownOpen, ...(keep ? { keep } : {}) }) as Promise<
         import('../shared/workTask').WorktaskScanResultWire
       >,
     // F2 — 재발사: prompt.md 실존 검사 후 원래 initialCommand를 정상 경로와 동일
@@ -1739,6 +1750,19 @@ const electronAPI = {
       >,
     deletePhoneBranch: (repo: string, branch: string) =>
       ipcRenderer.invoke(IPC.WORKTASK_DELETE_PHONE_BRANCH, { repo, branch }) as Promise<{ ok: boolean; error?: string }>,
+    removeCompanySeat: (worktreePath: string, force: boolean) =>
+      ipcRenderer.invoke(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath, force }) as Promise<
+        import('../shared/workTask').RemovePhoneWorktreeResultWire
+      >,
+    /** Only `company/<slug>` of that seat folder. */
+    deleteCompanySeatBranch: (worktreePath: string, repo: string, branch: string, oid: string) =>
+      ipcRenderer.invoke(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath, repo, branch, oid }) as Promise<{ ok: boolean; error?: string }>,
+    /** Remove the company seat worktrees nothing uses any more; `keep`: every
+     *  folder a live, stashed or archived pane is in. */
+    sweepCompanySeats: (keep: string[]) =>
+      ipcRenderer.invoke(IPC.WORKTASK_SWEEP_COMPANY_SEATS, { keep }) as Promise<
+        import('../shared/workTask').CompanySeatSweepResultWire
+      >,
   },
   dialog: {
     pickFolder: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER) as Promise<string[]>,

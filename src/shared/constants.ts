@@ -58,6 +58,10 @@ export const IPC = {
   // manual rearm/stop). Always forwarded for badge sync; main also raises an
   // OS toast on guard trips only. Payload: { ptyId, status, reason, restartCount }.
   SUPERVISION_CHANGED: 'supervision:changed',
+  // The daemon's agent process-death edge (the tracker saw the pane's agent
+  // exit with no successor). The renderer drops the pane's agent row on it
+  // instead of waiting for its 15 s liveness poll. Payload: { ptyId, slug }.
+  AGENT_PROCESS_EXIT: 'agent:processExit',
   // X8 — renderer → main invoke channels for the supervision control surface
   // (pane context menu rearm / stop). Renderer-only by design: only the user
   // re-arms a tripped guard, never an external MCP/CLI client. Forwarded to
@@ -181,6 +185,14 @@ export const IPC = {
   // optionally delete their phone/<slug> branch.
   WORKTASK_REMOVE_PHONE: 'worktask:remove-phone',
   WORKTASK_DELETE_PHONE_BRANCH: 'worktask:delete-phone-branch',
+  // Company seat worktrees nothing uses any more are removed by this sweep
+  // (main company/seatCleanup.ts); `{ keep }` holds every folder a live,
+  // stashed or archived pane is in.
+  WORKTASK_SWEEP_COMPANY_SEATS: 'worktask:sweep-company-seats',
+  // A company seat folder the cleanup list shows: remove it by path, then
+  // optionally delete its company/<slug> branch.
+  WORKTASK_REMOVE_COMPANY_SEAT: 'worktask:remove-company-seat',
+  WORKTASK_DELETE_COMPANY_SEAT_BRANCH: 'worktask:delete-company-seat-branch',
   //   AGENT_MODELS_LIST (invoke) renderer → main: the models an agent CLI
   //                   reports (`agy models`, `codex debug models`, claude's
   //                   static list), cached in main. `{ agent, refresh? }` →
