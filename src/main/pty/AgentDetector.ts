@@ -1545,8 +1545,10 @@ export class AgentDetector {
     const previousLength = stripAnsi(this.approvalHintTail.replace(UNFINISHED_ESCAPE, '')).length;
     const probe = this.approvalHintTail + data;
     const cleanProbe = stripAnsi(probe);
-    // Keep in step with the approvalReady questions (READY_PROFILES).
-    const hint = /Do[\s│]*you[\s│]*(?:want|trust)|Would\s*you\s*like|Allow\s*tool\s*use|Permission\s*required|Trust\s*project\s*folder|Allow\s*execution\s*of:|Apply\s*this\s*change\?|Trust\s*this\s*folder|Is\s*this\s*a\s*project\s*you\s*created/g;
+    // Keep in step with the approvalReady questions (READY_PROFILES). The key
+    // row ends every dialog of Claude Code's screen-reader layout, whose
+    // AskUserQuestion asks in its own words.
+    const hint = /Do[\s│]*you[\s│]*(?:want|trust)|Would\s*you\s*like|Allow\s*tool\s*use|Permission\s*required|Trust\s*project\s*folder|Allow\s*execution\s*of:|Apply\s*this\s*change\?|Trust\s*this\s*folder|Is\s*this\s*a\s*project\s*you\s*created|Select\s*with\s*numbers|Enter\s*y\/n:/g;
     for (const match of cleanProbe.matchAll(hint)) {
       // Only newly drawn text refreshes freshness. Retaining an old question
       // in the tail across a title update must not make it recent again.

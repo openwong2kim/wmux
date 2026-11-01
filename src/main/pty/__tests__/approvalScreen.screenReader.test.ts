@@ -1,10 +1,11 @@
 // Quiet recovery on Claude Code's screen-reader layout (live captures in
 // daemon/approvals/__tests__/fixtures/screen-reader/, Claude Code 2.1.316).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { claudeScreenApproval } from '../approvalScreen';
+import { AgentDetector } from '../AgentDetector';
 
 const screen = (name: string): string[] =>
   (JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', '..', 'daemon', 'approvals', '__tests__', 'fixtures', 'screen-reader', `${name}.json`), 'utf8')) as {
@@ -50,9 +51,22 @@ describe('claudeScreenApproval — screen-reader layout', () => {
       'Esc to cancel',
     ])).toEqual({ text: 'Allowthisrequest?', message: 'Approval requested' });
     expect(claudeScreenApproval([
-      'Something new',
+      'Overwrite the existing config?',
+      'y. Yes, overwrite it',
+      'n. No, keep it',
       'Enter y/n:',
     ])).toEqual({ text: 'Entery/n:', message: 'Approval requested' });
+    // A bare y/n key row may be the trust dialog scrolled off a short pane.
+    expect(claudeScreenApproval(['Enter y/n:', 'Enter to confirm · Esc to cancel'])).toEqual({ text: 'Quick safety check:', message: 'Project trust prompt' });
+    // An option that asks, and a question broken over two rows: the text is the question.
+    expect(claudeScreenApproval([
+      'Question: Team',
+      '> Which of these should we pick for the',
+      'release?',
+      '1. Ship now',
+      '2. Should we ask the team?',
+      'Select with numbers [1-2]. Then Enter to submit or Escape to cancel:',
+    ])).toEqual({ text: 'Whichoftheseshouldwepickfortherelease?', message: 'Approval requested' });
     // Output under the key row: not the live dialog's.
     expect(claudeScreenApproval([
       'Do you want to proceed?',
@@ -61,5 +75,16 @@ describe('claudeScreenApproval — screen-reader layout', () => {
       'Select with numbers [1-2]. Then Enter to submit or Escape to cancel:',
       'tool: Bash (npm test)',
     ])).toBeNull();
+  });
+
+  it('is asked for once the screen-reader AskUserQuestion is drawn on a quiet screen', async () => {
+    const rows = screen('claude-sr-ask-100x30');
+    const det = new AgentDetector();
+    const events = vi.fn();
+    det.onEvent(events);
+    det.feed(rows.join('\r\n'));
+    det.seedTrustedIdentity('claude', det.getIdentityEpoch());
+    expect(await det.revalidateApprovalScreen(async () => ({ rows, isCurrent: () => true }))).toBe(true);
+    expect(events.mock.calls.map(([event]) => event.status)).toEqual(['awaiting_input']);
   });
 });

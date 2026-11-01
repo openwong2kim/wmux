@@ -54,6 +54,7 @@
 // which reports and waits: the safe direction.
 
 import { looksLikeApprovalPrompt, readFolderTrustScreen } from '../daemon/approvals/approvalKeystrokes';
+import { showsScreenReaderKeyRow } from '../daemon/approvals/screenReaderKeyRow';
 import { CODEX_TRUST_HEADLINE, TRUST_HEADLINE } from './folderTrustWording';
 
 /**
@@ -273,9 +274,10 @@ export type LaunchScreen =
 /**
  * Scheduled runs: what stands between a freshly launched agent and the prompt
  * paste. Known first-run screens (including codex's trust dialog) are named;
- * any other screen that shows a cursor option row or a confirm footer is
- * `blocking`, so an unknown menu is reported instead of being pasted into.
- * Null means the screen shows no menu at all.
+ * any other screen that shows a cursor option row, a confirm footer or the
+ * key row of Claude Code's screen-reader layout is `blocking`, so an unknown
+ * menu is reported instead of being pasted into. Null means the screen shows
+ * no menu at all.
  */
 export function classifyLaunchScreen(screen: string): LaunchScreen | null {
   if (!screen) return null;
@@ -283,7 +285,8 @@ export function classifyLaunchScreen(screen: string): LaunchScreen | null {
   if (known) return { kind: 'first-run', prompt: known };
   const text = boxlessText(screen);
   if (CODEX_TRUST_HEADLINE.test(text)) return { kind: 'first-run', prompt: { kind: 'trust', headline: trustHeadline(text) } };
-  if (looksLikeApprovalPrompt(screen.split('\n')) || MENU_FOOTER.test(screen)) {
+  const rows = screen.split('\n');
+  if (looksLikeApprovalPrompt(rows) || MENU_FOOTER.test(screen) || showsScreenReaderKeyRow(rows)) {
     return { kind: 'blocking', headline: 'unrecognised menu' };
   }
   return null;

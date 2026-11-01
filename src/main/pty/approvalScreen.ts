@@ -24,17 +24,31 @@ export function claudeScreenApproval(rows: readonly string[]): ScreenApproval | 
   // Claude Code's screen-reader layout ends every dialog with a key row and
   // draws no cursor (screenReaderKeyRow). Its trust dialog is read like the
   // input guard reads it; any other dialog there owns the keys too, whether
-  // or not a reader above names it. Its text is its question row.
+  // or not a reader above names it.
   const key = screenReaderKeyRow(rows);
   if (!key) return null;
   if (key.keys === 'y/n' && readFolderTrustScreen(rows) !== null) return { text: trust, message: 'Project trust prompt' };
-  const question = key.lines.slice(Math.max(0, key.at - SR_QUESTION_REACH), key.at).reverse()
-    .map((row) => row.trim().replace(/^> /, '')).find((row) => row.endsWith('?'));
-  return { text: (question ?? key.lines[key.at]!.trim()).replace(/\s+/g, ''), message: 'Approval requested' };
+  return { text: screenReaderQuestion(key.lines, key.at).replace(/\s+/g, ''), message: 'Approval requested' };
 }
 
-/** How far above a screen-reader key row its question may be: past nine options, each broken over two rows. */
-const SR_QUESTION_REACH = 20;
+/**
+ * A screen-reader dialog's question: the row right above its option 1, or,
+ * when that row is the lower-case tail Ink broke off a long question, the rows
+ * from the nearest of the two above it that starts one (`> Which …?`, `Do you
+ * want to …`). With no option 1, the key row itself.
+ */
+function screenReaderQuestion(lines: readonly string[], at: number): string {
+  let first = at - 1;
+  while (first >= 0 && !/^1[.)]\s/.test(lines[first]!.trim())) first--;
+  if (first <= 0) return lines[at]!.trim();
+  let start = first - 1;
+  if (!/^(?:[A-Z]|> )/.test(lines[start]!.trim())) {
+    for (let i = first - 2; i >= Math.max(0, first - 3); i--) {
+      if (/^(?:> |Do you want to )/.test(lines[i]!.trim())) { start = i; break; }
+    }
+  }
+  return lines.slice(start, first).map((row) => row.trim()).join(' ').replace(/^> /, '');
+}
 
 /** A dialog's choice rows: `option` is one choice, `selected` marks exactly
  *  one of them, and every `required` choice must be offered. */
