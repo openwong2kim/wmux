@@ -77,14 +77,19 @@ import type { WorkflowDispatchBinding } from '../../factory/workflowFanout';
 //
 // Residual: `senderPtyId` arrives in params, not from the connection peer PID,
 // so a same-user process can forge it — the #113 ceiling documented at length
-// in a2a.channel.rpc.ts. Attribution here is advisory in exactly the same way;
-// this handler is no weaker and no stronger than the channel surface it mirrors.
+// in a2a.channel.rpc.ts. Attribution here also carries privilege: a caller
+// naming a pane whose live Claude runs in bypass gets bypass workers (see
+// fanoutInheritedMode.ts). That is inside the same ceiling: a same-user process
+// can already type into such a pane or start its own bypass agent. What keeps
+// the inheritance narrow is that only a Claude MCP caller, never a plugin host
+// or a brain, inherits, and only on the daemon's process truth for that pane.
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
-import type { RpcContext } from '../../../shared/rpc';
+import { isHostedCaller, type RpcContext } from '../../../shared/rpc';
+import { agentSlugOf } from '../paneCaller';
 import { defaultBranchRefusal, noteBotRepoDefaultBranch, type DefaultBranchNote } from '../../agents/botWorkerDefaultBranch';
 import { HUMAN_WORKSPACE_ID, CHANNEL_TOPIC_MAX } from '../../../shared/channels';
 import {
@@ -1831,6 +1836,7 @@ export function registerFanOutRpc(
     // and only as the daemon reports it, never from the request.
     const settingMode = (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
     const inherited = botPresetMode === undefined && !commanderWorkspaceId && senderPtyId
+      && !isHostedCaller(ctx) && agentSlugOf(ctx?.clientName) === 'claude'
       ? inheritWorkerMode(settingMode, await callerPaneRunsBypass(senderPtyId, daemonRpc))
       : null;
     const workerMode = botPresetMode ?? inherited?.mode ?? settingMode;

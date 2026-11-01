@@ -4,10 +4,12 @@
 // the ONLY inheritance: any other parent mode, or a mode that cannot be read,
 // leaves the operator's setting in charge — never elevated beyond the parent.
 //
-// The parent's mode is the daemon's: HookIngest records the mode each Claude
-// hook reports into the pane's resume binding, and `daemon.listSessions`
-// surfaces that binding with the pane's live agent (process truth). Nothing
-// here reads the caller's request.
+// The parent's mode is the daemon's, from process truth: `daemon.listSessions`
+// marks a row `liveClaudeBypass` only when the pane's live Claude process was
+// launched in bypass (its command line) AND the newest mode its hooks reported
+// since that launch is still bypass. A conversation resumed without the flag, a
+// mode switched mid-session, a WSL pane (its command line is not read) or a
+// dead process all say no. Nothing here reads the caller's request.
 
 import type { DaemonRpc } from '../pty/wslCallerCwd';
 import type { FanoutWorkerPermissionMode } from '../../shared/workerLaunch';
@@ -15,20 +17,9 @@ import type { FanoutWorkerPermissionMode } from '../../shared/workerLaunch';
 /** Where a fan-out's worker mode came from, for its audit records. */
 export type FanoutWorkerModeSource = 'setting' | 'bot-preset' | 'inherited-caller-pane';
 
-/**
- * Whether one `daemon.listSessions` row is a pane whose Claude is alive right
- * now and last reported `bypassPermissions`. The recorded mode is "last
- * observed", so it is only believed while that Claude still runs: a pane that
- * ran bypass Claude earlier and now runs a shell or another agent says no.
- */
+/** Whether one `daemon.listSessions` row is a pane running bypass Claude right now (the daemon's `liveClaudeBypass`). */
 export function sessionRunsBypassClaude(row: unknown): boolean {
-  if (!row || typeof row !== 'object') return false;
-  const r = row as Record<string, unknown>;
-  if (r['liveAgent'] !== 'claude') return false;
-  const binding = r['resumeBinding'];
-  if (!binding || typeof binding !== 'object') return false;
-  const b = binding as Record<string, unknown>;
-  return b['agent'] === 'claude' && b['permissionMode'] === 'bypassPermissions';
+  return !!row && typeof row === 'object' && (row as Record<string, unknown>)['liveClaudeBypass'] === true;
 }
 
 /**

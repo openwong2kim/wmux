@@ -258,7 +258,7 @@ import { TeammateWakes, turnEndAt } from './transcript/teammateWake';
 import { TranscriptDiscovery, DISCOVERABLE_AGENT } from './transcript/TranscriptDiscovery';
 import { admitCodexCapture, gateCodexStop } from './transcript/codexCapture';
 import { CodexCwdBinder, codexLiveFor, describeCodexPane, readProcessStartMs, type CodexPaneFacts } from './transcript/codexRolloutByCwd';
-import { commandLineBinding, settleStoppedBinding } from './transcript/agentCommandLineBinding';
+import { claudeLaunchedInBypass, commandLineBinding, paneRunsBypassClaude, settleStoppedBinding, withCaptureTsNotAhead, type AgentLaunchFact } from './transcript/agentCommandLineBinding';
 import { PushSender } from './push/PushSender';
 import { RelayTransport } from './push/RelayTransport';
 import { LiveActivityPusher, type LiveActivityCounts } from './push/LiveActivityPusher';
@@ -471,6 +471,10 @@ const codexProcessStart = new Map<string, number>();
 let bindFromAgentCommandLine: ((sessionId: string, slug: string, pid: number) => void) | null = null;
 // The agent process (`pid@start`) whose command line each pane last read; cleared on its death edge.
 const agentCommandLineRead = new Map<string, string>();
+// Each pane's agent process as its command line read it: its pid, start time
+// and whether it is a Claude launched in bypass. Fan-out inherits bypass from a
+// calling pane only on this process truth (paneRunsBypassClaude); cleared on its death edge.
+const agentLaunchFacts = new Map<string, AgentLaunchFact>();
 // The start of each pane's agent process whose command line names no
 // conversation (no resume grammar, so its line is never read above), for its
 // launch time when the shell reports no command start; cleared on its death edge.
@@ -3487,9 +3491,16 @@ function registerRpcHandlers(
       // banner both stayed silent (a resumed Codex) and a dead agent is never
       // reported. agentProcessAlive below carries only liveness, slugless picks too.
       const tracked = agentProcessTracker.identityFor(s.id);
-      const withPrompt = tracked?.alive && tracked.slug
+      const withPrompt0 = tracked?.alive && tracked.slug
         ? { ...withCommand, liveAgent: tracked.slug }
         : withCommand;
+      // Fan-out bypass inheritance reads this one fact, never the raw binding:
+      // the pane's live Claude was LAUNCHED in bypass (its argv) AND still
+      // reports bypass (a binding captured after that launch). A conversation
+      // resumed without the flag, or switched out of bypass, says no.
+      const withPrompt = paneRunsBypassClaude(agentLaunchFacts.get(s.id), tracked, agentProcessTracker.pidFor(s.id), durableBinding)
+        ? { ...withPrompt0, liveClaudeBypass: true as const }
+        : withPrompt0;
       // Agent process truth — the resume chip's busy gate, and the death edge
       // the #1794 prompt-mode guard re-asks on (#2030), which an agent with no
       // resume binding (Codex, an unbound claude) needs too. So it is reported
@@ -4274,6 +4285,7 @@ function registerRpcHandlers(
     // capture's exactness (#2730).
     if (hasAuthoritativeTranscript(vetted)) discoveryPaneExact.delete(id);
     else discoveryPaneExact.set(id, paneExact);
+    vetted = withCaptureTsNotAhead(vetted, Date.now());
     const p = { id, resumeBinding: vetted };
     // Resume-chip edge trigger: a hook reaching this RPC proves claude is
     // running in the pane RIGHT NOW — attach the process watch (no-op while a
@@ -4701,8 +4713,9 @@ function registerRpcHandlers(
       if (cmdline === undefined || agentProcessTracker.pidFor(id) !== pid) return;
       const live = sessionManager.getSession(id);
       if (!live) return;
-      for (const known of agentCommandLineRead.keys()) if (!sessionManager.getSession(known)) agentCommandLineRead.delete(known);
+      for (const known of agentCommandLineRead.keys()) if (!sessionManager.getSession(known)) { agentCommandLineRead.delete(known); agentLaunchFacts.delete(known); }
       agentCommandLineRead.set(id, processKey);
+      agentLaunchFacts.set(id, { pid, ...(startedAt !== undefined ? { startedAt } : {}), bypass: slug === 'claude' && claudeLaunchedInBypass(cmdline) });
       // The launch time orders this against hook / relay / notify captures (see commandLineBinding).
       const launchAt = startedAt ?? live.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts;
       const binding = commandLineBinding(slug, cmdline, live.meta.cwd, live.meta.env, {
@@ -10208,7 +10221,7 @@ async function main(): Promise<void> {
         }).catch(() => undefined);
       }
     }
-    if (!state.alive) { agentCommandLineRead.delete(sessionId); agentProcessStart.delete(sessionId); }
+    if (!state.alive) { agentCommandLineRead.delete(sessionId); agentLaunchFacts.delete(sessionId); agentProcessStart.delete(sessionId); }
     // N4 — an agent that starts in a pane whose account is signed out gets
     // the notice now, not after its first turn fails. It still runs: the pane
     // is the user's own. Once per agent process (the tracker re-emits alive);
