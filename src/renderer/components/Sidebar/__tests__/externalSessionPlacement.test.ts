@@ -58,6 +58,9 @@ describe('matchExternalWorkspace: a session in WSL', () => {
   it('placement passes the session\'s distro', () => {
     const wsl = session('w', '/home/dev/app', { where: { kind: 'unknown', wslDistro: 'Ubuntu' } });
     expect(placeExternalSessions([wsl], workspaces).byWorkspace.share).toEqual([wsl]);
+    // A distro with a UNC cwd (not a Linux folder) is matched by that UNC path.
+    const unc = session('u', '\\\\wsl.localhost\\Ubuntu\\home\\dev\\app', { where: { kind: 'unknown', wslDistro: 'Ubuntu' } });
+    expect(placeExternalSessions([unc], workspaces).byWorkspace.share).toEqual([unc]);
   });
 
   it('externalSessionWslDistro: only a valid distro at a Linux folder', () => {

@@ -104,7 +104,8 @@ export function placeExternalSessions(
   const byWorkspace: Record<string, ExternalSession[]> = {};
   const outside: ExternalSession[] = [];
   for (const session of [...sessions].sort(compareExternalSessions)) {
-    const id = matchExternalWorkspace(session.cwd, workspaces, session.where.wslDistro);
+    // The distro counts only for a Linux folder; a UNC cwd is matched as it is.
+    const id = matchExternalWorkspace(session.cwd, workspaces, externalSessionWslDistro(session));
     if (id) (byWorkspace[id] ??= []).push(session);
     else outside.push(session);
   }
