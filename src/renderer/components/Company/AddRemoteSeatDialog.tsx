@@ -156,7 +156,7 @@ export default function AddRemoteSeatDialog({ workspaceId, onClose }: { workspac
       setReviewed({ from: intro, text: pending.text });
       return;
     }
-    const ask: A2aSpawnUiAsk = {
+    const request = {
       hostId: place.hostId,
       agent: agent as A2aSpawnUiAsk['agent'],
       folder: { root, ...(cleanSub ? { sub: cleanSub } : {}) },
@@ -164,11 +164,11 @@ export default function AddRemoteSeatDialog({ workspaceId, onClose }: { workspac
       expiresInHours: hours,
       end: { workspaceId, paneId: ceoPaneId },
       label: name,
-      requestKey: '',
     };
-    const of = JSON.stringify(ask);
-    if (keyRef.current?.of !== of) keyRef.current = { of, key: crypto.randomUUID() };
-    ask.requestKey = keyRef.current.key;
+    const of = JSON.stringify(request);
+    const requestKey = keyRef.current?.of === of ? keyRef.current.key : crypto.randomUUID();
+    keyRef.current = { of, key: requestKey };
+    const ask: A2aSpawnUiAsk = { ...request, requestKey };
     setBusy(true); setError(null);
     try {
       const r = await api.spawnAsk(ask);
