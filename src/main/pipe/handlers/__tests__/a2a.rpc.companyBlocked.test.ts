@@ -214,15 +214,47 @@ describe('a2a.task.send — each blocker is judged against the daemon before any
     expect(rendererCalls('a2a.task.send')).toEqual([]);
   });
 
-  it('a task whose blockers all completed is sent as any other, delivered now', async () => {
+  it('a task whose blockers all completed takes the hold route too: released at create, delivered by the bridge only', async () => {
     daemon.tasks.set('task-a', task('task-a', 'completed'));
     const res = await send(sendParams(['task-a', 'task-a']));
     expect(daemonCalls('a2a.task.query')).toHaveLength(1);
-    expect(rendererCalls('a2a.task.send')[0].silent).toBeUndefined();
-    expect(res).toMatchObject({ ok: true, taskId: NEW_ID, delivery: { stored: true, notified: true, mode: 'nudge' } });
+    expect(rendererCalls('a2a.task.send')[0]).toMatchObject({ silent: true, heldForBlockers: true });
     const create = daemonCalls('a2a.task.create');
     expect(create).toHaveLength(1);
-    expect(create[0].params.holdForBlockers).toBeUndefined();
+    expect(create[0].params.holdForBlockers).toBe(true);
+    expect(res).toMatchObject({ ok: true, taskId: NEW_ID, silent: false, delivery: { stored: true, notified: false, reason: 'released' } });
+    expect(pullNow).toHaveBeenCalledTimes(1);
+    expect(rendererCalls('a2a.company.deliver')).toEqual([]);
+  });
+
+  it('refuses execute even when every blocker completed: only the bridge delivers it', async () => {
+    daemon.tasks.set('task-a', task('task-a', 'completed'));
+    const res = await send(sendParams(['task-a'], { execute: true }));
+    expect(res.error).toMatch(/^a2a\.task\.send: a task that waits on blockedBy goes to its pane/);
+    expect(rendererCalls('a2a.task.send')).toEqual([]);
+  });
+
+  it('refuses a blockedBy that is not a list of task ids, before reading or storing anything', async () => {
+    const malformed = `a2a.task.send: ${COMPANY_BLOCKED_BY_REFUSAL.malformed}`;
+    for (const blockedBy of ['task-a', null, 7, { id: 'task-a' }, ['task-a', ''], ['task-a', '   '], ['task-a', 3]]) {
+      // eslint-disable-next-line no-await-in-loop -- one send at a time
+      const res = await send(sendParams(undefined, { data: { ...brief(), blockedBy } }));
+      expect(res.error).toBe(malformed);
+    }
+    expect(daemon.calls).toEqual([]);
+    expect(rendererCalls('a2a.task.send')).toEqual([]);
+  });
+
+  it('takes an empty blockedBy list as waiting on nothing: a plain send', async () => {
+    const res = await send(sendParams([]));
+    expect(res).toMatchObject({ ok: true, delivery: { notified: true } });
+    expect(rendererCalls('a2a.task.send')[0].silent).toBeUndefined();
+    expect(daemonCalls('a2a.task.query')).toEqual([]);
+  });
+
+  it('never takes the held flag from the wire', async () => {
+    await send(sendParams(undefined, { silent: true, heldForBlockers: true }));
+    expect(rendererCalls('a2a.task.send')[0]).not.toHaveProperty('heldForBlockers');
   });
 
   it('reads each blocker as the sender\'s pane, or as the human on the operator lane', async () => {
@@ -254,6 +286,8 @@ describe('a2a.task.send — each blocker is judged against the daemon before any
     } as unknown as RemoteA2aRpcDeps;
     const res = await send(sendParams(['task-a'], { to: 'pc-b/ws-b/codex', paneId: undefined }));
     expect(res.error).toBe(`a2a.task.send: ${COMPANY_BLOCKED_BY_REFUSAL.remoteTask}`);
+    const bad = await send(sendParams(undefined, { to: 'pc-b/ws-b/codex', paneId: undefined, data: { ...brief(), blockedBy: 'task-a' } }));
+    expect(bad.error).toBe(`a2a.task.send: ${COMPANY_BLOCKED_BY_REFUSAL.malformed}`);
     expect(sendTask).not.toHaveBeenCalled();
   });
 });
@@ -266,7 +300,7 @@ describe('a2a.task.send — a task with an open blocker is held, durably', () =>
 
   it('stores it with no delivery, has the daemon hold it, and says what it waits on', async () => {
     const res = await send(sendParams(['task-a', 'task-b']));
-    expect(rendererCalls('a2a.task.send')[0].silent).toBe(true);
+    expect(rendererCalls('a2a.task.send')[0]).toMatchObject({ silent: true, heldForBlockers: true });
     const create = daemonCalls('a2a.task.create');
     expect(create).toHaveLength(1);
     expect(create[0].params).toMatchObject({ id: NEW_ID, holdForBlockers: true });

@@ -205,6 +205,8 @@ export const COMPANY_BLOCKED_BY_REFUSAL = Object.freeze({
     `blockedBy names ${id}, a task sent to another PC; for now a task waits only on tasks on this PC`,
   remoteTask:
     'a task sent to another PC cannot wait on other tasks yet; send it once its blockers are completed',
+  malformed:
+    'blockedBy must be a list of task ids (each a non-empty string), such as ["task-1", "task-2"]; leave it out when the task waits on nothing',
 });
 
 /** Why the receiving side may not move a task that still waits on a blocker. */

@@ -1217,7 +1217,8 @@ function companyTaskOf(v: unknown): Task | null {
  * there would be: the gated new-task delivery, the one-line nudge for a live
  * agent. Never re-routed: a seat pane that is gone holds it. The store entry
  * comes back from the daemon's record when it is missing (after an app
- * restart the store starts empty).
+ * restart the store starts empty). Its `created` event goes out once it is
+ * written there: its send stored it without one.
  */
 async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDeliveryResult> {
   const snapshot = companyTaskOf(params.task);
@@ -1241,8 +1242,6 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
       history: snapshot.history,
       artifacts: snapshot.artifacts ?? [],
     });
-    const stored = useStore.getState().getTask(taskId);
-    if (stored) emitA2aTaskEvent(stored, 'created');
   }
   if (!a2aTargetHasAgent(seat.ws, seat.pty)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
   const store = useStore.getState();
@@ -1271,6 +1270,9 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
     if (deliveredCompanyTasks.size > DELIVERED_COMPANY_TASKS_MAX) {
       deliveredCompanyTasks.delete(deliveredCompanyTasks.values().next().value as string);
     }
+    // Its send stored it unannounced; it is the seat's from now on.
+    const written = useStore.getState().getTask(taskId);
+    if (written) emitA2aTaskEvent(written, 'created');
     return pastedOnly
       ? { ok: true, delivered: true, ptyId: seat.pty, note: 'pasted-not-submitted' }
       : { ok: true, delivered: true, ptyId: write.ptyId as string };
@@ -3988,8 +3990,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // store so the emit lands strictly AFTER createA2aTask's set() — the
     // pointer is queryable the moment a receiver follows it. createA2aTask
     // seeds status.state='submitted'.
+    // A company task held for its blockers (main's flag, with silent) is not
+    // announced yet: its seat must not hear of it before it may take it. Main's
+    // release delivery announces it once it is written to the seat.
     const createdTask = store.getTask(newTaskId);
-    if (createdTask) emitA2aTaskEvent(createdTask, 'created');
+    if (createdTask && !(silent && params.heldForBlockers === true)) emitA2aTaskEvent(createdTask, 'created');
 
     // Return the RESOLVED target workspaceId so the main-side a2a.rpc handler
     // uses it for execute:true ClaudeWorker spawn, instead of the raw fuzzy `to`

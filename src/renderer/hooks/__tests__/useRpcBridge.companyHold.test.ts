@@ -13,6 +13,13 @@ import { COMPANY_HOLD_KEY, COMPANY_HOLD_REASON_TEXT, companyBlockerEndedLine, ty
 import { useStore } from '../../stores';
 import { buildA2aNudge, handleRpcMethod } from '../useRpcBridge';
 
+const { publishA2aTaskMock } = vi.hoisted(() => ({ publishA2aTaskMock: vi.fn() }));
+vi.mock('../../events/publisher', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../events/publisher')>()),
+  publishA2aTask: publishA2aTaskMock,
+}));
+const createdEvents = (taskId: string) => publishA2aTaskMock.mock.calls.filter((c) => c[2] === taskId && c[4] === 'created');
+
 const WS = 'ws-co';
 const CEO_PTY = 'pty-ceo';
 const DEV_PTY = 'pty-dev';
@@ -64,6 +71,7 @@ let refusal: Record<string, unknown> | null;
 let written: Array<{ pty: string; text: string }>;
 
 beforeEach(() => {
+  publishA2aTaskMock.mockReset();
   refusal = null;
   written = [];
   gate = vi.fn(async (ptyId: string, text: string) => {
@@ -116,6 +124,18 @@ describe('a2a.company.deliver — a released task goes to its seat once', () => 
     const stored = useStore.getState().getTask('task-c1')!;
     expect(stored.metadata.to).toMatchObject({ workspaceId: WS, paneId: 'pane-dev' });
     expect(stored.history[0].parts).toHaveLength(2);
+    // Announced once it is the seat's: written to its pane.
+    expect(createdEvents('task-c1')).toHaveLength(1);
+  });
+
+  it('announces the task only when a write lands, and only once', async () => {
+    refusal = { ok: false, reason: 'user_typing', detail: 'typing' };
+    await deliver(heldTask('task-c9'));
+    expect(createdEvents('task-c9')).toHaveLength(0);
+    refusal = null;
+    await deliver(heldTask('task-c9'));
+    await deliver(heldTask('task-c9'));
+    expect(createdEvents('task-c9')).toHaveLength(1);
   });
 
   it('answers duplicate for a task it already wrote, or one the daemon shows delivered', async () => {
@@ -192,5 +212,34 @@ describe('a2a.company.discard — a hold the daemon did not keep', () => {
     expect(useStore.getState().getTask('task-e1')).toBeUndefined();
     expect(await handleRpcMethod('a2a.company.discard', { taskId: 'task-e2' })).toMatchObject({ ok: false });
     expect(useStore.getState().getTask('task-e2')).toBeDefined();
+  });
+});
+
+describe('a2a.task.send — a send held for its blockers is not announced', () => {
+  const send = (extra: Record<string, unknown>) => handleRpcMethod('a2a.task.send', {
+    workspaceId: WS,
+    to: WS,
+    paneId: 'pane-dev',
+    senderPtyId: CEO_PTY,
+    message: 'build it',
+    title: 'Build it',
+    data: BRIEF,
+    ...extra,
+  }) as Promise<{ ok?: boolean; taskId?: string }>;
+
+  it('stores it silently with no created event when main marks it held', async () => {
+    const r = await send({ silent: true, heldForBlockers: true });
+    expect(r.ok).toBe(true);
+    expect(useStore.getState().getTask(r.taskId!)).toBeDefined();
+    expect(gate).not.toHaveBeenCalled();
+    expect(createdEvents(r.taskId!)).toHaveLength(0);
+  });
+
+  it('a plain silent send is announced as before, and the flag alone changes nothing', async () => {
+    const silent = await send({ silent: true });
+    expect(createdEvents(silent.taskId!)).toHaveLength(1);
+    const flagOnly = await send({ heldForBlockers: true });
+    expect(createdEvents(flagOnly.taskId!)).toHaveLength(1);
+    expect(gate).toHaveBeenCalledTimes(1);
   });
 });

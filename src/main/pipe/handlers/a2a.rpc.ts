@@ -105,6 +105,8 @@ const INTERNAL_RENDERER_FIELDS = [
   'deliveryDeadlineAt',
   'deliveryGuardKey',
   'presetTaskId',
+  // A send held for its blockers: stored silently with no `created` event.
+  'heldForBlockers',
   // Cross-host A2A: only main's RemoteA2aBridge sets these, calling the
   // renderer directly (never through this router).
   'remoteFrom',
@@ -157,6 +159,19 @@ const PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS = 3_000;
  */
 function blockedByOf(data: unknown): string[] {
   return [...new Set((companyBriefOf(data)?.blockedBy ?? []).filter((id) => id.length > 0))];
+}
+
+/**
+ * A brief's `blockedBy` that is there but is not a list of task ids: refused,
+ * never ignored (a task sent at once while its sender meant it to wait would
+ * be told too early). Null when it is absent or well formed.
+ */
+function malformedBlockedBy(data: unknown): string | null {
+  if (!isRecord(data) || data.kind !== COMPANY_BRIEF_KIND || data.blockedBy === undefined) return null;
+  const list = data.blockedBy;
+  return Array.isArray(list) && list.every((id) => typeof id === 'string' && id.trim().length > 0)
+    ? null
+    : COMPANY_BLOCKED_BY_REFUSAL.malformed;
 }
 
 /**
@@ -478,6 +493,8 @@ export function registerA2aRpc(
     if (params.execute === true) return { error: 'a2a.task.send: execute is not available for a remote pane (message only)' };
     // A task held on its blockers waits on this PC's daemon record; a task to
     // another PC has no such hold yet (v1).
+    const malformed = malformedBlockedBy(params.data);
+    if (malformed) return { error: `a2a.task.send: ${malformed}` };
     if (blockedByOf(params.data).length > 0) return { error: `a2a.task.send: ${COMPANY_BLOCKED_BY_REFUSAL.remoteTask}` };
     // An alias must name exactly one link: never pick one of several silently.
     if (matches.length > 1) {
@@ -1461,14 +1478,15 @@ export function registerA2aRpc(
   }
 
   /**
-   * The end of a send the renderer stored with no delivery because its
-   * blockers were still open. The hold must be durable: when the daemon did
-   * not create the task with its hold, the renderer's copy is dropped and the
-   * send fails (a hold nothing keeps would be stored and never sent). The
-   * daemon decides the hold from the blockers' states at create, so the
-   * receipt names what it waits on. One whose last blocker completed after the
-   * check is released at create, and main's bridge writes it to its pane: the
-   * bridge is the only path a held task is delivered by.
+   * The end of a send the renderer stored with no delivery because its brief
+   * names blockers. The hold must be durable: when the daemon did not create
+   * the task with its hold, the renderer's copy is dropped and the send fails
+   * (a hold nothing keeps would be stored and never sent). The daemon decides
+   * the hold from the blockers' states at create, so the receipt names what
+   * it waits on. One whose blockers have all completed is released at create,
+   * and main's bridge writes it to its pane: the bridge is the only path a
+   * task with blockers is delivered by, so a blocker reopened meanwhile can
+   * never get the task told to its seat twice.
    */
   async function finishHeldSend(
     result: Record<string, unknown>,
@@ -1500,7 +1518,7 @@ export function registerA2aRpc(
           stored: true,
           notified: false,
           reason: 'released',
-          hint: 'Its blockers completed while it was being sent; wmux writes it to its pane next.',
+          hint: 'Its blockers have completed; wmux writes it to its pane next.',
         },
       };
     }
@@ -1739,11 +1757,13 @@ export function registerA2aRpc(
       if (isRemoteWorkspaceId(params.to)) return { error: `a2a.task.send: "${params.to}" is not an active link to another PC` };
     }
     // Company mode: a new task whose brief waits on other tasks. Its blockers
-    // are judged before anything is stored. While one is still open the task
-    // is stored with no delivery and held in the daemon, and main writes it to
-    // its pane once the last one completes (CompanyReleaseBridge).
+    // are judged before anything is stored. The task is then stored with no
+    // delivery and held in the daemon, and main writes it to its pane once
+    // the last blocker completes (CompanyReleaseBridge), at once when they all
+    // have already.
+    const malformed = params.taskId ? null : malformedBlockedBy(params.data);
+    if (malformed) return { error: `a2a.task.send: ${malformed}` };
     const blockedBy = params.taskId ? [] : blockedByOf(params.data);
-    let waitingOn: string[] = [];
     if (blockedBy.length > 0) {
       const senderWs = ctx?.commanderWorkspace ?? (typeof params.workspaceId === 'string' ? params.workspaceId : '');
       // Read as the sender: a blocker still waiting on its own blockers is
@@ -1753,13 +1773,12 @@ export function registerA2aRpc(
         ? { trusted: true }
         : senderPane.kind === 'resolved' ? { paneId: senderPane.paneId } : {});
       if ('error' in judged) return { error: `a2a.task.send: ${judged.error}` };
-      waitingOn = judged.open;
       // A background worker would start the task now.
-      if (waitingOn.length > 0 && params.execute === true) {
+      if (params.execute === true) {
         return { error: 'a2a.task.send: a task that waits on blockedBy goes to its pane once they complete; send it without execute' };
       }
     }
-    const held = waitingOn.length > 0;
+    const held = blockedBy.length > 0;
     // Forward the VALIDATED commander binding (RpcRouter set it from the
     // per-spawn token; never read from the wire, so any caller-supplied value
     // is dropped first). The renderer's reply-delivery guards need it: an
@@ -1799,7 +1818,11 @@ export function registerA2aRpc(
       sendParams.workspaceId = ctx.commanderWorkspace;
     }
     // Stored with no delivery; the addressed pane is pinned on the task as usual.
-    if (held) sendParams.silent = true;
+    // Nothing announces it yet: its seat hears of it when it is written there.
+    if (held) {
+      sendParams.silent = true;
+      sendParams.heldForBlockers = true;
+    }
     // A NEW execute send's reply is held until the user answers the approval
     // prompt, which the 5 s bridge default gave up on long before (#1462). The
     // renderer bounds that prompt against this same value, so it always
