@@ -144,7 +144,7 @@ describe('a2a.task.query — what the daemon kept from the caller stays out', ()
     expect((sender.tasks as Rec[]).find((t) => t.id === 'task-c')).toMatchObject({ waitingOn: ['task-a'] });
     const human = await query({}, {}, { operator: true });
     const c = (human.tasks as Rec[]).find((t) => t.id === 'task-c');
-    expect(c.metadata[COMPANY_HOLD_KEY]).toMatchObject({ waitingOn: ['task-a'] });
+    expect(c?.metadata?.[COMPANY_HOLD_KEY]).toMatchObject({ waitingOn: ['task-a'] });
   });
 
   it('with the daemon away, checks the renderer\'s full copies that carry the marker', async () => {
