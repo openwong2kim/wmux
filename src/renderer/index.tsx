@@ -8,6 +8,7 @@ import { installWindowGlass } from './utils/windowGlass';
 import { hasRoundedWindowCorners } from '../shared/windowCorners';
 import { rememberStartPolarity, settleStartTheme, startTheme } from './utils/startTheme';
 import { installDocumentHiddenMotion, installSystemReducedMotion } from './utils/reducedMotion';
+import { installScreenReader } from './utils/screenReader';
 import './styles/globals.css';
 import './styles/ui.css';
 import './styles/onboarding.css';
@@ -30,6 +31,9 @@ document.documentElement.setAttribute('data-window-corners',
 
 // Windows' Animation effects off, which the media query misses there.
 installSystemReducedMotion();
+
+// A screen reader on, as main sees it (utils/screenReader.ts).
+installScreenReader();
 
 // No avatar motion while the window is hidden (removed nodes stay alive until the next frame).
 installDocumentHiddenMotion();
