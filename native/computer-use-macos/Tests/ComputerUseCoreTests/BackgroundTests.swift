@@ -1,4 +1,5 @@
 import CoreGraphics
+import Foundation
 import XCTest
 @testable import ComputerUseCore
 
@@ -139,6 +140,23 @@ final class BackgroundTests: XCTestCase {
         XCTAssertEqual(afterStop(posted: false), .realInput)
         // A pointer that was there before is the user's, not ours.
         XCTAssertNil(sideEffect(start: now, now: now, pid: 300, point: target, targetOnScreen: true))
+    }
+
+    func testAStopUnderRefuseAsksForTheForegroundOnlyWhenNothingWasPosted() {
+        XCTAssertEqual(afterStop(posted: true, foreground: .allow), .end)
+        XCTAssertEqual(afterStop(posted: true, foreground: .refuse), .end)
+        XCTAssertEqual(afterStop(posted: false, foreground: .allow), .realInput)
+        XCTAssertEqual(afterStop(posted: false, foreground: .refuse), .needsForeground)
+    }
+
+    func testTheForegroundParamIsAllowRefuseOrAbsent() {
+        XCTAssertEqual(ForegroundMode(param: nil), .allow)
+        XCTAssertEqual(ForegroundMode(param: "allow"), .allow)
+        XCTAssertEqual(ForegroundMode(param: "refuse"), .refuse)
+        XCTAssertNil(ForegroundMode(param: "deny"))
+        XCTAssertNil(ForegroundMode(param: ""))
+        XCTAssertNil(ForegroundMode(param: true))
+        XCTAssertNil(ForegroundMode(param: NSNull()))
     }
 
     func testTheTargetComingForwardOrTakingTheSpaceIsASideEffect() {
