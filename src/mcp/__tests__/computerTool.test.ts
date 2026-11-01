@@ -238,6 +238,26 @@ describe('computer MCP tool', () => {
     expect(text).toContain('Do not retry');
   });
 
+  it('gives an input action\'s error its disposition, and one the pipe lost may have been delivered', async () => {
+    enabled.value = true;
+    const errors = [
+      new Error(encodeComputerErrorMessage({ code: 'input_busy', message: 'another agent', disposition: 'not_delivered' })),
+      new Error('RPC timeout: computer.act (300000ms)'),
+    ];
+    reply = () => { throw errors.shift(); };
+    const client = await connect();
+    const click = (extra: Record<string, unknown> = {}) =>
+      client.callTool({ name: 'computer', arguments: { action: 'click', snapshotId: 's7', index: 3, ...extra } });
+    const texts = [await click(), await click(), await click({ button: 'side' })]
+      .map((res) => (res.content as Array<{ text: string }>)[0].text);
+    await client.close();
+    expect(texts[0]).toContain('[input_busy]: another agent\ndisposition: not_delivered (no input was sent; retrying is safe)');
+    expect(texts[1]).toContain('[timeout]: RPC timeout: computer.act (300000ms)\ndisposition: delivered_unverified');
+    // Refused by the input schema before the tool runs: nothing claims it may have gone out.
+    expect(texts[2]).not.toContain('delivered_unverified');
+    expect(computerCalls()).toHaveLength(2);
+  });
+
   it('sends openApp to computer.act with its app selector', async () => {
     enabled.value = true;
     reply = () => ({ app: { id: 'com.apple.TextEdit', name: 'TextEdit' }, window: null });

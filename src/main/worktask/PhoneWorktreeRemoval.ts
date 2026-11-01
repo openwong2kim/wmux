@@ -10,6 +10,9 @@
  * worktree with changes, a locked one, or a leftover directory git does not
  * know, needs the caller's explicit `force` (the UI asks first). The branch is deleted only in
  * a separate, confirmed call, and only a `phone/<slug>` branch.
+ *
+ * The same checks remove a company seat's worktree (company/seatCleanup.ts),
+ * through a WorktreeShape of its own.
  */
 
 import * as fs from 'node:fs';
@@ -20,8 +23,10 @@ import { PHONE_WORKTREE_BRANCH_PREFIX, PHONE_WORKTREE_DIR_PREFIX, PHONE_WORKTREE
 import { directoryHold, type DirectoryHold } from '../../shared/directoryHold';
 
 export type PhoneWorktreeRemoveResult =
-  | { ok: true; branch?: string; repo?: string }
-  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'error'; error?: string };
+  /** `oid`: a company seat's branch commit at removal (removeCompanySeat). */
+  | { ok: true; branch?: string; repo?: string; oid?: string }
+  /** `unpushed`: a company seat with HEAD on no branch and commits on no remote (removeCompanySeat). */
+  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'unpushed' | 'error'; error?: string };
 
 export type PhoneGit = (args: string[], cwd: string) => Promise<{ ok: boolean; stdout: string; stderr: string }>;
 
@@ -45,8 +50,22 @@ const canonical = (p: string) => { try { return fs.realpathSync.native(p); } cat
 
 const BRANCH = new RegExp(`^${PHONE_WORKTREE_BRANCH_PREFIX}${PHONE_WORKTREE_SLUG.source.slice(1)}`);
 
-/** The canonical phone worktree directory, or null when `worktreePath` is not one. */
-export function phoneWorktreeDir(root: string, worktreePath: string): string | null {
+/** A kind of worktree removed by its path: `<root>/<12 hex>/<folder>`. */
+export interface WorktreeShape {
+  /** Whether `name` is a folder of this kind. */
+  folder: (name: string) => boolean;
+  /** Whether the checked-out `branch` of `folder` is reported for the separate, confirmed delete. */
+  branch: (branch: string, folder: string) => boolean;
+}
+
+const PHONE_SHAPE: WorktreeShape = {
+  folder: (name) => name.startsWith(PHONE_WORKTREE_DIR_PREFIX) && PHONE_WORKTREE_SLUG.test(name.slice(PHONE_WORKTREE_DIR_PREFIX.length)),
+  branch: (branch) => BRANCH.test(branch),
+};
+
+/** The root it was found under and the two parts below it, when `worktreePath`
+ *  is spelled as a folder of `shape`; the disk is not asked. */
+function shapedParts(root: string, worktreePath: string, shape: WorktreeShape): { rootReal: string; base: string; parts: string[] } | null {
   let rootReal: string;
   try { rootReal = fs.realpathSync.native(root); } catch { return null; }
   // The root as configured or as resolved (a home reached through a link).
@@ -56,8 +75,27 @@ export function phoneWorktreeDir(root: string, worktreePath: string): string | n
   });
   if (!base) return null;
   const parts = path.relative(base, path.resolve(worktreePath)).split(path.sep);
-  if (parts.length !== 2 || !/^[a-f0-9]{12}$/.test(parts[0]) || !parts[1].startsWith(PHONE_WORKTREE_DIR_PREFIX) ||
-      !PHONE_WORKTREE_SLUG.test(parts[1].slice(PHONE_WORKTREE_DIR_PREFIX.length))) return null;
+  if (parts.length !== 2 || !/^[a-f0-9]{12}$/.test(parts[0]) || !shape.folder(parts[1])) return null;
+  return { rootReal, base, parts };
+}
+
+/** The folder name when `worktreePath` is spelled as a folder of `shape`
+ *  (it may be gone already), or null. */
+export function shapedWorktreeName(root: string, worktreePath: string, shape: WorktreeShape): string | null {
+  return shapedParts(root, worktreePath, shape)?.parts[1] ?? null;
+}
+
+/** The canonical phone worktree directory, or null when `worktreePath` is not one. */
+export function phoneWorktreeDir(root: string, worktreePath: string): string | null {
+  return shapedWorktreeDir(root, worktreePath, PHONE_SHAPE);
+}
+
+/** The canonical directory of a worktree of `shape`, or null when
+ *  `worktreePath` is not one: every component a real directory, no link. */
+export function shapedWorktreeDir(root: string, worktreePath: string, shape: WorktreeShape): string | null {
+  const named = shapedParts(root, worktreePath, shape);
+  if (!named) return null;
+  const { rootReal, base, parts } = named;
   let current = base;
   for (const part of parts) {
     current = path.join(current, part);
@@ -71,8 +109,13 @@ export function phoneWorktreeDir(root: string, worktreePath: string): string | n
 }
 
 export async function removePhoneWorktree(worktreePath: string, force: boolean, deps: PhoneWorktreeRemoveDeps): Promise<PhoneWorktreeRemoveResult> {
+  return removeShapedWorktree(worktreePath, force, deps, PHONE_SHAPE);
+}
+
+/** removePhoneWorktree for a worktree of any `shape`. */
+export async function removeShapedWorktree(worktreePath: string, force: boolean, deps: PhoneWorktreeRemoveDeps, shape: WorktreeShape): Promise<PhoneWorktreeRemoveResult> {
   const git = deps.git ?? defaultGit;
-  const dir = phoneWorktreeDir(deps.root, worktreePath);
+  const dir = shapedWorktreeDir(deps.root, worktreePath, shape);
   if (!dir) return { ok: false, reason: 'invalid' };
   const inUse = (await deps.livePaneCwds()).some((cwd) => {
     const real = canonical(cwd);
@@ -96,7 +139,7 @@ export async function removePhoneWorktree(worktreePath: string, force: boolean, 
   if (!common.ok) return { ok: false, reason: 'error', error: common.stderr.trim() };
   const repo = path.resolve(dir, common.stdout.trim());
   const head = await git(['symbolic-ref', '-q', '--short', 'HEAD'], dir);
-  const branch = head.ok && BRANCH.test(head.stdout.trim()) ? head.stdout.trim() : undefined;
+  const branch = head.ok && shape.branch(head.stdout.trim(), path.basename(dir)) ? head.stdout.trim() : undefined;
   if (!force) {
     // Git keeps a locked worktree until it is unlocked; with `force` it is unlocked first.
     const lock = await git(['rev-parse', '--git-path', 'locked'], dir);
@@ -118,6 +161,11 @@ export async function removePhoneWorktree(worktreePath: string, force: boolean, 
 /** Delete a `phone/<slug>` branch after the user confirmed it. Git refuses a branch still checked out. */
 export async function deletePhoneBranch(repo: string, branch: string, git: PhoneGit = defaultGit): Promise<{ ok: boolean; error?: string }> {
   if (!BRANCH.test(branch)) return { ok: false, error: 'not a phone branch' };
+  return deleteConfirmedBranch(repo, branch, git);
+}
+
+/** Delete a branch the user confirmed, once the caller has checked it is its shape's. Git refuses a branch still checked out. */
+export async function deleteConfirmedBranch(repo: string, branch: string, git: PhoneGit = defaultGit): Promise<{ ok: boolean; error?: string }> {
   const gitDir = await git(['rev-parse', '--git-dir'], repo);
   if (!gitDir.ok) return { ok: false, error: 'not a repository' };
   const deleted = await git(['branch', '-D', branch], repo);

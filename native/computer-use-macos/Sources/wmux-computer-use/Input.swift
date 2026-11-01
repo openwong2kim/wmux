@@ -42,6 +42,23 @@ final class Input: @unchecked Sendable {
     private var heldKeys = Set<CGKeyCode>()
     private var heldButtons: [Int32: CGPoint] = [:]
     private var stopping = false
+    /// Every event posted, plus every press, value and launch that may have
+    /// reached the app (`noteSent`): Server tells from it whether a failed
+    /// input action sent anything. Bringing a window forward or focusing it
+    /// is not input and is not counted.
+    private var sentCount = 0
+
+    var sent: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return sentCount
+    }
+
+    func noteSent() {
+        lock.lock()
+        sentCount += 1
+        lock.unlock()
+    }
 
     private let source: CGEventSource? = {
         let src = CGEventSource(stateID: .privateState)
@@ -62,6 +79,7 @@ final class Input: @unchecked Sendable {
         defer { lock.unlock() }
         if stopping && !releasing { return false }
         event.post(tap: .cghidEventTap)
+        sentCount += 1
         return true
     }
 

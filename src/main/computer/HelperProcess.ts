@@ -23,7 +23,7 @@
 //     outlives wmux.
 
 import { spawn as nodeSpawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { ComputerError } from '../../shared/computer/errors';
+import { ComputerError, withDisposition } from '../../shared/computer/errors';
 import {
   COMPUTER_PROTOCOL_VERSION,
   HELPER_IDLE_EXIT_MS,
@@ -175,6 +175,16 @@ export class HelperProcess {
     return this.running?.hello ?? null;
   }
 
+  /**
+   * Whether the helper's hello has `input.deferForeground: true`. Starts the
+   * helper when none runs (or waits for the one starting) and reads its
+   * hello; no request is sent.
+   */
+  async defersForeground(): Promise<boolean> {
+    const running = await this.ensureRunning();
+    return running.hello.capabilities.input?.deferForeground === true;
+  }
+
   /** Whether the running helper's hello listed `method`; undefined while none runs. */
   supports(method: HelperMethod): boolean | undefined {
     return this.running ? this.running.hello.capabilities.actions.includes(method) : undefined;
@@ -187,6 +197,9 @@ export class HelperProcess {
    */
   reconfigure(): Promise<void> {
     const run = async (): Promise<void> => {
+      // A start in progress sends configure itself; wait for it rather than
+      // writing alongside its configure.
+      if (this.starting) await this.starting.catch(() => undefined);
       const running = this.running;
       if (this.disposed || !running) return;
       await this.sendConfigure(running);
@@ -202,6 +215,7 @@ export class HelperProcess {
 
   request<M extends HelperMethod>(method: M, params: HelperMethods[M]['params']): Promise<HelperMethods[M]['result']> {
     const generation = this.abortGeneration;
+    let written = false;
     const assertCurrent = () => {
       if (generation !== this.abortGeneration) throw new ComputerError('aborted', 'stopped by the user');
     };
@@ -231,13 +245,20 @@ export class HelperProcess {
       const sent = method === 'releaseInput' && this.heldInput
         ? mergeRelease(this.heldInput, params as ReleaseInputParams)
         : params;
+      written = true;
       const result = (await this.send(running, method, sent)) as HelperMethods[M]['result'];
       if (method === 'releaseInput' && (result as { released?: unknown })?.released === true) this.markReleased();
       return result;
     };
     const result = this.queue.then(run, run);
     this.queue = result.catch(() => undefined);
-    return result;
+    if (!isControlAction(method)) return result;
+    // An input action's error says whether it may be retried: nothing went
+    // out before the request was written; after that the helper says, or it
+    // died or timed out and the input may have gone.
+    return result.catch((err: unknown) => {
+      throw withDisposition(err, written ? 'delivered_unverified' : 'not_delivered');
+    });
   }
 
   /**
@@ -352,6 +373,11 @@ export class HelperProcess {
 
   private ensureRunning(): Promise<Running> {
     if (this.disposed) return Promise.reject(new ComputerError('shutting_down', 'computer use is shutting down'));
+    // `running` is set at hello, while start() may still wait on its configure.
+    // defersForeground() starts the helper outside the queue, so a queued
+    // request must wait for that start too: writing now would replace the
+    // configure's pending request and leave start() unsettled.
+    if (this.starting) return this.starting;
     if (this.running) return Promise.resolve(this.running);
     if (!this.starting) {
       this.starting = this.start()
@@ -522,7 +548,8 @@ export class HelperProcess {
     if (parsed.response.ok) {
       pending.resolve(parsed.response.result);
     } else {
-      pending.reject(new ComputerError(parsed.response.error.code, parsed.response.error.message));
+      const { code, message, disposition } = parsed.response.error;
+      pending.reject(new ComputerError(code, message, disposition));
     }
   }
 

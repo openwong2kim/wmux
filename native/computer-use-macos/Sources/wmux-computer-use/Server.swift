@@ -23,6 +23,8 @@ let agentActions = [
 /// Actions that drive the pointer or keyboard: they show the overlay, which
 /// fades once they are done.
 private let inputMethods: Set<String> = ["click", "type", "pressKey", "hotkey", "scroll"]
+/// protocol COMPUTER_CONTROL_ACTIONS.
+private let controlMethods = inputMethods.union(["setValue", "openApp"])
 
 @MainActor
 final class Server {
@@ -43,6 +45,7 @@ final class Server {
                 "accessibility": Permission.accessibility.granted,
                 "screenRecording": Permission.screenRecording.granted,
             ],
+            "input": SkyLight.capabilities,
         ]
     }
 
@@ -83,14 +86,25 @@ final class Server {
         let id = idNumber.intValue
         let method = object["method"] as? String ?? ""
         let params = object["params"] as? JSON ?? [:]
+        let sentBefore = Input.shared.sent
         do {
             let result = try await dispatch(method, params)
             Wire.send(["id": id, "ok": true, "result": result], id: id)
         } catch let error as HelperError {
-            Wire.send(["id": id, "ok": false, "error": ["code": error.code, "message": error.message]], id: id)
+            Wire.send(["id": id, "ok": false, "error": errorJSON(error.code, error.message, method: method, sentBefore: sentBefore)], id: id)
         } catch {
-            Wire.send(["id": id, "ok": false, "error": ["code": "internal", "message": String(describing: error)]], id: id)
+            Wire.send(["id": id, "ok": false, "error": errorJSON("internal", String(describing: error), method: method, sentBefore: sentBefore)], id: id)
         }
+    }
+
+    /// An input action's error says whether it sent anything (protocol
+    /// ActionDisposition): main may retry only a `not_delivered` one.
+    private func errorJSON(_ code: String, _ message: String, method: String, sentBefore: Int) -> JSON {
+        var error: JSON = ["code": code, "message": message]
+        if controlMethods.contains(method) {
+            error["disposition"] = Input.shared.sent == sentBefore ? "not_delivered" : "delivered_unverified"
+        }
+        return error
     }
 
     private func dispatch(_ method: String, _ p: JSON) async throws -> Any {

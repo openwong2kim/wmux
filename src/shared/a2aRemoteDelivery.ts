@@ -285,6 +285,8 @@ export interface A2aRemoteInboxItem {
   kind: 'reply' | 'state';
   /** For a 'state' item: the state the peer moved the task to. */
   state?: TaskState;
+  /** For a 'state' item: the peer's `completed`, held here as a report (the task is input-required). */
+  reported?: true;
   delivered?: boolean;
   held?: A2aRemoteHeldReason;
   /** When it was first held (the 24 h hold TTL counts from here). */

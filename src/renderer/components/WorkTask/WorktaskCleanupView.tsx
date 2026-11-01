@@ -19,10 +19,18 @@ import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import type { BadgeTone } from '../ui/Badge';
 import { IconRefresh } from '../icons';
+import { InlineConfirm } from '../Bots/InlineConfirm';
+import { companySeatKeepSet } from '../../hooks/useCompanySeatSweep';
 
 /** Why the last close attempt for a task failed — drives which next steps the
  *  row offers. 'dirty' is the only one a commit line can answer. */
 type WorktaskCloseFailure = 'dirty' | 'unpushed' | 'error';
+
+/** The in-place question a company seat row is asking: remove it although
+ *  git refused (`force`), or delete the branch its removal reported. */
+type SeatQuestion =
+  | { worktreePath: string; step: 'force'; reason: 'dirty' | 'locked' | 'unregistered' | 'unpushed' }
+  | { worktreePath: string; step: 'branch'; repo: string; branch: string; oid: string };
 
 const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   'unmaterialized-open': 'worktask.cleanup.cat.unmaterialized',
@@ -30,6 +38,7 @@ const CATEGORY_LABEL_KEY: Record<WorktaskScanCategoryWire, string> = {
   preserved: 'worktask.cleanup.cat.preserved',
   'orphan-dir': 'worktask.cleanup.cat.orphan',
   'phone-worktree': 'worktask.cleanup.cat.phoneWorktree',
+  'company-seat': 'worktask.cleanup.cat.companySeat',
 };
 
 // Localized detail line per scan code. A code this renderer does not know
@@ -42,6 +51,10 @@ const DETAIL_LABEL_KEY: Record<WorktaskScanDetailCodeWire, string> = {
   'orphan-unlinked': 'worktask.cleanup.detail.orphanUnlinked',
   'orphan-meta': 'worktask.cleanup.detail.orphanMeta',
   'disk-missing': 'worktask.cleanup.detail.diskMissing',
+  'seat-uncommitted': 'worktask.cleanup.detail.seatUncommitted',
+  'seat-unpushed': 'worktask.cleanup.detail.seatUnpushed',
+  'seat-locked': 'worktask.cleanup.detail.seatLocked',
+  'seat-unregistered': 'worktask.cleanup.detail.seatUnregistered',
 };
 
 // Status tones tint a neutral badge; steel is kept for focus and links.
@@ -51,6 +64,7 @@ const CATEGORY_TONE: Record<WorktaskScanCategoryWire, BadgeTone> = {
   preserved: 'neutral',
   'orphan-dir': 'neutral',
   'phone-worktree': 'neutral',
+  'company-seat': 'neutral',
 };
 
 // ─── C-4: the prepared commit line ──────────────────────────────────────
@@ -152,6 +166,7 @@ export default function WorktaskCleanupView() {
   // with no next step — a commit line answers 'dirty', but an unpushed branch
   // needs a push, and committing again would only add to what is unpushed.
   const [closeFailed, setCloseFailed] = useState<Record<string, WorktaskCloseFailure>>({});
+  const [seatQuestion, setSeatQuestion] = useState<SeatQuestion | null>(null);
 
   const runScan = useCallback(async () => {
     const api = window.electronAPI.workTask;
@@ -171,7 +186,8 @@ export default function WorktaskCleanupView() {
         ...(m.outputDir ? { outputDir: m.outputDir } : {}),
       }));
     try {
-      const res = await api.scan(activeWorkspaceId, knownOpen);
+      // Company seat folders are judged against every folder a pane here is in.
+      const res = await api.scan(activeWorkspaceId, knownOpen, companySeatKeepSet(useStore.getState()));
       if (res.ok) {
         setEntries(res.entries);
         setScannedRoot(res.scannedRoot);
@@ -288,6 +304,69 @@ export default function WorktaskCleanupView() {
         setBusyTaskId(null);
         void runScan();
       }
+    },
+    [pushToast, runScan, t],
+  );
+
+  // A company seat folder is removed by path like a phone worktree. A seat
+  // with changes, a locked one, or a folder git does not track, asks in the
+  // row before the forced retry; a company/<slug> branch its removal
+  // reports is deleted only on a second yes in the row.
+  const handleRemoveSeat = useCallback(
+    async (worktreePath: string, force: boolean) => {
+      const api = window.electronAPI.workTask;
+      if (!api) return;
+      setSeatQuestion(null);
+      setBusyTaskId(worktreePath);
+      let asking = false;
+      try {
+        const res = await api.removeCompanySeat(worktreePath, force);
+        if (res.ok) {
+          pushToast({ level: 'info', message: t('worktask.cleanup.removed') });
+          if (res.branch && res.repo && res.oid) {
+            // The row stays until this is answered.
+            setSeatQuestion({ worktreePath, step: 'branch', repo: res.repo, branch: res.branch, oid: res.oid });
+            asking = true;
+          }
+        } else if (!force && (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered' || res.reason === 'unpushed')) {
+          setSeatQuestion({ worktreePath, step: 'force', reason: res.reason });
+          asking = true;
+        } else if (res.reason === 'in-use') {
+          pushToast({ level: 'warn', message: t('worktask.cleanup.removeInUse') });
+        } else if (res.reason === 'held') {
+          pushToast({ level: 'warn', message: t('worktask.cleanup.removeHeld') });
+        } else if (res.reason === 'dirty' || res.reason === 'locked' || res.reason === 'unregistered') {
+          // The confirmed, forced retry came back with the same answer.
+          pushToast({ level: 'error', message: t('worktask.cleanup.removeRetryFailed', { reason: res.reason }) });
+        } else {
+          pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: res.error ?? res.reason }) });
+        }
+      } catch (e) {
+        pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: e instanceof Error ? e.message : String(e) }) });
+      } finally {
+        setBusyTaskId(null);
+        if (!asking) void runScan();
+      }
+    },
+    [pushToast, runScan, t],
+  );
+
+  const handleSeatBranch = useCallback(
+    async (question: Extract<SeatQuestion, { step: 'branch' }>, remove: boolean) => {
+      const api = window.electronAPI.workTask;
+      setSeatQuestion(null);
+      if (remove && api) {
+        setBusyTaskId(question.worktreePath);
+        try {
+          const deleted = await api.deleteCompanySeatBranch(question.worktreePath, question.repo, question.branch, question.oid);
+          if (!deleted.ok) pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: deleted.error ?? '' }) });
+        } catch (e) {
+          pushToast({ level: 'error', message: t('worktask.cleanup.removeFailed', { error: e instanceof Error ? e.message : String(e) }) });
+        } finally {
+          setBusyTaskId(null);
+        }
+      }
+      void runScan();
     },
     [pushToast, runScan, t],
   );
@@ -418,12 +497,18 @@ export default function WorktaskCleanupView() {
               const detailKey = e.detailCode && Object.prototype.hasOwnProperty.call(DETAIL_LABEL_KEY, e.detailCode)
                 ? DETAIL_LABEL_KEY[e.detailCode]
                 : undefined;
-              const detailText = detailKey ? t(detailKey) : e.detail;
+              const detailText = e.detailCode === 'seat-unpushed' && e.commitCount !== undefined
+                ? t('worktask.cleanup.detail.seatUnpushedCount', { count: e.commitCount })
+                : detailKey ? t(detailKey) : e.detail;
+              const question = seatQuestion && seatQuestion.worktreePath === e.worktreePath ? seatQuestion : null;
               return (
                 <div key={`${e.category}-${e.taskId ?? e.worktreePath ?? i}`} className="ui-row !items-start">
                   <div className="ui-row-text">
                     <div className="flex items-center gap-2 min-w-0">
-                      <p className="ui-row-title truncate">{e.title ?? e.taskId ?? t('worktask.cleanup.unnamed')}</p>
+                      <p className="ui-row-title truncate">
+                        {e.title ?? e.taskId ?? t('worktask.cleanup.unnamed')}
+                        {e.company && <span className="text-[var(--text-sub)]"> · {e.company}</span>}
+                      </p>
                       <Badge tone={CATEGORY_TONE[e.category]} className="shrink-0">
                         {t(CATEGORY_LABEL_KEY[e.category])}
                       </Badge>
@@ -438,6 +523,37 @@ export default function WorktaskCleanupView() {
                       <p className="ui-row-detail">
                         {t('worktask.cleanup.closedAt')}: {new Date(e.closedAt).toLocaleString()}
                       </p>
+                    )}
+                    {question && (
+                      <div className="mt-1.5">
+                        {question.step === 'force' ? (
+                          <InlineConfirm
+                            text={t(question.reason === 'dirty'
+                              ? 'worktask.cleanup.removeDirtyConfirm'
+                              : question.reason === 'locked'
+                                ? 'worktask.cleanup.removeLockedConfirm'
+                                : question.reason === 'unpushed'
+                                  ? 'worktask.cleanup.seatRemoveUnpushedConfirm'
+                                  : 'worktask.cleanup.removeUnregisteredConfirm')}
+                            confirmLabel={t('worktask.cleanup.remove')}
+                            cancelLabel={t('common.cancel')}
+                            busy={busyTaskId !== null}
+                            onConfirm={() => void handleRemoveSeat(question.worktreePath, true)}
+                            onCancel={() => setSeatQuestion(null)}
+                            testId="cleanup-seat-remove"
+                          />
+                        ) : (
+                          <InlineConfirm
+                            text={t('worktask.cleanup.seatDeleteBranchConfirm', { branch: question.branch })}
+                            confirmLabel={t('worktask.cleanup.deleteBranch')}
+                            cancelLabel={t('worktask.cleanup.keepBranch')}
+                            busy={busyTaskId !== null}
+                            onConfirm={() => void handleSeatBranch(question, true)}
+                            onCancel={() => void handleSeatBranch(question, false)}
+                            testId="cleanup-seat-branch"
+                          />
+                        )}
+                      </div>
                     )}
                     {e.taskId && closeFailed[e.taskId] && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-2" data-cleanup-close-failed>
@@ -499,6 +615,18 @@ export default function WorktaskCleanupView() {
                       onClick={() => void handleRemovePhone(e.worktreePath!)}
                       disabled={busyTaskId !== null}
                       data-cleanup-remove-phone
+                    >
+                      {busyTaskId === e.worktreePath ? t('worktask.cleanup.removing') : t('worktask.cleanup.remove')}
+                    </Button>
+                  )}
+                  {e.category === 'company-seat' && e.worktreePath && !question && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="shrink-0"
+                      onClick={() => void handleRemoveSeat(e.worktreePath!, false)}
+                      disabled={busyTaskId !== null}
+                      data-cleanup-remove-seat
                     >
                       {busyTaskId === e.worktreePath ? t('worktask.cleanup.removing') : t('worktask.cleanup.remove')}
                     </Button>

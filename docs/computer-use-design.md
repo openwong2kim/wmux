@@ -9,10 +9,11 @@ macOS**, the way wmux already lets them drive a browser over CDP.
 
 ## Code-origin rule
 
-Same rule as `docs/chat-view-oss-research-2026-09-24.md`: other projects are
-referenced for behaviour, protocol shape and UX only. No source, tests or
-assets are copied, translated or adapted. AGPL components are not even read
-for design (trycua `som`, `cua-perception`).
+Other projects are referenced for behaviour, protocol shape and UX. Code may be
+adapted only from permissively licensed projects the owner approved (Cua
+Driver, MIT): each adapted file names its source and commit in a header
+comment, and the license text goes into `THIRD_PARTY_NOTICES.md`. AGPL
+components are not even read for design (trycua `som`, `cua-perception`).
 
 ## Shape
 
@@ -227,12 +228,133 @@ snapshot is the v1.1 token saver.
   auto-activation, 2026-10-08), and a pointer action whose point is covered
   raises the target window first. The helper still re-checks, right before
   each keyboard batch, that focus is on the target and the screen is not
-  locked, and answers `window_not_focused` when it is not.
+  locked, and answers `window_not_focused` when it is not. On Windows an
+  action is first posted to the target window in the background, which
+  does not need the target to be in front or focused; the screen must still
+  be unlocked (the helper checks the input desktop before it posts). Only what
+  cannot be posted goes this way (`docs/computer-use-windows.md`, Background
+  input).
 - **Honest results.** Every action returns
-  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", note? }`.
+  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, disposition, note? }`.
   `verified` means state was read back, for example the value after
   `setValue`. The tool description tells the agent never to report an
-  unverified action as done.
+  unverified action as done. `delivery` says how the input reached the app:
+  `background` when it went to the target app alone (the user's pointer,
+  frontmost app and Space stay as they were), `foreground` when it was real
+  input to the frontmost app. Both helpers report it; the Windows helper's
+  background input is `PostMessage` to the target's child window
+  (`docs/computer-use-windows.md`, Background input).
+- **Retry safety.** The result of every snapshot input action and the error
+  of every input action (`openApp` included) carry a `disposition`, the same
+  on both OSes:
+  - `not_delivered`: refused before any input was sent. Only this one is safe
+    to retry, and only after a `not_delivered` refusal may a helper fall back
+    to another way of sending the same input.
+  - `delivered_unverified`: input was sent, or may have been (the helper
+    timed out or died with the request), and its effect was not read back.
+  - `delivered`: sent, and the effect was read back (`verified`).
+  - No protocol bump: `delivery`, `disposition` and `input` are optional, so a
+    released main and a newer helper, or the reverse, still read each other
+    (the skew test in `computerContract.os.test.ts` pins v4.13.0's parser).
+    A bump would make main refuse every helper that reports 2.
+  - A posting call that returned without error is not proof of delivery:
+    neither OS acknowledges an event it dropped (Windows reports `SendInput`
+    success under UIPI). So main sets a result's disposition from its
+    `verification` alone.
+  - Who stamps an error: `ComputerService` stamps `not_delivered` on one
+    raised before its request went to the helper (consent, the lock, the
+    rate limit), and the pipe on one raised before the service (parameters,
+    a protected pane). `HelperProcess` stamps `not_delivered` when the helper
+    never got the request and `delivered_unverified` when it timed out or
+    died holding it (a helper that timed out is killed, so it cannot post the
+    input late). Otherwise the helper's own verdict is used, and an error
+    with none, from the helper or from a step after it, is
+    `delivered_unverified`. Once a request of an action came back done, a
+    later `not_delivered` of the same action is `delivered_unverified`. An
+    error the MCP tool gets from a broken or timed-out pipe is
+    `delivered_unverified` too (a pipe timeout keeps the code `timeout`), and
+    one raised before the tool sent anything is `not_delivered`.
+  - The macOS helper counts the events it posts and the presses, values and
+    launches that may have reached the app (an AXPress or value that did not
+    answer in time counts, and is not followed by real input; a launch counts
+    once macOS took it or may still be making it, not when it refused it). A failed input
+    action is `not_delivered` only when that count did not move. Raising or
+    focusing a window is not input and is not counted. The Windows helper
+    counts the same way: `SendInput` events inserted, messages posted, and
+    UIA pattern calls (one that certainly did not run is taken back).
+- **Input capabilities.** `hello.capabilities.input` is
+  `{ backgroundPointer, focusWithoutRaise, keyAuth }`: which ways of sending
+  input without real input this machine has, probed when the helper starts.
+  `backgroundPointer`: pointer events sent to one window of the target app,
+  the user's pointer left where it is. `focusWithoutRaise`: the target window
+  given focus without raising it or changing the frontmost app. `keyAuth`:
+  keys sent that way reach Chromium-based apps. Each flag means the same on
+  every OS. Whether an action went that way is its result's `delivery`. On
+  macOS the flags come from private SkyLight calls that change across
+  releases; `keyAuth` is the key-event authentication message, from
+  macOS 15. The Windows helper sends `{ backgroundPointer: true,
+  focusWithoutRaise: false, keyAuth: true, deferForeground: true }`. Main
+  drops `input` when Accessibility is not granted.
+  `deferForeground` (optional): the helper honours `foreground: 'refuse'`
+  on input methods (Input lanes, below).
+- **Input lanes** (`src/main/computer/inputLanes.ts`). Several agents can
+  drive different apps at once:
+  - The foreground lease: real input (it moves the user's pointer and front
+    window) is held by one agent session at a time. It stays busy from the
+    moment it is taken until that real-input request settles (result,
+    error or timeout), however long it waits in the helper's queue, and
+    only then counts 15 s of idle time. Another agent gets `input_busy` at
+    once, `not_delivered`; the lease never waits.
+  - Pid lanes: every input action with a target app (every snapshot
+    action) takes that app's slot first, one action at a time per pid, in
+    arrival order. Actions on different apps never wait on each other. The
+    wait happens outside the slot; once it is held, main checks again the
+    stop generation and cooldown, that the stop key is still held, the
+    snapshot (known, not expired, this agent's, its window still that
+    pid's) and consent, without a prompt. A failed check is
+    `not_delivered` and never reaches the helper. The guarantee is
+    per-action order on one app; interleaving of whole action batches
+    between two agents on the same app is out of scope.
+  - Foreground-certain actions are sent with `foreground: 'allow'`: after
+    their slot they take the lease, at once or `input_busy`. They are, row
+    for row the Windows helper's own refusals: scroll, a button other than
+    left, a click with modifiers or more than one click, a hotkey with
+    modifiers, and `type` text with a control character other than one
+    trailing newline; plus `openApp`, which has no target app before the
+    launch and takes the lease only. `setValue` is a UIA call, not input.
+  - Everything else is sent with `foreground: 'refuse'`. A helper that
+    cannot post it answers `needs_foreground`, and only when nothing was
+    sent for that action (no event, posted message, pattern call or focus
+    request; otherwise it ends `delivered_unverified` as before). Main
+    upgrades only a `needs_foreground` whose disposition is
+    `not_delivered`; any other ends the action `delivered_unverified`,
+    never re-sent. The upgrade, still holding the slot, checks the
+    snapshot and the stop again, then takes the lease (`input_busy`,
+    `not_delivered`, when another agent holds it), so a failed check never
+    leaves the lease held, and re-sends once with `foreground: 'allow'`.
+    `needs_foreground` never reaches an agent; a second one ends
+    `internal`.
+  - Lock order is always slot, then lease. An action with no target app
+    takes the lease only, and the lease never waits, so no cycle can form.
+  - The stop key ends every action still queued for a slot with `aborted`,
+    `not_delivered`, before it reaches the helper. The rate cap stays per
+    agent and is charged once the action is about to be sent, so an action
+    that ended while queued costs none.
+  - Main reads `deferForeground` from the hello of the helper the action
+    starts anyway; it sends no extra request for it. A helper that cannot
+    start ends the action there with that error (`not_delivered`), started
+    once, not again by the request.
+  - Every helper request made while a slot is held has the helper's
+    request timeout, after which the helper is killed and replaced, so a
+    helper that never answers releases the slot at that timeout.
+  - The helper's retry-safety answers (dispositions, `needs_foreground`)
+    assume it runs one request at a time; the Windows helper's server loop
+    is single-threaded and also refuses (`internal`, nothing sent) a
+    request that arrives while another is in flight.
+  - A helper whose hello lacks `input.deferForeground: true` (the macOS
+    helper today, and older Windows helpers) gets no lanes: every input
+    action takes the lease, exactly as before. The helper process itself
+    still runs one request at a time.
 
 ## Errors
 
@@ -253,7 +375,10 @@ helpers never send them. `helper_unavailable` is kept for a helper that is
 missing, damaged or failed to start, which is the case that needs a reinstall.
 
 Errors are classified by stable identifiers (HRESULTs, AXError values), never
-by localized message text.
+by localized message text. An input action's error also carries its
+`disposition` (Retry safety, above): it crosses the pipe as
+`[code] message [disposition:<value>]`, so a parser that predates it still
+reads the code, and the MCP error text gives it a line of its own.
 
 ## Safety
 
@@ -359,8 +484,10 @@ a person was faster by hand, so the defaults moved:
   - Consent is fail-closed: a prompt nobody answers within 2 minutes refuses
     that call (`timeout`). Only an explicit Deny is remembered; an unanswered,
     withdrawn or unshowable prompt is not, so the next call asks again.
-- **Input lock.** One agent session at a time holds desktop input. Another
-  that tries gets `input_busy`, with the holder's client and workspace name.
+- **Input lock.** One agent session at a time holds real (foreground)
+  input. Another that tries gets `input_busy`, with the holder's client and
+  workspace name. Input posted in the background to one app only waits for
+  that app (Input lanes, above).
 - **Abort.** A global shortcut (default `Ctrl+Alt+Shift+Escape`) cancels the
   in-flight request, releases modifiers, takes down every open consent prompt
   (the calls parked on them fail with `aborted` at once), drops the input lock
@@ -488,6 +615,9 @@ Behaviour and UX only:
 - stablyai/orca: `docs/site/content/docs/cli/computer-use.mdx`
 - trycua/cua `libs/cua-driver` (MIT core): action-result contract, background
   delivery notes
+- vercel-labs/agent-desktop (Apache-2.0): the three delivery outcomes (not
+  delivered, delivered but unverified, delivered), never trusting an input
+  API's success as proof, and holding the input lock only around the real send
 - openclaw/Peekaboo: snapshot-bound element IDs, permission onboarding
 - CursorTouch/Windows-MCP: UIA control-type filtering and caching
 - mediar-ai/terminator: pre-action checks, click result reporting

@@ -102,37 +102,55 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
     proc = null;
     return had;
   };
+  const helperProcess = () => proc ??= new HelperProcess({
+    command,
+    verify: verifyHelper,
+    configure: () => ({ overlay: readComputerUseOverlay() }),
+    log: (m) => console.warn(m),
+  });
+  /** What an agent is told for a helper error (a spawn failure reads as a missing helper). */
+  const agentError = (err: unknown): unknown => {
+    if (err instanceof ComputerError && err.code === 'helper_unavailable' && SPAWN_FAILURE.test(err.message)) {
+      console.warn(`[computer] ${err.message}`);
+      reset();
+      return helperMissingError();
+    }
+    if (err instanceof ComputerError && err.code === 'helper_unavailable' && ELEVATED_EXIT.test(err.message)) {
+      reset();
+      return elevatedError();
+    }
+    if (err instanceof ComputerError && err.code === 'permission_missing' && appPath) {
+      return new ComputerError('permission_missing', `${err.message.replace(/[.\s]+$/, '')}. ${permissionMissingHelp(appPath)}`);
+    }
+    return err;
+  };
+  const checkReady = () => {
+    if (!ready()) {
+      reset();
+      throw notReadyError(command);
+    }
+  };
   return {
     async request(method, params) {
-      if (!ready()) {
-        reset();
-        throw notReadyError(command);
-      }
-      proc ??= new HelperProcess({
-        command,
-        verify: verifyHelper,
-        configure: () => ({ overlay: readComputerUseOverlay() }),
-        log: (m) => console.warn(m),
-      });
+      checkReady();
       try {
-        return await proc.request(method, params);
+        return await helperProcess().request(method, params);
       } catch (err) {
-        if (err instanceof ComputerError && err.code === 'helper_unavailable' && SPAWN_FAILURE.test(err.message)) {
-          console.warn(`[computer] ${err.message}`);
-          reset();
-          throw helperMissingError();
-        }
-        if (err instanceof ComputerError && err.code === 'helper_unavailable' && ELEVATED_EXIT.test(err.message)) {
-          reset();
-          throw elevatedError();
-        }
-        if (err instanceof ComputerError && err.code === 'permission_missing' && appPath) {
-          throw new ComputerError('permission_missing', `${err.message.replace(/[.\s]+$/, '')}. ${permissionMissingHelp(appPath)}`);
-        }
-        throw err;
+        throw agentError(err);
       }
     },
     supports: (method) => proc?.supports(method),
+    // Starts the helper the action needs anyway. A start that fails ends
+    // the action here with that error, mapped as for a request, so a helper
+    // that cannot start is waited for once, not again by the request.
+    defersForeground: async () => {
+      checkReady();
+      try {
+        return await helperProcess().defersForeground();
+      } catch (err) {
+        throw agentError(err);
+      }
+    },
     reconfigure: async () => { await proc?.reconfigure(); },
     abort: (reason) => proc?.abort(reason),
     dispose: () => { reset(); },

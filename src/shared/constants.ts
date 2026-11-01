@@ -185,6 +185,14 @@ export const IPC = {
   // optionally delete their phone/<slug> branch.
   WORKTASK_REMOVE_PHONE: 'worktask:remove-phone',
   WORKTASK_DELETE_PHONE_BRANCH: 'worktask:delete-phone-branch',
+  // Company seat worktrees nothing uses any more are removed by this sweep
+  // (main company/seatCleanup.ts); `{ keep }` holds every folder a live,
+  // stashed or archived pane is in.
+  WORKTASK_SWEEP_COMPANY_SEATS: 'worktask:sweep-company-seats',
+  // A company seat folder the cleanup list shows: remove it by path, then
+  // optionally delete its company/<slug> branch.
+  WORKTASK_REMOVE_COMPANY_SEAT: 'worktask:remove-company-seat',
+  WORKTASK_DELETE_COMPANY_SEAT_BRANCH: 'worktask:delete-company-seat-branch',
   //   AGENT_MODELS_LIST (invoke) renderer → main: the models an agent CLI
   //                   reports (`agy models`, `codex debug models`, claude's
   //                   static list), cached in main. `{ agent, refresh? }` →

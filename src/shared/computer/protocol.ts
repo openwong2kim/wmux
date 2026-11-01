@@ -11,7 +11,9 @@
 // implement layer 2 verbatim; bump COMPUTER_PROTOCOL_VERSION on any
 // incompatible change so main restarts or refuses a mismatched helper.
 
-import { isComputerErrorCode, type ComputerErrorPayload } from './errors';
+import { isActionDisposition, isComputerErrorCode, type ActionDisposition, type ComputerErrorPayload } from './errors';
+
+export type { ActionDisposition } from './errors';
 
 // 2: closed key vocabulary, `hotkey` as { modifiers, key }, and `target` on
 // every control request (#1689). No helper ever spoke 1 in a release.
@@ -244,17 +246,58 @@ export interface AppState {
 
 export type ActionMethod = 'accessibility' | 'synthetic' | 'clipboard';
 
+/**
+ * How the input reached the app. `background`: sent to the target app or
+ * window alone, so the user's pointer, frontmost app and Space stay as they
+ * were. `foreground`: real input, which brought the app to the front or moved
+ * the pointer. A helper that does not report it leaves it out.
+ */
+export type ActionDelivery = 'background' | 'foreground';
+
 export interface ActionResult {
   method: ActionMethod;
   /** `verified` only when the effect was read back (e.g. value after setValue). */
   verification: 'verified' | 'unverified';
+  delivery?: ActionDelivery;
+  disposition?: ActionDisposition;
   note?: string;
 }
+
+/**
+ * Which ways of sending input without real input this machine has, probed
+ * when the helper starts. Each flag means the same on every OS; on macOS the
+ * private SkyLight calls behind them change across releases. Whether an
+ * action went that way is its result's `delivery`. A helper that does not
+ * report it leaves `input` out.
+ */
+export interface HelperInputCapabilities {
+  /** Pointer events sent to one window of the target app, the user's pointer left where it is. */
+  backgroundPointer: boolean;
+  /** Giving the target window focus without raising it or changing the frontmost app. */
+  focusWithoutRaise: boolean;
+  /**
+   * Key events sent that way reach Chromium-based apps. Without it, those
+   * apps drop such keys, so their keys need real input. On macOS this is the
+   * key-event authentication message (SLSEventAuthenticationMessage, macOS 15
+   * and later).
+   */
+  keyAuth: boolean;
+  /**
+   * The helper honours `foreground: 'refuse'` on input methods (answers
+   * `needs_foreground` instead of using real input, see ForegroundMode). Main
+   * runs actions in per-app lanes only for a helper that says so; without it
+   * every input action takes the foreground lease, as before.
+   */
+  deferForeground?: boolean;
+}
+
+const HELPER_INPUT_CAPABILITIES = ['backgroundPointer', 'focusWithoutRaise', 'keyAuth'] as const;
 
 export interface HelperCapabilities {
   actions: string[];
   modes: ObservationMode[];
   permissions: { accessibility: boolean; screenRecording: boolean };
+  input?: HelperInputCapabilities;
 }
 
 export interface HelperHello {
@@ -281,6 +324,25 @@ export interface ControlTarget {
   pid: number;
   windowId: string;
 }
+
+/**
+ * Whether an input method may use real (foreground) input. `allow` (the
+ * default, and what a helper without `input.deferForeground` always does):
+ * background first where the helper can, real input otherwise. `refuse`: only
+ * background; where the helper would need real input it answers
+ * `needs_foreground` instead, and main decides (it takes the foreground lease
+ * and re-sends once with `allow`; docs/computer-use-design.md, Input lanes).
+ *
+ * RULE: a helper may answer `needs_foreground` ONLY when nothing was posted or
+ * sent for that action: no input event, no posted message, no UIA pattern
+ * call, no focus request. If anything went out before it found it needs the
+ * foreground, it ends as it would today (an error with
+ * `delivered_unverified`, or an unverified result), never `needs_foreground`:
+ * main's re-send in `allow` mode would send the same input twice.
+ */
+export type ForegroundMode = 'allow' | 'refuse';
+
+export const FOREGROUND_MODES: readonly ForegroundMode[] = ['allow', 'refuse'];
 
 /**
  * Methods a helper implements. Coordinates here are window logical points.
@@ -329,15 +391,28 @@ export interface HelperMethods {
       button: MouseButton;
       clickCount: number;
       modifiers: Modifier[];
+      foreground?: ForegroundMode;
     };
     result: ActionResult;
   };
-  setValue: { params: { snapshotId: string; target: ControlTarget; index: number; value: string }; result: ActionResult };
-  type: { params: { snapshotId: string; target: ControlTarget; index?: number; text: string }; result: ActionResult };
+  setValue: {
+    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
+  type: {
+    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
   /** `key` is canonical (normalizeKey); never a modifier on its own. */
-  pressKey: { params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number }; result: ActionResult };
+  pressKey: {
+    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
   /** Modifiers down in MODIFIERS order, `key` down/up, modifiers up in reverse. */
-  hotkey: { params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key }; result: ActionResult };
+  hotkey: {
+    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
   scroll: {
     params: {
       snapshotId: string;
@@ -346,6 +421,7 @@ export interface HelperMethods {
       point?: { x: number; y: number };
       direction: ScrollDirection;
       amount: number;
+      foreground?: ForegroundMode;
     };
     result: ActionResult;
   };
@@ -388,6 +464,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+function isInputCapabilities(value: unknown): value is HelperInputCapabilities {
+  return isRecord(value)
+    && HELPER_INPUT_CAPABILITIES.every((key) => typeof value[key] === 'boolean')
+    && (value.deferForeground === undefined || typeof value.deferForeground === 'boolean');
+}
+
 /**
  * Parses one NDJSON line from a helper. Never throws: a malformed line comes
  * back as `invalid` so the caller can decide to kill the helper.
@@ -414,6 +496,11 @@ export function parseHelperLine(line: string): HelperLine {
     ) {
       return { kind: 'invalid', reason: 'malformed hello' };
     }
+    // Advisory: a malformed set is dropped, not a reason to refuse the helper.
+    if (caps.input !== undefined && !isInputCapabilities(caps.input)) {
+      const { input: _dropped, ...rest } = caps;
+      return { kind: 'hello', hello: { ...value, capabilities: rest } as unknown as HelperHello };
+    }
     return { kind: 'hello', hello: value as unknown as HelperHello };
   }
 
@@ -424,7 +511,7 @@ export function parseHelperLine(line: string): HelperLine {
     return { kind: 'response', response: { id: value.id, ok: true, result: value.result } };
   }
   if (value.ok === false && isRecord(value.error)) {
-    const { code, message } = value.error;
+    const { code, message, disposition } = value.error;
     return {
       kind: 'response',
       response: {
@@ -433,6 +520,7 @@ export function parseHelperLine(line: string): HelperLine {
         error: {
           code: isComputerErrorCode(code) ? code : 'internal',
           message: typeof message === 'string' ? message : 'helper error',
+          ...(isActionDisposition(disposition) && { disposition }),
         },
       },
     };
