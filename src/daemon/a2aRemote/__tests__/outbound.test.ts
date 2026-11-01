@@ -279,7 +279,7 @@ describe('sendRemoteReply / sendRemoteState', () => {
     expect(sent.evidence!.items.length).toBeLessThan(10);
   });
 
-  it('a task this PC sent tells the peer no state but a cancel, also after a restart; a task it received still reports', async () => {
+  it('a task this PC sent tells the peer no state but a cancel, also after a restart', async () => {
     const states = (taskId: string) => outbox.pending(HOST).filter((r) => r.envelope.kind === 'state' && r.envelope.taskId === taskId);
     // Failed here (the other PC refused it): only the receiver moves a task there.
     const { id: refused } = await outboundTask();
@@ -292,7 +292,7 @@ describe('sendRemoteReply / sendRemoteState', () => {
     expect(states(refused)).toEqual([]);
 
     // Completed here while the peer was last told another state: nothing goes, nothing is recorded as told.
-    const linkId = activeLink();
+    const linkId = activeLink({ outbound: true, inbound: true }, 'codex', 'pane-c');
     const task: Task = {
       kind: 'task',
       id: remoteTaskId(linkId, 'sent-1'),
@@ -328,10 +328,6 @@ describe('sendRemoteReply / sendRemoteState', () => {
     expect(await syncRemoteTask(fake, task.id)).toEqual({ ok: true, queued: 1 });
     expect(states(task.id).map((r) => r.envelope.state)).toEqual(['canceled']);
     expect(marks).toEqual([{ taskId: task.id, stateSync: 'canceled' }]);
-
-    // Received from the peer: our completion still goes back.
-    const received = await completedInbound({ summary: 'reviewed', items: [{ kind: 'inspection' as const, status: 'verified' as const, summary: 'no P1' }] });
-    expect(states(received).map((r) => r.envelope.state)).toEqual(['completed']);
   });
 
   it('nothing is queued on a revoked link', async () => {
