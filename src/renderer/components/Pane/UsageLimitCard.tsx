@@ -21,7 +21,8 @@ import { useT } from '../../hooks/useT';
 import { getLocale } from '../../i18n';
 import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { getAgentSetupState, refreshAgentStatus, useAgentSetup } from '../../utils/agentSetupRuns';
-import { continueInAgent, continueInAgentText, handoffFacts, type HandoffFacts } from '../../utils/continueInAgent';
+import { continueInAgent, handoffFacts } from '../../utils/continueInAgent';
+import { handoffNoteText, type HandoffFacts } from '../../utils/handoffNote';
 import { continueOnPcText, remoteHandoffHours } from '../../utils/continueOnPc';
 import { spawnAskBlock } from '../Remote/RemoteSpawnAskDialog';
 import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
@@ -37,6 +38,7 @@ import Checkbox from '../ui/Checkbox';
 import Button from '../ui/Button';
 import { usageLimitStatusText, usageLimitView, everyAccountOutUntil } from './usageLimitPresentation';
 import type { PaneActionItem } from './PaneActionsMenu';
+import HandoffNotePreview from './HandoffNotePreview';
 
 export const USAGE_LIMIT_CARD_WIDTH = 300;
 
@@ -144,7 +146,7 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
   const outUntil = everyAccountOutUntil(rotation.state?.rows ?? [], vendor, now);
   const agents = (setup.statuses ?? []).filter((s) => s.readiness === 'ready' && s.agent !== vendor);
   const pos = placePopover(anchor, { width: USAGE_LIMIT_CARD_WIDTH, height });
-  const note = facts ? continueInAgentText(fromAgent, facts, { carryDraft }) : undefined;
+  const note = facts ? handoffNoteText(fromAgent, facts, { carryDraft }) : undefined;
 
   return createPortal(
     <Popover
@@ -239,17 +241,7 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
                   {t('usageLimit.carryDraft')}
                 </label>
               )}
-              <pre
-                aria-label={t('usageLimit.handoffPreview')}
-                tabIndex={0}
-                className="mt-2 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-[var(--chip-radius)] bg-[var(--selection)] p-2 font-mono text-[11px] text-[var(--text-sub)]"
-                data-usage-limit-card-memo
-              >
-                {note}
-              </pre>
-              <p className="mt-1 text-[11px] text-[var(--text-muted)] tabular-nums" data-usage-limit-card-memo-length>
-                {t('usageLimit.handoffLength', { count: note.length })}
-              </p>
+              <HandoffNotePreview note={note} className="mt-2" />
             </>
           )}
         </PopoverSection>

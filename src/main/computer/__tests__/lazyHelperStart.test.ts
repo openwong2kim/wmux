@@ -1,3 +1,6 @@
+// @wmux-lane unit
+// "win32" here is only a helper hello's OS, chosen as the opposite of this
+// machine's, so the result is the same on every platform.
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
 import type { AppInfo, WindowInfo } from '../../../shared/computer/protocol';
@@ -12,6 +15,8 @@ const h = vi.hoisted(() => ({
   starts: { count: 0 },
   requests: { count: 0 },
   startError: { value: null as Error | null },
+  hello: { value: null as unknown },
+  sent: [] as Array<{ method: string; params: Record<string, unknown> }>,
 }));
 
 vi.mock('electron', () => ({
@@ -28,14 +33,18 @@ vi.mock('../../../shared/computer/config', () => ({
 // hello timeout's worth of waiting.
 vi.mock('../HelperProcess', () => ({
   HelperProcess: class {
+    get hello() { return h.hello.value; }
     async defersForeground() {
       h.starts.count += 1;
-      throw h.startError.value;
+      if (h.startError.value) throw h.startError.value;
+      return true;
     }
-    async request() {
+    async request(method: string, params: Record<string, unknown>) {
       h.starts.count += 1;
       h.requests.count += 1;
-      throw h.startError.value;
+      if (h.startError.value) throw h.startError.value;
+      h.sent.push({ method, params });
+      return { method: 'synthetic', verification: 'unverified' };
     }
     supports() { return undefined; }
     abort() { /* nothing in flight */ }
@@ -60,6 +69,8 @@ beforeEach(() => {
   h.starts.count = 0;
   h.requests.count = 0;
   h.startError.value = new ComputerError('helper_unavailable', 'the computer-use helper did not say hello within 10000 ms');
+  h.hello.value = null;
+  h.sent.length = 0;
 });
 
 describe('a helper that cannot start', () => {
@@ -80,6 +91,40 @@ describe('a helper that cannot start', () => {
     expect((err as ComputerError).disposition).toBe('not_delivered');
     expect(h.starts.count).toBe(1);
     expect(h.requests.count).toBe(0);
+    service.dispose();
+  });
+});
+
+describe("a running helper's hello", () => {
+  it('picks the actions that need real input up front by the helper OS, not this machine', async () => {
+    // The opposite of this machine, so only the hello can decide.
+    const helperOs = process.platform === 'darwin' ? 'win32' : 'darwin';
+    h.startError.value = null;
+    h.hello.value = {
+      type: 'hello',
+      protocolVersion: 2,
+      os: helperOs,
+      helperVersion: 'test',
+      capabilities: {
+        actions: [],
+        modes: ['ax'],
+        permissions: { accessibility: true, screenRecording: true },
+        input: { backgroundPointer: true, focusWithoutRaise: true, keyAuth: true, deferForeground: true },
+      },
+    };
+    // A fresh module: the service above was disposed, which ends that module's.
+    vi.resetModules();
+    const mod = await import('../index');
+    const service = mod.createComputerService({ requestConsent: async () => 'approved' });
+    (service as unknown as { recordSnapshot(id: string, record: object): void }).recordSnapshot('s1', {
+      agentKey: AGENT.key,
+      app,
+      window,
+      expiresAt: Date.now() + 60_000,
+    });
+    await service.control(AGENT, { action: 'hotkey', snapshotId: 's1', keys: ['ctrl', 'a'] });
+    // A chord needs real input up front on Windows only; on macOS the helper decides.
+    expect(h.sent.at(-1)?.params.foreground).toBe(helperOs === 'win32' ? 'allow' : 'refuse');
     service.dispose();
   });
 });

@@ -96,3 +96,43 @@ describe('runCopyWithFeedback — ordering guarantees', () => {
     expect(order).toEqual(['clear', 'toast']);
   });
 });
+
+describe('runCopyWithFeedback — clean copy', () => {
+  it('writes the resolved text, not the raw selection', async () => {
+    const deps = makeDeps({ resolve: vi.fn(async () => 'clean') });
+    await runCopyWithFeedback('│ raw  ', deps);
+    expect(deps.resolve).toHaveBeenCalledWith('│ raw  ');
+    expect(deps.write).toHaveBeenCalledWith('clean');
+    expect(deps.clearSelection).toHaveBeenCalledTimes(1);
+    expect(deps.onSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it('a copy that starts during the write keeps its selection', async () => {
+    let current = true;
+    const deps = makeDeps({
+      resolve: async () => 'clean',
+      isCurrent: () => current,
+      write: vi.fn(async () => { current = false; }), // copy-on-select of a new selection started
+    });
+    await runCopyWithFeedback('old', deps);
+    expect(deps.write).toHaveBeenCalledWith('clean');
+    expect(deps.clearSelection).not.toHaveBeenCalled();
+  });
+
+  it('a copy superseded while it resolved writes nothing and shows no toast', async () => {
+    let finish!: (text: string) => void;
+    let current = true;
+    const deps = makeDeps({
+      resolve: () => new Promise<string>((r) => { finish = r; }),
+      isCurrent: () => current,
+    });
+    const run = runCopyWithFeedback('old', deps);
+    current = false; // a newer copy started
+    finish('old clean');
+    await run;
+    expect(deps.write).not.toHaveBeenCalled();
+    expect(deps.clearSelection).not.toHaveBeenCalled();
+    expect(deps.onSuccess).not.toHaveBeenCalled();
+    expect(deps.onError).not.toHaveBeenCalled();
+  });
+});

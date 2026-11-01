@@ -144,7 +144,7 @@ describe('useTerminalCopyShortcut — DOM glue', () => {
     const ev = pressCtrlC();
 
     expect(mocks.copySelectionWithFeedback).toHaveBeenCalledTimes(1);
-    expect(mocks.copySelectionWithFeedback).toHaveBeenCalledWith(term, 'hello world');
+    expect(mocks.copySelectionWithFeedback).toHaveBeenCalledWith(term, 'hello world', { ptyId: 'pty-term' });
     expect(ev.defaultPrevented).toBe(true);
   });
 

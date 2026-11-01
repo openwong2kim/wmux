@@ -15,6 +15,7 @@
 
 import type { Task, TaskState, Message, CompletionEvidence } from './types';
 import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from './a2aRemote';
+import type { CompanyBlockerEnd, CompanyHoldReason } from './companyHold';
 
 /**
  * A2A 로그 payload 판별 union. kind가 닫힌 enum이라 projection이 미지 kind를
@@ -28,7 +29,8 @@ export type A2aEventPayload =
   | A2aTaskCancelPayload
   | A2aExecutorLifecyclePayload
   | A2aTaskMessagePayload
-  | A2aRemoteMarkPayload;
+  | A2aRemoteMarkPayload
+  | A2aCompanyMarkPayload;
 
 /** 태스크 생성 — 정본 레코드 1건을 통째로 실어 projection 시드. */
 export interface A2aTaskCreatePayload {
@@ -140,6 +142,30 @@ export interface A2aRemoteMarkPayload {
   /** Task-level: the peer acked every reply / state of ours queued on this task. */
   replyAcked?: true;
   timestamp: string;
+}
+
+/**
+ * Company mode: one change to a held company task's marker
+ * (`metadata.companyHold`, shared/companyHold.ts). Exactly one of `drop`,
+ * `blockerEnded`, `attempted`, `delivered` (with `ptyId`) or `held` is set.
+ * A build that does not know this kind skips it on replay.
+ */
+export interface A2aCompanyMarkPayload {
+  kind: 'company.mark';
+  taskId: string;
+  timestamp: string;
+  /** A blocker that completed: it leaves `waitingOn`; the last one to leave releases the task. */
+  drop?: string;
+  /** A blocker in `waitingOn` that ended failed or canceled: the task stays held. */
+  blockerEnded?: CompanyBlockerEnd;
+  /** true: main is about to write the task to its pane (recorded BEFORE the write); false: that attempt wrote nothing. */
+  attempted?: boolean;
+  /** Written to its seat's pane. */
+  delivered?: true;
+  /** With `delivered`: the pty written to. */
+  ptyId?: string;
+  /** Released, not delivered, waiting on a person. */
+  held?: CompanyHoldReason;
 }
 
 /**

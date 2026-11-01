@@ -120,6 +120,36 @@ describe('AgentSignal `where` validation', () => {
   });
 });
 
+// The global WSL hook asks tmux on the Linux side: the bridge runs on Windows.
+describe('claude bridge tmux target from WSL', () => {
+  const where = (env: Env, query: TmuxQuery = null) => loaded.claude(env, query);
+
+  it('takes WMUX_TMUX_TARGET over the lookup, which is never asked', () => {
+    let asked = 0;
+    const got = where(
+      { TMUX: '/tmp/tmux-1000/default,9,0', TMUX_PANE: '%1', WMUX_TMUX_TARGET: 'api:dev:3', WSL_DISTRO_NAME: 'Ubuntu' },
+      () => { asked += 1; return { session: 'wrong', window: '9' }; },
+    );
+    expect(got).toEqual({ kind: 'tmux', session: 'api:dev', window: '3', wslDistro: 'Ubuntu' });
+    expect(asked).toBe(0);
+  });
+
+  it('a WSL hook with no target asks no tmux on Windows; a bridge inside WSL asks its own', () => {
+    const fromWsl = { TMUX: 'x', TMUX_PANE: '%1', WSL_DISTRO_NAME: 'Ubuntu' };
+    let asked = 0;
+    const lookup = () => { asked += 1; return { session: 'work', window: '1' }; };
+    const whereOn = (platform: string) => (loaded.claude as unknown as (e: Env, q: TmuxQuery, p: string) => unknown)(fromWsl, lookup, platform);
+    expect(whereOn('win32')).toEqual({ kind: 'tmux', wslDistro: 'Ubuntu' });
+    expect(asked).toBe(0);
+    expect(whereOn('linux')).toEqual({ kind: 'tmux', session: 'work', window: '1', wslDistro: 'Ubuntu' });
+    expect(asked).toBe(1);
+  });
+
+  it('a malformed target is no answer, not a wrong one', () => {
+    expect(where({ TMUX: 'x', WMUX_TMUX_TARGET: 'nocolon' })).toEqual({ kind: 'tmux' });
+  });
+});
+
 // The Claude bridge retries a failed lookup on every UserPromptSubmit; the
 // OpenClaude bridge has no such hook, so its once-a-turn retry is Stop.
 describe('openclaude bridge tmux lookup', () => {

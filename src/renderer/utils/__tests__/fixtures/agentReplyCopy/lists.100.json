@@ -1,0 +1,37 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 100,
+ "rows": [
+  "❯ show lists                                                                                        ",
+  "",
+  "⏺ Bullets:",
+  "",
+  "  - first bullet item",
+  "  - second bullet item that is rather long so that it wraps at sixty columns at least once",
+  "    - nested bullet one",
+  "    - nested bullet two",
+  "  - third",
+  "",
+  "  Numbers:",
+  "",
+  "  1. step one",
+  "  2. step two that is rather long so that it wraps at sixty columns at least once here",
+  "     a. nested step a",
+  "     b. nested step b",
+  "  3. step three",
+  "",
+  "                                                                                ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Bullets:\n\n- first bullet item\n- second bullet item that is rather long so that it wraps at sixty columns at least once\n  - nested bullet one\n  - nested bullet two\n- third\n\nNumbers:\n\n1. step one\n2. step two that is rather long so that it wraps at sixty columns at least once here\n   1. nested step a\n   2. nested step b\n3. step three"
+   }
+  ]
+ ]
+}

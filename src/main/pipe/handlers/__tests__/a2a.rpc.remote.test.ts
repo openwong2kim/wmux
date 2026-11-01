@@ -336,15 +336,22 @@ describe('a2a.task.send — a company CEO\'s task to another PC', () => {
 
   it('sends the CEO\'s message with the brief written out, and the brief with only its own fields', async () => {
     seatedAs('coordinator');
-    const res = await send(setup(), { data: { ...BRIEF, blockedBy: ['task-1'], deliveryKey: 'dk', note: 'not a brief field' } });
+    const res = await send(setup(), { data: { ...BRIEF, deliveryKey: 'dk', note: 'not a brief field' } });
     expect(res).toMatchObject({ ok: true, taskId: RT, remote: true });
     expect(remote.sendTask).toHaveBeenCalledWith({
       linkId: LINK,
       from: { workspaceId: 'ws-a', name: 'ws-a', paneId: 'pane-a', ptyId: 'pty-a' },
       title: 'T',
       text: renderRemoteBrief('Take the parser.', companyBriefOf(BRIEF)!),
-      brief: { ...BRIEF, blockedBy: ['task-1'] },
+      brief: BRIEF,
     });
+  });
+
+  it('refuses a task to another PC that waits on other tasks, and sends nothing', async () => {
+    seatedAs('coordinator');
+    const res = await send(setup(), { data: { ...BRIEF, blockedBy: ['task-1'] } });
+    expect(res).toEqual({ error: expect.stringContaining('cannot wait on other tasks') });
+    expect(remote.sendTask).not.toHaveBeenCalled();
   });
 
   it('refuses a written-out brief over the size another PC takes, never cutting it', async () => {

@@ -25,6 +25,12 @@ import { t } from '../../i18n';
 export interface ProjectPaneSeed {
   command?: string;
   cwd?: string;
+  /**
+   * Open the pane as a WSL shell in this distribution, at `cwd` (a Linux
+   * path): "open a wmux pane here" on a session started in WSL outside wmux.
+   * Never read from wmux.json.
+   */
+  wslDistro?: string;
   url?: string;
   /** X8 supervision policy carried from the leaf (terminal leaves only). The
    * AppLayout funnel turns a set `restart` into an exec-style supervised

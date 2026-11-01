@@ -15,7 +15,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconCopy, IconTerminal, IconX } from '../icons';
 import { StatusMarkView } from './AgentMarks';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { externalAgentStatus, externalAttachCommand, terminalAppName } from './externalSessionPlacement';
+import { externalAgentStatus, externalAttachCommand, externalSessionWslDistro, terminalAppName } from './externalSessionPlacement';
 import { folderWorkspaceName } from '../FirstRunWizard';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { displayPath } from '../../utils/displayPath';
@@ -62,16 +62,36 @@ export function externalWhereLong(where: ExternalSessionWhere, t: Translate): st
  * the session sits in a workspace, else a new workspace on that folder. A
  * split takes the folder only while splits inherit a folder (Settings), so
  * with that off it is a new workspace too.
+ *
+ * A session in WSL gets a WSL shell in its distro at its Linux folder (the
+ * pane seed the funnel creates it from), never a Windows shell handed a
+ * /home path. Its new workspace keeps no startup folder: a Linux path means
+ * nothing to the other shells a later pane may run.
  */
 export function openPaneInSessionFolder(session: ExternalSession, workspaceId: string | undefined): void {
   const st = useStore.getState();
+  const wslDistro = externalSessionWslDistro(session);
   const ws = workspaceId && st.splitInheritsCwd ? st.workspaces.find((w) => w.id === workspaceId) : undefined;
   if (ws) {
     st.setActiveWorkspace(ws.id);
     const paneId = useStore.getState().splitPane(ws.activePaneId, 'horizontal', ws.id);
     // The split seeds the new pane with its neighbour's folder; this pane is
     // asked for the session's folder.
-    if (paneId) useStore.setState((s) => { s.splitCwdSeed[paneId] = session.cwd; });
+    if (paneId) {
+      useStore.setState((s) => {
+        if (wslDistro) {
+          s.projectPaneSeed[paneId] = { cwd: session.cwd, wslDistro };
+          delete s.splitCwdSeed[paneId];
+        } else {
+          s.splitCwdSeed[paneId] = session.cwd;
+        }
+      });
+    }
+  } else if (wslDistro) {
+    st.addWorkspace(folderWorkspaceName(session.cwd));
+    const now = useStore.getState();
+    const leafId = now.workspaces.find((w) => w.id === now.activeWorkspaceId)?.activePaneId;
+    if (leafId) useStore.setState((s) => { s.projectPaneSeed[leafId] = { cwd: session.cwd, wslDistro }; });
   } else {
     st.addWorkspace(folderWorkspaceName(session.cwd), { startupCwd: session.cwd });
   }

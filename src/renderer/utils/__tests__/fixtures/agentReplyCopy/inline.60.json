@@ -1,0 +1,23 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ show inline                                               ",
+  "",
+  "⏺ Run npm test -- --run and then git status before exit.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Run `npm test -- --run` and then `git status` before `exit`."
+   }
+  ]
+ ]
+}

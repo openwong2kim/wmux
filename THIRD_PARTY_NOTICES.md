@@ -110,8 +110,12 @@ SOFTWARE.
 ## Cua Driver (trycua/cua)
 
 - Source: https://github.com/trycua/cua/tree/a9902d272655b65180fa713a8b1f2f1c1935e70b/libs/cua-driver
-  (`rust/crates/platform-macos/src/input/skylight.rs`)
-- Used in: `native/computer-use-macos/Sources/wmux-computer-use/SkyLight.swift`
+  (`rust/crates/platform-macos/src/input/skylight.rs`,
+  `rust/crates/platform-macos/src/input/mouse.rs`,
+  `rust/crates/platform-macos/src/input/keyboard.rs`)
+- Used in: `native/computer-use-macos/Sources/wmux-computer-use/SkyLight.swift`,
+  `native/computer-use-macos/Sources/wmux-computer-use/Background.swift`,
+  `native/computer-use-macos/Sources/ComputerUseCore/Background.swift`
 - License text, verbatim from `LICENSE.md` at the repository root (the Driver
   crate declares `license = "MIT"`):
 

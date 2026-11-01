@@ -140,6 +140,7 @@ function lazyHelper(command: string, ready: () => boolean): HelperLike & { reset
       }
     },
     supports: (method) => proc?.supports(method),
+    get hello() { return proc?.hello ?? null; },
     // Starts the helper the action needs anyway. A start that fails ends
     // the action here with that error, mapped as for a request, so a helper
     // that cannot start is waited for once, not again by the request.

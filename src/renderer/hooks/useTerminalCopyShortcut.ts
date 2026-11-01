@@ -148,6 +148,7 @@ export function useTerminalCopyShortcut(): void {
       void copySelectionWithFeedback(
         terminalRegistry.get(target.ptyId) ?? null,
         target.selection,
+        { ptyId: target.ptyId },
       );
     };
 

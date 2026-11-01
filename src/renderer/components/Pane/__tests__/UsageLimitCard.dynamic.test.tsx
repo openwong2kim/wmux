@@ -154,13 +154,13 @@ describe('usage-limit card', () => {
     // Never the agent that is out.
     expect(q('[data-usage-limit-card-agent="claude"]')).toBeNull();
     // The note it types in, previewed with its length; the unsent draft only once ticked.
-    const memo = q('[data-usage-limit-card-memo]')!;
-    expect(memo.textContent).toContain('The last request was:\nfix the login bug');
+    const memo = q('[data-handoff-note]')!;
+    expect(memo.textContent).toContain('\nAsked: fix the login bug\n');
     expect(memo.textContent).not.toContain('and the logout one');
     await act(async () => q('[data-usage-limit-card-action="carry-draft"]')!.click());
-    const note = q('[data-usage-limit-card-memo]')!.textContent!;
-    expect(note).toContain('A draft that was never sent:\nand the logout one');
-    expect(q('[data-usage-limit-card-memo-length]')!.textContent).toBe(`${note.length} characters`);
+    const note = q('[data-handoff-note]')!.textContent!;
+    expect(note).toContain('\nUnsent draft: and the logout one');
+    expect(q('[data-handoff-note-length]')!.textContent).toBe(`${note.length} characters`);
     await act(async () => q('[data-usage-limit-card-agent="codex"]')!.click());
     expect(continueInAgent).toHaveBeenCalledWith({ heldPtyId: 'pty-1', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', cwd: '/repo', note });
     expect(card()).toBeNull();

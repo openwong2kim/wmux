@@ -121,7 +121,7 @@ import { setUsageClientVersion, type UsageSnapshot } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
-import { IPC, getWmuxHomeDir } from '../shared/constants';
+import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
@@ -231,6 +231,7 @@ import { resyncAfterResubscribe, serialResync, type DaemonSessionRow } from './n
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
+import { CompanyReleaseBridge, type CompanyReleaseMark } from './a2a/CompanyReleaseBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
 import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
@@ -280,6 +281,8 @@ import {
   refreshHookBridgeAtBoot,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
+import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
@@ -840,6 +843,12 @@ let daemonNotificationRouter: DaemonNotificationRouter | null = null;
 let remoteInboxBridge: RemoteInboxBridge | null = null;
 // Cross-host A2A: hands remote tasks/replies the daemon holds to the renderer.
 let remoteA2aBridge: RemoteA2aBridge | null = null;
+// Company mode: delivers tasks the daemon released from their blockers; one per connection.
+let companyReleaseBridge: CompanyReleaseBridge | null = null;
+// The CEO lines told, the deliveries running and the marks not taken yet, kept across daemon reconnects.
+const companyCeoLinesTold = new Set<string>();
+const companyDeliveriesInFlight = new Set<string>();
+const companyPendingMarks = new Map<string, CompanyReleaseMark>();
 let remoteSpawnCoordinator: RemoteSpawnCoordinator | null = null;
 let continueStarter: ContinueStarter | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
@@ -1323,6 +1332,7 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
   getDaemonClient: () => daemonClient,
   // Cross-host A2A: a remote pane's alias and rt- tasks go through the daemon's outbox.
   remote: daemonRemoteA2aRpcDeps(() => daemonClient),
+  companyRelease: () => companyReleaseBridge,
 });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
@@ -2240,6 +2250,32 @@ app.on('ready', async () => {
     refreshTimer.unref();
   }
 
+  // The global WSL hook (`wmux setup-hooks --wsl`, shared/wslGlobalHook.ts)
+  // runs this runtime and bridge, which an update moves: record them at every
+  // start, and bring an installed hook script up to this build. getWmuxDir()
+  // is suffix-scoped, so an isolated instance writes only into its own data
+  // dir; an unsuffixed dev run writes nothing. Deferred like the refreshes
+  // above: the bridge lookup walks the filesystem, off the ready path.
+  if (process.platform === 'win32') {
+    const wslHookTimer = setTimeout(() => {
+      try {
+        const out = refreshWslHookAtBoot({
+          platform: process.platform,
+          isPackaged: app.isPackaged,
+          suffix: dataSuffix(),
+          hooksDir: path.join(getWmuxDir(), 'hooks'),
+          runtimePath: process.execPath,
+          bridgePath: findWslClaudeBridge(__dirname),
+        });
+        if (out.pointer === 'no-bridge') logLine('warn', 'main', 'wsl hook runtime pointer: no-bridge');
+        else if (out.pointer === 'written' || out.script === 'refreshed') logLine('info', 'main', `wsl hook: pointer ${out.pointer}, script ${out.script}`);
+      } catch (err) {
+        console.warn('[hooks] wsl hook refresh failed (non-fatal):', err);
+      }
+    }, 3000);
+    wslHookTimer.unref();
+  }
+
   // #898 — the OTHER copy of the bridge. `refreshHookBridge` above owns
   // `~/.wmux/hooks/`; a Claude Code plugin install is a snapshot in a version
   // directory that Claude Code owns, and no wmux release touches it. A user who
@@ -2653,6 +2689,18 @@ app.on('ready', async () => {
       });
       remoteA2aBridge.start();
       setA2aRemoteBridge(remoteA2aBridge);
+      // Company tasks released from their blockers, pulled on every (re)connect,
+      // after each task ends (a2a.rpc) and on a backstop.
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = new CompanyReleaseBridge({
+        daemon: client,
+        sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        told: companyCeoLinesTold,
+        inFlight: companyDeliveriesInFlight,
+        pendingMarks: companyPendingMarks,
+        log: (level, msg) => logLine(level, 'a2a-company', msg),
+      });
+      companyReleaseBridge.start();
       // Remote spawn (this PC starts an agent another PC asked for): cards and starts.
       remoteSpawnCoordinator?.stop();
       const spawnBridge = remoteA2aBridge;
@@ -2726,6 +2774,8 @@ app.on('ready', async () => {
       remoteInboxBridge = null;
       remoteA2aBridge?.stop();
       remoteA2aBridge = null;
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = null;
       remoteSpawnCoordinator?.stop();
       remoteSpawnCoordinator = null;
       continueStarter?.stop();
