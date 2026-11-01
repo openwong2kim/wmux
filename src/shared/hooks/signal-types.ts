@@ -90,6 +90,7 @@ export type { AgentSlug } from '../agentIdentity';
 export { agentSlugToDisplay } from '../agentIdentity';
 
 import { AGENT_SLUG_SET, type AgentSlug } from '../agentIdentity';
+import { EXTERNAL_SESSION_LIMITS, type ExternalSessionWhere } from '../externalSessions';
 
 /**
  * Canonical envelope. All fields are required UNLESS marked optional.
@@ -154,6 +155,14 @@ export interface AgentSignal {
    * parseWslAgentReport (src/daemon/wslAgentProcess.ts).
    */
   wslAgentProcess?: string;
+  /**
+   * Where a hook from OUTSIDE a wmux pane runs (tmux, screen, zellij, ssh, a
+   * terminal app), read by the bridge from env it already has. Sent only when
+   * the hook carries no WMUX_PTY_ID; it labels an external session and is
+   * never a routing key. Unvalidated hints, each capped at
+   * EXTERNAL_SESSION_LIMITS.whereField.
+   */
+  where?: ExternalSessionWhere;
   cwd: string;
   payload: Record<string, unknown>;
   ts: number;
@@ -261,5 +270,21 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   if (v['ptyId'] !== undefined && (typeof v['ptyId'] !== 'string' || v['ptyId'].length === 0)) return false;
   if (v['wslAgentProcess'] !== undefined && (typeof v['wslAgentProcess'] !== 'string' ||
     v['wslAgentProcess'].length === 0 || v['wslAgentProcess'].length > 8192)) return false;
+  if (v['where'] !== undefined && !isExternalSessionWhere(v['where'])) return false;
   return true;
+}
+
+const WHERE_KINDS: ReadonlySet<string> = new Set(['tmux', 'screen', 'zellij', 'ssh', 'terminal', 'unknown']);
+const WHERE_TEXT_FIELDS = ['session', 'window', 'label', 'wslDistro'] as const;
+
+/** A known kind, and each text field a non-empty string within the cap. Other keys are ignored. */
+export function isExternalSessionWhere(value: unknown): value is ExternalSessionWhere {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const w = value as Record<string, unknown>;
+  if (typeof w['kind'] !== 'string' || !WHERE_KINDS.has(w['kind'])) return false;
+  return WHERE_TEXT_FIELDS.every((key) => {
+    const field = w[key];
+    return field === undefined
+      || (typeof field === 'string' && field.length > 0 && field.length <= EXTERNAL_SESSION_LIMITS.whereField);
+  });
 }
