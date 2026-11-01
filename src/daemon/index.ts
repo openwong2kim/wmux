@@ -1570,14 +1570,14 @@ function spoolRecordToBinding(rec: Record<string, unknown>): { ptyId: string; bi
     : undefined;
   return {
     ptyId,
-    binding: {
+    binding: withCaptureTsNotAhead({
       agent,
       sessionId,
       cwd,
       ...(permissionMode ? { permissionMode } : {}),
       ...(typeof rec.transcriptPath === 'string' ? { transcriptPath: rec.transcriptPath } : {}),
       ts: typeof rec.ts === 'number' && Number.isFinite(rec.ts) ? rec.ts : 0,
-    },
+    }, Date.now()),
   };
 }
 
@@ -4715,7 +4715,10 @@ function registerRpcHandlers(
       if (!live) return;
       for (const known of agentCommandLineRead.keys()) if (!sessionManager.getSession(known)) { agentCommandLineRead.delete(known); agentLaunchFacts.delete(known); }
       agentCommandLineRead.set(id, processKey);
-      agentLaunchFacts.set(id, { pid, ...(startedAt !== undefined ? { startedAt } : {}), bypass: slug === 'claude' && claudeLaunchedInBypass(cmdline) });
+      // Where the start time cannot be read (Windows), the moment this line was
+      // read stands in: it is after the real start, so a binding has to be
+      // captured even later to count.
+      agentLaunchFacts.set(id, { pid, startedAt: startedAt ?? Date.now(), bypass: slug === 'claude' && claudeLaunchedInBypass(cmdline) });
       // The launch time orders this against hook / relay / notify captures (see commandLineBinding).
       const launchAt = startedAt ?? live.promptLog.recent(256).filter((e) => e.type === 'command_start').pop()?.ts;
       const binding = commandLineBinding(slug, cmdline, live.meta.cwd, live.meta.env, {
