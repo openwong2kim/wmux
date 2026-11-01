@@ -161,22 +161,58 @@ public struct UserState: Equatable {
     public var space: UInt64?
     /// When it was read, in seconds on a monotonic clock.
     public var time: Double
-    /// Seconds since the user's last real (HID) input, when it was read.
+    /// Seconds since the last HID input, when it was read. An event the
+    /// helper posts can reset it too (`ownPosts`).
     public var idle: Double
+    /// When the helper itself posted input, on the clock of `time`.
+    public var ownPosts: OwnPosts
 
-    public init(front: pid_t?, pointer: CGPoint, space: UInt64?, time: Double = 0, idle: Double = .infinity) {
+    public init(front: pid_t?, pointer: CGPoint, space: UInt64?, time: Double = 0, idle: Double = .infinity,
+                ownPosts: OwnPosts = OwnPosts()) {
         self.front = front
         self.pointer = pointer
         self.space = space
         self.time = time
         self.idle = idle
+        self.ownPosts = ownPosts
     }
 }
 
-/// The user gave real input between `start` and `now`: their last input is
-/// more recent than the start.
+/// How long after one of our posts the last HID input may still be ours. A
+/// posted mouse event can reset the HID idle time, dated within the post
+/// itself and read a few milliseconds later.
+public let ownPostSettle: Double = 0.1
+
+/// The times the helper posted input, as spans: a post within
+/// `ownPostSettle` of the span before it extends that span. Only the last
+/// few spans are kept, which is all one action looks back on.
+public struct OwnPosts: Equatable {
+    public private(set) var spans: [ClosedRange<Double>] = []
+
+    public init() {}
+
+    public mutating func note(_ time: Double) {
+        if let last = spans.last, time >= last.lowerBound, time - last.upperBound <= ownPostSettle {
+            spans[spans.count - 1] = last.lowerBound...max(last.upperBound, time)
+            return
+        }
+        spans.append(time...time)
+        if spans.count > 16 { spans.removeFirst(spans.count - 16) }
+    }
+
+    /// A HID event at `time` may be one of our posts: it falls in a span or
+    /// up to `ownPostSettle` after one. A few milliseconds before a span
+    /// count too, for the two clock readings behind `time`.
+    public func explain(_ time: Double) -> Bool {
+        spans.contains { time >= $0.lowerBound - 0.005 && time <= $0.upperBound + ownPostSettle }
+    }
+}
+
+/// The user gave real input between `start` and `now`: the last HID input is
+/// more recent than the start, and no post of ours explains it.
 public func userActed(start: UserState, now: UserState) -> Bool {
-    now.idle < now.time - start.time
+    let last = now.time - now.idle
+    return last > start.time && !now.ownPosts.explain(last)
 }
 
 /// A change to the user's state that background input itself made.

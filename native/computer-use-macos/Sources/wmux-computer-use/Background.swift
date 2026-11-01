@@ -89,7 +89,8 @@ enum Background {
             pointer: CGEvent(source: nil)?.location ?? .zero,
             space: SkyLight.activeSpace(),
             time: ProcessInfo.processInfo.systemUptime,
-            idle: anyInput.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) } ?? .infinity
+            idle: anyInput.map { CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: $0) } ?? .infinity,
+            ownPosts: Input.shared.ownPosts
         )
     }
 

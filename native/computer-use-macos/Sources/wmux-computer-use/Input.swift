@@ -47,6 +47,9 @@ final class Input: @unchecked Sendable {
     /// from it whether a failed input action sent anything. Bringing a window
     /// forward is not input and is not counted.
     private var sentCount = 0
+    /// When each of those was sent, so a HID idle reset it caused is not
+    /// taken for the user's input (Background.userState).
+    private var posts = OwnPosts()
 
     var sent: Int {
         lock.lock()
@@ -54,8 +57,15 @@ final class Input: @unchecked Sendable {
         return sentCount
     }
 
+    var ownPosts: OwnPosts {
+        lock.lock()
+        defer { lock.unlock() }
+        return posts
+    }
+
     func noteSent() {
         lock.lock()
+        posts.note(ProcessInfo.processInfo.systemUptime)
         sentCount += 1
         lock.unlock()
     }
@@ -78,6 +88,7 @@ final class Input: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if stopping && !releasing { return false }
+        posts.note(ProcessInfo.processInfo.systemUptime)
         event.post(tap: .cghidEventTap)
         sentCount += 1
         return true
@@ -91,7 +102,9 @@ final class Input: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if stopping, event.type != .leftMouseUp, event.type != .keyUp { return false }
+        let at = ProcessInfo.processInfo.systemUptime
         guard SkyLight.post(event, pid: pid, auth: auth) else { return false }
+        posts.note(at)
         sentCount += 1
         return true
     }

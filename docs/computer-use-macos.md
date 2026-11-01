@@ -227,7 +227,9 @@ is not re-walked.
     front, and the Space has not switched to the target window's. The user
     moving the pointer elsewhere, or switching to another app, does not stop
     it, and once the user gave real input (HID) since the action began, no
-    such change is taken for ours. The pointer is checked against a `type`
+    such change is taken for ours. A posted mouse event can reset the HID idle
+    time too, so a reset within 0.1 s of one of the helper's own posts is not
+    taken for the user's input (`OwnPosts`). The pointer is checked against a `type`
     focus click once, right after that click. Keys also stop when the target
     app comes to the front, whoever brought it (the user's typing would go to
     the window made key), on a password field focused in the target, with or

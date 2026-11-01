@@ -171,6 +171,39 @@ final class BackgroundTests: XCTestCase {
         XCTAssertNil(frontToRestore(start: start, now: now, pid: 300))
     }
 
+    func testAHIDResetFromOurOwnPostIsNotTheUsersInput() {
+        let start = UserState(front: 100, pointer: .zero, space: 1, time: 10, idle: 30)
+        var now = start
+        now.time = 10.5
+        now.front = 300
+        // Our mouse event posted at 10.2 reset the HID idle time: the last
+        // input reads as 10.21. The app came forward on its own, so it goes back.
+        now.ownPosts.note(10.2)
+        now.idle = 0.29
+        XCTAssertFalse(userActed(start: start, now: now))
+        XCTAssertEqual(frontToRestore(start: start, now: now, pid: 300), 100)
+        // Input at 10.45, after the post settled: the user's, so their front app stays.
+        now.idle = 0.05
+        XCTAssertTrue(userActed(start: start, now: now))
+        XCTAssertNil(frontToRestore(start: start, now: now, pid: 300))
+        // Input at 10.1, after the start but before the post: the user's too.
+        now.idle = 0.4
+        XCTAssertTrue(userActed(start: start, now: now))
+    }
+
+    func testPostsCloseTogetherMakeOneSpan() {
+        var posts = OwnPosts()
+        posts.note(1.0)
+        posts.note(1.05)
+        posts.note(1.12)
+        posts.note(3.0)
+        XCTAssertEqual(posts.spans, [1.0...1.12, 3.0...3.0])
+        XCTAssertTrue(posts.explain(1.2))
+        XCTAssertFalse(posts.explain(1.25))
+        XCTAssertFalse(posts.explain(2.9))
+        XCTAssertTrue(posts.explain(3.05))
+    }
+
     func testOnlyATargetThatCameForwardIsPutBack() {
         let start = UserState(front: 100, pointer: .zero, space: 1)
         XCTAssertNil(frontToRestore(start: start, now: start, pid: 300))
