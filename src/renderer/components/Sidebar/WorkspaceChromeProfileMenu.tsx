@@ -1,5 +1,6 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { keepSubmenuInWindow } from '../../utils/keepSubmenuInWindow';
 import { IconChevron } from '../icons';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -225,6 +226,7 @@ export default function WorkspaceChromeProfileMenu({
       </button>
       {open && (
         <div
+          ref={keepSubmenuInWindow}
           className={`absolute top-0 ${submenuPos} min-w-[200px] max-w-[300px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
           style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
         >
