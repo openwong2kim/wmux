@@ -5,6 +5,7 @@ import { heldReconnectAnswer, promoteOutcome, promoteStartedSession, suspendedRe
 import { app, ipcMain, BrowserWindow } from 'electron';
 import path from 'node:path';
 import { homedir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
@@ -660,8 +661,7 @@ export function registerPTYHandlers(
         : wslDistroArgs(shell, getDefaultWslDistro());
 
       // Generate a unique session ID
-      const crypto = require('crypto');
-      const sessionId = `daemon-${crypto.randomUUID().slice(0, 8)}`;
+      const sessionId = `daemon-${randomUUID().slice(0, 8)}`;
       // The leases are this pane's: they end with its session.
       gateway?.open.bind(sessionId);
       logCwdResolution(sessionId, cwdResolution.incomingCwd, safeCwd, cwdResolution.source);
@@ -1965,7 +1965,7 @@ export function registerPTYHandlers(
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1, payload.signal ?? null);
       }
-      daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
+      daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => undefined);
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
