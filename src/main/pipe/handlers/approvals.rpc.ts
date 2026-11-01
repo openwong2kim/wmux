@@ -45,7 +45,8 @@ import { getTaskLedger } from '../../deck/taskLedgerHost';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { looksLikeApprovalPrompt, readFolderTrustScreen } from '../../../daemon/approvals/approvalKeystrokes';
 import type { FolderTrustState } from '../../../daemon/folderTrustState';
-import { parseTerminalPrompt, showsScreenReaderKeyRow } from '../../../daemon/approvals/terminalPromptParse';
+import { parseTerminalPrompt } from '../../../daemon/approvals/terminalPromptParse';
+import { showsScreenReaderKeyRow } from '../../../daemon/approvals/screenReaderKeyRow';
 import { loadWorkspaceMode, type AgentMode } from '../../deck/deckAutonomyStore';
 import { workspaceFactsSettled } from '../../workspace/workspaceFactsFeed';
 

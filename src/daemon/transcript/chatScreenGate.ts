@@ -1,5 +1,6 @@
 import { looksLikeApprovalPrompt } from '../approvals/approvalKeystrokes';
-import { parseTerminalPrompt, screenReaderKeyRow, showsScreenReaderKeyRow } from '../approvals/terminalPromptParse';
+import { parseTerminalPrompt } from '../approvals/terminalPromptParse';
+import { screenReaderKeyRow, showsScreenReaderKeyRow } from '../approvals/screenReaderKeyRow';
 import { CLAUDE_IDLE_TITLE, CODEX_RUNNING_TITLE, RUNNING_TITLE } from '../../shared/agentTitleRules';
 
 /**

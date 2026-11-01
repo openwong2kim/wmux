@@ -66,7 +66,7 @@
 import { agentRow, type AgentDialogFamily } from '../../shared/agentIdentity';
 import { ESCAPE_WIN32 } from '../../shared/win32InputKeys';
 import { CODEX_TRUST_HEADLINE, TRUST_HEADLINE } from '../../shared/folderTrustWording';
-import { screenReaderKeyRow } from './terminalPromptParse';
+import { screenReaderKeyRow } from './screenReaderKeyRow';
 
 /** The two byte sequences for one agent. Single presses — never a CR chaser. */
 export interface ApprovalKeystrokes {

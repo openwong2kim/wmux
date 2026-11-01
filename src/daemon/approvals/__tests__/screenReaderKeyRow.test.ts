@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { screenReaderKeyRow, showsScreenReaderKeyRow } from '../terminalPromptParse';
+import { screenReaderKeyRow, showsScreenReaderKeyRow } from '../screenReaderKeyRow';
 
 const screen = (dir: string, name: string): string[] =>
   (JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures', dir, `${name}.json`), 'utf8')) as {
