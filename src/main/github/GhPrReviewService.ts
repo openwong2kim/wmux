@@ -38,6 +38,7 @@ import {
   type PrThreadsState,
   type PrWriteResult,
 } from '../../shared/prReview';
+import type { DonePrFacts } from '../../shared/companyDonePrCheck';
 
 type Exec = (
   cmd: string,
@@ -109,6 +110,40 @@ export const LANE_PR_QUERY = `query($owner: String!, $repo: String!, $number: In
           }
         }
       }
+    }
+  }
+}`;
+
+/**
+ * A company task's done check (shared/companyDonePrCheck.ts): state, head,
+ * mergeability, review decision, the last commit's checks with `isRequired`
+ * and the review threads, in one answer. A status's createdAt is read as its
+ * startedAt, so a rerun can be told from the run before it. Never cached.
+ */
+export const DONE_PR_QUERY = `query($owner: String!, $repo: String!, $number: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      state isDraft merged mergeCommit { oid }
+      headRefOid baseRefName
+      mergeable mergeStateStatus reviewDecision
+      commits(last: 1) {
+        nodes {
+          commit {
+            oid
+            statusCheckRollup {
+              contexts(first: 100) {
+                totalCount
+                nodes {
+                  __typename
+                  ... on CheckRun { name status conclusion startedAt isRequired(pullRequestNumber: $number) }
+                  ... on StatusContext { context state createdAt isRequired(pullRequestNumber: $number) }
+                }
+              }
+            }
+          }
+        }
+      }
+      reviewThreads(first: ${MAX_THREADS}) { totalCount nodes { isResolved } }
     }
   }
 }`;
@@ -241,6 +276,77 @@ export function mapLaneFacts(raw: unknown): PrLaneFacts | null {
     // No rollup at all (no checks ever ran) reads as nothing truncated.
     checksTruncated: contexts === undefined || contexts === null ? false : truncated(contexts, checkNodes.length) || checks.length !== checkNodes.length,
   };
+}
+
+/** A done check's facts from DONE_PR_QUERY's answer, before the base branch's
+ *  rules are read. Null when it is not a PR. A check node without a readable
+ *  `isRequired` counts as not required. */
+export function mapDonePr(raw: unknown): Omit<DonePrFacts, 'baseRequired' | 'baseRequiredUnread'> | null {
+  const pr = (raw as { data?: { repository?: { pullRequest?: unknown } } })?.data?.repository?.pullRequest as Record<string, unknown> | null | undefined;
+  if (!pr || typeof pr.headRefOid !== 'string') return null;
+  type Conn = { totalCount?: unknown; nodes?: unknown };
+  const nodesOf = (c: unknown): unknown[] => (Array.isArray((c as Conn | null)?.nodes) ? ((c as Conn).nodes as unknown[]) : []);
+  const commit = (nodesOf(pr.commits)[0] as { commit?: Record<string, unknown> } | undefined)?.commit;
+  const contexts = (commit?.statusCheckRollup as { contexts?: unknown } | null | undefined)?.contexts;
+  const checkNodes = nodesOf(contexts);
+  const checks = checkNodes.flatMap((n): PrCheck[] => {
+    const node = n as { createdAt?: unknown; startedAt?: unknown; isRequired?: unknown } | null;
+    // A status reports when it was created under its own key: one response key
+    // cannot be nullable on a check run and non-null on a status.
+    const check = mapRollup([node && node.startedAt === undefined && node.createdAt !== undefined ? { ...node, startedAt: node.createdAt } : n])[0];
+    return check ? [{ ...check, isRequired: node?.isRequired === true }] : [];
+  });
+  const checksTotal = (contexts as Conn | null | undefined)?.totalCount;
+  const threadNodes = nodesOf(pr.reviewThreads);
+  const threadsTotal = (pr.reviewThreads as Conn | null | undefined)?.totalCount;
+  return {
+    state: str(pr.state),
+    isDraft: pr.isDraft === true,
+    merged: pr.merged === true,
+    mergeCommitOid: str((pr.mergeCommit as { oid?: unknown } | null)?.oid) || null,
+    headRefOid: pr.headRefOid,
+    baseRefName: str(pr.baseRefName),
+    mergeable: str(pr.mergeable) || 'UNKNOWN',
+    mergeStateStatus: str(pr.mergeStateStatus) || 'UNKNOWN',
+    reviewDecision: str(pr.reviewDecision),
+    checksHeadOid: typeof commit?.oid === 'string' ? commit.oid : null,
+    checks,
+    // No rollup at all (no checks ever ran) reads as nothing truncated; an
+    // unreadable count is not proof that everything was read.
+    checksTruncated: contexts === undefined || contexts === null
+      ? false
+      : typeof checksTotal !== 'number' || checksTotal > checkNodes.length || checks.length !== checkNodes.length,
+    threads: {
+      total: typeof threadsTotal === 'number' ? threadsTotal : null,
+      read: threadNodes.length,
+      unresolved: threadNodes.filter((t) => (t as { isResolved?: unknown } | null)?.isResolved !== true).length,
+    },
+  };
+}
+
+/** Required check names from classic branch protection
+ *  (GET repos/:o/:r/branches/:branch); none while it is not enforced. */
+export function protectionRequiredChecks(raw: unknown): string[] {
+  const rsc = (raw as { protection?: { required_status_checks?: unknown } } | null)?.protection?.required_status_checks as
+    | { enforcement_level?: unknown; contexts?: unknown; checks?: unknown }
+    | null
+    | undefined;
+  if (!rsc || rsc.enforcement_level === 'off') return [];
+  const contexts = Array.isArray(rsc.contexts) ? rsc.contexts.map(str) : [];
+  const checks = Array.isArray(rsc.checks) ? rsc.checks.map((c) => str((c as { context?: unknown } | null)?.context)) : [];
+  return [...new Set([...contexts, ...checks])].filter(Boolean);
+}
+
+/** Required check names from the rulesets that apply to a branch
+ *  (GET repos/:o/:r/rules/branches/:branch). */
+export function rulesetRequiredChecks(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const names = raw.flatMap((rule): string[] => {
+    const r = rule as { type?: unknown; parameters?: { required_status_checks?: unknown } } | null;
+    const list = r?.type === 'required_status_checks' ? r.parameters?.required_status_checks : undefined;
+    return Array.isArray(list) ? list.map((c) => str((c as { context?: unknown } | null)?.context)) : [];
+  });
+  return [...new Set(names)].filter(Boolean);
 }
 
 /** Review threads from the GraphQL answer, comments capped; an outdated
@@ -501,6 +607,46 @@ export class GhPrReviewService {
       const facts = mapLaneFacts(JSON.parse(out));
       if (!facts) throw new Error('could not read the pull request');
       return facts;
+    });
+  }
+
+  /**
+   * A company task's done check of one PR (DONE_PR_QUERY), with an open PR's
+   * base branch rules: the required check names from branch protection and
+   * from rulesets. A rule source that cannot be read (no permission) adds no
+   * names and is named in `baseRequiredUnread`; a rate limit fails the whole
+   * read. Never cached.
+   */
+  donePrFacts(cwd: string, key: string, number: number): Promise<PrReviewRead<DonePrFacts>> {
+    return this.read(async () => {
+      const { host, owner, repo } = this.repo(key);
+      const out = await this.gh(host, [
+        'api', 'graphql', '--hostname', host,
+        '-f', `query=${DONE_PR_QUERY}`, '-f', `owner=${owner}`, '-f', `repo=${repo}`, '-F', `number=${number}`,
+      ], cwd);
+      const pr = mapDonePr(JSON.parse(out));
+      if (!pr) throw new Error('could not read the pull request');
+      if (pr.state !== 'OPEN') return { ...pr, baseRequired: [], baseRequiredUnread: [] };
+      // A branch name can hold a slash (release/4.0).
+      const branch = encodeURIComponent(pr.baseRefName);
+      const rules = async (source: string, path: string, names: (raw: unknown) => string[]) => {
+        if (!pr.baseRefName) return { source, names: null };
+        try {
+          return { source, names: names(JSON.parse(await this.gh(host, ['api', '--hostname', host, path], cwd))) };
+        } catch (err) {
+          if (err instanceof RateLimited) throw err;
+          return { source, names: null };
+        }
+      };
+      const read = await Promise.all([
+        rules('branch protection', `repos/${owner}/${repo}/branches/${branch}`, protectionRequiredChecks),
+        rules('rulesets', `repos/${owner}/${repo}/rules/branches/${branch}?per_page=100`, rulesetRequiredChecks),
+      ]);
+      return {
+        ...pr,
+        baseRequired: [...new Set(read.flatMap((r) => r.names ?? []))],
+        baseRequiredUnread: read.filter((r) => r.names === null).map((r) => r.source),
+      };
     });
   }
 

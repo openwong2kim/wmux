@@ -124,7 +124,8 @@
     },
     {
       "files": [
-        "src/mcp/__tests__/paneGetMetadataCrossWorkspace.test.ts"
+        "src/mcp/__tests__/paneGetMetadataCrossWorkspace.test.ts",
+        "src/mcp/__tests__/computerTool.test.ts"
       ],
       "rules": {
         "import/no-unresolved": [

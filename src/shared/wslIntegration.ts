@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { mergeWslEnv, wslTargetArgs, type WslTarget } from './wsl';
+import { CLAUDE_FILE_SEND_ENV } from './claudeFileSend';
 
 // Per-launch settings only. Never edit ~/.claude/settings.json in either OS.
 // Use the existing bridge in its Windows runtime: this preserves the named-pipe
@@ -364,6 +365,19 @@ function findBridge(startDir: string, basename = 'wmux-bridge.mjs', agent = 'cla
 }
 
 /**
+ * The Claude bridge a WSL pane's hook runs, or null when it is missing: the
+ * same lookup, so the global WSL hook (shared/wslGlobalHook.ts) and a pane's
+ * hook always run the same file — one outside app.asar, which Linux can open.
+ */
+export function findWslClaudeBridge(startDir: string): string | null {
+  try {
+    return findBridge(startDir);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * #1730 — the daemon keeps this file in its data dir exactly while the
  * permission gate can be answered; the WSL hook checks it before paying for a
  * Windows process (WSL_HOOK). It carries no authority: the daemon still decides.
@@ -384,6 +398,7 @@ export function wslClaudeHooks(): Record<string, Array<{ matcher: string; hooks:
   });
   return {
     SessionStart: [hook('SessionStart')],
+    SessionEnd: [hook('SessionEnd')],
     Stop: [hook('Stop')],
     StopFailure: [hook('StopFailure')],
     SubagentStop: [hook('SubagentStop')],
@@ -499,6 +514,8 @@ fi
     // stopped on "Is this a project you created or one you trust?" (#2231).
     // Only a pane that carries it: an ordinary WSL pane keeps the dialog.
     ...(options.env.CLAUDE_CODE_SANDBOXED ? ['CLAUDE_CODE_SANDBOXED/u'] : []),
+    // The Claude file send setting (shared/claudeFileSend.ts), when it is on.
+    ...(options.env[CLAUDE_FILE_SEND_ENV] ? [`${CLAUDE_FILE_SEND_ENV}/u`] : []),
   ];
   // Ordinary WSL panes keep their Linux profiles: copied Windows config can
   // contain Windows-only notify/MCP/hooks. Only forward the login's vendor.

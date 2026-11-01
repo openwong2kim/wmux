@@ -458,7 +458,7 @@ export class TaskWorktreeManager {
 
     // 경로 파생.
     const taskSlug = buildTaskSlug(title, taskId);
-    const root = `${getWmuxHomeDir()}/worktrees/${repoHash}`;
+    const root = path.join(this.worktreesRoot, repoHash);
     const worktreePath = path.join(root, taskSlug);
     const metaDir = path.join(root, '.meta', taskSlug);
     // A caller may name the branch (the Git page's issue-<n>-<slug>); it is

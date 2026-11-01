@@ -24,9 +24,9 @@ export interface ClaudeUsageCache {
  *  meter that stopped refreshing would leave yesterday's numbers on it. */
 export const BOT_QUOTA_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
-function quotaWindow(pct: number, resetEpochSec: number, now: number): BotQuotaWindow | undefined {
-  if (!Number.isFinite(pct)) return undefined;
-  const resetsAt = resetEpochSec > 0 ? resetEpochSec * 1000 : undefined;
+function quotaWindow(pct: number | undefined, resetEpochSec: number | undefined, now: number): BotQuotaWindow | undefined {
+  if (pct === undefined || !Number.isFinite(pct)) return undefined;
+  const resetsAt = resetEpochSec !== undefined && resetEpochSec > 0 ? resetEpochSec * 1000 : undefined;
   // A window that has reset since the reading says nothing about now.
   if (resetsAt !== undefined && resetsAt <= now) return undefined;
   return { pct: Math.max(0, Math.min(100, Math.round(pct))), ...(resetsAt !== undefined ? { resetsAt } : {}) };

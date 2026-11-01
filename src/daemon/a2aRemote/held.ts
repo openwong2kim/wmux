@@ -79,7 +79,8 @@ export async function expireHeld(deps: HeldDeps, ttlMs = A2A_REMOTE_HOLD_TTL_MS)
 /**
  * The link ended: fail every open remote task on it and refuse what the
  * outbox still owes the peer for this link (task / reply / state envelopes —
- * a `link` notice is left for the transport to deliver).
+ * a `link` notice is left for the transport to deliver). A report the peer
+ * made stays as it is (forceFailRemote): the peer finished that task.
  */
 export async function failTasksForLink(
   deps: HeldDeps,

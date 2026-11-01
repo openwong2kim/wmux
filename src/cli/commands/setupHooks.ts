@@ -33,6 +33,7 @@ wmux setup-hooks — install official CLI lifecycle integrations
 
 USAGE
   wmux setup-hooks [--remove | --status] [--signals-only | --with-gate] [--json]
+  wmux setup-hooks --wsl [<distro>] [--uninstall] [--json]
 
 ACTIONS (mutually exclusive; default = install)
   (default)    Install or refresh Claude Code hooks, the Codex notify bridge,
@@ -65,6 +66,15 @@ OTHER AGENTS (opt-in; touches only that CLI's hook config)
                    when COPILOT_HOME is set; run it with the same COPILOT_HOME
                    Copilot uses) and never edits your settings.
 
+WSL (opt-in; touches only that distribution's Claude settings)
+  --wsl [<distro>] [--uninstall]
+                   Report Claude Code sessions started in WSL outside wmux:
+                   merge the wmux hooks into the distribution's Claude
+                   settings ($CLAUDE_CONFIG_DIR/settings.json, else
+                   ~/.claude/settings.json; default distribution when <distro>
+                   is omitted). Your own entries are kept, a re-run changes
+                   nothing, and --uninstall removes only the wmux entries.
+
 GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
 `.trimStart();
@@ -82,8 +92,11 @@ GLOBAL FLAGS
  *  `StopFailure` is the other half of that turn: Claude Code fires it INSTEAD
  *  of `Stop` when the turn ends on an API error, so a pane the turn-start hook
  *  lit had no turn-end signal at all on that path and kept its amber dot until
- *  the agent process died. Same once-per-turn cost class. */
-const HOOK_EVENTS = ['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'UserPromptSubmit'] as const;
+ *  the agent process died. Same once-per-turn cost class.
+ *
+ *  `SessionEnd` fires once when a session closes. It ends a session running
+ *  outside wmux where no process can be checked (Linux, Windows). */
+const HOOK_EVENTS = ['Stop', 'StopFailure', 'SubagentStop', 'SessionStart', 'SessionEnd', 'UserPromptSubmit'] as const;
 
 /**
  * AskUserQuestion-scoped hook pair that drives the in-app approval card:
@@ -217,7 +230,7 @@ export function bridgeHookGroups(bridgePath: string): Record<string, Array<{ mat
 }
 
 /** The specs a given profile installs. */
-function specsFor(profile: HookProfile): readonly HookSpec[] {
+export function specsFor(profile: HookProfile): readonly HookSpec[] {
   return profile === 'signals-only' ? [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_NOTIFICATION_SPEC] : HOOK_SPECS;
 }
 
@@ -305,7 +318,7 @@ function findBridgeSource(): string | null {
  * Prototype-pollution-safe JSON.parse reviver — strips dangerous keys so a
  * malicious settings.json cannot poison Object.prototype. Same shape as mcp.ts.
  */
-function safeReviver(key: string, value: unknown): unknown {
+export function safeReviver(key: string, value: unknown): unknown {
   if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
   return value;
 }
@@ -477,7 +490,10 @@ export function hookSetStatus(settings: Record<string, unknown>): { profile: Hoo
  */
 export function detectProfile(settings: Record<string, unknown>): HookProfile {
   const installed = installedSpecsIn(settings);
-  const allSignals = SIGNAL_SPECS.every((spec) => installed.has(specKey(spec)));
+  // SessionEnd joined the signals later: a signals-only install made before it
+  // lacks it and must still read as signals-only, or the update would bring
+  // the gate back. The update then adds SessionEnd like any missing signal.
+  const allSignals = SIGNAL_SPECS.every((spec) => spec.event === 'SessionEnd' || installed.has(specKey(spec)));
   const gate = installed.has(specKey(PERMISSION_GATE_SPEC));
   return allSignals && !gate ? 'signals-only' : 'full';
 }
@@ -1769,6 +1785,15 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(HELP_TEXT);
     process.exit(0);
+    return;
+  }
+
+  // `--wsl [<distro>]` is its own opt-in lane: it touches only that distro's
+  // Claude settings and this instance's own ~/.wmux<suffix>/hooks, so it runs
+  // before the shared-scripts notice, which does not apply to it.
+  if (args.includes('--wsl')) {
+    const { handleSetupHooksWsl } = await import('./setupHooksWsl');
+    handleSetupHooksWsl(args, jsonMode);
     return;
   }
 

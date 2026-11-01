@@ -16,17 +16,19 @@
 //     override, no proxy, no telemetry sink.
 
 /** Snapshot returned to the caller. All fields plain numbers so the
- *  shape stays IPC-friendly. */
+ *  shape stays IPC-friendly. A window the account does not report (an Ultra
+ *  plan has no 5h window) leaves both of its fields absent; at least one
+ *  window is always present. */
 export interface UsageSnapshot {
   /** 5h window utilization, 0–100 (integer percent, rounded). */
-  sessionPct: number;
+  sessionPct?: number;
   /** 5h window reset time, Unix epoch SECONDS. 0 means "field missing
    *  / unparseable" — caller can render as "unknown" rather than 0. */
-  sessionResetEpochSec: number;
+  sessionResetEpochSec?: number;
   /** 7d window utilization, 0–100. */
-  weeklyPct: number;
+  weeklyPct?: number;
   /** 7d window reset time, Unix epoch SECONDS. */
-  weeklyResetEpochSec: number;
+  weeklyResetEpochSec?: number;
   /** When we fetched. Unix epoch ms. */
   fetchedAtMs: number;
   /** Per-model / per-scope weekly limits (e.g. an Opus-only weekly cap).
@@ -170,8 +172,9 @@ export async function fetchUsage(
  * are primary (utilization is already 0–100); `limits[]` entries of kind
  * `session` / `weekly_all` fill in when those are null. Every
  * `weekly_scoped` limit maps into `scoped`. Unknown or missing fields never
- * throw. Returns null unless BOTH the 5h and the 7d window are found (from
- * either source), so the caller reports an error instead of a silent 0%.
+ * throw. A window found in neither source is left out of the snapshot rather
+ * than reported as 0%; null when neither the 5h nor the 7d window is found,
+ * so the caller reports an error.
  */
 export function parseUsageBody(body: unknown, nowMs: number): UsageSnapshot | null {
   if (!isRecord(body)) return null;
@@ -180,7 +183,7 @@ export function parseUsageBody(body: unknown, nowMs: number): UsageSnapshot | nu
 
   const session = readWindow(body.five_hour) ?? readLimit(findLimit('session'));
   const weekly = readWindow(body.seven_day) ?? readLimit(findLimit('weekly_all'));
-  if (!session || !weekly) return null;
+  if (!session && !weekly) return null;
 
   const scoped: UsageScopedLimit[] = [];
   for (const l of limits) {
@@ -197,10 +200,8 @@ export function parseUsageBody(body: unknown, nowMs: number): UsageSnapshot | nu
   }
 
   const snapshot: UsageSnapshot = {
-    sessionPct: session.pct,
-    sessionResetEpochSec: session.resetEpochSec,
-    weeklyPct: weekly.pct,
-    weeklyResetEpochSec: weekly.resetEpochSec,
+    ...(session ? { sessionPct: session.pct, sessionResetEpochSec: session.resetEpochSec } : {}),
+    ...(weekly ? { weeklyPct: weekly.pct, weeklyResetEpochSec: weekly.resetEpochSec } : {}),
     fetchedAtMs: nowMs,
   };
   if (scoped.length > 0) snapshot.scoped = scoped;

@@ -11,7 +11,7 @@ export interface LayoutPreset {
   createRootPane: () => Pane;
 }
 
-function createBranchPane(
+export function createBranchPane(
   direction: 'horizontal' | 'vertical',
   children: Pane[],
   sizes?: number[],

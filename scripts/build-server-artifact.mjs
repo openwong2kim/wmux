@@ -24,10 +24,11 @@
 //   <ver>/resources/daemon-bundle/            dist/daemon-bundle
 //   <ver>/resources/daemon-bundle/node_modules/node-pty/   built on this host
 //   <ver>/resources/daemon-web/               dist/daemon-web (web terminal UI)
-// Slot for the native terminal core: `<ver>/resources/wmux-native/index.cjs`
-// is where the daemon looks for it (src/shared/nativeTerminalCore.ts resolves
-// `<daemon-bundle>/../wmux-native`). Nothing ships there yet; when it does,
-// stage it here the way forge.config.ts stages dist/wmux-native.
+//   <ver>/resources/wmux-native/              dist/wmux-native (Rust terminal core),
+//                                             built on this host by `npm run build:terminal-core`
+// The daemon finds the native terminal core at `<daemon-bundle>/../wmux-native`
+// (src/shared/nativeTerminalCore.ts). It runs on it unless the host picks the
+// node engine, and on node when it cannot load.
 //
 // `manifest` merges the per-arch fragments into the ServerArtifactManifest the
 // desktop app ships as resources/server-manifest.json (release.yml runs it
@@ -36,11 +37,13 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import { createRequire } from 'node:module';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const repoRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+const { verifyIntegrity } = createRequire(import.meta.url)('./verify-native-terminal-package.cjs');
 
 /** Bundled Node. Bump the version and both hashes together, from the
  * release's SHASUMS256.txt. The hashes are pinned here rather than read from
@@ -169,8 +172,24 @@ function stageNodePty(dest) {
   }
 }
 
-/** Run the staged Node against the staged node-pty and open a real PTY. Catches
- * an ABI or glibc mismatch here instead of on a user's host. */
+/** The native terminal core as `npm run build:terminal-core` staged it for
+ * the desktop package: only the files its manifest describes, so a binary an
+ * earlier build for another target left in the stage stays out. Checked
+ * before and after the copy. */
+export function stageNativeCore(src, dest, arch) {
+  requireFile(path.join(src, 'manifest.json'), 'run `npm run build:terminal-core` on this Linux host first');
+  verifyIntegrity(src, 'linux', arch);
+  const { binary } = JSON.parse(fs.readFileSync(path.join(src, 'manifest.json'), 'utf8'));
+  fs.mkdirSync(dest, { recursive: true });
+  for (const file of ['manifest.json', 'index.cjs', 'THIRD_PARTY_NOTICES', binary]) {
+    fs.copyFileSync(path.join(src, file), path.join(dest, file));
+  }
+  verifyIntegrity(dest, 'linux', arch);
+}
+
+/** Run the staged Node against the staged node-pty and open a real PTY, then
+ * run the native terminal core's package smoke on the same Node. Catches an
+ * ABI or glibc mismatch here instead of on a user's host. */
 function smokeStaged(root) {
   const node = path.join(root, 'node', 'bin', 'node');
   const pty = path.join(root, 'resources', 'daemon-bundle', 'node_modules', 'node-pty');
@@ -183,6 +202,9 @@ function smokeStaged(root) {
     p.onExit(() => { if (!out.includes('PTY_42')) { console.error(JSON.stringify(out)); process.exit(1); } console.log('pty ok'); });
   `;
   execFileSync(node, ['-e', probe], { stdio: 'inherit', env: { PATH: '/usr/bin:/bin' }, timeout: 30_000 });
+  execFileSync(node, [path.join(repoRoot, 'scripts', 'verify-native-terminal-package.cjs'), path.join(root, 'resources'), '--node'], {
+    stdio: 'inherit', env: { PATH: '/usr/bin:/bin' }, timeout: 30_000,
+  });
 }
 
 async function build(opts) {
@@ -223,6 +245,7 @@ async function build(opts) {
       fs.cpSync(path.join(dist, dir), path.join(resources, dir), { recursive: true });
     }
     stageNodePty(path.join(resources, 'daemon-bundle', 'node_modules', 'node-pty'));
+    stageNativeCore(path.join(dist, 'wmux-native'), path.join(resources, 'wmux-native'), arch);
 
     // Every ELF file in the artifact (addons, helpers it execs), so a future
     // native file cannot slip past.

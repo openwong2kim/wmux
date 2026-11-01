@@ -34,11 +34,12 @@ export interface UsageReserveHold {
 }
 
 /** When unattended starts on this reading may resume (the 5h reset, ms), or
- *  null when the reading does not hold them: no reading, an unknown or passed
- *  reset, or usage under the threshold. */
+ *  null when the reading does not hold them: no reading, no 5h window, an
+ *  unknown or passed reset, or usage under the threshold. */
 export function reserveUntilMs(snapshot: UsageSnapshot | null, nowMs: number): number | null {
-  if (!snapshot || snapshot.sessionResetEpochSec <= 0) return null;
-  const resetMs = snapshot.sessionResetEpochSec * 1000;
+  const resetSec = snapshot?.sessionResetEpochSec ?? 0;
+  if (snapshot?.sessionPct === undefined || resetSec <= 0) return null;
+  const resetMs = resetSec * 1000;
   if (resetMs <= nowMs) return null;
   return snapshot.sessionPct >= RESERVE_THRESHOLD_PCT ? resetMs : null;
 }

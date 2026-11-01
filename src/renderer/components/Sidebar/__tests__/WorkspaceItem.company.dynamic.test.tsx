@@ -122,6 +122,30 @@ describe('company workspace row', () => {
     expect(document.activeElement).toBe(row);
   });
 
+  it('offers Add a seat on another PC between Company settings and Dissolve, and disables it while the CEO seat is vacant', async () => {
+    const openMenu = () => act(() => {
+      container.querySelector('[role="treeitem"]')!
+        .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    });
+    await render();
+    openMenu();
+    const actions = [...container.querySelectorAll<HTMLElement>('[data-workspace-action]')].map((b) => b.dataset.workspaceAction);
+    expect(actions.indexOf('add-remote-seat')).toBe(actions.indexOf('company') + 1);
+    expect(actions.indexOf('dissolve-company')).toBe(actions.indexOf('add-remote-seat') + 1);
+    const item = container.querySelector<HTMLButtonElement>('[data-workspace-action="add-remote-seat"]')!;
+    expect(item.disabled).toBe(false);
+    expect(item.title).toBe('');
+
+    act(() => useStore.setState({ workspaces: [{ ...ws, company: { v: 1, id: 'co-1', coordinatorPaneId: 'p-gone' } }] }));
+    act(() => root.unmount());
+    act(() => { root = createRoot(container); });
+    await render();
+    openMenu();
+    const vacant = container.querySelector<HTMLButtonElement>('[data-workspace-action="add-remote-seat"]')!;
+    expect(vacant.disabled).toBe(true);
+    expect(vacant.title).not.toBe('');
+  });
+
   it('dissolving from the row menu brings the git line back', async () => {
     await render();
     act(() => {

@@ -178,6 +178,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'usagereserve', tab: 'claude-integration', labelKey: 'claudeIntegration.usageReserve', descKey: 'claudeIntegration.usageReserveDesc', synonyms: 'usage reserve quota limit 5h keep schedule fan-out bot worker unattended 사용량 예비 남기기 예약 팬아웃 봇' },
   { id: 'scheduledretry', tab: 'claude-integration', labelKey: 'claudeIntegration.scheduledRetry', descKey: 'claudeIntegration.scheduledRetryDesc', synonyms: 'schedule scheduled run retry network server error overloaded continue 예약 재시도 오류' },
   { id: 'clauderesumeonstart', tab: 'claude-integration', labelKey: 'claudeIntegration.resumeOnStart', descKey: 'claudeIntegration.resumeOnStartDesc', synonyms: 'resume restart recover continue launch boot session 재시작 이어가기 복원' },
+  { id: 'claudefilesend', tab: 'claude-integration', labelKey: 'claudeIntegration.fileSend', descKey: 'claudeIntegration.fileSendDesc', synonyms: 'send file attachment phone mobile SendUserFile remote control 파일 보내기 첨부 휴대폰 폰' },
   { id: 'mcp', tab: 'claude-integration', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register codex' },
 
   { id: 'claudeacct', tab: 'accounts', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },

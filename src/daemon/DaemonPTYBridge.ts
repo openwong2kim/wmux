@@ -18,6 +18,7 @@ import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { stripPassiveInput } from '../shared/terminal/passiveInput';
+import { ShellMarkIngress } from '../shared/terminal/shellMarkIngress';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
 import { titleShowsFinishedTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
 import { AWAITING_TITLE, CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, RUNNING_TITLE } from '../shared/agentTitleRules';
@@ -43,6 +44,13 @@ export const STARTUP_DA1_REPLY = '\x1b[?62;4;9;22c';
  * front of its query is 4 bytes (`CSI 1 t`).
  */
 const STARTUP_DA1_SCAN_BYTES = 64;
+
+/**
+ * After an Esc closes a dialog, how often the transcript is read for the turn
+ * end it records (watchDialogCancel), within ESC_INTERRUPT_CONFIRM_MS. Claude
+ * Code wrote it 0.8 s after the Esc in a live capture.
+ */
+const DIALOG_CANCEL_PROBE_MS = 500;
 
 // eslint-disable-next-line no-control-regex
 const CSI_SEQUENCE = /^\x1b\[[0-?]*[ -/]*[@-~]/;
@@ -352,6 +360,15 @@ export class DaemonPTYBridge extends EventEmitter {
   private lastEscAt = 0;
   /** The `lastEscAt` an idle title already reported as an interrupt (#2264). */
   private titleEdgeEscAt = 0;
+  /**
+   * The lone Esc that closed a dialog (watchDialogCancel) and the episode it
+   * landed in (`turnSeq`). A transcript end recorded after it, inside the Esc
+   * confirm window and in that same episode, is its interrupt. Cleared once
+   * reported.
+   */
+  private dialogCancel: { sessionId: string; escAt: number; turnSeq: number } | null = null;
+  /** Pending transcript read after an Esc closed a dialog (watchDialogCancel). */
+  private dialogCancelTimer: ReturnType<typeof setTimeout> | null = null;
   /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
   private lastTitle = '';
   private lastTitleAt = 0;
@@ -626,6 +643,60 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     if (!answered) return;
     this.startAnsweredTurn(wasAwaiting, 'input', promptSubmitted);
+    if (answerKey && isEscapeChunk(keyProbe)) this.watchDialogCancel();
+  }
+
+  /**
+   * A lone Esc closed the dialog the turn was blocked on. Claude Code ends the
+   * turn there (`[Request interrupted by user for tool use]`) with no Stop
+   * hook, and a declined question prints "User declined to answer questions",
+   * not the `Interrupted` row, so nothing on screen confirms it. The pane went
+   * back to running on the answer and stayed there until the next prompt.
+   * The transcript records the end, and an end written after this Esc settles
+   * the turn as the interrupt it is (noteTranscriptTurnEnd reports it). With a
+   * Chat view open, the append push delivers that end; with none, nothing
+   * pushes it, so it is read back here inside the Esc confirm window.
+   */
+  private watchDialogCancel(): void {
+    const sessionId = this.sessionId;
+    if (!sessionId) return;
+    const escAt = this.lastEscAt;
+    // Captured after the answer resumed the episode: a Stop hook and a new
+    // prompt before the end lands start another one, which this Esc never touched.
+    this.dialogCancel = { sessionId, escAt, turnSeq: this.turnSeq };
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    this.dialogCancelTimer = null;
+    if (!DaemonPTYBridge.transcriptTurnEndProbe) return;
+    const probe = (): void => {
+      this.dialogCancelTimer = null;
+      // Already reported, or a later dialog Esc owns its own read.
+      if (this.dialogCancel?.escAt !== escAt) return;
+      const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(sessionId);
+      // An end from before this Esc was recorded behind the dialog: the answer resumed past it.
+      if (endedAt !== undefined && endedAt >= escAt) this.noteTranscriptTurnEnd(endedAt);
+      if (this.dialogCancel?.escAt === escAt && Date.now() - escAt + DIALOG_CANCEL_PROBE_MS < ESC_INTERRUPT_CONFIRM_MS) {
+        this.dialogCancelTimer = setTimeout(probe, DIALOG_CANCEL_PROBE_MS);
+      }
+    };
+    this.dialogCancelTimer = setTimeout(probe, DIALOG_CANCEL_PROBE_MS);
+  }
+
+  /**
+   * Whether a transcript end recorded at `at` is the interrupt of the dialog a
+   * lone Esc declined (watchDialogCancel): recorded after that Esc, inside its
+   * confirm window, in the episode it landed in, and not already reported by
+   * the idle title. Consumes the watch when it is.
+   */
+  private takeDialogCancel(at: number): boolean {
+    const watch = this.dialogCancel;
+    if (!watch || watch.sessionId !== this.sessionId || watch.turnSeq !== this.turnSeq) return false;
+    if (watch.escAt !== this.lastEscAt || watch.escAt === this.titleEdgeEscAt) return false;
+    if (at < watch.escAt || Date.now() - watch.escAt >= ESC_INTERRUPT_CONFIRM_MS) return false;
+    this.dialogCancel = null;
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    this.dialogCancelTimer = null;
+    this.titleEdgeEscAt = watch.escAt;
+    return true;
   }
 
   /**
@@ -1341,12 +1412,18 @@ export class DaemonPTYBridge extends EventEmitter {
    * The agent's transcript recorded a turn end (completed or interrupted) at
    * `at`. An interrupt fires no Stop hook, so without this the episode would
    * stay open and the next prompt would join it. Ignored behind a dialog, or
-   * when the end predates the latest turn evidence.
+   * when the end predates the latest turn evidence. An end that follows a lone
+   * Esc which declined a dialog is that Esc's interrupt (watchDialogCancel):
+   * reported as `turnInterrupted`, since a hook-governed pane settles only on that.
    */
   noteTranscriptTurnEnd(at: number): void {
     if ((this.turnOpen || this.turnSoftClosed) && !this.awaitingHuman && at >= this.turnOpenedAt) {
+      const declined = this.takeDialogCancel(at);
       this.closeTurn();
       this.transcriptTurnEndAt = Date.now();
+      if (declined && this.sessionId) {
+        this.emit('turnInterrupted', { sessionId: this.sessionId, agent: this.agentDetector?.getLastAgent() || 'Claude Code' });
+      }
     }
   }
   /**
@@ -1944,6 +2021,14 @@ export class DaemonPTYBridge extends EventEmitter {
     ringBuffer: RingBuffer,
     sessionId: string,
     promptLog?: PromptEventLog,
+    /**
+     * #2771 — how the pane's process writes OSC 133 marks: `exec` runs a
+     * program with no shell (it never prompts), `integrated` is a shell with
+     * wmux's integration (it marks every prompt with `D;<n>` and `A`),
+     * `plain` anything else, whose marks are passed through unread. Absent:
+     * `plain`.
+     */
+    shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
     const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node');
     this.outputInterpreter = interpreter;
@@ -1964,6 +2049,11 @@ export class DaemonPTYBridge extends EventEmitter {
     if (prefilled.length > 0) {
       interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
     }
+    // A bridge is built only for a freshly spawned process (a recovered
+    // ring holds the dead one's scrollback), so an integrated shell starts at
+    // its prompt and an exec unit's program starts running.
+    const marks = shellMarks === 'plain' ? null : new ShellMarkIngress(shellMarks === 'exec' ? 'running' : 'idle',
+      () => console.log(`[pty] ${sessionId}: program-written OSC 133 marks lowercased (shell command running)`));
 
     // With OSC 133 parsed here, the detector ends the agent on its markers in
     // stream order itself (see the command start/end branch below).
@@ -2388,6 +2478,19 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.startupDa1) this.checkStartupDa1(data, ptyProcess);
       this.lastOutputAt = Date.now();
 
+      // #2771 — before anything reads the chunk: a mark the running program
+      // wrote (not the shell) gets a lowercase kind, so the detector, the
+      // held chunks, the ring, the interpreter and live data all read the
+      // same decision. Only a chunk that can hold a mark is scanned.
+      if (marks) {
+        const decided = marks.apply(data);
+        if (decided !== data) {
+          data = decided;
+          // The native chunk's bytes no longer match: it leaves the zero-copy
+          // path. A chunk with only the shell's marks keeps it.
+          nativeChunk = undefined;
+        }
+      }
       const buf = nativeChunk ? undefined : Buffer.from(data);
       const byteLength = nativeChunk ? nativeChunk.byteLength : (buf?.length ?? 0);
 
@@ -2661,6 +2764,9 @@ export class DaemonPTYBridge extends EventEmitter {
 
     if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
     this.resizeGuardTimer = null;
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    this.dialogCancelTimer = null;
+    this.dialogCancel = null;
 
     // AgentDetector subscriptions: without explicit unsubscribe, recovered
     // sessions or repeated setupDataForwarding calls would accumulate

@@ -1,0 +1,39 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ show fence_lang                                           ",
+  "",
+  "⏺ Code:",
+  "",
+  "  const a = 1;",
+  "  function g(b: number) {",
+  "    return a + b;",
+  "  }",
+  "",
+  "  End.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Code:"
+   },
+   {
+    "kind": "code",
+    "body": "const a = 1;\nfunction g(b: number) {\n  return a + b;\n}",
+    "lang": "ts"
+   },
+   {
+    "kind": "prose",
+    "text": "End."
+   }
+  ]
+ ]
+}

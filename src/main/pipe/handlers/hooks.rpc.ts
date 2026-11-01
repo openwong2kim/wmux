@@ -1616,6 +1616,8 @@ function titleFor(signal: AgentSignal): string {
       return `${display}: Activity`;
     case 'agent.session_start':
       return `${display}: Session started`;
+    case 'agent.session_end':
+      return `${display}: Session ended`;
     case 'agent.awaiting_input':
       return `${display}: Awaiting input`;
     case 'agent.input_answered':
@@ -1661,6 +1663,7 @@ function categoryFor(signal: AgentSignal): NotificationCategory {
     case 'agent.stop_failure':
     case 'agent.activity':
     case 'agent.session_start':
+    case 'agent.session_end':
     case 'agent.input_answered':
     case 'agent.user_prompt_submit':
     case 'agent.permission_answered':
@@ -1682,6 +1685,8 @@ function bodyFor(signal: AgentSignal): string {
       return 'Tool call completed';
     case 'agent.session_start':
       return 'Session initialized';
+    case 'agent.session_end':
+      return 'Session ended';
     case 'agent.awaiting_input':
       return 'Approval requested';
     case 'agent.input_answered':

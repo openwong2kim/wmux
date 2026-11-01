@@ -3,7 +3,7 @@
 // cannot run; checks survive gh's non-zero exits; logs come back as a capped
 // plain-text tail; reads share the per-host rate-limit breaker.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { GhPrReviewService, capPrDiff, mapRollup, mapThreads, pathFromHeader } from '../GhPrReviewService';
+import { GhPrReviewService, capPrDiff, mapRollup, mapThreads, pathFromHeader, protectionRequiredChecks } from '../GhPrReviewService';
 import { GhRateBreaker } from '../ghRateBreaker';
 import { parseCommentRequest, parseMergeRequest, parseReviewRequest, prNumberOn } from '../../ipc/handlers/prReview.handler';
 import { DIFF_FILE_CAP_BYTES, DIFF_TOTAL_CAP_BYTES } from '../../../shared/diffParse';
@@ -130,6 +130,96 @@ describe('defaultBranch', () => {
     expect(calls[0].args).toEqual(['repo', 'view', KEY, '--json', 'defaultBranchRef']);
     const empty = make(() => JSON.stringify({ defaultBranchRef: null }));
     expect((await empty.svc.defaultBranch('/repo', KEY)).ok).toBe(false);
+  });
+});
+
+describe('donePrFacts', () => {
+  const E2E = 'first-run e2e (macos-15)';
+  function donePr(over: Record<string, unknown> = {}) {
+    return JSON.stringify({ data: { repository: { pullRequest: {
+      state: 'OPEN', isDraft: false, merged: false, mergeCommit: null,
+      headRefOid: SHA, baseRefName: 'release/4.0',
+      mergeable: 'MERGEABLE', mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED',
+      commits: { nodes: [{ commit: { oid: SHA, statusCheckRollup: { contexts: { totalCount: 3, nodes: [
+        { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'FAILURE', startedAt: '2026-10-30T10:00:00Z', isRequired: true },
+        { __typename: 'CheckRun', name: 'build', status: 'COMPLETED', conclusion: 'SUCCESS', startedAt: '2026-10-30T11:00:00Z', isRequired: true },
+        { __typename: 'StatusContext', context: 'review', state: 'PENDING', createdAt: '2026-10-30T09:00:00Z' },
+      ] } } } }] },
+      reviewThreads: { totalCount: 2, nodes: [{ isResolved: true }, { isResolved: false }] },
+      ...over,
+    } } } });
+  }
+  const protection = JSON.stringify({ protection: { required_status_checks: { enforcement_level: 'everyone', contexts: ['build', E2E], checks: [{ context: E2E, app_id: null }] } } });
+  const rules = JSON.stringify([
+    { type: 'pull_request', parameters: {} },
+    { type: 'required_status_checks', parameters: { required_status_checks: [{ context: 'lint' }, { context: 'build', integration_id: 15368 }] } },
+  ]);
+  const route = (pr: string, prot: string | Error = protection, rs: string | Error = rules) => (args: string[]): string | Error => {
+    if (args[1] === 'graphql') return pr;
+    const path = args[args.length - 1];
+    return path.includes('/rules/branches/') ? rs : prot;
+  };
+
+  it('reads the PR in one GraphQL call and the base branch\'s required checks from protection and rulesets', async () => {
+    const { svc, calls } = make(route(donePr()));
+    const res = await svc.donePrFacts('/home', KEY, 7);
+    if (!res.ok) throw new Error(res.message);
+    expect(res.value).toMatchObject({
+      state: 'OPEN', headRefOid: SHA, baseRefName: 'release/4.0', mergeStateStatus: 'BLOCKED', reviewDecision: 'REVIEW_REQUIRED',
+      checksHeadOid: SHA, checksTruncated: false,
+      threads: { total: 2, read: 2, unresolved: 1 },
+      baseRequired: ['build', E2E, 'lint'],
+      baseRequiredUnread: [],
+    });
+    expect(res.value.checks.map((c) => [c.name, c.bucket, c.isRequired])).toEqual([
+      ['build', 'fail', true], ['build', 'pass', true], ['review', 'pending', false],
+    ]);
+    // A status's createdAt is read as its start, so reruns can be ordered.
+    expect(res.value.checks[2].startedAt).toBe('2026-10-30T09:00:00Z');
+    expect(calls).toHaveLength(3);
+    const [graphql, ...rest] = calls;
+    expect(graphql.args.slice(0, 4)).toEqual(['api', 'graphql', '--hostname', 'github.com']);
+    expect(graphql.args).toEqual(expect.arrayContaining(['-f', 'owner=Acme', '-f', 'repo=Widgets', '-F', 'number=7']));
+    expect(graphql.args.join(' ')).toContain('isRequired(pullRequestNumber: $number)');
+    // One response key, one type: a status's time is read under its own key.
+    expect(graphql.args.join(' ')).not.toContain('startedAt: createdAt');
+    expect(rest.map((c) => c.args)).toEqual([
+      ['api', '--hostname', 'github.com', 'repos/Acme/Widgets/branches/release%2F4.0'],
+      ['api', '--hostname', 'github.com', 'repos/Acme/Widgets/rules/branches/release%2F4.0?per_page=100'],
+    ]);
+    expect(calls[0].env.GH_REPO).toBeUndefined();
+  });
+
+  it('a rule source it cannot read adds no names and is named; a rate limit fails the whole read', async () => {
+    const denied = make(route(donePr(), errWith({ stderr: 'gh: Resource not accessible by integration (HTTP 403)' })));
+    const res = await denied.svc.donePrFacts('/home', KEY, 7);
+    expect(res).toMatchObject({ ok: true, value: { baseRequired: ['lint', 'build'], baseRequiredUnread: ['branch protection'] } });
+    const limited = make(route(donePr(), protection, errWith({ stderr: 'gh: API rate limit exceeded for user (HTTP 403)' })));
+    expect(await limited.svc.donePrFacts('/home', KEY, 7)).toMatchObject({ ok: false, code: 'rate-limited' });
+  });
+
+  it('reads no branch rules for a PR that is not open', async () => {
+    const { svc, calls } = make(route(donePr({ state: 'MERGED', merged: true, mergeCommit: { oid: OTHER } })));
+    expect(await svc.donePrFacts('/home', KEY, 7)).toMatchObject({
+      ok: true, value: { merged: true, mergeCommitOid: OTHER, baseRequired: [], baseRequiredUnread: [] },
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('counts unread checks and threads as not read, and an answer with no PR as an error', async () => {
+    const partial = donePr({
+      commits: { nodes: [{ commit: { oid: SHA, statusCheckRollup: { contexts: { totalCount: 140, nodes: [] } } } }] },
+      reviewThreads: { nodes: [] },
+    });
+    const res = await make(route(partial)).svc.donePrFacts('/home', KEY, 7);
+    expect(res).toMatchObject({ ok: true, value: { checksTruncated: true, threads: { total: null, read: 0, unresolved: 0 } } });
+    const none = make(() => JSON.stringify({ data: { repository: { pullRequest: null } } }));
+    expect(await none.svc.donePrFacts('/home', KEY, 7)).toMatchObject({ ok: false, code: 'error', message: 'could not read the pull request' });
+  });
+
+  it('takes no names from branch protection that is not enforced', () => {
+    expect(protectionRequiredChecks({ protection: { required_status_checks: { enforcement_level: 'off', contexts: ['build'] } } })).toEqual([]);
+    expect(protectionRequiredChecks({ protected: false })).toEqual([]);
   });
 });
 

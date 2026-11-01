@@ -7,7 +7,7 @@
 // Logs and bodies from GitHub are untrusted text: shown as text, never markup.
 import { cleanGhOutput } from './ghDeviceLogin';
 import type { DiffFile, DiffHunk } from './diffParse';
-import type { WorkLink, WorkLinkReason } from './workLink';
+import { linkWaitsOnRequester, type PaneLive, type WorkLink, type WorkLinkReason } from './workLink';
 
 /** A PR's head and mergeability, read fresh with its checks. */
 export interface PrReviewHead {
@@ -286,13 +286,15 @@ export function commentAnchor(line: DiffLine): { line: number; side: 'LEFT' | 'R
 }
 
 /** Who acts next on work linked to a PR: you, the agent doing it (the link's
- *  owner), or nobody (finished). */
+ *  owner), the pane that handed it out once the agent reported back to it
+ *  (the requester), or nobody (finished). */
 export type NextActor =
   | { actor: 'you'; reason: WorkLinkReason | 'review' }
   | { actor: 'owner'; reason?: WorkLinkReason; working: boolean }
+  | { actor: 'requester'; workspaceId: string; paneId: string }
   | null;
 
-export function whoActsNext(link: Pick<WorkLink, 'state' | 'reason'>): NextActor {
+export function whoActsNext(link: Pick<WorkLink, 'state' | 'reason' | 'a2aState' | 'requester'>, paneLive?: PaneLive): NextActor {
   switch (link.state) {
     case 'needs-you':
       return { actor: 'you', reason: link.reason ?? 'other' };
@@ -300,8 +302,14 @@ export function whoActsNext(link: Pick<WorkLink, 'state' | 'reason'>): NextActor
       return { actor: 'you', reason: 'review' };
     case 'blocked':
       return { actor: 'owner', ...(link.reason ? { reason: link.reason } : {}), working: false };
+    case 'running': {
+      const requester = linkWaitsOnRequester(link, paneLive);
+      if (requester) return { actor: 'requester', ...requester };
+      // Reported to a pane that has closed since: nobody else will check it.
+      if (linkWaitsOnRequester(link)) return { actor: 'you', reason: 'input-required' };
+      return { actor: 'owner', working: true };
+    }
     case 'queued':
-    case 'running':
       return { actor: 'owner', working: true };
     default:
       return null;

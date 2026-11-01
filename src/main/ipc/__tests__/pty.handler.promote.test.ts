@@ -283,9 +283,13 @@ describe('attach without promote (#2398)', () => {
     const region = handler.slice(start, start + 12000);
     expect(region.indexOf('const action = suspendedReconnectAction(session, opts);'))
       .toBeLessThan(region.indexOf("if (session.state === 'suspended')"));
-    expect(region).toMatch(/daemonClient\.rpc\('daemon\.attachSession', \{ id, promote: action === 'promote' \|\| action === 'join' \}\)/);
-    const attachAt = region.indexOf("daemonClient.rpc('daemon.attachSession'");
-    expect(region.slice(attachAt, attachAt + 400)).toMatch(/if \(attached\?\.pending\) return held\(/);
+    // The attach itself is in the pipe step (reconnectSessionPipe.ts).
+    expect(region).toMatch(/reconnectSessionPipe\(daemonClient, id, \{\s*promote: action === 'promote' \|\| action === 'join',/);
+    expect(region).toMatch(/if \(pipe\.kind === 'pending'\) return held\('pending again at attach'\);/);
+    const pipeStep = readSourceText(path.join(__dirname, '..', 'handlers', 'reconnectSessionPipe.ts'));
+    expect(pipeStep).toMatch(/client\.rpc\('daemon\.attachSession', \{ id, promote: opts\.promote \}\)/);
+    const attachAt = pipeStep.indexOf("client.rpc('daemon.attachSession'");
+    expect(pipeStep.slice(attachAt, attachAt + 400)).toMatch(/if \(attached\?\.pending\) return \{ kind: 'pending' \};/);
   });
 
   // Review item 2 — the reconnect asks the same predicate the daemon's boot

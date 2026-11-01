@@ -90,22 +90,26 @@ export async function readClaudeQuota(deps: ClaudeAdapterDeps = {}): Promise<Pro
 
   try {
     const snapshot = await fetchApi(credential.accessToken);
-    const windows: QuotaWindow[] = [
-      {
+    const resetAtMs = (sec: number | undefined) => (sec !== undefined && sec > 0 ? sec * 1000 : null);
+    const windows: QuotaWindow[] = [];
+    if (snapshot.sessionPct !== undefined) {
+      windows.push({
         id: 'five_hour',
         label: '5h',
         usedPct: snapshot.sessionPct,
-        resetAtMs: snapshot.sessionResetEpochSec > 0 ? snapshot.sessionResetEpochSec * 1000 : null,
+        resetAtMs: resetAtMs(snapshot.sessionResetEpochSec),
         windowMins: 300,
-      },
-      {
+      });
+    }
+    if (snapshot.weeklyPct !== undefined) {
+      windows.push({
         id: 'weekly',
         label: 'weekly',
         usedPct: snapshot.weeklyPct,
-        resetAtMs: snapshot.weeklyResetEpochSec > 0 ? snapshot.weeklyResetEpochSec * 1000 : null,
+        resetAtMs: resetAtMs(snapshot.weeklyResetEpochSec),
         windowMins: 10080,
-      },
-    ];
+      });
+    }
 
     if (Array.isArray(snapshot.scoped)) {
       for (const item of snapshot.scoped) {

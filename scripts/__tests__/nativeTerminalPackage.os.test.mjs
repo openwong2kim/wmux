@@ -1,9 +1,12 @@
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { nativeTerminalTarget } from '../lib/native-terminal-targets.mjs';
 
 const { verifyIntegrity, recordShippedDigest } = createRequire(import.meta.url)('../verify-native-terminal-package.cjs');
 let directory;
@@ -65,6 +68,31 @@ describe('recording the digest of the binary as shipped', () => {
   it('refuses a missing binary', () => {
     fs.unlinkSync(path.join(directory, manifest.binary));
     expect(() => recordShippedDigest(directory)).toThrow();
+  });
+});
+
+describe('build targets', () => {
+  it('names each binary the way napi builds it, Linux arm64 included', () => {
+    expect(nativeTerminalTarget('linux', 'arm64')).toEqual({ target: 'aarch64-unknown-linux-gnu', binary: 'wmux-term.linux-arm64-gnu.node' });
+    expect(nativeTerminalTarget('linux', 'x64')).toEqual({ target: 'x86_64-unknown-linux-gnu', binary: 'wmux-term.linux-x64-gnu.node' });
+    expect(() => nativeTerminalTarget('linux', 'ia32')).toThrow(/Unqualified terminal-core target: linux-ia32/);
+  });
+});
+
+describe('the package smoke runtime', () => {
+  const verifier = fileURLToPath(new URL('../verify-native-terminal-package.cjs', import.meta.url));
+  const runSmoke = (...args) => spawnSync(process.execPath, [verifier, directory, ...args], { encoding: 'utf8' });
+
+  it('wants the packaged Electron for a desktop package', () => {
+    expect(runSmoke().stderr).toContain('Run this smoke with the packaged Electron executable');
+  });
+
+  it('runs on Node for a package whose daemon runs on Node (wmux-server)', () => {
+    const { status, stderr } = runSmoke('--node');
+    expect(status).not.toBe(0);
+    expect(stderr).not.toContain('Run this smoke with');
+    // Past the runtime check: the fixture has no wmux-native module to load.
+    expect(stderr).toMatch(/Cannot find module/);
   });
 });
 

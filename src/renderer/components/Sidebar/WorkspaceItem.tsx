@@ -8,7 +8,8 @@ import { remoteAgentKey } from '../../../shared/remoteHosts';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { formatStaleMinutes, selectWorkspaceAgentStatus, selectWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
-import { createWorkspaceRosterChipSelector } from '../../stores/selectors/workspaceAgentRoster';
+import { chipStatusRank, createWorkspaceRosterChipSelector } from '../../stores/selectors/workspaceAgentRoster';
+import { parseExternalSummary, selectWorkspaceExternalSummary } from '../../stores/selectors/externalSessions';
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
@@ -27,6 +28,8 @@ import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../..
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import CompanyDialog from './CompanyDialog';
+import AddRemoteSeatDialog from '../Company/AddRemoteSeatDialog';
+import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
 import Popover from '../ui/Popover';
 import Button from '../ui/Button';
 import { placePopover } from '../AgentToolbar/placePopover';
@@ -491,6 +494,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
+  const [remoteSeatOpen, setRemoteSeatOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -544,8 +548,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // plain `waiting` with no pending question is idle there, so it must not
   // paint a "Needs you" row that sorts to the bottom.
   const attentionClass = useRowStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
-  const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
-  const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
+  // Sessions started outside wmux in this workspace's folder (placement B,
+  // 2026-11-01): one waiting on you lights this row as a pane's agent does —
+  // the ring, the hairline, "Needs you" and its question. One string, so the
+  // row re-renders only when a mark or that question changes.
+  const externalKey = useRowStore((s) => selectWorkspaceExternalSummary(s, workspaceId));
+  const external = useMemo(() => parseExternalSummary(externalKey), [externalKey]);
+  const paneNeedsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
+  const needsYou = paneNeedsYou || external.needYou > 0;
+  const markStatus = external.needYou > 0 && !paneNeedsYou ? 'awaiting_input'
+    : agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
   // A failed turn is its own tier (fleetAttentionClass): it says "Error" where
   // a needs-you row says "Needs you", and sorts above finished and idle rows
   // however old it is. Fleet still lists it under Needs you.
@@ -562,7 +574,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     }
     return '';
   });
-  const question = needsYou ? sanitizeDisplayText(rawQuestion, ROW_QUESTION_MAX) : undefined;
+  const question = needsYou ? sanitizeDisplayText(rawQuestion || external.question, ROW_QUESTION_MAX) : undefined;
   // The panes here that need you because their agent ended a turn on a
   // question — what the context menu's Dismiss clears. Live permission dialogs
   // are not in it: those wait for an answer. Read only while the menu is open.
@@ -669,14 +681,23 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     [workspaceId],
   );
   const rosterCounts = useRowStore(rosterChipSelector);
-  const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
+  // The roster lists the outside sessions after the panes' agents, so its
+  // count and its folded chip take them in too.
+  const rosterAgentCount = rosterCounts.agentCount + external.statuses.length;
+  const chipAgents = useMemo(() => (external.statuses.length === 0
+    ? rosterCounts.agents
+    : [...rosterCounts.agents, ...external.statuses.map((status) => ({ agentName: '', status }))]
+      .sort((a, b) => chipStatusRank(a.status) - chipStatusRank(b.status))), [rosterCounts.agents, external.statuses]);
+  const hasRoster = rosterAgentCount > 0 || rosterCounts.stashedCount > 0;
   /** Rows whose roster summary must not wait for the pointer — see its JSX.
    *  #1481 — the summary now names who is here and what they are doing, which
    *  is the reason to scan the list, so it no longer hides at rest. */
   // One idle agent and nothing else: a "› 1" on every quiet row says nothing
   // the status column does not, so its chip waits for hover or focus like the
   // other chrome (and draws no count).
-  const quietSingle = rosterCounts.agentCount === 1 && rosterCounts.stashedCount === 0
+  // An outside session is never that quiet pane: nothing else on the row
+  // says it is there.
+  const quietSingle = rosterCounts.agentCount === 1 && external.statuses.length === 0 && rosterCounts.stashedCount === 0
     && paneTaskIds.length === 0 && (rosterCounts.agents[0]?.status ?? 'idle') === 'idle';
   const rosterAlwaysShown = rosterShown || (hasRoster && !quietSingle) || paneTaskIds.length > 0;
   /** → opens the roster (and the tasks under it), ← folds it. */
@@ -1182,6 +1203,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // hides the same metadata, so a Tab into the row never overflows the line.
   const company = workspace.company;
   const actionsOnGitLine = (company ? !!company.mission : !!metadata?.gitBranch) || !!question;
+  // Replies from a seat on another PC come to the CEO pane: a vacant seat has none.
+  const ceoSeated = !!menuPos && !!company?.coordinatorPaneId && getWorkspaceLeafPanes(workspace).some((l) => l.id === company.coordinatorPaneId);
   // A nested task row has no width to spare on its name line (78px of text
   // at the 220px minimum): without a branch, its actions get a line of their
   // own, the height its sibling rows' git line takes, so the row never
@@ -1505,9 +1528,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
                     <WorkspaceRosterSummaryMemo
                       tabIndex={innerTab}
                       workspaceId={workspaceId}
-                      agentCount={rosterCounts.agentCount}
+                      agentCount={rosterAgentCount}
                       stashedCount={rosterCounts.stashedCount}
-                      agents={rosterShown ? undefined : rosterCounts.agents}
+                      agents={rosterShown ? undefined : chipAgents}
                       extra={rosterCounts.extra}
                       paneTaskCount={paneTaskIds.length}
                       paneTaskNeedYou={paneTaskNeedYou}
@@ -1638,6 +1661,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
               data-workspace-action="company"
             >
               {company ? t('company.settingsMenu') : t('company.makeMenu')}
+            </button>
+          )}
+          {!taskRow && company && REMOTE_SPAWN_UI_ENABLED && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ color: 'var(--text-main)' }}
+              disabled={!ceoSeated}
+              title={ceoSeated ? undefined : t('company.addSeat.noCeo')}
+              onClick={() => { rowRef.current?.focus(); setMenuPos(null); setRemoteSeatOpen(true); }}
+              data-workspace-action="add-remote-seat"
+            >
+              {t('company.addSeat.menu')}
             </button>
           )}
           {!taskRow && company && (
@@ -2026,6 +2061,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
       )}
       {companyDialogOpen && (
         <CompanyDialog workspace={workspace} onClose={() => setCompanyDialogOpen(false)} />
+      )}
+      {remoteSeatOpen && (
+        <AddRemoteSeatDialog workspaceId={workspaceId} onClose={() => setRemoteSeatOpen(false)} />
       )}
     </div>
   );

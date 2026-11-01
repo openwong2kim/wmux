@@ -112,6 +112,9 @@ export interface FanOutAuditRecord {
   approvedBy: 'auto' | 'human';
   /** The worker permission mode the tasks launch with (Settings → Agents). */
   workerPermissionMode: string;
+  /** Set when the mode was not the setting's but inherited: bypass taken
+   *  from the calling pane's own Claude (additive). */
+  workerPermissionModeSource?: 'inherited-caller-pane';
   /** The operator preset the caller named, when it named one (additive). */
   preset?: string;
   /** Per task: the agent CLI (+ model, + unattended) a preset or the caller's

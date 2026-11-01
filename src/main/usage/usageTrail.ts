@@ -86,9 +86,12 @@ export class UsageTrail {
   }
 
   /** Record a reading. Returns true when the trail changed. A null snapshot
-   *  (no value yet) is not a change. */
+   *  (no value yet) is not a change, nor is one without both windows: a
+   *  sample holds both. */
   record(key: string, snapshot: UsageSnapshot | null, nowMs: number): boolean {
     if (!snapshot) return false;
+    const { sessionPct: s5, sessionResetEpochSec: r5, weeklyPct: s7, weeklyResetEpochSec: r7 } = snapshot;
+    if (s5 === undefined || r5 === undefined || s7 === undefined || r7 === undefined) return false;
     let list = this.trails.get(key);
     // Samples later than now were stamped by a clock that ran ahead and has
     // since been corrected; drop them so the trail stays in time order.
@@ -98,13 +101,7 @@ export class UsageTrail {
       this.slotAt.delete(key);
     }
     const last = list?.[list.length - 1];
-    const next: UsageTrailSample = {
-      t: nowMs,
-      s5: snapshot.sessionPct,
-      r5: snapshot.sessionResetEpochSec,
-      s7: snapshot.weeklyPct,
-      r7: snapshot.weeklyResetEpochSec,
-    };
+    const next: UsageTrailSample = { t: nowMs, s5, r5, s7, r7 };
     if (!isUsageTrailSample(next)) return false;
     if (last && sameReset(next.r5, last.r5)) next.s5 = Math.max(next.s5, last.s5);
     if (last && sameReset(next.r7, last.r7)) next.s7 = Math.max(next.s7, last.s7);

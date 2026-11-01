@@ -16,6 +16,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../../stores';
+import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
 import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { selectActiveEmptyLeafIdsKey, selectActiveRefusedEmptyLeafIdsKey } from '../../stores/selectors/appLayout';
@@ -192,6 +193,13 @@ export function EmptyLeafFunnel() {
         // in renderer tests that stub only the APIs they exercise.
         void window.electronAPI?.metadata?.setRole?.(paneId, wsId, projectSeed.role);
       }
+      if (projectSeed?.label) {
+        // A company seat's agents are told this name: a refused one is said out loud.
+        const label = projectSeed.label;
+        const refused = () => useStore.getState().pushToast({ message: t('companyPreset.labelRefused', { label }), level: 'warn' });
+        void window.electronAPI?.metadata?.setLabel?.(paneId, wsId, label)
+          .then((res) => { if (res && res.ok === false) refused(); }, refused);
+      }
       // A refused create (toast surfaced by useIpc) leaves the leaf refused.
       void ptyLifecycle.ensure<{ id: string; shell?: string; cwd?: string }>(paneId, {
         create: () => ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
@@ -205,12 +213,18 @@ export function EmptyLeafFunnel() {
                   {
                     workspaceId: wsId,
                     cwd: startupCwd,
+                    // A WSL session's folder: a WSL shell in its distro.
+                    ...(projectSeed?.wslDistro ? { shell: 'wsl.exe', wslDistro: projectSeed.wslDistro } : {}),
                     ...bootstrapOptions,
                     ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
                   },
                   useStore.getState().defaultShell,
                 ),
-                activeWorkspace.profile,
+                // The profile's pane command was written for the workspace's own
+                // shell; a WSL shell opened for a WSL session does not run it.
+                projectSeed?.wslDistro && activeWorkspace.profile
+                  ? { ...activeWorkspace.profile, defaultPaneCommand: undefined }
+                  : activeWorkspace.profile,
               ),
               seedRoleBinding,
               seedRoleName,

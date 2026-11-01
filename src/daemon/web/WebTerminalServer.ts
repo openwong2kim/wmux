@@ -145,6 +145,7 @@ import {
   CHAT_SEND_MAX_UNITS,
   checkChatId,
   projectChatBlocked,
+  typedPhotoTextMatcher,
   type ChatBlocked,
   type ChatBridge,
   type ChatDeliveredMessage,
@@ -5142,11 +5143,31 @@ export class WebTerminalServer {
     ];
     if (!Array.isArray(events) || delivered.length === 0) return events;
     const unused = [...delivered];
+    const photoMatches = typedPhotoTextMatcher(this.deps.uploadsDir);
     return events.map((event: Record<string, unknown>) => {
       if (event?.kind !== 'user_text' || typeof event.text !== 'string') return event;
       const text = event.text.trim();
       const ts = typeof event.ts === 'number' ? event.ts : undefined;
-      const index = unused.findIndex((m) => m.text.trim() === text && (ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS));
+      const inTime = (m: ChatDeliveredMessage) => ts === undefined || ts >= m.at - CHAT_DELIVERY_SKEW_MS;
+      let index = unused.findIndex((m) => m.text.trim() === text && inTime(m));
+      // A photo row reads `[Image #N]` where the typed text held the upload path.
+      // Photo sends of the same count read alike, so a row takes the unclaimed
+      // send nearest its own time: one sent before the row first, then one in
+      // the skew window after it, the later send on a tie. Two alike sends keep
+      // their own ids, and a page with only the newest row does not take an
+      // older send another page already showed. A row without a time cannot be
+      // placed against the sends, so it is not paired this way.
+      if (index < 0 && event.hasImage === true && ts !== undefined) {
+        const rank = (m: ChatDeliveredMessage) => [m.at <= ts ? 0 : 1, Math.abs(ts - m.at), -m.at];
+        const better = (m: ChatDeliveredMessage, than: ChatDeliveredMessage) => {
+          const [x, y] = [rank(m), rank(than)];
+          const k = x.findIndex((v, i) => v !== y[i]);
+          return k >= 0 && x[k] < y[k];
+        };
+        unused.forEach((m, i) => {
+          if (inTime(m) && photoMatches(m.text, text) && (index < 0 || better(m, unused[index]))) index = i;
+        });
+      }
       if (index < 0) return event;
       const [match] = unused.splice(index, 1);
       return { ...event, clientMessageId: match.clientMessageId };
@@ -7044,10 +7065,14 @@ export class WebTerminalServer {
    * with the call's time; or null.
    *
    * The match is on `raw` as the request spelled it, byte for byte against the
-   * transcript's `input.files[]` (or `input.file_path`); `sentFileParts`
+   * path the grant was recorded under (`SendUserFile`: the result's validated
+   * `attachments[].path`, see sentFiles.ts; `Read`: `input.file_path`); `sentFileParts`
    * separately refuses `.`/`..` segments and doubled separators. A `Read`
-   * grant also matches macOS's `/tmp/` ↔ `/private/tmp/` respelling, as a
-   * string. Only the PARENT is resolved: the last
+   * grant (and a SendUserFile grant from a result without attachments) also
+   * matches macOS's `/tmp/` ↔ `/private/tmp/` respelling, as a string. A
+   * projected SendUserFile path that is the same file as one of the call's
+   * validated attachments opens that attachment's path. Only the PARENT is
+   * resolved: the last
    * component is opened as named, so `openResolvedFile` refuses it when it is a
    * symlink and checks the handle is the regular file it looked up.
    *
@@ -7061,13 +7086,18 @@ export class WebTerminalServer {
     tool: GrantTool,
   ): Promise<{ real: string; name: string; sentAt: number } | null> {
     if (!isLocalClientPath(raw)) return null;
-    const parts = sentFileParts(raw);
-    if (!parts) return null;
+    if (!sentFileParts(raw)) return null;
     const projector = this.deps.projector?.() ?? null;
     const before = projector?.sentFileBinding(sessionId) ?? null;
     if (!projector || !before) return null;
-    const sentAt = await this.sentFiles.grantedAt(before.transcriptPath, raw, this.now(), tool);
-    if (sentAt === null) return null;
+    const grant = await this.sentFiles.grantFor(before.transcriptPath, raw, this.now(), tool);
+    if (grant === null) return null;
+    // What is opened is the granted path: `raw` itself, or the attachment a
+    // projected SendUserFile path was found to be the same file as.
+    if (!isLocalClientPath(grant.path)) return null;
+    const parts = sentFileParts(grant.path);
+    if (!parts) return null;
+    const sentAt = grant.at;
     const after = projector.sentFileBinding(sessionId);
     if (
       !after ||

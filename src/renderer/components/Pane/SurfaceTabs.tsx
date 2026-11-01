@@ -34,6 +34,7 @@ import { PANE_BROWSER_PROFILE_KEY, usePaneChromeProfileMenu } from './usePaneChr
 import { usePaneBrowserPolicyMenu } from './usePaneBrowserPolicyMenu';
 import { PANE_CONTINUE_ACCOUNT_KEY, usePaneContinueOnAccount } from './usePaneContinueOnAccount';
 import { usePaneClaudeRewind } from './usePaneClaudeRewind';
+import ContinueInAgentDialog, { PANE_CONTINUE_IN_AGENT_KEY, usePaneContinueInAgent } from './ContinueInAgentDialog';
 import BrowserPolicyDialog from './BrowserPolicyDialog';
 import {
   bindingEnforcesModel, bindingEnforcesSkipPermissions, bindingSkipPermissionsFlag, type RoleBinding,
@@ -97,7 +98,7 @@ export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
  *  host, so no split, no new pane and (by the `snap-` prefix) no layout snap. */
 // 'mute-notifications': a shadow pane's notifications come from the remote
 // host's own path, which never reads this pane's mute flag.
-const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote', 'mute-notifications', 'share-remote-pane']);
+const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote', 'mute-notifications', 'share-remote-pane', PANE_CONTINUE_IN_AGENT_KEY]);
 
 /** Rendered width (px) of the COLLAPSED cluster: the ⋮ trigger alone, which
  *  opens the same actions as a vertical menu. Same outer box as the full
@@ -766,6 +767,13 @@ export default function SurfaceTabs({
   const reloadContinueAccount = continueAccount.reload;
   // Open Claude's own Rewind picker (the hook gates itself to a terminal Claude).
   const claudeRewindItems = usePaneClaudeRewind({ ptyId: activeSurfacePtyId, allowed: !readOnly });
+  // Hand the pane's work to another agent in a new tab (the hook gates itself to a known agent).
+  const [continueInAgentFor, setContinueInAgentFor] = useState<{ ptyId: string; cwd?: string } | null>(null);
+  const activeSurfaceCwd = activeSurface?.cwd;
+  const openContinueInAgent = useCallback(() => {
+    if (activeSurfacePtyId) setContinueInAgentFor({ ptyId: activeSurfacePtyId, ...(activeSurfaceCwd ? { cwd: activeSurfaceCwd } : {}) });
+  }, [activeSurfacePtyId, activeSurfaceCwd]);
+  const continueInAgentItems = usePaneContinueInAgent({ ptyId: activeSurfacePtyId, allowed: !readOnly, onOpen: openContinueInAgent });
   useEffect(() => {
     if (menu !== 'main') return;
     reloadChromeProfiles();
@@ -837,6 +845,7 @@ export default function SurfaceTabs({
       onSelect: startPaneRename,
     },
     ...continueAccount.mainItems,
+    ...continueInAgentItems,
     ...claudeRewindItems,
     ...(canShareRemote ? [{
       key: 'share-remote-pane',
@@ -893,7 +902,7 @@ export default function SurfaceTabs({
   ].filter((item) => !shadow || !(HIDDEN_ON_SHADOW.has(item.key) || item.key.startsWith('snap-'))), [
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, browserPolicy.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
-    menuTabSurface, startRename, canLinkRemote, canShareRemote, sharePeers, paneMuted, togglePaneMuted, continueAccount.mainItems, claudeRewindItems,
+    menuTabSurface, startRename, canLinkRemote, canShareRemote, sharePeers, paneMuted, togglePaneMuted, continueAccount.mainItems, continueInAgentItems, claudeRewindItems,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
     layoutTemplates, shadow, splitRightKey, splitDownKey,
   ]);
@@ -1480,6 +1489,15 @@ export default function SurfaceTabs({
       )}
       {shareDialogOpen && (
         <A2aShareDialog workspaceId={workspace.id} paneId={paneId} onClose={() => setShareDialogOpen(false)} />
+      )}
+      {continueInAgentFor && (
+        <ContinueInAgentDialog
+          ptyId={continueInAgentFor.ptyId}
+          workspaceId={workspace.id}
+          paneId={paneId}
+          {...(continueInAgentFor.cwd ? { cwd: continueInAgentFor.cwd } : {})}
+          onClose={() => setContinueInAgentFor(null)}
+        />
       )}
     </div>
   );

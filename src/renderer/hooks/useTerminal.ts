@@ -31,6 +31,7 @@ import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { agentSelectsOnDrag, installPlainDragSelect, installWheelClearsSelectionHint, mouseOwnedHintApplies } from '../utils/plainDragSelect';
 import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
+import { resolveCopyText, startCopy } from '../utils/cleanCopyResolve';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
 import {
   createReplayMute, getTerminalReplayMute, disposeTerminalReplayMute,
@@ -811,9 +812,15 @@ function showMouseOwnedHintToast(keys: { mac: string; other: string } = MOUSE_OW
 export function copySelectionWithFeedback(
   terminal: { clearSelection(): void } | null,
   selection: string,
-  options?: { keepSelection?: boolean },
+  options?: { keepSelection?: boolean; ptyId?: string },
 ): Promise<void> {
+  // `ptyId` names the pane whose agent reply a selection may be a span of
+  // (clean copy). Absent, e.g. a remote mirror: the selection as it is.
+  const ptyId = options?.ptyId;
   return runCopyWithFeedback(selection, {
+    resolve: ptyId ? (text) => resolveCopyText(ptyId, text) : undefined,
+    // Newest copy wins, explicit or copy-on-select (cleanCopyResolve startCopy).
+    isCurrent: startCopy(),
     write: (text) => window.clipboardAPI.writeText(text),
     // `keepSelection` leaves the highlight in place after a successful copy.
     // The right-click copy path uses this so the selection survives the
@@ -1447,6 +1454,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Ctrl/Cmd+Shift+click opens a new browser tab (#2140). The ptyId
     // identifies the owning workspace (multiview-safe reverse lookup).
     const activateTerminalUrl = (event: MouseEvent, uri: string) => {
+      // #2901: xterm activates a link on mouseup of any button; only a left
+      // click opens one.
+      if (event.button !== 0) return;
       const newTab = (event.ctrlKey || event.metaKey) && event.shiftKey;
       // Shift also extends xterm's selection on that click. Drop it, which also
       // cancels the debounced copy-on-select before it overwrites the clipboard.
@@ -2135,6 +2145,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Silent on the web too: a refused auto-copy is not kept for the next
       // key, which could be the ⌘V meant to paste what the clipboard holds.
       write: (text) => window.clipboardAPI.writeText(text, { keepIfRefused: false }),
+      resolve: (text) => resolveCopyText(ptyId, text),
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
       autoCopy.onSelection(terminal.getSelection());
@@ -2550,7 +2561,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
-          void copySelectionWithFeedback(terminal, sel);
+          void copySelectionWithFeedback(terminal, sel, { ptyId });
           return false;
         }
         return true; // no selection → let the OS handle ⌘C
@@ -2590,7 +2601,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (sel) {
           // main now throws on clipboard failure — await + catch so the
           // user sees an error toast and the selection stays put for retry.
-          void copySelectionWithFeedback(terminal, sel);
+          void copySelectionWithFeedback(terminal, sel, { ptyId });
           return false;
         }
         // no selection → SIGINT via resolveCtrlLetterByte at the end of this handler
@@ -2644,7 +2655,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // Ctrl+Shift+C historically without an explicit "keep" toggle. We
           // intentionally still pass the terminal so a successful copy ends
           // up consistent with Ctrl+C.
-          void copySelectionWithFeedback(terminal, sel);
+          void copySelectionWithFeedback(terminal, sel, { ptyId });
         }
         return false;
       }
@@ -2751,7 +2762,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (sel) {
         lastRightClickCopyAt = Date.now();
         autoCopy.dispose();
-        void copySelectionWithFeedback(terminal, sel, { keepSelection: true });
+        void copySelectionWithFeedback(terminal, sel, { keepSelection: true, ptyId });
         return;
       }
 

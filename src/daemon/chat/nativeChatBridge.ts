@@ -731,7 +731,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
 
   /** File binding (Claude/Codex): guarded bracketed paste, then Enter. */
   const dispatchFile = async (req: ChatSendRequest,
-    opts: { idleOnly?: boolean; onScreenHold?: (why: 'dialog' | 'no-composer') => void } = {}): Promise<StoredChatOutcome> => {
+    opts: { idleOnly?: boolean; steer?: boolean; onScreenHold?: (why: 'dialog' | 'no-composer') => void } = {}): Promise<StoredChatOutcome> => {
     const { id } = req;
     if (!deps.approvals()) return { result: 'unavailable', effect: 'none', error: 'chat-unavailable' };
     if (sending.has(id)) return { result: 'busy', effect: 'none', error: 'chat-busy' };
@@ -777,6 +777,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
         },
         ...(deps.delay ? { delay: deps.delay } : {}),
         ...(opts.idleOnly ? { idleOnly: true } : {}),
+        ...(opts.steer ? { steer: true } : {}),
         ...(opts.onScreenHold ? { onScreenHold: opts.onScreenHold } : {}),
         ...(authorize ? { authorized: async (stage: 'first-write' | 'submit') => {
           let ok = false;
@@ -997,7 +998,7 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     agentSessionId: string;
     historyEpoch?: string;
     source: 'file' | 'tui';
-    /** Claude (file binding): `steer` may type it into a running turn. */
+    /** Claude or Codex (file binding): `steer` may type it into a running turn. */
     steerable: boolean;
     deliver: ChatQueueDeliver;
     incarnation?: string;
@@ -1136,8 +1137,8 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
     if (inserted === 'exists') return heldReplay(queueStore!.get(owner, clientMessageId)!, id, fingerprint, undefined);
     if (inserted === 'full') return refuse(clientMessageId, 'queue-full');
     if (inserted === 'persist-failed') return refuse(clientMessageId, 'chat-persist-failed');
-    // Only a composer that queues a prompt typed mid-turn (`terminalChat.queue` on
-    // the registry row: Claude Code) can be steered; elsewhere `steer` is `next-turn`.
+    // Only a composer that takes a prompt typed mid-turn (`terminalChat.queue` on
+    // the registry row: Claude Code, Codex) can be steered; elsewhere `steer` is `next-turn`.
     const steerable = source === 'file' && agentRow(slugOf(deps.chatAgentState(id)))?.terminalChat?.queue === true;
     queueMemo.set(memoKey(owner, clientMessageId), {
       fingerprint, preview: Array.from(req.text).slice(0, QUEUE_PREVIEW_CHARS).join(''), text: req.text,
@@ -1338,9 +1339,10 @@ export function createChatBridge<P extends ChatPane>(deps: NativeChatBridgeDeps<
       let outcome: StoredChatOutcome;
       let screenHold: 'dialog' | 'no-composer' | undefined;
       try {
-        // Steer into a running turn takes Claude's composer queue, like a direct send.
+        // Steer into a running turn takes Claude's composer queue, like a direct
+        // send, or goes into the running Codex turn.
         outcome = resolution.source === 'tui' ? await dispatchTui(req, resolution)
-          : await dispatchFile(req, { idleOnly: !(steer && running), onScreenHold: (why) => { screenHold = why; } });
+          : await dispatchFile(req, { ...(steer && running ? { steer: true } : { idleOnly: true }), onScreenHold: (why) => { screenHold = why; } });
       } catch {
         outcome = { result: 'unconfirmed', effect: 'uncertain', error: 'delivery-unconfirmed' };
       }
