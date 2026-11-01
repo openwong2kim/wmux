@@ -850,14 +850,17 @@ function senderReopenPreflight(task: Task, callerWorkspaceId: string, callerAddr
  * Apply the reopen main decided on: the daemon's committed snapshot
  * (`daemonReopenedTask`), or a cache-only reopen (`localReopen`) for a task
  * the daemon does not hold. Main strips both from the wire, so neither can be
- * forged by a caller. Returns whether the task reopened.
+ * forged by a caller. Returns whether the task reopened, or a reported
+ * company task was handed back to `working`: either is a state change.
  */
 function applySenderReopen(taskId: string, params: RpcParams): boolean {
   const store = useStore.getState();
   const snapshot = params.daemonReopenedTask;
   if (snapshot && typeof snapshot === 'object' && (snapshot as { id?: unknown }).id === taskId) {
+    const before = store.getTask(taskId)?.status.state;
     store.applyDaemonTaskUpdate(snapshot as Task);
-    return store.getTask(taskId)?.status.state === 'submitted';
+    const after = store.getTask(taskId)?.status.state;
+    return after !== before && (after === 'submitted' || after === 'working');
   }
   if (params.localReopen === true) return store.reopenTask(taskId);
   return false;
@@ -3726,7 +3729,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // silent, target workspace gone, and a failed pty write. Delivered
       // replies deliberately do NOT emit (the nudge already signals; emitting
       // per delivered message is the flood the create-path comment forbids).
-      // A reopen is a state change, so it always tees the pointer.
+      // A reopen or a hand-back is a state change, so it always tees the pointer.
       if (!heldForBlockers && (delivery.notified !== true || reopened)) {
         const updatedTask = store.getTask(taskId);
         if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
