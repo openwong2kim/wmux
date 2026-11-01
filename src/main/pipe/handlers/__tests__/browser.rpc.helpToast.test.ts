@@ -10,12 +10,20 @@ import { dispatchAsClaimedCaller } from './claimedCaller';
 // the listener has to be on before `show()` or that event goes nowhere. The
 // fake Notification is a real EventEmitter and records the order of `on` and
 // `show`.
-const { toasts } = vi.hoisted(() => ({ toasts: [] as Array<{ steps: string[]; emitter: unknown }> }));
+const { toasts, gate } = vi.hoisted(() => ({
+  toasts: [] as Array<{ steps: string[]; emitter: unknown }>,
+  // #2964: an isolated packaged copy on Windows raises no OS toast at all.
+  gate: { allowed: true, isSupported: 0 },
+}));
+vi.mock('../../../notification/osToastGate', () => ({ osToastsAllowed: () => gate.allowed }));
 
 vi.mock('electron', async () => {
   const { EventEmitter: Emitter } = await import('node:events');
   class Notification extends Emitter {
-    static isSupported = () => true;
+    static isSupported = () => {
+      gate.isSupported += 1;
+      return true;
+    };
     readonly steps: string[] = [];
     constructor(readonly options: unknown) {
       super();
@@ -58,6 +66,8 @@ function register(): RpcRouter {
 describe('browser.help.request OS toast', () => {
   afterEach(() => {
     toasts.length = 0;
+    gate.allowed = true;
+    gate.isSupported = 0;
     vi.restoreAllMocks();
   });
 
@@ -80,6 +90,23 @@ describe('browser.help.request OS toast', () => {
       '[browser.help.request] OS notification failed to show:',
       'Notifications are not allowed',
     );
+
+    const requestId = (response as { result?: { requestId?: string } }).result?.requestId;
+    await router.dispatch({ id: '2', method: 'browser.help.cancel', params: { workspaceId: 'ws-1', requestId } });
+  });
+
+  it('an isolated packaged copy never reaches Notification, isSupported() included (#2964)', async () => {
+    gate.allowed = false;
+    const router = register();
+
+    const response = await router.dispatch({
+      id: '1',
+      method: 'browser.help.request',
+      params: { workspaceId: 'ws-1', prompt: 'Solve the captcha' },
+    });
+    expect(response.ok).toBe(true);
+    expect(toasts).toHaveLength(0);
+    expect(gate.isSupported).toBe(0);
 
     const requestId = (response as { result?: { requestId?: string } }).result?.requestId;
     await router.dispatch({ id: '2', method: 'browser.help.cancel', params: { workspaceId: 'ws-1', requestId } });
