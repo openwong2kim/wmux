@@ -20,6 +20,7 @@ use winapi::um::processthreadsapi::*;
 use winapi::um::winbase::{
     CREATE_UNICODE_ENVIRONMENT, EXTENDED_STARTUPINFO_PRESENT, STARTF_USESTDHANDLES, STARTUPINFOEXW,
 };
+use winapi::shared::windef::HWND;
 use winapi::um::wincon::COORD;
 use winapi::um::winnt::HANDLE;
 
@@ -29,6 +30,7 @@ type CreateFn = unsafe extern "system" fn(COORD, HANDLE, HANDLE, DWORD, *mut HPC
 type ResizeFn = unsafe extern "system" fn(HPCON, COORD) -> HRESULT;
 type CloseFn = unsafe extern "system" fn(HPCON);
 type ClearFn = unsafe extern "system" fn(HPCON) -> HRESULT;
+type ReparentFn = unsafe extern "system" fn(HPCON, HWND) -> HRESULT;
 #[allow(non_snake_case)]
 struct ConPtyFuncs {
     library: winapi::shared::minwindef::HMODULE,
@@ -37,6 +39,7 @@ struct ConPtyFuncs {
     ClosePseudoConsole: CloseFn,
     clear: Option<ClearFn>,
     release: Option<ClearFn>,
+    reparent: Option<ReparentFn>,
 }
 unsafe impl Send for ConPtyFuncs {}
 impl Drop for ConPtyFuncs {
@@ -71,12 +74,15 @@ fn load_conpty(dll: Option<&Path>) -> Result<ConPtyFuncs, Error> {
     }
     let clear = symbol("ClearPseudoConsole");
     let release = symbol("ReleasePseudoConsole");
+    // Only the bundled conpty.dll exports it (ConptyReparentPseudoConsole); kernel32 has none.
+    let reparent = symbol("ReparentPseudoConsole");
     Ok(ConPtyFuncs { library,
         CreatePseudoConsole: unsafe { mem::transmute(create) },
         ResizePseudoConsole: unsafe { mem::transmute(resize) },
         ClosePseudoConsole: unsafe { mem::transmute(close) },
         clear: if clear.is_null() { None } else { Some(unsafe { mem::transmute(clear) }) },
         release: if release.is_null() { None } else { Some(unsafe { mem::transmute(release) }) },
+        reparent: if reparent.is_null() { None } else { Some(unsafe { mem::transmute(reparent) }) },
     })
 }
 
@@ -129,6 +135,16 @@ impl PsuedoCon {
 
     pub fn clear(&self) {
         if let Some(clear) = self.functions.clear { unsafe { clear(self.con); } }
+    }
+
+    /// Ask ConPTY to make `hwnd` the owner of the window GetConsoleWindow() returns, so a
+    /// window a console program parents to it (a sign-in prompt) stacks above `hwnd`.
+    /// ConPTY applies it asynchronously. False when this ConPTY has no reparent call.
+    pub fn reparent(&self, hwnd: HWND) -> bool {
+        match self.functions.reparent {
+            Some(reparent) => (unsafe { reparent(self.con, hwnd) }) >= 0,
+            None => false,
+        }
     }
 
     pub fn spawn_command(&self, cmd: CommandBuilder) -> anyhow::Result<WinChild> {

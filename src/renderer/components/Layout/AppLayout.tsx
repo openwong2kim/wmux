@@ -50,6 +50,7 @@ import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import { useRoomSync } from '../../hooks/useRoomSync';
+import { useExternalSessionsSync } from '../../hooks/useExternalSessionsSync';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { FocusManager } from './LayoutLogicMounts';
@@ -74,6 +75,7 @@ import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
 import { useAgentAuthBridge } from '../../hooks/useAgentAuthBridge';
 import { useWorkspaceSettleBridge } from '../../hooks/useWorkspaceSettleBridge';
 import { useStarPromptSessionBridge } from '../../utils/starPrompt';
+import { useCompanySeatSweep } from '../../hooks/useCompanySeatSweep';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import PcRailFeeds from '../PcRail/PcRailFeeds';
@@ -116,6 +118,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { noteDaemonConnected, noteDaemonDisconnected, noteDaemonGaveUp, noteDaemonReconnecting, notePaneReattached, notePaneWriteDropped, setDaemonLinkSurfaceResolver, type DaemonPaneRef } from '../../daemon/daemonLinkNotice';
 import { planAgentCandidateSeed, planLiveAgentSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { agentSlugToDisplay } from '../../../shared/agentIdentity';
+import { applyProcessExits, clearSurfaceAgentOnProcessExit, clearSurfaceAgentsKnownGone, livenessSnapshotRequested, livenessSnapshotSettled } from '../../utils/agentRowLiveness';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import ComposeHost from '../AgentToolbar/ComposeHost';
 import { AgentToolbarStrip } from '../AgentToolbar/ToolbarHost';
@@ -132,28 +135,6 @@ interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   state?: string;
   surfaceId?: string;
   createdAt?: string;
-}
-
-/**
- * #1210 — drop a pane's detected agent identity once we know the TUI is gone.
- * #1463 — `requestedAt` is when the snapshot was asked for: only running
- * evidence older than that is dropped with it, so an agent relaunched while the
- * answer was in flight keeps its stamp. A dead process with a foreground
- * command still running may be a relaunch the tracker has not re-armed for yet,
- * so that case keeps the stamp too.
- */
-function clearSurfaceAgentsKnownGone(
-  agentAlive: Record<string, boolean>,
-  commandRunning: Record<string, boolean>,
-  requestedAt: number,
-): void {
-  const store = useStore.getState();
-  for (const [id, alive] of Object.entries(agentAlive)) {
-    if (alive === false) store.clearSurfaceAgent(id, commandRunning[id] === true ? undefined : requestedAt);
-  }
-  for (const [id, running] of Object.entries(commandRunning)) {
-    if (running === false) store.clearSurfaceAgent(id, requestedAt);
-  }
 }
 
 /** Name panes from the daemon's process truth — see planLiveAgentSeed. */
@@ -818,6 +799,7 @@ export default function AppLayout() {
   useUiScaleSync(uiScale);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   useRoomSync();
+  useExternalSessionsSync();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
@@ -1096,6 +1078,9 @@ export default function AppLayout() {
   // New agent sessions counted by main, toward the sidebar's star row. Taken
   // only once the saved session is restored, so loadSession cannot drop them.
   useStarPromptSessionBridge(sessionLoaded);
+  // Company seat worktrees nothing uses any more: swept once the saved
+  // session is in the store (its folders are kept), and after a workspace goes.
+  useCompanySeatSweep(sessionLoaded);
   // Fix 0: monotonic startup generation counter. Each mount-effect run
   // bumps it; the startup catch only applies its fallback if its own
   // gen still matches the current ref. Prevents a stale startup from
@@ -1986,7 +1971,7 @@ export default function AppLayout() {
   //     respawn re-derives badges without waiting for the next event.
   useEffect(() => {
     const hydrate = () => {
-      const requestedAt = Date.now();
+      const requestedAt = livenessSnapshotRequested();
       void window.electronAPI.pty.list().then((sessions) => {
         const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
         // X6 ②: resume hints for recovered interactive agent panes.
@@ -2007,6 +1992,7 @@ export default function AppLayout() {
           if (s.commandRunning !== undefined) commandRunningSnapshot[s.id] = s.commandRunning;
           if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
         }
+        applyProcessExits(agentAliveSnapshot, requestedAt);
         useStore.getState().hydrateSupervision(snapshot);
         useStore.getState().hydrateResume(resumeSnapshot);
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
@@ -2054,7 +2040,8 @@ export default function AppLayout() {
             void useStore.getState().principalRegisterPane(ptyId);
           }).catch(() => { /* best-effort — transient failure; retry allowed on the next connect */ });
         }
-      }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ });
+      }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ })
+        .finally(() => livenessSnapshotSettled(requestedAt));
     };
     hydrate();
     const offConnected = window.electronAPI.daemon.onConnected(hydrate);
@@ -2064,10 +2051,16 @@ export default function AppLayout() {
     const offRestarted = window.electronAPI.pty.onRestarted((payload) => {
       useStore.getState().bumpSupervisionRestart(payload.ptyId);
     });
+    // The agent's process-death edge drops its row now; the 15 s poll below
+    // stays the backstop for panes the tracker never attributed.
+    const offAgentExit = window.electronAPI.pty.onAgentProcessExit((payload) => {
+      clearSurfaceAgentOnProcessExit(payload.ptyId, payload.slug, Date.now());
+    });
     return () => {
       offConnected();
       offChanged();
       offRestarted();
+      offAgentExit();
     };
   }, []);
 
@@ -2079,7 +2072,7 @@ export default function AppLayout() {
   // note). One in-memory list RPC per 15s; negligible against the daemon idle diet.
   useEffect(() => {
     const refreshBindings = () => {
-      const requestedAt = Date.now();
+      const requestedAt = livenessSnapshotRequested();
       void window.electronAPI.pty.list().then((sessions) => {
         const snapshot: Record<string, ResumeBinding> = {};
         // OSC 133 shell state rides the same poll — keeps the chip's authoritative
@@ -2098,6 +2091,7 @@ export default function AppLayout() {
           if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
           if (s.resumeAgentOnScreen !== undefined) onScreenSnapshot[s.id] = s.resumeAgentOnScreen;
         }
+        applyProcessExits(agentAliveSnapshot, requestedAt);
         useStore.getState().hydrateResumeBindings(snapshot);
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
         useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
@@ -2106,7 +2100,8 @@ export default function AppLayout() {
         // An agent relaunched after boot (the Resume pill) is attributed by
         // the daemon seconds later; this tick is what brings its row back.
         seedSurfaceAgentsFromProcess(sessions, agentAliveSnapshot, cmdSnapshot);
-      }).catch(() => { /* transient list failure — the next tick self-heals */ });
+      }).catch(() => { /* transient list failure — the next tick self-heals */ })
+        .finally(() => livenessSnapshotSettled(requestedAt));
     };
     const id = window.setInterval(refreshBindings, 15_000);
     return () => window.clearInterval(id);

@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   WORK_LINK_STATES,
+  deriveLinkState,
   deriveWorkLinkState,
   isWorkLink,
   isWorkLinkReason,
   isWorkLinkState,
+  linkWaitsOnRequester,
   matchesWorkLinkFilter,
   parseWorkLink,
   parseWorkLinkFilter,
@@ -146,6 +148,8 @@ describe('deriveWorkLinkState', () => {
     ['submitted task', { a2aState: 'submitted' }, 'queued'],
     ['working task', { a2aState: 'working' }, 'running'],
     ['input-required task', { a2aState: 'input-required' }, 'needs-you', 'input-required'],
+    ['input-required task a pane handed out', { a2aState: 'input-required', requesterPane: true }, 'running'],
+    ['a pending decision on a task a pane handed out', { a2aState: 'input-required', requesterPane: true, pendingDecision: true }, 'needs-you', 'decision'],
     ['failed task', { a2aState: 'failed' }, 'blocked', 'task-failed'],
     ['canceled task', { a2aState: 'canceled' }, 'abandoned'],
     ['canceled task beats a pending decision', { a2aState: 'canceled', pendingDecision: true }, 'abandoned'],
@@ -209,5 +213,34 @@ describe('deriveWorkLinkState', () => {
       }
     }
     expect(cells).toBe(7 * 7 * 9 * 2 * 4);
+  });
+});
+
+describe('a report back to the pane that handed the work out', () => {
+  const reported = (requester: WorkLink['requester']): WorkLink => ({
+    id: 'l1', origin: 'manual', owner: { workspaceId: 'ws-co', paneId: 'pane-dev' }, requester,
+    a2aTaskId: 'task-1', a2aState: 'input-required', state: 'needs-you', reason: 'input-required',
+    decisionIds: [], createdAt: 1, updatedAt: 1,
+  });
+
+  it('waits on that pane, not on you', () => {
+    const link = reported({ workspaceId: 'ws-co', paneId: 'pane-ceo' });
+    expect(deriveLinkState(link, false)).toEqual({ state: 'running' });
+    expect(linkWaitsOnRequester(link)).toEqual({ workspaceId: 'ws-co', paneId: 'pane-ceo' });
+  });
+
+  it('is yours again once the requester pane has closed', () => {
+    const link = reported({ workspaceId: 'ws-co', paneId: 'pane-ceo' });
+    const closed = () => false;
+    expect(deriveLinkState(link, false, closed)).toEqual({ state: 'needs-you', reason: 'input-required' });
+    expect(linkWaitsOnRequester(link, closed)).toBeNull();
+    expect(deriveLinkState(link, false, () => true)).toEqual({ state: 'running' });
+  });
+
+  it('is yours when the requester names no pane, and nobody waits once it moves on', () => {
+    const link = reported({ workspaceId: 'ws-hq' });
+    expect(deriveLinkState(link, false)).toEqual({ state: 'needs-you', reason: 'input-required' });
+    expect(linkWaitsOnRequester(link)).toBeNull();
+    expect(linkWaitsOnRequester({ a2aState: 'working', requester: { workspaceId: 'ws-co', paneId: 'pane-ceo' } })).toBeNull();
   });
 });

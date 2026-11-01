@@ -2725,16 +2725,52 @@ describe('steer and passive input (a send into a running Claude turn)', () => {
     expect(q.bridge.receipt('device:a', 'pane', clientMessageId)).not.toMatchObject({ queued: true });
   });
 
-  it('Codex: steer falls back to next-turn', async () => {
-    const f = fixture();
+  // Captured live on codex-cli 0.162.1 (2026-10-31): the composer stays empty
+  // under the status row mid-turn, and under the last answer after it.
+  const codexScreen = (top: string) => Object.assign(
+    [top, '', '› Ask Codex to do anything', '', '  GPT-6-Luna medium · ~/work', '  ? for shortcuts'],
+    { undimmed: [top, '', '›', '', '  GPT-6-Luna medium · ~/work', '  ? for shortcuts'] });
+  const CODEX_EPOCH = fileHistoryEpoch('codex', 'conv', 'a.jsonl');
+  const runningCodex = (f: ReturnType<typeof fixture>) => {
     f.state.projector = { ...FILE, terminal: { ...FILE.terminal!, agent: 'codex' } };
     f.state.agent = { ...f.state.agent, agentName: 'Codex CLI', agentVerified: true };
     running(f);
+    f.state.screen = codexScreen('• Working (2s • esc to interrupt)');
+  };
+
+  it('Codex: steer types into the running turn and presses Enter, which Codex applies to that turn', async () => {
+    const f = fixture(); runningCodex(f);
     const q = withQueue(f);
-    const answer = await q.send('now', { historyEpoch: fileHistoryEpoch('codex', 'conv', 'a.jsonl'), queue: { authorized: allow, deliver: 'steer' } });
+    const answer = await q.send('now', { historyEpoch: CODEX_EPOCH, queue: { authorized: allow, deliver: 'steer' } });
+    expect(answer).toMatchObject({ queueState: 'queued', queueDeliver: 'steer' });
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual(['\x1b[200~now\x1b[201~', '\r']);
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'delivered', deliver: 'steer' });
+    expect(q.bridge.receipt('device:a', 'pane', answer.clientMessageId)).toMatchObject({ queued: true });
+  });
+
+  it('Codex: next-turn waits for the turn to end, then submits with Tab, not Enter', async () => {
+    const f = fixture(); runningCodex(f);
+    const q = withQueue(f);
+    const { clientMessageId } = await q.send('later', { historyEpoch: CODEX_EPOCH });
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual([]);
+    f.state.agent = { ...f.state.agent, agentStatus: 'complete', turn: { id: 't1:n.1', state: 'idle', startedAt: 1 } };
+    f.state.screen = codexScreen('• Done.');
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual(['\x1b[200~later\x1b[201~', '\t']);
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'delivered', deliver: 'next-turn' });
+  });
+
+  it('a composer that takes no prompt mid-turn (OpenCode): steer falls back to next-turn', async () => {
+    const f = fixture();
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    const q = withQueue(f);
+    const answer = await q.bridge.send({ owner: 'device:a', id: 'pane', agentSessionId: 'ses_one', historyEpoch: tuiHistoryEpoch('raw:ses_one'),
+      clientMessageId: msgId(), text: 'now', managedReadOnly: true, queue: { authorized: allow, deliver: 'steer' } });
     expect(answer).toMatchObject({ queueState: 'queued', queueDeliver: 'next-turn' });
     expect(q.bridge.steer('device:a', 'pane', answer.clientMessageId)).toEqual({ ok: true, state: 'queued', deliver: 'next-turn' });
     await q.bridge.kickQueue('pane');
-    expect(f.written).toEqual([]);
+    expect(f.tuiSend).not.toHaveBeenCalled();
   });
 });

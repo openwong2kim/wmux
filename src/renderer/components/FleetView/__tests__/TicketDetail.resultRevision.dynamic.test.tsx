@@ -140,3 +140,11 @@ describe('TicketDetail report identity', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('TicketDetail state word', () => {
+  it('says a job that reported back waits on its sender, not that it is working', async () => {
+    await render({ ...initial, state: 'working', waitingOn: { workspaceId: 'ws-1', paneId: 'pane-ceo' } });
+    expect(container.textContent).toContain(t('fleet.ticket.waitingOnSender'));
+    expect(container.textContent).not.toContain(t('fleet.ticket.state.working'));
+  });
+});

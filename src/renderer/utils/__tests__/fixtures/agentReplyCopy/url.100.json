@@ -1,0 +1,24 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 100,
+ "rows": [
+  "❯ show url                                                                                          ",
+  "",
+  "⏺ Open https://example.com/a/very/long/path/that/goes/on/and/on/segment/another-segment/yet-another?",
+  "  query=1&b=2 now.",
+  "",
+  "                                                                                ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Open https://example.com/a/very/long/path/that/goes/on/and/on/segment/another-segment/yet-another?query=1&b=2 now."
+   }
+  ]
+ ]
+}

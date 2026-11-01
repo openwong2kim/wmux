@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ComputerError } from '../../../shared/computer/errors';
-import { SNAPSHOT_TTL_MS, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
+import { SNAPSHOT_TTL_MS, type ActionResult, type AppInfo, type AppState, type HelperMethod, type WindowInfo } from '../../../shared/computer/protocol';
 import { ApprovalQueue } from '../../mcp/ApprovalQueue';
 import type { PluginTrustStore } from '../../mcp/PluginTrustStore';
+import { countNamedControls } from '../axFirst';
 import { createComputerConsentRequester } from '../computerConsent';
 import {
   ABORT_COOLDOWN_MS,
@@ -27,7 +28,7 @@ const win = (app: AppInfo, extra: Partial<WindowInfo> = {}): WindowInfo => ({
   ...extra,
 });
 
-function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>) {
+function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>, tree = '0 window') {
   let snapshotSeq = 0;
   const calls: Array<{ method: HelperMethod; params: unknown }> = [];
   const helper: HelperLike = {
@@ -44,9 +45,13 @@ function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>) 
             snapshotId: `s${++snapshotSeq}`,
             app: found.app,
             window: found.window,
-            tree: '0 window',
-            screenshot: { mime: 'image/jpeg', data: 'AAAA', width: 1280, height: 720, scale: 0.8 },
-            screenshotStatus: { status: 'captured' },
+            ...(params.mode !== 'vision' && { tree }),
+            ...(params.mode === 'ax'
+              ? { screenshotStatus: { status: 'skipped' } }
+              : {
+                screenshot: { mime: 'image/jpeg', data: 'AAAA', width: 1280, height: 720, scale: 0.8 },
+                screenshotStatus: { status: 'captured' },
+              }),
           };
           return state;
         }
@@ -54,6 +59,8 @@ function fakeHelper(apps: Record<string, { app: AppInfo; window: WindowInfo }>) 
           return { apps: Object.values(apps).map((t) => t.app) };
         case 'listWindows':
           return { windows: Object.values(apps).map((t) => t.window) };
+        case 'capabilities':
+          return { actions: ['getAppState', 'click'], modes: ['ax', 'vision', 'both'], permissions: { accessibility: true, screenRecording: true } };
         default:
           return { method: 'synthetic', verification: 'unverified' };
       }
@@ -75,12 +82,13 @@ function makeService(opts: {
   stopKeyHolds?: boolean;
   platform?: string;
   askPerApp?: boolean;
+  tree?: string;
 } = {}) {
   let now = 1_000_000;
   const { helper, calls } = fakeHelper({
     Notepad: { app: notepad, window: win(notepad, { elevated: opts.elevated }) },
     KeePassXC: { app: keepass, window: win(keepass) },
-  });
+  }, opts.tree);
   const stopKey = fakeStopKey(opts.stopKeyHolds ?? true);
   const consent = vi.fn(async () => {
     if (typeof opts.consent === 'function') return opts.consent();
@@ -101,6 +109,15 @@ function makeService(opts: {
 
 const AGENT_A: ComputerAgent = { key: 'agent-a', label: 'agent-a' };
 const AGENT_B: ComputerAgent = { key: 'agent-b', label: 'agent-b' };
+
+/** The disposition of an input action's result, or of its error. */
+async function dispositionOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    return ((await promise) as ActionResult).disposition;
+  } catch (err) {
+    return err instanceof ComputerError ? err.disposition : `non-computer error: ${String(err)}`;
+  }
+}
 
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
@@ -228,6 +245,27 @@ describe('ComputerService', () => {
     expect(await codeOf(service.control(AGENT_B, { action: 'click', snapshotId: state.snapshotId, index: 1 }))).toBe('snapshot_unknown');
   });
 
+  it('says whether an input action may be retried: refused before the helper, after it, or done', async () => {
+    const { service, helperRef } = makeService();
+    expect(await dispositionOf(service.control(AGENT_A, { action: 'click', snapshotId: 'nope', index: 1 }))).toBe('not_delivered');
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const answers: Array<() => unknown> = [
+      () => ({ method: 'accessibility', verification: 'verified' }),
+      // A result follows its verification, whatever the helper says.
+      () => ({ method: 'synthetic', verification: 'unverified', disposition: 'delivered' }),
+      () => { throw new ComputerError('window_not_focused', 'covered', 'not_delivered'); },
+      () => { throw new ComputerError('window_not_focused', 'covered'); },
+    ];
+    const observe = helperRef.request;
+    helperRef.request = (async (method: HelperMethod, params: never) =>
+      method === 'click' ? answers.shift()?.() : observe(method, params)) as typeof helperRef.request;
+    const click = () => service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, index: 1 });
+    expect(await dispositionOf(click())).toBe('delivered');
+    expect(await dispositionOf(click())).toBe('delivered_unverified');
+    expect(await dispositionOf(click())).toBe('not_delivered');
+    expect(await dispositionOf(click())).toBe('delivered_unverified');
+  });
+
   it('expires snapshots', async () => {
     const { service, advance } = makeService();
     const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
@@ -237,7 +275,7 @@ describe('ComputerService', () => {
 
   it('converts screenshot pixels to window points using the snapshot scale', async () => {
     const { service, calls } = makeService();
-    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'both' });
     await service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 400, y: 200 });
     const click = calls.find((c) => c.method === 'click')!;
     expect(click.params).toMatchObject({ point: { x: 500, y: 250 }, button: 'left', clickCount: 1, modifiers: [] });
@@ -245,7 +283,7 @@ describe('ComputerService', () => {
 
   it('refuses coordinates outside the screenshot and index+coordinates together', async () => {
     const { service } = makeService();
-    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'both' });
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 1280, y: 10 }))).toBe('invalid_argument');
     expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 1, y: 1, index: 2 }))).toBe('invalid_argument');
   });
@@ -463,7 +501,7 @@ describe('ComputerService', () => {
     expect(await codeOf(service.control(paneA, { action: 'pressKey', snapshotId, key: 'a' }))).toBe('input_busy');
     const b = await service.getAppState(paneB, { app: 'Notepad' });
     // B is not throttled by A's actions (only by A's lock, which has gone idle here).
-    (service as unknown as { lock: unknown }).lock = null;
+    (service as unknown as { lease: { clear(): void } }).lease.clear();
     expect(await codeOf(service.control(paneB, { action: 'pressKey', snapshotId: b.snapshotId, key: 'a' }))).toBe('resolved');
   });
 
@@ -754,6 +792,9 @@ describe('openApp', () => {
   it('refuses after the fact when the opened app turns out to be blocked', async () => {
     const { service } = openAppService({ opens: passwords });
     expect(await codeOf(service.openApp(AGENT_A, { app: 'Keys' }))).toBe('app_blocked');
+    // It was launched before that, so the refusal may not be retried blindly.
+    expect(await dispositionOf(service.openApp(AGENT_A, { app: 'Keys' }))).toBe('delivered_unverified');
+    expect(await dispositionOf(service.openApp(AGENT_A, { app: '1Password' }))).toBe('not_delivered');
   });
 
   it('asks consent like other control actions while askPerApp is on', async () => {
@@ -780,6 +821,125 @@ describe('openApp', () => {
   });
 });
 
+describe('accessibility-first observation', () => {
+  const RICH_TREE = [
+    'App: Notepad (pid 10) · Window: "notes.txt - Notepad"',
+    '0 window notes.txt - Notepad',
+    '\t1 document Text editor, Value: hello',
+    '\t2 button Save',
+    '\t3 check box Word wrap',
+    '\t4 tab item notes.txt',
+    '\t5 edit, Value: 12',
+    'Focused: 1',
+  ].join('\n');
+  // A canvas app: menus and the window's own buttons, nothing in the content.
+  const THIN_TREE = [
+    '0 window Game',
+    '\t1 menu bar',
+    '\t\t2 menu bar item File',
+    '\t\t\t3 menu item New',
+    '\t\t\t4 menu item Open',
+    '\t\t\t5 menu item Save',
+    '\t\t\t6 menu item Quit',
+    '\t7 button Close',
+    '\t8 button Minimize',
+    '\t9 button',
+    '\t10 group Canvas',
+  ].join('\n');
+  const observedModes = (calls: Array<{ method: HelperMethod; params: unknown }>) =>
+    calls.filter((c) => c.method === 'getAppState').map((c) => (c.params as { mode: string }).mode);
+
+  it('reads the tree alone when no mode is named and the tree has enough controls', async () => {
+    const { service, calls } = makeService({ tree: RICH_TREE });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(observedModes(calls)).toEqual(['ax']);
+    expect(state.mode).toBe('ax');
+    expect(state.screenshot).toBeUndefined();
+    expect(state.screenshotAdded).toBeUndefined();
+  });
+
+  it('adds a screenshot to a thin tree, says why, and binds x/y to that snapshot', async () => {
+    const { service, calls } = makeService({ tree: THIN_TREE });
+    const state = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(observedModes(calls)).toEqual(['ax', 'both']);
+    expect(state.mode).toBe('both');
+    expect(state.screenshot).toBeDefined();
+    // Menu items are skipped, and so is the unnamed button.
+    expect(state.screenshotAdded).toBe('the accessibility tree has only 2 named controls');
+    expect(await codeOf(service.control(AGENT_A, { action: 'click', snapshotId: state.snapshotId, x: 10, y: 10 }))).toBe('resolved');
+  });
+
+  it('takes an explicit mode as given, and never calls a cut-short walk thin', async () => {
+    const { service, calls } = makeService({ tree: THIN_TREE });
+    const ax = await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'ax' });
+    expect(ax.screenshot).toBeUndefined();
+    expect(ax.screenshotAdded).toBeUndefined();
+    await service.getAppState(AGENT_A, { app: 'Notepad', mode: 'vision' });
+    expect(observedModes(calls)).toEqual(['ax', 'vision']);
+
+    const helper = (service as unknown as { ensureReady: () => HelperLike }).ensureReady();
+    const original = helper.request.bind(helper);
+    helper.request = (async (method: HelperMethod, params: never) => {
+      const result = await original(method, params);
+      return method === 'getAppState' ? { ...(result as AppState), truncated: true } : result;
+    }) as HelperLike['request'];
+    const cut = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(cut.mode).toBe('ax');
+    expect(cut.screenshotAdded).toBeUndefined();
+  });
+
+  it('keeps the tree when the screenshot cannot be added', async () => {
+    // No Screen Recording: no second walk, the reason rides on screenshotStatus.
+    const noPerm = makeService({ tree: THIN_TREE });
+    const helper = (noPerm.service as unknown as { ensureReady: () => HelperLike }).ensureReady();
+    const original = helper.request.bind(helper);
+    helper.request = (async (method: HelperMethod, params: never) => {
+      if (method === 'capabilities') {
+        return { actions: ['getAppState'], modes: ['ax'], permissions: { accessibility: true, screenRecording: false } };
+      }
+      return original(method, params);
+    }) as HelperLike['request'];
+    const state = await noPerm.service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(observedModes(noPerm.calls)).toEqual(['ax']);
+    expect(state.mode).toBe('ax');
+    expect(state.screenshotAdded).toBeUndefined();
+    expect(state.screenshotStatus).toMatchObject({ status: 'failed', error: { code: 'permission_missing' } });
+
+    // The second walk fails: the first tree is returned, not an error.
+    const failing = makeService({ tree: THIN_TREE });
+    const h2 = (failing.service as unknown as { ensureReady: () => HelperLike }).ensureReady();
+    const original2 = h2.request.bind(h2);
+    h2.request = (async (method: HelperMethod, params: never) => {
+      if (method === 'getAppState' && (params as { mode: string }).mode === 'both') {
+        throw new ComputerError('window_not_found', 'the window closed');
+      }
+      return original2(method, params);
+    }) as HelperLike['request'];
+    const kept = await failing.service.getAppState(AGENT_A, { app: 'Notepad' });
+    expect(kept.mode).toBe('ax');
+    expect(kept.tree).toContain('menu bar');
+    expect(kept.screenshotStatus).toMatchObject({ status: 'failed', error: { code: 'screenshot_failed' } });
+  });
+});
+
+describe('countNamedControls', () => {
+  it('skips macOS window buttons and does not read a tab group as a named tab', () => {
+    const mac = [
+      '0 window Preview',
+      '\t1 button close button',
+      '\t2 button minimize button',
+      '\t3 button zoom button',
+      '\t4 button full screen button',
+      '\t5 tab group',
+      '\t\t6 group Canvas',
+      '\t7 toolbar',
+      '\t\t8 button Share',
+    ].join('\n');
+    expect(countNamedControls(mac, { skipWindowButtons: true })).toBe(1);
+    expect(countNamedControls(mac)).toBe(5);
+  });
+});
+
 describe('capabilities for the agent', () => {
   const caps = (accessibility: boolean, screenRecording: boolean) => ({
     actions: ['capabilities', 'listApps', 'listWindows', 'getAppState', 'openApp', 'click', 'type', 'scroll'],
@@ -796,6 +956,12 @@ describe('capabilities for the agent', () => {
     expect(out.missingPermissions).toEqual(['accessibility']);
     expect(out.actions).toEqual(['capabilities', 'listApps', 'listWindows', 'getAppState']);
     expect(out.modes).toEqual(['vision']);
+  });
+
+  it('drops the background input capabilities without Accessibility, and keeps them without Screen Recording', () => {
+    const input = { backgroundPointer: true, focusWithoutRaise: true, keyAuth: true };
+    expect(capabilitiesForAgent({ ...caps(false, true), input })).not.toHaveProperty('input');
+    expect(capabilitiesForAgent({ ...caps(true, false), input }).input).toEqual(input);
   });
 
   it('drops screenshots without Screen Recording, and getAppState with neither', () => {

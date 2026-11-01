@@ -17,6 +17,11 @@
 //               (a helper releasing held input on EOF)
 //   configurable  normal, but its hello also lists the optional `configure`
 //               and `openApp`; configure params go to `<argv[3]>.configure`
+//   deferring   normal, and its hello has `input.deferForeground: true`
+//   deferring-hang-once  like deferring, and it answers resolveTarget and
+//               getAppState for one app (pid 10); it never answers the first
+//               pressKey in the log (the log persists across restarts), and
+//               answers every later one
 // Every request is appended to the file named by argv[3] (if given), so tests
 // can see what the helper received, including across restarts; releaseInput
 // params go to `<argv[3]>.params`, one JSON line each.
@@ -36,7 +41,12 @@ if (mode !== 'silent') {
     protocolVersion: mode === 'old' ? 0 : 2,
     os: 'win32',
     helperVersion: 'fake',
-    capabilities: { actions: mode === 'configurable' ? ['click', 'configure', 'openApp'] : ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } },
+    capabilities: {
+      actions: mode === 'configurable' ? ['click', 'configure', 'openApp'] : ['click'],
+      modes: ['ax'],
+      permissions: { accessibility: true, screenRecording: true },
+      ...(mode.startsWith('deferring') && { input: { backgroundPointer: true, focusWithoutRaise: false, keyAuth: true, deferForeground: true } }),
+    },
   });
 }
 
@@ -52,6 +62,18 @@ rl.on('line', (line) => {
   if (mode === 'eof-release' && req.method === 'click') return;
   if (mode === 'hang-releasehang' && req.method === 'releaseInput') return;
   if (req.method === 'releaseInput') return send({ id: req.id, ok: true, result: { released: mode !== 'hang-norelease', echo: req.method } });
+  if (mode === 'deferring-hang-once') {
+    const app = { id: 'c:\\fake\\app.exe', name: 'Fake', pid: 10, path: 'C:\\fake\\app.exe' };
+    const window = { id: 'w-10', appId: app.id, pid: 10, title: 'Fake window', bounds: { x: 0, y: 0, width: 800, height: 600 } };
+    if (req.method === 'resolveTarget') return send({ id: req.id, ok: true, result: { app, window } });
+    if (req.method === 'getAppState') {
+      return send({ id: req.id, ok: true, result: { snapshotId: `s${req.id}-${process.pid}`, app, window, tree: '0 window', screenshotStatus: { status: 'skipped' } } });
+    }
+    if (req.method === 'pressKey') {
+      const presses = fs.readFileSync(logFile, 'utf8').split('\n').filter((l) => l === 'pressKey').length;
+      if (presses === 1) return;
+    }
+  }
   if (mode === 'exit') process.exit(3);
   if (mode === 'split-utf8' && req.method === 'listApps') {
     const bytes = Buffer.from(JSON.stringify({ id: req.id, ok: true, result: { apps: [{ name: '메모장' }] } }) + '\n');
@@ -65,6 +87,9 @@ rl.on('line', (line) => {
       return send({ id: req.id, ok: true, result: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true } } });
     case 'fail':
       return send({ id: req.id, ok: false, error: { code: 'element_stale', message: 'changed' } });
+    case 'scroll':
+      // An input error: amount 1 carries the helper's disposition, any other none.
+      return send({ id: req.id, ok: false, error: { code: 'window_not_focused', message: 'covered', ...(req.params.amount === 1 && { disposition: 'not_delivered' }) } });
     default:
       return send({ id: req.id, ok: true, result: { method: 'synthetic', verification: 'unverified', echo: req.method } });
   }

@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneBranch, PaneLeaf, Surface, Task, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
-import { handleRpcMethod } from '../useRpcBridge';
+import { buildA2aNudge, handleRpcMethod } from '../useRpcBridge';
 
 const LINK = '11111111-1111-4111-8111-111111111111';
 const HOST = '22222222-2222-4222-8222-222222222222';
@@ -317,6 +317,26 @@ describe('remote reply and state delivery', () => {
     const failed = outboundTask({ state: 'failed', inbox: [{ messageId: 's3', kind: 'state', state: 'failed', delivered: false }] });
     expect(await notify(failed, 's3')).toMatchObject({ ok: true, delivered: true });
     expect(gate.mock.calls[0][1]).toMatch(/A2A task failed:/);
+  });
+
+  it('a report another PC made on our company task leaves the report pointer in the sending pane', async () => {
+    const report = outboundTask({
+      state: 'input-required',
+      inbox: [{ messageId: 's5', kind: 'state', state: 'completed', reported: true, delivered: false }],
+    });
+    expect(await notify(report, 's5')).toEqual({ ok: true, delivered: true, ptyId: PINNED_PTY });
+    expect(gate).toHaveBeenCalledTimes(1);
+    expect(gate.mock.calls[0][0]).toBe(PINNED_PTY);
+    const pointer = gate.mock.calls[0][1] as string;
+    expect(pointer).toBe(`[wmux] pc-b/ws-b/codex reported A2A task ${RT.slice(0, 8)} done on its PC: check the report, then mark it done `
+      + `(a2a_task_update completed) — a2a_task_query task_id:${RT}`);
+    expect(pointer).not.toMatch(/A2A task completed:/);
+    expect(useStore.getState().getTask(RT)!.status.state).toBe('input-required');
+  });
+
+  it('the completed and failed pointers read as before', () => {
+    expect(buildA2aNudge(RT, 'pc-b/ws-b/codex', 'completed')).toBe(`[wmux] A2A task completed: ${RT.slice(0, 8)} from pc-b/ws-b/codex — a2a_task_query task_id:${RT}`);
+    expect(buildA2aNudge(RT, 'pc-b/ws-b/codex', 'failed')).toBe(`[wmux] A2A task failed: ${RT.slice(0, 8)} from pc-b/ws-b/codex — a2a_task_query task_id:${RT}`);
   });
 
   it('only the ending item announces it: an earlier working item handed over late writes nothing', async () => {

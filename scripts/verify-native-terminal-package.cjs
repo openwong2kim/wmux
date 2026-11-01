@@ -34,12 +34,26 @@ function recordShippedDigest(directory) {
   return manifest.sha256;
 }
 
-async function smoke(resources) {
-  assert(process.versions.electron, 'Run this smoke with the packaged Electron executable');
+/**
+ * `runtime` is what the package's daemon runs on: the packaged Electron for
+ * the desktop app, the bundled Node for the wmux-server artifact.
+ */
+async function smoke(resources, runtime = 'electron') {
+  assert.equal(Boolean(process.versions.electron), runtime === 'electron',
+    `Run this smoke with the packaged ${runtime === 'electron' ? 'Electron executable' : 'Node'}`);
   const core = require(path.join(resources, 'wmux-native', 'index.cjs'));
   assert.equal(core.nativeCoreAbiVersion(), 1);
-  for (const capability of ['pty-v1', 'ring-v1', 'frozen-ring-v1', 'text-v1', 'ansi-v2', 'output-chunk-v1', 'output-interpreter-v1']) {
+  for (const capability of ['pty-v1', 'ring-v1', 'frozen-ring-v1', 'text-v1', 'ansi-v2', 'output-chunk-v1', 'output-interpreter-v1', 'console-owner-v1']) {
     assert(core.nativeCoreCapabilities().includes(capability), `Missing ${capability}`);
+  }
+
+  if (process.platform === 'win32') {
+    assert(core.nativeCoreCapabilities().includes('process-table-v1'), 'Missing process-table-v1');
+    const rows = await core.processTable(true);
+    const own = rows.find(row => row.pid === process.pid);
+    assert(own, 'Process table lacks the smoke process');
+    assert(rows.some(row => row.pid === own.ppid), 'Process table lacks the smoke parent');
+    assert(typeof own.created === 'number' && own.cmdline, 'Process table row lacks details');
   }
 
   const interpreter = new core.NativeOutputInterpreter();
@@ -55,7 +69,7 @@ async function smoke(resources) {
   try {
     terminal.feed(Buffer.from('packaged snapshot'));
     assert(terminal.textSnapshot(false).rows.some(row => row.text.includes('packaged snapshot')));
-    assert.match(terminal.ansiSnapshot(), /packaged snapshot/);
+    assert.match(Buffer.from(terminal.ansiSnapshot()).toString('utf8'), /packaged snapshot/);
   } finally { terminal.dispose(); }
 
   const ring = new core.NativeRing(4096);
@@ -105,10 +119,12 @@ async function smoke(resources) {
     });
   } finally { transport?.close(); ring.dispose(); }
   console.log(JSON.stringify({ packagedNativeTerminal: 'ok', platform: process.platform,
-    arch: process.arch, electron: process.versions.electron, resources }));
+    arch: process.arch, electron: process.versions.electron, node: process.version, resources }));
 }
 
 module.exports = { verifyIntegrity, recordShippedDigest };
 if (require.main === module) {
-  smoke(path.resolve(process.argv[2])).catch(error => { console.error(error); process.exitCode = 1; });
+  // `<resources> [--node]`: --node for a package whose daemon runs on Node.
+  smoke(path.resolve(process.argv[2]), process.argv[3] === '--node' ? 'node' : 'electron')
+    .catch(error => { console.error(error); process.exitCode = 1; });
 }

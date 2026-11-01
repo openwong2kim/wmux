@@ -207,6 +207,7 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
           // Per pane, as for an agent: the pane that gets the replies.
           callerKey: paneId,
           ...(p.requestKey !== undefined ? { requestKey: p.requestKey } : {}),
+          ...(typeof p.label === 'string' ? { label: p.label } : {}),
         });
       },
     ],

@@ -79,7 +79,7 @@ import { buildSidebarTree, paneRowsFinished, splitTasksByPane, taskRollup } from
 import { selectWorkspaceAgentStatus, surfaceAttentionStatus } from '../stores/selectors/fleet';
 import { selectWorkspaceAgentRoster, agentSurfaceTitle } from '../stores/selectors/workspaceAgentRoster';
 import { isTaskReadyForReview } from '../stores/selectors/reviewQueue';
-import { buildFleetTickets, type FleetTicket } from '../components/FleetView/fleetTickets';
+import { buildFleetTickets, paneLiveIn, type FleetTicket } from '../components/FleetView/fleetTickets';
 import type { WorkLink } from '../../shared/workLink';
 import { agentSlugToDisplay, isAgentSlug } from '../../shared/agentIdentity';
 
@@ -223,7 +223,7 @@ export function projectMoaDelegations(
   decisions: readonly MoaPendingDecision[],
   now: number,
 ): PhoneMoaDelegation[] {
-  const tickets = buildFleetTickets({ links, decisions, a2aTasks: state.a2aTasks ?? {}, now });
+  const tickets = buildFleetTickets({ links, decisions, a2aTasks: state.a2aTasks ?? {}, now, paneLive: paneLiveIn(state.workspaces) });
   const out: PhoneMoaDelegation[] = [];
   for (const ticket of tickets) {
     if (ticket.origin !== 'moa' && ticket.origin !== 'moa-auto') continue;
@@ -284,7 +284,7 @@ export function projectFleetTickets(
   const L = PHONE_SIDEBAR_LIMITS;
   const tickets: PhoneFleetTicket[] = [];
   const details: PhoneFleetTicketDetail[] = [];
-  for (const ticket of buildFleetTickets({ links, decisions, a2aTasks: state.a2aTasks ?? {}, now })) {
+  for (const ticket of buildFleetTickets({ links, decisions, a2aTasks: state.a2aTasks ?? {}, now, paneLive: paneLiveIn(state.workspaces) })) {
     if (tickets.length >= L.fleetTickets) break;
     if (!isSidebarId(ticket.id) || !isSidebarId(ticket.workspaceId)) continue;
     if (!Number.isSafeInteger(ticket.updatedAt) || ticket.updatedAt <= 0) continue;
@@ -296,7 +296,7 @@ export function projectFleetTickets(
       paneAgent ?? (isAgentSlug(ticket.agent) ? agentSlugToDisplay(ticket.agent) : ticket.agent),
       L.fleetTicketAgentName,
     );
-    const workspaceName = clampSidebarString(state.workspaces.find((w) => w.id === ticket.workspaceId)?.name, L.fleetTicketWorkspaceName);
+    const workspaceName = clampSidebarString(state.workspaces.find((w) => w.id === ticket.workspaceId)?.name ?? ticket.workspaceName, L.fleetTicketWorkspaceName);
     const requestLine = firstTicketLine(ticket.request, L.fleetTicketRequestLine);
     const resultSummary = firstTicketLine(ticket.result?.summary, L.fleetTicketResultSummary);
     const verification = ticket.result?.verification;

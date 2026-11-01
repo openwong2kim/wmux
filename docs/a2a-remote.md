@@ -203,6 +203,38 @@ The **Remote** page has a **Messages between PCs** section:
   delivers it to the agent in that pane now. Held work that nobody handles
   is rejected automatically after 24 hours.
 
+## Company tasks across PCs
+
+A company's CEO pane (its coordinator) can hand work to a pane on another PC
+it is linked to, the way it briefs a staff pane on this PC:
+
+- **A brief is required.** A task from the CEO pane to another PC needs a
+  complete brief in `data` (`{"kind":"wmux.company.brief","v":1,…}` with
+  goal, scope, acceptance, verify and report). Without one the send is
+  refused, naming the missing fields. So a CEO pane can no longer send an
+  unbriefed task to a PC it is linked to; keep a casual link on another
+  pane. Sends from other panes are unchanged.
+- **The other PC gets plain text.** It receives the CEO's message, the five
+  brief fields under their names, and a closing line: finish the task as
+  completed with evidence (the PR URL, its head commit, what was run and who
+  ran the live check). Nothing new goes over the wire, so the other PC may
+  run an older wmux. A task that comes to more than 32 KiB with its brief
+  written out is refused, never cut.
+- **The report is held here.** This PC's copy of the task keeps the brief,
+  so it is a company task here. When the other PC completes it, this PC
+  holds that as a report (`input-required`, with the other PC's message and
+  evidence) instead of finishing it. The CEO pane gets a one-line pointer
+  that the task was reported done, and `a2a_task_query` lists it with
+  `remoteReported: true`.
+- **Done is marked here.** The CEO pane, or the owner, marks the report
+  completed on this PC. wmux first checks every GitHub PR the task names,
+  the report's evidence included (its summaries and locations, not command
+  output), as for a seat on this PC. Nothing is sent back: the other PC's
+  copy is already completed.
+- **A report outlasts the link.** If the link ends (the other pane closes or
+  someone revokes it), open tasks on it fail, but a report stays as it is
+  until it is marked done here.
+
 ## Network and firewall
 
 - **Port.** The listener uses TCP **45660** by default (clear of the phone

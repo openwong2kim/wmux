@@ -1,0 +1,33 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ say it                                                    ",
+  "",
+  "⏺ The shared sentence appears in both replies.",
+  "",
+  "❯ say it again                                              ",
+  "",
+  "⏺ Again: the shared sentence appears in both replies.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "The shared sentence appears in both replies."
+   }
+  ],
+  [
+   {
+    "kind": "prose",
+    "text": "Again: the shared sentence appears in both replies."
+   }
+  ]
+ ]
+}
