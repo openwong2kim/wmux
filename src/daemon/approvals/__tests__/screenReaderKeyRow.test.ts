@@ -76,6 +76,11 @@ describe('screenReaderKeyRow', () => {
     const head = 'Select with numbers [1-4]. Then Enter to submit or Escape to';
     expect(keyRowOf([head, ' cancel:', 'Esc to cancel'])).toMatchObject({ keys: 'numbers', max: 4, row: head });
     expect(keyRowOf([{ text: head }, { text: ' cancel:', wrapped: true }])).toMatchObject({ keys: 'numbers', max: 4 });
+    // Broken right after a space: the space is cut off the first row.
+    expect(keyRowOf([{ text: head }, { text: 'cancel:', wrapped: true }])).toMatchObject({ keys: 'numbers', max: 4 });
+    // Under 26 columns the first row ends before `[1-4]`.
+    expect(keyRowOf(['Select with numbers', '[1-4]. Then Enter to', 'submit or Escape to', 'cancel:'])).toMatchObject({ keys: 'numbers', max: 4, row: 'Select with numbers' });
+    expect(showsScreenReaderKeyRow(['1. PostgreSQL', 'Select with numbers', '[1-4]. Then Enter to'])).toBe(true);
     // A blank row inside it breaks it.
     expect(screenReaderKeyRow([head, '', ' cancel:'])).toBeNull();
   });

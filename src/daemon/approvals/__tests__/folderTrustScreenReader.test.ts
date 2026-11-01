@@ -85,13 +85,24 @@ describe('readFolderTrustScreen in the screen-reader layout', () => {
     expect(readFolderTrustScreen(rows)).toBe('unreadable');
   });
 
-  it('reads a y/n key row with no trust question and no title as no dialog', () => {
+  it('reads another y/n dialog, its choices whole and none a trust choice, as no dialog', () => {
     expect(readFolderTrustScreen([
       'Overwrite the existing config?',
-      'y. Yes, I trust this folder',
-      'n. No, exit',
+      'y. Yes, overwrite it',
+      'n. No, keep it',
       'Enter y/n:',
       'Enter to confirm · Esc to cancel',
     ])).toBeNull();
+  });
+
+  it('reads the dialog whose question and title a short pane scrolled off as unreadable', () => {
+    const rows = screen('screen-reader', 'claude-sr-trust-100x30');
+    const key = rows.findIndex((row) => row.startsWith('Enter y/n:'));
+    // The choices, the key row and the hint are all a 4-row pane shows.
+    expect(readFolderTrustScreen(rows.slice(key - 2, key + 2))).toBe('unreadable');
+    // Only the key row and the hint.
+    expect(readFolderTrustScreen(rows.slice(key, key + 2))).toBe('unreadable');
+    // Trust choices under another question still say which dialog this is.
+    expect(readFolderTrustScreen(['Overwrite the existing config?', ...rows.slice(key - 2, key + 2)])).toBe('unreadable');
   });
 });

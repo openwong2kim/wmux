@@ -628,8 +628,9 @@ const SR_QUESTION_START = /^Do you want to /;
  * Options `1.` to `<max>.` right above the key row; Ink breaks a long label
  * onto rows of its own, which continue it. The question is the 1-3 rows above
  * option 1, the title the nearest `Permission Required:` row above that, and
- * the rows between them the body: its `> ` rows when it has any (Bash), else
- * every row but Claude's tip (Write and Edit: the file and its numbered rows).
+ * the rows between them the body: its `> ` rows when it has any (Bash), each
+ * with the rows Ink broke off it, else every row but Claude's tip (Write and
+ * Edit: the file and its numbered rows).
  * Null when the options are not 1..max in order, or the question is not a
  * permission question (an AskUserQuestion asks `> Which …?`).
  */
@@ -681,11 +682,15 @@ function parseScreenReaderPrompt(key: ScreenReaderKeyRow): ParsedTerminalPrompt 
   // With no title row on screen, the body runs from the grid top, as in a
   // cursor-drawn dialog whose top rule scrolled off.
   const body = lines.slice(titleAt + 1, questionStart).filter((line) => line.trim().length > 0);
-  const marked = body.filter((line) => SR_BODY_ROW.test(line));
-  const fullCommand = (marked.length > 0
-    ? marked.map((line) => line.replace(SR_BODY_ROW, ''))
-    : body.filter((line) => !TIP_ROW.test(line))
-  ).map(normalizePromptText);
+  // A row Ink broke off a `> ` row starts with no `> ` and continues it; rows
+  // above the first `> ` row are the tip.
+  const firstMarked = body.findIndex((line) => SR_BODY_ROW.test(line));
+  const marked: string[] = [];
+  for (const line of firstMarked >= 0 ? body.slice(firstMarked) : []) {
+    if (SR_BODY_ROW.test(line)) marked.push(line.replace(SR_BODY_ROW, ''));
+    else marked[marked.length - 1] += ` ${line}`;
+  }
+  const fullCommand = (firstMarked >= 0 ? marked : body.filter((line) => !TIP_ROW.test(line))).map(normalizePromptText);
   const bodyCut = body.some((line) => CUT_ROW.test(line));
 
   let truncated = false;

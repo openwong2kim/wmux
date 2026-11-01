@@ -141,4 +141,12 @@ describe('parseTerminalPrompt — screen-reader layout', () => {
     expect(parsed?.screenReader).toBeUndefined();
     expect(parsed?.active).toBe(false);
   });
+
+  it('joins a `> ` row Ink broke onto the next row back into it', () => {
+    const rows = screen('claude-sr-bash-60x30');
+    const broken = (tail: string) => replaceRow(rows, '> npm run clean', '> rm -rf ./build ./dist && npm run clean && npm run', tail);
+    const prod = parseTerminalPrompt(broken('build -- --prod'));
+    expect(prod?.commandRows).toEqual(['Remove the build output', 'rm -rf ./build ./dist && npm run clean && npm run build -- --prod', 'This command requires approval']);
+    expect(prod?.fingerprint).not.toBe(parseTerminalPrompt(broken('test'))?.fingerprint);
+  });
 });

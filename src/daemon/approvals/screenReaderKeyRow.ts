@@ -30,15 +30,17 @@ export interface ScreenReaderKeyRow {
   at: number;
 }
 
-/** How a key row starts, on its first row. */
-const SR_KEY_START = /^(?:Select with numbers \[1-\d{1,2}\]|Enter y\/n:)/;
+/** How a key row starts, on its first row (a pane under 26 columns breaks it before `[1-n]`). */
+const SR_KEY_START = /^(?:Select with numbers\b|Enter y\/n:)/;
 /**
- * The whole key row, its rows joined with one space. What was typed may follow
- * the colon: numbers (with commas or spaces for several), or one key for y/n.
- * Anything longer is not a key row read whole.
+ * The whole key row, its rows joined with every space dropped: a pane may
+ * break it at a space with or without the soft-wrap flag, and the space is
+ * then on either row or on none. What was typed may follow the colon: numbers
+ * (commas between several), or one key for y/n. Anything longer is not a key
+ * row read whole.
  */
-const SR_NUMBERS_ROW = /^Select with numbers \[1-(\d{1,2})\]( \(comma- or space-separated for several\))?\. Then Enter to submit or Escape to cancel:(?: [\d, ]+)?$/i;
-const SR_YES_NO_ROW = /^Enter y\/n:(?: \S)?$/;
+const SR_NUMBERS_ROW = /^Selectwithnumbers\[1-(\d{1,2})\](\(comma-orspace-separatedforseveral\))?\.ThenEntertosubmitorEscapetocancel:[\d,]*$/i;
+const SR_YES_NO_ROW = /^Entery\/n:\S?$/;
 /** The key hint under a permission or trust dialog's key row. */
 const SR_KEY_HINT = /^(?:Enter to confirm · )?Esc to cancel$/;
 /** Rows a key row may take once a narrow pane breaks it (four at 30 columns). */
@@ -58,7 +60,7 @@ export function screenReaderKeyRow(rows: readonly PromptRow[]): ScreenReaderKeyR
   for (let at = end; at >= 0 && at > end - SR_KEY_ROW_MAX_ROWS; at--) {
     if (!lines[at]!.trim()) return null;
     if (!SR_KEY_START.test(lines[at]!.trim())) continue;
-    const text = lines.slice(at, end + 1).join(' ').replace(/\s+/g, ' ').trim();
+    const text = lines.slice(at, end + 1).join('').replace(/\s+/g, '');
     const numbers = SR_NUMBERS_ROW.exec(text);
     if (numbers) return { keys: 'numbers', max: Number(numbers[1]), multi: numbers[2] !== undefined, lines, at };
     return SR_YES_NO_ROW.test(text) ? { keys: 'y/n', multi: false, lines, at } : null;

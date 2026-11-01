@@ -336,6 +336,8 @@ function trustDialogBlock(rows: readonly string[]): TrustRow[] | null {
 const SR_TRUST_CHOICE = /^([a-z])\. (.+)$/;
 /** The title row over Claude Code's screen-reader trust dialog. */
 const SR_TRUST_TITLE = /^Permission Required: Accessing workspace:$/;
+/** A choice label Ink cut short. */
+const CUT_ROW_END = /…$/;
 /** How the screen-reader trust dialog's key row starts, typed key or not. */
 const SR_YES_NO_START = /^Enter y\/n:/;
 
@@ -352,14 +354,18 @@ function trustQuestionAbove(texts: readonly string[], end: number): boolean {
  * Claude Code's screen-reader trust dialog (fixtures/screen-reader/): 'trust'
  * when it reads whole, 'unreadable' when its question or title is on screen
  * over an `Enter y/n:` row but it does not, null when neither is on screen.
+ * A pane too short for the whole dialog scrolls its question and title off:
+ * a y/n key row at the bottom with no question is still 'unreadable', unless
+ * the choices right above it are whole and none is a trust choice.
  */
 function readScreenReaderTrust(rows: readonly string[]): 'trust' | 'unreadable' | null {
   const texts = rows.map((row) => row.trim());
   let keyAt = texts.length - 1;
   while (keyAt >= 0 && !SR_YES_NO_START.test(texts[keyAt] ?? '')) keyAt--;
   if (keyAt < 0) return null;
-  if (!texts.slice(0, keyAt).some((text) => SR_TRUST_TITLE.test(text)) && !trustQuestionAbove(texts, keyAt)) return null;
   const key = screenReaderKeyRow(rows);
+  const titled = texts.slice(0, keyAt).some((text) => SR_TRUST_TITLE.test(text)) || trustQuestionAbove(texts, keyAt);
+  if (!titled && key?.keys !== 'y/n') return null;
   if (key?.keys !== 'y/n') return 'unreadable';
   const lines = key.lines.map((line) => line.trim());
   const choices: { key: string; label: string }[] = [];
@@ -368,6 +374,10 @@ function readScreenReaderTrust(rows: readonly string[]): 'trust' | 'unreadable' 
     const [, letter, label] = SR_TRUST_CHOICE.exec(lines[first - 1] ?? '') ?? [];
     if (letter === undefined || label === undefined) break;
     choices.push({ key: letter, label });
+  }
+  if (!titled) {
+    const trustChoice = choices.some((choice) => TRUST_GRANT_LABEL.test(choice.label) || TRUST_DECLINE_LABEL.test(choice.label));
+    return choices.length >= 2 && !trustChoice && !choices.some((choice) => CUT_ROW_END.test(choice.label)) ? null : 'unreadable';
   }
   const keys = choices.map((choice) => choice.key).sort().join('');
   return keys === 'ny'
