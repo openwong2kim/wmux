@@ -1134,7 +1134,7 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
     // The item's own state, not the task's: an earlier `working` item handed
     // over late must not announce the end. A peer's `completed` held here as a
     // report (`reported`) asks this side to check it and mark it done.
-    const ended = (item as { reported?: unknown }).reported === true
+    const ended = item.reported === true
       ? 'reported'
       : item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
     if (!ended || side !== 'from') return { ok: true, delivered: true };
