@@ -24,11 +24,13 @@ import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow OpenClaude
 // Stamped on every bridge.log line; bump on behavior changes.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal -> hooks.signal).
-const BRIDGE_VERSION = '0.2.0';
+//   0.3.0 — `where` on hooks from outside a wmux pane (external sessions).
+const BRIDGE_VERSION = '0.3.0';
 
 // Retry transient connect failures within the HOOK_TIMEOUT_MS budget.
 // A pipe that is ABSENT (ENOENT — wmux not running) is NOT retried.
@@ -320,6 +322,64 @@ function sessionIdFromTranscript(transcriptPath, fallback) {
   return fallback;
 }
 
+// ----- External sessions: where a hook outside a wmux pane runs ----------
+// Same as the Claude bridge (integrations/claude/bin/wmux-bridge.mjs); keep
+// the two in step.
+
+const WHERE_FIELD_MAX = 64;
+const TMUX_QUERY_TIMEOUT_MS = 150;
+
+function whereText(value) {
+  if (typeof value !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex -- env text is untrusted
+  const text = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, WHERE_FIELD_MAX).trim();
+  return text.length > 0 ? text : undefined;
+}
+
+function queryTmuxTarget(env) {
+  const args = ['display-message', '-p'];
+  if (typeof env.TMUX_PANE === 'string' && env.TMUX_PANE.length > 0) args.push('-t', env.TMUX_PANE);
+  args.push('#S:#I');
+  try {
+    const out = spawnSync('tmux', args, {
+      encoding: 'utf8',
+      timeout: TMUX_QUERY_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    if (out.status !== 0 || typeof out.stdout !== 'string') return null;
+    const line = out.stdout.trim();
+    const cut = line.lastIndexOf(':');
+    return cut > 0 ? { session: line.slice(0, cut), window: line.slice(cut + 1) } : null;
+  } catch {
+    return null;
+  }
+}
+
+function whereFromEnv(env, queryTmux) {
+  const wslDistro = whereText(env.WSL_DISTRO_NAME);
+  let where = null;
+  if (env.TMUX || env.TMUX_PANE) {
+    const target = queryTmux ? queryTmux(env) : null;
+    where = { kind: 'tmux', session: whereText(target?.session), window: whereText(target?.window) };
+  } else if (env.STY) {
+    const sty = String(env.STY);
+    where = { kind: 'screen', session: whereText(sty.slice(sty.indexOf('.') + 1)) };
+  } else if (env.ZELLIJ_SESSION_NAME || env.ZELLIJ) {
+    where = { kind: 'zellij', session: whereText(env.ZELLIJ_SESSION_NAME) };
+  } else if (env.SSH_CONNECTION) {
+    where = { kind: 'ssh', label: whereText(String(env.SSH_CONNECTION).trim().split(/\s+/)[0]) };
+  } else if (env.TERM_PROGRAM) {
+    where = { kind: 'terminal', label: whereText(env.TERM_PROGRAM) };
+  } else if (wslDistro) {
+    where = { kind: 'unknown' };
+  }
+  if (!where) return undefined;
+  if (wslDistro) where.wslDistro = wslDistro;
+  for (const key of Object.keys(where)) if (where[key] === undefined) delete where[key];
+  return where;
+}
+
 // ----- stdin reader -------------------------------------------------------
 
 async function readStdin() {
@@ -567,6 +627,17 @@ async function main() {
       ? process.env.WMUX_PTY_ID
       : undefined;
 
+  // External sessions: a hook from outside any wmux pane says where it runs
+  // (the tmux lookup, one bounded spawn, only on SessionStart).
+  let where;
+  if (!envPtyId) {
+    try {
+      where = whereFromEnv(process.env, hookName === 'SessionStart' ? queryTmuxTarget : null);
+    } catch {
+      where = undefined;
+    }
+  }
+
   // Build the AgentSignal envelope.
   const envelope = {
     kind: hookName === 'PostToolUse'
@@ -580,6 +651,7 @@ async function main() {
     workspaceId: envWorkspaceId,
     surfaceId: envSurfaceId,
     ptyId: envPtyId,
+    ...(where ? { where } : {}),
     ...(entrypoint ? { entrypoint } : {}),
     // OBSERVATIONAL, macOS only: see the Claude bridge.
     ...(process.platform === 'darwin' ? { agentPid: process.ppid } : {}),

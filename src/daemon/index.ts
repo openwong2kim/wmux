@@ -233,6 +233,8 @@ import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug, agentRow, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { DIALOG_RECHECK_MS, HookIngest, identifiedAgentPid, type HookArbitration } from './hooks/HookIngest';
+import { ExternalSessionRegistry } from './externalSessions/ExternalSessionRegistry';
+import { EXTERNAL_SESSIONS_CHANGED_EVENT, EXTERNAL_SESSIONS_RPC } from '../shared/externalSessions';
 import { DetectionAgreementLog } from './diagnostics/detectionAgreementLog';
 import { deriveAgentLiveness } from './hooks/agentLiveness';
 import { classifyClaudeStopFailure, classifyCodexTurnCompleted, type TurnFailure } from '../shared/phoneTurnFailure';
@@ -404,6 +406,8 @@ function recordHistory(work: (store: RunHistoryStore) => void): void {
   catch (error) { log('warn', 'Phone run history could not be saved:', error); }
 }
 let hookIngest: HookIngest | null = null;
+/** External sessions: hooks from agents outside wmux that reach no pane. Module-level like `hookIngest`. */
+let externalSessions: ExternalSessionRegistry | null = null;
 /**
  * Opt-in detector-vs-hook agreement log (`diagnostics.detectionAgreement`).
  * Module-level like `hookIngest`: its hook side lives in registerRpcHandlers
@@ -5260,6 +5264,26 @@ function registerRpcHandlers(
     return projector.codeBlock(id, { srcOffset, n, ...(eventId ? { eventId } : {}) });
   });
 
+  // External sessions (shared/externalSessions.ts): agents running outside
+  // wmux whose hooks route to no pane, shown as status rows only. Both methods
+  // are first-party, like the transcript reads: a row carries the agent's
+  // first prompt, its question and its folder. The change event reaches only
+  // event subscribers, which are first-party by construction.
+  if (!externalSessions) {
+    externalSessions = new ExternalSessionRegistry({
+      isPidRunning: isPidAlive,
+      onChanged: (sessions) => pipeServer.broadcast({ type: EXTERNAL_SESSIONS_CHANGED_EVENT, sessionId: '', data: sessions }),
+    });
+  }
+  const externalRegistry = externalSessions;
+  pipeServer.onRpc(EXTERNAL_SESSIONS_RPC.list, async (_params, ctx) =>
+    (firstPartyOnly(ctx.clientId, EXTERNAL_SESSIONS_RPC.list) ? externalRegistry.list() : []));
+  pipeServer.onRpc(EXTERNAL_SESSIONS_RPC.hide, async (params, ctx) => {
+    if (!firstPartyOnly(ctx.clientId, EXTERNAL_SESSIONS_RPC.hide)) return { ok: false };
+    const id = typeof params?.['id'] === 'string' ? params['id'] : '';
+    return { ok: id.length > 0 && externalRegistry.hide(id) };
+  });
+
   if (!hookIngest) {
     hookIngest = new HookIngest({
       listLiveSessions: () => sessionManager.listLiveSessions(),
@@ -5405,11 +5429,14 @@ function registerRpcHandlers(
       // #783 — the gated-tools list from daemon config. A GETTER so `wmux gate
       // --add` takes effect on the next tool call without a daemon restart.
       gateConfig: () => coerceGate(loadConfig().gate),
-      // Exact pane identity only: a cwd-resolved guess could hold (or later
-      // type a continue into) a sibling pane in the same directory (#919).
       onResolvedSignal: (sessionId, signal) => {
+        // The conversation reports from a pane now, so it is not external.
+        if (signal.agentSessionId) externalSessions?.forget(signal.agent, signal.agentSessionId);
+        // Exact pane identity only: a cwd-resolved guess could hold (or later
+        // type a continue into) a sibling pane in the same directory (#919).
         if (signal.ptyId === sessionId) usageLimits?.noteHookSignal(sessionId, signal);
       },
+      onUnroutedSignal: (signal) => { externalSessions?.note(signal); },
       dialogOnScreen: (sessionId) => dialogOnScreen?.(sessionId) ?? Promise.resolve(null),
       onTentativeDialogLapsed: (sessionId) => { tentativeDialogLapsed?.(sessionId); },
       // Chat View P1 — the tail nudge rides the existing hook signals rather
@@ -8843,6 +8870,7 @@ async function shutdown(
   // process open; clearing it just keeps a shutdown from logging one last
   // rolling summary on the way out.
   hookIngest?.dispose();
+  externalSessions?.dispose();
   // #783 — defer every pending gate waiter so the exit is clean. Each held RPC
   // response gets a 'defer', and the bridge falls back to the local permission
   // flow instead of dying with a broken pipe.
