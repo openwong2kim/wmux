@@ -149,7 +149,8 @@ export interface SeatBriefInput {
  * other seats and the shape of a brief, which wmux requires on every task it
  * sends to a staff seat (shared/company.ts decideCompanySend). A seat reports
  * with input-required and only the CEO or the owner marks the task done
- * (companyDoneRefusal); both briefs say so.
+ * (companyDoneRefusal); both briefs say so. The CEO is also told that wmux
+ * checks the PRs a task names before its done (companyDonePrCheck).
  */
 export function seatBrief(input: SeatBriefInput): string {
   const me = input.seats[input.seat];
@@ -181,6 +182,10 @@ export function seatBrief(input: SeatBriefInput): string {
       lines.push(
         'A seat reports finished work with status input-required. Read the report and check it, then mark the task done ' +
         'with a2a_task_update status completed and evidence. Only you or the owner can.',
+      );
+      lines.push(
+        'Before the task is marked done, wmux checks every PR it names (its current head, required checks and open review threads) ' +
+        'and refuses until they pass.',
       );
     }
     lines.push('Wait for the owner\'s first request.');

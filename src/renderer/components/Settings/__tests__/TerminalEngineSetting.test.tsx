@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // @wmux-lane unit
-// 'win32' and 'darwin' here are only platform values given to the mocked electronAPI; nothing reaches the OS.
+// 'win32', 'darwin' and 'linux' here are only platform values given to the mocked electronAPI; nothing reaches the OS.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -59,11 +59,11 @@ describe('terminal engine setting', () => {
     set.mockResolvedValue(initial); await choose('node');
     expect(container.textContent).not.toContain('settings.terminalEngineRestartDaemon');
   });
-  it('names Rust as the default on Windows and macOS and as experimental elsewhere', async () => {
+  it('names Rust as the default on Windows, macOS and Linux and as experimental elsewhere', async () => {
     await render();
     const rust = () => select().querySelector('option[value="rust"]')?.textContent;
     expect(rust()).toBe('settings.terminalEngineRust');
-    for (const platform of ['win32', 'darwin']) {
+    for (const platform of ['win32', 'darwin', 'linux']) {
       act(() => root.unmount());
       root = createRoot(container);
       (window.electronAPI as unknown as { platform: string }).platform = platform;
