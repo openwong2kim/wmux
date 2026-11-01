@@ -161,16 +161,19 @@ describe('PTY_RECONNECT keeps only a pipe the create attached (source-level lock
     expect(RECONNECT).toMatch(/const ownsCreatePipe = createAttachedPipes\.delete\(id\);\s*const pipe = await reconnectSessionPipe\(daemonClient, id, \{[\s\S]*?ownsCreatePipe,/);
   });
 
-  it('death, supervised restart and dispose drop the mark', () => {
-    expect(SRC).toMatch(/disconnectSessionPipe\(payload\.sessionId\)\.catch\(\(\) => \{\}\);\s*createAttachedPipes\.delete\(payload\.sessionId\);/);
-    expect(SRC).toMatch(/onDaemonSessionRestarted = \(payload\) => \{[\s\S]{0,400}?createAttachedPipes\.delete\(payload\.sessionId\);/);
-    expect(SRC).toMatch(/await daemonClient\.disconnectSessionPipe\(id\);\s*createAttachedPipes\.delete\(id\);/);
+  it('death, supervised restart and dispose drop the mark and the first-output hook', () => {
+    expect(SRC).toMatch(/function forgetCreateState\(sessionId: string\): void \{\s*createAttachedPipes\.delete\(sessionId\);\s*firstOutputHooks\.delete\(sessionId\);/);
+    expect(SRC).toMatch(/disconnectSessionPipe\(payload\.sessionId\)\.catch\(\(\) => \{\}\);\s*forgetCreateState\(payload\.sessionId\);/);
+    expect(SRC).toMatch(/onDaemonSessionRestarted = \(payload\) => \{[\s\S]{0,500}?forgetCreateState\(payload\.sessionId\);/);
+    expect(SRC).toMatch(/await daemonClient\.disconnectSessionPipe\(id\);\s*forgetCreateState\(id\);/);
   });
 
   it('the startup line hears the shell first speak through whichever listener the session has', () => {
     expect(SRC).toMatch(/firstOutputHooks\.set\(sessionId, initialCmd\.onFirstData\);/);
     expect(SRC).toMatch(/if \(payload\.sessionId !== sessionId\) return;\s*noteFirstOutput\(sessionId\);/);
-    expect(RECONNECT).toMatch(/if \(payload\.sessionId !== id\) return;[\s\S]{0,120}?noteFirstOutput\(id\);/);
+    // A reconnect's listener counts live bytes only: a re-flush replay opens
+    // with its own terminal reset, which is not the shell speaking.
+    expect(RECONNECT).toMatch(/if \(payload\.sessionId !== id\) return;[\s\S]{0,400}?if \(!payload\.replay\) noteFirstOutput\(id\);/);
     // The create listener no longer calls the startup line directly.
     expect(SRC).not.toMatch(/return;\s*initialCmd\.onFirstData\(\);/);
   });
@@ -180,5 +183,7 @@ describe('PTY_RECONNECT keeps only a pipe the create attached (source-level lock
     expect(RECONNECT).toMatch(/return await resyncOf\(daemonClient\)\(id, scrollback\);/);
     // Only the shared helper calls the daemon's re-flush.
     expect(SRC).not.toMatch(/rpc\('daemon\.resyncSession'/);
+    // A flush complete ends the episode for joiners.
+    expect(SRC).toMatch(/onDaemonFlushComplete = \(payload[^\n]*\n[\s\S]{0,300}?sessionResync\?\.flushCompleted\(payload\.sessionId\);/);
   });
 });

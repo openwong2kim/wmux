@@ -31,6 +31,14 @@ export interface SessionResync {
   (id: string, scrollback?: number): Promise<SessionResyncResult>;
   /** Whether a re-flush of `id` is in flight. */
   inFlight(id: string): boolean;
+  /**
+   * main's scanner reported a flush complete for `id`. The episode's replay
+   * and its flushComplete have gone out, so it takes no more joiners: one
+   * arriving now would wait for a flushComplete already sent. Its own callers
+   * still get its outcome when the daemon's reply lands (the FLUSH_DONE on
+   * the session socket can be read before the reply on the control socket).
+   */
+  flushCompleted(id: string): void;
 }
 
 export function createSessionResync(client: SessionResyncClient): SessionResync {
@@ -85,5 +93,10 @@ export function createSessionResync(client: SessionResyncClient): SessionResync 
     return episode;
   }) as SessionResync;
   resync.inFlight = (id: string) => episodes.has(id);
+  // Only a re-flush can be in flight when this fires for a session with an
+  // episode: arming needs a live scanner, so no attach flush runs beside it.
+  resync.flushCompleted = (id: string) => {
+    episodes.delete(id);
+  };
   return resync;
 }

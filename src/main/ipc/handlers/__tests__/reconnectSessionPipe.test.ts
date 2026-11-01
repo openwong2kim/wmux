@@ -88,16 +88,26 @@ class World {
     hook?.();
   }
 
+  /** Replays main forwarded (attach flush or re-flush), in order. */
+  replays: string[] = [];
+
   private emit(data: string, replay: boolean): void {
+    if (replay) this.replays.push(data);
     this.listener?.({ sessionId: ID, data: Buffer.from(data), replay });
   }
 
-  /** The daemon's attach flush reaching main's socket. */
+  /** The shell prints: live bytes into the ring and down the pipe. */
+  shellSays(text: string): void {
+    this.ring += text;
+    if (this.socket?.alive && this.scanner === 'live') this.emit(text, false);
+  }
+
+  /** The daemon's attach flush reaching main's socket (an empty ring replays nothing). */
   private flushTo(socket: FakeSocket): void {
     this.scanner = 'accumulating';
     setTimeout(() => {
       if (this.socket !== socket || !socket.alive) return;
-      this.emit(this.ring, true);
+      if (this.ring) this.emit(this.ring, true);
       this.scanner = 'live';
       socket.server.flushed = true;
     }, 1);
@@ -122,10 +132,15 @@ class World {
       this.leakedMarkers++;
     }
     await deliberateSleep(1, 'the fake replay on its way to main (fake timers drive it)');
-    this.emit(this.ring, true);
+    // RIS, then the screen, then FLUSH_DONE (SessionPipe.reflushInSlot); main's
+    // flush-complete forwarder tells the shared re-flush.
+    this.emit('\x1bc' + this.ring, true);
     this.scanner = 'live';
     server.flushed = true;
     server.reflushing = false;
+    this.resync.flushCompleted(ID);
+    // The RPC reply comes over the control socket, read after FLUSH_DONE.
+    await deliberateSleep(2, 'the fake daemon reply trailing its FLUSH_DONE (fake timers drive it)');
     return { mode: 'raw' };
   }
 
@@ -203,7 +218,7 @@ async function mountReattach(world: World, ownsCreatePipe = true): Promise<{ pai
     resync: world.resync,
     installListener: () => {
       world.listener = (p) => {
-        world.noteFirstOutput();
+        if (!p.replay) world.noteFirstOutput();
         painted.push(p.data.toString());
       };
     },
@@ -248,8 +263,24 @@ describe('a Terminal adopting a pane main created keeps the create-time session 
     // would wait for the 3 s no-output fallback.
     await create(world, 'claude');
     const mount = mountReattach(world);
+    await vi.advanceTimersByTimeAsync(3);
+    world.shellSays('\r\nPS> ');
     await vi.advanceTimersByTimeAsync(100);
     await mount;
+    expect(world.ptyInput).toBe('claude\r');
+  });
+
+  it('a re-flush replay is not the shell speaking: the line waits for real output', async () => {
+    world.ring = ''; // a shell that has printed nothing yet
+    await create(world, 'claude');
+    await vi.advanceTimersByTimeAsync(5); // the attach flush: nothing to replay
+    const mount = mountReattach(world);
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await mount).kind).toBe('kept');
+    expect(world.replays).toEqual(['\x1bc']); // the re-flush's reset
+    expect(world.ptyInput).toBe('');
+    world.shellSays('PS> ');
+    await vi.advanceTimersByTimeAsync(50);
     expect(world.ptyInput).toBe('claude\r');
   });
 
@@ -264,7 +295,7 @@ describe('a Terminal adopting a pane main created keeps the create-time session 
     expect(world.attaches).toBe(1);
     expect(world.socket).toBe(socketBefore);
     expect(world.resyncCalls).toBe(1);
-    expect(re.painted).toEqual(['PS> ']);
+    expect(re.painted).toEqual(['\x1bcPS> ']);
     expect(world.leakedMarkers).toBe(0);
   });
 });
@@ -290,6 +321,21 @@ describe('the mount re-flush and a reveal re-flush of the same pane are one', ()
     expect(await reveal).toEqual({ success: true, mode: 'raw' });
     expect(world.resyncCalls).toBe(1);
     expect(world.disarms).toBe(0);
+    expect(world.leakedMarkers).toBe(0);
+  });
+
+  it('a reveal asking after the mount re-flush painted gets one of its own', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const mount = mountReattach(world);
+    await vi.advanceTimersByTimeAsync(REFLUSH_BEGIN_MS + 1.5); // FLUSH_DONE in, daemon reply not yet
+    expect(world.replays).toHaveLength(2); // attach flush, mount re-flush
+    const reveal = world.resync(ID, 1000);
+    await vi.advanceTimersByTimeAsync(30);
+    expect((await mount).kind).toBe('kept');
+    expect(await reveal).toEqual({ success: true, mode: 'raw' });
+    expect(world.resyncCalls).toBe(2);
+    expect(world.replays).toHaveLength(3); // the reveal's own flushComplete came
     expect(world.leakedMarkers).toBe(0);
   });
 

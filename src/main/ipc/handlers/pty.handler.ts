@@ -477,6 +477,11 @@ export function registerPTYHandlers(
     firstOutputHooks.delete(sessionId);
     hook();
   }
+  /** Drop what a daemon create left for its session's first reconnect. */
+  function forgetCreateState(sessionId: string): void {
+    createAttachedPipes.delete(sessionId);
+    firstOutputHooks.delete(sessionId);
+  }
 
   // One live-pipe re-flush per session, shared by pty:resync and pty:reconnect
   // (sessionResync.ts). Per registration, like the stream scanners it arms;
@@ -560,6 +565,9 @@ export function registerPTYHandlers(
     sessionDataDispatcher = createSessionDataDispatcher(daemonClient);
 
     onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
+      // A re-flush whose FLUSH_DONE is in has painted: a caller from here on
+      // needs a re-flush of its own, not this one (sessionResync.ts).
+      sessionResync?.flushCompleted(payload.sessionId);
       // P1-3 ordering rule: the flush-complete marker must never overtake
       // batched data — the renderer resets + settles its resync on this
       // marker, and a late chunk would parse as live output onto the fresh
@@ -1438,8 +1446,7 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
-      createAttachedPipes.delete(id);
-      firstOutputHooks.delete(id);
+      forgetCreateState(id);
       sessionDecoders.delete(id);
       forgetPtyShell(id);
       forgetFolderTrustPane(id);
@@ -1753,8 +1760,11 @@ export function registerPTYHandlers(
         // reconnect) is swapped, not duplicated.
         const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
           if (payload.sessionId !== id) return;
-          // A startup line still waiting for the shell's first output.
-          noteFirstOutput(id);
+          // A startup line still waiting for the shell's first output hears
+          // it from live bytes only: a re-flush replay opens with a terminal
+          // reset of its own (SessionPipe.reflushInSlot), so a replay here
+          // is no evidence the shell has spoken.
+          if (!payload.replay) noteFirstOutput(id);
           // P1-3: same decode-then-batch as the create path.
           const text = decodeSessionData(id, payload.data);
           if (text) dataBatcher.push(id, text, payload.replay);
@@ -1951,8 +1961,7 @@ export function registerPTYHandlers(
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1, payload.signal ?? null);
       }
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
-      createAttachedPipes.delete(payload.sessionId);
-      firstOutputHooks.delete(payload.sessionId);
+      forgetCreateState(payload.sessionId);
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
@@ -2000,8 +2009,8 @@ export function registerPTYHandlers(
     onDaemonSessionRestarted = (payload) => {
       // The daemon stopped the dead PTY's pipe; the renderer's reconnect on
       // this restart must attach the new one, never keep main's old socket
-      // (its close may not have arrived yet).
-      createAttachedPipes.delete(payload.sessionId);
+      // (its close may not have arrived yet). The new PTY has no startup line.
+      forgetCreateState(payload.sessionId);
       // P1-3 ordering rule: the old PTY's trailing output must precede the
       // restart marker (the renderer re-attaches on it).
       dataBatcher.finishSession(payload.sessionId);
