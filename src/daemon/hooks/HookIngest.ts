@@ -387,6 +387,14 @@ export interface HookIngestDeps {
    */
   isAutomationPane?: (sessionId: string) => boolean;
   /**
+   * Fan-out — is this pane in the task workspace of an open fan-out task? Such
+   * a pane raises no #783 gate either: a fan-out worker runs unattended (the
+   * 2026-09-24 no-approval default), so holding its calls for a phone only
+   * stalls it until the gate deadline. Its boundary is its launch mode and the
+   * agent's own prompts. Task records, never the workspace title or id shape.
+   */
+  isFanoutWorkerPane?: (sessionId: string) => boolean;
+  /**
    * External sessions — a valid signal that reached no pane: an agent running
    * outside wmux (tmux, ssh, another terminal), or one whose guessed pane
    * refused it. Never called for a signal that routed to a pane. The signal's
@@ -1228,7 +1236,9 @@ export class HookIngest {
       env: sessions.find((s) => s.id === sessionId)?.env,
     });
     const isAutomation = this.deps.isAutomationPane?.(sessionId) === true;
-    const isGated = !bypassing && !isBrain && !isAutomation && toolName !== null && gatedTools.includes(toolName);
+    const isFanoutWorker = this.deps.isFanoutWorkerPane?.(sessionId) === true;
+    const isGated = !bypassing && !isBrain && !isAutomation && !isFanoutWorker
+      && toolName !== null && gatedTools.includes(toolName);
 
     if (!isGated) {
       // Non-gated tool (or a bypass session) — emit tool_started for the phone

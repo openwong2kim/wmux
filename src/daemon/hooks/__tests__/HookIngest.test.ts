@@ -1326,6 +1326,27 @@ describe('HookIngest', () => {
       expect(base.emitted.at(-1)?.data.hookKind).toBe('agent.tool_started');
     });
 
+    it('opens no gate for a fan-out worker pane, and still gates a pane that is not one', () => {
+      for (const [isWorker, expected] of [[true, 0], [false, 1]] as const) {
+        const base = makeDeps();
+        let gatesOpened = 0;
+        const ingestWithGate = new HookIngest({
+          ...base.deps,
+          gateConfig: () => ({ gatedTools: ['Bash'] }),
+          isFanoutWorkerPane: (id) => isWorker && id === 'pty-a',
+          approvals: {
+            ...base.deps.approvals,
+            noteGateAwaiting: () => {
+              gatesOpened += 1;
+              return 'gate-id';
+            },
+          },
+        });
+        ingestWithGate.handlePermissionGate(gateSignal());
+        expect(gatesOpened, `worker=${isWorker}`).toBe(expected);
+      }
+    });
+
     it('still gates the same tool when the session prompts (acceptEdits / default / absent)', () => {
       // acceptEdits auto-approves edits but still prompts for Bash, so its gate
       // stays meaningful — only bypassPermissions is a declared opt-out.

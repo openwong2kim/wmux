@@ -450,6 +450,20 @@ describe('isMissionTaskSeat (#1920) — the mission channel seat a fan-out worke
     await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner' });
     expect(svc.isMissionTaskSeat(started.channelId, 'ws-task')).toBe(false);
   });
+
+  it('isOpenTaskWorkspace names a task workspace only while its task is open', async () => {
+    const svc = newWorkTaskService(newLog(), newChannelService(makeFakeWriter()) as unknown as WorkTaskChannelPort);
+    await svc.boot();
+    const started = await svc.startMission({ title: 'Gate me not', verifiedWorkspaceId: 'ws-owner', memberId: 'lead' });
+    if (!started.ok) throw new Error('start failed');
+    expect(svc.isOpenTaskWorkspace('ws-task')).toBe(false);
+    await svc.updateMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner', paneGroupId: 'ws-task' });
+    expect(svc.isOpenTaskWorkspace('ws-task')).toBe(true);
+    expect(svc.isOpenTaskWorkspace('ws-owner')).toBe(false);
+    expect(svc.isOpenTaskWorkspace('')).toBe(false);
+    await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-owner' });
+    expect(svc.isOpenTaskWorkspace('ws-task')).toBe(false);
+  });
 });
 
 // ═══ §3 멱등 (start 재시도 · 재close) ═══════════════════════════════════

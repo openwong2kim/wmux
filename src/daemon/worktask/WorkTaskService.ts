@@ -751,6 +751,20 @@ export class WorkTaskService {
     return false;
   }
 
+  /**
+   * Is `workspaceId` the materialized task workspace (paneGroupId) of an OPEN
+   * task? The permission gate reads this to let a fan-out worker run without
+   * holding its calls for a phone: fan-out runs unattended by design. Projection
+   * data only — the paneGroupId was written by the task owner, never the worker.
+   */
+  isOpenTaskWorkspace(workspaceId: string): boolean {
+    if (!workspaceId) return false;
+    for (const task of this.tasks.values()) {
+      if (task.status === 'open' && task.paneGroupId === workspaceId) return true;
+    }
+    return false;
+  }
+
   /** 관측용(테스트/디버그): 현재 projection 태스크 수. */
   get taskCount(): number {
     return this.tasks.size;

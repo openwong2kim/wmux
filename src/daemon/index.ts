@@ -5421,6 +5421,12 @@ function registerRpcHandlers(
       },
       log: (level, message) => log(level, message),
       isAutomationPane: (id) => automationEngine?.ownsPane(id) === true,
+      isFanoutWorkerPane: (id) => {
+        // The pane's workspace comes from its spawn env, which main sets and
+        // the agent cannot change.
+        const ws = sessionManager.getSession(id)?.meta.env?.[ENV_KEYS.WORKSPACE_ID];
+        return typeof ws === 'string' && workTaskService?.isOpenTaskWorkspace(ws) === true;
+      },
       latestEndedTurn: (id) => sessionManager.getSession(id)?.bridge.endedTurnId() ?? null,
       // M2 — hook-sourced awaiting_input is the ONLY thing that mints an
       // approval request. Wired here, on the daemon-internal path, because this
