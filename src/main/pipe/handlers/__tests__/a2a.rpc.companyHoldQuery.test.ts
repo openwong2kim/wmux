@@ -147,6 +147,16 @@ describe('a2a.task.query — what the daemon kept from the caller stays out', ()
     expect(c?.metadata?.[COMPANY_HOLD_KEY]).toMatchObject({ waitingOn: ['task-a'] });
   });
 
+  it('a summary takes queued from the daemon\'s row, not the renderer\'s copy', async () => {
+    const queuedOf = async () => (((await query({ view: 'page' }, { callerPtyId: 'pty-ceo' })).tasks as Rec[]).find((t) => t.id === 'task-c'));
+    rendererRows = [task('task-c', { waitingOn: [], releasedAt: 'r' })];
+    daemonRows = [task('task-c', { waitingOn: [], releasedAt: 'r', attempted: true, delivered: true })];
+    expect(await queuedOf()).not.toHaveProperty('queued');
+    rendererRows = [task('task-c', { waitingOn: [], releasedAt: 'r', attempted: true, delivered: true })];
+    daemonRows = [task('task-c', { waitingOn: [], releasedAt: 'r' })];
+    expect(await queuedOf()).toMatchObject({ queued: true });
+  });
+
   it('with the daemon away, checks the renderer\'s full copies that carry the marker', async () => {
     daemonUp = false;
     rendererRows = [task('task-c', {}), task('task-plain')];

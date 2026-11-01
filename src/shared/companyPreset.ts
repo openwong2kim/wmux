@@ -184,10 +184,11 @@ export function seatBrief(input: SeatBriefInput): string {
       );
       lines.push(
         'Only a few seats on this PC work at once (the owner\'s setting, 3 by default). A brief to an idle seat past that is held, not refused: '
-        + 'its receipt says reason "cap" and names the seats holding the slots, and it goes to its seat once one of them reports or its task ends. '
+        + 'its receipt says reason "cap" and names the seats holding the slots, and it goes to its seat once one of them frees its slot: '
+        + 'no task of that seat is in progress any more (each one reported or ended), or its agent exited. '
         + 'To start it sooner, cancel it and give the work to a seat on another PC. '
         + 'A reply to a seat\'s report hands the work back and takes a slot too; at the cap it is refused and names the seats holding the slots: '
-        + 'reply again once one of them reports, or mark the task done.',
+        + 'reply again once one of them frees its slot, or, if the report is good enough, mark the task done.',
       );
       lines.push(
         'A seat reports finished work with status input-required. Read the report and check it, then mark the task done ' +

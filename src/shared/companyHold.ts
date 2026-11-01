@@ -292,7 +292,8 @@ export function companyHeldMessageRefusal(taskId: string, reason: CompanyHoldRea
  */
 export function companyCapHint(cap: number, holders: readonly string[]): string {
   return `${companyCapSlotsLine(cap, holders)} `
-    + 'wmux writes this task to its seat once one of them reports (input-required) or its task ends. '
+    + 'wmux writes this task to its seat once one of them frees its slot: no task of that seat is in progress any more '
+    + '(each one reported with input-required, or ended), or its agent exited. '
     + 'To start it sooner, cancel it and send it to a seat on another PC.';
 }
 
@@ -303,7 +304,8 @@ export function companyCapHint(cap: number, holders: readonly string[]): string 
  */
 export function companyCapMessageRefusal(cap: number, holders: readonly string[]): string {
   return `${companyCapSlotsLine(cap, holders)} This message gives its seat the work again, so nothing was stored. `
-    + 'Send it again once one of them reports (input-required) or its task ends, or mark this task done if it needs no more work.';
+    + 'Send it again once one of them frees its slot (no task of that seat in progress, or its agent exited). '
+    + 'If the report needs no more work, mark this task done instead.';
 }
 
 function companyCapSlotsLine(cap: number, holders: readonly string[]): string {

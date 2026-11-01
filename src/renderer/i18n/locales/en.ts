@@ -2557,7 +2557,7 @@ export const en = {
   'settings.factory.maxAgents': "Agents at once (bots and workers)",
   'settings.factory.maxAgentsDesc': "Bots in a turn and live workers together, 2 to 16. A bot's new worker past it waits for a slot; your own work never waits.",
   'settings.factory.companyMaxWorking': "Working seats per PC",
-  'settings.factory.companyMaxWorkingDesc': "Company seats working on a task at once on this PC, across every company, 1 to 8. A brief that would start one more waits, and goes to its seat once a working seat reports or its task ends.",
+  'settings.factory.companyMaxWorkingDesc': "Company seats working on a task at once on this PC, across every company, 1 to 8. A brief that would start one more waits, and goes to its seat once a working seat has no task in progress or its agent exits. Your own sends are never held.",
   'settings.factory.laneAutoMerge': 'Auto-merge bot pull requests',
   'settings.factory.laneAutoMergeDesc': "Merges bot pull requests that passed their Verifier and CI, up to the daily cap. Off: you merge, except what an Always allow rule covers.",
   'settings.factory.laneDailyCap': 'Auto-merges per day',

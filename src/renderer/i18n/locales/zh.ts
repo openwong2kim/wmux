@@ -2552,7 +2552,7 @@ export const zh = {
   'settings.factory.maxAgents': "同时运行的智能体（机器人和工作者）",
   'settings.factory.maxAgentsDesc': "进行回合的机器人与存活的工作者合计，2 到 16。超过时，机器人新启动的工作者会等待空位；你自己的工作从不等待。",
   'settings.factory.companyMaxWorking': "每台电脑同时工作的席位",
-  'settings.factory.companyMaxWorkingDesc': "这台电脑上同时在处理任务的公司席位数，所有公司合计，1 到 8。会让多一个席位开始工作的简报会等待，在某个工作中的席位提交报告或其任务结束后交给它的席位。",
+  'settings.factory.companyMaxWorkingDesc': "这台电脑上同时在处理任务的公司席位数，所有公司合计，1 到 8。会让多一个席位开始工作的简报会等待，在某个工作中的席位不再有进行中的任务或其代理退出后交给它的席位。你自己发送的任务不会被搁置。",
   'settings.factory.laneAutoMerge': '自动合并机器人的拉取请求',
   'settings.factory.laneAutoMergeDesc': "合并通过 Verifier 和 CI 的机器人拉取请求，直到每日上限。关闭时由你合并（“始终允许”规则覆盖的除外）。",
   'settings.factory.laneDailyCap': '每日自动合并数',

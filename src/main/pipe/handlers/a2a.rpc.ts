@@ -214,7 +214,7 @@ function copyWithheld(task: unknown, workspaceId: string, caller: TaskQueryCalle
  */
 function withDaemonHold(row: Record<string, unknown>, daemonRow: Record<string, unknown>, summaries: boolean): Record<string, unknown> {
   if (summaries) {
-    const keys = ['waitingOn', 'held'] as const;
+    const keys = ['waitingOn', 'held', 'queued'] as const;
     if (!keys.some((k) => row[k] !== undefined || daemonRow[k] !== undefined)) return row;
     const out: Record<string, unknown> = { ...row };
     for (const k of keys) {
