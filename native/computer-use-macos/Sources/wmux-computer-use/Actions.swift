@@ -398,6 +398,7 @@ enum Actions {
             }
             defer { restoreKey() }
             var focusPoint: CGPoint?
+            var clicked = false
             var typed = 0
             do {
                 // Focus first, in the background: a background app keeps its
@@ -410,7 +411,9 @@ enum Actions {
                     let el = try snap.element(at: index)
                     if Focus.isSecure(el) { throw HelperError("app_blocked", "that is a password field; wmux does not type into it") }
                     focusPoint = AX.frame(el).flatMap { frame in (try? snap.windowFrame()).flatMap { backgroundFocusPoint(frame: frame, window: $0) } }
-                    if !(await Background.focus(el, target, windowID, clickAt: focusPoint)) {
+                    let field = await Background.focus(el, target, windowID, clickAt: focusPoint)
+                    clicked = field.clicked
+                    if !field.focused {
                         throw Background.Stop(reason: "element \(index) did not take keyboard focus in the background")
                     }
                 } else {
@@ -455,7 +458,7 @@ enum Actions {
                     // real input now could click the field again and select a
                     // word, so the call ends.
                     if typed == 0 {
-                        let after = focusPoint == nil ? "after the window was focused in the background" : "after a background click on the field"
+                        let after = clicked ? "after a background click on the field" : "after the window was focused in the background, with no click"
                         throw HelperError("window_not_focused", "\(stop.reason) \(after); nothing was typed\(note). It may have focus now: call getAppState, then type without an index")
                     }
                     throw HelperError("window_not_focused", "\(stop.reason) while typing in the background, after \(typed) of \(text.count) characters; the rest was not typed\(note)")

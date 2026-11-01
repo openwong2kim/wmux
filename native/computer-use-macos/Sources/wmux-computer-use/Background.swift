@@ -192,20 +192,21 @@ enum Background {
 
     /// Gives `el` keyboard focus without bringing its app forward: AX first,
     /// then a background click at `point` (a web page in a window that was
-    /// never active takes focus only that way). True once the app reports it
-    /// focused.
-    static func focus(_ el: AXUIElement, _ target: ControlTarget, _ windowID: CGWindowID, clickAt point: CGPoint?) async -> Bool {
+    /// never active takes focus only that way). `focused` once the app
+    /// reports it focused; `clicked` when the click was sent (an app that
+    /// places clicks where the real pointer is gets none).
+    static func focus(_ el: AXUIElement, _ target: ControlTarget, _ windowID: CGWindowID, clickAt point: CGPoint?) async -> (focused: Bool, clicked: Bool) {
         func focused() -> Bool { AX.element(AX.app(target.pid), kAXFocusedUIElementAttribute).map { CFEqual($0, el) } ?? false }
-        if focused() { return true }
+        if focused() { return (true, false) }
         AXUIElementSetAttributeValue(el, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-        if focused() { return true }
-        guard let point, !Session.isLocked, reason(.click(button: 0, count: 1), target) == nil else { return false }
+        if focused() { return (true, false) }
+        guard let point, !Session.isLocked, reason(.click(button: 0, count: 1), target) == nil else { return (false, false) }
         click(pid: target.pid, windowID: windowID, at: point, count: 1, flags: [])
         for _ in 0..<6 {
             try? await Task.sleep(nanoseconds: 50_000_000)
-            if focused() { return true }
+            if focused() { return (true, true) }
         }
-        return false
+        return (false, true)
     }
 
     /// The app's focused element takes text (its value is settable).
