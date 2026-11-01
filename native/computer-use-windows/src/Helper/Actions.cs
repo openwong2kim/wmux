@@ -438,8 +438,54 @@ internal static unsafe class Actions
         return null;
     }
 
+    /// <summary>
+    /// protocol ForegroundMode: `refuse` means background only; where real
+    /// input would be needed the action answers needs_foreground instead.
+    /// </summary>
+    private static bool RefuseForeground(Params p)
+    {
+        if (!p.Has("foreground")) return false;
+        return p.String("foreground") switch
+        {
+            "allow" => false,
+            "refuse" => true,
+            _ => throw new HelperError("invalid_argument", "foreground must be allow or refuse"),
+        };
+    }
+
+    /// <summary>
+    /// After a background attempt (Core Background.Next): its result, or null
+    /// to go on with real input. needs_foreground only when nothing at all
+    /// went out during the action (the protocol's rule: main re-sends it with
+    /// real input, so anything sent before would arrive twice).
+    /// </summary>
+    private static JsonObject? AfterBackground(string action, BackgroundOutcome posted, bool refuseForeground, long sentAtStart)
+    {
+        var next = Background.Next(posted, refuseForeground, Input.Sent != sentAtStart);
+        // Refusals that depend on the target's state are logged; what the
+        // action asks for (a chord, the wheel) never posts, so it is not.
+        if (next is AfterAttempt.RealInput or AfterAttempt.NeedsForeground && !Background.IsActionRefusal(posted.Refusal))
+        {
+            var why = Background.Describe(posted.Refusal);
+            Wire.Log(next == AfterAttempt.NeedsForeground ? $"{action}: needs foreground ({why})" : $"{action}: real input, not background ({why})");
+        }
+        switch (next)
+        {
+            case AfterAttempt.UseResult:
+                return Posted(posted);
+            case AfterAttempt.RealInput:
+                return null;
+            case AfterAttempt.NeedsForeground:
+                throw new HelperError("needs_foreground", $"this needs real input ({Background.Describe(posted.Refusal)}); nothing was sent");
+            default:
+                throw new HelperError("internal", "input may have reached the app before wmux found this needs real input, so nothing more was sent. Call getAppState before retrying");
+        }
+    }
+
     public static JsonObject Click(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         int button = (p.String("button") ?? "left") switch
         {
@@ -461,7 +507,7 @@ internal static unsafe class Actions
         // Background first; RequirePointer (which may raise the window) only on the real-input path.
         Input.ThrowIfStopping();
         var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
-        if (!posted.FallBack) return Posted(posted);
+        if (AfterBackground("click", posted, refuse, sentAtStart) is { } result) return result;
         var preflight = Focus.RequirePointer(target, x, y);
         Input.Click(x, y, button, count, mods, preflight);
         return Result("synthetic", false, "foreground");
@@ -482,6 +528,10 @@ internal static unsafe class Actions
 
     public static JsonObject SetValue(Params p)
     {
+        // A UIA ValuePattern call: no input, no focus request, nothing that
+        // raises the window, so it never needs the foreground and `refuse`
+        // changes nothing (the mode is still validated).
+        RefuseForeground(p);
         var (snap, target) = Begin(p);
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
         var value = p.RequireString("value");
@@ -560,6 +610,8 @@ internal static unsafe class Actions
 
     public static JsonObject Type(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         var text = p.RequireString("text");
         if (text.Length == 0) throw new HelperError("invalid_argument", "type needs text");
@@ -580,7 +632,7 @@ internal static unsafe class Actions
                 fieldPoint = null;
             }
             var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
-            if (!posted.FallBack) return Posted(posted);
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
             try
             {
                 Focus.RequireSemantic(target, el);
@@ -599,7 +651,7 @@ internal static unsafe class Actions
         else
         {
             var posted = BackgroundInput.Type(target, text, null, null, -1, null);
-            if (!posted.FallBack) return Posted(posted);
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
         }
 
         // Checked before anything is sent; FocusedValue below is the baseline for verification.
@@ -649,13 +701,15 @@ internal static unsafe class Actions
 
     public static JsonObject PressKey(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (_, target) = Begin(p);
         var keyName = p.RequireString("key");
         var key = Key(keyName);
         int repeat = Math.Clamp(p.Int("repeat") ?? 1, 1, 50);
         Input.ThrowIfStopping();
         var posted = BackgroundInput.Key(target, keyName, repeat, 0, "pressKey");
-        if (!posted.FallBack) return Posted(posted);
+        if (AfterBackground("pressKey", posted, refuse, sentAtStart) is { } result) return result;
         for (int n = 0; n < repeat; n++)
         {
             if (n > 0) Sta.Sleep(4);
@@ -673,6 +727,8 @@ internal static unsafe class Actions
 
     public static JsonObject Hotkey(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (_, target) = Begin(p);
         var keyName = p.RequireString("key");
         var key = Key(keyName);
@@ -680,13 +736,15 @@ internal static unsafe class Actions
         Input.ThrowIfStopping();
         // Posted keys carry no modifier state, so a chord is always real input.
         var posted = BackgroundInput.Key(target, keyName, 1, mods.Count, "hotkey");
-        if (!posted.FallBack) return Posted(posted);
+        if (AfterBackground("hotkey", posted, refuse, sentAtStart) is { } result) return result;
         Input.Tap(key, mods, Focus.RequireKeyboard(target));
         return Result("synthetic", false, "foreground");
     }
 
     public static JsonObject Scroll(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         int amount = Math.Clamp(p.Int("amount") ?? 3, 1, 50);
         var (dx, dy) = (p.String("direction") ?? "down") switch
@@ -699,6 +757,7 @@ internal static unsafe class Actions
         };
         var (x, y, _) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
         // Always real input: WM_MOUSEWHEEL was not measured (Core Background.ActionRefusal).
+        AfterBackground("scroll", BackgroundOutcome.Refused(BackgroundRefusal.Scroll), refuse, sentAtStart);
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);

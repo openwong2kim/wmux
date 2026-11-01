@@ -3,6 +3,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using WmuxComputerUse.Core;
 
 namespace WmuxComputerUse;
 
@@ -51,7 +52,15 @@ internal static class Server
         // the cursor alone; nothing gives a window focus without the app
         // taking it itself; posted keys reach Chromium-based apps after a
         // posted click on the field.
-        ["input"] = new JsonObject { ["backgroundPointer"] = true, ["focusWithoutRaise"] = false, ["keyAuth"] = true },
+        ["input"] = new JsonObject
+        {
+            ["backgroundPointer"] = true,
+            ["focusWithoutRaise"] = false,
+            ["keyAuth"] = true,
+            // Honours `foreground: 'refuse'` (answers needs_foreground
+            // instead of real input), so main can run input in per-app lanes.
+            ["deferForeground"] = true,
+        },
     };
 
     public static void Handle(byte[] line)
@@ -76,10 +85,20 @@ internal static class Server
         int id = (int)idNumber;
         var method = request["method"] is JsonValue m && m.GetValueKind() == JsonValueKind.String ? m.GetValue<string>() : "";
         var p = new Params(request["params"] as JsonObject ?? new JsonObject());
+        // Dispositions and needs_foreground compare Input.Sent around one
+        // request, so they are true only while requests run one at a time
+        // (Core RequestGate). The loop is single-threaded; this asserts it.
+        if (!Gate.TryEnter())
+        {
+            Wire.Log("a request arrived while another was in flight; refused before sending anything");
+            Wire.Send(Error(id, "internal", "the computer-use helper was already running a request; nothing was sent",
+                ControlMethods.Contains(method) ? "not_delivered" : null), id);
+            return;
+        }
         long sentBefore = Input.Sent;
         try
         {
-            var result = Dispatch(method, p);
+            var result = Dispatch(method, p, ref sentBefore);
             Wire.Send(new JsonObject { ["id"] = id, ["ok"] = true, ["result"] = result }, id);
         }
         catch (HelperError e)
@@ -90,7 +109,13 @@ internal static class Server
         {
             Wire.Send(Error(id, Uia.ErrorCode(e), Uia.Describe(e), Disposition(method, sentBefore)), id);
         }
+        finally
+        {
+            Gate.Exit();
+        }
     }
+
+    private static readonly RequestGate Gate = new();
 
     /// <summary>
     /// A control method's error says whether it sent anything: main may retry
@@ -107,13 +132,24 @@ internal static class Server
         return new JsonObject { ["id"] = id, ["ok"] = false, ["error"] = error };
     }
 
-    private static JsonNode Dispatch(string method, Params p)
+    /// <remarks>
+    /// `sentBefore` is this request's baseline for Disposition. It is taken
+    /// again after the orphan release: up events a dead helper's keys needed
+    /// are not this action's input, so they can never make an action's
+    /// `needs_foreground` or `not_delivered` untrue, nor be mistaken for it
+    /// (the actions take their own baseline after this point too).
+    /// </remarks>
+    private static JsonNode Dispatch(string method, Params p, ref long sentBefore)
     {
         // Never act on the lock screen or a UAC / Ctrl+Alt+Del secure
         // desktop, and say why windows "vanished".
         if (method is not ("capabilities" or "listApps" or "releaseInput")) InputDesktop.Require();
         // A dead helper's held keys go up before this one sends anything.
-        if (method is "click" or "setValue" or "type" or "pressKey" or "hotkey" or "scroll") Input.EnsureOrphansReleased();
+        if (method is "click" or "setValue" or "type" or "pressKey" or "hotkey" or "scroll")
+        {
+            Input.EnsureOrphansReleased();
+            sentBefore = Input.Sent;
+        }
         switch (method)
         {
             case "capabilities": return Capabilities();

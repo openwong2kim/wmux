@@ -18,6 +18,7 @@ import {
   isControlAction,
   type ActionResult,
   type AppState,
+  type ObservationMode,
 } from '../../shared/computer/protocol';
 import { defineWmuxTool, registerWmuxTools, type RegisterWmuxToolsOptions } from '../toolCatalog';
 
@@ -47,7 +48,7 @@ const COMPUTER_SHAPE = {
   action: z.enum(COMPUTER_ACTIONS),
   app: z.string().optional().describe('App name or listApps id; openApp (macOS) also takes a bundle id or .app path.'),
   window: z.string().optional().describe('Window id from listWindows; default is the app\'s main window.'),
-  mode: z.enum(OBSERVATION_MODES as ['ax', 'vision', 'both']).optional().describe('getAppState: ax = tree only, vision = screenshot only, both (default).'),
+  mode: z.enum(OBSERVATION_MODES as ['ax', 'vision', 'both']).optional().describe('getAppState: ax = tree only, vision = screenshot only, both = tree + screenshot. Default: tree, plus a screenshot when it has too few controls.'),
   snapshotId: z.string().optional().describe('Required for every input action: the snapshot the index or x/y came from.'),
   index: z.number().int().nonnegative().optional().describe('Element index from that snapshot\'s tree.'),
   x: z.number().optional(),
@@ -83,13 +84,21 @@ function textResult(value: unknown): CallToolResult {
 }
 
 /**
+ * The state main answers with (ComputerService ObservedAppState): the mode it
+ * was taken in and, when main added a screenshot to a thin tree, why.
+ */
+type ObservedAppState = AppState & { mode?: ObservationMode; screenshotAdded?: string };
+
+/**
  * Metadata text comes BEFORE the image: stating the image size and scale
  * ahead of the pixels measurably improves click accuracy, and the agent needs
  * the snapshotId to act at all.
  */
-export function renderAppState(state: AppState): CallToolResult {
+export function renderAppState(state: ObservedAppState): CallToolResult {
   const head = {
     snapshotId: state.snapshotId,
+    ...(state.mode && { mode: state.mode }),
+    ...(state.screenshotAdded && { screenshotAdded: state.screenshotAdded }),
     app: { id: state.app.id, name: state.app.name },
     window: { id: state.window.id, title: state.window.title },
     ...(state.screenshot && {
@@ -136,7 +145,7 @@ export function createComputerTool(rpc: ComputerRpc) {
               'computer.getAppState',
               { app: input.app, window: input.window, mode: input.mode },
               CONSENT_AWARE_TIMEOUT_MS,
-            )) as AppState;
+            )) as ObservedAppState;
             return renderAppState(state);
           }
           case 'openApp':

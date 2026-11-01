@@ -282,6 +282,13 @@ export interface HelperInputCapabilities {
    * and later).
    */
   keyAuth: boolean;
+  /**
+   * The helper honours `foreground: 'refuse'` on input methods (answers
+   * `needs_foreground` instead of using real input, see ForegroundMode). Main
+   * runs actions in per-app lanes only for a helper that says so; without it
+   * every input action takes the foreground lease, as before.
+   */
+  deferForeground?: boolean;
 }
 
 const HELPER_INPUT_CAPABILITIES = ['backgroundPointer', 'focusWithoutRaise', 'keyAuth'] as const;
@@ -317,6 +324,25 @@ export interface ControlTarget {
   pid: number;
   windowId: string;
 }
+
+/**
+ * Whether an input method may use real (foreground) input. `allow` (the
+ * default, and what a helper without `input.deferForeground` always does):
+ * background first where the helper can, real input otherwise. `refuse`: only
+ * background; where the helper would need real input it answers
+ * `needs_foreground` instead, and main decides (it takes the foreground lease
+ * and re-sends once with `allow`; docs/computer-use-design.md, Input lanes).
+ *
+ * RULE: a helper may answer `needs_foreground` ONLY when nothing was posted or
+ * sent for that action: no input event, no posted message, no UIA pattern
+ * call, no focus request. If anything went out before it found it needs the
+ * foreground, it ends as it would today (an error with
+ * `delivered_unverified`, or an unverified result), never `needs_foreground`:
+ * main's re-send in `allow` mode would send the same input twice.
+ */
+export type ForegroundMode = 'allow' | 'refuse';
+
+export const FOREGROUND_MODES: readonly ForegroundMode[] = ['allow', 'refuse'];
 
 /**
  * Methods a helper implements. Coordinates here are window logical points.
@@ -365,15 +391,28 @@ export interface HelperMethods {
       button: MouseButton;
       clickCount: number;
       modifiers: Modifier[];
+      foreground?: ForegroundMode;
     };
     result: ActionResult;
   };
-  setValue: { params: { snapshotId: string; target: ControlTarget; index: number; value: string }; result: ActionResult };
-  type: { params: { snapshotId: string; target: ControlTarget; index?: number; text: string }; result: ActionResult };
+  setValue: {
+    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
+  type: {
+    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
   /** `key` is canonical (normalizeKey); never a modifier on its own. */
-  pressKey: { params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number }; result: ActionResult };
+  pressKey: {
+    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
   /** Modifiers down in MODIFIERS order, `key` down/up, modifiers up in reverse. */
-  hotkey: { params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key }; result: ActionResult };
+  hotkey: {
+    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode };
+    result: ActionResult;
+  };
   scroll: {
     params: {
       snapshotId: string;
@@ -382,6 +421,7 @@ export interface HelperMethods {
       point?: { x: number; y: number };
       direction: ScrollDirection;
       amount: number;
+      foreground?: ForegroundMode;
     };
     result: ActionResult;
   };
@@ -425,7 +465,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isInputCapabilities(value: unknown): value is HelperInputCapabilities {
-  return isRecord(value) && HELPER_INPUT_CAPABILITIES.every((key) => typeof value[key] === 'boolean');
+  return isRecord(value)
+    && HELPER_INPUT_CAPABILITIES.every((key) => typeof value[key] === 'boolean')
+    && (value.deferForeground === undefined || typeof value.deferForeground === 'boolean');
 }
 
 /**

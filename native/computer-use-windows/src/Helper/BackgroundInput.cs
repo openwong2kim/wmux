@@ -69,7 +69,7 @@ internal static unsafe class BackgroundInput
         var window = WindowState(target);
         Target? at = Background.WindowRefusal(window) == BackgroundRefusal.None ? AtPoint(target, x, y, secrecy: false) : null;
         var plan = Background.Plan(window, request, at?.Info);
-        return Run("click", plan, target, (x, y),
+        return Run(plan, target, (x, y),
             click: () => Post(at!.Value, Background.Click(at.Value.ClientX, at.Value.ClientY)),
             keys: null, readBack: () => false);
     }
@@ -100,7 +100,7 @@ internal static unsafe class BackgroundInput
                 : Focused(target);
         }
         var plan = Background.Plan(window, request, receiver?.Info);
-        if (plan.Refused) return Run("type", plan, target, null, null, null, () => false);
+        if (plan.Refused) return Run(plan, target, null, null, null, () => false);
 
         var to = receiver!.Value;
         Func<string?> value = field != null ? () => ElementValue(field) : () => WindowValue(to.Hwnd);
@@ -112,7 +112,7 @@ internal static unsafe class BackgroundInput
         // it only while the window is in front.
         bool plainEdit = Background.IsPlainEdit(to.Info.ClassName);
         Func<bool?> fieldFocus = () => Background.FieldFocused(FieldHasFocus(field, runtimeId), to.Info.ClassName, (nint)ThreadFocus(to.Tid).Value, (nint)to.Hwnd.Value);
-        var outcome = Run("type", plan, target, plan.ClickFirst ? fieldPoint : null,
+        var outcome = Run(plan, target, plan.ClickFirst ? fieldPoint : null,
             click: () => Post(to, Background.Click(to.ClientX, to.ClientY)),
             keys: () =>
             {
@@ -165,7 +165,7 @@ internal static unsafe class BackgroundInput
         var window = WindowState(target);
         var receiver = Background.WindowRefusal(window) == BackgroundRefusal.None ? Focused(target) : null;
         var plan = Background.Plan(window, request, receiver?.Info);
-        return Run(action, plan, target, null, null,
+        return Run(plan, target, null, null,
             keys: () =>
             {
                 var press = KeyMessages(key);
@@ -185,21 +185,19 @@ internal static unsafe class BackgroundInput
     }
 
     /// <summary>
-    /// Refuse (logged, left to the caller's real-input path), or run the
-    /// steps in Core's order and probe for our side effects. `focusBefore`
+    /// Refuse (left to the caller: real input or needs_foreground), or run
+    /// the steps in Core's order and probe for our side effects. `focusBefore`
     /// and `fieldAfterClick` are for a field; `receiverStill` for keys
     /// without a click.
     /// </summary>
-    private static BackgroundOutcome Run(string action, BackgroundPlan plan, ControlTarget target, (double X, double Y)? point,
+    private static BackgroundOutcome Run(BackgroundPlan plan, ControlTarget target, (double X, double Y)? point,
         Func<int>? click, Func<int>? keys, Func<bool> readBack,
         Func<bool>? focusBefore = null, Func<bool, FieldCheck>? fieldAfterClick = null, Func<bool>? receiverStill = null,
         Func<bool>? clickedReceiverFocused = null)
     {
-        if (plan.Refused)
-        {
-            Wire.Log($"{action}: real input, not background ({Background.Describe(plan.Refusal)})");
-            return BackgroundOutcome.Refused(plan.Refusal);
-        }
+        // A refusal is logged by the caller (Actions.AfterBackground), which
+        // knows whether real input or needs_foreground follows.
+        if (plan.Refused) return BackgroundOutcome.Refused(plan.Refusal);
         // Never act while the lock screen or a secure desktop is up (an error, not a fallback).
         InputDesktop.Require();
         bool cursorBefore = CursorAt(point);
@@ -226,9 +224,7 @@ internal static unsafe class BackgroundInput
             ReceiverStill = receiverStill,
             ClickedReceiverFocused = clickedReceiverFocused,
         };
-        var outcome = Background.Execute(plan, steps);
-        if (outcome.FallBack) Wire.Log($"{action}: real input, not background ({Background.Describe(outcome.Refusal)})");
-        return outcome;
+        return Background.Execute(plan, steps);
     }
 
     // MARK: Window state

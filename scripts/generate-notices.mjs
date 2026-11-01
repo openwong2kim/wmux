@@ -724,6 +724,14 @@ const INSPIRED_BY = [
     what: 'Removing the tool-error wrapper from a failed tool\'s output when\n' +
       'reading a Claude Code transcript.',
   },
+  {
+    name: 'agent-desktop',
+    license: 'Apache License 2.0',
+    repo: 'https://github.com/vercel-labs/agent-desktop',
+    what: 'Computer use that observes the accessibility tree first and adds a\n' +
+      'screenshot only for a thin tree, and input results that say whether an\n' +
+      'action was not delivered, delivered but unverified, or delivered.',
+  },
 ];
 lines.push('PROJECTS THAT INSPIRED THE DESIGN');
 lines.push('');

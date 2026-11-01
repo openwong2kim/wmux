@@ -312,10 +312,29 @@ section); that result says `delivery: "foreground"`. A posted one says
   event, posted message or UIA pattern call went out during the request,
   `delivered_unverified` otherwise (the same rule as the macOS helper).
 - **Capabilities.** `hello.capabilities.input` is
-  `{ backgroundPointer: true, focusWithoutRaise: false, keyAuth: true }`:
-  posted clicks leave the cursor alone; nothing gives a window focus without
-  the app taking it itself; posted keys reach Chromium-based apps after a
-  posted click on the field.
+  `{ backgroundPointer: true, focusWithoutRaise: false, keyAuth: true,
+  deferForeground: true }`: posted clicks leave the cursor alone; nothing
+  gives a window focus without the app taking it itself; posted keys reach
+  Chromium-based apps after a posted click on the field; and the helper
+  honours `foreground: 'refuse'`.
+- **`foreground: 'refuse'`** (main's input lanes,
+  `docs/computer-use-design.md`). Every input method takes an optional
+  `foreground: 'allow' | 'refuse'` (default `allow`, the behaviour above).
+  With `refuse`, wherever the action would go the real way after a
+  refusal that posted nothing, it answers `needs_foreground`
+  (`not_delivered`) instead, and main re-sends it with `allow` under its
+  foreground lease. The decision is Core `Background.Next`: only a refusal
+  with nothing posted and the sent counter unchanged since the action
+  began becomes `needs_foreground`; a stop after posting started (no focus
+  after the click, the field moved, the keys refused) keeps its own answer.
+  `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
+  `setValue` and the UIA click ladder are pattern calls, not input, and
+  nothing in them raises the window, so `refuse` changes nothing for them.
+  The sent counter's baseline for a request is taken after the release of
+  keys a dead helper left down, so those up events never decide an
+  action's `not_delivered` or `needs_foreground`. The helper's stderr says
+  `needs foreground (…)` for such a refusal under `refuse`, and
+  `real input, not background (…)` under `allow`.
 - Measured on Windows 11 with Chrome 155, Electron 42 and Notepad
   (`RichEditD2DPT`): posted clicks move the caret or land as
   `pointerType: mouse`, posted keys insert text, and the cursor, foreground

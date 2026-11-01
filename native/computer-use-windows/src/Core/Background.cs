@@ -159,6 +159,18 @@ public sealed record BackgroundSteps(Func<int>? Click, Func<bool, FieldCheck>? F
     public Func<bool>? ClickedReceiverFocused { get; init; }
 }
 
+/// <summary>
+/// What an action does after its background attempt (Background.AfterAttempt).
+/// `UseResult`: something was posted, so its result or stop stands.
+/// `RealInput`: nothing was posted and real input is allowed.
+/// `NeedsForeground`: nothing was posted and main asked for background only
+/// (protocol `foreground: 'refuse'`), so the answer is needs_foreground.
+/// `EndUnverified`: the attempt says nothing was posted but something was
+/// counted as sent during the action; it ends delivered_unverified, never
+/// with real input or needs_foreground (either could send it twice).
+/// </summary>
+public enum AfterAttempt { UseResult, RealInput, NeedsForeground, EndUnverified }
+
 /// <summary>How a posted sequence ended (Background.PostSequence).</summary>
 public enum PostEnd { Done, NothingPosted, ReceiverChanged, Refused }
 
@@ -300,6 +312,10 @@ public static class Background
         }
     }
 
+    /// <summary>The refusals ActionRefusal gives: what the action asks for, whatever the target.</summary>
+    public static bool IsActionRefusal(BackgroundRefusal r) => r is BackgroundRefusal.Scroll or BackgroundRefusal.Button
+        or BackgroundRefusal.Modifiers or BackgroundRefusal.MultiClick or BackgroundRefusal.Chord or BackgroundRefusal.FocusMovingText;
+
     /// <summary>
     /// The refusals every action shares, in order: the target window must be
     /// on screen here (not minimized, visible, on this virtual desktop) and
@@ -404,6 +420,20 @@ public static class Background
         bool ours = steps.Probe().Ours;
         bool verified = confirmed && !ours;
         return new(verified ? Disposition.Delivered : Disposition.DeliveredUnverified, false, verified, ours, BackgroundRefusal.None);
+    }
+
+    /// <summary>
+    /// After the background attempt. `refuseForeground`: main sent
+    /// `foreground: 'refuse'`. `sentDuringAction`: the helper's sent counter
+    /// moved since the action began. needs_foreground is answered only when
+    /// nothing at all went out (the protocol's rule); a stop after posting
+    /// started is never turned into it.
+    /// </summary>
+    public static AfterAttempt Next(BackgroundOutcome outcome, bool refuseForeground, bool sentDuringAction)
+    {
+        if (!outcome.FallBack) return AfterAttempt.UseResult;
+        if (sentDuringAction) return AfterAttempt.EndUnverified;
+        return refuseForeground ? AfterAttempt.NeedsForeground : AfterAttempt.RealInput;
     }
 
     private static BackgroundOutcome Stopped(BackgroundStop stop, BackgroundSteps steps) =>

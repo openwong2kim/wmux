@@ -13416,4 +13416,9 @@ claude-replay (MIT License) - https://github.com/es617/claude-replay
 Removing the tool-error wrapper from a failed tool's output when
 reading a Claude Code transcript.
 
+agent-desktop (Apache License 2.0) - https://github.com/vercel-labs/agent-desktop
+Computer use that observes the accessibility tree first and adds a
+screenshot only for a thin tree, and input results that say whether an
+action was not delivered, delivered but unverified, or delivered.
+
 ================================================================================

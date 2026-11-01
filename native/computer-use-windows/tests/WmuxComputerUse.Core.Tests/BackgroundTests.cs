@@ -601,4 +601,85 @@ public class BackgroundTests
     {
         Assert.Equal(accepts, Background.AcceptsPostedInput(className));
     }
+
+    public static TheoryData<BackgroundRefusal> PrePostRefusals => new()
+    {
+        BackgroundRefusal.Chord, BackgroundRefusal.Scroll, BackgroundRefusal.Button, BackgroundRefusal.Minimized,
+        BackgroundRefusal.DpiMismatch, BackgroundRefusal.ChromiumNeedsClick, BackgroundRefusal.FocusMoved, BackgroundRefusal.NothingPosted,
+    };
+
+    [Theory]
+    [MemberData(nameof(PrePostRefusals))]
+    public void RefuseModeTurnsAPrePostRefusalIntoNeedsForeground(BackgroundRefusal reason)
+    {
+        var refused = BackgroundOutcome.Refused(reason);
+        Assert.Equal(AfterAttempt.NeedsForeground, Background.Next(refused, refuseForeground: true, sentDuringAction: false));
+        // Allow mode: real input, as before.
+        Assert.Equal(AfterAttempt.RealInput, Background.Next(refused, refuseForeground: false, sentDuringAction: false));
+    }
+
+    [Theory]
+    [InlineData(BackgroundStop.None)]
+    [InlineData(BackgroundStop.FocusUnconfirmed)]
+    [InlineData(BackgroundStop.FieldMoved)]
+    [InlineData(BackgroundStop.KeysNotPosted)]
+    public void RefuseModeNeverTurnsAPostStartedActionIntoNeedsForeground(BackgroundStop stop)
+    {
+        // Something was posted (a result, or a stop after the click): it stands.
+        var posted = new BackgroundOutcome(Disposition.DeliveredUnverified, false, false, false, BackgroundRefusal.None, stop);
+        Assert.Equal(AfterAttempt.UseResult, Background.Next(posted, refuseForeground: true, sentDuringAction: true));
+        Assert.Equal(AfterAttempt.UseResult, Background.Next(posted, refuseForeground: false, sentDuringAction: true));
+    }
+
+    [Fact]
+    public void ARefusalAfterSomethingWasSentEndsUnverifiedInEitherMode()
+    {
+        // The rule: needs_foreground (and real input) only when nothing went out.
+        var refused = BackgroundOutcome.Refused(BackgroundRefusal.NothingPosted);
+        Assert.Equal(AfterAttempt.EndUnverified, Background.Next(refused, refuseForeground: true, sentDuringAction: true));
+        Assert.Equal(AfterAttempt.EndUnverified, Background.Next(refused, refuseForeground: false, sentDuringAction: true));
+    }
+
+    [Fact]
+    public void TheRequestGateAdmitsOneRequestAtATime()
+    {
+        var gate = new RequestGate();
+        Assert.True(gate.TryEnter());
+        Assert.True(gate.Busy);
+        // A second request while the first is in flight is refused.
+        Assert.False(gate.TryEnter());
+        gate.Exit();
+        Assert.False(gate.Busy);
+        Assert.True(gate.TryEnter());
+        gate.Exit();
+    }
+
+    [Fact]
+    public void ActionRefusalsAreExactlyWhatActionRefusalCanReturn()
+    {
+        // Every refusal ActionRefusal gives is one, and no target-state refusal is.
+        var requests = new BackgroundRequest[]
+        {
+            new(InputAction.Scroll), new(InputAction.Click, Button: 1), new(InputAction.Click, Modifiers: 1),
+            new(InputAction.Click, ClickCount: 2), new(InputAction.Hotkey, Modifiers: 1), new(InputAction.Type, Text: "a\tb"),
+        };
+        var fromAction = requests.Select(Background.ActionRefusal).ToHashSet();
+        foreach (var r in Enum.GetValues<BackgroundRefusal>())
+        {
+            Assert.Equal(fromAction.Contains(r), Background.IsActionRefusal(r));
+        }
+    }
+
+    [Fact]
+    public void ExecuteNeverReportsAFallBackOnceTheClickWasPosted()
+    {
+        // Every stop after the posted click is UseResult for Next, so refuse
+        // mode cannot re-send it.
+        foreach (var (focus, atPoint, keys) in new[] { (false, true, 5), (true, false, 5), (true, true, 0) })
+        {
+            var (outcome, _) = Trace(Background.Plan(Normal, FieldTyping, Chromium), focus: focus, atPoint: atPoint, keys: keys);
+            Assert.False(outcome.FallBack);
+            Assert.Equal(AfterAttempt.UseResult, Background.Next(outcome, refuseForeground: true, sentDuringAction: true));
+        }
+    }
 }
