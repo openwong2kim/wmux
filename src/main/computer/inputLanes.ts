@@ -9,9 +9,10 @@
 //     a time per target pid; different pids never wait on each other. A stop
 //     ends every queued waiter with `aborted`.
 //   - foregroundCertain: the actions main knows need real input up front
-//     (sent with `foreground: 'allow'` under the lease). It mirrors the
-//     Windows helper's Core Background.ActionRefusal; anything else is sent
-//     with `foreground: 'refuse'` and upgraded only when the helper answers
+//     (sent with `foreground: 'allow'` under the lease), per helper OS: the
+//     Windows helper's Core Background.ActionRefusal, or the action-only rows
+//     of the macOS helper's foregroundReason. Anything else is sent with
+//     `foreground: 'refuse'` and upgraded only when the helper answers
 //     needs_foreground.
 //
 // Lock order is always pid slot, then lease: an action with a target pid
@@ -20,7 +21,7 @@
 // waits, so no cycle can form.
 
 import { ComputerError } from '../../shared/computer/errors';
-import type { ComputerControlAction, Modifier, MouseButton } from '../../shared/computer/protocol';
+import type { ComputerControlAction, HelperHello, Modifier, MouseButton } from '../../shared/computer/protocol';
 
 export const INPUT_LOCK_IDLE_MS = 15_000;
 
@@ -181,21 +182,32 @@ export interface LaneRequest {
 }
 
 /**
- * Whether an action certainly needs real input, so it is sent with
- * `foreground: 'allow'` under the foreground lease. Row for row the Windows
- * helper's Core `Background.ActionRefusal`
+ * Whether an action certainly needs real input on a helper of `os`, so it is
+ * sent with `foreground: 'allow'` under the foreground lease.
+ *
+ * win32, row for row the Windows helper's Core `Background.ActionRefusal`
  * (native/computer-use-windows/src/Core/Background.cs):
  *   - scroll: always;
  *   - click: a button other than left, any modifiers, more than one click;
  *   - hotkey: only with modifiers (one without is a plain key there);
  *   - type: text that can move focus (Core `Background.MovesFocus`);
  *   - pressKey, setValue: never (setValue is a UIA call: no input, no raise).
- * openApp has no row there (it is not a posted action): launching and
- * raising an app is always real input.
+ * openApp has no row there (it is not a posted action).
+ *
+ * darwin, the rows of the macOS helper's `foregroundReason` that depend on
+ * the action alone (native/computer-use-macos): a click with a button other
+ * than left or more than two clicks. Every other row depends on the target
+ * (an Electron scroll, a Command chord to a Chromium app, a window off
+ * screen), so the helper answers needs_foreground for those itself.
+ *
+ * openApp, on both: launching and raising an app is always real input.
  */
-export function foregroundCertain(req: LaneRequest): boolean {
+export function foregroundCertain(req: LaneRequest, os: HelperHello['os']): boolean {
+  if (req.action === 'openApp') return true;
+  if (os === 'darwin') {
+    return req.action === 'click' && ((req.button ?? 'left') !== 'left' || (req.clickCount ?? 1) > 2);
+  }
   switch (req.action) {
-    case 'openApp':
     case 'scroll':
       return true;
     case 'click':

@@ -43,6 +43,7 @@ import {
   type AppState,
   type ComputerControlAction,
   type HelperCapabilities,
+  type HelperHello,
   type HelperMethod,
   type HelperMethods,
   type Key,
@@ -80,6 +81,8 @@ export interface HelperLike {
    * input lanes.
    */
   defersForeground?(): Promise<boolean>;
+  /** The running helper's hello, if one is up. */
+  readonly hello?: HelperHello | null;
 }
 
 /**
@@ -448,6 +451,9 @@ export class ComputerService {
     // lane. Read from its hello: it starts the helper if none runs, which
     // the action needs anyway, and sends no request.
     const defer = (await ready.defersForeground?.()) === true;
+    // Which actions need real input up front follows that helper's OS; its
+    // hello is up now. A helper without one is this machine's.
+    const os = ready.hello?.os ?? ((this.deps.platform ?? process.platform) === 'darwin' ? 'darwin' : 'win32');
     // Consent can take minutes; the clock and the stop key may both have
     // moved, so the snapshot and the cooldown are checked again on a fresh
     // clock before the lease, the slot and the rate slot are taken.
@@ -478,7 +484,7 @@ export class ComputerService {
       clickCount: clampInt(params.clickCount ?? 1, 1, 3),
       modifiers: keys?.modifiers ?? params.modifiers,
       text: params.text,
-    });
+    }, os);
     // Every action on this app takes its slot first, foreground or not, so
     // one app's actions run in arrival order; other apps' agents never wait
     // on it. The wait happens outside the slot; everything that may have
