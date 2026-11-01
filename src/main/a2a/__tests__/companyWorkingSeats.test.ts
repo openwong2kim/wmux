@@ -74,6 +74,9 @@ describe('companyWorkingSeats', () => {
     expect(names([company('ws-a', dead, [task('t1', 'ws-a', 'dev-1')])])).toEqual([]);
     const noAgents = [{ ...pane('dev-1', 'staff', { label: 'dev-1' }), agents: [] }];
     expect(names([company('ws-a', noAgents, [task('t1', 'ws-a', 'dev-1')])])).toEqual([]);
+    // A terminal that has not started yet runs no agent, whatever the row carries from before a restart.
+    const deferred = [{ ...pane('dev-1', 'staff', { label: 'dev-1' }), deferred: true }];
+    expect(names([company('ws-a', deferred, [task('t1', 'ws-a', 'dev-1')])])).toEqual([]);
   });
 
   it('counts a task with a hold only once it is delivered', () => {

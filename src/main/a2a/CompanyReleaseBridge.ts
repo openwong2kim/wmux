@@ -501,8 +501,11 @@ function workingPaneOf(task: unknown, workspaceId: string): string | undefined {
 /**
  * A pane row's agent is alive: a terminal of its own runs a detected agent
  * (`pane.list` leaves the name out once the agent is known to have exited).
+ * A pane whose terminal has not started (`deferred`) runs none, whatever
+ * agent evidence it carries from before a restart.
  */
 function paneAgentAlive(row: Record<string, unknown>): boolean {
+  if (row.deferred === true) return false;
   const ptys = Array.isArray(row.surfacePtyIds) ? row.surfacePtyIds : [];
   const agents = Array.isArray(row.agents) ? row.agents : [];
   return agents.some((a) => isRecord(a) && typeof a.agentName === 'string' && a.agentName.length > 0
