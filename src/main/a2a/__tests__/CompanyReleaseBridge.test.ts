@@ -99,7 +99,7 @@ let daemon: FakeDaemon;
 let clock: number;
 let deliverAnswers: unknown[];
 let ceoAnswers: unknown[];
-let renderer: ReturnType<typeof vi.fn>;
+let renderer: ReturnType<typeof vi.fn<(method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>>>;
 
 function bridge(told?: Set<string>): CompanyReleaseBridge {
   return new CompanyReleaseBridge({ daemon, sendToRenderer: renderer, now: () => clock, ...(told ? { told } : {}) });
