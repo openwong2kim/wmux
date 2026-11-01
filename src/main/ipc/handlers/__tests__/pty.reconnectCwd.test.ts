@@ -141,3 +141,26 @@ describe('PTY_RECONNECT promotes a cap-skipped session instead of declaring it d
     expect(RECONNECT).toMatch(/recordPtyShell\(session\.id, session\.cmd\)/);
   });
 });
+
+/**
+ * A Terminal adopting a pane main created keeps the create-time session pipe
+ * (reconnectSessionPipe.ts, behavior tested in reconnectSessionPipe.test.ts).
+ * The mark that allows it is set by the daemon create, consumed by the first
+ * reconnect, and dropped on death, supervised restart and dispose, so a
+ * reconnect that must attach the daemon's new pipe never keeps an old socket.
+ */
+describe('PTY_RECONNECT keeps only a pipe the create attached (source-level lock)', () => {
+  it('the daemon create marks the session once its listener is on the pipe', () => {
+    expect(SRC).toMatch(/setSessionDataListener\(sessionId, onSessionData\);\s*createAttachedPipes\.add\(sessionId\);/);
+  });
+
+  it('the reconnect consumes the mark and hands it to the pipe step', () => {
+    expect(RECONNECT).toMatch(/const ownsCreatePipe = createAttachedPipes\.delete\(id\);\s*const pipe = await reconnectSessionPipe\(daemonClient, id, \{[\s\S]*?ownsCreatePipe,/);
+  });
+
+  it('death, supervised restart and dispose drop the mark', () => {
+    expect(SRC).toMatch(/disconnectSessionPipe\(payload\.sessionId\)\.catch\(\(\) => \{\}\);\s*createAttachedPipes\.delete\(payload\.sessionId\);/);
+    expect(SRC).toMatch(/onDaemonSessionRestarted = \(payload\) => \{[\s\S]{0,400}?createAttachedPipes\.delete\(payload\.sessionId\);/);
+    expect(SRC).toMatch(/await daemonClient\.disconnectSessionPipe\(id\);\s*createAttachedPipes\.delete\(id\);/);
+  });
+});

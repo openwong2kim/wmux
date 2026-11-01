@@ -601,6 +601,16 @@ export class DaemonClient extends EventEmitter {
   }
 
   /**
+   * True while the session's pipe is connected and its flush (the attach-time
+   * one, or a live re-flush) has not reached the data listeners yet: the
+   * replay is still on its way.
+   */
+  sessionPipeFlushPending(sessionId: string): boolean {
+    if (!this.isSessionPipeWritable(sessionId)) return false;
+    return this.sessionScanners.get(sessionId)?.mode === 'accumulating';
+  }
+
+  /**
    * Write input data to a session via its data pipe. Returns true if the
    * data was handed to a live socket, false if the call silently dropped.
    *

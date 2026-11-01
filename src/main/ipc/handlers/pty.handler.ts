@@ -456,6 +456,14 @@ export function registerPTYHandlers(
   // single-slot-Map-vs-Set rationale. Null until the daemon-mode wiring below.
   let sessionDataDispatcher: SessionDataDispatcher | null = null;
 
+  // Sessions whose main-side pipe is still the one this registration's
+  // pty:create attached, with the create-time data listener on it (the one
+  // that tells the startup line the shell spoke). The first pty:reconnect —
+  // the adopting Terminal's mount — keeps that pipe instead of replacing it
+  // (reconnectSessionPipe.ts). Per registration, so a new daemon generation
+  // starts empty; a death, a supervised restart or a dispose drops the id.
+  const createAttachedPipes = new Set<string>();
+
   /** Register (or replace) the per-session data handler for `sessionId`. */
   function setSessionDataListener(sessionId: string, handler: SessionDataHandler): void {
     if (!sessionDataDispatcher) return;
@@ -923,6 +931,7 @@ export function registerPTYHandlers(
         if (text) dataBatcher.push(sessionId, text, payload.replay);
       };
       setSessionDataListener(sessionId, onSessionData);
+      createAttachedPipes.add(sessionId);
 
       // Register initial CWD
       updateCwd(sessionId, effectiveCwd);
@@ -1408,6 +1417,7 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
+      createAttachedPipes.delete(id);
       sessionDecoders.delete(id);
       forgetPtyShell(id);
       forgetFolderTrustPane(id);
@@ -1725,8 +1735,12 @@ export function registerPTYHandlers(
           const text = decodeSessionData(id, payload.data);
           if (text) dataBatcher.push(id, text, payload.replay);
         };
+        // Consumed here: whatever this reconnect does, the pipe after it is
+        // no longer one a later reconnect may keep unasked.
+        const ownsCreatePipe = createAttachedPipes.delete(id);
         const pipe = await reconnectSessionPipe(daemonClient, id, {
           promote: action === 'promote' || action === 'join',
+          ownsCreatePipe,
           installListener: () => setSessionDataListener(id, onSessionData),
         });
         if (pipe.kind === 'pending') return held('pending again at attach');
@@ -1755,7 +1769,7 @@ export function registerPTYHandlers(
         // (session:data forwarding was registered BEFORE attachSession above so
         // the historical RingBuffer replay can't be dropped — see that comment.)
 
-        console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
+        console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}${pipe.kind === 'kept' ? ` pipe=kept replay=${pipe.replay}` : ''}`);
         // The daemon already told us this session's shell — record it, or a
         // pane recovered across an app restart loses its WSL path rewrite.
         recordPtyShell(session.id, session.cmd);
@@ -1943,6 +1957,7 @@ export function registerPTYHandlers(
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1, payload.signal ?? null);
       }
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
+      createAttachedPipes.delete(payload.sessionId);
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
@@ -1988,6 +2003,10 @@ export function registerPTYHandlers(
   let onDaemonAgentProcessExit: ((payload: { sessionId: string; slug?: string | null }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonSessionRestarted = (payload) => {
+      // The daemon stopped the dead PTY's pipe; the renderer's reconnect on
+      // this restart must attach the new one, never keep main's old socket
+      // (its close may not have arrived yet).
+      createAttachedPipes.delete(payload.sessionId);
       // P1-3 ordering rule: the old PTY's trailing output must precede the
       // restart marker (the renderer re-attaches on it).
       dataBatcher.finishSession(payload.sessionId);
