@@ -26,6 +26,8 @@ import { PaneTaskGroup, usePaneTaskSplit } from './SidebarTaskGroup';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import type { Workspace } from '../../../shared/types';
+import { selectWorkspaceExternalSessions } from '../../stores/selectors/externalSessions';
+import ExternalSessionRow from './ExternalSessionRow';
 
 /**
  * The roster row's `@`: insert this agent's reference into the focused agent's
@@ -388,7 +390,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   // the per-PTY stamps: those move on every throttled output write, and the
   // label only changes once a minute. Stamps are read at render time.
   const [now, setNow] = useState(() => Date.now());
-  const hasRows = roster.rows.length > 0;
+  // Sessions started outside wmux in this workspace's folder (placement B,
+  // 2026-11-01): listed after the panes' rows, never focusable as a pane.
+  const externals = useRowStore((s) => selectWorkspaceExternalSessions(s, workspaceId));
+  const hasRows = roster.rows.length > 0 || externals.length > 0;
   useEffect(() => {
     if (!hasRows) return;
     setNow(Date.now());
@@ -414,7 +419,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   const barePaneIds = [...taskSplit.byPane.keys()].filter((paneId) => !firstRowOfPane.has(paneId));
   const bareRows = useRowStore(useShallow((s) => barePanesOf(s, workspaceId, barePaneIds)));
 
-  if (roster.agentCount === 0 && roster.stashedCount === 0 && taskSplit.byPane.size === 0) return null;
+  if (roster.agentCount === 0 && roster.stashedCount === 0 && taskSplit.byPane.size === 0 && externals.length === 0) return null;
 
   // Computed once per render, not per row: the vendor column earns its width
   // only when the workspace actually mixes vendors.
@@ -795,6 +800,9 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
               </PaneTaskGroup>
             );
           })}
+          {externals.map((session) => (
+            <ExternalSessionRow key={session.id} session={session} workspaceId={workspaceId} now={now} />
+          ))}
       </div>
     </div>
   );
