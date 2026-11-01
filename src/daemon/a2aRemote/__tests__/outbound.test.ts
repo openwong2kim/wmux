@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { A2A_REMOTE_STATE_ENVELOPE_MAX, A2A_REMOTE_STATE_EVIDENCE_MAX } from '../../../shared/a2aRemote';
-import { COMPANY_BRIEF_KIND, isCompanyTask } from '../../../shared/company';
+import { COMPANY_BRIEF_KIND, isCompanyTask, type CompanyBriefV1 } from '../../../shared/company';
 import type { Task } from '../../../shared/types';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
@@ -110,7 +110,7 @@ describe('sendRemoteTask', () => {
 
   it('keeps a company brief as data on this PC\'s copy only; the envelope carries the same text and nothing else', async () => {
     const linkId = activeLink();
-    const brief = { kind: COMPANY_BRIEF_KIND, v: 1 as const, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' };
+    const brief: CompanyBriefV1 = { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' };
     const res = await sendRemoteTask(deps, { linkId, from: FROM, title: 'T', text: 'Take it.\n\nGoal:\ng', brief });
     const t = tasks.getTask(remoteTaskId(linkId, 'msg-1'))!;
     expect(res.ok).toBe(true);
