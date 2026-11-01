@@ -231,6 +231,7 @@ import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS, dataSuffix, isBrainPty } from '../shared/constants';
 import { toResumeCommand, resumeGrammarFor, resumeOfferForRecovered, mergeResumeBinding, isProvisionalCapture, hasAuthoritativeTranscript, transcriptRelocated, normalizeResumeCwd, isUsableResumeBinding, isPlausibleResumeSessionId } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
+import { alignResumeCwd } from './alignResumeCwd';
 import { agentDisplayToSlug, agentRow, AGENT_SLUG_SET, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentEventStatus } from '../main/pty/AgentDetector';
 import { DIALOG_RECHECK_MS, HookIngest, identifiedAgentPid, shellAtPrompt, type HookArbitration } from './hooks/HookIngest';
@@ -1504,6 +1505,9 @@ function resumeLaunchCommand(
   }
   // The agent being replayed has stopped: a binding with no transcript yet is settled first.
   binding = settledForReplay(session.id, binding, session);
+  // A symlinked project: the hook's real path and the pane's logical one name
+  // the same folder, so toResumeCommand's cwd match must not miss it.
+  if (binding) binding = alignResumeCwd(binding, session);
   // D5: start fresh when the exact transcript is gone (pass no binding).
   const usableBinding = bindingTranscriptLives(binding) ? binding : undefined;
   // U-PERM: honor the persisted, consent-gated restore bit (set by main at
@@ -1649,7 +1653,8 @@ function ingestResumeSpool(
     // never becomes a durable binding.
     const parsed = spoolRecordToBinding(rec);
     if (!parsed) { drop(); continue; }
-    const { ptyId, binding } = parsed;
+    const { ptyId } = parsed;
+    let { binding } = parsed;
 
     const managed = sessionManager.getSession(ptyId);
     if (!managed) {
@@ -1661,6 +1666,7 @@ function ingestResumeSpool(
     // F7: `--resume` is cwd-scoped, so the capture's origin cwd must match the
     // recovered pane's cwd; a mismatch would dead-end (offer --continue instead).
     // Normalized compare so a drive-case / trailing-slash diff isn't a false miss.
+    binding = alignResumeCwd(binding, managed.meta);
     if (normalizeResumeCwd(binding.cwd) !== normalizeResumeCwd(managed.meta.cwd)) { drop(); continue; }
     const prev = managed.meta.resumeBinding;
     // Never clobber: for a DIFFERENT conversation, only a strictly-newer spool
@@ -2424,7 +2430,7 @@ async function recoverSessions(
         if (persisted.lastDetectedAgentEvidence) managed.meta.lastDetectedAgentEvidence = persisted.lastDetectedAgentEvidence;
       }
       if (persisted.resumeBinding && !managed.meta.resumeBinding) {
-        managed.meta.resumeBinding = persisted.resumeBinding;
+        managed.meta.resumeBinding = alignResumeCwd(persisted.resumeBinding, managed.meta);
       }
       // Same reason, for the owned-Codex hint: the saved value is read only to
       // build the resume command. When recovery runs without a relay — no
@@ -3669,6 +3675,7 @@ function registerRpcHandlers(
         // conversation this shell has nothing to do with. (The cwd guard below
         // already refuses it; the meta assignment did not.)
         if (!startFresh) {
+          if (session.resumeBinding) session.resumeBinding = alignResumeCwd(session.resumeBinding, promotedSession.meta);
           promotedSession.meta.resumeBinding = session.resumeBinding;
           promotedSession.meta.lastDetectedAgent = session.lastDetectedAgent;
           promotedSession.meta.lastDetectedAgentEvidence = session.lastDetectedAgentEvidence;
@@ -4338,6 +4345,10 @@ function registerRpcHandlers(
     if (isProvisionalCapture(prev, p.resumeBinding)) {
       return true;
     }
+    // The hook reports a symlinked project's real path: give it the pane's
+    // spelling, as recovery did, so the merge sees the same conversation (keeping
+    // the sticky fields) and the binding does not flip back to the real path.
+    p.resumeBinding = alignResumeCwd(p.resumeBinding, managed.meta);
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
     // A synchronous exact-ID discovery may have just supplied the path.
