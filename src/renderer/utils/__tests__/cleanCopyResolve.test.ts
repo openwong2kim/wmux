@@ -7,6 +7,8 @@ vi.mock('../agentReplyCopy', () => ({ cleanCopyText: (...args: unknown[]) => cle
 import { CLEAN_COPY_TIMEOUT_MS, createCopySequence, forgetNoTranscript, resolveCopyText, type CleanCopyDeps } from '../cleanCopyResolve';
 
 const NUL = '\u0000';
+/** Two screen rows: a one-row selection never asks the transcript. */
+const SEL = 'sel\nrow two';
 
 function reply(id: string, text: string, codeBlocks?: CodeBlockRef[], extra: Partial<AssistantTextEvent> = {}): AssistantTextEvent {
   return { id, kind: 'assistant_text', text, ...(codeBlocks ? { codeBlocks } : {}), ...extra };
@@ -47,8 +49,14 @@ beforeEach(() => {
 describe('resolveCopyText — raw fallbacks', () => {
   it('returns the selection without a snapshot when ptyId is missing', async () => {
     const d = deps([reply('a', 'hi')]);
-    expect(await resolveCopyText(undefined, 'sel', d)).toBe('sel');
-    expect(await resolveCopyText('', 'sel', d)).toBe('sel');
+    expect(await resolveCopyText(undefined, SEL, d)).toBe(SEL);
+    expect(await resolveCopyText('', SEL, d)).toBe(SEL);
+    expect(d.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('returns a one-row selection without a snapshot', async () => {
+    const d = deps([reply('a', 'hi')]);
+    expect(await resolveCopyText('p1', '⏺ hi there', d)).toBe('⏺ hi there');
     expect(d.snapshot).not.toHaveBeenCalled();
   });
 
@@ -63,25 +71,25 @@ describe('resolveCopyText — raw fallbacks', () => {
   it('returns the selection when the snapshot is null', async () => {
     const d = deps([]);
     d.snapshot.mockResolvedValue(null);
-    expect(await resolveCopyText('p1', 'sel', d)).toBe('sel');
+    expect(await resolveCopyText('p1', SEL, d)).toBe(SEL);
     expect(cleanCopyText).not.toHaveBeenCalled();
   });
 
   it('returns the selection when the snapshot throws or rejects', async () => {
     const d = deps([]);
     d.snapshot.mockRejectedValue(new Error('daemon gone'));
-    expect(await resolveCopyText('p1', 'sel', d)).toBe('sel');
+    expect(await resolveCopyText('p1', SEL, d)).toBe(SEL);
     d.snapshot.mockImplementation(() => { throw new Error('sync'); });
-    expect(await resolveCopyText('p1', 'sel', d)).toBe('sel');
+    expect(await resolveCopyText('p1', SEL, d)).toBe(SEL);
   });
 
   it('returns the selection when cleanCopyText declines', async () => {
     cleanCopyText.mockReturnValue(null);
-    expect(await resolveCopyText('p1', 'sel', deps([reply('a', 'hi')]))).toBe('sel');
+    expect(await resolveCopyText('p1', SEL, deps([reply('a', 'hi')]))).toBe(SEL);
   });
 
   it('returns the selection when there is no chat bridge', async () => {
-    expect(await resolveCopyText('p1', 'sel', null)).toBe('sel');
+    expect(await resolveCopyText('p1', SEL, null)).toBe(SEL);
   });
 
   describe('timeout', () => {
@@ -91,18 +99,18 @@ describe('resolveCopyText — raw fallbacks', () => {
     it('returns the selection once the snapshot takes longer than the cap', async () => {
       const d = deps([]);
       d.snapshot.mockReturnValue(new Promise(() => undefined));
-      const result = resolveCopyText('p1', 'sel', d);
+      const result = resolveCopyText('p1', SEL, d);
       await vi.advanceTimersByTimeAsync(CLEAN_COPY_TIMEOUT_MS);
-      expect(await result).toBe('sel');
+      expect(await result).toBe(SEL);
     });
 
     it('starts no code-body fetch once the cap has passed', async () => {
       let answer!: (p: TranscriptPage) => void;
       const d = deps([]);
       d.snapshot.mockReturnValue(new Promise((r) => { answer = r; }));
-      const result = resolveCopyText('p1', 'sel', d);
+      const result = resolveCopyText('p1', SEL, d);
       await vi.advanceTimersByTimeAsync(CLEAN_COPY_TIMEOUT_MS);
-      expect(await result).toBe('sel');
+      expect(await result).toBe(SEL);
       answer(page([reply('a', `x${NUL}code:0${NUL}`, [{ n: 0, lines: 1, srcOffset: 5 }])]));
       await vi.advanceTimersByTimeAsync(0);
       expect(d.codeBlock).not.toHaveBeenCalled();
@@ -111,20 +119,20 @@ describe('resolveCopyText — raw fallbacks', () => {
     it('does not ask a pane without a transcript again for a while', async () => {
       const d = deps([]);
       d.snapshot.mockResolvedValue(null);
-      expect(await resolveCopyText('p1', 'sel', d)).toBe('sel');
-      expect(await resolveCopyText('p1', 'sel', d)).toBe('sel');
+      expect(await resolveCopyText('p1', SEL, d)).toBe(SEL);
+      expect(await resolveCopyText('p1', SEL, d)).toBe(SEL);
       expect(d.snapshot).toHaveBeenCalledTimes(1);
       await vi.advanceTimersByTimeAsync(10_000);
-      await resolveCopyText('p1', 'sel', d);
+      await resolveCopyText('p1', SEL, d);
       expect(d.snapshot).toHaveBeenCalledTimes(2);
     });
 
     it('counts the code bodies inside the same cap', async () => {
       const d = deps([reply('a', `x${NUL}code:0${NUL}`, [{ n: 0, lines: 1, srcOffset: 5 }])]);
       d.codeBlock.mockReturnValue(new Promise(() => undefined));
-      const result = resolveCopyText('p1', 'sel', d);
+      const result = resolveCopyText('p1', SEL, d);
       await vi.advanceTimersByTimeAsync(CLEAN_COPY_TIMEOUT_MS);
-      expect(await result).toBe('sel');
+      expect(await result).toBe(SEL);
       expect(cleanCopyText).not.toHaveBeenCalled();
     });
   });
@@ -139,8 +147,8 @@ describe('resolveCopyText — replies', () => {
       ])],
       { 'a:0': 'npm test', 'a:1': 'one\ntwo' },
     );
-    expect(await resolveCopyText('p1', 'sel', d)).toBe('CLEAN');
-    expect(cleanCopyText).toHaveBeenCalledWith('sel', [[
+    expect(await resolveCopyText('p1', SEL, d)).toBe('CLEAN');
+    expect(cleanCopyText).toHaveBeenCalledWith(SEL, [[
       { kind: 'prose', text: 'Run:' },
       { kind: 'code', body: 'npm test', lang: 'sh' },
       { kind: 'prose', text: 'then' },
@@ -148,6 +156,20 @@ describe('resolveCopyText — replies', () => {
     ]]);
     expect(d.codeBlock).toHaveBeenCalledWith({ ptyId: 'p1', srcOffset: 10, n: 0, eventId: 'a' });
     expect(d.codeBlock).toHaveBeenCalledWith({ ptyId: 'p1', srcOffset: 10, n: 1, eventId: 'a' });
+  });
+
+  it('reads a body once however often its reply is copied from', async () => {
+    const d = deps([reply('a', `Run:${NUL}code:1${NUL}`, [{ n: 1, lines: 1, srcOffset: 10 }])], { 'a:1': 'npm test' });
+    await resolveCopyText('p1', SEL, d);
+    await resolveCopyText('p1', SEL, d);
+    expect(d.codeBlock).toHaveBeenCalledTimes(1);
+    expect(repliesSeen()).toEqual([[{ kind: 'prose', text: 'Run:' }, { kind: 'code', body: 'npm test' }]]);
+  });
+
+  it('leaves out the space between two blocks as a part', async () => {
+    const d = deps([reply('a', `${NUL}code:1${NUL}\n\n${NUL}code:2${NUL}`, [{ n: 1, lines: 1, srcOffset: 1 }, { n: 2, lines: 1, srcOffset: 1 }])], { 'a:1': 'one', 'a:2': 'two' });
+    await resolveCopyText('p1', SEL, d);
+    expect(repliesSeen()).toEqual([[{ kind: 'code', body: 'one' }, { kind: 'code', body: 'two' }]]);
   });
 
   it('keeps only visible assistant replies, oldest first', async () => {
@@ -158,7 +180,7 @@ describe('resolveCopyText — replies', () => {
       reply('a', 'first'),
       reply('b', 'second'),
     ]);
-    await resolveCopyText('p1', 'sel', d);
+    await resolveCopyText('p1', SEL, d);
     expect(repliesSeen()).toEqual([[{ kind: 'prose', text: 'first' }], [{ kind: 'prose', text: 'second' }]]);
   });
 
@@ -167,7 +189,7 @@ describe('resolveCopyText — replies', () => {
       [reply('a', 'kept'), reply('b', `cut${NUL}code:0${NUL}`, [{ n: 0, lines: 900, srcOffset: 1, truncated: true }])],
       { 'b:0': 'partial' },
     );
-    await resolveCopyText('p1', 'sel', d);
+    await resolveCopyText('p1', SEL, d);
     expect(repliesSeen()).toEqual([[{ kind: 'prose', text: 'kept' }]]);
     expect(d.codeBlock).not.toHaveBeenCalled();
   });
@@ -183,13 +205,13 @@ describe('resolveCopyText — replies', () => {
       if (eventId === 'c') throw new Error('read failed');
       return null; // b: unavailable
     });
-    await resolveCopyText('p1', 'sel', d);
+    await resolveCopyText('p1', SEL, d);
     expect(repliesSeen()).toEqual([[{ kind: 'prose', text: 'kept' }]]);
   });
 
   it('caps the replies at the latest 20', async () => {
     const events = Array.from({ length: 25 }, (_, i) => reply(`r${i}`, `reply ${i}`));
-    await resolveCopyText('p1', 'sel', deps(events));
+    await resolveCopyText('p1', SEL, deps(events));
     const seen = repliesSeen();
     expect(seen).toHaveLength(20);
     expect(seen[0]).toEqual([{ kind: 'prose', text: 'reply 5' }]);

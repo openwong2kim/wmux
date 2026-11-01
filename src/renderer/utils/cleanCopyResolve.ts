@@ -17,10 +17,27 @@ const MAX_REPLIES = 20;
  *  so copying from a plain shell costs no IPC. */
 const NO_TRANSCRIPT_MS = 10_000;
 const noTranscriptAt = new Map<string, number>();
+/** Code bodies already read, by pane, event and block: a transcript entry
+ *  never changes, so a body is read once however often its reply is copied
+ *  from. The oldest go first past the cap. */
+const BODY_CACHE_MAX = 200;
+const bodyCache = new Map<string, string>();
 
-/** Test seam: forget which panes had no transcript. */
+/** Test seam: forget which panes had no transcript, and the bodies read. */
 export function forgetNoTranscript(): void {
   noTranscriptAt.clear();
+  bodyCache.clear();
+}
+
+async function bodyOf(deps: CleanCopyDeps, args: { ptyId: string; srcOffset: number; n: number; eventId: string }): Promise<string | null> {
+  const key = `${args.ptyId}\u0000${args.eventId}\u0000${args.n}`;
+  const cached = bodyCache.get(key);
+  if (cached !== undefined) return cached;
+  const result = await deps.codeBlock(args);
+  if (!result) return null;
+  bodyCache.set(key, result.body);
+  if (bodyCache.size > BODY_CACHE_MAX) bodyCache.delete(bodyCache.keys().next().value as string);
+  return result.body;
 }
 // eslint-disable-next-line no-control-regex -- a code block's inline marker is NUL-delimited
 const CODE_MARKER = /\u0000code:(\d+)\u0000/;
@@ -37,19 +54,19 @@ function defaultDeps(): CleanCopyDeps | null {
 }
 
 /** One reply's parts, or null when a code body is cut, unaddressable or
- *  unfetchable, or the copy stopped waiting (`live` false): no more fetches. */
-async function replyOf(ptyId: string, event: AssistantTextEvent, deps: CleanCopyDeps, live: () => boolean): Promise<AgentReply | null> {
+ *  unfetchable. Prose that is only the space between two blocks is no part:
+ *  the TUI draws the blocks one blank line apart. */
+async function replyOf(ptyId: string, event: AssistantTextEvent, deps: CleanCopyDeps): Promise<AgentReply | null> {
   // split with a capture group: odd indexes are the block numbers.
   const pieces = event.text.split(CODE_MARKER);
   try {
     const parts = await Promise.all(pieces.map(async (piece, i): Promise<ReplyPart | null> => {
-      if (i % 2 === 0) return piece ? { kind: 'prose', text: piece } : null;
+      if (i % 2 === 0) return piece.trim() ? { kind: 'prose', text: piece } : null;
       const block = event.codeBlocks?.find((b) => b.n === Number(piece));
       if (!block || block.truncated || block.srcOffset === undefined) throw new Error('body incomplete');
-      if (!live()) throw new Error('copy no longer waiting');
-      const result = await deps.codeBlock({ ptyId, srcOffset: block.srcOffset, n: block.n, eventId: event.id });
-      if (!result) throw new Error('body unavailable');
-      return block.lang ? { kind: 'code', body: result.body, lang: block.lang } : { kind: 'code', body: result.body };
+      const body = await bodyOf(deps, { ptyId, srcOffset: block.srcOffset, n: block.n, eventId: event.id });
+      if (body === null) throw new Error('body unavailable');
+      return block.lang ? { kind: 'code', body, lang: block.lang } : { kind: 'code', body };
     }));
     return parts.filter((p): p is ReplyPart => p !== null);
   } catch {
@@ -60,7 +77,9 @@ async function replyOf(ptyId: string, event: AssistantTextEvent, deps: CleanCopy
 async function cleanOrRaw(ptyId: string, selection: string, deps: CleanCopyDeps, live: () => boolean): Promise<string> {
   const page = await deps.snapshot(ptyId);
   if (!page) {
-    noTranscriptAt.set(ptyId, Date.now());
+    const now = Date.now();
+    for (const [id, at] of noTranscriptAt) if (now - at >= NO_TRANSCRIPT_MS) noTranscriptAt.delete(id);
+    noTranscriptAt.set(ptyId, now);
     return selection;
   }
   noTranscriptAt.delete(ptyId);
@@ -68,7 +87,7 @@ async function cleanOrRaw(ptyId: string, selection: string, deps: CleanCopyDeps,
   const events = page.events
     .filter((e): e is AssistantTextEvent => e.kind === 'assistant_text' && !e.thinking && !e.folded)
     .slice(-MAX_REPLIES);
-  const replies = await Promise.all(events.map((e) => replyOf(ptyId, e, deps, live)));
+  const replies = await Promise.all(events.map((e) => replyOf(ptyId, e, deps)));
   return cleanCopyText(selection, replies.filter((r): r is AgentReply => r !== null)) ?? selection;
 }
 
@@ -82,12 +101,14 @@ export async function resolveCopyText(
   selection: string,
   deps: CleanCopyDeps | null = defaultDeps(),
 ): Promise<string> {
-  if (!ptyId || !deps || !selection || selection.length > MAX_SELECTION_CHARS) return selection;
+  // One row: by the spacing rule the clean copy could only differ from it in
+  // a reply marker, so it costs no IPC.
+  if (!ptyId || !deps || !selection.includes('\n') || selection.length > MAX_SELECTION_CHARS) return selection;
   const none = noTranscriptAt.get(ptyId);
   if (none !== undefined && Date.now() - none < NO_TRANSCRIPT_MS) return selection;
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // Past the cap the copy writes the selection; the reads still running
-  // start no more fetches.
+  // Past the cap the copy writes the selection; a snapshot that answers
+  // later starts no code-body fetches.
   let waiting = true;
   const timeout = new Promise<string>((resolve) => { timer = setTimeout(() => { waiting = false; resolve(selection); }, CLEAN_COPY_TIMEOUT_MS); });
   try {
@@ -113,7 +134,19 @@ export function createCopySequence(): () => () => boolean {
   };
 }
 
+const sharedSequence = createCopySequence();
+let copiesStarted = 0;
+
 /** The one sequence every copy shares (the explicit copies, copy-on-select,
  *  every pane): a copy that resolves after any newer copy started writes
  *  nothing, so the clipboard ends with the newest. */
-export const startCopy = createCopySequence();
+export function startCopy(): () => boolean {
+  copiesStarted += 1;
+  return sharedSequence();
+}
+
+/** How many copies have started so far: a copy-on-select still in its
+ *  debounce skips its write when another copy started after its selection. */
+export function copiesStartedSoFar(): number {
+  return copiesStarted;
+}

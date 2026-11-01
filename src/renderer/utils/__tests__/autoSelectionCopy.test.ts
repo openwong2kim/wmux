@@ -173,6 +173,20 @@ describe('createAutoSelectionCopy', () => {
     expect(write).not.toHaveBeenCalled();
   });
 
+  it('skips its write when a copy started during its debounce (Cmd+C on the selection)', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const resolve = vi.fn(async (s: string) => `clean:${s}`);
+    const handle = createAutoSelectionCopy({ write, resolve, debounceMs: 50 });
+
+    handle.onSelection('sel');
+    await vi.advanceTimersByTimeAsync(20);
+    startCopy(); // the explicit copy of the same selection
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
   it('dispose() stops a resolution still running from writing', async () => {
     const write = vi.fn().mockResolvedValue(undefined);
     let finish!: (text: string) => void;

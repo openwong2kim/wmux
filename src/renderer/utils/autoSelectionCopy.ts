@@ -15,7 +15,7 @@
  * unit-tested without pulling in xterm + Electron + DOM.
  */
 
-import { startCopy } from './cleanCopyResolve';
+import { copiesStartedSoFar, startCopy } from './cleanCopyResolve';
 
 export interface AutoSelectionCopyDeps {
   /** Bridge to `window.clipboardAPI.writeText` (or any equivalent). */
@@ -61,10 +61,14 @@ export function createAutoSelectionCopy(deps: AutoSelectionCopyDeps): AutoSelect
 
   const onSelection = (selection: string): void => {
     if (pending) clearT(pending);
+    const seen = copiesStartedSoFar();
     pending = setT(() => {
       pending = null;
       if (!selection || selection.length === 0) return;
       if (!deps.resolve) { write(selection); return; }
+      // A copy started since this selection (Cmd+C on it) is the one that
+      // writes, with its toast; this one would only cancel it.
+      if (copiesStartedSoFar() !== seen) return;
       const isCurrent = startCopy();
       const mine = epoch;
       // resolve never rejects; the catch only keeps a broken one silent.
