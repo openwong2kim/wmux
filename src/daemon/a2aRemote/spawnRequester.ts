@@ -111,7 +111,8 @@ export class A2aSpawnRequester {
       ...(request.folder.sub ? { sub: request.folder.sub } : {}),
       from: { workspaceId: request.from.workspaceId, paneId: request.from.paneId },
       callerKey: input.callerKey, ...(input.requestKey !== undefined ? { requestKey: input.requestKey } : {}),
-      text: request.text, state: 'sent', createdAt: at, updatedAt: at, expiresAt: request.expiresAt,
+      text: request.text, ...(input.label ? { label: input.label } : {}),
+      state: 'sent', createdAt: at, updatedAt: at, expiresAt: request.expiresAt,
     };
     try {
       this.deps.store.add(rec);
@@ -200,7 +201,8 @@ export class A2aSpawnRequester {
         link = this.deps.links.createSpawned({
           linkId,
           local: { kind: 'pane', workspaceId: rec.from.workspaceId, paneId: rec.from.paneId },
-          remote: { hostId, kind: 'pane', workspaceId: result.endpoint.workspaceId, paneId: result.endpoint.paneId },
+          // The asker's name for the agent, so its alias is not raw ids.
+          remote: { hostId, kind: 'pane', workspaceId: result.endpoint.workspaceId, paneId: result.endpoint.paneId, ...(rec.label ? { label: rec.label } : {}) },
           allow: { outbound: true, inbound: false },
           proposer: 'local',
         });
@@ -343,6 +345,7 @@ export function registerSpawnAskRpc(onRpc: (method: string, handler: RpcHandler)
       from: { kind: 'pane', workspaceId: from['workspaceId'], paneId: from['paneId'] },
       callerKey: p['callerKey'],
       ...(typeof p['requestKey'] === 'string' ? { requestKey: p['requestKey'] } : {}),
+      ...(typeof p['label'] === 'string' ? { label: p['label'] } : {}),
     });
   });
   onRpc(A2A_SPAWN_RPC.outgoing, async (p) => requester.list(typeof p['spawnId'] === 'string' ? p['spawnId'] : undefined));

@@ -38,6 +38,7 @@ import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 // Stamped on every bridge.log line. Bump on behavior changes so a log tells you
@@ -48,7 +49,8 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 //   0.5.0 — `--context` mode (HQ brain UserPromptSubmit additionalContext).
 //   0.6.0 — `--context` mode honors a `block` (exit 2 discards the prompt).
 //   0.7.0 — `Notification` (permission_prompt only) → agent.awaiting_input.
-const BRIDGE_VERSION = '0.7.0';
+//   0.8.0 — `where` on hooks from outside a wmux pane (external sessions).
+const BRIDGE_VERSION = '0.8.0';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -90,6 +92,9 @@ const HOOK_TO_KIND = {
   Stop: 'agent.stop',
   SubagentStop: 'agent.subagent_stop',
   SessionStart: 'agent.session_start',
+  // The session closed. Ends an external session's row where no pid can be
+  // checked; sent to the daemon only (main has no use for it).
+  SessionEnd: 'agent.session_end',
   // Turn START. Registered by hooks.json (plugin path), `wmux setup-hooks`
   // (plugin-less path) and the deck brain's generated profile alike, so an
   // ordinary pane goes 'running' the moment a prompt is submitted instead of
@@ -766,6 +771,74 @@ function classifyEntrypoint(entrypoint) {
   return 'unknown';
 }
 
+// ----- External sessions: where a hook outside a wmux pane runs ----------
+
+// Each field is a hint for a status row, capped like EXTERNAL_SESSION_LIMITS
+// .whereField (src/shared/externalSessions.ts): the daemon refuses an envelope
+// whose `where` breaks the cap, so the cut happens here.
+const WHERE_FIELD_MAX = 64;
+const TMUX_QUERY_TIMEOUT_MS = 150;
+
+function whereText(value) {
+  if (typeof value !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex -- env text is untrusted
+  const text = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, '').trim().slice(0, WHERE_FIELD_MAX).trim();
+  return text.length > 0 ? text : undefined;
+}
+
+// The tmux session name and window index of the hook's own pane, or null. One
+// spawn, bounded; tmux missing, a gone server or a slow answer is no answer.
+function queryTmuxTarget(env) {
+  const args = ['display-message', '-p'];
+  if (typeof env.TMUX_PANE === 'string' && env.TMUX_PANE.length > 0) args.push('-t', env.TMUX_PANE);
+  args.push('#S:#I');
+  try {
+    const out = spawnSync('tmux', args, {
+      encoding: 'utf8',
+      timeout: TMUX_QUERY_TIMEOUT_MS,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    if (out.status !== 0 || typeof out.stdout !== 'string') return null;
+    const line = out.stdout.trim();
+    const cut = line.lastIndexOf(':');
+    return cut > 0 ? { session: line.slice(0, cut), window: line.slice(cut + 1) } : null;
+  } catch {
+    return null;
+  }
+}
+
+// Where a hook outside a wmux pane runs, from env this process already has. A
+// multiplexer wins over the connection it runs in (tmux inside ssh is 'tmux');
+// a WSL distro rides along with any kind. `queryTmux` is asked only for a tmux
+// hook and may be null (no spawn). Undefined when nothing says where.
+function whereFromEnv(env, queryTmux) {
+  const wslDistro = whereText(env.WSL_DISTRO_NAME);
+  let where = null;
+  if (env.TMUX || env.TMUX_PANE) {
+    const target = queryTmux ? queryTmux(env) : null;
+    where = { kind: 'tmux', session: whereText(target?.session), window: whereText(target?.window) };
+  } else if (env.STY) {
+    // `<pid>.<name>`; the name may itself contain dots.
+    const sty = String(env.STY);
+    where = { kind: 'screen', session: whereText(sty.slice(sty.indexOf('.') + 1)) };
+  } else if (env.ZELLIJ_SESSION_NAME || env.ZELLIJ) {
+    where = { kind: 'zellij', session: whereText(env.ZELLIJ_SESSION_NAME) };
+  } else if (env.SSH_CONNECTION) {
+    // `<client ip> <client port> <server ip> <server port>`
+    where = { kind: 'ssh', label: whereText(String(env.SSH_CONNECTION).trim().split(/\s+/)[0]) };
+  } else if (env.TERM_PROGRAM) {
+    where = { kind: 'terminal', label: whereText(env.TERM_PROGRAM) };
+  } else if (wslDistro) {
+    where = { kind: 'unknown' };
+  }
+  if (!where) return undefined;
+  if (wslDistro) where.wslDistro = wslDistro;
+  // Absent, never empty: the daemon refuses an empty field.
+  for (const key of Object.keys(where)) if (where[key] === undefined) delete where[key];
+  return where;
+}
+
 function sessionIdFromTranscript(transcriptPath, fallback) {
   if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
     const base = transcriptPath.split(/[\\/]/).pop() ?? '';
@@ -1231,7 +1304,16 @@ async function main() {
   // endpoint means wmux has never run for this user — drop as before.
   // Context mode is MAIN-only like the gate: the daemon has no brain lane and
   // would answer `ok` with no context, silently dropping the pointer.
-  const targets = resolveTargets(gateMode || contextMode);
+  // SessionEnd only ends a session outside wmux: a pane's agent is ended by
+  // its pane, and the pane is usually gone by the time this hook runs.
+  if (hookName === 'SessionEnd' && process.env.WMUX_PTY_ID) {
+    logEvent('skip-session-end-in-pane', {});
+    return;
+  }
+
+  // SessionEnd is the daemon's alone: main has no external sessions.
+  const targets = resolveTargets(gateMode || contextMode)
+    .filter((t) => hookName !== 'SessionEnd' || t.name === 'daemon');
   if (targets.length === 0) {
     logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     return;
@@ -1317,6 +1399,21 @@ async function main() {
       ? process.env.WMUX_WSL_AGENT_PROC
       : undefined;
 
+  // External sessions: a hook from outside any wmux pane says where it runs.
+  // The tmux lookup (one bounded spawn) runs only on a session's start and its
+  // turn starts, never per tool call; every other hook sends the env alone.
+  let where;
+  if (!envPtyId) {
+    try {
+      where = whereFromEnv(
+        process.env,
+        hookName === 'SessionStart' || hookName === 'UserPromptSubmit' ? queryTmuxTarget : null,
+      );
+    } catch {
+      where = undefined;
+    }
+  }
+
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
   // this is JS-only).
@@ -1337,6 +1434,7 @@ async function main() {
     surfaceId: envSurfaceId,
     ptyId: envPtyId,
     ...(wslAgentProcess ? { wslAgentProcess } : {}),
+    ...(where ? { where } : {}),
     ...(entrypoint ? { entrypoint } : {}),
     // OBSERVATIONAL: the hook's parent process. Sent only on macOS, where it is
     // measured to be Claude Code itself (no shell between them). Elsewhere it

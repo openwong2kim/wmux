@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage, type Message } from '../../../shared/types';
-import { isCompanyTask, parseCompanySeat, type CompanySeat } from '../../../shared/company';
+import { COMPANY_BRIEF_KIND, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
 import { configuredForge, forgeHosts } from '../../../shared/forgeHosts';
 import {
   DONE_PR_CHECK_MAX,
@@ -48,7 +48,7 @@ import {
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromRemoteSend, workLinkFromSentTask } from '../../workLink/a2aProducer';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
-import { A2A_BRAIN_ALIAS, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
+import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
   remoteWorkspaceId,
@@ -463,14 +463,34 @@ export function registerA2aRpc(
     const link = matches.find((t) => t.kind !== 'brain' && t.local.workspaceId === workspaceId && t.local.paneId === caller.paneId);
     if (!link) return { error: `a2a.task.send: this pane is not linked to "${alias}"` };
     if (!link.allowOutbound) return { error: `a2a.task.send: the link to "${alias}" does not allow sending from this side` };
+    // A company's CEO briefs a seat on another PC as one here: the brief is
+    // written into the text that PC gets, and kept as data on this PC's copy.
+    let text = message;
+    let brief: ReturnType<typeof companyBriefOf> = null;
+    if (caller.companySeat === 'coordinator') {
+      brief = companyBriefOf(params.data);
+      if (!brief) {
+        return {
+          error: `a2a.task.send: a task from a company's CEO to another PC needs a brief in data ({"kind":"${COMPANY_BRIEF_KIND}","v":1,…}); missing: ${missingBriefFields(params.data).join(', ')}`,
+        };
+      }
+      text = renderRemoteBrief(message, brief);
+      const bytes = Buffer.byteLength(text, 'utf8');
+      if (bytes > A2A_REMOTE_BODY_MAX) {
+        return {
+          error: `a2a.task.send: the message with its brief written out is ${bytes} bytes, over the ${A2A_REMOTE_BODY_MAX}-byte limit for a task to another PC; shorten the message or the brief`,
+        };
+      }
+    }
     const res = await remote!.sendTask({
       linkId: link.linkId,
       // The verified sender pty: a reply from the peer is held if another
       // agent holds this pane by then.
       from: { workspaceId, name: workspaceId, paneId: caller.paneId, ptyId: params.senderPtyId as string },
       title,
-      text: message,
+      text,
       ...(images ? { images } : {}),
+      ...(brief ? { brief } : {}),
     }).catch((err: unknown): RemoteOpResult => ({ ok: false, error: err instanceof Error ? err.message : String(err) }));
     if (!res.ok) return { error: `a2a.task.send: remote send refused (${res.error})` };
     // Work link (best-effort, never awaited), as for a local send.
@@ -1323,6 +1343,8 @@ export function registerA2aRpc(
     const prs = donePrRefs({
       history,
       statusMessage: isRecord(status) ? status.message : undefined,
+      // The report's own evidence: a PR only it names is checked too.
+      statusEvidence: isRecord(status) ? status.evidence : undefined,
       message: params.message,
       evidence,
     });

@@ -16,7 +16,7 @@ import {
   type A2aSpawnOutgoingState,
   type A2aSpawnTargetsV1,
 } from '../../shared/a2aSpawn';
-import { isIsoString, isPlainObject, isSafeId, loadStore, storeUnavailable, type StoreLog } from './storeFile';
+import { isIsoString, isPlainObject, isSafeId, loadStore, sanitizeName, storeUnavailable, type StoreLog } from './storeFile';
 
 /**
  * The asking side of remote spawn (`spawn-outgoing.json`): the requests this
@@ -50,6 +50,8 @@ export interface SpawnOutgoingRecordV1 {
   requestKey?: string;
   /** The prompt, until the request is final. */
   text?: string;
+  /** The asker's name for the started agent: the remote label of the link `started` makes. */
+  label?: string;
   state: A2aSpawnOutgoingState;
   code?: A2aSpawnCode;
   /** `started`: the link to the agent (the uuid the other PC minted). */
@@ -239,11 +241,14 @@ export class SpawnOutgoingStore {
 
 function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
   if (!isPlainObject(raw) || raw['v'] !== 1) return null;
-  const { hostId, spawnId, agent, rootId, sub, from, callerKey, requestKey, text, state, code, linkId, createdAt, updatedAt, expiresAt } = raw;
+  const { hostId, spawnId, agent, rootId, sub, from, callerKey, requestKey, text, label, state, code, linkId, createdAt, updatedAt, expiresAt } = raw;
   if (!isHostId(hostId) || !isSpawnId(spawnId) || !isAgentSlug(agent) || !isSpawnRootId(rootId)) return null;
   if (sub !== undefined && (typeof sub !== 'string' || !sub || normalizeSpawnSub(sub) !== sub)) return null;
   if (!isPlainObject(from) || !isSafeId(from['workspaceId']) || !isSafeId(from['paneId'])) return null;
   if (!isSafeId(callerKey) || (text !== undefined && typeof text !== 'string')) return null;
+  if (label !== undefined && typeof label !== 'string') return null;
+  // Bounded like a link's label, which it becomes.
+  const name = typeof label === 'string' ? sanitizeName(label, '') : '';
   if (requestKey !== undefined && (typeof requestKey !== 'string' || !SPAWN_REQUEST_KEY_RE.test(requestKey))) return null;
   if (typeof state !== 'string' || !STATES.has(state) || (code !== undefined && !isSpawnCode(code))) return null;
   if (linkId !== undefined && (typeof linkId !== 'string' || !UUID_RE.test(linkId))) return null;
@@ -252,6 +257,7 @@ function coerceRecord(raw: unknown): SpawnOutgoingRecordV1 | null {
     v: 1, hostId, spawnId, agent, rootId, ...(sub ? { sub: sub as string } : {}),
     from: { workspaceId: from['workspaceId'] as string, paneId: from['paneId'] as string },
     callerKey, ...(typeof requestKey === 'string' ? { requestKey } : {}), ...(typeof text === 'string' ? { text } : {}),
+    ...(name ? { label: name } : {}),
     state: state as A2aSpawnOutgoingState, ...(code ? { code: code as A2aSpawnCode } : {}),
     ...(typeof linkId === 'string' ? { linkId } : {}),
     createdAt, updatedAt, expiresAt,

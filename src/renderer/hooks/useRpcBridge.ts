@@ -888,7 +888,7 @@ function bodyWithImages(text: string, images: readonly A2aDeliveredImage[]): (pt
   return (ptyId) => withImageFooter(body, images, panePathFor(ptyId));
 }
 
-export function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 'reply' | 'completed' | 'failed', title?: string): string {
+export function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 'reply' | 'completed' | 'failed' | 'reported', title?: string): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
   const what = kind === 'new' ? 'new A2A task' : kind === 'reply' ? 'reply on A2A task' : `A2A task ${kind}:`;
   const preview = kind === 'new' && title ? nudgeTitlePreview(title) : '';
@@ -897,6 +897,11 @@ export function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 
   // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
   // split this "single line" into a multi-line bracketed paste (submitted with
   // `\r\r`) and inject text into the very live-agent prompt this path protects.
+  if (kind === 'reported') {
+    // A company task another PC finished: held here as a report for this side to mark done.
+    return `[wmux] ${sanitizeA2aName(senderName)} reported A2A task ${id8} done on its PC: check the report, then mark it done `
+      + `(a2a_task_update completed) — a2a_task_query task_id:${safeId}`;
+  }
   return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)}${about} — a2a_task_query task_id:${safeId}`;
 }
 
@@ -1127,8 +1132,11 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
       emitA2aTaskEvent(cached, state === 'canceled' ? 'cancelled' : 'updated', state);
     }
     // The item's own state, not the task's: an earlier `working` item handed
-    // over late must not announce the end.
-    const ended = item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
+    // over late must not announce the end. A peer's `completed` held here as a
+    // report (`reported`) asks this side to check it and mark it done.
+    const ended = item.reported === true
+      ? 'reported'
+      : item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
     if (!ended || side !== 'from') return { ok: true, delivered: true };
     // The pointer is one best-effort try. The event above already announced
     // the end and the task stays queryable, so a pane that is gone, holds

@@ -232,6 +232,9 @@ describe('computer.rpc with the real service', () => {
           const state: AppState = { snapshotId: `s${++seq}`, app: notepad, window: notepadWindow, tree: '0 window', screenshotStatus: { status: 'skipped' } };
           return state;
         }
+        if (method === 'capabilities') {
+          return { actions: ['getAppState', 'click'], modes: ['ax', 'vision', 'both'], permissions: { accessibility: true, screenRecording: true } };
+        }
         return { method: 'synthetic', verification: 'unverified' };
       }) as HelperLike['request'],
       abort: vi.fn(),

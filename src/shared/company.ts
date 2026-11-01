@@ -84,6 +84,48 @@ export function missingBriefFields(data: unknown): string[] {
   return BRIEF_FIELDS.filter((f) => !nonEmptyString(data[f]));
 }
 
+/**
+ * The brief in `data` with only the fields a brief has (`blockedBy` when it
+ * is a list of strings), or null when `data` is not a complete version-1
+ * brief.
+ */
+export function companyBriefOf(data: unknown): CompanyBriefV1 | null {
+  if (!isRecord(data) || missingBriefFields(data).length > 0) return null;
+  const blockedBy = data.blockedBy;
+  return {
+    kind: COMPANY_BRIEF_KIND,
+    v: 1,
+    goal: data.goal as string,
+    scope: data.scope as string,
+    acceptance: data.acceptance as string,
+    verify: data.verify as string,
+    report: data.report as string,
+    ...(Array.isArray(blockedBy) && blockedBy.every((b) => typeof b === 'string') ? { blockedBy: [...blockedBy] as string[] } : {}),
+  };
+}
+
+const BRIEF_HEADINGS: Record<(typeof BRIEF_FIELDS)[number], string> = {
+  goal: 'Goal',
+  scope: 'Scope',
+  acceptance: 'Acceptance',
+  verify: 'Verify',
+  report: 'Report',
+};
+
+/** How a seat on another PC finishes a company task: it has no CEO there to report to. */
+export const REMOTE_SEAT_FINISH_LINE = 'When it is done, finish this task as completed with evidence: the PR URL, '
+  + 'its head commit, what you ran and who ran the live check. The CEO checks it and marks it done on its PC.';
+
+/**
+ * The text a company task to another PC carries: the CEO's message, the
+ * brief's five fields each under its name, and how a seat there finishes.
+ * That PC gets plain text; the brief itself stays on this PC.
+ */
+export function renderRemoteBrief(message: string, brief: CompanyBriefV1): string {
+  const fields = BRIEF_FIELDS.map((f) => `${BRIEF_HEADINGS[f]}:\n${brief[f].trim()}`);
+  return [message.trim(), ...fields, REMOTE_SEAT_FINISH_LINE].join('\n\n');
+}
+
 /** True when the task's first message carries a brief: a company task. */
 export function isCompanyTask(history: readonly Message[]): boolean {
   const first = history[0];

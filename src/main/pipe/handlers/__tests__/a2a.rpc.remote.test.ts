@@ -6,6 +6,8 @@ import { PEER_HINTS_DEADLINE_MS, registerA2aRpc, type RemoteA2aRpcDeps } from '.
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { DaemonClient } from '../../../DaemonClient';
 import type { A2aRemoteTarget } from '../../../../shared/a2aRemoteDelivery';
+import { A2A_REMOTE_BODY_MAX } from '../../../../shared/a2aRemote';
+import { COMPANY_BRIEF_KIND, companyBriefOf, renderRemoteBrief } from '../../../../shared/company';
 import { getWorkLinkStore } from '../../../workLink/workLinkStore';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
@@ -302,6 +304,78 @@ describe('a2a.task.send — Moa to another PC\'s Moa (brain link)', () => {
     expect(moa.description).toContain('Moa of PC pc-b');
     expect(moa.metadata).toMatchObject({ endpoint: 'brain', remote: true });
     expect(moa.metadata).not.toHaveProperty('localPaneId');
+  });
+});
+
+describe('a2a.task.send — a company CEO\'s task to another PC', () => {
+  const BRIEF = {
+    kind: COMPANY_BRIEF_KIND, v: 1,
+    goal: 'Fix the parser', scope: 'src/parser only', acceptance: 'parser tests pass', verify: 'npm test -- parser', report: 'the PR URL',
+  };
+  /** The caller's pane (pane-a, pty-a) sits in `seat` of its workspace's company. */
+  function seatedAs(seat: 'coordinator' | 'staff'): void {
+    const base = sendToRendererMock.getMockImplementation()!;
+    sendToRendererMock.mockImplementation(async (w: unknown, method: string, p: unknown) => (method === 'pane.list'
+      ? [{ id: 'pane-a', surfacePtyIds: ['pty-a'], companySeat: seat }, { id: 'pane-a2', surfacePtyIds: ['pty-a2'] }]
+      : base(w, method, p)));
+  }
+  const send = (router: RpcRouter, extra: Record<string, unknown>): Promise<Record<string, unknown>> =>
+    call(router, 'a2a.task.send', { workspaceId: 'ws-a', senderPtyId: 'pty-a', to: ALIAS, message: 'Take the parser.', title: 'T', ...extra });
+
+  it('refuses the CEO with no brief or a partial one, naming the missing fields', async () => {
+    seatedAs('coordinator');
+    const router = setup();
+    const none = await send(router, {});
+    expect(none.error).toBe(
+      'a2a.task.send: a task from a company\'s CEO to another PC needs a brief in data ({"kind":"wmux.company.brief","v":1,…}); missing: goal, scope, acceptance, verify, report',
+    );
+    const partial = await send(router, { data: { ...BRIEF, scope: '', report: ' ' } });
+    expect(partial.error).toMatch(/missing: scope, report$/);
+    expect(remote.sendTask).not.toHaveBeenCalled();
+  });
+
+  it('sends the CEO\'s message with the brief written out, and the brief with only its own fields', async () => {
+    seatedAs('coordinator');
+    const res = await send(setup(), { data: { ...BRIEF, blockedBy: ['task-1'], deliveryKey: 'dk', note: 'not a brief field' } });
+    expect(res).toMatchObject({ ok: true, taskId: RT, remote: true });
+    expect(remote.sendTask).toHaveBeenCalledWith({
+      linkId: LINK,
+      from: { workspaceId: 'ws-a', name: 'ws-a', paneId: 'pane-a', ptyId: 'pty-a' },
+      title: 'T',
+      text: renderRemoteBrief('Take the parser.', companyBriefOf(BRIEF)!),
+      brief: { ...BRIEF, blockedBy: ['task-1'] },
+    });
+  });
+
+  it('refuses a written-out brief over the size another PC takes, never cutting it', async () => {
+    seatedAs('coordinator');
+    const res = await send(setup(), { data: { ...BRIEF, goal: 'g'.repeat(A2A_REMOTE_BODY_MAX) } });
+    expect(res.error).toMatch(new RegExp(`over the ${A2A_REMOTE_BODY_MAX}-byte limit for a task to another PC`));
+    expect(remote.sendTask).not.toHaveBeenCalled();
+  });
+
+  it('a staff pane, or a pane in no company, sends as before: data is not read and no brief goes', async () => {
+    seatedAs('staff');
+    await send(setup(), { data: BRIEF });
+    expect(remote.sendTask).toHaveBeenLastCalledWith({
+      linkId: LINK, from: { workspaceId: 'ws-a', name: 'ws-a', paneId: 'pane-a', ptyId: 'pty-a' }, title: 'T', text: 'Take the parser.',
+    });
+    sendToRendererMock.mockImplementation(async (_w: unknown, method: string) => (method === 'pane.list' ? [{ id: 'pane-a', surfacePtyIds: ['pty-a'] }] : { ok: true }));
+    await send(setup(), {});
+    expect(remote.sendTask).toHaveBeenLastCalledWith({
+      linkId: LINK, from: { workspaceId: 'ws-a', name: 'ws-a', paneId: 'pane-a', ptyId: 'pty-a' }, title: 'T', text: 'Take the parser.',
+    });
+  });
+
+  it('Moa\'s send on its brain link is unchanged: no brief rule, no brief', async () => {
+    remote.listTargets.mockResolvedValue([{
+      alias: 'pc-b/Moa', linkId: LINK, hostId: HOST, kind: 'brain', local: { workspaceId: 'ws-hq' }, remote: { workspaceId: 'ws-rhq' }, allowOutbound: true,
+    }]);
+    const res = await setup().dispatch({
+      id: 'b', method: 'a2a.task.send', params: { to: 'pc-b/Moa', message: 'check the build', title: 'T', data: BRIEF }, commanderToken: mintCommanderToken('ws-hq'),
+    });
+    expect((res as { result: Record<string, unknown> }).result).toMatchObject({ ok: true, remote: true });
+    expect(remote.sendTask).toHaveBeenCalledWith({ linkId: LINK, from: { workspaceId: 'ws-hq', name: 'Moa' }, title: 'T', text: 'check the build' });
   });
 });
 

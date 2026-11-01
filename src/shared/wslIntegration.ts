@@ -385,6 +385,7 @@ export function wslClaudeHooks(): Record<string, Array<{ matcher: string; hooks:
   });
   return {
     SessionStart: [hook('SessionStart')],
+    SessionEnd: [hook('SessionEnd')],
     Stop: [hook('Stop')],
     StopFailure: [hook('StopFailure')],
     SubagentStop: [hook('SubagentStop')],

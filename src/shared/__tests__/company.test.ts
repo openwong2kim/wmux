@@ -4,6 +4,8 @@ import {
   BRIEF_FIELDS,
   COMPANY_BRIEF_KIND,
   decideCompanySend,
+  REMOTE_SEAT_FINISH_LINE,
+  companyBriefOf,
   companyCancelRefusal,
   companyDoneRefusal,
   companySeatOf,
@@ -11,6 +13,7 @@ import {
   isCompanyTask,
   missingBriefFields,
   parseWorkspaceCompany,
+  renderRemoteBrief,
   type CompanyWorkspaceView,
 } from '../company';
 
@@ -228,5 +231,51 @@ describe('companySeatOf', () => {
     expect(companySeatOf({ ...company, coordinatorPaneId: null }, 'pane-ceo')).toBe('staff');
     expect(companySeatOf(undefined, 'pane-dev')).toBeUndefined();
     expect(companySeatOf(company, undefined)).toBeUndefined();
+  });
+});
+
+describe('companyBriefOf', () => {
+  it('keeps only the brief fields of a complete version-1 brief', () => {
+    const brief = companyBriefOf({ ...BRIEF, blockedBy: ['task-1'], deliveryKey: 'k', note: 'x', paneId: 'pane-x' });
+    expect(brief).toEqual({ ...BRIEF, blockedBy: ['task-1'] });
+  });
+
+  it('drops a blockedBy that is not a list of strings', () => {
+    expect(companyBriefOf({ ...BRIEF, blockedBy: ['task-1', 2] })).toEqual(BRIEF);
+    expect(companyBriefOf({ ...BRIEF, blockedBy: 'task-1' })).toEqual(BRIEF);
+  });
+
+  it('is null for a partial brief, another version, or no brief at all', () => {
+    expect(companyBriefOf({ ...BRIEF, verify: ' ' })).toBeNull();
+    expect(companyBriefOf({ ...BRIEF, v: 2 })).toBeNull();
+    expect(companyBriefOf(undefined)).toBeNull();
+    expect(companyBriefOf([BRIEF])).toBeNull();
+  });
+});
+
+describe('renderRemoteBrief', () => {
+  it('writes the message, the five fields under their names, then how a seat on another PC finishes', () => {
+    const text = renderRemoteBrief('Take the parser.', companyBriefOf(BRIEF)!);
+    expect(text).toBe([
+      'Take the parser.',
+      'Goal:\nShip the parser',
+      'Scope:\nsrc/parser only',
+      'Acceptance:\ntests pass',
+      'Verify:\nnpm test',
+      'Report:\nreply with the diff summary',
+      REMOTE_SEAT_FINISH_LINE,
+    ].join('\n\n'));
+    expect(REMOTE_SEAT_FINISH_LINE).toBe('When it is done, finish this task as completed with evidence: the PR URL, its head commit, '
+      + 'what you ran and who ran the live check. The CEO checks it and marks it done on its PC.');
+  });
+
+  it('keeps a multi-line value whole under its name', () => {
+    const text = renderRemoteBrief('Go.', companyBriefOf({ ...BRIEF, acceptance: '  - parser tests pass\n- lint is clean\n' })!);
+    expect(text).toContain('Acceptance:\n- parser tests pass\n- lint is clean\n\nVerify:\nnpm test');
+  });
+
+  it('writes nothing else of the data', () => {
+    const text = renderRemoteBrief('Go.', companyBriefOf({ ...BRIEF, blockedBy: ['task-blocker-1'], deliveryKey: 'dk-1', extra: 'other-note' })!);
+    for (const s of ['task-blocker-1', 'dk-1', 'other-note', COMPANY_BRIEF_KIND, 'blockedBy']) expect(text).not.toContain(s);
   });
 });

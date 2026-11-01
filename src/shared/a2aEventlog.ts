@@ -66,10 +66,18 @@ export interface A2aTaskTransitionPayload {
   forced?: 'workspace_removed' | 'remote_state' | 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
   /**
    * Cross-host A2A: the peer's messageId when this transition came from the
-   * other host (`forced: 'remote_state'` for a terminal one). Replay re-seeds the
-   * per-task remote-message dedupe from it.
+   * other host (`forced: 'remote_state'` for a terminal one, and for a report
+   * held as input-required, see `remoteAsked`). Replay re-seeds the per-task
+   * remote-message dedupe from it.
    */
   remoteMessageId?: string;
+  /**
+   * Cross-host A2A: the state the peer asked for, when it differs from `to`.
+   * `'completed'` on a company task this host sent is committed as
+   * `input-required`: a report held here until this host marks it done. The
+   * remote-message dedupe keys on `remoteAsked ?? to`.
+   */
+  remoteAsked?: 'completed';
   /**
    * Reopen marker. `'sender_message'` = the sender wrote to a task that had
    * already ended, so it went back to `submitted` for the receiver

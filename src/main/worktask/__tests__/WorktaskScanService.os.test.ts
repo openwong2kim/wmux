@@ -304,9 +304,33 @@ describe('detail codes (the renderer localizes the detail line)', () => {
       'orphan-unlinked': 'worktask.cleanup.detail.orphanUnlinked',
       'orphan-meta': 'worktask.cleanup.detail.orphanMeta',
       'disk-missing': 'worktask.cleanup.detail.diskMissing',
+      'seat-uncommitted': 'worktask.cleanup.detail.seatUncommitted',
+      'seat-unpushed': 'worktask.cleanup.detail.seatUnpushed',
+      'seat-locked': 'worktask.cleanup.detail.seatLocked',
+      'seat-unregistered': 'worktask.cleanup.detail.seatUnregistered',
     };
     for (const [code, text] of Object.entries(WORKTASK_SCAN_DETAIL)) {
       expect(text).toBe(en[enKey[code as keyof typeof WORKTASK_SCAN_DETAIL]]);
     }
+  });
+});
+
+describe('company seat leftovers', () => {
+  it('lists each as a company seat, named by its stamp\'s label or else its folder, with its commit count', async () => {
+    const res = await makeSvc().scan([], [
+      { worktreePath: '/cw/abc123def456/dev-1-456789ab', reason: 'unpushed', commits: 3, label: 'dev-1', company: 'checkout' },
+      { worktreePath: '/cw/abc123def456/qa-456789ab', reason: 'uncommitted' },
+      { worktreePath: '/cw/abc123def456/ops-456789ab', reason: 'locked' },
+      { worktreePath: '/cw/abc123def456/x-456789ab', reason: 'unregistered' },
+    ]);
+    expect(res.entries).toEqual([
+      {
+        category: 'company-seat', title: 'dev-1', company: 'checkout', worktreePath: '/cw/abc123def456/dev-1-456789ab',
+        commitCount: 3, detailCode: 'seat-unpushed', detail: WORKTASK_SCAN_DETAIL['seat-unpushed'],
+      },
+      { category: 'company-seat', title: 'qa-456789ab', worktreePath: '/cw/abc123def456/qa-456789ab', detailCode: 'seat-uncommitted', detail: WORKTASK_SCAN_DETAIL['seat-uncommitted'] },
+      { category: 'company-seat', title: 'ops-456789ab', worktreePath: '/cw/abc123def456/ops-456789ab', detailCode: 'seat-locked', detail: WORKTASK_SCAN_DETAIL['seat-locked'] },
+      { category: 'company-seat', title: 'x-456789ab', worktreePath: '/cw/abc123def456/x-456789ab', detailCode: 'seat-unregistered', detail: WORKTASK_SCAN_DETAIL['seat-unregistered'] },
+    ]);
   });
 });

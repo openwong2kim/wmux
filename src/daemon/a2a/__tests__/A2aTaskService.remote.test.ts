@@ -6,6 +6,9 @@ import os from 'node:os';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { A2aTaskService, REMOTE_STATE_IDS_MAX, statusMessageFromWire } from '../A2aTaskService';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
+import type { A2aRemoteTaskState } from '../../../shared/a2aRemoteDelivery';
+import { COMPANY_BRIEF_KIND } from '../../../shared/company';
+import { panePrincipalId } from '../../../shared/principals';
 import type { Message } from '../../../shared/types';
 
 let dir: string;
@@ -65,6 +68,37 @@ async function outbound(svc: A2aTaskService, id = 'rt-out') {
     remote: marker('outbound'),
   });
 }
+
+/** Sender side (A), company mode: the CEO pane briefed a seat on the peer. */
+async function companyOutbound(svc: A2aTaskService, id = 'rt-co') {
+  return svc.createTask({
+    id,
+    title: 'T',
+    from: { workspaceId: 'ws-local', name: 'Local', paneId: 'pane-ceo' },
+    to: { workspaceId: REMOTE_WS, name: 'pc-b/ws/pane' },
+    history: [{
+      kind: 'message',
+      messageId: 'm-0',
+      role: 'user',
+      parts: [
+        { kind: 'text', text: 'please' },
+        { kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } },
+      ],
+    }],
+    remote: marker('outbound'),
+  });
+}
+
+const PEER_EVIDENCE = {
+  summary: 'merged',
+  items: [
+    { kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'tests pass' },
+    { kind: 'inspection' as const, status: 'unverified' as const, summary: 'read the diff' },
+  ],
+};
+
+const remoteOf = (svc: A2aTaskService, id: string): A2aRemoteTaskState => svc.getTask(id)!.metadata.remote as A2aRemoteTaskState;
+const lastPayload = (log: AppendOnlyLog): unknown => log.readAllRecords().filter((r) => r.domain === 'a2a').at(-1)!.payload;
 
 describe('A2aTaskService — remote marker', () => {
   it('stores the marker on create and restores it from the log', async () => {
@@ -217,6 +251,27 @@ describe('A2aTaskService — remote.mark and listRemotePending', () => {
     expect(svc.listRemoteByLink(LINK)).toEqual([]);
     expect(log.readAllRecords().filter((x) => x.domain === 'a2a').at(-1)?.payload).toMatchObject({ forced: 'remote_link_ended' });
   });
+
+  it('forceFailRemote leaves a report the peer made as it is, for every reason, also after a replay', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'completed', summary: 'merged' });
+    const before = log.readAllRecords().length;
+    for (const forced of ['remote_link_ended', 'remote_refused', 'remote_held_rejected'] as const) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      expect(await svc.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced })).toMatchObject({ ok: true, failed: false });
+    }
+    expect(log.readAllRecords()).toHaveLength(before);
+    expect(svc.getTask('rt-co')!.status.state).toBe('input-required');
+
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(await restored.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced: 'remote_link_ended' })).toMatchObject({ ok: true, failed: false });
+    // Once the peer works on it again, the report no longer stands.
+    await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'working' });
+    expect(await restored.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced: 'remote_link_ended' })).toMatchObject({ ok: true, failed: true });
+  });
 });
 
 describe('A2aTaskService — remote messages and states', () => {
@@ -326,7 +381,7 @@ describe('A2aTaskService — remote messages and states', () => {
   it('refuses an invalid transition and a task on another link', async () => {
     const svc = newService(newLog());
     await outbound(svc);
-    expect((await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's1', to: 'completed' })).ok).toBe(false);
+    expect((await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's1', to: 'submitted' })).ok).toBe(false);
     expect((await svc.applyRemoteState({ taskId: 'rt-out', linkId: 'x', messageId: 's2', to: 'working' })).ok).toBe(false);
   });
 
@@ -336,6 +391,294 @@ describe('A2aTaskService — remote messages and states', () => {
     await svc.transition({ taskId: 'rt-in', to: 'working', callerWorkspaceId: 'ws-local' });
     const r = await svc.transition({ taskId: 'rt-in', to: 'completed', callerWorkspaceId: 'ws-local', evidence: { summary: 's', items: [] } });
     expect(r.ok).toBe(false);
+  });
+});
+
+describe('A2aTaskService — a company task\'s remote completion is held as a report', () => {
+  it('a peer completed commits input-required with its message, evidence and grade; the report stays in history and on the marker', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'working' });
+    const res = await svc.applyRemoteState({
+      taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged', message: 'PR #12 merged.', evidence: PEER_EVIDENCE,
+    });
+    expect(res).toMatchObject({ ok: true, duplicate: false });
+    const task = svc.getTask('rt-co')!;
+    expect(task.status.state).toBe('input-required');
+    expect(task.status.evidence).toEqual(PEER_EVIDENCE);
+    expect(task.status.message?.parts).toEqual([{ kind: 'text', text: 'PR #12 merged.' }]);
+    expect(task.history.at(-1)).toMatchObject({ messageId: 's2', role: 'agent', parts: [{ kind: 'text', text: 'PR #12 merged.' }] });
+    expect(remoteOf(svc, 'rt-co')).toMatchObject({ reported: 's2', stateSync: 'input-required' });
+    expect(lastPayload(log)).toMatchObject({
+      to: 'input-required', remoteAsked: 'completed', remoteMessageId: 's2', forced: 'remote_state', verifiedItemCount: 1,
+    });
+
+    // Replay rebuilds the same report.
+    const restored = newService(log);
+    restored.restoreFromLog();
+    const again = restored.getTask('rt-co')!;
+    expect(again.status).toMatchObject({ state: 'input-required', evidence: PEER_EVIDENCE });
+    expect(again.history.map((h) => h.messageId)).toEqual(['m-0', 's2']);
+    expect(remoteOf(restored, 'rt-co')).toMatchObject({ reported: 's2' });
+  });
+
+  it('a report\'s inbox item says completed and is flagged, live and on replay; a non-company completion has no flag', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await companyOutbound(svc);
+    await outbound(svc);
+    for (const id of ['rt-co', 'rt-out']) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      await svc.applyRemoteState({ taskId: id, linkId: LINK, messageId: `${id}-s1`, to: 'working' });
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      await svc.applyRemoteState({ taskId: id, linkId: LINK, messageId: `${id}-s2`, to: 'completed', summary: 'done' });
+    }
+    const report = { messageId: 'rt-co-s2', kind: 'state', state: 'completed', reported: true, delivered: false };
+    const plain = { messageId: 'rt-out-s2', kind: 'state', state: 'completed', delivered: false };
+    expect(remoteOf(svc, 'rt-co').inbox?.at(-1)).toEqual(report);
+    expect(remoteOf(svc, 'rt-out').inbox?.at(-1)).toEqual(plain);
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(remoteOf(restored, 'rt-co').inbox?.at(-1)).toEqual(report);
+    expect(remoteOf(restored, 'rt-out').inbox?.at(-1)).toEqual(plain);
+  });
+
+  it('a non-company remote task keeps today\'s completion', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await outbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-out', linkId: LINK, messageId: 's2', to: 'completed', message: 'Done.', evidence: PEER_EVIDENCE });
+    const task = svc.getTask('rt-out')!;
+    expect(task.status).toMatchObject({ state: 'completed', evidence: PEER_EVIDENCE });
+    expect(task.history.map((h) => h.messageId)).toEqual(['m-0']);
+    expect(task.metadata.remote).not.toHaveProperty('reported');
+    expect(lastPayload(log)).toMatchObject({ to: 'completed', verifiedItemCount: 1 });
+    expect(lastPayload(log)).not.toHaveProperty('remoteAsked');
+  });
+
+  it('a redelivered report is a duplicate, live and after a replay; the same id asking another state is a conflict', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', message: 'Done.' });
+    const records = (): number => log.readAllRecords().filter((r) => r.domain === 'a2a').length;
+    const before = records();
+    expect(await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', message: 'Done.' }))
+      .toMatchObject({ ok: true, duplicate: true });
+
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', message: 'Done.' }))
+      .toMatchObject({ ok: true, duplicate: true });
+    expect(await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'failed' }))
+      .toMatchObject({ ok: false, conflict: true });
+    expect(records()).toBe(before);
+    expect(restored.getTask('rt-co')!.history.filter((h) => h.messageId === 's2')).toHaveLength(1);
+    expect(restored.getTask('rt-co')!.status.state).toBe('input-required');
+  });
+
+  it('a question then a completed is a same-state report; a second completed under a new id replaces it', async () => {
+    const svc = newService(newLog());
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'input-required', message: 'Which branch?' });
+    expect(svc.getTask('rt-co')!.status.state).toBe('input-required');
+    expect(remoteOf(svc, 'rt-co')).not.toHaveProperty('reported');
+
+    expect(await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's3', to: 'completed', message: 'Done on main.', evidence: PEER_EVIDENCE }))
+      .toMatchObject({ ok: true, duplicate: false });
+    expect(svc.getTask('rt-co')!.status).toMatchObject({ state: 'input-required', evidence: PEER_EVIDENCE });
+    expect(remoteOf(svc, 'rt-co').reported).toBe('s3');
+
+    expect(await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's4', to: 'completed', message: 'Fixed the nit.' }))
+      .toMatchObject({ ok: true, duplicate: false });
+    const task = svc.getTask('rt-co')!;
+    expect(task.status.state).toBe('input-required');
+    expect(task.status.message?.parts).toEqual([{ kind: 'text', text: 'Fixed the nit.' }]);
+    expect(task.status.evidence).toEqual({ summary: 'completed on the remote host (evidence stays there)', items: [] });
+    expect(remoteOf(svc, 'rt-co').reported).toBe('s4');
+    // Both reports stay readable; the question was a status, not a report.
+    expect(task.history.map((h) => h.messageId)).toEqual(['m-0', 's3', 's4']);
+  });
+
+  it('a later peer state replaces the report; failed still ends the task', async () => {
+    const svc = newService(newLog());
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed' });
+    // B works again: the report no longer stands.
+    expect((await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's3', to: 'working' })).ok).toBe(true);
+    expect(svc.getTask('rt-co')!.status.state).toBe('working');
+    expect(remoteOf(svc, 'rt-co')).not.toHaveProperty('reported');
+
+    // B asks a question after a report: input-required on input-required.
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's4', to: 'completed' });
+    expect((await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's5', to: 'input-required', message: 'One more thing?' })).ok).toBe(true);
+    expect(svc.getTask('rt-co')!.status.message?.parts).toEqual([{ kind: 'text', text: 'One more thing?' }]);
+    expect(remoteOf(svc, 'rt-co')).not.toHaveProperty('reported');
+    // A question on a question is still refused, as for any remote task.
+    expect((await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's6', to: 'input-required' })).ok).toBe(false);
+
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's7', to: 'completed' });
+    expect((await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's8', to: 'failed', summary: 'reverted' })).ok).toBe(true);
+    expect(svc.getTask('rt-co')!.status.state).toBe('failed');
+  });
+
+  it('a peer completed or input-required is taken from submitted for any remote task; an ended task refuses every move', async () => {
+    const svc = newService(newLog());
+    await outbound(svc, 'rt-a');
+    await outbound(svc, 'rt-b');
+    await companyOutbound(svc, 'rt-c');
+    await companyOutbound(svc, 'rt-d');
+    expect((await svc.applyRemoteState({ taskId: 'rt-a', linkId: LINK, messageId: 'a1', to: 'completed', summary: 'done' })).ok).toBe(true);
+    expect((await svc.applyRemoteState({ taskId: 'rt-b', linkId: LINK, messageId: 'b1', to: 'input-required' })).ok).toBe(true);
+    expect((await svc.applyRemoteState({ taskId: 'rt-c', linkId: LINK, messageId: 'c1', to: 'completed', summary: 'done' })).ok).toBe(true);
+    expect((await svc.applyRemoteState({ taskId: 'rt-d', linkId: LINK, messageId: 'd1', to: 'input-required' })).ok).toBe(true);
+    expect(svc.getTask('rt-a')!.status.state).toBe('completed');
+    expect(svc.getTask('rt-b')!.status.state).toBe('input-required');
+    expect(svc.getTask('rt-c')!.status.state).toBe('input-required');
+    expect(remoteOf(svc, 'rt-c').reported).toBe('c1');
+    expect(svc.getTask('rt-d')!.status.state).toBe('input-required');
+    expect(remoteOf(svc, 'rt-d')).not.toHaveProperty('reported');
+
+    for (const to of ['working', 'input-required', 'completed', 'failed'] as const) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      expect((await svc.applyRemoteState({ taskId: 'rt-a', linkId: LINK, messageId: `a-${to}`, to })).ok).toBe(false);
+    }
+    expect(svc.getTask('rt-a')!.status.state).toBe('completed');
+  });
+});
+
+describe('A2aTaskService — the sending PC marks a remote company task\'s report done', () => {
+  const DONE_EVIDENCE = { summary: 'PR checked', items: [{ kind: 'inspection' as const, status: 'unverified' as const, summary: 'PR head read' }] };
+  const CEO = { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator' as const };
+  const records = (log: AppendOnlyLog) => log.readAllRecords().filter((r) => r.domain === 'a2a');
+
+  /** A company task the peer reported done (s2), held here as input-required. */
+  async function reported(svc: A2aTaskService, id = 'rt-co'): Promise<void> {
+    await companyOutbound(svc, id);
+    await svc.applyRemoteState({ taskId: id, linkId: LINK, messageId: 's1', to: 'working' });
+    await svc.applyRemoteState({ taskId: id, linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged' });
+    expect(svc.getTask(id)!.status.state).toBe('input-required');
+  }
+
+  it('the sending pane in the coordinator seat marks it done, stamped as that pane; a retry is the cached result', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await reported(svc);
+    // The evidence gate holds as for any completion.
+    const bare = await svc.transition({ taskId: 'rt-co', to: 'completed', ...CEO });
+    expect(!bare.ok && bare.error).toContain('completion_evidence_missing');
+
+    const done = await svc.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k1' });
+    expect(done.ok).toBe(true);
+    expect(svc.getTask('rt-co')!.status).toMatchObject({ state: 'completed', evidence: DONE_EVIDENCE });
+    const last = records(log).at(-1)!;
+    expect(last.payload).toMatchObject({ kind: 'task.transition', to: 'completed' });
+    expect(last.payload).not.toHaveProperty('remoteMessageId');
+    expect(last.authContext?.verifiedWorkspaceId).toBe('ws-local');
+    expect(last.authContext?.principalId).toBe(panePrincipalId('ws-local', 'pane-ceo'));
+
+    // The same key returns the first result, live and after a restart, appending nothing.
+    const count = records(log).length;
+    expect(await svc.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k1' })).toMatchObject({ ok: true });
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(await restored.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k1' }))
+      .toMatchObject({ ok: true, task: { status: { state: 'completed' } } });
+    // A new done is refused: the task has ended.
+    expect((await restored.transition({ taskId: 'rt-co', to: 'completed', ...CEO, evidence: DONE_EVIDENCE, idempotencyKey: 'k2' })).ok).toBe(false);
+    expect(records(log)).toHaveLength(count);
+
+    // The peer's report redelivered is still a duplicate; a new completed meets an ended task.
+    expect(await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'completed', summary: 'merged' }))
+      .toMatchObject({ ok: true, duplicate: true });
+    expect((await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's3', to: 'completed' })).ok).toBe(false);
+    expect(restored.getTask('rt-co')!.status.state).toBe('completed');
+  });
+
+  it('the trusted lane marks it done for the sending workspace only', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await reported(svc);
+    const elsewhere = await svc.transition({ taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-other', trustedLane: true, evidence: DONE_EVIDENCE });
+    expect(!elsewhere.ok && elsewhere.error).toContain('is not the receiver');
+    const done = await svc.transition({ taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-local', trustedLane: true, evidence: DONE_EVIDENCE });
+    expect(done.ok).toBe(true);
+    // As for a local trusted completion: the receiver side's principal, here the sending workspace (no receiver pane on this PC).
+    expect(records(log).at(-1)!.authContext?.principalId).toBe('ws-local');
+  });
+
+  it('the workspace\'s coordinator now, after the CEO seat moved to another pane, marks it done as its own pane', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await reported(svc);
+    const done = await svc.transition({
+      taskId: 'rt-co', to: 'completed', callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-new-ceo' }, callerCompanySeat: 'coordinator', evidence: DONE_EVIDENCE,
+    });
+    expect(done.ok).toBe(true);
+    expect(records(log).at(-1)!.authContext?.principalId).toBe(panePrincipalId('ws-local', 'pane-new-ceo'));
+    // The done ends the report, live and after a replay.
+    expect((svc.getTask('rt-co')!.metadata.remote as { reported?: string }).reported).toBeUndefined();
+    const replayed = newService(log);
+    replayed.restoreFromLog();
+    expect((replayed.getTask('rt-co')!.metadata.remote as { reported?: string }).reported).toBeUndefined();
+  });
+
+  it('refuses a staff seat, another workspace\'s coordinator and a seat with no resolved pane', async () => {
+    const svc = newService(newLog());
+    await reported(svc);
+    const callers = [
+      { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'staff' as const },
+      { callerWorkspaceId: 'ws-ops', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator' as const },
+      { callerWorkspaceId: 'ws-local', callerCompanySeat: 'coordinator' as const },
+      { callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-ceo' } },
+    ];
+    for (const caller of callers) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      const res = await svc.transition({ taskId: 'rt-co', to: 'completed', ...caller, evidence: DONE_EVIDENCE });
+      expect(!res.ok && res.error).toContain('is not the receiver');
+    }
+    expect(svc.getTask('rt-co')!.status.state).toBe('input-required');
+  });
+
+  it('refuses the done on anything but a report, and any other state on a report', async () => {
+    const svc = newService(newLog());
+    // Still working on the peer.
+    await companyOutbound(svc, 'rt-w');
+    await svc.applyRemoteState({ taskId: 'rt-w', linkId: LINK, messageId: 'w1', to: 'working' });
+    // A real question from the peer, not a report.
+    await companyOutbound(svc, 'rt-q');
+    await svc.applyRemoteState({ taskId: 'rt-q', linkId: LINK, messageId: 'q1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-q', linkId: LINK, messageId: 'q2', to: 'input-required', message: 'Which branch?' });
+    for (const id of ['rt-w', 'rt-q']) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      const res = await svc.transition({ taskId: id, to: 'completed', ...CEO, evidence: DONE_EVIDENCE });
+      expect(!res.ok && res.error).toContain('only on its report');
+    }
+    expect(svc.getTask('rt-w')!.status.state).toBe('working');
+    expect(svc.getTask('rt-q')!.status.state).toBe('input-required');
+
+    // On a report, the sending pane moves nothing but the done.
+    await reported(svc);
+    for (const to of ['working', 'input-required', 'failed'] as const) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      const res = await svc.transition({ taskId: 'rt-co', to, ...CEO, evidence: { summary: 'x', items: [] } });
+      expect(!res.ok && res.error).toContain('only on its report');
+    }
+    expect(svc.getTask('rt-co')!.status.state).toBe('input-required');
+
+    // A remote task outside a company keeps the receiver-only rule.
+    await outbound(svc, 'rt-plain');
+    await svc.applyRemoteState({ taskId: 'rt-plain', linkId: LINK, messageId: 'p1', to: 'working' });
+    await svc.applyRemoteState({ taskId: 'rt-plain', linkId: LINK, messageId: 'p2', to: 'input-required' });
+    const plain = await svc.transition({
+      taskId: 'rt-plain', to: 'completed', callerWorkspaceId: 'ws-local', callerAddr: { paneId: 'pane-l' }, callerCompanySeat: 'coordinator', evidence: DONE_EVIDENCE,
+    });
+    expect(!plain.ok && plain.error).toContain('is not the receiver');
   });
 });
 

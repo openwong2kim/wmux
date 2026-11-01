@@ -72,7 +72,7 @@ describe('WSL per-launch Claude integration', () => {
     const settings = JSON.parse(fs.readFileSync(injected.env.WMUX_WSL_SETTINGS, 'utf8'));
     // #1730 — the same events and matchers a Windows pane registers (setupHooks.ts).
     expect(Object.keys(settings.hooks).sort()).toEqual(['Notification', 'PermissionRequest', 'PostToolUse', 'PreToolUse',
-      'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
+      'SessionEnd', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(settings.hooks.SessionStart[0].hooks[0].command).toBe('/bin/sh "$WMUX_WSL_HOOK" SessionStart');
     expect(settings.hooks.PreToolUse.map((g: { matcher: string; hooks: Array<{ command: string; timeout: number }> }) =>
       [g.matcher, g.hooks[0].command, g.hooks[0].timeout])).toEqual([

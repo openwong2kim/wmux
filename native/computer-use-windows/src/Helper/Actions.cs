@@ -1,6 +1,8 @@
-// Control actions. Each one re-checks its target right before sending input
-// (protocol ControlTarget), and again between typed chunks, repeated keys and
-// scroll notches:
+// Control actions. Input actions try background input first (posted to the
+// target window alone, BackgroundInput.cs); what cannot be posted, or is
+// refused before anything was posted, goes the real way below. Real input
+// re-checks its target right before sending (protocol ControlTarget), and
+// again between typed chunks, repeated keys and scroll notches:
 //   - the input desktop is the normal one (not locked, no UAC / secure desktop);
 //   - keyboard batches: the foreground window is the target window, owned by
 //     the target pid, and the focused control belongs to it;
@@ -227,12 +229,27 @@ internal static unsafe class Focus
 
 internal static unsafe class Actions
 {
-    private static JsonObject Result(string method, bool verified, string? note = null)
+    /// <summary>`delivery` is protocol ActionDelivery: background (posted, or a UIA call) or foreground (real input).</summary>
+    private static JsonObject Result(string method, bool verified, string delivery, string? note = null)
     {
-        var o = new JsonObject { ["method"] = method, ["verification"] = verified ? "verified" : "unverified" };
+        var o = new JsonObject { ["method"] = method, ["verification"] = verified ? "verified" : "unverified", ["delivery"] = delivery };
         if (note != null) o["note"] = note;
         return o;
     }
+
+    /// <summary>A posted action's result. Our own side effect (cursor or foreground moved) is said in the note.</summary>
+    private static JsonObject Posted(BackgroundOutcome outcome) => outcome.SideEffect
+        ? Result("synthetic", false, outcome.Delivery, "the target window came to the front or the pointer moved onto the target while the input was posted; check the app state")
+        : Result("synthetic", outcome.Verified, outcome.Delivery);
+
+    private static bool InFront(ControlTarget target) => Win.Root(PInvoke.GetForegroundWindow()) == target.Window;
+
+    /// <summary>
+    /// A UIA call is not input, so it is background unless the target window
+    /// came to the front during it (macOS does the same with the frontmost app).
+    /// </summary>
+    private static string SemanticDelivery(ControlTarget target, bool frontBefore) =>
+        !frontBefore && InFront(target) ? "foreground" : "background";
 
     private static (Snapshot Snap, ControlTarget Target) Begin(Params p)
     {
@@ -301,7 +318,11 @@ internal static unsafe class Actions
     /// </summary>
     private static void EndIfAmbiguous(Exception e, string call)
     {
-        if (Uia.NotExecuted(e.HResult)) return;
+        if (Uia.NotExecuted(e.HResult))
+        {
+            Input.UncountSemantic();
+            return;
+        }
         throw new HelperError(Uia.ErrorCode(e) is "action_not_supported" ? "internal" : Uia.ErrorCode(e),
             $"{call} failed after it was sent ({Uia.Describe(e)}); it may have taken effect. Call getAppState before retrying");
     }
@@ -330,6 +351,7 @@ internal static unsafe class Actions
                 try
                 {
                     Focus.RequireSemantic(target, el);
+                    Input.CountSemantic();
                     invoke->Invoke();
                     return "pressed through accessibility (Invoke)";
                 }
@@ -349,6 +371,7 @@ internal static unsafe class Actions
             try
             {
                 Focus.RequireSemantic(target, el);
+                Input.CountSemantic();
                 toggle->Toggle();
                 return "toggled through accessibility (Toggle)";
             }
@@ -367,6 +390,7 @@ internal static unsafe class Actions
             try
             {
                 Focus.RequireSemantic(target, el);
+                Input.CountSemantic();
                 select->Select();
                 return "selected through accessibility (SelectionItem)";
             }
@@ -396,6 +420,7 @@ internal static unsafe class Actions
                 try
                 {
                     Focus.RequireSemantic(target, el);
+                    Input.CountSemantic();
                     if (collapsed) expand->Expand();
                     else expand->Collapse();
                     return "expanded or collapsed through accessibility (ExpandCollapse)";
@@ -413,8 +438,54 @@ internal static unsafe class Actions
         return null;
     }
 
+    /// <summary>
+    /// protocol ForegroundMode: `refuse` means background only; where real
+    /// input would be needed the action answers needs_foreground instead.
+    /// </summary>
+    private static bool RefuseForeground(Params p)
+    {
+        if (!p.Has("foreground")) return false;
+        return p.String("foreground") switch
+        {
+            "allow" => false,
+            "refuse" => true,
+            _ => throw new HelperError("invalid_argument", "foreground must be allow or refuse"),
+        };
+    }
+
+    /// <summary>
+    /// After a background attempt (Core Background.Next): its result, or null
+    /// to go on with real input. needs_foreground only when nothing at all
+    /// went out during the action (the protocol's rule: main re-sends it with
+    /// real input, so anything sent before would arrive twice).
+    /// </summary>
+    private static JsonObject? AfterBackground(string action, BackgroundOutcome posted, bool refuseForeground, long sentAtStart)
+    {
+        var next = Background.Next(posted, refuseForeground, Input.Sent != sentAtStart);
+        // Refusals that depend on the target's state are logged; what the
+        // action asks for (a chord, the wheel) never posts, so it is not.
+        if (next is AfterAttempt.RealInput or AfterAttempt.NeedsForeground && !Background.IsActionRefusal(posted.Refusal))
+        {
+            var why = Background.Describe(posted.Refusal);
+            Wire.Log(next == AfterAttempt.NeedsForeground ? $"{action}: needs foreground ({why})" : $"{action}: real input, not background ({why})");
+        }
+        switch (next)
+        {
+            case AfterAttempt.UseResult:
+                return Posted(posted);
+            case AfterAttempt.RealInput:
+                return null;
+            case AfterAttempt.NeedsForeground:
+                throw new HelperError("needs_foreground", $"this needs real input ({Background.Describe(posted.Refusal)}); nothing was sent");
+            default:
+                throw new HelperError("internal", "input may have reached the app before wmux found this needs real input, so nothing more was sent. Call getAppState before retrying");
+        }
+    }
+
     public static JsonObject Click(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         int button = (p.String("button") ?? "left") switch
         {
@@ -429,12 +500,17 @@ internal static unsafe class Actions
 
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
+            bool frontBefore = InFront(target);
             var note = ClickSemantically(target, (IUIAutomationElement*)element);
-            if (note != null) return Result("accessibility", false, note);
+            if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
         }
+        // Background first; RequirePointer (which may raise the window) only on the real-input path.
+        Input.ThrowIfStopping();
+        var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
+        if (AfterBackground("click", posted, refuse, sentAtStart) is { } result) return result;
         var preflight = Focus.RequirePointer(target, x, y);
         Input.Click(x, y, button, count, mods, preflight);
-        return Result("synthetic", false);
+        return Result("synthetic", false, "foreground");
     }
 
     /// <summary>
@@ -452,6 +528,10 @@ internal static unsafe class Actions
 
     public static JsonObject SetValue(Params p)
     {
+        // A UIA ValuePattern call: no input, no focus request, nothing that
+        // raises the window, so it never needs the foreground and `refuse`
+        // changes nothing (the mode is still validated).
+        RefuseForeground(p);
         var (snap, target) = Begin(p);
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
         var value = p.RequireString("value");
@@ -471,10 +551,13 @@ internal static unsafe class Actions
                 throw new HelperError(Uia.IsGone(e.HResult) ? "element_stale" : "value_not_settable", $"element {index}: {Uia.Describe(e)}");
             }
             if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
+            // Read before the checks, as the click path does.
+            bool frontBefore = InFront(target);
             Focus.RequireSemantic(target, el);
             var bstr = Marshal.StringToBSTR(value);
             try
             {
+                Input.CountSemantic();
                 pattern->SetValue(new BSTR((char*)bstr));
             }
             catch (Exception e) when (e is not HelperError)
@@ -495,9 +578,10 @@ internal static unsafe class Actions
             {
                 readBack = null;
             }
+            var delivery = SemanticDelivery(target, frontBefore);
             return readBack == value
-                ? Result("accessibility", true)
-                : Result("accessibility", false, "the value read back differs from what was set");
+                ? Result("accessibility", true, delivery)
+                : Result("accessibility", false, delivery, "the value read back differs from what was set");
         }
         finally
         {
@@ -526,13 +610,29 @@ internal static unsafe class Actions
 
     public static JsonObject Type(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         var text = p.RequireString("text");
         if (text.Length == 0) throw new HelperError("invalid_argument", "type needs text");
+        Input.ThrowIfStopping();
         if (p.Int("index") is int index)
         {
             var el = snap.Element(index);
             RefuseSecretElement(snap, el, index, "type into");
+            // Background first, before UIA SetFocus (which can raise the window).
+            (double X, double Y)? fieldPoint;
+            try
+            {
+                var (fx, fy, _) = ScreenPoint(snap, index, null);
+                fieldPoint = (fx, fy);
+            }
+            catch (HelperError)
+            {
+                fieldPoint = null;
+            }
+            var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
             try
             {
                 Focus.RequireSemantic(target, el);
@@ -547,6 +647,11 @@ internal static unsafe class Actions
             {
                 throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
             }
+        }
+        else
+        {
+            var posted = BackgroundInput.Type(target, text, null, null, -1, null);
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
         }
 
         // Checked before anything is sent; FocusedValue below is the baseline for verification.
@@ -575,7 +680,7 @@ internal static unsafe class Actions
             typed += chunk.GraphemeCount;
         }
         bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
-        return Result("synthetic", verified);
+        return Result("synthetic", verified, "foreground");
     }
 
     /// <summary>
@@ -596,9 +701,15 @@ internal static unsafe class Actions
 
     public static JsonObject PressKey(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (_, target) = Begin(p);
-        var key = Key(p.RequireString("key"));
+        var keyName = p.RequireString("key");
+        var key = Key(keyName);
         int repeat = Math.Clamp(p.Int("repeat") ?? 1, 1, 50);
+        Input.ThrowIfStopping();
+        var posted = BackgroundInput.Key(target, keyName, repeat, 0, "pressKey");
+        if (AfterBackground("pressKey", posted, refuse, sentAtStart) is { } result) return result;
         for (int n = 0; n < repeat; n++)
         {
             if (n > 0) Sta.Sleep(4);
@@ -611,20 +722,29 @@ internal static unsafe class Actions
                 throw new HelperError(e.Code, $"{e.Message} (after {n} of {repeat} presses; the rest were not sent)");
             }
         }
-        return Result("synthetic", false);
+        return Result("synthetic", false, "foreground");
     }
 
     public static JsonObject Hotkey(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (_, target) = Begin(p);
-        var key = Key(p.RequireString("key"));
+        var keyName = p.RequireString("key");
+        var key = Key(keyName);
         var mods = Modifiers(p);
+        Input.ThrowIfStopping();
+        // Posted keys carry no modifier state, so a chord is always real input.
+        var posted = BackgroundInput.Key(target, keyName, 1, mods.Count, "hotkey");
+        if (AfterBackground("hotkey", posted, refuse, sentAtStart) is { } result) return result;
         Input.Tap(key, mods, Focus.RequireKeyboard(target));
-        return Result("synthetic", false);
+        return Result("synthetic", false, "foreground");
     }
 
     public static JsonObject Scroll(Params p)
     {
+        long sentAtStart = Input.Sent;
+        bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         int amount = Math.Clamp(p.Int("amount") ?? 3, 1, 50);
         var (dx, dy) = (p.String("direction") ?? "down") switch
@@ -636,6 +756,8 @@ internal static unsafe class Actions
             _ => throw new HelperError("invalid_argument", "direction must be up, down, left or right"),
         };
         var (x, y, _) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
+        // Always real input: WM_MOUSEWHEEL was not measured (Core Background.ActionRefusal).
+        AfterBackground("scroll", BackgroundOutcome.Refused(BackgroundRefusal.Scroll), refuse, sentAtStart);
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);
@@ -651,6 +773,6 @@ internal static unsafe class Actions
                 throw new HelperError(e.Code, $"{e.Message} (after {n} of {amount} notches; the rest was not sent)");
             }
         }
-        return Result("synthetic", false);
+        return Result("synthetic", false, "foreground");
     }
 }

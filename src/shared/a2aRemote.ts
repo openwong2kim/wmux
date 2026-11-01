@@ -958,6 +958,12 @@ export interface A2aRemoteTaskMarkerV1 {
    * task stored before it was recorded (treated as a pane task).
    */
   kind?: A2aEndpointKind;
+  /**
+   * Outbound company task: the peer's state messageId of the `completed` held
+   * here as a report (the task is input-required) until this host marks it
+   * done. Cleared by the peer's next state that is not a report.
+   */
+  reported?: string;
 }
 
 /**
