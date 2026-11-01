@@ -989,3 +989,45 @@ describe('Cancel', () => {
     expect(h.stepKeys).toEqual([]);
   });
 });
+
+describe("Claude Code's screen-reader layout", () => {
+  const srScreen = (name: string): string[] => screen(path.join('..', 'screen-reader', `${name}.json`));
+  const DATABASE_PAYLOAD = {
+    hook_event_name: 'PreToolUse',
+    tool_name: 'AskUserQuestion',
+    tool_input: {
+      questions: [{
+        question: 'Which database should we use?',
+        header: 'Database',
+        multiSelect: false,
+        options: [
+          { label: 'PostgreSQL', description: 'Relational, runs as a server' },
+          { label: 'SQLite', description: 'A single file, no server' },
+        ],
+      }],
+    },
+  };
+
+  it('keeps the live question when another tool starts', async () => {
+    const h = makeRegistry({}, srScreen('claude-sr-ask-100x30'));
+    const record = await create(h, DATABASE_PAYLOAD);
+    await h.registry.retireStaleQuestion('pty-a');
+    expect(stored(h, record.id).state).toBe('pending');
+    // Answered, the dialog is erased: then it retires.
+    h.pane.rows = srScreen('claude-sr-ask-answered-100x30');
+    await h.registry.retireStaleQuestion('pty-a');
+    expect(stored(h, record.id).state).toBe('expired');
+  });
+
+  it('answers a phone tap with "answer in the terminal", writing nothing and keeping the record', async () => {
+    const h = makeRegistry({}, srScreen('claude-sr-ask-100x30'));
+    const record = await create(h, DATABASE_PAYLOAD);
+    expect(await answer(h, record, { answers: [{ questionId: 'q0', keys: ['2'] }] }))
+      .toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
+    expect(await h.registry.resolve({ id: record.id, decision: 'approve', choiceKey: '2', resolvedBy: 'device Test phone (dev-1)' }))
+      .toMatchObject({ ok: false, reason: 'answer-in-terminal', answerRefusal: 'unsupported-shape' });
+    expect(h.stepKeys).toEqual([]);
+    expect(h.writes).toEqual([]);
+    expect(stored(h, record.id).state).toBe('pending');
+  });
+});

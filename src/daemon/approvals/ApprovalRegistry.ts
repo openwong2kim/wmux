@@ -147,6 +147,7 @@ import {
   type AskFormQuestion,
   type AskStep,
 } from './askPicker';
+import { showsScreenReaderKeyRow } from './screenReaderKeyRow';
 import type { PhoneDecisionsConfig } from './decisionConfig';
 import { boundDecisionForm, nativeV2Answer } from './decisionForm';
 
@@ -2206,6 +2207,10 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
           rows.length > 0 && looksLikeApprovalPrompt(rows));
         if (pressRefusal) return { result: pressRefusal };
 
+        // Claude Code's screen-reader layout draws the question its own way, and
+        // there a digit only fills the key row: the person answers it.
+        if (read && showsScreenReaderKeyRow(rows)) return { result: this.answerInTerminal(record, 'unsupported-shape') };
+
         const proof = read && rows.length > 0 ? questionOnScreen(rows, record) : 'absent';
         if (!read || proof !== 'match' && proof !== 'changed') {
           // Whatever the pane is showing now, it is not this question: expire,
@@ -3362,6 +3367,8 @@ export class ApprovalRegistry implements ApprovalRegistryApi, ApprovalHookSink {
       audit('prompt-changed:unreadable');
       return { ok: false, reason: 'prompt-changed', request: copyRequest(record) };
     }
+    // Claude Code's screen-reader layout: no picker the steps can drive.
+    if (showsScreenReaderKeyRow(first.rows)) return inTerminal('unsupported-shape');
     const picker = parseAskPicker(first.rows);
     const untouched = askPickerUntouchedRead(picker, questions, first.unknown, answers);
     if (untouched !== 'meets') {
