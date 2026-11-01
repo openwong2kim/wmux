@@ -10,7 +10,9 @@ import {
   companyHoldAtCreate,
   companyHoldOf,
   companyHoldPhase,
+  companyHoldNotGiven,
   companyHoldWithholds,
+  companyNotGivenRefusal,
   companyWaitingLine,
   companyWaitingRefusal,
   isCompanyHoldReason,
@@ -119,13 +121,30 @@ describe('companyHoldWithholds', () => {
     expect(companyHoldWithholds(task(waiting, { workspaceId: 'ws-out', paneId: 'o' }), { workspaceId: 'ws', paneId: 's1' })).toBe(true);
   });
 
-  it('keeps nothing once released, or without a hold', () => {
-    expect(companyHoldWithholds(task({ blockedBy: ['a'], waitingOn: [], releasedAt: 't' }), { workspaceId: 'ws', paneId: 's1' })).toBe(false);
+  it('keeps a released task until a write to its seat starts, and one held because nothing was written', () => {
+    const released = { blockedBy: ['a'], waitingOn: [], releasedAt: 't' };
+    const slotHeld = { blockedBy: [], waitingOn: [], releasedAt: 't' };
+    for (const hold of [released, slotHeld, { ...released, held: 'no-agent' }, { ...released, held: 'pane-missing' }]) {
+      expect(companyHoldNotGiven(hold as never)).toBe(true);
+      expect(companyHoldWithholds(task(hold), { workspaceId: 'ws', paneId: 's1' })).toBe(true);
+      expect(companyHoldWithholds(task(hold), { workspaceId: 'ws', paneId: 'ceo' })).toBe(false);
+      expect(companyHoldWithholds(task(hold), { workspaceId: 'ws', paneId: 's1', trusted: true })).toBe(false);
+    }
+  });
+
+  it('gives it to its seat once a write started, once delivered, and when the write may have landed', () => {
+    const released = { blockedBy: ['a'], waitingOn: [], releasedAt: 't' };
+    for (const hold of [{ ...released, attempted: true }, { ...released, delivered: true }, { ...released, held: 'delivery-unconfirmed' }]) {
+      expect(companyHoldNotGiven(hold as never)).toBe(false);
+      expect(companyHoldWithholds(task(hold), { workspaceId: 'ws', paneId: 's1' })).toBe(false);
+    }
     expect(companyHoldWithholds(task(undefined), { workspaceId: 'ws', paneId: 's1' })).toBe(false);
   });
 
   it('names the blockers by their short ids', () => {
     expect(companyWaitingRefusal(['task-abcdef123', 'task-99887766x'])).toBe('this task waits on abcdef12, 99887766; it is not yours until they complete');
+    expect(companyNotGivenRefusal({ blockedBy: ['task-abcdef123'], waitingOn: ['task-abcdef123'] })).toBe('this task waits on abcdef12; it is not yours until it completes');
+    expect(companyNotGivenRefusal({ blockedBy: [], waitingOn: [], releasedAt: 't' })).toBe('this task has not been written to your pane yet; it is not yours until wmux writes it there');
   });
 });
 

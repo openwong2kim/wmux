@@ -164,6 +164,27 @@ export function remoteSeatIntro(input: RemoteSeatIntroInput): string {
   return lines.join('\n');
 }
 
+/** A seat added to a running company, as its CEO hears of it. */
+export interface CompanyHireNoticeInput {
+  /** The seat's pane name. */
+  label: string;
+  owns?: string;
+  /** The seat's own branch, when it got a worktree. */
+  branch?: string;
+}
+
+/**
+ * The one line the CEO pane gets once a seat added to its company ("Add a
+ * seat on this PC…") has its agent up: the seat's name, what it owns and its
+ * branch, each part only when there is one.
+ */
+export function companyHireNotice(input: CompanyHireNoticeInput): string {
+  const owns = input.owns?.replace(/\s+/g, ' ').trim().replace(/\.+$/, '');
+  const branch = input.branch?.trim();
+  const notes = [owns && `owns ${owns}`, branch && `branch ${branch}`].filter(Boolean);
+  return `wmux: #${input.label.trim()} joined the company${notes.length > 0 ? ` (${notes.join('; ')})` : ''}. Brief it like your other seats.`;
+}
+
 /** True when the task's first message carries a brief: a company task. */
 export function isCompanyTask(history: readonly Message[]): boolean {
   const first = history[0];

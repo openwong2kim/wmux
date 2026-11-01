@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import * as path from 'node:path';
 import ts from 'typescript';
 import { selectPcRailPersisted } from '../../../stores/selectors/pcRail';
+import { multiviewGroupsForSave } from '../../../utils/multiviewGroups';
 import { readSourceText } from '../../../../test-utils/sourceText';
 
 describe('AppLayout — axis A session-save invariants', () => {
@@ -93,18 +94,20 @@ describe('AppLayout — axis A session-save invariants', () => {
     const code = ts.transpileModule(builder!.getText(tree), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    // The builder's one imported helper, passed in alongside the store.
-    const build = new Function('useStore', 'selectPcRailPersisted', `${code}; return buildSessionData(new Map());`);
+    // The builder's imported helpers, passed in alongside the store.
+    const build = new Function('useStore', 'selectPcRailPersisted', 'multiviewGroupsForSave', `${code}; return buildSessionData(new Map());`);
     const snapshot = build({ getState: () => ({
       anthropicUsageEnabled: enabled,
       workspaces: [],
+      multiviewIds: [],
+      multiviewSavedGroups: [],
       archivedWorkspaces: [],
       orchestratorRoleBindings: {},
       layoutTemplates: [],
       recentCommands: [],
       toolbarSnippets: [],
       surfaceDismissedQuestion: {},
-    }) }, selectPcRailPersisted);
+    }) }, selectPcRailPersisted, multiviewGroupsForSave);
     const persisted = JSON.parse(JSON.stringify(snapshot));
     expect(Object.hasOwn(persisted, 'anthropicUsageEnabled')).toBe(true);
     expect(persisted.anthropicUsageEnabled).toBe(enabled);
@@ -120,16 +123,18 @@ describe('AppLayout — axis A session-save invariants', () => {
     const code = ts.transpileModule(builder!.getText(tree), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const build = new Function('useStore', 'selectPcRailPersisted', `${code}; return buildSessionData(new Map());`);
+    const build = new Function('useStore', 'selectPcRailPersisted', 'multiviewGroupsForSave', `${code}; return buildSessionData(new Map());`);
     const snapshot = build({ getState: () => ({
       workspaces: [],
+      multiviewIds: [],
+      multiviewSavedGroups: [],
       archivedWorkspaces: [],
       orchestratorRoleBindings: {},
       layoutTemplates: [],
       recentCommands: [],
       toolbarSnippets: [],
       surfaceDismissedQuestion: { 'pty-1': 'Shall I merge?' },
-    }) }, selectPcRailPersisted);
+    }) }, selectPcRailPersisted, multiviewGroupsForSave);
     expect(JSON.parse(JSON.stringify(snapshot)).surfaceDismissedQuestion).toEqual({ 'pty-1': 'Shall I merge?' });
   });
 
@@ -141,9 +146,11 @@ describe('AppLayout — axis A session-save invariants', () => {
     const code = ts.transpileModule(builder!.getText(tree), {
       compilerOptions: { target: ts.ScriptTarget.ES2022 },
     }).outputText;
-    const build = new Function('useStore', 'selectPcRailPersisted', `${code}; return buildSessionData(new Map());`);
+    const build = new Function('useStore', 'selectPcRailPersisted', 'multiviewGroupsForSave', `${code}; return buildSessionData(new Map());`);
     const snapshot = JSON.parse(JSON.stringify(build({ getState: () => ({
       workspaces: [],
+      multiviewIds: [],
+      multiviewSavedGroups: [],
       archivedWorkspaces: [],
       orchestratorRoleBindings: {},
       layoutTemplates: [],
@@ -154,7 +161,7 @@ describe('AppLayout — axis A session-save invariants', () => {
       paneFlashEnabled: false,
       taskbarFlashEnabled: false,
       paneGlowOpacity: 0.85,
-    }) }, selectPcRailPersisted)));
+    }) }, selectPcRailPersisted, multiviewGroupsForSave)));
     expect([snapshot.paneRingEnabled, snapshot.paneFlashEnabled, snapshot.taskbarFlashEnabled, snapshot.paneGlowOpacity])
       .toEqual([false, false, false, 0.85]);
   });

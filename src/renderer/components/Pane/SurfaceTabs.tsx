@@ -20,7 +20,7 @@ import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock, IconBellOff, IconBell } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock, IconBellOff, IconBell, IconCornerUpLeft } from '../icons';
 import { isPrivateBrowserSurface } from '../../../shared/privateBrowser';
 import { BrowserAgentTabMark } from '../Browser/BrowserAgentControls';
 import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
@@ -423,13 +423,15 @@ export default function SurfaceTabs({
   const t = useT();
   const tabLabel = (s: Surface): string => s.title || (s.surfaceType === 'board' ? t('company.board') : t('surface.terminal'));
   // "Continue in another agent": a held tab and the tab its work went on in
-  // each name the other on a tooltip line of its own.
-  const continuedNote = (s: Surface): string => ([['surface.continuedIn', s.continuedIn], ['surface.continuedFrom', s.continuedFrom]] as const)
-    .map(([key, id]) => {
+  // each name the other on a tooltip line of its own, and carry a muted mark
+  // before the title (out on the tab the work left, back-arrow on the tab it
+  // came to) that says the same to assistive tech.
+  const continuedLines = (s: Surface): string[] => ([['surface.continuedIn', s.continuedIn], ['surface.continuedFrom', s.continuedFrom]] as const)
+    .flatMap(([key, id]) => {
       const peer = id ? surfaces.find((p) => p.id === id) : undefined;
-      return peer ? `\n${t(key, { name: peer.title || t('surface.terminal') })}` : '';
-    })
-    .join('');
+      return peer ? [t(key, { name: peer.title || t('surface.terminal') })] : [];
+    });
+  const continuedNote = (s: Surface): string => continuedLines(s).map((line) => `\n${line}`).join('');
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
   // gets eaten by a click-after-dragend race.
   const dragStartTimeRef = useRef<number>(0);
@@ -1157,6 +1159,16 @@ export default function SurfaceTabs({
             <RemoteSurfaceGlyph label={t('surface.remoteTerminal')} />
           )}
           {s.surfaceType === 'browser' && <BrowserAgentTabMark surfaceId={s.id} />}
+          {continuedLines(s).length > 0 && (
+            <span
+              className="shrink-0 flex text-[var(--text-muted)]"
+              role="img"
+              aria-label={continuedLines(s).join(', ')}
+              data-continued-link={s.continuedIn && surfaces.some((p) => p.id === s.continuedIn) ? 'in' : 'from'}
+            >
+              {s.continuedIn && surfaces.some((p) => p.id === s.continuedIn) ? <IconExternalLink size={12} /> : <IconCornerUpLeft size={12} />}
+            </span>
+          )}
           {/* Private browser tab: the same padlock a private channel carries. */}
           {isPrivateBrowserSurface(s) && (
             <span className="shrink-0" role="img" aria-label={t('browser.privateTab')} data-private-browser-tab>

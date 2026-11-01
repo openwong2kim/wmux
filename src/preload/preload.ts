@@ -88,7 +88,7 @@ import type { NotificationCategory, StallPrefillResult } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
 import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
-import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
+import type { PaneUsageLimit, PaneUsageLimitPatch, PaneUsageWindow } from '../shared/usageLimit';
 import type { AuthLostEntry } from '../shared/agentAuthLost';
 import type { DictationAssetsResult, DictationMicAccess, DictationModelState } from '../shared/dictation';
 import type { PreviewChangedEvent, PreviewLinkEvent, PreviewOpenResult } from '../shared/filePreview';
@@ -1619,6 +1619,9 @@ const electronAPI = {
   company: {
     seatLaunches: (req: import('../main/company/seatLaunch').SeatLaunchRequest) =>
       ipcRenderer.invoke(IPC.COMPANY_SEAT_LAUNCHES, req) as Promise<import('../main/company/seatLaunch').SeatLaunchResult>,
+    // One seat added to a company that already runs.
+    hireSeat: (req: import('../main/company/seatLaunch').HireSeatRequest) =>
+      ipcRenderer.invoke(IPC.COMPANY_HIRE_SEAT, req) as Promise<import('../main/company/seatLaunch').HireSeatResult>,
   },
   // Fleet's Plan card: Claude's plan dialogs and the answer to one (main window only).
   planApprovals: {
@@ -1701,7 +1704,8 @@ const electronAPI = {
         { ok: true; repoPaths: string[] } | { ok: false }
       >,
     // mode='workspace'는 cwd repo/worktree 자신의 미커밋 변경만(본 repo 매핑 없음).
-    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace') =>
+    // mode='since': the same folder's changes since targetHeadOid, committed or not.
+    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace' | 'since') =>
       ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '', mode ?? 'task') as Promise<
         import('../shared/diffParse').DiffReadResult | import('../shared/diffParse').DiffReadError
       >,
@@ -2118,6 +2122,13 @@ const electronAPI = {
     },
     update: (ptyId: string, patch: PaneUsageLimitPatch) =>
       ipcRenderer.invoke(IPC.USAGE_LIMIT_UPDATE, { ptyId, patch }) as Promise<{ ok: boolean }>,
+    // Each pane's 5-hour window from its statusline: the boot read, then the whole map on each change.
+    windows: () => ipcRenderer.invoke(IPC.USAGE_LIMIT_WINDOWS_LIST) as Promise<Record<string, PaneUsageWindow>>,
+    onWindows: (callback: (windows: Record<string, PaneUsageWindow>) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, windows: Record<string, PaneUsageWindow>) => callback(windows);
+      ipcRenderer.on(IPC.USAGE_LIMIT_WINDOWS, listener);
+      return () => { ipcRenderer.removeListener(IPC.USAGE_LIMIT_WINDOWS, listener); };
+    },
   },
   // External sessions (shared/externalSessions.ts): agents running outside
   // wmux, status only. `onChanged` always carries the full list.

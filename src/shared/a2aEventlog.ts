@@ -84,7 +84,9 @@ export interface A2aTaskTransitionPayload {
    * Reopen marker. `'sender_message'` = the sender wrote to a task that had
    * already ended, so it went back to `submitted` for the receiver
    * (`reopenTask`). Like `forced`, this bypasses VALID_TRANSITIONS on purpose;
-   * the regular transition API never carries it.
+   * the regular transition API never carries it. Also set when the sender's
+   * message hands a reported company task back (`input-required` ->
+   * `working`, an edge VALID_TRANSITIONS has).
    */
   reopened?: 'sender_message';
 }

@@ -19,10 +19,20 @@
 //      was refused and nothing was written: it is listed again), or a `held`
 //      reason.
 //
-// While a task waits on a blocker it is not its receiver's yet: a query from
-// its receiving side leaves it out, as if it had not been sent, and a state
-// move from there is refused (companyHoldWithholds). Its sender and the human
-// still see it, and the sender can still cancel it.
+// A brief that would make one more staff seat on this PC work while every
+// working slot is taken (main's cap, main/a2a/CompanyReleaseBridge.ts) is
+// held the same way, by a marker with no blockers that is released at
+// create: it is owed from the start, and main writes it once a slot frees. A
+// task with blockers also waits for a slot once they complete.
+//
+// Until it is given to its seat a held task is not its receiver's: while it
+// waits on a blocker, while it is owed a delivery that has not started, and
+// while it is held because it could not be written (no agent, pane gone). A
+// query from its receiving side leaves it out, as if it had not been sent,
+// and a state move from there is refused (companyHoldWithholds). It is given
+// once a write starts (`attempted`: it may have landed, and the nudged seat
+// must find it), once delivered, and when held as `delivery-unconfirmed`. Its
+// sender and the human always see it, and the sender can still cancel it.
 //
 // `delivered` is final. A `held` task waits for a person; `delivered` is
 // still taken on it (the person had it sent), `attempted` is ignored on it.
@@ -113,17 +123,32 @@ export function companyHoldPhase(marker: CompanyHoldMarker): CompanyHoldPhase {
 }
 
 /**
- * True when the task is kept from this caller because it still waits on a
- * blocker: the caller is on its receiving side (its receiver workspace) and
- * is neither its verified sender (in a company workspace that is the sender's
- * own pane) nor the human. A caller whose pane is unknown is kept out.
+ * True while a held task is not given to its seat yet: it waits on a
+ * blocker, it is owed a delivery no write has started on, or it is held as
+ * `no-agent` or `pane-missing` (nothing was written). False once a write
+ * started (`attempted`), once delivered, and when held as
+ * `delivery-unconfirmed` (the write may have landed).
+ */
+export function companyHoldNotGiven(marker: CompanyHoldMarker): boolean {
+  const phase = companyHoldPhase(marker);
+  if (phase === 'waiting') return true;
+  if (phase === 'owed') return marker.attempted !== true;
+  return phase === 'held' && (marker.held === 'no-agent' || marker.held === 'pane-missing');
+}
+
+/**
+ * True when the task is kept from this caller because it is not given to its
+ * seat yet (companyHoldNotGiven): the caller is on its receiving side (its
+ * receiver workspace) and is neither its verified sender (in a company
+ * workspace that is the sender's own pane) nor the human. A caller whose pane
+ * is unknown is kept out.
  */
 export function companyHoldWithholds(
   task: Pick<Task, 'metadata'>,
   caller: { workspaceId: string; paneId?: string; trusted?: boolean },
 ): boolean {
   const hold = companyHoldOf(task);
-  if (!hold || companyHoldPhase(hold) !== 'waiting' || caller.trusted === true) return false;
+  if (!hold || !companyHoldNotGiven(hold) || caller.trusted === true) return false;
   if (task.metadata.to.workspaceId !== caller.workspaceId) return false;
   return !isVerifiedTaskSender(task.metadata, caller.workspaceId, caller.paneId);
 }
@@ -238,6 +263,13 @@ export function companyWaitingRefusal(waitingOn: readonly string[]): string {
   return `this task waits on ${waitingOn.map(shortTaskId).join(', ')}; it is not yours until ${waitingOn.length === 1 ? 'it completes' : 'they complete'}`;
 }
 
+/** Why the receiving side may not move a held task it was not given yet (companyHoldNotGiven). */
+export function companyNotGivenRefusal(marker: CompanyHoldMarker): string {
+  return companyHoldPhase(marker) === 'waiting'
+    ? companyWaitingRefusal(marker.waitingOn)
+    : 'this task has not been written to your pane yet; it is not yours until wmux writes it there';
+}
+
 /** Each hold reason in plain words: "<task> is held: <text>". */
 export const COMPANY_HOLD_REASON_TEXT: Readonly<Record<CompanyHoldReason, string>> = Object.freeze({
   'no-agent': 'its blockers are done, but its pane has no agent running to take it',
@@ -252,6 +284,33 @@ export const COMPANY_HOLD_REASON_TEXT: Readonly<Record<CompanyHoldReason, string
 export function companyHeldMessageRefusal(taskId: string, reason: CompanyHoldReason): string {
   return `task ${taskId} is held and was never written to its seat (${COMPANY_HOLD_REASON_TEXT[reason]}); nothing was stored. `
     + 'Cancel it and send the work again to a seat with an agent running';
+}
+
+/**
+ * The receipt's hint for a brief held until a working slot on this PC frees:
+ * the cap, the seats holding the slots, when it goes, and the other way out.
+ */
+export function companyCapHint(cap: number, holders: readonly string[]): string {
+  return `${companyCapSlotsLine(cap, holders)} `
+    + 'wmux writes this task to its seat once one of them frees its slot: no task of that seat is in progress any more '
+    + '(each one reported with input-required, or ended), or its agent exited. '
+    + 'To start it sooner, cancel it and send it to a seat on another PC.';
+}
+
+/**
+ * Why a message that gives its seat the work again (a reported task handed
+ * back, an ended one reopened) is refused while every working slot on this
+ * PC is held: nothing keeps a message until a slot frees.
+ */
+export function companyCapMessageRefusal(cap: number, holders: readonly string[]): string {
+  return `${companyCapSlotsLine(cap, holders)} This message gives its seat the work again, so nothing was stored. `
+    + 'Send it again once one of them frees its slot (no task of that seat in progress, or its agent exited). '
+    + 'If the report needs no more work, mark this task done instead.';
+}
+
+function companyCapSlotsLine(cap: number, holders: readonly string[]): string {
+  const seats = cap === 1 ? 'one company seat works' : `${cap} company seats work`;
+  return `On this PC at most ${seats} at once, and ${holders.join(', ')} ${holders.length === 1 ? 'holds' : 'hold'} the slots now.`;
 }
 
 /** The line for a task still waiting: "Waiting on a, b". `label` names a task (default: its id). */
