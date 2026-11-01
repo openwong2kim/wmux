@@ -118,7 +118,7 @@ export function formatA2aMessage(
  * Broadcast variant — delivered to all workspaces.
  *
  *   ━━━ WMUX A2A BROADCAST [Priority: HIGH] ━━━
- *   From: Workspace 1.q1
+ *   From: Workspace 1
  *
  *   All workspaces: please pull latest.
  *   ━━━ END ━━━
