@@ -1,7 +1,7 @@
 // ─── Whether a screen reader is running ─────────────────────────────────────
 //
 // wmux changes behaviour for screen-reader users only (xterm's screen-reader
-// mode, agents' own screen-reader output, spoken agent state), so the signal
+// mode, spoken agent state), so the signal
 // must not fire for anyone else. Chromium's accessibility support
 // (app.accessibilitySupportEnabled) is not enough on its own: any program that
 // reads the accessibility tree turns it on (window managers, writing tools,

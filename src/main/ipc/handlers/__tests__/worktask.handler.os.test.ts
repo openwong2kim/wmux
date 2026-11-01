@@ -18,10 +18,6 @@ vi.mock('electron', () => ({
   },
 }));
 
-// Whether a screen reader is on (screenReaderService.ts); off unless a test says.
-const screenReader = vi.hoisted(() => ({ on: false }));
-vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => screenReader.on, launcherVersionsIn: () => () => '2.1.316' }));
-
 import { registerWorktaskHandlers } from '../worktask.handler';
 import { forgetBotWorkerSession, noteBotWorkerSession, reloadBotWorkerSessionsForTests, setWorkerMcpResolvers } from '../../../agents/botWorkerMergeGuard';
 import { IPC } from '../../../../shared/constants';
@@ -119,21 +115,6 @@ describe('worktask:refire (§3·F2 — 원래 initialCommand 재전송)', () => 
     expect(daemon.writes[0].sessionId).toBe('pty-1');
     expect(daemon.writes[0].data).toContain('claude');
     expect(daemon.writes[0].data.endsWith('\r')).toBe(true);
-  });
-
-  it('a re-fire starts the agent in its own screen-reader mode only while a screen reader is on', async () => {
-    daemon = makeDaemon([]);
-    dispose = registerWorktaskHandlers(() => daemon.client);
-    const wt = seedWorktree('task-sr', true);
-    const refire = () => call(IPC.WORKTASK_REFIRE, { ptyId: 'pty-1', worktreePath: wt, initialCommand: 'claude "go"' });
-    screenReader.on = true;
-    try {
-      expect(((await refire()) as { ok: boolean }).ok).toBe(true);
-    } finally {
-      screenReader.on = false;
-    }
-    expect(((await refire()) as { ok: boolean }).ok).toBe(true);
-    expect(daemon.writes.map((w) => w.data)).toEqual(['claude --ax-screen-reader "go"\r', 'claude "go"\r']);
   });
 
   it('types nothing at a folder-trust prompt and says why; a screen it cannot read does not stop a re-fire a person asked for', async () => {
