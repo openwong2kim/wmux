@@ -288,6 +288,20 @@ export function companyCancelRefusal(
   return 'only the pane that created this company task can cancel it; the receiver reports failed with evidence instead';
 }
 
+/**
+ * Renderer methods main calls for company tasks held on their blockers
+ * (shared/companyHold.ts). Never registered on the pipe router, so no pipe
+ * caller reaches them.
+ */
+export const COMPANY_RENDERER_METHOD = Object.freeze({
+  /** Write a stored company task to its seat's pane: the new-task delivery. */
+  deliver: 'a2a.company.deliver',
+  /** Drop a task the renderer stored for a hold the daemon did not keep. */
+  discard: 'a2a.company.discard',
+  /** One line to the company's coordinator (CEO) pane about a held task. */
+  ceoLine: 'a2a.company.ceoLine',
+} as const);
+
 /** A pane's place in its workspace's company: the coordinator, or staff. */
 export type CompanySeat = 'coordinator' | 'staff';
 
