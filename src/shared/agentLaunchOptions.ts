@@ -39,7 +39,9 @@
 //
 // Verified 2026-11-01 (screen-reader mode, screenReaderLaunch.ts), from --help:
 //   claude 2.1.316  `--ax-screen-reader` "Render screen-reader friendly
-//                   output"; `-p, --print` is the headless run.
+//                   output"; `-p, --print` is the headless run. The flag
+//                   first appears in Claude Code's changelog at 2.1.208; an
+//                   older claude rejects it as an unknown option.
 //   gemini 0.35.3   `--screen-reader` "Enable screen reader mode for
 //                   accessibility"; `-p, --prompt` is the headless run
 //                   (`-i, --prompt-interactive` stays interactive).
@@ -85,7 +87,13 @@ export interface AgentLaunchGrammar {
   freshContext?: FreshContextGrammar;
   /** The agent's own screen-reader output flag, and the flags that make a
    *  run headless (nobody reads its screen, so it gets no flag). */
-  screenReader?: { flag: string; headlessFlags: readonly string[] };
+  screenReader?: {
+    flag: string;
+    headlessFlags: readonly string[];
+    /** The first version with the flag (`x.y.z`). When set, a launcher whose
+     *  version is unknown or older gets no flag. */
+    minVersion?: string;
+  };
 }
 
 /**
@@ -104,7 +112,7 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
     skipPermissionsFlag: '--dangerously-skip-permissions',
     permissionFlags: ['--permission-mode'],
     freshContext: { command: '/clear', evidence: 'session_start' },
-    screenReader: { flag: '--ax-screen-reader', headlessFlags: ['-p', '--print'] },
+    screenReader: { flag: '--ax-screen-reader', headlessFlags: ['-p', '--print'], minVersion: '2.1.208' },
   },
   codex: {
     effortFlag: (e) => ['-c', `model_reasoning_effort=${e}`],

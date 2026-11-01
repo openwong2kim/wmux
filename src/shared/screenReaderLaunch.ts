@@ -1,4 +1,5 @@
 import { launchGrammarFor } from './agentLaunchOptions';
+import { isOlderVersion } from './agentSetup';
 import { launcherStem, tokenize } from './agentResume';
 import { splitModelEnvMarker } from './workerLaunch';
 
@@ -9,6 +10,8 @@ import { splitModelEnvMarker } from './workerLaunch';
  * text typed into a pane, never to a line stored for resume, replay or display,
  * so the flag goes away with the screen reader. Unchanged when:
  *   - `on` is false, or the launcher has no verified flag;
+ *   - the flag needs a minimum version and `versionOf(launcher)` is null or
+ *     older (claude before 2.1.208 rejects `--ax-screen-reader`);
  *   - the flag is already there;
  *   - the run is headless (claude `-p`/`--print`, gemini `-p`/`--prompt`);
  *   - an unquoted word follows the launcher: a subcommand (`claude auth
@@ -16,13 +19,18 @@ import { splitModelEnvMarker } from './workerLaunch';
  * Only unquoted words before an unquoted `--` count. A leading worker
  * model-env marker is kept. Pure.
  */
-export function withScreenReaderFlag(line: string, on: boolean): string {
+export function withScreenReaderFlag(line: string, on: boolean, versionOf: (launcher: string) => string | null): string {
   if (!on) return line;
   const { marker, command } = splitModelEnvMarker(line);
   const tokens = tokenize(command);
   if (tokens.length === 0 || tokens[0].quoted) return line;
-  const grammar = launchGrammarFor(launcherStem(tokens[0].value))?.screenReader;
+  const launcher = launcherStem(tokens[0].value);
+  const grammar = launchGrammarFor(launcher)?.screenReader;
   if (!grammar) return line;
+  if (grammar.minVersion) {
+    const version = versionOf(launcher);
+    if (!version || isOlderVersion(version, grammar.minVersion)) return line;
+  }
   const next = tokens[1];
   if (next && !next.quoted && !next.value.startsWith('-')) return line;
   const isFlag = (value: string, flag: string): boolean => value === flag || (flag.startsWith('--') && value.startsWith(`${flag}=`));

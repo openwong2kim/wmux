@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
 }));
 
 const screenReader = vi.hoisted(() => ({ on: false }));
-vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => screenReader.on }));
+vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => screenReader.on, launcherVersion: () => '2.1.316' }));
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -70,7 +70,7 @@ describe('pty:create typed launch line', () => {
 
   it('the daemon create types the same flagged line (source lock: no daemon here)', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
-    expect(src).toContain('const typedLine = execCommand !== undefined || !options?.initialCommand ? undefined : withScreenReaderFlag(options.initialCommand, isScreenReaderOn());');
+    expect(src).toContain('const typedLine = execCommand !== undefined || !options?.initialCommand ? undefined : withScreenReaderFlag(options.initialCommand, isScreenReaderOn(), launcherVersion);');
   });
 });
 

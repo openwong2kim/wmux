@@ -3,8 +3,11 @@
 
 import { app, BrowserWindow } from 'electron';
 import { dataSuffix } from '../shared/constants';
+import { parseAgentVersion } from '../shared/agentSetup';
 import { SCREEN_READER_IPC } from '../shared/screenReader';
 import { createScreenReaderMonitor, listProcessNames, screenReaderForcedForTest } from './screenReader';
+import { resolveClaudeExecutable } from './claude/resolveClaudeExecutable';
+import { probeClaudeExecutable } from './factory/claudeProbe';
 
 const monitor = createScreenReaderMonitor({
   platform: process.platform,
@@ -24,10 +27,43 @@ export function onScreenReaderChange(fn: (on: boolean) => void): () => void {
   return monitor.onChange(fn);
 }
 
+/** claude's `x.y.z`, read in the background, so a launch never waits on it:
+ *  null until a read answers, and when claude does not run. The probe caches
+ *  by path and mtime, so a read again is a stat. */
+let claudeVersion: string | null = null;
+
+function readClaudeVersion(): void {
+  const exe = resolveClaudeExecutable();
+  if (!exe) {
+    claudeVersion = null;
+    return;
+  }
+  void probeClaudeExecutable(exe).then((r) => { claudeVersion = r.ok ? parseAgentVersion(r.version) : null; });
+}
+
+/** The launchers whose version wmux can read: claude's flag is the one with
+ *  a minimum version (agentLaunchOptions.ts). Each answers its last read at
+ *  once and reads again for the next launch. */
+const VERSION_READS = new Map<string, () => string | null>([
+  ['claude', () => {
+    readClaudeVersion();
+    return claudeVersion;
+  }],
+]);
+
+/** The version a launch line's screen-reader flag is checked against
+ *  (screenReaderLaunch.ts); null while unknown or for a launcher wmux cannot
+ *  read. Never waits. */
+export function launcherVersion(launcher: string): string | null {
+  return VERSION_READS.get(launcher)?.() ?? null;
+}
+
 /** Starts watching (once the app is ready); every window hears a change. */
 export function startScreenReaderMonitor(): void {
   monitor.onChange((on) => {
     console.log(`[screen-reader] ${on ? 'on' : 'off'}`);
+    // Ready before the first launch a screen reader's user makes.
+    if (on) readClaudeVersion();
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(SCREEN_READER_IPC.changed, on);
     }
