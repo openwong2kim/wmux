@@ -11,6 +11,7 @@ import type { AgentStatus, Workspace } from '../../../shared/types';
 import { isAtOrUnder } from '../FileTree/FileTreePanel';
 import { quotePosixPath } from '../../../shared/imagePaste';
 import { isValidWslDistroName } from '../../../shared/wslDistro';
+import { isLinuxCwd } from '../../../shared/wslTarget';
 
 /**
  * The folder a workspace stands for: the one it was opened on, else its live
@@ -34,17 +35,45 @@ export interface ExternalPlacement {
 }
 
 /**
+ * The distro a session runs in, when it runs in WSL at a Linux folder (what a
+ * WSL pane can open), else undefined.
+ */
+export function externalSessionWslDistro(session: Pick<ExternalSession, 'cwd' | 'where'>): string | undefined {
+  const distro = session.where.wslDistro;
+  return isValidWslDistroName(distro) && isLinuxCwd(session.cwd) && session.cwd.startsWith('/') ? distro : undefined;
+}
+
+/** `\\wsl.localhost\<distro>\…` or `\\wsl$\<distro>\…`: the distro, then the Linux path. */
+const WSL_SHARE_FOLDER = /^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(.*)$/i;
+
+/**
+ * A workspace folder as a session in `wslDistro` names it. A WSL share
+ * (`\\wsl.localhost\Ubuntu\home\me`) is that distro's Linux path, so it holds
+ * a session in that distro only, and never one outside WSL. Any other folder
+ * is compared as it is: a WSL pane's folder is already its Linux path.
+ */
+function folderAsSessionSees(folder: string, wslDistro: string | undefined): string | undefined {
+  const share = WSL_SHARE_FOLDER.exec(folder);
+  if (!share) return folder;
+  if (!wslDistro || share[1].toLowerCase() !== wslDistro.toLowerCase()) return undefined;
+  return share[2].replace(/\\/g, '/') || '/';
+}
+
+/**
  * The workspace whose folder holds `cwd`: the deepest one (longest folder),
  * the first in list order on a tie. A workspace whose folder sits under the
- * session's never matches — the session is not working in it.
+ * session's never matches — the session is not working in it. `wslDistro` is
+ * the session's distro when it runs in WSL: a workspace opened on that
+ * distro's `\\wsl.localhost` / `\\wsl$` share holds it too.
  */
-export function matchExternalWorkspace(cwd: string, workspaces: readonly PlacementWorkspace[]): string | undefined {
+export function matchExternalWorkspace(cwd: string, workspaces: readonly PlacementWorkspace[], wslDistro?: string): string | undefined {
   if (!cwd) return undefined;
   let best: string | undefined;
   let bestLength = -1;
   for (const ws of workspaces) {
-    if (!ws.folder || !isAtOrUnder(ws.folder, cwd)) continue;
-    const length = ws.folder.replace(/[\\/]+$/, '').length;
+    const folder = ws.folder ? folderAsSessionSees(ws.folder, wslDistro) : undefined;
+    if (!folder || !isAtOrUnder(folder, cwd)) continue;
+    const length = folder.replace(/[\\/]+$/, '').length;
     if (length > bestLength) {
       best = ws.id;
       bestLength = length;
@@ -74,7 +103,7 @@ export function placeExternalSessions(
   const byWorkspace: Record<string, ExternalSession[]> = {};
   const outside: ExternalSession[] = [];
   for (const session of [...sessions].sort(compareExternalSessions)) {
-    const id = matchExternalWorkspace(session.cwd, workspaces);
+    const id = matchExternalWorkspace(session.cwd, workspaces, session.where.wslDistro);
     if (id) (byWorkspace[id] ??= []).push(session);
     else outside.push(session);
   }

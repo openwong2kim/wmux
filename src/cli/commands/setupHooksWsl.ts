@@ -1,0 +1,417 @@
+/**
+ * `wmux setup-hooks --wsl [<distro>] [--uninstall]` — the explicit opt-in that
+ * lets Claude Code sessions started in a WSL distro OUTSIDE wmux report to it
+ * (external sessions, shared/externalSessions.ts).
+ *
+ * It merges hook entries into that distro's Claude user settings, resolved as
+ * Claude Code resolves them: `$CLAUDE_CONFIG_DIR/settings.json` when set, else
+ * `~/.claude/settings.json`. Both the read and the write run INSIDE the distro
+ * through wsl.exe (no \\wsl$ access), the write tmp + rename. The user's own
+ * entries and every other key are kept; a re-run changes nothing; `--uninstall`
+ * removes only this instance's entries.
+ *
+ * Each entry runs the hook script shared/wslGlobalHook.ts writes under
+ * `~/.wmux<suffix>/hooks/` on the Windows side, by its /mnt path. The events
+ * are the Windows install's signals-only profile (setupHooks.ts specsFor),
+ * SessionEnd included: the wide permission gate fires on EVERY tool call, and
+ * here each one would start a Windows process.
+ */
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { dataSuffix } from '../../shared/constants';
+import { decodeWslOutput, isValidWslDistroName } from '../../shared/wslDistro';
+import { renameWithRetry } from '../../shared/settingsFile';
+import {
+  isScriptableSuffix,
+  wslGlobalHookScript,
+  WSL_GLOBAL_HOOK_SCRIPT,
+  WSL_RUNTIME_POINTER,
+} from '../../shared/wslGlobalHook';
+import { specsFor } from './setupHooks';
+
+/** Seconds Claude Code waits for one hook: a cold Electron start over interop can be slow. */
+const WSL_HOOK_TIMEOUT_S = 10;
+const WSL_RUN_TIMEOUT_MS = 60_000;
+
+export interface WslRunResult {
+  status: number | null;
+  /** The Linux child's stdout, UTF-8. */
+  stdout: string;
+  /** wsl.exe's own message or the child's stderr, decoded. */
+  stderr: string;
+  /** A spawn failure (wsl.exe missing, timeout). */
+  error?: string;
+}
+
+/** Runs wsl.exe with `args`, `input` on stdin. Injectable: tests never start a distro. */
+export type WslRunner = (args: string[], input?: string) => WslRunResult;
+
+/** A runner over `command` (wsl.exe; tests pass a local sh). */
+export function spawnRunner(command: string): WslRunner {
+  return (args, input) => runSpawned(command, args, input);
+}
+
+export const defaultWslRunner: WslRunner = spawnRunner('wsl.exe');
+
+function runSpawned(command: string, args: string[], input: string | undefined): WslRunResult {
+  const out = spawnSync(command, args, {
+    // A Buffer: with encoding 'buffer', a string input is refused ("Unknown encoding").
+    input: Buffer.from(input ?? '', 'utf8'),
+    encoding: 'buffer',
+    timeout: WSL_RUN_TIMEOUT_MS,
+    maxBuffer: 16 * 1024 * 1024,
+    windowsHide: true,
+    cwd: os.homedir(),
+  });
+  return {
+    status: out.status,
+    stdout: out.stdout ? out.stdout.toString('utf8') : '',
+    stderr: out.stderr ? decodeWslOutput(out.stderr).trim() : '',
+    ...(out.error ? { error: out.error.message } : {}),
+  };
+}
+
+/**
+ * Inside the distro: the settings path, the hook script's Linux path (`$1` is
+ * its Windows path) and the settings file, NUL-separated. CLAUDE_CONFIG_DIR is
+ * read from this process first (a caller can pass it through WSLENV); this
+ * process ran no startup files, so otherwise the user's interactive shell is
+ * asked for it, bounded and with its output discarded but for one marker line.
+ */
+export const WSL_SETTINGS_READ_SCRIPT = `set -u
+dir=\${CLAUDE_CONFIG_DIR:-}
+if [ -z "$dir" ]; then
+  wmux_sh=\${SHELL:-/bin/bash}
+  [ -x "$wmux_sh" ] || wmux_sh=/bin/bash
+  wmux_bound=
+  command -v timeout >/dev/null 2>&1 && wmux_bound="timeout -k 1 10"
+  command -v setsid >/dev/null 2>&1 && wmux_bound="setsid $wmux_bound"
+  # shellcheck disable=SC2086
+  dir=$($wmux_bound "$wmux_sh" -ic 'printf "\\nWMUX_CLAUDE_CONFIG_DIR=%s\\n" "\${CLAUDE_CONFIG_DIR:-}"' </dev/null 2>/dev/null \\
+    | sed -n 's/^WMUX_CLAUDE_CONFIG_DIR=//p' | tail -n 1)
+fi
+[ -n "$dir" ] || dir="$HOME/.claude"
+case "$dir" in
+  '~') dir=$HOME ;;
+  '~/'*) dir="$HOME/\${dir#\\~/}" ;;
+esac
+case "$dir" in
+  /*) ;;
+  *) printf 'wmux: CLAUDE_CONFIG_DIR is not an absolute path: %s\\n' "$dir" >&2; exit 5 ;;
+esac
+script=$(wslpath -u "$1" 2>/dev/null) || { printf '%s\\n' 'wmux: wslpath could not translate the hook path' >&2; exit 6; }
+file="\${dir%/}/settings.json"
+printf '%s\\0%s\\0' "$file" "$script"
+if [ -e "$file" ]; then
+  printf 'present\\0'
+  cat -- "$file" || exit 4
+else
+  printf 'absent\\0'
+fi
+`;
+
+/** Inside the distro: stdin replaces `$1`, tmp + rename beside it (through a symlink). */
+export const WSL_SETTINGS_WRITE_SCRIPT = `set -u
+file=$1
+if [ -L "$file" ]; then file=$(readlink -f -- "$file") || exit 4; fi
+mkdir -p -- "\${file%/*}" || exit 4
+tmp="$file.wmux-$$.tmp"
+if ! cat > "$tmp"; then rm -f -- "$tmp"; exit 4; fi
+if [ -e "$file" ]; then chmod --reference="$file" -- "$tmp" 2>/dev/null || true; fi
+if ! mv -f -- "$tmp" "$file"; then rm -f -- "$tmp"; exit 4; fi
+`;
+
+const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * What identifies this instance's entries: the hook script under ITS data dir.
+ * `/.wmux/hooks/…` (production) is not a substring of `/.wmux-x/hooks/…`, so
+ * an isolated instance never touches the production entries, or the reverse.
+ */
+export function wslHookMarker(suffix: string): string {
+  return `/.wmux${suffix}/hooks/${WSL_GLOBAL_HOOK_SCRIPT}`;
+}
+
+export function wslHookCommand(scriptLinuxPath: string, event: string, extraArgs?: string): string {
+  return `/bin/sh ${shellQuote(scriptLinuxPath)} ${event}${extraArgs ? ` ${extraArgs}` : ''}`;
+}
+
+interface HookLeaf { type?: unknown; command?: unknown; [k: string]: unknown }
+interface HookGroup { matcher?: string; hooks?: unknown[]; [k: string]: unknown }
+
+function isOurLeaf(leaf: unknown, marker: string): boolean {
+  return !!leaf && typeof leaf === 'object' && typeof (leaf as HookLeaf).command === 'string' &&
+    ((leaf as HookLeaf).command as string).includes(marker);
+}
+
+/**
+ * Remove this instance's hook leaves, keeping a user's leaf that shares a
+ * group with one of ours, and dropping groups, events and `hooks` left empty.
+ * Returns the number of leaves removed. Mutates `settings`.
+ */
+export function stripWslHooks(settings: Record<string, unknown>, marker: string): number {
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return 0;
+  const map = hooks as Record<string, unknown>;
+  let removed = 0;
+  for (const event of Object.keys(map)) {
+    const groups = map[event];
+    if (!Array.isArray(groups)) continue;
+    const kept: unknown[] = [];
+    for (const group of groups) {
+      const leaves = group && typeof group === 'object' ? (group as HookGroup).hooks : undefined;
+      if (!Array.isArray(leaves) || !leaves.some((leaf) => isOurLeaf(leaf, marker))) {
+        kept.push(group);
+        continue;
+      }
+      const foreign = leaves.filter((leaf) => !isOurLeaf(leaf, marker));
+      removed += leaves.length - foreign.length;
+      if (foreign.length > 0) kept.push({ ...(group as HookGroup), hooks: foreign });
+    }
+    if (kept.length === 0) delete map[event];
+    else map[event] = kept;
+  }
+  if (Object.keys(map).length === 0) delete settings.hooks;
+  return removed;
+}
+
+/** Strip, then add this instance's entries after the user's. Mutates `settings`. */
+export function mergeWslHooks(settings: Record<string, unknown>, scriptLinuxPath: string, marker: string): string[] {
+  stripWslHooks(settings, marker);
+  const hooks = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
+    ? settings.hooks as Record<string, unknown>
+    : {};
+  const specs = specsFor('signals-only');
+  for (const spec of specs) {
+    const group = {
+      matcher: spec.matcher,
+      hooks: [{ type: 'command', command: wslHookCommand(scriptLinuxPath, spec.event, spec.extraArgs), timeout: WSL_HOOK_TIMEOUT_S }],
+    };
+    const existing = hooks[spec.event];
+    hooks[spec.event] = Array.isArray(existing) ? [...existing, group] : [group];
+  }
+  settings.hooks = hooks;
+  return specs.map((spec) => spec.event);
+}
+
+function safeReviver(key: string, value: unknown): unknown {
+  if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+  return value;
+}
+
+export interface WslSettingsRead {
+  settingsPath: string;
+  scriptLinuxPath: string;
+  exists: boolean;
+  settings: Record<string, unknown>;
+}
+
+function distroArgs(distro: string | undefined): string[] {
+  return distro ? ['-d', distro] : [];
+}
+
+function runFailure(what: string, run: WslRunResult): string {
+  const detail = run.error ?? (run.stderr || `wsl.exe exited with code ${run.status}`);
+  return `${what}: ${detail}`;
+}
+
+/** Read the distro's Claude settings. Throws with a message the CLI prints. */
+export function readWslSettings(runner: WslRunner, distro: string | undefined, scriptWindowsPath: string): WslSettingsRead {
+  const run = runner([...distroArgs(distro), '--exec', '/bin/sh', '-c', WSL_SETTINGS_READ_SCRIPT, 'wmux-wsl-read', scriptWindowsPath]);
+  if (run.error || run.status !== 0) throw new Error(runFailure('could not read the Claude settings in WSL', run));
+  const first = run.stdout.indexOf('\0');
+  const second = run.stdout.indexOf('\0', first + 1);
+  const third = run.stdout.indexOf('\0', second + 1);
+  if (first < 0 || second < 0 || third < 0) throw new Error('could not read the Claude settings in WSL: unexpected answer');
+  const settingsPath = run.stdout.slice(0, first);
+  const scriptLinuxPath = run.stdout.slice(first + 1, second);
+  const state = run.stdout.slice(second + 1, third);
+  const raw = run.stdout.slice(third + 1);
+  if (!settingsPath.startsWith('/') || !scriptLinuxPath.startsWith('/') || /[\r\n]/.test(scriptLinuxPath)) {
+    throw new Error('could not read the Claude settings in WSL: unexpected paths');
+  }
+  if (state !== 'present' || raw.trim() === '') {
+    return { settingsPath, scriptLinuxPath, exists: state === 'present', settings: {} };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw, safeReviver);
+  } catch {
+    parsed = undefined;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${settingsPath} in WSL is not valid JSON — aborting to avoid overwriting your Claude Code config. Fix or remove the file and re-run.`);
+  }
+  return { settingsPath, scriptLinuxPath, exists: true, settings: parsed as Record<string, unknown> };
+}
+
+function writeWslSettings(runner: WslRunner, distro: string | undefined, settingsPath: string, settings: Record<string, unknown>): void {
+  const run = runner(
+    [...distroArgs(distro), '--exec', '/bin/sh', '-c', WSL_SETTINGS_WRITE_SCRIPT, 'wmux-wsl-write', settingsPath],
+    JSON.stringify(settings, null, 2) + '\n',
+  );
+  if (run.error || run.status !== 0) throw new Error(runFailure(`could not write ${settingsPath} in WSL`, run));
+}
+
+/** Write the hook script beside the runtime pointer, tmp + rename, only when it changed. */
+function writeHookScript(hooksDir: string, suffix: string): string {
+  const file = path.join(hooksDir, WSL_GLOBAL_HOOK_SCRIPT);
+  const text = wslGlobalHookScript(suffix);
+  let current: string | null = null;
+  try { current = fs.readFileSync(file, 'utf8'); } catch { current = null; }
+  if (current === text) return file;
+  fs.mkdirSync(hooksDir, { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, text, { mode: 0o755 });
+  try {
+    renameWithRetry(tmp, file);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw err;
+  }
+  return file;
+}
+
+export interface WslHooksOptions {
+  /** Undefined → the default distro. */
+  distro?: string;
+  /** `~/.wmux<suffix>/hooks` on Windows. */
+  hooksDir: string;
+  suffix: string;
+  runner?: WslRunner;
+}
+
+export interface WslHooksOutcome {
+  ok: boolean;
+  action: 'install' | 'uninstall';
+  distro: string | null;
+  settingsPath: string | null;
+  /** The hook command's script, as Linux reaches it. */
+  scriptPath: string | null;
+  /** Whether the settings file was written (false: already as wanted). */
+  changed: boolean;
+  /** Events installed (install) — empty on uninstall. */
+  events: string[];
+  /** Entries removed (uninstall). */
+  removed: number;
+  warning: string | null;
+  error: string | null;
+}
+
+function validate(options: WslHooksOptions): string | null {
+  if (options.distro !== undefined && !isValidWslDistroName(options.distro)) return `not a WSL distribution name: ${JSON.stringify(options.distro)}`;
+  if (!isScriptableSuffix(options.suffix)) return `WMUX_DATA_SUFFIX=${options.suffix} cannot be carried by the WSL hook`;
+  return null;
+}
+
+export function installWslHooks(options: WslHooksOptions): WslHooksOutcome {
+  const base: WslHooksOutcome = {
+    ok: false, action: 'install', distro: options.distro ?? null, settingsPath: null, scriptPath: null,
+    changed: false, events: [], removed: 0, warning: null, error: null,
+  };
+  const invalid = validate(options);
+  if (invalid) return { ...base, error: invalid };
+  const runner = options.runner ?? defaultWslRunner;
+  try {
+    // The script first: an entry must never name a file that is not there.
+    const scriptWindowsPath = writeHookScript(options.hooksDir, options.suffix);
+    const read = readWslSettings(runner, options.distro, scriptWindowsPath);
+    const before = JSON.stringify(read.settings);
+    const events = mergeWslHooks(read.settings, read.scriptLinuxPath, wslHookMarker(options.suffix));
+    const changed = JSON.stringify(read.settings) !== before;
+    if (changed) writeWslSettings(runner, options.distro, read.settingsPath, read.settings);
+    const warning = fs.existsSync(path.join(options.hooksDir, WSL_RUNTIME_POINTER))
+      ? null
+      : 'wmux has not recorded its runtime yet: start wmux once, or the hooks stay silent until it does.';
+    return { ...base, ok: true, settingsPath: read.settingsPath, scriptPath: read.scriptLinuxPath, changed, events, warning };
+  } catch (err) {
+    return { ...base, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export function uninstallWslHooks(options: WslHooksOptions): WslHooksOutcome {
+  const base: WslHooksOutcome = {
+    ok: false, action: 'uninstall', distro: options.distro ?? null, settingsPath: null, scriptPath: null,
+    changed: false, events: [], removed: 0, warning: null, error: null,
+  };
+  const invalid = validate(options);
+  if (invalid) return { ...base, error: invalid };
+  const runner = options.runner ?? defaultWslRunner;
+  try {
+    // The read translates this path but never opens it: uninstall writes no script.
+    const read = readWslSettings(runner, options.distro, path.join(options.hooksDir, WSL_GLOBAL_HOOK_SCRIPT));
+    const removed = read.exists ? stripWslHooks(read.settings, wslHookMarker(options.suffix)) : 0;
+    if (removed > 0) writeWslSettings(runner, options.distro, read.settingsPath, read.settings);
+    return { ...base, ok: true, settingsPath: read.settingsPath, scriptPath: read.scriptLinuxPath, changed: removed > 0, removed };
+  } catch (err) {
+    return { ...base, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** `~/.wmux<suffix>/hooks` — this instance's own dir, never another's. */
+export function defaultWslHooksDir(suffix = dataSuffix()): string {
+  return path.join(os.homedir(), `.wmux${suffix}`, 'hooks');
+}
+
+/**
+ * Parse `--wsl [<distro>] [--uninstall|--remove]` (`args` without --json): the
+ * distro, when given, is the word right after --wsl. Anything else is a usage
+ * error, never a silent install.
+ */
+export function parseWslArgs(args: readonly string[]): { distro?: string; uninstall: boolean } | { usage: string } {
+  const at = args.indexOf('--wsl');
+  if (at === -1) return { usage: '--wsl is missing' };
+  const next = args[at + 1];
+  const distro = next !== undefined && !next.startsWith('-') ? next : undefined;
+  const rest = args.filter((_, i) => i !== at && !(distro !== undefined && i === at + 1));
+  let uninstall = false;
+  for (const arg of rest) {
+    if (arg === '--uninstall' || arg === '--remove') { uninstall = true; continue; }
+    return { usage: `Unknown argument for --wsl: ${arg}. Usage: wmux setup-hooks --wsl [<distro>] [--uninstall]` };
+  }
+  return { ...(distro !== undefined ? { distro } : {}), uninstall };
+}
+
+export function handleSetupHooksWsl(args: string[], jsonMode: boolean, runner?: WslRunner): void {
+  const parsed = parseWslArgs(args);
+  if ('usage' in parsed) {
+    console.error(parsed.usage);
+    process.exit(1);
+    return;
+  }
+  if (process.platform !== 'win32' && !runner) {
+    console.error('--wsl is for wmux on Windows: it installs hooks in a WSL distribution.');
+    process.exit(1);
+    return;
+  }
+  const suffix = dataSuffix();
+  const options: WslHooksOptions = {
+    ...(parsed.distro !== undefined ? { distro: parsed.distro } : {}),
+    hooksDir: defaultWslHooksDir(suffix),
+    suffix,
+    ...(runner ? { runner } : {}),
+  };
+  const outcome = parsed.uninstall ? uninstallWslHooks(options) : installWslHooks(options);
+  if (jsonMode) {
+    console.log(JSON.stringify(outcome, null, 2));
+  } else if (!outcome.ok) {
+    console.error(`wsl hooks: ${outcome.error}`);
+  } else {
+    const where = outcome.distro ? `WSL ${outcome.distro}` : 'the default WSL distribution';
+    if (outcome.action === 'install') {
+      console.log(outcome.changed
+        ? `wsl hooks: installed in ${outcome.settingsPath} (${where}) → ${outcome.scriptPath}`
+        : `wsl hooks: already installed in ${outcome.settingsPath} (${where})`);
+      if (outcome.warning) console.warn(`wsl hooks: ${outcome.warning}`);
+      if (suffix) console.log(`wsl hooks: these entries report to the isolated instance (WMUX_DATA_SUFFIX=${suffix}).`);
+      console.log('Restart claude sessions in that distribution so they load the hooks.');
+    } else {
+      console.log(outcome.removed > 0
+        ? `wsl hooks: removed ${outcome.removed} wmux entries from ${outcome.settingsPath} (${where})`
+        : `wsl hooks: no wmux entries in ${outcome.settingsPath} (${where})`);
+    }
+  }
+  if (!outcome.ok) process.exit(1);
+}

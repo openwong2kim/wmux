@@ -213,6 +213,8 @@ export function EmptyLeafFunnel() {
                   {
                     workspaceId: wsId,
                     cwd: startupCwd,
+                    // A WSL session's folder: a WSL shell in its distro.
+                    ...(projectSeed?.wslDistro ? { shell: 'wsl.exe', wslDistro: projectSeed.wslDistro } : {}),
                     ...bootstrapOptions,
                     ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
                   },

@@ -120,6 +120,25 @@ describe('AgentSignal `where` validation', () => {
   });
 });
 
+// The global WSL hook asks tmux on the Linux side: the bridge runs on Windows.
+describe('claude bridge tmux target from WSL', () => {
+  const where = (env: Env, query: TmuxQuery = null) => loaded.claude(env, query);
+
+  it('takes WMUX_TMUX_TARGET over the lookup, which is never asked', () => {
+    let asked = 0;
+    const got = where(
+      { TMUX: '/tmp/tmux-1000/default,9,0', TMUX_PANE: '%1', WMUX_TMUX_TARGET: 'api:dev:3', WSL_DISTRO_NAME: 'Ubuntu' },
+      () => { asked += 1; return { session: 'wrong', window: '9' }; },
+    );
+    expect(got).toEqual({ kind: 'tmux', session: 'api:dev', window: '3', wslDistro: 'Ubuntu' });
+    expect(asked).toBe(0);
+  });
+
+  it('a malformed target is no answer, not a wrong one', () => {
+    expect(where({ TMUX: 'x', WMUX_TMUX_TARGET: 'nocolon' })).toEqual({ kind: 'tmux' });
+  });
+});
+
 // The Claude bridge retries a failed lookup on every UserPromptSubmit; the
 // OpenClaude bridge has no such hook, so its once-a-turn retry is Stop.
 describe('openclaude bridge tmux lookup', () => {

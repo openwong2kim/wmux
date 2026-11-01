@@ -121,7 +121,7 @@ import { setUsageClientVersion, type UsageSnapshot } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
-import { IPC, getWmuxHomeDir } from '../shared/constants';
+import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
@@ -279,7 +279,9 @@ import {
 import {
   refreshHookBridgeAtBoot,
   defaultPaths as defaultHooksPaths,
+  findBridgeSourceFrom,
 } from '../cli/commands/setupHooks';
+import { refreshWslRuntimePointerAtBoot } from '../shared/wslGlobalHook';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
@@ -2238,6 +2240,24 @@ app.on('ready', async () => {
       }
     }, 3000);
     refreshTimer.unref();
+  }
+
+  // The global WSL hook (`wmux setup-hooks --wsl`, shared/wslGlobalHook.ts)
+  // runs this runtime and bridge, which an update moves: record them at every
+  // start. getWmuxDir() is suffix-scoped, so an isolated instance writes only
+  // into its own data dir; an unsuffixed dev run writes nothing.
+  try {
+    const pointer = refreshWslRuntimePointerAtBoot({
+      platform: process.platform,
+      isPackaged: app.isPackaged,
+      suffix: dataSuffix(),
+      hooksDir: path.join(getWmuxDir(), 'hooks'),
+      runtimePath: process.execPath,
+      bridgePath: process.platform === 'win32' ? findBridgeSourceFrom(__dirname) : null,
+    });
+    if (pointer === 'written' || pointer === 'no-bridge') logLine(pointer === 'written' ? 'info' : 'warn', 'main', `wsl hook runtime pointer: ${pointer}`);
+  } catch (err) {
+    console.warn('[hooks] wsl runtime pointer write failed (non-fatal):', err);
   }
 
   // #898 — the OTHER copy of the bridge. `refreshHookBridge` above owns
