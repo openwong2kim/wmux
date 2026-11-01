@@ -26,6 +26,12 @@ import { classifyEntrypoint, signalAgentPid, signalEntrypoint, summarizeToolInpu
 const CHANGE_COALESCE_MS = 250;
 /** TTLs and process liveness are re-checked this often while any row exists. */
 const SWEEP_MS = 30_000;
+/**
+ * A running row with no pid to check goes idle after this much silence: a
+ * process that died mid-turn sends nothing. needs-you never times out (a
+ * question can wait for hours); SessionEnd covers a session that closed.
+ */
+const RUNNING_SILENT_MS = 10 * 60 * 1000;
 /** Bounds for the two keys the contract leaves uncapped; a signal past either is dropped. */
 const SESSION_ID_MAX = 128;
 const CWD_MAX = 4096;
@@ -183,6 +189,9 @@ export class ExternalSessionRegistry {
           changed = true;
         } else if (entry.agentPid !== undefined && !this.pidRunning(entry.agentPid)) {
           this.end(entry, now);
+          changed = true;
+        } else if (entry.agentPid === undefined && s.state === 'running' && now - s.lastSignalAt >= RUNNING_SILENT_MS) {
+          this.setState(entry, 'idle');
           changed = true;
         }
       }

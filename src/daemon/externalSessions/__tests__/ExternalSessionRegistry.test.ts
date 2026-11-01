@@ -236,6 +236,19 @@ describe('ExternalSessionRegistry', () => {
     expect(f.registry.list()).toEqual([]);
   });
 
+  it('without a pid, a silent running row goes idle after ten minutes; needs-you waits', () => {
+    const f = setup();
+    f.registry.note(signal({ kind: 'agent.user_prompt_submit', payload: { prompt: 'p' } }));
+    f.registry.note(signal({ agentSessionId: SID2, kind: 'agent.awaiting_input', payload: { hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion' } }));
+    f.registry.note(signal({ agentSessionId: '0a1b2c3d-0000-4000-8000-000000000003', agentPid: 7, kind: 'agent.user_prompt_submit', payload: { prompt: 'p' } }));
+    const byId = () => f.registry.list().map((s) => s.state);
+    f.advance(10 * 60 * 1000 - 1);
+    expect(byId()).toEqual(['running', 'needs-you', 'running']);
+    f.advance(1);
+    // The row with a pid is judged by its process instead.
+    expect(byId()).toEqual(['idle', 'needs-you', 'running']);
+  });
+
   it('ends a session whose agent process died, and an older conversation of the same process', () => {
     const alive = new Set([4242]);
     const f = setup({ running: (pid) => alive.has(pid) });
