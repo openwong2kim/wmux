@@ -17,10 +17,16 @@ import { TERMINAL_STATES, type Message, type Task, type TaskState } from '../../
  * its blockers (shared/companyHold.ts) to its seat's pane, and tell the
  * company's CEO pane when a held task needs a person.
  *
- * Triggers: a task ending through the a2a handlers (`pullNow`: the daemon
- * releases dependents before that commit returns), each (re)connection to the
- * daemon (a bridge is made per connection and pulls on start), and a
- * periodic backstop. Each trigger PULLS `a2a.company.pending`.
+ * Triggers: a task ending or reported through the a2a handlers (`pullNow`:
+ * the daemon releases dependents before that commit returns, and a report
+ * frees a working slot), each (re)connection to the daemon (a bridge is made
+ * per connection and pulls on start), and a periodic backstop (it also sees
+ * an agent that exited). Each trigger PULLS `a2a.company.pending`, oldest
+ * released first.
+ *
+ * The cap on working seats (`slots`, one gate per PC): a task to a staff seat
+ * that does not work yet is written only while a slot is free. At the cap it
+ * stays owed with nothing marked or written, and the next trigger asks again.
  *
  * At most once per attempt: one delivery per task in flight; `attempted` is
  * recorded in the daemon BEFORE the write and nothing is written unless it
@@ -74,6 +80,8 @@ export interface CompanyReleaseBridgeDeps {
    */
   inFlight?: Set<string>;
   pendingMarks?: Map<string, CompanyReleaseMark>;
+  /** The per-PC cap on working company seats; absent: no cap. */
+  slots?: CompanySlotGate;
   backstopMs?: number;
   now?: () => number;
   log?: (level: 'info' | 'warn', msg: string) => void;
@@ -172,7 +180,9 @@ export class CompanyReleaseBridge {
     } catch {
       return; // daemon down: the next trigger retries
     }
-    const tasks = tasksOf(res).filter(isOwed);
+    // Oldest released first: the gate decides in this order, so a slot that
+    // frees goes to the task that has waited longest.
+    const tasks = tasksOf(res).filter(isOwed).sort((a, b) => releasedAtOf(a).localeCompare(releasedAtOf(b)));
     // Forget state for tasks the daemon no longer lists (delivered, held, ended).
     const listed = new Set(tasks.map((t) => t.id));
     for (const map of [this.retry, this.pendingMarks, this.noAgent]) {
@@ -201,7 +211,7 @@ export class CompanyReleaseBridge {
     }
   }
 
-  /** Write one released task to its seat's pane and record the outcome. */
+  /** Write one released task to its seat's pane, once its seat may work, and record the outcome. */
   private async deliver(task: Task): Promise<void> {
     // A company task always names its seat's pane; one that does not is held, never guessed.
     if (!task.metadata.to.paneId) {
@@ -209,6 +219,19 @@ export class CompanyReleaseBridge {
       await this.mark(task.id, { held: 'pane-missing' });
       return;
     }
+    // Taken before the first await of this delivery, so the gate decides in pull order.
+    const slot = this.deps.slots ? await this.deps.slots.take({ workspaceId: task.metadata.to.workspaceId, paneId: task.metadata.to.paneId }) : null;
+    // At the cap, or the count unreadable: it stays owed, nothing marked or written.
+    if (slot && slot.kind !== 'go') return;
+    try {
+      await this.write(task);
+    } finally {
+      slot?.release();
+    }
+  }
+
+  /** Record the attempt, write the task to its seat's pane and record the outcome. */
+  private async write(task: Task): Promise<void> {
     // Durable BEFORE the write: if main dies after it, the daemon knows a
     // write may have happened and the task is not written again on its own.
     try {
@@ -619,6 +642,11 @@ function tasksOf(res: unknown): Task[] {
 
 function isEnded(task: Task): boolean {
   return (TERMINAL_STATES as readonly string[]).includes(task.status.state);
+}
+
+/** When the task was released (its marker's time, else its creation): the pull order. */
+function releasedAtOf(task: Task): string {
+  return companyHoldOf(task)?.releasedAt ?? task.metadata.createdAt ?? '';
 }
 
 /** A local company task released from its blockers, not delivered, not held, not ended. */

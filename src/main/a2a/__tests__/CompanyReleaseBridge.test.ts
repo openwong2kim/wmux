@@ -5,6 +5,7 @@ import {
   COMPANY_BRIDGE_NO_AGENT_TRIES,
   COMPANY_BRIDGE_RETRY_MIN_MS,
   CompanyReleaseBridge,
+  CompanySlotGate,
   companyCeoEventsOf,
   type CompanyReleaseMark,
 } from '../CompanyReleaseBridge';
@@ -372,5 +373,100 @@ describe('CompanyReleaseBridge — CEO lines', () => {
     // An end with no time keeps the earlier key.
     expect(companyCeoEventsOf(companyTask('task-x', { blockedBy: ['task-a'], waitingOn: ['task-a'], blockerEnded: [{ id: 'task-a', state: 'failed' }] }))[0].key)
       .toBe('task-x|ended|task-a|failed');
+  });
+});
+
+describe('CompanyReleaseBridge — the cap on working seats', () => {
+  const STAFF = ['pane-dev', 'pane-dev2', 'pane-dev3'];
+  let cap: number;
+  /** Seats working on tasks this bridge does not deliver. */
+  let busy: string[];
+  let readable: boolean;
+
+  /** The count as main reads it: the busy seats, and every seat a delivered task was written to. */
+  function slots(): CompanySlotGate {
+    return new CompanySlotGate({
+      read: async () => {
+        if (!readable) return null;
+        const working = new Set(busy);
+        for (const t of daemon.tasks.values()) {
+          if (companyHoldOf(t)?.delivered && t.metadata.to.paneId) working.add(t.metadata.to.paneId);
+        }
+        return {
+          staff: new Map(STAFF.map((id) => [id, { workspaceId: 'ws-co', name: `#${id}`, alive: true }])),
+          working: [...working].map((id) => ({ workspaceId: 'ws-co', paneId: id, name: `#${id}` })),
+        };
+      },
+      cap: () => cap,
+    });
+  }
+
+  const capped = (gate = slots()) => new CompanyReleaseBridge({ daemon, sendToRenderer: renderer, now: () => clock, slots: gate });
+  const written = () => writes().map((c) => ((c[1] as { task: Task }).task.id));
+
+  beforeEach(() => {
+    cap = 1;
+    busy = ['pane-dev'];
+    readable = true;
+  });
+
+  it('at the cap writes nothing and marks nothing; once a slot frees it writes the task once', async () => {
+    daemon.tasks.set('task-c', companyTask('task-c', released(), { paneId: 'pane-dev2' }));
+    const b = capped();
+    await pull(b);
+    await pull(b);
+    expect(writes()).toHaveLength(0);
+    expect(daemon.marks).toEqual([]);
+    // pane-dev reported: its slot is free.
+    busy = [];
+    await pull(b);
+    expect(events).toEqual(['attempted:true', 'write', 'delivered']);
+    await pull(b);
+    expect(written()).toEqual(['task-c']);
+  });
+
+  it('gives a freed slot to the task released first', async () => {
+    busy = [];
+    daemon.tasks.set('task-new', companyTask('task-new', released({ releasedAt: '2026-11-01T00:02:00.000Z' }), { paneId: 'pane-dev2' }));
+    daemon.tasks.set('task-old', companyTask('task-old', released({ releasedAt: '2026-11-01T00:01:00.000Z' }), { paneId: 'pane-dev3' }));
+    const b = capped();
+    await pull(b);
+    expect(written()).toEqual(['task-old']);
+    expect(marksOf('task-new')).toEqual([]);
+  });
+
+  it('writes a task to a seat that works already, at the cap', async () => {
+    daemon.tasks.set('task-c', companyTask('task-c', released(), { paneId: 'pane-dev' }));
+    await pull(capped());
+    expect(written()).toEqual(['task-c']);
+  });
+
+  it('caps no pane that is not a staff seat', async () => {
+    daemon.tasks.set('task-c', companyTask('task-c', released(), { paneId: 'pane-ceo' }));
+    await pull(capped());
+    expect(written()).toEqual(['task-c']);
+  });
+
+  it('writes nothing while the count cannot be read', async () => {
+    readable = false;
+    daemon.tasks.set('task-c', companyTask('task-c', released(), { paneId: 'pane-dev2' }));
+    const b = capped();
+    await pull(b);
+    expect(writes()).toHaveLength(0);
+    expect(daemon.marks).toEqual([]);
+    readable = true;
+    busy = [];
+    await pull(b);
+    expect(written()).toEqual(['task-c']);
+  });
+
+  it('gives the slot back when nothing was written', async () => {
+    busy = [];
+    daemon.tasks.set('task-c', companyTask('task-c', released(), { paneId: 'pane-dev2' }));
+    deliverAnswers.push({ ok: true, delivered: false, reason: 'approval_pending' });
+    const gate = slots();
+    await pull(capped(gate));
+    expect(marksOf('task-c')).toEqual([{ attempted: true }, { attempted: false }]);
+    expect((await gate.take({ workspaceId: 'ws-co', paneId: 'pane-dev3' })).kind).toBe('go');
   });
 });

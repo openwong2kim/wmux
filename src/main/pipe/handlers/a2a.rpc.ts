@@ -1748,7 +1748,8 @@ export function registerA2aRpc(
         void recordTaskState(params.taskId, stateOfTask(gate.result.task), undefined, gate.result.task);
         // The daemon settled the company tasks waiting on this one before it
         // answered: a released one is delivered, a stranded one told to the CEO.
-        if (params.status === 'completed' || params.status === 'failed' || params.status === 'canceled') {
+        // A report (input-required) frees its seat's working slot.
+        if (params.status === 'completed' || params.status === 'failed' || params.status === 'canceled' || params.status === 'input-required') {
           opts.companyRelease?.()?.pullNow();
         }
         const applied = await sendToRenderer(getWindow, 'a2a.task.update', {

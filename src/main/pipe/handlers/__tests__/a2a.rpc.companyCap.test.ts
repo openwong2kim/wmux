@@ -253,3 +253,13 @@ describe('a2a.task.send — the cap on working seats', () => {
     expect(await send(router, sendParams({ paneId: 'dev-3' }))).toMatchObject({ delivery: { notified: true } });
   });
 });
+
+describe('a2a.task.update — a report frees a working slot', () => {
+  it('pulls the release bridge after a committed input-required, as after a task ends', async () => {
+    const router = setup();
+    await router.dispatch({ id: 'w', method: 'a2a.task.update', params: { taskId: 'task-1', workspaceId: WS, status: 'working' } }, { operator: true });
+    expect(pullNow).not.toHaveBeenCalled();
+    await router.dispatch({ id: 'r', method: 'a2a.task.update', params: { taskId: 'task-1', workspaceId: WS, status: 'input-required' } }, { operator: true });
+    expect(pullNow).toHaveBeenCalledTimes(1);
+  });
+});

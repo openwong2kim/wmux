@@ -2680,6 +2680,7 @@ app.on('ready', async () => {
         told: companyCeoLinesTold,
         inFlight: companyDeliveriesInFlight,
         pendingMarks: companyPendingMarks,
+        slots: companySlots,
         log: (level, msg) => logLine(level, 'a2a-company', msg),
       });
       companyReleaseBridge.start();
