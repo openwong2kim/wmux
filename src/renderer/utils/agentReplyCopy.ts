@@ -26,7 +26,8 @@ export type AgentReply = readonly ReplyPart[];
  * Null means "copy the selection as it is".
  */
 export function cleanCopyText(selection: string, replies: readonly AgentReply[]): string | null {
-  const needle = selectionKey(selection);
+  const shown = selection.replace(DECORATION, '');
+  const { key: needle, map: shownMap } = whitespaceFreeKey(shown);
   if (needle === '') return null;
   let found: { projection: string; map: readonly number[]; at: number } | null = null;
   for (const reply of replies) {
@@ -39,17 +40,32 @@ export function cleanCopyText(selection: string, replies: readonly AgentReply[])
   }
   if (!found) return null;
   const { projection, map, at } = found;
-  return projection.slice(map[at], map[at + needle.length - 1] + 1);
+  const spanMap = map.slice(at, at + needle.length);
+  if (!sameSpacing(projection, spanMap, shown, shownMap)) return null;
+  return projection.slice(spanMap[0], spanMap[spanMap.length - 1] + 1);
+}
+
+/** Whether the selection spaces the matched characters as the reply does,
+ *  given that the TUI only adds line breaks and margins (its wraps): every
+ *  break and space of the reply shows in the selection, and the selection
+ *  shows no space where the reply has none. So `npm test` on screen is not the
+ *  reply's `npm` and `test` on two lines. */
+function sameSpacing(projection: string, spanMap: readonly number[], shown: string, shownMap: readonly number[]): boolean {
+  const breaks = (gap: string): number => gap.split('\n').length - 1;
+  for (let k = 0; k + 1 < spanMap.length; k++) {
+    const reply = projection.slice(spanMap[k] + 1, spanMap[k + 1]);
+    const seen = shown.slice(shownMap[k] + 1, shownMap[k + 1]);
+    if (breaks(seen) < breaks(reply)) return false;
+    if (reply !== '' && seen === '') return false;
+    if (reply === '' && seen !== '' && breaks(seen) === 0) return false;
+  }
+  return true;
 }
 
 // What the selection holds besides the reply's own text, as Claude Code 2.1.316
 // draws it: the reply marker at the start of the reply's first row, and the bar
 // it puts in place of a blockquote's `>` (on every row, wrapped rows too).
 const DECORATION = /^[^\S\n]*(?:⏺|▎)/gmu;
-
-function selectionKey(selection: string): string {
-  return selection.replace(DECORATION, '').replace(/\s+/gu, '');
-}
 
 /** `text` without whitespace, and where each of its characters sits in `text`. */
 function whitespaceFreeKey(text: string): { key: string; map: number[] } {

@@ -149,6 +149,18 @@ describe('cleanCopyText: anything uncertain copies the selection as it is', () =
     expect(copy('basic.60', 'Done.', '❯')).toBeNull();
   });
 
+  it('text spaced unlike the reply: a line break or a space the screen does not show', () => {
+    const replies: AgentReply[] = [[{ kind: 'prose', text: 'Run it with:' }, { kind: 'code', body: 'npm\ntest' }]];
+    // Elsewhere on screen (a tool's output, the prompt): one command, not the reply's two lines.
+    expect(cleanCopyText('npm test', replies)).toBeNull();
+    // The reply's own lines, as the TUI draws them with its margin.
+    expect(cleanCopyText('  npm\n  test', replies)).toBe('npm\ntest');
+    // A space where the reply has none.
+    expect(cleanCopyText('Run it wi th:', replies)).toBeNull();
+    // A wrap inside a word is the TUI's, not a space.
+    expect(cleanCopyText('Run it wi\n  th:', replies)).toBe('Run it with:');
+  });
+
   it('an empty or whitespace-only selection', () => {
     const fx = fixture('basic.60');
     expect(cleanCopyText(' \n  ', fx.replies)).toBeNull();
