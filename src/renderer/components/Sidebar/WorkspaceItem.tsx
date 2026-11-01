@@ -692,8 +692,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // One idle agent and nothing else: a "› 1" on every quiet row says nothing
   // the status column does not, so its chip waits for hover or focus like the
   // other chrome (and draws no count).
-  const quietSingle = rosterAgentCount === 1 && rosterCounts.stashedCount === 0
-    && paneTaskIds.length === 0 && (chipAgents[0]?.status ?? 'idle') === 'idle';
+  // An outside session is never that quiet pane: nothing else on the row
+  // says it is there.
+  const quietSingle = rosterCounts.agentCount === 1 && external.statuses.length === 0 && rosterCounts.stashedCount === 0
+    && paneTaskIds.length === 0 && (rosterCounts.agents[0]?.status ?? 'idle') === 'idle';
   const rosterAlwaysShown = rosterShown || (hasRoster && !quietSingle) || paneTaskIds.length > 0;
   /** → opens the roster (and the tasks under it), ← folds it. */
   const expandable = hasRoster || paneTaskIds.length > 0;

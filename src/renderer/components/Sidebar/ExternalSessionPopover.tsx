@@ -59,11 +59,13 @@ export function externalWhereLong(where: ExternalSessionWhere, t: Translate): st
 
 /**
  * A wmux pane in the session's folder: beside the workspace's active pane when
- * the session sits in a workspace, else a new workspace on that folder.
+ * the session sits in a workspace, else a new workspace on that folder. A
+ * split takes the folder only while splits inherit a folder (Settings), so
+ * with that off it is a new workspace too.
  */
 export function openPaneInSessionFolder(session: ExternalSession, workspaceId: string | undefined): void {
   const st = useStore.getState();
-  const ws = workspaceId ? st.workspaces.find((w) => w.id === workspaceId) : undefined;
+  const ws = workspaceId && st.splitInheritsCwd ? st.workspaces.find((w) => w.id === workspaceId) : undefined;
   if (ws) {
     st.setActiveWorkspace(ws.id);
     const paneId = useStore.getState().splitPane(ws.activePaneId, 'horizontal', ws.id);

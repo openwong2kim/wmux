@@ -115,7 +115,9 @@ export default function ExternalSessionRow({ session, workspaceId, now }: {
           {trailer && (
             <>
               <span className="flex-none text-[11px] text-[var(--text-muted)]">·</span>
-              <span className="min-w-0 max-w-[55%] flex-none truncate text-[11px] text-[var(--text-muted)]" data-external-trailer>
+              {/* Where it runs is machine evidence (mono, like the roster's
+                  coordinate); live activity and the ended word are not. */}
+              <span className={`min-w-0 max-w-[55%] flex-none truncate text-[11px] text-[var(--text-muted)] ${!activity && !ended ? 'font-mono' : ''}`} data-external-trailer>
                 {trailer}
               </span>
             </>
