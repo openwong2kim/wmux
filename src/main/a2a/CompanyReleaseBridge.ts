@@ -375,9 +375,12 @@ export function companyCeoEventsOf(task: Task): CompanyCeoEvent[] {
   const marker = companyHoldOf(task);
   if (!marker) return [];
   const events: CompanyCeoEvent[] = [];
-  if (companyHoldPhase(marker) === 'held' && marker.held) {
+  const phase = companyHoldPhase(marker);
+  if (phase === 'held' && marker.held) {
     events.push({ key: `${task.id}|held|${marker.held}`, kind: 'held', held: marker.held });
   }
+  // A delivered task is the seat's now: a blocker that ends later is not news for it.
+  if (phase === 'delivered') return events;
   for (const ended of marker.blockerEnded ?? []) {
     if (!marker.waitingOn.includes(ended.id)) continue;
     // When it ended, so a blocker that ends again after a reopen is told again.

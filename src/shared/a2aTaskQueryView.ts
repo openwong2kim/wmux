@@ -17,7 +17,7 @@
  */
 
 import { isReceiverPaneGone, normalizeLivePaneIds } from './a2aOrphanedTask';
-import { companyHoldOf } from './companyHold';
+import { companyHoldOf, companyHoldPhase } from './companyHold';
 import { TERMINAL_STATES, type Task } from './types';
 
 /** Byte budget for one result: the MCP tool result cap (DEFAULT_RESULT_CAP_BYTES). */
@@ -110,8 +110,9 @@ function preview(text: string): string {
 export function companyHoldFields(task: Rec): Rec {
   const hold = isRec(task.metadata) ? companyHoldOf(task as unknown as Pick<Task, 'metadata'>) : undefined;
   if (!hold) return {};
-  if (hold.waitingOn.length > 0) return { waitingOn: [...hold.waitingOn] };
-  return hold.held && !hold.delivered ? { held: hold.held } : {};
+  const phase = companyHoldPhase(hold);
+  if (phase === 'waiting') return { waitingOn: [...hold.waitingOn] };
+  return phase === 'held' && hold.held ? { held: hold.held } : {};
 }
 
 /** One task as a summary line: identity, parties, timing, and a short look at the latest message. */
