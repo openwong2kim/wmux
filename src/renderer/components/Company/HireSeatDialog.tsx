@@ -86,7 +86,8 @@ export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: 
   const [owns, setOwns] = useState('');
   const [agentPick, setAgentPick] = useState<AgentSlug | null>(null);
   const installed = agents.filter((a) => a.installed);
-  const agent = agentPick ?? (installed.some((a) => a.agent === 'claude') ? 'claude' : installed[0]?.agent);
+  // The first installed agent, in the order the preset offers them.
+  const agent = agentPick ?? installed[0]?.agent;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // A seat made after the dialog was closed is one the user backed out of.
