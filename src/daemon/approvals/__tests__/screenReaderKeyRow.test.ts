@@ -12,7 +12,7 @@ const screen = (dir: string, name: string): string[] =>
     screen: string[];
   }).screen;
 
-const keyRowOf = (rows: readonly string[]) => {
+const keyRowOf = (rows: Parameters<typeof screenReaderKeyRow>[0]) => {
   const key = screenReaderKeyRow(rows);
   return key && { keys: key.keys, max: key.max, multi: key.multi, row: key.lines[key.at] };
 };

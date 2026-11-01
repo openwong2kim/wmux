@@ -355,7 +355,8 @@ function trustQuestionAbove(texts: readonly string[], end: number): boolean {
  */
 function readScreenReaderTrust(rows: readonly string[]): 'trust' | 'unreadable' | null {
   const texts = rows.map((row) => row.trim());
-  const keyAt = texts.findLastIndex((text) => SR_YES_NO_START.test(text));
+  let keyAt = texts.length - 1;
+  while (keyAt >= 0 && !SR_YES_NO_START.test(texts[keyAt] ?? '')) keyAt--;
   if (keyAt < 0) return null;
   if (!texts.slice(0, keyAt).some((text) => SR_TRUST_TITLE.test(text)) && !trustQuestionAbove(texts, keyAt)) return null;
   const key = screenReaderKeyRow(rows);
