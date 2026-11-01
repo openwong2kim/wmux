@@ -28,6 +28,8 @@ import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../..
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import CompanyDialog from './CompanyDialog';
+import AddRemoteSeatDialog from '../Company/AddRemoteSeatDialog';
+import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
 import Popover from '../ui/Popover';
 import Button from '../ui/Button';
 import { placePopover } from '../AgentToolbar/placePopover';
@@ -492,6 +494,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
+  const [remoteSeatOpen, setRemoteSeatOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -1200,6 +1203,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // hides the same metadata, so a Tab into the row never overflows the line.
   const company = workspace.company;
   const actionsOnGitLine = (company ? !!company.mission : !!metadata?.gitBranch) || !!question;
+  // Replies from a seat on another PC come to the CEO pane: a vacant seat has none.
+  const ceoSeated = !!menuPos && !!company?.coordinatorPaneId && getWorkspaceLeafPanes(workspace).some((l) => l.id === company.coordinatorPaneId);
   // A nested task row has no width to spare on its name line (78px of text
   // at the 220px minimum): without a branch, its actions get a line of their
   // own, the height its sibling rows' git line takes, so the row never
@@ -1658,6 +1663,18 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
               {company ? t('company.settingsMenu') : t('company.makeMenu')}
             </button>
           )}
+          {!taskRow && company && REMOTE_SPAWN_UI_ENABLED && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ color: 'var(--text-main)' }}
+              disabled={!ceoSeated}
+              title={ceoSeated ? undefined : t('company.addSeat.noCeo')}
+              onClick={() => { rowRef.current?.focus(); setMenuPos(null); setRemoteSeatOpen(true); }}
+              data-workspace-action="add-remote-seat"
+            >
+              {t('company.addSeat.menu')}
+            </button>
+          )}
           {!taskRow && company && (
             <button
               className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
@@ -2044,6 +2061,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
       )}
       {companyDialogOpen && (
         <CompanyDialog workspace={workspace} onClose={() => setCompanyDialogOpen(false)} />
+      )}
+      {remoteSeatOpen && (
+        <AddRemoteSeatDialog workspaceId={workspaceId} onClose={() => setRemoteSeatOpen(false)} />
       )}
     </div>
   );

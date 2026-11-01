@@ -22,13 +22,14 @@ import { isTerminalKindSurfaceType } from '../Pane/surfaceKinds';
 import { spawnUntil } from '../Remote/RemoteSpawnAskDialog';
 import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
 import { buildCompanyBoard, remoteSeatsOf, seatAsksOf, type BoardRemoteSeat, type BoardSeat, type BoardSeatAsk } from './companyBoard';
+import AddRemoteSeatDialog from './AddRemoteSeatDialog';
 
 const NOW_SHOWN = 2;
 const NO_TASKS: Record<string, Task> = {};
 const NO_AGENTS: StoreState['surfaceAgent'] = {};
 const NO_REQUESTS: A2aSpawnOutgoingSummary[] = [];
 
-function Section({ title, count, needsYou = false, children }: { title: string; count?: number; needsYou?: boolean; children: ReactNode }) {
+function Section({ title, count, needsYou = false, children, after }: { title: string; count?: number; needsYou?: boolean; children: ReactNode; after?: ReactNode }) {
   return (
     <section className="flex flex-col">
       <h3 className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">
@@ -38,6 +39,7 @@ function Section({ title, count, needsYou = false, children }: { title: string; 
         )}
       </h3>
       <div className="flex flex-col divide-y divide-[var(--stroke)]">{children}</div>
+      {after}
     </section>
   );
 }
@@ -87,6 +89,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     void readRequests();
     return window.electronAPI?.a2aRemote?.onLinkEvent?.(() => void readRequests());
   }, [readsRequests, readRequests]);
+  const [addSeat, setAddSeat] = useState(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!isActive) return undefined;
@@ -297,7 +300,20 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
             </Section>
           )}
 
-          <Section title={t('company.board.seats')}>
+          <Section
+            title={t('company.board.seats')}
+            after={REMOTE_SPAWN_UI_ENABLED && ceoPaneId && (
+              <button
+                type="button"
+                className={`mt-2 self-start rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+                // The board's own pane takes a click that bubbles up and would win the focus back.
+                onClick={(event) => { event.stopPropagation(); setAddSeat(true); }}
+                data-board-add-remote-seat
+              >
+                {t('company.addSeat.menu')}
+              </button>
+            )}
+          >
             {board.seats.map(seatRow)}
             {board.remoteSeats.map(remoteSeatRow)}
             {asks.map(askRow)}
@@ -324,6 +340,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
           <p className="text-[11px] text-[var(--text-muted)]">{t('company.board.notShown')}</p>
         </div>
       )}
+      {addSeat && <AddRemoteSeatDialog workspaceId={workspaceId} onClose={() => setAddSeat(false)} />}
     </div>
   );
 }

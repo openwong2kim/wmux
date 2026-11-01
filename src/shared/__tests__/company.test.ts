@@ -13,6 +13,7 @@ import {
   isCompanyTask,
   missingBriefFields,
   parseWorkspaceCompany,
+  remoteSeatIntro,
   renderRemoteBrief,
   type CompanyWorkspaceView,
 } from '../company';
@@ -277,5 +278,47 @@ describe('renderRemoteBrief', () => {
   it('writes nothing else of the data', () => {
     const text = renderRemoteBrief('Go.', companyBriefOf({ ...BRIEF, blockedBy: ['task-blocker-1'], deliveryKey: 'dk-1', extra: 'other-note' })!);
     for (const s of ['task-blocker-1', 'dk-1', 'other-note', COMPANY_BRIEF_KIND, 'blockedBy']) expect(text).not.toContain(s);
+  });
+});
+
+describe('remoteSeatIntro', () => {
+  const full = {
+    name: 'linux-build',
+    company: 'wmux',
+    mission: 'Keep every PC busy and ship company mode',
+    pc: 'Linux build box',
+    owns: 'Linux-only fixes and the Linux check before merge.',
+    ceo: 'pm',
+    ceoPc: 'MacBook Air',
+    standingOrders: 'Every PR gets a live check before merge.',
+  };
+
+  it('says who the seat is, what it owns, who its CEO is, how briefs come and finish, and the standing orders', () => {
+    expect(remoteSeatIntro(full).split('\n')).toEqual([
+      'You are linux-build, a seat of the company "wmux" (mission: Keep every PC busy and ship company mode), on Linux build box.',
+      'You own: Linux-only fixes and the Linux check before merge.',
+      'Your CEO is pm on MacBook Air; its briefs come here as tasks with Goal, Scope, Acceptance, Verify and Report.',
+      `Each brief ends with how to finish it: ${REMOTE_SEAT_FINISH_LINE}`,
+      'Standing orders: Every PR gets a live check before merge.',
+      'Wait for a brief.',
+    ]);
+  });
+
+  it('leaves out what it owns, the mission, this PC\'s name and the standing orders when there are none', () => {
+    const text = remoteSeatIntro({ name: 'win-dev', company: 'wmux', pc: 'Windows', owns: '  ', ceo: 'pm', standingOrders: '' });
+    expect(text.split('\n')).toEqual([
+      'You are win-dev, a seat of the company "wmux", on Windows.',
+      'Your CEO is pm; its briefs come here as tasks with Goal, Scope, Acceptance, Verify and Report.',
+      `Each brief ends with how to finish it: ${REMOTE_SEAT_FINISH_LINE}`,
+      'Wait for a brief.',
+    ]);
+    expect(text).not.toContain('You own');
+    expect(text).not.toContain('Standing orders');
+  });
+
+  it('carries no brief: no data kind and no brief field written out', () => {
+    const text = remoteSeatIntro(full);
+    expect(text).not.toContain(COMPANY_BRIEF_KIND);
+    for (const heading of ['Goal:', 'Scope:', 'Acceptance:', 'Verify:', 'Report:']) expect(text).not.toContain(heading);
   });
 });
