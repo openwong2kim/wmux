@@ -159,8 +159,14 @@ export function ExternalSessionCard({ session, inWorkspace, anchor, triggerRef, 
       data-external-session-card={session.id}
       className="fixed"
       style={{ top: pos.top, left: pos.left, width: EXTERNAL_SESSION_CARD_WIDTH, zIndex: 'var(--z-popover-top)' }}
+      // A portal still bubbles through the React tree: keep the card's
+      // presses, double-clicks (rename) and right-clicks (row menu) away from
+      // the roster and the workspace row it sits under.
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
+      onDoubleClick={(e) => e.stopPropagation()}
+      onContextMenu={(e) => e.stopPropagation()}
+      onDragStart={(e) => e.stopPropagation()}
     >
       <PopoverSection>
         <div className="flex items-start gap-2">
