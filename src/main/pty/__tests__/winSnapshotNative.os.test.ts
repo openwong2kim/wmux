@@ -175,7 +175,10 @@ describe.skipIf(process.platform !== 'win32')('a gone process (Windows, live)', 
     // System (pid 4) is always running; whatever its open returns, it is not gone.
     expect(readProcessExitState(4)).not.toBe('exited');
     expect(tryProcessIdentity(4)).not.toMatchObject({ gone: true });
-    expect(tryProcessHandleApi()?.open(4)).not.toEqual({ gone: true });
+    const api = tryProcessHandleApi();
+    const system = api?.open(4);
+    if (system && 'handle' in system) api?.close(system.handle);
+    expect(system).not.toEqual({ gone: true });
   });
 });
 

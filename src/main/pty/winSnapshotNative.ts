@@ -246,6 +246,7 @@ export function setNativeBindingsForTests(next: NativeBindings | null | undefine
   bindings = next;
   loadFailed = false;
   consecutiveCallFailures = 0;
+  warnedV6 = false;
 }
 
 /**
