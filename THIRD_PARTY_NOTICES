@@ -13340,9 +13340,23 @@ Driver (libs/cua-driver) at commit
 a9902d272655b65180fa713a8b1f2f1c1935e70b:
 - From rust/crates/platform-macos/src/input/skylight.rs: the run-time
   lookup of the private SkyLight calls, so a call an OS release removed
-  turns its path off, and the check that the key-event authentication
-  message exists (macOS 15 and later). wmux file:
-  native/computer-use-macos/Sources/wmux-computer-use/SkyLight.swift.
+  turns its path off; the check that the key-event authentication
+  message exists (macOS 15 and later) and how it is attached; the
+  focus-without-raise event record (without the record that takes focus
+  from the frontmost app); and the key-window records that move key
+  status inside one app, read back before keys are posted. wmux files:
+  native/computer-use-macos/Sources/wmux-computer-use/SkyLight.swift,
+  native/computer-use-macos/Sources/wmux-computer-use/Background.swift.
+- From rust/crates/platform-macos/src/input/mouse.rs: the background
+  left click (a mouseMoved, a primer click off screen, then the click,
+  with the pid, window-number, gesture and window-location fields) and
+  the stamped wheel scroll. wmux files:
+  native/computer-use-macos/Sources/ComputerUseCore/Background.swift,
+  native/computer-use-macos/Sources/wmux-computer-use/Background.swift.
+- From rust/crates/platform-macos/src/input/keyboard.rs: keys posted to
+  the process with the authentication message, and shortcuts with
+  Command without it so they reach the app's menus. wmux file:
+  native/computer-use-macos/Sources/wmux-computer-use/Background.swift.
 
 Cua Driver credits these MIT upstreams for parts of its sources, and
 their notices are kept with it here:
@@ -13415,5 +13429,10 @@ tab is selected and the pane is focused.
 claude-replay (MIT License) - https://github.com/es617/claude-replay
 Removing the tool-error wrapper from a failed tool's output when
 reading a Claude Code transcript.
+
+agent-desktop (Apache License 2.0) - https://github.com/vercel-labs/agent-desktop
+Computer use that observes the accessibility tree first and adds a
+screenshot only for a thin tree, and input results that say whether an
+action was not delivered, delivered but unverified, or delivered.
 
 ================================================================================

@@ -1003,7 +1003,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       cancelled = true;
       clearTimeout(timer);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSurfacePtyId, resumePtyReady, resumeHint, resumeBinding, supervision, chatV2OwnsPane]);
   // The persistent resume chip's "is this pane's agent busy?" gate — and the
   // store-wide `agentClockMs` decay-clock subscription it needs — lives in the

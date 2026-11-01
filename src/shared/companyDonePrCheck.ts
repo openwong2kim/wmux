@@ -113,13 +113,17 @@ function messageTexts(m: unknown): string[] {
   });
 }
 
-/** The text of the done call's evidence: its summary, and each item's summary, location and output. */
-function evidenceTexts(ev: unknown): string[] {
+/**
+ * The text of a piece of evidence: its summary, and each item's summary,
+ * location and (with `output`) output. A seat's report is read without its
+ * command output, which can list PRs the report is not about.
+ */
+function evidenceTexts(ev: unknown, output = true): string[] {
   if (!isRecord(ev)) return [];
   const out = typeof ev.summary === 'string' ? [ev.summary] : [];
   for (const it of Array.isArray(ev.items) ? ev.items : []) {
     if (!isRecord(it)) continue;
-    for (const k of ['summary', 'location', 'output']) if (typeof it[k] === 'string') out.push(it[k] as string);
+    for (const k of output ? ['summary', 'location', 'output'] : ['summary', 'location']) if (typeof it[k] === 'string') out.push(it[k] as string);
   }
   return out;
 }
@@ -127,18 +131,21 @@ function evidenceTexts(ev: unknown): string[] {
 /**
  * Every GitHub PR a company task names, once each (by refKey), in the order
  * first named: in its messages after the first (the brief, which may cite
- * unrelated PRs), its current status message, and the done call's own message
- * and evidence.
+ * unrelated PRs), its current status message and evidence (a seat's report,
+ * from this PC or another, without command output), and the done call's own
+ * message and evidence.
  */
 export function donePrRefs(input: {
   history: readonly unknown[];
   statusMessage?: unknown;
+  statusEvidence?: unknown;
   message?: unknown;
   evidence?: unknown;
 }): DonePrRef[] {
   const texts = [
     ...input.history.slice(1).flatMap(messageTexts),
     ...messageTexts(input.statusMessage),
+    ...evidenceTexts(input.statusEvidence, false),
     ...(typeof input.message === 'string' ? [input.message] : []),
     ...evidenceTexts(input.evidence),
   ];

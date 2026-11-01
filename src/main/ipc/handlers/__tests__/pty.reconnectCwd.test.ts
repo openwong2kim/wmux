@@ -77,24 +77,35 @@ describe('PTY_RECONNECT reports the session geometry (#1847)', () => {
  * above we assert it at the source level.
  */
 describe('PTY_RECONNECT registers session:data before attachSession (source-level lock)', () => {
-  const listenerIdx = RECONNECT.indexOf('setSessionDataListener(id, onSessionData)');
-  const attachIdx = RECONNECT.indexOf("daemon.attachSession', { id");
+  // The attach itself lives in reconnectSessionPipe.ts; the handler hands it
+  // the listener install.
+  const PIPE = readFileSync(
+    path.resolve(process.cwd(), 'src/main/ipc/handlers/reconnectSessionPipe.ts'),
+    'utf8',
+  );
+  const installIdx = PIPE.indexOf('opts.installListener()');
+  const attachIdx = PIPE.indexOf("daemon.attachSession', { id");
 
-  it('registers the session:data handler in the reconnect path', () => {
-    expect(listenerIdx).toBeGreaterThan(-1);
+  it('the handler installs its session:data handler through the pipe step', () => {
+    expect(RECONNECT).toMatch(/installListener: \(\) => setSessionDataListener\(id, onSessionData\)/);
   });
 
-  it('calls attachSession in the reconnect path', () => {
+  it('calls attachSession in the reconnect pipe step', () => {
     expect(attachIdx).toBeGreaterThan(-1);
   });
 
-  it('registers the handler BEFORE attachSession (closes the replay-drop window)', () => {
-    expect(listenerIdx).toBeLessThan(attachIdx);
+  it('installs the handler BEFORE attachSession (closes the replay-drop window)', () => {
+    expect(installIdx).toBeGreaterThan(-1);
+    expect(installIdx).toBeLessThan(attachIdx);
   });
 
-  it('does not re-register the handler a second time after attach (no duplicate)', () => {
+  it('installs the handler once per path (no duplicate)', () => {
     const matches = RECONNECT.match(/setSessionDataListener\(id, onSessionData\)/g) ?? [];
     expect(matches.length).toBe(1);
+    // One install on the attach path, one where the create-time pipe is kept.
+    expect(PIPE.match(/opts\.installListener\(\)/g)?.length).toBe(2);
+    const keepAt = PIPE.indexOf('async function keepCreatePipe');
+    expect(PIPE.indexOf('opts.installListener()', keepAt)).toBeGreaterThan(keepAt);
   });
 });
 
@@ -117,7 +128,7 @@ describe('PTY_RECONNECT promotes a cap-skipped session instead of declaring it d
   it('a suspended entry goes down the promote branch, before any attach', () => {
     const suspendedAt = RECONNECT.indexOf("if (session.state === 'suspended')");
     const promoteAt = RECONNECT.indexOf("daemonClient.rpc('daemon.promoteSession', { id", suspendedAt);
-    const attachAt = RECONNECT.indexOf("daemon.attachSession', { id");
+    const attachAt = RECONNECT.indexOf('await reconnectSessionPipe(daemonClient, id');
     expect(suspendedAt).toBeGreaterThan(-1);
     expect(promoteAt).toBeGreaterThan(suspendedAt);
     expect(attachAt).toBeGreaterThan(promoteAt);
@@ -131,5 +142,48 @@ describe('PTY_RECONNECT promotes a cap-skipped session instead of declaring it d
     const entry = readFileSync(path.resolve(process.cwd(), 'src/daemon/suspendedListEntry.ts'), 'utf8');
     expect(entry).toMatch(/cmd: s\.cmd,[\s\S]*?state: 'suspended' as const,/);
     expect(RECONNECT).toMatch(/recordPtyShell\(session\.id, session\.cmd\)/);
+  });
+});
+
+/**
+ * A Terminal adopting a pane main created keeps the create-time session pipe
+ * (reconnectSessionPipe.ts, behavior tested in reconnectSessionPipe.test.ts).
+ * The mark that allows it is set by the daemon create, consumed by the first
+ * reconnect, and dropped on death, supervised restart and dispose, so a
+ * reconnect that must attach the daemon's new pipe never keeps an old socket.
+ */
+describe('PTY_RECONNECT keeps only a pipe the create attached (source-level lock)', () => {
+  it('the daemon create marks the session once its listener is on the pipe', () => {
+    expect(SRC).toMatch(/setSessionDataListener\(sessionId, onSessionData\);\s*createAttachedPipes\.add\(sessionId\);/);
+  });
+
+  it('the reconnect consumes the mark and hands it to the pipe step', () => {
+    expect(RECONNECT).toMatch(/const ownsCreatePipe = createAttachedPipes\.delete\(id\);\s*const pipe = await reconnectSessionPipe\(daemonClient, id, \{[\s\S]*?ownsCreatePipe,/);
+  });
+
+  it('death, supervised restart and dispose drop the mark and the first-output hook', () => {
+    expect(SRC).toMatch(/function forgetCreateState\(sessionId: string\): void \{\s*createAttachedPipes\.delete\(sessionId\);\s*firstOutputHooks\.delete\(sessionId\);/);
+    expect(SRC).toMatch(/disconnectSessionPipe\(payload\.sessionId\)\.catch\(\(\) => \{\}\);\s*forgetCreateState\(payload\.sessionId\);/);
+    expect(SRC).toMatch(/onDaemonSessionRestarted = \(payload\) => \{[\s\S]{0,500}?forgetCreateState\(payload\.sessionId\);/);
+    expect(SRC).toMatch(/await daemonClient\.disconnectSessionPipe\(id\);\s*forgetCreateState\(id\);/);
+  });
+
+  it('the startup line hears the shell first speak through whichever listener the session has', () => {
+    expect(SRC).toMatch(/firstOutputHooks\.set\(sessionId, initialCmd\.onFirstData\);/);
+    expect(SRC).toMatch(/if \(payload\.sessionId !== sessionId\) return;\s*noteFirstOutput\(sessionId\);/);
+    // A reconnect's listener counts live bytes only: a re-flush replay opens
+    // with its own terminal reset, which is not the shell speaking.
+    expect(RECONNECT).toMatch(/if \(payload\.sessionId !== id\) return;[\s\S]{0,400}?if \(!payload\.replay\) noteFirstOutput\(id\);/);
+    // The create listener no longer calls the startup line directly.
+    expect(SRC).not.toMatch(/return;\s*initialCmd\.onFirstData\(\);/);
+  });
+
+  it('pty:resync and the reconnect share one re-flush per session', () => {
+    expect(RECONNECT).toMatch(/resync: resyncOf\(daemonClient\),/);
+    expect(RECONNECT).toMatch(/return await resyncOf\(daemonClient\)\(id, scrollback\);/);
+    // Only the shared helper calls the daemon's re-flush.
+    expect(SRC).not.toMatch(/rpc\('daemon\.resyncSession'/);
+    // A flush complete ends the episode for joiners.
+    expect(SRC).toMatch(/onDaemonFlushComplete = \(payload[^\n]*\n[\s\S]{0,300}?sessionResync\?\.flushCompleted\(payload\.sessionId\);/);
   });
 });

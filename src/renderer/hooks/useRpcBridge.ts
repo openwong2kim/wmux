@@ -95,7 +95,16 @@ import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
-import { decideCompanySend, companyCancelRefusal, companyDoneRefusal, companySeatOf, isCompanyTask } from '../../shared/company';
+import { COMPANY_RENDERER_METHOD, companyBriefOf, decideCompanySend, companyCancelRefusal, companyDoneRefusal, companySeatOf, isCompanyTask } from '../../shared/company';
+import {
+  COMPANY_HOLD_KEY,
+  COMPANY_HOLD_REASON_TEXT,
+  companyBlockerEndedLine,
+  companyHoldOf,
+  isCompanyHoldReason,
+  type CompanyBlockerEnd,
+  type CompanyHoldReason,
+} from '../../shared/companyHold';
 import { findActivePtyId, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 import { buildPhoneSidebarSnapshot } from './phoneSidebarSnapshot';
 import type { MoaPendingDecision } from '../../shared/moa';
@@ -888,7 +897,13 @@ function bodyWithImages(text: string, images: readonly A2aDeliveredImage[]): (pt
   return (ptyId) => withImageFooter(body, images, panePathFor(ptyId));
 }
 
-export function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 'reply' | 'completed' | 'failed', title?: string): string {
+export function buildA2aNudge(
+  taskId: string,
+  senderName: string,
+  kind: 'new' | 'reply' | 'completed' | 'failed' | 'reported' | 'blocker-ended' | 'held',
+  title?: string,
+  company?: { blocker?: CompanyBlockerEnd; held?: CompanyHoldReason },
+): string {
   const id8 = taskId.replace(/^task[-_]?/, '').slice(0, 8);
   const what = kind === 'new' ? 'new A2A task' : kind === 'reply' ? 'reply on A2A task' : `A2A task ${kind}:`;
   const preview = kind === 'new' && title ? nudgeTitlePreview(title) : '';
@@ -897,6 +912,24 @@ export function buildA2aNudge(taskId: string, senderName: string, kind: 'new' | 
   // Sanitize the user-editable workspace name: a CR/LF in it would otherwise
   // split this "single line" into a multi-line bracketed paste (submitted with
   // `\r\r`) and inject text into the very live-agent prompt this path protects.
+  if (kind === 'reported') {
+    // A company task another PC finished: held here as a report for this side to mark done.
+    return `[wmux] ${sanitizeA2aName(senderName)} reported A2A task ${id8} done on its PC: check the report, then mark it done `
+      + `(a2a_task_update completed) — a2a_task_query task_id:${safeId}`;
+  }
+  // Company mode, to the CEO pane: a task held on its blockers needs a person
+  // (shared/companyHold.ts). Ids are named in full: the CEO acts on them.
+  if (kind === 'blocker-ended') {
+    const blocker = company?.blocker;
+    const line = blocker
+      ? companyBlockerEndedLine(safeId, { id: blocker.id.replace(/[^A-Za-z0-9_-]/g, ''), state: blocker.state })
+      : `${safeId} stays on hold: one of its blockers will not complete.`;
+    return `[wmux] ${line} — a2a_task_query task_id:${safeId}`;
+  }
+  if (kind === 'held') {
+    const why = company?.held ? COMPANY_HOLD_REASON_TEXT[company.held] : 'its blockers are done, but it was not written to its pane';
+    return `[wmux] A2A task ${safeId} is held: ${why} — a2a_task_query task_id:${safeId}`;
+  }
   return `[wmux] ${what} ${id8} from ${sanitizeA2aName(senderName)}${about} — a2a_task_query task_id:${safeId}`;
 }
 
@@ -1127,8 +1160,11 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
       emitA2aTaskEvent(cached, state === 'canceled' ? 'cancelled' : 'updated', state);
     }
     // The item's own state, not the task's: an earlier `working` item handed
-    // over late must not announce the end.
-    const ended = item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
+    // over late must not announce the end. A peer's `completed` held here as a
+    // report (`reported`) asks this side to check it and mark it done.
+    const ended = item.reported === true
+      ? 'reported'
+      : item.state === 'completed' || item.state === 'failed' ? item.state : undefined;
     if (!ended || side !== 'from') return { ok: true, delivered: true };
     // The pointer is one best-effort try. The event above already announced
     // the end and the task stays queryable, so a pane that is gone, holds
@@ -1157,6 +1193,145 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
   return writeRemoteDelivery({ ...anchor, ptyId: target.pty }, target, () => (isLiveTuiAgent(liveMeta)
     ? deliverPtyNudge(target.ws, buildA2aNudge(task.id, senderName, 'reply') + imagesNudgeSuffix(images), target.pty, false)
     : deliverPtyNotification(target.ws, senderName, bodyWithImages(text, images), target.pty, false)));
+}
+
+// ---------------------------------------------------------------------------
+// Company mode: a task held on its blockers (shared/companyHold.ts). Only
+// main's CompanyReleaseBridge calls these (they are never registered on the
+// pipe router); `task` is the daemon's record, judged when it was sent.
+// ---------------------------------------------------------------------------
+
+/** Why a message on a task still held for its blockers was not written anywhere. */
+const COMPANY_HELD_REPLY_HINT =
+  'The task still waits on its blockers and is not its seat\'s yet, so nothing was written to a pane. The message is kept on the task; '
+  + 'its seat reads it with the task once wmux writes the task to its pane.';
+
+/** Company tasks this renderer wrote to their seat: a repeat is answered `duplicate`. */
+const deliveredCompanyTasks = new Set<string>();
+const DELIVERED_COMPANY_TASKS_MAX = 1000;
+
+function companyTaskOf(v: unknown): Task | null {
+  const task = v as Task | undefined;
+  if (!task || typeof task !== 'object' || typeof task.id !== 'string' || isRemoteTaskId(task.id)) return null;
+  if (!task.metadata?.to || !task.metadata.from || !Array.isArray(task.history)) return null;
+  const first = task.history[0];
+  return first && Array.isArray(first.parts) && isCompanyTask(task.history) ? task : null;
+}
+
+/**
+ * A released task, written to the seat pane it is pinned to as a fresh send
+ * there would be: the gated new-task delivery, the one-line nudge for a live
+ * agent. Never re-routed: a seat pane that is gone holds it. The store entry
+ * comes back from the daemon's record when it is missing (after an app
+ * restart the store starts empty). Its `created` event goes out once it is
+ * written there: its send stored it without one.
+ */
+async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDeliveryResult> {
+  const snapshot = companyTaskOf(params.task);
+  if (!snapshot) return { error: `${COMPANY_RENDERER_METHOD.deliver}: not a company task` };
+  const taskId = snapshot.id;
+  if (deliveredCompanyTasks.has(taskId) || companyHoldOf(snapshot)?.delivered || companyHoldOf(useStore.getState().getTask(taskId))?.delivered) {
+    return { ok: true, delivered: true, duplicate: true };
+  }
+  const to = snapshot.metadata.to;
+  const resolveSeat = (): { ws: Workspace; pty: string } | null => {
+    const ws = useStore.getState().workspaces.find((w) => w.id === to.workspaceId);
+    const addr = ws && to.paneId ? resolvePaneAddress(getWorkspaceLeafPanes(ws), to.paneId, '') : null;
+    return ws && addr && !('error' in addr) ? { ws, pty: addr.ptyId } : null;
+  };
+  const seat = resolveSeat();
+  if (!seat) return { ok: true, delivered: false, held: 'pane-missing' };
+  if (!useStore.getState().getTask(taskId)) {
+    useStore.getState().createA2aTask({
+      id: taskId,
+      title: snapshot.metadata.title,
+      from: snapshot.metadata.from,
+      to: { workspaceId: to.workspaceId, name: to.name, ...(to.paneId ? { paneId: to.paneId } : {}), ...(to.surfaceId ? { surfaceId: to.surfaceId } : {}) },
+      history: snapshot.history,
+      artifacts: snapshot.artifacts ?? [],
+    });
+  }
+  if (!a2aTargetHasAgent(seat.ws, seat.pty)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
+  const store = useStore.getState();
+  const t = store.getTask(taskId) ?? snapshot;
+  const fromName = t.metadata.from.name;
+  const firstPart = t.history[0]?.parts.find((p) => p.kind === 'text');
+  const body = firstPart && firstPart.kind === 'text' ? firstPart.text : '';
+  const images = deliveredImagesOf(t.history[0]?.parts);
+  const liveMeta = deliveryLiveMeta(store.surfaceAgent, seat.pty, seat.ws.metadata);
+  // The gated delivery: wait for the person to stop typing, re-check the
+  // agent before the paste and the Enter, never past main's deadline.
+  const gated: NewTaskDelivery = {
+    taskId,
+    waitQuiet: true,
+    ...(liveMeta?.agentName ? { expectAgent: liveMeta.agentName } : {}),
+    ...(typeof params.deliveryDeadlineAt === 'number' ? { deadlineAt: params.deliveryDeadlineAt } : {}),
+  };
+  const write = isLiveTuiAgent(liveMeta)
+    ? await deliverPtyNudge(seat.ws, (p) => buildA2aNudge(taskId, fromName, 'new', a2aFormatOptionsFor(p).multiline ? t.metadata.title : undefined) + imagesNudgeSuffix(images), seat.pty, false, gated)
+    : await deliverPtyNotification(seat.ws, fromName, bodyWithImages(body, images), seat.pty, false, gated);
+  // A paste left in the composer (Enter withheld, not cleared) counts as
+  // delivered: writing it again would duplicate it.
+  const pastedOnly = !write.ptyId && !!write.refused?.pasted && !write.refused.cleared;
+  if (write.ptyId || pastedOnly) {
+    deliveredCompanyTasks.add(taskId);
+    if (deliveredCompanyTasks.size > DELIVERED_COMPANY_TASKS_MAX) {
+      deliveredCompanyTasks.delete(deliveredCompanyTasks.values().next().value as string);
+    }
+    // The copy here is the seat's from now on: no longer waiting, delivered.
+    const marker = companyHoldOf(snapshot);
+    useStore.setState((s) => {
+      const copy = s.a2aTasks[taskId];
+      if (!copy) return;
+      copy.metadata[COMPANY_HOLD_KEY] = {
+        blockedBy: marker?.blockedBy ?? companyHoldOf(copy)?.blockedBy ?? [],
+        waitingOn: [],
+        ...(marker?.releasedAt ? { releasedAt: marker.releasedAt } : {}),
+        delivered: true,
+        ptyId: pastedOnly ? seat.pty : (write.ptyId as string),
+      };
+    });
+    // Its send stored it unannounced; it is the seat's from now on.
+    const written = useStore.getState().getTask(taskId);
+    if (written) emitA2aTaskEvent(written, 'created');
+    return pastedOnly
+      ? { ok: true, delivered: true, ptyId: seat.pty, note: 'pasted-not-submitted' }
+      : { ok: true, delivered: true, ptyId: write.ptyId as string };
+  }
+  // The pane may have gone while the delivery waited.
+  if (!resolveSeat()) return { ok: true, delivered: false, held: 'pane-missing' };
+  return { ok: true, delivered: false, reason: write.refused?.reason ?? 'no_target_pty' };
+}
+
+/**
+ * One line to the CEO of the company that sent a held task: its coordinator
+ * pane (or, with none, the pane that sent it). A plain gated write, never a
+ * new-task delivery: it starts no fresh context. `reason` says why nothing
+ * was written: no such pane, no agent in it, or what the gate refused.
+ */
+async function handleCompanyCeoLine(params: RpcParams): Promise<Record<string, unknown>> {
+  const task = companyTaskOf(params.task);
+  const kind = params.kind === 'held' || params.kind === 'blocker-ended' ? params.kind : null;
+  if (!task || !kind) return { error: `${COMPANY_RENDERER_METHOD.ceoLine}: not a company task line` };
+  const raw = params.blocker as Partial<CompanyBlockerEnd> | undefined;
+  const blocker = raw && typeof raw.id === 'string' && (raw.state === 'failed' || raw.state === 'canceled')
+    ? { id: raw.id, state: raw.state }
+    : undefined;
+  const held = isCompanyHoldReason(params.held) ? params.held : undefined;
+  const from = task.metadata.from;
+  const ws = useStore.getState().workspaces.find((w) => w.id === from.workspaceId);
+  const paneId = ws?.company?.coordinatorPaneId ?? from.paneId;
+  const addr = ws && paneId ? resolvePaneAddress(getWorkspaceLeafPanes(ws), paneId, '') : null;
+  if (!ws || !addr || 'error' in addr) return { ok: true, delivered: false, reason: 'no_coordinator' };
+  if (!a2aTargetHasAgent(ws, addr.ptyId)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
+  const line = buildA2aNudge(task.id, '', kind, undefined, { ...(blocker ? { blocker } : {}), ...(held ? { held } : {}) });
+  const liveMeta = deliveryLiveMeta(useStore.getState().surfaceAgent, addr.ptyId, ws.metadata);
+  const write = isLiveTuiAgent(liveMeta)
+    ? await deliverPtyNudge(ws, line, addr.ptyId, false)
+    : await deliverPtyNotification(ws, 'wmux', line, addr.ptyId, false);
+  if (write.ptyId) return { ok: true, delivered: true, ptyId: write.ptyId };
+  if (write.refused?.pasted && !write.refused.cleared) return { ok: true, delivered: true, ptyId: addr.ptyId };
+  return { ok: true, delivered: false, reason: write.refused?.reason ?? 'no_target_pty' };
 }
 
 // ---------------------------------------------------------------------------
@@ -3232,6 +3407,20 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
 
   if (method === A2A_REMOTE_NOTIFY_METHOD) return handleRemoteNotify(params);
 
+  // Company mode, main only: a task stored with no delivery while it waits on
+  // its blockers, whose hold the daemon did not keep. Main fails the send, so
+  // the copy here goes too: nothing would ever deliver it.
+  if (method === COMPANY_RENDERER_METHOD.deliver) return handleCompanyDelivery(params);
+  if (method === COMPANY_RENDERER_METHOD.ceoLine) return handleCompanyCeoLine(params);
+
+  if (method === COMPANY_RENDERER_METHOD.discard) {
+    const taskId = typeof params.taskId === 'string' ? params.taskId : '';
+    const task = taskId ? useStore.getState().getTask(taskId) : undefined;
+    if (!task || !isCompanyTask(task.history)) return { ok: false, error: `${method}: no company task ${taskId}` };
+    useStore.setState((s) => { delete s.a2aTasks[taskId]; });
+    return { ok: true };
+  }
+
   if (method === 'a2a.task.send') {
     if (params.remoteMarker !== undefined || params.remoteFrom !== undefined) return handleRemoteTaskSend(params);
     const operator = a2aOperatorOrigin(params);
@@ -3368,8 +3557,18 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // was a bare success either way — the 2026-08-13 dogfood sessions showed
       // both agents believing their replies were delivered while every nudge was
       // being suppressed, leaving a human to relay the whole debate by hand.
-      let delivery: Record<string, unknown> = { stored: true, notified: false, reason: 'silent' };
-      if (!silent) {
+      // Company mode: a task still held for its blockers is not its seat's yet
+      // (main's flag from the daemon's record, or this copy's own marker when
+      // main could not read the record). The message is kept on it with no
+      // write and no event; the release delivery brings the seat to the task
+      // with its whole history.
+      const copyHold = companyHoldOf(task);
+      const heldForBlockers = (silent && params.heldForBlockers === true)
+        || (params.heldForBlockers !== false && !!copyHold && !copyHold.delivered);
+      let delivery: Record<string, unknown> = heldForBlockers
+        ? { stored: true, notified: false, reason: 'blocked', hint: COMPANY_HELD_REPLY_HINT }
+        : { stored: true, notified: false, reason: 'silent' };
+      if (!silent && !heldForBlockers) {
         const replyingToReceiver = role === 'user';
         const targetWsId = replyingToReceiver ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
         const targetWs = store.workspaces.find((w) => w.id === targetWsId);
@@ -3509,7 +3708,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // replies deliberately do NOT emit (the nudge already signals; emitting
       // per delivered message is the flood the create-path comment forbids).
       // A reopen is a state change, so it always tees the pointer.
-      if (delivery.notified !== true || reopened) {
+      if (!heldForBlockers && (delivery.notified !== true || reopened)) {
         const updatedTask = store.getTask(taskId);
         if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
       }
@@ -3721,6 +3920,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       history: [initialMessage],
       artifacts: [],
     });
+    // Company mode: a send main held for its blockers. Until the daemon's
+    // release delivery writes it to its seat, this copy says it waits on all of
+    // them, so it is kept from its receiving side when the daemon is away.
+    const heldSend = silent && params.heldForBlockers === true;
+    if (heldSend) {
+      const blockedBy = [...new Set((companyBriefOf(params.data)?.blockedBy ?? []).filter((id) => id.length > 0))];
+      useStore.setState((s) => {
+        const created = s.a2aTasks[newTaskId];
+        if (created) created.metadata[COMPANY_HOLD_KEY] = { blockedBy, waitingOn: [...blockedBy] };
+      });
+    }
 
     // Deliver message to target workspace's terminal (unless silent).
     // When silent, the task is only persisted in the store and the
@@ -3822,8 +4032,11 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // store so the emit lands strictly AFTER createA2aTask's set() — the
     // pointer is queryable the moment a receiver follows it. createA2aTask
     // seeds status.state='submitted'.
+    // A company task held for its blockers (main's flag, with silent) is not
+    // announced yet: its seat must not hear of it before it may take it. Main's
+    // release delivery announces it once it is written to the seat.
     const createdTask = store.getTask(newTaskId);
-    if (createdTask) emitA2aTaskEvent(createdTask, 'created');
+    if (createdTask && !heldSend) emitA2aTaskEvent(createdTask, 'created');
 
     // Return the RESOLVED target workspaceId so the main-side a2a.rpc handler
     // uses it for execute:true ClaudeWorker spawn, instead of the raw fuzzy `to`

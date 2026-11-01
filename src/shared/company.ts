@@ -84,6 +84,86 @@ export function missingBriefFields(data: unknown): string[] {
   return BRIEF_FIELDS.filter((f) => !nonEmptyString(data[f]));
 }
 
+/**
+ * The brief in `data` with only the fields a brief has (`blockedBy` when it
+ * is a list of strings), or null when `data` is not a complete version-1
+ * brief.
+ */
+export function companyBriefOf(data: unknown): CompanyBriefV1 | null {
+  if (!isRecord(data) || missingBriefFields(data).length > 0) return null;
+  const blockedBy = data.blockedBy;
+  return {
+    kind: COMPANY_BRIEF_KIND,
+    v: 1,
+    goal: data.goal as string,
+    scope: data.scope as string,
+    acceptance: data.acceptance as string,
+    verify: data.verify as string,
+    report: data.report as string,
+    ...(Array.isArray(blockedBy) && blockedBy.every((b) => typeof b === 'string') ? { blockedBy: [...blockedBy] as string[] } : {}),
+  };
+}
+
+const BRIEF_HEADINGS: Record<(typeof BRIEF_FIELDS)[number], string> = {
+  goal: 'Goal',
+  scope: 'Scope',
+  acceptance: 'Acceptance',
+  verify: 'Verify',
+  report: 'Report',
+};
+
+/** How a seat on another PC finishes a company task: it has no CEO there to report to. */
+export const REMOTE_SEAT_FINISH_LINE = 'When it is done, finish this task as completed with evidence: the PR URL, '
+  + 'its head commit, what you ran and who ran the live check. The CEO checks it and marks it done on its PC.';
+
+/**
+ * The text a company task to another PC carries: the CEO's message, the
+ * brief's five fields each under its name, and how a seat there finishes.
+ * That PC gets plain text; the brief itself stays on this PC.
+ */
+export function renderRemoteBrief(message: string, brief: CompanyBriefV1): string {
+  const fields = BRIEF_FIELDS.map((f) => `${BRIEF_HEADINGS[f]}:\n${brief[f].trim()}`);
+  return [message.trim(), ...fields, REMOTE_SEAT_FINISH_LINE].join('\n\n');
+}
+
+/** What a seat on another PC is told when it starts. */
+export interface RemoteSeatIntroInput {
+  /** The seat's name: the label the ask gives its link here. */
+  name: string;
+  company: string;
+  mission?: string;
+  owns?: string;
+  /** The CEO pane's name on this PC. */
+  ceo: string;
+  standingOrders?: string;
+}
+
+/**
+ * The first message a seat on another PC gets, sent with the ask that starts
+ * it: who it is and for which company, what it owns, who its CEO is, that
+ * briefs come as tasks with the five brief fields, how it finishes one
+ * (REMOTE_SEAT_FINISH_LINE), and the standing orders. It holds no brief, and
+ * no PC names: the send masks a host name such as `name.local`.
+ */
+export function remoteSeatIntro(input: RemoteSeatIntroInput): string {
+  const mission = input.mission?.trim();
+  const owns = input.owns?.trim().replace(/\.+$/, '');
+  const orders = input.standingOrders?.trim();
+  const headings = BRIEF_FIELDS.map((f) => BRIEF_HEADINGS[f]);
+  const lines = [
+    `You are ${input.name.trim()}, a seat of the company "${input.company.trim()}"${mission ? ` (mission: ${mission})` : ''}.`,
+  ];
+  if (owns) lines.push(`You own: ${owns}.`);
+  lines.push(
+    `Your CEO is ${input.ceo.trim()} on the PC that started you; its briefs come here as tasks with `
+    + `${headings.slice(0, -1).join(', ')} and ${headings[headings.length - 1]}.`,
+  );
+  lines.push(`Each brief ends with how to finish it: ${REMOTE_SEAT_FINISH_LINE}`);
+  if (orders) lines.push(`Standing orders: ${orders}`);
+  lines.push('Wait for a brief.');
+  return lines.join('\n');
+}
+
 /** True when the task's first message carries a brief: a company task. */
 export function isCompanyTask(history: readonly Message[]): boolean {
   const first = history[0];
@@ -207,6 +287,20 @@ export function companyCancelRefusal(
   if (from.workspaceId === caller.workspaceId && !!from.paneId && caller.paneId === from.paneId) return null;
   return 'only the pane that created this company task can cancel it; the receiver reports failed with evidence instead';
 }
+
+/**
+ * Renderer methods main calls for company tasks held on their blockers
+ * (shared/companyHold.ts). Never registered on the pipe router, so no pipe
+ * caller reaches them.
+ */
+export const COMPANY_RENDERER_METHOD = Object.freeze({
+  /** Write a stored company task to its seat's pane: the new-task delivery. */
+  deliver: 'a2a.company.deliver',
+  /** Drop a task the renderer stored for a hold the daemon did not keep. */
+  discard: 'a2a.company.discard',
+  /** One line to the company's coordinator (CEO) pane about a held task. */
+  ceoLine: 'a2a.company.ceoLine',
+} as const);
 
 /** A pane's place in its workspace's company: the coordinator, or staff. */
 export type CompanySeat = 'coordinator' | 'staff';

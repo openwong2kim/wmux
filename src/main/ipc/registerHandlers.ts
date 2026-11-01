@@ -1,6 +1,7 @@
 import { registerTerminalCoreHandlers } from './handlers/terminalCore.handler';
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
+import { registerExternalSessionsHandlers } from '../externalSessions/externalSessions.handler';
 import { registerAgentAuthHandlers } from '../agentAuth/agentAuthLost';
 import { registerDictationHandlers } from '../dictation/dictation.handler';
 import { registerContinueOnAccountHandler } from '../account/continueOnAccount.handler';
@@ -201,6 +202,7 @@ export function registerAllHandlers(
 ): () => void {
   const cleanupPty = registerPTYHandlers(ptyManager, ptyBridge, daemonClient, getWindow, { daemonMayReturn: options.daemonMayReturn });
   const cleanupUsageLimit = registerUsageLimitHandlers(daemonClient, getWindow);
+  const cleanupExternalSessions = registerExternalSessionsHandlers(daemonClient, getWindow);
   const cleanupAgentAuth = registerAgentAuthHandlers(daemonClient, getWindow);
   const cleanupDictation = registerDictationHandlers(getWindow);
   const cleanupContinueOnAccount = registerContinueOnAccountHandler(daemonClient);
@@ -614,6 +616,7 @@ export function registerAllHandlers(
   return () => {
     cleanupPty();
     cleanupUsageLimit();
+    cleanupExternalSessions();
     cleanupAgentAuth();
     cleanupDictation();
     cleanupContinueOnAccount();

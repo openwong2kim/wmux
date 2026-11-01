@@ -387,6 +387,13 @@ export interface HookIngestDeps {
    */
   isAutomationPane?: (sessionId: string) => boolean;
   /**
+   * External sessions — a valid signal that reached no pane: an agent running
+   * outside wmux (tmux, ssh, another terminal), or one whose guessed pane
+   * refused it. Never called for a signal that routed to a pane. The signal's
+   * response is unchanged; a failure is non-fatal. Only the daemon supplies it.
+   */
+  onUnroutedSignal?: (signal: AgentSignal) => void;
+  /**
    * One turn has one end. The daemon's id for the pane's latest episode when
    * that episode is over for good (DaemonPTYBridge.endedTurnId: a hard close;
    * a soft close resumes under the same id), else null. Optional: without it
@@ -706,7 +713,7 @@ function cwdCandidates(
  * stays bounded. Returns undefined when there is nothing useful to show.
  */
 const TOOL_INPUT_SUMMARY_MAX = 200;
-function summarizeToolInput(payload: Record<string, unknown> | undefined): string | undefined {
+export function summarizeToolInput(payload: Record<string, unknown> | undefined): string | undefined {
   if (!payload) return undefined;
   const toolInput = payload['tool_input'];
   if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return undefined;
@@ -1309,10 +1316,20 @@ export class HookIngest {
     if (!sessionId) {
       // The agent is running outside any live wmux pane (expected for
       // standalone use), or the pane it claims is gone. The per-pane event is
-      // dropped, health still recorded.
+      // dropped, health still recorded, and the signal kept as an external
+      // session's status.
       this.noteRefusedClaim(signal);
+      try {
+        this.deps.onUnroutedSignal?.(signal);
+      } catch (err) {
+        this.deps.log?.('warn', `[hooks] unrouted-signal callback failed: ${String(err)}`);
+      }
       return { ok: false, reason: 'no-workspace-match' };
     }
+
+    // A session end only ends an external session's row. A pane follows its
+    // own process, so a routed one changes nothing about it.
+    if (signal.kind === 'agent.session_end') return { ok: true };
 
     // #1823: a Claude-bridge signal carrying a Codex rollout (a Codex hook
     // pointed at the Claude bridge) contradicts itself. Dropped before it can

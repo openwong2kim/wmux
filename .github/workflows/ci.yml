@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         id: node
         with:
           # Same range as validate (see #984 there), so the node_modules cache
@@ -144,7 +144,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         id: node
         with:
           # The floor is the fix for #984: official Node 24.16.0-24.20.0 ship
@@ -194,7 +194,7 @@ jobs:
 
       - name: Upload test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-report-validate-${{ matrix.shard }}
           path: test-results/
@@ -205,7 +205,7 @@ jobs:
       # and nothing else, so a run without a retry costs it no API call.
       - name: Upload retry report
         if: ${{ !cancelled() && steps.flaky.outputs.retried == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-report-retries-validate-${{ matrix.shard }}
           path: test-results/retries-*.json
@@ -222,7 +222,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Same Node as validate (see the comment there, #984).
           node-version: '>=24.21.0 <25'
@@ -249,7 +249,7 @@ jobs:
           Write-Host "wmux-computer-use.exe sha256=$hash"
 
       - name: Upload the helper
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wmux-computer-use-${{ github.event.pull_request.head.sha || github.sha }}
           path: |
@@ -302,7 +302,7 @@ jobs:
       # Same pins and toolchain as validate; see the comments there.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         id: node
         with:
           node-version: '>=24.21.0 <25'
@@ -343,7 +343,7 @@ jobs:
 
       - name: Upload test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-report-integration-${{ matrix.shard }}
           path: test-results/
@@ -354,7 +354,7 @@ jobs:
       # and nothing else, so a run without a retry costs it no API call.
       - name: Upload retry report
         if: ${{ !cancelled() && steps.flaky.outputs.retried == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-report-retries-integration-${{ matrix.shard }}
           path: test-results/retries-*.json
@@ -390,7 +390,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         id: node
         with:
           node-version: '>=24.21.0 <25'
@@ -424,7 +424,7 @@ jobs:
 
       - name: Upload first-run evidence
         if: ${{ failure() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: first-run-e2e-${{ matrix.os }}
           path: e2e/artifacts/first-run/

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, type StoreState } from '../../stores';
 import { createWorkspaceAgentRosterSelector, type WorkspaceAgentRosterRow } from '../../stores/selectors/workspaceAgentRoster';
@@ -13,16 +13,23 @@ import { StatusMarkView } from '../Sidebar/AgentMarks';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { rosterPrimaryLabel } from '../Sidebar/WorkspaceAgentRoster';
 import type { Task } from '../../../shared/types';
+import type { A2aSpawnOutgoingSummary } from '../../../shared/a2aSpawn';
+import { remoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
+import { agentRow } from '../../../shared/agentIdentity';
 import { useMoaDecisions, useWorkLinks } from '../FleetView/useFleetSources';
 import { buildFleetTickets, paneLiveIn, type FleetTicket } from '../FleetView/fleetTickets';
 import { isTerminalKindSurfaceType } from '../Pane/surfaceKinds';
-import { buildCompanyBoard, type BoardSeat } from './companyBoard';
+import { spawnUntil } from '../Remote/RemoteSpawnAskDialog';
+import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
+import { buildCompanyBoard, remoteSeatsOf, seatAsksOf, type BoardRemoteSeat, type BoardSeat, type BoardSeatAsk } from './companyBoard';
+import AddRemoteSeatDialog from './AddRemoteSeatDialog';
 
 const NOW_SHOWN = 2;
 const NO_TASKS: Record<string, Task> = {};
 const NO_AGENTS: StoreState['surfaceAgent'] = {};
+const NO_REQUESTS: A2aSpawnOutgoingSummary[] = [];
 
-function Section({ title, count, needsYou = false, children }: { title: string; count?: number; needsYou?: boolean; children: ReactNode }) {
+function Section({ title, count, needsYou = false, children, after }: { title: string; count?: number; needsYou?: boolean; children: ReactNode; after?: ReactNode }) {
   return (
     <section className="flex flex-col">
       <h3 className="mb-1 text-[11px] font-medium text-[var(--text-muted)]">
@@ -32,6 +39,7 @@ function Section({ title, count, needsYou = false, children }: { title: string; 
         )}
       </h3>
       <div className="flex flex-col divide-y divide-[var(--stroke)]">{children}</div>
+      {after}
     </section>
   );
 }
@@ -63,6 +71,25 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const a2aTasks = useStore((s) => (isActive ? s.a2aTasks : NO_TASKS));
   const links = useWorkLinks(isActive && !!company);
   const { decisions } = useMoaDecisions(isActive && !!company);
+  const remoteLinks = useStore((s) => s.a2aRemote.links);
+  const remoteHosts = useStore((s) => s.a2aRemote.hosts);
+  // What the CEO pane asked other PCs to start; not in the store, so read
+  // here while the board shows, again on every link nudge (a request this PC
+  // sent rides that channel). A failed read keeps the last list.
+  const [requests, setRequests] = useState<A2aSpawnOutgoingSummary[]>(NO_REQUESTS);
+  const readRequests = useCallback(async () => {
+    const read = window.electronAPI?.a2aRemote?.spawnOutgoing;
+    if (!read) return;
+    const v = await read().catch(() => null);
+    if (v && Array.isArray(v.requests)) setRequests(v.requests);
+  }, []);
+  const readsRequests = REMOTE_SPAWN_UI_ENABLED && isActive && !!company;
+  useEffect(() => {
+    if (!readsRequests) return undefined;
+    void readRequests();
+    return window.electronAPI?.a2aRemote?.onLinkEvent?.(() => void readRequests());
+  }, [readsRequests, readRequests]);
+  const [addSeat, setAddSeat] = useState(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!isActive) return undefined;
@@ -76,6 +103,16 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     () => new Set(leaves.filter((leaf) => leaf.surfaces.some((sf) => !!sf.ptyId && !!surfaceAgent[sf.ptyId]?.name)).map((leaf) => leaf.id)),
     [leaves, surfaceAgent],
   );
+  // The CEO's seat while it is still a pane of the workspace.
+  const ceoPaneId = company?.coordinatorPaneId && leaves.some((l) => l.id === company.coordinatorPaneId) ? company.coordinatorPaneId : null;
+  const remoteSeats = useMemo(
+    () => remoteSeatsOf({ workspaceId, coordinatorPaneId: ceoPaneId, links: remoteLinks, hosts: remoteHosts }),
+    [workspaceId, ceoPaneId, remoteLinks, remoteHosts],
+  );
+  const asks = useMemo(
+    () => seatAsksOf({ workspaceId, coordinatorPaneId: ceoPaneId, requests, hosts: remoteHosts, now }),
+    [workspaceId, ceoPaneId, requests, remoteHosts, now],
+  );
   const board = useMemo(() => {
     // The log keeps the last ten finished jobs however old, not Fleet's last day.
     const tickets = buildFleetTickets({ links, decisions, a2aTasks, now, recentMs: Infinity, paneLive: paneLiveIn(workspaces) });
@@ -88,8 +125,9 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
       tickets,
       links,
       paneRole,
+      remoteSeats,
     });
-  }, [links, decisions, a2aTasks, now, workspaces, workspaceId, company?.coordinatorPaneId, leaves, agentPaneIds, roster.rows, paneRole]);
+  }, [links, decisions, a2aTasks, now, workspaces, workspaceId, company?.coordinatorPaneId, leaves, agentPaneIds, roster.rows, paneRole, remoteSeats]);
 
   const tagOf = (paneId: string): string => {
     const leaf = leaves.find((l) => l.id === paneId);
@@ -101,11 +139,12 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const seat = paneId ? board.seats.find((s) => s.paneId === paneId) : undefined;
     return seat ? seatTitle(seat) : '';
   };
-  // A job inside the company is placed by its seat, one handed out by the
-  // workspace or other PC's pane it went to.
+  // A job inside the company is placed by its seat (a seat on another PC by
+  // its name), one handed out by the workspace or other PC's pane it went to.
   const whereOf = (ticket: FleetTicket): string => (ticket.workspaceId === workspaceId
     ? seatName(ticket.paneId)
-    : workspaceNames[ticket.workspaceId] ?? ticket.workspaceName ?? t('fleet.ticket.unknownWorkspace'));
+    : board.remoteSeats.find((seat) => remoteWorkspaceId(seat.linkId) === ticket.workspaceId)?.name
+      ?? workspaceNames[ticket.workspaceId] ?? ticket.workspaceName ?? t('fleet.ticket.unknownWorkspace'));
   // A job that reported back waits on the pane that sent it: the CEO, a seat,
   // or a workspace outside the company.
   const reportedTo = (ticket: FleetTicket): string | undefined => {
@@ -127,6 +166,34 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
       </span>
       {detail && <span className="line-clamp-2 text-[11px] text-[var(--text-sub)]">{detail}</span>}
     </div>
+  );
+
+  // A seat's open jobs, the ones that need you in the needs-you colour, and
+  // the first job queued for it.
+  const jobLines = (seat: Pick<BoardSeat, 'now' | 'next'>) => (
+    <>
+      {seat.now.slice(0, NOW_SHOWN).map((ticket) => (
+        <span
+          key={ticket.id}
+          className={`truncate ${ticket.state === 'needs-you' ? 'text-[var(--attention-text)]' : 'text-[var(--text-sub)]'}`}
+          data-board-now={ticket.id}
+        >
+          {ticketTitle(ticket)}
+          {ticket.waitingOn && (
+            <span className="text-[11px] text-[var(--text-muted)]" data-board-reported>{` · ${reportedTo(ticket)}`}</span>
+          )}
+        </span>
+      ))}
+      {seat.now.length > NOW_SHOWN && (
+        <span className="text-[11px] text-[var(--text-muted)]">{t('company.board.more', { count: seat.now.length - NOW_SHOWN })}</span>
+      )}
+      {seat.next.length > 0 && (
+        <span className="truncate text-[11px] text-[var(--text-muted)]" data-board-next>
+          {t('company.board.next', { title: ticketTitle(seat.next[0]) })}
+          {seat.next.length > 1 && ` ${t('company.board.more', { count: seat.next.length - 1 })}`}
+        </span>
+      )}
+    </>
   );
 
   const seatRow = (seat: BoardSeat) => {
@@ -160,29 +227,53 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
         <span className="flex flex-col gap-0.5 pl-[16px]">
           {!seat.agent && <span className="truncate text-[11px] text-[var(--text-muted)]" data-board-no-agent>{t('company.noAgent')}</span>}
           {seat.owns && <span className="truncate text-[11px] text-[var(--text-muted)]">{t('company.board.owns', { role: seat.owns })}</span>}
-          {seat.now.slice(0, NOW_SHOWN).map((ticket) => (
-            <span
-              key={ticket.id}
-              className={`truncate ${ticket.state === 'needs-you' ? 'text-[var(--attention-text)]' : 'text-[var(--text-sub)]'}`}
-              data-board-now={ticket.id}
-            >
-              {ticketTitle(ticket)}
-              {ticket.waitingOn && (
-                <span className="text-[11px] text-[var(--text-muted)]" data-board-reported>{` · ${reportedTo(ticket)}`}</span>
-              )}
-            </span>
-          ))}
-          {seat.now.length > NOW_SHOWN && (
-            <span className="text-[11px] text-[var(--text-muted)]">{t('company.board.more', { count: seat.now.length - NOW_SHOWN })}</span>
-          )}
-          {seat.next.length > 0 && (
-            <span className="truncate text-[11px] text-[var(--text-muted)]" data-board-next>
-              {t('company.board.next', { title: ticketTitle(seat.next[0]) })}
-              {seat.next.length > 1 && ` ${t('company.board.more', { count: seat.next.length - 1 })}`}
-            </span>
-          )}
+          {jobLines(seat)}
         </span>
       </button>
+    );
+  };
+
+  // A seat on another PC: no pane here to focus, so not a button. Running
+  // while it holds an open job; a report back reads as one, not as needs-you.
+  const remoteSeatRow = (seat: BoardRemoteSeat) => {
+    const status = seat.now.length > 0 ? 'running' : 'idle';
+    return (
+      <div key={seat.linkId} className="flex flex-col gap-0.5 py-1.5" data-board-remote-seat={seat.linkId}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <StatusMarkView status={status} quiet label={t(AGENT_STATUS_ICON[status].labelKey)} />
+          <span className="min-w-0 truncate font-semibold text-[var(--text-main)]">{seat.name}</span>
+          {/* A long PC name takes only the room the seat's name leaves. */}
+          <span className="min-w-0 flex-1 basis-0 truncate text-[11px] text-[var(--text-muted)]">{t('company.board.onPc', { pc: seat.pc })}</span>
+        </span>
+        <span className="flex flex-col gap-0.5 pl-[16px]">{jobLines(seat)}</span>
+      </div>
+    );
+  };
+
+  // An ask the CEO pane made for a seat on another PC: waiting for that PC,
+  // or, for a day, why it did not start.
+  const askRow = (ask: BoardSeatAsk) => {
+    const name = ask.label ?? agentRow(ask.agent)?.display ?? ask.agent;
+    const line = !ask.pending
+      ? `${t('company.board.askEnded', { reason: t(`remoteSpawn.code.${ask.code ?? 'failed'}`, { pc: ask.pc }) })} · ${timeAgo(ask.updatedAt, now)}`
+      : ask.online
+        ? t('company.board.askWaiting', { pc: ask.pc, age: timeAgo(ask.createdAt, now) })
+        : t('company.board.askOffline', { pc: ask.pc, time: spawnUntil(ask.expiresAt) });
+    return (
+      <div key={ask.spawnId} className="flex flex-col gap-0.5 py-1.5" data-board-ask={ask.spawnId} data-pending={ask.pending || undefined}>
+        <span className="flex min-w-0 items-center gap-1.5">
+          {ask.pending ? (
+            <span className="flex h-2.5 w-2.5 flex-none items-center justify-center" data-status-mark="asked" aria-hidden="true">
+              <span className="h-[7px] w-[7px] rounded-full border-[1.5px] border-dashed border-[var(--text-muted)]" />
+            </span>
+          ) : (
+            <StatusMarkView status="idle" quiet />
+          )}
+          <span className="min-w-0 truncate font-semibold text-[var(--text-sub)]">{name}</span>
+          <span className="min-w-0 flex-1 basis-0 truncate text-[11px] text-[var(--text-muted)]">{t('company.board.onPc', { pc: ask.pc })}</span>
+        </span>
+        <span className="truncate pl-[16px] text-[11px] text-[var(--text-muted)]" data-board-ask-line>{line}</span>
+      </div>
     );
   };
 
@@ -210,7 +301,24 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
             </Section>
           )}
 
-          <Section title={t('company.board.seats')}>{board.seats.map(seatRow)}</Section>
+          <Section
+            title={t('company.board.seats')}
+            after={REMOTE_SPAWN_UI_ENABLED && ceoPaneId && (
+              <button
+                type="button"
+                className={`mt-2 self-start rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+                // The board's own pane takes a click that bubbles up and would win the focus back.
+                onClick={(event) => { event.stopPropagation(); setAddSeat(true); }}
+                data-board-add-remote-seat
+              >
+                {t('company.addSeat.menu')}
+              </button>
+            )}
+          >
+            {board.seats.map(seatRow)}
+            {board.remoteSeats.map(remoteSeatRow)}
+            {asks.map(askRow)}
+          </Section>
 
           {board.handedOut.length > 0 && (
             <Section title={t('company.board.handedOut')} count={board.handedOut.length}>
@@ -233,6 +341,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
           <p className="text-[11px] text-[var(--text-muted)]">{t('company.board.notShown')}</p>
         </div>
       )}
+      {addSeat && <AddRemoteSeatDialog workspaceId={workspaceId} onClose={() => setAddSeat(false)} />}
     </div>
   );
 }

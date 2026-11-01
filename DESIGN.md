@@ -1579,15 +1579,36 @@ leaves the page.
   panes in one grouped container, a pane with no agent listed but disabled;
   optional Standing orders; **Make company** the one primary). A company's
   menu offers **Open board** (the board tab, see "Pane: terminals and work
-  area"), **Company settings…** (the same dialog, filled in) and
-  **Dissolve company**. Line 2 is the mission after a small muted org-chart
-  glyph where the branch icon sits, never the git line: the row has no branch,
-  PR badge or sync badge, since with panes in different worktrees they are
+  area"), **Company settings…** (the same dialog, filled in), **Add a seat
+  on another PC…** (below) and **Dissolve company**. Line 2 is the mission
+  after a small muted org-chart glyph where the branch icon sits, never the
+  git line: the row has no branch, PR badge or sync badge, since with panes
+  in different worktrees they are
   whichever pane reported last. No mission leaves line 2 empty; a needs-you
   question still takes it. In the roster the coordinator's row comes first
   with a muted `CEO` after its title, in the agent-kind slot and style; a
   row's title is its pane label (Rename pane) when it has one, and the trailer
   keeps live activity, else the coordinate. The company adds no colour.
+  **Add a seat on another PC…** (owner-approved 2026-11-01, mockup round for
+  other-PC seats), also the link that ends the board's Seats, is the Remote
+  page's Start an agent… for the company, with the replies going to the CEO
+  pane. One dialog: the title, then `Asks that PC to start an agent for
+  <company>. Its replies come to <CEO>, the CEO.` Fields two to a row: PC
+  (the paired PCs this one may ask, each marked online or offline) and Agent;
+  Folder (one that PC lists) and Subfolder (optional); Name (the pane-label
+  rules, a free `<pc>-dev` by default; it names that agent here) and Wait for
+  that PC; then Owns (optional) and the First message, read-only and sent
+  exactly as shown: who the seat is, for which company and on which PC, what
+  it owns, who its CEO is, that briefs come as tasks with Goal, Scope,
+  Acceptance, Verify and Report, how it finishes one, and the standing
+  orders. The Remote page's rules hold: an offline PC gets the note on how
+  long the ask waits, a message the final pass would change is shown changed
+  and goes on the next Send, a refusal keeps the form and says why. The
+  footer's muted hint says that PC asks its owner first unless it always
+  allows this one, and the agent works in its own worktree there; Cancel and
+  `Ask <PC>`, the one primary. With no PC to ask, each paired PC's reason
+  shows, with Open Remote page (secondary) and no primary. While the CEO seat is
+  vacant the menu item is disabled and says why, and the board has no link.
 - **Company presets** (owner-approved 2026-10-31, mockup round 6): the
   titlebar + menu lists them under a muted **Company** heading, below the
   layout presets, as label + description rows like theirs
@@ -1758,9 +1779,10 @@ A pane is a terminal column plus, when it needs one, a work area.
   you** (jobs to or from the company that need the owner), **Seats** (every
   pane, the CEO first: status mark, the muted CEO word, the title, the
   coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
-  needs-you one in `--attention-text`, and a muted `Next:` line), **Handed
-  out** (open jobs sent to other workspaces, or to panes on other PCs, named
-  by their alias), **Not on a seat** and **Log**
+  needs-you one in `--attention-text`, and a muted `Next:` line; then the
+  company's seats on other PCs, see below), **Handed out** (open jobs sent to
+  other workspaces, or to panes on other PCs that are not the company's
+  seats, named by their alias), **Not on a seat** and **Log**
   (finished jobs, newest first, the last ten however old). A section with nothing in it is
   not drawn, Seats aside; a pane with no agent keeps its seat with a muted
   `No agent in this pane` under its title, and the coordinate gives way
@@ -1771,6 +1793,23 @@ A pane is a terminal column plus, when it needs one, a work area.
   longer a company. A pane with a board can be stashed (the board keeps no
   state of its own), and while the board is the active tab Fleet still reads
   the pane by the terminal beside it.
+  - **Seats on other PCs** (owner-approved 2026-11-01, mockup round for
+    other-PC seats). A seat on another PC is every active link from the CEO
+    pane to a pane on a paired PC that this side may send work over; nothing
+    is stored for it, and a link that ends drops it (its open jobs go back to
+    Handed out). After the panes, one row each: status mark (running while it
+    holds an open job, else idle), the name in the title weight (the link's
+    label), muted `on <PC>` where a pane shows its coordinate, then its open
+    jobs and `Next:` as for a pane. A job it reported back reads as the muted
+    `Reported to CEO`, never needs-you, and Waiting on you and Log name its
+    jobs by the seat. The row is not a button: there is no pane here to
+    focus. An ask the CEO pane made follows with a dashed muted ring, the
+    asked name in `--text-sub`, `on <PC>` and a muted `Waiting for <PC> to
+    approve · asked <age>` (or `<PC> is offline; the ask waits until
+    <time>`); an ask that ended without a seat stays a day as a muted
+    `Not started: <why> · <age>`. While the company has a CEO pane, a quiet
+    underlined text link, **Add a seat on another PC…** (`--text-sub`, a
+    `--line` underline), ends Seats.
 
 ## The one-boundary rule
 
@@ -1824,6 +1863,11 @@ always neutral (the fill ladder).
     - In that dialog (and on the Remote page) the prompt is sent only as shown. While a typed value would still be masked, a `wmux-a2a-note` line says how many. Send then puts the masked text in the box and asks for a review, and the next Send sends it.
     - When every account is out, one line with the earliest time one reopens.
   - **Colour.** None beyond the armed clock.
+- **Continue in another agent, from the pane menu** (owner approval 2026-11-01).
+  - **The entry.** "Continue in another agent…" in the pane ⋮ menu (and the header's right-click menu), after Continue on another account and before Rewind, on a terminal whose agent wmux knows; never in a shadow workspace.
+  - **The dialog.** A `Dialog` 400px wide: the title, one description line (a new tab of this pane, the note typed in, this tab keeps its session), one secondary button per other agent that is installed and signed in (one muted line when there is none), the "Include the unsent draft" checkbox (off) when the input holds a draft, then the note in the usage-limit card's preview block with its length. No primary: choosing an agent is the action. A click closes the dialog and takes the usage-limit card's path: a new tab, the note typed in, nothing sent.
+  - **The note.** The same note as the usage-limit card's, written by wmux from the pane's transcript: the folder and branch, the first and latest requests, the end of the last reply, the files touched (with their uncommitted line counts), the transcript, and the draft only when ticked.
+  - **Colour.** None.
 - **Stuck-turn chip and card** (owner approval 2026-10-25).
   - **The chip.** A pane whose Claude turn the daemon reads as stuck (no transcript progress, no tool in flight, nobody asked) shows one chip in its tab strip's flow beside the usage-limit chip: the word "Seems stuck" in `--accent-yellow`, nothing else coloured. It shows only while the stall lasts. Clicking it opens the card.
   - **The card.** The usage-limit card's popover (`placePopover`; Escape, an outside click or a resize closes it): one line saying how long nothing moved and that wmux never stops a turn on its own, then Stop and prefill (secondary) and Keep waiting (ghost). Stop and prefill interrupts the turn and puts the last prompt back into an empty input, unsent. A stop that fails keeps the card open with one line.
@@ -2296,6 +2340,8 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-31 | Owner-approved (mockup round 6, company presets): a company can be made in one pick from the + menu. Two built-ins, CEO + researcher + 3 devs (the owner's own shape: a CEO who orchestrates and writes no code, a researcher, developers not split by stack) and Lead + reviewer; each seat's agent is told its seat on its first turn | Making panes, starting agents and filling the company dialog by hand was the cost of every company. Agents that do not know their seat leave the company a set of empty roles, so the first message carries it. Seats on other PCs and saved presets come later: the other PC has to approve a start, and saving needs each pane's launch line |
 | 2026-10-30 | Owner-approved (mockup round 5, board as a tab): company mode's board is a work tab in the company workspace, opened beside the CEO's terminal, not a rail page or sidebar view. Seats are the workspace's panes, so a pane between agent runs keeps its seat and its jobs | The owner rejected a board that took over the sidebar; a work tab keeps the CEO's terminal beside it and expands with ◫. Seating by pane, not by detected agent, keeps a job sent to a restarting pane on that pane |
 | 2026-10-31 | Owner-approved (company done gate plan, "only the CEO or the owner marks done"): a task that reported back (`input-required`) to the pane that handed it out waits on that pane, not on the owner, so it is never needs-you: no attention orange, no Fleet report, out of the board's Waiting on you. It reads as working, its state word in muted text: Fleet "Reported, waiting on its sender", the board's seat line and job rows "Reported to CEO" (or the seat or workspace it went back to), the Git page "Next: CEO · report to check". A task handed out by a workspace with no pane, or reported to a pane that has closed since, still needs you. Applies to every agent-to-agent task, not only a company's | The owner was paged for a seat's report meant for the CEO, who checks it and marks the task done; the phone keeps its five ticket words |
+| 2026-11-01 | Owner-approved (external sessions, placement B of the mockup): a coding agent started outside wmux (tmux, screen, zellij, ssh into this computer, another terminal app) that reports through the hook bridge is kept as an external session. One whose folder is a workspace's folder, or sits under it (the deepest folder wins; a workspace inside the session's folder never matches), is a row in that workspace's roster: the roster recipe with a muted `outside` in the agent-kind slot, its activity or where it runs, the time since its last signal. Waiting on you, it draws its question line in `--attention-text`, lights the workspace row as a pane's agent does (ring, hairline, Needs you, the question) and counts in the rail's Fleet badge. The rest sit in an **Outside wmux** group at the list's foot after Snoozed and Settled (their header recipe, open by default, the folder on a second line; folded, a muted count and `N need you` in the attention colour). A click opens a detail popover — state and question, Folder, Where, Last activity, a `tmux attach -t …` / `screen -r …` command with Copy attach command as the one primary only when tmux or screen is known (else Open a wmux pane here is the primary), and Hide. No new colour | wmux never shows or types into that terminal, so the row cannot jump to a pane: the popover says where the session lives and how to reach it. Joining the workspace keeps one list and one attention grammar (2026-09-27); the foot group catches folders no workspace holds |
+| 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
 
 ### Desktop conversation view
 
