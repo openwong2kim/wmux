@@ -265,6 +265,29 @@ is not re-walked.
     on Secure Keyboard Entry and the input is keys, the field does not take
     focus in the background (a page Chrome does not expose to AX), or the app
     came to the front when its window or field was focused.
+- **Capabilities.** `hello.capabilities.input` is `{ backgroundPointer,
+  focusWithoutRaise, keyAuth, deferForeground: true }`. The first three say
+  which SkyLight calls resolved on this macOS: posting to one process, the
+  focus event record (on a macOS major whose record layout the helper knows),
+  and key authentication (macOS 15 and later, when the self-test at start
+  passes). `deferForeground` says the helper honours `foreground: 'refuse'`.
+- **`foreground: 'refuse'`** (main's input lanes,
+  `docs/computer-use-design.md`). `click`, `type`, `pressKey`, `hotkey` and
+  `scroll` take an optional `foreground: 'allow' | 'refuse'` (default
+  `allow`, the behaviour above; any other value is `invalid_argument`).
+  With `refuse`, wherever the action would go as real input with nothing
+  sent for it, it answers `needs_foreground` (`not_delivered`) instead, and
+  main re-sends it with `allow` under its foreground lease. That covers a
+  reason found before anything is posted (the list above) and a check that
+  fails before anything was posted. The decision is Core `afterStop`: only
+  a sent counter unchanged since the action began (key-window event records
+  count, and key status going back is counted before the answer is chosen)
+  becomes `needs_foreground`; a stop after posting started (no focus after
+  the focus click, the window left the screen mid-scroll, the app came
+  forward mid-typing) keeps its own answer, `window_not_focused` with
+  `delivered_unverified`. `setValue` and the `AXPress` step of `click` are
+  accessibility calls, not input, and raise no window, so `refuse` changes
+  nothing for them; `setValue` accepts the param.
 - Bringing the target forward, for real input: every input action (`click` by
   point or by an index that falls through to the pointer, `scroll`, `type`,
   `pressKey`, `hotkey`) first brings the target forward when it is not the frontmost app

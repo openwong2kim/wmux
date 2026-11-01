@@ -246,6 +246,29 @@ private func realInputAfter(_ stop: Background.Stop, sentBefore: Int, detail: St
     return stop.reason
 }
 
+/// The request's `foreground` (protocol ForegroundMode); absent is `allow`.
+private func foregroundMode(_ p: JSON) throws -> ForegroundMode {
+    guard let mode = ForegroundMode(param: p["foreground"]) else {
+        throw HelperError("invalid_argument", "foreground must be allow or refuse")
+    }
+    return mode
+}
+
+/// Right before real input, for `why`. Under refuse it never goes: the
+/// action answers `needs_foreground` when nothing was sent since
+/// `sentBefore` (the action's start), the Core decision (afterStop). By then
+/// a stop after posting has ended the action already, so only key status
+/// going back (restoreKey) can have sent something; the action then ends
+/// the way such a stop does.
+private func refuseRealInput(_ why: String?, _ mode: ForegroundMode, sentBefore: Int) throws {
+    guard mode == .refuse else { return }
+    let why = why ?? "background input could not be used"
+    if afterStop(posted: Input.shared.sent != sentBefore, foreground: mode) == .needsForeground {
+        throw HelperError("needs_foreground", "this needs real input (\(why)); nothing was sent")
+    }
+    throw HelperError("window_not_focused", "\(why), after something was sent in the background; nothing more was sent")
+}
+
 /// The note on real input that could not go in the background.
 private func realInputNote(_ why: String?) -> String? {
     why.map { "sent as real input: \($0)" }
@@ -307,6 +330,8 @@ enum Actions {
             throw HelperError("invalid_argument", "modifiers must be ctrl, alt, shift or meta")
         }
         let (point, element) = try screenPoint(snap, index: p.int("index"), point: try p.point("point"))
+        let mode = try foregroundMode(p)
+        let sentAtStart = Input.shared.sent
 
         // Action ladder: a plain left click on a pressable element is AXPress.
         if let element, button == .left, count == 1, mods.isEmpty, AX.actions(element).contains(kAXPressAction) {
@@ -342,6 +367,7 @@ enum Actions {
                 why = try realInputAfter(stop, sentBefore: sentBefore)
             }
         }
+        try refuseRealInput(why, mode, sentBefore: sentAtStart)
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
         // The cursor glide awaited: check again right before posting.
@@ -359,6 +385,8 @@ enum Actions {
         try checkTarget(snap, target)
         guard let index = p.int("index") else { throw HelperError("invalid_argument", "setValue needs an element index") }
         let value = try p.requireString("value")
+        // AX alone, never real input: refuse changes nothing here.
+        _ = try foregroundMode(p)
         let el = try snap.element(at: index)
         if Focus.isSecure(el) || IsSecureEventInputEnabled() {
             throw HelperError("app_blocked", "that is a password field (or secure input is on); wmux does not fill it")
@@ -385,6 +413,8 @@ enum Actions {
         try checkTarget(snap, target)
         let text = try p.requireString("text")
         guard !text.isEmpty else { throw HelperError("invalid_argument", "type needs text") }
+        let mode = try foregroundMode(p)
+        let sentAtStart = Input.shared.sent
         let windowID = CGWindowID(target.windowID)
         var why = Background.reason(.keys(command: false), target)
         if why == nil, let windowID {
@@ -475,6 +505,7 @@ enum Actions {
                 why = stop.reason
             }
         }
+        try refuseRealInput(why, mode, sentBefore: sentAtStart)
         if let index = p.int("index") {
             let el = try snap.element(at: index)
             if Focus.isSecure(el) { throw HelperError("app_blocked", "that is a password field; wmux does not type into it") }
@@ -537,6 +568,8 @@ enum Actions {
             throw HelperError("invalid_argument", "\"\(key.prefix(20))\" is not a canonical key name")
         }
         let repeatCount = min(50, max(1, p.int("repeat") ?? 1))
+        let mode = try foregroundMode(p)
+        let sentAtStart = Input.shared.sent
         let flags = KeyCodes.intrinsicFlags(for: key)
         let windowID = CGWindowID(target.windowID)
         var why = Background.reason(.keys(command: flags.contains(.maskCommand)), target)
@@ -576,6 +609,7 @@ enum Actions {
                 why = try realInputAfter(stop, sentBefore: sentBefore, detail: " (after \(pressed) of \(repeatCount) presses)")
             }
         }
+        try refuseRealInput(why, mode, sentBefore: sentAtStart)
         try await requireKeyboardForward(snap, target)
         for n in 0..<repeatCount {
             if n > 0 {
@@ -603,6 +637,8 @@ enum Actions {
             throw HelperError("invalid_argument", "modifiers must be ctrl, alt, shift or meta")
         }
         let flags = mods.reduce(into: KeyCodes.intrinsicFlags(for: key)) { $0.insert($1.flag) }
+        let mode = try foregroundMode(p)
+        let sentAtStart = Input.shared.sent
         let windowID = CGWindowID(target.windowID)
         var why = Background.reason(.keys(command: flags.contains(.maskCommand)), target)
         if why == nil, let windowID {
@@ -632,6 +668,7 @@ enum Actions {
                 why = try realInputAfter(stop, sentBefore: sentBefore)
             }
         }
+        try refuseRealInput(why, mode, sentBefore: sentAtStart)
         try await requireKeyboardForward(snap, target)
         Input.shared.withModifiers(mods) { flags in
             Input.shared.tap(key: code, flags: flags.union(KeyCodes.intrinsicFlags(for: key)))
@@ -653,6 +690,8 @@ enum Actions {
         default: throw HelperError("invalid_argument", "direction must be up, down, left or right")
         }
         let (point, _) = try screenPoint(snap, index: p.int("index"), point: try p.point("point"))
+        let mode = try foregroundMode(p)
+        let sentAtStart = Input.shared.sent
         var why = Background.reason(.scroll, target)
         if why == nil, let windowID = CGWindowID(target.windowID) {
             let start = Background.userState()
@@ -682,6 +721,7 @@ enum Actions {
                 why = try realInputAfter(stop, sentBefore: sentBefore, detail: " (after \(sent) of \(amount) notches)")
             }
         }
+        try refuseRealInput(why, mode, sentBefore: sentAtStart)
         try await Focus.requirePointer(target, window: snap.window, at: point)
         await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
         // Re-run the hit-test before every notch (the first one included,

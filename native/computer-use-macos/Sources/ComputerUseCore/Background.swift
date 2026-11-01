@@ -250,6 +250,29 @@ public enum BackgroundStop: Equatable {
     /// Something was posted and may have landed: the action ends there, since
     /// real input could do it twice.
     case end
+    /// Nothing was posted and real input is refused: the action answers
+    /// `needs_foreground`, and main re-sends it with `allow`.
+    case needsForeground
+}
+
+/// Whether an input action may go as real input (protocol ForegroundMode).
+public enum ForegroundMode: String, Equatable {
+    /// Background first where it can, real input otherwise (the default).
+    case allow
+    /// Background only: where real input would follow with nothing posted,
+    /// the action answers `needs_foreground` instead.
+    case refuse
+
+    /// The `foreground` request param: absent is `allow`; nil for any other
+    /// value than the two names.
+    public init?(param: Any?) {
+        guard let param else {
+            self = .allow
+            return
+        }
+        guard let name = param as? String, let mode = ForegroundMode(rawValue: name) else { return nil }
+        self = mode
+    }
 }
 
 /// The app to bring back to the front after background input: the one the
@@ -260,8 +283,12 @@ public func frontToRestore(start: UserState, now: UserState, pid: pid_t) -> pid_
     return start.front
 }
 
-public func afterStop(posted: Bool) -> BackgroundStop {
-    posted ? .end : .realInput
+/// What follows a stop, or a reason for real input found before anything
+/// was posted. Once something was posted the action ends with its own answer
+/// in either mode: a `needs_foreground` would make main send it twice.
+public func afterStop(posted: Bool, foreground: ForegroundMode = .allow) -> BackgroundStop {
+    if posted { return .end }
+    return foreground == .refuse ? .needsForeground : .realInput
 }
 
 /// Where a background click gives an element focus: the centre of the part
