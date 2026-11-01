@@ -10,7 +10,9 @@
 //   1. `A2A_COMPANY_RPC.pending` lists the released tasks owed a delivery.
 //   2. A listed task whose marker already says `attempted` was started by an
 //      earlier main and never confirmed: mark it `held: 'delivery-unconfirmed'`
-//      and never write it again on its own (a person decides).
+//      and never write it again on its own (a person decides). After a daemon
+//      restart the daemon does this itself: such a task comes back held as
+//      `delivery-unconfirmed` (derived on restore, not written to the log).
 //   3. Otherwise mark `attempted: true` BEFORE writing to the pane (do not
 //      write unless that mark returned ok), then mark the outcome:
 //      `delivered` (with the pty written to), `attempted: false` (the write

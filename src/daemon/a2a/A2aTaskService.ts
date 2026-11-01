@@ -267,6 +267,9 @@ export class A2aTaskService {
       this.restoreIdempotency(rec); // E: 크로스-재시작 멱등 재시드
       this.restoreRemoteState(rec.payload);
     }
+    // Before the GC below: a blocker that ended long ago is still in the
+    // projection here, so a hold can be checked against it.
+    this.reconcileCompanyHolds();
     // A: 부트 직후 GC — 30분 경과 종단 태스크를 즉시 정리한다. 로그는 영구이므로
     // 이게 없으면 restore가 역대 전 종단 태스크를 매 부트 부활시켜(projection 무한
     // 성장) query에 노출한다. GC는 projection만 바운드(로그 절단은 §9 컴팩션 몫).
@@ -1238,6 +1241,38 @@ export class A2aTaskService {
       const phase = companyHoldPhase(marker);
       return phase === 'waiting' || phase === 'held';
     });
+  }
+
+  /**
+   * After replay, before eviction, in memory: bring each open held task in
+   * line with the projection. A blocker shown completed is dropped (its drop
+   * mark was lost to a crash), the last one releasing the task at its
+   * completion time; one shown failed or canceled is noted. Then a released
+   * task left `attempted` (main was writing it and never confirmed) is held
+   * as `delivery-unconfirmed`: a person decides, and it is never written
+   * again on its own. Nothing is appended: the log keeps every blocker's end,
+   * so each restore derives the same result.
+   */
+  private reconcileCompanyHolds(): void {
+    for (const task of this.tasks.values()) {
+      const marker = companyHoldOf(task);
+      if (!marker || isTaskEnded(task)) continue;
+      const blockers = marker.waitingOn
+        .map((id) => this.tasks.get(id))
+        .filter((b): b is Task => !!b && isTaskEnded(b))
+        .sort((a, b) => a.status.timestamp.localeCompare(b.status.timestamp));
+      for (const blocker of blockers) {
+        const { state, timestamp } = blocker.status;
+        if (state === 'completed') {
+          applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, drop: blocker.id, timestamp });
+        } else if ((state === 'failed' || state === 'canceled') && !marker.blockerEnded?.some((e) => e.id === blocker.id && e.state === state)) {
+          applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, blockerEnded: { id: blocker.id, state }, timestamp });
+        }
+      }
+      if (marker.attempted && companyHoldPhase(marker) === 'owed') {
+        applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, held: 'delivery-unconfirmed', timestamp: task.metadata.updatedAt });
+      }
+    }
   }
 
   /**

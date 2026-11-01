@@ -8,7 +8,7 @@ import { A2aTaskService, type A2aLogLike } from '../A2aTaskService';
 import type { A2aCompanyMarkPayload } from '../../../shared/a2aEventlog';
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 import { companyHoldOf, companyHoldPhase } from '../../../shared/companyHold';
-import type { EventEnvelopeDraft } from '../../../shared/eventlog';
+import { makeEnvelope, type EventEnvelopeDraft } from '../../../shared/eventlog';
 import type { CompletionEvidence, Message } from '../../../shared/types';
 
 let dir: string;
@@ -353,5 +353,120 @@ describe('company hold: marks from main', () => {
     expect(svc.listCompanyPending()).toEqual([]);
     expect((await svc.cancelTask({ taskId: 'D', callerWorkspaceId: WS, callerPaneId: 'pane-ceo' })).ok).toBe(true);
     expect(svc.listCompanyHeld().map((t) => t.id)).toEqual(['C']);
+  });
+});
+
+describe('company hold: replay', () => {
+  function restored(log: A2aLogLike, now?: () => number): A2aTaskService {
+    const svc = newService(log, now);
+    svc.restoreFromLog();
+    return svc;
+  }
+
+  it('restores every marker as it was', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await assign(svc, 'A');
+    await assign(svc, 'B');
+    await assign(svc, 'X');
+    await assign(svc, 'C', ['A', 'B']);
+    await assign(svc, 'D', ['A']);
+    await assign(svc, 'E', ['X']);
+    await assign(svc, 'F', ['A']);
+    await complete(svc, 'A');
+    await fail(svc, 'X');
+    await svc.markCompany({ taskId: 'D', attempted: true });
+    await svc.markCompany({ taskId: 'D', delivered: true, ptyId: 'pty-d' });
+    await svc.markCompany({ taskId: 'F', held: 'pane-missing' });
+
+    const again = restored(log);
+    for (const id of ['C', 'D', 'E', 'F']) expect(holdOf(again, id)).toEqual(holdOf(svc, id));
+    expect(again.listCompanyPending()).toEqual([]);
+    expect(again.listCompanyHeld().map((t) => t.id).sort()).toEqual(['C', 'E', 'F']);
+  });
+
+  it('reconciles a drop mark that never reached the log', async () => {
+    const inner = newLog();
+    // The log refuses every company mark: the drop is lost, as if the daemon died before writing it.
+    const lossy: A2aLogLike = {
+      append: (draft) => ((draft.payload as { kind?: string }).kind === 'company.mark' ? Promise.resolve(false) : inner.append(draft)),
+      readAllRecords: () => inner.readAllRecords(),
+    };
+    const svc = newService(lossy);
+    await assign(svc, 'A');
+    await assign(svc, 'B');
+    await assign(svc, 'C', ['A']);
+    await assign(svc, 'D', ['B']);
+    await complete(svc, 'A');
+    await fail(svc, 'B');
+    expect(holdOf(svc, 'C')?.waitingOn).toEqual(['A']);
+    expect(holdOf(svc, 'D')?.blockerEnded).toBeUndefined();
+
+    const again = restored(inner);
+    expect(holdOf(again, 'C')?.waitingOn).toEqual([]);
+    expect(holdOf(again, 'C')?.releasedAt).toBe(again.getTask('A')?.status.timestamp);
+    expect(again.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+    expect(holdOf(again, 'D')?.blockerEnded).toEqual([{ id: 'B', state: 'failed' }]);
+    // The same answer on every restore.
+    expect(holdOf(restored(inner), 'C')).toEqual(holdOf(again, 'C'));
+  });
+
+  it('a task left attempted is not pending after a restore: it is held as delivery-unconfirmed', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await complete(svc, 'A');
+    await svc.markCompany({ taskId: 'C', attempted: true });
+
+    const again = restored(log);
+    expect(again.listCompanyPending()).toEqual([]);
+    expect(again.listCompanyHeld().map((t) => t.id)).toEqual(['C']);
+    expect(holdOf(again, 'C')).toMatchObject({ held: 'delivery-unconfirmed' });
+    expect(holdOf(again, 'C')?.attempted).toBeUndefined();
+    // A person had it sent: delivered is taken on the held task.
+    expect((await again.markCompany({ taskId: 'C', delivered: true })).ok).toBe(true);
+    expect(holdOf(restored(log), 'C')).toMatchObject({ delivered: true });
+  });
+
+  it('evicting a completed blocker after the release leaves the dependent as it was', async () => {
+    let clock = Date.parse('2026-11-01T00:00:00.000Z');
+    const now = () => clock;
+    const log = newLog();
+    const svc = newService(log, now);
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await complete(svc, 'A');
+    const hold = structuredClone(holdOf(svc, 'C'));
+    clock += 31 * 60 * 1000;
+    svc.gcTerminalTasks();
+    expect(svc.getTask('A')).toBeUndefined();
+    expect(holdOf(svc, 'C')).toEqual(hold);
+
+    const again = restored(log, now);
+    expect(again.getTask('A')).toBeUndefined();
+    expect(holdOf(again, 'C')).toEqual(hold);
+    expect(again.listCompanyPending().map((t) => t.id)).toEqual(['C']);
+  });
+
+  it('records of a kind this build does not know, and marks for tasks without a hold, replay without error', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    const auth = { principalId: WS, verifiedWorkspaceId: WS, trustTier: 'semi-trusted' as const };
+    const origin = { machineId: 'm1', daemonEpoch: 1 };
+    const ts = new Date().toISOString();
+    for (const payload of [
+      { kind: 'company.someday', taskId: 'C', timestamp: ts },
+      { kind: 'company.mark', taskId: 'A', delivered: true, timestamp: ts },
+      { kind: 'company.mark', taskId: 'nobody', drop: 'A', timestamp: ts },
+    ]) {
+      expect(await log.append(makeEnvelope({ domain: 'a2a', payload, origin, authContext: auth }))).toBe(true);
+    }
+    const again = restored(log);
+    expect(again.getTask('A')?.metadata.companyHold).toBeUndefined();
+    expect(holdOf(again, 'C')).toEqual({ blockedBy: ['A'], waitingOn: ['A'] });
+    expect(again.getTask('nobody')).toBeUndefined();
   });
 });
