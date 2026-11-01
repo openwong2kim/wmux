@@ -134,8 +134,9 @@ mkdir -p -- "\${file%/*}" || exit 4
 umask 077
 tmp="$file.wmux-$$.tmp"
 if ! cat > "$tmp"; then rm -f -- "$tmp"; exit 4; fi
-if [ -e "$file" ]; then chmod --reference="$file" -- "$tmp" 2>/dev/null || true; fi
 if [ -e "$file" ]; then
+  # GNU and busybox stat both answer -c %a; without it the file stays owner-only.
+  mode=$(stat -c %a -- "$file" 2>/dev/null) && chmod "$mode" "$tmp" 2>/dev/null
   if command -v sha256sum >/dev/null 2>&1; then
     now=$(sha256sum < "$file" | cut -d' ' -f1)
   else

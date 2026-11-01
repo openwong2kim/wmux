@@ -395,7 +395,10 @@ describe.skipIf(!hasSh)('setup-hooks --wsl: the in-distro scripts under a real s
     fs.writeFileSync(shared, '{}', { mode: 0o640 });
     fs.chmodSync(shared, 0o640);
     expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [shared, hasSha256sum ? sha256('{}') : 'nohash'], { HOME: home }, '{"x":1}\n').status).toBe(0);
-    expect(fs.statSync(shared).mode & 0o777).toBe(0o640);
+    // GNU / busybox stat (every WSL distro) carries the mode over; BSD stat
+    // (a macOS host) has no `-c %a`, and the file stays owner-only instead.
+    const statC = spawnSync('sh', ['-c', 'stat -c %a / >/dev/null 2>&1'], { windowsHide: true }).status === 0;
+    expect(fs.statSync(shared).mode & 0o777).toBe(statC ? 0o640 : 0o600);
   });
 
   it('the spawn runner hands stdin over as UTF-8 and reports the exit status', () => {
@@ -429,7 +432,8 @@ describe.skipIf(!hasSh)('setup-hooks --wsl: the in-distro scripts under a real s
     const settings = JSON.parse(fs.readFileSync(path.join(home, 'cfg', 'settings.json'), 'utf8'));
     expect(settings.model).toBe('opus');
     expect(settings.hooks.Stop[0]).toEqual({ matcher: '', hooks: [{ type: 'command', command: 'true user-hook' }] });
-    expect(settings.hooks.SessionEnd[0].hooks[0].command).toMatch(/^\/bin\/sh '\/mnt\/c\/.*\/\.wmux\/hooks\/wmux-wsl-hook\.sh' SessionEnd$/);
+    // The stub maps a drive path to /mnt/c/…; a POSIX host's temp path is already Linux.
+    expect(settings.hooks.SessionEnd[0].hooks[0].command).toMatch(/^\/bin\/sh '\/.*\/\.wmux\/hooks\/wmux-wsl-hook\.sh' SessionEnd$/);
     expect(uninstallWslHooks({ distro: 'Ubuntu', hooksDir, suffix: '', runner: local })).toMatchObject({ ok: true, changed: true });
     expect(JSON.parse(fs.readFileSync(path.join(home, 'cfg', 'settings.json'), 'utf8'))).toEqual({
       model: 'opus', hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'true user-hook' }] }] },
