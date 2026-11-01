@@ -47,15 +47,16 @@ export function externalSessionWslDistro(session: Pick<ExternalSession, 'cwd' | 
 const WSL_SHARE_FOLDER = /^[\\/]{2}(?:wsl\.localhost|wsl\$)[\\/]([^\\/]+)(.*)$/i;
 
 /**
- * A workspace folder as a session in `wslDistro` names it. A WSL share
- * (`\\wsl.localhost\Ubuntu\home\me`) is that distro's Linux path, so it holds
- * a session in that distro only, and never one outside WSL. Any other folder
- * is compared as it is: a WSL pane's folder is already its Linux path.
+ * A workspace folder as a session in `wslDistro` names it. To a session in
+ * WSL, a share (`\\wsl.localhost\Ubuntu\home\me`) is that distro's Linux path,
+ * so it holds a session in that distro only. A session outside WSL sees the
+ * share as the UNC path it is (a Windows agent can work in one). Any other
+ * folder is compared as it is: a WSL pane's folder is already its Linux path.
  */
 function folderAsSessionSees(folder: string, wslDistro: string | undefined): string | undefined {
   const share = WSL_SHARE_FOLDER.exec(folder);
-  if (!share) return folder;
-  if (!wslDistro || share[1].toLowerCase() !== wslDistro.toLowerCase()) return undefined;
+  if (!share || !wslDistro) return folder;
+  if (share[1].toLowerCase() !== wslDistro.toLowerCase()) return undefined;
   return share[2].replace(/\\/g, '/') || '/';
 }
 

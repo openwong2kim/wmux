@@ -43,10 +43,12 @@ describe('matchExternalWorkspace: a session in WSL', () => {
     expect(matchExternalWorkspace('/srv', [{ id: 'fwd', folder: '//wsl$/Debian/srv/' }], 'Debian')).toBe('fwd');
   });
 
-  it('another distro\'s share never holds it, and a session outside WSL never matches a share', () => {
+  it('another distro\'s share never holds it; a session outside WSL matches a share only by its UNC path', () => {
     expect(matchExternalWorkspace('/home/dev/app', workspaces, 'Debian')).toBe('linux');
     expect(matchExternalWorkspace('/srv/site', workspaces, 'Ubuntu')).toBeUndefined();
     expect(matchExternalWorkspace('/home/dev/app', workspaces)).toBe('linux');
+    // A Windows agent started inside the share keeps matching the workspace opened on it.
+    expect(matchExternalWorkspace('\\\\wsl.localhost\\Ubuntu\\home\\dev\\app\\src', workspaces)).toBe('share');
   });
 
   it('a workspace opened in a WSL pane (its folder is the Linux path) holds it as before', () => {

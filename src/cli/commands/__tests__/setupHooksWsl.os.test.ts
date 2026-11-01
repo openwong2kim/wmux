@@ -143,6 +143,24 @@ describe('setup-hooks --wsl: settings merge', () => {
     expect(distro.files.get(SETTINGS)).toBe(first);
   });
 
+  it('a re-run leaves ours where they are when the user added entries after them', () => {
+    const root = tempDir();
+    const hooksDir = hooksDirFor(root);
+    const distro = fakeDistro();
+    installWslHooks({ hooksDir, suffix: '', runner: distro.runner });
+    const settings = read(distro);
+    settings.hooks.Stop.push({ matcher: '', hooks: [{ type: 'command', command: 'echo later' }] });
+    distro.files.set(SETTINGS, JSON.stringify(settings));
+    distro.calls.length = 0;
+    expect(installWslHooks({ hooksDir, suffix: '', runner: distro.runner })).toMatchObject({ ok: true, changed: false });
+    expect(distro.calls.map((c) => c.kind)).toEqual(['read']);
+    // A changed entry (an older timeout) is rewritten.
+    settings.hooks.Stop[0].hooks[0].timeout = 5;
+    distro.files.set(SETTINGS, JSON.stringify(settings));
+    expect(installWslHooks({ hooksDir, suffix: '', runner: distro.runner })).toMatchObject({ ok: true, changed: true });
+    expect(read(distro).hooks.Stop.map((g: { hooks: Array<{ command: string; timeout?: number }> }) => g.hooks[0].timeout ?? null)).toEqual([null, 10]);
+  });
+
   it('uninstall removes only our entries and leaves the user\'s, the keys and the script', () => {
     const root = tempDir();
     const hooksDir = hooksDirFor(root);

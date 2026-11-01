@@ -134,6 +134,13 @@ describe('claude bridge tmux target from WSL', () => {
     expect(asked).toBe(0);
   });
 
+  it('a WSL hook with no target asks no tmux on Windows', () => {
+    let asked = 0;
+    const got = where({ TMUX: 'x', TMUX_PANE: '%1', WSL_DISTRO_NAME: 'Ubuntu' }, () => { asked += 1; return { session: 'other', window: '1' }; });
+    expect(got).toEqual({ kind: 'tmux', wslDistro: 'Ubuntu' });
+    expect(asked).toBe(0);
+  });
+
   it('a malformed target is no answer, not a wrong one', () => {
     expect(where({ TMUX: 'x', WMUX_TMUX_TARGET: 'nocolon' })).toEqual({ kind: 'tmux' });
   });

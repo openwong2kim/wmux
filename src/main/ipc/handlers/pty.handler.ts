@@ -210,13 +210,13 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   return { ...rest, initialCommand };
 }
 
-/** The shell a create will spawn (the same default both modes use). */
 /** The distro a new WSL pane boots: the caller's, when it names a valid one, else the settings picker's. */
 export function requestedWslDistro(options: Pick<PtyCreateOptions, 'wslDistro'> | undefined): string | null {
   const requested = options?.wslDistro;
   return isValidWslDistroName(requested) ? requested : getDefaultWslDistro();
 }
 
+/** The shell a create will spawn (the same default both modes use). */
 function createShell(options: PtyCreateOptions | undefined): string {
   return options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
 }

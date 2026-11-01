@@ -90,6 +90,19 @@ describe('open a wmux pane where an external session runs', () => {
     expect(createdWith()).toMatchObject({ shell: 'wsl.exe', wslDistro: 'Ubuntu-24.04', cwd: '/home/dev/app', workspaceId: wsId });
   });
 
+  it('the workspace profile\'s pane command (written for its own shell) is not typed into the WSL shell', () => {
+    const wsId = seedWorkspace();
+    act(() => useStore.setState((s) => {
+      const ws = s.workspaces.find((w) => w.id === wsId);
+      if (ws) ws.profile = { defaultPaneCommand: '.\\.venv\\Scripts\\Activate.ps1', env: { A: '1' } };
+    }));
+    act(() => openPaneInSessionFolder(session({}), wsId));
+    mount();
+    const options = createdWith();
+    expect(options).toMatchObject({ shell: 'wsl.exe', env: { A: '1' } });
+    expect(options.initialCommand).toBeUndefined();
+  });
+
   it('a session outside WSL keeps the folder-only behaviour', () => {
     seedWorkspace();
     act(() => openPaneInSessionFolder(session({ cwd: 'C:\\code\\api', where: { kind: 'terminal', label: 'WezTerm' } }), undefined));

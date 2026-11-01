@@ -220,7 +220,11 @@ export function EmptyLeafFunnel() {
                   },
                   useStore.getState().defaultShell,
                 ),
-                activeWorkspace.profile,
+                // The profile's pane command was written for the workspace's own
+                // shell; a WSL shell opened for a WSL session does not run it.
+                projectSeed?.wslDistro && activeWorkspace.profile
+                  ? { ...activeWorkspace.profile, defaultPaneCommand: undefined }
+                  : activeWorkspace.profile,
               ),
               seedRoleBinding,
               seedRoleName,

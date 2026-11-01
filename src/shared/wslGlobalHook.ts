@@ -18,6 +18,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { renameWithRetry } from './settingsFile';
 
 /** The hook command's file name; also how an installed hook is recognised as wmux's. */
@@ -129,49 +130,79 @@ export function wslRuntimePointerText(runtimePath: string, bridgePath: string): 
 }
 
 /**
- * Write the pointer atomically (tmp + rename: the hook reads it at any moment)
- * and only when it changed. `hooksDir` is `<getWmuxDir()>/hooks`, which is
- * already suffix-scoped. Returns whether the file was written.
+ * Write `text` to `file` only when it differs: a temp file with a random
+ * name, fsynced, then renamed over it, so the hook (which may read either
+ * file at any moment) never sees a half-written one. Returns whether it wrote.
  */
-export function writeWslRuntimePointer(hooksDir: string, runtimePath: string, bridgePath: string): boolean {
-  if (/[\r\n]/.test(runtimePath) || /[\r\n]/.test(bridgePath)) throw new Error('WSL runtime pointer: a path holds a line break');
-  const file = path.join(hooksDir, WSL_RUNTIME_POINTER);
-  const text = wslRuntimePointerText(runtimePath, bridgePath);
+export function writeTextFileAtomic(file: string, text: string, mode = 0o644): boolean {
   try {
     if (fs.readFileSync(file, 'utf8') === text) return false;
   } catch {
     // Absent or unreadable: write it.
   }
-  fs.mkdirSync(hooksDir, { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, text);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
   try {
+    const fd = fs.openSync(tmp, 'w', mode);
+    try {
+      fs.writeFileSync(fd, text, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
     renameWithRetry(tmp, file);
   } catch (err) {
-    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    try { fs.rmSync(tmp, { force: true }); } catch { /* never created, or already gone */ }
     throw err;
   }
   return true;
 }
 
-export type WslRuntimePointerOutcome = 'written' | 'up-to-date' | 'skipped' | 'no-bridge';
+/**
+ * Write the pointer (only when it changed). `hooksDir` is
+ * `<getWmuxDir()>/hooks`, which is already suffix-scoped.
+ */
+export function writeWslRuntimePointer(hooksDir: string, runtimePath: string, bridgePath: string): boolean {
+  if (/[\r\n]/.test(runtimePath) || /[\r\n]/.test(bridgePath)) throw new Error('WSL runtime pointer: a path holds a line break');
+  return writeTextFileAtomic(path.join(hooksDir, WSL_RUNTIME_POINTER), wslRuntimePointerText(runtimePath, bridgePath));
+}
+
+/** Write this instance's hook script (only when it changed); returns its path. */
+export function writeWslHookScript(hooksDir: string, suffix: string): string {
+  const file = path.join(hooksDir, WSL_GLOBAL_HOOK_SCRIPT);
+  writeTextFileAtomic(file, wslGlobalHookScript(suffix), 0o755);
+  return file;
+}
+
+export interface WslHookBootOutcome {
+  pointer: 'written' | 'up-to-date' | 'skipped' | 'no-bridge';
+  /** The installed script brought up to this build's text; 'not-installed' when the user never opted in. */
+  script: 'refreshed' | 'up-to-date' | 'not-installed' | 'skipped';
+}
 
 /**
- * The boot-time write. Windows only. The production (packaged) app writes
+ * The boot-time refresh. Windows only. The production (packaged) app writes
  * into the real data dir; an isolated (suffixed) instance into its own, which
  * `hooksDir` already is; an unsuffixed dev run writes nothing, so a dev build
  * never becomes the runtime of the user's real WSL hooks.
+ *
+ * The pointer is written at every start (an update moves the runtime and the
+ * bridge). The script is rewritten only when it is already there — the user
+ * opted in with `setup-hooks --wsl` — so a release that changes it reaches
+ * existing installs without a second opt-in, and no one else gets one.
  */
-export function refreshWslRuntimePointerAtBoot(input: {
+export function refreshWslHookAtBoot(input: {
   platform: NodeJS.Platform | string;
   isPackaged: boolean;
   suffix: string;
   hooksDir: string;
   runtimePath: string;
   bridgePath: string | null;
-}): WslRuntimePointerOutcome {
-  if (input.platform !== 'win32') return 'skipped';
-  if (!input.isPackaged && input.suffix === '') return 'skipped';
-  if (!input.bridgePath) return 'no-bridge';
-  return writeWslRuntimePointer(input.hooksDir, input.runtimePath, input.bridgePath) ? 'written' : 'up-to-date';
+}): WslHookBootOutcome {
+  if (input.platform !== 'win32' || (!input.isPackaged && input.suffix === '')) return { pointer: 'skipped', script: 'skipped' };
+  const pointer = !input.bridgePath ? 'no-bridge'
+    : writeWslRuntimePointer(input.hooksDir, input.runtimePath, input.bridgePath) ? 'written' : 'up-to-date';
+  const scriptFile = path.join(input.hooksDir, WSL_GLOBAL_HOOK_SCRIPT);
+  if (!fs.existsSync(scriptFile) || !isScriptableSuffix(input.suffix)) return { pointer, script: 'not-installed' };
+  return { pointer, script: writeTextFileAtomic(scriptFile, wslGlobalHookScript(input.suffix), 0o755) ? 'refreshed' : 'up-to-date' };
 }

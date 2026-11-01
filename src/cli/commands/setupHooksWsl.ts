@@ -22,14 +22,15 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { dataSuffix } from '../../shared/constants';
 import { decodeWslOutput, isValidWslDistroName } from '../../shared/wslDistro';
-import { renameWithRetry } from '../../shared/settingsFile';
+import { shellQuote } from '../../shared/resumeShell';
+import { getWmuxDir } from '../../daemon/config';
 import {
   isScriptableSuffix,
-  wslGlobalHookScript,
+  writeWslHookScript,
   WSL_GLOBAL_HOOK_SCRIPT,
   WSL_RUNTIME_POINTER,
 } from '../../shared/wslGlobalHook';
-import { specsFor } from './setupHooks';
+import { safeReviver, specsFor } from './setupHooks';
 
 /** Seconds Claude Code waits for one hook: a cold Electron start over interop can be slow. */
 const WSL_HOOK_TIMEOUT_S = 10;
@@ -77,8 +78,11 @@ function runSpawned(command: string, args: string[], input: string | undefined):
  * Inside the distro: the settings path, the hook script's Linux path (`$1` is
  * its Windows path) and the settings file, NUL-separated. CLAUDE_CONFIG_DIR is
  * read from this process first (a caller can pass it through WSLENV); this
- * process ran no startup files, so otherwise the user's interactive shell is
- * asked for it, bounded and with its output discarded but for one marker line.
+ * process ran no startup files, so otherwise the user's shell is asked for
+ * it as a WSL terminal starts it — login and interactive, so ~/.profile and
+ * ~/.bashrc (or zsh's, fish's) both count — bounded, its output discarded but
+ * for one marker line. `printenv` reads the exported value (what claude
+ * inherits) and needs no POSIX syntax, so fish answers too.
  */
 export const WSL_SETTINGS_READ_SCRIPT = `set -u
 dir=\${CLAUDE_CONFIG_DIR:-}
@@ -89,7 +93,7 @@ if [ -z "$dir" ]; then
   command -v timeout >/dev/null 2>&1 && wmux_bound="timeout -k 1 10"
   command -v setsid >/dev/null 2>&1 && wmux_bound="setsid $wmux_bound"
   # shellcheck disable=SC2086
-  dir=$($wmux_bound "$wmux_sh" -ic 'printf "\\nWMUX_CLAUDE_CONFIG_DIR=%s\\n" "\${CLAUDE_CONFIG_DIR:-}"' </dev/null 2>/dev/null \\
+  dir=$($wmux_bound "$wmux_sh" -lic 'echo; printf WMUX_CLAUDE_CONFIG_DIR=; printenv CLAUDE_CONFIG_DIR; echo' </dev/null 2>/dev/null \\
     | sed -n 's/^WMUX_CLAUDE_CONFIG_DIR=//p' | tail -n 1)
 fi
 [ -n "$dir" ] || dir="$HOME/.claude"
@@ -122,8 +126,6 @@ if ! cat > "$tmp"; then rm -f -- "$tmp"; exit 4; fi
 if [ -e "$file" ]; then chmod --reference="$file" -- "$tmp" 2>/dev/null || true; fi
 if ! mv -f -- "$tmp" "$file"; then rm -f -- "$tmp"; exit 4; fi
 `;
-
-const shellQuote = (text: string) => `'${text.replace(/'/g, `'\\''`)}'`;
 
 /**
  * What identifies this instance's entries: the hook script under ITS data dir.
@@ -177,28 +179,57 @@ export function stripWslHooks(settings: Record<string, unknown>, marker: string)
   return removed;
 }
 
-/** Strip, then add this instance's entries after the user's. Mutates `settings`. */
+/** One entry as event, matcher and leaf: what makes two installs the same. */
+function entryKey(event: string, matcher: unknown, leaf: HookLeaf): string {
+  return JSON.stringify([event, matcher ?? '', leaf.type ?? null, leaf.command, leaf.timeout ?? null]);
+}
+
+/** This instance's entries now in `settings`, as sorted entryKeys. */
+function installedEntries(settings: Record<string, unknown>, marker: string): string[] {
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return [];
+  const keys: string[] = [];
+  for (const [event, groups] of Object.entries(hooks as Record<string, unknown>)) {
+    if (!Array.isArray(groups)) continue;
+    for (const group of groups) {
+      const leaves = group && typeof group === 'object' ? (group as HookGroup).hooks : undefined;
+      if (!Array.isArray(leaves)) continue;
+      for (const leaf of leaves) {
+        if (isOurLeaf(leaf, marker)) keys.push(entryKey(event, (group as HookGroup).matcher, leaf as HookLeaf));
+      }
+    }
+  }
+  return keys.sort();
+}
+
+/**
+ * Strip, then add this instance's entries after the user's. Mutates
+ * `settings` — unless exactly these entries are already there, wherever the
+ * user's own entries sit around them: then nothing moves, and a re-run never
+ * rewrites the file.
+ */
 export function mergeWslHooks(settings: Record<string, unknown>, scriptLinuxPath: string, marker: string): string[] {
+  const specs = specsFor('signals-only');
+  const wanted = specs.map((spec) => ({
+    event: spec.event,
+    group: {
+      matcher: spec.matcher,
+      hooks: [{ type: 'command', command: wslHookCommand(scriptLinuxPath, spec.event, spec.extraArgs), timeout: WSL_HOOK_TIMEOUT_S }],
+    },
+  }));
+  const events = specs.map((spec) => spec.event);
+  const wantedKeys = wanted.map(({ event, group }) => entryKey(event, group.matcher, group.hooks[0])).sort();
+  if (JSON.stringify(installedEntries(settings, marker)) === JSON.stringify(wantedKeys)) return events;
   stripWslHooks(settings, marker);
   const hooks = settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks)
     ? settings.hooks as Record<string, unknown>
     : {};
-  const specs = specsFor('signals-only');
-  for (const spec of specs) {
-    const group = {
-      matcher: spec.matcher,
-      hooks: [{ type: 'command', command: wslHookCommand(scriptLinuxPath, spec.event, spec.extraArgs), timeout: WSL_HOOK_TIMEOUT_S }],
-    };
-    const existing = hooks[spec.event];
-    hooks[spec.event] = Array.isArray(existing) ? [...existing, group] : [group];
+  for (const { event, group } of wanted) {
+    const existing = hooks[event];
+    hooks[event] = Array.isArray(existing) ? [...existing, group] : [group];
   }
   settings.hooks = hooks;
-  return specs.map((spec) => spec.event);
-}
-
-function safeReviver(key: string, value: unknown): unknown {
-  if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-  return value;
+  return events;
 }
 
 export interface WslSettingsRead {
@@ -255,25 +286,6 @@ function writeWslSettings(runner: WslRunner, distro: string | undefined, setting
   if (run.error || run.status !== 0) throw new Error(runFailure(`could not write ${settingsPath} in WSL`, run));
 }
 
-/** Write the hook script beside the runtime pointer, tmp + rename, only when it changed. */
-function writeHookScript(hooksDir: string, suffix: string): string {
-  const file = path.join(hooksDir, WSL_GLOBAL_HOOK_SCRIPT);
-  const text = wslGlobalHookScript(suffix);
-  let current: string | null = null;
-  try { current = fs.readFileSync(file, 'utf8'); } catch { current = null; }
-  if (current === text) return file;
-  fs.mkdirSync(hooksDir, { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, text, { mode: 0o755 });
-  try {
-    renameWithRetry(tmp, file);
-  } catch (err) {
-    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
-    throw err;
-  }
-  return file;
-}
-
 export interface WslHooksOptions {
   /** Undefined → the default distro. */
   distro?: string;
@@ -316,7 +328,7 @@ export function installWslHooks(options: WslHooksOptions): WslHooksOutcome {
   const runner = options.runner ?? defaultWslRunner;
   try {
     // The script first: an entry must never name a file that is not there.
-    const scriptWindowsPath = writeHookScript(options.hooksDir, options.suffix);
+    const scriptWindowsPath = writeWslHookScript(options.hooksDir, options.suffix);
     const read = readWslSettings(runner, options.distro, scriptWindowsPath);
     const before = JSON.stringify(read.settings);
     const events = mergeWslHooks(read.settings, read.scriptLinuxPath, wslHookMarker(options.suffix));
@@ -350,9 +362,9 @@ export function uninstallWslHooks(options: WslHooksOptions): WslHooksOutcome {
   }
 }
 
-/** `~/.wmux<suffix>/hooks` — this instance's own dir, never another's. */
-export function defaultWslHooksDir(suffix = dataSuffix()): string {
-  return path.join(os.homedir(), `.wmux${suffix}`, 'hooks');
+/** `<getWmuxDir()>/hooks` — this instance's own (suffix-scoped) dir, the one main writes the pointer into. */
+export function defaultWslHooksDir(): string {
+  return path.join(getWmuxDir(), 'hooks');
 }
 
 /**
@@ -389,7 +401,7 @@ export function handleSetupHooksWsl(args: string[], jsonMode: boolean, runner?: 
   const suffix = dataSuffix();
   const options: WslHooksOptions = {
     ...(parsed.distro !== undefined ? { distro: parsed.distro } : {}),
-    hooksDir: defaultWslHooksDir(suffix),
+    hooksDir: defaultWslHooksDir(),
     suffix,
     ...(runner ? { runner } : {}),
   };

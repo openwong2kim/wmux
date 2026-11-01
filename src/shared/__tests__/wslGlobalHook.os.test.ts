@@ -8,7 +8,8 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  refreshWslRuntimePointerAtBoot,
+  refreshWslHookAtBoot,
+  writeWslHookScript,
   writeWslRuntimePointer,
   wslGlobalHookScript,
   WSL_GLOBAL_HOOK_SCRIPT,
@@ -205,13 +206,29 @@ describe('WSL runtime pointer', () => {
     const prod = path.join(dir, '.wmux', 'hooks');
     const isolated = path.join(dir, '.wmux-wslhook', 'hooks');
     const base = { runtimePath: 'C:\\app\\wmux.exe', bridgePath: 'C:\\app\\bridge.mjs' };
-    expect(refreshWslRuntimePointerAtBoot({ ...base, platform: 'win32', isPackaged: false, suffix: '', hooksDir: prod })).toBe('skipped');
-    expect(refreshWslRuntimePointerAtBoot({ ...base, platform: 'darwin', isPackaged: true, suffix: '', hooksDir: prod })).toBe('skipped');
+    const boot = (patch: Partial<Parameters<typeof refreshWslHookAtBoot>[0]>) =>
+      refreshWslHookAtBoot({ ...base, platform: 'win32', isPackaged: true, suffix: '', hooksDir: prod, ...patch });
+    expect(boot({ isPackaged: false })).toEqual({ pointer: 'skipped', script: 'skipped' });
+    expect(boot({ platform: 'darwin' })).toEqual({ pointer: 'skipped', script: 'skipped' });
     expect(fs.existsSync(prod)).toBe(false);
-    expect(refreshWslRuntimePointerAtBoot({ ...base, platform: 'win32', isPackaged: false, suffix: '-wslhook', hooksDir: isolated })).toBe('written');
+    expect(boot({ isPackaged: false, suffix: '-wslhook', hooksDir: isolated }).pointer).toBe('written');
     expect(fs.existsSync(prod)).toBe(false);
-    expect(refreshWslRuntimePointerAtBoot({ ...base, platform: 'win32', isPackaged: true, suffix: '', hooksDir: prod })).toBe('written');
-    expect(refreshWslRuntimePointerAtBoot({ ...base, platform: 'win32', isPackaged: true, suffix: '', hooksDir: prod })).toBe('up-to-date');
-    expect(refreshWslRuntimePointerAtBoot({ ...base, bridgePath: null, platform: 'win32', isPackaged: true, suffix: '', hooksDir: prod })).toBe('no-bridge');
+    // Never opted in: the pointer only, no script appears.
+    expect(boot({})).toEqual({ pointer: 'written', script: 'not-installed' });
+    expect(fs.existsSync(path.join(prod, WSL_GLOBAL_HOOK_SCRIPT))).toBe(false);
+    expect(boot({})).toEqual({ pointer: 'up-to-date', script: 'not-installed' });
+    expect(boot({ bridgePath: null }).pointer).toBe('no-bridge');
+  });
+
+  it('at boot: an installed script from an older build is brought up to this one, in its own suffix', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wslptr-')); dirs.push(dir);
+    const isolated = path.join(dir, '.wmux-wslhook', 'hooks');
+    const script = writeWslHookScript(isolated, '-wslhook');
+    fs.writeFileSync(script, '#!/bin/sh\n# an older build\nexit 0\n');
+    const base = { platform: 'win32', isPackaged: false, suffix: '-wslhook', hooksDir: isolated, runtimePath: 'C:\\a.exe', bridgePath: 'C:\\b.mjs' };
+    expect(refreshWslHookAtBoot(base).script).toBe('refreshed');
+    expect(fs.readFileSync(script, 'utf8')).toBe(wslGlobalHookScript('-wslhook'));
+    expect(refreshWslHookAtBoot(base).script).toBe('up-to-date');
+    expect(fs.readdirSync(isolated).sort()).toEqual([WSL_GLOBAL_HOOK_SCRIPT, WSL_RUNTIME_POINTER].sort());
   });
 });

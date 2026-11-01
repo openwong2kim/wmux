@@ -318,7 +318,7 @@ function findBridgeSource(): string | null {
  * Prototype-pollution-safe JSON.parse reviver — strips dangerous keys so a
  * malicious settings.json cannot poison Object.prototype. Same shape as mcp.ts.
  */
-function safeReviver(key: string, value: unknown): unknown {
+export function safeReviver(key: string, value: unknown): unknown {
   if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
   return value;
 }
