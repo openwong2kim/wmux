@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
 
 // Whether a screen reader is on (screenReaderService.ts); off unless a test says.
 const screenReader = vi.hoisted(() => ({ on: false }));
-vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => screenReader.on, launcherVersion: () => '2.1.316' }));
+vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => screenReader.on, launcherVersionsIn: () => () => '2.1.316' }));
 
 import { registerWorktaskHandlers } from '../worktask.handler';
 import { forgetBotWorkerSession, noteBotWorkerSession, reloadBotWorkerSessionsForTests, setWorkerMcpResolvers } from '../../../agents/botWorkerMergeGuard';

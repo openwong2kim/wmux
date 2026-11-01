@@ -44,7 +44,9 @@
 //                   older claude rejects it as an unknown option.
 //   gemini 0.35.3   `--screen-reader` "Enable screen reader mode for
 //                   accessibility"; `-p, --prompt` is the headless run
-//                   (`-i, --prompt-interactive` stays interactive).
+//                   (`-i, --prompt-interactive` stays interactive). The
+//                   option is in packages/cli/src/config/config.ts from
+//                   v0.3.0 (not in v0.2.2), and that parser is strict.
 //   codex 0.162.1 and opencode 0.0.55 list no such flag; agy and the rest
 //   are unverified. They get none.
 
@@ -129,7 +131,7 @@ export const LAUNCH_GRAMMAR_BY_AGENT: Readonly<Record<string, AgentLaunchGrammar
     effortInModelId: true,
   },
   gemini: {
-    screenReader: { flag: '--screen-reader', headlessFlags: ['-p', '--prompt'] },
+    screenReader: { flag: '--screen-reader', headlessFlags: ['-p', '--prompt'], minVersion: '0.3.0' },
   },
 } satisfies Partial<Record<AgentSlug, AgentLaunchGrammar>>;
 

@@ -9,6 +9,8 @@ vi.mock('electron', () => ({
 }));
 
 const probe = vi.hoisted(() => ({ answer: null as null | ((r: { ok: true; version: string } | { ok: false; detail: string }) => void), calls: 0 }));
+// A WSL shell on any host, so the WSL rule runs here too.
+vi.mock('../../shared/wsl', () => ({ isWslShell: (shell?: string) => /wsl\.exe$/i.test(shell ?? '') }));
 vi.mock('../claude/resolveClaudeExecutable', () => ({ resolveClaudeExecutable: () => '/fake/claude' }));
 vi.mock('../factory/claudeProbe', () => ({
   probeClaudeExecutable: () => {
@@ -17,9 +19,11 @@ vi.mock('../factory/claudeProbe', () => ({
   },
 }));
 
-import { launcherVersion } from '../screenReaderService';
+import { launcherVersionsIn } from '../screenReaderService';
 
-describe('launcherVersion', () => {
+describe('launcherVersionsIn', () => {
+  const launcherVersion = (launcher: string) => launcherVersionsIn('/bin/zsh')(launcher, launcher);
+
   it('answers null until claude --version answers, then its x.y.z, and only for claude', async () => {
     expect(launcherVersion('claude')).toBeNull();
     expect(probe.calls).toBe(1);
@@ -31,6 +35,17 @@ describe('launcherVersion', () => {
     expect(launcherVersion('claude')).toBeNull();
     const before = probe.calls;
     expect(launcherVersion('gemini')).toBeNull();
+    expect(probe.calls).toBe(before);
+  });
+
+  it('knows no version for a launcher given by path, or in a WSL pane', async () => {
+    launcherVersion('claude');
+    probe.answer?.({ ok: true, version: '2.1.316 (Claude Code)' });
+    await Promise.resolve();
+    expect(launcherVersion('claude')).toBe('2.1.316');
+    const before = probe.calls;
+    expect(launcherVersionsIn('/bin/zsh')('claude', '/opt/other/claude')).toBeNull();
+    expect(launcherVersionsIn('C:\\Windows\\System32\\wsl.exe')('claude', 'claude')).toBeNull();
     expect(probe.calls).toBe(before);
   });
 });

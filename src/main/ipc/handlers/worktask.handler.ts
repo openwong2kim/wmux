@@ -53,7 +53,7 @@ import { guardBotWorkerSessionText } from '../../agents/codexWorkerGuard';
 import { isBotWorkerSession, noteGuardedLaunchTyped, paneLaunchFolders } from '../../agents/botWorkerMergeGuard';
 import { folderTrustLaunchRefusal } from '../../folderTrustCheck';
 import { withScreenReaderFlag } from '../../../shared/screenReaderLaunch';
-import { isScreenReaderOn, launcherVersion } from '../../screenReaderService';
+import { isScreenReaderOn, launcherVersionsIn } from '../../screenReaderService';
 
 const execFileAsync = promisify(execFile);
 
@@ -403,7 +403,7 @@ export function registerWorktaskHandlers(
       // 정상 경로(scheduleInitialCommand.write)와 동일: sanitize + CR.
       // A screen reader's agent starts in its own screen-reader mode; the
       // guard's record keeps `line` as it was.
-      const typed = dc.writeToSession(ptyId, sanitizePtyText(withScreenReaderFlag(line, isScreenReaderOn(), launcherVersion)) + '\r') !== false;
+      const typed = dc.writeToSession(ptyId, sanitizePtyText(withScreenReaderFlag(line, isScreenReaderOn(), launcherVersionsIn(getPtyShell(ptyId)))) + '\r') !== false;
       settleRelaunch?.(typed);
       if (typed) noteGuardedLaunchTyped(ptyId, line);
       return { ok: true as const };

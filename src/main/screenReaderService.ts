@@ -5,7 +5,8 @@ import { app, BrowserWindow } from 'electron';
 import { dataSuffix } from '../shared/constants';
 import { parseAgentVersion } from '../shared/agentSetup';
 import { SCREEN_READER_IPC } from '../shared/screenReader';
-import { createScreenReaderMonitor, listProcessNames, screenReaderForcedForTest } from './screenReader';
+import { isWslShell } from '../shared/wsl';
+import { createScreenReaderMonitor, listProcessNames, screenReaderForcedForTest, SCREEN_READER_IDLE_POLL_MS_WIN32 } from './screenReader';
 import { resolveClaudeExecutable } from './claude/resolveClaudeExecutable';
 import { probeClaudeExecutable } from './factory/claudeProbe';
 
@@ -15,16 +16,12 @@ const monitor = createScreenReaderMonitor({
   onAccessibilitySupportChanged: (fn) => { app.on('accessibility-support-changed', (_event, enabled) => fn(enabled)); },
   listProcesses: () => listProcessNames(process.platform),
   forceOn: screenReaderForcedForTest(process.env, dataSuffix()),
+  ...(process.platform === 'win32' ? { idlePollMs: SCREEN_READER_IDLE_POLL_MS_WIN32 } : {}),
 });
 
 /** Whether a screen reader is on (screenReader.ts). */
 export function isScreenReaderOn(): boolean {
   return monitor.isOn();
-}
-
-/** Calls `fn` on every change. Returns the unsubscribe. */
-export function onScreenReaderChange(fn: (on: boolean) => void): () => void {
-  return monitor.onChange(fn);
 }
 
 /** claude's `x.y.z`, read in the background, so a launch never waits on it:
@@ -51,11 +48,14 @@ const VERSION_READS = new Map<string, () => string | null>([
   }],
 ]);
 
-/** The version a launch line's screen-reader flag is checked against
- *  (screenReaderLaunch.ts); null while unknown or for a launcher wmux cannot
- *  read. Never waits. */
-export function launcherVersion(launcher: string): string | null {
-  return VERSION_READS.get(launcher)?.() ?? null;
+/** The versions a launch line's screen-reader flag is checked against
+ *  (screenReaderLaunch.ts), for a pane running `shell`: the launcher's on
+ *  main's PATH. A WSL pane runs the distro's own agent and a launcher given
+ *  by path may be another install, so theirs are unknown (no flag), as is any
+ *  launcher wmux cannot read. Never waits. */
+export function launcherVersionsIn(shell: string | null | undefined): (launcher: string, typed: string) => string | null {
+  if (isWslShell(shell ?? undefined)) return () => null;
+  return (launcher, typed) => (/[\\/]/.test(typed) ? null : VERSION_READS.get(launcher)?.() ?? null);
 }
 
 /** Starts watching (once the app is ready); every window hears a change. */

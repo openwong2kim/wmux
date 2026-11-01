@@ -18,7 +18,7 @@ vi.mock('electron', () => ({
 }));
 
 const screenReader = vi.hoisted(() => ({ on: false }));
-vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => screenReader.on, launcherVersion: () => '2.1.316' }));
+vi.mock('../../../screenReaderService', () => ({ isScreenReaderOn: () => screenReader.on, launcherVersionsIn: () => () => '2.1.316' }));
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -33,7 +33,7 @@ afterEach(() => {
 
 describe('pty:create typed launch line', () => {
   /** What a local create types into its pane once the shell first prints. */
-  async function typedOnCreate(initialCommand: string): Promise<string[]> {
+  async function typedOnCreate(initialCommand: string, beforeFirstOutput: () => void = () => undefined): Promise<string[]> {
     const written: string[] = [];
     const onData: Array<() => void> = [];
     const ptyManager = {
@@ -49,6 +49,7 @@ describe('pty:create typed launch line', () => {
       const create = captured.get(IPC.PTY_CREATE);
       if (!create) throw new Error('pty:create not registered');
       await create({}, { initialCommand, shell: '/bin/zsh', ignoreAccountBinding: true });
+      beforeFirstOutput();
       for (const fn of onData) fn();
       await vi.waitFor(() => expect(written.length).toBeGreaterThan(0), { timeout: 5_000 });
       return written;
@@ -68,9 +69,13 @@ describe('pty:create typed launch line', () => {
     expect(await typedOnCreate('gemini')).toEqual(['gemini\r']);
   });
 
+  it('reads the state when the line is typed, not when the pane is created', async () => {
+    expect(await typedOnCreate('claude', () => { screenReader.on = true; })).toEqual([expect.stringMatching(/^claude --ax-screen-reader --session-id [0-9a-f-]{36}\r$/)]);
+  });
+
   it('the daemon create types the same flagged line (source lock: no daemon here)', () => {
     const src = readFileSync(path.resolve(process.cwd(), 'src/main/ipc/handlers/pty.handler.ts'), 'utf8');
-    expect(src).toContain('const typedLine = execCommand !== undefined || !options?.initialCommand ? undefined : withScreenReaderFlag(options.initialCommand, isScreenReaderOn(), launcherVersion);');
+    expect(src).toContain('const cmd = typedStartupLine(line, shell, !!botWorker);');
   });
 });
 
