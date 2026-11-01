@@ -50,6 +50,18 @@ describe('transcriptHandoff', () => {
     // Outside the folder, a path stays absolute.
     expect(transcriptHandoff(parse(CLAUDE, parseTranscriptLineDetailed), '/elsewhere').filesTouched).toEqual(['/work/app/src/board.ts', '/work/app/plans/board.md']);
   });
+
+  it('reads the files Codex CLI 0.163 patches from its exec script, where the patch is a string literal', () => {
+    // As the rollout records it: `exec` runs a script that calls tools.apply_patch.
+    const script = (body: string) => ({ timestamp: at, type: 'response_item', payload: { type: 'custom_tool_call', call_id: 'call_9', name: 'exec', input: body } });
+    const events = parse([
+      script('const patch = "*** Begin Patch\\n*** Add File: /work/app/b.md\\n+from codex\\n*** Update File: C:\\\\work\\\\app\\\\new.ts\\n@@\\n-a\\n+b\\n*** End Patch";\ntext(await tools.apply_patch(patch));\n'),
+      // A script that only reads names no file.
+      script('text(await tools.exec_command({ cmd: "cat /work/app/src/other.ts" }));\n'),
+    ], parseCodexLineDetailed);
+    expect(transcriptHandoff(events, '/work/app').filesTouched).toEqual(['b.md', 'C:\\work\\app\\new.ts']);
+    expect(transcriptHandoff(events, 'C:\\work\\app').filesTouched).toEqual(['/work/app/b.md', 'new.ts']);
+  });
 });
 
 describe('handoffNoteText', () => {

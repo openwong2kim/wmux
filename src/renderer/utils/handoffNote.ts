@@ -55,15 +55,23 @@ export const NOTE_FILES_MAX = 8;
 /** Longest draft this note carries. */
 export const NOTE_DRAFT_MAX = 1000;
 
-/** A tool that writes files: Claude Code's Write/Edit/MultiEdit/NotebookEdit,
- *  Codex's apply_patch, Gemini's and Qwen's write_file/replace. Read-only
- *  tools also take a `file_path`, so the name decides. */
+/** A tool that writes files by name: Claude Code's Write/Edit/MultiEdit/
+ *  NotebookEdit, Gemini's and Qwen's write_file/replace. Read-only tools take
+ *  a `file_path` too, so the name decides. */
 const WRITE_TOOL_RE = /write|edit|replace|patch/i;
-/** A written path: a `file_path`/`notebook_path`/`filePath` argument, or a
- *  Codex patch's file header. */
-const WRITTEN_PATH_RE = /"(?:file_path|notebook_path|filePath)"\s*:\s*"((?:[^"\\]|\\.)+)"|^\*\*\* (?:Add|Update) File: (.+)$/gm;
+/** A written path argument. */
+const PATH_ARG_RE = /"(?:file_path|notebook_path|filePath)"\s*:\s*"((?:[^"\\]|\\.)+)"/g;
+/** A patch's file header: in a raw patch (Codex's apply_patch tool), one per
+ *  line; inside a script's string literal (Codex CLI 0.163's `exec` tool
+ *  calling `tools.apply_patch`), after a written `\n` and with its
+ *  backslashes doubled. */
+const PATCH_FILE_RE = /^\*\*\* (?:Add|Update) File: (.+)$/gm;
+const QUOTED_PATCH_FILE_RE = /(?<!\\)\\n\*\*\* (?:Add|Update) File: (.+?)(?=(?<!\\)\\n|")/g;
 /** A plan or todo file: under a plans/todos folder, or named for one. */
 const PLAN_FILE_RE = /(?:^|[\\/])(?:plans?|todos?)[\\/][^\\/]+$|(?:^|[\\/])[^\\/]*(?:plan|todo)[^\\/]*\.(?:md|txt)$/i;
+
+/** A string literal's escapes taken out: a doubled backslash becomes one, `\"` becomes `"`. */
+const unescape = (s: string): string => s.replace(/\\(.)/g, '$1');
 
 /** `path` below `cwd` when it is inside it, else as given. */
 function belowFolder(path: string, cwd: string | undefined): string {
@@ -95,9 +103,14 @@ export function transcriptHandoff(events: readonly TurnEvent[], cwd?: string): T
       // A code block's inline marker is NUL-delimited.
       // eslint-disable-next-line no-control-regex
       if (!e.thinking && e.text.trim()) reply = e.text.replace(/\u0000code:\d+\u0000/g, '[code]');
-    } else if (e.kind === 'tool_use' && e.input?.inline && WRITE_TOOL_RE.test(e.name)) {
-      for (const m of e.input.inline.matchAll(WRITTEN_PATH_RE)) {
-        written.push(belowFolder(m[1] !== undefined ? m[1].replace(/\\(.)/g, '$1') : m[2].trim(), cwd));
+    } else if (e.kind === 'tool_use' && e.input?.inline) {
+      const input = e.input.inline;
+      if (WRITE_TOOL_RE.test(e.name)) {
+        for (const m of input.matchAll(PATH_ARG_RE)) written.push(belowFolder(unescape(m[1]), cwd));
+      }
+      if (input.includes('*** Begin Patch')) {
+        for (const m of input.matchAll(PATCH_FILE_RE)) written.push(belowFolder(m[1].trim(), cwd));
+        for (const m of input.matchAll(QUOTED_PATCH_FILE_RE)) written.push(belowFolder(unescape(m[1].trim()), cwd));
       }
     }
   }
