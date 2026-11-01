@@ -254,7 +254,8 @@ import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
-import { terminateRunningAppInstances } from './squirrelTeardown';
+import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
+import { daemonStageRootIn, removeDaemonRuntimeStages } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -456,6 +457,16 @@ if (process.platform === 'win32') {
 
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
       try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
+
+      // The daemon runs from a copy outside the install (daemonRuntimeStage.ts),
+      // which Squirrel's uninstall neither stops nor deletes: stop its daemon,
+      // then remove the copies.
+      try {
+        const stageRoot = daemonStageRootIn(getWmuxDir());
+        const stopped = terminateStagedDaemons(stageRoot);
+        if (stopped.length > 0) console.log(`[Squirrel] stopped the staged daemon(s) before uninstall: ${stopped.join(', ')}`);
+        if (!removeDaemonRuntimeStages(stageRoot)) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
+      } catch { /* best-effort */ }
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
