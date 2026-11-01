@@ -31,6 +31,8 @@ import { revokeSecretGrant, secretEnvForCreate } from '../../factory/secretGrant
 import { noteSessionAgentLaunched, noteSessionInput, noteTaskWorkerLaunched } from '../../factory/agentGoneFacts';
 import { beginPaneRelaunch, launchStillCurrent, startsAgent } from '../../factory/workerSlots';
 import { withLaunchSessionPin } from '../../agents/launchSessionPin';
+import { withScreenReaderFlag } from '../../../shared/screenReaderLaunch';
+import { isScreenReaderOn } from '../../screenReaderService';
 import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/codexWorkerGuard';
 import { workerFenceSupportFor } from '../../agents/botWorkerFence';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
@@ -842,7 +844,9 @@ export function registerPTYHandlers(
       // there is nothing to type — pass `undefined` so scheduleInitialCommand
       // is a no-op (its onFirstData stays a harmless call below).
       // A bot worker's line clears the screen first (clearedLaunchLine).
-      const typedLine = execCommand !== undefined ? undefined : options?.initialCommand;
+      // A screen reader's agent starts in its own screen-reader mode: the typed
+      // line carries the flag, nothing stored for a resume does.
+      const typedLine = execCommand !== undefined || !options?.initialCommand ? undefined : withScreenReaderFlag(options.initialCommand, isScreenReaderOn());
       const writeLaunchLine = (cmd: string): boolean => {
         // The task launch it is for was abandoned (its spawn timed out) or
         // replaced since the create: nothing is typed, and the pane goes.
@@ -1038,7 +1042,9 @@ export function registerPTYHandlers(
       // so it lands at a ready prompt, mirroring the daemon path. ptyManager
       // writes are always delivered locally, so the writer returns void.
       if (initialCommand && initialCommand.trim().length > 0) {
-        const initialCmd = scheduleInitialCommand(botWorker && !isWslShell(shell) ? clearedLaunchLine(initialCommand, shell) : initialCommand, {
+        // As the daemon path: the typed line carries a screen reader's flag.
+        const typedLine = withScreenReaderFlag(initialCommand, isScreenReaderOn());
+        const initialCmd = scheduleInitialCommand(botWorker && !isWslShell(shell) ? clearedLaunchLine(typedLine, shell) : typedLine, {
           write: (cmd) => {
             // As the daemon path: an abandoned task launch types nothing.
             if (!launchStillCurrent(options?.fanoutLaunch)) {
@@ -1196,6 +1202,9 @@ export function registerPTYHandlers(
       throw new Error('PTY_WRITE_LAUNCH: a bot worker\'s line for a Command Prompt pane holds characters cmd would read as more than one command');
     }
     const line = sanitizePtyText(guardedText) + (submit === true ? '\r' : '');
+    // A screen reader's agent starts in its own screen-reader mode. The typed
+    // line only: the guard's record keeps `guardedText`.
+    const typed = withScreenReaderFlag(line, isScreenReaderOn());
     // A line a person clicked to type stops only at a folder-trust prompt on
     // screen; one wmux types on its own (any caller that does not say
     // otherwise) also when the screen cannot rule one out.
@@ -1219,10 +1228,10 @@ export function registerPTYHandlers(
     }
     try {
       if (useDaemon && daemonClient) {
-        if (!daemonClient.writeToSession(id, line)) throw new Error('PTY_WRITE_LAUNCH: the session is not live');
+        if (!daemonClient.writeToSession(id, typed)) throw new Error('PTY_WRITE_LAUNCH: the session is not live');
       } else {
         if (!ptyManager.get(id)) throw new Error('PTY_WRITE_LAUNCH: no such session');
-        ptyManager.write(id, line);
+        ptyManager.write(id, typed);
       }
     } catch (err) {
       settleRelaunch?.(false);
