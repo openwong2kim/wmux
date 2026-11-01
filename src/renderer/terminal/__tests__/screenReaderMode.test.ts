@@ -76,6 +76,31 @@ describe('followScreenReader', () => {
     expect(off.state.attaches).toBe(0);
   });
 
+  it('drops the guard before the mode turns on, and brings it back after it turns off', () => {
+    const order: string[] = [];
+    const terminal = {
+      options: {
+        _mode: false,
+        get screenReaderMode() { return this._mode; },
+        set screenReaderMode(v: boolean) { order.push(`mode ${v}`); this._mode = v; },
+      },
+    };
+    let attached = true;
+    followScreenReader(terminal, {
+      on: screenReaderOn,
+      subscribe: subscribeScreenReader,
+      guardSettingOn: () => true,
+      guard: {
+        attached: () => attached,
+        attach: () => { attached = true; order.push('attach'); },
+        detach: () => { attached = false; order.push('detach'); },
+      },
+    });
+    setScreenReaderOn(true);
+    setScreenReaderOn(false);
+    expect(order).toEqual(['detach', 'mode true', 'mode false', 'attach']);
+  });
+
   it('stops following after the unsubscribe', () => {
     const { terminal, state, unsubscribe } = harness({ attached: true });
     unsubscribe();

@@ -37,17 +37,20 @@ export interface ScreenReaderFollow {
 }
 
 /** Keeps the terminal's mode and its IME residue guard on the screen-reader
- *  state at every change. Returns the unsubscribe. */
+ *  state at every change. The guard goes before the mode turns on and comes
+ *  back after it turns off, so it never runs under the mode. Returns the
+ *  unsubscribe. */
 export function followScreenReader(terminal: ScreenReaderModeTerminal, deps: ScreenReaderFollow): () => void {
   return deps.subscribe(() => {
     const on = deps.on();
-    if (!syncScreenReaderMode(terminal, on)) return;
+    if ((terminal.options.screenReaderMode ?? false) === on) return;
     const step = imeResidueGuardStep({
       attached: deps.guard.attached(),
       screenReaderMode: on,
       settingOn: deps.guardSettingOn(),
     });
     if (step === 'detach') deps.guard.detach();
-    else if (step === 'attach') deps.guard.attach();
+    syncScreenReaderMode(terminal, on);
+    if (step === 'attach') deps.guard.attach();
   });
 }
