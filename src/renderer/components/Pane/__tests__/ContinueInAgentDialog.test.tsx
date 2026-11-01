@@ -18,7 +18,7 @@ vi.mock('../../../utils/continueInAgent', async (importOriginal) => ({
 
 import { useStore } from '../../../stores';
 import { resetAgentSetupForTests } from '../../../utils/agentSetupRuns';
-import { continueInAgent } from '../../../utils/continueInAgent';
+import { continueInAgent, handoffFacts } from '../../../utils/continueInAgent';
 import ContinueInAgentDialog, { usePaneContinueInAgent } from '../ContinueInAgentDialog';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -81,6 +81,16 @@ describe('Continue in another agent (pane menu)', () => {
     await act(async () => q('[data-continue-in-agent="codex"]')!.click());
     expect(continueInAgent).toHaveBeenCalledWith({ heldPtyId: 'pty-1', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', cwd: '/repo', note });
     expect(q('[data-testid="continue-in-agent-dialog"]')).toBeNull();
+  });
+
+  it('offers no agent until the note is previewed', async () => {
+    stubAgents([{ agent: 'claude', readiness: 'ready' }, { agent: 'codex', readiness: 'ready' }]);
+    useStore.setState({ surfaceAgent: { 'pty-1': { name: 'claude', status: 'idle', slug: 'claude' } } } as never);
+    vi.mocked(handoffFacts).mockReturnValueOnce(new Promise(() => undefined));
+    await act(async () => root.render(<ContinueInAgentDialog ptyId="pty-1" workspaceId="ws-1" paneId="pane-1" onClose={() => undefined} />));
+    await flush();
+    expect(q<HTMLButtonElement>('[data-continue-in-agent="codex"]')!.disabled).toBe(true);
+    expect(q('[data-handoff-note]')).toBeNull();
   });
 
   it('says so when no other agent is installed and signed in', async () => {

@@ -21,6 +21,8 @@ import type { PaneActionItem } from './PaneActionsMenu';
 
 export const PANE_CONTINUE_IN_AGENT_KEY = 'continue-in-agent';
 
+const NO_FACTS: HandoffFacts = { requests: [], reply: null, filesTouched: [], planFiles: [], repo: null, branch: null, files: [], transcriptPath: null, draft: null };
+
 /** The pane menu's entry, for a terminal whose agent wmux knows. Which other
  *  agents can take over is asked when the dialog opens, so the entry does not
  *  come and go with that probe. */
@@ -58,10 +60,11 @@ export default function ContinueInAgentDialog({ ptyId, workspaceId, paneId, cwd,
   // Asked again on every open: an agent installed or signed in since the last
   // probe is offered. The last answer shows meanwhile.
   useEffect(() => { void refreshAgentStatus(); }, []);
-  // Gathered on open, so the note previewed is the one typed in.
+  // Gathered on open, so the note previewed is the one typed in. Unreadable
+  // facts still give a note (who and where), so the buttons never stay off.
   useEffect(() => {
     let live = true;
-    void handoffFacts(ptyId, cwd).then((f) => { if (live) setFacts(f); }, () => undefined);
+    void handoffFacts(ptyId, cwd).then((f) => { if (live) setFacts(f); }, () => { if (live) setFacts(NO_FACTS); });
     return () => { live = false; };
   }, [ptyId, cwd]);
 
@@ -80,6 +83,8 @@ export default function ContinueInAgentDialog({ ptyId, workspaceId, paneId, cwd,
                 key={s.agent}
                 size="sm"
                 variant="secondary"
+                // Not before the note is previewed: the owner sees it, and chooses the draft, first.
+                disabled={note === undefined}
                 title={t('usageLimit.continueInAgentHint')}
                 onClick={() => {
                   void continueInAgent({ heldPtyId: ptyId, fromAgent, agent: s.agent, workspaceId, paneId, ...(cwd ? { cwd } : {}), ...(note ? { note } : {}) })
