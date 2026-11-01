@@ -214,7 +214,8 @@ is not re-walked.
     key status moves inside that app alone (the key-window event records,
     then `AXFocusedWindow`), read back before anything is typed. `type` gives
     the field focus first, by AX or else a background click on it; without an
-    index the app's focused element must take text. Keys carry the key
+    index the app's focused element must take text, checked once before key
+    status moves too, so one that does not goes as real input. Keys carry the key
     authentication message (macOS 15 and later), except a shortcut with
     Command, which then reaches the app's menus. Chromium drops a posted key
     without the message, so a Command shortcut to a Chromium-based app goes
@@ -241,7 +242,8 @@ is not re-walked.
     `window_not_focused` and `delivered_unverified`, and no real input
     follows, which could do it twice. That includes a background focus click
     for `type` after which the field did not report focus or the app came
-    forward; the call then says to check the app and type without an index.
+    forward; the call then says to check the app and type without an index
+    (after a `type` without one, to pass the field's index).
   - After the input, an app that brought itself to the front is put back
     behind the user's app (not when the user gave real input meanwhile), and key status goes back to the app's window that
     had it before (by the key-window records, or `AXFocusedWindow` when they

@@ -401,6 +401,12 @@ enum Actions {
             var clicked = false
             var typed = 0
             do {
+                // Without an index the keys go to the app's focused element. One
+                // that does not take text is refused before anything is sent, so
+                // the call goes on as real input instead of failing on every retry.
+                if p.int("index") == nil, !Background.focusedFieldTakesText(target.pid) {
+                    throw Background.Stop(reason: "the app has no focused text field to type into in the background")
+                }
                 // Focus first, in the background: a background app keeps its
                 // own focused element, and a page's autofocus does not take in
                 // a window that was never active.
@@ -459,7 +465,10 @@ enum Actions {
                     // word, so the call ends.
                     if typed == 0 {
                         let after = clicked ? "after a background click on the field" : "after the window was focused in the background, with no click"
-                        throw HelperError("window_not_focused", "\(stop.reason) \(after); nothing was typed\(note). It may have focus now: call getAppState, then type without an index")
+                        let next = p.int("index") == nil
+                            ? "Call getAppState, then pass the index of the field to type into"
+                            : "It may have focus now: call getAppState, then type without an index"
+                        throw HelperError("window_not_focused", "\(stop.reason) \(after); nothing was typed\(note). \(next)")
                     }
                     throw HelperError("window_not_focused", "\(stop.reason) while typing in the background, after \(typed) of \(text.count) characters; the rest was not typed\(note)")
                 }
