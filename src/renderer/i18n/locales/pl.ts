@@ -2501,6 +2501,8 @@ export const pl = {
   'settings.factory.concurrencyDesc': "We wszystkich obszarach roboczych, od 1 do 5.",
   'settings.factory.maxAgents': "Agenci jednocześnie (boty i workery)",
   'settings.factory.maxAgentsDesc': "Boty w turze i działające workery razem, od 2 do 16. Nowy worker bota ponad limit czeka na wolne miejsce; twoja własna praca nigdy nie czeka.",
+  'settings.factory.companyMaxWorking': "Pracujące stanowiska na komputer",
+  'settings.factory.companyMaxWorkingDesc': "Stanowiska firm pracujące jednocześnie nad zadaniem na tym komputerze, we wszystkich firmach razem, od 1 do 8. Zlecenie, które uruchomiłoby kolejne, czeka i trafia do swojego stanowiska, gdy pracujące stanowisko zgłosi wynik albo jego zadanie się zakończy.",
   'settings.factory.laneAutoMerge': 'Automatycznie scalaj pull requesty botów',
   'settings.factory.laneAutoMergeDesc': "Scala pull requesty botów, które przeszły Verifiera i CI, do dziennego limitu. Wyłączone: scalasz Ty, poza tym, co obejmuje reguła Zawsze zezwalaj.",
   'settings.factory.laneDailyCap': 'Automatyczne scalenia dziennie',

@@ -1,6 +1,6 @@
 import { isRemoteTaskId } from '../../shared/a2aRemote';
 import { missKindOf } from '../../shared/a2aRemoteDelivery';
-import { COMPANY_RENDERER_METHOD } from '../../shared/company';
+import { COMPANY_RENDERER_METHOD, isCompanyTask, parseCompanySeat } from '../../shared/company';
 import {
   companyHoldOf,
   companyHoldPhase,
@@ -9,7 +9,8 @@ import {
   type CompanyHoldReason,
 } from '../../shared/companyHold';
 import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../shared/freshContext';
-import { TERMINAL_STATES, type Task } from '../../shared/types';
+import { paneLabelShapeError } from '../../shared/paneLabelRules';
+import { TERMINAL_STATES, type Message, type Task, type TaskState } from '../../shared/types';
 
 /**
  * Company mode, in main: deliver each company task the daemon released from
@@ -399,6 +400,134 @@ export function companyCeoEventsOf(task: Task): CompanyCeoEvent[] {
     events.push({ key: `${task.id}|ended|${ended.id}|${ended.state}${at}`, kind: 'blocker-ended', blocker: ended });
   }
   return events;
+}
+
+// ─── Working company seats on this PC (the cap's count) ──────────────────────
+
+/** A company staff seat on this PC that takes one of the PC's working slots. */
+export interface CompanyWorkingSeat {
+  workspaceId: string;
+  paneId: string;
+  /** How a CEO names it: `#<label>`, else the pane's tag (`#w1-2`). */
+  name: string;
+}
+
+/** One company workspace as main reads it: its pane rows (`pane.list`) and the open tasks to it (the daemon's). */
+export interface CompanySeatSnapshot {
+  workspaceId: string;
+  panes: readonly unknown[];
+  tasks: readonly unknown[];
+}
+
+/** The count: every staff seat on this PC by pane id, and the ones working. */
+export interface CompanyWorkingCount {
+  staff: Map<string, { workspaceId: string; name: string; alive: boolean }>;
+  working: CompanyWorkingSeat[];
+}
+
+/** The open states a seat works in; a report (`input-required`) frees it. */
+const WORKING_STATES: readonly TaskState[] = ['submitted', 'working'];
+/** Main's wait on the daemon for one read of a company's open tasks. */
+export const COMPANY_SEAT_READ_TIMEOUT_MS = 3_000;
+
+/**
+ * The working staff seats on this PC: a staff pane (not the CEO) whose agent
+ * is alive and that holds at least one open company task (`submitted` or
+ * `working`) that was written to it. A task with a hold marker counts only
+ * once delivered: one still waiting, owed or held is not its seat's work yet.
+ * A seat counts once however many tasks it holds. Every company on the PC
+ * shares the count. Pure.
+ */
+export function companyWorkingSeats(snapshots: readonly CompanySeatSnapshot[]): CompanyWorkingCount {
+  const staff: CompanyWorkingCount['staff'] = new Map();
+  for (const { workspaceId, panes } of snapshots) {
+    for (const row of panes) {
+      if (!isRecord(row) || typeof row.id !== 'string' || parseCompanySeat(row.companySeat) !== 'staff') continue;
+      staff.set(row.id, { workspaceId, name: seatNameOf(row), alive: paneAgentAlive(row) });
+    }
+  }
+  const working: CompanyWorkingSeat[] = [];
+  const seen = new Set<string>();
+  for (const { workspaceId, tasks } of snapshots) {
+    for (const task of tasks) {
+      const paneId = workingPaneOf(task, workspaceId);
+      const seat = paneId ? staff.get(paneId) : undefined;
+      if (!paneId || !seat || !seat.alive || seat.workspaceId !== workspaceId || seen.has(paneId)) continue;
+      seen.add(paneId);
+      working.push({ workspaceId, paneId, name: seat.name });
+    }
+  }
+  return { staff, working };
+}
+
+/** The pane an open company task to `workspaceId` keeps working, or undefined. */
+function workingPaneOf(task: unknown, workspaceId: string): string | undefined {
+  if (!isRecord(task) || typeof task.id !== 'string' || isRemoteTaskId(task.id)) return undefined;
+  const state = isRecord(task.status) ? task.status.state : undefined;
+  if (!(WORKING_STATES as readonly unknown[]).includes(state)) return undefined;
+  const to = isRecord(task.metadata) && isRecord(task.metadata.to) ? task.metadata.to : undefined;
+  if (!to || to.workspaceId !== workspaceId || typeof to.paneId !== 'string' || !to.paneId) return undefined;
+  const history = Array.isArray(task.history) ? task.history : [];
+  const first = history[0];
+  if (!isRecord(first) || !Array.isArray(first.parts) || !isCompanyTask(history as Message[])) return undefined;
+  const hold = companyHoldOf(task as unknown as Task);
+  if (hold && companyHoldPhase(hold) !== 'delivered') return undefined;
+  return to.paneId;
+}
+
+/**
+ * A pane row's agent is alive: a terminal of its own runs a detected agent
+ * (`pane.list` leaves the name out once the agent is known to have exited).
+ */
+function paneAgentAlive(row: Record<string, unknown>): boolean {
+  const ptys = Array.isArray(row.surfacePtyIds) ? row.surfacePtyIds : [];
+  const agents = Array.isArray(row.agents) ? row.agents : [];
+  return agents.some((a) => isRecord(a) && typeof a.agentName === 'string' && a.agentName.length > 0
+    && typeof a.ptyId === 'string' && ptys.includes(a.ptyId));
+}
+
+/** `#<label>` when the pane has a label, else its tag (`#w1-2`). */
+function seatNameOf(row: Record<string, unknown>): string {
+  const name = typeof row.paneName === 'string' ? row.paneName : '';
+  if (name && paneLabelShapeError(name) === null) return `#${name}`;
+  return typeof row.paneTag === 'string' && row.paneTag ? row.paneTag : `#${row.id as string}`;
+}
+
+/** What the count reads through: the renderer's panes and the daemon's tasks. */
+export interface CompanySeatReaderIo {
+  sendToRenderer: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  daemonRpc: (method: string, params: Record<string, unknown>, opts?: { timeoutMs?: number }) => Promise<unknown>;
+}
+
+/**
+ * Read the count: every workspace's panes (stashed ones included) from the
+ * renderer; for each company among them (a pane row with a seat), the open
+ * tasks to it from the daemon, read as main's own lane. Null when either side
+ * cannot answer: nothing is counted on a guess.
+ */
+export async function readCompanyWorkingSeats(io: CompanySeatReaderIo): Promise<CompanyWorkingCount | null> {
+  try {
+    const list = await io.sendToRenderer('workspace.list', {});
+    if (!Array.isArray(list)) return null;
+    const ids = list.flatMap((w) => (isRecord(w) && typeof w.id === 'string' ? [w.id] : []));
+    const panes = await Promise.all(ids.map((workspaceId) => io.sendToRenderer('pane.list', { workspaceId, includeStashed: true })));
+    if (panes.some((rows) => !Array.isArray(rows))) return null;
+    const companies = ids
+      .map((workspaceId, i) => ({ workspaceId, panes: panes[i] as unknown[] }))
+      .filter((ws) => ws.panes.some((row) => isRecord(row) && parseCompanySeat(row.companySeat) !== undefined));
+    const snapshots = await Promise.all(companies.map(async (ws): Promise<CompanySeatSnapshot | null> => {
+      const reads = await Promise.all(WORKING_STATES.map((status) => io.daemonRpc(
+        'a2a.task.query',
+        { workspaceId: ws.workspaceId, role: 'agent', status, trustedLane: true },
+        { timeoutMs: COMPANY_SEAT_READ_TIMEOUT_MS },
+      )));
+      if (reads.some((res) => !isRecord(res) || res.ok !== true || !Array.isArray(res.tasks))) return null;
+      return { ...ws, tasks: reads.flatMap((res) => (res as { tasks: unknown[] }).tasks) };
+    }));
+    return snapshots.every((snap): snap is CompanySeatSnapshot => snap !== null) ? companyWorkingSeats(snapshots) : null;
+  } catch {
+    return null;
+  }
 }
 
 function taskIdOfKey(key: string): string {

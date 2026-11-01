@@ -59,6 +59,10 @@ export interface FactorySettings {
    *  it waits for a slot (main/factory/agentSlots.ts); the owner's own work
    *  never waits. */
   maxConcurrentAgents: number;
+  /** Company staff seats working on a task at once on this PC, across every
+   *  company (1-8). A CEO's brief that would start one more is held and
+   *  written to its seat once a slot frees (main/a2a/CompanyReleaseBridge.ts). */
+  companyMaxWorking: number;
   /** The merge lane merges a bot PR by itself once every predicate passes.
    *  Off: the lane posts a ready-to-merge card and the owner merges. */
   laneAutoMerge: boolean;
@@ -93,6 +97,10 @@ export const FACTORY_MAX_AGENTS_MAX = 16;
  *  caps side by side (about 2.3 GiB of agent and MCP memory measured on
  *  macOS arm64, bench/bot-memory.md). */
 export const DEFAULT_MAX_CONCURRENT_AGENTS = 6;
+export const COMPANY_MAX_WORKING_MIN = 1;
+export const COMPANY_MAX_WORKING_MAX = 8;
+/** The owner's rule for one machine: at most three heavy jobs at once. */
+export const DEFAULT_COMPANY_MAX_WORKING = 3;
 
 export const DEFAULT_FACTORY_SETTINGS: Readonly<FactorySettings> = Object.freeze({
   version: FACTORY_SETTINGS_VERSION,
@@ -104,6 +112,7 @@ export const DEFAULT_FACTORY_SETTINGS: Readonly<FactorySettings> = Object.freeze
   defaultEngine: DEFAULT_BOT_ENGINE,
   globalConcurrentBots: WAKE_LIMITS.GLOBAL_CONCURRENT_BOTS,
   maxConcurrentAgents: DEFAULT_MAX_CONCURRENT_AGENTS,
+  companyMaxWorking: DEFAULT_COMPANY_MAX_WORKING,
   laneAutoMerge: false,
   laneDailyCap: 5,
   botCommandReviewer: true,
