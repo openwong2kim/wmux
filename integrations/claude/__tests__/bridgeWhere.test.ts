@@ -25,6 +25,7 @@ const ENTRYPOINT_MARKER = '// Run; never throw upward';
 
 let tmp: string;
 const loaded: Record<string, WhereFromEnv> = {};
+let openClaudeLookupHooks: Set<string> | undefined;
 
 beforeAll(async () => {
   tmp = mkdtempSync(path.join(tmpdir(), 'wmux-bridge-where-'));
@@ -32,10 +33,13 @@ beforeAll(async () => {
     const src = readFileSync(path.resolve(process.cwd(), rel), 'utf8');
     const cut = src.indexOf(ENTRYPOINT_MARKER);
     expect(cut).toBeGreaterThan(-1);
-    const testable = src.slice(0, cut).replace(/^#![^\n]*\n/, '') + '\nexport { whereFromEnv };\n';
+    const exported = name === 'openclaude' ? 'whereFromEnv, TMUX_LOOKUP_HOOKS' : 'whereFromEnv';
+    const testable = src.slice(0, cut).replace(/^#![^\n]*\n/, '') + `\nexport { ${exported} };\n`;
     const mod = path.join(tmp, `${name}-under-test.mjs`);
     writeFileSync(mod, testable, 'utf8');
-    loaded[name] = (await import(pathToFileURL(mod).href)).whereFromEnv;
+    const imported = await import(pathToFileURL(mod).href);
+    loaded[name] = imported.whereFromEnv;
+    if (name === 'openclaude') openClaudeLookupHooks = imported.TMUX_LOOKUP_HOOKS;
   }
 });
 
@@ -113,5 +117,13 @@ describe('AgentSignal `where` validation', () => {
     expect(isAgentSignal({ ...base, where: { kind: 'tmux', session: 'x'.repeat(EXTERNAL_SESSION_LIMITS.whereField + 1) } })).toBe(false);
     expect(isAgentSignal({ ...base, where: 'tmux' })).toBe(false);
     expect(isAgentSignal({ ...base, where: [] })).toBe(false);
+  });
+});
+
+// The Claude bridge retries a failed lookup on every UserPromptSubmit; the
+// OpenClaude bridge has no such hook, so its once-a-turn retry is Stop.
+describe('openclaude bridge tmux lookup', () => {
+  it('asks tmux on a session start and once a turn, never per tool call', () => {
+    expect([...(openClaudeLookupHooks ?? [])].sort()).toEqual(['SessionStart', 'Stop']);
   });
 });

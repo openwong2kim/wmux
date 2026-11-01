@@ -356,6 +356,11 @@ function queryTmuxTarget(env) {
   }
 }
 
+// The hooks that ask tmux: a session's start, and each turn's end (this
+// bridge has no turn-start hook) so a lookup that failed at the start is
+// retried once a turn. Never a per-tool hook.
+const TMUX_LOOKUP_HOOKS = new Set(['SessionStart', 'Stop']);
+
 function whereFromEnv(env, queryTmux) {
   const wslDistro = whereText(env.WSL_DISTRO_NAME);
   let where = null;
@@ -628,11 +633,11 @@ async function main() {
       : undefined;
 
   // External sessions: a hook from outside any wmux pane says where it runs
-  // (the tmux lookup, one bounded spawn, only on SessionStart).
+  // (the tmux lookup is one bounded spawn, see TMUX_LOOKUP_HOOKS).
   let where;
   if (!envPtyId) {
     try {
-      where = whereFromEnv(process.env, hookName === 'SessionStart' ? queryTmuxTarget : null);
+      where = whereFromEnv(process.env, TMUX_LOOKUP_HOOKS.has(hookName) ? queryTmuxTarget : null);
     } catch {
       where = undefined;
     }
