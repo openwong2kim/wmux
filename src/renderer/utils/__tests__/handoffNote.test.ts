@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { parseTranscriptLineDetailed } from '../../../daemon/transcript/parseEntry';
 import { parseCodexLineDetailed } from '../../../daemon/transcript/parseCodexEntry';
 import type { TurnEvent } from '../../../shared/transcript/turnEvents';
-import { NOTE_FILES_MAX, NOTE_REPLY_MAX, NOTE_REQUEST_MAX, handoffNoteText, transcriptHandoff } from '../handoffNote';
+import { NOTE_COMMITS_MAX, NOTE_FILES_MAX, NOTE_REPLY_MAX, NOTE_REQUEST_MAX, bringBackNoteText, handoffNoteText, transcriptCommits, transcriptHandoff } from '../handoffNote';
 
 const at = '2026-11-01T10:00:00.000Z';
 const parse = (lines: object[], parser: typeof parseTranscriptLineDetailed): TurnEvent[] =>
@@ -122,5 +122,63 @@ describe('handoffNoteText', () => {
     expect(edge).not.toContain('sk-ant');
     expect(edge).toContain(`Latest request: ${'z'.repeat(NOTE_REQUEST_MAX - 1)}…\n`);
     expect(handoffNoteText('Claude Code', { files: [{ path: 'img.png', additions: null, deletions: null }] })).toContain('\nUncommitted changes: img.png (bin)\n');
+  });
+});
+
+describe('bringing the work back', () => {
+  /** Codex took over: the handoff note, a commit from its shell, a later request, a failed commit, its reply. */
+  const CODEX_AFTER = [
+    { timestamp: at, type: 'event_msg', payload: { type: 'user_message', message: 'Continuing work Claude Code started in app.' } },
+    { timestamp: at, type: 'response_item', payload: { type: 'function_call', call_id: 'c1', name: 'exec_command', arguments: JSON.stringify({ cmd: 'git commit -am "board: blockedBy"' }) } },
+    { timestamp: at, type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: 'lint ok\n[feat/board 3a91c2e] board: blockedBy\n 2 files changed, 38 insertions(+), 6 deletions(-)' } },
+    { timestamp: at, type: 'event_msg', payload: { type: 'user_message', message: 'now relay the upstream result' } },
+    { timestamp: at, type: 'response_item', payload: { type: 'function_call', call_id: 'c2', name: 'exec_command', arguments: JSON.stringify({ cmd: 'git commit -m relay' }) } },
+    { timestamp: at, type: 'response_item', payload: { type: 'function_call_output', call_id: 'c2', output: '[main (root-commit) 7d04b18c9e] relay downstream\n 1 file changed' } },
+    { timestamp: at, type: 'event_msg', payload: { type: 'agent_message', message: 'Relayed. Export to markdown is still open.' } },
+  ];
+  /** Claude Code: a Bash commit and the same summary line quoted back in prose (not a commit). */
+  const CLAUDE_AFTER = [
+    { type: 'assistant', uuid: 'a1', timestamp: at, message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'git commit -m x' } }] } },
+    { type: 'user', uuid: 'r1', timestamp: at, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: '[feat/board 3a91c2e] board: blockedBy' }] } },
+    { type: 'assistant', uuid: 'a2', timestamp: at, message: { role: 'assistant', content: [{ type: 'text', text: '[feat/board 9999999] not a real commit' }] } },
+  ];
+
+  it('reads the commits an agent made from what its shell printed, once each', () => {
+    expect(transcriptCommits(parse(CODEX_AFTER, parseCodexLineDetailed))).toEqual([
+      { sha: '3a91c2e', subject: 'board: blockedBy' },
+      { sha: '7d04b18', subject: 'relay downstream' },
+    ]);
+    expect(transcriptCommits([...parse(CLAUDE_AFTER, parseTranscriptLineDetailed), ...parse(CLAUDE_AFTER, parseTranscriptLineDetailed)])).toEqual([
+      { sha: '3a91c2e', subject: 'board: blockedBy' },
+    ]);
+  });
+
+  it('says what the other agent did: the latest request there, commits, files since the handoff, its reply', () => {
+    const events = parse(CODEX_AFTER, parseCodexLineDetailed);
+    const { requests, reply } = transcriptHandoff(events);
+    const note = bringBackNoteText('Codex', {
+      // The first request there is the handoff note itself.
+      requests: requests.slice(1),
+      reply,
+      commits: transcriptCommits(events),
+      filesTouched: [],
+      repo: 'app',
+      branch: 'feat/board',
+      files: [{ path: 'src/board.ts', additions: 38, deletions: 6 }, { path: 'src/relay.ts', additions: 112, deletions: 0 }],
+      transcriptPath: '/home/me/.codex/sessions/rollout-1.jsonl',
+    });
+    expect(note).toBe([
+      'Codex carried on this work in app, on branch feat/board.',
+      'Asked there: now relay the upstream result',
+      'Commits: 3a91c2e board: blockedBy, 7d04b18 relay downstream',
+      'Changes since the handoff: src/board.ts (+38 −6), src/relay.ts (+112 −0)',
+      'Last reply: Relayed. Export to markdown is still open.',
+      'Full conversation: /home/me/.codex/sessions/rollout-1.jsonl',
+      'Check the current changes, then carry on from here.',
+    ].join('\n'));
+    // Capped: the latest commits, then how many more.
+    const many = Array.from({ length: NOTE_COMMITS_MAX + 2 }, (_, i) => ({ sha: `abc000${i}`, subject: `step ${i}` }));
+    expect(bringBackNoteText('Codex', { commits: many })).toContain(`Commits: abc0002 step 2, abc0003 step 3, abc0004 step 4, abc0005 step 5, abc0006 step 6, …and 2 more\n`);
+    expect(bringBackNoteText('Codex', null)).toBe('Codex carried on this work in this folder.\nCheck the current changes, then carry on from here.');
   });
 });

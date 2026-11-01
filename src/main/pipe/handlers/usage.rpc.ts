@@ -142,8 +142,9 @@ export function registerUsageRpc(router: RpcRouter, deps: UsageRpcDeps): void {
     const parsed = validateRateLimitsParams(params);
     if (!parsed) return { ok: false, reason: 'invalid' };
     // Per pane, whatever account it is: a pane held at a usage limit with no
-    // reset time in its hook text takes it from its own exhausted window.
-    if (parsed.ptyId) notePaneUsageSample(parsed.ptyId, parsed.update);
+    // reset time in its hook text takes it from its own exhausted window, and
+    // a pane close to its limit is shown so.
+    if (parsed.ptyId) notePaneUsageSample(parsed.ptyId, parsed.update, parsed.configDir);
     const target = await resolveUsageTarget(parsed.configDir, deps);
     if (!target.isDefault && target.accountIds.length === 0) {
       deps.log?.(`[usage.rateLimits] dropped: unknown config dir (pty ${parsed.ptyId ?? '-'})`);

@@ -70,6 +70,9 @@ export function useUsageLimitBridge(): void {
     const offChanged = api.onChanged(({ ptyId, limit }) => {
       useStore.getState().setUsageLimit(ptyId, limit);
     });
+    // Each pane's 5-hour window (a pane close to its limit): read once, then pushed whole.
+    void api.windows?.().then((w) => { useStore.getState().setUsageWindows(w ?? {}); }).catch(() => undefined);
+    const offWindows = api.onWindows?.((w) => { useStore.getState().setUsageWindows(w ?? {}); });
 
     // Re-derive `usageLimitWaiting` when the next hold ends, so a pane whose
     // reset passed without a release turns back into attention on time.
@@ -111,6 +114,7 @@ export function useUsageLimitBridge(): void {
     return () => {
       offConnected?.();
       offChanged();
+      offWindows?.();
       offStore();
       if (waitingTimer) clearTimeout(waitingTimer);
     };

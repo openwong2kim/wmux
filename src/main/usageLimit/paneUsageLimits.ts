@@ -5,19 +5,44 @@
 // refuses a held pane without a daemon round-trip, and it fills a reset time
 // the hook text did not carry from the statusline's live `rate_limits` for the
 // same pane.
+//
+// It also keeps each pane's 5-hour window for the renderer, so a pane close
+// to its limit can offer a handoff before work stops. The statusline sends a
+// changed sample once per account (its config dir), from whichever pane drew
+// it first, so a window is kept per config dir and every pane that ever
+// reported from that dir reads it.
 
-import type { UsageUpdate } from '../claude/usageMerge';
+import { mergeLiveWindow, type UsageUpdate, type UsageWindow } from '../claude/usageMerge';
 import {
   exhaustedWindowResetAt,
   formatResetDuration,
   usageLimitHolds,
   type PaneUsageLimit,
+  type PaneUsageWindow,
 } from '../../shared/usageLimit';
 
 const limits = new Map<string, PaneUsageLimit>();
 /** Last statusline sample per pane, kept small: only panes that report one. */
 const samples = new Map<string, UsageUpdate>();
 const SAMPLE_CAP = 256;
+/** The config dir each pane's statusline reported from ('' = the default profile). */
+const paneConfig = new Map<string, string>();
+/** The latest 5-hour window per config dir. */
+const configWindow = new Map<string, UsageWindow>();
+
+/** Told when a pane's 5-hour window may have changed. */
+let onWindows: (() => void) | null = null;
+
+export function setPaneUsageWindowsListener(fn: (() => void) | null): void {
+  onWindows = fn;
+}
+
+/** Insert as the newest entry, dropping the oldest past the cap. */
+function putCapped<V>(map: Map<string, V>, key: string, value: V): void {
+  map.delete(key);
+  map.set(key, value);
+  if (map.size > SAMPLE_CAP) map.delete(map.keys().next().value as string);
+}
 
 /** Called with a reset time worth sending to the daemon for a pane. */
 let fillReset: ((ptyId: string, resetsAt: number) => void) | null = null;
@@ -61,17 +86,32 @@ export function getPaneUsageLimit(ptyId: string): PaneUsageLimit | undefined {
   return limits.get(ptyId);
 }
 
-/** A live `rate_limits` sample from the pane's statusline. */
-export function notePaneUsageSample(ptyId: string, update: UsageUpdate): void {
-  samples.delete(ptyId);
-  samples.set(ptyId, update);
-  if (samples.size > SAMPLE_CAP) samples.delete(samples.keys().next().value as string);
+/** A live `rate_limits` sample from the pane's statusline, which runs with
+ *  the pane's `configDir` (null = the default profile). */
+export function notePaneUsageSample(ptyId: string, update: UsageUpdate, configDir: string | null = null, now = Date.now()): void {
+  putCapped(samples, ptyId, update);
   maybeFill(ptyId);
+  const key = configDir ?? '';
+  putCapped(paneConfig, ptyId, key);
+  const merged = mergeLiveWindow(configWindow.get(key) ?? null, update.session, Math.floor(now / 1000));
+  if (merged) putCapped(configWindow, key, merged);
+  onWindows?.();
+}
+
+/** Each reporting pane's 5-hour window, while it has not reset. */
+export function paneUsageWindows(now = Date.now()): Record<string, PaneUsageWindow> {
+  const out: Record<string, PaneUsageWindow> = {};
+  for (const [ptyId, key] of paneConfig) {
+    const w = configWindow.get(key);
+    if (w && w.resetEpochSec * 1000 > now) out[ptyId] = { pct: w.pct, resetsAt: w.resetEpochSec * 1000 };
+  }
+  return out;
 }
 
 export function forgetPaneUsage(ptyId: string): void {
   limits.delete(ptyId);
   samples.delete(ptyId);
+  if (paneConfig.delete(ptyId)) onWindows?.();
 }
 
 /** The refusal detail when automatic input must wait, else null. */
@@ -87,5 +127,8 @@ export function usageLimitHoldDetail(ptyId: string, now = Date.now()): string | 
 export function resetPaneUsageLimitsForTest(): void {
   limits.clear();
   samples.clear();
+  paneConfig.clear();
+  configWindow.clear();
   fillReset = null;
+  onWindows = null;
 }

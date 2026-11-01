@@ -52,6 +52,8 @@ import { selectHostPickName } from '../../stores/shadowWorkspace';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import { toastFolderTrustLaunchRefusal } from '../../utils/folderTrustLaunchToast';
 import { FOLDER_TRUST_UNREADABLE_REFUSAL } from '../../../shared/folderTrustWording';
+import { nearLimitWindow } from '../../../shared/usageLimit';
+import { bringBackAt, findBringBackPair } from '../../utils/continueInAgent';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -852,7 +854,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const activeSurfaceType = pane.surfaces.find((s) => s.id === stripActiveSurfaceId)?.surfaceType;
   // Keyed on the terminal the strip shows, which is what draws the chip.
   const stripPtyId = pane.surfaces.find((s) => s.id === stripActiveSurfaceId)?.ptyId;
-  const hasUsageLimit = useStore((s) => !!stripPtyId && !!s.usageLimits[stripPtyId]);
+  // The chip's other states take its room too: close to the limit, or back after a handoff.
+  const hasUsageLimit = useStore((s) => {
+    if (!stripPtyId) return false;
+    if (s.usageLimits[stripPtyId] || nearLimitWindow(s.usageWindows[stripPtyId], Date.now())) return true;
+    const pair = findBringBackPair(s, stripPtyId);
+    return !!pair && Date.now() >= bringBackAt(pair, s);
+  });
   const customAgents = useStore((s) => s.customAgents);
   const headerExtraChrome = paneHeaderExtraChromeWidth({
     chatToggle: chatViewEnabled && isTerminalSurfaceType(activeSurfaceType),

@@ -34,6 +34,8 @@ export interface HandoffFacts {
   transcriptPath: string | null;
   /** Text typed into the agent's input and never sent. */
   draft: string | null;
+  /** The commit checked out when the facts were read (the branch's HEAD). */
+  head?: string | null;
 }
 
 /** What one transcript says, for the note. */
@@ -54,6 +56,23 @@ export const NOTE_REPLY_MAX = 400;
 export const NOTE_FILES_MAX = 8;
 /** Longest draft this note carries. */
 export const NOTE_DRAFT_MAX = 1000;
+/** Most commits the note that brings work back names. */
+export const NOTE_COMMITS_MAX = 5;
+/** Longest commit subject it quotes. */
+export const NOTE_COMMIT_SUBJECT_MAX = 60;
+
+/** A commit an agent made, as `git commit` printed it. */
+export interface TranscriptCommit {
+  sha: string;
+  subject: string;
+}
+
+/** What the agent that took a pane's work over did, for the note that brings it back. */
+export interface BringBackFacts extends Pick<HandoffFacts, 'reply' | 'filesTouched' | 'repo' | 'branch' | 'files' | 'transcriptPath'> {
+  /** The owner's requests there after the handoff note, oldest first. */
+  requests: string[];
+  commits: TranscriptCommit[];
+}
 
 /** A tool that writes files by name: Claude Code's Write/Edit/MultiEdit/
  *  NotebookEdit, Gemini's and Qwen's write_file/replace. Read-only tools take
@@ -69,6 +88,9 @@ const PATCH_FILE_RE = /^\*\*\* (?:Add File|Update File|Move to): (.+)$/gm;
 const QUOTED_PATCH_FILE_RE = /(?<!\\)\\n\*\*\* (?:Add File|Update File|Move to): (.+?)(?=(?<!\\)\\n|")/g;
 /** A plan or todo file: under a plans/todos folder, or named for one. */
 const PLAN_FILE_RE = /(?:^|[\\/])(?:plans?|todos?)[\\/][^\\/]+$|(?:^|[\\/])[^\\/]*(?:plan|todo)[^\\/]*\.(?:md|txt)$/i;
+
+/** `git commit`'s summary line: `[branch 3a91c2e] subject`, `[main (root-commit) 3a91c2e] subject`. */
+const COMMIT_LINE_RE = /^\[[^\]\s]+(?: \([\w-]+\))? ([0-9a-f]{7,40})\] (.+)$/gm;
 
 /** A string literal's escapes taken out: a doubled backslash becomes one, `\"` becomes `"`. */
 const unescape = (s: string): string => s.replace(/\\(.)/g, '$1');
@@ -126,6 +148,24 @@ export function transcriptHandoff(events: readonly TurnEvent[], cwd?: string): T
   return { requests, reply, filesTouched, planFiles: filesTouched.filter((p) => PLAN_FILE_RE.test(p)) };
 }
 
+/**
+ * The commits an agent made, oldest first, each once: read from what its
+ * tool calls returned (a shell running `git commit` prints its summary line).
+ * A result cut short shows only its head, so a commit printed past it is not
+ * seen.
+ */
+export function transcriptCommits(events: readonly TurnEvent[]): TranscriptCommit[] {
+  const out = new Map<string, TranscriptCommit>();
+  for (const e of events) {
+    if (e.folded || e.kind !== 'tool_result' || !e.ok || !e.output?.inline) continue;
+    for (const m of e.output.inline.matchAll(COMMIT_LINE_RE)) {
+      const sha = m[1].slice(0, 7);
+      if (!out.has(sha)) out.set(sha, { sha, subject: m[2].trim() });
+    }
+  }
+  return [...out.values()];
+}
+
 /** The first `max` characters, never ending on half of a surrogate pair. */
 function first(text: string, max: number): string {
   const s = text.trim();
@@ -144,6 +184,23 @@ function last(text: string, max: number): string {
 
 const counts = (f: DiffNumstat): string => (f.additions === null ? 'bin' : `+${f.additions} −${f.deletions ?? 0}`);
 
+/** "a.ts (+3 −1), b.ts, …and 2 more": the files `touched` names (the latest
+ *  first) with their line counts from `changed`, or `changed` itself when
+ *  `touched` is empty; null when both are. Whether it came from `touched`. */
+function fileList(touched: readonly string[], changed: readonly DiffNumstat[]): { text: string; touched: boolean } | null {
+  if (!touched.length && !changed.length) return null;
+  const byPath = new Map(changed.map((f) => [f.path, f]));
+  const named = touched.length
+    ? touched.map((p) => { const f = byPath.get(p); return f ? `${p} (${counts(f)})` : p; })
+    : changed.map((f) => `${f.path} (${counts(f)})`);
+  const shown = named.slice(0, NOTE_FILES_MAX).join(', ');
+  const more = named.length > NOTE_FILES_MAX ? `, ${t('usageLimit.handoffMoreFiles', { count: named.length - NOTE_FILES_MAX })}` : '';
+  return { text: `${shown}${more}`, touched: touched.length > 0 };
+}
+
+/** Masked whole before it is cut, so a cut never leaves part of a key unrecognised. */
+const quote = (text: string, max: number, from: typeof first) => from(redactSecrets(text), max);
+
 /**
  * The note typed into the agent taking over `fromAgent`'s work: where and on
  * which branch, what was asked (the first request and the latest), the end of
@@ -157,27 +214,44 @@ export function handoffNoteText(fromAgent: string, facts: Partial<HandoffFacts> 
   const lines = [facts?.branch
     ? t('handoff.note.headBranch', { agent: fromAgent, place, branch: facts.branch })
     : t('handoff.note.head', { agent: fromAgent, place })];
-  // Masked whole before it is cut, so a cut never leaves part of a key unrecognised.
-  const quote = (text: string, max: number, from: typeof first) => from(redactSecrets(text), max);
-
   const requests = (facts?.requests ?? []).filter((r) => r.trim());
   if (requests.length) lines.push(t('handoff.note.asked', { text: quote(requests[0], NOTE_REQUEST_MAX, first) }));
   if (requests.length > 1) lines.push(t('handoff.note.latest', { text: quote(requests[requests.length - 1], NOTE_REQUEST_MAX, first) }));
   if (facts?.reply?.trim()) lines.push(t('handoff.note.reply', { text: quote(facts.reply, NOTE_REPLY_MAX, last) }));
 
-  const changed = facts?.files ?? [];
-  const touched = facts?.filesTouched ?? [];
-  if (touched.length || changed.length) {
-    const byPath = new Map(changed.map((f) => [f.path, f]));
-    const named = touched.length
-      ? touched.map((p) => { const f = byPath.get(p); return f ? `${p} (${counts(f)})` : p; })
-      : changed.map((f) => `${f.path} (${counts(f)})`);
-    const shown = named.slice(0, NOTE_FILES_MAX).join(', ');
-    const more = named.length > NOTE_FILES_MAX ? `, ${t('usageLimit.handoffMoreFiles', { count: named.length - NOTE_FILES_MAX })}` : '';
-    lines.push(t(touched.length ? 'handoff.note.filesTouched' : 'handoff.note.filesChanged', { files: `${shown}${more}` }));
-  }
+  const files = fileList(facts?.filesTouched ?? [], facts?.files ?? []);
+  if (files) lines.push(t(files.touched ? 'handoff.note.filesTouched' : 'handoff.note.filesChanged', { files: files.text }));
   if (facts?.transcriptPath) lines.push(t('handoff.note.transcript', { path: facts.transcriptPath }));
   lines.push(t('handoff.note.carryOn'));
   if (opts.carryDraft && facts?.draft?.trim()) lines.push(t('handoff.note.draft', { text: quote(facts.draft, NOTE_DRAFT_MAX, first) }));
+  return lines.join('\n');
+}
+
+/**
+ * The note typed back into the tab a handoff left from, once its limit has
+ * reset: what `byAgent` did with the work there, from its own transcript.
+ * Where and on which branch, the latest request the owner sent there, the
+ * commits it made, the files it wrote (with their line counts since the
+ * handoff), the end of its last reply, and its transcript. Free text is
+ * masked for keys and tokens.
+ */
+export function bringBackNoteText(byAgent: string, facts: Partial<BringBackFacts> | null): string {
+  const place = facts?.repo || t('handoff.note.thisFolder');
+  const lines = [facts?.branch
+    ? t('handoff.back.headBranch', { agent: byAgent, place, branch: facts.branch })
+    : t('handoff.back.head', { agent: byAgent, place })];
+  const requests = (facts?.requests ?? []).filter((r) => r.trim());
+  if (requests.length) lines.push(t('handoff.back.asked', { text: quote(requests[requests.length - 1], NOTE_REQUEST_MAX, first) }));
+  const commits = facts?.commits ?? [];
+  if (commits.length) {
+    const named = commits.slice(-NOTE_COMMITS_MAX).map((c) => `${c.sha} ${quote(c.subject, NOTE_COMMIT_SUBJECT_MAX, first)}`);
+    const more = commits.length > NOTE_COMMITS_MAX ? `, ${t('usageLimit.handoffMoreFiles', { count: commits.length - NOTE_COMMITS_MAX })}` : '';
+    lines.push(t('handoff.back.commits', { commits: `${named.join(', ')}${more}` }));
+  }
+  const files = fileList(facts?.filesTouched ?? [], facts?.files ?? []);
+  if (files) lines.push(t(files.touched ? 'handoff.note.filesTouched' : 'handoff.back.filesChanged', { files: files.text }));
+  if (facts?.reply?.trim()) lines.push(t('handoff.note.reply', { text: quote(facts.reply, NOTE_REPLY_MAX, last) }));
+  if (facts?.transcriptPath) lines.push(t('handoff.note.transcript', { path: facts.transcriptPath }));
+  lines.push(t('handoff.note.carryOn'));
   return lines.join('\n');
 }
