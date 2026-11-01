@@ -95,8 +95,9 @@ import { resolveWorkspaceTarget } from './workspaceTargeting';
 import { destroyRemoteSessions, destroySurfaceRemoteSession, destroyWorkspaceRemoteSessions } from '../utils/remoteSessionTeardown';
 import { remoteAgentKey } from '../../shared/remoteHosts';
 import { collectPaneTreeRemoteSessions } from '../../shared/paneUtils';
-import { COMPANY_RENDERER_METHOD, decideCompanySend, companyCancelRefusal, companyDoneRefusal, companySeatOf, isCompanyTask } from '../../shared/company';
+import { COMPANY_RENDERER_METHOD, companyBriefOf, decideCompanySend, companyCancelRefusal, companyDoneRefusal, companySeatOf, isCompanyTask } from '../../shared/company';
 import {
+  COMPANY_HOLD_KEY,
   COMPANY_HOLD_REASON_TEXT,
   companyBlockerEndedLine,
   companyHoldOf,
@@ -1200,6 +1201,11 @@ async function handleRemoteNotify(params: RpcParams): Promise<A2aRemoteDeliveryR
 // pipe router); `task` is the daemon's record, judged when it was sent.
 // ---------------------------------------------------------------------------
 
+/** Why a message on a task still held for its blockers was not written anywhere. */
+const COMPANY_HELD_REPLY_HINT =
+  'The task still waits on its blockers and is not its seat\'s yet, so nothing was written to a pane. The message is kept on the task; '
+  + 'its seat reads it with the task once wmux writes the task to its pane.';
+
 /** Company tasks this renderer wrote to their seat: a repeat is answered `duplicate`. */
 const deliveredCompanyTasks = new Set<string>();
 const DELIVERED_COMPANY_TASKS_MAX = 1000;
@@ -1224,7 +1230,9 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
   const snapshot = companyTaskOf(params.task);
   if (!snapshot) return { error: `${COMPANY_RENDERER_METHOD.deliver}: not a company task` };
   const taskId = snapshot.id;
-  if (deliveredCompanyTasks.has(taskId) || companyHoldOf(snapshot)?.delivered) return { ok: true, delivered: true, duplicate: true };
+  if (deliveredCompanyTasks.has(taskId) || companyHoldOf(snapshot)?.delivered || companyHoldOf(useStore.getState().getTask(taskId))?.delivered) {
+    return { ok: true, delivered: true, duplicate: true };
+  }
   const to = snapshot.metadata.to;
   const resolveSeat = (): { ws: Workspace; pty: string } | null => {
     const ws = useStore.getState().workspaces.find((w) => w.id === to.workspaceId);
@@ -1270,6 +1278,19 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
     if (deliveredCompanyTasks.size > DELIVERED_COMPANY_TASKS_MAX) {
       deliveredCompanyTasks.delete(deliveredCompanyTasks.values().next().value as string);
     }
+    // The copy here is the seat's from now on: no longer waiting, delivered.
+    const marker = companyHoldOf(snapshot);
+    useStore.setState((s) => {
+      const copy = s.a2aTasks[taskId];
+      if (!copy) return;
+      copy.metadata[COMPANY_HOLD_KEY] = {
+        blockedBy: marker?.blockedBy ?? companyHoldOf(copy)?.blockedBy ?? [],
+        waitingOn: [],
+        ...(marker?.releasedAt ? { releasedAt: marker.releasedAt } : {}),
+        delivered: true,
+        ptyId: pastedOnly ? seat.pty : (write.ptyId as string),
+      };
+    });
     // Its send stored it unannounced; it is the seat's from now on.
     const written = useStore.getState().getTask(taskId);
     if (written) emitA2aTaskEvent(written, 'created');
@@ -3536,8 +3557,16 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // was a bare success either way — the 2026-08-13 dogfood sessions showed
       // both agents believing their replies were delivered while every nudge was
       // being suppressed, leaving a human to relay the whole debate by hand.
-      let delivery: Record<string, unknown> = { stored: true, notified: false, reason: 'silent' };
-      if (!silent) {
+      // Company mode: a task still held for its blockers is not its seat's yet
+      // (main's flag from the daemon's record, or this copy's own marker). The
+      // message is kept on it with no write and no event; the release delivery
+      // brings the seat to the task with its whole history.
+      const copyHold = companyHoldOf(task);
+      const heldForBlockers = (silent && params.heldForBlockers === true) || (!!copyHold && !copyHold.delivered);
+      let delivery: Record<string, unknown> = heldForBlockers
+        ? { stored: true, notified: false, reason: 'blocked', hint: COMPANY_HELD_REPLY_HINT }
+        : { stored: true, notified: false, reason: 'silent' };
+      if (!silent && !heldForBlockers) {
         const replyingToReceiver = role === 'user';
         const targetWsId = replyingToReceiver ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
         const targetWs = store.workspaces.find((w) => w.id === targetWsId);
@@ -3677,7 +3706,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // replies deliberately do NOT emit (the nudge already signals; emitting
       // per delivered message is the flood the create-path comment forbids).
       // A reopen is a state change, so it always tees the pointer.
-      if (delivery.notified !== true || reopened) {
+      if (!heldForBlockers && (delivery.notified !== true || reopened)) {
         const updatedTask = store.getTask(taskId);
         if (updatedTask) emitA2aTaskEvent(updatedTask, 'updated');
       }
@@ -3889,6 +3918,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       history: [initialMessage],
       artifacts: [],
     });
+    // Company mode: a send main held for its blockers. Until the daemon's
+    // release delivery writes it to its seat, this copy says it waits on all of
+    // them, so it is kept from its receiving side when the daemon is away.
+    const heldSend = silent && params.heldForBlockers === true;
+    if (heldSend) {
+      const blockedBy = [...new Set((companyBriefOf(params.data)?.blockedBy ?? []).filter((id) => id.length > 0))];
+      useStore.setState((s) => {
+        const created = s.a2aTasks[newTaskId];
+        if (created) created.metadata[COMPANY_HOLD_KEY] = { blockedBy, waitingOn: [...blockedBy] };
+      });
+    }
 
     // Deliver message to target workspace's terminal (unless silent).
     // When silent, the task is only persisted in the store and the
@@ -3994,7 +4034,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // announced yet: its seat must not hear of it before it may take it. Main's
     // release delivery announces it once it is written to the seat.
     const createdTask = store.getTask(newTaskId);
-    if (createdTask && !(silent && params.heldForBlockers === true)) emitA2aTaskEvent(createdTask, 'created');
+    if (createdTask && !heldSend) emitA2aTaskEvent(createdTask, 'created');
 
     // Return the RESOLVED target workspaceId so the main-side a2a.rpc handler
     // uses it for execute:true ClaudeWorker spawn, instead of the raw fuzzy `to`

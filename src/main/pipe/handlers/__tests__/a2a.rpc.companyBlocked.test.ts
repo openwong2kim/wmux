@@ -34,7 +34,11 @@ const firstMessage = (data?: unknown): Message => ({
   parts: [{ kind: 'text', text: 'do it' }, ...(data ? [{ kind: 'data' as const, data: data as Record<string, unknown> }] : [])],
 });
 
-function task(id: string, state: TaskState, over: { to?: Record<string, unknown>; from?: Record<string, unknown>; history?: Message[] } = {}) {
+function task(
+  id: string,
+  state: TaskState,
+  over: { to?: Record<string, unknown>; from?: Record<string, unknown>; history?: Message[]; hold?: Record<string, unknown> } = {},
+) {
   return {
     kind: 'task',
     id,
@@ -47,6 +51,7 @@ function task(id: string, state: TaskState, over: { to?: Record<string, unknown>
       to: over.to ?? { workspaceId: WS, name: 'Co', paneId: 'pane-dev' },
       createdAt: 'x',
       updatedAt: 'x',
+      ...(over.hold ? { [COMPANY_HOLD_KEY]: over.hold } : {}),
     },
   };
 }
@@ -147,6 +152,10 @@ beforeEach(() => {
   remote = undefined;
   daemon = { tasks: new Map(), calls: [], create: 'derive' };
   sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Record<string, unknown>) => {
+    if (method === 'a2a.task.send' && params.reopenPreflight === true) return { ok: true, preflight: { reopen: false } };
+    if (method === 'a2a.task.send' && typeof params.taskId === 'string') {
+      return { ok: true, taskId: params.taskId, silent: params.silent === true, delivery: { stored: true, notified: params.silent !== true } };
+    }
     if (method === 'a2a.task.send') {
       return {
         ok: true,
@@ -268,11 +277,27 @@ describe('a2a.task.send — each blocker is judged against the daemon before any
     expect(daemonCalls('a2a.task.query')[0].params.callerPaneId).toBeUndefined();
   });
 
-  it('a reply carries no blockers: nothing is read for it', async () => {
+  it('a reply carries no blockers: no blocker is read for it', async () => {
     daemon.tasks.set(NEW_ID, task(NEW_ID, 'working'));
-    sendToRendererMock.mockImplementation(async () => ({ ok: true, taskId: NEW_ID, preflight: { reopen: false } }));
     await send(sendParams(['task-gone'], { taskId: NEW_ID }));
-    expect(daemonCalls('a2a.task.query')).toEqual([]);
+    // Only main's own read of the replied task (is it held?), never one of the blockers named.
+    expect(daemonCalls('a2a.task.query').map((c) => c.params.taskId)).toEqual([NEW_ID]);
+  });
+
+  it('reads blockers as an untrusted caller when the sender\'s pane cannot be resolved', async () => {
+    daemon.tasks.set('task-a', task('task-a', 'completed'));
+    await send(sendParams(['task-a'], { senderPtyId: 'pty-not-here' }));
+    const query = daemonCalls('a2a.task.query')[0].params;
+    expect(query).not.toHaveProperty('trustedLane');
+    expect(query).not.toHaveProperty('callerPaneId');
+    // The pane tree cannot be read at all.
+    daemon.calls = [];
+    const panes = sendToRendererMock.getMockImplementation()!;
+    sendToRendererMock.mockImplementation(async (w: unknown, method: string, params: Record<string, unknown>) =>
+      (method === 'pane.list' ? null : panes(w, method, params)));
+    await send(sendParams(['task-a']));
+    expect(daemonCalls('a2a.task.query')[0].params).not.toHaveProperty('trustedLane');
+    expect(daemonCalls('a2a.task.query')[0].params).not.toHaveProperty('callerPaneId');
   });
 
   it('refuses a task to another PC that names blockers, before anything is sent there', async () => {
@@ -366,5 +391,36 @@ describe('a2a.task.update / a2a.task.cancel — a task that ends pulls the compa
     daemonCancel = { ok: true, task: { id: 'task-a', status: { state: 'canceled' }, metadata: { updatedAt: 'z' } } };
     await router.dispatch({ id: 'c', method: 'a2a.task.cancel', params: { taskId: 'task-a', workspaceId: WS } }, { operator: true });
     expect(pullNow).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('a2a.task.send — a message on a task still held for its blockers', () => {
+  const reply = (taskId: string, over: Record<string, unknown> = {}) =>
+    send({ workspaceId: WS, taskId, message: 'one more thing', senderPtyId: 'pty-ceo', ...over });
+  const realReply = () => rendererCalls('a2a.task.send').filter((p) => p.reopenPreflight !== true).at(-1);
+
+  it('is kept on the task with no write: main marks it silent and held', async () => {
+    daemon.tasks.set('task-w', task('task-w', 'submitted', { hold: { blockedBy: ['task-a'], waitingOn: ['task-a'] } }));
+    await reply('task-w');
+    expect(realReply()).toMatchObject({ taskId: 'task-w', silent: true, heldForBlockers: true });
+    // Main's own read of the task, as trusted: it decides delivery only.
+    expect(daemonCalls('a2a.task.query')[0].params).toMatchObject({ taskId: 'task-w', trustedLane: true });
+  });
+
+  it('stays held while released but not yet written to its seat', async () => {
+    daemon.tasks.set('task-r', task('task-r', 'submitted', { hold: { blockedBy: ['task-a'], waitingOn: [], releasedAt: 'r', attempted: true } }));
+    await reply('task-r');
+    expect(realReply()).toMatchObject({ silent: true, heldForBlockers: true });
+  });
+
+  it('goes as any reply once the task was written to its seat, or for a task with no hold', async () => {
+    daemon.tasks.set('task-d', task('task-d', 'working', { hold: { blockedBy: ['task-a'], waitingOn: [], delivered: true } }));
+    daemon.tasks.set('task-p', task('task-p', 'working'));
+    await reply('task-d');
+    expect(realReply()).not.toHaveProperty('heldForBlockers');
+    expect(realReply()?.silent).toBeUndefined();
+    await reply('task-p', { heldForBlockers: true });
+    // Never taken from the wire.
+    expect(realReply()).not.toHaveProperty('heldForBlockers');
   });
 });

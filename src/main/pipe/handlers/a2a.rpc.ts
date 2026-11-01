@@ -12,7 +12,7 @@ import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage, type Message, type Task } from '../../../shared/types';
 import { COMPANY_BRIEF_KIND, COMPANY_RENDERER_METHOD, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
-import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyHoldOf, companyHoldWithholds, companyWaitingLine } from '../../../shared/companyHold';
+import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyHoldOf, companyHoldPhase, companyHoldWithholds, companyWaitingLine } from '../../../shared/companyHold';
 import { configuredForge, forgeHosts } from '../../../shared/forgeHosts';
 import {
   DONE_PR_CHECK_MAX,
@@ -205,16 +205,27 @@ function copyWithheld(task: unknown, workspaceId: string, caller: TaskQueryCalle
 
 /**
  * A merged task row with the daemon's company hold on it, whatever the row's
- * age: the daemon is the hold's record, and the renderer's copy never has it.
+ * age: the daemon is the hold's record. The renderer's copy has at most a
+ * provisional marker from its send, which the daemon's replaces.
  */
 function withDaemonHold(row: Record<string, unknown>, daemonRow: Record<string, unknown>, summaries: boolean): Record<string, unknown> {
   if (summaries) {
-    const hold = Object.fromEntries((['waitingOn', 'held'] as const).filter((k) => daemonRow[k] !== undefined).map((k) => [k, daemonRow[k]]));
-    return Object.keys(hold).length > 0 ? { ...row, ...hold } : row;
+    const keys = ['waitingOn', 'held'] as const;
+    if (!keys.some((k) => row[k] !== undefined || daemonRow[k] !== undefined)) return row;
+    const out: Record<string, unknown> = { ...row };
+    for (const k of keys) {
+      if (daemonRow[k] === undefined) delete out[k];
+      else out[k] = daemonRow[k];
+    }
+    return out;
   }
   const daemonMeta = isRecord(daemonRow.metadata) ? daemonRow.metadata : {};
-  if (daemonMeta[COMPANY_HOLD_KEY] === undefined) return row;
-  return { ...row, metadata: { ...(isRecord(row.metadata) ? row.metadata : {}), [COMPANY_HOLD_KEY]: daemonMeta[COMPANY_HOLD_KEY] } };
+  const rowMeta = isRecord(row.metadata) ? row.metadata : {};
+  if (daemonMeta[COMPANY_HOLD_KEY] === undefined && rowMeta[COMPANY_HOLD_KEY] === undefined) return row;
+  const metadata: Record<string, unknown> = { ...rowMeta };
+  if (daemonMeta[COMPANY_HOLD_KEY] === undefined) delete metadata[COMPANY_HOLD_KEY];
+  else metadata[COMPANY_HOLD_KEY] = daemonMeta[COMPANY_HOLD_KEY];
+  return { ...row, metadata };
 }
 
 /** The pane of `panes` that holds `ptyId`, or undefined. */
@@ -1478,6 +1489,26 @@ export function registerA2aRpc(
   }
 
   /**
+   * Whether the daemon holds the task for its blockers and has not written it
+   * to its seat yet. Main's own read (it decides only how a message on the
+   * task is delivered, nothing is shown to the caller); false when the daemon
+   * cannot say, and the renderer then checks its own copy's marker.
+   */
+  async function heldForBlockers(taskId: string, workspaceId: string): Promise<boolean> {
+    if (!taskId || !workspaceId || isRemoteTaskId(taskId)) return false;
+    const gate = await daemonTaskRpc(
+      getDaemonClient,
+      'a2a.task.query',
+      { workspaceId, view: 'page', taskId, trustedLane: true },
+      { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS },
+    );
+    if (gate.kind !== 'ok' || !Array.isArray(gate.result.tasks)) return false;
+    const task: unknown = gate.result.tasks.find((t: unknown) => isRecord(t) && t.id === taskId);
+    const hold = isRecord(task) && isRecord(task.metadata) ? companyHoldOf(task as unknown as Task) : undefined;
+    return !!hold && companyHoldPhase(hold) !== 'delivered';
+  }
+
+  /**
    * The end of a send the renderer stored with no delivery because its brief
    * names blockers. The hold must be durable: when the daemon did not create
    * the task with its hold, the renderer's copy is dropped and the send fails
@@ -1829,6 +1860,14 @@ export function registerA2aRpc(
     // answers first. Plain sends keep the default: nothing in them waits on a
     // person.
     const awaitsApproval = params.execute === true && !params.taskId;
+    // Company mode: a message on a task still held for its blockers (not yet
+    // written to its seat) is kept on the task with no write and no event; the
+    // release delivery brings the seat to the task with its whole history.
+    if (params.taskId && params.execute !== true
+      && await heldForBlockers(params.taskId as string, typeof sendParams.workspaceId === 'string' ? sendParams.workspaceId : '')) {
+      sendParams.silent = true;
+      sendParams.heldForBlockers = true;
+    }
     // A reply may reopen an ended task: commit that in the daemon first.
     if (params.taskId && params.execute !== true) {
       const prepared = await prepareReopen('a2a.task.send', sendParams);
