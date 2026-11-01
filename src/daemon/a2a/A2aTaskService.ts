@@ -925,7 +925,8 @@ export class A2aTaskService {
    * rejected (or that expired), or its link ended. Like
    * failTasksForWorkspaceRemoved this bypasses VALID_TRANSITIONS and the
    * evidence gate (submitted -> failed is not a graph edge), and the receiver
-   * authz: either side ends its own copy. An ended task is left as it is.
+   * authz: either side ends its own copy. An ended task is left as it is, and
+   * so is a report the peer made (it finished the task there).
    */
   forceFailRemote(input: {
     taskId: string;
@@ -936,6 +937,7 @@ export class A2aTaskService {
       const task = this.tasks.get(input.taskId);
       if (!task || !remoteMarkerOf(task)) return { ok: false, error: `a2a.remote.fail: remote task not found: ${input.taskId}` };
       if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, task, failed: false };
+      if (remoteMarkerOf(task)?.reported !== undefined) return { ok: true, task, failed: false };
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,

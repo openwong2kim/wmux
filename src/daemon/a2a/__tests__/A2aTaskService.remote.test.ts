@@ -250,6 +250,27 @@ describe('A2aTaskService — remote.mark and listRemotePending', () => {
     expect(svc.listRemoteByLink(LINK)).toEqual([]);
     expect(log.readAllRecords().filter((x) => x.domain === 'a2a').at(-1)?.payload).toMatchObject({ forced: 'remote_link_ended' });
   });
+
+  it('forceFailRemote leaves a report the peer made as it is, for every reason, also after a replay', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await companyOutbound(svc);
+    await svc.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's1', to: 'completed', summary: 'merged' });
+    const before = log.readAllRecords().length;
+    for (const forced of ['remote_link_ended', 'remote_refused', 'remote_held_rejected'] as const) {
+      // eslint-disable-next-line no-await-in-loop -- sequential by design
+      expect(await svc.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced })).toMatchObject({ ok: true, failed: false });
+    }
+    expect(log.readAllRecords()).toHaveLength(before);
+    expect(svc.getTask('rt-co')!.status.state).toBe('input-required');
+
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(await restored.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced: 'remote_link_ended' })).toMatchObject({ ok: true, failed: false });
+    // Once the peer works on it again, the report no longer stands.
+    await restored.applyRemoteState({ taskId: 'rt-co', linkId: LINK, messageId: 's2', to: 'working' });
+    expect(await restored.forceFailRemote({ taskId: 'rt-co', reason: 'x', forced: 'remote_link_ended' })).toMatchObject({ ok: true, failed: true });
+  });
 });
 
 describe('A2aTaskService — remote messages and states', () => {

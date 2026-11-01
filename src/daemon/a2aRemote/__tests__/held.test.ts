@@ -5,9 +5,11 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { A2A_REMOTE_PROTOCOL } from '../../../shared/a2aRemote';
 import { A2A_REMOTE_HOLD_TTL_MS } from '../../../shared/a2aRemoteDelivery';
+import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { expireHeld, failTasksForLink, rejectHeld, type HeldDeps } from '../held';
+import { remoteTaskId } from '../ids';
 import { acceptInbound } from '../inbound';
 import { LinkStore } from '../linkStore';
 import { linkAlias, sendRemoteReply, sendRemoteTask } from '../outbound';
@@ -135,6 +137,45 @@ describe('failTasksForLink', () => {
     expect(outbox.pending(HOST).map((r) => r.envelope.kind)).toEqual(['link']);
     expect(await failTasksForLink(deps, linkId, 'link_revoked')).toEqual({ failed: [], refused: 0 });
   });
+});
+
+describe('failTasksForLink — a report the peer made', () => {
+  /** A company task this PC sent, which the peer reported done (held here as input-required). */
+  async function reportedTask(): Promise<string> {
+    const id = remoteTaskId(linkId, 'brief-1');
+    await tasks.createTask({
+      id,
+      title: 'T',
+      from: { workspaceId: 'ws-b', name: 'B', paneId: 'pane-b' },
+      to: { workspaceId: `remote:${linkId}`, name: 'pc-a/ws-a/pane-a' },
+      history: [{
+        kind: 'message',
+        messageId: 'brief-1',
+        role: 'user',
+        parts: [
+          { kind: 'text', text: 'ship it' },
+          { kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } },
+        ],
+      }],
+      remote: { v: 1, linkId, hostId: HOST, messageId: 'brief-1', direction: 'outbound', kind: 'pane' },
+    });
+    expect((await tasks.applyRemoteState({ taskId: id, linkId, messageId: 'st-1', to: 'completed', summary: 'merged' })).ok).toBe(true);
+    return id;
+  }
+
+  for (const reason of ['link_revoked', 'link_broken'] as const) {
+    it(`${reason}: the report stays input-required; an unreported open task fails`, async () => {
+      const reported = await reportedTask();
+      const open = await outboundTask();
+      if (reason === 'link_revoked') links.revoke(linkId, 'local');
+      else links.markBroken(linkId, 'pane-closed');
+      const res = await failTasksForLink(deps, linkId, reason);
+      expect(res.failed).toEqual([open]);
+      expect(tasks.getTask(open)!.status.state).toBe('failed');
+      expect(tasks.getTask(reported)!.status.state).toBe('input-required');
+      expect(tasks.getTask(reported)!.metadata.remote).toMatchObject({ reported: 'st-1' });
+    });
+  }
 });
 
 describe('failTasksForLink — what is still owed to our pane', () => {

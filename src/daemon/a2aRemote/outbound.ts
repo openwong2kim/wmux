@@ -305,7 +305,9 @@ export async function syncRemoteTask(
       queued += 1;
     }
     const state = task.status.state;
-    if (SYNCED_STATES.has(state) && marker.stateSync !== state) {
+    // Only the receiver moves a task on the peer: one this PC sent tells it nothing but a cancel.
+    const mayTell = marker.direction !== 'outbound' || state === 'canceled';
+    if (mayTell && SYNCED_STATES.has(state) && marker.stateSync !== state) {
       const summary = (opts.summary ?? statusSummary(task))?.slice(0, 2000);
       deps.outbox.enqueue(link.remote.hostId, stateEnvelope(deps, link, task, summary));
       await deps.taskService.markRemote({ taskId: task.id, stateSync: state });
