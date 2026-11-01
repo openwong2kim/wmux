@@ -291,10 +291,24 @@ export function companyHeldMessageRefusal(taskId: string, reason: CompanyHoldRea
  * the cap, the seats holding the slots, when it goes, and the other way out.
  */
 export function companyCapHint(cap: number, holders: readonly string[]): string {
-  const seats = cap === 1 ? 'one company seat works' : `${cap} company seats work`;
-  return `On this PC at most ${seats} at once, and ${holders.join(', ')} ${holders.length === 1 ? 'holds' : 'hold'} the slots now. `
+  return `${companyCapSlotsLine(cap, holders)} `
     + 'wmux writes this task to its seat once one of them reports (input-required) or its task ends. '
     + 'To start it sooner, cancel it and send it to a seat on another PC.';
+}
+
+/**
+ * Why a message that gives its seat the work again (a reported task handed
+ * back, an ended one reopened) is refused while every working slot on this
+ * PC is held: nothing keeps a message until a slot frees.
+ */
+export function companyCapMessageRefusal(cap: number, holders: readonly string[]): string {
+  return `${companyCapSlotsLine(cap, holders)} This message gives its seat the work again, so nothing was stored. `
+    + 'Send it again once one of them reports (input-required) or its task ends, or mark this task done if it needs no more work.';
+}
+
+function companyCapSlotsLine(cap: number, holders: readonly string[]): string {
+  const seats = cap === 1 ? 'one company seat works' : `${cap} company seats work`;
+  return `On this PC at most ${seats} at once, and ${holders.join(', ')} ${holders.length === 1 ? 'holds' : 'hold'} the slots now.`;
 }
 
 /** The line for a task still waiting: "Waiting on a, b". `label` names a task (default: its id). */

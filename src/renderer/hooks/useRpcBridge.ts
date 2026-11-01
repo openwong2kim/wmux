@@ -828,6 +828,25 @@ function wantsSenderReopen(task: Task, callerWorkspaceId: string, callerAddr: Pa
 }
 
 /**
+ * The preflight answer for a message on `task`: whether it reopens the ended
+ * task (wantsSenderReopen); whether it hands a reported company task back to
+ * its seat (the verified sender's message on an `input-required` one); and,
+ * when either makes a company seat work again, that seat, so main can take a
+ * working slot for it first.
+ */
+function senderReopenPreflight(task: Task, callerWorkspaceId: string, callerAddr: PaneAddress | null): Record<string, unknown> {
+  const reopen = wantsSenderReopen(task, callerWorkspaceId, callerAddr);
+  const company = isCompanyTask(task.history) && !!task.metadata.to.paneId;
+  const handBack = company && task.status.state === 'input-required'
+    && isVerifiedTaskSender(task.metadata, callerWorkspaceId, callerAddr?.paneId);
+  return {
+    reopen,
+    ...(handBack ? { handBack: true } : {}),
+    ...((reopen || handBack) && company ? { seat: { workspaceId: task.metadata.to.workspaceId, paneId: task.metadata.to.paneId } } : {}),
+  };
+}
+
+/**
  * Apply the reopen main decided on: the daemon's committed snapshot
  * (`daemonReopenedTask`), or a cache-only reopen (`localReopen`) for a task
  * the daemon does not hold. Main strips both from the wire, so neither can be
@@ -3533,8 +3552,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // A verified sender writing to a task that already ended is new work for
       // the receiver: the task reopens. Main asks first (preflight), commits the
       // reopen in the daemon, then replays the call with the daemon's snapshot.
-      const reopenWanted = wantsSenderReopen(task, workspaceId, callerAddr);
-      if (params.reopenPreflight === true) return { ok: true, preflight: { reopen: reopenWanted } };
+      // A company task its seat reported is handed back the same way.
+      if (params.reopenPreflight === true) return { ok: true, preflight: senderReopenPreflight(task, workspaceId, callerAddr) };
       const reopened = applySenderReopen(taskId, params);
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
@@ -4238,8 +4257,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // Same rule as the reply branch: a verified sender's message reopens an
       // ended task. Never in a call that also carries a status: only the
       // receiver may transition, and its completion must stay closed.
-      const reopenWanted = !nextState && wantsSenderReopen(task, workspaceId, callerAddrUpdate);
-      if (params.reopenPreflight === true) return { ok: true, preflight: { reopen: reopenWanted } };
+      if (params.reopenPreflight === true) {
+        return { ok: true, preflight: nextState ? { reopen: false } : senderReopenPreflight(task, workspaceId, callerAddrUpdate) };
+      }
       updateReopened = !nextState && applySenderReopen(taskId, params);
 
       const parts: Part[] = [{ kind: 'text', text: message }];

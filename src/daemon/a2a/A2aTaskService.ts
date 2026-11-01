@@ -776,8 +776,14 @@ export class A2aTaskService {
    * the regular transition API still refuses terminal -> submitted. The commit
    * is a plain `task.transition` payload (plus a `reopened` marker), so a log
    * replayed by an older daemon still lands on `submitted`.
+   *
+   * `handBack` (main only): the sender's message on a company task its seat
+   * reported (`input-required`) hands the work back, and the task goes to
+   * `working` again, so it counts toward its seat's working slot. That edge
+   * is in VALID_TRANSITIONS; it is committed here because the actor is the
+   * sender, not the seat. Any other state is left as it is.
    */
-  reopenTask(input: { taskId: string; callerWorkspaceId: string; callerPaneId?: string }): Promise<ReopenOk | OpErr> {
+  reopenTask(input: { taskId: string; callerWorkspaceId: string; callerPaneId?: string; handBack?: boolean }): Promise<ReopenOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.reopen: task not found: ${input.taskId}` };
@@ -786,13 +792,14 @@ export class A2aTaskService {
       if (!isVerifiedTaskSender(task.metadata, input.callerWorkspaceId, input.callerPaneId)) {
         return { ok: false, error: 'a2a.task.reopen: caller is not the verified sender of this task' };
       }
-      if (!(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+      const handBack = input.handBack === true && task.status.state === 'input-required' && isCompanyTask(task.history);
+      if (!handBack && !(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
         return { ok: true, reopened: false, task };
       }
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
-        to: 'submitted',
+        to: handBack ? 'working' : 'submitted',
         timestamp: this.isoNow(),
         reopened: 'sender_message',
       };

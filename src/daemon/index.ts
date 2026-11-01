@@ -7324,7 +7324,7 @@ function registerRpcHandlers(
     return canceled;
   });
 
-  pipeServer.onRpc('a2a.task.reopen', async (rawParams) => {
+  pipeServer.onRpc('a2a.task.reopen', async (rawParams, ctx) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.reopen: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
     const taskId = typeof p.taskId === 'string' ? p.taskId : '';
@@ -7334,6 +7334,8 @@ function registerRpcHandlers(
       taskId,
       callerWorkspaceId: workspaceId,
       ...(typeof p.callerPaneId === 'string' && p.callerPaneId ? { callerPaneId: p.callerPaneId } : {}),
+      // Main sets this once a working slot is taken for the seat.
+      ...(pipeServer.isFirstParty(ctx.clientId) && p.handBack === true ? { handBack: true } : {}),
     });
   });
 

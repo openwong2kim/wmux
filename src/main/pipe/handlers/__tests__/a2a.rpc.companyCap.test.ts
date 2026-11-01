@@ -9,7 +9,7 @@ import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { DaemonClient } from '../../../DaemonClient';
 import { CompanySlotGate, type CompanyWorkingCount, type CompanyWorkingSeat } from '../../../a2a/CompanyReleaseBridge';
-import { COMPANY_HOLD_KEY, companyCapHint } from '../../../../shared/companyHold';
+import { COMPANY_HOLD_KEY, companyCapHint, companyCapMessageRefusal } from '../../../../shared/companyHold';
 import type { Message } from '../../../../shared/types';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
@@ -37,6 +37,11 @@ let created: Array<Record<string, unknown>>;
 let taskSeq: number;
 /** Every renderer send waits on this when set. */
 let rendererGate: Promise<void> | null;
+/** What the renderer's reopen preflight answers. */
+let preflight: Record<string, unknown>;
+let reopens: Array<Record<string, unknown>>;
+/** A reply's renderer send waits on this when set. */
+let replyGate: Promise<void> | null;
 
 function count(): CompanyWorkingCount | null {
   reads += 1;
@@ -66,6 +71,10 @@ const dc = {
           metadata: { title: params.title, from: params.from, to: params.to, createdAt: 'y', updatedAt: 'y', ...(hold ? { [COMPANY_HOLD_KEY]: hold } : {}) },
         },
       };
+    }
+    if (method === 'a2a.task.reopen') {
+      reopens.push(params);
+      return { ok: true, reopened: true, task: { id: params.taskId, status: { state: params.handBack === true ? 'working' : 'submitted', timestamp: 'z' } } };
     }
     if (method === 'a2a.task.query') {
       // task-a: an open company task of this workspace, which a brief may wait on.
@@ -124,7 +133,16 @@ beforeEach(() => {
   created = [];
   taskSeq = 0;
   rendererGate = null;
+  preflight = { reopen: false };
+  reopens = [];
+  replyGate = null;
   sendToRendererMock.mockImplementation(async (_w: unknown, method: string, params: Record<string, unknown>) => {
+    if ((method === 'a2a.task.send' || method === 'a2a.task.update') && params.reopenPreflight === true) return { ok: true, preflight };
+    if (method === 'a2a.task.update') return { ok: true };
+    if (method === 'a2a.task.send' && typeof params.taskId === 'string') {
+      if (replyGate) await replyGate;
+      return { ok: true, taskId: params.taskId, delivery: { stored: true, notified: true, mode: 'nudge' } };
+    }
     if (method === 'a2a.task.send') {
       if (rendererGate) await rendererGate;
       taskSeq += 1;
@@ -251,6 +269,69 @@ describe('a2a.task.send — the cap on working seats', () => {
     // would hold dev-3's brief.
     expect(await send(router, sendParams({ paneId: 'dev-2' }))).toMatchObject({ delivery: { notified: true } });
     expect(await send(router, sendParams({ paneId: 'dev-3' }))).toMatchObject({ delivery: { notified: true } });
+  });
+});
+
+describe('a message that gives a reported or ended task back to its seat', () => {
+  const reply = (router: RpcRouter, over: Record<string, unknown> = {}, opts?: { operator: true }) =>
+    send(router, { workspaceId: WS, taskId: 'task-9', message: 'fix the failing test', senderPtyId: 'pty-ceo', ...over }, opts);
+  const realReplies = () => rendererSends().filter((p) => p.reopenPreflight !== true);
+  const backTo = (paneId: string) => ({ reopen: false, handBack: true, seat: { workspaceId: WS, paneId } });
+
+  it('is refused while every slot is held by other seats, storing nothing and naming them', async () => {
+    preflight = backTo('dev-2');
+    const res = await reply(setup());
+    expect(res).toMatchObject({ error: `a2a.task.send: ${companyCapMessageRefusal(1, ['#dev-1'])}`, reason: 'cap', cap: 1, holders: ['#dev-1'] });
+    expect(reopens).toEqual([]);
+    expect(realReplies()).toEqual([]);
+  });
+
+  it('hands the task back to working through the daemon while a slot is free, then goes as a reply', async () => {
+    cap = 2;
+    preflight = backTo('dev-2');
+    expect(await reply(setup())).toMatchObject({ ok: true });
+    expect(reopens).toEqual([expect.objectContaining({ taskId: 'task-9', handBack: true })]);
+    expect(realReplies()[0]).toMatchObject({ taskId: 'task-9', daemonReopenedTask: { status: { state: 'working' } } });
+  });
+
+  it('goes at the cap to a seat that works already', async () => {
+    preflight = backTo('dev-1');
+    expect(await reply(setup())).toMatchObject({ ok: true });
+    expect(reopens).toHaveLength(1);
+  });
+
+  it('takes a slot for an ended task it reopens too', async () => {
+    preflight = { reopen: true, seat: { workspaceId: WS, paneId: 'dev-3' } };
+    expect(await reply(setup())).toMatchObject({ reason: 'cap' });
+    expect(reopens).toEqual([]);
+  });
+
+  it('never refuses the owner\'s own message, nor reads the count for it', async () => {
+    preflight = backTo('dev-2');
+    expect(await reply(setup(), {}, { operator: true })).toMatchObject({ ok: true });
+    expect(reads).toBe(0);
+    expect(reopens).toEqual([expect.objectContaining({ handBack: true })]);
+  });
+
+  it('holds the slot until the call is over, so a brief sent meanwhile cannot take it', async () => {
+    cap = 2;
+    preflight = backTo('dev-2');
+    let open!: () => void;
+    replyGate = new Promise((resolve) => { open = resolve; });
+    const router = setup();
+    const handing = reply(router);
+    await vi.waitFor(() => expect(reopens).toHaveLength(1), { timeout: 5_000 });
+    const brief = await send(router, sendParams({ paneId: 'dev-3' }));
+    expect(brief).toMatchObject({ delivery: { reason: 'cap', holders: ['#dev-1', '#dev-2'] } });
+    open();
+    expect(await handing).toMatchObject({ ok: true });
+  });
+
+  it('is refused the same way on a message-only a2a_task_update', async () => {
+    preflight = backTo('dev-2');
+    const res = await setup().dispatch({ id: 'u', method: 'a2a.task.update', params: { taskId: 'task-9', workspaceId: WS, message: 'one more', senderPtyId: 'pty-ceo' } });
+    expect((res as { result: Record<string, unknown> }).result).toMatchObject({ error: `a2a.task.update: ${companyCapMessageRefusal(1, ['#dev-1'])}`, reason: 'cap' });
+    expect(reopens).toEqual([]);
   });
 });
 

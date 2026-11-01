@@ -83,4 +83,13 @@ describe('company presets', () => {
     expect(ceo).toContain('give the work to a seat on another PC');
     expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 })).not.toContain('reason "cap"');
   });
+
+  it('tells both sides that a reply on a reported task hands it back, and the CEO that it takes a slot', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
+    expect(ceo).toContain('A reply to a seat\'s report hands the work back and takes a slot too; at the cap it is refused');
+    expect(ceo).toContain('reply again once one of them reports, or mark the task done.');
+    expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 }))
+      .toContain('A reply from #ceo on a task you reported hands it back to you: do the work and report it again the same way.');
+  });
 });
