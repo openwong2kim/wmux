@@ -8,7 +8,7 @@ import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc, type RemoteA2aRpcDeps } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { DaemonClient } from '../../../DaemonClient';
-import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyBriefOfHistory, companyHoldAtCreate } from '../../../../shared/companyHold';
+import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyBriefOfHistory, companyHeldMessageRefusal, companyHoldAtCreate } from '../../../../shared/companyHold';
 import type { Message, TaskState } from '../../../../shared/types';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
@@ -254,6 +254,17 @@ describe('a2a.task.send — each blocker is judged against the daemon before any
     expect(rendererCalls('a2a.task.send')).toEqual([]);
   });
 
+  it('refuses blockers in a brief that is not complete, naming what it lacks, before reading or storing anything', async () => {
+    const { verify: _verify, report: _report, ...partial } = brief();
+    const res = await send(sendParams(undefined, { data: { ...partial, blockedBy: ['task-a'] } }));
+    expect(res.error).toBe(`a2a.task.send: ${COMPANY_BLOCKED_BY_REFUSAL.incompleteBrief(['verify', 'report'])}`);
+    expect(daemon.calls).toEqual([]);
+    expect(rendererCalls('a2a.task.send')).toEqual([]);
+    // An empty list in a partial brief asks for no hold: the renderer judges the brief as before.
+    await send(sendParams(undefined, { data: { ...partial, blockedBy: [] } }));
+    expect(rendererCalls('a2a.task.send')).toHaveLength(1);
+  });
+
   it('takes an empty blockedBy list as waiting on nothing: a plain send', async () => {
     const res = await send(sendParams([]));
     expect(res).toMatchObject({ ok: true, delivery: { notified: true } });
@@ -417,10 +428,34 @@ describe('a2a.task.send — a message on a task still held for its blockers', ()
     daemon.tasks.set('task-d', task('task-d', 'working', { hold: { blockedBy: ['task-a'], waitingOn: [], delivered: true } }));
     daemon.tasks.set('task-p', task('task-p', 'working'));
     await reply('task-d');
-    expect(realReply()).not.toHaveProperty('heldForBlockers');
+    // Main's word from the daemon's record: the renderer's copy does not hold it back.
+    expect(realReply()).toMatchObject({ heldForBlockers: false });
     expect(realReply()?.silent).toBeUndefined();
     await reply('task-p', { heldForBlockers: true });
     // Never taken from the wire.
+    expect(realReply()).toMatchObject({ heldForBlockers: false });
+  });
+
+  it('goes as any reply when its write may have landed: the seat can read the task', async () => {
+    daemon.tasks.set('task-u', task('task-u', 'submitted', { hold: { blockedBy: ['task-a'], waitingOn: [], releasedAt: 'r', attempted: true, held: 'delivery-unconfirmed' } }));
+    await reply('task-u');
+    expect(realReply()).toMatchObject({ taskId: 'task-u', heldForBlockers: false });
+    expect(realReply()?.silent).toBeUndefined();
+  });
+
+  it('is refused, storing nothing, on a task held for a person with nothing written to its seat', async () => {
+    for (const held of ['no-agent', 'pane-missing'] as const) {
+      daemon.tasks.set(`task-${held}`, task(`task-${held}`, 'submitted', { hold: { blockedBy: ['task-a'], waitingOn: [], releasedAt: 'r', held } }));
+      // eslint-disable-next-line no-await-in-loop -- one send at a time
+      const res = await reply(`task-${held}`);
+      expect(res.error).toBe(`a2a.task.send: ${companyHeldMessageRefusal(`task-${held}`, held)}`);
+    }
+    expect(rendererCalls('a2a.task.send')).toEqual([]);
+  });
+
+  it('leaves the renderer to its own copy when the daemon cannot say', async () => {
+    connected = false;
+    await reply('task-x');
     expect(realReply()).not.toHaveProperty('heldForBlockers');
   });
 });

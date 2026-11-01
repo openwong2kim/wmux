@@ -288,6 +288,12 @@ describe('a held send\'s renderer copy, before and after its release delivery', 
     expect(written.map((w) => w.pty)).toEqual([DEV_PTY, DEV_PTY]);
   });
 
+  it('main\'s word that the task is its seat\'s writes the message even when this copy still waits', async () => {
+    const id = await heldSend();
+    expect((await reply(id, { heldForBlockers: false })).delivery).toMatchObject({ notified: true });
+    expect(written.map((w) => w.pty)).toEqual([DEV_PTY]);
+  });
+
   it('main\'s held flag on a reply keeps the message off the pane even when this copy has no marker', async () => {
     useStore.getState().createA2aTask({
       id: 'task-f1', title: 'x', from: { workspaceId: WS, name: 'Co', paneId: 'pane-ceo' }, to: { workspaceId: WS, name: 'Co', paneId: 'pane-dev' },

@@ -3558,11 +3558,13 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       // both agents believing their replies were delivered while every nudge was
       // being suppressed, leaving a human to relay the whole debate by hand.
       // Company mode: a task still held for its blockers is not its seat's yet
-      // (main's flag from the daemon's record, or this copy's own marker). The
-      // message is kept on it with no write and no event; the release delivery
-      // brings the seat to the task with its whole history.
+      // (main's flag from the daemon's record, or this copy's own marker when
+      // main could not read the record). The message is kept on it with no
+      // write and no event; the release delivery brings the seat to the task
+      // with its whole history.
       const copyHold = companyHoldOf(task);
-      const heldForBlockers = (silent && params.heldForBlockers === true) || (!!copyHold && !copyHold.delivered);
+      const heldForBlockers = (silent && params.heldForBlockers === true)
+        || (params.heldForBlockers !== false && !!copyHold && !copyHold.delivered);
       let delivery: Record<string, unknown> = heldForBlockers
         ? { stored: true, notified: false, reason: 'blocked', hint: COMPANY_HELD_REPLY_HINT }
         : { stored: true, notified: false, reason: 'silent' };

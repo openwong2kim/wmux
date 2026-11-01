@@ -229,6 +229,8 @@ export const COMPANY_BLOCKED_BY_REFUSAL = Object.freeze({
     `blockedBy names ${id}, which wmux no longer holds (it ended more than 30 minutes ago); if it completed, send this task again without it, otherwise send that work again and wait on the new task`,
   malformed:
     'blockedBy must be a list of task ids (each a non-empty string), such as ["task-1", "task-2"]; leave it out when the task waits on nothing',
+  incompleteBrief: (missing: readonly string[]): string =>
+    `blockedBy holds a task only in a complete brief, and this one has no ${missing.join(', ')}; add them, or leave blockedBy out`,
 });
 
 /** Why the receiving side may not move a task that still waits on a blocker. */
@@ -242,6 +244,15 @@ export const COMPANY_HOLD_REASON_TEXT: Readonly<Record<CompanyHoldReason, string
   'pane-missing': 'its blockers are done, but its pane is gone',
   'delivery-unconfirmed': 'its blockers are done and wmux started writing it to its pane, but could not confirm it arrived; check the pane before sending it again',
 });
+
+/**
+ * Why a message on a task held for a person, with nothing written to its seat
+ * (`no-agent`, `pane-missing`), is refused: no delivery is coming for it.
+ */
+export function companyHeldMessageRefusal(taskId: string, reason: CompanyHoldReason): string {
+  return `task ${taskId} is held and was never written to its seat (${COMPANY_HOLD_REASON_TEXT[reason]}); nothing was stored. `
+    + 'Cancel it and send the work again to a seat with an agent running';
+}
 
 /** The line for a task still waiting: "Waiting on a, b". `label` names a task (default: its id). */
 export function companyWaitingLine(waitingOn: readonly string[], label: (id: string) => string = (id) => id): string {

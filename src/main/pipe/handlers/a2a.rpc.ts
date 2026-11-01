@@ -12,7 +12,7 @@ import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage, type Message, type Task } from '../../../shared/types';
 import { COMPANY_BRIEF_KIND, COMPANY_RENDERER_METHOD, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
-import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyHoldOf, companyHoldPhase, companyHoldWithholds, companyWaitingLine } from '../../../shared/companyHold';
+import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyHeldMessageRefusal, companyHoldOf, companyHoldPhase, companyHoldWithholds, companyWaitingLine, type CompanyHoldMarker } from '../../../shared/companyHold';
 import { configuredForge, forgeHosts } from '../../../shared/forgeHosts';
 import {
   DONE_PR_CHECK_MAX,
@@ -162,16 +162,19 @@ function blockedByOf(data: unknown): string[] {
 }
 
 /**
- * A brief's `blockedBy` that is there but is not a list of task ids: refused,
- * never ignored (a task sent at once while its sender meant it to wait would
- * be told too early). Null when it is absent or well formed.
+ * A brief's `blockedBy` that is there but is not a list of task ids, or names
+ * tasks in a brief that is not complete (only a complete brief's blockers hold
+ * a task): refused, never ignored (a task sent at once while its sender meant
+ * it to wait would be told too early). Null when it is absent or well formed.
  */
 function malformedBlockedBy(data: unknown): string | null {
   if (!isRecord(data) || data.kind !== COMPANY_BRIEF_KIND || data.blockedBy === undefined) return null;
   const list = data.blockedBy;
-  return Array.isArray(list) && list.every((id) => typeof id === 'string' && id.trim().length > 0)
-    ? null
-    : COMPANY_BLOCKED_BY_REFUSAL.malformed;
+  if (!Array.isArray(list) || !list.every((id) => typeof id === 'string' && id.trim().length > 0)) {
+    return COMPANY_BLOCKED_BY_REFUSAL.malformed;
+  }
+  const missing = list.length > 0 ? missingBriefFields(data) : [];
+  return missing.length > 0 ? COMPANY_BLOCKED_BY_REFUSAL.incompleteBrief(missing) : null;
 }
 
 /**
@@ -1489,23 +1492,22 @@ export function registerA2aRpc(
   }
 
   /**
-   * Whether the daemon holds the task for its blockers and has not written it
-   * to its seat yet. Main's own read (it decides only how a message on the
-   * task is delivered, nothing is shown to the caller); false when the daemon
-   * cannot say, and the renderer then checks its own copy's marker.
+   * The daemon's hold on a task, null when it has none. Main's own read (it
+   * decides only how a message on the task is delivered, nothing is shown to
+   * the caller); undefined when the daemon cannot say, and the renderer then
+   * checks its own copy's marker.
    */
-  async function heldForBlockers(taskId: string, workspaceId: string): Promise<boolean> {
-    if (!taskId || !workspaceId || isRemoteTaskId(taskId)) return false;
+  async function daemonCompanyHold(taskId: string, workspaceId: string): Promise<CompanyHoldMarker | null | undefined> {
+    if (!taskId || !workspaceId || isRemoteTaskId(taskId)) return undefined;
     const gate = await daemonTaskRpc(
       getDaemonClient,
       'a2a.task.query',
       { workspaceId, view: 'page', taskId, trustedLane: true },
       { timeoutMs: PAGED_TASK_QUERY_DAEMON_TIMEOUT_MS },
     );
-    if (gate.kind !== 'ok' || !Array.isArray(gate.result.tasks)) return false;
+    if (gate.kind !== 'ok' || !Array.isArray(gate.result.tasks)) return undefined;
     const task: unknown = gate.result.tasks.find((t: unknown) => isRecord(t) && t.id === taskId);
-    const hold = isRecord(task) && isRecord(task.metadata) ? companyHoldOf(task as unknown as Task) : undefined;
-    return !!hold && companyHoldPhase(hold) !== 'delivered';
+    return (isRecord(task) && isRecord(task.metadata) ? companyHoldOf(task as unknown as Task) : undefined) ?? null;
   }
 
   /**
@@ -1860,13 +1862,25 @@ export function registerA2aRpc(
     // answers first. Plain sends keep the default: nothing in them waits on a
     // person.
     const awaitsApproval = params.execute === true && !params.taskId;
-    // Company mode: a message on a task still held for its blockers (not yet
-    // written to its seat) is kept on the task with no write and no event; the
-    // release delivery brings the seat to the task with its whole history.
-    if (params.taskId && params.execute !== true
-      && await heldForBlockers(params.taskId as string, typeof sendParams.workspaceId === 'string' ? sendParams.workspaceId : '')) {
-      sendParams.silent = true;
-      sendParams.heldForBlockers = true;
+    // Company mode: a message on a task still held for its blockers, or
+    // released and not yet written to its seat, is kept on the task with no
+    // write and no event; the release delivery brings the seat to the task
+    // with its whole history. A task held for a person with nothing written
+    // has no delivery coming, so a message on it is refused. One whose write
+    // may have landed (`delivery-unconfirmed`) or that was delivered goes as
+    // any reply, whatever the renderer's copy says.
+    if (params.taskId && params.execute !== true) {
+      const hold = await daemonCompanyHold(params.taskId as string, typeof sendParams.workspaceId === 'string' ? sendParams.workspaceId : '');
+      const phase = hold ? companyHoldPhase(hold) : undefined;
+      if (hold && phase === 'held' && (hold.held === 'no-agent' || hold.held === 'pane-missing')) {
+        return { error: `a2a.task.send: ${companyHeldMessageRefusal(params.taskId as string, hold.held)}` };
+      }
+      if (phase === 'waiting' || phase === 'owed') {
+        sendParams.silent = true;
+        sendParams.heldForBlockers = true;
+      } else if (hold !== undefined) {
+        sendParams.heldForBlockers = false;
+      }
     }
     // A reply may reopen an ended task: commit that in the daemon first.
     if (params.taskId && params.execute !== true) {
