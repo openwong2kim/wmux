@@ -6,7 +6,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
-import { HIRE_NOTICE_TRIES, watchHireNotice } from '../companyHireNotice';
+import { watchHireNotice } from '../companyHireNotice';
 
 const CEO_PTY = 'pty-ceo';
 const SEAT_PTY = 'pty-seat';
@@ -123,16 +123,30 @@ describe('watchHireNotice', () => {
     expect(gatedSubmit).toHaveBeenCalledTimes(1);
   });
 
-  it('tries a refused line again on a later change, a few times at most', async () => {
+  it('tries a refused line again only once the CEO pane\'s agent has moved on, until it lands', async () => {
     gatedSubmit.mockResolvedValue({ ok: false, reason: 'user_typing', detail: 'typing' });
     useStore.setState({ workspaces: [company(startedSeat())] });
     useStore.getState().setSurfaceAgent(SEAT_PTY, 'Codex', 'idle', 'codex');
     watch();
     await flush();
-    for (let i = 0; i < HIRE_NOTICE_TRIES + 2; i++) {
-      useStore.getState().setSurfaceAgent(SEAT_PTY, 'Codex', i % 2 ? 'idle' : 'waiting', 'codex');
+    expect(gatedSubmit).toHaveBeenCalledTimes(1);
+    // Changes elsewhere, or the CEO's own status sent again, do not retry it.
+    for (let i = 0; i < 4; i++) {
+      useStore.getState().setSurfaceAgent(SEAT_PTY, 'Codex', i % 2 ? 'idle' : 'running', 'codex');
+      useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'idle', 'claude');
       await flush();
     }
-    expect(gatedSubmit).toHaveBeenCalledTimes(HIRE_NOTICE_TRIES);
+    expect(gatedSubmit).toHaveBeenCalledTimes(1);
+    // The person sends the draft: the CEO runs a turn and ends it.
+    gatedSubmit.mockResolvedValue({ ok: true });
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'running', 'claude');
+    await flush();
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'idle', 'claude');
+    await flush();
+    expect(gatedSubmit).toHaveBeenCalledTimes(2);
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'running', 'claude');
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'idle', 'claude');
+    await flush();
+    expect(gatedSubmit).toHaveBeenCalledTimes(2);
   });
 });

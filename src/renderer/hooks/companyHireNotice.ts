@@ -8,10 +8,12 @@
 // The line goes through the delivery gate with the typing hold (it never
 // answers an approval prompt and waits while someone types), and only while
 // the CEO pane's agent may take it (a2aTurnEndReminder eligibility: alive,
-// not mid-turn, not held at a usage limit). A refused line is tried again on
-// a later change, a few times at most; a delivered one never again. The watch
-// ends with the line, when the seat's pane closes, or when the workspace is
-// no longer a company. It lives in memory: an app restart drops it.
+// not mid-turn, not held at a usage limit). A refused line (a draft the
+// person left in the CEO's prompt, say) is tried again only once the CEO
+// pane's agent has moved on, so a draft sent or a turn ended lets it through
+// and nothing retries in a loop; a delivered one never again. The watch ends
+// with the line, when the seat's pane closes, or when the workspace is no
+// longer a company. It lives in memory: an app restart drops it.
 
 import { useStore, type StoreState } from '../stores';
 import { companyHireNotice, type CompanyHireNoticeInput } from '../../shared/company';
@@ -22,8 +24,6 @@ import { eligibility } from './a2aTurnEndReminder';
 
 /** How long the gate may hold the line while someone types in the CEO pane. */
 export const HIRE_NOTICE_DEADLINE_MS = 120_000;
-/** Deliveries tried before the watch gives up. */
-export const HIRE_NOTICE_TRIES = 3;
 
 export interface HireNoticeWatch extends CompanyHireNoticeInput {
   workspaceId: string;
@@ -39,8 +39,10 @@ function agentPty(leaf: PaneLeaf, surfaceAgent: StoreState['surfaceAgent']): str
 /** Watch one hired seat until its CEO is told; returns a stop. */
 export function watchHireNotice(seat: HireNoticeWatch): () => void {
   const text = companyHireNotice(seat);
-  let tries = 0;
   let sending = false;
+  // The CEO agent's status a refused line was tried in; the next try waits
+  // until the status has been another one (the same status is broadcast again).
+  let refusedIn: string | undefined;
   let stopped = false;
   let unsubscribe: () => void = () => undefined;
   const stop = (): void => {
@@ -60,11 +62,16 @@ export function watchHireNotice(seat: HireNoticeWatch): () => void {
     if (!seatPty || state.surfaceAgent[seatPty]?.status === 'awaiting_input') return;
     const ceoLeaf = leaves.find((l) => l.id === ws.company?.coordinatorPaneId);
     const ceoPty = ceoLeaf ? agentPty(ceoLeaf, state.surfaceAgent) : null;
-    if (!ceoPty || eligibility(ceoPty) !== 'write') return;
+    if (!ceoPty) return;
+    const ceoState = state.surfaceAgent[ceoPty];
+    if (refusedIn !== undefined) {
+      if (ceoState?.status === refusedIn) return;
+      refusedIn = undefined;
+    }
+    if (eligibility(ceoPty) !== 'write') return;
     // Claimed before the await, so a change while it is out sends nothing more.
     sending = true;
-    tries += 1;
-    const agent = state.surfaceAgent[ceoPty]?.name ?? null;
+    const agent = ceoState?.name ?? null;
     void gatedSubmitToPty(ceoPty, text, {
       agent,
       waitQuiet: true,
@@ -72,7 +79,8 @@ export function watchHireNotice(seat: HireNoticeWatch): () => void {
       deadlineAt: Date.now() + HIRE_NOTICE_DEADLINE_MS,
     }).then((result) => {
       sending = false;
-      if (result.ok || tries >= HIRE_NOTICE_TRIES) stop();
+      if (result.ok) stop();
+      else refusedIn = ceoState?.status;
     });
   };
   unsubscribe = useStore.subscribe(check);
