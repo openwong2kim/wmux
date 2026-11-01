@@ -1,0 +1,24 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ show links                                                ",
+  "",
+  "⏺ See the docs page (https://example.com/docs/page) for",
+  "  more, or https://example.com/auto.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "See [the docs page](https://example.com/docs/page) for more, or <https://example.com/auto>."
+   }
+  ]
+ ]
+}
