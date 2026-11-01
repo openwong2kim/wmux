@@ -233,7 +233,7 @@ describe('a2a.task.update — a company task is done only once wmux has checked 
       state: 'input-required',
       timestamp: 'x',
       message: message('m2', 'agent', [{ kind: 'text', text: 'Reported done on PC-B.' }]),
-      evidence: { summary: 'Done on PC-B', items: [{ kind: 'command', status: 'passed', summary: 'opened the PR', command: 'gh pr create', output: PR_URL }] },
+      evidence: { summary: 'Done on PC-B', items: [{ kind: 'command', status: 'passed', summary: `opened ${PR_URL}`, command: 'gh pr create' }] },
     };
     const { router, updates, donePrFacts } = setup({ daemonTask: task({ status: report }) });
     await router.dispatch({ id: 'd6c', method: 'a2a.task.update', params: done() });

@@ -268,12 +268,15 @@ describe('donePrRefs', () => {
     expect(numbers(donePrRefs({ history: [brief], evidence }))).toEqual([20, 21, 22, 23]);
   });
 
-  it('reads the task\'s status evidence, a report from another PC included, after its status message', () => {
+  it('reads the task\'s status evidence, a report from another PC included, after its status message, but not its command output', () => {
     const statusEvidence = {
       summary: 'Reported done on PC-B',
-      items: [{ kind: 'command', status: 'passed', summary: 'opened https://github.com/acme/app/pull/40', command: 'gh pr create', output: 'https://github.com/acme/app/pull/41' }],
+      items: [
+        { kind: 'command', status: 'passed', summary: 'opened https://github.com/acme/app/pull/40', command: 'gh pr list', output: 'https://github.com/acme/app/pull/41' },
+        { kind: 'inspection', status: 'verified', summary: 'live check', location: 'https://github.com/acme/app/pull/42' },
+      ],
     };
-    expect(numbers(donePrRefs({ history: [brief], statusEvidence }))).toEqual([40, 41]);
+    expect(numbers(donePrRefs({ history: [brief], statusEvidence }))).toEqual([40, 42]);
     const refs = donePrRefs({
       history: [brief, text('Opened https://github.com/acme/app/pull/2')],
       statusMessage: text('Report: https://github.com/acme/app/pull/3'),
