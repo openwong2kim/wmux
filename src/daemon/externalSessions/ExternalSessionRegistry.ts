@@ -64,11 +64,11 @@ function toolLine(payload: Record<string, unknown>, max: number): string | undef
   return externalText(summary ? `${tool} ${summary}` : tool, max);
 }
 
-/** A real subagent's hook (both ids set): its tools can run while the lead waits on the user. */
-function isSubagentPayload(payload: Record<string, unknown>): boolean {
+/** A real subagent's id (both ids set), or undefined for the lead: its tools can run while another agent waits on the user. */
+function subagentId(payload: Record<string, unknown>): string | undefined {
   const id = payload['agent_id'];
   const type = payload['agent_type'];
-  return typeof id === 'string' && id.length > 0 && typeof type === 'string' && type.length > 0;
+  return typeof id === 'string' && id.length > 0 && typeof type === 'string' && type.length > 0 ? id : undefined;
 }
 
 interface Entry {
@@ -77,6 +77,10 @@ interface Entry {
   agentPid?: number;
   /** What the latest permission dialog asks; shown once it is confirmed waiting. */
   permissionText?: string;
+  /** The subagent that latest permission dialog belongs to; undefined for the lead. */
+  permissionAgentId?: string;
+  /** The subagent a needs-you row waits on; undefined for the lead. */
+  pendingAgentId?: string;
 }
 
 export interface ExternalSessionRegistryDeps {
@@ -214,8 +218,14 @@ export class ExternalSessionRegistry {
       case 'agent.awaiting_permission': {
         const line = toolLine(payload, EXTERNAL_SESSION_LIMITS.lastActivity);
         if (line) s.lastActivity = line;
-        // A subagent's tool can run while the lead's question is still up.
-        if (s.state === 'needs-you' && isSubagentPayload(payload)) return;
+        // Another agent's tool can run while a dialog is still up. A question
+        // is answered only by input_answered; an approval is answered once the
+        // agent that asked runs a tool again (an external session sends no
+        // permission_answered: its gate hook exits outside a pane).
+        if (s.state === 'needs-you') {
+          const agentId = subagentId(payload);
+          if (s.pendingKind === 'question' ? agentId !== undefined : agentId !== entry.pendingAgentId) return;
+        }
         this.setState(entry, 'running');
         return;
       }
@@ -247,6 +257,7 @@ export class ExternalSessionRegistry {
       // seconds, is what marks the session needs-you. A new dialog also means
       // the previous one was answered.
       entry.permissionText = toolLine(payload, EXTERNAL_SESSION_LIMITS.pendingQuestion);
+      entry.permissionAgentId = subagentId(payload);
       if ((s.state === 'needs-you' && s.pendingKind === 'approval') || s.state === 'ended') {
         this.setState(entry, 'running');
       }
@@ -254,12 +265,13 @@ export class ExternalSessionRegistry {
     }
     if (event === 'Notification') {
       this.setNeedsYou(entry, 'approval',
-        entry.permissionText ?? externalText(payload['message'], EXTERNAL_SESSION_LIMITS.pendingQuestion));
+        entry.permissionText ?? externalText(payload['message'], EXTERNAL_SESSION_LIMITS.pendingQuestion),
+        subagentId(payload) ?? entry.permissionAgentId);
       return;
     }
     const question = extractAskUserQuestion(payload).question ?? payload['message'];
     this.setNeedsYou(entry, payload['tool_name'] === 'AskUserQuestion' ? 'question' : 'approval',
-      externalText(question, EXTERNAL_SESSION_LIMITS.pendingQuestion));
+      externalText(question, EXTERNAL_SESSION_LIMITS.pendingQuestion), subagentId(payload));
   }
 
   private setState(entry: Entry, state: Exclude<ExternalSessionState, 'needs-you' | 'ended'>): void {
@@ -268,12 +280,14 @@ export class ExternalSessionRegistry {
     delete s.endedAt;
     delete s.pendingQuestion;
     delete s.pendingKind;
+    delete entry.pendingAgentId;
   }
 
-  private setNeedsYou(entry: Entry, kind: 'approval' | 'question', question: string | undefined): void {
+  private setNeedsYou(entry: Entry, kind: 'approval' | 'question', question: string | undefined, agentId: string | undefined): void {
     const s = entry.session;
     s.state = 'needs-you';
     s.pendingKind = kind;
+    entry.pendingAgentId = agentId;
     if (question) s.pendingQuestion = question;
     else delete s.pendingQuestion;
     delete s.endedAt;
@@ -285,6 +299,7 @@ export class ExternalSessionRegistry {
     s.endedAt = at;
     delete s.pendingQuestion;
     delete s.pendingKind;
+    delete entry.pendingAgentId;
   }
 
   /** One process runs one conversation: `/clear` or `/resume` in it ends the one before. */

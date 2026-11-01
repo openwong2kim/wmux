@@ -105,6 +105,29 @@ describe('ExternalSessionRegistry', () => {
     expect(f.one().state).toBe('idle');
   });
 
+  it("a subagent's permission dialog clears once that subagent runs a tool again", () => {
+    const f = setup();
+    const sub = { agent_id: 'a1', agent_type: 'general' };
+    f.registry.note(signal({ kind: 'agent.awaiting_input', payload: { hook_event_name: 'PermissionRequest', tool_name: 'Bash', ...sub } }));
+    f.registry.note(signal({ kind: 'agent.awaiting_input', payload: { hook_event_name: 'Notification', notification_type: 'permission_prompt' } }));
+    expect(f.one()).toMatchObject({ state: 'needs-you', pendingKind: 'approval' });
+
+    // The lead and another subagent do not answer it.
+    f.registry.note(signal({ kind: 'agent.activity', payload: { tool_name: 'Read', agent_id: 'a2', agent_type: 'general' } }));
+    f.registry.note(signal({ kind: 'agent.activity', payload: { tool_name: 'Read' } }));
+    expect(f.one().state).toBe('needs-you');
+    f.registry.note(signal({ kind: 'agent.activity', payload: { tool_name: 'Bash', ...sub } }));
+    expect(f.one().state).toBe('running');
+
+    // The lead's own dialog is released by the lead's tool, not a subagent's.
+    f.registry.note(signal({ kind: 'agent.awaiting_input', payload: { hook_event_name: 'PermissionRequest', tool_name: 'Edit' } }));
+    f.registry.note(signal({ kind: 'agent.awaiting_input', payload: { hook_event_name: 'Notification', notification_type: 'permission_prompt' } }));
+    f.registry.note(signal({ kind: 'agent.activity', payload: { tool_name: 'Bash', ...sub } }));
+    expect(f.one().state).toBe('needs-you');
+    f.registry.note(signal({ kind: 'agent.activity', payload: { tool_name: 'Edit' } }));
+    expect(f.one().state).toBe('running');
+  });
+
   it('strips control characters, escapes and bidi overrides, and caps every text field', () => {
     const f = setup();
     const long = 'y'.repeat(2_000);
