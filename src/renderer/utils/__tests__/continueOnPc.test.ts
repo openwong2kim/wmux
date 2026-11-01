@@ -9,7 +9,7 @@ vi.mock('../../hooks/useTerminal', () => ({ terminalRegistry: new Map() }));
 import { SPAWN_TEXT_MAX } from '../../../shared/a2aSpawn';
 import { finalizeSpawnPrompt } from '../../../shared/a2aSpawnPrompt';
 import { REDACTED } from '../../../shared/redactSecrets';
-import type { HandoffFacts } from '../continueInAgent';
+import type { HandoffFacts } from '../handoffNote';
 import { REMOTE_HANDOFF_MAX_BYTES, continueOnPcText, folderRelative, isSecretFileName, remoteHandoffHours, scrubLocalPaths } from '../continueOnPc';
 
 // Built at run time: no credential-shaped literal in the source.

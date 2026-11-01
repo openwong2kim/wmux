@@ -21,7 +21,8 @@ import { useT } from '../../hooks/useT';
 import { getLocale } from '../../i18n';
 import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { getAgentSetupState, refreshAgentStatus, useAgentSetup } from '../../utils/agentSetupRuns';
-import { continueInAgent, continueInAgentText, handoffFacts, type HandoffFacts } from '../../utils/continueInAgent';
+import { continueInAgent, handoffFacts } from '../../utils/continueInAgent';
+import { handoffNoteText, type HandoffFacts } from '../../utils/handoffNote';
 import { continueOnPcText, remoteHandoffHours } from '../../utils/continueOnPc';
 import { spawnAskBlock } from '../Remote/RemoteSpawnAskDialog';
 import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
@@ -144,7 +145,7 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
   const outUntil = everyAccountOutUntil(rotation.state?.rows ?? [], vendor, now);
   const agents = (setup.statuses ?? []).filter((s) => s.readiness === 'ready' && s.agent !== vendor);
   const pos = placePopover(anchor, { width: USAGE_LIMIT_CARD_WIDTH, height });
-  const note = facts ? continueInAgentText(fromAgent, facts, { carryDraft }) : undefined;
+  const note = facts ? handoffNoteText(fromAgent, facts, { carryDraft }) : undefined;
 
   return createPortal(
     <Popover
