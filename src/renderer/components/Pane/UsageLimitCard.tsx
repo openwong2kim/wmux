@@ -38,6 +38,7 @@ import Checkbox from '../ui/Checkbox';
 import Button from '../ui/Button';
 import { usageLimitStatusText, usageLimitView, everyAccountOutUntil } from './usageLimitPresentation';
 import type { PaneActionItem } from './PaneActionsMenu';
+import HandoffNotePreview from './HandoffNotePreview';
 
 export const USAGE_LIMIT_CARD_WIDTH = 300;
 
@@ -240,17 +241,7 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
                   {t('usageLimit.carryDraft')}
                 </label>
               )}
-              <pre
-                aria-label={t('usageLimit.handoffPreview')}
-                tabIndex={0}
-                className="mt-2 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-[var(--chip-radius)] bg-[var(--selection)] p-2 font-mono text-[11px] text-[var(--text-sub)]"
-                data-usage-limit-card-memo
-              >
-                {note}
-              </pre>
-              <p className="mt-1 text-[11px] text-[var(--text-muted)] tabular-nums" data-usage-limit-card-memo-length>
-                {t('usageLimit.handoffLength', { count: note.length })}
-              </p>
+              <HandoffNotePreview note={note} className="mt-2" />
             </>
           )}
         </PopoverSection>
