@@ -472,7 +472,7 @@ describe('company hold: replay', () => {
   });
 });
 
-describe('company hold: the receiving side does not have a waiting task yet', () => {
+describe('company hold: the receiving side does not have a held task until it is given to it', () => {
   const ids = (tasks: { id: string }[]) => tasks.map((t) => t.id).sort();
 
   it('a query from the receiving side leaves it out; its sender and the human still see it with the marker', async () => {
@@ -491,13 +491,30 @@ describe('company hold: the receiving side does not have a waiting task yet', ()
     expect(ids(svc.queryTasks(WS, {}, { trusted: true }))).toEqual(['A', 'C']);
   });
 
-  it('once released the receiver sees it as any other task', async () => {
+  it('released, it stays out until a write starts; then, delivered, or held as delivery-unconfirmed, the receiver sees it', async () => {
     const svc = newService(newLog());
     await assign(svc, 'A');
     await assign(svc, 'C', ['A']);
     await complete(svc, 'A');
+    expect(ids(svc.queryTasks(WS, {}, { paneId: 'pane-s1' }))).toEqual(['A']);
+    expect(svc.withheldTaskIds(WS, { paneId: 'pane-s1' })).toEqual(['C']);
+    await svc.markCompany({ taskId: 'C', attempted: true });
     expect(ids(svc.queryTasks(WS, {}, { paneId: 'pane-s1' }))).toEqual(['A', 'C']);
     expect(svc.withheldTaskIds(WS, { paneId: 'pane-s1' })).toEqual([]);
+    // Nothing was written (no agent in the pane): it is not the seat's again.
+    await svc.markCompany({ taskId: 'C', held: 'no-agent' });
+    expect(svc.withheldTaskIds(WS, { paneId: 'pane-s1' })).toEqual(['C']);
+    await svc.markCompany({ taskId: 'C', delivered: true, ptyId: 'pty-s1' });
+    expect(svc.withheldTaskIds(WS, { paneId: 'pane-s1' })).toEqual([]);
+  });
+
+  it('a released task whose write may have landed is the receiver\'s', async () => {
+    const svc = newService(newLog());
+    await assign(svc, 'A');
+    await assign(svc, 'C', ['A']);
+    await complete(svc, 'A');
+    await svc.markCompany({ taskId: 'C', held: 'delivery-unconfirmed' });
+    expect(ids(svc.queryTasks(WS, {}, { paneId: 'pane-s1' }))).toEqual(['A', 'C']);
   });
 
   it('across workspaces: the sending workspace sees it, the receiving one does not', async () => {
@@ -535,7 +552,7 @@ describe('company hold: the receiving side does not have a waiting task yet', ()
     expect(svc.getTask('C')?.status.state).toBe('canceled');
   });
 
-  it('the receiver moves it once released, and the human lane at any time', async () => {
+  it('the receiver moves it once a write to it started, and the human lane at any time', async () => {
     const svc = newService(newLog());
     await assign(svc, 'A');
     await assign(svc, 'B');
@@ -543,6 +560,9 @@ describe('company hold: the receiving side does not have a waiting task yet', ()
     await assign(svc, 'D', ['B']);
     expect((await svc.transition({ taskId: 'D', to: 'working', callerWorkspaceId: WS, trustedLane: true })).ok).toBe(true);
     await complete(svc, 'A');
+    const owed = await svc.transition({ taskId: 'C', to: 'working', callerWorkspaceId: WS, callerAddr: { paneId: 'pane-s1' } });
+    expect(!owed.ok && owed.error).toBe('a2a.task.update: this task has not been written to your pane yet; it is not yours until wmux writes it there');
+    await svc.markCompany({ taskId: 'C', attempted: true });
     expect((await svc.transition({ taskId: 'C', to: 'working', callerWorkspaceId: WS, callerAddr: { paneId: 'pane-s1' } })).ok).toBe(true);
   });
 });

@@ -153,8 +153,10 @@ describe('a2a.task.query — what the daemon kept from the caller stays out', ()
     expect(ids(await query({}, { callerPtyId: 'pty-dev' }))).toEqual(['task-plain']);
     expect(ids(await query({}, { callerPtyId: 'pty-ceo' }))).toEqual(['task-c', 'task-plain']);
     expect(ids(await query({}, {}, { operator: true }))).toEqual(['task-c', 'task-plain']);
-    // A released task is the receiver's.
+    // A released task is the receiver's once a write to it started, not before.
     rendererRows = [task('task-c', { waitingOn: [], releasedAt: 'r' })];
+    expect(ids(await query({}, { callerPtyId: 'pty-dev' }))).toEqual([]);
+    rendererRows = [task('task-c', { waitingOn: [], releasedAt: 'r', attempted: true })];
     expect(ids(await query({}, { callerPtyId: 'pty-dev' }))).toEqual(['task-c']);
   });
 });

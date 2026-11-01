@@ -58,7 +58,7 @@ import {
   companyHoldOf,
   companyHoldPhase,
   companyHoldWithholds,
-  companyWaitingRefusal,
+  companyNotGivenRefusal,
   isCompanyHoldReason,
   type CompanyHoldMarker,
   type CompanyHoldReason,
@@ -244,8 +244,8 @@ export interface QueryFilters {
 
 /**
  * Who asks a query, as main resolved it: the caller's pane, or the human's
- * lane (`trusted`). A company task still waiting on a blocker is left out
- * for its receiving side (companyHoldWithholds).
+ * lane (`trusted`). A held company task not given to its seat yet is left
+ * out for its receiving side (companyHoldWithholds).
  */
 export interface QueryCaller {
   paneId?: string;
@@ -554,7 +554,7 @@ export class A2aTaskService {
       if (!remoteDone && task.metadata.to.workspaceId !== input.callerWorkspaceId) {
         return { ok: false, error: `a2a.task.update: caller ${input.callerWorkspaceId} is not the receiver` };
       }
-      // A company task still waiting on a blocker is not its receiver's yet;
+      // A held company task not given to its seat yet is not its receiver's;
       // its sender and the human may still move it.
       const hold = companyHoldOf(task);
       if (hold && companyHoldWithholds(task, {
@@ -562,7 +562,7 @@ export class A2aTaskService {
         ...(input.callerAddr?.paneId ? { paneId: input.callerAddr.paneId } : {}),
         trusted: input.trustedLane === true,
       })) {
-        return { ok: false, error: `a2a.task.update: ${companyWaitingRefusal(hold.waitingOn)}` };
+        return { ok: false, error: `a2a.task.update: ${companyNotGivenRefusal(hold)}` };
       }
       // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
       // 수신 페인에 핀됐으면(to.paneId) 그 페인이어야 한다. callerAddr 부재(헤드리스
@@ -1417,8 +1417,8 @@ export class A2aTaskService {
   }
 
   /**
-   * `caller` given: a company task still waiting on a blocker is left out
-   * when the caller is on its receiving side (see QueryCaller).
+   * `caller` given: a held company task not given to its seat yet is left
+   * out when the caller is on its receiving side (see QueryCaller).
    */
   queryTasks(workspaceId: string, filters?: QueryFilters, caller?: QueryCaller): Task[] {
     const out: Task[] = [];

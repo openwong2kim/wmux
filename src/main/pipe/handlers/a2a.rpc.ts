@@ -178,8 +178,8 @@ function malformedBlockedBy(data: unknown): string | null {
 }
 
 /**
- * Who reads the daemon's tasks, as its a2a.task.query takes it: a company task
- * that still waits on a blocker is kept from its receiving side unless the
+ * Who reads the daemon's tasks, as its a2a.task.query takes it: a held company
+ * task not given to its seat yet is kept from its receiving side unless the
  * caller is its sender's pane or the human (shared/companyHold.ts).
  */
 type TaskQueryCaller = { paneId?: string; trusted?: true };
@@ -1295,7 +1295,7 @@ export function registerA2aRpc(
       return { error: 'a2a.task.query: state view requires taskId' };
     }
     if (params.view !== 'page' && !stateOnly) delete params.view;
-    // A company task still waiting on a blocker is kept from its receiving
+    // A held company task not given to its seat yet is kept from its receiving
     // side (shared/companyHold.ts): the daemon needs the caller's pane, and the
     // human sees every task. The MCP tool sends no senderPtyId, so the pane
     // comes from the caller's pane claim, else its envelope's pty.
@@ -1420,8 +1420,8 @@ export function registerA2aRpc(
 
   /**
    * One task in full: the daemon's copy, else the renderer's; null when neither
-   * has it, or when it is kept from `caller` (a company task still waiting on a
-   * blocker, read from its receiving side).
+   * has it, or when it is kept from `caller` (a held company task not given
+   * to its seat yet, read from its receiving side).
    */
   async function readFullTask(workspaceId: string, taskId: string, caller: TaskQueryCaller = {}): Promise<Record<string, unknown> | null> {
     const query = { workspaceId, view: 'page', taskId };

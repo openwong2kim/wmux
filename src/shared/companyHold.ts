@@ -19,10 +19,14 @@
 //      was refused and nothing was written: it is listed again), or a `held`
 //      reason.
 //
-// While a task waits on a blocker it is not its receiver's yet: a query from
-// its receiving side leaves it out, as if it had not been sent, and a state
-// move from there is refused (companyHoldWithholds). Its sender and the human
-// still see it, and the sender can still cancel it.
+// Until it is given to its seat a held task is not its receiver's: while it
+// waits on a blocker, while it is owed a delivery that has not started, and
+// while it is held because it could not be written (no agent, pane gone). A
+// query from its receiving side leaves it out, as if it had not been sent,
+// and a state move from there is refused (companyHoldWithholds). It is given
+// once a write starts (`attempted`: it may have landed, and the nudged seat
+// must find it), once delivered, and when held as `delivery-unconfirmed`. Its
+// sender and the human always see it, and the sender can still cancel it.
 //
 // `delivered` is final. A `held` task waits for a person; `delivered` is
 // still taken on it (the person had it sent), `attempted` is ignored on it.
@@ -113,17 +117,32 @@ export function companyHoldPhase(marker: CompanyHoldMarker): CompanyHoldPhase {
 }
 
 /**
- * True when the task is kept from this caller because it still waits on a
- * blocker: the caller is on its receiving side (its receiver workspace) and
- * is neither its verified sender (in a company workspace that is the sender's
- * own pane) nor the human. A caller whose pane is unknown is kept out.
+ * True while a held task is not given to its seat yet: it waits on a
+ * blocker, it is owed a delivery no write has started on, or it is held as
+ * `no-agent` or `pane-missing` (nothing was written). False once a write
+ * started (`attempted`), once delivered, and when held as
+ * `delivery-unconfirmed` (the write may have landed).
+ */
+export function companyHoldNotGiven(marker: CompanyHoldMarker): boolean {
+  const phase = companyHoldPhase(marker);
+  if (phase === 'waiting') return true;
+  if (phase === 'owed') return marker.attempted !== true;
+  return phase === 'held' && (marker.held === 'no-agent' || marker.held === 'pane-missing');
+}
+
+/**
+ * True when the task is kept from this caller because it is not given to its
+ * seat yet (companyHoldNotGiven): the caller is on its receiving side (its
+ * receiver workspace) and is neither its verified sender (in a company
+ * workspace that is the sender's own pane) nor the human. A caller whose pane
+ * is unknown is kept out.
  */
 export function companyHoldWithholds(
   task: Pick<Task, 'metadata'>,
   caller: { workspaceId: string; paneId?: string; trusted?: boolean },
 ): boolean {
   const hold = companyHoldOf(task);
-  if (!hold || companyHoldPhase(hold) !== 'waiting' || caller.trusted === true) return false;
+  if (!hold || !companyHoldNotGiven(hold) || caller.trusted === true) return false;
   if (task.metadata.to.workspaceId !== caller.workspaceId) return false;
   return !isVerifiedTaskSender(task.metadata, caller.workspaceId, caller.paneId);
 }
@@ -236,6 +255,13 @@ export const COMPANY_BLOCKED_BY_REFUSAL = Object.freeze({
 /** Why the receiving side may not move a task that still waits on a blocker. */
 export function companyWaitingRefusal(waitingOn: readonly string[]): string {
   return `this task waits on ${waitingOn.map(shortTaskId).join(', ')}; it is not yours until ${waitingOn.length === 1 ? 'it completes' : 'they complete'}`;
+}
+
+/** Why the receiving side may not move a held task it was not given yet (companyHoldNotGiven). */
+export function companyNotGivenRefusal(marker: CompanyHoldMarker): string {
+  return companyHoldPhase(marker) === 'waiting'
+    ? companyWaitingRefusal(marker.waitingOn)
+    : 'this task has not been written to your pane yet; it is not yours until wmux writes it there';
 }
 
 /** Each hold reason in plain words: "<task> is held: <text>". */
