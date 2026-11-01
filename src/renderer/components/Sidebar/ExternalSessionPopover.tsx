@@ -15,7 +15,7 @@ import { FOCUS_RING } from '../focusRing';
 import { IconCopy, IconTerminal, IconX } from '../icons';
 import { StatusMarkView } from './AgentMarks';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { externalAgentStatus, externalAttachCommand } from './externalSessionPlacement';
+import { externalAgentStatus, externalAttachCommand, terminalAppName } from './externalSessionPlacement';
 import { folderWorkspaceName } from '../FirstRunWizard';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { displayPath } from '../../utils/displayPath';
@@ -48,7 +48,7 @@ export function externalWhereLong(where: ExternalSessionWhere, t: Translate): st
       parts.push(label ? t('externalSessions.whereSsh', { client: label }) : 'ssh');
       break;
     case 'terminal':
-      if (label) parts.push(label);
+      if (label) parts.push(terminalAppName(label));
       break;
     default:
       break;

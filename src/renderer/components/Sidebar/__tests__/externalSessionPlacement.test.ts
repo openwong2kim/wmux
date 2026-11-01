@@ -99,6 +99,14 @@ describe('placeExternalSessions', () => {
   });
 });
 
+describe('externalWhereShort terminal names', () => {
+  it('shows a terminal app by its own name, and an unknown one as sent', () => {
+    expect(externalWhereShort({ kind: 'terminal', label: 'Apple_Terminal' })).toBe('Terminal');
+    expect(externalWhereShort({ kind: 'terminal', label: 'iTerm.app' })).toBe('iTerm2');
+    expect(externalWhereShort({ kind: 'terminal', label: 'kitty' })).toBe('kitty');
+  });
+});
+
 describe('externalAttachCommand', () => {
   it('attaches to a known tmux session', () => {
     expect(externalAttachCommand({ kind: 'tmux', session: 'api', window: '2' })).toBe('tmux attach -t api');

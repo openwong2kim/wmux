@@ -109,6 +109,22 @@ function wslAttachCommand(kind: 'tmux' | 'screen', distro: string, session: stri
   return `wsl.exe -d ${distro.includes(' ') ? `"${distro}"` : distro} --exec ${tool}`;
 }
 
+/** TERM_PROGRAM values as the apps name themselves; anything else shows as sent. */
+const TERMINAL_APP_NAMES: Record<string, string> = {
+  Apple_Terminal: 'Terminal',
+  'iTerm.app': 'iTerm2',
+  vscode: 'VS Code',
+  WarpTerminal: 'Warp',
+  ghostty: 'Ghostty',
+  WezTerm: 'WezTerm',
+  Hyper: 'Hyper',
+  Tabby: 'Tabby',
+};
+
+export function terminalAppName(termProgram: string): string {
+  return TERMINAL_APP_NAMES[termProgram] ?? termProgram;
+}
+
 /**
  * The row's short "where": `tmux api:2`, `screen build`, `zellij dev`,
  * `ssh 10.0.0.4`, the terminal app's name, or the WSL distro alone. Product
@@ -132,7 +148,7 @@ export function externalWhereShort(where: ExternalSessionWhere): string | undefi
       base = label ? `ssh ${label}` : 'ssh';
       break;
     case 'terminal':
-      base = label || undefined;
+      base = label ? terminalAppName(label) : undefined;
       break;
     default:
       base = undefined;
