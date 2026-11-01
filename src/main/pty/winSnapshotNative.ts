@@ -138,7 +138,8 @@ export function decodeProcessEntry(buf: Buffer): NativeProcRow {
 
 type Handle = number | bigint;
 
-interface NativeBindings {
+/** The kernel32/iphlpapi calls this module makes (exported for tests). */
+export interface NativeBindings {
   GetExtendedTcpTable: (
     table: Buffer | null,
     size: Buffer,
@@ -238,6 +239,14 @@ function loadBindings(): NativeBindings | null {
     bindings = null;
   }
   return bindings;
+}
+
+/** Replace the native bindings (undefined = load them again on next use). Tests only. */
+export function setNativeBindingsForTests(next: NativeBindings | null | undefined): void {
+  bindings = next;
+  loadFailed = false;
+  consecutiveCallFailures = 0;
+  warnedV6 = false;
 }
 
 /**
@@ -447,6 +456,28 @@ export function tryProcessCreatedAt(pid: number): bigint | null {
 
 /** OpenProcess on a pid that no longer exists. */
 const ERROR_INVALID_PARAMETER = 87;
+
+/**
+ * Whether a failed OpenProcess means the pid is gone. Error 87 alone is not
+ * enough: the code comes from a separate GetLastError call, so the pid must
+ * also be missing from a process table read after it. A pid that is listed,
+ * or a table that could not be read (`listed` null), is not gone.
+ */
+export function isGoneAfterOpenFailure(error: number, listed: boolean | null): boolean {
+  return error === ERROR_INVALID_PARAMETER && listed === false;
+}
+
+/** {@link isGoneAfterOpenFailure} for this pid; the table is read only for error 87. */
+function confirmGone(b: NativeBindings, pid: number, error: number): boolean {
+  if (error !== ERROR_INVALID_PARAMETER) return false;
+  let listed: boolean | null;
+  try {
+    listed = readProcessTable(b).some((p) => p.pid === pid);
+  } catch {
+    listed = null;
+  }
+  return isGoneAfterOpenFailure(error, listed);
+}
 /** QueryFullProcessImageNameW takes and returns a length in WCHARs; 32767 is the longest Win32 path. */
 const MAX_IMAGE_PATH_CHARS = 32767;
 
@@ -484,7 +515,7 @@ export function tryProcessIdentity(pid: number): ProcessIdentityRow | ProcessIde
     const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
     if (handle === 0n) {
       const code = b.GetLastError();
-      return { failure: `OpenProcess failed (error ${code})`, gone: code === ERROR_INVALID_PARAMETER };
+      return { failure: `OpenProcess failed (error ${code})`, gone: confirmGone(b, pid, code) };
     }
     try {
       const creation = Buffer.alloc(8);
@@ -524,7 +555,7 @@ export function readProcessExitState(pid: number): 'exited' | 'running' | 'unkno
   try {
     const raw = b.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
     const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
-    if (handle === 0n) return b.GetLastError() === ERROR_INVALID_PARAMETER ? 'exited' : 'unknown';
+    if (handle === 0n) return confirmGone(b, pid, b.GetLastError()) ? 'exited' : 'unknown';
     try {
       const r = b.WaitForSingleObject(raw, 0);
       return r === WAIT_OBJECT_0 ? 'exited' : r === WAIT_TIMEOUT ? 'running' : 'unknown';
@@ -641,7 +672,7 @@ export function tryProcessHandleApi(): ProcessHandleApi | null {
         let h = b.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if (isNull(h)) {
           const code = b.GetLastError();
-          if (code === ERROR_INVALID_PARAMETER) return { gone: true };
+          if (confirmGone(b, pid, code)) return { gone: true };
           if (code !== ERROR_ACCESS_DENIED) return { failure: `OpenProcess failed (error ${code})` };
           // Not ours to terminate (another user's, or elevated), but it can
           // still be waited on and identified.
@@ -649,7 +680,7 @@ export function tryProcessHandleApi(): ProcessHandleApi | null {
           h = b.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
           if (isNull(h)) {
             const again = b.GetLastError();
-            return again === ERROR_INVALID_PARAMETER ? { gone: true } : { failure: `OpenProcess failed (error ${again})` };
+            return confirmGone(b, pid, again) ? { gone: true } : { failure: `OpenProcess failed (error ${again})` };
           }
         }
         const createdAt = createdAtOf(h);
