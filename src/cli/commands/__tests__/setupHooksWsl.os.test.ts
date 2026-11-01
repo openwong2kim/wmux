@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   installWslHooks,
@@ -21,6 +22,7 @@ import { specsFor } from '../setupHooks';
 import { WSL_GLOBAL_HOOK_SCRIPT, WSL_RUNTIME_POINTER } from '../../../shared/wslGlobalHook';
 
 const hasSh = spawnSync('sh', ['-c', 'exit 0'], { windowsHide: true }).status === 0;
+const hasSha256sum = hasSh && spawnSync('sh', ['-c', 'command -v sha256sum'], { windowsHide: true }).status === 0;
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -41,6 +43,8 @@ interface FakeDistro {
   runner: WslRunner;
 }
 
+const sha256 = (text: string) => createHash('sha256').update(text, 'utf8').digest('hex');
+
 /** A distro whose files live in a Map; CLAUDE_CONFIG_DIR as Claude Code would see it. */
 function fakeDistro(initial: Record<string, string> = {}, configDir?: string): FakeDistro {
   const files = new Map(Object.entries(initial));
@@ -54,10 +58,13 @@ function fakeDistro(initial: Record<string, string> = {}, configDir?: string): F
       const file = `${configDir ?? '/home/dev/.claude'}/settings.json`;
       const head = `${file}\0${fakeWslpath(positional[0])}\0`;
       const content = files.get(file);
-      return { status: 0, stdout: content === undefined ? `${head}absent\0` : `${head}present\0${content}`, stderr: '' };
+      return { status: 0, stdout: content === undefined ? `${head}absent\0absent\0` : `${head}present\0${sha256(content)}\0${content}`, stderr: '' };
     }
     if (script === WSL_SETTINGS_WRITE_SCRIPT) {
       calls.push({ kind: 'write', args });
+      // As the script does: refuse when the file is not what was read.
+      const now = files.has(positional[0]) ? sha256(files.get(positional[0]) ?? '') : 'absent';
+      if (now !== positional[1]) return { status: 7, stdout: '', stderr: '' };
       files.set(positional[0], input ?? '');
       return { status: 0, stdout: '', stderr: '' };
     }
@@ -226,6 +233,33 @@ describe('setup-hooks --wsl: settings merge', () => {
     expect(distro.files.get(SETTINGS)).toBe('{ broken');
   });
 
+  it('a hooks value that is not an object, or an event that is not a list, is refused, not dropped', () => {
+    const root = tempDir();
+    for (const bad of ['{"hooks":[]}', '{"hooks":{"Stop":{"command":"mine"}}}']) {
+      const distro = fakeDistro({ [SETTINGS]: bad });
+      const out = installWslHooks({ hooksDir: hooksDirFor(root), suffix: '', runner: distro.runner });
+      expect(out.ok).toBe(false);
+      expect(out.error).toMatch(/aborting to avoid dropping it/);
+      expect(uninstallWslHooks({ hooksDir: hooksDirFor(root), suffix: '', runner: distro.runner }).ok).toBe(false);
+      expect(distro.files.get(SETTINGS)).toBe(bad);
+      expect(distro.calls.map((c) => c.kind)).toEqual(['read', 'read']);
+    }
+  });
+
+  it('a file claude saved between the read and the write is not overwritten', () => {
+    const root = tempDir();
+    const distro = fakeDistro({ [SETTINGS]: '{"theme":"dark"}' });
+    const racing: WslRunner = (args, input) => {
+      // claude saves a setting just before wmux writes.
+      if (args.includes(WSL_SETTINGS_WRITE_SCRIPT)) distro.files.set(SETTINGS, '{"theme":"dark","permissions":{"allow":["Bash(ls)"]}}');
+      return distro.runner(args, input);
+    };
+    const out = installWslHooks({ hooksDir: hooksDirFor(root), suffix: '', runner: racing });
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/changed while wmux was updating it/);
+    expect(read(distro)).toEqual({ theme: 'dark', permissions: { allow: ['Bash(ls)'] } });
+  });
+
   it('a failed wsl.exe call is reported, not written past', () => {
     const root = tempDir();
     const out = installWslHooks({
@@ -286,8 +320,8 @@ describe.skipIf(!hasSh)('setup-hooks --wsl: the in-distro scripts under a real s
   }
 
   function parse(stdout: string) {
-    const [file, script, state, ...rest] = stdout.split('\0');
-    return { file, script, state, content: rest.join('\0') };
+    const [file, script, state, hash, ...rest] = stdout.split('\0');
+    return { file, script, state, hash, content: rest.join('\0') };
   }
 
   /** A stand-in for the user's interactive shell: prints what its startup files would export. */
@@ -307,6 +341,7 @@ describe.skipIf(!hasSh)('setup-hooks --wsl: the in-distro scripts under a real s
     expect(got.file.endsWith('/cfg/settings.json')).toBe(true);
     expect(got.script).toBe('/mnt/c/hooks/wmux-wsl-hook.sh');
     expect(got.state).toBe('present');
+    expect(got.hash).toBe(hasSha256sum ? sha256('{"a":1}') : 'nohash');
     expect(got.content).toBe('{"a":1}');
   });
 
@@ -330,11 +365,37 @@ describe.skipIf(!hasSh)('setup-hooks --wsl: the in-distro scripts under a real s
   it('writes stdin over the file through a temp file, creating its folder, leaving no temp behind', () => {
     const home = tempDir();
     const file = path.join(home, 'new', 'settings.json');
-    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [posix(file)], { HOME: posix(home) }, '{"b":2}\n').status).toBe(0);
+    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [posix(file), 'absent'], { HOME: posix(home) }, '{"b":2}\n').status).toBe(0);
     expect(fs.readFileSync(file, 'utf8')).toBe('{"b":2}\n');
-    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [posix(file)], { HOME: posix(home) }, '{"b":3}\n').status).toBe(0);
+    const was = hasSha256sum ? sha256('{"b":2}\n') : 'nohash';
+    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [posix(file), was], { HOME: posix(home) }, '{"b":3}\n').status).toBe(0);
     expect(fs.readFileSync(file, 'utf8')).toBe('{"b":3}\n');
     expect(fs.readdirSync(path.dirname(file))).toEqual(['settings.json']);
+  });
+
+  it('replaces nothing when the file is not what was read (exit 7), and leaves no temp behind', () => {
+    const home = tempDir();
+    const file = path.join(home, 'settings.json');
+    fs.writeFileSync(file, '{"saved":"by claude"}');
+    // Read as absent, but it exists now.
+    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [posix(file), 'absent'], { HOME: posix(home) }, '{}\n').status).toBe(7);
+    if (hasSha256sum) {
+      expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [posix(file), sha256('{"old":1}')], { HOME: posix(home) }, '{}\n').status).toBe(7);
+    }
+    expect(fs.readFileSync(file, 'utf8')).toBe('{"saved":"by claude"}');
+    expect(fs.readdirSync(home).filter((name) => name.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('never makes the settings readable by others: a new file is owner-only, an existing one keeps its mode', () => {
+    const home = tempDir();
+    const fresh = path.join(home, 'fresh.json');
+    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [fresh, 'absent'], { HOME: home }, '{}\n').status).toBe(0);
+    expect(fs.statSync(fresh).mode & 0o777).toBe(0o600);
+    const shared = path.join(home, 'shared.json');
+    fs.writeFileSync(shared, '{}', { mode: 0o640 });
+    fs.chmodSync(shared, 0o640);
+    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [shared, hasSha256sum ? sha256('{}') : 'nohash'], { HOME: home }, '{"x":1}\n').status).toBe(0);
+    expect(fs.statSync(shared).mode & 0o777).toBe(0o640);
   });
 
   it('the spawn runner hands stdin over as UTF-8 and reports the exit status', () => {
@@ -382,7 +443,7 @@ describe.skipIf(!hasSh)('setup-hooks --wsl: the in-distro scripts under a real s
     fs.writeFileSync(real, '{}');
     const link = path.join(home, 'settings.json');
     fs.symlinkSync(real, link);
-    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [link], { HOME: home }, '{"c":1}\n').status).toBe(0);
+    expect(sh(WSL_SETTINGS_WRITE_SCRIPT, [link, hasSha256sum ? sha256('{}') : 'nohash'], { HOME: home }, '{"c":1}\n').status).toBe(0);
     expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(real, 'utf8')).toBe('{"c":1}\n');
   });

@@ -134,11 +134,15 @@ describe('claude bridge tmux target from WSL', () => {
     expect(asked).toBe(0);
   });
 
-  it('a WSL hook with no target asks no tmux on Windows', () => {
+  it('a WSL hook with no target asks no tmux on Windows; a bridge inside WSL asks its own', () => {
+    const fromWsl = { TMUX: 'x', TMUX_PANE: '%1', WSL_DISTRO_NAME: 'Ubuntu' };
     let asked = 0;
-    const got = where({ TMUX: 'x', TMUX_PANE: '%1', WSL_DISTRO_NAME: 'Ubuntu' }, () => { asked += 1; return { session: 'other', window: '1' }; });
-    expect(got).toEqual({ kind: 'tmux', wslDistro: 'Ubuntu' });
+    const lookup = () => { asked += 1; return { session: 'work', window: '1' }; };
+    const whereOn = (platform: string) => (loaded.claude as unknown as (e: Env, q: TmuxQuery, p: string) => unknown)(fromWsl, lookup, platform);
+    expect(whereOn('win32')).toEqual({ kind: 'tmux', wslDistro: 'Ubuntu' });
     expect(asked).toBe(0);
+    expect(whereOn('linux')).toEqual({ kind: 'tmux', session: 'work', window: '1', wslDistro: 'Ubuntu' });
+    expect(asked).toBe(1);
   });
 
   it('a malformed target is no answer, not a wrong one', () => {

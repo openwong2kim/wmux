@@ -109,21 +109,42 @@ script=$(wslpath -u "$1" 2>/dev/null) || { printf '%s\\n' 'wmux: wslpath could n
 file="\${dir%/}/settings.json"
 printf '%s\\0%s\\0' "$file" "$script"
 if [ -e "$file" ]; then
-  printf 'present\\0'
+  hash=nohash
+  if command -v sha256sum >/dev/null 2>&1; then hash=$(sha256sum < "$file" | cut -d' ' -f1) || exit 4; fi
+  printf 'present\\0%s\\0' "$hash"
   cat -- "$file" || exit 4
 else
-  printf 'absent\\0'
+  printf 'absent\\0absent\\0'
 fi
 `;
 
-/** Inside the distro: stdin replaces `$1`, tmp + rename beside it (through a symlink). */
+/**
+ * Inside the distro: stdin replaces `$1`, tmp + rename beside it (through a
+ * symlink). The temp file is created owner-only (settings can hold tokens) and
+ * takes the old file's mode when it can, so the file is never readable by
+ * others, even for a moment. `$2` is the sha256 of the file as it was read
+ * (`absent` when there was none): if Claude wrote it since, nothing is
+ * replaced (exit 7) and the CLI asks for a re-run instead of losing that write.
+ */
 export const WSL_SETTINGS_WRITE_SCRIPT = `set -u
 file=$1
+expected=$2
 if [ -L "$file" ]; then file=$(readlink -f -- "$file") || exit 4; fi
 mkdir -p -- "\${file%/*}" || exit 4
+umask 077
 tmp="$file.wmux-$$.tmp"
 if ! cat > "$tmp"; then rm -f -- "$tmp"; exit 4; fi
 if [ -e "$file" ]; then chmod --reference="$file" -- "$tmp" 2>/dev/null || true; fi
+if [ -e "$file" ]; then
+  if command -v sha256sum >/dev/null 2>&1; then
+    now=$(sha256sum < "$file" | cut -d' ' -f1)
+  else
+    now=$expected
+  fi
+else
+  now=absent
+fi
+if [ "$now" != "$expected" ]; then rm -f -- "$tmp"; exit 7; fi
 if ! mv -f -- "$tmp" "$file"; then rm -f -- "$tmp"; exit 4; fi
 `;
 
@@ -236,6 +257,8 @@ export interface WslSettingsRead {
   settingsPath: string;
   scriptLinuxPath: string;
   exists: boolean;
+  /** sha256 of the file as read, `nohash` (no sha256sum in the distro) or `absent`. */
+  hash: string;
   settings: Record<string, unknown>;
 }
 
@@ -252,19 +275,23 @@ function runFailure(what: string, run: WslRunResult): string {
 export function readWslSettings(runner: WslRunner, distro: string | undefined, scriptWindowsPath: string): WslSettingsRead {
   const run = runner([...distroArgs(distro), '--exec', '/bin/sh', '-c', WSL_SETTINGS_READ_SCRIPT, 'wmux-wsl-read', scriptWindowsPath]);
   if (run.error || run.status !== 0) throw new Error(runFailure('could not read the Claude settings in WSL', run));
-  const first = run.stdout.indexOf('\0');
-  const second = run.stdout.indexOf('\0', first + 1);
-  const third = run.stdout.indexOf('\0', second + 1);
-  if (first < 0 || second < 0 || third < 0) throw new Error('could not read the Claude settings in WSL: unexpected answer');
-  const settingsPath = run.stdout.slice(0, first);
-  const scriptLinuxPath = run.stdout.slice(first + 1, second);
-  const state = run.stdout.slice(second + 1, third);
-  const raw = run.stdout.slice(third + 1);
-  if (!settingsPath.startsWith('/') || !scriptLinuxPath.startsWith('/') || /[\r\n]/.test(scriptLinuxPath)) {
-    throw new Error('could not read the Claude settings in WSL: unexpected paths');
+  // path NUL script NUL state NUL hash NUL content
+  const cuts: number[] = [];
+  for (let i = 0, at = -1; i < 4; i++) {
+    at = run.stdout.indexOf('\0', at + 1);
+    if (at < 0) throw new Error('could not read the Claude settings in WSL: unexpected answer');
+    cuts.push(at);
+  }
+  const settingsPath = run.stdout.slice(0, cuts[0]);
+  const scriptLinuxPath = run.stdout.slice(cuts[0] + 1, cuts[1]);
+  const state = run.stdout.slice(cuts[1] + 1, cuts[2]);
+  const hash = run.stdout.slice(cuts[2] + 1, cuts[3]);
+  const raw = run.stdout.slice(cuts[3] + 1);
+  if (!settingsPath.startsWith('/') || !scriptLinuxPath.startsWith('/') || /[\r\n]/.test(scriptLinuxPath) || !/^(?:[0-9a-f]{64}|nohash|absent)$/.test(hash)) {
+    throw new Error('could not read the Claude settings in WSL: unexpected answer');
   }
   if (state !== 'present' || raw.trim() === '') {
-    return { settingsPath, scriptLinuxPath, exists: state === 'present', settings: {} };
+    return { settingsPath, scriptLinuxPath, exists: state === 'present', hash, settings: {} };
   }
   let parsed: unknown;
   try {
@@ -275,15 +302,35 @@ export function readWslSettings(runner: WslRunner, distro: string | undefined, s
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error(`${settingsPath} in WSL is not valid JSON — aborting to avoid overwriting your Claude Code config. Fix or remove the file and re-run.`);
   }
-  return { settingsPath, scriptLinuxPath, exists: true, settings: parsed as Record<string, unknown> };
+  return { settingsPath, scriptLinuxPath, exists: true, hash, settings: parsed as Record<string, unknown> };
 }
 
-function writeWslSettings(runner: WslRunner, distro: string | undefined, settingsPath: string, settings: Record<string, unknown>): void {
+/** Exit code of the write script when the file changed after it was read. */
+const WRITE_CHANGED_SINCE_READ = 7;
+
+function writeWslSettings(runner: WslRunner, distro: string | undefined, read: WslSettingsRead): void {
   const run = runner(
-    [...distroArgs(distro), '--exec', '/bin/sh', '-c', WSL_SETTINGS_WRITE_SCRIPT, 'wmux-wsl-write', settingsPath],
-    JSON.stringify(settings, null, 2) + '\n',
+    [...distroArgs(distro), '--exec', '/bin/sh', '-c', WSL_SETTINGS_WRITE_SCRIPT, 'wmux-wsl-write', read.settingsPath, read.hash],
+    JSON.stringify(read.settings, null, 2) + '\n',
   );
-  if (run.error || run.status !== 0) throw new Error(runFailure(`could not write ${settingsPath} in WSL`, run));
+  if (!run.error && run.status === WRITE_CHANGED_SINCE_READ) {
+    throw new Error(`${read.settingsPath} in WSL changed while wmux was updating it (a running claude saved it); nothing was written — re-run the command.`);
+  }
+  if (run.error || run.status !== 0) throw new Error(runFailure(`could not write ${read.settingsPath} in WSL`, run));
+}
+
+/**
+ * A `hooks` value Claude would not read as wmux expects (not an object, or a
+ * non-array event list) is the user's to fix: merging would drop it.
+ */
+function malformedHooks(settings: Record<string, unknown>, settingsPath: string): string | null {
+  const hooks = settings.hooks;
+  if (hooks === undefined) return null;
+  const bad = !hooks || typeof hooks !== 'object' || Array.isArray(hooks)
+    ? 'hooks'
+    : Object.entries(hooks as Record<string, unknown>).find(([, groups]) => !Array.isArray(groups))?.[0];
+  if (!bad) return null;
+  return `${settingsPath} in WSL has a "${bad === 'hooks' ? 'hooks' : `hooks.${bad}`}" that is not ${bad === 'hooks' ? 'an object' : 'a list'} — aborting to avoid dropping it. Fix it and re-run.`;
 }
 
 export interface WslHooksOptions {
@@ -330,10 +377,12 @@ export function installWslHooks(options: WslHooksOptions): WslHooksOutcome {
     // The script first: an entry must never name a file that is not there.
     const scriptWindowsPath = writeWslHookScript(options.hooksDir, options.suffix);
     const read = readWslSettings(runner, options.distro, scriptWindowsPath);
+    const malformed = malformedHooks(read.settings, read.settingsPath);
+    if (malformed) return { ...base, settingsPath: read.settingsPath, error: malformed };
     const before = JSON.stringify(read.settings);
     const events = mergeWslHooks(read.settings, read.scriptLinuxPath, wslHookMarker(options.suffix));
     const changed = JSON.stringify(read.settings) !== before;
-    if (changed) writeWslSettings(runner, options.distro, read.settingsPath, read.settings);
+    if (changed) writeWslSettings(runner, options.distro, read);
     const warning = fs.existsSync(path.join(options.hooksDir, WSL_RUNTIME_POINTER))
       ? null
       : 'wmux has not recorded its runtime yet: start wmux once, or the hooks stay silent until it does.';
@@ -354,8 +403,10 @@ export function uninstallWslHooks(options: WslHooksOptions): WslHooksOutcome {
   try {
     // The read translates this path but never opens it: uninstall writes no script.
     const read = readWslSettings(runner, options.distro, path.join(options.hooksDir, WSL_GLOBAL_HOOK_SCRIPT));
+    const malformed = malformedHooks(read.settings, read.settingsPath);
+    if (malformed) return { ...base, settingsPath: read.settingsPath, error: malformed };
     const removed = read.exists ? stripWslHooks(read.settings, wslHookMarker(options.suffix)) : 0;
-    if (removed > 0) writeWslSettings(runner, options.distro, read.settingsPath, read.settings);
+    if (removed > 0) writeWslSettings(runner, options.distro, read);
     return { ...base, ok: true, settingsPath: read.settingsPath, scriptPath: read.scriptLinuxPath, changed: removed > 0, removed };
   } catch (err) {
     return { ...base, error: err instanceof Error ? err.message : String(err) };

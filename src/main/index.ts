@@ -279,9 +279,9 @@ import {
 import {
   refreshHookBridgeAtBoot,
   defaultPaths as defaultHooksPaths,
-  findBridgeSourceFrom,
 } from '../cli/commands/setupHooks';
 import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
+import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
@@ -2257,7 +2257,7 @@ app.on('ready', async () => {
           suffix: dataSuffix(),
           hooksDir: path.join(getWmuxDir(), 'hooks'),
           runtimePath: process.execPath,
-          bridgePath: findBridgeSourceFrom(__dirname),
+          bridgePath: findWslClaudeBridge(__dirname),
         });
         if (out.pointer === 'no-bridge') logLine('warn', 'main', 'wsl hook runtime pointer: no-bridge');
         else if (out.pointer === 'written' || out.script === 'refreshed') logLine('info', 'main', `wsl hook: pointer ${out.pointer}, script ${out.script}`);

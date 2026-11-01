@@ -822,16 +822,18 @@ function parseTmuxTarget(text) {
 // A hook from WSL outside wmux (the global WSL hook script, shared/
 // wslGlobalHook.ts) runs this bridge on Windows, where tmux does not exist: the
 // script asks tmux on the Linux side and hands the answer over as
-// WMUX_TMUX_TARGET, which wins over the lookup. With no answer from there the
-// bridge asks nothing: a tmux on the Windows side (MSYS2, Cygwin) is another
-// server, and its answer would name the wrong session.
-function whereFromEnv(env, queryTmux) {
+// WMUX_TMUX_TARGET, which wins over the lookup. With no answer from there a
+// bridge on Windows asks nothing: a tmux on that side (MSYS2, Cygwin) is
+// another server, and its answer would name the wrong session. A bridge run
+// inside WSL itself asks its own tmux as on any Linux.
+function whereFromEnv(env, queryTmux, platform = process.platform) {
   const wslDistro = whereText(env.WSL_DISTRO_NAME);
   let where = null;
   if (env.TMUX || env.TMUX_PANE) {
+    const fromWslOnWindows = Boolean(wslDistro) && platform === 'win32';
     const target = env.WMUX_TMUX_TARGET
       ? parseTmuxTarget(env.WMUX_TMUX_TARGET)
-      : queryTmux && !wslDistro ? queryTmux(env) : null;
+      : queryTmux && !fromWslOnWindows ? queryTmux(env) : null;
     where = { kind: 'tmux', session: whereText(target?.session), window: whereText(target?.window) };
   } else if (env.STY) {
     // `<pid>.<name>`; the name may itself contain dots.
