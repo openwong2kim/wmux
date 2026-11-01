@@ -77,7 +77,7 @@ export default function ExternalSessionRow({ session, workspaceId, now }: {
           anchor
             // Pressed while its card is open (DESIGN.md: an open control is
             // the emphasis fill, never colour).
-            ? 'bg-[var(--selection-emphasis)] text-[var(--text-main)]'
+            ? 'bg-[var(--selection-emphasis)] [--text-muted:var(--text-sub)] text-[var(--text-main)]'
             : 'text-[var(--text-sub)] hover:bg-[var(--hover-fill)] hover:text-[var(--text-main)]'
         }`}
         title={rowLabel}
