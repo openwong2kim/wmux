@@ -859,7 +859,6 @@ export const en = {
   'pane.renameError.failed': "Could not rename the pane",
   'pane.renameTab': 'Rename tab',
   'pane.stash': 'Stash pane',
-  'pane.balanceLayout': 'Balance layout',
   'pane.muteNotifications': 'Mute notifications',
   'pane.unmuteNotifications': 'Unmute notifications',
   'pane.notificationsMuted': 'Notifications muted for this pane',

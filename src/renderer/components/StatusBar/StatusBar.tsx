@@ -1,4 +1,3 @@
-import BalanceLayoutButton from '../Titlebar/BalanceLayoutButton';
 import { type CSSProperties, useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
@@ -268,7 +267,6 @@ export default function StatusBar() {
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
-        <BalanceLayoutButton />
       </div>
     </div>
   );

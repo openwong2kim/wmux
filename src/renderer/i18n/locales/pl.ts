@@ -851,7 +851,6 @@ export const pl = {
   'pane.renameError.failed': "Nie udało się zmienić nazwy panelu",
   'pane.renameTab': 'Zmień nazwę karty',
   'pane.stash': 'Odłóż panel',
-  'pane.balanceLayout': 'Wyrównaj układ',
   'pane.muteNotifications': 'Wycisz powiadomienia',
   'pane.unmuteNotifications': 'Włącz powiadomienia',
   'pane.notificationsMuted': 'Powiadomienia z tego panelu są wyciszone',
