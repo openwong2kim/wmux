@@ -5,7 +5,7 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
-import { computePaneAutoName, paneDisplayName, paneNameFields } from '../utils/paneNaming';
+import { a2aPartyName, computePaneAutoName, paneDisplayName, paneNameFields } from '../utils/paneNaming';
 import { resolvePaneName } from '../utils/paneNameResolver';
 import { paneForegroundProgram, surfaceForegroundProgram } from '../utils/surfaceProgram';
 import { originFromCaller } from '../utils/fanoutProvenance';
@@ -697,7 +697,7 @@ export function useRpcBridge(): void {
 // pane that received the bytes — see `ptyAgent`.
 // Exported for tests only (a2aFormat.delivery.test.ts).
 export async function deliverPtyNotification(
-  targetWs: { rootPane: Pane; activePaneId: string; name: string; stashedPanes?: Workspace['stashedPanes'] },
+  targetWs: { rootPane: Pane; activePaneId: string; name: string; wsOrdinal?: number; stashedPanes?: Workspace['stashedPanes'] },
   senderName: string,
   // A function builds the body for the pane actually chosen, at write time.
   message: string | ((ptyId: string) => string),
@@ -713,7 +713,7 @@ export async function deliverPtyNotification(
   if (ptyId) {
     return deliverA2aText(
       ptyId,
-      formatA2aMessage(senderName, targetWs.name, typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
+      formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
       operator,
       newTask,
     );
@@ -3603,7 +3603,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           };
         } else {
           const senderWs = store.workspaces.find((w) => w.id === workspaceId);
-          const senderName = senderWs?.name ?? 'unknown';
+          const senderName = senderWs ? a2aPartyName(senderWs, store.paneLabel, store.surfaceAgent, callerPtyId) : 'unknown';
           const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
           const pinAnchor = replyingToReceiver ? task.metadata.to : task.metadata.from;
           const hasAnchor = !!(pinAnchor.paneId || pinAnchor.surfaceId);
@@ -3841,6 +3841,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // senderPtyId is already validated against the sender's own tree above, so an
     // absent/forged value resolves to null → `from` stays ws-only (no regression).
     const senderAddr = resolveSenderPaneAddress(senderLeaves, senderPtyId);
+    const fromParty = sender ? a2aPartyName(sender, store.paneLabel, store.surfaceAgent, senderPtyId) : fromName;
 
     // Explicit address first, then the agent pane resolved from an unaddressed
     // send — both are pinned on the task identically (see `to` below).
@@ -4021,9 +4022,9 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       } else if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
         // #1680 — this branch is the task boundary: the pane's role may ask
         // for a fresh conversation before the task lands (both modes).
-        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromName, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined) + imagesNudgeSuffix(images), explicitPty, operator, { taskId: newTaskId, ...gated });
+        write = await deliverPtyNudge(target, (pty) => buildA2aNudge(newTaskId, fromParty, 'new', a2aFormatOptionsFor(pty).multiline ? title : undefined) + imagesNudgeSuffix(images), explicitPty, operator, { taskId: newTaskId, ...gated });
       } else {
-        write = await deliverPtyNotification(target, fromName, bodyWithImages(message, images), explicitPty, operator, { taskId: newTaskId, ...gated });
+        write = await deliverPtyNotification(target, fromParty, bodyWithImages(message, images), explicitPty, operator, { taskId: newTaskId, ...gated });
         mode = 'notification';
       }
       const wrotePty = write.ptyId;
@@ -4281,7 +4282,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const targetWs = store.workspaces.find((w) => w.id === targetWsId);
       if (targetWs) {
         const callerWs = store.workspaces.find((w) => w.id === workspaceId);
-        const callerName = callerWs?.name ?? 'unknown';
+        const callerName = callerWs ? a2aPartyName(callerWs, store.paneLabel, store.surfaceAgent, callerPtyIdUpdate) : 'unknown';
         const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
         const pinAnchor = replyingToReceiver ? task.metadata.to : task.metadata.from;
         const hasAnchor = !!(pinAnchor.paneId || pinAnchor.surfaceId);

@@ -88,8 +88,8 @@ function formatBody(message: string, opts: A2aFormatOptions): string {
  * delimiters (━) so the receiving agent can clearly identify it.
  *
  *   ━━━ WMUX A2A [Priority: HIGH] ━━━
- *   From: Workspace 1
- *   To: Workspace 2
+ *   From: Workspace 1.q1
+ *   To: Workspace 2.release
  *
  *   Please check the build output.
  *   ━━━ END ━━━
