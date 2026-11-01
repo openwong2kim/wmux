@@ -130,11 +130,12 @@ describe('existing Codex PTY composer', () => {
     expect(codexComposerEmpty(screen)).toBe(true);
     for (const bad of [null, ['› my unfinished task', ...screen.slice(1)], [...screen, 'esc to cancel'], ['› Ask Codex to do anything']]) expect(codexComposerEmpty(bad)).toBe(false);
   });
-  it('submits to the existing process with one Enter and no new native session', async () => {
+  // Tab submits like Enter on an idle Codex, and is queued if a turn started meanwhile (deliverChatPrompt codexSubmit).
+  it('submits to the existing process with one Tab and no new native session', async () => {
     const state = { slug: 'codex' as const, incarnationId: 'process', status: 'idle' as const, inputQuiet: true, inputRevision: 0 };
     const write = vi.fn(() => { state.inputRevision++; return true; });
     expect(await deliverChatPrompt(nativeId, 'first\nsecond', { getTranscriptSessionId: () => nativeId, hasOpenApproval: () => false,
       readScreen: async () => screen, getAgentState: () => ({ ...state }), isAgentProcessAlive: async () => true, write, delay: async () => undefined })).toBe('sent');
-    expect(write).toHaveBeenNthCalledWith(2, '\r');
+    expect(write).toHaveBeenNthCalledWith(2, '\t');
   });
 });

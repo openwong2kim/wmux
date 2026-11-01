@@ -2008,6 +2008,7 @@ export function registerPTYHandlers(
         consecutiveFailures: number;
       }) => void)
     | null = null;
+  let onDaemonAgentProcessExit: ((payload: { sessionId: string; slug?: string | null }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonSessionRestarted = (payload) => {
       // P1-3 ordering rule: the old PTY's trailing output must precede the
@@ -2052,6 +2053,16 @@ export function registerPTYHandlers(
       }
     };
     daemonClient.on('supervision:changed', onDaemonSupervisionChanged);
+
+    // The agent's process-death edge: the renderer drops the pane's agent
+    // row now rather than on its next 15 s liveness poll.
+    onDaemonAgentProcessExit = (payload) => {
+      const win = getWindow?.();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.AGENT_PROCESS_EXIT, { ptyId: payload.sessionId, slug: payload.slug ?? null });
+      }
+    };
+    daemonClient.on('session:agentProcessExit', onDaemonAgentProcessExit);
   }
 
   // Cleanup function
@@ -2097,6 +2108,9 @@ export function registerPTYHandlers(
       }
       if (onDaemonSupervisionChanged) {
         daemonClient.removeListener('supervision:changed', onDaemonSupervisionChanged);
+      }
+      if (onDaemonAgentProcessExit) {
+        daemonClient.removeListener('session:agentProcessExit', onDaemonAgentProcessExit);
       }
       if (onDaemonFlushComplete) {
         daemonClient.removeListener('session:flushComplete', onDaemonFlushComplete);

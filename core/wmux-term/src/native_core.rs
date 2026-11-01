@@ -34,7 +34,52 @@ pub fn native_core_capabilities() -> Vec<String> {
         "ansi-v2".into(),
         "ansi-v3".into(),
         "console-owner-v1".into(),
+        #[cfg(windows)]
+        "process-table-v1".into(),
     ]
+}
+
+#[cfg(windows)]
+#[napi(object)]
+pub struct NativeProcessRow {
+    pub pid: u32,
+    pub ppid: u32,
+    pub name: String,
+    pub created: Option<f64>,
+    pub cmdline: Option<String>,
+}
+
+#[cfg(windows)]
+pub struct ProcessTableTask {
+    with_command_lines: bool,
+}
+#[cfg(windows)]
+impl Task for ProcessTableTask {
+    type Output = Vec<crate::process_table::ProcessRow>;
+    type JsValue = Vec<NativeProcessRow>;
+    fn compute(&mut self) -> Result<Self::Output> {
+        crate::process_table::snapshot(self.with_command_lines).map_err(Error::from_reason)
+    }
+    fn resolve(&mut self, _env: Env, rows: Self::Output) -> Result<Self::JsValue> {
+        Ok(rows
+            .into_iter()
+            .map(|r| NativeProcessRow {
+                pid: r.pid,
+                ppid: r.ppid,
+                name: r.name,
+                created: r.created,
+                cmdline: r.cmdline,
+            })
+            .collect())
+    }
+}
+
+/// Windows process table off the JS thread. With `with_command_lines`, each
+/// row also carries its creation time and command line where readable.
+#[cfg(windows)]
+#[napi]
+pub fn process_table(with_command_lines: bool) -> AsyncTask<ProcessTableTask> {
+    AsyncTask::new(ProcessTableTask { with_command_lines })
 }
 
 struct Size {

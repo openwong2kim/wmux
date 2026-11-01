@@ -47,6 +47,15 @@ async function smoke(resources, runtime = 'electron') {
     assert(core.nativeCoreCapabilities().includes(capability), `Missing ${capability}`);
   }
 
+  if (process.platform === 'win32') {
+    assert(core.nativeCoreCapabilities().includes('process-table-v1'), 'Missing process-table-v1');
+    const rows = await core.processTable(true);
+    const own = rows.find(row => row.pid === process.pid);
+    assert(own, 'Process table lacks the smoke process');
+    assert(rows.some(row => row.pid === own.ppid), 'Process table lacks the smoke parent');
+    assert(typeof own.created === 'number' && own.cmdline, 'Process table row lacks details');
+  }
+
   const interpreter = new core.NativeOutputInterpreter();
   const probe = new core.NativeOutputDecoder().feed(Buffer.from('\x1b[?2004h\x1b]7;file:///tmp/terminal-package\x07'), false);
   try {

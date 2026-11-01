@@ -102,10 +102,10 @@ its port and flags.
   ```
 
   Start `wmux web` with the same flags it had before.
-- **Terminal engine.** Terminals run on the Node engine by default. To run
-  them on the Rust engine, which the server ships, write
-  `{"engine": "rust"}` to `~/.wmux/terminal-core.json` (or start the daemon
-  with `WMUX_TERMINAL_CORE=rust` set), then restart the daemon as above. The
+- **Terminal engine.** Terminals run on the Rust engine, which the server
+  ships, by default. To run them on the Node engine, write
+  `{"engine": "node"}` to `~/.wmux/terminal-core.json` (or start the daemon
+  with `WMUX_TERMINAL_CORE=node` set), then restart the daemon as above. The
   daemon reads it once when it starts, and uses Node if the Rust engine cannot
   load.
 - **Logging out may stop the daemon.** On systemd hosts with

@@ -27,14 +27,14 @@ export function terminalCoreSettingsPath(): string {
   return path.join(os.homedir(), `.wmux${dataSuffix()}`, 'terminal-core.json');
 }
 
-/** The engine when no valid choice is saved: Rust on Windows and macOS when
- * this build ships a loadable Rust module (it measured flatter memory and no
- * worse latency than Node there), Node on Linux. */
+/** The engine when no valid choice is saved: Rust on Windows, macOS and Linux
+ * when this build ships a loadable Rust module (it measured flatter memory and
+ * no worse latency than Node there), Node everywhere else. */
 export function defaultTerminalEngine(
   platform: NodeJS.Platform = process.platform,
   rustAvailable: () => boolean = rustTerminalCoreAvailable,
 ): TerminalEngine {
-  return (platform === 'win32' || platform === 'darwin') && rustAvailable() ? 'rust' : 'node';
+  return (platform === 'win32' || platform === 'darwin' || platform === 'linux') && rustAvailable() ? 'rust' : 'node';
 }
 
 export function readTerminalEngine(
