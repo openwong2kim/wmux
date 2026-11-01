@@ -12,7 +12,8 @@ import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
 import { validateMessage, type Message, type Task } from '../../../shared/types';
 import { COMPANY_BRIEF_KIND, COMPANY_RENDERER_METHOD, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
-import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyHeldMessageRefusal, companyHoldOf, companyHoldPhase, companyHoldWithholds, companyWaitingLine, type CompanyHoldMarker } from '../../../shared/companyHold';
+import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyCapHint, companyHeldMessageRefusal, companyHoldOf, companyHoldPhase, companyHoldWithholds, companyWaitingLine, type CompanyHoldMarker } from '../../../shared/companyHold';
+import type { CompanySlot, CompanySlotGate } from '../../a2a/CompanyReleaseBridge';
 import { configuredForge, forgeHosts } from '../../../shared/forgeHosts';
 import {
   DONE_PR_CHECK_MAX,
@@ -474,6 +475,8 @@ export function registerA2aRpc(
     prReview?: Pick<GhPrReviewService, 'donePrFacts'>;
     /** Main's CompanyReleaseBridge of the moment (one per daemon connection), or null. */
     companyRelease?: () => CompanyReleaseHook | null;
+    /** The per-PC cap on working company seats (one gate, shared with the bridge). */
+    companySlots?: CompanySlotGate;
   } = {},
 ): void {
   const getDaemonClient = opts.getDaemonClient;
@@ -1526,6 +1529,7 @@ export function registerA2aRpc(
     mirror: DaemonTaskGate | undefined,
     workLink: ReturnType<typeof workLinkFromSentTask>,
     silentAsked: boolean,
+    full?: Extract<CompanySlot, { kind: 'full' }>,
   ): Promise<unknown> {
     const taskId = result.taskId as string;
     const created = mirror?.kind === 'ok' && isRecord(mirror.result.task) && isRecord(mirror.result.task.metadata)
@@ -1538,10 +1542,30 @@ export function registerA2aRpc(
         ? mirror.error
         : mirror?.kind === 'ok' ? 'the wmux daemon did not record the hold' : 'the wmux daemon did not answer';
       return {
-        error: `a2a.task.send: the task waits on blockedBy, and wmux could not keep it on hold (${why}); nothing was stored, send it again`,
+        error: full
+          ? `a2a.task.send: every working seat slot on this PC is taken, and wmux could not keep the task waiting for one (${why}); nothing was stored, send it again`
+          : `a2a.task.send: the task waits on blockedBy, and wmux could not keep it on hold (${why}); nothing was stored, send it again`,
       };
     }
     void recordSentTask(workLink);
+    if (full) {
+      // A slot may have freed while it was stored: the bridge checks now.
+      opts.companyRelease?.()?.pullNow();
+      const holders = full.holders.map((seat) => seat.name);
+      return {
+        ...result,
+        silent: silentAsked,
+        delivery: {
+          stored: true,
+          notified: false,
+          reason: 'cap',
+          cap: full.cap,
+          working: holders.length,
+          holders,
+          hint: companyCapHint(full.cap, holders),
+        },
+      };
+    }
     if (hold.waitingOn.length === 0) {
       opts.companyRelease?.()?.pullNow();
       return {
@@ -1763,13 +1787,58 @@ export function registerA2aRpc(
     return sendToRenderer(getWindow, 'a2a.task.update', params);
   });
 
+  /**
+   * The pane a new send names in the sender's own workspace: its pane_id,
+   * else the pane holding its surface_id. A brief reaches a staff seat only
+   * from inside its company, and a send inside a workspace must name a pane
+   * (an unaddressed one is refused there), so this is the seat it would go to.
+   */
+  async function addressedPaneOf(params: Record<string, unknown>): Promise<string | null> {
+    if (typeof params.paneId === 'string' && params.paneId) return params.paneId;
+    if (typeof params.surfaceId !== 'string' || !params.surfaceId || typeof params.workspaceId !== 'string') return null;
+    try {
+      const surfaces = await sendToRenderer(getWindow, 'surface.list', { workspaceId: params.workspaceId, includeStashed: true });
+      const surface = Array.isArray(surfaces) ? surfaces.find((x) => isRecord(x) && x.id === params.surfaceId) : undefined;
+      return isRecord(surface) && typeof surface.paneId === 'string' ? surface.paneId : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Company mode: a working slot on this PC for the staff seat a new brief
+   * goes to, whoever in the company sends it. Null when the cap does not
+   * apply: no gate, the owner's own lane (counted, never held), a reply, an
+   * execute send, no complete brief, or no pane named. The gate itself lets a
+   * pane that is no staff seat go uncounted.
+   */
+  async function takeCompanySlot(params: Record<string, unknown>, ctx: RpcContext | undefined): Promise<CompanySlot | null> {
+    const gate = opts.companySlots;
+    const trustedLane = ctx?.operator === true || (ctx?.firstParty === true && !isHostedCaller(ctx));
+    if (!gate || trustedLane || ctx?.commanderWorkspace || params.taskId || params.execute === true) return null;
+    if (!companyBriefOf(params.data) || typeof params.workspaceId !== 'string' || !params.workspaceId) return null;
+    const paneId = await addressedPaneOf(params);
+    return paneId ? gate.take({ workspaceId: params.workspaceId, paneId }) : null;
+  }
+
   // task.send: renderer validates, approval-gates execute:true, then stores +
   // delivers. Main only spawns the background worker after renderer reports that
   // the pre-create execute approval succeeded.
   // envelope PR4: 렌더러 성공 후 데몬 A2aTaskService에 정본 미러-생성한다(주소
   // 해석·승인 게이트 등 렌더러 UI 반응성 로직은 그대로). 워커 spawn **전에**
   // await — 이후 전이(working/completed)가 데몬 게이트에서 태스크를 찾도록.
+  // A working slot the send took is released once it is over, its task in the
+  // daemon's record by then (or never stored).
   router.register('a2a.task.send', async (params, ctx) => {
+    const taken: { release?: () => void } = {};
+    try {
+      return await sendTask(params, ctx, taken);
+    } finally {
+      taken.release?.();
+    }
+  });
+
+  async function sendTask(params: Record<string, unknown>, ctx: RpcContext | undefined, taken: { release?: () => void }): Promise<unknown> {
     const marked = refuseHandoffMarker('a2a.task.send', [params.message, params.title], ctx);
     if (marked) return marked;
     // A new task with `execute` runs a background claude outside the worker
@@ -1812,6 +1881,13 @@ export function registerA2aRpc(
       }
     }
     const held = blockedBy.length > 0;
+    // Company mode: a brief that would make one more staff seat on this PC
+    // work while every working slot is taken is held the same way, and the
+    // bridge writes it to its seat once a slot frees. A send held for its
+    // blockers waits for a slot at its release instead.
+    const slot = held ? null : await takeCompanySlot(params, ctx);
+    const full = slot?.kind === 'full' ? slot : undefined;
+    if (slot?.kind === 'go') taken.release = slot.release;
     // Forward the VALIDATED commander binding (RpcRouter set it from the
     // per-spawn token; never read from the wire, so any caller-supplied value
     // is dropped first). The renderer's reply-delivery guards need it: an
@@ -1852,7 +1928,7 @@ export function registerA2aRpc(
     }
     // Stored with no delivery; the addressed pane is pinned on the task as usual.
     // Nothing announces it yet: its seat hears of it when it is written there.
-    if (held) {
+    if (held || full) {
       sendParams.silent = true;
       sendParams.heldForBlockers = true;
     }
@@ -1916,7 +1992,7 @@ export function registerA2aRpc(
       // A commander brain's send is a Moa delegation (docs/work-links.md).
       workLink = workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace, workLinkId });
       // A held task's link waits until the daemon has kept its hold (below).
-      if (!held) void recordSentTask(workLink);
+      if (!held && !full) void recordSentTask(workLink);
       const t = result.task as { id?: unknown; metadata?: { title?: unknown; from?: unknown; to?: unknown }; history?: unknown };
       if (typeof t.id === 'string' && isRecord(t.metadata)) {
         mirror = await daemonTaskRpc(getDaemonClient, 'a2a.task.create', {
@@ -1928,6 +2004,7 @@ export function registerA2aRpc(
           // The daemon keeps a marker even when every blocker completes before
           // it creates the task, so the bridge is what delivers it.
           ...(held ? { holdForBlockers: true } : {}),
+          ...(full ? { holdForSlot: true } : {}),
         });
         // C(패널): 미러-생성 실패는 조용한 비내구 태스크가 된다(렌더러엔 있고 데몬엔
         // 없음 → 재시작 미생존). 이후 전이는 'task not found'로 렌더러 폴백해 수렴하나,
@@ -1942,8 +2019,8 @@ export function registerA2aRpc(
       // 내부 운반 필드 제거 — 파이프 호출자 응답 계약 불변.
       delete (result as Record<string, unknown>).task;
     }
-    if (held && isRecord(result) && result.ok === true && typeof result.taskId === 'string') {
-      return finishHeldSend(result, mirror, workLink, params.silent === true);
+    if ((held || full) && isRecord(result) && result.ok === true && typeof result.taskId === 'string') {
+      return finishHeldSend(result, mirror, workLink, params.silent === true, full);
     }
     // A reply that reopened an ended task moves its link back with it.
     if (params.taskId && isRecord(result) && result.ok === true) {
@@ -1974,7 +2051,7 @@ export function registerA2aRpc(
     }
 
     return result;
-  });
+  }
 
   // task.cancel: cancel worker + 데몬 정본 커밋 + 렌더러 캐시/이벤트(envelope PR4).
   router.register('a2a.task.cancel', async (params, ctx) => {

@@ -155,6 +155,13 @@ export interface CreateTaskInput {
    * blocker has completed meanwhile (companyHoldAtCreate).
    */
   holdForBlockers?: true;
+  /**
+   * Company mode, set by main only: the sender's brief would make one more
+   * staff seat on this PC work while every working slot is taken. A company
+   * task with no hold from blockers then gets a released marker with none,
+   * owed from the start, and main writes it to its seat once a slot frees.
+   */
+  holdForSlot?: true;
 }
 
 export interface CreateTaskOptions {
@@ -496,9 +503,10 @@ export class A2aTaskService {
       // ago and was evicted, and a hold on it would never release.
       const gone = local && input.holdForBlockers ? blockers.find((b) => !this.tasks.has(b)) : undefined;
       if (gone !== undefined) return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.gone(gone)}` };
-      const hold = local
+      const blockerHold = local
         ? companyHoldAtCreate(brief, (blockerId) => this.tasks.get(blockerId)?.status, input.holdForBlockers ? nowIso : undefined)
         : null;
+      const hold = blockerHold ?? (local && input.holdForSlot && brief ? { blockedBy: [], waitingOn: [], releasedAt: nowIso } : null);
       const metadata: WmuxTaskMetadata = {
         title: input.title,
         from: input.from,

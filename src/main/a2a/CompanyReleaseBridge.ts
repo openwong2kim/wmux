@@ -530,6 +530,83 @@ export async function readCompanyWorkingSeats(io: CompanySeatReaderIo): Promise<
   }
 }
 
+// ─── The cap on working seats: one gate per PC ───────────────────────────────
+
+/** What taking a working slot for a seat answered. */
+export type CompanySlot =
+  /** Go on: the seat works already, a slot is free, or the pane is no staff seat here. `release` ends what it reserved. */
+  | { kind: 'go'; release: () => void }
+  /** Every slot is held by other seats (named, working ones first). */
+  | { kind: 'full'; cap: number; holders: CompanyWorkingSeat[] }
+  /** The count could not be read. */
+  | { kind: 'unknown' };
+
+/**
+ * Where a staff seat stands against the cap: it works already, a slot is
+ * free, or every slot is held by other seats. A seat being written to right
+ * now (`reserved`) holds a slot like a working one. Pure.
+ */
+export function decideCompanySlot(input: {
+  working: readonly CompanyWorkingSeat[];
+  reserved: readonly CompanyWorkingSeat[];
+  paneId: string;
+  cap: number;
+}): { kind: 'working' } | { kind: 'free' } | { kind: 'full'; holders: CompanyWorkingSeat[] } {
+  const holders = new Map<string, CompanyWorkingSeat>();
+  for (const seat of [...input.working, ...input.reserved]) if (!holders.has(seat.paneId)) holders.set(seat.paneId, seat);
+  if (holders.has(input.paneId)) return { kind: 'working' };
+  return holders.size < input.cap ? { kind: 'free' } : { kind: 'full', holders: [...holders.values()] };
+}
+
+export interface CompanySlotGateDeps {
+  /** The count (readCompanyWorkingSeats); null when it cannot be read. */
+  read: () => Promise<CompanyWorkingCount | null>;
+  /** The cap of the moment (the `companyMaxWorking` setting). */
+  cap: () => number;
+}
+
+/**
+ * The per-PC cap on working company seats, shared by a new send and the
+ * release bridge. Takes count and decide one at a time, so two of them can
+ * never both get the last slot. A seat let in keeps a reservation (it holds
+ * a slot in every later count) until its taker releases it: once the
+ * daemon's record shows the seat working, or nothing was written.
+ */
+export class CompanySlotGate {
+  private readonly deps: CompanySlotGateDeps;
+  private chain: Promise<unknown> = Promise.resolve();
+  private readonly reserved = new Map<symbol, CompanyWorkingSeat>();
+
+  constructor(deps: CompanySlotGateDeps) {
+    this.deps = deps;
+  }
+
+  /** A slot for the pane `paneId` of `workspaceId`; a pane that is no staff seat there goes uncounted. */
+  take(seat: { workspaceId: string; paneId: string }): Promise<CompanySlot> {
+    const run = this.chain.then(() => this.decide(seat));
+    this.chain = run.catch(() => undefined);
+    return run;
+  }
+
+  private async decide(seat: { workspaceId: string; paneId: string }): Promise<CompanySlot> {
+    let count: CompanyWorkingCount | null;
+    try {
+      count = await this.deps.read();
+    } catch {
+      count = null;
+    }
+    if (!count) return { kind: 'unknown' };
+    const staff = count.staff.get(seat.paneId);
+    if (!staff || staff.workspaceId !== seat.workspaceId) return { kind: 'go', release: () => undefined };
+    const cap = this.deps.cap();
+    const decision = decideCompanySlot({ working: count.working, reserved: [...this.reserved.values()], paneId: seat.paneId, cap });
+    if (decision.kind === 'full') return { kind: 'full', cap, holders: decision.holders };
+    const key = Symbol(seat.paneId);
+    this.reserved.set(key, { workspaceId: seat.workspaceId, paneId: seat.paneId, name: staff.name });
+    return { kind: 'go', release: () => { this.reserved.delete(key); } };
+  }
+}
+
 function taskIdOfKey(key: string): string {
   const bar = key.indexOf('|');
   return bar < 0 ? key : key.slice(0, bar);

@@ -19,6 +19,12 @@
 //      was refused and nothing was written: it is listed again), or a `held`
 //      reason.
 //
+// A brief that would make one more staff seat on this PC work while every
+// working slot is taken (main's cap, main/a2a/CompanyReleaseBridge.ts) is
+// held the same way, by a marker with no blockers that is released at
+// create: it is owed from the start, and main writes it once a slot frees. A
+// task with blockers also waits for a slot once they complete.
+//
 // Until it is given to its seat a held task is not its receiver's: while it
 // waits on a blocker, while it is owed a delivery that has not started, and
 // while it is held because it could not be written (no agent, pane gone). A
@@ -278,6 +284,17 @@ export const COMPANY_HOLD_REASON_TEXT: Readonly<Record<CompanyHoldReason, string
 export function companyHeldMessageRefusal(taskId: string, reason: CompanyHoldReason): string {
   return `task ${taskId} is held and was never written to its seat (${COMPANY_HOLD_REASON_TEXT[reason]}); nothing was stored. `
     + 'Cancel it and send the work again to a seat with an agent running';
+}
+
+/**
+ * The receipt's hint for a brief held until a working slot on this PC frees:
+ * the cap, the seats holding the slots, when it goes, and the other way out.
+ */
+export function companyCapHint(cap: number, holders: readonly string[]): string {
+  const seats = cap === 1 ? 'one company seat works' : `${cap} company seats work`;
+  return `On this PC at most ${seats} at once, and ${holders.join(', ')} ${holders.length === 1 ? 'holds' : 'hold'} the slots now. `
+    + 'wmux writes this task to its seat once one of them reports (input-required) or its task ends. '
+    + 'To start it sooner, cancel it and send it to a seat on another PC.';
 }
 
 /** The line for a task still waiting: "Waiting on a, b". `label` names a task (default: its id). */
