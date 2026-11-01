@@ -5,7 +5,7 @@
 // is cut or takes too long copies the selection as it is.
 
 import type { AssistantTextEvent, ChatBridgeApi } from '../../shared/transcript/turnEvents';
-import { cleanCopyText, type AgentReply, type ReplyPart } from './agentReplyCopy';
+import { cleanAsIs, cleanCopyText, type AgentReply, type ReplyPart } from './agentReplyCopy';
 
 /** The most a copy waits for the snapshot and the code bodies together. */
 export const CLEAN_COPY_TIMEOUT_MS = 300;
@@ -101,9 +101,8 @@ export async function resolveCopyText(
   selection: string,
   deps: CleanCopyDeps | null = defaultDeps(),
 ): Promise<string> {
-  // One row: by the spacing rule the clean copy could only differ from it in
-  // a reply marker, so it costs no IPC.
-  if (!ptyId || !deps || !selection.includes('\n') || selection.length > MAX_SELECTION_CHARS) return selection;
+  // Already clean (one row, nothing the TUI added at its ends): no IPC.
+  if (!ptyId || !deps || !selection || cleanAsIs(selection) || selection.length > MAX_SELECTION_CHARS) return selection;
   const none = noTranscriptAt.get(ptyId);
   if (none !== undefined && Date.now() - none < NO_TRANSCRIPT_MS) return selection;
   let timer: ReturnType<typeof setTimeout> | undefined;

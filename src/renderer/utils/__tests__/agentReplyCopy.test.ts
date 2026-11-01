@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { cleanCopyText, type AgentReply } from '../agentReplyCopy';
+import { cleanAsIs, cleanCopyText, type AgentReply } from '../agentReplyCopy';
 
 // Each fixture is a real Claude Code 2.1.316 screen (a seeded transcript shown
 // with `--resume`, rendered by @xterm/headless at `cols` columns, banner rows
@@ -176,6 +176,15 @@ describe('cleanCopyText: anything uncertain copies the selection as it is', () =
     expect(cleanCopyText('Run it wi th:', replies)).toBeNull();
     // A wrap inside a word is the TUI's, not a space.
     expect(cleanCopyText('Run it wi\n  th:', replies)).toBe('Run it with:');
+  });
+
+  it('a one-row selection with a margin still cleans; one with nothing added at its ends is its own copy', () => {
+    const replies: AgentReply[] = [[{ kind: 'prose', text: 'All set.\nDone.' }]];
+    expect(cleanCopyText('  Done.', replies)).toBe('Done.');
+    expect(cleanAsIs('  Done.')).toBe(false);
+    expect(cleanAsIs('⏺ All set.')).toBe(false);
+    expect(cleanAsIs('Done.')).toBe(true);
+    expect(cleanAsIs('All set.\n  Done.')).toBe(false);
   });
 
   it('an empty or whitespace-only selection', () => {

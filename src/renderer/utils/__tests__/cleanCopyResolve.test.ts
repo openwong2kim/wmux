@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { AssistantTextEvent, CodeBlockRef, TranscriptPage, TurnEvent } from '../../../shared/transcript/turnEvents';
 
 const cleanCopyText = vi.fn();
-vi.mock('../agentReplyCopy', () => ({ cleanCopyText: (...args: unknown[]) => cleanCopyText(...args) }));
+vi.mock('../agentReplyCopy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../agentReplyCopy')>()),
+  cleanCopyText: (...args: unknown[]) => cleanCopyText(...args),
+}));
 
 import { CLEAN_COPY_TIMEOUT_MS, createCopySequence, forgetNoTranscript, resolveCopyText, type CleanCopyDeps } from '../cleanCopyResolve';
 
@@ -54,10 +57,18 @@ describe('resolveCopyText — raw fallbacks', () => {
     expect(d.snapshot).not.toHaveBeenCalled();
   });
 
-  it('returns a one-row selection without a snapshot', async () => {
+  it('returns a one-row selection with nothing added at its ends without a snapshot', async () => {
     const d = deps([reply('a', 'hi')]);
-    expect(await resolveCopyText('p1', '⏺ hi there', d)).toBe('⏺ hi there');
+    expect(await resolveCopyText('p1', 'hi there', d)).toBe('hi there');
     expect(d.snapshot).not.toHaveBeenCalled();
+  });
+
+  it('reads the transcript for a one-row selection with a margin, padding or reply marker', async () => {
+    for (const row of ['  Done.', 'Done.  ', '⏺ hi there', '● hi there']) {
+      const d = deps([reply('a', 'hi')]);
+      expect(await resolveCopyText('p1', row, d)).toBe('CLEAN');
+      expect(d.snapshot).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('returns an empty or over-64KB selection without a snapshot', async () => {

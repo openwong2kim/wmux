@@ -50,6 +50,13 @@ export function cleanCopyText(selection: string, replies: readonly AgentReply[])
   return projection.slice(start, spanMap[spanMap.length - 1] + 1);
 }
 
+/** Whether `selection` is already its own clean copy: one row with nothing
+ *  the TUI adds at either end (a margin, padding, a reply marker). By the
+ *  spacing rule a match could not change it, so it needs no transcript. */
+export function cleanAsIs(selection: string): boolean {
+  return !selection.includes('\n') && selection === selection.trim() && selection.replace(DECORATION, '') === selection;
+}
+
 /** Whether the selection spaces the matched characters as the reply does,
  *  given that the TUI only adds line breaks and margins (its wraps): every
  *  break and space of the reply shows in the selection, and the selection
