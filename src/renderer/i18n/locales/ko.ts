@@ -1,4 +1,8 @@
 export const ko = {
+  "plugins.settings.commander": "파일",
+  "plugins.settings.commanderHint": "최대 세 개 패널에서 로컬 파일을 탐색하고 관리합니다. 복사, 이동, 이름 변경 및 휴지통으로 이동할 수 있습니다.",
+  "plugins.page.commanderTagline": "작업 공간을 위한 다중 패널 파일 관리자",
+
   "connectors.access.platform": "터미널 실행은 로컬 macOS·Linux 셸에서 지원해요. Windows·WSL 실행은 아직 지원하지 않지만 접근 설정은 저장할 수 있어요.",
   "connectors.access.title": "일반 판 접근",
   "connectors.access.none": "꺼짐",

@@ -75,6 +75,8 @@ export type RiskClass =
   | 'a2a'              // agent-to-agent messaging
   | 'ui'               // plugin host UI contribution points (B-1)
   | 'notifications'    // terminal desktop-notification text (OSC 9/777/99)
+  | 'files-write'
+  | 'files'            // browses folders and reads files on this computer
   | 'agent-state'
   | 'agent-state-all'  // the agent-state projection for every local workspace
   | 'internal';        // wmux.internal — never surfaced
@@ -114,8 +116,9 @@ export function resolveRequiredCapability(
  * like the commander gate in RpcRouter. `computer` reads other apps' windows
  * and injects input into them, so an unapproved named client must never reach
  * it just because a build (or `mcp.mode: "shadow"`) runs the enforcer advisory.
+ * `files` and `files-write` reach any local file outside fsRefusals.ts.
  */
-const ALWAYS_ENFORCED_RISK_CLASSES: ReadonlySet<RiskClass> = new Set<RiskClass>(['computer', 'agent-state', 'agent-state-all']);
+const ALWAYS_ENFORCED_RISK_CLASSES: ReadonlySet<RiskClass> = new Set<RiskClass>(['computer', 'agent-state', 'agent-state-all', 'files', 'files-write']);
 
 /** Whether a non-allow verdict on `method` is refused even in shadow mode. */
 export function isAlwaysEnforcedMethod(method: string): boolean {
@@ -728,6 +731,17 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'usage.rateLimits': { capability: 'wmux.internal' },
   // Recorded usage history per account. First-party readers only for now.
   'usage.trail': { capability: 'wmux.internal' },
+  // Read-only filesystem access for a file-manager plugin (fs.rpc.ts).
+  'fs.list':     { capability: 'fs.read', riskClass: 'files' },
+  'fs.stat':     { capability: 'fs.read', riskClass: 'files' },
+  'fs.readText': { capability: 'fs.read', riskClass: 'files' },
+  'fs.mkdir': { capability: 'fs.write', riskClass: 'files-write' },
+  'fs.rename': { capability: 'fs.write', riskClass: 'files-write' },
+  'fs.copy': { capability: 'fs.write', riskClass: 'files-write' },
+  'fs.move': { capability: 'fs.write', riskClass: 'files-write' },
+  'fs.trash': { capability: 'fs.write', riskClass: 'files-write' },
+  'fs.job.status': { capability: 'fs.write', riskClass: 'files-write' },
+  'fs.job.cancel': { capability: 'fs.write', riskClass: 'files-write' },
   // Agent environments of the paired PCs, read with their stored credentials.
   // First-party readers only.
   'pc.envDiff': { capability: 'wmux.internal' },
@@ -810,6 +824,8 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   'ui.commands':        'ui',
   // notification.received opt-in (events.poll gate)
   'notifications.read': 'notifications',
+  'fs.read': 'files',
+  'fs.write': 'files-write',
 };
 
 /**
@@ -903,6 +919,8 @@ export const CAPABILITY_EFFECT: Record<string, 'read' | 'write'> = {
   'ui.commands':        'read',
   // notification.received opt-in (events.poll gate)
   'notifications.read': 'read',
+  'fs.read': 'read',
+  'fs.write': 'write',
 };
 
 /**
@@ -1004,6 +1022,17 @@ export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
     summary: 'Can read terminal notification text',
     detail:
       'Receives the title and body of desktop notifications emitted by programs in your terminals (OSC 9/777/99). Notification text is program-controlled and can include fragments of command output.',
+  },
+  'files-write': {
+    severity: 'critical',
+    summary: 'Can create, rename, copy, move and move files to Trash',
+    detail: 'The plugin can change local files and folders, overwrite destinations and move items to the operating system Trash. It never permanently deletes files. The paths the files permission refuses are refused here too, including any folder that holds one. This permission has no path scope.',
+  },
+  'files': {
+    severity: 'critical',
+    summary: 'Can browse folders and read any text file on this computer',
+    detail:
+      'The plugin can list any local folder and read any text file up to 1 MB outside the list below, including source code, documents and config files. wmux refuses: ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.azure, gcloud and Docker credentials, ~/.npmrc, ~/.netrc and ~/.pgpass, ~/.git-credentials, ~/.config/gh, ~/.claude.json and ~/.claude/.credentials.json, ~/.codex/auth.json, wmux\'s own data and tokens, .env and .env.* files, *.pem and *.key files and SSH key files (id_*) anywhere, and shell history files. It cannot change or delete anything with this permission.',
   },
   'internal': {
     severity: 'critical',

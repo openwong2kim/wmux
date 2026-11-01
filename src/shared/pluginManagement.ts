@@ -16,7 +16,7 @@ export const PLUGIN_MANAGEMENT_IPC = {
 export const TERMINAL_CONTENT_CAPABILITIES: readonly string[] = ['terminal.read', 'pane.search', 'notifications.read', 'computer.observe'];
 
 /** Glyphs a catalog entry may name for its rail item and Plugins page tile. */
-export type UiPluginGlyph = 'office' | 'pulse';
+export type UiPluginGlyph = 'office' | 'pulse' | 'files';
 
 /**
  * Curated, shipped originals only. IDs never resolve arbitrary paths or URLs.
@@ -54,6 +54,21 @@ export const UI_PLUGIN_CATALOG = [{
   license: 'MIT',
   version: '1.1.0',
   files: ['manifest.json', 'index.html', 'office.js', 'layout.js', 'sprites.js', 'characters.png', 'furniture.png', 'README.md', 'LICENSE'],
+}, {
+  id: 'commander',
+  name: 'Files',
+  titleKey: 'plugins.settings.commander',
+  hintKey: 'plugins.settings.commanderHint',
+  taglineKey: 'plugins.page.commanderTagline',
+  signature: false,
+  glyph: 'files',
+  preview: undefined,
+  capabilities: ['ui.rail-page', 'pane.read', 'fs.read', 'fs.write'],
+  readme: 'https://github.com/openwong2kim/wmux/blob/main/examples/plugins/commander/README.md',
+  publisher: 'wmux',
+  license: 'MIT',
+  version: '1.0.0',
+  files: ['manifest.json', 'index.html', 'commander.js', 'README.md', 'LICENSE'],
 }] as const;
 
 export type UiPluginCatalogEntry = typeof UI_PLUGIN_CATALOG[number];

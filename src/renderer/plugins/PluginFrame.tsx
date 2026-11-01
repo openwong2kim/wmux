@@ -1,4 +1,5 @@
 import { pluginFrameHandshake } from './pluginFrameHandshake';
+import { isLight } from '../tailwindPalette';
 import { useT } from '../hooks/useT';
 import { subscribeAgentState } from './agentStateSubscription';
 import { useEffect, useRef, useState } from 'react';
@@ -10,6 +11,8 @@ import {
   type BridgeResponse,
 } from '../../shared/pluginHost';
 import { registerFrame } from './pluginFrameRegistry';
+import { parseBridgeKey, pluginPageKeyRoute } from './pluginPageKey';
+import { activeShortcutBindings } from '../utils/shortcutBindings';
 import { findPane } from '../../shared/paneUtils';
 
 // Cadence for the host-side events.poll forwarding loop (see below). The
@@ -97,6 +100,24 @@ export default function PluginFrame({
     }
   }), []);
 
+  // Theme tokens are copied explicitly: sandboxed frames cannot read parent CSS.
+  useEffect(() => {
+    if (!bridgeEpoch || !portRef.current) return;
+    const sendTheme = () => {
+      const style = getComputedStyle(document.documentElement);
+      const variables: Record<string, string> = {};
+      for (const name of ['--bg-base', '--bg-mantle', '--bg-surface', '--text-main', '--text-sub', '--text-muted', '--accent', '--accent-red', '--accent-green', '--accent-yellow', '--selection', '--font-ui']) {
+        const value = style.getPropertyValue(name).trim();
+        if (value) variables[name] = value;
+      }
+      portRef.current?.postMessage({ v: PLUGIN_BRIDGE_VERSION, kind: 'theme', variables, colorScheme: isLight(variables['--bg-base'] || '#000000') ? 'light' : 'dark' });
+    };
+    sendTheme();
+    const observer = new MutationObserver(sendTheme);
+    observer.observe(document.documentElement, { attributes: true });
+    return () => observer.disconnect();
+  }, [bridgeEpoch]);
+
   // ── Bridge: port lifetime, request forwarding, palette commands ──────────
   useEffect(() => {
     const iframe = frameRef.current;
@@ -151,6 +172,17 @@ export default function PluginFrame({
       if (!port) { setBlocked(true); return; }
       portRef.current = port;
       port.onmessage = (e: MessageEvent) => {
+        // A page's own toggle shortcut, handed back from inside the frame
+        // (pluginPageKey.ts). Pages only: a sidebar or status-bar frame has
+        // no page to toggle.
+        const key = railPage ? parseBridgeKey(e.data) : null;
+        if (key) {
+          if (disposed || portRef.current !== port) return;
+          const state = useStore.getState();
+          const route = pluginPageKeyRoute(key, activeShortcutBindings(), state.appRoute);
+          if (route) state.setAppRoute(route);
+          return;
+        }
         const req = parseBridgeRequest(e.data);
         if (!req || disposed || portRef.current !== port) return;
         const requestWorkspace = useStore.getState().activeWorkspaceId;

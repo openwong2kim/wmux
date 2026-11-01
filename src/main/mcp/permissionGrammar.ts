@@ -98,6 +98,11 @@ const KNOWN_CAPABILITIES = new Set<string>([
   // events.subscribe deliberately does NOT include notification events —
   // they carry terminal-program-controlled text (schema-freeze §4).
   'notifications.read',
+  // Read-only filesystem access (fs.list / fs.stat / fs.readText) for a
+  // file-manager plugin. Its own capability, never implied by another: it
+  // reads files the user owns, not wmux state.
+  'fs.read',
+  'fs.write',
 ]);
 
 // Reserved capability prefix — substrate-internal surface, never grantable
@@ -146,7 +151,7 @@ export function globToRegex(glob: string): RegExp {
  * against. A scoped grant for one would read as narrower than it is, so the
  * grammar refuses it rather than letting it pass as unrestricted.
  */
-const UNSCOPABLE_CAPABILITIES: ReadonlySet<string> = new Set(['automation.read', 'automation.write', 'agent.state.read', 'agent.state.read.all', 'ui.rail-page']);
+const UNSCOPABLE_CAPABILITIES: ReadonlySet<string> = new Set(['automation.read', 'automation.write', 'agent.state.read', 'agent.state.read.all', 'ui.rail-page', 'fs.read', 'fs.write']);
 
 export function parsePermission(spec: unknown): PermissionParseResult {
   if (typeof spec !== 'string') {

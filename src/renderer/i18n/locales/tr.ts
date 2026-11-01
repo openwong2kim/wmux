@@ -1,4 +1,8 @@
 export const tr = {
+  "plugins.settings.commander": "Files",
+  "plugins.settings.commanderHint": "Browse and manage local files in up to three panels. Copy, move, rename and move files to Trash.",
+  "plugins.page.commanderTagline": "A commander for your workspace files",
+
   // App lifecycle
   'app.restoringPanes': 'Bölmeler geri yükleniyor…',
 

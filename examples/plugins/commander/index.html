@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Files</title>
+<style>
+:root { color-scheme: light dark; font: 13px var(--font-ui,system-ui),sans-serif; --bg-base: Canvas; --bg-mantle: Canvas; --bg-surface: ButtonFace; --text-main: CanvasText; --text-sub: GrayText; --text-muted: GrayText; --accent: LinkText; --accent-red: MarkText; --accent-green: LinkText; --accent-yellow: LinkText; --selection: color-mix(in srgb, CanvasText 10%, transparent); --hover-fill: color-mix(in srgb, var(--text-main) 6%, transparent); --line: color-mix(in srgb, var(--text-main) 12%, transparent); }
+* { box-sizing: border-box; } body { margin: 0; background: var(--bg-base); color: var(--text-main); }
+#page { height: 100vh; display: flex; flex-direction: column; outline: none; }
+#panels { display: flex; flex: 1; min-height: 0; } .panel { flex: 1; min-width: 0; display: flex; flex-direction: column; } .panel + .panel { border-left: 1px solid var(--line); }
+.path { padding: 10px; overflow-wrap: anywhere; background: var(--bg-mantle); color: var(--text-sub); min-height: 38px; }
+.panel.active .path { color: var(--text-main); font-weight: 600; }
+.columns,.row { display: grid; grid-template-columns: minmax(100px,1fr) 48px 62px 82px 45px; gap: 8px; padding: 0 8px; align-items: center; }
+.columns { height: 26px; color: var(--text-muted); font-size: 11px; } .rows { flex: 1; overflow: auto; position: relative; font: 11px ui-monospace,monospace; }
+.row { height: 26px; cursor: default; } .row>span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } .row:hover { background: var(--hover-fill); }
+.row.cursor { background: var(--selection); } .row.marked { color: var(--accent); } .size { text-align: right; }
+.colours .row.dir:not(.marked) { color: var(--accent); } .colours .row.image:not(.marked) { color: var(--accent-green); } .colours .row.archive:not(.marked) { color: var(--accent-yellow); } .colours .row.executable:not(.marked) { color: var(--accent-red); }
+.summary { padding: 6px 8px; min-height: 28px; font-size: 11px; color: var(--text-sub); }
+#toolbar { width: 42px; flex-shrink: 0; display: flex; flex-direction: column; gap: 3px; padding: 6px 3px; overflow: auto; background: var(--bg-mantle); }
+button,input,select { font: inherit; color: var(--text-main); background: var(--bg-surface); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+button { cursor: pointer; } button:hover { background: var(--hover-fill); } button:disabled { opacity: .4; cursor: default; } button[aria-pressed="true"] { background: var(--selection); }
+button:focus-visible,input:focus-visible,select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#toolbar button { min-height: 27px; padding: 3px; } #toolbar .layout-start { margin-top: auto; }
+footer { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px; background: var(--bg-mantle); } footer button { flex: 1; white-space: nowrap; font-size: 11px; }
+#notice { padding: 0 8px; font-size: 11px; color: var(--text-sub); }
+.overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg-base) 80%, transparent); display: grid; place-items: center; padding: 24px; }
+.dialog { background: var(--bg-base); border: 1px solid var(--line); border-radius: 12px; padding: 20px; max-width: 680px; width: 100%; max-height: 90vh; overflow: auto; }
+h2 { margin: 0 0 12px; font-size: 14px; } .dialog p { white-space: pre-wrap; overflow-wrap: anywhere; } .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+.dialog input { width: 100%; } progress { width: 100%; accent-color: var(--accent); } .viewer { max-width: 1200px; height: 90vh; display: flex; flex-direction: column; } pre { flex: 1; overflow: auto; white-space: pre; font: 13px ui-monospace,monospace; user-select: text; } .errors { color: var(--accent-red); }
+@media(max-width:900px) { .columns,.row { grid-template-columns: minmax(80px,1fr) 38px 55px; } .date,.time { display: none; } }
+</style></head><body>
+<main id="page" tabindex="0" aria-label="Commander file manager"><div id="panels"></div><div id="notice" role="status">Connecting…</div><footer id="keys"></footer></main>
+<script src="commander.js"></script>
+</body></html>

@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **294** methods (`ALL_RPC_METHODS` in
+Total: **304** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -343,6 +343,16 @@ Total: **294** methods (`ALL_RPC_METHODS` in
 | `deck.state.prune` | `wmux.internal` |  |
 | `usage.rateLimits` | `wmux.internal` |  |
 | `usage.trail` | `wmux.internal` |  |
+| `fs.list` | `fs.read` | `files` |
+| `fs.stat` | `fs.read` | `files` |
+| `fs.readText` | `fs.read` | `files` |
+| `fs.mkdir` | `fs.write` | `files-write` |
+| `fs.rename` | `fs.write` | `files-write` |
+| `fs.copy` | `fs.write` | `files-write` |
+| `fs.move` | `fs.write` | `files-write` |
+| `fs.trash` | `fs.write` | `files-write` |
+| `fs.job.status` | `fs.write` | `files-write` |
+| `fs.job.cancel` | `fs.write` | `files-write` |
 | `pc.envDiff` | `wmux.internal` |  |
 | `commit.origin` | `wmux.internal` |  |
 | `task.mission.start` | `a2a.channel.send` | `a2a` |

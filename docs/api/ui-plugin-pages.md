@@ -128,3 +128,27 @@ already dispatched before a plugin was disabled.
 
 See the original example at
 [`examples/plugins/agent-state-page`](../../examples/plugins/agent-state-page).
+
+## Theme tokens
+
+After bridge initialization and when the host root theme attributes change,
+frames receive `{v:1, kind:"theme", variables, colorScheme}` on their port.
+`variables` maps CSS custom property names to computed values for page surfaces,
+text, accent/state colors, selection and the UI font.
+Apply these values to the frame root; keep system color fallbacks until the
+first message. The sandbox prevents reading the parent document directly.
+
+## Handing a key back
+
+A page with keyboard focus holds every key: the app's own shortcut listener
+never sees a key pressed inside the frame, so the page's toggle shortcut
+(Settings › Keyboard, "Toggle <page>") could open the page but not close it.
+A page may post a chord it does not use to the host:
+
+`{v:1, kind:"key", key, code, ctrlKey, metaKey, altKey, shiftKey, repeat}`
+
+The host runs it only when it resolves to a plugin page shortcut: it opens
+that page, or returns to Workspaces when that page is the one showing, as the
+key would outside the frame. Any other shortcut is ignored, so a page cannot
+trigger other app actions this way. Auto-repeats are ignored. Sidebar and
+status-bar frames have no page and are ignored too.

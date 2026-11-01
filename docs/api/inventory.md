@@ -163,6 +163,23 @@ Desktop computer use ([design](../computer-use-design.md)). Off unless the user 
 | `computer.getAppState` | `{ app, window?, mode? }` | experimental | Capability `computer.observe`. Returns a `snapshotId`, the accessibility tree text and/or a scaled window screenshot. |
 | `computer.act` | `{ action, snapshotId, index? \| x?, y?, ... }` | experimental | Capability `computer.control`, the only input-injecting method. Targets only a snapshot the same agent took; x/y are screenshot pixels. One agent drives at a time; 120 actions per minute. |
 
+### Filesystem surface
+
+Access to local files for a file-manager plugin. Paths must be absolute (a leading `~` is the home folder) and pass `resolvePluginPath` (`src/main/pipe/handlers/fsRefusals.ts`), as given and once symlinks resolve: the app file tree's check (`resolveAccessiblePath`: local paths only, never `~/.ssh`, `~/.aws` and the other folders it blocks) plus a list for plugins only. That list refuses wmux's own data and app-data folders (any profile suffix), `.env` and `.env.*` files, `*.pem`, `*.key` and SSH key files (`id_*`) at any depth, `~/.git-credentials`, `~/.config/gh`, `~/.claude.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.pgpass`, `~/.netrc` and shell history files. Anything else on the local disk is reachable. The write methods refuse the same paths, and a copy, move or trash of a folder that holds one. A listed symlink whose target is refused shows `target: null`, like a broken one. A refused path answers `{ ok: false, reason: 'unavailable' }`, exactly like a missing one. Answers carry the canonical (realpath'd) path. Other failure reasons: `invalid`, `not-a-directory`, `is-a-directory`, `denied`, `binary`, `failed`.
+
+| Method | Params | Tier | Notes |
+|---|---|---|---|
+| `fs.list` | `{ path }` | experimental | Capability `fs.read`. `{ ok, path, parent, entries, truncated }`; each entry is `{ name, kind: 'file'\|'dir'\|'symlink'\|'other', size, mtimeMs, mode?, target? }`. At most 10,000 entries. |
+| `fs.stat` | `{ path }` | experimental | Capability `fs.read`. `{ ok, path, entry }`. |
+| `fs.readText` | `{ path, maxBytes? }` | experimental | Capability `fs.read`. `{ ok, path, size, text, truncated }`. Regular files only, opened non-blocking (a FIFO answers `failed`). Reads 256 KB by default, 1 MB at most, cut back to a whole UTF-8 character; a NUL byte in the first 8 KB answers `binary` whatever `maxBytes` is. |
+| `fs.mkdir` | `{ path }` | experimental | Capability `fs.write`. Nonrecursive; `{ ok, path }`. |
+| `fs.rename` | `{ path, newName }` | experimental | Capability `fs.write`. Same folder; `{ ok, path }`; existing destination refused (`exists`). |
+| `fs.copy` | `{ sources, destDir, conflict }` | experimental | Capability `fs.write`. `{ ok, jobId }`; conflict is `skip`, `overwrite` or `fail`. |
+| `fs.move` | `{ sources, destDir, conflict }` | experimental | Capability `fs.write`. Rename, or copy then remove on EXDEV. |
+| `fs.trash` | `{ paths }` | experimental | Capability `fs.write`. `{ ok, jobId }`; OS Trash only. |
+| `fs.job.status` | `{ jobId }` | experimental | Capability `fs.write`. `{ ok, job: { id, kind, state, totalBytes, doneBytes, totalItems, doneItems, current?, errors } }`. |
+| `fs.job.cancel` | `{ jobId }` | experimental | Capability `fs.write`. `{ ok }`; aborts at next stream chunk and removes partial file. |
+
 The full list lives in `src/shared/rpc.ts` (`ALL_RPC_METHODS`). For the MCP-facing tool names (which are the actual external API for most consumers), see [MCP tools](#mcp-tools).
 
 ### Daemon (internal IPC, not part of substrate contract)
@@ -357,6 +374,7 @@ The summary each PC serves is `GET /api/agent-env` on its web server, device-aut
 
 | Date | Change |
 |---|---|
+| 2026-11-01 | Filesystem read surface — added `fs.list`, `fs.stat` and `fs.readText` (**experimental**) behind the new `fs.read` capability (risk class `files`, critical and always enforced), the read half of a file-manager plugin. No new MCP tool or event type. |
 | 2026-10-01 | Desktop computer use — added five `computer.*` RPC methods (**experimental**), the opt-in `computer` MCP tool, and the `computer.observe` / `computer.control` capabilities (risk class `computer`, critical). Per-app consent rides the approval queue as a new `computer-app` prompt kind. No new event type. |
 | 2026-07-24 | Workspace-scoped browser tabs (issue #565) — defined a browser tab as a logical wmux browser surface and replaced the global Playwright-page inventory plus mutable numeric `tabId` with stable `surfaceId` addressing. The public experimental `browser_tabs` tool now resolves the caller workspace strictly; its reserved `browser.tabs` backing RPC re-checks ownership at the renderer effect boundary and is denied to commander-role callers because it multiplexes close. |
 | 2026-07-05 | Channel delivery reliability (v3.15.0) — added the `a2a.channel.nudgeRecorded` daemon RPC (**internal** tier) to the A2A table: the renderer reports a just-delivered mention paste into the wake worker's shared nudge ledger, so an attached agent is not pasted AND re-nudged for the same mention. Renderer-only mutate path (`channels:mutate-local`), absent from the main pipe router by design. No new MCP tool, event type, or capability. |
@@ -413,6 +431,8 @@ The capability column below summarises the table. Three sentinels:
 | `hooks.signal` | `wmux.internal` | — | — |
 | `usage.rateLimits` | `wmux.internal` | — | — |
 | `usage.trail` | `wmux.internal` | — | — |
+| `fs.mkdir` / `fs.rename` / `fs.copy` / `fs.move` / `fs.trash` / `fs.job.status` / `fs.job.cancel` | `fs.write` | — | files-write |
+| `fs.list` / `fs.stat` / `fs.readText` | `fs.read` | — | files |
 | `pc.envDiff` | `wmux.internal` | — | — |
 | `commit.origin` | `wmux.internal` | — | — |
 

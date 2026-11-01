@@ -37,6 +37,7 @@ function setup() {
   fs.mkdirSync(catalogDir);
   fs.cpSync(path.resolve('examples/plugins/agent-state-page'), path.join(catalogDir, 'agent-state-page'), { recursive: true });
   fs.cpSync(path.resolve('examples/plugins/office'), path.join(catalogDir, 'office'), { recursive: true });
+  fs.cpSync(path.resolve('examples/plugins/commander'), path.join(catalogDir, 'commander'), { recursive: true });
   const loader = new PluginHostLoader(trust, pluginsDir);
   const approval = new ApprovalQueue(trust, { openPrompt: vi.fn() });
   const options = { loader, trust, approval: () => approval, pluginsDir, catalogDir, statePath: path.join(root, 'ui-plugins.json'), changed: vi.fn() };
@@ -310,4 +311,15 @@ describe('a refresh that is interrupted', () => {
     // Neither link is removed or restored as the office bundle.
     expect(fs.readdirSync(test.options.pluginsDir).sort()).toEqual(['.install-link', '.retired@office@link']);
   });
+});
+
+it('installs Commander with its reviewed filesystem permissions and removes its bundle', async () => {
+  const test = setup();
+  await test.manager.initialize();
+  await test.manager.install('commander');
+  const plugin = (await test.manager.inventory()).plugins.find((p) => p.name === 'commander');
+  expect(plugin).toMatchObject({ managed: true, enabled: true, trustStatus: 'denied', capabilities: ['ui.rail-page', 'pane.read', 'fs.read', 'fs.write'] });
+  for (const file of ['index.html', 'commander.js', 'README.md', 'LICENSE']) expect(test.loader.resolveBundlePath('commander', file)).not.toBeNull();
+  await test.manager.remove('commander');
+  expect(test.loader.resolveBundlePath('commander', 'index.html')).toBeNull();
 });

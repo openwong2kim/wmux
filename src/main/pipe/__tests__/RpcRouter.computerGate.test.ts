@@ -52,6 +52,12 @@ describe('computer.* is enforced even in shadow mode', () => {
     expect(isAlwaysEnforcedMethod('not.a.method')).toBe(false);
   });
 
+  it('also always enforces the fs.* plugin methods', () => {
+    for (const m of ['fs.list', 'fs.stat', 'fs.readText', 'fs.copy', 'fs.trash', 'fs.job.status']) {
+      expect(isAlwaysEnforcedMethod(m)).toBe(true);
+    }
+  });
+
   for (const mode of ['shadow', 'enforce'] as const) {
     describe(`${mode} mode`, () => {
       beforeEach(() => router.setEnforcementMode(mode));

@@ -1,0 +1,8 @@
+{
+  "name": "commander",
+  "version": "1.0.0",
+  "description": "Browse files in one, two or three panels; copy, move, rename, create folders and move files to the OS Trash. Credential folders are refused.",
+  "capabilities": ["ui.rail-page", "pane.read", "fs.read", "fs.write"],
+  "activationEvents": [],
+  "contributes": { "railPage": { "title": "Files", "entry": "index.html" } }
+}

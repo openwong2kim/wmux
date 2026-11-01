@@ -43,7 +43,7 @@ const BLOCKED_FILES = [
  * symlink, or on Windows through an 8.3 short name, the two spellings differ
  * and a symlink into ~/.ssh would otherwise pass the check on its target.
  */
-function homeRoots(): string[] {
+export function homeRoots(): string[] {
   const home = os.homedir();
   let real = home;
   try {

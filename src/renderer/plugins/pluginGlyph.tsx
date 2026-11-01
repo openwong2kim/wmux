@@ -1,8 +1,9 @@
 import type { ComponentType } from 'react';
 import { UI_PLUGIN_CATALOG, type UiPluginGlyph } from '../../shared/pluginManagement';
-import { IconOffice, IconPackage, IconPulse } from '../components/icons';
+import { IconOffice, IconPackage, IconPulse, IconFolder } from '../components/icons';
 
 const GLYPHS: Record<UiPluginGlyph, ComponentType<{ size?: number }>> = {
+  files: IconFolder,
   office: IconOffice,
   pulse: IconPulse,
 };

@@ -665,6 +665,16 @@ export type RpcMethod =
   | 'hooks.signal'
   | 'usage.rateLimits'
   | 'usage.trail'
+  | 'fs.list'
+  | 'fs.stat'
+  | 'fs.readText'
+  | 'fs.mkdir'
+  | 'fs.rename'
+  | 'fs.copy'
+  | 'fs.move'
+  | 'fs.trash'
+  | 'fs.job.status'
+  | 'fs.job.cancel'
   | 'pc.envDiff'
   | 'commit.origin'
   | 'a2a.channel.list'
@@ -1012,6 +1022,16 @@ export const ALL_RPC_METHODS = [
   'hooks.signal',
   'usage.rateLimits',
   'usage.trail',
+  'fs.list',
+  'fs.stat',
+  'fs.readText',
+  'fs.mkdir',
+  'fs.rename',
+  'fs.copy',
+  'fs.move',
+  'fs.trash',
+  'fs.job.status',
+  'fs.job.cancel',
   'pc.envDiff',
   'commit.origin',
   'a2a.channel.list',
