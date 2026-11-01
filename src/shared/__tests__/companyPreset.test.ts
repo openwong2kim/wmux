@@ -73,4 +73,14 @@ describe('company presets', () => {
     expect(ceo).toContain('wmux checks every PR it names (its current head, required checks and open review threads) and refuses until they pass.');
     expect(dev).not.toContain('wmux checks every PR');
   });
+
+  it('tells the CEO a brief past the PC\'s cap waits for a slot, and the ways out', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
+    expect(ceo).toContain('Only a few seats on this PC work at once');
+    expect(ceo).toContain('its receipt says reason "cap" and names the seats holding the slots');
+    expect(ceo).toContain('once one of them reports or its task ends');
+    expect(ceo).toContain('give the work to a seat on another PC');
+    expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 })).not.toContain('reason "cap"');
+  });
 });

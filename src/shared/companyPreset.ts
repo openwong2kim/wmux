@@ -150,7 +150,8 @@ export interface SeatBriefInput {
  * sends to a staff seat (shared/company.ts decideCompanySend). A seat reports
  * with input-required and only the CEO or the owner marks the task done
  * (companyDoneRefusal); both briefs say so. The CEO is also told that wmux
- * checks the PRs a task names before its done (companyDonePrCheck).
+ * checks the PRs a task names before its done (companyDonePrCheck), and
+ * that a brief past the PC's cap on working seats waits for a slot.
  */
 export function seatBrief(input: SeatBriefInput): string {
   const me = input.seats[input.seat];
@@ -178,6 +179,11 @@ export function seatBrief(input: SeatBriefInput): string {
         `Hand work to a seat with the wmux send_message tool, to its #name, with a brief in data: ` +
         `{"kind":"${COMPANY_BRIEF_KIND}","v":1,${BRIEF_FIELDS.map((f) => `"${f}":"…"`).join(',')}}. ` +
         'A task to a seat without a full brief is refused. Follow the work with a2a_task_query.',
+      );
+      lines.push(
+        'Only a few seats on this PC work at once (the owner\'s setting, 3 by default). A brief to an idle seat past that is held, not refused: '
+        + 'its receipt says reason "cap" and names the seats holding the slots, and it goes to its seat once one of them reports or its task ends. '
+        + 'To start it sooner, cancel it and give the work to a seat on another PC.',
       );
       lines.push(
         'A seat reports finished work with status input-required. Read the report and check it, then mark the task done ' +
