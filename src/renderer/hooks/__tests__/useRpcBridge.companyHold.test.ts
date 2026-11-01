@@ -288,6 +288,17 @@ describe('a held send\'s renderer copy, before and after its release delivery', 
     expect(written.map((w) => w.pty)).toEqual([DEV_PTY, DEV_PTY]);
   });
 
+  it('a reply that hands a reported task back applies the daemon\'s working state and tees the pointer, even when nudged', async () => {
+    const id = await heldSend();
+    await deliver(releasedSnapshot(id));
+    useStore.setState((st) => { st.a2aTasks[id].status = { state: 'input-required', timestamp: '2026-11-02T00:00:00.000Z' }; });
+    publishA2aTaskMock.mockClear();
+    const handedBack = { ...copy(id), status: { state: 'working' as const, timestamp: '2099-01-01T00:00:00.000Z' } };
+    expect((await reply(id, { heldForBlockers: false, daemonReopenedTask: handedBack })).delivery).toMatchObject({ notified: true });
+    expect(copy(id).status.state).toBe('working');
+    expect(publishA2aTaskMock.mock.calls.filter((c) => c[2] === id && c[4] === 'updated')).toHaveLength(1);
+  });
+
   it('main\'s word that the task is its seat\'s writes the message even when this copy still waits', async () => {
     const id = await heldSend();
     expect((await reply(id, { heldForBlockers: false })).delivery).toMatchObject({ notified: true });

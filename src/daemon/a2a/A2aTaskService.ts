@@ -58,7 +58,7 @@ import {
   companyHoldOf,
   companyHoldPhase,
   companyHoldWithholds,
-  companyWaitingRefusal,
+  companyNotGivenRefusal,
   isCompanyHoldReason,
   type CompanyHoldMarker,
   type CompanyHoldReason,
@@ -155,6 +155,13 @@ export interface CreateTaskInput {
    * blocker has completed meanwhile (companyHoldAtCreate).
    */
   holdForBlockers?: true;
+  /**
+   * Company mode, set by main only: the sender's brief would make one more
+   * staff seat on this PC work while every working slot is taken. A company
+   * task with no hold from blockers then gets a released marker with none,
+   * owed from the start, and main writes it to its seat once a slot frees.
+   */
+  holdForSlot?: true;
 }
 
 export interface CreateTaskOptions {
@@ -244,8 +251,8 @@ export interface QueryFilters {
 
 /**
  * Who asks a query, as main resolved it: the caller's pane, or the human's
- * lane (`trusted`). A company task still waiting on a blocker is left out
- * for its receiving side (companyHoldWithholds).
+ * lane (`trusted`). A held company task not given to its seat yet is left
+ * out for its receiving side (companyHoldWithholds).
  */
 export interface QueryCaller {
   paneId?: string;
@@ -496,9 +503,10 @@ export class A2aTaskService {
       // ago and was evicted, and a hold on it would never release.
       const gone = local && input.holdForBlockers ? blockers.find((b) => !this.tasks.has(b)) : undefined;
       if (gone !== undefined) return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.gone(gone)}` };
-      const hold = local
+      const blockerHold = local
         ? companyHoldAtCreate(brief, (blockerId) => this.tasks.get(blockerId)?.status, input.holdForBlockers ? nowIso : undefined)
         : null;
+      const hold = blockerHold ?? (local && input.holdForSlot && brief ? { blockedBy: [], waitingOn: [], releasedAt: nowIso } : null);
       const metadata: WmuxTaskMetadata = {
         title: input.title,
         from: input.from,
@@ -554,7 +562,7 @@ export class A2aTaskService {
       if (!remoteDone && task.metadata.to.workspaceId !== input.callerWorkspaceId) {
         return { ok: false, error: `a2a.task.update: caller ${input.callerWorkspaceId} is not the receiver` };
       }
-      // A company task still waiting on a blocker is not its receiver's yet;
+      // A held company task not given to its seat yet is not its receiver's;
       // its sender and the human may still move it.
       const hold = companyHoldOf(task);
       if (hold && companyHoldWithholds(task, {
@@ -562,7 +570,7 @@ export class A2aTaskService {
         ...(input.callerAddr?.paneId ? { paneId: input.callerAddr.paneId } : {}),
         trusted: input.trustedLane === true,
       })) {
-        return { ok: false, error: `a2a.task.update: ${companyWaitingRefusal(hold.waitingOn)}` };
+        return { ok: false, error: `a2a.task.update: ${companyNotGivenRefusal(hold)}` };
       }
       // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
       // 수신 페인에 핀됐으면(to.paneId) 그 페인이어야 한다. callerAddr 부재(헤드리스
@@ -768,8 +776,14 @@ export class A2aTaskService {
    * the regular transition API still refuses terminal -> submitted. The commit
    * is a plain `task.transition` payload (plus a `reopened` marker), so a log
    * replayed by an older daemon still lands on `submitted`.
+   *
+   * `handBack` (main only): the sender's message on a company task its seat
+   * reported (`input-required`) hands the work back, and the task goes to
+   * `working` again, so it counts toward its seat's working slot. That edge
+   * is in VALID_TRANSITIONS; it is committed here because the actor is the
+   * sender, not the seat. Any other state is left as it is.
    */
-  reopenTask(input: { taskId: string; callerWorkspaceId: string; callerPaneId?: string }): Promise<ReopenOk | OpErr> {
+  reopenTask(input: { taskId: string; callerWorkspaceId: string; callerPaneId?: string; handBack?: boolean }): Promise<ReopenOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.reopen: task not found: ${input.taskId}` };
@@ -778,13 +792,14 @@ export class A2aTaskService {
       if (!isVerifiedTaskSender(task.metadata, input.callerWorkspaceId, input.callerPaneId)) {
         return { ok: false, error: 'a2a.task.reopen: caller is not the verified sender of this task' };
       }
-      if (!(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+      const handBack = input.handBack === true && task.status.state === 'input-required' && isCompanyTask(task.history);
+      if (!handBack && !(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
         return { ok: true, reopened: false, task };
       }
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
-        to: 'submitted',
+        to: handBack ? 'working' : 'submitted',
         timestamp: this.isoNow(),
         reopened: 'sender_message',
       };
@@ -1417,8 +1432,8 @@ export class A2aTaskService {
   }
 
   /**
-   * `caller` given: a company task still waiting on a blocker is left out
-   * when the caller is on its receiving side (see QueryCaller).
+   * `caller` given: a held company task not given to its seat yet is left
+   * out when the caller is on its receiving side (see QueryCaller).
    */
   queryTasks(workspaceId: string, filters?: QueryFilters, caller?: QueryCaller): Task[] {
     const out: Task[] = [];

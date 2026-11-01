@@ -39,3 +39,17 @@ describe('holdForBlockers on a2a.task.create', () => {
     }
   });
 });
+
+describe('holdForSlot on a2a.task.create', () => {
+  it('passes from the app\'s main process only', () => {
+    const main = parsePublicCreateTask({ ...base, holdForSlot: true }, { firstParty: true });
+    expect(main.ok && main.input.holdForSlot).toBe(true);
+    for (const res of [
+      parsePublicCreateTask({ ...base, holdForSlot: true }),
+      parsePublicCreateTask({ ...base, holdForSlot: true }, { firstParty: false }),
+      parsePublicCreateTask({ ...base, holdForSlot: 1 }, { firstParty: true }),
+    ]) {
+      expect(res.ok && 'holdForSlot' in res.input).toBe(false);
+    }
+  });
+});

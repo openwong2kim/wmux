@@ -231,7 +231,7 @@ import { resyncAfterResubscribe, serialResync, type DaemonSessionRow } from './n
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
-import { CompanyReleaseBridge, type CompanyReleaseMark } from './a2a/CompanyReleaseBridge';
+import { CompanyReleaseBridge, CompanySlotGate, readCompanyWorkingSeats, type CompanyReleaseMark } from './a2a/CompanyReleaseBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
 import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
@@ -849,6 +849,15 @@ let companyReleaseBridge: CompanyReleaseBridge | null = null;
 const companyCeoLinesTold = new Set<string>();
 const companyDeliveriesInFlight = new Set<string>();
 const companyPendingMarks = new Map<string, CompanyReleaseMark>();
+// The per-PC cap on working company seats: one gate for every send and every
+// release bridge, kept across daemon reconnects.
+const companySlots = new CompanySlotGate({
+  read: () => readCompanyWorkingSeats({
+    sendToRenderer: (method, params) => sendToRenderer(() => mainWindow, method, params),
+    daemonRpc: (method, params, opts) => (daemonClient ? daemonClient.rpc(method, params, opts) : Promise.reject(new Error('daemon not connected'))),
+  }),
+  cap: () => getFactorySettings().companyMaxWorking,
+});
 let remoteSpawnCoordinator: RemoteSpawnCoordinator | null = null;
 let continueStarter: ContinueStarter | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
@@ -1333,6 +1342,7 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
   // Cross-host A2A: a remote pane's alias and rt- tasks go through the daemon's outbox.
   remote: daemonRemoteA2aRpcDeps(() => daemonClient),
   companyRelease: () => companyReleaseBridge,
+  companySlots,
 });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
@@ -2698,6 +2708,7 @@ app.on('ready', async () => {
         told: companyCeoLinesTold,
         inFlight: companyDeliveriesInFlight,
         pendingMarks: companyPendingMarks,
+        slots: companySlots,
         log: (level, msg) => logLine(level, 'a2a-company', msg),
       });
       companyReleaseBridge.start();

@@ -9,9 +9,9 @@ import type { CreateTaskInput } from './A2aTaskService';
  * `rt-` id is refused so no plain task can sit on a remote task's id and turn
  * the real one into a conflict.
  *
- * `holdForBlockers: true` passes only from the app's main process
- * (`firstParty`): it sends it for a company task it held back for its
- * blockers.
+ * `holdForBlockers: true` and `holdForSlot: true` pass only from the app's
+ * main process (`firstParty`): it sends them for a company task it held back
+ * for its blockers, or until a working slot on this PC frees.
  */
 export function parsePublicCreateTask(
   p: Record<string, unknown>,
@@ -32,6 +32,7 @@ export function parsePublicCreateTask(
       to,
       ...(Array.isArray(p.history) ? { history: p.history as Message[] } : {}),
       ...(opts.firstParty === true && p.holdForBlockers === true ? { holdForBlockers: true as const } : {}),
+      ...(opts.firstParty === true && p.holdForSlot === true ? { holdForSlot: true as const } : {}),
     },
   };
 }

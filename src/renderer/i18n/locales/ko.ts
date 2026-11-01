@@ -2097,6 +2097,8 @@ export const ko = {
   'settings.factory.concurrencyDesc': "모든 워크스페이스 합쳐 1~5.",
   'settings.factory.maxAgents': "동시에 실행되는 에이전트 (봇+워커)",
   'settings.factory.maxAgentsDesc': "턴을 도는 봇과 살아 있는 워커를 합쳐 2~16. 넘으면 봇이 새로 시작하는 워커는 자리가 날 때까지 기다립니다. 내가 시작한 작업은 기다리지 않습니다.",
+  'settings.factory.companyMaxWorking': "PC당 일하는 자리 수",
+  'settings.factory.companyMaxWorkingDesc': "이 PC에서 동시에 작업 중인 회사 자리 수, 모든 회사를 합쳐 1~8. 하나를 더 일하게 할 브리프는 기다렸다가, 일하던 자리에 진행 중인 작업이 없어지거나 그 에이전트가 종료되면 자기 자리로 전달됩니다. 직접 보낸 작업은 기다리지 않습니다.",
   'settings.factory.laneAutoMerge': '봇 PR 자동 머지',
   'settings.factory.laneAutoMergeDesc': "Verifier와 CI를 통과한 봇 PR을 하루 한도까지 머지해요. 끄면 직접 머지해요 (항상 허용 규칙이 있는 건 제외).",
   'settings.factory.laneDailyCap': '하루 자동 머지 수',
