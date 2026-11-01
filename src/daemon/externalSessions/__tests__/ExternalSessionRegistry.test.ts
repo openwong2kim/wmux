@@ -59,6 +59,19 @@ describe('ExternalSessionRegistry', () => {
     expect(f.one().state).toBe('idle');
   });
 
+  it("an interrupted turn's Stop that arrives after the next prompt leaves it running", () => {
+    const f = setup();
+    f.registry.note(signal({ kind: 'agent.user_prompt_submit', payload: { prompt: 'first' } }));
+    f.advance(1_000);
+    const endedAt = 1_000_000 + 500;
+    f.registry.note(signal({ kind: 'agent.user_prompt_submit', payload: { prompt: 'second' } }));
+    f.registry.note(signal({ kind: 'agent.stop', payload: { wmux_turn_reason: 'aborted', wmux_turn_ended_at: endedAt } }));
+    expect(f.one().state).toBe('running');
+    // A stop of the current turn still lands.
+    f.registry.note(signal({ kind: 'agent.stop', payload: { wmux_turn_reason: 'aborted', wmux_turn_ended_at: 1_000_000 + 2_000 } }));
+    expect(f.one().state).toBe('idle');
+  });
+
   it('the first prompt names the session; later prompts do not rename it', () => {
     const f = setup();
     f.registry.note(signal({ kind: 'agent.user_prompt_submit', payload: { prompt: 'first' } }));

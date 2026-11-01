@@ -19,6 +19,7 @@ import { isFreshSessionSource, type AgentSignal } from '../../shared/hooks/signa
 import { containsControlChars } from '../../shared/cwdShape';
 import { sanitizeRemoteText } from '../../shared/a2aRemoteDelivery';
 import { extractAskUserQuestion } from '../approvals/askUserQuestion';
+import { isStaleInterruptedStop } from '../../shared/hooks/CompletionAlarm';
 import { classifyEntrypoint, signalAgentPid, signalEntrypoint, summarizeToolInput } from '../hooks/HookIngest';
 
 /** A burst of signals (a turn's tool calls) leaves as one push. */
@@ -81,6 +82,8 @@ interface Entry {
   permissionAgentId?: string;
   /** The subagent a needs-you row waits on; undefined for the lead. */
   pendingAgentId?: string;
+  /** When the latest prompt was submitted: an interrupted turn's Stop older than it is stale. */
+  lastPromptAt?: number;
 }
 
 export interface ExternalSessionRegistryDeps {
@@ -209,6 +212,7 @@ export class ExternalSessionRegistry {
         return;
       case 'agent.user_prompt_submit':
         s.title ??= externalText(payload['prompt'], EXTERNAL_SESSION_LIMITS.title);
+        entry.lastPromptAt = this.now();
         this.setState(entry, 'running');
         return;
       // The PreToolUse gate (awaiting_permission) fires for every tool call;
@@ -238,6 +242,9 @@ export class ExternalSessionRegistry {
         return;
       case 'agent.stop':
       case 'agent.stop_failure':
+        // An Esc'd turn's Stop that lost the race to the next prompt: that
+        // prompt's turn is running now.
+        if (isStaleInterruptedStop(signal, entry.lastPromptAt)) return;
         this.setState(entry, 'idle');
         return;
       case 'agent.subagent_stop':
