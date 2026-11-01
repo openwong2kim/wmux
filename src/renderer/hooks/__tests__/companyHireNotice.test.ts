@@ -149,4 +149,26 @@ describe('watchHireNotice', () => {
     await flush();
     expect(gatedSubmit).toHaveBeenCalledTimes(2);
   });
+
+  it('tries a refused line again at once when the CEO pane\'s agent moved on while it was out', async () => {
+    let answer!: (result: unknown) => void;
+    gatedSubmit.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    useStore.setState({ workspaces: [company(startedSeat())] });
+    useStore.getState().setSurfaceAgent(SEAT_PTY, 'Codex', 'idle', 'codex');
+    watch();
+    await flush();
+    expect(gatedSubmit).toHaveBeenCalledTimes(1);
+    // The CEO runs a turn and ends it while the gate still holds the line.
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'running', 'claude');
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'idle', 'claude');
+    await flush();
+    answer({ ok: false, reason: 'user_typing', detail: 'typing' });
+    await flush();
+    expect(gatedSubmit).toHaveBeenCalledTimes(2);
+    // That one lands: nothing more.
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'running', 'claude');
+    useStore.getState().setSurfaceAgent(CEO_PTY, 'Claude Code', 'idle', 'claude');
+    await flush();
+    expect(gatedSubmit).toHaveBeenCalledTimes(2);
+  });
 });

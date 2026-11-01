@@ -11,7 +11,9 @@
 // not mid-turn, not held at a usage limit). A refused line (a draft the
 // person left in the CEO's prompt, say) is tried again only once the CEO
 // pane's agent has moved on, so a draft sent or a turn ended lets it through
-// and nothing retries in a loop; a delivered one never again. The watch ends
+// and nothing retries in a loop; a delivered one never again. A move made
+// while the line was out counts: the refused line is then tried again at
+// once. The watch ends
 // with the line, when the seat's pane closes, or when the workspace is no
 // longer a company. It lives in memory: an app restart drops it.
 
@@ -43,6 +45,10 @@ export function watchHireNotice(seat: HireNoticeWatch): () => void {
   // The CEO agent's status a refused line was tried in; the next try waits
   // until the status has been another one (the same status is broadcast again).
   let refusedIn: string | undefined;
+  // The CEO agent's status when the line went out, and whether it changed
+  // before the answer came back.
+  let sentIn: string | undefined;
+  let movedWhileSending = false;
   let stopped = false;
   let unsubscribe: () => void = () => undefined;
   const stop = (): void => {
@@ -50,9 +56,15 @@ export function watchHireNotice(seat: HireNoticeWatch): () => void {
     unsubscribe();
   };
   const check = (state: StoreState): void => {
-    if (stopped || sending) return;
+    if (stopped) return;
     const ws = state.workspaces.find((w) => w.id === seat.workspaceId);
     const leaves = ws ? getWorkspaceLeafPanes(ws) : [];
+    if (sending) {
+      const ceoLeaf = leaves.find((l) => l.id === ws?.company?.coordinatorPaneId);
+      const ceoPty = ceoLeaf ? agentPty(ceoLeaf, state.surfaceAgent) : null;
+      if ((ceoPty ? state.surfaceAgent[ceoPty]?.status : undefined) !== sentIn) movedWhileSending = true;
+      return;
+    }
     const leaf = leaves.find((l) => l.id === seat.paneId);
     if (!ws?.company || !leaf) {
       stop();
@@ -71,6 +83,8 @@ export function watchHireNotice(seat: HireNoticeWatch): () => void {
     if (eligibility(ceoPty) !== 'write') return;
     // Claimed before the await, so a change while it is out sends nothing more.
     sending = true;
+    sentIn = ceoState?.status;
+    movedWhileSending = false;
     const agent = ceoState?.name ?? null;
     void gatedSubmitToPty(ceoPty, text, {
       agent,
@@ -79,8 +93,15 @@ export function watchHireNotice(seat: HireNoticeWatch): () => void {
       deadlineAt: Date.now() + HIRE_NOTICE_DEADLINE_MS,
     }).then((result) => {
       sending = false;
-      if (result.ok) stop();
-      else refusedIn = ceoState?.status;
+      if (result.ok) {
+        stop();
+        return;
+      }
+      if (!movedWhileSending) {
+        refusedIn = sentIn;
+        return;
+      }
+      check(useStore.getState());
     });
   };
   unsubscribe = useStore.subscribe(check);
