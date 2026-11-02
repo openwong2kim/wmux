@@ -13,7 +13,7 @@ import { useT } from '../../hooks/useT';
 import { renderSentence } from '../../i18n/renderSentence';
 import { displayPath } from '../../utils/displayPath';
 import { companyFileFolder, makeCompany } from '../../utils/makeCompany';
-import { decideProjectTrust } from '../../utils/projectConfigProbe';
+import { decideProjectTrust, probeProjectConfig } from '../../utils/projectConfigProbe';
 import { layoutRows } from '../Project/ProjectConfigDialog';
 import { useAgentChoices } from './CompanyPresetDialog';
 import Button from '../ui/Button';
@@ -97,7 +97,9 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
       setBusy(false);
       return;
     }
-    const fresh = useStore.getState().projectConfigs[workspaceId];
+    // Decided on the file as main reads it now, never on a copy.
+    const fresh = await probeProjectConfig(workspaceId);
+    if (!open.current) return;
     const made = fresh?.config?.company;
     if (!fresh?.configPath || !made || companyNeedsReview(fresh) || fresh.contentHash !== shownHash) {
       setBusy(false);

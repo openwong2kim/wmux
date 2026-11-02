@@ -12,6 +12,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { displayPath } from '../../utils/displayPath';
 import { makeCompany } from '../../utils/makeCompany';
+import { companyNeedsReview } from '../../../shared/wmuxProjectConfig';
 import { probeProjectConfig } from '../../utils/projectConfigProbe';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -170,6 +171,18 @@ export default function CompanyPresetDialog({ preset, fromFile, onClose }: Compa
     if (seatsError || busy) return;
     setBusy(true);
     setFailed(null);
+    // Filled from a folder's wmux.json: made only while that file's company is
+    // approved here, as main reads it now.
+    if (fromFile) {
+      const fresh = await (window.electronAPI?.projectConfig?.get(fromFile.folder) ?? Promise.resolve(null)).catch(() => null);
+      if (!open.current) return;
+      if (!fresh || companyNeedsReview(fresh) || !fresh.config?.company) {
+        setBusy(false);
+        setFailed(null);
+        setSaveNote(t('companyFile.makeChanged'));
+        return;
+      }
+    }
     const res = await makeCompany(
       { name: companyName, ...(folder ? { folder } : {}), mission, standingOrders, ceo, tellSeats, seats: trimmed },
       () => open.current,

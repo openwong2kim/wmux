@@ -15,6 +15,7 @@ import { useStore } from '../../../stores';
 import { probeProjectConfig } from '../../../utils/projectConfigProbe';
 import { BUILTIN_COMPANY_PRESETS } from '../../../../shared/companyPreset';
 import { companyFileJson, type CompanyFileView, type WmuxProjectCompany } from '../../../../shared/companyFile';
+import type { ProjectConfigState } from '../../../../shared/wmuxProjectConfig';
 import CompanyPresetDialog from '../CompanyPresetDialog';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -45,6 +46,13 @@ async function flush(): Promise<void> {
   });
 }
 
+const get = vi.fn();
+const seatLaunches = vi.fn();
+const APPROVED_FILE: ProjectConfigState = {
+  found: true, root: '/dev/shop', configPath: '/dev/shop/wmux.json', contentHash: 'h1', trust: 'trusted', companyReviewed: true,
+  config: { version: 1, company: COMPANY },
+};
+
 function renderFromFile(): void {
   act(() => root.render(createElement(CompanyPresetDialog, { fromFile: { company: COMPANY, folder: '/dev/shop' }, onClose })));
 }
@@ -74,13 +82,16 @@ beforeEach(() => {
   document.body.appendChild(container);
   root = createRoot(container);
   companyGet.mockReset();
+  get.mockReset().mockResolvedValue(APPROVED_FILE);
+  seatLaunches.mockReset().mockResolvedValue({ ok: true, labels: COMPANY.seats.map((s) => s.label), commands: COMPANY.seats.map(() => null), cwds: COMPANY.seats.map(() => null) });
   companySave.mockReset().mockResolvedValue({ ok: true, contentHash: 'h2' });
   pickFolder.mockReset().mockResolvedValue(['/dev/shop']);
   onClose.mockReset();
   vi.mocked(probeProjectConfig).mockClear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
-    projectConfig: { companyGet, companySave },
+    projectConfig: { companyGet, companySave, get },
     dialog: { pickFolder },
+    company: { seatLaunches },
   };
   act(() => useStore.setState({ workspaces: [{ id: 'ws-1', name: 'shop', metadata: { cwd: '/dev/shop' } }] } as never));
 });
@@ -134,6 +145,23 @@ describe('CompanyPresetDialog from the folder\'s wmux.json', () => {
     // The dialog stays, and Make is still there.
     expect(onClose).not.toHaveBeenCalled();
     expect(button('Make company').disabled).toBe(false);
+  });
+
+  it('makes the company only while the file\'s company is approved here, as main reads it at Make', async () => {
+    get.mockResolvedValue({ ...APPROVED_FILE, trust: 'stale', contentHash: 'h9', companyReviewed: undefined });
+    renderFromFile();
+    await act(async () => button('Make company').click());
+    await flush();
+    expect(get).toHaveBeenCalledWith('/dev/shop');
+    expect(seatLaunches).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-company-file-note]')?.textContent)
+      .toBe('This folder\'s wmux.json changed, or its company is no longer approved here. Pick it from the + menu again to review it.');
+
+    get.mockResolvedValue(APPROVED_FILE);
+    await act(async () => button('Make company').click());
+    await flush();
+    expect(seatLaunches).toHaveBeenCalledTimes(1);
+    expect(seatLaunches.mock.calls[0][0]).toMatchObject({ company: COMPANY.name, folder: '/dev/shop' });
   });
 
   it('says why Save is off when the text is what the file can\'t keep', () => {

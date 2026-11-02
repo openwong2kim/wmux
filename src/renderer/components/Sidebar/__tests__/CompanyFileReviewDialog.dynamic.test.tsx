@@ -193,6 +193,16 @@ describe('CompanyFileReviewDialog', () => {
     expect(onClose).toHaveBeenCalled();
   });
 
+  it('decides on the file as main reads it after the approval, not on what the approval saw', async () => {
+    get.mockResolvedValueOnce(APPROVED).mockResolvedValueOnce({ ...APPROVED, contentHash: 'h2', trust: 'stale', companyReviewed: undefined });
+    await render(UNTRUSTED);
+    await act(async () => button('Approve and make company').click());
+    await flush();
+    expect(get).toHaveBeenCalledTimes(2);
+    expect(seatLaunches).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-company-review-note]')?.textContent).toBe('wmux.json changed. Review it again.');
+  });
+
   it('a re-approval of trusted bytes keeps their unattended consent', async () => {
     await render({ ...UNTRUSTED, trust: 'trusted', unattended: true, companyReviewed: false });
     await act(async () => button('Approve and make company').click());

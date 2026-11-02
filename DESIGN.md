@@ -1660,7 +1660,8 @@ leaves the page.
     "Review it before it starts". Opening the menu reads the file again. A
     pick never makes the company: while it waits for a review it opens the
     review, else the New company dialog filled from the file (`New company:
-    <name>`). A company the file holds but cannot be read is a muted row
+    <name>`), whose Make company reads the file again and makes the company
+    only while its company is still approved here. A company the file holds but cannot be read is a muted row
     that does nothing and says to fix it in wmux.json. The New company
     dialog's footer holds, on the left, the quiet underlined text button
     **Save as this folder's company** (never a second primary), enabled once
@@ -1697,7 +1698,9 @@ leaves the page.
     shows the file as it is now with "wmux.json changed. Review it again."
     The wmux.json dialog lists the company in a Company group, with its seat
     count and "Approved to start from the + menu" or "Reviewed on its first
-    start from the + menu"; its Trust does not approve the company.
+    start from the + menu"; its Trust does not approve the company, and
+    neither does its re-approval of the setup and copy settings, since it
+    does not show the company.
 - **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
   `treeitem`) with one Tab stop — the row the keyboard was last on, else the
   selected row, else the first. ↑ ↓ Home End move between rows in screen

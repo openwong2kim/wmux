@@ -97,17 +97,17 @@ describe('ProjectConfigDialog', () => {
     const primary = container.querySelector('.ui-btn-primary') as HTMLButtonElement;
     expect(primary.textContent).toBe('Approve setup');
     act(() => primary.click());
-    expect(decideProjectTrust).toHaveBeenCalledWith('ws-1', 'trusted', true, false);
+    expect(decideProjectTrust).toHaveBeenCalledWith('ws-1', 'trusted', true);
   });
 
-  it('keeps the company review when it approves the setup and copy settings', () => {
+  it('never marks the company reviewed when it approves the setup and copy settings, since it does not show the company', () => {
     vi.mocked(decideProjectTrust).mockClear();
     act(() => useStore.setState({
       projectConfigs: { 'ws-1': { ...config, trust: 'trusted', prepReviewed: false, companyReviewed: true, config: { ...config.config, company, fanout: { setup: 'npm ci' } } } },
     } as never));
     act(() => root.render(createElement(ProjectConfigDialog)));
     act(() => (container.querySelector('.ui-btn-primary') as HTMLButtonElement).click());
-    expect(decideProjectTrust).toHaveBeenCalledWith('ws-1', 'trusted', false, true);
+    expect(decideProjectTrust).toHaveBeenCalledWith('ws-1', 'trusted', false);
   });
 
   it('lists the folder\'s company and whether it is approved to start', () => {

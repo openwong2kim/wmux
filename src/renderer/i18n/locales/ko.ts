@@ -592,6 +592,7 @@ export const ko = {
   'companyFile.menuInvalidLine': "{folder}의 wmux.json에서 회사를 고치세요",
   'companyFile.save': "이 폴더의 회사로 저장",
   'companyFile.unsavable': "이 회사는 wmux.json에 저장할 수 없습니다. 탭이나 보이지 않는 문자가 든 칸, 또는 너무 긴 칸이 있습니다.",
+  'companyFile.makeChanged': "이 폴더의 wmux.json이 바뀌었거나 그 회사가 이 PC에서 더는 승인된 상태가 아닙니다. + 메뉴에서 다시 골라 검토하세요.",
   'companyFile.confirmTitle': "이 회사를 {dir}/wmux.json에 저장할까요?",
   'companyFile.confirmHolds': "이름, 미션, 상시 지침, CEO, 그리고 각 자리의 담당과 에이전트가 들어갑니다.",
   'companyFile.confirmNever': "실행 플래그, 환경 변수, 토큰, 폴더, 다른 PC의 자리는 들어가지 않습니다.",

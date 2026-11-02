@@ -317,8 +317,9 @@ export default function ProjectConfigDialog() {
               <Button
                 size="md"
                 variant="primary"
-                // Same bytes, same unattended consent and company review: only the setup and copy settings are newly approved.
-                onClick={() => { void decideProjectTrust(wsId, 'trusted', project.unattended === true, project.companyReviewed === true); close(); }}
+                // Same bytes, same unattended consent: only the setup and copy settings are newly approved.
+                // The company is not shown here, so this approval never marks it reviewed.
+                onClick={() => { void decideProjectTrust(wsId, 'trusted', project.unattended === true); close(); }}
               >
                 {t('project.approvePrep')}
               </Button>

@@ -574,6 +574,7 @@ export const pl = {
   'companyFile.menuInvalidLine': "Popraw firmę w wmux.json w {folder}",
   'companyFile.save': "Zapisz jako firmę tego folderu",
   'companyFile.unsavable': "Tej firmy nie można zapisać w wmux.json: pole zawiera tabulator lub ukryty znak albo jest za długie.",
+  'companyFile.makeChanged': "Plik wmux.json tego folderu się zmienił albo jego firma nie jest już tu zatwierdzona. Wybierz ją ponownie z menu +, aby ją przejrzeć.",
   'companyFile.confirmTitle': "Zapisać tę firmę w {dir}/wmux.json?",
   'companyFile.confirmHolds': "Zawiera nazwę, misję, stałe polecenia, CEO oraz każde stanowisko z tym, za co odpowiada, i jego agentem.",
   'companyFile.confirmNever': "Nigdy nie zawiera flag uruchomienia, środowiska, tokenów, folderów ani stanowisk na innych komputerach.",
