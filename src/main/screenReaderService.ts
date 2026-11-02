@@ -4,11 +4,11 @@
 
 import { app, BrowserWindow } from 'electron';
 import { dataSuffix } from '../shared/constants';
-import { parseAgentVersion } from '../shared/agentSetup';
+import { isOlderVersion, parseAgentVersion } from '../shared/agentSetup';
 import { SCREEN_READER_IPC } from '../shared/screenReader';
 import { isWslShell } from '../shared/wsl';
 import { createScreenReaderMonitor, listProcessNames, screenReaderForcedForTest, SCREEN_READER_IDLE_POLL_MS_WIN32 } from './screenReader';
-import { resolveClaudeExecutable } from './claude/resolveClaudeExecutable';
+import { claudeInstalls } from './claude/resolveClaudeExecutable';
 import { probeClaudeExecutable } from './factory/claudeProbe';
 
 /** Sent to a window by an accessibility client asking for its tree. */
@@ -62,18 +62,26 @@ export function isScreenReaderOn(): boolean {
   return monitor.isOn();
 }
 
-/** claude's `x.y.z`, read in the background, so a launch never waits on it:
- *  null until a read answers, and when claude does not run. The probe caches
- *  by path and mtime, so a read again is a stat. */
+/** The oldest claude `x.y.z` among every install a pane's shell might run
+ *  (claudeInstalls), read in the background, so a launch never waits on it:
+ *  null until a read answers, when no claude is found, and when any install's
+ *  version cannot be read. The probe caches by path and mtime, so a read
+ *  again is a stat. */
 let claudeVersion: string | null = null;
+let reading: Promise<void> | null = null;
 
 function readClaudeVersion(): void {
-  const exe = resolveClaudeExecutable();
-  if (!exe) {
-    claudeVersion = null;
-    return;
-  }
-  void probeClaudeExecutable(exe).then((r) => { claudeVersion = r.ok ? parseAgentVersion(r.version) : null; });
+  if (reading) return;
+  reading = (async () => {
+    const versions = await Promise.all((await claudeInstalls()).map(async (exe) => {
+      const r = await probeClaudeExecutable(exe);
+      return r.ok ? parseAgentVersion(r.version) : null;
+    }));
+    const known = versions.filter((v): v is string => v !== null);
+    claudeVersion = known.length > 0 && known.length === versions.length
+      ? known.reduce((oldest, v) => (isOlderVersion(v, oldest) ? v : oldest))
+      : null;
+  })().catch(() => { claudeVersion = null; }).finally(() => { reading = null; });
 }
 
 /** The launchers whose version wmux can read: claude's flag is the one with
@@ -87,12 +95,13 @@ const VERSION_READS = new Map<string, () => string | null>([
 ]);
 
 /** The versions a launch line's screen-reader flag is checked against
- *  (screenReaderLaunch.ts), for a pane running `shell`: the launcher's on
- *  main's PATH. A WSL pane runs the distro's own agent and a launcher given
- *  by path may be another install, so theirs are unknown (no flag), as is any
- *  launcher wmux cannot read. Never waits. */
+ *  (screenReaderLaunch.ts), for a pane running `shell`: the oldest of the
+ *  launcher's installs. A WSL pane runs the distro's own agent, a pane whose
+ *  shell is not known may be one, and a launcher given by path may be another
+ *  install, so theirs are unknown (no flag), as is any launcher wmux cannot
+ *  read. Never waits. */
 export function launcherVersionsIn(shell: string | null | undefined): (launcher: string, typed: string) => string | null {
-  if (isWslShell(shell ?? undefined)) return () => null;
+  if (!shell || isWslShell(shell)) return () => null;
   return (launcher, typed) => (/[\\/]/.test(typed) ? null : VERSION_READS.get(launcher)?.() ?? null);
 }
 

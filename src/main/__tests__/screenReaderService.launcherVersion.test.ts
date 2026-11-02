@@ -1,6 +1,7 @@
 // @wmux-lane unit
 // The version a launch's screen-reader flag is checked against: read in the
-// background, so a launch never waits on `claude --version`.
+// background, so a launch never waits on `claude --version`, and the oldest of
+// every claude install a pane's shell might run.
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('electron', () => ({
@@ -8,44 +9,72 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
 }));
 
-const probe = vi.hoisted(() => ({ answer: null as null | ((r: { ok: true; version: string } | { ok: false; detail: string }) => void), calls: 0 }));
+type ProbeResult = { ok: true; version: string } | { ok: false; detail: string };
+const fake = vi.hoisted(() => ({
+  installs: [] as string[],
+  reads: 0,
+  answers: new Map<string, (r: ProbeResult) => void>(),
+}));
 // A WSL shell on any host, so the WSL rule runs here too.
 vi.mock('../../shared/wsl', () => ({ isWslShell: (shell?: string) => /wsl\.exe$/i.test(shell ?? '') }));
-vi.mock('../claude/resolveClaudeExecutable', () => ({ resolveClaudeExecutable: () => '/fake/claude' }));
-vi.mock('../factory/claudeProbe', () => ({
-  probeClaudeExecutable: () => {
-    probe.calls++;
-    return new Promise((resolve) => { probe.answer = resolve; });
+vi.mock('../claude/resolveClaudeExecutable', () => ({
+  claudeInstalls: async () => {
+    fake.reads++;
+    return fake.installs;
   },
+}));
+vi.mock('../factory/claudeProbe', () => ({
+  probeClaudeExecutable: (exe: string) => new Promise<ProbeResult>((resolve) => { fake.answers.set(exe, resolve); }),
 }));
 
 import { launcherVersionsIn } from '../screenReaderService';
 
 describe('launcherVersionsIn', () => {
   const launcherVersion = (launcher: string) => launcherVersionsIn('/bin/zsh')(launcher, launcher);
+  const ok = (version: string): ProbeResult => ({ ok: true, version: `${version} (Claude Code)` });
+  /** Answers each probe asked with `by(exe)` until a read gives `want`. Every
+   *  ask reads again in the background, as a launch does. */
+  async function readUntil(by: (exe: string) => ProbeResult, want: string | null): Promise<void> {
+    await vi.waitFor(() => {
+      for (const [exe, resolve] of [...fake.answers]) {
+        fake.answers.delete(exe);
+        resolve(by(exe));
+      }
+      expect(launcherVersion('claude')).toBe(want);
+    }, { timeout: 5_000 });
+  }
 
-  it('answers null until claude --version answers, then its x.y.z, and only for claude', async () => {
+  it('answers null until every install is read, then the oldest version', async () => {
+    fake.installs = ['/home/u/.local/bin/claude', '/home/u/.nvm/versions/node/v20/bin/claude'];
     expect(launcherVersion('claude')).toBeNull();
-    expect(probe.calls).toBe(1);
-    probe.answer?.({ ok: true, version: '2.1.316 (Claude Code)' });
-    await Promise.resolve();
-    expect(launcherVersion('claude')).toBe('2.1.316');
-    probe.answer?.({ ok: false, detail: 'gone' });
-    await Promise.resolve();
-    expect(launcherVersion('claude')).toBeNull();
-    const before = probe.calls;
-    expect(launcherVersion('gemini')).toBeNull();
-    expect(probe.calls).toBe(before);
+    const versions: Record<string, string> = { '/home/u/.local/bin/claude': '2.1.316', '/home/u/.nvm/versions/node/v20/bin/claude': '2.1.250' };
+    await readUntil((exe) => ok(versions[exe]!), '2.1.250');
   });
 
-  it('knows no version for a launcher given by path, or in a WSL pane', async () => {
+  it('knows no version when any install cannot be read, or none is found', async () => {
+    fake.installs = ['/a/claude', '/b/claude'];
+    await readUntil(() => ok('2.1.316'), '2.1.316');
+    await readUntil((exe) => (exe === '/b/claude' ? { ok: false, detail: 'timed out' } : ok('2.1.316')), null);
+    await readUntil(() => ok('2.1.316'), '2.1.316');
+    fake.installs = [];
+    await readUntil(() => ok('2.1.316'), null);
+  });
+
+  it('starts no second read while one runs', () => {
+    fake.installs = ['/a/claude'];
     launcherVersion('claude');
-    probe.answer?.({ ok: true, version: '2.1.316 (Claude Code)' });
-    await Promise.resolve();
-    expect(launcherVersion('claude')).toBe('2.1.316');
-    const before = probe.calls;
+    const before = fake.reads;
+    launcherVersion('claude');
+    launcherVersion('claude');
+    expect(fake.reads).toBe(before);
+  });
+
+  it('knows no version for gemini, a launcher given by path, a WSL pane or a shell not known, while claude\'s is known', async () => {
+    fake.installs = ['/a/claude'];
+    await readUntil(() => ok('2.1.316'), '2.1.316');
+    expect(launcherVersion('gemini')).toBeNull();
     expect(launcherVersionsIn('/bin/zsh')('claude', '/opt/other/claude')).toBeNull();
     expect(launcherVersionsIn('C:\\Windows\\System32\\wsl.exe')('claude', 'claude')).toBeNull();
-    expect(probe.calls).toBe(before);
+    expect(launcherVersionsIn(undefined)('claude', 'claude')).toBeNull();
   });
 });

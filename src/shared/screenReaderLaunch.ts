@@ -5,9 +5,11 @@ import { splitModelEnvMarker } from './workerLaunch';
 
 /**
  * A launch line with the agent's own screen-reader flag (claude
- * `--ax-screen-reader`; agentLaunchOptions.ts) right after the launcher token, when a screen reader is `on`. Applied only to the
- * text typed into a pane, never to a line stored for resume, replay or display,
- * so the flag goes away with the screen reader. Unchanged when:
+ * `--ax-screen-reader`; agentLaunchOptions.ts) right after the launcher token,
+ * when a screen reader is `on`. Applied only to the text typed into a pane,
+ * never to a line stored for resume, replay or display, so the flag goes away
+ * with the screen reader (the shell's own history keeps the line as typed).
+ * Unchanged when:
  *   - `on` is false, or the launcher has no verified flag;
  *   - the flag is already there;
  *   - the run is headless (claude `-p`/`--print`);

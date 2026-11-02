@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { agentCandidates, claudeCandidates, programOnPath, resolveAgentExecutableWith, resolveClaudeExecutableWith, type ResolveClaudeEnv } from '../resolveClaudeExecutable';
+import { agentCandidates, claudeCandidates, claudeInstallsWith, programOnPath, resolveAgentExecutableWith, resolveClaudeExecutableWith, type ResolveClaudeEnv } from '../resolveClaudeExecutable';
 
 function posix(files: string[], env: Record<string, string> = {}, platform: NodeJS.Platform = 'linux'): ResolveClaudeEnv {
   const set = new Set(files);
@@ -297,6 +297,17 @@ describe('Qwen Code and Kimi Code CLI candidates', () => {
     const r = posix(['/home/u/.local/bin/qwen', '/home/u/.kimi-code/bin/kimi'], { PATH: '/usr/bin' });
     expect(resolveAgentExecutableWith(r, 'qwen')).toBe('/home/u/.local/bin/qwen');
     expect(resolveAgentExecutableWith(r, 'kimi')).toBe('/home/u/.kimi-code/bin/kimi');
+  });
+});
+
+describe('claudeInstallsWith (every claude a shell might run)', () => {
+  it('lists each existing candidate, then each claude on the login shell PATH, once and absolute only', () => {
+    const r: ResolveClaudeEnv = {
+      ...posix(['/usr/local/bin/claude', '/home/u/.local/bin/claude', '/home/u/.nvm/versions/node/v18.0.0/bin/claude', 'claude'], { PATH: '/usr/local/bin:.' }, 'darwin'),
+      loginShellPath: () => '/home/u/.nvm/versions/node/v18.0.0/bin:/usr/local/bin:relative',
+    };
+    expect(claudeInstallsWith(r)).toEqual(['/usr/local/bin/claude', '/home/u/.local/bin/claude', '/home/u/.nvm/versions/node/v18.0.0/bin/claude']);
+    expect(claudeInstallsWith({ ...r, loginShellPath: () => null })).toEqual(['/usr/local/bin/claude', '/home/u/.local/bin/claude']);
   });
 });
 
