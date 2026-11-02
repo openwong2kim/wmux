@@ -1043,7 +1043,8 @@ function remoteAnchorTarget(
 /**
  * One gated write of a remote delivery to `pty`, with the outcome in the
  * bridge's terms. A paste left in the composer (Enter withheld, not cleared)
- * counts as delivered: pasting it again would duplicate it.
+ * was never submitted, and pasting it again would duplicate it: it is held as
+ * `delivery-unconfirmed` for a person to check (#2993).
  */
 async function writeRemoteDelivery(
   anchor: RemoteAnchor,
@@ -1053,7 +1054,7 @@ async function writeRemoteDelivery(
   if (!a2aTargetHasAgent(target.ws, target.pty)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
   const res = await write();
   if (res.ptyId) return { ok: true, delivered: true, ptyId: res.ptyId };
-  if (res.refused?.pasted && !res.refused.cleared) return { ok: true, delivered: true, ptyId: target.pty, note: 'pasted-not-submitted' };
+  if (res.refused?.pasted && !res.refused.cleared) return { ok: true, delivered: false, held: 'delivery-unconfirmed' };
   // The pane may have changed while the delivery waited.
   const after = remoteAnchorTarget({ ...anchor, ptyId: target.pty }, false);
   if ('held' in after) return { ok: true, delivered: false, held: after.held };
@@ -1292,10 +1293,12 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
   const write = isLiveTuiAgent(liveMeta)
     ? await deliverPtyNudge(seat.ws, (p) => buildA2aNudge(taskId, fromName, 'new', a2aFormatOptionsFor(p).multiline ? t.metadata.title : undefined) + imagesNudgeSuffix(images), seat.pty, false, gated)
     : await deliverPtyNotification(seat.ws, fromName, bodyWithImages(body, images), seat.pty, false, gated);
-  // A paste left in the composer (Enter withheld, not cleared) counts as
-  // delivered: writing it again would duplicate it.
-  const pastedOnly = !write.ptyId && !!write.refused?.pasted && !write.refused.cleared;
-  if (write.ptyId || pastedOnly) {
+  // A paste left in the composer (Enter withheld, not cleared) was never
+  // submitted, and writing it again would duplicate it: held for a person.
+  if (!write.ptyId && write.refused?.pasted && !write.refused.cleared) {
+    return { ok: true, delivered: false, held: 'delivery-unconfirmed' };
+  }
+  if (write.ptyId) {
     deliveredCompanyTasks.add(taskId);
     if (deliveredCompanyTasks.size > DELIVERED_COMPANY_TASKS_MAX) {
       deliveredCompanyTasks.delete(deliveredCompanyTasks.values().next().value as string);
@@ -1310,15 +1313,13 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
         waitingOn: [],
         ...(marker?.releasedAt ? { releasedAt: marker.releasedAt } : {}),
         delivered: true,
-        ptyId: pastedOnly ? seat.pty : (write.ptyId as string),
+        ptyId: write.ptyId as string,
       };
     });
     // Its send stored it unannounced; it is the seat's from now on.
     const written = useStore.getState().getTask(taskId);
     if (written) emitA2aTaskEvent(written, 'created');
-    return pastedOnly
-      ? { ok: true, delivered: true, ptyId: seat.pty, note: 'pasted-not-submitted' }
-      : { ok: true, delivered: true, ptyId: write.ptyId as string };
+    return { ok: true, delivered: true, ptyId: write.ptyId as string };
   }
   // The pane may have gone while the delivery waited.
   if (!resolveSeat()) return { ok: true, delivered: false, held: 'pane-missing' };

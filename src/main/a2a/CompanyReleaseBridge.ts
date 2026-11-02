@@ -268,8 +268,10 @@ export class CompanyReleaseBridge {
       return;
     }
     this.backoff(task.id);
-    if (isRecord(res) && res.ok === true && res.held === 'pane-missing') {
-      await this.mark(task.id, { held: 'pane-missing' });
+    // A paste left unsubmitted in the composer is a person's to check: it is
+    // never written again on its own.
+    if (isRecord(res) && res.ok === true && (res.held === 'pane-missing' || res.held === 'delivery-unconfirmed')) {
+      await this.mark(task.id, { held: res.held });
       return;
     }
     if (isRecord(res) && typeof res.error === 'string') {

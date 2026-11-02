@@ -62,7 +62,10 @@ const live: {
   afterScreenRead?: () => void;
   /** Latency of each screen read, like a hidden pane's. */
   readDelayMs?: number;
+  /** Main's clock as the gated submit sees it; each injected sleep moves it. */
+  clock: number;
 } = {
+  clock: 0,
   policy: { allowed: false, reason: 'autonomy-off' },
   screen: '',
   daemonVerdict: 'clear',
@@ -128,7 +131,11 @@ function wire(options: {
         return live.daemonVerdict;
       },
       // The gap between paste and Enter: tests may redraw the screen in it.
-      sleep: async () => { live.betweenPasteAndEnter?.(); },
+      sleep: async (ms: number) => {
+        live.clock += ms;
+        live.betweenPasteAndEnter?.();
+      },
+      now: () => live.clock,
     },
   );
   registerApprovalsRpc(router, () => dc as never, {
@@ -158,6 +165,7 @@ beforeEach(() => {
   live.betweenPasteAndEnter = undefined;
   live.afterScreenRead = undefined;
   live.readDelayMs = undefined;
+  live.clock = 0;
   w = wire();
 });
 afterEach(() => {
@@ -819,9 +827,54 @@ describe('a folder-trust verdict for a pane with no screen', () => {
     live.screen = '$ ';
     live.betweenPasteAndEnter = () => { live.screen = null; };
     const atEnter = await w.gatedSubmit('pty-w', 'hello');
-    expect(atEnter).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true });
+    expect(atEnter).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true, cleared: true });
     expect(atEnter.ok === false && atEnter.detail).toContain('could not be read — not submitting blind. The text was pasted but not submitted.');
-    expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~hello\x1b[201~']);
+    // Still undecided after the redraw settled: the paste is taken back out (#2993).
+    expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~hello\x1b[201~', '\x15']);
+  });
+
+  // #2993: on a hidden pane our own paste moves the output the folder-trust
+  // verdict was read from, so the check before the Enter can come back
+  // undecided with no dialog there. The text used to sit in the composer,
+  // never submitted, while the sender counted it as delivered.
+  it.each([['single-line', 'hello', '\r'], ['multi-line', 'line one\nline two', '\r\r']])(
+    '%s: an undecided gate at the Enter clears the paste instead of leaving it unsubmitted',
+    async (_name, text, enter) => {
+      live.policy = { allowed: true };
+      live.screen = { parked: '❯ ' };
+      live.daemonVerdict = 'clear';
+      live.betweenPasteAndEnter = () => { live.daemonVerdict = 'unknown'; };
+      const res = await w.gatedSubmit('pty-w', text, 'Claude Code');
+      expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true, cleared: true });
+      const data = w.writes.map((x) => x.data);
+      expect(data.at(-1)).toBe('\x15');
+      expect(data).not.toContain(enter);
+    },
+  );
+
+  it.each([['single-line', 'hello', '\r'], ['multi-line', 'line one\nline two', '\r\r']])(
+    '%s: an undecided gate at the Enter that settles once the paste has redrawn submits',
+    async (_name, text, enter) => {
+      live.policy = { allowed: true };
+      live.screen = { parked: '❯ ' };
+      live.daemonVerdict = 'clear';
+      let sleeps = 0;
+      // The paste's drain: undecided; the settle that follows: decided again.
+      live.betweenPasteAndEnter = () => { live.daemonVerdict = ++sleeps === 1 ? 'unknown' : 'clear'; };
+      expect(await w.gatedSubmit('pty-w', text, 'Claude Code')).toEqual({ ok: true });
+      expect(w.writes.map((x) => x.data).slice(1)).toEqual([enter]);
+    },
+  );
+
+  it('an Enter the composer did not take is sent once more (submit receipt)', async () => {
+    live.policy = { allowed: true };
+    live.screen = { parked: '❯ ' };
+    live.daemonVerdict = 'clear';
+    // The pasted placeholder never leaves the composer.
+    vi.mocked(sendToRenderer).mockImplementation(async (_win, method) =>
+      method === 'input.readScreen' ? { text: '⏺ Done.\n\n──────────\n❯ [Pasted text #1 +1 lines]' } : null);
+    expect(await w.gatedSubmit('pty-w', 'line one\nline two', 'Claude Code')).toEqual({ ok: true });
+    expect(w.writes.map((x) => x.data).slice(1)).toEqual(['\r\r', '\r']);
   });
 
   it("a delivery, and an agent's own text and keys, ask the daemon on a delivery's budget: no person waits on them", async () => {

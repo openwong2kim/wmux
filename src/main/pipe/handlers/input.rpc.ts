@@ -1132,6 +1132,16 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
  * Enter follows the paste after an agent-specific delay and a dialog drawn in
  * that gap would take it. A refusal at the second check leaves the text in the
  * composer unsubmitted (`pasted: true`) rather than answering the dialog.
+ *
+ * A gate that could not decide at the Enter (`gate_unavailable`) is asked once
+ * more after the paste's redraw settles: on a hidden pane our own paste moves
+ * the output the folder-trust verdict was read from, so the first answer can be
+ * unknown with no dialog there (#2993). Still undecided, the paste is taken back
+ * out (`cleared`) so the sender may deliver it again cleanly.
+ *
+ * With `probe`, the Enter gets the same submit receipt and one retried Enter
+ * that `input.send` uses. A receipt that never comes is still `ok`: the text
+ * may have been submitted, and pasting it again would duplicate it.
  */
 export async function gatedPasteSubmit(
   gate: ApprovalInputGate,
@@ -1149,6 +1159,8 @@ export async function gatedPasteSubmit(
    */
   freshContext?: () => Promise<FreshContextReply>,
   guard?: DeliveryGuard,
+  probe?: SubmitProbe,
+  clock?: { now?: () => number },
 ): Promise<GatedSubmitResult> {
   const before = await deliveryGateCheck(gate, ptyId);
   if (before) return before;
@@ -1178,13 +1190,11 @@ export async function gatedPasteSubmit(
   } catch (err) {
     return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err) };
   }
-  await sleep(submitProfileForAgent(agent).submitDelayMs);
-  const atEnter = await deliveryGateCheck(gate, ptyId, ' The text was pasted but not submitted.');
-  if (atEnter) return { ...atEnter, pasted: true };
-  const guardAtEnter = guard ? await guard.beforeEnter() : null;
-  if (guardAtEnter) {
-    // Not submitted; take the text back out (Ctrl+U empties an agent's
-    // composer or a shell's line — best effort, reported as such).
+  // Always a bracketed paste: a large one needs time to drain before Enter.
+  await sleep(pasteSubmitDelayMs(agent ?? null, text.length));
+  /** Not submitted; take the text back out (Ctrl+U empties an agent's
+   *  composer or a shell's line — best effort, reported as such). */
+  const takeBack = (refusal: GatedSubmitRefusal): GatedSubmitRefusal => {
     let cleared = false;
     try {
       write(ptyId, '\x15');
@@ -1192,12 +1202,46 @@ export async function gatedPasteSubmit(
     } catch {
       /* the pane went away */
     }
-    return { ...guardAtEnter, pasted: true, cleared };
+    return { ...refusal, pasted: true, cleared };
+  };
+  // The pane while the text sits uncommitted: what the receipt diffs
+  // against. Read before the gate below, so nothing lands between it and the Enter.
+  const atEnterReading = probe ? await probe.readAgentStatus() : null;
+  const atEnterPane = {
+    screen: probe ? await probe.readScreen() : '',
+    agentStatus: atEnterReading?.status ?? null,
+    turnStartedAt: atEnterReading?.turnStartedAt,
+  };
+  const notSubmitted = ' The text was pasted but not submitted.';
+  let atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
+  if (atEnter?.reason === 'gate_unavailable') {
+    // Our own paste redrew the pane; ask once more once that has settled.
+    await sleep(submitProfileForAgent(agent).submitDelayMs);
+    atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
+    // Still undecided: take it back out. A dialog now on screen gets no key.
+    if (atEnter?.reason === 'gate_unavailable') return takeBack(atEnter);
   }
+  if (atEnter) return { ...atEnter, pasted: true };
+  const guardAtEnter = guard ? await guard.beforeEnter() : null;
+  if (guardAtEnter) return takeBack(guardAtEnter);
   try {
     write(ptyId, isMultilinePtyPayload(text) ? '\r\r' : '\r');
   } catch (err) {
     return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err), pasted: true };
+  }
+  if (probe) {
+    const now = clock?.now ?? Date.now;
+    await awaitSubmitReceipt(
+      probe,
+      composerMarker(atEnterPane.screen, submitNeedle(text)),
+      atEnterPane,
+      async () => {
+        const again = await deliveryGateCheck(gate, ptyId, ' The text and its first Enter were sent; this retried Enter was not.');
+        if (again) throw new EnterRetryRefused(again.detail);
+        write(ptyId, '\r');
+      },
+      { enterAt: now(), sleep, now },
+    );
   }
   return fresh ? { ok: true, ...fresh } : { ok: true };
 }
@@ -2153,7 +2197,12 @@ export function registerInputRpc(
         guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
       }
-      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard);
+      // The submit receipt's workspace, resolved before anything is written so
+      // its round-trip never lands between the paste and its Enter.
+      const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
+      const probe = makeSubmitProbe(getWindow, ptyId, workspaceId, deps.readTurnStartedAt);
+      const clock = { ...(deps.now ? { now: deps.now } : {}) };
+      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, probe, clock);
       // #1680 — a new task: the fresh-context step runs inside the gated
       // delivery, and the pane is held through the text's Enter. The pane's
       // conversation is kept when the renderer knows of other open tasks on it,
@@ -2165,7 +2214,6 @@ export function registerInputRpc(
         ptyId,
         () =>
           gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
-            const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
             return runFreshContextOn(
               ptyId,
               await bindingFor(ptyId),
@@ -2179,7 +2227,7 @@ export function registerInputRpc(
               },
               keepContext,
             );
-          }, guard),
+          }, guard, probe, clock),
         deps.freshContextLockWaitMs,
       ).catch((err: unknown): GatedSubmitResult => {
         if (!(err instanceof FreshContextBusy)) throw err;

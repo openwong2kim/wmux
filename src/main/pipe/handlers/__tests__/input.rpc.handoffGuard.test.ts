@@ -8,7 +8,7 @@
 
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RpcRouter } from '../../RpcRouter';
-import { registerInputRpc } from '../input.rpc';
+import { pasteSubmitDelayMs, registerInputRpc } from '../input.rpc';
 import type { GatedSubmitOptions, GatedSubmitResult } from '../../../../shared/ptyMessageDelivery';
 import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
@@ -156,9 +156,11 @@ describe('hand-off delivery guard', () => {
   });
 
   it('a key 50 ms after our paste, inside the 100 ms Enter delay: no Enter, the paste is cleared', async () => {
-    // The Enter check reads 100 ms after the paste (Claude Code's delay); the
-    // person's key landed at 50 ms. Idle time alone cannot tell it from our paste.
-    onRead = () => { if (writes.length === 1 && pane.lastKeyAt === clock - 100) { pane.lastKeyAt = clock - 50; pane.keys += 1; } };
+    // The Enter check reads Claude Code's paste delay (about 100 ms) after the
+    // paste; the person's key landed at 50 ms. Idle time alone cannot tell it
+    // from our paste.
+    const enterDelay = pasteSubmitDelayMs('Claude Code', 'ref'.length);
+    onRead = () => { if (writes.length === 1 && pane.lastKeyAt === clock - enterDelay) { pane.lastKeyAt = clock - 50; pane.keys += 1; } };
     expect(await send()).toMatchObject({ ok: false, reason: 'user_typing', pasted: true, cleared: true });
     expect(writes).toEqual([PASTE, '\x15']);
   });

@@ -168,11 +168,10 @@ describe('a2a.company.deliver — a released task goes to its seat once', () => 
     expect(await deliver(heldTask('task-c6'))).toEqual({ ok: true, delivered: true, ptyId: DEV_PTY });
   });
 
-  it('counts a paste left in the composer as delivered', async () => {
-    refusal = { ok: false, reason: 'approval_pending', detail: 'x', pasted: true, cleared: false };
-    expect(await deliver(heldTask('task-c7'))).toEqual({ ok: true, delivered: true, ptyId: DEV_PTY, note: 'pasted-not-submitted' });
-    refusal = null;
-    expect(await deliver(heldTask('task-c7'))).toEqual({ ok: true, delivered: true, duplicate: true });
+  // #2993: it was never submitted, and writing it again would duplicate it.
+  it('holds a paste left in the composer instead of counting it as delivered', async () => {
+    refusal = { ok: false, reason: 'gate_unavailable', detail: 'x', pasted: true, cleared: false };
+    expect(await deliver(heldTask('task-c7'))).toEqual({ ok: true, delivered: false, held: 'delivery-unconfirmed' });
   });
 
   it('refuses a task that carries no brief', async () => {

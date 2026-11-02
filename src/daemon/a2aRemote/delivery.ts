@@ -112,6 +112,8 @@ const HELD_REASONS: ReadonlySet<string> = new Set<A2aRemoteHeldReason>([
 ]);
 /** What the sender's ledger shows while our pane has no agent to take its task. */
 export const NO_AGENT_SUMMARY = 'The linked pane on the receiving PC has no agent running; the task is held until someone there acts.';
+/** What the sender's ledger shows when its task may sit unsubmitted in our pane (#2993). */
+export const DELIVERY_UNCONFIRMED_SUMMARY = 'The task reached the linked pane on the receiving PC but was not confirmed submitted; it is held until someone there checks the pane.';
 /** What the sender's ledger shows while our pane's agent is there but cannot take its task yet (not a hold). */
 export const WAITING_SUMMARY: Readonly<Record<A2aRemoteWaitingCause, string>> = {
   'agent-prompt': 'The agent on the receiving PC is waiting on a prompt there; the task is delivered once the prompt is answered.',
@@ -457,6 +459,7 @@ export class A2aRemoteDelivery {
       });
       // A reply that could not go now is tried again by `maintain`.
       if (res.ok && held === 'no-agent' && messageId === undefined) await this.tellSender(taskId, NO_AGENT_SUMMARY);
+      if (res.ok && held === 'delivery-unconfirmed' && messageId === undefined) await this.tellSender(taskId, DELIVERY_UNCONFIRMED_SUMMARY);
       // Not a hold: main keeps delivering and says `waiting` on every later miss,
       // so a reply that could not go is tried again then. A cause this build does not know is ignored.
       const waiting = p['waiting'];
