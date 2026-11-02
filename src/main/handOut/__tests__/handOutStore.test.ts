@@ -122,6 +122,23 @@ describe('HandOutStore', () => {
     expect(onDisk().items.map((i) => i.title).sort()).toEqual(['Added while unreadable', 'On disk']);
   });
 
+  it('closes a stopped app\'s picks on the first read though the file cannot be read, and never its own later', async () => {
+    const left = await pickLink(`ho-${randomUUID()}`);
+    const file = getHandOutPath(dir);
+    mkdirSync(file);
+    const a = make();
+    const added = a.add({ title: 'Picked while unreadable', folder: '/repo' }, owner);
+    if (!added.ok) throw new Error('add failed');
+    await vi.waitFor(() => expect(links.get(left.id)?.state).toBe('abandoned'), { timeout: 5_000 });
+
+    // This process's pick, still sending when the file reads again.
+    await pickLink(added.item.id);
+    rmSync(file, { recursive: true, force: true });
+    expect(a.get(added.item.id)?.state).toBe('out');
+    await links.flush();
+    expect(a.get(added.item.id)?.state).toBe('out');
+  });
+
   it('drops a bad record on its own', () => {
     const good = stored({ title: 'Good' });
     writeFileSync(getHandOutPath(dir), JSON.stringify({ version: 1, items: [{ ...stored(), folder: 'relative' }, good, 'junk', good] }));

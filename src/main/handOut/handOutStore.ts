@@ -10,9 +10,9 @@
 //
 // A pick holds an in-memory reservation for its whole send, so two picks of
 // one item never both send. A pick to a pane records its link before it
-// sends; a link still waiting for its task when the list first loads belongs
-// to a pick the app stopped in the middle of, so it is closed and the item is
-// open again.
+// sends; a link still waiting for its task when the list is first read
+// belongs to a pick the app stopped in the middle of, so it is closed and the
+// item is open again.
 //
 // Never throws: a torn file loads as an empty list, a bad record is dropped on
 // its own, and a failed write is logged and retried by the next mutation. A
@@ -147,6 +147,12 @@ export class HandOutStore {
 
   private cache(): Map<string, HandOutItem> {
     if (this.items && !this.unreadable) return this.items;
+    // On the first read, readable or not: later, a link waiting for its task
+    // is a pick of this process.
+    if (!this.strandedClosed) {
+      this.strandedClosed = true;
+      this.closeStrandedPicks();
+    }
     const loaded = this.load();
     if (!loaded) {
       if (!this.unreadable) console.warn('[handOut] hand-out.json is there but cannot be read; changes stay in memory until it can');
@@ -159,10 +165,6 @@ export class HandOutStore {
     const recovered = this.unreadable;
     this.unreadable = false;
     this.items = loaded;
-    if (!this.strandedClosed) {
-      this.strandedClosed = true;
-      this.closeStrandedPicks();
-    }
     // Work may have finished while the app was closed.
     if (this.dropDone() || recovered) void this.persist();
     return loaded;
@@ -186,8 +188,8 @@ export class HandOutStore {
     return items;
   }
 
-  /** Close the links of picks that never sent. Runs once, on load, before any
-   *  pick of this process can have recorded a link. */
+  /** Close the links of picks that never sent. Runs once, on the first read,
+   *  before any pick of this process can have recorded a link. */
   private closeStrandedPicks(): void {
     for (const link of this.handOutLinks()) {
       if (link.origin !== 'hand-out' || link.state !== 'queued' || link.a2aTaskId || link.worktree) continue;
