@@ -570,7 +570,7 @@ internal static unsafe class Actions
         }
         catch (HelperError e) when (ladderRaised)
         {
-            throw new HelperError(e.Code, $"{e.Message}. The target window came to the front during an accessibility call before it");
+            throw new HelperError(e.Code, $"{e.Message}. The target window came to the front during an accessibility call");
         }
     }
 
@@ -723,7 +723,7 @@ internal static unsafe class Actions
                 editBefore = ReadEditSelection(edit);
                 if (editBefore == null)
                 {
-                    throw new HelperError("action_not_supported", $"wmux could not read element {index}'s selection (the field did not answer, or holds more than 65,535 characters), so nothing was typed: focusing it may select its whole text. Click where the text should go, then type without an index");
+                    throw new HelperError("action_not_supported", $"wmux could not read element {index}'s selection (the field did not answer, or holds more than 65,534 characters), so nothing was typed: focusing it may select its whole text. Click where the text should go, then type without an index");
                 }
             }
             bool kept = selection != null || edit != HWND.Null;
