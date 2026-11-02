@@ -5,7 +5,7 @@ import { memo, useEffect, useState } from 'react';
 import type { MoaPendingDecision } from '../../../shared/moa';
 import { formatIdle } from '../../utils/idleTime';
 import type { Task } from '../../../shared/types';
-import { ticketResultOf, type FleetTicket, type TicketState } from './fleetTickets';
+import { handOutTicketLine, ticketResultOf, type FleetTicket, type TicketState } from './fleetTickets';
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -39,6 +39,7 @@ interface TicketRowProps {
 function TicketRowImpl({ ticket, assignee, focused, now, onFocus, onSelect, onJump, t }: TicketRowProps) {
   const title = ticket.title || t('fleet.ticket.untitled');
   const state = stateWord(ticket, t);
+  const handOutLine = handOutTicketLine(ticket, t);
   return (
     <button
       type="button"
@@ -65,6 +66,7 @@ function TicketRowImpl({ ticket, assignee, focused, now, onFocus, onSelect, onJu
       <span className="wmux-fleet-identity">
         <span className="wmux-fleet-name" title={title}>{title}</span>
         <span className="wmux-fleet-context"><span>{assignee}</span></span>
+        {handOutLine && <span className="wmux-fleet-requester" data-fleet-hand-out-line title={handOutLine}>{handOutLine}</span>}
       </span>
       <span className="wmux-fleet-progress">
         <span className="wmux-fleet-detail" title={ticket.result?.summary ?? ticket.request}>
@@ -149,6 +151,7 @@ export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecisi
     if (result || gone) onResultShown?.(ticket);
   }, [result, gone, ticket, onResultShown]);
   const waiting = decisions.filter((d) => ticket.decisionIds.includes(d.decision.id));
+  const handOutLine = handOutTicketLine(ticket, t);
   return (
     <section className="wmux-fleet-ticket-detail" data-fleet-ticket-detail={ticket.id}
       aria-label={t('fleet.ticket.detailLabel', { title: ticket.title || t('fleet.ticket.untitled') })}>
@@ -158,6 +161,7 @@ export function TicketDetail({ ticket, assignee, decisions, onJump, onOpenDecisi
           <span>{stateWord(ticket, t)}</span>
         </span>
         <span className="truncate">{assignee}</span>
+        {handOutLine && <span className="truncate text-[var(--text-muted)]" data-fleet-hand-out-line>{handOutLine}</span>}
       </div>
       {ticket.request && (
         <>

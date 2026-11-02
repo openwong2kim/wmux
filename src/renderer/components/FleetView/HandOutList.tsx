@@ -10,7 +10,7 @@ import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 import { useAgentChoices } from '../Sidebar/CompanyPresetDialog';
 import { workspaceFolder } from '../Sidebar/externalSessionPlacement';
 import PaneActionsMenu, { type PaneActionItem } from '../Pane/PaneActionsMenu';
-import { IconX } from '../icons';
+import { IconChevron, IconX } from '../icons';
 import { useStore } from '../../stores';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
@@ -41,19 +41,24 @@ interface HandOutCardProps {
   now: number;
   workspaceName: (id: string) => string;
   onFocus: () => void;
+  /** Enter: the Hand out… popover. */
+  onHandOut: (item: HandOutEntry) => void;
   /** Backspace / Delete: the inline Remove confirm. */
   onRemove: (item: HandOutEntry) => void;
   t: T;
 }
 
-function HandOutCardImpl({ item, layout, focused, now, workspaceName, onFocus, onRemove, t }: HandOutCardProps) {
+function HandOutCardImpl({ item, layout, focused, now, workspaceName, onFocus, onHandOut, onRemove, t }: HandOutCardProps) {
   const folder = displayPath(item.folder);
   const agent = item.agent ?? t('fleet.handOut.anyAgent');
   // The board's cards sit on a fill like the other cards; the list's rows are
   // a fill only on hover and selection.
   const surface = layout === 'board'
     ? 'px-3 py-2.5 rounded-[10px] bg-[var(--selection-subtle)] hover:bg-[var(--selection)] aria-selected:bg-[var(--selection-hover)]'
-    : 'px-2 py-[9px] rounded-[8px] hover:bg-[var(--hover-fill)] aria-selected:bg-[var(--selection)]';
+    : 'px-2 py-[9px] pr-[120px] rounded-[8px] hover:bg-[var(--hover-fill)] aria-selected:bg-[var(--selection)]';
+  // On the board the title makes room for the right lane while the card is
+  // selected or focused; on hover the lane's button sits over it.
+  const titleLane = layout === 'board' ? (focused ? 'pr-[104px]' : 'group-focus-within:pr-[104px]') : '';
   return (
     <button
       type="button"
@@ -65,7 +70,10 @@ function HandOutCardImpl({ item, layout, focused, now, workspaceName, onFocus, o
       onFocus={onFocus}
       onKeyDown={(event) => {
         if (event.ctrlKey || event.metaKey || event.altKey) return;
-        if (event.key === 'Backspace' || event.key === 'Delete') {
+        if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+          event.preventDefault();
+          onHandOut(item);
+        } else if (event.key === 'Backspace' || event.key === 'Delete') {
           event.preventDefault();
           onRemove(item);
         }
@@ -74,7 +82,7 @@ function HandOutCardImpl({ item, layout, focused, now, workspaceName, onFocus, o
       data-fleet-hand-out={item.id}
       data-fleet-key={handOutKey(item.id)}
     >
-      <span className="line-clamp-2 [overflow-wrap:anywhere] text-[13px] leading-[18px] text-[var(--text-main)]">{item.title}</span>
+      <span className={`line-clamp-2 [overflow-wrap:anywhere] text-[13px] leading-[18px] text-[var(--text-main)] ${titleLane}`}>{item.title}</span>
       <span className="flex items-center gap-1.5 min-w-0 text-[11px] leading-[14px]">
         <span className="truncate font-mono text-[var(--text-sub)]" title={item.folder}>{folder}</span>
         <span aria-hidden="true" className="text-[var(--text-muted)]">·</span>
@@ -86,6 +94,27 @@ function HandOutCardImpl({ item, layout, focused, now, workspaceName, onFocus, o
 }
 
 export const HandOutCard = memo(HandOutCardImpl);
+
+/** The right lane's "Hand out…": shown on hover, focus and selection. A
+ *  pointer twin of the card's Enter, so it stays out of the listbox's tree. */
+export function HandOutLaneButton({ item, layout, shown, onHandOut, t }: {
+  item: HandOutEntry;
+  layout: 'list' | 'board';
+  shown: boolean;
+  onHandOut: (item: HandOutEntry) => void;
+  t: T;
+}) {
+  const place = layout === 'board' ? 'top-[6px]' : 'top-1/2 -translate-y-1/2';
+  const visibility = shown ? 'opacity-100 pointer-events-auto'
+    : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto';
+  return (
+    <Button variant="secondary" size="sm" tabIndex={-1} aria-hidden="true"
+      className={`absolute right-[36px] !min-h-[24px] h-[24px] ${place} ${visibility}`}
+      onClick={(e) => { e.stopPropagation(); onHandOut(item); }} data-fleet-hand-out-lane>
+      {t('fleet.handOut.handOut')}
+    </Button>
+  );
+}
 
 /** The folders an item can be for: each open workspace's, the active one's
  *  first, without repeats. */
@@ -138,8 +167,9 @@ export function HandOutAddForm({ folders, onDone, t }: HandOutAddFormProps) {
     }
     if (!open.current) return;
     setBusy(false);
-    if (res?.ok) onDone(res.item.id);
-    else setError(t(!res ? 'fleet.handOut.form.failed' : res.code === 'full' ? 'fleet.handOut.form.full' : 'fleet.handOut.form.invalid'));
+    if (!res) setError(t('fleet.handOut.form.failed'));
+    else if (res.ok) onDone(res.item.id);
+    else setError(t(res.code === 'full' ? 'fleet.handOut.form.full' : 'fleet.handOut.form.invalid'));
   };
   const onKeyDown = (event: React.KeyboardEvent) => {
     // A focused button keeps its own Enter (Cancel cancels).
@@ -182,6 +212,7 @@ export function HandOutAddForm({ folders, onDone, t }: HandOutAddFormProps) {
 
 interface HandOutMenuProps {
   item: HandOutEntry;
+  onHandOut: (item: HandOutEntry) => void;
   onRemove: (item: HandOutEntry) => void;
   /** Told the menu's close function while it is open (null once closed), so
    *  FleetView's Escape closes the menu rather than the page. */
@@ -189,8 +220,8 @@ interface HandOutMenuProps {
   t: T;
 }
 
-/** An item's ⋮ menu (Shift+F10 on the card opens it): Remove. */
-export function HandOutMenu({ item, onRemove, onMenuOpenChange, t }: HandOutMenuProps) {
+/** An item's ⋮ menu (Shift+F10 on the card opens it): Hand out… and Remove. */
+export function HandOutMenu({ item, onHandOut, onRemove, onMenuOpenChange, t }: HandOutMenuProps) {
   const [anchor, setAnchor] = useState<{ top: number; left: number; right: number; bottom: number } | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => {
@@ -201,7 +232,8 @@ export function HandOutMenu({ item, onRemove, onMenuOpenChange, t }: HandOutMenu
   openRef.current = anchor !== null;
   useEffect(() => () => { if (openRef.current) onMenuOpenChange?.(null); }, [onMenuOpenChange]);
   const items: PaneActionItem[] = [
-    { key: 'remove', label: t('fleet.handOut.remove'), shortcut: '⌫', icon: <IconX size={12} />, onSelect: () => onRemove(item) },
+    { key: 'hand-out', label: t('fleet.handOut.handOut'), shortcut: 'Enter', icon: <IconChevron size={12} />, onSelect: () => onHandOut(item) },
+    { key: 'remove', label: t('fleet.handOut.remove'), shortcut: '⌫', icon: <IconX size={12} />, separatorBefore: true, onSelect: () => onRemove(item) },
   ];
   return (
     <>

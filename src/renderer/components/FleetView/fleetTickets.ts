@@ -37,6 +37,8 @@ export interface FleetTicket {
   waitingOn?: { workspaceId: string; paneId: string };
   a2aTaskId?: string;
   origin: WorkLinkOrigin | 'handoff';
+  /** The PR the work opened, with its checks as last observed. */
+  pr?: { number: number; checks?: 'passing' | 'pending' | 'failing' | null };
   updatedAt: number;
 }
 
@@ -139,6 +141,7 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = 
     if (link.owner.paneId) ticket.paneId = link.owner.paneId;
     if (link.agent) ticket.agent = link.agent;
     if (link.a2aTaskId) ticket.a2aTaskId = link.a2aTaskId;
+    if (link.pr) ticket.pr = { number: link.pr.number, ...(link.prStatus ? { checks: link.prStatus.checks } : {}) };
     const waitingOn = state === 'working' ? linkWaitsOnRequester(link, paneLive) : null;
     if (waitingOn) ticket.waitingOn = waitingOn;
     // The report kept on the link first (it outlives the task record), then
@@ -167,6 +170,24 @@ export function buildFleetTickets({ links, decisions, a2aTasks, now, recentMs = 
   }
   const rank: Record<TicketState, number> = { 'needs-you': 0, failed: 1, working: 2, queued: 3, done: 4 };
   return out.sort((a, b) => rank[a.state] - rank[b.state] || b.updatedAt - a.updatedAt);
+}
+
+/**
+ * The muted line a ticket picked from To hand out carries wherever Fleet
+ * shows it: "From To hand out", and its PR with the checks once it has one.
+ * Undefined for any other ticket.
+ */
+export function handOutTicketLine(
+  ticket: Pick<FleetTicket, 'origin' | 'pr'>,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+): string | undefined {
+  if (ticket.origin !== 'hand-out') return undefined;
+  const parts = [t('fleet.handOut.fromLine')];
+  if (ticket.pr) {
+    parts.push(t('fleet.handOut.pr', { number: ticket.pr.number }));
+    if (ticket.pr.checks) parts.push(t(`workspace.prChecks.${ticket.pr.checks}`));
+  }
+  return parts.join(' · ');
 }
 
 /**

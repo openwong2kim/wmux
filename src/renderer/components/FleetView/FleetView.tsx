@@ -46,9 +46,14 @@ import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTi
 import { IconCheck, IconChevron, IconPlus } from '../icons';
 // Read-only: the readers of delegated work and pending decisions.
 import { useHandOutItems, useMoaDecisions, useWorkLinks } from './useFleetSources';
-import { HandOutAddForm, HandOutCard, HandOutMenu, HandOutRemoveConfirm, HandOutRing, handOutFolderChoices, handOutKey } from './HandOutList';
+import {
+  HandOutAddForm, HandOutCard, HandOutLaneButton, HandOutMenu, HandOutRemoveConfirm, HandOutRing, handOutFolderChoices, handOutKey,
+} from './HandOutList';
+import HandOutPopover from './HandOutPopover';
 import type { HandOutEntry } from '../../../shared/handOut';
-import { buildFleetTickets, loadSeenReports, openTicketFor, paneLiveIn, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
+import {
+  buildFleetTickets, handOutTicketLine, loadSeenReports, openTicketFor, paneLiveIn, saveSeenReports, ticketAttention, type FleetTicket,
+} from './fleetTickets';
 import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 import FleetRequestPanel from './FleetRequestPanel';
 import PlanApprovalList from './PlanApprovalList';
@@ -198,6 +203,8 @@ export default function FleetView() {
     surfaceAgent, surfacePendingQuestion, surfaceShellPrompt, surfaceActivityAt, surfaceTurnOpenAt,
     commandRunningByPtyId, agentAliveByPtyId, hookRunningByPtyId, remoteWorkspaces, unverifiableMinutes,
     surfaceLastMessage, now, fleetSortMode]);
+  // Every row, unfiltered: where the Hand out… popover reads a pane's state.
+  const allRows = useMemo(() => [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle], [groups]);
   // On close (unmount), remember what each pane's status was, so the next open
   // can mark needs-you rows that changed while Fleet was not being looked at.
   const panesRef = useRef(panes);
@@ -323,6 +330,9 @@ export default function FleetView() {
   // the one Remove confirm that is open.
   const [handOutAdding, setHandOutAdding] = useState(false);
   const [handOutRemove, setHandOutRemove] = useState<string | null>(null);
+  // The Hand out… popover, anchored to its item's card.
+  const [handOutPick, setHandOutPick] = useState<{ id: string; anchor: { top: number; left: number; right: number; bottom: number } } | null>(null);
+  const handOutPickItem = handOutPick ? handOutItems.find((item) => item.id === handOutPick.id) : undefined;
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const handOutFolders = useMemo(() => handOutFolderChoices(workspaces, activeWorkspaceId), [workspaces, activeWorkspaceId]);
   // The list's "Add a task…" row ends the open section; the form takes its place.
@@ -663,6 +673,27 @@ export default function FleetView() {
     if (added) setFocusedPaneId(handOutKey(added));
     requestAnimationFrame(() => { focusActiveItemRef.current(); });
   }, []);
+  // Hand out… from the card (Enter), its right lane or its ⋮ menu. The card
+  // takes focus first, so the popover hands focus back to it.
+  const openHandOutPick = useCallback((item: HandOutEntry) => {
+    const card = listRef.current?.querySelector<HTMLElement>(`[data-fleet-hand-out="${attr(item.id)}"]`);
+    if (!card) return;
+    card.focus();
+    setFocusedPaneId(handOutKey(item.id));
+    setHandOutRemove(null);
+    const r = card.getBoundingClientRect();
+    setHandOutPick({ id: item.id, anchor: { top: r.top, left: r.left, right: r.right, bottom: r.bottom } });
+  }, []);
+  const closeHandOutPick = useCallback(() => {
+    setHandOutPick(null);
+    // A menu or the lane may have held focus; the list takes it back.
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body || (panelRef.current?.contains(active) && active.getAttribute('role') !== 'option')) {
+        focusActiveItemRef.current();
+      }
+    });
+  }, []);
   const openHandOutRemove = useCallback((item: HandOutEntry) => {
     setFocusedPaneId(handOutKey(item.id));
     setEditor(null);
@@ -683,6 +714,9 @@ export default function FleetView() {
   useEffect(() => {
     if (handOutRemove && !visibleHandOut.some((item) => item.id === handOutRemove)) setHandOutRemove(null);
   }, [handOutRemove, visibleHandOut]);
+  useEffect(() => {
+    if (handOutPick && !handOutPickItem) setHandOutPick(null);
+  }, [handOutPick, handOutPickItem]);
 
   // A row closes only its own confirm: another row's may be open by now.
   // Focus goes back to the list only when this confirm was the one open.
@@ -890,6 +924,7 @@ export default function FleetView() {
         // Innermost first: an open ⋮ menu, a row editor, the detail area,
         // another tab, then Fleet itself.
         if (closeRowMenuRef.current) closeRowMenuRef.current();
+        else if (handOutPick) closeHandOutPick();
         else if (editor || reviewEditor || handOutRemove) closeEditor();
         else if (handOutAdding) closeHandOutForm();
         else if (detailOpen && tab === 'fleet') setDetailOpen(false);
@@ -897,6 +932,8 @@ export default function FleetView() {
         else setVisible(false);
         return;
       }
+      // Keys typed in the Hand out… popover are its own.
+      if (handOutPick) return;
       const plain = !e.ctrlKey && !e.metaKey && !e.altKey && !isEditableTarget(e.target);
       // `/` finds — never while typing.
       if (plain && e.key === '/') {
@@ -1084,7 +1121,8 @@ export default function FleetView() {
       }
     }, [tab, setTab, rovingKeys, grid, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible,
       editor, reviewEditor, closeEditor, detailOpen, visibleRows, focusedKey, focusedTicket, verbsFor, selectKey,
-      focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask, plans, handOutRemove, handOutAdding, closeHandOutForm]);
+      focusedReview, openReviewDiff, openReviewEditor, jumpToReviewTask, plans, handOutRemove, handOutAdding, closeHandOutForm,
+      handOutPick, closeHandOutPick]);
 
   // Summary strip: account usage, the next scheduled run, phones watching.
   const usage = useStore((s) => (s.anthropicUsageEnabled ? s.anthropicUsage.snapshot : null));
@@ -1219,6 +1257,7 @@ export default function FleetView() {
           card={card}
           row={row}
           ticketTitle={ticket?.title || undefined}
+          ticketLine={ticket ? handOutTicketLine(ticket, t) : undefined}
           changed={(row.section === 'needsYou' || row.section === 'finished') && fleetChangedSinceSeen(fleetLastSeen, card.ptyId, card.agentStatus, surfacePendingQuestion[fleetTargetPtyId(card)])}
           focused={focused}
           onJump={jump}
@@ -1278,10 +1317,13 @@ export default function FleetView() {
         now={now}
         workspaceName={workspaceName}
         onFocus={() => setFocusedPaneId(handOutKey(item.id))}
+        onHandOut={openHandOutPick}
         onRemove={openHandOutRemove}
         t={t}
       />
-      <HandOutMenu item={item} onRemove={openHandOutRemove} onMenuOpenChange={onRowMenuOpenChange} t={t} />
+      <HandOutLaneButton item={item} layout={layout} shown={handOutKey(item.id) === focusedKey || handOutPick?.id === item.id}
+        onHandOut={openHandOutPick} t={t} />
+      <HandOutMenu item={item} onHandOut={openHandOutPick} onRemove={openHandOutRemove} onMenuOpenChange={onRowMenuOpenChange} t={t} />
       {handOutRemove === item.id && <HandOutRemoveConfirm item={item} onDone={closeEditor} t={t} />}
     </div>
   );
@@ -1694,6 +1736,10 @@ export default function FleetView() {
         </div>
       )}
       {pickerAnchor && <PresetPicker onClose={() => setPickerAnchor(null)} anchorStyle={pickerAnchor} />}
+      {handOutPick && handOutPickItem && (
+        <HandOutPopover item={handOutPickItem} anchor={handOutPick.anchor} rows={allRows} workspaces={workspaces}
+          onClose={closeHandOutPick} t={t} />
+      )}
     </div>
   );
 }
