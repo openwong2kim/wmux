@@ -413,7 +413,8 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
 
   it('tells the tracker once per agent it takes', () => {
     fake.feed(C);
-    childAgent(() => ({ slug: 'claude', startedAt: Date.now() }));
+    const shell: { agent?: { slug: string; startedAt: number; pid?: number } } = { agent: { slug: 'claude', startedAt: Date.now() } };
+    childAgent(() => shell.agent);
     vi.advanceTimersByTime(2_600);
     fake.feed(QUERY_BEL);
     vi.advanceTimersByTime(1_500);
@@ -421,6 +422,22 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
     expect(asked).toHaveLength(2);
     expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY, PROGRAM_STATUS_PROBE_REPLY]);
     expect(accepted).toEqual([['sess-1', SHELL_PID]]);
+    // It exits unnamed and the next command starts another agent.
+    fake.feed(PROMPT);
+    fake.feed(C);
+    shell.agent = { slug: 'claude', startedAt: Date.now(), pid: AGENT_PID + 1 };
+    vi.advanceTimersByTime(2_600);
+    fake.feed(QUERY_BEL);
+    expect(accepted).toEqual([['sess-1', SHELL_PID], ['sess-1', SHELL_PID]]);
+  });
+
+  it('a clock stepped back ends a read\'s reuse', () => {
+    childAgent(() => undefined);
+    fake.feed(C);
+    fake.feed(QUERY_BEL);
+    vi.setSystemTime(Date.now() - 60_000);
+    fake.feed(QUERY_BEL);
+    expect(asked).toHaveLength(2);
   });
 
   it('keeps the launch edge it read when the tracker names the agent after a later command started', () => {

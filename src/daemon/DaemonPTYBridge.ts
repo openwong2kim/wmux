@@ -1582,14 +1582,14 @@ export class DaemonPTYBridge extends EventEmitter {
    * shellChildAgentProbe, read at most once per SHELL_CHILD_READ_REUSE_MS: a
    * program can print the query thousands of times a second, command starts
    * included (OSC 133 is output too), and each read walks the whole process
-   * table.
+   * table. A clock stepped back ends the reuse rather than stretching it.
    */
   private readShellChildAgent(shellPid: number, since: number): { slug: string; pid: number; startedAt: number } | undefined {
     const probe = DaemonPTYBridge.shellChildAgentProbe;
     if (!probe || !this.sessionId) return undefined;
     const now = Date.now();
     const last = this.shellChildRead;
-    if (last && now - last.at < SHELL_CHILD_READ_REUSE_MS) return last.agent;
+    if (last && now >= last.at && now - last.at < SHELL_CHILD_READ_REUSE_MS) return last.agent;
     const agent = probe.read(shellPid, since);
     this.shellChildRead = { at: now, agent };
     return agent;

@@ -47,11 +47,10 @@ export function shellChildAgent(shellPid: number, since: number, read: ShellChil
   const startedAt = new Map<number, number>();
   const entries: ProcessTreeEntry[] = [];
   for (const p of family) {
-    if (read.exitState(p.pid) !== 'running') continue;
     const created = read.createdAt(p.pid);
     if (created === null) continue;
     const at = Number(created / TICKS_PER_MS - UNIX_EPOCH_FILETIME_MS);
-    if (at < since) continue;
+    if (at < since || read.exitState(p.pid) !== 'running') continue;
     startedAt.set(p.pid, at);
     // A runtime (node.exe) is named by its script, which only its command line holds.
     entries.push({ ...p, cmdline: read.commandLine(p.pid) ?? undefined });
