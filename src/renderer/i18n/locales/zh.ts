@@ -2004,7 +2004,6 @@ export const zh = {
   'botsPage.folders.menu': "文件夹操作",
   'botsPage.folders.rename': "重命名",
   'botsPage.folders.delete': "删除文件夹",
-  'botsPage.folders.deleteAction': "删除文件夹",
   'botsPage.folders.deleteConfirm': "要删除文件夹 {name} 吗？其中的机器人会回到列表中，不会删除任何机器人。",
   'botsPage.folders.nameLabel': "文件夹名称",
   'botsPage.folders.failed': "无法更新文件夹。{reason}",

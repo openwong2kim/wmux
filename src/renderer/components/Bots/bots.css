@@ -150,8 +150,8 @@
   align-items: center;
   gap: 6px;
   width: 100%;
-  min-height: 28px;
-  padding: 0 10px;
+  min-height: 24px;
+  padding: 2px 4px;
   border-radius: 6px;
   font-size: 12px;
   font-weight: 500;

@@ -362,6 +362,9 @@ export const BOT_AVATAR_PX = 128;
 /** Longest bot name, in UTF-16 units after trimming. */
 export const BOT_NAME_MAX = 64;
 
+/** Bots the store holds at most. */
+export const BOTS_MAX = 64;
+
 /** A stored bot name read back: trimmed, 1..BOT_NAME_MAX long, no control
  *  or line-separator characters. Looser than normalizeBotName, so a name
  *  stored before its path-separator rule still loads. Undefined otherwise. */

@@ -12,6 +12,8 @@
 // Folders live in `<wmuxDir>/factory/bot-folders.json`, written by main alone
 // (the main window's IPC).
 
+import { BOTS_MAX } from './bot';
+
 export const BOT_FOLDER_ID_RE = /^fld-[0-9a-f]{8}$/;
 
 export interface BotFolder {
@@ -30,7 +32,7 @@ export const BOT_FOLDER_LIMITS = {
   NAME_MAX: 60,
   FOLDERS_MAX: 200,
   /** Bots one batch assign may name (the bot store's cap, BOTS_MAX). */
-  ASSIGN_MANY_MAX: 64,
+  ASSIGN_MANY_MAX: BOTS_MAX,
 } as const;
 
 export const BOT_FOLDER_IPC = {
@@ -42,34 +44,6 @@ export const BOT_FOLDER_IPC = {
   assignMany: 'factory:folder:assign-many',
   remove: 'factory:folder:remove',
 } as const;
-
-export interface BotFolderCreateRequest {
-  name: string;
-}
-
-export interface BotFolderRenameRequest {
-  id: string;
-  name: string;
-}
-
-export interface BotFolderCollapsedRequest {
-  id: string;
-  collapsed: boolean;
-}
-
-/** File a bot in a folder, or take it out of its folder (`folderId: null`).
- *  A bot filed elsewhere moves. */
-export interface BotFolderAssignRequest {
-  botId: string;
-  folderId: string | null;
-}
-
-/** File several bots in a folder (or out of theirs, `folderId: null`) in one
- *  step: all of them move or none does. */
-export interface BotFolderAssignManyRequest {
-  botIds: string[];
-  folderId: string | null;
-}
 
 export type BotFolderRefusalCode = 'invalid' | 'not_found' | 'not_started' | 'store_unreadable' | 'not_authorized' | 'error';
 

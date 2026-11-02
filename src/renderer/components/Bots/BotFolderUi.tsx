@@ -11,7 +11,17 @@ import type { useT } from '../../hooks/useT';
 
 type T = ReturnType<typeof useT>;
 
-export const FOLDER_MENU_ITEM = `ui-section-row w-full text-left text-[13px] ${FOCUS_RING}`;
+const FOLDER_MENU_ITEM = `ui-section-row w-full text-left text-[13px] ${FOCUS_RING}`;
+
+/** Shift+F10 / the Menu key on a row or header: cancels the key's default and
+ *  returns where its context menu opens (under the element); null for any other
+ *  key. */
+export function menuKeyPoint(e: React.KeyboardEvent<HTMLElement>): { x: number; y: number } | null {
+  if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return null;
+  e.preventDefault();
+  const r = e.currentTarget.getBoundingClientRect();
+  return { x: r.left + 24, y: r.bottom - 4 };
+}
 
 /** A one-line name field: Enter commits, Escape cancels, leaving the field
  *  commits (like renaming a workspace in the Sidebar). A name that is empty or
@@ -99,11 +109,8 @@ export function FolderHeader({ folder, count, open, listId, renaming, renameLabe
         aria-controls={listId}
         onClick={onToggle}
         onKeyDown={(e) => {
-          if ((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu') {
-            e.preventDefault();
-            const r = e.currentTarget.getBoundingClientRect();
-            onMenu(r.left + 24, r.bottom - 4);
-          }
+          const at = menuKeyPoint(e);
+          if (at) onMenu(at.x, at.y);
         }}
         className={`wmux-bots-folder-head ${dropActive ? 'is-drop' : ''} ${FOCUS_RING}`}
       >
@@ -117,7 +124,7 @@ export function FolderHeader({ folder, count, open, listId, renaming, renameLabe
 
 /** A fixed menu at a point, kept inside the window; it closes on an outside
  *  press and on Escape. */
-export function BotsContextMenu({ x, y, label, onClose, children }: {
+function BotsContextMenu({ x, y, label, onClose, children }: {
   x: number;
   y: number;
   label: string;

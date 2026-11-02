@@ -11,7 +11,7 @@
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { BOT_ID_RE } from '../../shared/bot';
-import { BOT_FOLDER_ID_RE, BOT_FOLDER_LIMITS, normalizeFolderName, type BotFolder, type BotFolderRefusal } from '../../shared/botFolder';
+import { BOT_FOLDER_ID_RE, BOT_FOLDER_LIMITS, normalizeFolderName, type BotFolder, type BotFolderOkResult, type BotFolderRefusal } from '../../shared/botFolder';
 import { createFilePersister, readVersionedFile, type FilePersister } from './versionedFile';
 
 export const BOT_FOLDERS_FILE_VERSION = 1 as const;
@@ -32,7 +32,6 @@ export interface BotFolderStoreOptions {
 }
 
 export type BotFolderStoreResult = { ok: true; folder: BotFolder } | BotFolderRefusal;
-export type BotFolderStoreOk = { ok: true } | BotFolderRefusal;
 
 /** One record read from disk, or null when it is malformed. */
 export function parseStoredFolder(raw: unknown): BotFolder | null {
@@ -146,7 +145,7 @@ export class BotFolderStore {
 
   /** File a bot in a folder (moving it from another), or take it out of its
    *  folder with `null`. */
-  assign(botId: string, folderId: string | null): BotFolderStoreOk {
+  assign(botId: string, folderId: string | null): BotFolderOkResult {
     const why = this.writeRefusal();
     if (why) return { ok: false, code: 'store_unreadable', message: why };
     if (typeof botId !== 'string' || !BOT_ID_RE.test(botId)) return invalid('bot', 'Pick a bot.');
@@ -160,7 +159,7 @@ export class BotFolderStore {
   /** `assign` for several bots at once: every bot and the folder are checked
    *  first, so either all of them move or none does, and the change is
    *  announced once. */
-  assignMany(botIds: readonly string[], folderId: string | null): BotFolderStoreOk {
+  assignMany(botIds: readonly string[], folderId: string | null): BotFolderOkResult {
     const why = this.writeRefusal();
     if (why) return { ok: false, code: 'store_unreadable', message: why };
     if (!Array.isArray(botIds) || botIds.length === 0 || botIds.length > BOT_FOLDER_LIMITS.ASSIGN_MANY_MAX) {

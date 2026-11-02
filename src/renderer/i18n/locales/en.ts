@@ -1988,7 +1988,6 @@ export const en = {
   'botsPage.folders.menu': "Folder actions",
   'botsPage.folders.rename': "Rename",
   'botsPage.folders.delete': "Delete folder",
-  'botsPage.folders.deleteAction': "Delete folder",
   'botsPage.folders.deleteConfirm': "Delete the folder {name}? Its bots go back to the list. No bot is deleted.",
   'botsPage.folders.nameLabel': "Folder name",
   'botsPage.folders.failed': "Could not update the folders. {reason}",

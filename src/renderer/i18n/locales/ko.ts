@@ -1529,7 +1529,6 @@ export const ko = {
   'botsPage.folders.menu': "폴더 작업",
   'botsPage.folders.rename': "이름 바꾸기",
   'botsPage.folders.delete': "폴더 삭제",
-  'botsPage.folders.deleteAction': "폴더 삭제",
   'botsPage.folders.deleteConfirm': "{name} 폴더를 삭제할까요? 안에 있던 봇은 목록으로 돌아가요. 봇은 삭제되지 않아요.",
   'botsPage.folders.nameLabel': "폴더 이름",
   'botsPage.folders.failed': "폴더를 업데이트하지 못했어요. {reason}",

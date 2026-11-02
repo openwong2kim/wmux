@@ -1933,7 +1933,6 @@ export const pl = {
   'botsPage.folders.menu': "Akcje folderu",
   'botsPage.folders.rename': "Zmień nazwę",
   'botsPage.folders.delete': "Usuń folder",
-  'botsPage.folders.deleteAction': "Usuń folder",
   'botsPage.folders.deleteConfirm': "Usunąć folder {name}? Jego boty wrócą na listę. Żaden bot nie zostanie usunięty.",
   'botsPage.folders.nameLabel': "Nazwa folderu",
   'botsPage.folders.failed': "Nie udało się zaktualizować folderów. {reason}",

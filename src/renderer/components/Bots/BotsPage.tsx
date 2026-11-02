@@ -59,9 +59,11 @@ import { blocksStart, bridgeEnginePort, useEngineReadiness, type EnginePort } fr
 import { CLAUDE_CODE_INSTALL_URL } from '../../../shared/factoryEngine';
 import { BOT_NAME_MAX, isCoordinatorBot, normalizeBotName, type BotProfile } from '../../../shared/bot';
 import { listedWorkspaces } from '../../../shared/pcRail';
-import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, rangeBetween, splitFolders, type Conversation } from './botsModel';
+import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, splitFolders, type Conversation } from './botsModel';
 import { getBotFolderPort, type BotFolderPort } from '../Room/botFolders';
-import { BotFolderMenu, FolderActionsMenu, FolderHeader, FolderNameInput } from './BotFolderUi';
+import { BotFolderMenu, FolderActionsMenu, FolderHeader, FolderNameInput, menuKeyPoint } from './BotFolderUi';
+import { useBotFolderSelection } from './useBotFolderSelection';
+import { UNFILED_DROP, useBotFolderDrag } from './useBotFolderDrag';
 import BotsGroupDialog, { type GroupDialogStart } from './BotsGroupDialog';
 import { getBotGroupPort, type BotGroupPort } from '../Room/botGroups';
 import type { BotGroup } from '../../../shared/botGroup';
@@ -700,44 +702,11 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   };
   const folderOfBot = (botId: string) => folders.find((f) => f.botIds.includes(botId))?.id ?? null;
 
-  // Several bots checked for moving (DESIGN.md › Bots › Folders): a set of
-  // bot ids and the anchor a Shift-click extends from. The open conversation
-  // (`selectedId`) is a separate thing and never changes with these. Only live
-  // 1:1 bots are checkable; the set is pruned to the rows on screen.
-  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set());
-  const [anchor, setAnchor] = useState<string | null>(null);
-  const clearChecked = () => { setChecked(new Set()); setAnchor(null); };
+  // Several bots checked for moving (DESIGN.md › Bots › Folders).
+  const { checked, anchor, checkOrder, checkedIds, clearChecked, toggleCheck, checkRange, onEscape } = useBotFolderSelection({
+    foldersOn, searching: !!q, sections: folderSections, unfiled: unfiledLive,
+  });
   const fileableId = (r: { c: Conversation }) => foldersOn && r.c.kind === 'bot' && !r.c.removed;
-  // The checkable bots in on-screen order: each open folder's rows, then the
-  // unfiled ones.
-  const checkOrder: string[] = [];
-  if (foldersOn) {
-    for (const { folder, rows: members } of folderSections) {
-      if (!q && folder.collapsed) continue;
-      for (const r of members) if (r.c.kind === 'bot' && !r.c.removed) checkOrder.push(r.c.row.bot.id);
-    }
-    for (const r of unfiledLive) if (r.c.kind === 'bot' && !r.c.removed) checkOrder.push(r.c.row.bot.id);
-  }
-  const checkOrderKey = checkOrder.join('\n');
-  useEffect(() => {
-    const live = new Set(checkOrderKey ? checkOrderKey.split('\n') : []);
-    setChecked((cur) => {
-      if ([...cur].every((id) => live.has(id))) return cur;
-      return new Set([...cur].filter((id) => live.has(id)));
-    });
-    setAnchor((cur) => (cur !== null && live.has(cur) ? cur : null));
-  }, [checkOrderKey]);
-  const toggleCheck = (botId: string) => {
-    setChecked((cur) => {
-      const next = new Set(cur);
-      if (!next.delete(botId)) next.add(botId);
-      return next;
-    });
-    setAnchor(botId);
-  };
-  const checkRange = (botId: string) => setChecked(new Set(rangeBetween(checkOrder, anchor, botId)));
-  /** The checked bots, in on-screen order. */
-  const checkedIds = () => checkOrder.filter((id) => checked.has(id));
 
   /** File bots (a batch is one call), then drop the check marks. */
   const moveBots = (botIds: string[], folderId: string | null) => {
@@ -756,65 +725,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
     });
   };
 
-  // Dragging rows onto a folder (or the unfiled rows): native drag and drop as
-  // the Sidebar's workspace rows do it. The source is held here, not read back
-  // from `dataTransfer` (which a foreign drag fills too), the dragged look is
-  // inline `opacity` so the source is never re-rendered mid-drag, and a click
-  // within 200 ms of a drag is not a click.
-  const dragIds = useRef<string[] | null>(null);
-  const dragStartedAt = useRef(0);
-  const dimmed = useRef<HTMLElement[]>([]);
-  const rowsRef = useRef<HTMLDivElement>(null);
-  const [dropOn, setDropOn] = useState<string | null>(null);
-  const UNFILED_DROP = '';
-  const dragStart = (e: React.DragEvent<HTMLElement>, botId: string) => {
-    const ids = checked.has(botId) ? checkedIds() : [botId];
-    dragIds.current = ids;
-    dragStartedAt.current = Date.now();
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('application/x-wmux-bots', ids.join(' '));
-    dimmed.current = [];
-    for (const id of ids) {
-      const el = rowsRef.current?.querySelector<HTMLElement>(`[data-bots-entry="${botConversationId(id)}"]`);
-      if (!el) continue;
-      el.style.opacity = '0.4';
-      dimmed.current.push(el);
-    }
-  };
-  const dragEnd = () => {
-    for (const el of dimmed.current) el.style.opacity = '';
-    dimmed.current = [];
-    dragIds.current = null;
-    dragStartedAt.current = Date.now();
-    setDropOn(null);
-  };
-  /** Handlers for a drop target: a folder id, or null for the unfiled rows. */
-  const dropTarget = (folderId: string | null) => {
-    const key = folderId ?? UNFILED_DROP;
-    // Only our own drag, and only when it would change something.
-    const accepts = () => !!dragIds.current?.some((id) => folderOfBot(id) !== folderId);
-    return {
-      onDragOver: (e: React.DragEvent<HTMLElement>) => {
-        if (!accepts()) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'move';
-        setDropOn((cur) => (cur === key ? cur : key));
-      },
-      onDragLeave: (e: React.DragEvent<HTMLElement>) => {
-        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
-        setDropOn((cur) => (cur === key ? null : cur));
-      },
-      onDrop: (e: React.DragEvent<HTMLElement>) => {
-        if (!accepts()) return;
-        e.preventDefault();
-        e.stopPropagation();
-        const live = new Set(checkOrder);
-        const ids = (dragIds.current ?? []).filter((id) => live.has(id) && folderOfBot(id) !== folderId);
-        dragEnd();
-        moveBots(ids, folderId);
-      },
-    };
-  };
+  // Dragging rows onto a folder (or the unfiled rows).
+  const { rowsRef, dropOn, dragStartedAt, dragStart, dragEnd, dropTarget } = useBotFolderDrag({ checked, checkedIds, checkOrder, folderOfBot, moveBots });
 
   const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
   // A bot's settings page, shown in place of its chat (BotSettingsPage).
@@ -1088,11 +1000,10 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               setRowMenu({ x: e.clientX, y: e.clientY, botIds: isChecked && checked.size > 1 ? checkedIds() : [botId] });
             } : undefined}
             onKeyDown={fileable ? (e) => {
-              if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return;
-              e.preventDefault();
-              const rect = e.currentTarget.getBoundingClientRect();
+              const at = menuKeyPoint(e);
+              if (!at) return;
               setFolderMenu(null);
-              setRowMenu({ x: rect.left + 24, y: rect.bottom - 4, botIds: isChecked && checked.size > 1 ? checkedIds() : [botId] });
+              setRowMenu({ ...at, botIds: isChecked && checked.size > 1 ? checkedIds() : [botId] });
             } : undefined}
           >
             <ConversationRow
@@ -1225,15 +1136,11 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
           <div
             ref={rowsRef}
             className="wmux-bots-rows"
-            onKeyDown={(e) => {
-              if (e.key !== 'Escape' || checked.size === 0 || rowMenu || folderMenu) return;
-              e.preventDefault();
-              clearChecked();
-            }}
+            onKeyDown={(e) => onEscape(e, !!rowMenu || !!folderMenu)}
           >
             {shown.length === 0 && rows.length > 0 && <p className="px-4 py-3 text-[12px] text-[var(--text-muted)]">{t('botsPage.noMatch')}</p>}
             {rows.length === 0 && !starting && <p data-bots-empty className="px-4 py-3 text-[12px] text-[var(--text-muted)]">{t('botsPage.noConversations')}</p>}
-            {folderError !== null && <p data-bots-folder-error role="alert" className="px-4 py-2 text-[12px] text-[var(--text-muted)]">{t('botsPage.folders.failed', { reason: folderError })}</p>}
+            {folderError !== null && <p data-bots-folder-error role="alert" className="px-4 py-2 text-[12px] text-[var(--accent-red)]">{t('botsPage.folders.failed', { reason: folderError })}</p>}
             {naming && (
               <div className="wmux-bots-folder-head" data-bots-folder-draft>
                 <FolderNameInput initial="" label={t('botsPage.folders.nameLabel')} testId="bots-folder-new" onCommit={(name) => createFolder(name, naming.botIds)} onCancel={() => setNaming(null)} />
@@ -1261,7 +1168,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                     <div className="px-3 pb-2">
                       <InlineConfirm
                         text={t('botsPage.folders.deleteConfirm', { name: folder.name })}
-                        confirmLabel={t('botsPage.folders.deleteAction')}
+                        confirmLabel={t('botsPage.folders.delete')}
                         cancelLabel={t('room.hq.cancel')}
                         busy={folderBusy}
                         onConfirm={() => { setDeletingId(null); void folderCall(() => foldersPort.remove(folder.id)); }}
