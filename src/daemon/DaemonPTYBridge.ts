@@ -9,7 +9,7 @@ import { TerminalNotificationParser } from '../main/pty/oscNotification';
 import { AgentDetector, drawsCodexBanner, type AgentEventStatus } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
-import { ClaudeTitleTurnEdge, sanitizeTitle } from '../main/pty/titleDetect';
+import { ClaudeTitleTurnEdge, sanitizeTitle, TitleForwardGate } from '../main/pty/titleDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
 import { ESC_INTERRUPT_CONFIRM_MS, RESIZE_REDRAW_GUARD_MS } from '../main/notification/idleSuppression';
@@ -372,6 +372,8 @@ export class DaemonPTYBridge extends EventEmitter {
   /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
   private lastTitle = '';
   private lastTitleAt = 0;
+  /** Which titles go on to the tab: repeats and bare spinner frames are held back (#3004). */
+  private titleForward = new TitleForwardGate();
   /** When `active` was last emitted (0 = never); see noteCodexTitleSpinner. */
   private lastActiveAt = 0;
   /** #1463 — a session started and no turn has since (see isPreTurn). */
@@ -2279,7 +2281,7 @@ export class DaemonPTYBridge extends EventEmitter {
         // running spinner here and needs to know how fresh it is.
         this.lastTitle = title;
         this.lastTitleAt = Date.now();
-        if (title) this.emit('title', { sessionId, title });
+        if (title && this.titleForward.admit(title)) this.emit('title', { sessionId, title });
         if (titleTurnEdge.observe(title)) this.noteTitleTurnEnd(sessionId);
         if (CLAUDE_RUNNING_TITLE.test(title)) this.noteSpinnerTitle();
         else if (this.spinnerOpenedTurn && this.turnOpen && !this.awaitingHuman && CLAUDE_IDLE_TITLE.test(title)) this.endSpinnerTurn();
@@ -2833,6 +2835,7 @@ export class DaemonPTYBridge extends EventEmitter {
     this.awaitingFromProgram = false;
     this.lastTitle = '';
     this.lastTitleAt = 0;
+    this.titleForward = new TitleForwardGate();
     this.awaitingHuman = false;
     this.outputInterpreter?.dispose();
     this.outputInterpreter = null;
