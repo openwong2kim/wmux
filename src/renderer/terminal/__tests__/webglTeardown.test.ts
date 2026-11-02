@@ -56,6 +56,18 @@ describe('teardownWebglAddon', () => {
     expect(() => teardownWebglAddon(f.addon)).not.toThrow();
     expect(f.loseContext).toHaveBeenCalledOnce();
   });
+
+  it('never loses the context of a shared-context addon, only disposes it', () => {
+    // A shared-context addon (terminal/sharedWebgl) draws through the context
+    // every such pane shares; losing it would blank all of them. Even when a
+    // `_gl` is reachable, teardown must leave it alone.
+    const f = makeAddon();
+    (f.addon as unknown as { usesSharedContext: boolean }).usesSharedContext = true;
+    teardownWebglAddon(f.addon);
+    expect(f.dispose).toHaveBeenCalledOnce();
+    expect(f.getExtension).not.toHaveBeenCalled();
+    expect(f.loseContext).not.toHaveBeenCalled();
+  });
 });
 
 /**
@@ -158,6 +170,23 @@ describe('@xterm/addon-webgl private-path shape lock', () => {
 
   it('WebglRenderer still exposes the _gl field teardown reads', () => {
     expect(addonSrc).toMatch(/this\._gl\b/);
+  });
+});
+
+describe('teardown private-path shape lock (shared-context fork)', () => {
+  const fork = 'src/renderer/terminal/sharedWebgl/addon/';
+  const addonSrc = readFileSync(`${fork}WebglAddon.ts`, 'utf8');
+  const rendererSrc = readFileSync(`${fork}WebglRenderer.ts`, 'utf8');
+
+  it('the fork addon exposes usesSharedContext and the _renderer field', () => {
+    expect(addonSrc).toMatch(/public readonly usesSharedContext: boolean/);
+    expect(addonSrc).toMatch(/this\._renderer = this\._register\(new WebglRenderer\(/);
+  });
+
+  it('a shared-mode fork renderer leaves _gl unset (only SharedGlContext holds the context)', () => {
+    expect(rendererSrc).toMatch(/private _gl: IWebGL2RenderingContext \| undefined;/);
+    expect(rendererSrc.match(/this\._gl = /g)).toHaveLength(1);
+    expect(rendererSrc).toMatch(/if \(sharedContext\) \{[^}]*acquireSharedGlContext/);
   });
 });
 
