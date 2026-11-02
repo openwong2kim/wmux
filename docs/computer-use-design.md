@@ -333,7 +333,11 @@ snapshot is the v1.1 token saver.
       window off screen, and the other cases of
       `docs/computer-use-macos.md`, Input).
     - Both: `openApp`, which has no target app before the launch and takes
-      the lease only. `setValue` is a UIA or AX call, not input.
+      the lease only. `setValue` is a UIA or AX call, not input. On
+      Windows a UIA pattern call brings a covered window to the front, so
+      the Windows helper answers `needs_foreground` under `refuse` before
+      such a call (`setValue`, the click ladder) on a target that is not in
+      front (`docs/computer-use-windows.md`).
   - Everything else is sent with `foreground: 'refuse'`. A helper that
     cannot post it answers `needs_foreground`, and only when nothing was
     sent for that action (no event, posted message, pattern call or focus

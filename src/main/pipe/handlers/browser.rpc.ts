@@ -5,6 +5,7 @@ import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { noteChromeProfileUse } from '../../browser-session/profileFallback';
 import { logNotificationFailure } from '../../notification/notificationFailure';
+import { osToastsAllowed } from '../../notification/osToastGate';
 import { IPC } from '../../../shared/constants';
 import { HelpRequests } from '../../browser-session/HelpRequests';
 import {
@@ -2040,7 +2041,8 @@ export function registerBrowserRpc(
       }
     }
     try {
-      if (!Notification.isSupported()) return;
+      // Gate before isSupported(), which already runs Electron's toast setup (#2964).
+      if (!osToastsAllowed() || !Notification.isSupported()) return;
       const notification = new Notification({
         title: 'wmux — the browser needs you',
         body: prompt,

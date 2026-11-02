@@ -196,6 +196,18 @@ export const pl = {
   'settings.terminalEngineRestartApp': "Po zakończeniu pracy w sesjach uruchom ponownie wmux, aby zastosować zapisany wybór.",
   'settings.terminalEngineError': "Nie udało się odczytać lub zapisać ustawienia silnika terminala.",
   'settings.terminalEngineRetry': "Odśwież",
+  'settings.tabLabs': "Laboratorium",
+  'settings.labsIntro': "Eksperymentalne funkcje oszczędzające pamięć. Każda jest domyślnie wyłączona i może się zmienić lub zniknąć.",
+  'settings.labsCompactScrollback': "Kompaktowa historia przewijania",
+  'settings.labsCompactScrollbackDesc': "Pakuje wiersze historii daleko nad ekranem, zajmując około jednej trzeciej pamięci. Przeszukiwanie całej historii jest wolniejsze. Dotyczy terminali otwartych po zmianie.",
+  'settings.labsSharedWebgl': "Wspólny renderer WebGL",
+  'settings.labsSharedWebglDesc': "Wszystkie panele rysują przez jeden kontekst WebGL i jeden atlas glifów. Oszczędza pamięć GPU, gdy wiele paneli pokazuje wiele różnych glifów. Dotyczy paneli otwartych po zmianie.",
+  'settings.labsRingCompression': "Kompresja wyjścia sesji",
+  'settings.labsRingCompressionDesc': "Usługa terminala przechowuje ostatnie wyjście każdej sesji skompresowane, w około jednej dziewiątej pamięci. Działa po ponownym uruchomieniu usługi terminala.",
+  'settings.labsError': "Nie udało się odczytać ani zapisać tego ustawienia.",
+  'settings.labsRingCompressionNodeOnly': "Działa tylko z silnikiem terminala Node.",
+  'settings.labsRingCompressionInConfig': "W config.json włączono session.ringCompression, więc wyjście sesji jest zawsze kompresowane. Usuń ten wpis, aby sterować nim tutaj.",
+  'settings.labsRestartDaemon': "Zadziała po ponownym uruchomieniu usługi terminala. Po zakończeniu sesji zamknij wmux, uruchom poniższe polecenie w osobnym terminalu (w Windows w PowerShell), a następnie otwórz wmux ponownie.",
   'chat.commandsAndSkills': "Polecenia i umiejętności",
   'chat.inChat': "Otwórz w czacie",
   'chat.inTerminal': "Użyj terminala",
@@ -717,6 +729,7 @@ export const pl = {
   'statusbar.notifSingular': 'powiadomienie',
   'statusbar.notifPlural': 'powiadomień',
   'statusbar.unreadAria': '{count} nieprzeczytanych ({noun}), kliknij, aby otworzyć panel',
+  'statusbar.securityAria': 'Powiadomienia o bezpieczeństwie do potwierdzenia: {count}',
 
   // Usage meter (Anthropic 5h/7d widget)
   'usage.tooltipSession': '5h: {pct}%',
@@ -975,6 +988,9 @@ export const pl = {
   'notification.needsYou.question': "Czeka na Ciebie: „{question}”",
   'notification.needsYou.noQuestion': "Czeka na Ciebie. Brak treści pytania; zajrzyj do terminala.",
   'notification.needsYou.over': "Już na Ciebie nie czeka.",
+  'notification.security.heading': 'Bezpieczeństwo · zostaje, dopóki go nie potwierdzisz',
+  'notification.security.goToPane': 'Przejdź do panelu',
+  'notification.security.ack': 'Rozumiem',
 
   // Command palette
   'palette.placeholder': 'Wpisz polecenie...',
@@ -3027,6 +3043,7 @@ export const pl = {
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
   'deck.limit.window': 'zużycie',
   'deck.brainTerminal': 'Terminal mózgu',
+  'deck.expiredDecision': "Decyzja, o którą wcześniejsza wersja wmux prosiła w {workspace}, została zamknięta, bo ta wersja nie ma karty, na której można na nią odpowiedzieć: \"{question}\"",
   'deck.limit.resetsSoon': 'wkrótce reset',
   'deck.limit.resetsIn': 'reset za {rel}',
   'deck.limit.onAccount': ' na {account}',

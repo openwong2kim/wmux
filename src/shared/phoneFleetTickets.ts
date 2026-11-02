@@ -181,6 +181,7 @@ export const PHONE_FLEET_TICKET_PLAIN_TITLES: Record<PhoneFleetTicketOrigin, str
   issue: 'Issue task',
   pr: 'Pull request task',
   handoff: 'Hand-off waiting',
+  'hand-out': 'To hand out task',
 };
 
 /**

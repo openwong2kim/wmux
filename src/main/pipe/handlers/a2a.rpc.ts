@@ -49,6 +49,8 @@ import {
 } from '../../../mcp/codexThreadIdentity';
 import type { OwningAnchor } from '../../pty/serverSidePidWalk';
 import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFromRemoteSend, workLinkFromSentTask } from '../../workLink/a2aProducer';
+import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
+import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
@@ -477,11 +479,14 @@ export function registerA2aRpc(
     companyRelease?: () => CompanyReleaseHook | null;
     /** The per-PC cap on working company seats (one gate, shared with the bridge). */
     companySlots?: CompanySlotGate;
+    /** The To hand out list a send's handOutId picks from; tests inject one. */
+    handOuts?: Pick<HandOutStore, 'get' | 'reserve' | 'release'>;
   } = {},
 ): void {
   const getDaemonClient = opts.getDaemonClient;
   const remote = opts.remote;
   const prReview = opts.prReview ?? ghPrReviewService;
+  const handOuts = (): Pick<HandOutStore, 'get' | 'reserve' | 'release'> => opts.handOuts ?? getHandOutStore();
 
   /**
    * Active links `to` names EXACTLY (no trimming, no partial match): by alias,
@@ -505,6 +510,7 @@ export function registerA2aRpc(
     params: Record<string, unknown>,
     matches: A2aRemoteTarget[],
     ctx: RpcContext | undefined,
+    handOutId: string | undefined,
   ): Promise<unknown> {
     const alias = params.to as string;
     if (params.execute === true) return { error: 'a2a.task.send: execute is not available for a remote pane (message only)' };
@@ -601,7 +607,7 @@ export function registerA2aRpc(
     if (!res.ok) return { error: `a2a.task.send: remote send refused (${res.error})` };
     // Work link (best-effort, never awaited), as for a local send.
     void recordSentTask(workLinkFromRemoteSend({
-      taskId: res.taskId, linkId: link.linkId, alias: link.alias, requester: { workspaceId, paneId: caller.paneId }, title, message, fromCommander: false,
+      taskId: res.taskId, linkId: link.linkId, alias: link.alias, requester: { workspaceId, paneId: caller.paneId }, title, message, fromCommander: false, handOutId,
     }));
     return { ok: true, taskId: res.taskId, remote: true, delivery: REMOTE_QUEUED, ...(res.note ? { note: res.note } : {}) };
   }
@@ -1884,21 +1890,60 @@ export function registerA2aRpc(
   // A working slot the send took is released once it is over, its task in the
   // daemon's record by then (or never stored).
   router.register('a2a.task.send', async (params, ctx) => {
-    const taken: { release?: () => void } = {};
+    const taken: { release?: () => void; handOut?: () => void } = {};
     try {
       return await sendTask(params, ctx, taken);
     } finally {
       taken.release?.();
+      taken.handOut?.();
     }
   });
 
-  async function sendTask(params: Record<string, unknown>, ctx: RpcContext | undefined, taken: { release?: () => void }): Promise<unknown> {
+  /**
+   * A new task that picks a To hand out item (`handOutId`, shared/handOut.ts):
+   * only an agent pane on this PC picks this way (the app picks over IPC),
+   * the item must be open, and it is held until the send is over. Refused
+   * before anything is stored.
+   */
+  async function claimHandOut(params: Record<string, unknown>, ctx: RpcContext | undefined): Promise<{ id: string } | { error: string; code: string }> {
+    const refuse = (code: string, hint: string) => ({ error: `a2a.task.send: ${hint}`, code });
+    if (ctx?.origin !== 'local' || ctx.operator === true || isHostedCaller(ctx) || ctx.bot || ctx.commanderWorkspace || ctx.fencedWorker) {
+      return refuse('hand_out_refused', 'handOutId is taken only from an agent in a pane on this PC');
+    }
+    if (params.taskId !== undefined || params.workLinkId !== undefined) {
+      return refuse('hand_out_invalid', 'handOutId picks an item with a new task of its own; send it without taskId or workLinkId');
+    }
+    if (params.silent === true || params.execute === true) {
+      return refuse('hand_out_invalid', 'handOutId hands an item to the agent in a pane; send it without silent or execute');
+    }
+    const id = params.handOutId;
+    if (!isHandOutId(id)) return refuse('hand_out_invalid', 'handOutId is not an item id; read the To hand out list for one');
+    const caller = await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId);
+    if (caller.kind !== 'resolved') return refuse('hand_out_refused', 'handOutId needs the caller\'s verified pane on this PC');
+    const store = handOuts();
+    if (!store.get(id)) return refuse('hand_out_unknown', `${id} is no longer on To hand out; read the list again`);
+    if (!store.reserve(id)) return refuse('hand_out_taken', `${id} is already handed out; pick another item`);
+    return { id };
+  }
+
+  async function sendTask(
+    params: Record<string, unknown>,
+    ctx: RpcContext | undefined,
+    taken: { release?: () => void; handOut?: () => void },
+  ): Promise<unknown> {
     const marked = refuseHandoffMarker('a2a.task.send', [params.message, params.title], ctx);
     if (marked) return marked;
     // A new task with `execute` runs a background claude outside the worker
     // fence: a fenced worker sends it as a message only.
     if (ctx?.fencedWorker && params.execute === true && !params.taskId) {
       return { error: 'a2a.task.send: execute is not available inside the worker fence; send the task without execute' };
+    }
+    let handOutId: string | undefined;
+    if (params.handOutId !== undefined) {
+      const claimed = await claimHandOut(params, ctx);
+      if ('error' in claimed) return claimed;
+      handOutId = claimed.id;
+      taken.handOut = () => handOuts().release(claimed.id);
     }
     // Cross-host A2A: a reply on a remote task, or a new task to a remote
     // pane's exact alias, goes to the peer host instead of a local pane.
@@ -1908,7 +1953,7 @@ export function registerA2aRpc(
     }
     if (!params.taskId) {
       const matches = await remoteTargetsFor(params.to);
-      if (matches.length > 0) return sendRemoteTask(params, matches, ctx);
+      if (matches.length > 0) return sendRemoteTask(params, matches, ctx, handOutId);
       // A remote end's id never names a local workspace: no active link, no send.
       if (isRemoteWorkspaceId(params.to)) return { error: `a2a.task.send: "${params.to}" is not an active link to another PC` };
     }
@@ -1976,6 +2021,8 @@ export function registerA2aRpc(
     const linkTrusted = ctx?.operator === true || (ctx?.firstParty === true && !isHostedCaller(ctx));
     const workLinkId = linkTrusted && typeof sendParams.workLinkId === 'string' ? sendParams.workLinkId : undefined;
     delete sendParams.workLinkId;
+    // Main-only too: the item is checked and held above, and its link is made here.
+    delete sendParams.handOutId;
     if (ctx?.commanderWorkspace) {
       sendParams.commanderWorkspaceId = ctx.commanderWorkspace;
       sendParams.workspaceId = ctx.commanderWorkspace;
@@ -2044,7 +2091,7 @@ export function registerA2aRpc(
     if (isRecord(result) && result.ok === true && isRecord(result.task) && !params.taskId) {
       // Work link (best-effort, never awaited): read before `task` is stripped.
       // A commander brain's send is a Moa delegation (docs/work-links.md).
-      workLink = workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace, workLinkId });
+      workLink = workLinkFromSentTask(result, { fromCommander: !!ctx?.commanderWorkspace, workLinkId, handOutId });
       // A held task's link waits until the daemon has kept its hold (below).
       if (!held && !full) void recordSentTask(workLink);
       const t = result.task as { id?: unknown; metadata?: { title?: unknown; from?: unknown; to?: unknown }; history?: unknown };
@@ -2075,6 +2122,20 @@ export function registerA2aRpc(
     }
     if ((held || full) && isRecord(result) && result.ok === true && typeof result.taskId === 'string') {
       return finishHeldSend(result, mirror, workLink, params.silent === true, full);
+    }
+    // A pick that reached no agent gives the item back, as the app's pick
+    // does: the picker withdraws its own task, so nobody finds it later while
+    // the item reads open again.
+    if (handOutId && isRecord(result) && result.ok === true && typeof result.taskId === 'string'
+      && !(isRecord(result.delivery) && result.delivery.notified === true)) {
+      const cancel = await cancelTask({ taskId: result.taskId, workspaceId: params.workspaceId, senderPtyId: params.senderPtyId }, ctx).catch(() => null);
+      const withdrawn = isRecord(cancel) && cancel.ok === true;
+      return {
+        ...result,
+        handOut: withdrawn
+          ? 'not delivered: its task was cancelled and the item is open again'
+          : 'not delivered, and its task could not be cancelled: cancel it to put the item back',
+      };
     }
     // A reply that reopened an ended task moves its link back with it.
     if (params.taskId && isRecord(result) && result.ok === true) {
@@ -2108,7 +2169,9 @@ export function registerA2aRpc(
   }
 
   // task.cancel: cancel worker + 데몬 정본 커밋 + 렌더러 캐시/이벤트(envelope PR4).
-  router.register('a2a.task.cancel', async (params, ctx) => {
+  router.register('a2a.task.cancel', cancelTask);
+
+  async function cancelTask(params: Record<string, unknown>, ctx: RpcContext | undefined): Promise<unknown> {
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     // The caller's pane, resolved here as for an update: a company task is
     // canceled only by the pane that created it (shared/company.ts).
@@ -2157,5 +2220,5 @@ export function registerA2aRpc(
       void recordTaskState(taskId, 'canceled');
     }
     return res;
-  });
+  }
 }
