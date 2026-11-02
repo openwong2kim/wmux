@@ -150,8 +150,9 @@ export interface SeatBriefInput {
  * sends to a staff seat (shared/company.ts decideCompanySend). A seat reports
  * with input-required and only the CEO or the owner marks the task done
  * (companyDoneRefusal); both briefs say so. The CEO is also told that wmux
- * checks the PRs a task names before its done (companyDonePrCheck), and
- * that a brief past the PC's cap on working seats waits for a slot. A reply
+ * checks the PRs a task names before its done (companyDonePrCheck), that a
+ * brief past the PC's cap on working seats waits for a slot, and how to take
+ * work from To hand out (the hand_out tool) to a seat. A reply
  * on a reported task hands it back; both briefs say so, and the CEO's says it
  * takes a slot.
  */
@@ -181,6 +182,11 @@ export function seatBrief(input: SeatBriefInput): string {
         `Hand work to a seat with the wmux send_message tool, to its #name, with a brief in data: ` +
         `{"kind":"${COMPANY_BRIEF_KIND}","v":1,${BRIEF_FIELDS.map((f) => `"${f}":"…"`).join(',')}}. ` +
         'A task to a seat without a full brief is refused. Follow the work with a2a_task_query.',
+      );
+      lines.push(
+        'Work waiting for this company may be on To hand out, the list of work nobody has been given yet: the wmux hand_out tool '
+        + 'with action list and folder set to the folder you work in shows it. To give an item to a seat, use action pick, to the '
+        + 'seat\'s #name, with the brief in data, so the seat gets a full brief and the item is linked; action add puts new work on the list.',
       );
       lines.push(
         'Only a few seats on this PC work at once (the owner\'s setting, 3 by default). A brief to an idle seat past that is held, not refused: '

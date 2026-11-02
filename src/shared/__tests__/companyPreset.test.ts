@@ -84,6 +84,18 @@ describe('company presets', () => {
     expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 })).not.toContain('reason "cap"');
   });
 
+  it('teaches the CEO, and only the CEO, to find and give out work from To hand out', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
+    expect(ceo).toContain('Work waiting for this company may be on To hand out');
+    expect(ceo).toContain('the wmux hand_out tool with action list and folder set to the folder you work in shows it.');
+    expect(ceo).toContain('use action pick, to the seat\'s #name, with the brief in data, so the seat gets a full brief and the item is linked');
+    expect(ceo).toContain('action add puts new work on the list.');
+    // The brief's shape is still the one the brief-shape check reads.
+    expect(missingBriefFields(JSON.parse(/data: (\{.*?\})\./.exec(ceo)![1].replace(/…/g, 'x')))).toEqual([]);
+    expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 })).not.toContain('hand_out');
+  });
+
   it('tells both sides that a reply on a reported task hands it back, and the CEO that it takes a slot', () => {
     const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
     const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
