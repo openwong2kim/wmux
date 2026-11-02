@@ -8,7 +8,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { HandOutAddResult, HandOutEntry } from '../../../../shared/handOut';
 import type { Workspace } from '../../../../shared/types';
-import { HandOutAddForm, handOutAddedLine, handOutFolderChoices } from '../HandOutList';
+import { HandOutAddForm, HandOutCard, handOutAddedLine, handOutFolderChoices } from '../HandOutList';
 
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -110,5 +110,25 @@ describe('HandOutAddForm', () => {
     });
     expect(container.querySelector('[data-fleet-hand-out-error]')?.textContent).toBe('fleet.handOut.form.full');
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+describe('HandOutCard', () => {
+  it('shows a long folder by its last two segments, keeping the full path as its tooltip and in its name', () => {
+    const folder = '/private/tmp/claude-501/-Users-someone-Desktop-coding-wmux/c6e8dfc2/scratchpad/wmux-web';
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const item: HandOutEntry = { id: 'ho-1', title: 'Move the docs site', folder, agent: 'codex', addedBy: { kind: 'owner' }, createdAt: 0, state: 'open' };
+    act(() => {
+      root.render(<HandOutCard item={item} layout="board" focused={false} now={0} workspaceName={() => ''}
+        onFocus={() => undefined} onHandOut={() => undefined} onRemove={() => undefined} t={t} />);
+    });
+    const line = container.querySelector<HTMLElement>('[data-fleet-hand-out-folder-line]')!;
+    expect(line.textContent).toBe('…/scratchpad/wmux-web');
+    expect(line.title).toBe(folder);
+    expect(container.querySelector('[data-fleet-hand-out]')?.getAttribute('aria-label')).toContain(folder);
+    act(() => root.unmount());
+    container.remove();
   });
 });

@@ -6,6 +6,7 @@ import { memo, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { HAND_OUT_LIMITS, type HandOutAddResult, type HandOutEntry } from '../../../shared/handOut';
 import type { Workspace } from '../../../shared/types';
 import { displayPath } from '../../utils/displayPath';
+import { shortDir } from '../../utils/shortDir';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 import { useAgentChoices } from '../Sidebar/CompanyPresetDialog';
 import { workspaceFolder } from '../Sidebar/externalSessionPlacement';
@@ -84,7 +85,9 @@ function HandOutCardImpl({ item, layout, focused, now, workspaceName, onFocus, o
     >
       <span className={`line-clamp-2 [overflow-wrap:anywhere] text-[13px] leading-[18px] text-[var(--text-main)] ${titleLane}`}>{item.title}</span>
       <span className="flex items-center gap-1.5 min-w-0 text-[11px] leading-[14px]">
-        <span className="truncate font-mono text-[var(--text-sub)]" title={item.folder}>{folder}</span>
+        {/* The folder's own name is what tells items apart: the line keeps its
+            last two segments, the tooltip and the accessible name the path. */}
+        <span className="truncate font-mono text-[var(--text-sub)]" title={folder} data-fleet-hand-out-folder-line>{shortDir(folder)}</span>
         <span aria-hidden="true" className="text-[var(--text-muted)]">·</span>
         <span className={`flex-none ${item.agent ? 'text-[var(--text-sub)]' : 'text-[var(--text-muted)]'}`}>{agent}</span>
       </span>

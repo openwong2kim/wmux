@@ -14,6 +14,7 @@ import { useStore } from '../../stores';
 import type { FleetRow } from '../../stores/selectors/fleet';
 import { renderSentence } from '../../i18n/renderSentence';
 import { displayPath } from '../../utils/displayPath';
+import { shortDir } from '../../utils/shortDir';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 import { paneTag } from '../../utils/paneNaming';
 import { placePopover } from '../AgentToolbar/placePopover';
@@ -78,6 +79,18 @@ export function handOutPickNotices(
     }));
   }
   return out;
+}
+
+/** A folder by its last two segments, in mono; the full path is its tooltip
+ *  and what a screen reader reads. */
+function FolderText({ folder }: { folder: string }) {
+  const full = displayPath(folder);
+  return (
+    <span className="font-mono" title={full} data-hand-out-folder>
+      <span aria-hidden="true">{shortDir(full)}</span>
+      <span className="sr-only">{full}</span>
+    </span>
+  );
 }
 
 /** The agent panes and workspaces of this PC as the targets read them. */
@@ -279,7 +292,7 @@ export default function HandOutPopover({ item, anchor, rows, workspaces, onClose
         <p className="m-0 text-[13px] font-medium text-[var(--text-main)]">{t('fleet.handOut.pick.title')}</p>
         <p className="m-0 line-clamp-2 [overflow-wrap:anywhere] text-[12px] text-[var(--text-sub)]">
           {item.title}
-          {' · '}<span className="font-mono">{displayPath(item.folder)}</span>
+          {' · '}<FolderText folder={item.folder} />
           {item.agent && ` · ${t('fleet.handOut.pick.asks', { agent: item.agent })}`}
         </p>
       </div>
@@ -308,7 +321,7 @@ export default function HandOutPopover({ item, anchor, rows, workspaces, onClose
               <div className="flex-1 min-w-0">
                 {radio(targets.worktree, (
                   <span className="truncate text-[13px] text-[var(--text-main)]">
-                    {renderSentence(t('fleet.handOut.pick.worktreeOf'), { folder: <span className="font-mono">{displayPath(targets.worktree.folder)}</span> })}
+                    {renderSentence(t('fleet.handOut.pick.worktreeOf'), { folder: <FolderText folder={targets.worktree.folder} /> })}
                   </span>
                 ))}
               </div>

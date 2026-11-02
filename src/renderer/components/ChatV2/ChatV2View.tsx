@@ -1,7 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useT } from '../../hooks/useT';
 import { CHATV2_AGENT_CAPS, type ChatV2Agent, type ChatV2RunMode } from '../../../shared/chatv2/ipc';
-import { Composer, setDraft, shortDir } from './Composer';
+import { Composer, setDraft } from './Composer';
+import { shortDir } from '../../utils/shortDir';
 import { FindBar } from './FindBar';
 import { groupToolRows, sessionRows, type RowCache, type TranscriptRow } from './rows';
 import { S } from './strings';
