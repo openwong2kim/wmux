@@ -2702,7 +2702,9 @@ differently in the two places, and in the order `fleet_triage` returns.
     two-line note; Cancel, then Add (the primary). Enter adds, Escape
     cancels; main's invalid or full refusal shows inline under the fields.
   - **Card.** The title (13px, two lines at most), the folder in mono 11px
-    with the agent it asks for (or a muted "any agent"), then "Added by you
+    as its last two segments (`…/a/b`, the full path as its tooltip and
+    accessible name; the popover's header and worktree row read it the same
+    way) with the agent it asks for (or a muted "any agent"), then "Added by you
     · 2d" or "Added by #ceo · wmux co. · 3h", on a `--selection-subtle`
     fill with no border, like the other cards (in the list, a row with no
     fill at rest). On hover, focus or selection the right lane shows **Hand
