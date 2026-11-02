@@ -3,7 +3,7 @@
 // startup removes it and frees its thread for an ask_person question.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
@@ -20,6 +20,12 @@ import {
   resolveThreadDecision,
 } from '../deckDecisionStore';
 import { GENERAL_THREAD } from '../../../shared/room';
+import { atomicWriteJSON } from '../../../daemon/util/atomicWrite';
+
+vi.mock('../../../daemon/util/atomicWrite', async (actual) => {
+  const real = await actual<typeof import('../../../daemon/util/atomicWrite')>();
+  return { ...real, atomicWriteJSON: vi.fn(real.atomicWriteJSON) };
+});
 
 let dir: string;
 beforeEach(() => {
@@ -88,15 +94,14 @@ describe('expireUnanswerableDecisions', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('warns and returns nothing when the write fails', async () => {
+  it('warns and returns nothing when the write fails', async () => {
     await raiseDecision('ws-1', { question: 'Go?' }, dir);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    chmodSync(dir, 0o500);
+    vi.mocked(atomicWriteJSON).mockRejectedValueOnce(new Error('disk full'));
     try {
       expect(await expireUnanswerableDecisions(dir)).toEqual([]);
-      expect(warn.mock.calls.some(([line]) => String(line).includes('could not expire unanswerable decisions'))).toBe(true);
+      expect(warn.mock.calls.some(([line]) => String(line).includes('could not expire unanswerable decisions: Error: disk full'))).toBe(true);
     } finally {
-      chmodSync(dir, 0o700);
       warn.mockRestore();
     }
   });
