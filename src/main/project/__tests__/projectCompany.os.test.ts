@@ -122,7 +122,7 @@ describe('saveProjectCompany', () => {
     fs.writeFileSync(path.join(sub, 'wmux.json'), text);
     fs.writeFileSync(path.join(repo, 'wmux.json'), text);
     const { contentHash } = await store.getState(repo);
-    await store.setDecision(repo, 'trusted', contentHash!, false);
+    await store.setDecision(repo, 'trusted', contentHash ?? '', false);
     // The folder's own file goes away after the folder check, leaving the one above it.
     let calls = 0;
     const racing: ProjectConfigWriteDeps = {
@@ -214,7 +214,7 @@ describe('writeProjectConfig', () => {
     const raw = JSON.stringify({ version: 1, fanout: { portRange: '3000-3010' }, notes: 'x'.repeat(PROJECT_CONFIG_MAX_FILE_BYTES - 200) });
     fs.writeFileSync(path.join(repo, 'wmux.json'), raw);
     const { contentHash } = await store.getState(repo);
-    await store.setDecision(repo, 'trusted', contentHash!, false);
+    await store.setDecision(repo, 'trusted', contentHash ?? '', false);
     expect(await saveProjectCompany(repo, shop, contentHash, deps)).toEqual({ ok: false, error: 'invalid-input' });
     expect(fs.readFileSync(path.join(repo, 'wmux.json'), 'utf8')).toBe(raw);
   });
