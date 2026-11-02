@@ -1,11 +1,9 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
-import { generateId } from '../../../shared/types';
 import { agentSlugToDisplay, isAgentSlug, type AgentSlug } from '../../../shared/agentIdentity';
 import { companySeatsError, ownWorktreeSeats, type CompanyPreset, type CompanyPresetSeat } from '../../../shared/companyPreset';
-import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { displayPath } from '../../utils/displayPath';
-import { showWorkspaces } from '../../utils/showWorkspaces';
+import { makeCompany } from '../../utils/makeCompany';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import Select from '../ui/Select';
@@ -46,7 +44,6 @@ export function useAgentChoices(): AgentChoice[] {
  */
 export default function CompanyPresetDialog({ preset, onClose }: { preset: CompanyPreset; onClose: () => void }) {
   const t = useT();
-  const addCompanyWorkspace = useStore((s) => s.addCompanyWorkspace);
   const agents = useAgentChoices();
   const [name, setName] = useState('');
   const [folder, setFolder] = useState<string | null>(null);
@@ -90,43 +87,16 @@ export default function CompanyPresetDialog({ preset, onClose }: { preset: Compa
     if (seatsError || busy) return;
     setBusy(true);
     setFailed(null);
-    const id = generateId('ws');
-    // Main settles each seat's pane name (it holds every label) and writes the
-    // briefs with those names.
-    const res = await window.electronAPI?.company?.seatLaunches?.({
-      workspaceId: id,
-      company: companyName,
-      mission,
-      standingOrders,
-      ceo,
-      tellSeats,
-      ...(folder ? { folder } : {}),
-      seats: trimmed.map((s) => ({ label: s.label, owns: s.owns, ...(s.agent ? { agent: s.agent } : {}) })),
-    }).catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }));
-    if (!open.current) return;
-    if (!res?.ok) {
-      setBusy(false);
-      setFailed(res?.error ?? 'unavailable');
-      return;
-    }
-    const ok = addCompanyWorkspace({
-      id,
-      name: companyName,
-      ...(folder ? { cwd: folder } : {}),
-      mission,
-      standingOrders,
-      ceo,
-      seats: trimmed.map((s, i) => {
-        const cwd = res.cwds[i];
-        return { label: res.labels[i], owns: s.owns, command: res.commands[i] ?? null, ...(cwd ? { cwd } : {}) };
-      }),
-    });
+    const res = await makeCompany(
+      { name: companyName, ...(folder ? { folder } : {}), mission, standingOrders, ceo, tellSeats, seats: trimmed },
+      () => open.current,
+    );
+    if (!res) return;
     setBusy(false);
-    if (!ok) {
-      setFailed('invalid');
+    if (!res.ok) {
+      setFailed(res.error);
       return;
     }
-    showWorkspaces(useStore.getState());
     onClose();
   };
 
