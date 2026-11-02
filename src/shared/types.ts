@@ -940,6 +940,10 @@ export interface SessionData {
   titlebarVitalsAlwaysVisible?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.paneNewTerminalButton. */
   paneNewTerminalButton?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalCompactScrollback. */
+  terminalCompactScrollback?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalSharedWebgl. */
+  terminalSharedWebgl?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

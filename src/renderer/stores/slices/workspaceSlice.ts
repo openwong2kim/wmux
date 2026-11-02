@@ -1689,6 +1689,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.paneNewTerminalButton === 'boolean') {
         state.paneNewTerminalButton = data.paneNewTerminalButton;
       }
+      // Experimental memory opt-ins: only an explicit true turns them on.
+      if (data.terminalCompactScrollback === true) state.terminalCompactScrollback = true;
+      if (data.terminalSharedWebgl === true) state.terminalSharedWebgl = true;
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.closeTabOnShellExit != null) state.closeTabOnShellExit = data.closeTabOnShellExit;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;

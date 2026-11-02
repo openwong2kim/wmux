@@ -8,6 +8,7 @@ import { installWindowGlass } from './utils/windowGlass';
 import { hasRoundedWindowCorners } from '../shared/windowCorners';
 import { rememberStartPolarity, settleStartTheme, startTheme } from './utils/startTheme';
 import { installDocumentHiddenMotion, installSystemReducedMotion } from './utils/reducedMotion';
+import { installScrollbackCompactionOnFlag } from './terminal/scrollbackCompactionBootstrap';
 import './styles/globals.css';
 import './styles/ui.css';
 import './styles/onboarding.css';
@@ -36,6 +37,10 @@ installDocumentHiddenMotion();
 
 // Undo any programmatic scroll of the page chrome (#1679) — see pinChromeScroll.
 installChromeScrollPin();
+
+// Experimental scrollback compaction, before any terminal mounts; nothing is
+// installed until terminalCompactScrollback is on.
+installScrollbackCompactionOnFlag();
 
 // Translucent chrome over the macOS window material, in the theme's appearance.
 // Installed once the saved theme and glass level are in, so a launch never
