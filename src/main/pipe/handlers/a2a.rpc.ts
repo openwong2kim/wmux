@@ -2128,8 +2128,14 @@ export function registerA2aRpc(
     // the item reads open again.
     if (handOutId && isRecord(result) && result.ok === true && typeof result.taskId === 'string'
       && !(isRecord(result.delivery) && result.delivery.notified === true)) {
-      await cancelTask({ taskId: result.taskId, workspaceId: params.workspaceId, senderPtyId: params.senderPtyId }, ctx);
-      return { ...result, handOut: 'not delivered: its task was cancelled and the item is open again' };
+      const cancel = await cancelTask({ taskId: result.taskId, workspaceId: params.workspaceId, senderPtyId: params.senderPtyId }, ctx).catch(() => null);
+      const withdrawn = isRecord(cancel) && cancel.ok === true;
+      return {
+        ...result,
+        handOut: withdrawn
+          ? 'not delivered: its task was cancelled and the item is open again'
+          : 'not delivered, and its task could not be cancelled: cancel it to put the item back',
+      };
     }
     // A reply that reopened an ended task moves its link back with it.
     if (params.taskId && isRecord(result) && result.ok === true) {

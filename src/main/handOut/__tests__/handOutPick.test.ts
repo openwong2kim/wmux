@@ -191,6 +191,12 @@ describe('a pick to a new worktree', () => {
     expect(store.get(item.id)?.state).toBe('open');
   });
 
+  it('keeps the worktree on the link when the link refuses the agent the start reported', async () => {
+    fanOut = async () => ({ ok: true, tasks: [{ index: 0, title: 't', ok: true, workspaceId: 'ws-new', worktreePath: '/wt/hand-out', branch: 'hand-out-x-abc123', agent: 'not a slug!' }] });
+    const res = await pickHandOut(deps(), { itemId: item.id, to: { kind: 'worktree', workspaceId: 'ws-repo' } });
+    expect(links.get(res.ok ? res.linkId : '')).toMatchObject({ owner: { workspaceId: 'ws-new' }, worktree: { path: '/wt/hand-out', branch: 'hand-out-x-abc123' } });
+  });
+
   it('the fan-out mission finishing takes the item off the list', async () => {
     let transition: (t: { entry: { taskWorkspaceId: string }; to: LedgerStatus }) => void = () => undefined;
     const stop = watchHandoffWorktreeLinks({ onTransition: (fn) => { transition = fn; return () => undefined; } }, links);

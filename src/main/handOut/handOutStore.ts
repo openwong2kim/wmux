@@ -15,9 +15,13 @@
 // open again.
 //
 // Never throws: a torn file loads as an empty list, a bad record is dropped on
-// its own, and a failed write is logged and retried by the next mutation.
+// its own, and a failed write is logged and retried by the next mutation. A
+// file that is there but cannot be read (permissions, a lock) is never written
+// over: changes stay in memory, every read tries the file again, and once it
+// reads they are merged into what it holds.
 
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
@@ -62,6 +66,9 @@ export interface HandOutStoreOptions {
 
 export class HandOutStore {
   private items: Map<string, HandOutItem> | null = null;
+  /** The file is there but could not be read: nothing is written over it. */
+  private unreadable = false;
+  private strandedClosed = false;
   private writeChain: Promise<void> = Promise.resolve();
   private readonly listeners = new Set<() => void>();
   private readonly reserved = new Set<string>();
@@ -139,22 +146,43 @@ export class HandOutStore {
   }
 
   private cache(): Map<string, HandOutItem> {
-    if (this.items) return this.items;
-    const items = new Map<string, HandOutItem>();
+    if (this.items && !this.unreadable) return this.items;
+    const loaded = this.load();
+    if (!loaded) {
+      if (!this.unreadable) console.warn('[handOut] hand-out.json is there but cannot be read; changes stay in memory until it can');
+      this.unreadable = true;
+      this.items ??= new Map();
+      return this.items;
+    }
+    // Items added while the file could not be read join what it holds.
+    for (const [id, item] of this.items ?? []) if (!loaded.has(id)) loaded.set(id, item);
+    const recovered = this.unreadable;
+    this.unreadable = false;
+    this.items = loaded;
+    if (!this.strandedClosed) {
+      this.strandedClosed = true;
+      this.closeStrandedPicks();
+    }
+    // Work may have finished while the app was closed.
+    if (this.dropDone() || recovered) void this.persist();
+    return loaded;
+  }
+
+  /** The items on disk; null when the file is there but cannot be read. A
+   *  torn file reads as empty, as a missing one does. */
+  private load(): Map<string, HandOutItem> | null {
     let raw: { items: unknown[] } | null = null;
     try {
       raw = atomicReadJSONSync(this.filePath, { validate: isFileShape });
     } catch (err) {
-      console.warn('[handOut] load failed, starting empty:', err);
+      console.warn('[handOut] load failed:', err);
     }
+    if (!raw && cannotRead(this.filePath)) return null;
+    const items = new Map<string, HandOutItem>();
     for (const entry of raw?.items ?? []) {
       const item = parseHandOutItem(entry);
       if (item && !items.has(item.id)) items.set(item.id, item);
     }
-    this.items = items;
-    this.closeStrandedPicks();
-    // Work may have finished while the app was closed.
-    if (this.dropDone()) void this.persist();
     return items;
   }
 
@@ -223,7 +251,9 @@ export class HandOutStore {
 
   private persist(): Promise<void> {
     const run = this.writeChain.then(async () => {
-      const file: HandOutFile = { version: 1, items: [...this.cache().values()] };
+      const items = this.cache();
+      if (this.unreadable) return;
+      const file: HandOutFile = { version: 1, items: [...items.values()] };
       try {
         await atomicWriteJSON(this.filePath, file);
       } catch (err) {
@@ -242,6 +272,16 @@ export class HandOutStore {
         /* a listener never breaks a write */
       }
     }
+  }
+}
+
+/** The file exists, but reading it fails (permissions, a lock, a folder). */
+function cannotRead(file: string): boolean {
+  try {
+    readFileSync(file);
+    return false;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code !== 'ENOENT';
   }
 }
 

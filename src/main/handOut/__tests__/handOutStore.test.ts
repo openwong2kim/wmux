@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { HandOutStore, getHandOutPath } from '../handOutStore';
@@ -103,6 +103,23 @@ describe('HandOutStore', () => {
     a.add({ title: 'Fix it', folder: '/repo' }, owner);
     await a.flush();
     expect(onDisk().items).toHaveLength(1);
+  });
+
+  it('never writes over a file it cannot read, and merges its adds once the file reads again', async () => {
+    const file = getHandOutPath(dir);
+    mkdirSync(file);
+    const a = make();
+    const added = a.add({ title: 'Added while unreadable', folder: '/repo' }, owner);
+    expect(added.ok).toBe(true);
+    await a.flush();
+    expect(statSync(file).isDirectory()).toBe(true);
+
+    rmSync(file, { recursive: true, force: true });
+    const kept = stored({ title: 'On disk' });
+    writeFileSync(file, JSON.stringify({ version: 1, items: [kept] }));
+    expect(a.list().map((e) => e.title).sort()).toEqual(['Added while unreadable', 'On disk']);
+    await a.flush();
+    expect(onDisk().items.map((i) => i.title).sort()).toEqual(['Added while unreadable', 'On disk']);
   });
 
   it('drops a bad record on its own', () => {

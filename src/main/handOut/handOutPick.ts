@@ -134,12 +134,18 @@ async function toWorktree(deps: HandOutPickDeps, item: HandOutItem, workspaceId:
     return { ok: false, code: 'error', message: started.message };
   }
   const { task, result } = started;
-  await deps.links.upsert({
+  const worktree = task.worktreePath ? { worktree: { path: task.worktreePath, ...(task.branch ? { branch: task.branch } : {}) } } : {};
+  const placed = await deps.links.upsert({
     id: link.id,
     owner: { workspaceId: task.workspaceId },
     ...(task.agent ? { agent: task.agent } : {}),
-    ...(task.worktreePath ? { worktree: { path: task.worktreePath, ...(task.branch ? { branch: task.branch } : {}) } } : {}),
+    ...worktree,
   }).catch(() => null);
+  // The worktree is what lets the fan-out mission move the link; an agent name
+  // the link refuses must not cost it.
+  if (!placed && (await deps.links.upsert({ id: link.id, owner: { workspaceId: task.workspaceId }, ...worktree }).catch(() => null)) === null) {
+    console.warn(`[handOut] the worktree pick's link ${link.id} could not take its worktree`);
+  }
   const prep = prepNoticeOf(result, task);
   return { ok: true, linkId: link.id, branch: task.branch ?? branch, ...(prep ? { prep } : {}) };
 }

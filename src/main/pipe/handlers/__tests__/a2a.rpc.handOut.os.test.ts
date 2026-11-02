@@ -96,6 +96,7 @@ beforeEach(() => {
         ? [{ id: 'dev-1', surfacePtyIds: ['pty-dev-1'] }, { id: 'dev-2', surfacePtyIds: ['pty-dev-2'] }, { id: 'dev-3', surfacePtyIds: ['pty-dev-3'] }]
         : [];
     }
+    if (method === 'a2a.task.cancel') return { ok: true, taskId: params.taskId };
     if (method === 'a2a.task.send') {
       seq += 1;
       const id = `task-${seq}`;
@@ -150,6 +151,16 @@ describe('a2a.task.send with handOutId', () => {
     await vi.waitFor(() => expect(links.getByTaskId('task-1')?.state).toBe('abandoned'), { timeout: 5_000 });
     expect(handOuts.get(itemId)?.state).toBe('open');
     expect(handOuts.reserve(itemId)).toBe(true);
+  });
+
+  it('a pick whose task cannot be cancelled says so, and the item stays out', async () => {
+    const rpc = dc.rpc.bind(dc);
+    vi.spyOn(dc, 'rpc').mockImplementation(async (method: string, params?: Record<string, unknown>) =>
+      method === 'a2a.task.cancel' ? { ok: false, error: 'a2a.task.cancel: not allowed' } : rpc(method, params ?? {}));
+    const res = await send(pick({ paneId: 'dev-3' }));
+    expect(res).toMatchObject({ ok: true, handOut: expect.stringContaining('could not be cancelled') });
+    await links.flush();
+    expect(handOuts.get(itemId)?.state).toBe('out');
   });
 
   it('a send the renderer refuses links nothing, and the item can be picked again', async () => {
