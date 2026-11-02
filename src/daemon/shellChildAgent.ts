@@ -9,9 +9,10 @@
  * Only the shell itself (an exec-rooted pane) and its direct children count:
  * an agent the shell started in the foreground is its child, and a `cat` of a
  * file holding the query (a cmdlet or builtin in PowerShell and cmd.exe)
- * starts none. The naming is the tracker's own (selectAgentProcess).
+ * starts none. The naming is the tracker's own (selectAgentProcess). The
+ * caller compares the start time with the shell's latest command start.
  */
-import { readProcessCommandLine, tryProcessFamily } from '../main/pty/winSnapshotNative';
+import { readProcessCommandLine, readProcessExitState, tryProcessCreatedAt, tryProcessFamily } from '../main/pty/winSnapshotNative';
 import { selectAgentProcess, type ProcessTreeEntry } from './AgentProcessTracker';
 import type { AgentSlug } from '../shared/agentIdentity';
 
@@ -19,15 +20,32 @@ export interface ShellChildReaders {
   /** The shell and its direct children with image names; null when unreadable. */
   family: (shellPid: number) => Array<{ pid: number; ppid: number; name: string }> | null;
   commandLine: (pid: number) => string | null;
+  /** Creation time as a FILETIME (100 ns since 1601), or null. */
+  createdAt: (pid: number) => bigint | null;
+  exitState: (pid: number) => 'exited' | 'running' | 'unknown';
 }
 
-const NATIVE_READERS: ShellChildReaders = { family: tryProcessFamily, commandLine: readProcessCommandLine };
+const NATIVE_READERS: ShellChildReaders = {
+  family: tryProcessFamily, commandLine: readProcessCommandLine, createdAt: tryProcessCreatedAt, exitState: readProcessExitState,
+};
 
-/** The agent `shellPid` is, or runs as a direct child; undefined when none can be named. */
-export function shellChildAgent(shellPid: number, read: ShellChildReaders = NATIVE_READERS): AgentSlug | undefined {
+/** FILETIME ticks per ms, and the Unix epoch in FILETIME ms. */
+const TICKS_PER_MS = 10_000n;
+const UNIX_EPOCH_FILETIME_MS = 11_644_473_600_000n;
+
+/**
+ * The running agent `shellPid` is, or runs as a direct child, with its start
+ * time (epoch ms); undefined when none can be named. A process that has
+ * exited can stay listed while its last handles close, so only a running one counts.
+ */
+export function shellChildAgent(shellPid: number, read: ShellChildReaders = NATIVE_READERS): { slug: AgentSlug; pid: number; startedAt: number } | undefined {
   const family = read.family(shellPid);
   if (!family) return undefined;
   // A runtime (node.exe) is named by its script, which only its command line holds.
   const entries: ProcessTreeEntry[] = family.map((p) => ({ ...p, cmdline: read.commandLine(p.pid) ?? undefined }));
-  return selectAgentProcess(entries, shellPid)?.slug;
+  const pick = selectAgentProcess(entries, shellPid);
+  if (!pick?.slug || read.exitState(pick.pid) !== 'running') return undefined;
+  const created = read.createdAt(pick.pid);
+  if (created === null) return undefined;
+  return { slug: pick.slug, pid: pick.pid, startedAt: Number(created / TICKS_PER_MS - UNIX_EPOCH_FILETIME_MS) };
 }

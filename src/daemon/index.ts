@@ -6109,8 +6109,15 @@ function registerRpcHandlers(
     ['Claude Code', 'Codex CLI'].includes(readDaemonAgentState(id).agentName ?? '')
       ? transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at
       : undefined;
-  // Windows only: the tracker names a new agent after its OSC 7501 query (#2838).
-  if (process.platform === 'win32') DaemonPTYBridge.shellChildAgentProbe = (pid) => shellChildAgent(pid);
+  // Windows only: the tracker names a new agent after its OSC 7501 query
+  // (#2838). An agent found here is launch evidence: the tracker probes now.
+  if (process.platform === 'win32') {
+    DaemonPTYBridge.shellChildAgentProbe = (sessionId, pid) => {
+      const agent = shellChildAgent(pid);
+      if (agent) agentProcessTracker.rearm(sessionId, pid);
+      return agent;
+    };
+  }
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.

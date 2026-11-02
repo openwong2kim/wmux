@@ -82,6 +82,11 @@ export function scanStartupDa1(text: string): 'answer' | 'more' | 'closed' {
  */
 export const PROGRAM_STATUS_PROBE_REPLY = '\x1b]7501;?\x1b\\';
 
+/** How long one read of a pane shell's children answers repeated queries (readShellChildAgent). */
+const SHELL_CHILD_READ_REUSE_MS = 1_000;
+/** How far an agent's start may precede the command start the shell reported for it. */
+const COMMAND_START_SKEW_MS = 1_000;
+
 /** The `agent` event message for an OSC 7501 `blocked` report, by its `kind`. */
 const PROGRAM_BLOCKED_MESSAGE: Record<'permission' | 'question' | 'auth' | 'none', string> = {
   permission: 'Approval requested',
@@ -364,11 +369,12 @@ export class DaemonPTYBridge extends EventEmitter {
   static transcriptTurnEndProbe: ((sessionId: string) => number | undefined) | null = null;
 
   /**
-   * The agent a pane's shell runs as its own child right now (shellChildAgent),
-   * or undefined. Installed by the daemon on Windows only, where the process
-   * tracker names an agent after its OSC 7501 query (answerProgramStatusProbe).
+   * The live agent a pane's shell runs as its own child right now
+   * (shellChildAgent), with its start time (epoch ms), or undefined. Installed
+   * by the daemon on Windows only, where the process tracker names an agent
+   * after its OSC 7501 query (answerProgramStatusProbe).
    */
-  static shellChildAgentProbe: ((shellPid: number) => string | undefined) | null = null;
+  static shellChildAgentProbe: ((sessionId: string, shellPid: number) => { slug: string; startedAt: number } | undefined) | null = null;
 
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
@@ -1464,6 +1470,15 @@ export class DaemonPTYBridge extends EventEmitter {
   private commandStarts = 0;
   /** `commandStarts` when the tracked agent launched (see answerProgramStatusProbe). */
   private agentCommandStarts = 0;
+  /** When the latest OSC 133 command start arrived (0 = never). */
+  private lastCommandStartAt = 0;
+  /** The last shell-child read, reused within one command for SHELL_CHILD_READ_REUSE_MS. */
+  private shellChildRead: { at: number; commandStarts: number; agent: { slug: string; startedAt: number } | undefined } | null = null;
+  /**
+   * The launch edge that read gave, kept when the tracker names the same agent
+   * later. The next agent's query replaces it before the tracker names that one.
+   */
+  private probeLaunch: { slug: string; commandStarts: number } | null = null;
   private parsesOsc133 = false;
 
   /**
@@ -1533,9 +1548,14 @@ export class DaemonPTYBridge extends EventEmitter {
     if (process.env.WMUX_PROGRAM_STATUS_REPLY === '0') return;
     if (!this.paneAgent()) {
       // Windows: the tracker names a new agent after it asks (#2838). The
-      // shell's own child, read now, is the evidence and the launch edge.
-      if (!DaemonPTYBridge.shellChildAgentProbe?.(ptyProcess.pid)) return;
+      // shell's own child, read now, is the evidence and the launch edge, if
+      // the shell's latest command started it: one started before that
+      // command runs behind it. The command start is read a moment after the
+      // process starts, hence the skew.
+      const agent = this.readShellChildAgent(ptyProcess.pid);
+      if (!agent || agent.startedAt < this.lastCommandStartAt - COMMAND_START_SKEW_MS) return;
       this.agentCommandStarts = this.commandStarts;
+      this.probeLaunch = { slug: agent.slug, commandStarts: this.commandStarts };
     }
     // A command the shell started since the agent launched (after Ctrl+Z, the
     // agent stays alive behind it) owns the keyboard: the reply would be typed
@@ -1547,6 +1567,22 @@ export class DaemonPTYBridge extends EventEmitter {
     } catch {
       // The PTY is already gone: nothing is waiting for the answer.
     }
+  }
+
+  /**
+   * shellChildAgentProbe, read at most once per SHELL_CHILD_READ_REUSE_MS
+   * within one command: a program can print the query thousands of times a
+   * second, and each read walks the whole process table.
+   */
+  private readShellChildAgent(shellPid: number): { slug: string; startedAt: number } | undefined {
+    const probe = DaemonPTYBridge.shellChildAgentProbe;
+    if (!probe || !this.sessionId) return undefined;
+    const now = Date.now();
+    const last = this.shellChildRead;
+    if (last && last.commandStarts === this.commandStarts && now - last.at < SHELL_CHILD_READ_REUSE_MS) return last.agent;
+    const agent = probe(this.sessionId, shellPid);
+    this.shellChildRead = { at: now, commandStarts: this.commandStarts, agent };
+    return agent;
   }
 
   /**
@@ -1767,7 +1803,11 @@ export class DaemonPTYBridge extends EventEmitter {
     if (!state.alive || ((state.observedAt !== undefined || state.replacedLive) && state.slug && previous && previous !== state.slug)) this.noteAgentEnded();
     // The agent's launch edge: shell commands counted after it run behind it.
     if (state.alive && (this.trackedAgent?.alive !== true || this.trackedAgent.slug !== state.slug || state.replacedLive)) {
-      this.agentCommandStarts = this.commandStarts;
+      // An edge the shell-child read already took stands: a command started
+      // since then runs behind the agent.
+      const launch = this.probeLaunch;
+      this.agentCommandStarts = launch && launch.slug === state.slug ? launch.commandStarts : this.commandStarts;
+      this.probeLaunch = null;
     }
     this.trackedAgent = { ...(state.slug ? { slug: state.slug } : {}), alive: state.alive };
     this.reportMidTurn();
@@ -2419,6 +2459,7 @@ export class DaemonPTYBridge extends EventEmitter {
           }
           if (parsed.type === 'command_start') {
             this.commandStarts += 1;
+            this.lastCommandStartAt = Date.now();
             this.shellCommandKeyRevision = this.shellSubmittedKeyRevision ?? this.keyInputRevision;
             this.shellSubmittedKeyRevision = undefined;
             this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false;
