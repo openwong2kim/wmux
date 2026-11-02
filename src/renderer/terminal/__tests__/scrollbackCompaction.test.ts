@@ -263,8 +263,9 @@ describe('scrollback compaction', () => {
     expect(resizedPacked).toBeGreaterThan(500);
   });
 
-  // 300 random writes with a full-buffer comparison after each: ~1 s on a
-  // developer Mac, past the 10 s default on a loaded Windows CI runner.
+  // 300 random writes with a full-buffer comparison every 25 writes and at
+  // the end: ~1 s on a developer Mac, past the 10 s default on a loaded
+  // Windows CI runner.
   it('two terminals, one compacting every row after every write, hold the same buffer', async () => {
     const r = rng(42);
     const opts = { cols: 40, rows: 10, scrollback: 400, allowProposedApi: true };
