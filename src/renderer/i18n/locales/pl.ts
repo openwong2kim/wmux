@@ -717,6 +717,7 @@ export const pl = {
   'statusbar.notifSingular': 'powiadomienie',
   'statusbar.notifPlural': 'powiadomień',
   'statusbar.unreadAria': '{count} nieprzeczytanych ({noun}), kliknij, aby otworzyć panel',
+  'statusbar.securityAria': 'Powiadomienia o bezpieczeństwie do potwierdzenia: {count}',
 
   // Usage meter (Anthropic 5h/7d widget)
   'usage.tooltipSession': '5h: {pct}%',
@@ -975,6 +976,9 @@ export const pl = {
   'notification.needsYou.question': "Czeka na Ciebie: „{question}”",
   'notification.needsYou.noQuestion': "Czeka na Ciebie. Brak treści pytania; zajrzyj do terminala.",
   'notification.needsYou.over': "Już na Ciebie nie czeka.",
+  'notification.security.heading': 'Bezpieczeństwo · zostaje, dopóki go nie potwierdzisz',
+  'notification.security.goToPane': 'Przejdź do panelu',
+  'notification.security.ack': 'Rozumiem',
 
   // Command palette
   'palette.placeholder': 'Wpisz polecenie...',

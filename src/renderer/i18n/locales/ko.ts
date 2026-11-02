@@ -737,6 +737,10 @@ export const ko = {
   'notification.needsYou.question': "답변 대기: “{question}”",
   'notification.needsYou.noQuestion': "답변 대기. 질문 내용 없음, 터미널을 확인하세요.",
   'notification.needsYou.over': "더 이상 기다리지 않습니다.",
+  'notification.security.heading': '보안 · 확인할 때까지 남아 있습니다',
+  'notification.security.goToPane': '판으로 이동',
+  'notification.security.ack': '확인했어요',
+  'statusbar.securityAria': '확인을 기다리는 보안 알림 {count}개',
 
   // Command palette
   'palette.placeholder': '명령어 입력...',

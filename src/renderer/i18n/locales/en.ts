@@ -755,6 +755,7 @@ export const en = {
   'statusbar.notifSingular': 'notification',
   'statusbar.notifPlural': 'notifications',
   'statusbar.unreadAria': '{count} unread {noun}, click to open panel',
+  'statusbar.securityAria': 'Security notices waiting: {count}',
 
   // Usage meter (Anthropic 5h/7d widget)
   'usage.tooltipSession': '5h: {pct}%',
@@ -1015,6 +1016,9 @@ export const en = {
   'notification.needsYou.question': "Needs you: “{question}”",
   'notification.needsYou.noQuestion': "Needs you. No question text; see its terminal.",
   'notification.needsYou.over': "No longer waiting on you.",
+  'notification.security.heading': 'Security · stays until you acknowledge it',
+  'notification.security.goToPane': 'Go to pane',
+  'notification.security.ack': 'Got it',
 
   // Command palette
   'palette.placeholder': 'Type a command...',
