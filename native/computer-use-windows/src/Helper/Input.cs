@@ -290,23 +290,49 @@ internal static unsafe class Input
         Post(b, preflight);
     }
 
-    /// <summary>Move, then `count` clicks with `mods` held around them, at a screen pixel — one batch.</summary>
-    public static void Click(double x, double y, int button, int count, IReadOnlyList<ModifierKey> mods, Action preflight)
+    /// <summary>
+    /// Move, then `count` clicks with `mods` held around them, at a screen
+    /// pixel — one batch. `returnCursor`: the batch ends with a move back to
+    /// where the cursor was, for a click that only serves another action
+    /// (the focusing click of `type`), so the user's pointer stays put.
+    /// </summary>
+    public static void Click(double x, double y, int button, int count, IReadOnlyList<ModifierKey> mods, Action preflight, bool returnCursor = false)
     {
+        var back = returnCursor ? CursorNow() : default;
         var b = new BatchBuilder().AddRaw(Mouse(x, y, 0), x, y);
         foreach (var m in mods) b.Add(InputEvent.KeyDown(m.Vk));
         for (int n = 0; n < count; n++) b.Add(InputEvent.ButtonDown(button, x, y)).Add(InputEvent.ButtonUp(button, x, y));
         for (int i = mods.Count - 1; i >= 0; i--) b.Add(InputEvent.KeyUp(mods[i].Vk));
+        if (returnCursor) b.AddRaw(Mouse(back.X, back.Y, 0), back.X, back.Y);
         Post(b, preflight);
     }
 
-    /// <summary>One wheel notch at a screen pixel (WHEEL_DELTA, about three lines).</summary>
+    /// <summary>
+    /// One wheel notch at a screen pixel (WHEEL_DELTA, about three lines).
+    /// A real wheel event goes to the window under the cursor, so the batch
+    /// moves the cursor to the point, turns the wheel, and moves it back to
+    /// where it was. All three are one SendInput call, so the system handles
+    /// them in order with no other input in between: the notch lands at the
+    /// point and the user's pointer ends where it started.
+    /// </summary>
     public static void Wheel(double x, double y, int dx, int dy, Action preflight)
     {
+        var back = CursorNow();
         var b = new BatchBuilder().AddRaw(Mouse(x, y, 0), x, y);
         if (dy != 0) b.AddRaw(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_WHEEL, dy * WheelDelta), x, y);
         if (dx != 0) b.AddRaw(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_HWHEEL, dx * WheelDelta), x, y);
+        b.AddRaw(Mouse(back.X, back.Y, 0), back.X, back.Y);
         Post(b, preflight);
+    }
+
+    /// <summary>The cursor position (physical pixels); unreadable means no access to the input desktop, so nothing is sent.</summary>
+    private static (double X, double Y) CursorNow()
+    {
+        if (!PInvoke.GetCursorPos(out var p))
+        {
+            throw new HelperError("window_not_focused", "could not read the cursor position (a secure desktop may be up); nothing was sent");
+        }
+        return (p.X, p.Y);
     }
 
     // MARK: Release

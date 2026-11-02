@@ -46,6 +46,22 @@ internal static unsafe class Focus
     }
 
     /// <summary>
+    /// Real input needs the target window on screen. A hidden window
+    /// (SW_HIDE, no WS_VISIBLE) can take neither a click nor keys without
+    /// being shown, and what would bring it forward (UIA SetFocus,
+    /// SetForegroundWindow) gives it the foreground while it stays hidden or
+    /// shows it: both undo the app's or the user's choice to hide it. So it
+    /// is refused before anything is done to it.
+    /// </summary>
+    public static void RequireShown(ControlTarget target)
+    {
+        if (!PInvoke.IsWindowVisible(target.Window))
+        {
+            throw new HelperError("window_not_focused", "the target window is hidden; real input would have to show it or give it the foreground, so nothing was sent. Ask the user to show the window first");
+        }
+    }
+
+    /// <summary>
     /// The fast keyboard check: the normal input desktop, the target window
     /// in the foreground and owned by the target pid, and keyboard focus
     /// inside it. Anything that cannot be confirmed refuses. Returns the
@@ -91,6 +107,7 @@ internal static unsafe class Focus
     /// </summary>
     public static Action RequireKeyboard(ControlTarget target)
     {
+        RequireShown(target);
         var focusWindow = KeyboardPreflight(target);
         RequireNotElevated(target);
         var secrecy = Uia.FocusSecrecy(out var focusedId);
@@ -161,6 +178,7 @@ internal static unsafe class Focus
     public static Action RequirePointer(ControlTarget target, double x, double y)
     {
         InputDesktop.Require();
+        RequireShown(target);
         RequireNotElevated(target);
         Action preflight = () => PointerPreflight(target, x, y);
         if (PointerHitsTarget(target, x, y)) return preflight;
@@ -250,6 +268,19 @@ internal static unsafe class Actions
     /// </summary>
     private static string SemanticDelivery(ControlTarget target, bool frontBefore) =>
         !frontBefore && InFront(target) ? "foreground" : "background";
+
+    /// <summary>
+    /// The error path of the same check: a pattern call can bring the target
+    /// to the front and still fail. An Invoke or ExpandCollapse call made the
+    /// covered target the foreground window with WinForms and Electron
+    /// (ScrollIntoView did not), and Electron's menu-bar buttons, which offer
+    /// ExpandCollapse but do not implement it, then answer Expand with
+    /// E_FAIL. The error has no `delivery`, so its message says so.
+    /// </summary>
+    private static HelperError SayIfCameToFront(HelperError e, ControlTarget target, bool frontBefore) =>
+        !frontBefore && InFront(target)
+            ? new HelperError(e.Code, $"{e.Message}. The target window came to the front during the call")
+            : e;
 
     private static (Snapshot Snap, ControlTarget Target) Begin(Params p)
     {
@@ -501,7 +532,15 @@ internal static unsafe class Actions
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
             bool frontBefore = InFront(target);
-            var note = ClickSemantically(target, (IUIAutomationElement*)element);
+            string? note;
+            try
+            {
+                note = ClickSemantically(target, (IUIAutomationElement*)element);
+            }
+            catch (HelperError e)
+            {
+                throw SayIfCameToFront(e, target, frontBefore);
+            }
             if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
         }
         // Background first; RequirePointer (which may raise the window) only on the real-input path.
@@ -562,8 +601,15 @@ internal static unsafe class Actions
             }
             catch (Exception e) when (e is not HelperError)
             {
-                EndIfAmbiguous(e, "SetValue");
-                throw new HelperError("value_not_settable", $"the app refused the value ({Uia.Describe(e)})");
+                try
+                {
+                    EndIfAmbiguous(e, "SetValue");
+                }
+                catch (HelperError ambiguous)
+                {
+                    throw SayIfCameToFront(ambiguous, target, frontBefore);
+                }
+                throw SayIfCameToFront(new HelperError("value_not_settable", $"the app refused the value ({Uia.Describe(e)})"), target, frontBefore);
             }
             finally
             {
@@ -633,19 +679,24 @@ internal static unsafe class Actions
             }
             var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
             if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
-            try
-            {
-                Focus.RequireSemantic(target, el);
-                el->SetFocus();
-            }
-            catch (Exception e) when (e is not HelperError)
-            {
-                if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
-            }
-            // Typing into whatever else has focus would put the text in the wrong field.
+            // A field that already has keyboard focus keeps its caret and
+            // selection. Any other is focused the way a user and the
+            // background path do it: a click on the field. Not UIA SetFocus:
+            // that is a keyboard (Tab-like) focus, and a field may select its
+            // whole text on such a focus (a WinForms TextBox does on its first
+            // one), so the keys would replace the text instead of being
+            // inserted.
             if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
             {
-                throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
+                var (fx, fy, _) = ScreenPoint(snap, index, null);
+                Focus.RequireSemantic(target, el);
+                var pointer = Focus.RequirePointer(target, fx, fy);
+                Input.Click(fx, fy, 0, 1, [], pointer, returnCursor: true);
+                // Typing into whatever else has focus would put the text in the wrong field.
+                if (!WaitForFocus(snap.RuntimeIds[index]))
+                {
+                    throw new HelperError("action_not_supported", $"the click on element {index} was sent, but the field did not take keyboard focus, so nothing was typed. Call getAppState before retrying");
+                }
             }
         }
         else
@@ -681,6 +732,21 @@ internal static unsafe class Actions
         }
         bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
         return Result("synthetic", verified, "foreground");
+    }
+
+    /// <summary>How long a clicked field may take to report keyboard focus (the app handles the click asynchronously; as BackgroundInput's FocusWaitMs).</summary>
+    private const int FocusAfterClickMs = 300;
+
+    /// <summary>Whether the element with this runtime id becomes the focused element within FocusAfterClickMs.</summary>
+    private static bool WaitForFocus(int[] runtimeId)
+    {
+        long deadline = Environment.TickCount64 + FocusAfterClickMs;
+        while (true)
+        {
+            if (Uia.FocusedRuntimeId().AsSpan().SequenceEqual(runtimeId)) return true;
+            if (Environment.TickCount64 >= deadline) return false;
+            Sta.Sleep(15);
+        }
     }
 
     /// <summary>
