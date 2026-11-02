@@ -41,7 +41,7 @@ interface LayoutRow {
 }
 
 /** Layout startup commands with their pane position, depth-first. */
-function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutRow[] {
+export function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutRow[] {
   const walk = (n: WmuxProjectLayoutNode): void => {
     if (n.type === 'leaf') {
       const index = acc.length + 1;
