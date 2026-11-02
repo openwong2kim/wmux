@@ -3031,6 +3031,8 @@ export const pl = {
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
   'deck.limit.window': 'zużycie',
   'deck.brainTerminal': 'Terminal mózgu',
+  'deck.expiredDecision': "Decyzja, o którą wcześniejsza wersja wmux prosiła w {workspace}, została zamknięta, bo ta wersja nie ma karty, na której można na nią odpowiedzieć: \"{question}\"",
+  'deck.expiredDecisionNoWorkspace': "Decyzja, o którą prosiła wcześniejsza wersja wmux, została zamknięta, bo ta wersja nie ma karty, na której można na nią odpowiedzieć: \"{question}\"",
   'deck.limit.resetsSoon': 'wkrótce reset',
   'deck.limit.resetsIn': 'reset za {rel}',
   'deck.limit.onAccount': ' na {account}',

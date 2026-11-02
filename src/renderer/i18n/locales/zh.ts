@@ -3034,6 +3034,8 @@ export const zh = {
   'pane.enforcedSkipPermissions': '跳过权限确认（{flag}）',
   'deck.limit.window': '用量',
   'deck.brainTerminal': '大脑终端',
+  'deck.expiredDecision': "早期 wmux 版本在 {workspace} 中请求的一项决定已关闭,因为此版本没有可回答它的卡片:\"{question}\"",
+  'deck.expiredDecisionNoWorkspace': "早期 wmux 版本请求的一项决定已关闭,因为此版本没有可回答它的卡片:\"{question}\"",
   'deck.limit.resetsSoon': '即将重置',
   'deck.limit.resetsIn': '{rel} 后重置',
   'deck.limit.onAccount': ' 于 {account}',
