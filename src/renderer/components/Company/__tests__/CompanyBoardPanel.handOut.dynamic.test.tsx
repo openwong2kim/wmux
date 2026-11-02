@@ -237,6 +237,18 @@ describe('Company board: To hand out', () => {
     expect(q('[data-board-hand-out-section]')).toBeNull();
   });
 
+  it('keeps the focus on Add a task… when the first item arrives', async () => {
+    seed(company('/code/wmux'));
+    await render();
+    const add = q<HTMLButtonElement>('[data-board-hand-out-add]')!;
+    act(() => add.focus());
+    items = [item('ho-first', '/code/wmux')];
+    await pushChange();
+    expect(q('[data-board-hand-out="ho-first"]')).not.toBeNull();
+    expect(document.activeElement).toBe(add);
+    expect(add.isConnected).toBe(true);
+  });
+
   it('reads the list only while the board is shown', async () => {
     seed(company('/code/wmux'));
     await render(false);

@@ -1844,7 +1844,8 @@ A pane is a terminal column plus, when it needs one, a work area.
     title, then a muted line with the agent it asks for (`--text-sub`, or
     "any agent") and who added it and when ("Added by #ceo · 3h"; a pane of
     this company is named without its workspace), and on the right a quiet
-    muted **Hand out…** that opens Fleet's Hand out… popover anchored to the
+    muted **Hand out…** (in a narrow board it wraps onto a line of its own,
+    so the title truncates last) that opens Fleet's Hand out… popover anchored to the
     row, where the company is offered as its CEO. The popover keeps its own
     width inside the window, past the edge of a narrow board; it follows its
     row when the list changes, and a scroll of the board or the board going

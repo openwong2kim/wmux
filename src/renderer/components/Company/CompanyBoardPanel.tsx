@@ -182,11 +182,11 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
     requestAnimationFrame(() => addRef.current?.focus());
   }, []);
 
-  const addLink = !adding && (
+  const addLink = (
     <button
       ref={addRef}
       type="button"
-      className={`self-start rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+      className={`rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
       // The board's own pane takes a click that bubbles up and would win the focus back.
       onClick={(event) => { event.stopPropagation(); setAdding(true); }}
       data-board-hand-out-add
@@ -198,7 +198,7 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
   // off the board's pane, which would win the focus back.
   const form = adding && (
     <div
-      className="mt-2"
+      className="mt-2 w-full"
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
         if (event.key !== 'Escape' || event.nativeEvent.isComposing) return;
@@ -224,12 +224,13 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
     </span>
   );
 
-  // Item text is untrusted: rendered as text only.
+  // Item text is untrusted: rendered as text only. In a narrow board Hand out…
+  // wraps onto a line of its own rather than squeeze the title away.
   const itemRow = (item: HandOutEntry) => {
     const titleId = `${ids}-${item.id}`;
     return (
-      <div key={item.id} className="flex min-w-0 items-start gap-3 py-1.5" data-board-hand-out={item.id}>
-        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <div key={item.id} className="flex min-w-0 flex-wrap items-start gap-x-3 gap-y-0.5 py-1.5" data-board-hand-out={item.id}>
+        <span className="flex min-w-0 grow basis-40 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
             <span className="flex h-2.5 w-2.5 flex-none items-center justify-center"><HandOutRing /></span>
             <span id={titleId} className="min-w-0 truncate text-[var(--text-main)]" title={item.note || undefined}>{item.title}</span>
@@ -244,7 +245,7 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
           aria-describedby={titleId}
           aria-haspopup="dialog"
           aria-expanded={pick?.id === item.id}
-          className={`flex-none rounded-sm text-[12px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+          className={`ml-auto flex-none rounded-sm text-[12px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
           // The board's own pane takes a click that bubbles up and would win the focus back.
           onClick={(event) => { event.stopPropagation(); openPick(item, event.currentTarget); }}
           data-board-hand-out-pick
@@ -255,25 +256,23 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
     );
   };
 
+  // Both states are one tree, so Add a task… keeps its node, and the focus,
+  // when the first item arrives. Empty, the heading and the link share a line.
+  const empty = items.length === 0;
   return (
-    <div data-board-hand-out-section>
-      {items.length === 0 ? (
-        <section className="flex flex-col">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <h3 className="text-[11px] font-medium text-[var(--text-muted)]">{t('fleet.handOut.title')}</h3>
-            {addLink}
-          </div>
-          {form}
-        </section>
-      ) : (
-        <Section
-          title={t('fleet.handOut.title')}
-          count={items.length}
-          after={form || <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">{addLink}{folderLine}</div>}
-        >
-          {items.map(itemRow)}
-        </Section>
+    <section className={empty ? 'flex flex-wrap items-baseline gap-x-3 gap-y-1' : 'flex flex-col'} data-board-hand-out-section>
+      <h3 className={`text-[11px] font-medium text-[var(--text-muted)] ${empty ? '' : 'mb-1'}`}>
+        {t('fleet.handOut.title')}
+        {!empty && <span className="ml-1.5 tabular-nums">{items.length}</span>}
+      </h3>
+      {!empty && <div className="flex flex-col divide-y divide-[var(--stroke)]">{items.map(itemRow)}</div>}
+      {!adding && (
+        <div className={empty ? 'flex items-baseline' : 'mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1'}>
+          {addLink}
+          {!empty && folderLine}
+        </div>
       )}
+      {form}
       {pick && pickItem && (
         // A portal, but its clicks still bubble up through React to the board's pane.
         <div onClick={(event) => event.stopPropagation()}>
@@ -281,7 +280,7 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
             onClose={closePick} t={t} />
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
