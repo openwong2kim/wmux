@@ -1,0 +1,24 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ show emph                                                 ",
+  "",
+  "⏺ Plain bold words then italic words then under italic then",
+  "  under bold and both end.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Plain **bold words** then *italic words* then _under italic_ then __under bold__ and ***both*** end."
+   }
+  ]
+ ]
+}

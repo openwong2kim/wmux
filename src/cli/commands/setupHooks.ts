@@ -33,6 +33,7 @@ wmux setup-hooks — install official CLI lifecycle integrations
 
 USAGE
   wmux setup-hooks [--remove | --status] [--signals-only | --with-gate] [--json]
+  wmux setup-hooks --wsl [<distro>] [--uninstall] [--json]
 
 ACTIONS (mutually exclusive; default = install)
   (default)    Install or refresh Claude Code hooks, the Codex notify bridge,
@@ -64,6 +65,15 @@ OTHER AGENTS (opt-in; touches only that CLI's hook config)
                    ~/.copilot/hooks/wmux.json ($COPILOT_HOME/hooks/wmux.json
                    when COPILOT_HOME is set; run it with the same COPILOT_HOME
                    Copilot uses) and never edits your settings.
+
+WSL (opt-in; touches only that distribution's Claude settings)
+  --wsl [<distro>] [--uninstall]
+                   Report Claude Code sessions started in WSL outside wmux:
+                   merge the wmux hooks into the distribution's Claude
+                   settings ($CLAUDE_CONFIG_DIR/settings.json, else
+                   ~/.claude/settings.json; default distribution when <distro>
+                   is omitted). Your own entries are kept, a re-run changes
+                   nothing, and --uninstall removes only the wmux entries.
 
 GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
@@ -220,7 +230,7 @@ export function bridgeHookGroups(bridgePath: string): Record<string, Array<{ mat
 }
 
 /** The specs a given profile installs. */
-function specsFor(profile: HookProfile): readonly HookSpec[] {
+export function specsFor(profile: HookProfile): readonly HookSpec[] {
   return profile === 'signals-only' ? [...SIGNAL_SPECS, PERMISSION_REQUEST_SPEC, PERMISSION_NOTIFICATION_SPEC] : HOOK_SPECS;
 }
 
@@ -308,7 +318,7 @@ function findBridgeSource(): string | null {
  * Prototype-pollution-safe JSON.parse reviver — strips dangerous keys so a
  * malicious settings.json cannot poison Object.prototype. Same shape as mcp.ts.
  */
-function safeReviver(key: string, value: unknown): unknown {
+export function safeReviver(key: string, value: unknown): unknown {
   if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
   return value;
 }
@@ -1775,6 +1785,15 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
   if (args.includes('--help') || args.includes('-h')) {
     process.stdout.write(HELP_TEXT);
     process.exit(0);
+    return;
+  }
+
+  // `--wsl [<distro>]` is its own opt-in lane: it touches only that distro's
+  // Claude settings and this instance's own ~/.wmux<suffix>/hooks, so it runs
+  // before the shared-scripts notice, which does not apply to it.
+  if (args.includes('--wsl')) {
+    const { handleSetupHooksWsl } = await import('./setupHooksWsl');
+    handleSetupHooksWsl(args, jsonMode);
     return;
   }
 

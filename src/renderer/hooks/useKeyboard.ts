@@ -95,7 +95,7 @@ export const WORKSPACES_ONLY_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<Sh
   'focusUpAlt', 'focusDownAlt', 'focusLeftAlt', 'focusRightAlt',
   'clearMultiview', 'openBrowser', 'openPrivateBrowser', 'addBookmark', 'zoomIn', 'zoomOut', 'zoomReset',
   'stashPane', 'movePaneLeft', 'movePaneRight', 'movePaneUp', 'movePaneDown',
-  'multiTask', 'showGitDiff', 'renameTab', 'dictatePane',
+  'multiTask', 'showGitDiff', 'renameTab', 'dictatePane', 'balanceLayout',
 ]);
 
 const STOP_PROPAGATION_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<ShortcutActionId>([
@@ -284,6 +284,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (ws) state.togglePaneZoom(ws.activePaneId);
     },
+    balanceLayout: () => { store.getState().balanceLayout(); },
     commandPalette: () => { store.getState().toggleCommandPalette(); },
     focusUp: () => { store.getState().focusPaneDirection('up'); },
     focusDown: () => { store.getState().focusPaneDirection('down'); },
@@ -609,6 +610,7 @@ export function useKeyboard() {
       // binds one, from the command palette or Settings → Shortcuts. Each
       // runs exactly what its palette row runs.
       stashPane: stashActivePane,
+      balanceLayout: () => { store.getState().balanceLayout(); },
       movePaneLeft: () => { store.getState().moveActivePaneDirection('left'); },
       movePaneRight: () => { store.getState().moveActivePaneDirection('right'); },
       movePaneUp: () => { store.getState().moveActivePaneDirection('up'); },

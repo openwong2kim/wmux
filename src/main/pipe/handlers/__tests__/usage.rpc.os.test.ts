@@ -9,6 +9,7 @@ import {
   validateRateLimitsParams,
   type UsageRpcDeps,
 } from '../usage.rpc';
+import { paneUsageWindows, resetPaneUsageLimitsForTest } from '../../../usageLimit/paneUsageLimits';
 
 const RESET = 1_900_000_000;
 // Platform-neutral fixtures: absolute on POSIX and Windows alike.
@@ -148,6 +149,20 @@ describe('usage.rateLimits handler', () => {
     const spelled = process.platform === 'win32' ? `${ACCT_A.toUpperCase()}\\` : `${ACCT_A}/`;
     await call(sample({ configDir: spelled }));
     expect(deps.ingestAccount).toHaveBeenCalledWith('A', expect.anything());
+  });
+
+  it('gives panes on one account one 5-hour window, however their statusline spells the dir', async () => {
+    resetPaneUsageLimitsForTest();
+    const { call } = setup();
+    // Unset (the default profile) and the default dir spelled out are one account.
+    await call(sample({ ptyId: 'p-unset' }));
+    await call(sample({ ptyId: 'p-spelled', configDir: `${NOWHERE}${path.sep}`, rateLimits: { five_hour: { pct: 91, resets_at: RESET } } }));
+    const now = (RESET - 60) * 1000;
+    expect(paneUsageWindows(now)).toEqual({
+      'p-spelled': { pct: 91, resetsAt: RESET * 1000 },
+      'p-unset': { pct: 91, resetsAt: RESET * 1000 },
+    });
+    resetPaneUsageLimitsForTest();
   });
 
   it('routes a registered config dir to that account', async () => {

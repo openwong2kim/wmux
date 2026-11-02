@@ -50,7 +50,8 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 //   0.6.0 — `--context` mode honors a `block` (exit 2 discards the prompt).
 //   0.7.0 — `Notification` (permission_prompt only) → agent.awaiting_input.
 //   0.8.0 — `where` on hooks from outside a wmux pane (external sessions).
-const BRIDGE_VERSION = '0.8.0';
+//   0.8.1 — WMUX_TMUX_TARGET: the tmux target a WSL hook looked up in Linux.
+const BRIDGE_VERSION = '0.8.1';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -800,23 +801,39 @@ function queryTmuxTarget(env) {
       windowsHide: true,
     });
     if (out.status !== 0 || typeof out.stdout !== 'string') return null;
-    const line = out.stdout.trim();
-    const cut = line.lastIndexOf(':');
-    return cut > 0 ? { session: line.slice(0, cut), window: line.slice(cut + 1) } : null;
+    return parseTmuxTarget(out.stdout);
   } catch {
     return null;
   }
+}
+
+// `tmux display-message -p '#S:#I'` output → { session, window }, or null.
+function parseTmuxTarget(text) {
+  const line = String(text).trim();
+  const cut = line.lastIndexOf(':');
+  return cut > 0 ? { session: line.slice(0, cut), window: line.slice(cut + 1) } : null;
 }
 
 // Where a hook outside a wmux pane runs, from env this process already has. A
 // multiplexer wins over the connection it runs in (tmux inside ssh is 'tmux');
 // a WSL distro rides along with any kind. `queryTmux` is asked only for a tmux
 // hook and may be null (no spawn). Undefined when nothing says where.
-function whereFromEnv(env, queryTmux) {
+//
+// A hook from WSL outside wmux (the global WSL hook script, shared/
+// wslGlobalHook.ts) runs this bridge on Windows, where tmux does not exist: the
+// script asks tmux on the Linux side and hands the answer over as
+// WMUX_TMUX_TARGET, which wins over the lookup. With no answer from there a
+// bridge on Windows asks nothing: a tmux on that side (MSYS2, Cygwin) is
+// another server, and its answer would name the wrong session. A bridge run
+// inside WSL itself asks its own tmux as on any Linux.
+function whereFromEnv(env, queryTmux, platform = process.platform) {
   const wslDistro = whereText(env.WSL_DISTRO_NAME);
   let where = null;
   if (env.TMUX || env.TMUX_PANE) {
-    const target = queryTmux ? queryTmux(env) : null;
+    const fromWslOnWindows = Boolean(wslDistro) && platform === 'win32';
+    const target = env.WMUX_TMUX_TARGET
+      ? parseTmuxTarget(env.WMUX_TMUX_TARGET)
+      : queryTmux && !fromWslOnWindows ? queryTmux(env) : null;
     where = { kind: 'tmux', session: whereText(target?.session), window: whereText(target?.window) };
   } else if (env.STY) {
     // `<pid>.<name>`; the name may itself contain dots.

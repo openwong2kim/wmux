@@ -235,6 +235,68 @@ export function sessionFromCommandLine(agent: string, cmdline: string | undefine
     : subcommandFormSession(argv, launcher + 1, head, table);
 }
 
+/**
+ * Whether a live Claude process was launched in bypass: among its leading
+ * options (up to the first positional, an unquoted `--`, or the end), the last
+ * of `--dangerously-skip-permissions` / `--permission-mode <mode>` starts it in
+ * `bypassPermissions`. Everything else, an unreadable line included, says no.
+ * Pure — exported for tests.
+ */
+export function claudeLaunchedInBypass(cmdline: string | undefined): boolean {
+  if (!cmdline) return false;
+  const argv = words(cmdline);
+  const launcher = launcherIndex(argv, 'claude');
+  if (launcher < 0) return false;
+  const table = OPTIONS.claude;
+  let bypass = false;
+  for (let i = launcher + 1; i < argv.length && isOption(argv[i]);) {
+    const w = argv[i].value;
+    if (w === '--dangerously-skip-permissions') bypass = true;
+    else if (w.startsWith('--permission-mode=')) bypass = w.slice('--permission-mode='.length) === 'bypassPermissions';
+    else if (w === '--permission-mode') bypass = !argv[i + 1]?.quoted && argv[i + 1]?.value === 'bypassPermissions';
+    i = skipOption(argv, i, table);
+  }
+  return bypass;
+}
+
+/** A pane's agent process as its command line was read: pid, start time, and whether it is a Claude launched in bypass. */
+export interface AgentLaunchFact {
+  readonly pid: number;
+  readonly startedAt?: number;
+  readonly bypass: boolean;
+}
+
+/**
+ * A pane runs a Claude that bypasses permissions right now: its live tracked
+ * process is the one whose command line was read, that line started it in
+ * bypass, and the newest binding captured since that launch still reports
+ * bypass (a `/permissions` switch, or a conversation resumed without the
+ * flag, says no). An unknown start time, a WSL pane (its line is never read)
+ * or a dead process says no. Pure — exported for tests.
+ */
+export function paneRunsBypassClaude(
+  fact: AgentLaunchFact | undefined,
+  tracked: { alive?: boolean; slug?: string } | undefined,
+  livePid: number | undefined,
+  binding: ResumeBinding | undefined,
+): boolean {
+  if (!tracked?.alive || tracked.slug !== 'claude') return false;
+  if (!fact?.bypass || fact.startedAt === undefined || fact.pid !== livePid) return false;
+  return binding?.agent === 'claude' && binding.permissionMode === 'bypassPermissions' && binding.ts >= fact.startedAt;
+}
+
+/** How far ahead of the daemon's clock a captured resume binding may be dated. */
+export const RESUME_BINDING_TS_SKEW_MS = 5_000;
+
+/**
+ * A captured binding is never dated ahead of the daemon's clock (beyond a small
+ * skew): a far-future ts would make every later real capture look stale and
+ * pin this binding, its permission mode included. Pure — exported for tests.
+ */
+export function withCaptureTsNotAhead(binding: ResumeBinding, now: number): ResumeBinding {
+  return typeof binding.ts === 'number' && binding.ts > now + RESUME_BINDING_TS_SKEW_MS ? { ...binding, ts: now } : binding;
+}
+
 /** Exact-id transcript candidates, per agent with a file transcript; `report` says whether "none" is certain. */
 const CANDIDATES: Readonly<Record<string, (id: string, env: Record<string, string> | undefined, report: ScanReport) => string[]>> = {
   claude: (id, env, report) => scanForTranscript(id, env, report),

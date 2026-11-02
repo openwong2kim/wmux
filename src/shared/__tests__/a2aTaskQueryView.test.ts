@@ -2,7 +2,7 @@
 // the full task only on request, and every shape within one result. The raw
 // RPC returned every task with its whole history and outgrew the 64 KiB cap.
 import { describe, expect, it } from 'vitest';
-import { TASK_PREVIEW_CHARS, TASK_QUERY_CAP_BYTES, applyTaskQueryView, shapeTaskQueryResult, summarizeTask } from '../a2aTaskQueryView';
+import { TASK_PREVIEW_CHARS, TASK_QUERY_CAP_BYTES, applyTaskQueryView, companyHoldFields, shapeTaskQueryResult, summarizeTask } from '../a2aTaskQueryView';
 import { DEFAULT_RESULT_CAP_BYTES } from '../../mcp/resultCap';
 
 type View = Record<string, any>; // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -201,5 +201,17 @@ describe("view: 'anchors'", () => {
   it('leaves the other views alone', () => {
     const tasks = [full('open', 'working')];
     expect(applyTaskQueryView(tasks, {})).toEqual(tasks);
+  });
+});
+
+describe('companyHoldFields — why a company task has not reached its seat', () => {
+  const held = (companyHold: Record<string, unknown>) => ({ id: 't', metadata: { companyHold } });
+  it('names the blockers while it waits, queued once released and not started, the reason when held, nothing once given', () => {
+    expect(companyHoldFields(held({ blockedBy: ['a'], waitingOn: ['a'] }))).toEqual({ waitingOn: ['a'] });
+    expect(companyHoldFields(held({ blockedBy: [], waitingOn: [], releasedAt: 'x' }))).toEqual({ queued: true });
+    expect(companyHoldFields(held({ blockedBy: [], waitingOn: [], releasedAt: 'x', attempted: true }))).toEqual({});
+    expect(companyHoldFields(held({ blockedBy: [], waitingOn: [], releasedAt: 'x', held: 'no-agent' }))).toEqual({ held: 'no-agent' });
+    expect(companyHoldFields(held({ blockedBy: ['a'], waitingOn: ['a'], delivered: true }))).toEqual({});
+    expect(companyHoldFields({ id: 't', metadata: {} })).toEqual({});
   });
 });

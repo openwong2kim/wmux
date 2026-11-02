@@ -164,6 +164,27 @@ export function remoteSeatIntro(input: RemoteSeatIntroInput): string {
   return lines.join('\n');
 }
 
+/** A seat added to a running company, as its CEO hears of it. */
+export interface CompanyHireNoticeInput {
+  /** The seat's pane name. */
+  label: string;
+  owns?: string;
+  /** The seat's own branch, when it got a worktree. */
+  branch?: string;
+}
+
+/**
+ * The one line the CEO pane gets once a seat added to its company ("Add a
+ * seat on this PC…") has its agent up: the seat's name, what it owns and its
+ * branch, each part only when there is one.
+ */
+export function companyHireNotice(input: CompanyHireNoticeInput): string {
+  const owns = input.owns?.replace(/\s+/g, ' ').trim().replace(/\.+$/, '');
+  const branch = input.branch?.trim();
+  const notes = [owns && `owns ${owns}`, branch && `branch ${branch}`].filter(Boolean);
+  return `wmux: #${input.label.trim()} joined the company${notes.length > 0 ? ` (${notes.join('; ')})` : ''}. Brief it like your other seats.`;
+}
+
 /** True when the task's first message carries a brief: a company task. */
 export function isCompanyTask(history: readonly Message[]): boolean {
   const first = history[0];
@@ -287,6 +308,20 @@ export function companyCancelRefusal(
   if (from.workspaceId === caller.workspaceId && !!from.paneId && caller.paneId === from.paneId) return null;
   return 'only the pane that created this company task can cancel it; the receiver reports failed with evidence instead';
 }
+
+/**
+ * Renderer methods main calls for company tasks held on their blockers
+ * (shared/companyHold.ts). Never registered on the pipe router, so no pipe
+ * caller reaches them.
+ */
+export const COMPANY_RENDERER_METHOD = Object.freeze({
+  /** Write a stored company task to its seat's pane: the new-task delivery. */
+  deliver: 'a2a.company.deliver',
+  /** Drop a task the renderer stored for a hold the daemon did not keep. */
+  discard: 'a2a.company.discard',
+  /** One line to the company's coordinator (CEO) pane about a held task. */
+  ceoLine: 'a2a.company.ceoLine',
+} as const);
 
 /** A pane's place in its workspace's company: the coordinator, or staff. */
 export type CompanySeat = 'coordinator' | 'staff';

@@ -12,6 +12,7 @@ import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { useGlanceBoardOrder } from './useGlanceBoardOrder';
 import { partitionWorkspaceSettle, workspaceSettleGroupOf } from './workspaceSettleGroups';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
+import { multiviewGroupNumbers } from '../../utils/multiviewGroups';
 import { tokenAttrs } from '../../themes';
 import { expandDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir, IconGear } from '../icons';
@@ -104,6 +105,15 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const toggleSidebar = useStore((s) => s.toggleSidebar);
   const toggleMultiviewWorkspace = useStore((s) => s.toggleMultiviewWorkspace);
   const multiviewIds = useStore((s) => s.multiviewIds);
+  const multiviewSavedGroups = useStore((s) => s.multiviewSavedGroups);
+  const multiviewGroupById = useMemo(
+    () => multiviewGroupNumbers(workspaces.map((w) => w.id), multiviewIds, multiviewSavedGroups),
+    [workspaces, multiviewIds, multiviewSavedGroups],
+  );
+  const activeRemoteKey = useStore((s) => s.activeRemoteKey);
+  // The grid is on screen only while the active workspace is one of its tiles
+  // and no remote mirror covers it (Sidebar's shownGridIds).
+  const gridShown = !activeRemoteKey && multiviewIds.includes(activeWorkspaceId);
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const notifications = useStore((s) => s.notifications);
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
@@ -225,7 +235,8 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
           const railIndex = workspaces.indexOf(ws);
           const shortcutNumber = workspaceShortcutNumber(railIndex, workspaces.length);
           const isActive = ws.id === activeWorkspaceId;
-          const isMultiview = multiviewIds.includes(ws.id);
+          const isMultiview = gridShown && multiviewIds.includes(ws.id);
+          const multiviewGroup = multiviewGroupById.get(ws.id);
           const isDragging = draggingIndex === i;
           const isPinned = pinnedIds.includes(ws.id);
           const reorderOff = readOnly || (sidebarAttentionFirst && !isPinned);
@@ -249,7 +260,8 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
             ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
             : attentionClassById[ws.id] === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input') ? t('workspace.needsYou')
               : agentStatus !== 'idle' ? t(AGENT_STATUS_ICON[agentStatus].labelKey) : undefined;
-          const railName = [ws.name, statusText].filter(Boolean).join(', ');
+          const groupText = multiviewGroup !== undefined ? t('sidebar.multiviewGroup', { n: multiviewGroup }) : undefined;
+          const railName = [ws.name, groupText, statusText].filter(Boolean).join(', ');
 
           const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
             // Suppress click that fires immediately after a drag.
@@ -330,11 +342,11 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
             <div key={ws.id} className="relative w-8">
               {/* Color tag rail — in the 48px rail the label is 2 characters,
                   so color is the only thing that tells "CTO" from "CSO" at a
-                  glance. Shifts right of the multiview border when both apply. */}
+                  glance. */}
               {railColor && (
                 <div
                   className="absolute top-1 bottom-1 w-[3px] rounded-full z-[1] pointer-events-none"
-                  style={{ left: isMultiview ? 2 : 0, background: railColor }}
+                  style={{ left: 0, background: railColor }}
                   aria-hidden="true"
                 />
               )}
@@ -351,7 +363,6 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
                     ? 'bg-[var(--selection)] text-[var(--text-main)]'
                     : 'text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:bg-[var(--hover-fill)] hover:text-[var(--text-main)]'
                 } ${isDragging ? 'opacity-40' : 'opacity-100'}`}
-                style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
                 {...tokenAttrs('bgSurface', 'bg')}
                 {...tokenAttrs('textMain', 'text')}
                 onClick={handleClick}
@@ -374,6 +385,19 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
                     {...tokenAttrs('textMain', 'text')}
                   >
                     {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+                {/* The multiview group, as on the full sidebar row: accent while
+                    that grid is on screen, neutral otherwise. */}
+                {multiviewGroup !== undefined && (
+                  <span
+                    className={`absolute -bottom-0.5 -left-0.5 rounded-full min-w-[14px] h-3.5 px-0.5 flex items-center justify-center text-[10px] font-semibold tabular-nums leading-none bg-[var(--bg-mantle)] ring-1 ring-[var(--border-soft)] ${
+                      isMultiview ? 'text-[var(--accent-blue)]' : 'text-[var(--text-muted)]'
+                    }`}
+                    title={t('sidebar.multiviewGroup', { n: multiviewGroup })}
+                    data-multiview-group={multiviewGroup}
+                  >
+                    {multiviewGroup}
                   </span>
                 )}
                 {statusText && (

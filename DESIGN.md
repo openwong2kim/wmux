@@ -1580,7 +1580,8 @@ leaves the page.
   optional Standing orders; **Make company** the one primary). A company's
   menu offers **Open board** (the board tab, see "Pane: terminals and work
   area"), **Company settings…** (the same dialog, filled in), **Add a seat
-  on another PC…** (below) and **Dissolve company**. Line 2 is the mission
+  on this PC…** and **Add a seat on another PC…** (both below) and
+  **Dissolve company**. Line 2 is the mission
   after a small muted org-chart glyph where the branch icon sits, never the
   git line: the row has no branch, PR badge or sync badge, since with panes
   in different worktrees they are
@@ -1609,6 +1610,27 @@ leaves the page.
   `Ask <PC>`, the one primary. With no PC to ask, each paired PC's reason
   shows, with Open Remote page (secondary) and no primary. While the CEO seat is
   vacant the menu item is disabled and says why, and the board has no link.
+  **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan), right
+  before the other-PC item and also a link at the end of the board's Seats,
+  adds a staff seat here the way a preset makes one. One dialog: the title,
+  then `Starts an agent for <company> on this PC. It takes briefs from <CEO>,
+  the CEO.` Name (the pane-label rules, the first free `dev`, `dev-2`… by
+  default; a name another pane carries is refused, never suffixed) and Agent
+  (the installed agents a preset offers, Claude Code by default) side by
+  side; Owns (optional); then a read-only **Works in** line, a muted label
+  over `--text-sub`: the seat's own worktree of the company folder on a new
+  branch when that folder is a git repository, else the company folder. A
+  seat that would share a folder that is not a repository with another
+  staff agent gets a note saying so and cannot be added. A refusal keeps the
+  form and says why, as the other-PC dialog does; at the pane cap the
+  split's own message shows. Cancel and **Add seat**, the one primary. The
+  company comes forward and the seat opens as a new pane below its last
+  staff pane (right of the CEO when it has none), named and started like a
+  preset seat with its brief as the agent's first prompt. Once that agent
+  is up, the CEO pane gets one line through the gated delivery, never
+  before: `wmux: #<name> joined the company (owns <what>; branch <branch>).
+  Brief it like your other seats.` While the CEO seat is vacant the menu
+  item is disabled and says why, and the board has no link.
 - **Company presets** (owner-approved 2026-10-31, mockup round 6): the
   titlebar + menu lists them under a muted **Company** heading, below the
   layout presets, as label + description rows like theirs
@@ -1807,9 +1829,10 @@ A pane is a terminal column plus, when it needs one, a work area.
     asked name in `--text-sub`, `on <PC>` and a muted `Waiting for <PC> to
     approve · asked <age>` (or `<PC> is offline; the ask waits until
     <time>`); an ask that ended without a seat stays a day as a muted
-    `Not started: <why> · <age>`. While the company has a CEO pane, a quiet
-    underlined text link, **Add a seat on another PC…** (`--text-sub`, a
-    `--line` underline), ends Seats.
+    `Not started: <why> · <age>`. While the company has a CEO pane, quiet
+    underlined text links (`--text-sub`, a `--line` underline) end Seats:
+    **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan; see
+    "Company row") and, beside it, **Add a seat on another PC…**.
 
 ## The one-boundary rule
 
@@ -1863,6 +1886,16 @@ always neutral (the fill ladder).
     - In that dialog (and on the Remote page) the prompt is sent only as shown. While a typed value would still be masked, a `wmux-a2a-note` line says how many. Send then puts the masked text in the box and asks for a review, and the next Send sends it.
     - When every account is out, one line with the earliest time one reopens.
   - **Colour.** None beyond the armed clock.
+- **Continue in another agent, from the pane menu** (owner approval 2026-11-01).
+  - **The entry.** "Continue in another agent…" in the pane ⋮ menu (and the header's right-click menu), after Continue on another account and before Rewind, on a terminal whose agent wmux knows; never in a shadow workspace.
+  - **The dialog.** A `Dialog` 400px wide: the title, one description line (a new tab of this pane, the note typed in, this tab keeps its session), one secondary button per other agent that is installed and signed in (one muted line when there is none), the "Include the unsent draft" checkbox (off) when the input holds a draft, then the note in the usage-limit card's preview block with its length. No primary: choosing an agent is the action. A click closes the dialog and takes the usage-limit card's path: a new tab, the note typed in, nothing sent.
+  - **The note.** The same note as the usage-limit card's, written by wmux from the pane's transcript: the folder and branch, the first and latest requests, the end of the last reply, the files touched (with their uncommitted line counts), the transcript, and the draft only when ticked.
+  - **Colour.** None.
+- **Close to the limit, and back after the reset** (owner approval 2026-11-01, handoff mockup boards A and C).
+  - **Close to the limit.** When the pane's own statusline says its account has used 90% of the 5-hour window, the usage-limit chip's place shows a muted clock, a muted "5h", the share in `--accent-yellow` and "· resets 3:16 PM" (compact: clock and share). It never opens by itself and has no ×: the pane is still working, and it goes at the reset. Clicking it opens the usage-limit card in its close-to-the-limit form: the title "Close to the 5-hour limit", one line with the share, the reset and that the pane keeps working until then, Continue in another agent (with the note) and Continue on another account (2+ accounts, without the Always switch checkbox), then one muted line that the new tab opens beside this one with the note typed in and nothing is sent until Enter. Nothing is armed, held or switched by itself.
+  - **A handoff waits for the reset.** A handoff from a pane at or close to its limit is recorded on the tab it left, and a held pane's Resume automatically is turned off: the work goes on in the other tab until the owner brings it back. In the usage-limit card of a held pane, one muted line under the agent buttons says so. The two tabs carry a muted mark before their titles (an out-arrow on the tab the work left, a back-arrow on the tab it went to) whose name, like the tooltip, says "Continued in …" / "Continued from …".
+  - **Back after the reset.** From the reset, the chip of either tab reads a muted clock, "Limit has reset" in `--text-sub` and "Bring back" in `--text-main` at the title weight, then × (leave the work there). It opens the bring-back card, the usage-limit card's popover: "<agent> is back", one line with the reset and since when the other agent had the work, "What <other> did" with the note wmux writes from the other agent's own transcript (the latest request there, the commits it made, the files with their line counts since the handoff, the end of its last reply, its transcript) in the preview block with its length, a "Close the <other> tab after" checkbox (off), then Stay in <other> (ghost) and Bring back to <agent> (primary), and one muted line that the note is typed into that tab, which comes to the front, and nothing is sent until Enter.
+  - **Colour.** The share in `--accent-yellow` (caution) while close to the limit; nothing else.
 - **Stuck-turn chip and card** (owner approval 2026-10-25).
   - **The chip.** A pane whose Claude turn the daemon reads as stuck (no transcript progress, no tool in flight, nobody asked) shows one chip in its tab strip's flow beside the usage-limit chip: the word "Seems stuck" in `--accent-yellow`, nothing else coloured. It shows only while the stall lasts. Clicking it opens the card.
   - **The card.** The usage-limit card's popover (`placePopover`; Escape, an outside click or a resize closes it): one line saying how long nothing moved and that wmux never stops a turn on its own, then Stop and prefill (secondary) and Keep waiting (ghost). Stop and prefill interrupts the turn and puts the last prompt back into an empty input, unsent. A stop that fails keeps the card open with one line.
@@ -2335,7 +2368,10 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-31 | Owner-approved (mockup round 6, company presets): a company can be made in one pick from the + menu. Two built-ins, CEO + researcher + 3 devs (the owner's own shape: a CEO who orchestrates and writes no code, a researcher, developers not split by stack) and Lead + reviewer; each seat's agent is told its seat on its first turn | Making panes, starting agents and filling the company dialog by hand was the cost of every company. Agents that do not know their seat leave the company a set of empty roles, so the first message carries it. Seats on other PCs and saved presets come later: the other PC has to approve a start, and saving needs each pane's launch line |
 | 2026-10-30 | Owner-approved (mockup round 5, board as a tab): company mode's board is a work tab in the company workspace, opened beside the CEO's terminal, not a rail page or sidebar view. Seats are the workspace's panes, so a pane between agent runs keeps its seat and its jobs | The owner rejected a board that took over the sidebar; a work tab keeps the CEO's terminal beside it and expands with ◫. Seating by pane, not by detected agent, keeps a job sent to a restarting pane on that pane |
 | 2026-10-31 | Owner-approved (company done gate plan, "only the CEO or the owner marks done"): a task that reported back (`input-required`) to the pane that handed it out waits on that pane, not on the owner, so it is never needs-you: no attention orange, no Fleet report, out of the board's Waiting on you. It reads as working, its state word in muted text: Fleet "Reported, waiting on its sender", the board's seat line and job rows "Reported to CEO" (or the seat or workspace it went back to), the Git page "Next: CEO · report to check". A task handed out by a workspace with no pane, or reported to a pane that has closed since, still needs you. Applies to every agent-to-agent task, not only a company's | The owner was paged for a seat's report meant for the CEO, who checks it and marks the task done; the phone keeps its five ticket words |
+| 2026-10-31 | Owner decision: multiview holds several groups, one on screen. A Ctrl+click from a workspace in no group starts a new group and saves the one on screen instead of dropping it; selecting any member of a saved group puts its grid back. A workspace is in one group at a time. Each grouped row carries a small grid-glyph number badge (rail: a corner number), numbered by the group's first row in the stored order; the group on screen reads in the accent, saved groups neutral. The badge is the row's only group marker: it replaces the 2px blue left border, which belongs to the color tag, and no edge bar is added. Groups persist in the session | One grid meant a second grid erased the first. The left border could not say which group and collided with the color tag; one marker per row keeps the sidebar rows free of a new edge (maintainer decision on #2906) |
 | 2026-11-01 | Owner-approved (external sessions, placement B of the mockup): a coding agent started outside wmux (tmux, screen, zellij, ssh into this computer, another terminal app) that reports through the hook bridge is kept as an external session. One whose folder is a workspace's folder, or sits under it (the deepest folder wins; a workspace inside the session's folder never matches), is a row in that workspace's roster: the roster recipe with a muted `outside` in the agent-kind slot, its activity or where it runs, the time since its last signal. Waiting on you, it draws its question line in `--attention-text`, lights the workspace row as a pane's agent does (ring, hairline, Needs you, the question) and counts in the rail's Fleet badge. The rest sit in an **Outside wmux** group at the list's foot after Snoozed and Settled (their header recipe, open by default, the folder on a second line; folded, a muted count and `N need you` in the attention colour). A click opens a detail popover — state and question, Folder, Where, Last activity, a `tmux attach -t …` / `screen -r …` command with Copy attach command as the one primary only when tmux or screen is known (else Open a wmux pane here is the primary), and Hide. No new colour | wmux never shows or types into that terminal, so the row cannot jump to a pane: the popover says where the session lives and how to reach it. Joining the workspace keeps one list and one attention grammar (2026-09-27); the foot group catches folders no workspace holds |
+| 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
+| 2026-11-01 | Owner-approved (handoff mockup, boards A and C): at 90% of the 5-hour window (the pane's own statusline reading) the usage chip shows the share and the reset and opens the usage-limit card with the handoffs; nothing switches by itself. After a handoff at or near the limit, the tab it left offers to bring the work back once the limit resets, with a note from the other agent's transcript typed in, never sent | A handoff chosen before work stops loses nothing; bringing the work back closes the loop the owner otherwise did by hand, reading the other tab to tell the first agent what changed |
 
 ### Desktop conversation view
 

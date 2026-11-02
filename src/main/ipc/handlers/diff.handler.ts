@@ -330,12 +330,13 @@ export async function readDiffSummary(worktreePath: string, knownStateKey: strin
 async function readDiff(
   worktreePath: string,
   targetHeadOid: string,
-  mode: 'task' | 'workspace' = 'task',
+  mode: 'task' | 'workspace' | 'since' = 'task',
 ): Promise<DiffReadResult | DiffReadError> {
   // workspace 모드: 대상 repo = 자기 자신(cwd toplevel). resolveTargetRepo로
-  // 본 repo 매핑을 하지 않는다.
+  // 본 repo 매핑을 하지 않는다. 'since' reads the same folder, measured from
+  // `targetHeadOid` (a commit it had checked out earlier) instead of HEAD.
   const targetRepoPath =
-    mode === 'workspace'
+    mode !== 'task'
       ? await (async () => {
           const r = await git(['rev-parse', '--show-toplevel'], worktreePath);
           return r.code === 0 && r.stdout.trim() ? localSpelling(r.stdout.trim(), worktreePath) : null;
@@ -353,7 +354,14 @@ async function readDiff(
   }
 
   let mergeBase: string;
-  if (mode === 'workspace') {
+  if (mode === 'since') {
+    // Committed and uncommitted changes since that commit, while it is still
+    // in HEAD's history; after a rebase or reset it is not, and the changes
+    // are measured from HEAD as in workspace mode.
+    const anc = targetHeadOid ? await git(['merge-base', '--is-ancestor', targetHeadOid, 'HEAD'], targetRepoPath) : null;
+    const h = await git(['rev-parse', anc?.code === 0 ? targetHeadOid : 'HEAD'], targetRepoPath);
+    mergeBase = h.code === 0 && h.stdout.trim() ? h.stdout.trim() : EMPTY_TREE_OID;
+  } else if (mode === 'workspace') {
     // 미커밋만: base = 자기 HEAD. 첫 커밋 전이면 empty-tree(전 파일 added).
     const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
     mergeBase = h.code === 0 && h.stdout.trim() ? h.stdout.trim() : EMPTY_TREE_OID;
@@ -726,8 +734,8 @@ export function registerDiffHandlers(): () => void {
         if (!safeWt) return { ok: false, error: 'worktreePath is required.', code: 'bad-args' };
         // targetHeadOid는 선택 — 미지정 시 타겟 repo HEAD로 도출.
         const head = typeof targetHeadOid === 'string' ? targetHeadOid : '';
-        // mode 미지정/오값은 'task'(기존 계약). 'workspace'만 명시 분기.
-        return readDiff(safeWt, head, mode === 'workspace' ? 'workspace' : 'task');
+        // mode 미지정/오값은 'task'(기존 계약). 'workspace'·'since'만 명시 분기.
+        return readDiff(safeWt, head, mode === 'workspace' || mode === 'since' ? mode : 'task');
       },
     ),
   );

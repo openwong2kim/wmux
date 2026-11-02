@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { startCopy } from '../cleanCopyResolve';
 import { createAutoSelectionCopy } from '../autoSelectionCopy';
 
 describe('createAutoSelectionCopy', () => {
@@ -123,5 +124,81 @@ describe('createAutoSelectionCopy', () => {
     vi.advanceTimersByTime(50);
 
     expect(write).toHaveBeenCalledWith('reborn');
+  });
+
+  it('writes the resolved text after the debounce', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const resolve = vi.fn(async (s: string) => `clean:${s}`);
+    const handle = createAutoSelectionCopy({ write, resolve, debounceMs: 50 });
+
+    handle.onSelection('raw');
+    expect(resolve).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(resolve).toHaveBeenCalledWith('raw');
+    expect(write).toHaveBeenCalledTimes(1);
+    expect(write).toHaveBeenCalledWith('clean:raw');
+  });
+
+  it('an older resolution that finishes after a newer one never writes', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const finishers: Record<string, (text: string) => void> = {};
+    const resolve = (s: string) => new Promise<string>((r) => { finishers[s] = r; });
+    const handle = createAutoSelectionCopy({ write, resolve, debounceMs: 50 });
+
+    handle.onSelection('first');
+    await vi.advanceTimersByTimeAsync(50);
+    handle.onSelection('second');
+    await vi.advanceTimersByTimeAsync(50);
+    finishers.second('second clean');
+    await vi.advanceTimersByTimeAsync(0);
+    finishers.first('first clean');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(write.mock.calls).toEqual([['second clean']]);
+  });
+
+  it('a copy started anywhere else meanwhile (an explicit copy) stops it from writing', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    let finish!: (text: string) => void;
+    const resolve = () => new Promise<string>((r) => { finish = r; });
+    const handle = createAutoSelectionCopy({ write, resolve, debounceMs: 50 });
+
+    handle.onSelection('sel');
+    await vi.advanceTimersByTimeAsync(50);
+    startCopy(); // e.g. Cmd+C in this pane or another
+    finish('sel clean');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('skips its write when a copy started during its debounce (Cmd+C on the selection)', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    const resolve = vi.fn(async (s: string) => `clean:${s}`);
+    const handle = createAutoSelectionCopy({ write, resolve, debounceMs: 50 });
+
+    handle.onSelection('sel');
+    await vi.advanceTimersByTimeAsync(20);
+    startCopy(); // the explicit copy of the same selection
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(resolve).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('dispose() stops a resolution still running from writing', async () => {
+    const write = vi.fn().mockResolvedValue(undefined);
+    let finish!: (text: string) => void;
+    const resolve = () => new Promise<string>((r) => { finish = r; });
+    const handle = createAutoSelectionCopy({ write, resolve, debounceMs: 50 });
+
+    handle.onSelection('sel');
+    await vi.advanceTimersByTimeAsync(50);
+    handle.dispose(); // e.g. a right-click copy takes over
+    finish('sel clean');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(write).not.toHaveBeenCalled();
   });
 });

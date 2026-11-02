@@ -106,6 +106,7 @@ import {
 } from '../../components/Sidebar/attentionBlink';
 import { initialGitPageState, type GitDragContext, type GitHandoffOpen, type GitPageState } from '../../components/Git/gitPageState';
 import { multiviewColumnCount, type MultiviewArrangement } from '../../utils/multiviewGrid';
+import { leaveSavedMultiviewGroups, promoteMultiviewGroup, saveCurrentMultiviewGroup } from '../../utils/multiviewGroups';
 import { DEFAULT_WINDOW_GLASS, type WindowGlassLevel } from '../../utils/windowGlass';
 import {
   normalizeRoleBinding,
@@ -466,6 +467,15 @@ export interface UISlice {
    */
   paneNewTerminalButton: boolean;
   setPaneNewTerminalButton: (visible: boolean) => void;
+
+  /** EXPERIMENTAL, default OFF: keep xterm scrollback lines outside the
+   *  viewport compacted in memory. No Settings row yet (dogfood only). */
+  terminalCompactScrollback: boolean;
+  setTerminalCompactScrollback: (enabled: boolean) => void;
+  /** EXPERIMENTAL, default OFF: draw every pane through one shared WebGL
+   *  context instead of one context per pane. No Settings row yet. */
+  terminalSharedWebgl: boolean;
+  setTerminalSharedWebgl: (enabled: boolean) => void;
 
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
@@ -887,7 +897,10 @@ export interface UISlice {
   }) => void;
 
   // ─── Multiview ─────────────────────────────────────────────────────────
+  /** The group on screen (see utils/multiviewGroups.ts). */
   multiviewIds: string[];
+  /** The other groups, each waiting for one of its members to be activated. */
+  multiviewSavedGroups: string[][];
   toggleMultiviewWorkspace: (wsId: string) => void;
   // Close-button primitive. Pure removal, never adds. Use this from the tile
   // X button so a stale-event toggle cannot re-add the workspace.
@@ -1627,6 +1640,16 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.paneNewTerminalButton = visible;
   }),
 
+  terminalCompactScrollback: false,
+  setTerminalCompactScrollback: (enabled) => set((state) => {
+    state.terminalCompactScrollback = enabled;
+  }),
+
+  terminalSharedWebgl: false,
+  setTerminalSharedWebgl: (enabled) => set((state) => {
+    state.terminalSharedWebgl = enabled;
+  }),
+
   splitInheritsCwd: true,
 
   setSplitInheritsCwd: (enabled) => set((state) => {
@@ -2106,6 +2129,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   // ─── Multiview ─────────────────────────────────────────────────────────
   multiviewIds: [] as string[],
+  multiviewSavedGroups: [] as string[][],
 
   multiviewArrangement: 'auto' as MultiviewArrangement,
 
@@ -2116,6 +2140,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   toggleMultiviewWorkspace: (wsId) => {
     handOffBeforeLeavingGrid(get(), wsId);
     set((state) => {
+    // A grid the active workspace is not in is not on screen: save it as a
+    // group first, so Ctrl+clicking one of its members from outside takes
+    // that member into a new group with the active workspace (as a member of
+    // any other saved group would be) instead of removing it from the hidden grid.
+    if (!state.multiviewIds.includes(state.activeWorkspaceId)) {
+      saveCurrentMultiviewGroup(state);
+    }
     const idx = state.multiviewIds.indexOf(wsId);
     if (idx >= 0) {
       state.multiviewIds.splice(idx, 1);
@@ -2125,9 +2156,17 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       // a member). The second case appears as "Ctrl-click does nothing" because
       // AppLayout gates the grid on active ∈ multiviewIds — without reseeding,
       // the new id gets appended to the stale group and the grid stays hidden.
+      // The group that was on screen is saved, not dropped: a workspace in no
+      // group starts another one (multiview groups).
+      if (!state.multiviewIds.includes(state.activeWorkspaceId)) {
+        promoteMultiviewGroup(state, state.activeWorkspaceId);
+      }
       if (state.multiviewIds.length === 0 || !state.multiviewIds.includes(state.activeWorkspaceId)) {
+        saveCurrentMultiviewGroup(state);
         state.multiviewIds = [state.activeWorkspaceId];
       }
+      // A workspace is in one group at a time: joining this one leaves its old one.
+      leaveSavedMultiviewGroups(state, wsId);
       if (!state.multiviewIds.includes(wsId)) {
         state.multiviewIds.push(wsId);
       }

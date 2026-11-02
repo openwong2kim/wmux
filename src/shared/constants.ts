@@ -477,6 +477,8 @@ export const IPC = {
   WORK_LINK_CHANGED: 'workLink:changed',
   // Company presets: the launch line (and brief file) of each seat.
   COMPANY_SEAT_LAUNCHES: 'company:seatLaunches',
+  // "Add a seat on this PC…": one seat's worktree, brief file and launch line.
+  COMPANY_HIRE_SEAT: 'company:hireSeat',
   // Moa's track record (src/shared/trackRecord.ts): the weekly retro card and
   // its schedule. The counts themselves are main's and Moa's, not the renderer's.
   TRACK_RECORD_RETRO_GET: 'trackRecord:retro:get',
@@ -635,6 +637,10 @@ export const IPC = {
   // dismiss, resume now) relayed to the daemon, which owns the state.
   USAGE_LIMIT_CHANGED: 'usageLimit:changed',
   USAGE_LIMIT_LIST: 'usageLimit:list',
+  // Each pane's 5-hour window from its statusline (Record<ptyId, PaneUsageWindow>):
+  // main → renderer push of the whole map, and the renderer's boot read.
+  USAGE_LIMIT_WINDOWS: 'usageLimit:windows',
+  USAGE_LIMIT_WINDOWS_LIST: 'usageLimit:windowsList',
   // N4 — an agent's lost sign-in (shared/agentAuthLost): main's entries, and the status check behind [Sign in again].
   AGENT_AUTH_LOST_CHANGED: 'agentAuth:lostChanged',
   AGENT_AUTH_LOST_LIST: 'agentAuth:lostList',
@@ -1003,9 +1009,11 @@ export function getPipeName(): string {
   if (process.platform === 'win32') {
     // Use os.userInfo() instead of process.env.USERNAME — env vars may not
     // be inherited by MCP subprocesses spawned by Claude Code
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux${dataSuffix()}-${username}`;
   }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux${dataSuffix()}.sock`;
 }
@@ -1018,9 +1026,11 @@ export function getPipeName(): string {
 // dev-suffixed app's shims can never join the production broker.
 export function getMcpBrokerPipeName(): string {
   if (process.platform === 'win32') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-mcpb${dataSuffix()}-${username}`;
   }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux-mcpb${dataSuffix()}.sock`;
 }
@@ -1193,6 +1203,7 @@ export function getWmuxHomeDir(): string {
 /** 데몬 제어 소켓/파이프 기본 경로. */
 export function getDaemonSocketPath(): string {
   if (process.platform === 'win32') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
   }
@@ -1202,6 +1213,7 @@ export function getDaemonSocketPath(): string {
 /** P7 이전(구버전)의 데몬 제어 소켓 경로 — 폴백/마이그레이션 판정용.
  * 구버전 코드와 동일하게 os.homedir() 기반으로 계산해야 문자열이 일치한다. */
 export function getLegacyDaemonSocketPath(): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '';
   return `${home}/.wmux-daemon${dataSuffix()}.sock`;
 }
@@ -1216,6 +1228,7 @@ export function getSessionSocketPath(sessionId: string): string {
 
 /** P7 이전(구버전)의 세션 소켓 경로 — 구데몬 연결 폴백용(os.homedir() 기반). */
 export function getLegacySessionSocketPath(sessionId: string): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '';
   return `${home}/.wmux-session-${sessionId}.sock`;
 }

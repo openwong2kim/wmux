@@ -23,6 +23,7 @@ import { spawnUntil } from '../Remote/RemoteSpawnAskDialog';
 import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
 import { buildCompanyBoard, remoteSeatsOf, seatAsksOf, type BoardRemoteSeat, type BoardSeat, type BoardSeatAsk } from './companyBoard';
 import AddRemoteSeatDialog from './AddRemoteSeatDialog';
+import HireSeatDialog from './HireSeatDialog';
 
 const NOW_SHOWN = 2;
 const NO_TASKS: Record<string, Task> = {};
@@ -90,6 +91,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     return window.electronAPI?.a2aRemote?.onLinkEvent?.(() => void readRequests());
   }, [readsRequests, readRequests]);
   const [addSeat, setAddSeat] = useState(false);
+  const [hireSeat, setHireSeat] = useState(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
     if (!isActive) return undefined;
@@ -303,16 +305,28 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
 
           <Section
             title={t('company.board.seats')}
-            after={REMOTE_SPAWN_UI_ENABLED && ceoPaneId && (
-              <button
-                type="button"
-                className={`mt-2 self-start rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
-                // The board's own pane takes a click that bubbles up and would win the focus back.
-                onClick={(event) => { event.stopPropagation(); setAddSeat(true); }}
-                data-board-add-remote-seat
-              >
-                {t('company.addSeat.menu')}
-              </button>
+            after={ceoPaneId && (
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                <button
+                  type="button"
+                  className={`self-start rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+                  // The board's own pane takes a click that bubbles up and would win the focus back.
+                  onClick={(event) => { event.stopPropagation(); setHireSeat(true); }}
+                  data-board-hire-seat
+                >
+                  {t('company.hireSeat.menu')}
+                </button>
+                {REMOTE_SPAWN_UI_ENABLED && (
+                  <button
+                    type="button"
+                    className={`self-start rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+                    onClick={(event) => { event.stopPropagation(); setAddSeat(true); }}
+                    data-board-add-remote-seat
+                  >
+                    {t('company.addSeat.menu')}
+                  </button>
+                )}
+              </div>
             )}
           >
             {board.seats.map(seatRow)}
@@ -342,6 +356,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
         </div>
       )}
       {addSeat && <AddRemoteSeatDialog workspaceId={workspaceId} onClose={() => setAddSeat(false)} />}
+      {hireSeat && <HireSeatDialog workspaceId={workspaceId} onClose={() => setHireSeat(false)} />}
     </div>
   );
 }

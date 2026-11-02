@@ -995,7 +995,9 @@ export class DaemonSessionManager extends EventEmitter {
     const bufferSize = this.config
       ? this.config.session.bufferSizeMb * 1024 * 1024
       : DEFAULT_BUFFER_SIZE;
-    const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess));
+    const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
+      compress: this.config?.session.ringCompression === true,
+    });
     // Replays parse each stretch of the ring at the size it was written at.
     // Recovered scrollback below is assumed to be at the spawn size.
     ringBuffer.noteGeometry(cols, rows);
@@ -1010,6 +1012,9 @@ export class DaemonSessionManager extends EventEmitter {
     // buffer — the exact garbling util/outputModeTracker.ts exists to prevent.
     if (params.scrollbackData && params.scrollbackData.length > 0) {
       ringBuffer.write(params.scrollbackData);
+      // The ring holds its own copy. The listeners below capture `params`, so
+      // without this the whole dump would stay alive as long as the session.
+      params.scrollbackData = undefined;
       // #952: the dump repainted the DEAD process's screen, but the fresh
       // process spawned above starts from an empty ConPTY whose absolute
       // coordinates begin at row 1 — any restored rows left in the viewport

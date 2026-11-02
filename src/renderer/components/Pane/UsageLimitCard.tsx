@@ -6,7 +6,8 @@
 //   - Continue on another account, with 2+ accounts, and the opt-in "Always
 //     switch automatically" (the vendor's switch-by-quota setting);
 //   - Continue in another agent that is installed and signed in: a new tab
-//     with the handoff typed in, not sent (utils/continueInAgent.ts), the
+//     with the handoff typed in, not sent (utils/continueInAgent.ts), which
+//     turns this pane's Resume automatically off (one line says so), the
 //     note previewed here with its length, an unsent draft carried only when
 //     the owner ticks it;
 //   - Continue on another PC that lets this one start an agent there: the
@@ -14,6 +15,10 @@
 //     (utils/continueOnPc.ts); not from a pane that was itself started for
 //     someone, since its replies could not come back to it;
 //   - when every account is out, the earliest time one reopens.
+// Opened from a pane close to its limit (`near`), the same card says how much
+// of the 5-hour window is used, when it resets and that the pane keeps
+// working until then, and offers only the other agents and accounts: nothing
+// is held, armed or switched by itself.
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { useStore } from '../../stores';
@@ -21,14 +26,15 @@ import { useT } from '../../hooks/useT';
 import { getLocale } from '../../i18n';
 import { updateUsageLimit } from '../../hooks/useUsageLimitBridge';
 import { getAgentSetupState, refreshAgentStatus, useAgentSetup } from '../../utils/agentSetupRuns';
-import { continueInAgent, continueInAgentText, handoffFacts, type HandoffFacts } from '../../utils/continueInAgent';
+import { continueInAgent, handoffFacts } from '../../utils/continueInAgent';
+import { handoffNoteText, type HandoffFacts } from '../../utils/handoffNote';
 import { continueOnPcText, remoteHandoffHours } from '../../utils/continueOnPc';
 import { spawnAskBlock } from '../Remote/RemoteSpawnAskDialog';
 import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
 import type { A2aSpawnPlace } from '../../../shared/a2aSpawn';
 import { agentRow } from '../../../shared/agentIdentity';
-import { formatResetClock } from '../../../shared/usageLimit';
+import { formatResetClock, formatResetDuration, type PaneUsageWindow } from '../../../shared/usageLimit';
 import { placePopover } from '../AgentToolbar/placePopover';
 import { useAccountRotation } from '../Settings/AccountRotationControls';
 import Popover, { PopoverSection } from '../ui/Popover';
@@ -37,6 +43,7 @@ import Checkbox from '../ui/Checkbox';
 import Button from '../ui/Button';
 import { usageLimitStatusText, usageLimitView, everyAccountOutUntil } from './usageLimitPresentation';
 import type { PaneActionItem } from './PaneActionsMenu';
+import HandoffNotePreview from './HandoffNotePreview';
 
 export const USAGE_LIMIT_CARD_WIDTH = 300;
 
@@ -50,12 +57,14 @@ export interface UsageLimitPcHandoff {
   hours: number;
 }
 
-export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, accountItems, anchor, triggerRef, onClose, onContinueOnPc }: {
+export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, near, accountItems, anchor, triggerRef, onClose, onContinueOnPc }: {
   ptyId: string;
   workspaceId: string;
   paneId: string;
   cwd?: string;
   now: number;
+  /** The pane is not held but close to its limit: this 5-hour window. */
+  near?: PaneUsageWindow;
   /** One per account the conversation can move to (usePaneContinueOnAccount). */
   accountItems: PaneActionItem[];
   anchor: { top: number; left: number; right: number; bottom: number };
@@ -66,13 +75,15 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
 }) {
   const t = useT();
   const limit = useStore((s) => s.usageLimits[ptyId]);
+  const slug = useStore((s) => s.surfaceAgent[ptyId]?.slug);
   const rotation = useAccountRotation();
   const setup = useAgentSetup();
   const cardRef = useRef<HTMLDivElement>(null);
   const [height, setHeight] = useState(240);
   const [facts, setFacts] = useState<HandoffFacts | null>(null);
   const [carryDraft, setCarryDraft] = useState(false);
-  const canHandOff = !!limit && (setup.statuses ?? []).some((s) => s.readiness === 'ready' && s.agent !== limit.provider);
+  const vendor = limit?.provider ?? slug ?? '';
+  const canHandOff = (!!limit || !!near) && (setup.statuses ?? []).some((s) => s.readiness === 'ready' && s.agent !== vendor);
   // Main refuses a reply pane whose workspace was itself started for someone (depth 1).
   const startedFor = useStore((s) => isShadowWorkspaceId(workspaceId) || !!(s.fanoutLineage[workspaceId] || s.fanoutSpawnOwner[workspaceId] || s.missionByPaneGroup[workspaceId]));
   const [places, setPlaces] = useState<A2aSpawnPlace[]>([]);
@@ -136,44 +147,52 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
     };
   }, [onClose, triggerRef]);
 
-  if (!limit) return null;
-  const view = usageLimitView(limit, now, getLocale());
-  const vendor = limit.provider;
+  if (!limit && !near) return null;
+  const view = limit ? usageLimitView(limit, now, getLocale()) : null;
   const fromAgent = agentRow(vendor)?.display ?? vendor;
-  const rotationOn = rotation.state?.settings[vendor] === true;
-  const outUntil = everyAccountOutUntil(rotation.state?.rows ?? [], vendor, now);
+  // Switch-by-quota is the held vendor's setting: only with a limit.
+  const provider = limit?.provider;
+  const rotationOn = !!provider && rotation.state?.settings[provider] === true;
+  const outUntil = limit ? everyAccountOutUntil(rotation.state?.rows ?? [], vendor, now) : undefined;
+  const title = near && !limit ? t('usageLimit.nearTitle') : t('usageLimit.cardTitle');
   const agents = (setup.statuses ?? []).filter((s) => s.readiness === 'ready' && s.agent !== vendor);
   const pos = placePopover(anchor, { width: USAGE_LIMIT_CARD_WIDTH, height });
-  const note = facts ? continueInAgentText(fromAgent, facts, { carryDraft }) : undefined;
+  const note = facts ? handoffNoteText(fromAgent, facts, { carryDraft }) : undefined;
 
   return createPortal(
     <Popover
       ref={cardRef}
       padded
-      aria-label={t('usageLimit.cardTitle')}
-      data-usage-limit-card={view.phase}
+      aria-label={title}
+      data-usage-limit-card={view?.phase ?? 'near'}
       className="fixed"
       style={{ top: pos.top, left: pos.left, width: USAGE_LIMIT_CARD_WIDTH, zIndex: 'var(--z-popover-top)' }}
       onClick={(e) => e.stopPropagation()}
     >
-      <PopoverSection title={t('usageLimit.cardTitle')}>
-        <p className="text-[12px] text-[var(--text-sub)] tabular-nums" data-usage-limit-card-status>{usageLimitStatusText(view, t)}</p>
+      <PopoverSection title={title}>
+        {view ? (
+          <p className="text-[12px] text-[var(--text-sub)] tabular-nums" data-usage-limit-card-status>{usageLimitStatusText(view, t)}</p>
+        ) : near && (
+          <p className="text-[12px] text-[var(--text-sub)] tabular-nums" data-usage-limit-card-status>
+            {t('usageLimit.nearStatus', { pct: near.pct, clock: formatResetClock(near.resetsAt, now, getLocale()), duration: formatResetDuration(near.resetsAt - now) })}
+          </p>
+        )}
         {outUntil !== undefined && (
           <p className="text-[12px] text-[var(--text-sub)] tabular-nums" data-usage-limit-card-all-out>
             {outUntil === null ? t('usageLimit.allAccountsOutUnknown') : t('usageLimit.allAccountsOut', { clock: formatResetClock(outUntil, now, getLocale()) })}
           </p>
         )}
-        {view.canArm && (
+        {view?.canArm && (
           <label className="mt-2 flex items-center gap-2 text-[13px] text-[var(--text-main)]">
             <Switch
-              checked={view.armed}
+              checked={view.armed === true}
               onCheckedChange={(on) => { void updateUsageLimit(ptyId, { autoResume: on }); }}
               data-usage-limit-card-action="auto-resume"
             />
             {t('usageLimit.resumeAutomatically')}
           </label>
         )}
-        {view.canResumeNow && (
+        {view?.canResumeNow && (
           <Button size="sm" variant="secondary" className="mt-2" onClick={() => { void updateUsageLimit(ptyId, { resumeNow: true }); onClose(); }} data-usage-limit-card-action="resume">
             {t('usageLimit.resume')}
           </Button>
@@ -197,14 +216,16 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
               </Button>
             ))}
           </div>
-          <label className="mt-2 flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
-            <Checkbox
-              checked={rotationOn}
-              onCheckedChange={(on) => { void window.electronAPI?.accountRotation?.set(vendor, on).then(rotation.reload).catch(() => undefined); }}
-              data-usage-limit-card-action="always-switch"
-            />
-            {t('usageLimit.alwaysSwitch')}
-          </label>
+          {provider && (
+            <label className="mt-2 flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
+              <Checkbox
+                checked={rotationOn}
+                onCheckedChange={(on) => { void window.electronAPI?.accountRotation?.set(provider, on).then(rotation.reload).catch(() => undefined); }}
+                data-usage-limit-card-action="always-switch"
+              />
+              {t('usageLimit.alwaysSwitch')}
+            </label>
+          )}
         </PopoverSection>
       )}
       {agents.length > 0 && (
@@ -220,7 +241,7 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
                   className="justify-start"
                   title={t('usageLimit.continueInAgentHint')}
                   onClick={() => {
-                    void continueInAgent({ heldPtyId: ptyId, fromAgent, agent: s.agent, workspaceId, paneId, ...(cwd ? { cwd } : {}), ...(note ? { note } : {}) })
+                    void continueInAgent({ heldPtyId: ptyId, fromAgent, agent: s.agent, workspaceId, paneId, ...(cwd ? { cwd } : {}), ...(note ? { note, head: facts?.head } : {}) })
                       .catch((err: unknown) => { console.warn('[usageLimit] continue in agent failed', err); });
                     onClose();
                   }}
@@ -231,6 +252,9 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
               );
             })}
           </div>
+          {limit && (
+            <p className="mt-2 text-[12px] text-[var(--text-muted)]" data-usage-limit-card-handoff-resume>{t('usageLimit.handoffStopsResume')}</p>
+          )}
           {note !== undefined && (
             <>
               {facts?.draft && (
@@ -239,17 +263,7 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
                   {t('usageLimit.carryDraft')}
                 </label>
               )}
-              <pre
-                aria-label={t('usageLimit.handoffPreview')}
-                tabIndex={0}
-                className="mt-2 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-[var(--chip-radius)] bg-[var(--selection)] p-2 font-mono text-[11px] text-[var(--text-sub)]"
-                data-usage-limit-card-memo
-              >
-                {note}
-              </pre>
-              <p className="mt-1 text-[11px] text-[var(--text-muted)] tabular-nums" data-usage-limit-card-memo-length>
-                {t('usageLimit.handoffLength', { count: note.length })}
-              </p>
+              <HandoffNotePreview note={note} className="mt-2" />
             </>
           )}
         </PopoverSection>
@@ -273,7 +287,7 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
                     void readPlaces().then((fresh) => {
                       const now2 = Date.now();
                       const current = fresh?.find((p) => p.hostId === place.hostId);
-                      const hours = remoteHandoffHours(limit.resetsAt, now2);
+                      const hours = limit ? remoteHandoffHours(limit.resetsAt, now2) : null;
                       if (fresh) setPlaces(fresh);
                       if (!current || spawnAskBlock(current) !== null || hours === null) {
                         useStore.getState().pushToast({ level: 'warn', message: t('usageLimit.continueOnPcGone', { pc: pcName }) });
@@ -297,6 +311,9 @@ export default function UsageLimitCard({ ptyId, workspaceId, paneId, cwd, now, a
             </label>
           )}
         </PopoverSection>
+      )}
+      {near && !limit && agents.length > 0 && (
+        <p className="text-[12px] text-[var(--text-muted)]" data-usage-limit-card-near-footer>{t('usageLimit.nearFooter')}</p>
       )}
     </Popover>,
     document.body,
