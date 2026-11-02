@@ -6,6 +6,7 @@ export type SettingsTabId =
   | 'terminal'
   | 'shortcuts'
   | 'notifications'
+  | 'labs'
   | 'claude-integration'
   | 'accounts'
   | 'factory'
@@ -66,7 +67,7 @@ export const SETTINGS_NAV_GROUPS: {
 }[] = [
   {
     id: 'app',
-    tabs: ['general', 'appearance', 'terminal', 'shortcuts', 'notifications'],
+    tabs: ['general', 'appearance', 'terminal', 'shortcuts', 'notifications', 'labs'],
   },
   {
     id: 'agents',
@@ -165,6 +166,9 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'catmute', tab: 'notifications', labelKey: 'settings.notificationCategories', descKey: 'settings.notificationCategoriesDesc', synonyms: 'mute category subagent approval' },
   { id: 'wsmute', tab: 'notifications', labelKey: 'settings.perWorkspaceNotifications', descKey: 'settings.perWorkspaceNotificationsDesc', synonyms: 'mute workspace quiet' },
   { id: 'wsprwake', tab: 'notifications', labelKey: 'settings.prWake', descKey: 'settings.prWakeDesc', synonyms: 'pull request ci checks review comment conflict nudge agent' },
+  { id: 'labs-compact-scrollback', tab: 'labs', labelKey: 'settings.labsCompactScrollback', descKey: 'settings.labsCompactScrollbackDesc', synonyms: 'labs experimental memory ram scrollback compress 실험 메모리 압축 스크롤백' },
+  { id: 'labs-shared-webgl', tab: 'labs', labelKey: 'settings.labsSharedWebgl', descKey: 'settings.labsSharedWebglDesc', synonyms: 'labs experimental gpu webgl renderer atlas memory 실험 그래픽 메모리' },
+  { id: 'labs-ring-compression', tab: 'labs', labelKey: 'settings.labsRingCompression', descKey: 'settings.labsRingCompressionDesc', synonyms: 'labs experimental daemon buffer compress memory 실험 데몬 버퍼 압축 메모리' },
 
   { id: 'quicklaunch', tab: 'shortcuts', labelKey: 'settings.quickLaunch', descKey: 'settings.quickLaunchDesc', synonyms: 'quick launch global shortcut hotkey composer spotlight launcher prompt 빠른 실행 전역 단축키' },
   { id: 'quicklaunchkey', tab: 'shortcuts', labelKey: 'settings.quickLaunchShortcut', descKey: 'settings.quickLaunchShortcutDesc', synonyms: 'quick launch global hotkey cmd shift space 빠른 실행 단축키' },

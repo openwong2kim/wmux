@@ -1,4 +1,5 @@
 import { registerTerminalCoreHandlers } from './handlers/terminalCore.handler';
+import { registerLabsHandlers } from './handlers/labs.handler';
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
 import { registerExternalSessionsHandlers } from '../externalSessions/externalSessions.handler';
@@ -212,6 +213,7 @@ export function registerAllHandlers(
   // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
   const cleanupTerminalCore = registerTerminalCoreHandlers(daemonClient);
+  const cleanupLabs = registerLabsHandlers(daemonClient);
   const cleanupFonts = registerFontHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow, {
     // X1: daemon-backed sessions never appear in ptyManager — disable the
@@ -625,6 +627,7 @@ export function registerAllHandlers(
     // live outside this swap cycle (see import-block note above).
     cleanupShell();
     cleanupTerminalCore();
+    cleanupLabs();
     cleanupFonts();
     cleanupMetadata();
     if (cleanupLocalContext) cleanupLocalContext();

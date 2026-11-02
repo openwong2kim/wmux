@@ -11,6 +11,7 @@ import {
 } from '../shared/browserBackend';
 import { WORKFLOW_OWNER_IPC } from '../shared/botWorkflow';
 import type { TerminalCoreSettings, TerminalEngine } from '../shared/terminalCoreSettings';
+import type { LabsSettings, LabsStatus } from '../shared/labsSettings';
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
@@ -614,6 +615,8 @@ const electronAPI = {
   settings: {
     getTerminalCore: () => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_GET) as Promise<TerminalCoreSettings>,
     setTerminalCore: (engine: TerminalEngine) => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_SET, engine) as Promise<TerminalCoreSettings>,
+    getLabs: () => ipcRenderer.invoke(IPC.LABS_SETTINGS_GET) as Promise<LabsStatus>,
+    setLabs: (settings: LabsSettings) => ipcRenderer.invoke(IPC.LABS_SETTINGS_SET, settings) as Promise<LabsStatus>,
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
     setMutedNotificationCategories: (categories: NotificationCategory[]) =>
       ipcRenderer.send(IPC.MUTED_NOTIFICATION_CATEGORIES, categories),
@@ -1054,6 +1057,12 @@ const electronAPI = {
         return () => { ipcRenderer.removeListener(IPC.DECK_MOA_CHANGED, listener); };
       },
     },
+    // The pending decisions an earlier version raised that this startup
+    // removed (no card answers them), taken once for a one-time notice.
+    expiredDecisions: () =>
+      ipcRenderer.invoke(IPC.DECK_EXPIRED_DECISIONS) as Promise<{
+        decisions: import('../main/deck/deckDecisionStore').ExpiredDecision[];
+      }>,
     // Claude Code hook bridge (in-app `wmux setup-hooks`). STATUS feeds the
     // install prompt (launch + off→assist/auto mode switch); INSTALL is the
     // explicit user-clicked install — never auto-run.
@@ -1632,6 +1641,21 @@ const electronAPI = {
       const listener = (_event: Electron.IpcRendererEvent, ids: string[]) => callback(ids);
       ipcRenderer.on(IPC.WORK_LINK_CHANGED, listener);
       return () => { ipcRenderer.removeListener(IPC.WORK_LINK_CHANGED, listener); };
+    },
+  },
+  // To hand out (shared/handOut.ts): main keeps the list and derives each
+  // item's state from its work links; onChanged says to re-read it.
+  handOut: {
+    list: () => ipcRenderer.invoke(IPC.HAND_OUT_LIST) as Promise<import('../shared/handOut').HandOutEntry[]>,
+    add: (request: import('../shared/handOut').HandOutAddRequest) =>
+      ipcRenderer.invoke(IPC.HAND_OUT_ADD, request) as Promise<import('../shared/handOut').HandOutAddResult>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.HAND_OUT_REMOVE, id) as Promise<{ ok: boolean }>,
+    pick: (request: import('../shared/handOut').HandOutPickRequest) =>
+      ipcRenderer.invoke(IPC.HAND_OUT_PICK, request) as Promise<import('../shared/handOut').HandOutPickResult>,
+    onChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.HAND_OUT_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.HAND_OUT_CHANGED, listener); };
     },
   },
   // Company presets: write each seat's brief file and get its launch line.

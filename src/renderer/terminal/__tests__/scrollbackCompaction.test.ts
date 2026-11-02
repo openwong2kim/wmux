@@ -168,6 +168,8 @@ describe('scrollback compaction', () => {
     }
   });
 
+  // Hundreds of random rows checked method by method: under 1 s on a
+  // developer Mac, past the 10 s default on a loaded Windows CI runner.
   it('a packed row answers every BufferLine method exactly as the original does', async () => {
     const r = rng(1234);
     let resizedPacked = 0;
@@ -261,7 +263,7 @@ describe('scrollback compaction', () => {
     }
     // The no-decode resize paths ran, not only the inflate fallback.
     expect(resizedPacked).toBeGreaterThan(500);
-  });
+  }, 60_000);
 
   // 300 random writes with a full-buffer comparison every 25 writes and at
   // the end: ~1 s on a developer Mac, past the 10 s default on a loaded

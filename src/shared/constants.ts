@@ -225,6 +225,10 @@ export const IPC = {
   //   DECK_MOA_CHANGED (send, main → renderer, no payload) says it moved.
   DECK_MOA_CHANGED: 'deck:moa:changed',
   DECK_MOA_DECISIONS: 'deck:moa:decisions',
+  //   DECK_EXPIRED_DECISIONS — the pending decisions an earlier version raised
+  //   that this startup removed, taken once for a one-time notice (a second
+  //   call gets none) ({ decisions: ExpiredDecision[] }, main/deck/deckDecisionStore.ts).
+  DECK_EXPIRED_DECISIONS: 'deck:expired-decisions',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as
@@ -361,6 +365,8 @@ export const IPC = {
   SECRET_GUARD_ENABLED: 'settings:secret-guard-enabled',
   TERMINAL_CORE_SETTINGS_GET: 'settings:terminal-core:get',
   TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
+  LABS_SETTINGS_GET: 'settings:labs:get',
+  LABS_SETTINGS_SET: 'settings:labs:set',
   // #1103 — the renderer's default-WSL-distro choice, pushed to main so
   // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
   // choke point without threading it through every create call.
@@ -475,6 +481,13 @@ export const IPC = {
   WORK_LINK_LIST: 'workLink:list',
   WORK_LINK_GET: 'workLink:get',
   WORK_LINK_CHANGED: 'workLink:changed',
+  // To hand out (src/shared/handOut.ts): the list, an add, a removal, a pick
+  // (main window only), and the push after any change.
+  HAND_OUT_LIST: 'handOut:list',
+  HAND_OUT_ADD: 'handOut:add',
+  HAND_OUT_REMOVE: 'handOut:remove',
+  HAND_OUT_PICK: 'handOut:pick',
+  HAND_OUT_CHANGED: 'handOut:changed',
   // Company presets: the launch line (and brief file) of each seat.
   COMPANY_SEAT_LAUNCHES: 'company:seatLaunches',
   // "Add a seat on this PC…": one seat's worktree, brief file and launch line.
