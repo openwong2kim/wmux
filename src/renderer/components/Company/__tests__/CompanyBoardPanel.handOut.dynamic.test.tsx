@@ -77,7 +77,7 @@ function seed(ws: Workspace): void {
     activeWorkspaceId: ws.id,
     surfaceAgent: {
       'pty-1': { name: 'Claude Code', status: 'idle' as const },
-      'pty-2': { name: 'Claude Code', status: 'running' as const },
+      'pty-2': { name: 'Claude Code', status: 'idle' as const },
     },
   }));
 }
@@ -145,6 +145,16 @@ describe('Company board: To hand out', () => {
     expect(popover!.querySelector('[data-hand-out-option="company:ws-co"]')).not.toBeNull();
     // The CEO pane is the company's way in, never a pane of its own.
     expect(popover!.querySelector('[data-hand-out-option="pane:pty-1"]')).toBeNull();
+  });
+
+  it('keeps Hand out…\'s agent panes live: one that comes to need you leaves the list', async () => {
+    items = [item('ho-root', '/code/wmux')];
+    seed(company('/code/wmux'));
+    await render();
+    act(() => q<HTMLButtonElement>('[data-board-hand-out-pick]')!.click());
+    expect(popover()!.querySelector('[data-hand-out-option="pane:pty-2"]')).not.toBeNull();
+    act(() => useStore.setState({ surfacePendingQuestion: { 'pty-2': 'Which branch should I target?' } }));
+    expect(popover()!.querySelector('[data-hand-out-option="pane:pty-2"]')).toBeNull();
   });
 
   it('closes Hand out… once its workspace is hidden or another pane is zoomed', async () => {

@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useR
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, type StoreState } from '../../stores';
 import { createWorkspaceAgentRosterSelector, type WorkspaceAgentRosterRow } from '../../stores/selectors/workspaceAgentRoster';
-import { selectFleetBoard, type FleetRow } from '../../stores/selectors/fleet';
+import { selectFleetBoard, selectHookRunningByPtyId, selectUnverifiablePaneMinutes, type FleetRow } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
 import { renderSentence } from '../../i18n/renderSentence';
@@ -17,6 +17,7 @@ import { FOCUS_RING } from '../focusRing';
 import { StatusMarkView } from '../Sidebar/AgentMarks';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { rosterPrimaryLabel } from '../Sidebar/WorkspaceAgentRoster';
+import { selectOwnerWorkspaces } from '../Sidebar/botTasks';
 import type { Task } from '../../../shared/types';
 import type { A2aSpawnOutgoingSummary } from '../../../shared/a2aSpawn';
 import { remoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
@@ -39,6 +40,9 @@ const NOW_SHOWN = 2;
 const NO_TASKS: Record<string, Task> = {};
 const NO_AGENTS: StoreState['surfaceAgent'] = {};
 const NO_REQUESTS: A2aSpawnOutgoingSummary[] = [];
+const NO_FLAGS: Record<string, boolean> = {};
+const NO_MINUTES: Record<string, number> = {};
+const NO_ROWS: FleetRow[] = [];
 
 function Section({ title, count, needsYou = false, children, after }: { title: string; count?: number; needsYou?: boolean; children: ReactNode; after?: ReactNode }) {
   return (
@@ -64,6 +68,42 @@ function focusSeat(row: WorkspaceAgentRosterRow | undefined, surfaceId: string):
 type Rect = { top: number; left: number; right: number; bottom: number };
 
 /**
+ * Every Fleet row while `enabled`, live, from the inputs Fleet feeds
+ * selectFleetBoard: the Hand out… popover reads a pane's section (a pane that
+ * needs you is not offered) and idle time there, as it does in Fleet.
+ */
+function useFleetRows(enabled: boolean, now: number): readonly FleetRow[] {
+  const inputs = useStore(useShallow((s) => (enabled ? {
+    workspaces: selectOwnerWorkspaces(s),
+    surfaceAgentStatus: s.surfaceAgentStatus,
+    surfaceActivity: s.surfaceActivity,
+    paneLabel: s.paneLabel,
+    supervisionByPtyId: s.supervisionByPtyId,
+    surfaceAgent: s.surfaceAgent,
+    surfacePendingQuestion: s.surfacePendingQuestion,
+    surfaceShellPrompt: s.surfaceShellPrompt,
+    surfaceActivityAt: s.surfaceActivityAt,
+    surfaceTurnOpenAt: s.surfaceTurnOpenAt,
+    commandRunningByPtyId: s.commandRunningByPtyId,
+    agentAliveByPtyId: s.agentAliveByPtyId,
+    remoteWorkspaces: s.remoteWorkspaces,
+    surfaceLastMessage: s.surfaceLastMessage,
+    usageLimitWaiting: s.usageLimitWaiting,
+  } : null)));
+  const hookRunningByPtyId = useStore(useShallow((s) => (enabled ? selectHookRunningByPtyId(s) : NO_FLAGS)));
+  const unverifiablePaneMinutes = useStore(useShallow((s) => (enabled ? selectUnverifiablePaneMinutes(s) : NO_MINUTES)));
+  return useMemo(() => {
+    if (!inputs) return NO_ROWS;
+    // The output stamp moves on every chunk, so it is read, not subscribed, as Fleet does.
+    const { groups } = selectFleetBoard(
+      { ...inputs, hookRunningByPtyId, unverifiablePaneMinutes, surfaceOutputAt: useStore.getState().surfaceOutputAt },
+      { now, sortMode: 'attention' },
+    );
+    return [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle];
+  }, [inputs, hookRunningByPtyId, unverifiablePaneMinutes, now]);
+}
+
+/**
  * To hand out on the board: the open items for the company's folder, each
  * given out through Fleet's Hand out… popover, and Add a task… with that
  * folder first. With no items it is one line, the heading and Add a task…,
@@ -78,7 +118,8 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
   scrollRef: RefObject<HTMLDivElement | null>;
 }) {
   const t = useT();
-  const workspaces = useStore((s) => s.workspaces);
+  // Bot workers are not Fleet's, so not the popover's or the form's either.
+  const workspaces = useStore(selectOwnerWorkspaces);
   const listed = useHandOutItems(isActive);
   const items = useMemo(() => companyHandOutItems(listed, folder), [listed, folder]);
   const folders = useMemo(
@@ -86,8 +127,9 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
     [folder, workspaces, workspaceId],
   );
   const [adding, setAdding] = useState(false);
-  const [pick, setPick] = useState<{ id: string; anchor: Rect; bounds: Rect; rows: FleetRow[] } | null>(null);
+  const [pick, setPick] = useState<{ id: string; anchor: Rect; bounds: Rect } | null>(null);
   const pickItem = pick ? items.find((item) => item.id === pick.id) : undefined;
+  const rows = useFleetRows(pick !== null, now);
   const addRef = useRef<HTMLButtonElement>(null);
   const pickTrigger = useRef<HTMLElement | null>(null);
   const ids = useId();
@@ -116,16 +158,8 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
     const r = row.getBoundingClientRect();
     // The window, not the board's pane: a narrow board would squeeze the popover.
     const bounds = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
-    // Every Fleet row, read as the popover opens: where it finds a pane's
-    // section (a pane that needs you is not offered) and idle time.
-    const { groups } = selectFleetBoard(useStore.getState(), { now: Date.now(), sortMode: 'attention' });
     pickTrigger.current = trigger;
-    setPick({
-      id: item.id,
-      anchor: { top: r.top, left: r.left, right: r.right, bottom: r.bottom },
-      bounds,
-      rows: [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle],
-    });
+    setPick({ id: item.id, anchor: { top: r.top, left: r.left, right: r.right, bottom: r.bottom }, bounds });
   };
   const closePick = useCallback(() => {
     setPick(null);
@@ -243,7 +277,7 @@ function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
       {pick && pickItem && (
         // A portal, but its clicks still bubble up through React to the board's pane.
         <div onClick={(event) => event.stopPropagation()}>
-          <HandOutPopover item={pickItem} anchor={pick.anchor} bounds={pick.bounds} rows={pick.rows} workspaces={workspaces}
+          <HandOutPopover item={pickItem} anchor={pick.anchor} bounds={pick.bounds} rows={rows} workspaces={workspaces}
             onClose={closePick} t={t} />
         </div>
       )}
