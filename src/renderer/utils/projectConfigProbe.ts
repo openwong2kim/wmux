@@ -101,15 +101,16 @@ export async function applyProjectLayoutFresh(workspaceId: string): Promise<bool
  * `unattended` is the explicit unattended reboot-survival consent — only
  * meaningful for a 'trusted' decision (main forces it false otherwise). The
  * caller passes the checkbox's current value every time (no carry-forward).
- * `companyReviewed`: the approving dialog showed the file's company. */
+ * `companyReviewed`: the approving dialog showed the file's company.
+ * Resolves false when the decision was not saved (a toast says why). */
 export async function decideProjectTrust(
   workspaceId: string,
   decision: 'trusted' | 'denied' | 'clear',
   unattended = false,
   companyReviewed = false,
-): Promise<void> {
+): Promise<boolean> {
   const project = useStore.getState().projectConfigs[workspaceId];
-  if (!project?.root) return;
+  if (!project?.root) return false;
   try {
     await window.electronAPI.projectConfig.setTrust(
       project.root,
@@ -125,8 +126,9 @@ export async function decideProjectTrust(
       level: 'error',
       message: `Failed to save trust decision: ${err instanceof Error ? err.message : String(err)}`,
     });
-    return;
+    return false;
   }
   await probeProjectConfig(workspaceId);
   if (decision === 'trusted') maybeAutoApplyProjectLayout(workspaceId);
+  return true;
 }

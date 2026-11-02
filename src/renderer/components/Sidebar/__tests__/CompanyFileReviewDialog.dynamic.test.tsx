@@ -134,8 +134,37 @@ describe('CompanyFileReviewDialog', () => {
     expect(also.textContent).toContain('npm ci');
     expect(also.textContent).toContain('.env');
 
-    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...UNTRUSTED, trust: 'trusted', companyReviewed: false } } } as never));
+    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...UNTRUSTED, trust: 'trusted', prepReviewed: true, companyReviewed: false } } } as never));
     expect(container.querySelector('[data-company-review-also]')).toBeNull();
+  });
+
+  it('lists the setup of trusted bytes whose grant never showed it, since approving covers it', async () => {
+    await render({ ...UNTRUSTED, trust: 'trusted', prepReviewed: false, companyReviewed: false });
+    const also = container.querySelector('[data-company-review-also]') as HTMLElement;
+    expect(also.textContent).toContain('npm ci');
+    expect(also.textContent).toContain('.env');
+  });
+
+  it('approves nothing when the file in the store is no longer the one on screen', async () => {
+    await render(UNTRUSTED);
+    const approve = button('Approve and make company');
+    // The store moves on before the dialog has drawn it.
+    useStore.setState({ projectConfigs: { 'ws-1': { ...UNTRUSTED, contentHash: 'h2' } } } as never);
+    await act(async () => approve.click());
+    await flush();
+    expect(setTrust).not.toHaveBeenCalled();
+    expect(seatLaunches).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-company-review-note]')?.textContent).toBe('wmux.json changed. Review it again.');
+  });
+
+  it('a trust decision that was not saved makes nothing', async () => {
+    setTrust.mockRejectedValue(new Error('disk full'));
+    await render(UNTRUSTED);
+    await act(async () => button('Approve and make company').click());
+    await flush();
+    expect(seatLaunches).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-company-review-note]')).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it('Approve trusts the shown bytes with the company reviewed, then makes the company in the file\'s folder', async () => {

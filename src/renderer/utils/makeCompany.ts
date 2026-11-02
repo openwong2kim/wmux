@@ -59,7 +59,6 @@ export async function makeCompany(input: MakeCompanyInput, isOpen: () => boolean
   return { ok: true };
 }
 
-
 /** The folder a wmux.json is in: a company read from it works there. */
 export function companyFileFolder(configPath: string): string {
   const i = Math.max(configPath.lastIndexOf('/'), configPath.lastIndexOf('\\'));

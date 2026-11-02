@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { agentLauncherStem, agentRow, agentSlugToDisplay, type AgentSlug } from '../../../shared/agentIdentity';
 import { ownWorktreeSeats } from '../../../shared/companyPreset';
-import { companyNeedsReview } from '../../../shared/wmuxProjectConfig';
+import { companyNeedsReview, prepAwaitsReview } from '../../../shared/wmuxProjectConfig';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { renderSentence } from '../../i18n/renderSentence';
@@ -70,17 +70,30 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
   const setup = state.config?.fanout?.setup;
   const copy = state.config?.fanout?.copy ?? [];
   const copyAutomated = state.config?.fanout?.copyIntoAutomated === true;
-  const alsoInFile = state.trust !== 'trusted' && (commands.length > 0 || rows.length > 0 || setup !== undefined || copy.length > 0);
+  // Approving also approves these: shown unless the grant on these bytes
+  // already covers them (a grant without the setup review does not).
+  const alsoInFile = (state.trust !== 'trusted' || prepAwaitsReview(state))
+    && (commands.length > 0 || rows.length > 0 || setup !== undefined || copy.length > 0);
 
   const approve = async () => {
     if (busy || missing.length > 0) return;
     const shownHash = state.contentHash;
     // A re-approval of trusted bytes keeps their unattended consent.
     const unattendedCarry = state.trust === 'trusted' && state.unattended === true;
+    // The grant binds to the store's bytes as decideProjectTrust reads them,
+    // in this same turn: they must be the ones on screen.
+    if (useStore.getState().projectConfigs[workspaceId]?.contentHash !== shownHash) {
+      setNote(t('companyFile.changed'));
+      return;
+    }
     setBusy(true);
     setNote(null);
-    await decideProjectTrust(workspaceId, 'trusted', unattendedCarry, true);
+    const decided = await decideProjectTrust(workspaceId, 'trusted', unattendedCarry, true);
     if (!open.current) return;
+    if (!decided) {
+      setBusy(false);
+      return;
+    }
     const fresh = useStore.getState().projectConfigs[workspaceId];
     const made = fresh?.config?.company;
     if (!fresh?.configPath || !made || companyNeedsReview(fresh) || fresh.contentHash !== shownHash) {
