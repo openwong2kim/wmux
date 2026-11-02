@@ -40,6 +40,12 @@ function Quote({ text }: { text: string }) {
   );
 }
 
+/** Marks drawn as their own element; past them the rest of the file is one
+ *  string with its marks inline, so a file dense in them stays a few nodes. */
+const MARKS_STYLED_MAX = 2000;
+
+const mark = (c: string) => `⟨U+${c.codePointAt(0)?.toString(16).toUpperCase().padStart(4, '0')}⟩`;
+
 /** The file's text as it is, drawn left to right in byte order: each
  *  character a reader would not see, and each run of bytes that is not UTF-8
  *  (U+FFFD), is shown as its code point where it sits and counted above the
@@ -48,6 +54,9 @@ const WholeFile = memo(function WholeFile({ text }: { text: string }) {
   const t = useT();
   const parts = splitHiddenCharacters(text);
   const hidden = (parts.length - 1) / 2;
+  // parts alternate text, mark, text…: the styled ones end on a text entry.
+  const styled = parts.slice(0, 2 * MARKS_STYLED_MAX + 1);
+  const rest = parts.slice(2 * MARKS_STYLED_MAX + 1).map((part, i) => (i % 2 === 0 ? mark(part) : part)).join('');
   return (
     <>
       {hidden > 0 && <p className="ui-note" data-company-review-hidden>{t('companyFile.wholeFileHidden', { count: hidden })}</p>}
@@ -56,9 +65,10 @@ const WholeFile = memo(function WholeFile({ text }: { text: string }) {
         className="m-0 mt-2 max-h-[240px] overflow-auto whitespace-pre-wrap break-words border-l-2 border-[var(--line)] py-0.5 pl-2.5 font-mono text-[12px] text-[var(--text-sub)] [unicode-bidi:bidi-override]"
         data-company-review-file
       >
-        {parts.map((part, i) => (i % 2 === 0
+        {styled.map((part, i) => (i % 2 === 0
           ? <Fragment key={i}>{part}</Fragment>
-          : <span key={i} className="font-semibold text-[var(--text-main)]" data-hidden-char>{`⟨U+${part.codePointAt(0)?.toString(16).toUpperCase().padStart(4, '0')}⟩`}</span>))}
+          : <span key={i} className="font-semibold text-[var(--text-main)]" data-hidden-char>{mark(part)}</span>))}
+        {rest}
       </pre>
     </>
   );

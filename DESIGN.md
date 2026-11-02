@@ -1693,12 +1693,13 @@ leaves the page.
     trusts all of it") reads the file again and shows it whole, for what the
     groups do not list (a key wmux does not know, an entry it dropped), in
     mono under a `--line` left rule, scrolling past 240px, drawn left to
-    right in byte order. A CRLF line end shows as a line break; every other
+    right in byte order. A CRLF line end shows as a line break. Every other
     character a reader would not see (controls, format characters such as
-    the bidi marks, zero-width and other default-ignorable characters) and
-    every run of bytes that is not UTF-8 (`⟨U+FFFD⟩`) is shown where it sits
-    as a semibold `⟨U+202E⟩`, counted in a muted line above the text, never
-    removed.
+    the bidi marks, zero-width and other default-ignorable characters) is
+    shown where it sits as its code point, such as a semibold `⟨U+202E⟩`;
+    every run of bytes that is not UTF-8 shows as `⟨U+FFFD⟩`. Both are
+    counted in a muted line above the text and never removed; past the
+    first 2,000, the marks are plain text.
     The review shows the file as it was when it opened; when another read of
     the file differs (an edit, a save, the workspace moving to another
     folder, or the read for Show the whole file) it keeps that file on

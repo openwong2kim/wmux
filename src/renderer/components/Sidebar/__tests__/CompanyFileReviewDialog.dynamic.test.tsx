@@ -214,6 +214,17 @@ describe('CompanyFileReviewDialog', () => {
     expect(container.querySelector('[data-company-review-file]')?.textContent).toBe('{"a": "x⟨U+FFFD⟩y"}');
   });
 
+  it('keeps a file dense in hidden characters to a bounded number of elements, every one still marked', async () => {
+    text.mockResolvedValue({ configPath: '/dev/shop/wmux.json', contentHash: 'h1', text: `{"pad": "${'\u200b'.repeat(2500)}"}` });
+    await render(UNTRUSTED);
+    await act(async () => button('Show the whole file').click());
+    await flush();
+    expect(container.querySelectorAll('[data-hidden-char]').length).toBe(2000);
+    const shown = container.querySelector('[data-company-review-file]')?.textContent ?? '';
+    expect(shown).toBe(`{"pad": "${'⟨U+200B⟩'.repeat(2500)}"}`);
+    expect(container.querySelector('[data-company-review-hidden]')?.textContent).toContain('Hidden characters in this file: 2500.');
+  });
+
   it('still hides the whole file once the file on screen has changed', async () => {
     await render(UNTRUSTED);
     await act(async () => button('Show the whole file').click());
