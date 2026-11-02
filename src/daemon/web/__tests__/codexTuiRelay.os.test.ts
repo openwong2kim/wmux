@@ -124,6 +124,18 @@ describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>
       client.terminate();
     } finally { await f.cleanup(); }
   });
+  it('forwards a server frame larger than the client-frame bound (a 22.5 MiB plugin/list, #2612)', async () => {
+    const f = await fixture();
+    try {
+      const client = await f.connect(); await select(client, 1);
+      const received = new Promise<number>(resolve => client.once('message', bytes => resolve(Buffer.byteLength(bytes as Buffer))));
+      const payload = JSON.stringify({ id: 99, result: { plugins: 'x'.repeat(23 * 1024 * 1024) } });
+      f.upstream()?.send(payload);
+      expect(await received).toBe(Buffer.byteLength(payload));
+      expect(f.relay.retired()).toBe(false);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
   it('uses private permissions, rejects another client, and closes without stopping upstream',async()=>{
     const f=await fixture();
     try {

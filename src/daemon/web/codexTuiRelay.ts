@@ -18,6 +18,10 @@ export class CodexRelayUnavailableError extends Error {
 // Keep transport bounds separate from the much smaller Chat display budget.
 const MAX_FRAME = 16 * 1024 * 1024;
 const MAX_BUFFER = 32 * 1024 * 1024;
+// A frame from the server: plugin/list alone reached 22.5 MiB (#2612). Sends
+// to the TUI may hold two such frames before the connection is dropped.
+const MAX_SERVER_FRAME = 64 * 1024 * 1024;
+const MAX_SERVER_BUFFER = 2 * MAX_SERVER_FRAME;
 /** How long a request that needs the pane's identity waits for the pane to be
  * committed to this relay. A relay still unowned after that is torn down. */
 const IDENTITY_WAIT_MS = 3000;
@@ -272,14 +276,15 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     const retire = () => { void close().catch(()=> { /* noop */ }); };
     const send = (target:WebSocket,bytes:Buffer) => {
       if (!alive) return;
-      if (retired || target.readyState !== WebSocket.OPEN || target.bufferedAmount + bytes.length > MAX_BUFFER) { retire();return; }
+      const bound = target === client ? MAX_SERVER_BUFFER : MAX_BUFFER;
+      if (retired || target.readyState !== WebSocket.OPEN || target.bufferedAmount + bytes.length > bound) { retire();return; }
       target.send(bytes,{binary:false},error=>{if(error && alive)retire();});
     };
-    const decode = (raw:RawData,binary:boolean):{bytes:Buffer;message:unknown}|undefined => {
+    const decode = (raw:RawData,binary:boolean,limit = MAX_FRAME):{bytes:Buffer;message:unknown}|undefined => {
       if (!alive) return;
       if (retired || binary) {retire();return;}
       const bytes = Buffer.isBuffer(raw) ? raw : raw instanceof ArrayBuffer ? Buffer.from(raw) : Buffer.concat(raw);
-      if (bytes.length > MAX_FRAME) {retire();return;}
+      if (bytes.length > limit) {retire();return;}
       try {return {bytes,message:JSON.parse(bytes.toString('utf8'))};}
       catch {retire();return;}
     };
@@ -480,7 +485,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       }
     };
     const fromUpstream = (raw:RawData,binary:boolean) => {
-      const frame = decode(raw,binary);if(!frame)return;
+      const frame = decode(raw,binary,MAX_SERVER_FRAME);if(!frame)return;
       const before = JSON.stringify(tracker.current());
       tracker.fromServer(frame.message);
       const message = frame.message as {method?:unknown;params?:{threadId?:unknown;requestId?:unknown;turn?:unknown};id?:unknown;result?:unknown} | null;
@@ -659,7 +664,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         if (!alive || retired) return;
       }
       let attempt:WebSocket;
-      try {attempt = openCodexAccountSocket(upstreamPath,{handshakeTimeout:5000,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});}
+      try {attempt = openCodexAccountSocket(upstreamPath,{handshakeTimeout:5000,maxPayload:MAX_SERVER_FRAME,perMessageDeflate:false,followRedirects:false});}
       catch {if (rejoining) retryLater();else {endConnection();retire();}return;}
       upstream = attempt;sockets.add(attempt);
       let over = false;
