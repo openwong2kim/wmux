@@ -2,15 +2,18 @@
 // a temp sandbox: real powershell.exe, real WScript.Shell COM, real property
 // stores. This is the evidence the unit tests cannot give — that a dead
 // versioned link is retargeted to the stub with the icon pinned to app.ico,
-// that the legacy Start Menu link is deduped rather than retargeted, that
-// foreign shortcuts are untouched, and that Save() preserves the link's
-// AppUserModelID (the property Windows resolves the taskbar icon through).
+// that Squirrel's publisher-folder Start Menu link is removed while the
+// top-level entry is kept (#2971), that foreign shortcuts are untouched, and
+// that Save() preserves the link's AppUserModelID (the property Windows
+// resolves the taskbar icon through). The uninstall pass is run the same way.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
+  removeSecondStartMenuEntry,
+  removeToastEntries,
   runShortcutRepairPass,
   stageRootIcon,
   type RepairLocations,
@@ -94,9 +97,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     fs.mkdirSync(path.join(programs, 'someauthor'), { recursive: true });
     fs.mkdirSync(pinDir, { recursive: true });
     loc = {
-      legacyLnks: [path.join(programs, 'wmux.lnk')],
       pinDirs: [pinDir],
-      publisherLnk: path.join(programs, '*', 'wmux.lnk'),
     };
   });
 
@@ -143,24 +144,18 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
     expect(readLnk(pin).target.toLowerCase()).toBe(path.join(root, 'wmux.exe').toLowerCase());
   });
 
-  it('removes a dead legacy Start Menu link when the publisher link exists', () => {
-    const legacy = loc.legacyLnks[0];
-    makeLnk(legacy, path.join(root, 'app-0.5.0', 'wmux.exe'));
-    makeLnk(path.join(programs, 'someauthor', 'wmux.lnk'), path.join(root, 'wmux.exe'));
+  // #2971: Electron's toast setup is the one writer of the top-level entry;
+  // the repair pass must not become a second one.
+  it('never touches the Start Menu, not even a dead top-level link', () => {
+    const top = path.join(programs, 'wmux.lnk');
+    const dead = path.join(root, 'app-0.5.0', 'wmux.exe');
+    makeLnk(top, dead);
+    const pub = path.join(programs, 'someauthor', 'wmux.lnk');
+    makeLnk(pub, path.join(root, 'wmux.exe'));
 
-    const actions = repair();
-    expect(actions).toEqual([{ path: legacy, action: 'removed' }]);
-    expect(fs.existsSync(legacy)).toBe(false);
-  });
-
-  it('retargets (not removes) a dead legacy link when no publisher link exists', () => {
-    const legacy = loc.legacyLnks[0];
-    makeLnk(legacy, path.join(root, 'app-0.5.0', 'wmux.exe'));
-
-    const actions = repair();
-    expect(actions).toEqual([{ path: legacy, action: 'retargeted' }]);
-    expect(fs.existsSync(legacy)).toBe(true);
-    expect(readLnk(legacy).target.toLowerCase()).toBe(path.join(root, 'wmux.exe').toLowerCase());
+    expect(repair()).toEqual([]);
+    expect(readLnk(top).target.toLowerCase()).toBe(dead.toLowerCase());
+    expect(fs.existsSync(pub)).toBe(true);
   });
 
   it('leaves healthy stub-targeted links and foreign shortcuts alone', () => {
@@ -229,9 +224,7 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
       fs.mkdirSync(oddPins, { recursive: true });
       fs.mkdirSync(oddPrograms, { recursive: true });
       const oddLoc: RepairLocations = {
-        legacyLnks: [path.join(oddPrograms, 'wmux.lnk')],
         pinDirs: [oddPins],
-        publisherLnk: path.join(oddPrograms, '*', 'wmux.lnk'),
       };
 
       const pin = path.join(oddPins, 'wmux-pin.lnk');
@@ -304,6 +297,170 @@ describe.skipIf(!onWindows)('shortcutHygiene end-to-end (real .lnk, real PowerSh
       `$item.ExtendedProperty('System.AppUserModel.ID')`,
     ].join('\n')).trim();
     expect(aumid).toBe('com.squirrel.wmux.wmux');
+  });
+});
+
+// #2971: at startup, Squirrel's publisher-folder link from installs before
+// #2971 goes once the top-level entry exists and points into the install.
+describe.skipIf(!onWindows)('removeSecondStartMenuEntry end-to-end (real .lnk, real PowerShell)', () => {
+  let sandbox: string;
+  let root: string;
+  let execPath: string;
+  let top: string;
+  let pubDir: string;
+  let pub: string;
+
+  beforeEach(() => {
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-second-entry-')));
+    root = path.join(sandbox, 'wmux');
+    fs.mkdirSync(path.join(root, 'app-1.0.0'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'wmux.exe'), 'stub');
+    execPath = path.join(root, 'app-1.0.0', 'wmux.exe');
+    fs.writeFileSync(execPath, 'exe');
+    const programs = path.join(sandbox, 'Programs');
+    pubDir = path.join(programs, 'someauthor');
+    fs.mkdirSync(pubDir, { recursive: true });
+    top = path.join(programs, 'wmux.lnk');
+    pub = path.join(pubDir, 'wmux.lnk');
+  });
+
+  afterEach(() => {
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  const run = async () => {
+    const { actions, failure } = await removeSecondStartMenuEntry(execPath, 'someauthor', { topLevelLnk: top, publisherLnk: pub });
+    if (failure) throw new Error(`second entry removal did not run: ${failure}`);
+    return actions;
+  };
+
+  it('removes the publisher link and its emptied folder once the top-level entry points into the install', async () => {
+    makeLnk(top, path.join(root, 'wmux.exe'));
+    makeLnk(pub, path.join(root, 'wmux.exe'));
+    expect(await run()).toEqual([{ path: pub, action: 'removed' }]);
+    expect(fs.existsSync(pub)).toBe(false);
+    expect(fs.existsSync(pubDir)).toBe(false);
+    expect(fs.existsSync(top)).toBe(true);
+  });
+
+  it('keeps a publisher folder that holds anything else', async () => {
+    makeLnk(top, path.join(root, 'wmux.exe'));
+    makeLnk(pub, execPath);
+    fs.writeFileSync(path.join(pubDir, 'other.lnk'), 'not ours');
+    expect(await run()).toEqual([{ path: pub, action: 'removed' }]);
+    expect(fs.existsSync(path.join(pubDir, 'other.lnk'))).toBe(true);
+  });
+
+  it('keeps the publisher link while there is no top-level entry, so the app always has one', async () => {
+    makeLnk(pub, path.join(root, 'wmux.exe'));
+    expect(await run()).toEqual([]);
+    expect(fs.existsSync(pub)).toBe(true);
+  });
+
+  it('keeps it while the top-level entry points at a removed version', async () => {
+    // An install upgraded from 3.3.x: the top-level link still names the
+    // deleted app-3.3.0\wmux.exe until Electron rewrites it.
+    makeLnk(top, path.join(root, 'app-0.9.0', 'wmux.exe'));
+    makeLnk(pub, path.join(root, 'wmux.exe'));
+    expect(await run()).toEqual([]);
+    expect(fs.existsSync(pub)).toBe(true);
+  });
+
+  it('keeps it while the top-level entry points at another install', async () => {
+    const other = path.join(sandbox, 'other', 'wmux.exe');
+    fs.mkdirSync(path.dirname(other), { recursive: true });
+    fs.writeFileSync(other, 'x');
+    makeLnk(top, other);
+    makeLnk(pub, path.join(root, 'wmux.exe'));
+    expect(await run()).toEqual([]);
+    expect(fs.existsSync(pub)).toBe(true);
+  });
+
+  it("keeps a publisher-folder link that is not this install's", async () => {
+    makeLnk(top, path.join(root, 'wmux.exe'));
+    const other = path.join(sandbox, 'other', 'wmux.exe');
+    fs.mkdirSync(path.dirname(other), { recursive: true });
+    fs.writeFileSync(other, 'x');
+    makeLnk(pub, other);
+    expect(await run()).toEqual([]);
+    expect(fs.existsSync(pub)).toBe(true);
+  });
+});
+
+// #2971: the uninstall hook removes what Electron's toast setup wrote for this
+// install. The class key lives under a throwaway HKCU key, never the real
+// HKCU\Software\Classes\CLSID.
+describe.skipIf(!onWindows)('removeToastEntries end-to-end (real .lnk, real registry under a temp key)', () => {
+  let sandbox: string;
+  let root: string;
+  let execPath: string;
+  let top: string;
+  let regRoot: string;
+  let clsidKey: string;
+
+  const setDefault = (key: string, value: string) => ps([
+    `New-Item -Path ${q(key)} -Force | Out-Null`,
+    `Set-Item -LiteralPath ${q(key)} -Value ${q(value)}`,
+  ].join('\n'));
+  const activator = (clsid: string, name: string, server: string) => {
+    setDefault(`${clsidKey}\\${clsid}`, name);
+    setDefault(`${clsidKey}\\${clsid}\\LocalServer32`, server);
+  };
+  const keyExists = (clsid: string) => ps(`Test-Path -LiteralPath ${q(`${clsidKey}\\${clsid}`)}`).trim() === 'True';
+
+  beforeEach(() => {
+    sandbox = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-toast-entries-')));
+    root = path.join(sandbox, 'wmux');
+    fs.mkdirSync(path.join(root, 'app-1.0.0'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'wmux.exe'), 'stub');
+    execPath = path.join(root, 'app-1.0.0', 'wmux.exe');
+    fs.writeFileSync(execPath, 'exe');
+    fs.mkdirSync(path.join(sandbox, 'Programs'), { recursive: true });
+    top = path.join(sandbox, 'Programs', 'wmux.lnk');
+    regRoot = `HKCU:\\Software\\wmux-hygiene-test-${process.pid}-${Date.now()}`;
+    clsidKey = `${regRoot}\\CLSID`;
+  });
+
+  afterEach(() => {
+    ps(`if (Test-Path -LiteralPath ${q(regRoot)}) { Remove-Item -LiteralPath ${q(regRoot)} -Recurse -Force }`);
+    fs.rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  const remove = () => {
+    const { actions, failure } = removeToastEntries(execPath, { topLevelLnk: top, clsidKey });
+    if (failure) throw new Error(`toast entry removal did not run: ${failure}`);
+    return actions;
+  };
+
+  it("removes this install's Start Menu entry and activator classes, and nothing else", () => {
+    makeLnk(top, path.join(root, 'wmux.exe'));
+    const ours = '{11111111-2222-3333-4444-555555555555}';
+    const oursOld = '{66666666-2222-3333-4444-555555555555}';
+    const otherApp = '{77777777-2222-3333-4444-555555555555}';
+    const notActivator = '{88888888-2222-3333-4444-555555555555}';
+    activator(ours, 'Electron Notification Activator', execPath);
+    activator(oursOld, 'Electron Notification Activator', path.join(root, 'app-0.9.0', 'wmux.exe'));
+    activator(otherApp, 'Electron Notification Activator', path.join(sandbox, 'other', 'other.exe'));
+    activator(notActivator, 'Something Else', execPath);
+
+    const actions = remove();
+    expect(actions.map((a) => a.path).sort()).toEqual(
+      [top, `HKEY_CURRENT_USER${clsidKey.slice('HKCU:'.length)}\\${ours}`, `HKEY_CURRENT_USER${clsidKey.slice('HKCU:'.length)}\\${oursOld}`].sort(),
+    );
+    expect(fs.existsSync(top)).toBe(false);
+    expect(keyExists(ours)).toBe(false);
+    expect(keyExists(oursOld)).toBe(false);
+    expect(keyExists(otherApp)).toBe(true);
+    expect(keyExists(notActivator)).toBe(true);
+  });
+
+  it("keeps a top-level entry that belongs to another install", () => {
+    const foreign = path.join(sandbox, 'other', 'wmux.exe');
+    fs.mkdirSync(path.dirname(foreign), { recursive: true });
+    fs.writeFileSync(foreign, 'x');
+    makeLnk(top, foreign);
+    expect(remove()).toEqual([]);
+    expect(fs.existsSync(top)).toBe(true);
   });
 });
 

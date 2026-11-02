@@ -27,9 +27,10 @@
  *     pointed at the running exe. A MISSING value is only created on the
  *     firstrun of a fresh install (installProfile.ts). The same absence on an
  *     existing profile may be the user's opt-out, and must stick.
- *   - Shortcuts: only on the firstrun of a fresh install, and only the
- *     locations that are missing. A user who deleted a shortcut must not see
- *     it come back on the next update.
+ *   - Desktop shortcut: only on the firstrun of a fresh install, and only when
+ *     it is missing. A user who deleted it must not see it come back on the
+ *     next update. The Start Menu entry is not Update.exe's to write: the app
+ *     writes it at every startup (notification/startMenuEntry.ts, #2971).
  *
  * The decision is a pure function (`planPostInstallReconcile`) so it is unit
  * tested directly; `runPostInstallReconcile` is the thin OS layer, win32-only
@@ -44,7 +45,8 @@ import * as cliShim from './cliShim';
 import * as shortcutHygiene from './shortcutHygiene';
 import { squirrelInstallRootFor } from './updater/installIntegrity';
 
-export type ShortcutLocation = 'Desktop' | 'StartMenu';
+/** Update.exe writes only the Desktop link; the Start Menu entry is the app's (#2971). */
+export type ShortcutLocation = 'Desktop';
 
 export interface ReconcileProbe {
   /** Launched with `--squirrel-firstrun`: an install finished moments ago. */
@@ -60,7 +62,6 @@ export interface ReconcileProbe {
   /** Whether `autostartTarget` exists on disk (ignored when the target is null). */
   autostartTargetExists: boolean;
   desktopShortcutExists: boolean;
-  startMenuShortcutExists: boolean;
 }
 
 export interface ReconcilePlan {
@@ -82,10 +83,7 @@ export function planPostInstallReconcile(probe: ReconcileProbe): ReconcilePlan {
   }
 
   const shortcuts: ShortcutLocation[] = [];
-  if (freshFirstRun) {
-    if (!probe.desktopShortcutExists) shortcuts.push('Desktop');
-    if (!probe.startMenuShortcutExists) shortcuts.push('StartMenu');
-  }
+  if (freshFirstRun && !probe.desktopShortcutExists) shortcuts.push('Desktop');
 
   return { installCliShim: !probe.shimCurrent || !probe.binOnPath, autostart: autostartAction, shortcuts };
 }
@@ -130,18 +128,6 @@ export function isEmptyPlan(plan: ReconcilePlan): boolean {
  */
 const SHORTCUT_DELAY_MS = 30_000;
 
-/** Squirrel's Start Menu link lives in `Programs\<author>\`; <=3.3.x wrote it at the top level. */
-function startMenuShortcutExists(appData: string): boolean {
-  const programs = path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
-  if (fs.existsSync(path.join(programs, 'wmux.lnk'))) return true;
-  try {
-    return fs.readdirSync(programs, { withFileTypes: true })
-      .some((d) => d.isDirectory() && fs.existsSync(path.join(programs, d.name, 'wmux.lnk')));
-  } catch {
-    return false;
-  }
-}
-
 /**
  * `desktopDir` comes from app.getPath('desktop') so a Desktop redirected by
  * OneDrive is checked where Squirrel actually writes the link.
@@ -181,8 +167,6 @@ export async function runPostInstallReconcile(opts: ReconcileOptions): Promise<R
   try {
     const root = squirrelInstallRootFor(opts.execPath);
     if (!root) return null;
-    const appData = process.env.APPDATA;
-    if (!appData) return null;
 
     const target = autostart.readAutostartTarget();
     const plan = planPostInstallReconcile({
@@ -193,7 +177,6 @@ export async function runPostInstallReconcile(opts: ReconcileOptions): Promise<R
       autostartTarget: target,
       autostartTargetExists: target !== null && autostartTargetAlive(target, root),
       desktopShortcutExists: desktopShortcutExists(opts.desktopDir),
-      startMenuShortcutExists: startMenuShortcutExists(appData),
     });
     if (isEmptyPlan(plan)) return plan;
 

@@ -12,12 +12,14 @@ import {
 } from '../installProfile';
 
 describe('planInstallHook', () => {
-  it('a first install turns autostart on and creates Desktop and Start Menu shortcuts', () => {
-    expect(planInstallHook(false)).toEqual({ autostart: 'enable', shortcutLocations: 'Desktop,StartMenu' });
+  // #2971: Update.exe never writes a Start Menu link; Electron's toast setup
+  // owns the one entry, at the top level of Programs.
+  it('a first install turns autostart on and creates only the Desktop shortcut', () => {
+    expect(planInstallHook(false)).toEqual({ autostart: 'enable', shortcutLocations: 'Desktop' });
   });
 
-  it('an update keeps autostart as the user left it and creates no Desktop shortcut', () => {
-    expect(planInstallHook(true)).toEqual({ autostart: 'refresh', shortcutLocations: 'StartMenu' });
+  it('an update keeps autostart as the user left it and runs no --createShortcut', () => {
+    expect(planInstallHook(true)).toEqual({ autostart: 'refresh', shortcutLocations: null });
   });
 });
 

@@ -204,7 +204,8 @@ import { setConfiguredFirstPartyClients } from './mcp/firstParty';
 import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
-import { warnOnInstallIntegrityGap } from './updater/installIntegrity';
+import { squirrelInstallRootFor, warnOnInstallIntegrityGap } from './updater/installIntegrity';
+import { keepOneStartMenuEntry, shouldWriteStartMenuEntry } from './notification/startMenuEntry';
 import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -381,7 +382,7 @@ if (process.platform === 'win32') {
       const hookPlan = planInstallHook(existingProfile);
       console.log(
         `[Squirrel] install hook: ${existingProfile ? 'existing profile (update)' : 'first install'} — ` +
-        `autostart ${hookPlan.autostart}, shortcuts ${hookPlan.shortcutLocations}`,
+        `autostart ${hookPlan.autostart}, shortcuts ${hookPlan.shortcutLocations ?? 'none'}`,
       );
 
       // Register Windows startup entry so wmux survives reboot. Autostart
@@ -403,22 +404,23 @@ if (process.platform === 'win32') {
       let installIcon: string | null = null;
       try { installIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
 
-      const installShortcutArgs = ['--createShortcut', target, '--shortcut-locations', hookPlan.shortcutLocations];
-      if (installIcon) installShortcutArgs.push('--icon', installIcon);
-      spawn(updateExe, installShortcutArgs, { detached: true, windowsHide: true })
-        .on('close', () => {
-          // #863: repair leftover shortcuts AFTER Update.exe has written the
-          // canonical ones. Order matters: the legacy top-level Start Menu
-          // link is only deduped when the publisher-folder link exists, and on
-          // an install over a <=3.3.x layout that link does not exist until
-          // --createShortcut has run. Repairing first would retarget the legacy
-          // link instead of removing it and leave two Start Menu entries.
-          try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-          // Auto-launch app after install
-          spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-          process.exit(0);
-        });
-      app.quit();
+      // #863: repair leftover pins after Update.exe is done. The Start Menu
+      // entry is written by the app this launches (notification/
+      // startMenuEntry.ts, #2971), never by Update.exe.
+      const finishInstall = () => {
+        try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+        // Auto-launch app after install
+        spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        process.exit(0);
+      };
+      if (hookPlan.shortcutLocations) {
+        const installShortcutArgs = ['--createShortcut', target, '--shortcut-locations', hookPlan.shortcutLocations];
+        if (installIcon) installShortcutArgs.push('--icon', installIcon);
+        spawn(updateExe, installShortcutArgs, { detached: true, windowsHide: true }).on('close', finishInstall);
+        app.quit();
+      } else {
+        finishInstall();
+      }
     } else if (squirrelCmd === '--squirrel-updated') {
       // Refresh the startup entry's exe path (it changes on every update) —
       // but ONLY if autostart is still on. Re-adding unconditionally would
@@ -430,28 +432,20 @@ if (process.platform === 'win32') {
       try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
       // #863: same shortcut hygiene as the install hook — an update is when
-      // versioned shortcut targets (old app-X.Y.Z paths) actually die.
-      let updateIcon: string | null = null;
-      try { updateIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
+      // versioned shortcut targets (old app-X.Y.Z paths) actually die. The
+      // staged icon is what retargeted pins point at.
+      try { shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
 
-      // Start Menu only, named explicitly: an update must not bring back a
-      // Desktop shortcut the user deleted (same rule as the install branch on
-      // an existing profile).
-      const updateShortcutArgs = ['--createShortcut', target, '--shortcut-locations', 'StartMenu'];
-      if (updateIcon) updateShortcutArgs.push('--icon', updateIcon);
-      spawn(updateExe, updateShortcutArgs, { detached: true, windowsHide: true })
-        .on('close', () => {
-          // Repair after the canonical links are written — see the install
-          // branch for why the ordering is load-bearing.
-          try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-          // #502: relaunch the updated app — the pre-update instance was
-          // taken down above (or quit itself in the in-app "Restart to
-          // install" flow), and the single-instance lock dedupes if
-          // Squirrel also launches one itself.
-          spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-          process.exit(0);
-        });
-      app.quit();
+      // No --createShortcut: an update must not bring back a Desktop shortcut
+      // the user deleted, and the Start Menu entry is the app's own
+      // (notification/startMenuEntry.ts, #2971).
+      try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+      // #502: relaunch the updated app — the pre-update instance was taken
+      // down above (or quit itself in the in-app "Restart to install" flow),
+      // and the single-instance lock dedupes if Squirrel also launches one
+      // itself.
+      spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      process.exit(0);
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Remove startup registry entry
       try { autostart.disableAutostart(); } catch { /* best-effort */ }
@@ -482,6 +476,11 @@ if (process.platform === 'win32') {
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
+
+      // #2971: the Start Menu entry and the toast activator classes Electron's
+      // toast setup wrote are not Update.exe's, so --removeShortcut leaves
+      // them. Done while Update.exe works, so it never delays --removeShortcut.
+      try { shortcutHygiene.removeToastEntries(process.execPath); } catch { /* best-effort */ }
       app.quit();
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
@@ -721,6 +720,17 @@ void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /
 void app.whenReady().then(() => { void warmLoginShellPath(); });
 // Screen-reader users only: watch for a screen reader (screenReader.ts).
 void app.whenReady().then(() => { startScreenReaderMonitor(); });
+// #2971: the installed app writes its one Start Menu entry through Electron's
+// toast setup, so it exists from the first launch rather than the first toast.
+void app.whenReady().then(() => {
+  const probe = {
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    dataSuffix: dataSuffix(),
+    squirrelRoot: squirrelInstallRootFor(process.execPath),
+  };
+  if (shouldWriteStartMenuEntry(probe)) keepOneStartMenuEntry(process.execPath, app.getAppPath());
+});
 
 // ── Promoted browser flows: the idle sweep ─────────────────────────────────
 //
