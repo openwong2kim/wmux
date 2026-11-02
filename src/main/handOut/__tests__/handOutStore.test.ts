@@ -35,6 +35,23 @@ afterEach(() => {
 });
 
 describe('HandOutStore', () => {
+  it('puts an item back when the app stopped between recording a pick and sending it', async () => {
+    const a = make();
+    const stranded = a.add({ title: 'Stranded', folder: '/repo' }, owner);
+    const sent = a.add({ title: 'Sent', folder: '/repo' }, owner);
+    if (!stranded.ok || !sent.ok) throw new Error('add failed');
+    await pickLink(stranded.item.id);
+    await links.upsert({ origin: 'hand-out', handOutId: sent.item.id, title: 'Sent', a2aTaskId: 'task-1', owner: { workspaceId: 'ws-1', paneId: 'pane-1' } });
+    expect(a.get(stranded.item.id)?.state).toBe('out');
+    await a.flush();
+
+    const b = make();
+    expect(b.list()).toHaveLength(2);
+    await links.flush();
+    expect(b.get(stranded.item.id)?.state).toBe('open');
+    expect(b.get(sent.item.id)?.state).toBe('out');
+  });
+
   it('adds, lists newest first, removes, and keeps the list across a reload', async () => {
     const a = make();
     const first = a.add({ title: 'First', folder: '/repo' }, owner);

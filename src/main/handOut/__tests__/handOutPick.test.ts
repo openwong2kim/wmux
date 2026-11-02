@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,7 +21,7 @@ let item: HandOutItem;
 let sendReply: Record<string, unknown>;
 let cancelTakes: boolean;
 let fanOut: (req: FanOutRequest) => Promise<FanOutResult>;
-let invoke: ReturnType<typeof vi.fn>;
+let invoke: Mock<(method: string, params: Record<string, unknown>) => Promise<unknown>>;
 
 function deps(over: Partial<HandOutPickDeps> = {}): HandOutPickDeps {
   return {

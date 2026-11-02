@@ -9,7 +9,10 @@
 // and an item whose work is done leaves the list (on load too).
 //
 // A pick holds an in-memory reservation for its whole send, so two picks of
-// one item never both send.
+// one item never both send. A pick to a pane records its link before it
+// sends; a link still waiting for its task when the list first loads belongs
+// to a pick the app stopped in the middle of, so it is closed and the item is
+// open again.
 //
 // Never throws: a torn file loads as an empty list, a bad record is dropped on
 // its own, and a failed write is logged and retried by the next mutation.
@@ -28,7 +31,7 @@ import {
   type HandOutEntry,
   type HandOutItem,
 } from '../../shared/handOut';
-import type { WorkLink } from '../../shared/workLink';
+import type { WorkLink, WorkLinkState } from '../../shared/workLink';
 import { getWorkLinkStore } from '../workLink/workLinkStore';
 
 interface HandOutFile {
@@ -47,6 +50,7 @@ export function getHandOutPath(dir: string = getWmuxDir()): string {
 export interface HandOutLinks {
   list(): WorkLink[];
   get(id: string): WorkLink | null;
+  setState(id: string, state: WorkLinkState): Promise<unknown>;
   onChange(fn: (ids: string[]) => void): () => void;
 }
 
@@ -148,9 +152,21 @@ export class HandOutStore {
       if (item && !items.has(item.id)) items.set(item.id, item);
     }
     this.items = items;
+    this.closeStrandedPicks();
     // Work may have finished while the app was closed.
     if (this.dropDone()) void this.persist();
     return items;
+  }
+
+  /** Close the links of picks that never sent. Runs once, on load, before any
+   *  pick of this process can have recorded a link. */
+  private closeStrandedPicks(): void {
+    for (const link of this.handOutLinks()) {
+      if (link.origin !== 'hand-out' || link.state !== 'queued' || link.a2aTaskId || link.worktree) continue;
+      void this.links.setState(link.id, 'abandoned').catch((err: unknown) => {
+        console.warn('[handOut] could not close a stranded pick:', err);
+      });
+    }
   }
 
   /** The links a pick made: the only ones an item's state reads. */
