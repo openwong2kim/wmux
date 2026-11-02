@@ -184,15 +184,21 @@ describe('CompanyFileReviewDialog', () => {
     expect(container.querySelector('[data-company-review-file]')).toBeNull();
   });
 
-  it('does not show a whole file that is not the one on screen, and turns Approve off', async () => {
-    text.mockResolvedValue({ configPath: '/dev/shop/wmux.json', contentHash: 'h2', text: '{"version": 1}' });
-    get.mockResolvedValue({ ...UNTRUSTED, contentHash: 'h2' });
+  it.each([
+    ['other bytes', { configPath: '/dev/shop/wmux.json', contentHash: 'h2', text: '{"version": 1}' }],
+    ['another file', { configPath: '/dev/wmux.json', contentHash: 'h1', text: '{"version": 1}' }],
+    ['no file', null],
+  ])('does not show a whole file with %s, and turns Approve off though the store still holds the file on screen', async (_what, read) => {
+    text.mockResolvedValue(read);
+    // The re-probe still reads the bytes on screen, as main's cache can after a same-size edit.
+    get.mockResolvedValue(UNTRUSTED);
     await render(UNTRUSTED);
     await act(async () => button('Show the whole file').click());
     await flush();
+    expect(get).toHaveBeenCalledWith('/dev/shop');
+    expect(useStore.getState().projectConfigs['ws-1']?.contentHash).toBe('h1');
     expect(container.querySelector('[data-company-review-file]')).toBeNull();
     expect(container.querySelector('[data-company-review-moved]')).not.toBeNull();
-    expect(get).toHaveBeenCalledWith('/dev/shop');
     const approve = button('Approve and make company');
     expect(approve.disabled).toBe(true);
     await act(async () => approve.click());
@@ -200,14 +206,25 @@ describe('CompanyFileReviewDialog', () => {
     expect(setTrust).not.toHaveBeenCalled();
   });
 
-  it('says so when the file holds bytes that are not text', async () => {
-    text.mockResolvedValue({ configPath: '/dev/shop/wmux.json', contentHash: 'h1', notText: true });
+  it('marks bytes that are not UTF-8 where they sit', async () => {
+    text.mockResolvedValue({ configPath: '/dev/shop/wmux.json', contentHash: 'h1', text: '{"a": "x\ufffdy"}' });
     await render(UNTRUSTED);
     await act(async () => button('Show the whole file').click());
     await flush();
-    expect(container.querySelector('[data-company-review-not-text]')?.textContent)
-      .toBe("This file holds bytes that are not text, so it can't be shown here.");
+    expect(container.querySelector('[data-company-review-file]')?.textContent).toBe('{"a": "x⟨U+FFFD⟩y"}');
+  });
+
+  it('still hides the whole file once the file on screen has changed', async () => {
+    await render(UNTRUSTED);
+    await act(async () => button('Show the whole file').click());
+    await flush();
+    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...UNTRUSTED, contentHash: 'h2' } } } as never));
+    expect(button('Approve and make company').disabled).toBe(true);
+    const hide = button('Hide the whole file');
+    expect(hide.disabled).toBe(false);
+    await act(async () => hide.click());
     expect(container.querySelector('[data-company-review-file]')).toBeNull();
+    expect(button('Show the whole file').disabled).toBe(true);
   });
 
   it('lists the setup of trusted bytes whose grant never showed it, since approving covers it', async () => {

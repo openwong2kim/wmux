@@ -637,7 +637,6 @@ export const en = {
   'companyFile.hideWholeFile': "Hide the whole file",
   'companyFile.wholeFileHint': "approving trusts all of it",
   'companyFile.wholeFileHidden': "Hidden characters in this file: {count}. Each is shown as ⟨U+…⟩ where it sits.",
-  'companyFile.wholeFileNotText': "This file holds bytes that are not text, so it can't be shown here.",
   'companyFile.projectHeading': "Company",
   'companyFile.projectReviewed': "Approved to start from the + menu",
   'companyFile.projectNotReviewed': "Reviewed on its first start from the + menu",

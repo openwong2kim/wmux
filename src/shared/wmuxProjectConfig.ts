@@ -237,10 +237,12 @@ export interface ProjectConfigState {
 }
 
 /** The whole wmux.json a state reads, for a view of it (IPC PROJECT_CONFIG_TEXT):
- *  its bytes as text and their hash, or `notText` when they are not UTF-8. */
-export type ProjectConfigText =
-  | { configPath: string; contentHash: string; text: string }
-  | { configPath: string; contentHash: string; notText: true };
+ *  its bytes as text and their hash. */
+export interface ProjectConfigText {
+  configPath: string;
+  contentHash: string;
+  text: string;
+}
 
 /** A trusted project whose setup command or copy list waits for that one
  *  re-approval (the badge stays visible, like any verdict to act on). */

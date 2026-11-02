@@ -238,7 +238,7 @@ describe('readText — the whole file, for a view of it', () => {
     expect(read?.contentHash).toBe((await store.getState(nested)).contentHash);
   });
 
-  it('does not decode bytes that are not UTF-8', () => {
+  it('shows bytes that are not UTF-8 as U+FFFD, hashed over the bytes themselves', () => {
     const proj = path.join(tmpRoot, 'proj');
     fs.mkdirSync(proj);
     const bytes = Buffer.from([0x7b, 0xff, 0x7d]);
@@ -246,8 +246,15 @@ describe('readText — the whole file, for a view of it', () => {
     expect(makeStore().readText(proj)).toEqual({
       configPath: path.join(proj, 'wmux.json'),
       contentHash: createHash('sha256').update(bytes).digest('hex'),
-      notText: true,
+      text: '{\ufffd}',
     });
+  });
+
+  it('reads the folder it is given, a name ending in a space included', () => {
+    const proj = path.join(tmpRoot, 'proj ');
+    writeConfig(proj, VALID);
+    writeConfig(path.join(tmpRoot, 'proj'), { version: 1 });
+    expect(makeStore().readText(proj)?.configPath).toBe(path.join(proj, 'wmux.json'));
   });
 
   it('reads nothing without a file, or past the size cap', () => {

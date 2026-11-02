@@ -630,7 +630,6 @@ export const ko = {
   'companyFile.hideWholeFile': "파일 전체 숨기기",
   'companyFile.wholeFileHint': "승인하면 이 전부를 신뢰합니다",
   'companyFile.wholeFileHidden': "이 파일에 보이지 않는 문자가 {count}개 있습니다. 각각 그 자리에 ⟨U+…⟩로 표시됩니다.",
-  'companyFile.wholeFileNotText': "이 파일에는 텍스트가 아닌 바이트가 있어 여기에 표시할 수 없습니다.",
   'companyFile.projectHeading': "회사",
   'companyFile.projectReviewed': "+ 메뉴에서 시작하도록 승인됨",
   'companyFile.projectNotReviewed': "+ 메뉴에서 처음 시작할 때 검토합니다",

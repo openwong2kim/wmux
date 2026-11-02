@@ -24,20 +24,21 @@ export interface WmuxProjectCompany {
   seats: CompanyPresetSeat[];
 }
 
-/** Above C0: the C1 controls, the line and paragraph separators, the bidi
- *  marks, embeddings, overrides and isolates that reorder what is displayed,
- *  and the invisible characters (zero-width, joiners, variation selectors,
- *  tags) that carry text a reader does not see. With the C0 controls, the set
- *  agentEnvSummary.ts refuses, and the supplementary variation selectors. */
-const HIDDEN_ABOVE_C0 = String.raw`\u007f-\u009f\u00ad\u034f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}`;
+/** Above C0: the C1 controls, the line and paragraph separators, the format
+ *  characters (the bidi marks, embeddings, overrides and isolates among them)
+ *  and every default-ignorable character (zero-width, joiners, variation
+ *  selectors, tags, fillers): what reorders the text a reader sees or carries
+ *  text a reader does not see. */
+const HIDDEN_ABOVE_C0 = String.raw`\u007f-\u009f\p{Zl}\p{Zp}\p{Cf}\p{Default_Ignorable_Code_Point}`;
 // eslint-disable-next-line no-misleading-character-class -- matching combining characters is the point
 const UNSAFE_LINE = new RegExp(String.raw`[\u0000-\u001f${HIDDEN_ABOVE_C0}]`, 'u');
 /** The same, with the line feed allowed. */
 // eslint-disable-next-line no-misleading-character-class -- as above
 const UNSAFE_TEXT = new RegExp(String.raw`[\u0000-\u0009\u000b-\u001f${HIDDEN_ABOVE_C0}]`, 'u');
-/** The same, with the tab allowed too, captured for a split. */
+/** The same with the tab allowed too, and the replacement character that
+ *  stands for bytes that are not UTF-8, captured for a split. */
 // eslint-disable-next-line no-misleading-character-class -- as above
-const HIDDEN = new RegExp(String.raw`([\u0000-\u0008\u000b-\u001f${HIDDEN_ABOVE_C0}])`, 'u');
+const HIDDEN = new RegExp(String.raw`([\u0000-\u0008\u000b-\u001f${HIDDEN_ABOVE_C0}\ufffd])`, 'u');
 
 /** A file's text cut at each of these characters but a tab or a line end (LF,
  *  or CRLF), so a view of it can show each one where it sits: the odd entries

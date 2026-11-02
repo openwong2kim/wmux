@@ -1692,11 +1692,13 @@ leaves the page.
     the quiet underlined text button **Show the whole file** ("approving
     trusts all of it") reads the file again and shows it whole, for what the
     groups do not list (a key wmux does not know, an entry it dropped), in
-    mono under a `--line` left rule, scrolling past 240px. A CRLF line end
-    shows as a line break; every other character a reader would not see
-    (controls, the bidi marks, zero-width and other invisible characters) is
-    shown where it sits as a semibold `⟨U+202E⟩`, counted in a muted line
-    above the text, never removed. A file that is not text says so instead.
+    mono under a `--line` left rule, scrolling past 240px, drawn left to
+    right in byte order. A CRLF line end shows as a line break; every other
+    character a reader would not see (controls, format characters such as
+    the bidi marks, zero-width and other default-ignorable characters) and
+    every run of bytes that is not UTF-8 (`⟨U+FFFD⟩`) is shown where it sits
+    as a semibold `⟨U+202E⟩`, counted in a muted line above the text, never
+    removed.
     The review shows the file as it was when it opened; when another read of
     the file differs (an edit, a save, the workspace moving to another
     folder, or the read for Show the whole file) it keeps that file on

@@ -227,29 +227,27 @@ export class ProjectConfigStore {
     return { contentHash, config };
   }
 
-  /** The wmux.json `getState` reads for `cwd`, whole, with the hash of the
-   *  bytes returned (read now, not from the cache). Bytes that are not UTF-8
-   *  are not decoded, since a substituted character would not be what the
-   *  hash covers; a byte-order mark is kept. */
-  readText(cwd: string): ProjectConfigText | null {
-    if (typeof cwd !== 'string' || cwd.trim().length === 0) return null;
-    const dir = this.findConfigDir(cwd.trim());
-    if (dir === null) return null;
-    const configPath = path.join(dir, WMUX_PROJECT_CONFIG_FILENAME);
+  /** The wmux.json `getState` reads for `dir`, whole, with the hash of the
+   *  bytes returned (read now, not from the cache). It is decoded as getState
+   *  decodes it: bytes that are not UTF-8 become U+FFFD, and a byte-order mark
+   *  is kept. `dir` is taken as given, not trimmed: it is the folder of a
+   *  configPath. */
+  readText(dir: string): ProjectConfigText | null {
+    if (typeof dir !== 'string' || dir.length === 0) return null;
+    const found = this.findConfigDir(dir);
+    if (found === null) return null;
+    const configPath = path.join(found, WMUX_PROJECT_CONFIG_FILENAME);
     let raw: Buffer;
     try {
-      if (!fs.statSync(configPath).isFile()) return null;
+      const stat = fs.statSync(configPath);
+      if (!stat.isFile() || stat.size > PROJECT_CONFIG_MAX_FILE_BYTES) return null;
       raw = fs.readFileSync(configPath);
     } catch {
       return null;
     }
+    // It may have grown between the stat and the read.
     if (raw.length > PROJECT_CONFIG_MAX_FILE_BYTES) return null;
-    const contentHash = sha256Hex(raw);
-    try {
-      return { configPath, contentHash, text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw) };
-    } catch {
-      return { configPath, contentHash, notText: true };
-    }
+    return { configPath, contentHash: sha256Hex(raw), text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw) };
   }
 
   // ── State for the renderer ─────────────────────────────────────────────────

@@ -391,7 +391,6 @@ export const zh = {
   'companyFile.hideWholeFile': "隐藏整个文件",
   'companyFile.wholeFileHint': "批准即信任其全部内容",
   'companyFile.wholeFileHidden': "此文件含有 {count} 个看不见的字符，每个都在原位显示为 ⟨U+…⟩。",
-  'companyFile.wholeFileNotText': "此文件含有非文本字节，无法在此显示。",
   'companyFile.projectHeading': "公司",
   'companyFile.projectReviewed': "已批准从 + 菜单启动",
   'companyFile.projectNotReviewed': "首次从 + 菜单启动时审阅",

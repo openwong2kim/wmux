@@ -612,7 +612,6 @@ export const pl = {
   'companyFile.hideWholeFile': "Ukryj cały plik",
   'companyFile.wholeFileHint': "zatwierdzenie obejmuje go w całości",
   'companyFile.wholeFileHidden': "Ukryte znaki w tym pliku: {count}. Każdy jest pokazany jako ⟨U+…⟩ w swoim miejscu.",
-  'companyFile.wholeFileNotText': "Ten plik zawiera bajty, które nie są tekstem, więc nie można go tu pokazać.",
   'companyFile.projectHeading': "Firma",
   'companyFile.projectReviewed': "Zatwierdzona do uruchomienia z menu +",
   'companyFile.projectNotReviewed': "Przeglądana przy pierwszym uruchomieniu z menu +",
