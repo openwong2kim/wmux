@@ -210,16 +210,6 @@ describe('RemoteA2aBridge', () => {
     expect(daemon.marks).toEqual([]);
   });
 
-  it('a paste left in the composer is recorded as delivered with its note', async () => {
-    daemon.tasks.set(id(10), remoteTask(10));
-    answer = () => ({ ok: true, delivered: true, ptyId: 'pty-b', note: 'pasted-not-submitted' });
-    bridge.start();
-    await settle();
-    expect(daemon.marks).toEqual([{ taskId: id(10), delivered: true, ptyId: 'pty-b', note: 'pasted-not-submitted' }]);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(renderer).toHaveBeenCalledTimes(1);
-  });
-
   it('delivers each peer reply once, after its inbound task, and marks it per message', async () => {
     const t = remoteTask(11);
     (t.metadata.remote as A2aRemoteTaskState).inbox = [

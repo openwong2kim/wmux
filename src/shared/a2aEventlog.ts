@@ -125,8 +125,6 @@ export interface A2aRemoteMarkPayload {
   messageId?: string;
   delivered?: boolean;
   held?: NonNullable<A2aRemoteTaskMarkerV1['held']>;
-  /** With `delivered`: the paste stayed in the composer (Enter withheld). */
-  note?: 'pasted-not-submitted';
   /** With `delivered`: the pty written to — the local pane's new occupant snapshot. */
   ptyId?: string;
   /** true: main is about to paste (recorded BEFORE the write); false: that attempt wrote nothing. */

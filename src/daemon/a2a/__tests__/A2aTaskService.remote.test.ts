@@ -164,7 +164,7 @@ describe('A2aTaskService — remote.mark and listRemotePending', () => {
 
     expect((await svc.markRemote({ taskId: 'rt-1', delivered: true, ptyId: 'pty-9' })).ok).toBe(true);
     expect(svc.getTask('rt-1')?.metadata.to.ptyId).toBe('pty-9');
-    expect((await svc.markRemote({ taskId: 'rt-3', delivered: true, note: 'pasted-not-submitted' })).ok).toBe(true);
+    expect((await svc.markRemote({ taskId: 'rt-3', delivered: true })).ok).toBe(true);
     expect(svc.listRemotePending()).toEqual([]);
 
     const restored = newService(log);
@@ -173,7 +173,7 @@ describe('A2aTaskService — remote.mark and listRemotePending', () => {
     expect(restored.listRemoteHeld().map((t) => t.id)).toEqual(['rt-2']);
     expect(restored.getTask('rt-2')?.metadata.remote).toMatchObject({ held: 'pane-missing', heldAt: expect.any(String) });
     expect(restored.getTask('rt-1')?.metadata.to.ptyId).toBe('pty-9');
-    expect(restored.getTask('rt-3')?.metadata.remote).toMatchObject({ delivered: true, note: 'pasted-not-submitted' });
+    expect(restored.getTask('rt-3')?.metadata.remote).toMatchObject({ delivered: true });
     expect(restored.getTask('rt-1')?.metadata.remote).toMatchObject({ delivered: true });
     expect(restored.getTask('rt-1')?.metadata.remote).not.toHaveProperty('held');
   });

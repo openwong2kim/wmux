@@ -455,7 +455,6 @@ export class A2aRemoteDelivery {
         ...(p['delivered'] === true ? { delivered: true } : {}),
         ...(typeof held === 'string' ? { held: readHeldReason(held) } : {}),
         ...(typeof p['attempted'] === 'boolean' && p['delivered'] !== true && held === undefined ? { attempted: p['attempted'] } : {}),
-        ...(p['note'] === 'pasted-not-submitted' ? { note: 'pasted-not-submitted' as const } : {}),
         ...(typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? { ptyId: p['ptyId'] } : {}),
       });
       // A reply that could not go now is tried again by `maintain`.
