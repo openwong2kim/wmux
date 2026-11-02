@@ -447,7 +447,6 @@ export class A2aTaskService {
         delete target.attempted;
         delete target.held;
         delete target.heldAt;
-        if (r.note) target.note = r.note;
         // The pty written to is the local pane's occupant from now on.
         if (r.ptyId) task.metadata[localSideOf(task)].ptyId = r.ptyId;
       } else if (r.held) {
@@ -885,8 +884,8 @@ export class A2aTaskService {
   /**
    * Record main's delivery outcome for an inbound remote task (no
    * `messageId`; inbound only) or for one reply/state item the peer sent into a
-   * remote task (`messageId`): `delivered` (clears a hold; `note` and the pty
-   * written to ride along) or a `held` reason. A mark that changes nothing
+   * remote task (`messageId`): `delivered` (clears a hold; the pty written to
+   * rides along) or a `held` reason. A mark that changes nothing
    * appends nothing. `updatedAt` is left alone: this is delivery bookkeeping,
    * not a task change an agent's incremental query should see.
    */
@@ -895,7 +894,6 @@ export class A2aTaskService {
     messageId?: string;
     delivered?: boolean;
     held?: A2aRemoteHeldReason;
-    note?: 'pasted-not-submitted';
     ptyId?: string;
     attempted?: boolean;
     stateSync?: TaskState;
@@ -958,8 +956,8 @@ export class A2aTaskService {
           ...(input.replyAcked ? { replyAcked: true as const } : {}),
         };
       } else if (input.delivered === true) {
-        unchanged = target.delivered === true && (!input.note || target.note === input.note) && (!input.ptyId || side.ptyId === input.ptyId);
-        body = { delivered: true, ...(input.note ? { note: input.note } : {}), ...(input.ptyId ? { ptyId: input.ptyId } : {}) };
+        unchanged = target.delivered === true && (!input.ptyId || side.ptyId === input.ptyId);
+        body = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}) };
       } else if (input.held) {
         unchanged = target.delivered !== true && target.held === input.held;
         body = { held: input.held };

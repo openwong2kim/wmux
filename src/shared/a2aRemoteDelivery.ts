@@ -124,11 +124,16 @@ export function aliasPart(raw: string): string {
  */
 export function sanitizeRemoteText(raw: string): string {
   return raw
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b[PX^_][\s\S]*?(?:\x1b\\|$)/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]?/g, '')
     .replace(/\x9b[0-?]*[ -/]*[@-~]?/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x9d[\s\S]*?(?:\x07|\x9c|$)/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b[\s\S]?/g, '')
     .replace(/\r\n?/g, '\n')
     // eslint-disable-next-line no-control-regex -- stripping controls is the point
@@ -298,7 +303,6 @@ export interface A2aRemoteInboxItem {
   held?: A2aRemoteHeldReason;
   /** When it was first held (the 24 h hold TTL counts from here). */
   heldAt?: string;
-  note?: 'pasted-not-submitted';
   /** main started a paste and has not confirmed it yet. */
   attempted?: boolean;
 }
@@ -328,8 +332,6 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * arrival, not of the other side applying it.
    */
   replyDeliveredAt?: string;
-  /** Inbound task: its paste stayed in the composer; counted as delivered. */
-  note?: 'pasted-not-submitted';
   /** Inbound task: when it was first held. */
   heldAt?: string;
   inbox?: A2aRemoteInboxItem[];
@@ -355,7 +357,7 @@ export function localSideOf(task: Pick<Task, 'metadata'>): 'from' | 'to' {
  *     which (`missKindOf`).
  */
 export type A2aRemoteDeliveryResult =
-  | { ok: true; delivered: true; duplicate?: boolean; ptyId?: string; note?: 'pasted-not-submitted' }
+  | { ok: true; delivered: true; duplicate?: boolean; ptyId?: string }
   | { ok: true; delivered: false; held?: A2aRemoteHeldReason; reason?: string }
   | { ok?: false; error: string };
 
