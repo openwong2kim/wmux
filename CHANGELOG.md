@@ -1,5 +1,485 @@
 ## [Unreleased]
 
+## [4.14.0] — 2026-11-02
+
+### Added
+
+- **Company mode groundwork: companies and company tasks.** A workspace can
+  become a company: one of its panes is the coordinator and the others are its
+  staff. The coordinator takes a request from anyone. A new task to a staff
+  pane must come from inside the company, name that pane and carry a brief
+  (goal, scope, acceptance, how to verify, what to report); a company task is
+  canceled only by the pane that created it. There is no way to make a company
+  in the app yet. (#2876)
+
+- **Claude can send files to your phone.** A new setting under Settings →
+  Claude Code, off by default, lets Claude send files to the wmux phone app
+  from panes started after you turn it on. Claude's own Remote Control may
+  then not upload those files to claude.ai. (#2882)
+
+- **Make a workspace a company.** The workspace menu's Make company… sets a
+  mission, the CEO pane and optional standing orders; Company settings… and
+  Dissolve company follow. A company's sidebar row shows its mission instead
+  of the git line, and its roster lists the CEO first, with each pane's label
+  as its title. (#2886)
+
+- **A company board.** A company workspace's menu has Open board, which
+  opens a Board tab beside the CEO's terminal. It lists what waits on you,
+  every pane as a seat (the CEO first, with its role, its open jobs and its
+  next one), the work handed to other workspaces, and a log of finished
+  jobs. The jobs are the ones Fleet lists, and they come back after a
+  restart. Work sent to fan-out workers is not shown yet. (#2888)
+
+- **The company board and Fleet show work sent to other PCs.** A task sent
+  to a pane on another PC now appears on the sending company's board under
+  Handed out, named by that pane's alias. It moves as the other PC works on
+  it and lands in the log with its report, also when the other PC refuses
+  it or the link between the PCs breaks. Fleet and the phone list it too,
+  and Fleet's Jump goes to the pane that sent it. Before, such work showed
+  nowhere. (#2891)
+
+- **Make a company in one pick from a preset.** The + menu now has a
+  Company section with two presets: a CEO with a researcher and three
+  developers, and a lead with a builder and a reviewer. The dialog lets you
+  change the name, folder, mission, each seat's name, what it owns and its
+  agent, and which seat is CEO. Make then creates the whole company at
+  once: a pane for each seat, named and started with its agent. Every seat
+  but the CEO works in its own worktree and branch of the folder, so the
+  agents never edit the same checkout. With "Tell each agent its seat" on
+  (the default), each agent's first turn tells it its seat, its worktree,
+  who its CEO is and how work is handed out, so the CEO can start sending
+  briefs right away. A name that is already taken gets a `-2` suffix.
+  Before, each of these steps was done by hand. (#2892)
+
+- **Balance layout.** The prefix key `=` and a command-palette entry give every
+  column and row of the workspace an equal share again, however you had dragged
+  the dividers. Seven side-by-side columns become one seventh of the window
+  each, and a column split into rows divides its height evenly. You can also
+  bind a key to it in Settings → Shortcuts. (#2895)
+
+- **A Linux PC added over SSH can run its terminals on the Rust engine.** The
+  wmux server that "Add PC over SSH" installs now includes the Rust terminal
+  engine, on x64 and arm64. Before, the server could only use the Node engine.
+  Node is used when the Rust engine cannot load. (#2903)
+
+- **Several multiview groups.** Ctrl+click from a workspace outside every
+  group starts a new group instead of replacing the one you had; click any
+  member to bring its grid back. Each grouped workspace shows its group
+  number in the sidebar, and groups are kept across restarts. (#2906)
+
+- **"Send now" works on a Codex pane.** A message you send now from your phone goes into the running Codex turn, as it does on Claude. A message for the next turn still waits for the turn to end, and a message sent while Codex works is queued by Codex itself instead of being refused. (#2913)
+
+- **Computer use says whether an input reached the app.** Every click, key,
+  scroll and text input now reports whether it was not delivered (safe to
+  retry), delivered but unconfirmed, or confirmed by reading the app back, and
+  whether it ran in the background or used the real mouse and keyboard. A
+  timed-out or lost request no longer reads as safe to retry, and a macOS
+  button press that the app answers late is no longer followed by a second,
+  real click. (#2914)
+
+- **Computer use on Windows no longer takes over your mouse and keyboard.**
+  When an agent clicks or types into another app, wmux now sends the input
+  straight to that app's window in the background, so your cursor, the window
+  in front and your keyboard focus stay where you left them. Before, every
+  action moved the real cursor and brought the app to the front. Input the
+  background path cannot carry safely (shortcuts with modifiers, scrolling,
+  password fields, a minimized app) still goes the old way.
+
+- **Agents in different panes can drive different apps without turning each
+  other away.** Computer use used to let one agent at a time send input: after
+  any click or keystroke the agent held the desktop for 15 seconds, and every
+  other agent was told the desktop was busy. Now only input that has to take
+  over the real mouse and keyboard holds the desktop. Input sent to an app in
+  the background waits only for earlier actions on that same app, and actions
+  on one app still run in the order they arrive. The helper still carries out
+  one action at a time, so a slow action in one app can delay another app's
+  action a little (well under a second in normal use).
+
+- **Company staff worktrees are cleaned up once nothing uses them.** Each staff
+  seat of a company works in its own git worktree on a `company/…` branch, and
+  these used to stay on disk and in your repository after the company ended.
+  Now, once no pane works in or is set to open in such a worktree and it is at
+  least 10 minutes old, wmux removes it with its branch when all of its work is
+  on a remote or it never committed anything. It checks at start and a few
+  seconds after you close or archive a workspace. Dissolving a company still keeps every pane running. A worktree
+  with uncommitted changes, commits only on this PC, a lock, or a folder git
+  does not know is kept and listed in the Task cleanup list as "Company seat
+  worktree" with the reason; Remove there asks in the row before it discards
+  anything, and deleting the branch is a second question.
+  (#2927)
+
+- **Optional compression for session output kept by the terminal service.**
+  `session.ringCompression: true` in `config.json` keeps the older part of
+  each new session's output compressed, at about a ninth of the memory, and
+  reads it back unchanged. Off by default. (#2929)
+
+- **A Labs tab in Settings for experimental memory savers.** Settings › Labs
+  has three switches, all off by default: compact scrollback (rows far above
+  the screen take about a third of the memory; searching the whole
+  scrollback gets slower), a shared WebGL renderer (every pane draws through
+  one GPU context and glyph atlas, which saves GPU memory with many panes
+  and glyphs), and session output compression in the terminal service (it
+  applies after the service restarts, and the tab says when a restart is
+  pending; it works only with the Node terminal engine, so the switch is
+  unavailable while the service runs Rust). (#2932)
+
+- **A company's CEO can brief a pane on another PC like a staff pane here.**
+  A task from the CEO pane to a linked pane on another PC now needs the
+  company brief, as a task to a staff pane does; the other PC gets it written
+  out as text, so it may run an older wmux. When that PC finishes the task,
+  this PC holds it as a report: the CEO pane is told, `a2a_task_query` shows
+  `remoteReported`, and the CEO or you mark it done here after wmux checks
+  the PRs it names, the report's evidence included. A CEO pane can no longer
+  send an unbriefed task to a PC it is linked to; keep a casual link on
+  another pane. See "Company tasks across PCs" in `docs/a2a-remote.md`.
+  (#2936)
+
+- **Agents started outside wmux show up in the sidebar.** A Claude Code session you start in tmux, a plain terminal or over SSH now appears in wmux from its hooks, with no screen import and no tmux requirement. If its folder sits under one of your workspaces, it shows in that workspace's agent list as `outside`. Otherwise it goes in an "Outside wmux" group at the foot of the list. When it waits on you (a question or an approval), its row lights up and counts in the Fleet badge. Its card shows the folder, where it runs and what it last did, and offers to copy an attach command when the session runs in tmux or screen, to open a wmux pane in that folder, or to hide it. The row ends when the session ends. Run `wmux setup-hooks` again to register the session-end hook. (#2938)
+
+- **The company board shows seats on other PCs, and you can add one.** A
+  pane on another PC that the CEO pane is linked to is listed under Seats
+  with its PC's name, its open jobs and what is next; a report from it reads
+  "Reported to CEO". "Add a seat on another PC…", in the company row menu and
+  at the end of Seats, asks a paired PC to start an agent for the company:
+  pick the PC, agent, folder and a seat name, and the first message telling
+  the agent who it is and how to finish a brief is shown before it is sent.
+  The ask waits on the board until that PC answers. (#2941)
+
+- **On macOS, agents in different panes can drive different apps at once.**
+  Before, one agent's click or keystroke held the desktop for 15 seconds on
+  macOS, and every other agent was told it was busy. Now, as on Windows, only
+  input that has to take over the real mouse and keyboard holds the desktop.
+  Input sent to an app in the background waits only for earlier actions on
+  that same app.
+
+- **Agents started in WSL outside wmux show up too.** Run `wmux setup-hooks --wsl [<distro>]` once and Claude Code sessions you start in that WSL distribution (Windows Terminal, tmux, an ssh login) report their status to the sidebar like any other session started outside wmux, tmux session and window included. The command adds the wmux hooks to that distribution's Claude settings (`$CLAUDE_CONFIG_DIR/settings.json`, else `~/.claude/settings.json`). It keeps your own entries and changes nothing on a re-run. `--uninstall` removes only the wmux entries. Before, only sessions inside a wmux pane reported from WSL. (#2946)
+
+- **"Open a wmux pane here" on a WSL session opens a WSL shell.** It opens in that session's distribution and folder, instead of a Windows shell handed a Linux path. A session in WSL also joins a workspace opened on that distribution's `\\wsl.localhost` or `\\wsl$` share. (#2946)
+
+- **Add a seat to a running company.** "Add a seat on this PC…", in the
+  company row menu and at the end of the board's Seats, starts one more agent
+  for the company: name the seat, say what it owns and pick its agent. It gets
+  its own worktree and brief the way a preset's seats do, opens as a new pane
+  in the company, and starts without stopping on the agent's first-run
+  screens. The CEO is told the seat joined once the seat can take a brief.
+  (#2947)
+
+- **Continue in another agent, any time, from the pane menu.** A terminal
+  running an agent wmux knows now has "Continue in another agent…" in its
+  pane menu. It lists the other agents that are installed and signed in and
+  previews the note wmux writes from the pane's own conversation: the folder
+  and branch, what was asked, the end of the last reply, the files touched
+  and where the full conversation is kept. Choosing one opens it in a new tab
+  of the same pane with the note typed in; nothing is sent until you press
+  Enter, and the first tab keeps its session. Before, this was offered only
+  once a usage limit had stopped the pane. (#2951)
+
+- **A company task can wait on others.** A CEO's brief can name the tasks it
+  waits on in `blockedBy`. Such a task is kept off its seat until every one of
+  them is marked done, then wmux writes it to the seat once, also across app
+  and daemon restarts. A blocker that fails or is canceled keeps it waiting and
+  the CEO is told; a task that cannot be written to its seat waits for you and
+  the CEO is told. A task to another PC cannot wait on tasks yet. (#2952)
+
+- **Screen-reader support for terminals and agent state.** While a screen
+  reader runs (VoiceOver, NVDA, JAWS, Narrator or Orca), terminal panes turn
+  on xterm's screen-reader mode, so the reader can follow what a terminal
+  prints. A spoken status line also says when a pane's agent needs you, has
+  finished or stopped with an error, for example "#w1-2 Claude Code needs
+  you". Nothing changes when no screen reader is running. (#2953)
+
+- **Hand off before the limit.** When a Claude Code pane's account has used
+  90% of its 5-hour window (as the pane's statusline reports it), the pane
+  header shows the share and when it resets. Clicking it opens the
+  usage-limit card in a close-to-the-limit form: continue in another agent
+  that is installed and signed in (a new tab with the handoff note typed in,
+  nothing sent), or on another account when there are two or more. The pane
+  keeps working until the reset; nothing switches by itself. (#2956)
+
+- **Bring the work back after the reset.** A handoff made at or close to a
+  usage limit is remembered on the tab it left. Once the limit resets, either
+  tab's header offers "Bring back": a card with a note wmux writes from the
+  other agent's own conversation (its latest request, the commits it made,
+  the files it changed with their line counts since the handoff, the end of
+  its last reply), typed into the first tab without sending, optionally
+  closing the other tab. The two tabs now carry a small mark before their
+  titles saying which one the work continued in and came from. (#2956)
+
+- **A cap on the company seats that work at once on one PC.** Settings ›
+  Bots › "Working seats per PC" (1 to 8, default 3) limits how many staff
+  seats of all companies on this PC work at the same time. A CEO's brief that
+  would start one more seat while every slot is taken is not refused: it waits,
+  its receipt names the seats holding the slots, and wmux writes it to its seat
+  once one of them has no task in progress or its agent exits. A CEO's reply
+  that hands a reported task back to its seat takes a slot too, and is refused
+  at the cap. Your own sends are never held. (#2962)
+
+- **The phone security notice also shows inside the app.** When a paired
+  phone starts an agent with permission prompts or the sandbox off, the
+  notice is pinned at the top of the notification panel until you press Got
+  it or Go to pane, and the titlebar bell shows a yellow dot meanwhile. Mark
+  all read and Clear leave it pinned. Before, it was only an OS toast, so a
+  copy without OS toasts, or anyone with toasts turned off, never saw it.
+  The toast still appears where toasts work. (#2984)
+
+### Changed
+
+- **Long chats open and scroll faster.** A pane's chat view and a bot chat
+  now show the most recent messages and load older ones as you scroll up,
+  instead of drawing the whole conversation at once.
+
+- **Ctrl+Shift+M reaches the terminal again.** It toggled a message feed that
+  showed nothing. A key you had saved on that action, or on the hidden Toggle
+  Company View action, is dropped. (#2874)
+
+- On macOS, the terminal now runs on the Rust engine by default when the installed build includes it. In a two-hour 20-pane test its daemon used about 8% less memory and stayed flat. A saved engine choice is kept, and Settings › Terminal engine can switch back to Node. (#2889)
+
+- On the Rust terminal engine, reattaching to a pane and opening it on the phone restore the screen faster, because the screen snapshot now renders on the Rust core. Output that the Rust core cannot restore exactly still uses the previous renderer. (#2893)
+
+- **A2A messages now name the pane, not just the workspace.** The sender and
+  receiver in an agent-to-agent message read `Workspace.pane` (for example
+  `Simply.q1` writing to `Simply.release`), using the pane's own name. Before,
+  two panes in one workspace were indistinguishable. A broadcast, and a message
+  from a sender wmux cannot tie to a pane, still show the workspace name only.
+  (#2897)
+
+- **On Windows the background service no longer starts a process to check on your panes.** It used to run `tasklist` every 15 seconds and a PowerShell query each time an agent started, which was most of its CPU use while idle. It now reads the process list directly, every 3 seconds, so an agent that exits is noticed within about 3 seconds instead of up to 15, at a fraction of the cost. If the direct read keeps failing it goes back to `tasklist`; setting `WMUX_NATIVE_PROCESS_TABLE=off` does that from the start. (#2908)
+
+- **Only the CEO or you mark a company task done.** A staff seat can no
+  longer mark its own company task completed. It reports the finished work
+  instead (status input-required, naming its PR, head commit and who ran the
+  live check), and the company's CEO pane or you mark it done. Seat briefs
+  say so. A pane in no company still finishes work sent to it itself.
+  (#2909)
+
+- **A report sent back to a pane no longer pages you.** When an agent
+  reports back to the pane that handed it the work, Fleet, the company board
+  and the Git page show it as reported, waiting on that pane (the CEO, say),
+  in muted text, not as Needs you. It comes back to you if that pane has
+  closed. This applies to every agent-to-agent task. (#2909)
+
+- **Company panes run their own work.** A task sent with execute to a pane
+  in a company is refused, except from your own lane: company work runs in
+  the seat's own pane. (#2909)
+
+- **Macs on macOS 12 are no longer offered updates.** Upcoming releases need macOS 13 (Ventura) or later, and installing one on macOS 12 would leave an app that does not open. This version keeps running there. (#2911)
+
+- **A company task is marked done only once its PRs are ready.** When the
+  CEO marks a company task done, wmux first reads every GitHub PR the task
+  names. A PR must be merged, or open with every required check passed on
+  its current head (the base branch's required list included, so a check
+  that never ran is caught), no open review threads, no conflicts and not
+  behind its base. Otherwise the done is refused, naming the PR and what
+  blocks it, for example "required check 'first-run e2e (macos-15)' has not
+  run on c8b77a2". Each checked PR is recorded in the task's evidence. You
+  can still mark a task done yourself. (#2912)
+
+- **Computer use on macOS no longer takes over your screen.**
+  An agent's clicks, keys and scrolls now go to the app it is working in
+  while that app stays in the background: your pointer, the app you are
+  using and your Space stay where they are. When an app or window cannot
+  take input that way (a minimized window, another Space, some toolkits),
+  wmux brings it forward and uses real input as before, and says so in the
+  result. (#2917)
+
+- **Linux terminals run on the Rust engine by default.** On Linux, the desktop
+  app and the wmux server now start the Rust terminal engine when nothing is
+  saved and the installed build includes it, as Windows and macOS do. Before,
+  Linux started Node unless you picked Rust. A saved engine choice is kept,
+  `WMUX_TERMINAL_CORE` still overrides it, and Node is used when the Rust
+  engine cannot load. Settings › Terminal engine can switch back to Node; on
+  the server, write `{"engine": "node"}` to `~/.wmux/terminal-core.json` and
+  restart its background service.
+  (#2919)
+
+- **Computer use reads an app's accessibility tree first and sends a screenshot only when it is needed.** When an agent asks for an app's state without naming a mode, wmux now returns the accessibility tree alone, which keeps images out of most observations. If the tree has fewer than five named controls (canvas apps, games, some web content), wmux adds a screenshot and tells the agent why. Asking for `ax`, `vision` or `both` explicitly works as before. (#2926)
+
+- A fan-out started by Claude Code that was launched with bypass permissions, and still runs in that mode, launches its workers in bypass too. Any other caller or mode keeps the worker mode from Settings, and the approval and the fan-out audit record say when the mode was inherited. A WSL pane keeps the Settings mode.
+
+- **A shorter handoff note.** The note "Continue in another agent" types in
+  from the usage-limit card is now a few lines instead of quoting several
+  requests, a long reply and every uncommitted file. It names the files the
+  agent touched, including the files Codex CLI patches. (#2951)
+
+- **Copying from an agent's reply gives the text as you see it.** In a
+  terminal pane, a selection that is exactly part of an agent's reply now
+  copies without the terminal's margin, line wraps and padding: a long URL
+  that wrapped at the pane edge copies on one line, and a code block copies
+  with its own indentation and no margin. Markdown markers the agent's screen
+  hides (such as `**`) are not put back. Anything else, or anything uncertain,
+  copies exactly as selected, as before. (#2954)
+
+- **A handoff from a pane held at its limit turns off its automatic resume.**
+  Until now, "Continue in another agent" from the usage-limit card (#2634)
+  left the held pane armed, so at the reset it carried on with the same work
+  the other agent had taken over, in the same folder. The pane now stays put
+  until you bring the work back, and the card says so. (#2956)
+
+### Removed
+
+- **The old, hidden company mode is gone.** It had been switched off in every
+  build since July; its code, internal RPCs and saved-session fields are
+  removed so it can be rebuilt on agent-to-agent tasks. A session saved by an
+  older build that still holds those fields opens normally, and the next save
+  drops them. (#2874)
+
+### Fixed
+
+- **Resizing a pane while output streams no longer prints it twice.**
+  Toggling the sidebar, splitting or resizing the window while an agent was
+  writing could repeat the same output, such as `git statusgit status`.
+
+- Double-clicking inline code in a chat reply selects all of it, so a path or flag is no longer cut at `-`, `.` or `/`.
+
+- Messages between agents are no longer refused while the receiving pane's workspace is hidden and its agent keeps printing.
+
+- **Files Claude sends by a relative path open on the phone.** A file sent as
+  `./shot.png`, for example, used to fail to load. (#2882)
+
+- Clicking a link or file path that wraps onto the next line in a Claude reply opens the whole link again, not just the part on the first line. (#2884)
+
+- **Sign-in windows that a terminal command opens now appear in front of wmux on Windows.** `az login`'s account picker and other Microsoft sign-in prompts opened behind the wmux window, so the pane looked frozen until you found the window. wmux now makes its own window the owner of each pane's console, so those windows stack above it. This covers both terminal engines, the default Rust engine and node-pty (which moves to 1.2.0-beta.17 for this). (#2885, #2887)
+
+- **Fleet keeps an agent beside a work tab.** With a browser, editor,
+  preview or board tab active beside a running agent, Fleet dropped that
+  agent's card; it now reads the pane by the terminal next to the tab.
+  (#2888)
+
+- **A message with photos sent while Claude is working now shows in the
+  conversation.** Claude Code records such a message differently from a
+  text-only one, and it was left out of the chat on the phone and desktop.
+
+- **A photo message sent from the phone no longer stays "Sent" forever.** The
+  phone's pending bubble now clears once the message appears in the
+  conversation, as it already did for text.
+
+- **A program that writes its own prompt marks no longer looks like the
+  shell.** Some CLIs (Kimi Code CLI, for one) mark each prompt of their own
+  transcript with the same OSC 133 sequences a shell uses. While such a
+  program ran in a pane with wmux's shell integration, wmux took those marks
+  for the shell prompting and ending commands mid-reply, which could end the
+  pane's agent status or log commands that never ran. Marks written while a
+  shell command is running are now read as the program's, and PowerShell's
+  integration no longer marks a command start on a continuation prompt. Marks
+  from a nested ssh session or a kitty-style program inside a running command
+  are now treated as the program's too. A nested shell that brings its own
+  shell integration (nested pwsh, or ssh to a host with OSC 133) is still read
+  as the shell once it reports its first command end. (#2899)
+
+- **Messages you rewound away in Claude (Esc Esc) no longer stay in the
+  chat.** Once you send the next message, the abandoned messages and
+  Claude's answers to them disappear from the conversation on the phone and
+  desktop.
+
+- **A right or middle click on a terminal link no longer opens it.** Before, it opened the link on top of the normal right-click action: a URL replaced the page in the first browser tab, a file path opened the file, and a formatted (OSC 8) link raised the "navigate?" dialog. Only a left click opens a link now, with Ctrl/Cmd and Ctrl/Cmd+Shift working as before. (#2904)
+
+- **Declining a question with Esc no longer leaves a pane "running".**
+  Pressing Esc on a Claude Code question or permission prompt ended the
+  turn, but the pane kept its running dot until the next prompt. (#2907)
+
+- **A Claude account with no 5h window shows its usage.** An account whose
+  usage report has only the weekly window, as an Ultra plan's does, showed a
+  usage error, and account rotation had no reading for it. The usage meter,
+  Settings and the Fleet chip now show the window it has, and rotation decides
+  on that window. (#2910)
+
+- **An agent's row leaves the sidebar as soon as the agent exits.** It used to stay for up to 15 seconds after the agent quit or was killed, until the window's next periodic check. The row now goes when the background service sees the agent's process end (within about 3 seconds on Windows), and the periodic check still catches anything that service could not attribute. (#2915)
+
+- **Reinstalling wmux on Windows no longer ends running sessions.** Running the installer while wmux was open killed the background service, and with it every pane. For Squirrel installs, the service now runs from its own copy outside the install folder, so reinstalling the same version leaves Claude Code, Codex and shells running. (#2922)
+
+- **Uninstalling wmux on Windows removes that copy too.** The uninstaller stops the background service running from it and deletes its folder, so nothing is left behind in your profile. (#2922)
+
+- **Claude Code and Codex panes in a symlinked project folder resume their
+  conversation after a restart again.** When a project was opened through a
+  symlink, such as `~/git` pointing at another disk, wmux saw the agent's
+  folder and the pane's folder as different. The pane then skipped the
+  automatic resume and the Resume button offered only the session picker. Now
+  both paths count as the same folder. (#2923)
+
+- **The workspace menu fits the window.** Right-clicking a workspace near
+  the bottom or edge of the sidebar no longer cuts off the menu's last
+  items; the menu moves to fit, again when its account rows load, and its
+  submenus move up or open on the side with room. (#2925)
+
+- **The terminal service lets go of a recovered session's old scrollback.**
+  A session restored after a restart kept its whole saved scrollback in
+  memory for as long as it ran, next to the copy it actually uses, and a
+  decoded piece of its output stayed pinned as well. Both are released once
+  they are used; with 8 restored sessions the service held about 25 MiB
+  less. (#2928)
+
+- **A task sent to another PC no longer stays "submitted" when that PC finishes
+  it fast.** Only a task's latest state goes between PCs, so a task the other PC
+  finished before its "working" was sent arrived as finished from "submitted",
+  was refused, and stayed "submitted" here. It is now taken. (#2935)
+
+- **Code inside a list item shows and copies without the list's
+  indentation.** A code block nested in a numbered or bulleted step no longer
+  shows its lines shifted right in the chat view, or copies them that way.
+  (#2954)
+
+- **Windows: a process is reported gone only when it really is.** When
+  Windows refuses to open a process with "invalid parameter", wmux now also
+  checks that the pid is missing from the process list before it treats the
+  process as exited.
+
+- **A pane started from another PC runs its agent again.** When you allowed a
+  remote start, the new "From <PC>" pane sometimes sat at a bare shell prompt
+  and the agent never launched, so the task stayed waiting. The terminal that
+  opened on the pane briefly replaced its connection, and the launch command
+  typed in that moment was lost. Now the terminal opens on the connection the
+  pane already has. The same fix covers any keystroke typed right as a new
+  pane opens, and a profile startup command or fan-out launch on a new pane.
+
+- **A shell pane no longer takes over a session started outside wmux.** A
+  wmux pane that only runs a shell, in the same folder as a Claude session
+  started outside wmux, no longer takes that session's signals. "Open a wmux
+  pane here" on an outside session leaves the session on its row until it
+  ends, and a restored pane in that folder no longer shows a new outside
+  session as its own agent. (#2961)
+
+- **Claude Code's screen-reader layout is read like its usual one.** When
+  Claude Code runs with `--ax-screen-reader`, wmux now recognizes its
+  folder-trust, permission and question dialogs. A chat message, a scheduled
+  run or dictation no longer types into one. A pane on such a dialog shows
+  that it needs you, and a question there is answered in the terminal rather
+  than from a phone. (#2963)
+
+- **Computer use reads the app window it picked when two copies of the app
+  are open.** With a second copy of an app running beside the one in front,
+  for example a Chrome with its own profile, reading a window of the second
+  copy could fail with "window not found". It now reads that copy's window.
+  (#2966)
+
+- **A portable or test copy of wmux on Windows no longer takes over the
+  installed app's Start Menu entry.** When a packaged copy ran with its own
+  data (`WMUX_DATA_SUFFIX` set) and showed a desktop notification, Windows'
+  notification setup in Electron repointed the Start Menu "wmux" shortcut and
+  the notification click handler at that copy. Such a copy now shows no
+  desktop notifications; in-app notifications and sounds still work, and the
+  taskbar still flashes for notifications raised in the window. The installed app is unchanged. (#2970)
+
+- **Computer use on Windows no longer moves your cursor, raises hidden
+  windows or wipes a text box when it falls back to real input.** A scroll
+  puts your mouse pointer back where it was. A hidden window is refused
+  instead of being given the foreground or typed into. Typing into a field
+  no longer replaces its text when the field selects everything on focus
+  (WinForms text boxes did). An accessibility click that brought the app to
+  the front and then failed now says so. (#2975)
+
+- **Shell prompt marks, folder changes and notifications are no longer
+  missed now and then.** When terminal output reached wmux split right after
+  the escape character that starts or ends one of these messages, wmux
+  missed that message (or read on past its end). It now reads it whole
+  wherever the output was split. (#2976)
+
+- **An agent's accessibility click or field fill on Windows no longer pulls
+  a covered window in front of yours while it works in the background.**
+  Clicking an element or setting a field's value on a window that is not in
+  front now waits for the turn to use the foreground, like other real input,
+  instead of bringing that window to the front while another agent was
+  driving the desktop. (#2982)
+
 ## [4.13.0] — 2026-10-30
 
 ### Added
