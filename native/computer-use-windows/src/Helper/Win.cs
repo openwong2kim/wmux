@@ -59,6 +59,13 @@ internal static unsafe class Win
         return !ShellClasses.Contains(ClassName(hwnd));
     }
 
+    /// <summary>
+    /// The window is on screen here: WS_VISIBLE and not cloaked. The one
+    /// definition both input paths use (a hidden or cloaked target is
+    /// refused by background input and by real input alike).
+    /// </summary>
+    public static bool IsShown(HWND hwnd) => PInvoke.IsWindowVisible(hwnd) && !IsCloaked(hwnd);
+
     /// <summary>Cloaked windows (other virtual desktops, suspended UWP frames) are not on screen.</summary>
     public static bool IsCloaked(HWND hwnd)
     {

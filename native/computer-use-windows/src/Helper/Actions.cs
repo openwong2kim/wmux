@@ -52,12 +52,12 @@ internal static unsafe class Focus
     /// and what would bring it forward (UIA SetFocus, SetForegroundWindow)
     /// gives it the foreground while it stays hidden, shows it, or switches
     /// the user's desktop: each undoes the app's or the user's choice. So it
-    /// is refused before anything is done to it (the background path's
-    /// "hidden" check, BackgroundInput.WindowState, is the same).
+    /// is refused before anything is done to it (Win.IsShown, the
+    /// background path's "hidden" check too).
     /// </summary>
     public static void RequireShown(ControlTarget target)
     {
-        if (!PInvoke.IsWindowVisible(target.Window) || Win.IsCloaked(target.Window))
+        if (!Win.IsShown(target.Window))
         {
             throw new HelperError("window_not_focused", "the target window is hidden or on another virtual desktop; real input would have to show it or give it the foreground, so nothing was sent. Ask the user to bring the window up first");
         }
@@ -557,9 +557,12 @@ internal static unsafe class Actions
             var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
             if (AfterBackground("click", posted, refuse, sentAtStart) is { } result)
             {
-                return ladderRaised && result["delivery"]?.GetValue<string>() == "background"
-                    ? Result("synthetic", false, "foreground", "the target window came to the front during an accessibility call before the click was posted; check the app state")
-                    : result;
+                if (ladderRaised && result["delivery"]?.GetValue<string>() == "background")
+                {
+                    result["delivery"] = "foreground";
+                    result["note"] = "the target window came to the front during an accessibility call before the click was posted; check the app state";
+                }
+                return result;
             }
             var preflight = Focus.RequirePointer(target, x, y);
             Input.Click(x, y, button, count, mods, preflight);
@@ -722,9 +725,16 @@ internal static unsafe class Actions
                 {
                     throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
                 }
-                if (selection != null && !KeepSelection(el, selection))
+                if (selection != null ? !KeepSelection(el, selection) : SelectsText(el))
                 {
-                    throw new HelperError("action_not_supported", $"element {index} changed its selection when it took focus, and wmux could not put it back, so nothing was typed (the keys would have replaced the selected text). Click where the text should go, then type without an index");
+                    throw new HelperError("action_not_supported", selection != null
+                        ? $"element {index} changed its selection when it took focus, and wmux could not put it back, so nothing was typed (the keys would have replaced the selected text). Click where the text should go, then type without an index"
+                        : $"element {index} has text selected after it took focus, and wmux could not read what was selected before, so nothing was typed (the keys would have replaced it). Click where the text should go, then type without an index");
+                }
+                // Selecting the old range again must not have moved focus.
+                if (selection != null && !Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+                {
+                    throw new HelperError("action_not_supported", $"element {index} lost keyboard focus while its selection was put back; nothing was typed. Click it first");
                 }
             }
             finally
@@ -767,8 +777,6 @@ internal static unsafe class Actions
         return Result("synthetic", verified, "foreground");
     }
 
-    private const int TextPatternId = 10014;
-
     /// <summary>
     /// The field's one selected range (a caret is an empty one) through UIA
     /// TextPattern, or null when the field has no TextPattern, reports no
@@ -776,7 +784,7 @@ internal static unsafe class Actions
     /// </summary>
     private static IUIAutomationTextRange* Selection(IUIAutomationElement* el)
     {
-        var text = (IUIAutomationTextPattern*)Pattern(el, TextPatternId, IUIAutomationTextPattern.IID_Guid);
+        var text = (IUIAutomationTextPattern*)Pattern(el, Uia.TextPattern, IUIAutomationTextPattern.IID_Guid);
         if (text == null) return null;
         IUIAutomationTextRangeArray* ranges = null;
         try
@@ -792,6 +800,33 @@ internal static unsafe class Actions
         {
             if (ranges != null) ranges->Release();
             text->Release();
+        }
+    }
+
+    /// <summary>
+    /// The field (whose selection before the focus could not be read) now
+    /// has a non-empty selection; unreadable counts as yes. False only when
+    /// it has no readable TextPattern at all (then it is focused as before)
+    /// or its selection is a caret.
+    /// </summary>
+    private static bool SelectsText(IUIAutomationElement* el)
+    {
+        var text = (IUIAutomationTextPattern*)Pattern(el, Uia.TextPattern, IUIAutomationTextPattern.IID_Guid);
+        if (text == null) return false;
+        text->Release();
+        var now = Selection(el);
+        if (now == null) return true;
+        try
+        {
+            return now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, now, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End) != 0;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return true;
+        }
+        finally
+        {
+            now->Release();
         }
     }
 
@@ -922,12 +957,13 @@ internal static unsafe class Actions
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);
+        var back = new CursorReturn();
         for (int n = 0; n < amount; n++)
         {
             if (n > 0) Sta.Sleep(8);
             try
             {
-                Input.Wheel(x, y, dx, dy, preflight);
+                Input.Wheel(x, y, dx, dy, preflight, back);
             }
             catch (HelperError e) when (n > 0)
             {

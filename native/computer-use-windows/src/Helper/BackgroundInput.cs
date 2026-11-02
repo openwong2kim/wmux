@@ -231,7 +231,7 @@ internal static unsafe class BackgroundInput
 
     private static TargetWindowState WindowState(ControlTarget target) => new(
         Iconic: PInvoke.IsIconic(target.Window),
-        Visible: PInvoke.IsWindowVisible(target.Window) && !Win.IsCloaked(target.Window),
+        Visible: Win.IsShown(target.Window),
         OnCurrentDesktop: OnCurrentDesktop(target.Window),
         Elevated: Integrity.IsAboveSelf(target.Pid));
 
@@ -390,7 +390,7 @@ internal static unsafe class BackgroundInput
             var exStyle = (WINDOW_EX_STYLE)(uint)PInvoke.GetWindowLongPtr(hwnd, WINDOW_LONG_PTR_INDEX.GWL_EXSTYLE);
             var window = new TopLevelWindow(
                 IsTarget: false,
-                Visible: PInvoke.IsWindowVisible(hwnd) && !Win.IsCloaked(hwnd),
+                Visible: Win.IsShown(hwnd),
                 ContainsPoint: RectContains(hwnd, screen),
                 IsMenu: Win.ClassName(hwnd) == "#32768",
                 OwnedByTarget: OwnedBy(hwnd, target.Window),

@@ -392,9 +392,11 @@ section); that result says `delivery: "foreground"`. A posted one says
   is `window_not_focused` before anything is done to it.
 - The user's cursor: a `scroll` notch moves the cursor to the point (a real
   wheel event goes to the window under the cursor), turns the wheel and
-  moves the cursor back to where it was right before the batch, all in one
-  `SendInput` call, so the notch lands at the point and the cursor ends
-  where it was. An app that reads the cursor position itself while it
+  moves the cursor back to where it was before the scroll (read under the
+  input lock before the first notch), each notch one `SendInput` call, so
+  the notch lands at the point and the cursor ends where it was. If Windows
+  takes only part of a notch's batch, the error says the cursor may have
+  been left at the point. An app that reads the cursor position itself while it
   handles the wheel, instead of the message's point, would see the user's
   position. A `click` leaves the cursor at the click, as a user's would.
 - `type`: Unicode key events (`KEYEVENTF_UNICODE`) in chunks of at most 16
@@ -406,10 +408,11 @@ section); that result says `delivery: "foreground"`. A posted one says
   WinForms `TextBox` does on its first focus), and the keys would replace
   it. So the field's selection (UIA `TextPattern`, one range; a caret is an
   empty one) is read before the focus and, if focusing changed it, selected
-  again and read back. The text then goes where the field's own caret was.
-  If the selection cannot be put back, nothing is typed
-  (`action_not_supported`). A field without `TextPattern` is focused as
-  before.
+  again and read back, and the field must still have keyboard focus. The
+  text then goes where the field's own caret was. If the selection cannot
+  be put back, or could not be read before and is not a caret after the
+  focus, nothing is typed (`action_not_supported`). A field without
+  `TextPattern` is focused as before.
   `verified` means the focused value after equals the value before with
   exactly the typed text inserted at one position; text that was already
   there never verifies a failed insert.

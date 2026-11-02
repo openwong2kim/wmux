@@ -49,6 +49,7 @@ internal static unsafe class Uia
     public const int ValuePattern = 10002;
     public const int ExpandCollapsePattern = 10005;
     public const int SelectionItemPattern = 10010;
+    public const int TextPattern = 10014;
     public const int TogglePattern = 10015;
 
     public const int DocumentControlType = 50030;
