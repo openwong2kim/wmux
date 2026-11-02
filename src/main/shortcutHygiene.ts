@@ -11,13 +11,13 @@
  *
  * Two ways such dead links arise, both observed:
  *
- *  1. LEGACY layout — installs from <=3.3.x wrote the Start Menu link at
- *     `Programs\wmux.lnk` (top level). Squirrel now writes
- *     `Programs\<author>\wmux.lnk` and `--createShortcut` never revisits the
- *     old location, so the legacy link survives every update pointing at an
- *     `app-X.Y.Z` directory that no longer exists. Measured: one such link
- *     survived three installs untouched (its target, app-3.3.0, was deleted
- *     over a year of updates ago).
+ *  1. TOP-LEVEL link — installs from <=3.3.x wrote the Start Menu link at
+ *     `Programs\wmux.lnk` and left it pointing at an `app-X.Y.Z` directory
+ *     that a later update deleted. Measured: one such link survived three
+ *     installs untouched (its target, app-3.3.0, was deleted over a year of
+ *     updates ago). That path is now the app's one Start Menu entry again:
+ *     Electron's toast setup owns it (notification/startMenuEntry.ts, #2971),
+ *     so a dead one is retargeted, never removed.
  *
  *  2. VERSIONED pins — pinning a running window records the live exe path
  *     (`<root>\app-X.Y.Z\wmux.exe`) into the pin's .lnk. The next update
@@ -30,10 +30,9 @@
  * the one .lnk API available without native modules; measured to preserve the
  * link's PropertyStore, including the AUMID, across Save()):
  *
- *   - candidates: the legacy top-level Start Menu link + every *.lnk in the
- *     taskbar/Start "User Pinned" folders. Desktop and publisher-folder links
- *     are NOT touched here — `Update.exe --createShortcut` owns and rewrites
- *     those on every install/update.
+ *   - candidates: the top-level Start Menu link + every *.lnk in the
+ *     taskbar/Start "User Pinned" folders. Desktop links are NOT touched
+ *     here — `Update.exe --createShortcut` owns those.
  *   - only links whose target lies under OUR install root are considered;
  *     anything else is someone else's shortcut and is left alone.
  *   - a link whose target is not the root stub (`<root>\wmux.exe`) is
@@ -42,9 +41,11 @@
  *     Retargeting, not deletion, is the default: pinned items cannot be
  *     re-created programmatically (Windows blocks pin automation), so a
  *     deleted pin is unrecoverable while a repaired one keeps working.
- *   - the one deletion: the LEGACY top-level link, when dead AND the
- *     publisher-folder link exists — retargeting it would leave two identical
- *     Start Menu entries forever.
+ *   - the one deletion: Squirrel's publisher-folder Start Menu link
+ *     (`Programs\<publisher>\wmux.lnk`, written by installs before #2971)
+ *     whose target lies under our root, and its folder when that leaves it
+ *     empty. Next to the top-level entry it is a second "wmux" entry
+ *     (#2971); Update.exe no longer writes it.
  *
  * `stageRootIcon` covers the second half of #863: Squirrel materializes
  * `<root>\app.ico` by DOWNLOADING the nuspec iconUrl (raw.githubusercontent.com)
@@ -106,11 +107,11 @@ export interface RepairPassResult {
 
 /** Locations the repair pass reads. Overridable so tests use temp dirs. */
 export interface RepairLocations {
-  /** Explicit .lnk paths to examine (the legacy top-level link). */
-  legacyLnks: string[];
+  /** Explicit .lnk paths to examine (the top-level Start Menu entry). */
+  topLevelLnks: string[];
   /** Directories whose *.lnk children are examined (pin folders). */
   pinDirs: string[];
-  /** Publisher-folder link whose existence allows deleting a dead legacy link. */
+  /** Wildcard for Squirrel's publisher-folder Start Menu link, removed when it is ours. */
   publisherLnk: string;
 }
 
@@ -138,11 +139,12 @@ export function defaultRepairLocations(appData: string): RepairLocations {
   const programs = path.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs');
   const pinned = path.join(appData, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned');
   return {
-    legacyLnks: [path.join(programs, 'wmux.lnk')],
+    topLevelLnks: [path.join(programs, 'wmux.lnk')],
     pinDirs: [path.join(pinned, 'TaskBar'), path.join(pinned, 'StartMenu')],
     // Any one-level subfolder of Programs holding a wmux.lnk counts as the
     // publisher link — the author name is Squirrel metadata, not ours to
-    // hardcode. Checked via wildcard inside the script.
+    // hardcode. Expanded inside the script; only links whose target lies under
+    // our root are removed.
     publisherLnk: path.join(programs, '*', 'wmux.lnk'),
   };
 }
@@ -151,16 +153,16 @@ export function defaultRepairLocations(appData: string): RepairLocations {
  * Build the repair script. Pure — exported for unit tests.
  *
  * The script's contract: examine each candidate .lnk; skip links whose target
- * is missing/empty or not under `<root>\`; retarget the rest to the stub
- * unless the target already IS the stub; delete (not retarget) a legacy link
- * whose target is dead while a publisher link exists. Emits a compact JSON
- * array of {path, action} — empty output means nothing needed repair.
+ * is missing/empty or not under `<root>\`; delete a publisher-folder link (and
+ * its folder once empty); retarget the rest to the stub unless the target
+ * already IS the stub. Emits a compact JSON array of {path, action} — empty
+ * output means nothing needed repair.
  */
 export function buildRepairScript(rootDir: string, loc: RepairLocations): string | null {
-  const paths = [rootDir, ...loc.legacyLnks, ...loc.pinDirs, loc.publisherLnk];
+  const paths = [rootDir, ...loc.topLevelLnks, ...loc.pinDirs, loc.publisherLnk];
   if (!paths.every(isSafePsPathLiteral)) return null;
 
-  const legacyArray = loc.legacyLnks.map(psQuote).join(', ');
+  const topLevelArray = loc.topLevelLnks.map(psQuote).join(', ');
   const pinArray = loc.pinDirs.map(psQuote).join(', ');
 
   // ASCII-only, single statement per line: this travels through execFileSync
@@ -176,10 +178,10 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     // shell fall back to the (version-stable) stub's embedded icon.
     `$icon = Join-Path $root 'app.ico'`,
     `$haveIcon = Test-Path -LiteralPath $icon`,
-    `$legacy = @(${legacyArray})`,
-    `$cands = @() + $legacy`,
+    `$cands = @(${topLevelArray})`,
     `foreach ($d in @(${pinArray})) { if (Test-Path $d) { $cands += @(Get-ChildItem -LiteralPath $d -Filter *.lnk | ForEach-Object { $_.FullName }) } }`,
-    `$pubExists = @(Get-Item ${psQuote(loc.publisherLnk)}).Count -gt 0`,
+    `$pubs = @(Get-Item ${psQuote(loc.publisherLnk)} | ForEach-Object { $_.FullName })`,
+    `$cands += $pubs`,
     `$sh = New-Object -ComObject WScript.Shell`,
     // A refused COM class factory (a loaded machine, an antivirus holding the
     // registration) leaves $sh null, and with SilentlyContinue every read
@@ -205,9 +207,18 @@ export function buildRepairScript(rootDir: string, loc: RepairLocations): string
     `  $t = $l.TargetPath`,
     `  if (-not $t) { continue }`,
     `  if (-not $t.StartsWith($root + '\\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }`,
+    // Squirrel's publisher-folder Start Menu link: a second entry next to the
+    // top-level one Electron owns (#2971). Removed, live or dead, and its
+    // folder with it when nothing else is left there.
+    `  if ($pubs -icontains $p) {`,
+    `    $dir = Split-Path -Parent $p`,
+    `    Remove-Item -LiteralPath $p -Force`,
+    `    if (Test-Path -LiteralPath $p) { continue }`,
+    `    $out += @{ path = $p; action = 'removed' }`,
+    `    if (@(Get-ChildItem -LiteralPath $dir -Force).Count -eq 0) { Remove-Item -LiteralPath $dir -Force }`,
+    `    continue`,
+    `  }`,
     `  if ($t -ieq $stub) { continue }`,
-    `  $dead = -not (Test-Path -LiteralPath $t)`,
-    `  if ($dead -and $pubExists -and ($legacy -icontains $p)) { Remove-Item -LiteralPath $p -Force; $out += @{ path = $p; action = 'removed' }; continue }`,
     `  $l.TargetPath = $stub`,
     `  $l.WorkingDirectory = $root`,
     `  if ($haveIcon) { $l.IconLocation = "$icon,0" }`,
@@ -388,4 +399,96 @@ export function repairInstalledShortcuts(
   locations?: RepairLocations,
 ): ShortcutRepairAction[] {
   return runShortcutRepairPass(execPath, locations).actions;
+}
+
+/** The registry key Electron's toast setup writes its activator class under. */
+export const TOAST_ACTIVATOR_CLSID_KEY = 'HKCU:\\Software\\Classes\\CLSID';
+/** The default value Electron gives every toast activator class it registers. */
+const TOAST_ACTIVATOR_NAME = 'Electron Notification Activator';
+
+/** What the uninstall pass removes. Overridable so tests use temp locations. */
+export interface ToastEntryLocations {
+  /** The top-level Start Menu entry Electron's toast setup owns. */
+  topLevelLnks: string[];
+  /** PowerShell path of the key holding the activator classes. */
+  clsidKey: string;
+}
+
+export function defaultToastEntryLocations(appData: string): ToastEntryLocations {
+  return {
+    topLevelLnks: defaultRepairLocations(appData).topLevelLnks,
+    clsidKey: TOAST_ACTIVATOR_CLSID_KEY,
+  };
+}
+
+/**
+ * Build the uninstall script. Pure — exported for unit tests.
+ *
+ * Electron's toast setup writes the top-level Start Menu entry and a COM class
+ * (`HKCU\Software\Classes\CLSID\{x}`, LocalServer32 = the running exe) and
+ * never removes either; Update.exe --removeShortcut only knows its own links.
+ * Removes the entry when its target lies under `<root>\`, and every activator
+ * class whose LocalServer32 does, including ones left by earlier entries
+ * (each new entry got a fresh CLSID). Anything pointing elsewhere is another
+ * app's and is left alone. Emits the same JSON as the repair script.
+ */
+export function buildToastEntryRemovalScript(rootDir: string, loc: ToastEntryLocations): string | null {
+  const paths = [rootDir, ...loc.topLevelLnks, loc.clsidKey];
+  if (!paths.every(isSafePsPathLiteral)) return null;
+  return [
+    `$ErrorActionPreference = 'SilentlyContinue'`,
+    `$root = ${psQuote(rootDir)}`,
+    `$under = { param($p) $p -and $p.Trim('"').StartsWith($root + '\\', [System.StringComparison]::OrdinalIgnoreCase) }`,
+    `$out = @()`,
+    `$sh = New-Object -ComObject WScript.Shell`,
+    `if (-not $sh) { Write-Output '${COM_UNAVAILABLE_MARKER}'; exit ${COM_UNAVAILABLE_EXIT} }`,
+    `foreach ($p in @(${loc.topLevelLnks.map(psQuote).join(', ')})) {`,
+    `  if (-not (Test-Path -LiteralPath $p)) { continue }`,
+    `  $l = $sh.CreateShortcut($p)`,
+    `  if (-not $l -or -not (& $under $l.TargetPath)) { continue }`,
+    `  Remove-Item -LiteralPath $p -Force`,
+    `  if (-not (Test-Path -LiteralPath $p)) { $out += @{ path = $p; action = 'removed' } }`,
+    `}`,
+    `[System.Runtime.InteropServices.Marshal]::ReleaseComObject($sh) | Out-Null`,
+    `foreach ($k in @(Get-ChildItem -LiteralPath ${psQuote(loc.clsidKey)})) {`,
+    `  if ($k.GetValue('') -ne '${TOAST_ACTIVATOR_NAME}') { continue }`,
+    `  $s = $k.OpenSubKey('LocalServer32')`,
+    `  $srv = if ($s) { $s.GetValue('') } else { $null }`,
+    `  if ($s) { $s.Close() }`,
+    `  if (-not (& $under $srv)) { continue }`,
+    `  Remove-Item -LiteralPath $k.PSPath -Recurse -Force`,
+    `  if (-not (Test-Path -LiteralPath $k.PSPath)) { $out += @{ path = $k.Name; action = 'removed' } }`,
+    `}`,
+    `ConvertTo-Json @($out) -Compress`,
+  ].join('\n');
+}
+
+/**
+ * Remove the Start Menu entry and toast activator classes Electron's toast
+ * setup left for this install (#2971). For the uninstall hook. win32-only,
+ * best-effort, never throws.
+ */
+export function removeToastEntries(
+  execPath: string,
+  locations?: ToastEntryLocations,
+): RepairPassResult {
+  if (process.platform !== 'win32') return { actions: [], failure: null };
+  const fail = (reason: string): RepairPassResult => {
+    console.warn(`[shortcutHygiene] toast entry removal did not run: ${reason}`);
+    return { actions: [], failure: reason };
+  };
+  try {
+    const appData = process.env.APPDATA;
+    const loc = locations ?? (appData ? defaultToastEntryLocations(appData) : null);
+    if (!loc) return fail('no locations (APPDATA unset)');
+    const script = buildToastEntryRemovalScript(rootFromExecPath(execPath), loc);
+    if (!script) return fail('a path could not be embedded in the script safely');
+    const run = runRepairScript(script, REPAIR_BUDGET_MS);
+    if ('failure' in run) return fail(run.failure);
+    const read = readActions(run.stdout);
+    if ('failure' in read) return fail(read.failure);
+    return { actions: read.actions, failure: null };
+  } catch (err) {
+    return fail(err instanceof Error ? err.message : String(err));
+  }
 }

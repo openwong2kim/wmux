@@ -32,7 +32,6 @@ function probe(over: Partial<ReconcileProbe> = {}): ReconcileProbe {
     autostartTarget: CUR,
     autostartTargetExists: true,
     desktopShortcutExists: true,
-    startMenuShortcutExists: true,
     ...over,
   };
 }
@@ -74,14 +73,19 @@ describe('planPostInstallReconcile', () => {
     expect(planPostInstallReconcile(probe({ autostartTarget: null, freshInstall: true })).autostart).toBeNull();
   });
 
-  it('creates only the missing shortcuts, only on the firstrun of a fresh install', () => {
+  it('creates a missing Desktop shortcut, only on the firstrun of a fresh install', () => {
     const plan = planPostInstallReconcile(probe({
       firstRun: true, freshInstall: true, desktopShortcutExists: false,
     }));
     expect(plan.shortcuts).toEqual(['Desktop']);
-    expect(planPostInstallReconcile(probe({
-      firstRun: true, freshInstall: true, desktopShortcutExists: false, startMenuShortcutExists: false,
-    })).shortcuts).toEqual(['Desktop', 'StartMenu']);
+  });
+
+  // #2971: the Start Menu entry is the app's own (Electron's toast setup writes
+  // it at startup); one from Update.exe would be a second "wmux" entry.
+  it('never asks Update.exe for a Start Menu link, even on a fresh install with none yet', () => {
+    const plan = planPostInstallReconcile(probe({ firstRun: true, freshInstall: true }));
+    expect(plan.shortcuts).toEqual([]);
+    expect(isEmptyPlan(plan)).toBe(true);
   });
 
   it('never brings back a shortcut the user deleted', () => {
