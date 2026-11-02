@@ -59,4 +59,31 @@ describe('useSecurityNotices', () => {
     act(() => root.unmount());
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
+
+  it('subscribes before asking: a notice main adds after its list snapshot, heard before the list resolves, stays', async () => {
+    let resolveList: () => void = () => undefined;
+    // Main: the list is a snapshot taken when asked; s2 is recorded right
+    // after and broadcast to whoever is subscribed at that moment.
+    window.electronAPI.notification.securityNotices = vi.fn(() => {
+      const snapshot = [notice('s1', 10)];
+      listener?.(notice('s2', 20));
+      return new Promise<SecurityNotice[]>((r) => { resolveList = () => r(snapshot); });
+    });
+    await act(async () => root.render(createElement(Probe)));
+    expect(useStore.getState().securityNotices.map((n) => n.id)).toEqual(['s2']);
+    await act(async () => resolveList());
+    expect(useStore.getState().securityNotices.map((n) => n.id)).toEqual(['s1', 's2']);
+    act(() => root.unmount());
+  });
+
+  it('ignores a list that resolves after unmount', async () => {
+    let resolveList: () => void = () => undefined;
+    window.electronAPI.notification.securityNotices = vi.fn(
+      () => new Promise<SecurityNotice[]>((r) => { resolveList = () => r([notice('s1', 10)]); }),
+    );
+    await act(async () => root.render(createElement(Probe)));
+    act(() => root.unmount());
+    await act(async () => resolveList());
+    expect(useStore.getState().securityNotices).toEqual([]);
+  });
 });
