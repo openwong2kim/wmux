@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { ProjectConfigStore, normalizeProjectRoot } from '../ProjectConfigStore';
+import { PROJECT_CONFIG_MAX_FILE_BYTES } from '../../../shared/wmuxProjectConfig';
 
 let tmpRoot: string;
 let trustPath: string;
@@ -217,6 +218,44 @@ describe('getState — config + trust evaluation', () => {
     const state = await makeStore().getState(proj);
     expect(state.trust).toBe('untrusted');
     expect(({} as { status?: unknown }).status).toBeUndefined();
+  });
+});
+
+describe('readText — the whole file, for a view of it', () => {
+  it('reads the file getState reads, hashed over the bytes it returns', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    const text = '{\r\n  "version": 1,\r\n  "portRange": [1, 2],\r\n  "note": "a\u202eb"\r\n}';
+    writeConfig(proj, text);
+    const nested = path.join(proj, 'src');
+    fs.mkdirSync(nested);
+    const store = makeStore();
+    const read = store.readText(nested);
+    expect(read).toEqual({
+      configPath: path.join(proj, 'wmux.json'),
+      contentHash: createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex'),
+      text,
+    });
+    expect(read?.contentHash).toBe((await store.getState(nested)).contentHash);
+  });
+
+  it('does not decode bytes that are not UTF-8', () => {
+    const proj = path.join(tmpRoot, 'proj');
+    fs.mkdirSync(proj);
+    const bytes = Buffer.from([0x7b, 0xff, 0x7d]);
+    fs.writeFileSync(path.join(proj, 'wmux.json'), bytes);
+    expect(makeStore().readText(proj)).toEqual({
+      configPath: path.join(proj, 'wmux.json'),
+      contentHash: createHash('sha256').update(bytes).digest('hex'),
+      notText: true,
+    });
+  });
+
+  it('reads nothing without a file, or past the size cap', () => {
+    const proj = path.join(tmpRoot, 'proj');
+    fs.mkdirSync(proj);
+    expect(makeStore().readText(proj)).toBeNull();
+    writeConfig(proj, ' '.repeat(PROJECT_CONFIG_MAX_FILE_BYTES + 1));
+    expect(makeStore().readText(proj)).toBeNull();
   });
 });
 

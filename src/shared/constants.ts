@@ -926,6 +926,8 @@ export const IPC = {
   // user decision bound to the content hash the approval UI displayed.
   PROJECT_CONFIG_GET: 'project-config:get',
   PROJECT_CONFIG_SET_TRUST: 'project-config:set-trust',
+  // The whole file and its hash, for the company review's view of it.
+  PROJECT_CONFIG_TEXT: 'project-config:text',
   WORKSPACE_PREP_NOTICE: 'workspace-prep:notice',
   PROJECT_PREP_GET: 'project-config:prep-get',
   PROJECT_PREP_SAVE: 'project-config:prep-save',

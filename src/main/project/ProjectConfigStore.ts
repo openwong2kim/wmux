@@ -27,6 +27,7 @@ import {
   PROJECT_CONFIG_MAX_FILE_BYTES,
   WMUX_PROJECT_CONFIG_FILENAME,
   type ProjectConfigState,
+  type ProjectConfigText,
   type ProjectTrustState,
   type WmuxProjectConfig,
 } from '../../shared/wmuxProjectConfig';
@@ -224,6 +225,31 @@ export class ProjectConfigStore {
     }
     this.configCache.set(configPath, { mtimeMs: stat.mtimeMs, size: stat.size, contentHash, config });
     return { contentHash, config };
+  }
+
+  /** The wmux.json `getState` reads for `cwd`, whole, with the hash of the
+   *  bytes returned (read now, not from the cache). Bytes that are not UTF-8
+   *  are not decoded, since a substituted character would not be what the
+   *  hash covers; a byte-order mark is kept. */
+  readText(cwd: string): ProjectConfigText | null {
+    if (typeof cwd !== 'string' || cwd.trim().length === 0) return null;
+    const dir = this.findConfigDir(cwd.trim());
+    if (dir === null) return null;
+    const configPath = path.join(dir, WMUX_PROJECT_CONFIG_FILENAME);
+    let raw: Buffer;
+    try {
+      if (!fs.statSync(configPath).isFile()) return null;
+      raw = fs.readFileSync(configPath);
+    } catch {
+      return null;
+    }
+    if (raw.length > PROJECT_CONFIG_MAX_FILE_BYTES) return null;
+    const contentHash = sha256Hex(raw);
+    try {
+      return { configPath, contentHash, text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(raw) };
+    } catch {
+      return { configPath, contentHash, notText: true };
+    }
   }
 
   // ── State for the renderer ─────────────────────────────────────────────────

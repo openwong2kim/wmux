@@ -24,16 +24,27 @@ export interface WmuxProjectCompany {
   seats: CompanyPresetSeat[];
 }
 
-/** C0 and C1 controls, the line and paragraph separators, the bidi marks,
- *  embeddings, overrides and isolates that reorder what is displayed, and the
- *  invisible characters (zero-width, joiners, variation selectors, tags) that
- *  carry text a reader does not see: the set agentEnvSummary.ts refuses, and
- *  the supplementary variation selectors. */
-// eslint-disable-next-line no-control-regex, no-misleading-character-class -- matching control and combining characters is the point
-const UNSAFE_LINE = /[\u0000-\u001f\u007f-\u009f\u00ad\u034f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
+/** Above C0: the C1 controls, the line and paragraph separators, the bidi
+ *  marks, embeddings, overrides and isolates that reorder what is displayed,
+ *  and the invisible characters (zero-width, joiners, variation selectors,
+ *  tags) that carry text a reader does not see. With the C0 controls, the set
+ *  agentEnvSummary.ts refuses, and the supplementary variation selectors. */
+const HIDDEN_ABOVE_C0 = String.raw`\u007f-\u009f\u00ad\u034f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}`;
+// eslint-disable-next-line no-misleading-character-class -- matching combining characters is the point
+const UNSAFE_LINE = new RegExp(String.raw`[\u0000-\u001f${HIDDEN_ABOVE_C0}]`, 'u');
 /** The same, with the line feed allowed. */
-// eslint-disable-next-line no-control-regex, no-misleading-character-class -- as above
-const UNSAFE_TEXT = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u00ad\u034f\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufe00-\ufe0f\ufeff\u{e0000}-\u{e007f}\u{e0100}-\u{e01ef}]/u;
+// eslint-disable-next-line no-misleading-character-class -- as above
+const UNSAFE_TEXT = new RegExp(String.raw`[\u0000-\u0009\u000b-\u001f${HIDDEN_ABOVE_C0}]`, 'u');
+/** The same, with the tab allowed too, captured for a split. */
+// eslint-disable-next-line no-misleading-character-class -- as above
+const HIDDEN = new RegExp(String.raw`([\u0000-\u0008\u000b-\u001f${HIDDEN_ABOVE_C0}])`, 'u');
+
+/** A file's text cut at each of these characters but a tab or a line end (LF,
+ *  or CRLF), so a view of it can show each one where it sits: the odd entries
+ *  are those characters, one each. */
+export function splitHiddenCharacters(text: string): string[] {
+  return text.replace(/\r\n/g, '\n').split(HIDDEN);
+}
 
 /** The trimmed text, '' for an omitted one, or null when it is refused. */
 function text(input: unknown, max: number, multiline: boolean): string | null {

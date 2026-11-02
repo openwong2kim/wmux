@@ -9,6 +9,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { getProjectConfigStore, type ProjectConfigState } from '../../project/ProjectConfigStore';
+import type { ProjectConfigText } from '../../../shared/wmuxProjectConfig';
 import {
   parseWorkspacePrepSettings,
   readWorkspacePrepSettings,
@@ -47,6 +48,16 @@ export function registerProjectConfigHandlers(): () => void {
       return { found: false };
     }
     return getProjectConfigStore().getState(cwd);
+  }));
+
+  // The whole file, read now, for the company review's view of it.
+  ipcMain.removeHandler(IPC.PROJECT_CONFIG_TEXT);
+  ipcMain.handle(IPC.PROJECT_CONFIG_TEXT, wrapHandler(IPC.PROJECT_CONFIG_TEXT, async (
+    _event: Electron.IpcMainInvokeEvent,
+    cwd: unknown,
+  ): Promise<ProjectConfigText | null> => {
+    if (typeof cwd !== 'string' || cwd.length === 0 || cwd.length > MAX_PATH_LEN) return null;
+    return getProjectConfigStore().readText(cwd);
   }));
 
   ipcMain.removeHandler(IPC.PROJECT_CONFIG_SET_TRUST);
@@ -147,6 +158,7 @@ export function registerProjectConfigHandlers(): () => void {
     ipcMain.removeHandler(IPC.WORKSPACE_PREP_DECIDE);
     ipcMain.removeHandler(IPC.PROJECT_CONFIG_GET);
     ipcMain.removeHandler(IPC.PROJECT_CONFIG_SET_TRUST);
+    ipcMain.removeHandler(IPC.PROJECT_CONFIG_TEXT);
     ipcMain.removeHandler(IPC.PROJECT_PREP_GET);
     ipcMain.removeHandler(IPC.PROJECT_PREP_SAVE);
     ipcMain.removeHandler(IPC.PROJECT_COMPANY_GET);

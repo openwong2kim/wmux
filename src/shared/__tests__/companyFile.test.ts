@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { companyFileJson, normalizeCompanyFile } from '../companyFile';
+import { companyFileJson, normalizeCompanyFile, splitHiddenCharacters } from '../companyFile';
 import { COMPANY_PRESET_MAX_SEATS, COMPANY_TEXT_MAX } from '../companyPreset';
 
 const shop = {
@@ -89,5 +89,19 @@ describe('normalizeCompanyFile', () => {
     expect(normalizeCompanyFile(null)).toBeNull();
     expect(normalizeCompanyFile([shop])).toBeNull();
     expect(normalizeCompanyFile('shop')).toBeNull();
+  });
+});
+
+describe('splitHiddenCharacters', () => {
+  it('cuts out each character a reader would not see, one per odd entry', () => {
+    expect(splitHiddenCharacters('"a": "x\u202ey\u200bz"')).toEqual(['"a": "x', '\u202e', 'y', '\u200b', 'z"']);
+    // A tag character is one entry, though it takes two UTF-16 units.
+    expect(splitHiddenCharacters('a\u{e0041}b')).toEqual(['a', '\u{e0041}', 'b']);
+    expect(splitHiddenCharacters('\u0000')).toEqual(['', '\u0000', '']);
+  });
+
+  it('keeps a tab and a line end, CRLF as LF, and cuts out a lone carriage return', () => {
+    expect(splitHiddenCharacters('{\r\n\t"a": 1\n}')).toEqual(['{\n\t"a": 1\n}']);
+    expect(splitHiddenCharacters('a\rb')).toEqual(['a', '\r', 'b']);
   });
 });

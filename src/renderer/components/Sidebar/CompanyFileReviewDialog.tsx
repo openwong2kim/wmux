@@ -1,13 +1,15 @@
 // The review of a folder's company before it first starts on this PC (DESIGN.md
 // "This folder's company"): each seat with the agent wmux starts for it and
-// where it works, the mission and standing orders verbatim, and, while the file
-// is not trusted, what else approving trusts. It renders the store's copy of
-// the file, so what it shows is what the grant binds.
+// where it works, the mission and standing orders verbatim, while the file is
+// not trusted what else approving trusts, and on request the whole file. It
+// renders the store's copy of the file, so what it shows is what the grant
+// binds.
 
-import { useEffect, useRef, useState } from 'react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { agentLauncherStem, agentRow, agentSlugToDisplay, type AgentSlug } from '../../../shared/agentIdentity';
+import { splitHiddenCharacters } from '../../../shared/companyFile';
 import { ownWorktreeSeats } from '../../../shared/companyPreset';
-import { companyNeedsReview, prepAwaitsReview } from '../../../shared/wmuxProjectConfig';
+import { companyNeedsReview, prepAwaitsReview, type ProjectConfigText } from '../../../shared/wmuxProjectConfig';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { renderSentence } from '../../i18n/renderSentence';
@@ -16,6 +18,7 @@ import { companyFileFolder, makeCompany } from '../../utils/makeCompany';
 import { decideProjectTrust, probeProjectConfig } from '../../utils/projectConfigProbe';
 import { layoutRows } from '../Project/ProjectConfigDialog';
 import { useAgentChoices } from './CompanyPresetDialog';
+import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import { IconWarning } from '../icons';
@@ -37,6 +40,27 @@ function Quote({ text }: { text: string }) {
   );
 }
 
+/** The file's text as it is: each character a reader would not see is shown
+ *  as its code point where it sits, and counted above the text. */
+function WholeFile({ text }: { text: string }) {
+  const t = useT();
+  const parts = splitHiddenCharacters(text);
+  const hidden = (parts.length - 1) / 2;
+  return (
+    <>
+      {hidden > 0 && <p className="ui-note" data-company-review-hidden>{t('companyFile.wholeFileHidden', { count: hidden })}</p>}
+      <pre
+        className="m-0 mt-2 max-h-[240px] overflow-auto whitespace-pre-wrap break-words border-l-2 border-[var(--line)] py-0.5 pl-2.5 font-mono text-[12px] text-[var(--text-sub)]"
+        data-company-review-file
+      >
+        {parts.map((part, i) => (i % 2 === 0
+          ? <Fragment key={i}>{part}</Fragment>
+          : <span key={i} className="font-semibold text-[var(--text-main)]" data-hidden-char>{`⟨U+${part.codePointAt(0)?.toString(16).toUpperCase().padStart(4, '0')}⟩`}</span>))}
+      </pre>
+    </>
+  );
+}
+
 export default function CompanyFileReviewDialog({ workspaceId, onClose }: { workspaceId: string; onClose: () => void }) {
   const t = useT();
   // What the dialog shows and what Approve grants: the file as it was when the
@@ -45,7 +69,10 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
   // Approve off until the dialog is opened again.
   const [state] = useState(() => useStore.getState().projectConfigs[workspaceId]);
   const live = useStore((s) => s.projectConfigs[workspaceId]);
-  const moved = live?.contentHash !== state?.contentHash || live?.configPath !== state?.configPath;
+  // A read of the whole file that found other bytes counts as a move too.
+  const [textMoved, setTextMoved] = useState(false);
+  const moved = textMoved || live?.contentHash !== state?.contentHash || live?.configPath !== state?.configPath;
+  const [whole, setWhole] = useState<ProjectConfigText | 'reading' | null>(null);
   const agents = useAgentChoices();
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -132,6 +159,24 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
       return;
     }
     onClose();
+  };
+
+  // The whole file is read on request and shown only when it is the one on screen.
+  const toggleWhole = async () => {
+    if (whole) {
+      setWhole(null);
+      return;
+    }
+    setWhole('reading');
+    const read = await (window.electronAPI?.projectConfig?.text(companyFileFolder(configPath)) ?? Promise.resolve(null)).catch(() => null);
+    if (!open.current) return;
+    if (!read || read.contentHash !== state.contentHash || read.configPath !== configPath) {
+      setWhole(null);
+      setTextMoved(true);
+      void probeProjectConfig(workspaceId);
+      return;
+    }
+    setWhole(read);
   };
 
   const deny = () => {
@@ -259,6 +304,25 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
             </div>
           </section>
         )}
+
+        <section data-company-review-whole>
+          <div className="flex items-baseline gap-2">
+            <button
+              type="button"
+              className={`rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] enabled:hover:text-[var(--text-main)] disabled:cursor-default disabled:opacity-50 ${FOCUS_RING}`}
+              disabled={whole === 'reading' || moved}
+              aria-expanded={whole !== null && whole !== 'reading'}
+              onClick={() => void toggleWhole()}
+              data-company-review-whole-toggle
+            >
+              {t(whole && whole !== 'reading' ? 'companyFile.hideWholeFile' : 'companyFile.showWholeFile')}
+            </button>
+            <span className="text-[11px] text-[var(--text-muted)]">{t('companyFile.wholeFileHint')}</span>
+          </div>
+          {whole && whole !== 'reading' && ('notText' in whole
+            ? <p className="ui-note mt-2" data-company-review-not-text>{t('companyFile.wholeFileNotText')}</p>
+            : <WholeFile text={whole.text} />)}
+        </section>
 
         {note && <p className="ui-note" data-company-review-note>{note}</p>}
       </DialogBody>
