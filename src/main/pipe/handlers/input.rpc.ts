@@ -65,6 +65,7 @@ import {
   type TaskOwnerLane,
 } from '../../workspace/ptyOwnership';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { findWorkspaceIdForPty } from './hooks.rpc';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { reclaimedWorkerOfPane, reclaimedWorkerWorkspaces } from '../../factory/workerReclaim';
 import { taskSignedIn } from '../../factory/wakeTaint';
@@ -779,6 +780,8 @@ function makeSubmitProbe(
   workspaceId: string | undefined,
   readTurnStartedAt?: (ptyId: string) => number | undefined,
   tailLines: number = SUBMIT_RECEIPT_READ_LINES,
+  /** Read the buffer as it is: a hidden pane is not resynced for the probe. */
+  noHydrate = false,
 ): SubmitProbe {
   return {
     readScreen: async (): Promise<string> => {
@@ -792,6 +795,7 @@ function makeSubmitProbe(
           // Composer rows are counted up from the cursor row; the statusline
           // and hints a TUI draws below it must not push the needle out (#1595).
           endAtCursor: true,
+          ...(noHydrate ? { noHydrate: true } : {}),
           timeoutMs: SUBMIT_RECEIPT_READ_TIMEOUT_MS,
         });
         if (result !== null && typeof result === 'object') {
@@ -1136,8 +1140,9 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
  * A gate that could not decide at the Enter (`gate_unavailable`) is asked once
  * more after the paste's redraw settles: on a hidden pane our own paste moves
  * the output the folder-trust verdict was read from, so the first answer can be
- * unknown with no dialog there (#2993). Still undecided, the paste is taken back
- * out (`cleared`) so the sender may deliver it again cleanly.
+ * unknown with no dialog there (#2993). Still undecided (a screen read that
+ * timed out included), the text is left in the composer: unknown never erases
+ * it, and the caller must not count it as delivered.
  *
  * With `probe`, the Enter gets the same submit receipt and one retried Enter
  * that `input.send` uses. A receipt that never comes is still `ok`: the text
@@ -1204,26 +1209,25 @@ export async function gatedPasteSubmit(
     }
     return { ...refusal, pasted: true, cleared };
   };
-  // The pane while the text sits uncommitted: what the receipt diffs
-  // against. Read before the gate below, so nothing lands between it and the Enter.
-  const atEnterReading = probe ? await probe.readAgentStatus() : null;
-  const atEnterPane = {
-    screen: probe ? await probe.readScreen() : '',
-    agentStatus: atEnterReading?.status ?? null,
-    turnStartedAt: atEnterReading?.turnStartedAt,
-  };
   const notSubmitted = ' The text was pasted but not submitted.';
   let atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
   if (atEnter?.reason === 'gate_unavailable') {
     // Our own paste redrew the pane; ask once more once that has settled.
     await sleep(submitProfileForAgent(agent).submitDelayMs);
     atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
-    // Still undecided: take it back out. A dialog now on screen gets no key.
-    if (atEnter?.reason === 'gate_unavailable') return takeBack(atEnter);
   }
+  // Still refused: the text stays where it is. An undecided gate is no proof
+  // the composer holds only our paste, so it is never cleared on that.
   if (atEnter) return { ...atEnter, pasted: true };
   const guardAtEnter = guard ? await guard.beforeEnter() : null;
   if (guardAtEnter) return takeBack(guardAtEnter);
+  // The pane while the text sits uncommitted: what the receipt diffs against.
+  const atEnterReading = probe ? await probe.readAgentStatus() : null;
+  const atEnterPane = {
+    screen: probe ? await probe.readScreen() : '',
+    agentStatus: atEnterReading?.status ?? null,
+    turnStartedAt: atEnterReading?.turnStartedAt,
+  };
   try {
     write(ptyId, isMultilinePtyPayload(text) ? '\r\r' : '\r');
   } catch (err) {
@@ -2197,10 +2201,13 @@ export function registerInputRpc(
         guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
       }
-      // The submit receipt's workspace, resolved before anything is written so
-      // its round-trip never lands between the paste and its Enter.
-      const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
-      const probe = makeSubmitProbe(getWindow, ptyId, workspaceId, deps.readTurnStartedAt);
+      // The submit receipt's workspace, from main's mirror only: a renderer
+      // round-trip here would add a wait before the paste. With none, the
+      // receipt watches the composer alone. Its screen reads never resync a
+      // hidden pane: on a large ring each would be a full replay (#2993).
+      const owner = getWorkspaceMirror().peek();
+      const probeWs = (owner && findWorkspaceIdForPty(ptyId, owner.entries)) ?? undefined;
+      const probe = makeSubmitProbe(getWindow, ptyId, probeWs, deps.readTurnStartedAt, SUBMIT_RECEIPT_READ_LINES, true);
       const clock = { ...(deps.now ? { now: deps.now } : {}) };
       if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, probe, clock);
       // #1680 — a new task: the fresh-context step runs inside the gated
@@ -2214,6 +2221,7 @@ export function registerInputRpc(
         ptyId,
         () =>
           gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, async () => {
+            const workspaceId = (await resolvePtyOwnerWorkspace(getWindow, ptyId).catch(() => null)) ?? undefined;
             return runFreshContextOn(
               ptyId,
               await bindingFor(ptyId),

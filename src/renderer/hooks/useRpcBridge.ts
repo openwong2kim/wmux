@@ -468,6 +468,12 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'The task is stored. Send again once the pane is idle.',
 };
 
+/** A refused delivery whose text is still in the target's composer (#2993). */
+const PASTED_NOT_SUBMITTED_HINT =
+  'The message was pasted into the target pane but not submitted, and it is still in its prompt. Do not ' +
+  'send it again (it would be pasted twice): someone at that pane presses Enter, or reads the pane first. ' +
+  'The task is stored; the receiver can find it with a2a_task_query.';
+
 /** The `delivery` receipt for a refused write. */
 function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<string, unknown> {
   return {
@@ -477,7 +483,7 @@ function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<stri
     reason: refused.reason,
     hint: DELIVERY_REFUSED_HINTS[refused.reason],
     detail: refused.detail,
-    ...(refused.pasted ? { pastedNotSubmitted: true } : {}),
+    ...(refused.pasted ? (refused.cleared ? { pastedCleared: true } : { pastedNotSubmitted: true, hint: PASTED_NOT_SUBMITTED_HINT }) : {}),
   };
 }
 
@@ -3109,7 +3115,10 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
 
     // Phase 3 hydrate-before-read — see pane.search above. Agents reading a
     // hidden pane must see its live state, not a retention-stale buffer.
-    await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
+    // Internal `noHydrate` (a delivery's submit receipt, polled several times a
+    // second): read the buffer as it is; resyncing a hidden pane with a large
+    // ring on every poll wedged the renderer (#2993).
+    if (raw.noHydrate !== true) await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
 
     // Read cost is bounded by DEFAULT unless the caller opts into the full
     // scrollback. RCA (2026-07-14 orchestrator lag): the old path always walked

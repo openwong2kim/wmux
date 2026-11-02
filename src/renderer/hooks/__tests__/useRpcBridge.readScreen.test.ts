@@ -200,6 +200,29 @@ it('approval probes read only a settled current viewport, never scrollback or pa
   }
 });
 
+// #2993 — a delivery's submit receipt polls a hidden pane several times a
+// second; resyncing a large ring on each poll wedged the renderer.
+it('a noHydrate read reads the buffer as it is, without resyncing the pane', async () => {
+  const ptyId = 'receipt-no-hydrate';
+  const terminal = new Terminal({ cols: 80, rows: 3, scrollback: 100, allowProposedApi: true });
+  const previousGate = useStore.getState().paneGate;
+  const hydrate = vi.spyOn(terminalModule, 'hydrateTerminalForRead').mockResolvedValue(true);
+  useStore.setState({ paneGate: 'ready' });
+  try {
+    await new Promise<void>((resolve) => terminal.write('❯ hello', resolve));
+    (terminalRegistry as Map<string, unknown>).set(ptyId, terminal);
+    expect(await handleRpcMethod('input.readScreen', { ptyId, tail_lines: 5, endAtCursor: true, noHydrate: true })).toMatchObject({ ptyId, text: '❯ hello' });
+    expect(hydrate).not.toHaveBeenCalled();
+    await handleRpcMethod('input.readScreen', { ptyId, tail_lines: 5 });
+    expect(hydrate).toHaveBeenCalledTimes(1);
+  } finally {
+    hydrate.mockRestore();
+    terminalRegistry.delete(ptyId);
+    terminal.dispose();
+    useStore.setState({ paneGate: previousGate });
+  }
+});
+
 // #2398 review item 6 — an approval probe of a pane whose suspended session
 // was left unstarted (its pane hidden) reads nothing and never hydrates it:
 // hydrating reattaches, and that must not start the session.

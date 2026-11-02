@@ -92,6 +92,8 @@ const DIALOG_SCREEN = [
 function wire(options: {
   pending?: Array<{ id: string; sessionId: string; workspaceId?: string; toolName?: string; question?: string; kind?: string }>;
   reply?: unknown;
+  /** Leave out the injected screen read: main's own, over the renderer bridge, runs. */
+  defaultScreenRead?: boolean;
 } = {}): Wiring {
   const writes: Array<{ ptyId: string; data: string }> = [];
   const dc = {
@@ -117,14 +119,14 @@ function wire(options: {
     undefined,
     {
       answerPolicy: async () => live.policy,
-      readScreenText: async () => {
+      ...(options.defaultScreenRead ? {} : { readScreenText: async () => {
         if (live.readDelayMs !== undefined) {
           await deliberateSleep(live.readDelayMs, 'latency of a slow screen read, inside the stub');
         }
         const screen = live.screen;
         live.afterScreenRead?.();
         return screen;
-      },
+      } }),
       daemonFolderTrust: async (_ptyId, opts) => {
         live.daemonAsks++;
         live.daemonBudgets.push(opts?.budgetMs);
@@ -827,10 +829,31 @@ describe('a folder-trust verdict for a pane with no screen', () => {
     live.screen = '$ ';
     live.betweenPasteAndEnter = () => { live.screen = null; };
     const atEnter = await w.gatedSubmit('pty-w', 'hello');
-    expect(atEnter).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true, cleared: true });
+    expect(atEnter).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true });
     expect(atEnter.ok === false && atEnter.detail).toContain('could not be read — not submitting blind. The text was pasted but not submitted.');
-    // Still undecided after the redraw settled: the paste is taken back out (#2993).
-    expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~hello\x1b[201~', '\x15']);
+    // Undecided is unknown, not a reason to erase: the text stays (#2993).
+    expect(atEnter).not.toHaveProperty('cleared');
+    expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~hello\x1b[201~']);
+  });
+
+  // #2993 on Windows: a hidden pane with a 7 MB ring, whose screen reads time
+  // out at the bridge's 5 s once the paste is in. The default screen read turns
+  // the timeout into an unreadable screen; that is unknown, and unknown must
+  // neither erase the paste nor submit it.
+  it('a screen read that times out after the paste leaves the text, uncleared and unsubmitted', async () => {
+    let reads = 0;
+    vi.mocked(sendToRenderer).mockImplementation(async (_win, method) => {
+      if (method !== 'input.readScreen') return null;
+      reads += 1;
+      if (reads === 1) return { text: '⏺ Done.\n\n──────────\n❯ ' };
+      throw new Error('RPC timeout: input.readScreen (5000ms)');
+    });
+    w = wire({ defaultScreenRead: true });
+    live.policy = { allowed: true };
+    const res = await w.gatedSubmit('pty-w', 'line one\nline two', 'Claude Code');
+    expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true });
+    expect(res).not.toHaveProperty('cleared');
+    expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~line one\nline two\x1b[201~']);
   });
 
   // #2993: on a hidden pane our own paste moves the output the folder-trust
@@ -838,16 +861,18 @@ describe('a folder-trust verdict for a pane with no screen', () => {
   // undecided with no dialog there. The text used to sit in the composer,
   // never submitted, while the sender counted it as delivered.
   it.each([['single-line', 'hello', '\r'], ['multi-line', 'line one\nline two', '\r\r']])(
-    '%s: an undecided gate at the Enter clears the paste instead of leaving it unsubmitted',
+    '%s: a gate still undecided at the Enter leaves the paste, neither cleared nor submitted',
     async (_name, text, enter) => {
       live.policy = { allowed: true };
       live.screen = { parked: '❯ ' };
       live.daemonVerdict = 'clear';
       live.betweenPasteAndEnter = () => { live.daemonVerdict = 'unknown'; };
       const res = await w.gatedSubmit('pty-w', text, 'Claude Code');
-      expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true, cleared: true });
+      expect(res).toMatchObject({ ok: false, reason: 'gate_unavailable', pasted: true });
+      expect(res).not.toHaveProperty('cleared');
       const data = w.writes.map((x) => x.data);
-      expect(data.at(-1)).toBe('\x15');
+      expect(data).toHaveLength(1);
+      expect(data).not.toContain('\x15');
       expect(data).not.toContain(enter);
     },
   );
@@ -875,6 +900,10 @@ describe('a folder-trust verdict for a pane with no screen', () => {
       method === 'input.readScreen' ? { text: '⏺ Done.\n\n──────────\n❯ [Pasted text #1 +1 lines]' } : null);
     expect(await w.gatedSubmit('pty-w', 'line one\nline two', 'Claude Code')).toEqual({ ok: true });
     expect(w.writes.map((x) => x.data).slice(1)).toEqual(['\r\r', '\r']);
+    // The receipt's reads never resync a hidden pane (#2993).
+    const probeReads = vi.mocked(sendToRenderer).mock.calls.filter(([, method]) => method === 'input.readScreen');
+    expect(probeReads.length).toBeGreaterThan(0);
+    for (const [, , params] of probeReads) expect(params).toMatchObject({ noHydrate: true });
   });
 
   it("a delivery, and an agent's own text and keys, ask the daemon on a delivery's budget: no person waits on them", async () => {
