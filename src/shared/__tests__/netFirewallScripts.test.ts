@@ -227,6 +227,15 @@ describe('rule IDs', () => {
     expect(installRootOf('D:\\portable\\wmux\\wmux.exe')).toBe('D:\\portable\\wmux');
   });
 
+  it('a staged daemon copy maps to its daemon-runtime folder, the same across builds', () => {
+    const root = 'C:\\Users\\me\\.wmux\\daemon-runtime';
+    expect(installRootOf(`${root}\\4.14.0-1793650000123\\wmux.exe`)).toBe(root);
+    expect(installRootOf(`${root}\\4.15.0-beta.1-1793650000999\\wmux.exe`)).toBe(root);
+    // A copy in progress or a folder that is not a stage key keeps its own folder.
+    expect(installRootOf(`${root}\\4.14.0-1793650000123.partial-42\\wmux.exe`)).toBe(`${root}\\4.14.0-1793650000123.partial-42`);
+    expect(installRootOf('C:\\other\\4.14.0-1793650000123\\wmux.exe')).toBe('C:\\other\\4.14.0-1793650000123');
+  });
+
   it('is stable across updates, case-insensitive on the root, and differs by instance and user', () => {
     const a = firewallRuleIds('a2a', EXE, SCOPE);
     expect(a).toEqual({ base: 'wmux-a2a-1451d14d', allow: 'wmux-a2a-1451d14d-allow', pubblock: 'wmux-a2a-1451d14d-pubblock' });

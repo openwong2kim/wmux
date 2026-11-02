@@ -63,6 +63,17 @@ export function stageKey(version: string, scriptMtimeMs: number): string {
   return `${version}-${Math.floor(scriptMtimeMs)}`;
 }
 
+/** The copy of this build's wmux.exe the daemon runs from, whether or not it
+ *  exists yet; null when the build's daemon script cannot be read. */
+export function stagedDaemonExePath(opts: { appDir: string; exeName: string; stageRoot: string; version: string }): string | null {
+  try {
+    const mtime = fs.statSync(path.join(opts.appDir, ...SCRIPT)).mtimeMs;
+    return path.join(opts.stageRoot, stageKey(opts.version, mtime), opts.exeName);
+  } catch {
+    return null;
+  }
+}
+
 /** The entry scripts of every staged copy (the kill gate must recognise an older build's daemon). */
 export function stagedDaemonScripts(stageRoot: string): string[] {
   let names: string[];

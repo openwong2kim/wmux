@@ -1,7 +1,7 @@
 import * as path from 'path';
 import { app, dialog } from 'electron';
 import { markBoot } from '../util/bootTrace';
-import { daemonStageRootIn, isSquirrelInstall, stageDaemonRuntime, stagedDaemonScripts } from './daemonRuntimeStage';
+import { daemonStageRootIn, isSquirrelInstall, stageDaemonRuntime, stagedDaemonExePath, stagedDaemonScripts } from './daemonRuntimeStage';
 import { getWmuxDir } from '../../daemon/config';
 import {
   classifyTasklistOutput,
@@ -130,6 +130,14 @@ async function askUserToRecoverFromStalePid(opts: {
 function daemonStageRoot(): string | null {
   if (process.platform !== 'win32' || !app.isPackaged) return null;
   return daemonStageRootIn(getWmuxDir());
+}
+
+/** The staged wmux.exe this build's daemon runs from; null where there is no copy. */
+export function stagedDaemonExe(): string | null {
+  const stageRoot = daemonStageRoot();
+  const appDir = path.dirname(process.execPath);
+  if (!stageRoot || !isSquirrelInstall(appDir)) return null;
+  return stagedDaemonExePath({ appDir, exeName: path.basename(process.execPath), stageRoot, version: app.getVersion() });
 }
 
 /**
