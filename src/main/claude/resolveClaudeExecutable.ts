@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { agentRow, type AgentSlugWith } from '../../shared/agentIdentity';
+import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 
 // One answer to "where is the user's claude?", shared by Moa (the deck
 // adapters) and the first-run wizard's "Claude Code detected" row so the two
@@ -337,10 +338,12 @@ export function liveResolveEnv(env: Record<string, string | undefined> = process
   };
 }
 
-/** {@link claudeInstallsWith} on this machine, once the login shell's PATH has been read. */
+/** {@link claudeInstallsWith} on this machine, once the login shell's PATH has
+ *  been read. On Windows the PATH is re-read from the registry, as a new pane's
+ *  is (pty.handler), so an install on a PATH written after wmux started counts. */
 export async function claudeInstalls(): Promise<string[]> {
   await warmLoginShellPath();
-  return claudeInstallsWith(liveResolveEnv());
+  return claudeInstallsWith(liveResolveEnv(withFreshWindowsPath(process.env)));
 }
 
 /** Where the user's Codex CLI is, by the same rules as {@link resolveClaudeExecutable}. */
