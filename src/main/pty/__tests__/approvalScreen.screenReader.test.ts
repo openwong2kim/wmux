@@ -55,7 +55,7 @@ describe('claudeScreenApproval — screen-reader layout', () => {
       'y. Yes, overwrite it',
       'n. No, keep it',
       'Enter y/n:',
-    ])).toEqual({ text: 'Entery/n:', message: 'Approval requested' });
+    ])).toEqual({ text: 'Overwritetheexistingconfig?y.Yes,overwriteitn.No,keepit', message: 'Approval requested' });
     // A bare y/n key row may be the trust dialog scrolled off a short pane.
     expect(claudeScreenApproval(['Enter y/n:', 'Enter to confirm · Esc to cancel'])).toEqual({ text: 'Quick safety check:', message: 'Project trust prompt' });
     // An option that asks, and a question broken over two rows: the text is the question.
@@ -75,6 +75,40 @@ describe('claudeScreenApproval — screen-reader layout', () => {
       'Select with numbers [1-2]. Then Enter to submit or Escape to cancel:',
       'tool: Bash (npm test)',
     ])).toBeNull();
+  });
+
+  it('names a dialog no question row names by its own rows, so two of them never share a value', () => {
+    const dialog = (question: string, key = 'Enter y/n:') => [
+      'you: tidy the repo',
+      'tool: Bash (git clean)',
+      'Permission Required: Confirm',
+      question,
+      'y. Yes',
+      'n. No',
+      key,
+      'Esc to cancel',
+    ];
+    const first = claudeScreenApproval(dialog('Delete the untracked files?'));
+    const second = claudeScreenApproval(dialog('Delete the ignored files?'));
+    expect(first?.text).toBe('PermissionRequired:ConfirmDeletetheuntrackedfiles?y.Yesn.No');
+    expect(second?.text).toBe('PermissionRequired:ConfirmDeletetheignoredfiles?y.Yesn.No');
+    // A typed key is the same dialog.
+    expect(claudeScreenApproval(dialog('Delete the untracked files?', 'Enter y/n: y'))).toEqual(first);
+    // Broken over other rows at another width: the same dialog.
+    expect(claudeScreenApproval([
+      'Permission Required:',
+      'Confirm Delete the untracked',
+      'files?',
+      'y. Yes',
+      'n. No',
+      'Enter y/n:',
+    ])).toEqual(first);
+    // A numbered dialog whose question scrolled off: its rows from the top.
+    expect(claudeScreenApproval([
+      '1. Allow',
+      '2. Deny',
+      'Select with numbers [1-2]. Then Enter to submit or Escape to cancel:',
+    ])).toEqual({ text: '1.Allow2.Deny', message: 'Approval requested' });
   });
 
   it('is asked for once the screen-reader AskUserQuestion is drawn on a quiet screen', async () => {

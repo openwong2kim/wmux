@@ -35,12 +35,12 @@ export function claudeScreenApproval(rows: readonly string[]): ScreenApproval | 
  * A screen-reader dialog's question: the row right above its option 1, or,
  * when that row is the lower-case tail Ink broke off a long question, the rows
  * from the nearest of the two above it that starts one (`> Which …?`, `Do you
- * want to …`). With no option 1, the key row itself.
+ * want to …`). With no option 1, or none above it, the dialog's own rows.
  */
 function screenReaderQuestion(lines: readonly string[], at: number): string {
   let first = at - 1;
   while (first >= 0 && !/^1[.)]\s/.test(lines[first]!.trim())) first--;
-  if (first <= 0) return lines[at]!.trim();
+  if (first <= 0) return screenReaderDialogRows(lines, at);
   let start = first - 1;
   if (!/^(?:[A-Z]|> )/.test(lines[start]!.trim())) {
     for (let i = first - 2; i >= Math.max(0, first - 3); i--) {
@@ -48,6 +48,18 @@ function screenReaderQuestion(lines: readonly string[], at: number): string {
     }
   }
   return lines.slice(start, first).map((row) => row.trim()).join(' ').replace(/^> /, '');
+}
+
+/**
+ * A dialog no question row names (lettered `y.`/`n.` choices, or one whose
+ * question scrolled off): its rows from its heading (`Permission Required:`,
+ * `Question:`), or from the top when that is off screen, down to its key row.
+ * Two such dialogs then differ; a typed key or a resize leaves it the same.
+ */
+function screenReaderDialogRows(lines: readonly string[], at: number): string {
+  let start = at - 1;
+  while (start > 0 && !/^(?:Permission Required|Question):/.test(lines[start]!.trim())) start--;
+  return lines.slice(Math.max(start, 0), at).map((row) => row.trim()).join(' ') || lines[at]!.trim();
 }
 
 /** A dialog's choice rows: `option` is one choice, `selected` marks exactly
