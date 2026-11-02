@@ -956,6 +956,7 @@ export const ko = {
   'fleet.handOut.notDelivered': '“{title}”을(를) {target}에 맡기지 못했습니다.',
   'fleet.handOut.fromLine': '맡길 일에서 옴',
   'fleet.handOut.pr': 'PR #{number}',
+  'fleet.handOut.task': '할 일',
   'workspace.prChecks.pending': '검사 진행 중',
   'workspace.prChecks.passing': '검사 통과',
   'workspace.prChecks.failing': '검사 실패',

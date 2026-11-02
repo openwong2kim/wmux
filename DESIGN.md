@@ -2579,7 +2579,7 @@ differently in the two places, and in the order `fleet_triage` returns.
   below), folded the same way. A finished turn wants
   a look, not a decision, so it never sits in Needs you. A section head is
   sentence-case 12px text with a status dot and its count; an empty section
-  is not drawn. Plain shells sit only in Idle and never keep the empty state
+  is not drawn (To hand out is the one exception, below). Plain shells sit only in Idle and never keep the empty state
   from showing.
 - **One count:** the Needs you chip and the Needs you head read the same
   two arrays (pane rows and decision tickets); the rail badge, the one
@@ -2687,12 +2687,15 @@ differently in the two places, and in the order `fleet_triage` returns.
     `--text-muted` ring (nobody has it, so no status colour), "To hand out",
     its count and a `+` icon button that opens the add form at the top of
     the column. It lists the open items only, newest first. Empty, it still
-    draws its head with the `+` (the one exception to "no dead gauges": it is
+    draws its head with the `+` (an exception to "no dead gauges": it is
     the way in); a status filter hides it.
-  - **List section.** In the list (the default) a quiet section after Idle,
-    folded to one `To hand out N` row like Idle, open while searching or
-    filtered to it; open, it ends in an "Add a task…" row. It is not drawn at
-    zero. The To hand out filter chip carries the count and is hidden at zero.
+  - **List section.** In the list (the default) a quiet section after Idle
+    holding the open items only, folded to one `To hand out N` row like Idle,
+    open while searching or filtered to it; open, it ends in an "Add a task…"
+    row. At zero it is still drawn, as one row reading "To hand out" with a
+    quiet "Add a task…" action (the column's `+` in the list): an exception to
+    "an empty section is not drawn", so the default layout has a way in. The
+    To hand out filter chip carries the count and is hidden at zero.
   - **Add form.** A title (required, one line), the folder (the open
     workspaces' folders, the active workspace's first, or a typed full
     path), the agent (Any agent, then the installed agents) and an optional
@@ -2716,13 +2719,16 @@ differently in the two places, and in the order `fleet_triage` returns.
     and still selectable; a pane that needs you and a company's CEO pane are
     not listed. Start in a new worktree: when an open workspace's folder holds
     the item's, with an agent select. Give to a company: each company whose
-    folder holds the item's ("its CEO briefs a seat; the seat cap applies").
+    folder holds the item's ("its CEO briefs a seat; the seat cap applies");
+    the pick sends the owner's task to the CEO pane, and that task is the
+    item's job (its work link), so the item is out while the CEO has it.
     The footer: one muted line ("It leaves To hand out once the agent has it.
     A send that is not delivered puts it back."), Cancel and Hand out (the one
     primary). Radio semantics: the arrows move, Enter hands out, Escape
     closes. A send that was not delivered is a toast with the reason in the
-    Git page's hand-off words; a worktree start toasts only its preparation
-    notice; a refusal stays inline in the popover.
+    Git page's hand-off words; a delivered send not known to have started a
+    turn gets the Git page's "check it started" warning; a worktree start
+    toasts only its preparation notice; a refusal stays inline in the popover.
   - **Tickets.** A pick's work link (origin `hand-out`) is a ticket like a
     manual send; wherever Fleet shows it (the ticket row, the pane card
     holding it, its detail) a muted line reads "From To hand out", plus
@@ -2735,7 +2741,10 @@ differently in the two places, and in the order `fleet_triage` returns.
   one selected; a pick writes the pane's role through the same path as the
   dock roster and None clears it. A set role is plain text on the row.
 - **Empty fleet:** no agents is one call to action, the Tickets way in when
-  there are any, and the three newest finished tasks.
+  there are any, and the three newest finished tasks; open To hand out items
+  are drawn under it (the list's To hand out section, open, or the board's
+  column), since a pick can still start a worktree or go to a company. With
+  no items it is unchanged.
 - **Keys:** ↑↓ (and ←→) move through the list and open the detail, Home/End
   go to its ends, Enter jumps (Check rows open their detail), Space toggles
   the detail, Esc closes it, / searches, Shift+F10 or the Menu key opens

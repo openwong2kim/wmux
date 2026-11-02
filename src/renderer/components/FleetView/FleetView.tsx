@@ -311,32 +311,6 @@ export default function FleetView() {
     () => (filter === 'tickets' ? tickets.filter(matchesTicket) : []),
     [tickets, filter, matchesTicket],
   );
-  // To hand out: work nobody has been given yet. Quiet like a queued ticket
-  // (its own filter and section, no badge, count or toast); on the board it is
-  // the first column. The section folds like Idle, open while searching or
-  // filtered to it.
-  const handOutItems = useHandOutItems(true);
-  const visibleHandOut = useMemo(() => {
-    if (filter !== 'all' && filter !== 'handOut') return [];
-    const term = query.trim().toLocaleLowerCase();
-    return !term ? handOutItems : handOutItems.filter((item) => [item.title, item.folder, item.agent, item.note]
-      .some((value) => value?.toLocaleLowerCase().includes(term)));
-  }, [handOutItems, filter, query]);
-  const [handOutExpanded, setHandOutExpanded] = useState(false);
-  const handOutForced = filter === 'handOut' || query.trim() !== '';
-  const handOutShown = handOutExpanded || handOutForced;
-  const handOutToggleShown = visibleHandOut.length > 0 && !handOutForced;
-  // The add form (the board column's +, the list's "Add a task…" row) and
-  // the one Remove confirm that is open.
-  const [handOutAdding, setHandOutAdding] = useState(false);
-  const [handOutRemove, setHandOutRemove] = useState<string | null>(null);
-  // The Hand out… popover, anchored to its item's card.
-  const [handOutPick, setHandOutPick] = useState<{ id: string; anchor: { top: number; left: number; right: number; bottom: number } } | null>(null);
-  const handOutPickItem = handOutPick ? handOutItems.find((item) => item.id === handOutPick.id) : undefined;
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const handOutFolders = useMemo(() => handOutFolderChoices(workspaces, activeWorkspaceId), [workspaces, activeWorkspaceId]);
-  // The list's "Add a task…" row ends the open section; the form takes its place.
-  const handOutAddRowShown = handOutShown && visibleHandOut.length > 0 && !handOutAdding;
   // A ticket asks for the operator only while a decision of its waits, and
   // once with its final report (until viewed). A decision joins Needs you; a
   // final report gets its own marked block (it is a read, not a decision);
@@ -374,6 +348,41 @@ export default function FleetView() {
     () => [...visibleDecisionTickets, ...visibleReportTickets],
     [visibleDecisionTickets, visibleReportTickets],
   );
+  // No agents: the page is a call to action (open To hand out items stay
+  // under it: a pick can still start a worktree or go to a company).
+  const empty = fleetAgentCount(groups, reviewQueue.length) === 0 && decisionTickets.length === 0
+    && reportTickets.length === 0 && filter !== 'tickets';
+  // To hand out: work nobody has been given yet. Quiet like a queued ticket
+  // (its own filter and section, no badge, count or toast); on the board it is
+  // the first column. The section folds like Idle, open while searching,
+  // filtered to it or under the empty page's call to action; at zero it is
+  // one row whose "Add a task…" is the list's way in.
+  const handOutItems = useHandOutItems(true);
+  const visibleHandOut = useMemo(() => {
+    // The empty page shows no filters or search, so neither narrows it there.
+    if (!empty && filter !== 'all' && filter !== 'handOut') return [];
+    const term = empty ? '' : query.trim().toLocaleLowerCase();
+    return !term ? handOutItems : handOutItems.filter((item) => [item.title, item.folder, item.agent, item.note]
+      .some((value) => value?.toLocaleLowerCase().includes(term)));
+  }, [handOutItems, filter, query, empty]);
+  const [handOutExpanded, setHandOutExpanded] = useState(false);
+  const handOutForced = filter === 'handOut' || query.trim() !== '' || empty;
+  const handOutShown = handOutExpanded || handOutForced;
+  const handOutToggleShown = visibleHandOut.length > 0 && !handOutForced;
+  const handOutZeroShown = !empty && handOutItems.length === 0 && filter === 'all' && !query.trim();
+  // The add form (the board column's +, the list's "Add a task…") and the
+  // one Remove confirm that is open.
+  const [handOutAdding, setHandOutAdding] = useState(false);
+  const [handOutRemove, setHandOutRemove] = useState<string | null>(null);
+  // The Hand out… popover, anchored to its item's card.
+  const [handOutPick, setHandOutPick] = useState<{ id: string; anchor: { top: number; left: number; right: number; bottom: number } } | null>(null);
+  const handOutPickItem = handOutPick ? handOutItems.find((item) => item.id === handOutPick.id) : undefined;
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const handOutFolders = useMemo(() => handOutFolderChoices(workspaces, activeWorkspaceId), [workspaces, activeWorkspaceId]);
+  // The list's "Add a task…" ends the open section (or is the zero row's
+  // action); the form takes its place.
+  const handOutListOpen = (handOutShown && visibleHandOut.length > 0) || handOutZeroShown;
+  const handOutAddRowShown = handOutListOpen && !handOutAdding;
   // The board layout: the same rows, tickets and review tasks in four columns,
   // nothing folded. The Tickets filter stays a list (tickets are not agents).
   const boardColumns = useMemo(() => (fleetLayout !== 'board' || filter === 'tickets' ? null : buildBoardColumns(
@@ -670,7 +679,10 @@ export default function FleetView() {
   // change push lists it) or on Cancel; focus goes back to the list.
   const closeHandOutForm = useCallback((added?: string) => {
     setHandOutAdding(false);
-    if (added) setFocusedPaneId(handOutKey(added));
+    if (added) {
+      setHandOutExpanded(true);
+      setFocusedPaneId(handOutKey(added));
+    }
     requestAnimationFrame(() => { focusActiveItemRef.current(); });
   }, []);
   // Hand out… from the card (Enter), its right lane or its ⋮ menu. The card
@@ -1137,9 +1149,7 @@ export default function FleetView() {
     const id = window.setInterval(poll, 10_000);
     return () => { cancelled = true; window.clearInterval(id); };
   }, []);
-  // No agents: a call to action, plus the newest finished A2A tasks.
-  const empty = fleetAgentCount(groups, reviewQueue.length) === 0 && decisionTickets.length === 0
-    && reportTickets.length === 0 && filter !== 'tickets';
+  // No agents (`empty`): a call to action, plus the newest finished A2A tasks.
   const recentDone = useMemo(() => (!empty ? [] : Object.values(a2aTasks)
     .filter((task) => task.status.state === 'completed')
     .sort((a, b) => Date.parse(b.status.timestamp ?? '') - Date.parse(a.status.timestamp ?? ''))
@@ -1328,6 +1338,60 @@ export default function FleetView() {
     </div>
   );
   const handOutForm = <HandOutAddForm key="hand-out-form" folders={handOutFolders} onDone={closeHandOutForm} t={t} />;
+  // The list's "Add a task…": a row ending the open section, or the quiet
+  // action on the zero row (the board column's +).
+  const handOutAdd = (inline: boolean) => (
+    <button
+      key="hand-out:add"
+      type="button"
+      role="option"
+      aria-selected={focusedKey === HAND_OUT_ADD_KEY}
+      tabIndex={focusedKey === HAND_OUT_ADD_KEY ? 0 : -1}
+      className={`flex items-center gap-1.5 text-left text-[12px] font-normal text-[var(--text-sub)] outline-none hover:bg-[var(--hover-fill)] hover:text-[var(--text-main)] aria-selected:bg-[var(--hover-fill)] focus-visible:![outline:2px_solid_var(--accent)] focus-visible:![outline-offset:-2px] ${inline ? 'min-h-[24px] px-1.5 rounded-[6px]' : 'w-full min-h-[32px] px-2 rounded-[8px]'}`}
+      data-fleet-hand-out-add-row
+      data-fleet-key={HAND_OUT_ADD_KEY}
+      onFocus={() => setFocusedPaneId(HAND_OUT_ADD_KEY)}
+      onClick={() => setHandOutAdding(true)}
+    >
+      {!inline && <IconPlus size={12} />}
+      <span>{t('fleet.handOut.addRow')}</span>
+    </button>
+  );
+  // The list's To hand out section, after Idle: folded like Idle, and drawn
+  // at zero too (one row with "Add a task…"), the default layout's way in.
+  const handOutSection = [
+    ...(visibleHandOut.length > 0 ? [handOutToggleShown ? (
+      <button
+        key="section:handOut"
+        type="button"
+        role="option"
+        aria-selected={focusedKey === HAND_OUT_TOGGLE_KEY}
+        aria-expanded={handOutShown}
+        tabIndex={focusedKey === HAND_OUT_TOGGLE_KEY ? 0 : -1}
+        className="wmux-fleet-idle-toggle"
+        data-fleet-section="handOut"
+        data-fleet-hand-out-toggle
+        data-fleet-key={HAND_OUT_TOGGLE_KEY}
+        onFocus={() => setFocusedPaneId(HAND_OUT_TOGGLE_KEY)}
+        onClick={() => setHandOutExpanded(!handOutExpanded)}
+      >
+        <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
+        <span>{t('fleet.handOut.section', { count: visibleHandOut.length })}</span>
+      </button>
+    ) : (
+      <div key="section:handOut" role="presentation" className="wmux-fleet-section-header" data-fleet-section="handOut">
+        {t('fleet.handOut.section', { count: visibleHandOut.length })}
+      </div>
+    )] : handOutZeroShown ? [(
+      <div key="section:handOut" role="presentation" className="wmux-fleet-section-header" data-fleet-section="handOut" data-fleet-hand-out-zero>
+        <span>{t('fleet.handOut.title')}</span>
+        {!handOutAdding && handOutAdd(true)}
+      </div>
+    )] : []),
+    ...(handOutShown ? visibleHandOut.map((item) => renderHandOut(item, 'list')) : []),
+    ...(handOutListOpen && handOutAdding ? [handOutForm] : []),
+    ...(handOutAddRowShown && !handOutZeroShown ? [handOutAdd(false)] : []),
+  ];
   const renderBoardItem = (item: BoardItem) => (item.kind === 'pane' ? renderRow(item.row)
     : item.kind === 'ticket' ? renderTicket(item.ticket)
     : item.kind === 'handOut' ? renderHandOut(item.item, 'board') : renderReview(item.entry));
@@ -1517,28 +1581,41 @@ export default function FleetView() {
             )}
           </div>
         ) : empty ? (
-          <div className="wmux-board-empty" data-fleet-empty>
-            <h3>{t('fleetBoard.empty.title')}</h3>
-            <p>{t('fleetBoard.empty.body')}</p>
-            <button type="button" className="wmux-board-cta" onClick={openPicker} data-fleet-new-agent>
-              <IconPlus size={12} />{t('fleetBoard.newAgent')}
-            </button>
-            {tickets.length > 0 && (
-              <button type="button" className="wmux-board-back" onClick={() => setFilter('tickets')} data-filter="tickets">
-                {t('fleet.filter.tickets')} {tickets.length}
+          <>
+            <div className={`wmux-board-empty${visibleHandOut.length > 0 ? ' !pt-12 !pb-6' : ''}`} data-fleet-empty>
+              <h3>{t('fleetBoard.empty.title')}</h3>
+              <p>{t('fleetBoard.empty.body')}</p>
+              <button type="button" className="wmux-board-cta" onClick={openPicker} data-fleet-new-agent>
+                <IconPlus size={12} />{t('fleetBoard.newAgent')}
               </button>
-            )}
-            {recentDone.length > 0 && (
-              <ul className="wmux-board-recent" aria-label={t('fleetBoard.recent')}>
-                {recentDone.map((task) => (
-                  <li key={task.id}>
-                    <span className="truncate"><IconCheck size={12} /> {task.metadata.title}</span>
-                    <span>{task.status.timestamp ? formatIdle(Math.max(0, now - Date.parse(task.status.timestamp))) : ''}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+              {tickets.length > 0 && (
+                <button type="button" className="wmux-board-back" onClick={() => setFilter('tickets')} data-filter="tickets">
+                  {t('fleet.filter.tickets')} {tickets.length}
+                </button>
+              )}
+              {recentDone.length > 0 && (
+                <ul className="wmux-board-recent" aria-label={t('fleetBoard.recent')}>
+                  {recentDone.map((task) => (
+                    <li key={task.id}>
+                      <span className="truncate"><IconCheck size={12} /> {task.metadata.title}</span>
+                      <span>{task.status.timestamp ? formatIdle(Math.max(0, now - Date.parse(task.status.timestamp))) : ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+            {/* Open items stay in reach: a pick can still start a worktree or go to a company. */}
+            {visibleHandOut.length > 0 && (boardColumns ? (
+              <div ref={listRef} role="listbox" aria-label={t('fleet.handOut.title')}
+                className="wmux-fleet-board grid-cols-[minmax(0,380px)]" data-fleet-board>
+                {renderColumn('handOut')}
+              </div>
+            ) : (
+              <div ref={listRef} role="listbox" aria-label={t('fleet.handOut.title')} className="wmux-fleet-list">
+                {handOutSection}
+              </div>
+            ))}
+          </>
         ) : matchCount === 0 ? (
           <div className="wmux-fleet-empty">
             <p>{filter === 'tickets' && !query.trim() ? t('fleet.ticket.empty') : t('fleet.noMatches')}</p>
@@ -1622,49 +1699,7 @@ export default function FleetView() {
                   <div key="section:idle" role="presentation" className="wmux-fleet-section-header" data-fleet-section="idle">{idleSummary}</div>
                 )]),
                 ...(idleShown ? visibleGroups.idle.map(renderRow) : []),
-                // To hand out: quiet, after Idle, folded the same way.
-                ...(visibleHandOut.length === 0 ? [] : [handOutToggleShown ? (
-                  <button
-                    key="section:handOut"
-                    type="button"
-                    role="option"
-                    aria-selected={focusedKey === HAND_OUT_TOGGLE_KEY}
-                    aria-expanded={handOutShown}
-                    tabIndex={focusedKey === HAND_OUT_TOGGLE_KEY ? 0 : -1}
-                    className="wmux-fleet-idle-toggle"
-                    data-fleet-section="handOut"
-                    data-fleet-hand-out-toggle
-                    data-fleet-key={HAND_OUT_TOGGLE_KEY}
-                    onFocus={() => setFocusedPaneId(HAND_OUT_TOGGLE_KEY)}
-                    onClick={() => setHandOutExpanded(!handOutExpanded)}
-                  >
-                    <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
-                    <span>{t('fleet.handOut.section', { count: visibleHandOut.length })}</span>
-                  </button>
-                ) : (
-                  <div key="section:handOut" role="presentation" className="wmux-fleet-section-header" data-fleet-section="handOut">
-                    {t('fleet.handOut.section', { count: visibleHandOut.length })}
-                  </div>
-                )]),
-                ...(handOutShown ? visibleHandOut.map((item) => renderHandOut(item, 'list')) : []),
-                ...(handOutShown && visibleHandOut.length > 0 && handOutAdding ? [handOutForm] : []),
-                ...(handOutAddRowShown ? [(
-                  <button
-                    key="hand-out:add"
-                    type="button"
-                    role="option"
-                    aria-selected={focusedKey === HAND_OUT_ADD_KEY}
-                    tabIndex={focusedKey === HAND_OUT_ADD_KEY ? 0 : -1}
-                    className="flex items-center gap-1.5 w-full min-h-[32px] px-2 rounded-[8px] text-left text-[12px] text-[var(--text-sub)] outline-none hover:bg-[var(--hover-fill)] hover:text-[var(--text-main)] aria-selected:bg-[var(--hover-fill)] focus-visible:![outline:2px_solid_var(--accent)] focus-visible:![outline-offset:-2px]"
-                    data-fleet-hand-out-add-row
-                    data-fleet-key={HAND_OUT_ADD_KEY}
-                    onFocus={() => setFocusedPaneId(HAND_OUT_ADD_KEY)}
-                    onClick={() => setHandOutAdding(true)}
-                  >
-                    <IconPlus size={12} />
-                    <span>{t('fleet.handOut.addRow')}</span>
-                  </button>
-                )] : []),
+                ...handOutSection,
               ]}
             </div>
             )}

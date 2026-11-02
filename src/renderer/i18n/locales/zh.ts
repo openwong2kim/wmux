@@ -1627,6 +1627,7 @@ export const zh = {
   'fleet.handOut.notDelivered': '未能将“{title}”分派给 {target}。',
   'fleet.handOut.fromLine': '来自待分派',
   'fleet.handOut.pr': 'PR #{number}',
+  'fleet.handOut.task': '任务',
   'fleet.now.edited': '编辑了 {target}',
   'fleet.now.ran': '运行了 {target}',
   'fleet.now.read': '读取了 {target}',

@@ -1172,6 +1172,7 @@ export const pl = {
   'fleet.handOut.notDelivered': 'Nie przydzielono „{title}” do {target}.',
   'fleet.handOut.fromLine': 'Z listy Do przydzielenia',
   'fleet.handOut.pr': 'PR #{number}',
+  'fleet.handOut.task': 'zadanie',
   'fleet.now.edited': 'Edytował {target}',
   'fleet.now.ran': 'Uruchomił {target}',
   'fleet.now.read': 'Czytał {target}',

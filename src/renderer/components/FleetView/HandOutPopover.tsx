@@ -48,6 +48,38 @@ function placeBeside(anchor: Anchor, height: number): { left: number; top: numbe
   return placePopover(anchor, { width: POPOVER_W, height });
 }
 
+/**
+ * What a pick that went through still has to say, each a warning toast: a
+ * new worktree's preparation notice; a send that was not delivered, with the
+ * reason in the Git page's hand-off words; a delivered send not known to have
+ * started a turn (a busy agent can take the paste and drop the Enter), with
+ * the Git page's "check it started". A delivered send says nothing more.
+ */
+export function handOutPickNotices(
+  res: Extract<HandOutPickResult, { ok: true }>,
+  picked: HandOutOption,
+  title: string,
+  t: T,
+): string[] {
+  const out: string[] = [];
+  const notice = res.prep ? prepNoticeToast(res.prep) : null;
+  if (notice) out.push(t(notice.key, notice.values));
+  if (picked.kind === 'worktree') return out;
+  if (res.delivered === false) {
+    const whyKey = `git.handoff.why.${res.reason ?? ''}`;
+    const why = res.reason && t(whyKey) !== whyKey ? t(whyKey) : res.note;
+    out.push(`${t('fleet.handOut.notDelivered', { title, target: picked.name })}${why ? ` ${why}` : ''}`);
+  } else if (res.assurance === 'unverified') {
+    out.push(t('git.handoff.pasted', {
+      kind: t('fleet.handOut.task'),
+      ref: `“${title}”`,
+      agent: picked.kind === 'pane' ? picked.name || picked.target.agentName : picked.target.agentName || picked.name,
+      workspace: picked.kind === 'pane' ? picked.workspaceName : picked.name,
+    }));
+  }
+  return out;
+}
+
 /** The agent panes and workspaces of this PC as the targets read them. */
 function useCandidates(rows: readonly FleetRow[], workspaces: readonly Workspace[]) {
   const paneLabel = useStore((s) => s.paneLabel);
@@ -185,16 +217,7 @@ export default function HandOutPopover({ item, anchor, rows, workspaces, onClose
     }
     onClose();
     const pushToast = useStore.getState().pushToast;
-    // The new worktree's preparation is never silent.
-    const notice = res.prep ? prepNoticeToast(res.prep) : null;
-    if (notice) pushToast({ level: 'warn', message: t(notice.key, notice.values) });
-    if (res.delivered === false) {
-      // The Git page's hand-off words for why a send did not land.
-      const whyKey = `git.handoff.why.${res.reason ?? ''}`;
-      const why = res.reason && t(whyKey) !== whyKey ? t(whyKey) : res.note;
-      const target = selected.kind === 'pane' ? selected.name : selected.kind === 'company' ? selected.name : '';
-      pushToast({ level: 'warn', message: `${t('fleet.handOut.notDelivered', { title: item.title, target })}${why ? ` ${why}` : ''}` });
-    }
+    for (const message of handOutPickNotices(res, selected, item.title, t)) pushToast({ level: 'warn', message });
   };
 
   const onKeyDown = (event: React.KeyboardEvent) => {

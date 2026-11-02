@@ -1251,6 +1251,7 @@ export const en = {
   'fleet.handOut.notDelivered': 'Did not hand out “{title}” to {target}.',
   'fleet.handOut.fromLine': 'From To hand out',
   'fleet.handOut.pr': 'PR #{number}',
+  'fleet.handOut.task': 'task',
   'fleet.now.edited': 'Edited {target}',
   'fleet.now.ran': 'Ran {target}',
   'fleet.now.read': 'Read {target}',
