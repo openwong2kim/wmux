@@ -39,6 +39,14 @@ describe('stripReplayQuerySequences', () => {
     );
   });
 
+  it('strips the program status query (OSC 7501 ; ?) with either terminator, keeps reports', () => {
+    expect(strip('a\x1b]7501;?\x07b\x1b]7501;?\x1b\\c')).toBe('abc');
+    const reports = '\x1b]7501;state=idle:app=claude-code\x07\x1b]7501;state=working\x1b\\\x1b]7501;state=clear\x07';
+    expect(strip(reports)).toBe(reports);
+    // Only the exact query: an unterminated one cannot swallow the text after it.
+    expect(strip('\x1b]7501;?abc\x07')).toBe('\x1b]7501;?abc\x07');
+  });
+
   it('strips DCS queries (DECRQSS, XTGETTCAP) and ENQ', () => {
     expect(strip('\x1bP$qm\x1b\\\x1bP+q544e\x1b\\\x05')).toBe('');
   });
