@@ -1,6 +1,6 @@
 // #2934 — which task workspaces the renderer closes when their task closes.
 import { describe, it, expect } from 'vitest';
-import { agentKeepsWorkspace, taskWorkspacesToClose } from '../closedTaskWorkspaces';
+import { leaveTaskWorkspaceToCaller, taskWorkspacesToClose } from '../closedTaskWorkspaces';
 import type { StoreState } from '../../stores';
 import type { AgentStatus, Pane, Surface, Workspace } from '../../../shared/types';
 import type { WorkTask } from '../../../shared/workTask';
@@ -24,6 +24,11 @@ function state(workspaces: Workspace[], extra: Record<string, unknown> = {}): St
   return {
     workspaces,
     activeWorkspaceId: 'owner',
+    multiviewIds: [],
+    appRoute: 'workspace',
+    botsWorkerPanel: null,
+    commandRunningByPtyId: {},
+    agentAliveByPtyId: {},
     surfaceAgent: {},
     surfaceAgentStatus: {},
     surfacePendingQuestion: {},
@@ -74,8 +79,16 @@ describe('taskWorkspacesToClose (#2934)', () => {
     expect(taskWorkspacesToClose(open, closed, state([OWNER]))).toEqual([]);
   });
 
-  it('keeps the active workspace', () => {
+  it('keeps a task left to its caller, once', () => {
+    leaveTaskWorkspaceToCaller('task-t1');
+    expect(decide(closed)).toEqual([]);
+    expect(decide(closed)).toEqual(['t1']);
+  });
+
+  it('keeps a shown workspace: active, a multiview tile, or the Bots worker panel', () => {
     expect(decide(closed, { activeWorkspaceId: 't1' })).toEqual([]);
+    expect(decide(closed, { multiviewIds: ['owner', 't1'] })).toEqual([]);
+    expect(decide(closed, { appRoute: 'bots', botsWorkerPanel: { workspaceId: 't1' } })).toEqual([]);
   });
 
   it.each(['running', 'awaiting_input'] as AgentStatus[])('keeps a workspace whose agent is %s', (status) => {
@@ -91,9 +104,29 @@ describe('taskWorkspacesToClose (#2934)', () => {
     expect(decide(closed, withAgent(status))).toEqual(['t1']);
   });
 
-  it('a waiting agent keeps the workspace only with a question', () => {
-    expect(agentKeepsWorkspace({ status: 'waiting' })).toBe(false);
-    expect(agentKeepsWorkspace({ status: 'waiting', pendingQuestion: 'Proceed?' })).toBe(true);
+  it('keeps a workspace whose shell runs a command, but not for its own finished agent', () => {
+    // A plain shell (no agent row) running a command.
+    expect(decide(closed, { commandRunningByPtyId: { 't1-pty': true } })).toEqual([]);
+    // A stashed shell has a roster row but is no agent.
+    const stashedShell = workspace('t1');
+    stashedShell.stashedPanes = [{ pane: { id: 'sp', type: 'leaf', surfaces: [surface('ss', 'shell-pty')], activeSurfaceId: 'ss' } }];
+    expect(decide(closed, { commandRunningByPtyId: { 'shell-pty': true } }, stashedShell)).toEqual([]);
+    // The finished agent is the command its shell runs: closing ends it.
+    expect(decide(closed, { ...withAgent('complete'), commandRunningByPtyId: { 't1-pty': true } })).toEqual(['t1']);
+    // An agent known gone: the command its shell runs now is something else.
+    expect(decide(closed, {
+      ...withAgent('complete'), commandRunningByPtyId: { 't1-pty': true }, agentAliveByPtyId: { 't1-pty': false },
+    })).toEqual([]);
+  });
+
+  it('keeps a workspace that holds an editor (stashed included), not one with only a browser', () => {
+    const editor = surface('e', '', { surfaceType: 'editor', editorFilePath: '/repo/a.ts' });
+    expect(decide(closed, {}, workspace('t1', [surface('t1-s', 't1-pty'), editor]))).toEqual([]);
+    const stashed = workspace('t1');
+    stashed.stashedPanes = [{ pane: { id: 'sp', type: 'leaf', surfaces: [editor], activeSurfaceId: 'e' } }];
+    expect(decide(closed, {}, stashed)).toEqual([]);
+    const browser = surface('b', '', { surfaceType: 'browser', browserUrl: 'http://localhost:3000' });
+    expect(decide(closed, {}, workspace('t1', [surface('t1-s', 't1-pty'), browser]))).toEqual(['t1']);
   });
 
   it('keeps a workspace that holds a remote-terminal session', () => {

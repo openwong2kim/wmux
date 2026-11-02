@@ -8,6 +8,7 @@ import { useStore } from '../../stores';
 import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { selectWorkspaceAgentRoster } from '../../stores/selectors/workspaceAgentRoster';
 import { paneRowsFinished } from '../Sidebar/sidebarTree';
+import { leaveTaskWorkspaceToCaller } from '../../utils/closedTaskWorkspaces';
 import type { useT } from '../../hooks/useT';
 
 type Translate = ReturnType<typeof useT>;
@@ -22,6 +23,7 @@ export function keptFolderMessage(res: { keptFolder?: string }, t: Translate): s
 export async function closeKeepingFolder(taskId: string, verifiedWorkspaceId: string, t: Translate): Promise<boolean> {
   const push = useStore.getState().pushToast;
   try {
+    leaveTaskWorkspaceToCaller(taskId);
     const res = await window.electronAPI.workTask.close(taskId, verifiedWorkspaceId, { keepFolder: true });
     if (res.ok) {
       push({ level: 'info', message: keptFolderMessage(res, t) ?? t('worktask.cleanup.closed') });

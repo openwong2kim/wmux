@@ -18,6 +18,9 @@ vi.mock('../../stores', async () => {
   const useStore = create(() => ({
     workspaces: [] as Workspace[],
     activeWorkspaceId: 'owner',
+    multiviewIds: [] as string[],
+    appRoute: 'workspace',
+    botsWorkerPanel: null,
     missionByPaneGroup: {} as Record<string, WorkTask>,
     removeWorkspace: (id: string) =>
       useStore.setState((s) => ({ workspaces: s.workspaces.filter((w) => w.id !== id) })),
@@ -32,6 +35,11 @@ vi.mock('../../stores', async () => {
     paneLabel: {},
     agentClockMs: 1_000_000,
     remoteWorkspaces: [],
+    commandRunningByPtyId: {},
+    agentAliveByPtyId: {},
+    // Close and keep folder's own reads.
+    pushToast: vi.fn(),
+    refreshMissions: vi.fn(async () => undefined),
     // The refresh passes the mount starts.
     refreshFanoutProvenance: vi.fn(async () => undefined),
     refreshMissionsForOwners: vi.fn(async () => undefined),
@@ -42,6 +50,7 @@ vi.mock('../../stores', async () => {
 
 import { useStore as realUseStore } from '../../stores';
 import { useMissionsPolling } from '../useMissionsPolling';
+import { closeKeepingFolder } from '../../components/WorkTask/closeKeepFolder';
 
 const useStore = realUseStore as unknown as {
   getState: () => { workspaces: Workspace[] };
@@ -90,6 +99,7 @@ describe('useMissionsPolling — closed task workspaces (#2934)', () => {
     });
     (window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
       daemon: { whenReady: () => new Promise<void>(() => undefined), onConnected: () => () => undefined },
+      workTask: { close: vi.fn(async () => ({ ok: true })) },
     };
     (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     root = createRoot(document.createElement('div'));
@@ -110,6 +120,14 @@ describe('useMissionsPolling — closed task workspaces (#2934)', () => {
     expect(mocks.dispose).toHaveBeenCalledTimes(1);
     expect(mocks.dispose.mock.calls[0][0]).toMatchObject({ id: 't1' });
     expect(liveIds()).toEqual(['owner', 't-detached', 't-active', 't-busy']);
+  });
+
+  it('leaves the workspace of a task closed by Close and keep folder to that close', async () => {
+    const t = ((key: string) => key) as unknown as Parameters<typeof closeKeepingFolder>[2];
+    await expect(closeKeepingFolder('task-t1', 'owner', t)).resolves.toBe(true);
+    useStore.setState({ missionByPaneGroup: index(['t1'], 'closed') });
+    expect(mocks.dispose).not.toHaveBeenCalled();
+    expect(liveIds()).toContain('t1');
   });
 
   it('stops closing once unmounted', () => {

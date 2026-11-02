@@ -1,22 +1,49 @@
 // #2934 — a fan-out task closed from anywhere (channel_mission_close, the CLI,
-// another window) used to leave its workspace in the sidebar and the phone task
-// list until someone closed it by hand. The mission cache sees the close on its
-// next poll; this decides which of those task workspaces the renderer may close
-// itself. The worktree is never touched: removing it stays the caller's call.
+// another agent) used to leave its workspace in the sidebar and the phone task
+// list until someone closed it by hand. For a task whose owner workspace is
+// still open, the next mission refresh sees the close; this decides which of
+// those task workspaces the renderer may close itself. The worktree is never
+// touched: removing it stays the caller's call.
 
-import type { AgentStatus } from '../../shared/types';
+import type { AgentStatus, Workspace } from '../../shared/types';
 import type { WorkTask } from '../../shared/workTask';
-import { getWorkspaceRemoteSessions } from '../../shared/paneUtils';
+import { getWorkspaceLeafPanes, getWorkspacePtyIds, getWorkspaceRemoteSessions } from '../../shared/paneUtils';
 import type { StoreState } from '../stores';
-import { selectWorkspaceAgentRoster } from '../stores/selectors/workspaceAgentRoster';
+import { selectWorkspaceAgentRoster, type WorkspaceAgentRosterRow } from '../stores/selectors/workspaceAgentRoster';
+import { isWorkspaceShown } from '../stores/selectors/surfaceShown';
 import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
 
-/** An agent still at work or asking something: its workspace stays. `waiting`
- *  without a question is an agent idle at its prompt (the detector's "Ready
- *  for input"), which the roster shows as idle: a finished worker. */
-export function agentKeepsWorkspace(row: { status: AgentStatus; pendingQuestion?: string }): boolean {
-  if (row.status === 'waiting') return row.pendingQuestion !== undefined;
-  return row.status === 'running' || row.status === 'awaiting_input';
+/** Tasks whose close a caller handles itself, workspace included (Close and
+ *  keep folder decides on its own whether the workspace stays). */
+const leftToCaller = new Set<string>();
+
+/** Mark `taskId` as closed by a caller that decides about its workspace
+ *  itself: the close this refresh sees then leaves the workspace alone. */
+export function leaveTaskWorkspaceToCaller(taskId: string): void {
+  leftToCaller.add(taskId);
+}
+
+/** An agent still at work or asking something: its workspace stays. A
+ *  question pending on the pane already reads `awaiting_input` in the roster,
+ *  and `waiting` without one is an agent idle at its prompt (the detector's
+ *  "Ready for input"), shown as idle: a finished worker. */
+function agentKeepsWorkspace(status: AgentStatus): boolean {
+  return status === 'running' || status === 'awaiting_input';
+}
+
+/** A shell running a command (OSC 133) that is not the pane's own live agent,
+ *  the same rule as workspaceBusy: ending the agent is what the close is for,
+ *  anything else is work of its own. */
+function runsOtherCommand(state: StoreState, ws: Workspace, rows: readonly WorkspaceAgentRosterRow[]): boolean {
+  const agents = new Set(rows.filter((r) => r.agentName && state.agentAliveByPtyId[r.ptyId] !== false).map((r) => r.ptyId));
+  return getWorkspacePtyIds(ws).some((ptyId) => !agents.has(ptyId) && state.commandRunningByPtyId[ptyId] === true);
+}
+
+/** An editor tab (stash included): its edits may be unsaved, and nothing
+ *  tracks whether they are. Browser, diff and preview tabs reopen from their
+ *  URL or the disk. */
+function holdsEditor(ws: Workspace): boolean {
+  return getWorkspaceLeafPanes(ws).some((leaf) => leaf.surfaces.some((s) => s.surfaceType === 'editor'));
 }
 
 /**
@@ -24,9 +51,10 @@ export function agentKeepsWorkspace(row: { status: AgentStatus; pendingQuestion?
  * from `open` (in `prev`) to `closed` (in `next`). Edge-triggered only — a task
  * first seen closed (startup) or already closed before is never closed here,
  * so a workspace kept once stays the user's. A workspace is kept when the task
- * was detached, the workspace is gone or active, an agent in it is still
- * working, it holds a remote session (closing would end it on another
- * machine), or closing it would be refused (the last workspace).
+ * was detached or left to its caller, the workspace is gone or shown, an agent
+ * in it is still working or a shell runs a command, it holds an editor or a
+ * remote session (closing would end it on another machine), or closing it
+ * would be refused (the last workspace).
  */
 export function taskWorkspacesToClose(
   prev: Readonly<Record<string, WorkTask>>,
@@ -39,11 +67,14 @@ export function taskWorkspacesToClose(
   for (const [wsId, task] of Object.entries(next)) {
     const before = prev[wsId];
     if (task.status !== 'closed' || before?.status !== 'open') continue;
+    // The edge comes once, so the mark is spent here.
+    if (leftToCaller.delete(task.id)) continue;
     if (task.detachedAt !== undefined) continue;
     const ws = workspaces.find((w) => w.id === wsId);
-    if (!ws || state.activeWorkspaceId === wsId) continue;
-    if (selectWorkspaceAgentRoster(state, wsId).rows.some(agentKeepsWorkspace)) continue;
-    if (getWorkspaceRemoteSessions(ws).length > 0) continue;
+    if (!ws || isWorkspaceShown(state, wsId)) continue;
+    const rows = selectWorkspaceAgentRoster(state, wsId).rows;
+    if (rows.some((row) => agentKeepsWorkspace(row.status)) || runsOtherCommand(state, ws, rows)) continue;
+    if (holdsEditor(ws) || getWorkspaceRemoteSessions(ws).length > 0) continue;
     if (workspaceCloseRefusal({ workspaces }, wsId)) continue;
     out.push(wsId);
     workspaces = workspaces.filter((w) => w.id !== wsId);
