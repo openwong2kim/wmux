@@ -10,7 +10,6 @@
  * (projectConfigWrite.ts). Only the `company` key changes.
  */
 
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import {
   companyFileJson,
@@ -18,28 +17,26 @@ import {
   type CompanyFileSaveResult,
   type CompanyFileView,
 } from '../../shared/companyFile';
-import { normalizeWmuxProjectConfig } from '../../shared/wmuxProjectConfig';
-import { locateProjectConfig, saveBlock, writeProjectConfig, type ProjectConfigWriteDeps } from './projectConfigWrite';
+import { normalizeWmuxProjectConfig, WMUX_PROJECT_CONFIG_FILENAME } from '../../shared/wmuxProjectConfig';
+import {
+  locateProjectConfig,
+  readConfigDoc,
+  sameFolder,
+  saveBlock,
+  writeProjectConfig,
+  type ProjectConfigWriteDeps,
+  type SaveShows,
+} from './projectConfigWrite';
 
-/** One folder however it is spelled: symlinks resolved, case folded on Windows. */
-function sameFolder(a: string, b: string): boolean {
-  const real = (p: string) => {
-    try {
-      return fs.realpathSync.native(p);
-    } catch {
-      return path.resolve(p);
-    }
-  };
-  const x = real(a);
-  const y = real(b);
-  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
-}
+/** The dialog shows the company and nothing else of the file. */
+const COMPANY_SAVE_SHOWS: SaveShows = { copy: false, only: ['version', 'company'] };
 
 export async function readProjectCompany(folder: string, deps: ProjectConfigWriteDeps): Promise<CompanyFileView> {
   const found = await locateProjectConfig(folder, deps);
   if (!found) return { exists: false, saveBlocked: 'no-project' };
   const { state, dir } = found;
-  const blocked = sameFolder(dir, folder) ? saveBlock(state, { copy: false }) : 'other-folder';
+  const doc = state.found && state.configPath ? readConfigDoc(state.configPath) : undefined;
+  const blocked = sameFolder(dir, folder) ? saveBlock(state, COMPANY_SAVE_SHOWS, doc) : 'other-folder';
   return {
     dir,
     exists: state.found === true,
@@ -74,6 +71,8 @@ export async function saveProjectCompany(
     return check !== undefined && JSON.stringify(companyFileJson(check)) === JSON.stringify(json);
   };
   // Through the folder as given: the trust key is the spelling the store finds
-  // from it, which git's top would resolve away for a linked folder.
-  return writeProjectConfig(folder, expectedHash, edit, (prior) => ({ unattended: prior.unattended, companyReviewed: true }), { copy: false }, deps);
+  // from it, which git's top would resolve away for a linked folder. Only into
+  // the file the folder check above was made for.
+  const grant = (prior: { unattended: boolean }) => ({ unattended: prior.unattended, companyReviewed: true });
+  return writeProjectConfig(folder, expectedHash, edit, grant, COMPANY_SAVE_SHOWS, deps, path.join(found.dir, WMUX_PROJECT_CONFIG_FILENAME));
 }
