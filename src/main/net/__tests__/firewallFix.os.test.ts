@@ -24,6 +24,7 @@ function setup(opts: {
   target?: Record<string, unknown>;
   elevate?: () => Promise<ShellRunResult>;
   selfExe?: string;
+  stagedExe?: string | null;
   scope?: () => RuleScope;
 } = {}) {
   const probes = [...(opts.probes ?? [status(), status({ verdict: 'covered' })])];
@@ -45,6 +46,7 @@ function setup(opts: {
     facts: { exists: () => true, onLocalFixedDrive: () => true },
     scope: opts.scope ?? (() => SCOPE),
     selfExe: opts.selfExe ?? EXE,
+    stagedExe: () => opts.stagedExe ?? null,
     platform: 'win32',
     tokenType: () => 3,
     selfElevated: () => false,
@@ -145,6 +147,21 @@ describe('FirewallFixer.fix', () => {
     const upper = setup({ selfExe: EXE.toUpperCase() });
     await upper.fixer.status('a2a');
     expect((await upper.fixer.fix('a2a')).outcome).toEqual({ kind: 'ok' });
+  });
+
+  it('accepts the staged copy this build\'s daemon runs from, and no other copy', async () => {
+    const staged = 'C:\\Users\\me\\.wmux\\daemon-runtime\\4.10.0-1793650000123\\wmux.exe';
+    const ids = firewallRuleIds('a2a', staged, SCOPE);
+    const stagedStatus = (over: Partial<InboundStatus> = {}) => status({ exe: staged, ruleIds: { allow: ids.allow, pubblock: ids.pubblock }, ...over });
+    const t = setup({ stagedExe: staged, probes: [stagedStatus(), stagedStatus({ verdict: 'covered' })], target: { exe: staged } });
+    await t.fixer.status('a2a');
+    expect((await t.fixer.fix('a2a')).outcome).toEqual({ kind: 'ok' });
+    // An older build's copy is not this build's.
+    const old = 'C:\\Users\\me\\.wmux\\daemon-runtime\\4.9.0-1793640000000\\wmux.exe';
+    const o = setup({ stagedExe: staged, probes: [status({ exe: old, ruleIds: { allow: ids.allow, pubblock: ids.pubblock } })], target: { exe: old } });
+    await o.fixer.status('a2a');
+    expect((await o.fixer.fix('a2a')).outcome).toEqual({ kind: 'refused', refusal: 'changed' });
+    expect(o.deps.elevateWindows).not.toHaveBeenCalled();
   });
 
   it('reads the rule scope at each click, not when the fixer was made', async () => {
