@@ -1798,7 +1798,8 @@ A pane is a terminal column plus, when it needs one, a work area.
   the seat is vacant). Top to bottom, 16px sides: the workspace name (16px),
   the mission (`--text-sub`) and the standing orders (muted, three lines at
   most); then muted 11px headings over `--stroke`-divided rows. **Waiting on
-  you** (jobs to or from the company that need the owner), **Seats** (every
+  you** (jobs to or from the company that need the owner), **To hand out**
+  (see below), **Seats** (every
   pane, the CEO first: status mark, the muted CEO word, the title, the
   coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
   needs-you one in `--attention-text`, and a muted `Next:` line; then the
@@ -1806,7 +1807,7 @@ A pane is a terminal column plus, when it needs one, a work area.
   other workspaces, or to panes on other PCs that are not the company's
   seats, named by their alias), **Not on a seat** and **Log**
   (finished jobs, newest first, the last ten however old). A section with nothing in it is
-  not drawn, Seats aside; a pane with no agent keeps its seat with a muted
+  not drawn, Seats and To hand out aside; a pane with no agent keeps its seat with a muted
   `No agent in this pane` under its title, and the coordinate gives way
   before the title in a narrow pane. A seat row focuses its pane. One muted
   closing line says work sent to fan-out workers is not shown yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
@@ -1833,6 +1834,28 @@ A pane is a terminal column plus, when it needs one, a work area.
     underlined text links (`--text-sub`, a `--line` underline) end Seats:
     **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan; see
     "Company row") and, beside it, **Add a seat on another PC…**.
+  - **To hand out** (owner decision 2026-11-02, insight 163; placed after
+    Waiting on you and before Seats provisionally, until the board's
+    direction is chosen, so it is one self-contained section). The open To
+    hand out items (see "Fleet page") whose folder is the company's (the one
+    it was made in, else where its CEO works) or inside it, newest first,
+    under `To hand out N`. A row each: the hollow `--text-muted` ring, the
+    title, then a muted line with the agent it asks for (`--text-sub`, or
+    "any agent") and who added it and when ("Added by #ceo · 3h"; a pane of
+    this company is named without its workspace), and on the right a quiet
+    muted **Hand out…** that opens Fleet's Hand out… popover anchored to the
+    row and kept inside the board's pane, where the company is offered as
+    its CEO. Under the rows, the quiet underlined **Add a task…** (Fleet's add
+    form in place, the company's folder first; Escape cancels) and the muted
+    line "Items for `…/a/b`, this company's folder. The CEO picks from here
+    too." (the folder in mono as its last two segments, the full path as its
+    tooltip). With no items the section is one line, the heading with no
+    count and Add a task…: an exception to "a section with nothing in it is
+    not drawn", as Fleet's list makes, so a company can start one. A company
+    with no folder draws no section. The list is read only while the board
+    is shown. A job picked from To hand out reads a muted "From To hand out",
+    plus `PR #N · checks …` once it has a PR, under the job on its seat and
+    in the board's job rows (Waiting on you, Handed out, Not on a seat, Log).
 
 ## The one-boundary rule
 
@@ -2373,6 +2396,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
 | 2026-11-01 | Owner-approved (handoff mockup, boards A and C): at 90% of the 5-hour window (the pane's own statusline reading) the usage chip shows the share and the reset and opens the usage-limit card with the handoffs; nothing switches by itself. After a handoff at or near the limit, the tab it left offers to bring the work back once the limit resets, with a note from the other agent's transcript typed in, never sent | A handoff chosen before work stops loses nothing; bringing the work back closes the loop the owner otherwise did by hand, reading the other tab to tell the first agent what changed |
 | 2026-11-02 | To hand out (owner decision 2026-11-02, insight 163): a main-process list of work nobody has been given yet, the first column of Fleet's board and a quiet folded section after Idle in its list, with an add form, item cards and a Hand out… popover that sends an item to an agent pane on this PC, a new worktree or a company's CEO; the item leaves the list once the agent has it, and an undelivered send puts it back | The next things to hand out lived outside wmux; keeping them beside the agents that take them, and picking through the existing send paths, closes that loop without a second queue or a new attention signal |
+| 2026-11-02 | To hand out on the Company board (owner decision 2026-11-02, insight 163): the board shows the open items for the company's folder between Waiting on you and Seats, each with Fleet's Hand out… (the company offered as its CEO), Add a task… with the company's folder first, and "From To hand out" on a picked job; the section's place is provisional until the board's direction is chosen | A company's next work belongs where its CEO and seats are watched; the same list, popover and add form keep one way of handing out work, and the CEO's brief teaches the hand_out tool so the CEO picks from the same list |
 
 ### Desktop conversation view
 
@@ -2737,8 +2761,9 @@ differently in the two places, and in the order `fleet_triage` returns.
     manual send; wherever Fleet shows it (the ticket row, the pane card
     holding it, its detail) a muted line reads "From To hand out", plus
     `PR #N · checks …` once the work has a PR.
-  - **Quiet.** Like a queued ticket: its own filter, section and column only;
-    no rail badge, no sidebar count, no toast, never in Needs you.
+  - **Quiet.** Like a queued ticket: its own filter, section and column only
+    (and a company's share on its board, see "Board tab"); no rail badge, no
+    sidebar count, no toast, never in Needs you.
 - **Role:** a row's ⋮ menu holds Jump, Message (M), Stash (S), Label (L),
   Role… (R), then Close pane (⌫). Role… opens an inline picker under the row:
   None, then the roles (built-in, plus the pane's custom role), the current
