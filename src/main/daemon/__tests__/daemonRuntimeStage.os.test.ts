@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { isSquirrelInstall, removeDaemonRuntimeStages, stageDaemonRuntime, stagedDaemonScripts, stageKey } from '../daemonRuntimeStage';
+import { isSquirrelInstall, removeDaemonRuntimeStages, stageDaemonRuntime, stagedDaemonScripts, stageKey, treeFsFor, type TreeFs } from '../daemonRuntimeStage';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 describe('daemon runtime staging', () => {
@@ -177,6 +177,71 @@ describe('daemon runtime staging', () => {
       });
       expect(await stageWith(partial)).toBeNull();
       expect(fs.readdirSync(stageRoot)).toEqual([]);
+    });
+  });
+
+  // In the packaged app, Electron's fs reads resources/app.asar as an archive:
+  // fs.promises.cp of the tree threw "Invalid package" and fs.promises.rm of it
+  // failed with EBUSY. The async operations on the tree have to use original-fs.
+  describe('the tree fs (original-fs under Electron)', () => {
+    it('under Electron the tree fs is original-fs; in plain node it is fs, and original-fs is never loaded', () => {
+      const originalFs = { promises: {} };
+      const load = vi.fn(() => originalFs);
+      expect(treeFsFor('42.11.18', load)).toBe(originalFs);
+      expect(load).toHaveBeenCalledTimes(1);
+      const unused = vi.fn();
+      expect(treeFsFor(undefined, unused)).toBe(fs);
+      expect(unused).not.toHaveBeenCalled();
+    });
+
+    it('the copy, its checks, the rename and the prune all go through the tree fs, never fs.promises', async () => {
+      const calls: string[] = [];
+      const real = fs.promises;
+      const record = <A extends unknown[], R>(name: string, fn: (...args: A) => Promise<R>) =>
+        async (...args: A): Promise<R> => { calls.push(name); return fn(...args); };
+      const treeFs = {
+        promises: {
+          cp: record('cp', real.cp.bind(real)),
+          rm: record('rm', real.rm.bind(real)),
+          rename: record('rename', real.rename.bind(real)),
+          readdir: record('readdir', real.readdir.bind(real)),
+          access: record('access', real.access.bind(real)),
+        },
+      } as unknown as TreeFs;
+      const viaFs = (['cp', 'rm', 'rename', 'readdir', 'access'] as const).map((name) => vi.spyOn(fs.promises, name));
+      try {
+        const staged = await stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0', treeFs });
+        expect(staged).not.toBeNull();
+        expect(fs.readFileSync(staged!.script, 'utf8')).toBe('daemon');
+        expect(new Set(calls)).toEqual(new Set(['cp', 'rm', 'rename', 'readdir', 'access']));
+        for (const spy of viaFs) expect(spy).not.toHaveBeenCalled();
+      } finally {
+        for (const spy of viaFs) spy.mockRestore();
+      }
+    });
+  });
+
+  describe('a partial copy left by an earlier process', () => {
+    // Only one app process per data dir copies into the stage root (the
+    // single-instance lock), so another pid's partial was left by a process
+    // that exited part way.
+    const partialOf = (pid: number) => {
+      const dir = path.join(stageRoot, `4.13.0-1.partial-${pid}`);
+      fs.mkdirSync(path.join(dir, 'resources'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'resources', 'app.asar'), 'half');
+      return dir;
+    };
+
+    it("is removed on the next stage run; this process's own partial is left", async () => {
+      const earlier = partialOf(process.pid + 1);
+      const longerPid = partialOf(Number(`${process.pid}1`));
+      const own = partialOf(process.pid);
+      const staged = await stage();
+      expect(staged).not.toBeNull();
+      expect(fs.existsSync(earlier)).toBe(false);
+      expect(fs.existsSync(longerPid)).toBe(false);
+      expect(fs.existsSync(own)).toBe(true);
+      expect(stagedDaemonScripts(stageRoot)).toEqual([staged!.script]);
     });
   });
 });

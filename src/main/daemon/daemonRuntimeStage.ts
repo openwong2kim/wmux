@@ -27,6 +27,28 @@ export interface StagedDaemon {
 
 const SCRIPT = ['resources', 'daemon-bundle', 'index.js'];
 
+/** A copy in progress is named `<build>.partial-<pid of the copying process>`. */
+const PARTIAL_INFIX = '.partial-';
+
+/** The async fs calls that walk or change the app's tree: the copy, its checks, the rename and the deletes. */
+export type TreeFs = Pick<typeof fs, 'promises'>;
+
+/**
+ * The fs that walks the copied tree. Electron's own `fs` reads a `.asar` file
+ * as an archive, and the tree holds resources\app.asar. In the packaged app,
+ * `fs.promises.cp` of the tree throws "Invalid package …\app.asar" and
+ * `fs.promises.rm` fails with EBUSY on it. original-fs is Electron's
+ * unpatched fs. Plain node (tests) has no such module and no such patch.
+ * (`fs.rmSync` of such a tree works even when patched, so the uninstall
+ * delete keeps it; the existsSync checks never reach into the archive.)
+ */
+export function treeFsFor(electronVersion: string | undefined, loadOriginalFs: () => unknown): TreeFs {
+  return electronVersion ? (loadOriginalFs() as TreeFs) : fs;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- Electron's built-in module; external in vite.main.config.ts
+const defaultTreeFs = treeFsFor(process.versions.electron, () => require('original-fs'));
+
 export function isSquirrelInstall(appDir: string): boolean {
   return fs.existsSync(path.join(appDir, '..', 'Update.exe'));
 }
@@ -41,7 +63,7 @@ export function stagedDaemonScripts(stageRoot: string): string[] {
   let names: string[];
   try { names = fs.readdirSync(stageRoot); } catch { return []; }
   return names
-    .filter((n) => !/\.(partial|trash)-/.test(n))
+    .filter((n) => !n.includes(PARTIAL_INFIX) && !n.includes('.trash-'))
     .map((n) => path.join(stageRoot, n, ...SCRIPT))
     .filter((p) => fs.existsSync(p));
 }
@@ -70,11 +92,14 @@ export async function stageDaemonRuntime(opts: {
   version: string;
   warn?: (msg: string) => void;
   log?: (msg: string) => void;
-  /** Test seam: copies a folder. fs.promises.cp by default. */
+  /** Test seam: copies a folder. The tree fs's promises.cp by default. */
   copy?: (from: string, to: string) => Promise<void>;
   /** Test seam: COPY_WAIT_MS by default. */
   maxWaitMs?: number;
+  /** Test seam: the fs for the tree (treeFsFor). original-fs under Electron. */
+  treeFs?: TreeFs;
 }): Promise<StagedDaemon | null> {
+  const treeFs = opts.treeFs ?? defaultTreeFs;
   const warn = opts.warn ?? (() => { /* silent */ });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -88,7 +113,7 @@ export async function stageDaemonRuntime(opts: {
       if (running) {
         copied = running;
       } else {
-        copied = copyStage(opts, staged).finally(() => copies.delete(dir));
+        copied = copyStage(opts, treeFs, staged).finally(() => copies.delete(dir));
         copies.set(dir, copied);
       }
     }
@@ -96,8 +121,9 @@ export async function stageDaemonRuntime(opts: {
     const tooLong = new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new Error(`still copying after ${waitMs} ms`)), waitMs);
     });
-    // The old copies go while this one is made; the prune skips it and any partial copy.
-    await Promise.race([Promise.all([copied, pruneStages(opts.stageRoot, path.basename(dir), opts.exeName)]), tooLong]);
+    // The old copies go while this one is made; the prune skips it and this
+    // process's own partial copy.
+    await Promise.race([Promise.all([copied, pruneStages(treeFs, opts.stageRoot, path.basename(dir), opts.exeName)]), tooLong]);
     return staged;
   } catch (err) {
     warn(`[launcher] could not copy the daemon runtime out of the install (${err instanceof Error ? err.message : String(err)}); running it from the install`);
@@ -114,20 +140,21 @@ export async function stageDaemonRuntime(opts: {
  */
 async function copyStage(
   opts: { appDir: string; log?: (msg: string) => void; copy?: (from: string, to: string) => Promise<void> },
+  treeFs: TreeFs,
   staged: StagedDaemon,
 ): Promise<void> {
-  const partial = `${staged.dir}.partial-${process.pid}`;
+  const partial = `${staged.dir}${PARTIAL_INFIX}${process.pid}`;
   const started = Date.now();
   try {
-    await fs.promises.rm(partial, { recursive: true, force: true });
-    await (opts.copy ?? ((from, to) => fs.promises.cp(from, to, { recursive: true })))(opts.appDir, partial);
+    await treeFs.promises.rm(partial, { recursive: true, force: true });
+    await (opts.copy ?? ((from, to) => treeFs.promises.cp(from, to, { recursive: true })))(opts.appDir, partial);
     for (const file of [staged.script, staged.nodePath]) {
-      await fs.promises.access(path.join(partial, path.relative(staged.dir, file)));
+      await treeFs.promises.access(path.join(partial, path.relative(staged.dir, file)));
     }
-    await fs.promises.rm(staged.dir, { recursive: true, force: true });
-    await fs.promises.rename(partial, staged.dir);
+    await treeFs.promises.rm(staged.dir, { recursive: true, force: true });
+    await treeFs.promises.rename(partial, staged.dir);
   } catch (err) {
-    await fs.promises.rm(partial, { recursive: true, force: true }).catch(() => { /* left for the next spawn */ });
+    await treeFs.promises.rm(partial, { recursive: true, force: true }).catch(() => { /* left for the next spawn */ });
     throw err;
   }
   opts.log?.(`[launcher] copied the daemon runtime to ${staged.dir} in ${Date.now() - started} ms`);
@@ -137,15 +164,28 @@ async function copyStage(
  * Removes every copy but `keep`. Windows refuses to delete a running exe, so
  * a copy whose daemon still runs keeps its wmux.exe and is left whole rather
  * than half deleted (renaming its folder would succeed, so that is no test).
+ *
+ * Partial copies: only this process copies into this stage root. The stage
+ * root sits in the suffixed wmux dir, and the app holds the single-instance
+ * lock for the matching suffixed userData until it exits. So a partial named
+ * after any other pid was left by a process that has exited part way (a crash,
+ * a kill), and nothing will finish it. It goes here; this process's own
+ * partial is left to copyStage.
  */
-async function pruneStages(stageRoot: string, keep: string, exeName: string): Promise<void> {
+async function pruneStages(treeFs: TreeFs, stageRoot: string, keep: string, exeName: string): Promise<void> {
   let names: string[];
-  try { names = await fs.promises.readdir(stageRoot); } catch { return; }
+  try { names = await treeFs.promises.readdir(stageRoot); } catch { return; }
+  const ownPartial = `${PARTIAL_INFIX}${process.pid}`;
   for (const name of names) {
-    if (name === keep || name.includes('.partial-')) continue;
+    if (name === keep) continue;
     const full = path.join(stageRoot, name);
-    try { await fs.promises.rm(path.join(full, exeName), { force: true }); } catch { continue; }
-    try { await fs.promises.rm(full, { recursive: true, force: true }); } catch { /* retried on the next spawn */ }
+    if (name.includes(PARTIAL_INFIX)) {
+      if (name.endsWith(ownPartial)) continue;
+      try { await treeFs.promises.rm(full, { recursive: true, force: true }); } catch { /* retried on the next spawn */ }
+      continue;
+    }
+    try { await treeFs.promises.rm(path.join(full, exeName), { force: true }); } catch { continue; }
+    try { await treeFs.promises.rm(full, { recursive: true, force: true }); } catch { /* retried on the next spawn */ }
   }
 }
 
