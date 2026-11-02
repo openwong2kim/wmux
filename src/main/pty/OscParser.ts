@@ -14,6 +14,8 @@ const MAX_BUFFER = 64 * 1024; // 64 KB
 export class OscParser {
   private buffer: string[] = [];
   private inOsc = false;
+  /** The last read ended in an ESC whose pair (`]` or `\`) may start the next one. */
+  private pendingEsc = false;
   private callbacks: OscCallback[] = [];
 
   onOsc(callback: OscCallback): void {
@@ -30,8 +32,16 @@ export class OscParser {
    * still carries forward via `this.buffer`.
    */
   process(data: string): string {
+    if (data.length === 0) return '';
+    // A read can end between ESC and `]` or `\`: the ESC held back from the
+    // last read goes in front of this one, so the pair is read whole.
+    if (this.pendingEsc) {
+      this.pendingEsc = false;
+      data = '\x1b' + data;
+    }
     const len = data.length;
-    if (len === 0) return '';
+    // Where the bytes this read can settle end: before an ESC it holds back.
+    let end = len;
 
     let result = '';
     let segStart = this.inOsc ? -1 : 0;     // start of current non-OSC segment in `data`
@@ -61,6 +71,10 @@ export class OscParser {
           i += 2;
           oscStart = -1;
           segStart = i;
+        } else if (ch === '\x1b' && i + 1 === len) {
+          this.pendingEsc = true;
+          end = i;
+          break;
         } else {
           // Still inside OSC. Cap total size to prevent unbounded growth.
           const currentRun = oscStart >= 0 ? i - oscStart + 1 : 0;
@@ -84,6 +98,12 @@ export class OscParser {
         i += 2;
         oscStart = i;
         segStart = -1;
+      } else if (ch === '\x1b' && i + 1 === len) {
+        // Not output yet: it reaches the output with the next read, unless that
+        // read starts with `]`.
+        this.pendingEsc = true;
+        end = i;
+        break;
       } else {
         i++;
       }
@@ -91,13 +111,13 @@ export class OscParser {
 
     // End of chunk: flush any pending non-OSC tail and carry over OSC bytes
     if (!this.inOsc) {
-      if (segStart >= 0 && len > segStart) {
-        result += data.slice(segStart, len);
+      if (segStart >= 0 && end > segStart) {
+        result += data.slice(segStart, end);
       }
-    } else if (oscStart >= 0 && len > oscStart) {
+    } else if (oscStart >= 0 && end > oscStart) {
       // OSC continues into next chunk — carry over bytes as a single string
       // (one slice per chunk) so eventual join() stays cheap.
-      const carry = data.slice(oscStart, len);
+      const carry = data.slice(oscStart, end);
       let bufferedLen = 0;
       for (const part of this.buffer) bufferedLen += part.length;
       if (bufferedLen + carry.length > MAX_BUFFER) {

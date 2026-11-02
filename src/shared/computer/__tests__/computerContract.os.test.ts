@@ -155,6 +155,27 @@ describe('helper protocol', () => {
     expect(error('maybe')).toEqual({ code: 'window_not_focused', message: 'x' });
   });
 
+  it('reads deferForeground from a hello, and drops an input set whose deferForeground is not a boolean', () => {
+    const hello = (input: unknown) => JSON.stringify({
+      type: 'hello', protocolVersion: 2, os: 'win32', helperVersion: 'dev',
+      capabilities: { actions: ['click'], modes: ['ax'], permissions: { accessibility: true, screenRecording: true }, input },
+    });
+    const input = { backgroundPointer: true, focusWithoutRaise: false, keyAuth: true, deferForeground: true };
+    const parsed = parseHelperLine(hello(input));
+    expect(parsed.kind === 'hello' && parsed.hello.capabilities.input?.deferForeground).toBe(true);
+    const bad = parseHelperLine(hello({ ...input, deferForeground: 'yes' }));
+    expect(bad.kind === 'hello' && 'input' in bad.hello.capabilities).toBe(false);
+  });
+
+  it('keeps needs_foreground as its own code, not_delivered', () => {
+    const parsed = parseHelperLine(JSON.stringify({
+      id: 5, ok: false, error: { code: 'needs_foreground', message: 'x', disposition: 'not_delivered' },
+    }));
+    expect(parsed.kind === 'response' && !parsed.response.ok && parsed.response.error).toEqual({
+      code: 'needs_foreground', message: 'x', disposition: 'not_delivered',
+    });
+  });
+
   it('downgrades an unknown helper error code to internal', () => {
     const parsed = parseHelperLine('{"id":4,"ok":false,"error":{"code":"weird","message":"x"}}');
     expect(parsed.kind === 'response' && !parsed.response.ok && parsed.response.error.code).toBe('internal');

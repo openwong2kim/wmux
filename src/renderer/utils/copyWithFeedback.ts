@@ -25,6 +25,12 @@ export interface CopyWithFeedbackDeps {
   onSuccess: () => void;
   /** Called on failure — typically shows a red "Copy failed" toast. */
   onError: () => void;
+  /** Turns the selection into the text to write (a clean copy). Absent: the
+   *  selection as it is. Must not throw. */
+  resolve?: (selection: string) => Promise<string>;
+  /** False once a newer copy started: this one then writes nothing and shows
+   *  no toast, so a slow resolution never overwrites the newer copy. */
+  isCurrent?: () => boolean;
 }
 
 /**
@@ -36,8 +42,11 @@ export async function runCopyWithFeedback(
   deps: CopyWithFeedbackDeps,
 ): Promise<void> {
   try {
-    await deps.write(selection);
-    deps.clearSelection();
+    const text = deps.resolve ? await deps.resolve(selection) : selection;
+    if (deps.isCurrent && !deps.isCurrent()) return;
+    await deps.write(text);
+    // A copy that started during the write owns the selection now.
+    if (!deps.isCurrent || deps.isCurrent()) deps.clearSelection();
     deps.onSuccess();
   } catch {
     // Keep the selection — the user can retry the copy.

@@ -36,6 +36,11 @@ import { TREE_DESTROY_TIMEOUT_MS, assertNothingRunsIn, destroyedTreeOf, forgetFo
 import { TaskPrService } from '../../worktask/TaskPrService';
 import { WorktaskScanService, type ScanOpenTask } from '../../worktask/WorktaskScanService';
 import { deletePhoneBranch, removePhoneWorktree } from '../../worktask/PhoneWorktreeRemoval';
+import {
+  SEAT_SWEEP_ATTEMPTS, SEAT_SWEEP_RETRY_MS, deleteCompanySeatBranch, listCompanySeatLeftovers, removeCompanySeat,
+  serialSeatSweeps, sweepCompanySeats,
+} from '../../company/seatCleanup';
+import { seatWorktrees } from '../../company/seatLaunch';
 import { prStatusCache } from '../../metadata/PrStatusCache';
 import { getWmuxHomeDir } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
@@ -146,6 +151,18 @@ export function registerWorktaskHandlers(
     });
   };
 
+  /** The daemon's sessions and whether its start-up recovery is done; null
+   *  when it cannot be asked. A daemon from before the flag answers a bare
+   *  list, recovered. */
+  const recoveredSessions = async () => {
+    const dc = getDaemonClient();
+    if (!dc) return null;
+    const reply = (await dc.rpc('daemon.listSessions', { withRecovery: true })) as unknown;
+    if (Array.isArray(reply)) return { sessions: reply, recoveryDone: true };
+    const r = reply as { sessions?: unknown; recoveryDone?: unknown } | null;
+    return Array.isArray(r?.sessions) ? { sessions: r.sessions, recoveryDone: r.recoveryDone === true } : null;
+  };
+
   // #2388: removals a close left part way (a folder git no longer has as a
   // worktree) are finished once the daemon has recovered its sessions.
   let sweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -154,14 +171,7 @@ export function registerWorktaskHandlers(
       sweepTimer = null;
       void sweepPendingRemovals({
         paths: () => worktrees.pendingRemovalPaths(),
-        sessions: async () => {
-          const dc = getDaemonClient();
-          if (!dc) return null;
-          const reply = (await dc.rpc('daemon.listSessions', { withRecovery: true })) as unknown;
-          if (Array.isArray(reply)) return { sessions: reply, recoveryDone: true };
-          const r = reply as { sessions?: unknown; recoveryDone?: unknown } | null;
-          return Array.isArray(r?.sessions) ? { sessions: r.sessions, recoveryDone: r.recoveryDone === true } : null;
-        },
+        sessions: recoveredSessions,
         // Started there, or working there now (OSC 7): either keeps it.
         startedIn: (folder, sessions) => sessionsStartedIn([folder], {
           listSessions: async () => sessions.flatMap((s) => (typeof s.cwd === 'string' && s.cwd ? [s, { ...s, spawnCwd: s.cwd }] : [s])),
@@ -179,6 +189,27 @@ export function registerWorktaskHandlers(
     sweepTimer.unref?.();
   };
   sweep(1);
+
+  /** The working directories of every live pane (spawn and current). */
+  const livePaneCwds = async (): Promise<string[]> => {
+    const dc = getDaemonClient();
+    if (!dc) throw new Error('Daemon not connected');
+    const sessions = (await dc.rpc('daemon.listSessions', {})) as Array<{ cwd?: string; spawnCwd?: string }>;
+    return (Array.isArray(sessions) ? sessions : []).flatMap((s) =>
+      [s.cwd, s.spawnCwd].filter((c): c is string => typeof c === 'string' && c.length > 0));
+  };
+  const seatRoot = (): string => path.join(getWmuxHomeDir(), 'company-worktrees');
+
+  // Company seat worktrees nothing uses any more (company/seatCleanup.ts),
+  // through the seats' own TaskWorktreeManager so a removal and a seat
+  // being made in the same repository take turns.
+  const seatSweeps = serialSeatSweeps((keep) => sweepCompanySeats({
+    root: seatRoot(),
+    sessions: recoveredSessions,
+    keep,
+    worktrees: seatWorktrees(),
+    log: (message) => console.log(message),
+  }), { attempts: SEAT_SWEEP_ATTEMPTS, delayMs: SEAT_SWEEP_RETRY_MS, log: (message) => console.warn(message) });
 
   // ── task:close ──────────────────────────────────────────────────────
   ipcMain.removeHandler(IPC.TASK_CLOSE);
@@ -303,7 +334,11 @@ export function registerWorktaskHandlers(
           ...(typeof kt.outputDir === 'string' && kt.outputDir ? { outputDir: kt.outputDir } : {}),
         });
       }
-      const result = await scanService.scan([...byId.values()]);
+      // Company seat folders kept for a person, judged against the folders
+      // the renderer keeps; a request without them lists none.
+      const keep = keepSetOf(raw);
+      const seats = keep ? await listCompanySeatLeftovers({ root: seatRoot(), sessions: recoveredSessions, keep }) : [];
+      const result = await scanService.scan([...byId.values()], seats);
       return { ok: true, ...result };
     }),
   );
@@ -401,13 +436,7 @@ export function registerWorktaskHandlers(
       if (typeof r.worktreePath !== 'string') return { ok: false as const, reason: 'invalid' as const };
       return removePhoneWorktree(r.worktreePath, r.force === true, {
         root: path.join(getWmuxHomeDir(), 'worktrees'),
-        livePaneCwds: async () => {
-          const dc = getDaemonClient();
-          if (!dc) throw new Error('Daemon not connected');
-          const sessions = (await dc.rpc('daemon.listSessions', {})) as Array<{ cwd?: string; spawnCwd?: string }>;
-          return (Array.isArray(sessions) ? sessions : []).flatMap((s) =>
-            [s.cwd, s.spawnCwd].filter((c): c is string => typeof c === 'string' && c.length > 0));
-        },
+        livePaneCwds,
       }).catch((error: unknown) => ({ ok: false as const, reason: 'error' as const, error: error instanceof Error ? error.message : String(error) }));
     }),
   );
@@ -421,8 +450,47 @@ export function registerWorktaskHandlers(
     }),
   );
 
+  // ── worktask:remove-company-seat / worktask:delete-company-seat-branch ─
+  // A company seat folder the cleanup list shows, removed on the person's
+  // word by its path (the seat shape), like a phone worktree.
+  ipcMain.removeHandler(IPC.WORKTASK_REMOVE_COMPANY_SEAT);
+  ipcMain.handle(
+    IPC.WORKTASK_REMOVE_COMPANY_SEAT,
+    wrapHandler(IPC.WORKTASK_REMOVE_COMPANY_SEAT, async (_event, raw: unknown) => {
+      const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      if (typeof r.worktreePath !== 'string') return { ok: false as const, reason: 'invalid' as const };
+      return removeCompanySeat(r.worktreePath, r.force === true, { root: seatRoot(), livePaneCwds })
+        .catch((error: unknown) => ({ ok: false as const, reason: 'error' as const, error: error instanceof Error ? error.message : String(error) }));
+    }),
+  );
+  ipcMain.removeHandler(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH);
+  ipcMain.handle(
+    IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH,
+    wrapHandler(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, async (_event, raw: unknown) => {
+      const r = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+      if (typeof r.worktreePath !== 'string' || typeof r.repo !== 'string' || typeof r.branch !== 'string' || typeof r.oid !== 'string') {
+        return { ok: false, error: 'invalid request' };
+      }
+      return deleteCompanySeatBranch(seatRoot(), r.worktreePath, r.repo, r.branch, r.oid);
+    }),
+  );
+
+  // ── worktask:sweep-company-seats ─────────────────────────────────────
+  // Asked by the renderer once its saved session is loaded and after a
+  // workspace or an archived workspace goes, with the folders it keeps.
+  ipcMain.removeHandler(IPC.WORKTASK_SWEEP_COMPANY_SEATS);
+  ipcMain.handle(
+    IPC.WORKTASK_SWEEP_COMPANY_SEATS,
+    wrapHandler(IPC.WORKTASK_SWEEP_COMPANY_SEATS, async (_event, raw: unknown) => {
+      const keep = keepSetOf(raw);
+      if (!keep) return { ok: false as const, error: 'invalid request' };
+      return { ok: true as const, ...(await seatSweeps.request(keep)) };
+    }),
+  );
+
   return () => {
     if (sweepTimer) clearTimeout(sweepTimer);
+    seatSweeps.stop();
     setActivePendingRemovals(null);
     ipcMain.removeHandler(IPC.TASK_CLOSE);
     ipcMain.removeHandler(IPC.TASK_CREATE_PR);
@@ -431,7 +499,21 @@ export function registerWorktaskHandlers(
     ipcMain.removeHandler(IPC.WORKTASK_COUNT_PANES);
     ipcMain.removeHandler(IPC.WORKTASK_REMOVE_PHONE);
     ipcMain.removeHandler(IPC.WORKTASK_DELETE_PHONE_BRANCH);
+    ipcMain.removeHandler(IPC.WORKTASK_SWEEP_COMPANY_SEATS);
+    ipcMain.removeHandler(IPC.WORKTASK_REMOVE_COMPANY_SEAT);
+    ipcMain.removeHandler(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH);
   };
+}
+
+const KEEP_SET_MAX = 10_000;
+const KEEP_PATH_MAX = 4096;
+
+/** The folders the renderer keeps, or null when the list is malformed: a
+ *  sweep never runs on part of it. */
+function keepSetOf(raw: unknown): string[] | null {
+  const keep = (raw as { keep?: unknown } | null)?.keep;
+  if (!Array.isArray(keep) || keep.length > KEEP_SET_MAX) return null;
+  return keep.every((p): p is string => typeof p === 'string' && p.length > 0 && p.length <= KEEP_PATH_MAX) ? keep : null;
 }
 
 /** The sweep of pending removals waits this long after start, and tries this

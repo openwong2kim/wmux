@@ -446,6 +446,21 @@ describe('scrollback compaction', () => {
     expect(written.translateToString(true)).toBe('Zbcdefgh');
   });
 
+  it('a held row that shrinks in the same task stays unpacked, so its trimmed length is never the old one', async () => {
+    const twin = new LineClass(8);
+    for (let i = 0; i < 8; i++) twin.setCellFromCodepoint(i, 0x61 + i, 1, { fg: 0, bg: 0, extended: new ExtendedAttrs() });
+    const line = packedCopy(twin);
+    line.getCell(0);
+    line.getCell(1);
+    expect(isLineCompacted(line)).toBe(false);
+    line.resize(4, twin.getCell(0) ?? new CellData());
+    await Promise.resolve();
+    expect(isLineCompacted(line)).toBe(false);
+    expect(line.length).toBe(4);
+    expect(line.getTrimmedLength()).toBe(4);
+    expect(line.translateToString(true)).toBe('abcd');
+  });
+
   it('a slice that requestIdleCallback runs by its timeout still gets a working budget', async () => {
     const callbacks: Array<(deadline: { didTimeout: boolean; timeRemaining(): number }) => void> = [];
     vi.stubGlobal('requestIdleCallback', (cb: (typeof callbacks)[number]) => callbacks.push(cb));

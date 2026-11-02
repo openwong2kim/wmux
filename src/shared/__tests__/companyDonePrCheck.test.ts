@@ -268,6 +268,25 @@ describe('donePrRefs', () => {
     expect(numbers(donePrRefs({ history: [brief], evidence }))).toEqual([20, 21, 22, 23]);
   });
 
+  it('reads the task\'s status evidence, a report from another PC included, after its status message, but not its command output', () => {
+    const statusEvidence = {
+      summary: 'Reported done on PC-B',
+      items: [
+        { kind: 'command', status: 'passed', summary: 'opened https://github.com/acme/app/pull/40', command: 'gh pr list', output: 'https://github.com/acme/app/pull/41' },
+        { kind: 'inspection', status: 'verified', summary: 'live check', location: 'https://github.com/acme/app/pull/42' },
+      ],
+    };
+    expect(numbers(donePrRefs({ history: [brief], statusEvidence }))).toEqual([40, 42]);
+    const refs = donePrRefs({
+      history: [brief, text('Opened https://github.com/acme/app/pull/2')],
+      statusMessage: text('Report: https://github.com/acme/app/pull/3'),
+      statusEvidence: { summary: 'https://github.com/acme/app/pull/40 and https://github.com/Acme/App/pull/2', items: [] },
+      message: 'Done https://github.com/acme/app/pull/40, https://github.com/acme/app/pull/5',
+      evidence: { summary: 'https://github.com/acme/app/pull/6', items: [] },
+    });
+    expect(numbers(refs)).toEqual([2, 3, 40, 5, 6]);
+  });
+
   it('ignores GitLab merge requests and anything that is not a pull URL', () => {
     const msg = 'MR https://gitlab.com/acme/app/-/merge_requests/3, issue https://github.com/acme/app/issues/4, '
       + 'repo https://github.com/acme/app, http://github.com/acme/app/pull/5';

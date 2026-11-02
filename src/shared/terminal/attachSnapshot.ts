@@ -10,3 +10,12 @@
  * pulling in SessionPipe and @xterm/headless.
  */
 export const ATTACH_SNAPSHOT_MIN_BYTES = 256 * 1024;
+
+/**
+ * Lossless upper bound on serialized scrollback (the daemon's HeadlessSnapshot
+ * MAX_SCROLLBACK). Aligned with the Settings ceiling for `scrollbackLines`
+ * (SettingsPanel.tsx — the slider maxes at 100k). The attach flush snapshots
+ * at this bound because it has no renderer config; main asks for the same
+ * when it replays a screen in place of an attach flush.
+ */
+export const SNAPSHOT_MAX_SCROLLBACK = 100_000;

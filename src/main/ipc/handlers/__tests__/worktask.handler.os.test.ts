@@ -2,9 +2,11 @@
 // close(F3). electron ipcMain을 캡처해 핸들러를 직접 호출한다(diff.handler.os.test.ts 패턴).
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync, readFileSync, existsSync, realpathSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 
 const captured = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock('electron', () => ({
@@ -316,5 +318,79 @@ describe('task:close keepFolder', () => {
     expect(res.ok).toBe(true);
     expect(existsSync(wt)).toBe(true);
     expect(daemon.rpcCalls.some((c) => c.method === 'daemon.listSessions' || c.method === 'daemon.destroySession')).toBe(false);
+  });
+});
+
+describe('worktask:sweep-company-seats', () => {
+  it('refuses a malformed keep set, and answers at once when there is no seat folder', async () => {
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    expect(await call(IPC.WORKTASK_SWEEP_COMPANY_SEATS, { keep: ['/a', 1] })).toEqual({ ok: false, error: 'invalid request' });
+    expect(await call(IPC.WORKTASK_SWEEP_COMPANY_SEATS, {})).toEqual({ ok: false, error: 'invalid request' });
+    expect(await call(IPC.WORKTASK_SWEEP_COMPANY_SEATS, { keep: ['/a'] })).toEqual({ ok: true, run: 1, removed: 0 });
+    expect(daemon.rpcCalls.some((c) => c.method === 'daemon.listSessions')).toBe(false);
+  });
+});
+
+describe('company seat worktrees in the cleanup list', () => {
+  const gitIn = (cwd: string, ...args: string[]) =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], { cwd, encoding: 'utf8' }).trim();
+
+  /** A repository with one seat worktree, made an hour ago, holding a file git does not track. */
+  function seedSeat(): { repo: string; seat: string } {
+    const repo = join(base, 'repo');
+    mkdirSync(repo);
+    gitIn(repo, 'init', '-q', '-b', 'main');
+    gitIn(repo, 'commit', '-q', '--allow-empty', '-m', 'base');
+    const hash = createHash('sha256').update(realpathSync(repo)).digest('hex').slice(0, 12);
+    const seat = join(base, '.wmux', 'company-worktrees', hash, 'dev-1-456789ab');
+    gitIn(repo, 'worktree', 'add', '-q', '-b', 'company/dev-1-456789ab', seat);
+    writeFileSync(join(seat, 'notes.txt'), 'mine');
+    const anHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(seat, anHourAgo, anHourAgo);
+    return { repo, seat };
+  }
+
+  it('worktask:scan lists a seat with changes, unless the renderer keeps it or sent no keep set', async () => {
+    const { seat } = seedSeat();
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    const listed = (await call(IPC.WORKTASK_SCAN, { verifiedWorkspaceId: 'ws', keep: [] })) as { entries: unknown[] };
+    expect(listed.entries).toEqual([expect.objectContaining({
+      category: 'company-seat', title: 'dev-1-456789ab', worktreePath: realpathSync.native(seat), detailCode: 'seat-uncommitted',
+    })]);
+    expect(((await call(IPC.WORKTASK_SCAN, { verifiedWorkspaceId: 'ws', keep: [seat] })) as { entries: unknown[] }).entries).toEqual([]);
+    expect(((await call(IPC.WORKTASK_SCAN, { verifiedWorkspaceId: 'ws' })) as { entries: unknown[] }).entries).toEqual([]);
+    expect(existsSync(join(seat, 'notes.txt'))).toBe(true);
+  });
+
+  it('removes only a seat-shaped folder, and deletes only that seat\'s company branch', async () => {
+    const { repo, seat } = seedSeat();
+    const phone = join(base, '.wmux', 'worktrees', 'abc123def456', 'phone-x');
+    mkdirSync(phone, { recursive: true });
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    for (const other of [repo, phone, join(seat, '..'), join(seat, '..', '.meta')]) {
+      expect(await call(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath: other, force: true })).toEqual({ ok: false, reason: 'invalid' });
+    }
+    expect(existsSync(phone)).toBe(true);
+    for (const branch of ['main', 'company/dev-2-456789ab', 'dev-1-456789ab']) {
+      expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo, branch, oid: 'a'.repeat(40) })).toEqual({ ok: false, error: "not this seat's branch" });
+    }
+    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: repo, repo, branch: 'company/dev-1-456789ab', oid: 'a'.repeat(40) })).toEqual({ ok: false, error: "not this seat's branch" });
+
+    expect(await call(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath: seat, force: false })).toEqual({ ok: false, reason: 'dirty' });
+    const removed = (await call(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath: seat, force: true })) as { ok: boolean; branch?: string; repo?: string; oid?: string };
+    expect(removed).toMatchObject({ ok: true, branch: 'company/dev-1-456789ab', oid: gitIn(repo, 'rev-parse', 'company/dev-1-456789ab') });
+    expect(existsSync(seat)).toBe(false);
+    // A branch that gained a commit after the question was asked stays.
+    gitIn(repo, 'commit', '-q', '--allow-empty', '-m', 'later');
+    gitIn(repo, 'branch', '-f', 'company/dev-1-456789ab', 'main');
+    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo: removed.repo, branch: removed.branch, oid: removed.oid }))
+      .toEqual({ ok: false, error: 'the branch moved since; it was kept' });
+    expect(gitIn(repo, 'branch', '--format=%(refname:short)')).toContain('company/dev-1-456789ab');
+    const now = gitIn(repo, 'rev-parse', 'company/dev-1-456789ab');
+    expect(await call(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath: seat, repo: removed.repo, branch: removed.branch, oid: now })).toEqual({ ok: true });
+    expect(gitIn(repo, 'branch', '--format=%(refname:short)')).toBe('main');
   });
 });

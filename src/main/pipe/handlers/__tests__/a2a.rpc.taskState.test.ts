@@ -205,7 +205,8 @@ describe('reopen — committed in the daemon first', () => {
     });
 
     expect(res.ok).toBe(true);
-    expect(calls).toEqual([{ method: 'a2a.task.reopen', params: { taskId: 't9', workspaceId: 'ws-a', callerPaneId: 'pane-from' } }]);
+    // The reply first reads the task for a hold on its blockers.
+    expect(calls.filter((c) => c.method !== 'a2a.task.query')).toEqual([{ method: 'a2a.task.reopen', params: { taskId: 't9', workspaceId: 'ws-a', callerPaneId: 'pane-from' } }]);
     const real = realCalls('a2a.task.send');
     expect(real).toHaveLength(1);
     expect(real[0].daemonReopenedTask).toEqual(reopenedTask);
@@ -246,7 +247,7 @@ describe('reopen — committed in the daemon first', () => {
     expect(real[0].localReopen).toBe(true);
   });
 
-  it('no reopen wanted: the daemon is not touched', async () => {
+  it('no reopen wanted: the daemon is only read, for a hold on blockers', async () => {
     const calls: DaemonCall[] = [];
     rendererForReopen(false);
     const router = setup(async (method, params) => {
@@ -254,7 +255,7 @@ describe('reopen — committed in the daemon first', () => {
       return { ok: true };
     });
     await router.dispatch({ id: 's5', method: 'a2a.task.send', params: { workspaceId: 'ws-a', taskId: 't9', message: 'x' } });
-    expect(calls).toEqual([]);
+    expect(calls.map((c) => c.method)).toEqual(['a2a.task.query']);
     expect(realCalls('a2a.task.send')[0]).not.toHaveProperty('daemonReopenedTask');
   });
 

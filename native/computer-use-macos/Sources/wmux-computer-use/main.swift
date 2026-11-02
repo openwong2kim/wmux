@@ -24,6 +24,10 @@ if CommandLine.arguments.contains("--request-permissions") {
 // icon, no menu bar, never activated.
 NSApplication.shared.setActivationPolicy(.prohibited)
 
+// The event-record self-test behind key authentication runs once, here,
+// before any request (SkyLight.recordOffset).
+_ = SkyLight.keyAuth
+
 // One messaging timeout for every AX element (the system-wide element sets
 // the global value), not just application elements: a hung app must not
 // stall a tree walk for AX's default 6 s per call.

@@ -45,6 +45,8 @@ import { getWorkerGateways, watchWorkerGatewaySessions, workerGatewaySandbox, ty
 import { probeBotExecSupport } from '../../factory/botExecSandbox';
 import { resolveClaudeExecutable } from '../../claude/resolveClaudeExecutable';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
+import { reconnectSessionPipe } from './reconnectSessionPipe';
+import { createSessionResync, type SessionResync } from './sessionResync';
 import { verifyLaunchLine, type LaunchLineRead } from './verifyLaunchLine';
 import { LAUNCH_PROBE_CONFIRM_TIMEOUT_MS } from '../../worktask/fanoutLaunchProbe';
 import { launchPresenceAllowsResend, type LaunchPresenceVerdict } from '../../../daemon/launchPresence';
@@ -76,7 +78,7 @@ import { isWslShell, type WslTarget } from '../../../shared/wsl';
 import { resolvePtyCreateCwdForShell, type PtyCwdSource, type ResolvedPtyCwd } from '../../pty/resolvePtyCwd';
 import { FANOUT_TASK_PORT_ENV } from '../../worktask/fanoutEnvironment';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
-import { wslDistroArgs, isWslDistroSpawnArgs } from '../../../shared/wslDistro';
+import { wslDistroArgs, isWslDistroSpawnArgs, isValidWslDistroName } from '../../../shared/wslDistro';
 import { getDefaultWslDistro } from '../../pty/defaultWslDistro';
 import { SessionPromptScheduler } from '../../pty/SessionPromptScheduler';
 import { recordFanoutTaskPane, stampFanoutTaskPane, stampRemoteSpawnPane } from '../../worktask/fanoutGuards';
@@ -146,6 +148,13 @@ type PtyCreateOptions = {
   ignoreAccountBinding?: boolean;
   shell?: string;
   cwd?: string;
+  /**
+   * A WSL pane's distribution, for a pane opened where a session started in
+   * WSL outside wmux runs (the external session's "open a pane here"). Used
+   * only with a WSL shell and a valid distro name; otherwise the settings
+   * picker's distro, as for any new pane.
+   */
+  wslDistro?: string;
   /** Dead-session replacement candidates. WSL validates inside its distro;
    * neither value is trusted merely because it came from the renderer. */
   recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args' | 'sourceSessionId'>;
@@ -201,6 +210,12 @@ function withWmuxTools(options: PtyCreateOptions | undefined): PtyCreateOptions 
   });
   if (initialCommand !== rest.initialCommand) console.log('[pty:create] wmux tool level applied', { tools: wmuxTools.tools, role: wmuxTools.role });
   return { ...rest, initialCommand };
+}
+
+/** The distro a new WSL pane boots: the caller's, when it names a valid one, else the settings picker's. */
+export function requestedWslDistro(options: Pick<PtyCreateOptions, 'wslDistro'> | undefined): string | null {
+  const requested = options?.wslDistro;
+  return isValidWslDistroName(requested) ? requested : getDefaultWslDistro();
 }
 
 /** The shell a create will spawn (the same default both modes use). */
@@ -455,6 +470,38 @@ export function registerPTYHandlers(
   // single-slot-Map-vs-Set rationale. Null until the daemon-mode wiring below.
   let sessionDataDispatcher: SessionDataDispatcher | null = null;
 
+  // Sessions whose main-side pipe is still the one this registration's
+  // pty:create attached, with the create-time data listener on it (the one
+  // that tells the startup line the shell spoke). The first pty:reconnect —
+  // the adopting Terminal's mount — keeps that pipe instead of replacing it
+  // (reconnectSessionPipe.ts). Per registration, so a new daemon generation
+  // starts empty; a death, a supervised restart or a dispose drops the id.
+  const createAttachedPipes = new Set<string>();
+
+  // The startup line's "the shell spoke" signal (scheduleInitialCommand's
+  // onFirstData), per session until it fires. Whichever data listener the
+  // session has (the create's, or a reconnect's after it) delivers it, so a
+  // reconnect can replace the create-time listener — and release the create's
+  // scope with it — without the startup line missing the shell's first output.
+  const firstOutputHooks = new Map<string, () => void>();
+  function noteFirstOutput(sessionId: string): void {
+    const hook = firstOutputHooks.get(sessionId);
+    if (!hook) return;
+    firstOutputHooks.delete(sessionId);
+    hook();
+  }
+  /** Drop what a daemon create left for its session's first reconnect. */
+  function forgetCreateState(sessionId: string): void {
+    createAttachedPipes.delete(sessionId);
+    firstOutputHooks.delete(sessionId);
+  }
+
+  // One live-pipe re-flush per session, shared by pty:resync and pty:reconnect
+  // (sessionResync.ts). Per registration, like the stream scanners it arms;
+  // made on first use, by the daemon-mode paths that hold the client.
+  let sessionResync: SessionResync | null = null;
+  const resyncOf = (client: DaemonClient): SessionResync => (sessionResync ??= createSessionResync(client));
+
   /** Register (or replace) the per-session data handler for `sessionId`. */
   function setSessionDataListener(sessionId: string, handler: SessionDataHandler): void {
     if (!sessionDataDispatcher) return;
@@ -531,6 +578,9 @@ export function registerPTYHandlers(
     sessionDataDispatcher = createSessionDataDispatcher(daemonClient);
 
     onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
+      // A re-flush whose FLUSH_DONE is in has painted: a caller from here on
+      // needs a re-flush of its own, not this one (sessionResync.ts).
+      sessionResync?.flushCompleted(payload.sessionId);
       // P1-3 ordering rule: the flush-complete marker must never overtake
       // batched data — the renderer resets + settles its resync on this
       // marker, and a late chunk would parse as live output onto the fresh
@@ -657,7 +707,7 @@ export function registerPTYHandlers(
       const trustedRecovery = recoverySessions.find(s => s.id === recoveryId && s.state === 'dead' && isWslShell(s.cmd));
       const wslArgs = isWslDistroSpawnArgs(shell, trustedRecovery?.args)
         ? [...trustedRecovery.args]
-        : wslDistroArgs(shell, getDefaultWslDistro());
+        : wslDistroArgs(shell, requestedWslDistro(options));
 
       // Generate a unique session ID
       const crypto = require('crypto');
@@ -913,15 +963,17 @@ export function registerPTYHandlers(
       // Forward session data to renderer. Routed through the per-id helper so
       // a stale listener (from a prior create with the same id, or a reconnect)
       // is removed before the new one is attached.
+      firstOutputHooks.set(sessionId, initialCmd.onFirstData);
       const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
         if (payload.sessionId !== sessionId) return;
-        initialCmd.onFirstData();
+        noteFirstOutput(sessionId);
         // P1-3: decode (stateful, upstream of batching) then micro-batch —
         // the batcher's send does the window-alive check at flush time.
         const text = decodeSessionData(sessionId, payload.data);
         if (text) dataBatcher.push(sessionId, text, payload.replay);
       };
       setSessionDataListener(sessionId, onSessionData);
+      createAttachedPipes.add(sessionId);
 
       // Register initial CWD
       updateCwd(sessionId, effectiveCwd);
@@ -1008,7 +1060,7 @@ export function registerPTYHandlers(
       const { initialCommand, cols, rows, workspaceId, surfaceId, env, spawnKind, wslAccountLoginEnvKey, ignoreAccountBinding } = options ?? {};
       // #1103 — same distro injection as the daemon branch, so both modes
       // boot the same WSL distro for the same setting.
-      const wslArgs = wslDistroArgs(shell, getDefaultWslDistro());
+      const wslArgs = wslDistroArgs(shell, requestedWslDistro(options));
       // #2231 — as the daemon branch: a WSL fan-out task pane's worktree git location.
       const wslTaskGit = (botWorker || options?.fanoutTaskOf) && isWslShell(shell) && safeCwd
         ? await resolveWslWorkerGit(safeCwd, wslArgs?.[1] ?? null).catch(() => null)
@@ -1407,6 +1459,7 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
+      forgetCreateState(id);
       sessionDecoders.delete(id);
       forgetPtyShell(id);
       forgetFolderTrustPane(id);
@@ -1713,47 +1766,33 @@ export function registerPTYHandlers(
         // mac만 안 됨"의 정체). 여기서 seed하면 전 플랫폼에서 즉시 복원된다.
         if (session.cwd) updateCwd(id, session.cwd);
 
-        // Set up data forwarding BEFORE attachSession, not after. attachSession
-        // makes the daemon replay the session's historical screen (the recovered
-        // RingBuffer) the instant the pipe connects — for an IDLE recovered pane
-        // (a shell sitting at its prompt) that replay is the ONLY paint it will
-        // get, because no new output is coming. Registering the handler after
-        // attach+connect (the old order) left a window where DaemonClient could
-        // read+emit that replay before a handler existed, dropping it — the pane
-        // then sat blank until a focus/reveal forced a resync. At boot with many
-        // recovered sessions the busy event loop made losing that race likely
-        // (dogfood: a recovered pane blank until clicked). Registering first
-        // closes the window; replace-semantics keep a repeat reconnect from
-        // stacking a duplicate. Routed through the per-id helper so a stale
+        // This reconnect's session:data forwarder. Installed by
+        // reconnectSessionPipe before the attach (the replay must land on a
+        // registered handler); routed through the per-id helper so a stale
         // listener (from a prior create with the same id, or an earlier
         // reconnect) is swapped, not duplicated.
         const onSessionData = (payload: { sessionId: string; data: Buffer; replay: boolean }) => {
           if (payload.sessionId !== id) return;
+          // A startup line still waiting for the shell's first output hears
+          // it from live bytes only: a re-flush replay opens with a terminal
+          // reset of its own (SessionPipe.reflushInSlot), so a replay here
+          // is no evidence the shell has spoken.
+          if (!payload.replay) noteFirstOutput(id);
           // P1-3: same decode-then-batch as the create path.
           const text = decodeSessionData(id, payload.data);
           if (text) dataBatcher.push(id, text, payload.replay);
         };
-        setSessionDataListener(id, onSessionData);
-
-        // Reconnect is an explicit fresh-attach intent — pass forceFresh
-        // so a stale sessionPipes entry (left over from a prior daemon
-        // pipe replacement) is torn down rather than silently reused.
-        // Without this, attach+connect can return success while the
-        // underlying socket is moments away from receiving its close
-        // event, and every subsequent write silently disappears.
-        // #2398 — the attach promotes only as `action` says: a daemon that
-        // restarted since the list holds a WSL session as a pending recovery
-        // again, and a caller that may not start it leaves it pending (held).
-        const attached = await daemonClient.rpc('daemon.attachSession', { id, promote: action === 'promote' || action === 'join' }) as { pending?: boolean } | undefined;
-        if (attached?.pending) return held('pending again at attach');
-        await daemonClient.connectSessionPipe(id, { forceFresh: true });
-
-        // Health probe: confirm the freshly connected pipe is actually
-        // writable before reporting success. A truthy reconnect that
-        // points at a dead socket is the exact shape of the input-mute
-        // bug we're trying to prevent here.
-        const probeOk = daemonClient.isSessionPipeWritable(id);
-        if (!probeOk) {
+        // Consumed here: whatever this reconnect does, the pipe after it is
+        // no longer one a later reconnect may keep unasked.
+        const ownsCreatePipe = createAttachedPipes.delete(id);
+        const pipe = await reconnectSessionPipe(daemonClient, id, {
+          promote: action === 'promote' || action === 'join',
+          ownsCreatePipe,
+          resync: resyncOf(daemonClient),
+          installListener: () => setSessionDataListener(id, onSessionData),
+        });
+        if (pipe.kind === 'pending') return held('pending again at attach');
+        if (pipe.kind === 'not-writable') {
           // RCA A1 — transient failure: the session is alive in the daemon but
           // the freshly-attached pipe is not writable yet (forceFresh tears the
           // old socket down asynchronously; the daemon-side close can arrive a
@@ -1778,7 +1817,7 @@ export function registerPTYHandlers(
         // (session:data forwarding was registered BEFORE attachSession above so
         // the historical RingBuffer replay can't be dropped — see that comment.)
 
-        console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
+        console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}${pipe.kind === 'kept' ? ` pipe=kept replay=${pipe.replay}` : ''}`);
         // The daemon already told us this session's shell — record it, or a
         // pane recovered across an app restart loses its WSL path rewrite.
         recordPtyShell(session.id, session.cmd);
@@ -1853,40 +1892,9 @@ export function registerPTYHandlers(
         return { success: false, code: 'serialize-unavailable', reason: snap.reason, transient: false };
       }
 
-      // Live session — the re-flush rides the existing connected socket.
-      if (!daemonClient.isSessionPipeWritable(id)) {
-        // Pipe not (yet) writable — the socket may be mid-replacement. Retry.
-        return { success: false, code: 'pipe-not-writable', transient: true };
-      }
-      if (!daemonClient.armSessionResync(id)) {
-        // No live scanner (pipe absent or still doing its initial flush). Retry.
-        return { success: false, code: 'pipe-not-writable', transient: true };
-      }
-      try {
-        // Extended timeout (Codex round-2 P2): the reflush legitimately waits
-        // behind the global snapshot slot under concurrent reveals — the
-        // default 10s RPC ceiling would disarm the scanner and tear the
-        // socket via reconnect while the daemon still writes the in-band
-        // replay. Must stay below the renderer's 32s resync-abort ceiling.
-        const res = await daemonClient.rpc('daemon.resyncSession', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
-          mode: 'snapshot' | 'raw';
-        };
-        // The scanner disarms itself when it consumes the in-band RESYNC_BEGIN
-        // the daemon just wrote, so no disarm is needed on the success path.
-        return { success: true, mode: res.mode };
-      } catch (err) {
-        // RPC failed AFTER arming — the scanner is still watching for a BEGIN
-        // marker that will now never come. Disarm so it doesn't misclassify a
-        // future coincidental byte run (harmless but must not linger).
-        daemonClient.disarmSessionResync(id);
-        const msg = err instanceof Error ? err.message : String(err);
-        if (msg.includes('Unknown method')) {
-          // Pre-PR-B daemon: no daemon.resyncSession. Renderer degrades to the
-          // classic pty:reconnect. Permanent for THIS daemon build.
-          return { success: false, code: 'legacy-daemon', transient: false };
-        }
-        return { success: false, code: 'rpc-error', reason: msg, transient: true };
-      }
+      // Live session — the re-flush rides the existing connected socket,
+      // joined with one already running for it (a mount reconnect's).
+      return await resyncOf(daemonClient)(id, scrollback);
     } catch (err) {
       // listSessions / serializeSession threw (timeout, ECONNRESET, or a legacy
       // daemon missing serializeSession). No scanner was armed on this path.
@@ -1966,6 +1974,7 @@ export function registerPTYHandlers(
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1, payload.signal ?? null);
       }
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
+      forgetCreateState(payload.sessionId);
       // Prune this session's pid-map anchor now that the shell is gone, so the
       // map doesn't accrete dead entries the OS can recycle into ghosts.
       removePidMapByPtyId(payload.sessionId);
@@ -2011,6 +2020,10 @@ export function registerPTYHandlers(
   let onDaemonAgentProcessExit: ((payload: { sessionId: string; slug?: string | null }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonSessionRestarted = (payload) => {
+      // The daemon stopped the dead PTY's pipe; the renderer's reconnect on
+      // this restart must attach the new one, never keep main's old socket
+      // (its close may not have arrived yet). The new PTY has no startup line.
+      forgetCreateState(payload.sessionId);
       // P1-3 ordering rule: the old PTY's trailing output must precede the
       // restart marker (the renderer re-attaches on it).
       dataBatcher.finishSession(payload.sessionId);

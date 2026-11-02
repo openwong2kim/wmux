@@ -5,6 +5,8 @@ import os from 'node:os';
 
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { A2aTaskService } from '../A2aTaskService';
+import { COMPANY_BRIEF_KIND } from '../../../shared/company';
+import type { Message } from '../../../shared/types';
 
 let dir: string;
 const syncOk = (): void => undefined;
@@ -148,6 +150,61 @@ describe('A2aTaskService.reopenTask — only a verified sender (same workspace)'
     const id = await sameWsCompleted(svc);
     const r = await svc.reopenTask({ taskId: id, callerWorkspaceId: 'ws-1', callerPaneId: 'pane-from' });
     expect(r).toMatchObject({ ok: true, reopened: true });
+  });
+});
+
+describe('A2aTaskService.reopenTask — a company task handed back to its seat', () => {
+  const brief: Message = {
+    kind: 'message',
+    messageId: 'm-brief',
+    role: 'user',
+    parts: [{ kind: 'text', text: 'do it' }, { kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } }],
+  };
+  async function reported(svc: A2aTaskService, id: string, history?: Message[]): Promise<string> {
+    await svc.createTask({
+      id,
+      title: 'T',
+      from: { workspaceId: 'ws-co', name: 'Co', paneId: 'pane-ceo' },
+      to: { workspaceId: 'ws-co', name: 'Co', paneId: 'pane-s1' },
+      ...(history ? { history } : {}),
+    });
+    const seat = { callerWorkspaceId: 'ws-co', callerAddr: { paneId: 'pane-s1' } };
+    expect((await svc.transition({ taskId: id, to: 'working', ...seat })).ok).toBe(true);
+    expect((await svc.transition({ taskId: id, to: 'input-required', ...seat })).ok).toBe(true);
+    return id;
+  }
+  const handBack = (svc: A2aTaskService, id: string, callerPaneId = 'pane-ceo') =>
+    svc.reopenTask({ taskId: id, callerWorkspaceId: 'ws-co', callerPaneId, handBack: true });
+
+  it('moves a reported company task back to working for its sender, durably', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    const id = await reported(svc, 'task-c', [brief]);
+    expect(await handBack(svc, id)).toMatchObject({ ok: true, reopened: true });
+    expect(svc.getTask(id)?.status.state).toBe('working');
+    const restored = newService(log);
+    restored.restoreFromLog();
+    expect(restored.getTask(id)?.status.state).toBe('working');
+    // The seat reports again through the normal graph.
+    expect((await restored.transition({ taskId: id, to: 'input-required', callerWorkspaceId: 'ws-co', callerAddr: { paneId: 'pane-s1' } })).ok).toBe(true);
+  });
+
+  it('leaves a task alone that is no company task, or that its seat has not reported', async () => {
+    const svc = newService(newLog());
+    const plain = await reported(svc, 'task-p');
+    expect(await handBack(svc, plain)).toMatchObject({ ok: true, reopened: false });
+    expect(svc.getTask(plain)?.status.state).toBe('input-required');
+    await svc.createTask({ id: 'task-w', title: 'T', from: { workspaceId: 'ws-co', name: 'Co', paneId: 'pane-ceo' }, to: { workspaceId: 'ws-co', name: 'Co', paneId: 'pane-s1' }, history: [brief] });
+    expect(await handBack(svc, 'task-w')).toMatchObject({ ok: true, reopened: false });
+    expect(svc.getTask('task-w')?.status.state).toBe('submitted');
+  });
+
+  it('never without the flag, and only for the task\'s sender', async () => {
+    const svc = newService(newLog());
+    const id = await reported(svc, 'task-c', [brief]);
+    expect(await svc.reopenTask({ taskId: id, callerWorkspaceId: 'ws-co', callerPaneId: 'pane-ceo' })).toMatchObject({ ok: true, reopened: false });
+    expect((await handBack(svc, id, 'pane-s1')).ok).toBe(false);
+    expect(svc.getTask(id)?.status.state).toBe('input-required');
   });
 });
 

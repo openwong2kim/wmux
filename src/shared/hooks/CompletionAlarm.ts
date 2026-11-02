@@ -430,6 +430,7 @@ export function normalizeHookCue(signal: AgentSignal): AlarmCue {
     case 'agent.permission_answered':
       return { class: 'answered' };
     case 'agent.session_start':
+    case 'agent.session_end':
       return { class: 'session' };
     case 'agent.subagent_stop':
       return { class: 'stop', child: true, leftoverWork: 0 };

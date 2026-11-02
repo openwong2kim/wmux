@@ -15,9 +15,14 @@
  * unit-tested without pulling in xterm + Electron + DOM.
  */
 
+import { copiesStartedSoFar, startCopy } from './cleanCopyResolve';
+
 export interface AutoSelectionCopyDeps {
   /** Bridge to `window.clipboardAPI.writeText` (or any equivalent). */
   write: (text: string) => Promise<unknown>;
+  /** Turns the selection into the text to write (a clean copy), after the
+   *  debounce. Absent: the selection as it is. */
+  resolve?: (selection: string) => Promise<string>;
   /** Debounce window in ms. Defaults to 150. */
   debounceMs?: number;
   /**
@@ -31,7 +36,7 @@ export interface AutoSelectionCopyDeps {
 export interface AutoSelectionCopyHandle {
   /** Call from the terminal's onSelectionChange callback. */
   onSelection: (selection: string) => void;
-  /** Cancel any pending debounced write. Call on unmount. */
+  /** Cancel any pending debounced write, or a resolution still running. Call on unmount. */
   dispose: () => void;
 }
 
@@ -43,19 +48,36 @@ export function createAutoSelectionCopy(deps: AutoSelectionCopyDeps): AutoSelect
   const clearT = deps.clearTimeoutFn ?? ((h) => clearTimeout(h));
 
   let pending: ReturnType<typeof setTimeout> | null = null;
+  // A resolution still running when any newer copy starts (startCopy is
+  // shared with the explicit copies), or after this handle's dispose(),
+  // writes nothing.
+  let epoch = 0;
+
+  const write = (text: string): void => {
+    void deps.write(text).catch(() => {
+      // Silent — explicit copy paths still surface errors when retried.
+    });
+  };
 
   const onSelection = (selection: string): void => {
     if (pending) clearT(pending);
+    const seen = copiesStartedSoFar();
     pending = setT(() => {
       pending = null;
       if (!selection || selection.length === 0) return;
-      void deps.write(selection).catch(() => {
-        // Silent — explicit copy paths still surface errors when retried.
-      });
+      if (!deps.resolve) { write(selection); return; }
+      // A copy started since this selection (Cmd+C on it) is the one that
+      // writes, with its toast; this one would only cancel it.
+      if (copiesStartedSoFar() !== seen) return;
+      const isCurrent = startCopy();
+      const mine = epoch;
+      // resolve never rejects; the catch only keeps a broken one silent.
+      void deps.resolve(selection).then((text) => { if (isCurrent() && mine === epoch) write(text); }).catch(() => undefined);
     }, debounceMs);
   };
 
   const dispose = (): void => {
+    epoch++;
     if (pending) {
       clearT(pending);
       pending = null;

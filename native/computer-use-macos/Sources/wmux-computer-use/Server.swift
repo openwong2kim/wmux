@@ -45,7 +45,8 @@ final class Server {
                 "accessibility": Permission.accessibility.granted,
                 "screenRecording": Permission.screenRecording.granted,
             ],
-            "input": SkyLight.capabilities,
+            // deferForeground: input methods honour `foreground: 'refuse'`.
+            "input": SkyLight.capabilities.merging(["deferForeground": true]) { $1 },
         ]
     }
 

@@ -2,6 +2,8 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../../shared/usageLimit';
 import { nextUsageLimitWaitingChange } from '../stores/slices/usageLimitSlice';
+import { getLeafPanes } from '../../shared/paneUtils';
+import type { Workspace } from '../../shared/types';
 
 // ─── Usage-limit bridge ──────────────────────────────────────────────────────
 //
@@ -45,6 +47,16 @@ export function planUsageLimitAutoResume(
   return out;
 }
 
+/** The ptyIds of tabs holding a handoff record (Surface.handoff). */
+export function handedOffPtyIds(workspaces: readonly Pick<Workspace, 'rootPane'>[]): Set<string> {
+  const out = new Set<string>();
+  for (const ws of workspaces) {
+    if (!ws.rootPane) continue;
+    for (const pane of getLeafPanes(ws.rootPane)) for (const s of pane.surfaces) if (s.handoff && s.ptyId) out.add(s.ptyId);
+  }
+  return out;
+}
+
 /** Send one patch; resolves whether the daemon applied it. Failures are logged. */
 export function updateUsageLimit(ptyId: string, patch: PaneUsageLimitPatch): Promise<boolean> {
   const api = window.electronAPI?.usageLimit;
@@ -70,6 +82,9 @@ export function useUsageLimitBridge(): void {
     const offChanged = api.onChanged(({ ptyId, limit }) => {
       useStore.getState().setUsageLimit(ptyId, limit);
     });
+    // Each pane's 5-hour window (a pane close to its limit): read once, then pushed whole.
+    void api.windows?.().then((w) => { useStore.getState().setUsageWindows(w ?? {}); }).catch(() => undefined);
+    const offWindows = api.onWindows?.((w) => { useStore.getState().setUsageWindows(w ?? {}); });
 
     // Re-derive `usageLimitWaiting` when the next hold ends, so a pane whose
     // reset passed without a release turns back into attention on time.
@@ -90,7 +105,11 @@ export function useUsageLimitBridge(): void {
     const applied = new Set<string>();
     const apply = (state: ReturnType<typeof useStore.getState>) => {
       if (!state.sessionSettingsLoaded) return;
+      // A tab whose work went on in another agent is never armed by the
+      // global setting: the work comes back only when the owner brings it.
+      const handedOff = handedOffPtyIds(state.workspaces);
       for (const ptyId of planUsageLimitAutoResume(state.usageLimits, state.usageLimitAutoResume, applied)) {
+        if (handedOff.has(ptyId)) continue;
         const limit = state.usageLimits[ptyId];
         // Claimed up front so an overlapping pass does not send twice; a send
         // the daemon did not apply gives the claim back, so the next pass retries.
@@ -111,6 +130,7 @@ export function useUsageLimitBridge(): void {
     return () => {
       offConnected?.();
       offChanged();
+      offWindows?.();
       offStore();
       if (waitingTimer) clearTimeout(waitingTimer);
     };
