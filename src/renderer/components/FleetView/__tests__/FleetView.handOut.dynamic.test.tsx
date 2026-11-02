@@ -93,6 +93,17 @@ describe('FleetView — To hand out in the list', () => {
     act(() => add.click());
     expect(container.querySelector('[data-fleet-hand-out-form]')).not.toBeNull();
   });
+
+  it('keeps the To hand out row when every agent workspace is settled and nothing else matches', async () => {
+    seed(true);
+    act(() => useStore.setState({
+      workspaceSettle: { states: { 'ws-1': { settled: { at: 1, reason: 'idle' } } }, idleDays: 3, hqWorkspaceId: null },
+    }));
+    mount();
+    await settle();
+    expect(container.textContent).not.toContain('No panes match this view');
+    expect(container.querySelector('[data-fleet-hand-out-zero] [data-fleet-hand-out-add-row]')).not.toBeNull();
+  });
 });
 
 describe('FleetView — To hand out cards', () => {

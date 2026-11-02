@@ -421,7 +421,10 @@ export default function FleetView() {
     finishedToggleShown, finishedShown, handOutToggleShown, handOutShown, visibleHandOut, handOutAddRowShown]);
   const matchCount = filter === 'tickets' ? visibleTickets.length
     : visibleGroups.needsYou.length + attentionTickets.length + visibleReview.length + visibleGroups.finished.length
-      + visibleGroups.running.length + visibleGroups.idle.length + visibleHandOut.length;
+      + visibleGroups.running.length + visibleGroups.idle.length + visibleHandOut.length
+      // The To hand out row at zero is a row too: the list's way in stays
+      // drawn when nothing else matches (every agent workspace settled).
+      + (handOutZeroShown ? 1 : 0);
   // Where the add form would be drawn, as the render decides it: the To hand
   // out column or list section, under the empty page's call to action too.
   const handOutFormHost = tab === 'fleet' && (empty
