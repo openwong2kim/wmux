@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeWmuxProjectConfig,
+  companyNeedsReview,
   collectConfigCommands,
   countLayoutLeaves,
   isValidProjectRelativeCwd,
@@ -531,5 +532,39 @@ describe('normalizeWmuxProjectConfig — fanout.copy / copyIntoAutomated', () =>
   it('rejects a non-boolean copyIntoAutomated', () => {
     const cfg = normalizeWmuxProjectConfig({ fanout: { copy: ['.env'], copyIntoAutomated: 'yes' } });
     expect(cfg?.fanout).toEqual({ copy: ['.env'], invalidFields: ['copyIntoAutomated'] });
+  });
+});
+
+describe('normalizeWmuxProjectConfig — company', () => {
+  const company = { name: 'shop', ceo: 'lead', seats: [{ name: 'lead', agent: 'claude' }, { name: 'dev', agent: 'codex' }] };
+
+  it('reads a file that holds only a company', () => {
+    const config = normalizeWmuxProjectConfig({ version: 1, company });
+    expect(config?.company?.seats.map((s) => s.label)).toEqual(['lead', 'dev']);
+    expect(config?.companyInvalid).toBeUndefined();
+  });
+
+  it('drops a refused company alone and says so, keeping the rest of the file', () => {
+    const config = normalizeWmuxProjectConfig({
+      commands: [{ id: 'a', title: 'A', command: 'echo a' }],
+      company: { ...company, seats: [{ name: 'lead', agent: 'not-an-agent' }] },
+    });
+    expect(config?.commands).toHaveLength(1);
+    expect(config?.company).toBeUndefined();
+    expect(config?.companyInvalid).toBe(true);
+  });
+
+  it('reads a file whose only key is a refused company as invalid', () => {
+    expect(normalizeWmuxProjectConfig({ company: { name: 'shop', seats: [] } })).toBeUndefined();
+  });
+
+  it('starts a company only from a grant that showed it', () => {
+    const config = normalizeWmuxProjectConfig({ company })!;
+    expect(companyNeedsReview({ found: true, config, trust: 'untrusted' })).toBe(true);
+    expect(companyNeedsReview({ found: true, config, trust: 'stale' })).toBe(true);
+    expect(companyNeedsReview({ found: true, config, trust: 'denied' })).toBe(true);
+    expect(companyNeedsReview({ found: true, config, trust: 'trusted', companyReviewed: false })).toBe(true);
+    expect(companyNeedsReview({ found: true, config, trust: 'trusted', companyReviewed: true })).toBe(false);
+    expect(companyNeedsReview({ found: true, config: { version: 1, commands: [] }, trust: 'untrusted' })).toBe(false);
   });
 });

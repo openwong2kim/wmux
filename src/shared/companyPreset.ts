@@ -43,6 +43,9 @@ export interface CompanyWorkspaceInput {
 /** Seats a preset may hold: the CEO and up to five more. */
 export const COMPANY_PRESET_MAX_SEATS = 6;
 
+/** Longest company name, seat `owns`, mission and standing orders, in UTF-16 units. */
+export const COMPANY_TEXT_MAX = { company: 200, owns: 200, mission: 2000, standingOrders: 8000 } as const;
+
 /** The built-in presets. Names and descriptions are i18n keys
  *  (`companyPreset.<id>.name` / `.description`). */
 export const BUILTIN_COMPANY_PRESETS: readonly CompanyPreset[] = [

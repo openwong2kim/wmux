@@ -296,3 +296,56 @@ describe('setDecision — unattended reboot-survival consent (U-PERM)', () => {
     expect((await makeStore().getState(proj)).unattended).toBe(true);
   });
 });
+
+describe('setDecision — the company review', () => {
+  const WITH_COMPANY = { version: 1, company: { name: 'shop', seats: [{ name: 'lead', agent: 'claude' }] } };
+
+  it('surfaces the company review only for a grant that showed it', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, WITH_COMPANY);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    expect(s1.companyReviewed).toBeUndefined();
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
+    expect((await store.getState(proj)).companyReviewed).toBe(false);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false, true);
+    expect((await store.getState(proj)).companyReviewed).toBe(true);
+    expect(await store.grantFor(s1.root!, s1.contentHash!)).toEqual({ unattended: false, companyReviewed: true });
+    expect((await makeStore().getState(proj)).companyReviewed).toBe(true);
+  });
+
+  it('is never carried to a re-trust that did not show the company, nor to changed bytes', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, WITH_COMPANY);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false, true);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
+    expect((await store.getState(proj)).companyReviewed).toBe(false);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false, true);
+    writeConfig(proj, { ...WITH_COMPANY, company: { ...WITH_COMPANY.company, name: 'other' } });
+    const s2 = await store.getState(proj);
+    expect(s2.trust).toBe('stale');
+    expect(s2.companyReviewed).toBeUndefined();
+    expect(await store.grantFor(s1.root!, s2.contentHash!)).toEqual({ unattended: false, companyReviewed: false });
+  });
+
+  it('a denied decision, or a record from an older wmux, never holds it', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, WITH_COMPANY);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'denied', s1.contentHash!, false, true);
+    expect((await store.getRecord(s1.root!))?.companyReviewed).toBeUndefined();
+    fs.writeFileSync(trustPath, JSON.stringify({
+      schemaVersion: 1,
+      projects: { [s1.root!]: { status: 'denied', contentHash: s1.contentHash, decidedAt: 1, companyReviewed: true } },
+    }));
+    expect((await makeStore().getRecord(s1.root!))?.companyReviewed).toBeUndefined();
+    fs.writeFileSync(trustPath, JSON.stringify({
+      schemaVersion: 1,
+      projects: { [s1.root!]: { status: 'trusted', contentHash: s1.contentHash, decidedAt: 1, prepReviewed: true } },
+    }));
+    expect((await makeStore().getState(proj)).companyReviewed).toBe(false);
+  });
+});

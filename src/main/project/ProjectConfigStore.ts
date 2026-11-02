@@ -68,6 +68,12 @@ export interface ProjectTrustRecord {
    * reason `needs-review` (commands and layout keep their approval).
    */
   prepReviewed?: true;
+  /**
+   * The decision was made with the file's company on screen, or wmux wrote
+   * the company here. Only on a 'trusted' record. Without it the company does
+   * not start from this grant: it is reviewed first (companyNeedsReview).
+   */
+  companyReviewed?: true;
 }
 
 export interface ProjectTrustDb {
@@ -112,6 +118,7 @@ function normalizeRecord(raw: unknown): ProjectTrustRecord | undefined {
   const decidedAt = typeof r.decidedAt === 'number' && Number.isFinite(r.decidedAt) ? r.decidedAt : 0;
   const rec: ProjectTrustRecord = { status: r.status, contentHash: r.contentHash, decidedAt };
   if (r.prepReviewed === true) rec.prepReviewed = true;
+  if (r.status === 'trusted' && r.companyReviewed === true) rec.companyReviewed = true;
   // Unattended consent only survives on a 'trusted' record and only as a strict
   // boolean true — a denied record or a garbage value can never grant it.
   if (r.status === 'trusted' && r.unattended === true) {
@@ -248,10 +255,12 @@ export class ProjectConfigStore {
     const unattended = trust === 'trusted' && record?.unattended === true;
     // Only meaningful while trusted: whether the grant covers the setup command and the copy settings.
     const prepReviewed = trust === 'trusted' ? record?.prepReviewed === true : undefined;
+    const companyReviewed = trust === 'trusted' ? record?.companyReviewed === true : undefined;
 
     return {
       found: true, root, configPath, config: read.config, contentHash: read.contentHash, trust, unattended,
       ...(prepReviewed !== undefined ? { prepReviewed } : {}),
+      ...(companyReviewed !== undefined ? { companyReviewed } : {}),
     };
   }
 
@@ -290,6 +299,13 @@ export class ProjectConfigStore {
     return Object.prototype.hasOwnProperty.call(db.projects, key) ? db.projects[key] : undefined;
   }
 
+  /** What the grant on these bytes holds; both false unless they are trusted. */
+  async grantFor(root: string, contentHash: string): Promise<{ unattended: boolean; companyReviewed: boolean }> {
+    const rec = await this.getRecord(root);
+    const same = rec?.status === 'trusted' && rec.contentHash === contentHash;
+    return { unattended: same && rec?.unattended === true, companyReviewed: same && rec?.companyReviewed === true };
+  }
+
   /**
    * Persist a user decision. `contentHash` must be the hash the approval UI
    * DISPLAYED — if the file changed while the dialog was open, the grant
@@ -301,12 +317,17 @@ export class ProjectConfigStore {
    * re-trust of new/changed bytes can never carry a prior unattended grant
    * forward silently — the caller must pass the checkbox's current value every
    * time. A 'denied' decision forces it false.
+   *
+   * `companyReviewed` says the approving surface showed the file's company
+   * (or wmux wrote it), with the same rule: explicit every time, never carried
+   * forward, forced false by 'denied'.
    */
   async setDecision(
     root: string,
     status: 'trusted' | 'denied',
     contentHash: string,
     unattended: boolean,
+    companyReviewed = false,
   ): Promise<void> {
     if (!/^[0-9a-f]{64}$/.test(contentHash)) throw new Error('Invalid content hash');
     const key = normalizeProjectRoot(root);
@@ -326,6 +347,7 @@ export class ProjectConfigStore {
         const same = prev?.status === 'trusted' && prev.contentHash === contentHash && prev.unattended === true;
         record.unattendedDecidedAt = same && prev?.unattendedDecidedAt !== undefined ? prev.unattendedDecidedAt : now;
       }
+      if (status === 'trusted' && companyReviewed === true) record.companyReviewed = true;
       db.projects[key] = record;
     });
   }
