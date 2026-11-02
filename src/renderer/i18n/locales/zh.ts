@@ -280,6 +280,7 @@ export const zh = {
   'company.board.askWaiting': "等待 {pc} 批准 · {age}发出",
   'company.board.askOffline': "{pc} 已离线；请求会等到 {time}",
   'company.board.askEnded': "未启动：{reason}",
+  'company.board.handOutFolder': "本公司文件夹 {folder} 的条目。CEO 也从这里挑选。",
   'company.addSeat.menu': "在另一台电脑上添加席位…",
   'company.addSeat.title': "在另一台电脑上添加席位",
   'company.addSeat.description': "请那台电脑为 {company} 启动一个代理。它的回复会发给 CEO {ceo}。",

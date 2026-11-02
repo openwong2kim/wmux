@@ -1,12 +1,17 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, type StoreState } from '../../stores';
 import { createWorkspaceAgentRosterSelector, type WorkspaceAgentRosterRow } from '../../stores/selectors/workspaceAgentRoster';
+import { selectFleetBoard, type FleetRow } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { focusNotificationTarget } from '../../hooks/useNotificationListener';
+import { renderSentence } from '../../i18n/renderSentence';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import type { HandOutEntry } from '../../../shared/handOut';
 import { paneTag } from '../../utils/paneNaming';
 import { timeAgo } from '../../utils/timeAgo';
+import { displayPath } from '../../utils/displayPath';
+import { shortDir } from '../../utils/shortDir';
 import { IDLE_TICK_MS } from '../../utils/idleTime';
 import { FOCUS_RING } from '../focusRing';
 import { StatusMarkView } from '../Sidebar/AgentMarks';
@@ -16,12 +21,17 @@ import type { Task } from '../../../shared/types';
 import type { A2aSpawnOutgoingSummary } from '../../../shared/a2aSpawn';
 import { remoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
 import { agentRow } from '../../../shared/agentIdentity';
-import { useMoaDecisions, useWorkLinks } from '../FleetView/useFleetSources';
-import { buildFleetTickets, paneLiveIn, type FleetTicket } from '../FleetView/fleetTickets';
+import { useHandOutItems, useMoaDecisions, useWorkLinks } from '../FleetView/useFleetSources';
+import { buildFleetTickets, handOutTicketLine, paneLiveIn, type FleetTicket } from '../FleetView/fleetTickets';
+import { HandOutAddForm, HandOutRing, handOutAddedLine, handOutFolderChoices } from '../FleetView/HandOutList';
+import HandOutPopover from '../FleetView/HandOutPopover';
 import { isTerminalKindSurfaceType } from '../Pane/surfaceKinds';
 import { spawnUntil } from '../Remote/RemoteSpawnAskDialog';
 import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
-import { buildCompanyBoard, remoteSeatsOf, seatAsksOf, type BoardRemoteSeat, type BoardSeat, type BoardSeatAsk } from './companyBoard';
+import {
+  buildCompanyBoard, companyHandOutItems, remoteSeatsOf, seatAsksOf, type BoardRemoteSeat, type BoardSeat, type BoardSeatAsk,
+} from './companyBoard';
+import { companyFolder } from './companyFolder';
 import AddRemoteSeatDialog from './AddRemoteSeatDialog';
 import HireSeatDialog from './HireSeatDialog';
 
@@ -49,6 +59,180 @@ function focusSeat(row: WorkspaceAgentRosterRow | undefined, surfaceId: string):
   focusNotificationTarget(() => useStore.getState(), row
     ? { ptyId: row.remote ? null : row.ptyId || null, surfaceId: row.surfaceId }
     : { surfaceId });
+}
+
+type Rect = { top: number; left: number; right: number; bottom: number };
+
+/**
+ * To hand out on the board: the open items for the company's folder, each
+ * given out through Fleet's Hand out… popover, and Add a task… with that
+ * folder first. With no items it is one line, the heading and Add a task…,
+ * so the company has a way in. It reads the list only while the board shows.
+ */
+function HandOutSection({ workspaceId, folder, isActive, now, boundsRef }: {
+  workspaceId: string;
+  folder: string;
+  isActive: boolean;
+  now: number;
+  /** The board: the popover stays inside it. */
+  boundsRef: RefObject<HTMLDivElement | null>;
+}) {
+  const t = useT();
+  const workspaces = useStore((s) => s.workspaces);
+  const listed = useHandOutItems(isActive);
+  const items = useMemo(() => companyHandOutItems(listed, folder), [listed, folder]);
+  const folders = useMemo(
+    () => [folder, ...handOutFolderChoices(workspaces, workspaceId).filter((f) => f !== folder)],
+    [folder, workspaces, workspaceId],
+  );
+  const [adding, setAdding] = useState(false);
+  const [pick, setPick] = useState<{ id: string; anchor: Rect; bounds: Rect; rows: FleetRow[] } | null>(null);
+  const pickItem = pick ? items.find((item) => item.id === pick.id) : undefined;
+  const addRef = useRef<HTMLButtonElement>(null);
+  const pickTrigger = useRef<HTMLElement | null>(null);
+  const ids = useId();
+  // A pick whose item left the list, or whose board was hidden, has nothing to point at.
+  useEffect(() => {
+    if (pick && (!pickItem || !isActive)) setPick(null);
+  }, [pick, pickItem, isActive]);
+
+  // A pane of this company that added an item needs no workspace name here.
+  const workspaceName = (id: string) => (id === workspaceId ? '' : workspaces.find((ws) => ws.id === id)?.name ?? '');
+
+  const openPick = (item: HandOutEntry, trigger: HTMLElement) => {
+    const row = trigger.closest<HTMLElement>('[data-board-hand-out]');
+    if (!row) return;
+    const r = row.getBoundingClientRect();
+    const pane = boundsRef.current?.getBoundingClientRect();
+    const bounds = {
+      top: Math.max(0, pane?.top ?? 0),
+      left: Math.max(0, pane?.left ?? 0),
+      right: Math.min(window.innerWidth, pane?.right ?? window.innerWidth),
+      bottom: Math.min(window.innerHeight, pane?.bottom ?? window.innerHeight),
+    };
+    // Every Fleet row, read as the popover opens: where it finds a pane's
+    // section (a pane that needs you is not offered) and idle time.
+    const { groups } = selectFleetBoard(useStore.getState(), { now: Date.now(), sortMode: 'attention' });
+    pickTrigger.current = trigger;
+    setPick({
+      id: item.id,
+      anchor: { top: r.top, left: r.left, right: r.right, bottom: r.bottom },
+      bounds,
+      rows: [...groups.needsYou, ...groups.finished, ...groups.running, ...groups.idle],
+    });
+  };
+  const closePick = useCallback(() => {
+    setPick(null);
+    // Back to the row's Hand out…, unless the press that closed it focused something else.
+    requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if ((!active || active === document.body) && pickTrigger.current?.isConnected) pickTrigger.current.focus();
+    });
+  }, []);
+  const closeForm = useCallback(() => {
+    setAdding(false);
+    requestAnimationFrame(() => addRef.current?.focus());
+  }, []);
+
+  const addLink = !adding && (
+    <button
+      ref={addRef}
+      type="button"
+      className={`self-start rounded-sm text-[12px] text-[var(--text-sub)] underline decoration-[var(--line)] underline-offset-[3px] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+      // The board's own pane takes a click that bubbles up and would win the focus back.
+      onClick={(event) => { event.stopPropagation(); setAdding(true); }}
+      data-board-hand-out-add
+    >
+      {t('fleet.handOut.addRow')}
+    </button>
+  );
+  // Escape cancels, as Fleet's key handler does there. A click inside stays
+  // off the board's pane, which would win the focus back.
+  const form = adding && (
+    <div
+      className="mt-2"
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape' || event.nativeEvent.isComposing) return;
+        event.preventDefault();
+        event.stopPropagation();
+        closeForm();
+      }}
+    >
+      <HandOutAddForm folders={folders} onDone={closeForm} t={t} />
+    </div>
+  );
+  const full = displayPath(folder);
+  const folderLine = (
+    <span className="min-w-0 text-[11px] text-[var(--text-muted)]" title={full} data-board-hand-out-folder>
+      {renderSentence(t('company.board.handOutFolder'), {
+        folder: (
+          <span className="font-mono">
+            <span aria-hidden="true">{shortDir(full)}</span>
+            <span className="sr-only">{full}</span>
+          </span>
+        ),
+      })}
+    </span>
+  );
+
+  // Item text is untrusted: rendered as text only.
+  const itemRow = (item: HandOutEntry) => {
+    const titleId = `${ids}-${item.id}`;
+    return (
+      <div key={item.id} className="flex min-w-0 items-start gap-3 py-1.5" data-board-hand-out={item.id}>
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex min-w-0 items-center gap-1.5">
+            <span className="flex h-2.5 w-2.5 flex-none items-center justify-center"><HandOutRing /></span>
+            <span id={titleId} className="min-w-0 truncate text-[var(--text-main)]" title={item.note || undefined}>{item.title}</span>
+          </span>
+          <span className="truncate pl-[16px] text-[11px] text-[var(--text-muted)]" data-board-hand-out-meta>
+            <span className={item.agent ? 'text-[var(--text-sub)]' : undefined}>{item.agent ?? t('fleet.handOut.anyAgent')}</span>
+            {` · ${handOutAddedLine(item, now, workspaceName, t)}`}
+          </span>
+        </span>
+        <button
+          type="button"
+          aria-describedby={titleId}
+          className={`flex-none rounded-sm text-[12px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
+          // The board's own pane takes a click that bubbles up and would win the focus back.
+          onClick={(event) => { event.stopPropagation(); openPick(item, event.currentTarget); }}
+          data-board-hand-out-pick
+        >
+          {t('fleet.handOut.handOut')}
+        </button>
+      </div>
+    );
+  };
+
+  return (
+    <div data-board-hand-out-section>
+      {items.length === 0 ? (
+        <section className="flex flex-col">
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <h3 className="text-[11px] font-medium text-[var(--text-muted)]">{t('fleet.handOut.title')}</h3>
+            {addLink}
+          </div>
+          {form}
+        </section>
+      ) : (
+        <Section
+          title={t('fleet.handOut.title')}
+          count={items.length}
+          after={form || <div className="mt-2 flex flex-wrap items-baseline gap-x-4 gap-y-1">{addLink}{folderLine}</div>}
+        >
+          {items.map(itemRow)}
+        </Section>
+      )}
+      {pick && pickItem && (
+        // A portal, but its clicks still bubble up through React to the board's pane.
+        <div onClick={(event) => event.stopPropagation()}>
+          <HandOutPopover item={pickItem} anchor={pick.anchor} bounds={pick.bounds} rows={pick.rows} workspaces={workspaces}
+            onClose={closePick} t={t} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 /**
@@ -107,6 +291,8 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   );
   // The CEO's seat while it is still a pane of the workspace.
   const ceoPaneId = company?.coordinatorPaneId && leaves.some((l) => l.id === company.coordinatorPaneId) ? company.coordinatorPaneId : null;
+  const folder = workspace && company ? companyFolder(workspace, leaves.find((l) => l.id === company.coordinatorPaneId)) : undefined;
+  const rootRef = useRef<HTMLDivElement>(null);
   const remoteSeats = useMemo(
     () => remoteSeatsOf({ workspaceId, coordinatorPaneId: ceoPaneId, links: remoteLinks, hosts: remoteHosts }),
     [workspaceId, ceoPaneId, remoteLinks, remoteHosts],
@@ -160,12 +346,19 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const stateWord = (ticket: FleetTicket) => reportedTo(ticket) ?? t(`fleet.ticket.state.${ticket.state}`);
   const ticketTitle = (ticket: FleetTicket) => ticket.title || t('fleet.ticket.untitled');
 
+  // A job picked from To hand out says so, with its PR once it has one, as in Fleet.
+  const fromLine = (ticket: FleetTicket) => {
+    const line = handOutTicketLine(ticket, t);
+    return line && <span className="truncate text-[11px] text-[var(--text-muted)]" title={line} data-board-hand-out-line>{line}</span>;
+  };
+
   const ticketRow = (ticket: FleetTicket, where: string, detail?: string) => (
     <div key={ticket.id} className="flex flex-col gap-0.5 py-1.5" data-board-ticket={ticket.id}>
       <span className="truncate text-[var(--text-main)]">{ticketTitle(ticket)}</span>
       <span className="truncate text-[11px] text-[var(--text-muted)]">
         {[where, ticket.state === 'needs-you' ? undefined : stateWord(ticket), timeAgo(ticket.updatedAt, now)].filter(Boolean).join(' · ')}
       </span>
+      {fromLine(ticket)}
       {detail && <span className="line-clamp-2 text-[11px] text-[var(--text-sub)]">{detail}</span>}
     </div>
   );
@@ -175,16 +368,18 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const jobLines = (seat: Pick<BoardSeat, 'now' | 'next'>) => (
     <>
       {seat.now.slice(0, NOW_SHOWN).map((ticket) => (
-        <span
-          key={ticket.id}
-          className={`truncate ${ticket.state === 'needs-you' ? 'text-[var(--attention-text)]' : 'text-[var(--text-sub)]'}`}
-          data-board-now={ticket.id}
-        >
-          {ticketTitle(ticket)}
-          {ticket.waitingOn && (
-            <span className="text-[11px] text-[var(--text-muted)]" data-board-reported>{` · ${reportedTo(ticket)}`}</span>
-          )}
-        </span>
+        <Fragment key={ticket.id}>
+          <span
+            className={`truncate ${ticket.state === 'needs-you' ? 'text-[var(--attention-text)]' : 'text-[var(--text-sub)]'}`}
+            data-board-now={ticket.id}
+          >
+            {ticketTitle(ticket)}
+            {ticket.waitingOn && (
+              <span className="text-[11px] text-[var(--text-muted)]" data-board-reported>{` · ${reportedTo(ticket)}`}</span>
+            )}
+          </span>
+          {fromLine(ticket)}
+        </Fragment>
       ))}
       {seat.now.length > NOW_SHOWN && (
         <span className="text-[11px] text-[var(--text-muted)]">{t('company.board.more', { count: seat.now.length - NOW_SHOWN })}</span>
@@ -195,6 +390,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
           {seat.next.length > 1 && ` ${t('company.board.more', { count: seat.next.length - 1 })}`}
         </span>
       )}
+      {seat.next.length > 0 && fromLine(seat.next[0])}
     </>
   );
 
@@ -281,6 +477,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
 
   return (
     <div
+      ref={rootRef}
       className="absolute inset-0 overflow-y-auto bg-[var(--bg-base)]"
       style={{ display: isActive ? 'block' : 'none' }}
       data-testid="company-board"
@@ -302,6 +499,9 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
               {board.needsYou.map((ticket) => ticketRow(ticket, whereOf(ticket)))}
             </Section>
           )}
+
+          {/* Placed here until the board's direction is chosen (DESIGN.md). */}
+          {folder && <HandOutSection workspaceId={workspaceId} folder={folder} isActive={isActive} now={now} boundsRef={rootRef} />}
 
           <Section
             title={t('company.board.seats')}
