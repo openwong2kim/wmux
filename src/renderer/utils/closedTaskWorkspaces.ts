@@ -28,12 +28,13 @@ export function leaveTaskWorkspaceToCaller(taskId: string): () => void {
   };
 }
 
-/** An agent still at work or asking something: its workspace stays. A
- *  question pending on the pane already reads `awaiting_input` in the roster,
- *  and `waiting` without one is an agent idle at its prompt (the detector's
- *  "Ready for input"), shown as idle: a finished worker. */
+/** An agent not seen to finish: its workspace stays. Finished is a turn that
+ *  ended (`complete`) or an agent idle at its prompt (`waiting`; a question
+ *  pending on the pane reads `awaiting_input` in the roster). `idle` is not:
+ *  without the turn-start hook a working agent reads idle too, the same rule
+ *  as paneRowsFinished. */
 function agentKeepsWorkspace(status: AgentStatus): boolean {
-  return status === 'running' || status === 'awaiting_input';
+  return status !== 'complete' && status !== 'waiting';
 }
 
 /** A shell running a command (OSC 133) that is not the pane's own live agent,
@@ -57,7 +58,7 @@ function holdsEditor(ws: Workspace): boolean {
  * first seen closed (startup) or already closed before is never closed here,
  * so a workspace kept once stays the user's. A workspace is kept when the task
  * was detached or left to its caller, the workspace is gone or shown, an agent
- * in it is still working or a shell runs a command, it holds an editor or a
+ * in it has not finished or a shell runs a command, it holds an editor or a
  * remote session (closing would end it on another machine), or closing it
  * would be refused (the last workspace).
  */

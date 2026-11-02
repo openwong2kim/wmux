@@ -91,8 +91,14 @@ describe('taskWorkspacesToClose (#2934)', () => {
     expect(decide(closed, { appRoute: 'bots', botsWorkerPanel: { workspaceId: 't1' } })).toEqual([]);
   });
 
-  it.each(['running', 'awaiting_input'] as AgentStatus[])('keeps a workspace whose agent is %s', (status) => {
+  it.each(['running', 'awaiting_input', 'idle', 'error'] as AgentStatus[])('keeps a workspace whose agent is %s', (status) => {
     expect(decide(closed, withAgent(status))).toEqual([]);
+  });
+
+  it('keeps a workspace whose agent works without the turn-start hook', () => {
+    // An older hook set reports no turn start: the working agent reads idle.
+    const midTurn = { surfaceAgent: { 't1-pty': { name: 'Claude Code', status: 'running' } } };
+    expect(decide(closed, midTurn)).toEqual([]);
   });
 
   it('keeps a workspace whose agent asked a question', () => {
@@ -100,7 +106,7 @@ describe('taskWorkspacesToClose (#2934)', () => {
   });
 
   // `waiting` with no question is Claude idle at its prompt: a finished worker.
-  it.each(['waiting', 'idle', 'complete', 'error'] as AgentStatus[])('closes a workspace whose agent is %s', (status) => {
+  it.each(['waiting', 'complete'] as AgentStatus[])('closes a workspace whose agent is %s', (status) => {
     expect(decide(closed, withAgent(status))).toEqual(['t1']);
   });
 
