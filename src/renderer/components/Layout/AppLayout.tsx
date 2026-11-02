@@ -40,6 +40,7 @@ import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
 import PermissionApprovalDialogContainer from '../Approval/PermissionApprovalDialogContainer';
 import CloseTabConfirm from '../Pane/CloseTabConfirm';
 import { isWorkSurfaceType } from '../Pane/surfaceKinds';
+import { forgetAutoResumeClaims } from '../Pane/Pane';
 import { initAtlasWakeRecovery } from '../../terminal/atlasWakeRecovery';
 import { windowDisplayedStore } from '../../hooks/useWindowDisplayed';
 import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
@@ -2054,7 +2055,18 @@ export default function AppLayout() {
         .finally(() => livenessSnapshotSettled(requestedAt));
     };
     hydrate();
-    const offConnected = window.electronAPI.daemon.onConnected(hydrate);
+    let daemonPid: number | null = null;
+    const offConnected = window.electronAPI.daemon.onConnected((pid) => {
+      // A different daemon process recovered every pane: the old offers' claims are void.
+      if (typeof pid === 'number') {
+        if (daemonPid !== null && pid !== daemonPid) {
+          forgetAutoResumeClaims();
+          useStore.getState().resetResumeOffers();
+        }
+        daemonPid = pid;
+      }
+      hydrate();
+    });
     const offChanged = window.electronAPI.pty.onSupervisionChanged((payload) => {
       useStore.getState().setSupervision(payload.ptyId, payload.status, payload.restartCount);
     });

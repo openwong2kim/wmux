@@ -84,6 +84,13 @@ export interface ResumeSlice {
    */
   hydrateResume: (snapshot: Record<string, AgentSlug>) => void;
 
+  /**
+   * A new daemon recovered the panes again: its offers are new, so forget the
+   * old daemon's hints and consumed marks. The next hydrate brings the hints
+   * back as a change, which the auto-resume in each pane runs on.
+   */
+  resetResumeOffers: () => void;
+
   /** Replace the binding map from a `pty.list` snapshot (parallel to hydrateResume). */
   hydrateResumeBindings: (snapshot: Record<string, ResumeBinding>) => void;
 
@@ -224,6 +231,11 @@ export const createResumeSlice: StateCreator<
       const agent = recovery.resumeAgent ?? asRecoveryAgentSlug(recovery.resumeBinding?.agent);
       if (agent) draft.resumeHintByPtyId[ptyId] = agent;
     }
+  }),
+
+  resetResumeOffers: () => set((draft: StoreState) => {
+    draft.resumeHintByPtyId = {};
+    draft.resumeConsumedByPtyId = {};
   }),
 
   hydrateResumeBindings: (snapshot) => set((draft: StoreState) => {

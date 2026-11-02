@@ -64,6 +64,17 @@ describe('resumeSlice', () => {
       expect(useStore.getState().resumeHintByPtyId).toEqual({ 'pty-b': 'codex' });
     });
 
+    it('a new daemon offers a consumed pane again (resetResumeOffers)', () => {
+      // The respawned daemon recovered pty-a with a fresh shell: the old
+      // daemon's dismiss/typed-into mark must not hide the new offer.
+      useStore.getState().hydrateResume({ 'pty-a': 'claude', 'pty-b': 'codex' });
+      useStore.getState().clearResumeHint('pty-a');
+      useStore.getState().resetResumeOffers();
+      expect(useStore.getState().resumeHintByPtyId).toEqual({});
+      useStore.getState().hydrateResume({ 'pty-a': 'claude', 'pty-b': 'codex' });
+      expect(useStore.getState().resumeHintByPtyId).toEqual({ 'pty-a': 'claude', 'pty-b': 'codex' });
+    });
+
     it('empty snapshot clears everything', () => {
       useStore.getState().setResumeHint('pty-a', 'claude');
       useStore.getState().hydrateResume({});

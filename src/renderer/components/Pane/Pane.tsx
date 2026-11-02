@@ -347,6 +347,12 @@ export function autoResumeRetryDelay(err: unknown, triesSoFar: number): number |
   return triesSoFar < AUTO_RESUME_UNREADABLE_RETRIES ? AUTO_RESUME_UNREADABLE_RETRY_MS : null;
 }
 
+/** A new daemon recovered the panes: each may take its one automatic resume again. */
+export function forgetAutoResumeClaims(): void {
+  autoResumedPtys.clear();
+  pillUsedPtys.clear();
+}
+
 /** Take the one automatic resume `ptyId` gets; false if it ran or the pill was used. */
 export function claimAutoResume(ptyId: string): boolean {
   if (autoResumedPtys.has(ptyId)) return false;

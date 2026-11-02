@@ -2809,7 +2809,8 @@ app.on('ready', async () => {
         // The preceding handler-swap lines + any 'daemon hang detected' /
         // 'respawn attempt' lines above distinguish initial from reconnect.
         logLine('info', 'main', 'emitting daemon:connected → renderer will re-reconcile PTYs');
-        mainWindow.webContents.send('daemon:connected');
+        // The pid lets the renderer tell a new daemon (fresh resume offers) from a reconnect.
+        mainWindow.webContents.send('daemon:connected', readDaemonPid(getWmuxDir()));
       }
       // Phase A — A7. Run the one-time legacy scrollback migration on
       // the first daemon-healthy transition. Idempotent — subsequent
