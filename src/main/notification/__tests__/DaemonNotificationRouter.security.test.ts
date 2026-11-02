@@ -22,7 +22,7 @@ import { dispatchNotification } from '../dispatchNotification';
 import { recordSecurityNotice } from '../securityNotices';
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
 
-type NotificationListener = (payload: { sessionId: string; event: unknown }) => void;
+type NotificationListener = (payload: { sessionId?: string; event: unknown }) => void;
 
 function start(): NotificationListener {
   let listener: NotificationListener | undefined;
@@ -59,6 +59,11 @@ describe('DaemonNotificationRouter security notice', () => {
     expect(recordSecurityNotice).toHaveBeenNthCalledWith(1, { title: 'Phone launch', body: 'Codex started with approvals off', ptyId: 'pty-a' });
     expect(recordSecurityNotice).toHaveBeenNthCalledWith(2, { title: 'wmux', body: 'Claude started with permissions skipped', ptyId: 'pty-b' });
     expect(dispatchNotification).not.toHaveBeenCalled();
+  });
+
+  it('records a notice that names no pane with a null ptyId', () => {
+    start()({ event: { source: 'security', title: 'Phone launch', body: 'Codex started with approvals off', ts: 1 } });
+    expect(recordSecurityNotice).toHaveBeenCalledWith({ title: 'Phone launch', body: 'Codex started with approvals off', ptyId: null });
   });
 
   it('keeps terminal notifications on the policy path and drops unknown sources', () => {

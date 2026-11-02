@@ -1210,7 +1210,8 @@ export class DaemonNotificationRouter {
         // records it for the notification panel first, so a copy with no OS
         // toasts still shows it in-app.
         if (ev.source === 'security') {
-          recordSecurityNotice({ title: title ?? 'wmux', body: ev.body, ptyId: payload.sessionId });
+          // The daemon omits sessionId when the notice names no pane.
+          recordSecurityNotice({ title: title ?? 'wmux', body: ev.body, ptyId: typeof payload.sessionId === 'string' ? payload.sessionId : null });
           toastManager.showDirect(title ?? 'wmux', ev.body, { ptyId: payload.sessionId }, { ignoreToastSetting: true });
           return;
         }
