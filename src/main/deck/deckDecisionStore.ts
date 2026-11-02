@@ -543,6 +543,48 @@ export async function resolveDecision(
   return transitioned ? result : null;
 }
 
+/** The resolution text a decision expired by expireUnanswerableDecisions is
+ *  stored with. */
+export const EXPIRED_RESOLUTION =
+  'Expired: an earlier wmux version raised this decision, and this version has no card that answers it';
+
+export interface ExpiredDecision {
+  workspaceId: string;
+  id: string;
+  question: string;
+}
+
+/**
+ * Expire every PENDING decision nothing in this version can answer: one with
+ * no origin, raised by a workspace brain, which no longer exists (#2943). Each
+ * is stored the way an operator dismissal is (resolveDecision with dismissed),
+ * with EXPIRED_RESOLUTION as its text. Main-owned cards and resolved decisions
+ * are left alone. Writes, and tells the listeners, only when something
+ * expired. Returns what it expired; never throws.
+ */
+export async function expireUnanswerableDecisions(dir?: string): Promise<ExpiredDecision[]> {
+  try {
+    return await serialize(async () => {
+      const all = loadAllDeckDecisions(dir);
+      const expired: ExpiredDecision[] = [];
+      const resolvedAt = Date.now();
+      for (const [workspaceId, list] of Object.entries(all)) {
+        all[workspaceId] = list.map((d) => {
+          if (d.status !== 'pending' || d.origin) return d;
+          expired.push({ workspaceId, id: d.id, question: d.question });
+          return { ...d, status: 'resolved', resolution: EXPIRED_RESOLUTION, resolvedBy: 'human', dismissed: true, resolvedAt };
+        });
+      }
+      if (expired.length === 0) return expired;
+      await atomicWriteJSON(getDeckDecisionPath(dir), all);
+      notifyDecisionsChanged();
+      return expired;
+    });
+  } catch {
+    return [];
+  }
+}
+
 /** Remove a workspace's `general` decision (called when its loop is cleared,
  *  or as a hard reset). Other threads are left alone. */
 export async function clearDecision(workspaceId: string, dir?: string): Promise<void> {
