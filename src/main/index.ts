@@ -75,6 +75,7 @@ import { registerConnectorTerminalHandlers } from './ipc/handlers/connectorTermi
 import { registerConnectorOAuthHandlers } from './ipc/handlers/connectorOAuth.handler';
 import { setWorkerGatewayOAuth } from './connectors/workerGateway';
 import { registerConnectorCatalogHandlers } from './ipc/handlers/connectorCatalog.handler';
+import { registerSecurityNoticeHandlers } from './notification/securityNotices';
 import { registerConnectorCheckHandlers } from './ipc/handlers/connectorCheck.handler';
 import { RpcRouter } from './pipe/RpcRouter';
 import type { RpcMethod } from '../shared/rpc';
@@ -254,7 +255,8 @@ import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
-import { terminateRunningAppInstances } from './squirrelTeardown';
+import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
+import { daemonStageRootIn, removeDaemonRuntimeStages } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -294,6 +296,7 @@ import { broadcastSettledIdle } from './notification/turnSettle';
 import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, isBrokenPipeError, logLine, stdioErrorsConsumed } from './util/logSink';
 import { isFencedBotWorkerSession } from './agents/botWorkerMergeGuard';
+import { startScreenReaderMonitor } from './screenReaderService';
 
 markBoot('imports-done');
 
@@ -456,6 +459,16 @@ if (process.platform === 'win32') {
 
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
       try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
+
+      // The daemon runs from a copy outside the install (daemonRuntimeStage.ts),
+      // which Squirrel's uninstall neither stops nor deletes: stop its daemon,
+      // then remove the copies.
+      try {
+        const stageRoot = daemonStageRootIn(getWmuxDir());
+        const stopped = terminateStagedDaemons(stageRoot);
+        if (stopped.length > 0) console.log(`[Squirrel] stopped the staged daemon(s) before uninstall: ${stopped.join(', ')}`);
+        if (!removeDaemonRuntimeStages(stageRoot)) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
+      } catch { /* best-effort */ }
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
@@ -696,6 +709,8 @@ void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /
 // Moa's claude lookup: read the login shell's PATH in the background (a Finder
 // launch misses nvm/fnm/volta). Never awaited; resolution works without it.
 void app.whenReady().then(() => { void warmLoginShellPath(); });
+// Screen-reader users only: watch for a screen reader (screenReader.ts).
+void app.whenReady().then(() => { startScreenReaderMonitor(); });
 
 // ── Promoted browser flows: the idle sweep ─────────────────────────────────
 //
@@ -969,6 +984,10 @@ setWorkerGatewayOAuth(connectorOAuth.service);
 const cleanupConnectorTerminal = registerConnectorTerminalHandlers(() => mainWindow, connectorOAuth.service, () => daemonClient);
 const cleanupConnectorChecks = registerConnectorCheckHandlers(() => mainWindow, connectorOAuth.service);
 const cleanupConnectorCatalog = registerConnectorCatalogHandlers(() => mainWindow);
+
+// Daemon security notices stay pending until acknowledged, across daemon
+// reconnects, so their handlers live outside the registerAllHandlers swap.
+registerSecurityNoticeHandlers();
 
 // Presence reporting for push suppression. Registered once on `app` (not on a
 // BrowserWindow) so it survives window recreation; the getter closes over the

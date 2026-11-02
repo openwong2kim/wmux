@@ -737,6 +737,10 @@ export const ko = {
   'notification.needsYou.question': "답변 대기: “{question}”",
   'notification.needsYou.noQuestion': "답변 대기. 질문 내용 없음, 터미널을 확인하세요.",
   'notification.needsYou.over': "더 이상 기다리지 않습니다.",
+  'notification.security.heading': '보안 · 확인할 때까지 남아 있습니다',
+  'notification.security.goToPane': '판으로 이동',
+  'notification.security.ack': '확인했어요',
+  'statusbar.securityAria': '확인을 기다리는 보안 알림 {count}개',
 
   // Command palette
   'palette.placeholder': '명령어 입력...',
@@ -777,6 +781,7 @@ export const ko = {
   'palette.cmd.splitRight': '오른쪽 분할',
   'palette.cmd.splitDown': '아래 분할',
   'palette.cmd.stashPane': '현재 페인 치우기 (세션은 계속 실행)',
+  'palette.cmd.balanceLayout': '페인 레이아웃 균등화 (열·행 동일 크기)',
   'palette.cmd.movePane.left': '페인 왼쪽으로 이동',
   'palette.cmd.movePane.right': '페인 오른쪽으로 이동',
   'palette.cmd.movePane.up': '페인 위로 이동',
@@ -3237,6 +3242,7 @@ export const ko = {
   'settings.sc.zoomReset': '글꼴 크기 초기화',
   'settings.sc.mentionAgent': '에이전트 멘션',
   'settings.sc.stashPane': '페인 보관 (세션 유지)',
+  'settings.sc.balanceLayout': '페인 레이아웃 균등화 (열·행 동일 크기)',
   'settings.sc.movePaneLeft': '페인을 왼쪽으로 이동',
   'settings.sc.movePaneRight': '페인을 오른쪽으로 이동',
   'settings.sc.movePaneUp': '페인을 위로 이동',
@@ -3324,6 +3330,7 @@ export const ko = {
   'settings.prefix.swapPanePrev': '이전 페인과 교환',
   'settings.prefix.swapPaneNext': '다음 페인과 교환',
   'settings.prefix.stashPane': '페인 치우기',
+  'settings.prefix.balanceLayout': '페인 레이아웃 균등화',
 
   // Custom keybindings
   'settings.customKeybindings': '커스텀 키바인딩',
@@ -5916,4 +5923,7 @@ export const ko = {
   'remoteSpawn.code.declined': "{pc}에서 거절했습니다",
   'remoteSpawn.code.app-not-ready': "{pc}의 wmux가 준비되지 않았습니다",
   'remoteSpawn.code.failed': "{pc}에서 에이전트를 시작하지 못했습니다",
+  'a11y.agent.needsYou': '{tag} {agent}: 확인이 필요합니다',
+  'a11y.agent.finished': '{tag} {agent}: 끝났습니다',
+  'a11y.agent.error': '{tag} {agent}: 오류로 멈췄습니다',
 } as const;

@@ -4448,7 +4448,7 @@ const PREFIX_ACTION_IDS = [
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
   'movePaneUp', 'movePaneDown', 'movePaneLeft', 'movePaneRight',
   'swapPanePrev', 'swapPaneNext',
-  'stashPane',
+  'stashPane', 'balanceLayout',
 ] as const;
 
 function prefixActionLabel(actionId: string, t: (key: string) => string): string {

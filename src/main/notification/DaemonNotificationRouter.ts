@@ -6,6 +6,7 @@ import type { AgentStatus } from '../../shared/types';
 import type { HookSignalRouter } from '../hooks/HookSignalRouter';
 import { dispatchNotification } from './dispatchNotification';
 import { toastManager } from './ToastManager';
+import { recordSecurityNotice } from './securityNotices';
 import {
   clearEscapeKey,
   clearPty as clearSuppression,
@@ -1205,8 +1206,12 @@ export class DaemonNotificationRouter {
         // approvals or the sandbox off). The daemon's OSC parser only yields
         // osc9/777/99, so no pane output can forge this source. It skips the
         // renderer policy on purpose: a watched pane, a muted workspace or
-        // category, window focus and the toast toggle must not hide it.
+        // category, window focus and the toast toggle must not hide it. Main
+        // records it for the notification panel first, so a copy with no OS
+        // toasts still shows it in-app.
         if (ev.source === 'security') {
+          // The daemon omits sessionId when the notice names no pane.
+          recordSecurityNotice({ title: title ?? 'wmux', body: ev.body, ptyId: typeof payload.sessionId === 'string' ? payload.sessionId : null });
           toastManager.showDirect(title ?? 'wmux', ev.body, { ptyId: payload.sessionId }, { ignoreToastSetting: true });
           return;
         }

@@ -717,6 +717,7 @@ export const pl = {
   'statusbar.notifSingular': 'powiadomienie',
   'statusbar.notifPlural': 'powiadomień',
   'statusbar.unreadAria': '{count} nieprzeczytanych ({noun}), kliknij, aby otworzyć panel',
+  'statusbar.securityAria': 'Powiadomienia o bezpieczeństwie do potwierdzenia: {count}',
 
   // Usage meter (Anthropic 5h/7d widget)
   'usage.tooltipSession': '5h: {pct}%',
@@ -975,6 +976,9 @@ export const pl = {
   'notification.needsYou.question': "Czeka na Ciebie: „{question}”",
   'notification.needsYou.noQuestion': "Czeka na Ciebie. Brak treści pytania; zajrzyj do terminala.",
   'notification.needsYou.over': "Już na Ciebie nie czeka.",
+  'notification.security.heading': 'Bezpieczeństwo · zostaje, dopóki go nie potwierdzisz',
+  'notification.security.goToPane': 'Przejdź do panelu',
+  'notification.security.ack': 'Rozumiem',
 
   // Command palette
   'palette.placeholder': 'Wpisz polecenie...',
@@ -993,6 +997,7 @@ export const pl = {
   'palette.cmd.splitRight': 'Podziel w prawo',
   'palette.cmd.splitDown': 'Podziel w dół',
   'palette.cmd.stashPane': 'Odłóż panel (sesja działa dalej)',
+  'palette.cmd.balanceLayout': 'Wyrównaj układ (równe kolumny i wiersze)',
   'palette.cmd.movePane.left': 'Przenieś panel w lewo',
   'palette.cmd.movePane.right': 'Przenieś panel w prawo',
   'palette.cmd.movePane.up': 'Przenieś panel w górę',
@@ -3710,6 +3715,7 @@ export const pl = {
   'settings.sc.zoomReset': 'Resetuj rozmiar czcionki',
   'settings.sc.mentionAgent': 'Wspomnij agenta',
   'settings.sc.stashPane': 'Odłóż panel (sesja dalej działa)',
+  'settings.sc.balanceLayout': 'Wyrównaj układ (równe kolumny i wiersze)',
   'settings.sc.movePaneLeft': 'Przenieś panel w lewo',
   'settings.sc.movePaneRight': 'Przenieś panel w prawo',
   'settings.sc.movePaneUp': 'Przenieś panel w górę',
@@ -3800,6 +3806,7 @@ export const pl = {
   'settings.prefix.swapPanePrev': 'Zamień z poprzednim panelem',
   'settings.prefix.swapPaneNext': 'Zamień z następnym panelem',
   'settings.prefix.stashPane': 'Odłóż panel',
+  'settings.prefix.balanceLayout': 'Wyrównaj układ',
 
   // Custom keybindings
   'settings.customKeybindings': 'Niestandardowe przypisania klawiszy',
@@ -6352,4 +6359,7 @@ export const pl = {
   'externalSessions.openPaneHere': "Otwórz tu panel wmux",
   'externalSessions.close': "Zamknij",
   'externalSessions.showDetails': "Pokaż szczegóły",
+  'a11y.agent.needsYou': '{tag} {agent} czeka na ciebie',
+  'a11y.agent.finished': '{tag} {agent}: gotowe',
+  'a11y.agent.error': '{tag} {agent}: zatrzymano z błędem',
 } as const;

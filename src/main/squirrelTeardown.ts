@@ -106,12 +106,34 @@ export function parseCimProcessJson(stdout: string): WmuxProcessRow[] {
 }
 
 /**
+ * PIDs of daemons running from a staged runtime copy under `stageRoot`
+ * (daemonRuntimeStage.ts). Only an uninstall stops them: the copy lives
+ * outside the install, so Squirrel's own kill no longer reaches them.
+ */
+export function selectStagedDaemonPids(rows: readonly WmuxProcessRow[], ownPid: number, stageRoot: string): number[] {
+  const norm = (p: string): string => p.replace(/\//g, '\\').toLowerCase();
+  const root = norm(stageRoot).replace(/\\+$/, '') + '\\';
+  return rows
+    .filter((row) => classifyWmuxProcess(row, ownPid) === 'daemon' && norm(row.commandLine).includes(root))
+    .map((row) => row.pid);
+}
+
+/**
  * Kill every running GUI app instance of this exe (tree-kill, so its
  * renderer/GPU helpers go with it). Returns the PIDs actually killed.
  * win32-only; every step is best-effort — enumeration or kill failures
  * return what succeeded rather than throwing into the installer hook.
  */
 export function terminateRunningAppInstances(): number[] {
+  return terminateSameImage((rows) => selectAppInstancePids(rows, process.pid));
+}
+
+/** Uninstall only: stop the daemons running from staged copies under `stageRoot`. */
+export function terminateStagedDaemons(stageRoot: string): number[] {
+  return terminateSameImage((rows) => selectStagedDaemonPids(rows, process.pid, stageRoot));
+}
+
+function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): number[] {
   if (process.platform !== 'win32') return [];
   const exeName = path.basename(process.execPath);
   // The name lands inside a CIM filter string — refuse anything that could
@@ -136,7 +158,7 @@ export function terminateRunningAppInstances(): number[] {
     return [];
   }
 
-  const targets = selectAppInstancePids(parseCimProcessJson(stdout), process.pid);
+  const targets = select(parseCimProcessJson(stdout));
   const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe');
   const killed: number[] = [];
   for (const pid of targets) {

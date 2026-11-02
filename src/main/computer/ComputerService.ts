@@ -388,8 +388,11 @@ export class ComputerService {
     mode: ObservationMode,
     generation: number,
   ): Promise<AppState> {
+    // By pid, the process resolveTarget picked: an app id names every
+    // instance of the app, and a helper resolves it to the active one or the
+    // first (a scratch-profile Chrome beside the user's own).
     const state = await helper.request('getAppState', {
-      app: target.app.id,
+      app: `pid:${target.app.pid}`,
       window: target.window.id,
       mode,
       maxNodes: TREE_MAX_NODES,
