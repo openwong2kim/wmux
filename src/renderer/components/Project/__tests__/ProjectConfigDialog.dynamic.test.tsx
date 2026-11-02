@@ -24,6 +24,15 @@ import ProjectConfigDialog from '../ProjectConfigDialog';
 let container: HTMLDivElement;
 let root: Root;
 
+const company = {
+  name: 'shop team',
+  ceo: 0,
+  seats: [
+    { label: 'ceo', owns: 'Plans', agent: 'claude' as const },
+    { label: 'web', owns: 'UI', agent: 'claude' as const },
+  ],
+};
+
 const config = {
   found: true,
   configPath: '/repo/wmux.json',
@@ -89,6 +98,34 @@ describe('ProjectConfigDialog', () => {
     expect(primary.textContent).toBe('Approve setup');
     act(() => primary.click());
     expect(decideProjectTrust).toHaveBeenCalledWith('ws-1', 'trusted', true);
+  });
+
+  it('never marks the company reviewed when it approves the setup and copy settings, since it does not show the company', () => {
+    vi.mocked(decideProjectTrust).mockClear();
+    act(() => useStore.setState({
+      projectConfigs: { 'ws-1': { ...config, trust: 'trusted', prepReviewed: false, companyReviewed: true, config: { ...config.config, company, fanout: { setup: 'npm ci' } } } },
+    } as never));
+    act(() => root.render(createElement(ProjectConfigDialog)));
+    act(() => (container.querySelector('.ui-btn-primary') as HTMLButtonElement).click());
+    expect(decideProjectTrust).toHaveBeenCalledWith('ws-1', 'trusted', false);
+  });
+
+  it('lists the folder\'s company and whether it is approved to start', () => {
+    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...config, config: { ...config.config, company } } } } as never));
+    act(() => root.render(createElement(ProjectConfigDialog)));
+    const section = container.querySelector('[data-testid="project-company"]') as HTMLElement;
+    expect(section.textContent).toContain('shop team');
+    expect(section.textContent).toContain('2 seats');
+    expect(section.textContent).toContain('Reviewed on its first start from the + menu');
+
+    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...config, trust: 'trusted', companyReviewed: true, config: { ...config.config, company } } } } as never));
+    expect(container.querySelector('[data-testid="project-company"]')?.textContent).toContain('Approved to start from the + menu');
+  });
+
+  it('says when the company in the file cannot be read', () => {
+    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...config, config: { ...config.config, companyInvalid: true } } } } as never));
+    act(() => root.render(createElement(ProjectConfigDialog)));
+    expect(container.querySelector('[data-testid="project-company"]')?.textContent).toContain('The company in this file can\'t be read.');
   });
 
   it('closes on Escape without deciding anything', () => {

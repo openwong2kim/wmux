@@ -13,7 +13,7 @@
 import { useEffect, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import { countLayoutLeaves, prepAwaitsReview, PROJECT_SUPERVISION_DEFAULT_BURST } from '../../../shared/wmuxProjectConfig';
+import { companyNeedsReview, countLayoutLeaves, prepAwaitsReview, PROJECT_SUPERVISION_DEFAULT_BURST } from '../../../shared/wmuxProjectConfig';
 import type { WmuxProjectLayoutNode } from '../../../shared/wmuxProjectConfig';
 import { applyProjectLayoutFresh, decideProjectTrust, probeProjectConfig } from '../../utils/projectConfigProbe';
 import { runProjectCommand } from '../../utils/projectCommands';
@@ -41,7 +41,7 @@ interface LayoutRow {
 }
 
 /** Layout startup commands with their pane position, depth-first. */
-function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutRow[] {
+export function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutRow[] {
   const walk = (n: WmuxProjectLayoutNode): void => {
     if (n.type === 'leaf') {
       const index = acc.length + 1;
@@ -102,6 +102,8 @@ export default function ProjectConfigDialog() {
   // Leaves that would restore their captured permission mode on reboot — the
   // subject of the separate unattended consent below (review mode only).
   const unattendedRows = rows.filter((r) => r.unattended);
+  // The folder's company starts from the + menu, never from this dialog.
+  const company = project.config?.company;
 
   const notice = project.invalid
     ? t('project.invalid')
@@ -245,6 +247,33 @@ export default function ProjectConfigDialog() {
           </section>
         )}
 
+        {(company || project.config?.companyInvalid) && (
+          <section data-testid="project-company">
+            <p className="ui-group-label">{t('companyFile.projectHeading')}</p>
+            <div className="ui-group">
+              <div className="ui-row">
+                {company ? (
+                  <>
+                    <div className="ui-row-text">
+                      <p className="ui-row-title break-words">{company.name}</p>
+                      <p className="ui-row-detail">
+                        {t(companyNeedsReview(project) ? 'companyFile.projectNotReviewed' : 'companyFile.projectReviewed')}
+                      </p>
+                    </div>
+                    <span className="shrink-0 text-[12px] text-[var(--text-muted)]">
+                      {company.seats.length === 1 ? t('companyFile.seatsOne') : t('companyFile.seats', { count: company.seats.length })}
+                    </span>
+                  </>
+                ) : (
+                  <div className="ui-row-text">
+                    <p className="ui-row-title">{t('companyFile.projectInvalid')}</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </section>
+        )}
+
         {!isTrusted && !project.invalid && unattendedRows.length > 0 && (
           <section className="ui-notice flex flex-col gap-2 px-3.5 py-3 text-[13px]">
             <p className="m-0 flex items-center gap-2 font-medium" style={{ color: 'var(--accent-yellow)' }}>
@@ -289,6 +318,7 @@ export default function ProjectConfigDialog() {
                 size="md"
                 variant="primary"
                 // Same bytes, same unattended consent: only the setup and copy settings are newly approved.
+                // The company is not shown here, so this approval never marks it reviewed.
                 onClick={() => { void decideProjectTrust(wsId, 'trusted', project.unattended === true); close(); }}
               >
                 {t('project.approvePrep')}

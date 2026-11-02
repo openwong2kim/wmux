@@ -9,7 +9,12 @@ import { selectPcRailVisible } from '../../stores/selectors/pcRail';
 import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { BUILTIN_COMPANY_PRESETS, type CompanyPreset } from '../../../shared/companyPreset';
+import { companyNeedsReview, type WmuxProjectCompany } from '../../../shared/wmuxProjectConfig';
+import { companyFileFolder } from '../../utils/makeCompany';
+import { probeProjectConfig } from '../../utils/projectConfigProbe';
+import { shortDir } from '../../utils/shortDir';
 import CompanyPresetDialog from './CompanyPresetDialog';
+import CompanyFileReviewDialog from './CompanyFileReviewDialog';
 
 interface PresetPickerProps {
   onClose: () => void;
@@ -73,6 +78,29 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   const [remotePaneOpen, setRemotePaneOpen] = useState(false);
   // A company preset picked: its dialog replaces the dropdown.
   const [companyPreset, setCompanyPreset] = useState<CompanyPreset | null>(null);
+  // The active workspace's folder keeps a company in its wmux.json: the row
+  // first under Company. The menu reads the file again when it opens.
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const project = useStore((s) => s.projectConfigs[s.activeWorkspaceId]);
+  useEffect(() => {
+    void probeProjectConfig(activeWorkspaceId);
+  }, [activeWorkspaceId]);
+  const fileFolder = project?.configPath ? companyFileFolder(project.configPath) : undefined;
+  const fileCompany = project?.config?.company;
+  // Picked: its review while it waits for one, else the dialog filled from it.
+  // Nothing is made from the menu itself.
+  const [fileCompanyOpen, setFileCompanyOpen] = useState<
+    { review: string } | { company: WmuxProjectCompany; folder: string } | null
+  >(null);
+  // Branches on the file as it is now, not on the menu's copy of it.
+  const pickFileCompany = async () => {
+    const fresh = await probeProjectConfig(activeWorkspaceId);
+    const picked = fresh?.config?.company;
+    if (dismissedRef.current || !fresh?.configPath || !picked) return;
+    setFileCompanyOpen(companyNeedsReview(fresh)
+      ? { review: activeWorkspaceId }
+      : { company: picked, folder: companyFileFolder(fresh.configPath) });
+  };
   // The modal calls onCreated after its host round-trip (up to the request
   // timeout) with no check that it is still on screen, and every way out of it
   // (Escape, backdrop, a repair) unmounts this picker. A mint that lands after
@@ -158,6 +186,11 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   if (companyPreset) {
     return <CompanyPresetDialog preset={companyPreset} onClose={onClose} />;
   }
+  if (fileCompanyOpen) {
+    return 'review' in fileCompanyOpen
+      ? <CompanyFileReviewDialog workspaceId={fileCompanyOpen.review} onClose={onClose} />
+      : <CompanyPresetDialog fromFile={fileCompanyOpen} onClose={onClose} />;
+  }
   if (remotePaneOpen) {
     // The heading is the row's own label (#1148: the dialog names the entry
     // that opened it).
@@ -218,6 +251,28 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
 
       {/* Company presets: a workspace that is a company from the start. */}
       <div className="px-3 pt-1 text-[11px] text-[var(--text-muted)]">{t('companyPreset.section')}</div>
+      {project && fileFolder && fileCompany && (
+        <button
+          className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+          onClick={() => void pickFileCompany()}
+          data-company-file
+        >
+          <div className="flex items-baseline gap-2">
+            <span className="min-w-0 flex-1 truncate font-semibold">{fileCompany.name}</span>
+            <span className="shrink-0 text-[var(--text-muted)] text-[11px]">
+              {fileCompany.seats.length === 1 ? t('companyFile.seatsOne') : t('companyFile.seats', { count: fileCompany.seats.length })}
+            </span>
+          </div>
+          <div className="text-[var(--text-sub)] text-[11px]">{t('companyFile.menuLine', { folder: shortDir(fileFolder) })}</div>
+          {companyNeedsReview(project) && <div className="text-[var(--text-sub)] text-[11px]">{t('companyFile.menuReview')}</div>}
+        </button>
+      )}
+      {fileFolder && !fileCompany && project?.config?.companyInvalid && (
+        <div className="px-3 py-1.5 text-[var(--text-sub)]" data-company-file-invalid>
+          <div className="font-semibold">{t('companyFile.menuInvalid')}</div>
+          <div className="text-[var(--text-muted)] text-[11px]">{t('companyFile.menuInvalidLine', { folder: shortDir(fileFolder) })}</div>
+        </div>
+      )}
       {BUILTIN_COMPANY_PRESETS.map((preset) => (
         <button
           key={preset.id}
