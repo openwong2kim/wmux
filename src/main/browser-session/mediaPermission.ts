@@ -1,8 +1,9 @@
-// Browser panes never get the camera or the microphone. Every session other
-// than wmux's own window (the browser profiles' `persist:wmux-*` / `wmux-*`
-// partitions, the private one) answers a `media` request and check with no;
-// the rest is approved as Electron approves it by default. wmux's own window
-// keeps the microphone for voice dictation.
+// Browser panes never get the camera, the microphone or the screen. Every
+// session other than wmux's own window (the browser profiles' `persist:wmux-*`
+// / `wmux-*` partitions, the private one) answers a `media` or
+// `display-capture` request and check with no; the rest is approved as
+// Electron approves it by default. wmux's own window keeps the microphone for
+// voice dictation.
 //
 // In a copy that may not raise OS toasts (an isolated packaged copy on
 // Windows, #2964), every session, wmux's own window included, also refuses
@@ -14,8 +15,9 @@ import { osToastsAllowed } from '../notification/osToastGate';
 
 type PermissionSession = Pick<Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>;
 
-const MEDIA = new Set(['media']);
-const MEDIA_AND_NOTIFICATIONS = new Set(['media', 'notifications']);
+/** Media permissions refused: audio and video, and (as Electron 45 reports it) a screen capture. */
+const MEDIA = new Set(['media', 'display-capture']);
+const MEDIA_AND_NOTIFICATIONS = new Set(['media', 'display-capture', 'notifications']);
 const NOTIFICATIONS = new Set(['notifications']);
 
 function refuse(ses: PermissionSession, refused: ReadonlySet<string>): void {
@@ -29,7 +31,7 @@ function guardDefaultSession(ses: PermissionSession): void {
   if (!osToastsAllowed()) refuse(ses, NOTIFICATIONS);
 }
 
-/** Refuse `media` (audio and video) on `ses`, and `notifications` where OS
+/** Refuse `media` (audio and video) and `display-capture` on `ses`, and `notifications` where OS
  *  toasts are not allowed; allow everything else. */
 export function denyMediaPermissions(ses: PermissionSession): void {
   refuse(ses, osToastsAllowed() ? MEDIA : MEDIA_AND_NOTIFICATIONS);

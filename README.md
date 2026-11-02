@@ -42,7 +42,7 @@ winget install openwong2kim.wmux    # or: choco install wmux
 
 <sub>Offline? [Download Setup.exe](https://github.com/openwong2kim/wmux/releases/latest). It is signed with a SignPath *test* certificate for now, so SmartScreen shows an unknown publisher ([why?](#install-help)).</sub>
 
-**macOS** (Apple Silicon) — [download the .dmg](https://github.com/openwong2kim/wmux/releases/latest) and drag wmux to Applications. It is Developer ID signed and notarized; on first launch the `wmux` CLI installs itself onto your PATH.
+**macOS** (Apple Silicon, macOS 13 Ventura or later) — [download the .dmg](https://github.com/openwong2kim/wmux/releases/latest) and drag wmux to Applications. It is Developer ID signed and notarized; on first launch the `wmux` CLI installs itself onto your PATH.
 
 **iPhone** — [wmux for iOS on the App Store](https://apps.apple.com/app/wmux-workspace-for-ai-agents/id6797904556) (free). In wmux, open **Remote** on the rail, choose **Share & pair**, turn on HTTPS over Tailscale, and scan the QR code with the app.
 
@@ -161,7 +161,7 @@ When Claude Code or Codex hits its usage limit, the pane pauses: its header and 
 <summary><b>FAQ + install troubleshooting</b></summary>
 
 - **Is wmux a tmux port?** No — tmux was the inspiration, not the base. wmux is a native app on Electron (ConPTY on Windows, forkpty on macOS) with tmux-style split panes, prefix keys and session persistence, plus agents, git worktrees and a browser. No WSL / Cygwin / MSYS2.
-- **Which Macs are supported?** Apple Silicon (arm64). The `.dmg` is Developer ID signed, notarized and stapled. Intel builds aren't produced right now; open an issue if you need one.
+- **Which Macs are supported?** Apple Silicon (arm64) on macOS 13 (Ventura) or later. A Mac on macOS 12 is not offered updates and keeps the version it has. The `.dmg` is Developer ID signed, notarized and stapled. Intel builds aren't produced right now; open an issue if you need one.
 - **Can I reach my panes without the iPhone app?** Yes: `wmux web` serves your live panes to any browser. It is read-only and loopback-only by default; input and network exposure are explicit opt-ins. Even read-only shows a pane's full scrollback to whoever can reach the port, so do not publish it to the open internet. See [remote workspaces](docs/how-to/remote-workspaces.md) and [the phone client contract](docs/phone-client-contract.md).
 - **Feels heavy, or a workspace switch is slow?** See [docs/performance.md](docs/performance.md).
 - **"Windows protected your PC" warning?** The release pipeline signs `Setup.exe` through [SignPath](https://signpath.io/), but with a *test* certificate while the [SignPath Foundation](https://signpath.org/) OSS certificate is pending — Windows does not trust it, so SmartScreen still reports an unknown publisher. Click **More info → Run anyway**, or install via **winget** / **Chocolatey** to skip the prompt.
