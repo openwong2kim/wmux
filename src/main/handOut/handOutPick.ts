@@ -117,6 +117,10 @@ async function toWorktree(deps: HandOutPickDeps, item: HandOutItem, workspaceId:
   const repoPath = await deps.confinePath(item.folder);
   if (!repoPath) return { ok: false, code: 'invalid', message: 'the item\'s folder is not a local folder wmux can open' };
   const branch = handOutBranchName(item.title, randomUUID().slice(0, 6));
+  // The link comes first, as a pane pick's does: a start whose link could not
+  // be recorded would run while the item still read open.
+  const link = await deps.links.upsert({ origin: 'hand-out', handOutId: item.id, title: item.title, owner: { workspaceId } }).catch(() => null);
+  if (!link) return { ok: false, code: 'error', message: 'the pick could not be recorded, so nothing was started' };
   const started = await startWorktreeTask(deps.startFanOut, {
     key: `hand-out-${randomUUID()}`,
     prompt: buildHandOutMessage(item),
@@ -125,16 +129,17 @@ async function toWorktree(deps: HandOutPickDeps, item: HandOutItem, workspaceId:
     agentCmd,
     workspaceId,
   });
-  if (!started.ok) return { ok: false, code: 'error', message: started.message };
+  if (!started.ok) {
+    await deps.links.setState(link.id, 'abandoned').catch(() => null);
+    return { ok: false, code: 'error', message: started.message };
+  }
   const { task, result } = started;
-  const link = await deps.links.upsert({
-    origin: 'hand-out',
-    handOutId: item.id,
-    title: item.title,
+  await deps.links.upsert({
+    id: link.id,
     owner: { workspaceId: task.workspaceId },
     ...(task.agent ? { agent: task.agent } : {}),
     ...(task.worktreePath ? { worktree: { path: task.worktreePath, ...(task.branch ? { branch: task.branch } : {}) } } : {}),
   }).catch(() => null);
   const prep = prepNoticeOf(result, task);
-  return { ok: true, linkId: link?.id ?? '', branch: task.branch ?? branch, ...(prep ? { prep } : {}) };
+  return { ok: true, linkId: link.id, branch: task.branch ?? branch, ...(prep ? { prep } : {}) };
 }

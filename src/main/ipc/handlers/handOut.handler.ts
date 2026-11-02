@@ -43,7 +43,7 @@ export function registerHandOutHandlers(opts: {
 
   ipcMain.handle(
     IPC.HAND_OUT_LIST,
-    wrapHandler(IPC.HAND_OUT_LIST, (): HandOutEntry[] => store.list()),
+    wrapHandler(IPC.HAND_OUT_LIST, (e: Electron.IpcMainInvokeEvent): HandOutEntry[] => (fromMainWindow(e) ? store.list() : [])),
   );
 
   ipcMain.handle(

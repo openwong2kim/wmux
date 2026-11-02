@@ -119,6 +119,11 @@ describe('handOutStateOf', () => {
     expect(handOutStateOf(ID, [abandoned, link({ id: 'link-new', state: 'running', createdAt: 2 })]))
       .toEqual({ state: 'out', linkId: 'link-new' });
   });
+
+  it('a failed task puts it back; work blocked on CI or review keeps it out', () => {
+    expect(handOutStateOf(ID, [link({ state: 'blocked', reason: 'task-failed' })])).toEqual({ state: 'open' });
+    expect(handOutStateOf(ID, [link({ state: 'blocked', reason: 'ci-failing' })])).toEqual({ state: 'out', linkId: 'link-1' });
+  });
 });
 
 describe('buildHandOutMessage', () => {

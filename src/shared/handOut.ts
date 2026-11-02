@@ -5,7 +5,7 @@
 // An item's state is never stored. A pick makes a work link (origin
 // 'hand-out', `handOutId` = the item), and the item is out while such a link
 // is live and open otherwise, so a send that was not delivered (its task
-// cancelled, the link abandoned) puts it back. Once that work is done the item
+// cancelled, the link abandoned) or a task that failed puts it back. Once that work is done the item
 // leaves the list; its ticket carries it from there.
 //
 // An agent picks with `a2a.task.send` and a `handOutId` param: the send runs
@@ -192,17 +192,23 @@ export interface HandOutLinkView {
   id: string;
   handOutId?: string;
   state: string;
+  reason?: string;
   createdAt: number;
 }
 
+/** A link that holds no work any more: abandoned, or blocked by its failed task. */
+const isDropped = (link: HandOutLinkView): boolean =>
+  link.state === 'abandoned' || (link.state === 'blocked' && link.reason === 'task-failed');
+
 /**
  * An item's state from the work links its picks made: the newest link that
- * is not abandoned decides (done, else out); with none the item is open.
+ * is not abandoned or failed decides (done, else out); with none the item
+ * is open.
  */
 export function handOutStateOf(itemId: string, links: readonly HandOutLinkView[]): { state: HandOutState; linkId?: string } {
   let live: HandOutLinkView | undefined;
   for (const link of links) {
-    if (link.handOutId !== itemId || link.state === 'abandoned') continue;
+    if (link.handOutId !== itemId || isDropped(link)) continue;
     if (!live || link.createdAt > live.createdAt) live = link;
   }
   if (!live) return { state: 'open' };

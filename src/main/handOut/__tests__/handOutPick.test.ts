@@ -184,6 +184,13 @@ describe('a pick to a new worktree', () => {
     expect(store.get(item.id)?.state).toBe('out');
   });
 
+  it('starts nothing when its link cannot be recorded, so the item never runs while it reads open', async () => {
+    const d = deps({ links: { list: (f) => links.list(f), upsert: async () => null, setState: (id, st, why) => links.setState(id, st, why) } });
+    expect(await pickHandOut(d, { itemId: item.id, to: { kind: 'worktree', workspaceId: 'ws-repo' } })).toMatchObject({ ok: false, code: 'error' });
+    expect(d.startFanOut).not.toHaveBeenCalled();
+    expect(store.get(item.id)?.state).toBe('open');
+  });
+
   it('the fan-out mission finishing takes the item off the list', async () => {
     let transition: (t: { entry: { taskWorkspaceId: string }; to: LedgerStatus }) => void = () => undefined;
     const stop = watchHandoffWorktreeLinks({ onTransition: (fn) => { transition = fn; return () => undefined; } }, links);
@@ -201,7 +208,7 @@ describe('a pick to a new worktree', () => {
     fanOut = async () => ({ ok: false, error: 'not a git repository', tasks: [] });
     expect(await pickHandOut(deps(), { itemId: item.id, to: { kind: 'worktree', workspaceId: 'ws-repo' } }))
       .toEqual({ ok: false, code: 'error', message: 'not a git repository' });
-    expect(links.list()).toEqual([]);
+    expect(links.list().map((l) => l.state)).toEqual(['abandoned']);
     expect(store.get(item.id)?.state).toBe('open');
   });
 });
