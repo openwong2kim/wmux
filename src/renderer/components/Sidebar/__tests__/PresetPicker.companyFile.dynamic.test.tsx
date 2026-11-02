@@ -60,7 +60,8 @@ beforeEach(() => {
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
-  vi.mocked(probeProjectConfig).mockClear();
+  // A read of the file finds what the store holds, unless a test says otherwise.
+  vi.mocked(probeProjectConfig).mockReset().mockImplementation(async (id) => useStore.getState().projectConfigs[id] ?? null);
   act(() => useStore.setState({
     workspaces: [
       { id: 'ws-a', name: 'shop', metadata: { cwd: '/Users/jamie/dev/shop' } },
@@ -97,22 +98,34 @@ describe('PresetPicker: this folder\'s company', () => {
     expect(fileRow()?.textContent).not.toContain('Review it before it starts');
   });
 
-  it('opens the review when the company waits for one', () => {
+  it('opens the review when the company waits for one', async () => {
     mount(shop({ trust: 'trusted', companyReviewed: false }));
-    act(() => fileRow()?.click());
+    await act(async () => fileRow()?.click());
     expect(container.querySelector('[data-testid="company-file-review-dialog"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="company-preset-dialog"]')).toBeNull();
   });
 
-  it('opens the New company dialog filled from the file once it was reviewed, making nothing', () => {
+  it('opens the New company dialog filled from the file once it was reviewed, making nothing', async () => {
     mount(shop({ trust: 'trusted', companyReviewed: true }));
     const before = useStore.getState().workspaces.length;
-    act(() => fileRow()?.click());
+    await act(async () => fileRow()?.click());
     const dialog = container.querySelector('[data-testid="company-preset-dialog"]') as HTMLElement;
     expect(dialog.querySelector('.ui-dialog-title')?.textContent).toBe('New company: shop team');
     expect(dialog.querySelector('[data-preset-folder]')?.textContent).toBe('/Users/jamie/dev/shop');
     expect(container.querySelector('[data-testid="company-file-review-dialog"]')).toBeNull();
     expect(useStore.getState().workspaces).toHaveLength(before);
+  });
+
+  it('branches on the file as it is when picked, not on the menu\'s copy', async () => {
+    mount(shop({ trust: 'trusted', companyReviewed: true }));
+    const changed = shop({ contentHash: 'h2', trust: 'stale' });
+    vi.mocked(probeProjectConfig).mockImplementation(async (id) => {
+      useStore.setState({ projectConfigs: { ...useStore.getState().projectConfigs, [id]: changed } } as never);
+      return changed;
+    });
+    await act(async () => fileRow()?.click());
+    expect(container.querySelector('[data-testid="company-file-review-dialog"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="company-preset-dialog"]')).toBeNull();
   });
 
   it('shows a company the file holds but cannot be read as a row that does nothing', () => {

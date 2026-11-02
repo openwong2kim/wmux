@@ -92,6 +92,15 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   const [fileCompanyOpen, setFileCompanyOpen] = useState<
     { review: string } | { company: WmuxProjectCompany; folder: string } | null
   >(null);
+  // Branches on the file as it is now, not on the menu's copy of it.
+  const pickFileCompany = async () => {
+    const fresh = await probeProjectConfig(activeWorkspaceId);
+    const picked = fresh?.config?.company;
+    if (dismissedRef.current || !fresh?.configPath || !picked) return;
+    setFileCompanyOpen(companyNeedsReview(fresh)
+      ? { review: activeWorkspaceId }
+      : { company: picked, folder: companyFileFolder(fresh.configPath) });
+  };
   // The modal calls onCreated after its host round-trip (up to the request
   // timeout) with no check that it is still on screen, and every way out of it
   // (Escape, backdrop, a repair) unmounts this picker. A mint that lands after
@@ -245,9 +254,7 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
       {project && fileFolder && fileCompany && (
         <button
           className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
-          onClick={() => setFileCompanyOpen(companyNeedsReview(project)
-            ? { review: activeWorkspaceId }
-            : { company: fileCompany, folder: fileFolder })}
+          onClick={() => void pickFileCompany()}
           data-company-file
         >
           <div className="flex items-baseline gap-2">
