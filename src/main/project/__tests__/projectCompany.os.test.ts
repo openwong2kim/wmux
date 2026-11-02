@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { ProjectConfigStore } from '../ProjectConfigStore';
 import { readProjectCompany, saveProjectCompany } from '../projectCompany';
 import { saveWorkspacePrepSettings } from '../workspacePrepSettings';
-import { writeProjectConfig, type ProjectConfigWriteDeps } from '../projectConfigWrite';
+import { saveBlock, writeProjectConfig, type ProjectConfigWriteDeps } from '../projectConfigWrite';
 import { companyNeedsReview, PROJECT_CONFIG_MAX_FILE_BYTES } from '../../../shared/wmuxProjectConfig';
 
 let tmp: string;
@@ -99,6 +99,45 @@ describe('saveProjectCompany', () => {
     expect((await store.getState(repo)).trust).toBe('untrusted');
   });
 
+  it('asks for review first when a file not approved here holds more than the company', async () => {
+    for (const raw of [
+      { version: 1, fanout: { portRange: '3000-3010' } },
+      { version: 1, fanout: { portRange: '3000-3010', setup: 42 } },
+      { version: 1, fanout: { portRange: '3000-3010' }, notes: 'a key wmux does not know' },
+    ]) {
+      const text = JSON.stringify(raw);
+      fs.writeFileSync(path.join(repo, 'wmux.json'), text);
+      const view = await readProjectCompany(repo, deps);
+      expect(view.saveBlocked).toBe('review-first');
+      expect(await saveProjectCompany(repo, shop, view.contentHash, deps)).toEqual({ ok: false, error: 'review-first' });
+      expect(fs.readFileSync(path.join(repo, 'wmux.json'), 'utf8')).toBe(text);
+      expect((await store.getState(repo)).trust).toBe('untrusted');
+    }
+  });
+
+  it('writes only the wmux.json its folder check found', async () => {
+    const sub = path.join(repo, 'packages', 'web');
+    fs.mkdirSync(sub, { recursive: true });
+    const text = JSON.stringify({ version: 1, commands: [{ id: 't', title: 't', command: 'npm test' }] });
+    fs.writeFileSync(path.join(sub, 'wmux.json'), text);
+    fs.writeFileSync(path.join(repo, 'wmux.json'), text);
+    const { contentHash } = await store.getState(repo);
+    await store.setDecision(repo, 'trusted', contentHash!, false);
+    // The folder's own file goes away after the folder check, leaving the one above it.
+    let calls = 0;
+    const racing: ProjectConfigWriteDeps = {
+      ...deps,
+      getState: async (cwd) => {
+        const state = await store.getState(cwd);
+        if (++calls === 1) fs.rmSync(path.join(sub, 'wmux.json'));
+        return state;
+      },
+    };
+    expect(await saveProjectCompany(sub, shop, contentHash, racing)).toEqual({ ok: false, error: 'changed' });
+    expect(fs.readFileSync(path.join(repo, 'wmux.json'), 'utf8')).toBe(text);
+    expect((await store.getState(repo)).companyReviewed).toBe(false);
+  });
+
   it('trusts the folder as the dialog names it, also when it is reached through a link', async () => {
     if (process.platform === 'win32') return;
     const link = path.join(tmp, 'linked');
@@ -146,11 +185,48 @@ describe('writeProjectConfig', () => {
     expect((await store.getState(repo)).trust).toBe('untrusted');
   });
 
+  it('trusts the written bytes only for the file it wrote', async () => {
+    let written = false;
+    const granted: string[] = [];
+    const elsewhere = path.join(tmp, 'elsewhere');
+    const binding: ProjectConfigWriteDeps = {
+      ...deps,
+      // Read back after the write, the same bytes come from another folder's file.
+      getState: async (cwd) => {
+        const state = await store.getState(cwd);
+        return written && state.found ? { ...state, root: elsewhere, configPath: path.join(elsewhere, 'wmux.json') } : state;
+      },
+      setTrusted: async (root, hash, grant) => {
+        granted.push(root);
+        await deps.setTrusted(root, hash, grant);
+      },
+    };
+    const r = await writeProjectConfig(repo, undefined, (doc) => {
+      written = true;
+      doc.company = shop;
+      return true;
+    }, (prior) => prior, { copy: false }, binding);
+    expect(r).toEqual({ ok: false, error: 'changed' });
+    expect(granted).toEqual([]);
+  });
+
   it('never writes a file too big to be read back', async () => {
     const raw = JSON.stringify({ version: 1, fanout: { portRange: '3000-3010' }, notes: 'x'.repeat(PROJECT_CONFIG_MAX_FILE_BYTES - 200) });
     fs.writeFileSync(path.join(repo, 'wmux.json'), raw);
     const { contentHash } = await store.getState(repo);
+    await store.setDecision(repo, 'trusted', contentHash!, false);
     expect(await saveProjectCompany(repo, shop, contentHash, deps)).toEqual({ ok: false, error: 'invalid-input' });
     expect(fs.readFileSync(path.join(repo, 'wmux.json'), 'utf8')).toBe(raw);
+  });
+});
+
+describe('saveBlock', () => {
+  it('asks for review of a file not approved here that holds a key the save does not show, known or not', () => {
+    const shows = { copy: false, only: ['version', 'company'] };
+    const untrusted = { found: true, trust: 'untrusted', config: { version: 1 } } as const;
+    expect(saveBlock(untrusted, shows, { version: 1, company: { name: 'x' } })).toBeUndefined();
+    expect(saveBlock(untrusted, shows, { version: 1, notes: 'x' })).toBe('review-first');
+    expect(saveBlock({ ...untrusted, trust: 'trusted' }, shows, { version: 1, notes: 'x' })).toBeUndefined();
+    expect(saveBlock(untrusted, { copy: true }, { version: 1, notes: 'x' })).toBeUndefined();
   });
 });

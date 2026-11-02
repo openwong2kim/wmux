@@ -62,6 +62,37 @@ function sameBytes(configPath: string, hash: string | undefined): boolean {
   return hash !== undefined && sha256Hex(bytes) === hash;
 }
 
+/** One folder however it is spelled: symlinks resolved, case folded on Windows. */
+export function sameFolder(a: string, b: string): boolean {
+  const real = (p: string) => {
+    try {
+      return fs.realpathSync.native(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  const x = real(a);
+  const y = real(b);
+  return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
+}
+
+/** One wmux.json however its folder is spelled. */
+function sameConfigFile(a: string, b: string): boolean {
+  return path.basename(a) === path.basename(b) && sameFolder(path.dirname(a), path.dirname(b));
+}
+
+/** The file's top-level object as it is on disk, or undefined when it cannot be read as one. */
+export function readConfigDoc(configPath: string): Record<string, unknown> | undefined {
+  try {
+    const st = fs.lstatSync(configPath);
+    if (!st.isFile() || st.size > PROJECT_CONFIG_MAX_FILE_BYTES) return undefined;
+    const parsed: unknown = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Where the project's wmux.json is (or would be): the discovered file, else
  *  the checkout's top. */
 export async function locateProjectConfig(
@@ -79,6 +110,9 @@ export async function locateProjectConfig(
  *  setup shows the copy list (and rewrites it); a company save does not. */
 export interface SaveShows {
   copy: boolean;
+  /** The top-level keys the save shows in full. A file not approved here that
+   *  holds any other key, known or not, is reviewed first. */
+  only?: readonly string[];
 }
 
 /**
@@ -94,6 +128,12 @@ function hasRunnables(config: WmuxProjectConfig | undefined, shows: SaveShows): 
     || config.company !== undefined || (!shows.copy && (config.fanout?.copy?.length ?? 0) > 0);
 }
 
+/** The file holds a top-level key the save does not show. */
+function holdsUnshown(doc: Record<string, unknown> | undefined, shows: SaveShows): boolean {
+  const only = shows.only;
+  return only !== undefined && doc !== undefined && Object.keys(doc).some((key) => !only.includes(key));
+}
+
 /** The live bytes are the approved ones (not just a cached verdict). */
 function trustedNow(state: ProjectConfigState, liveHash: string | undefined): boolean {
   return state.trust === 'trusted' && liveHash !== undefined && state.contentHash === liveHash;
@@ -107,13 +147,14 @@ function awaitsPrepReview(state: ProjectConfigState): boolean {
   return state.trust === 'trusted' && state.prepReviewed !== true && (f?.setup !== undefined || (f?.copy?.length ?? 0) > 0);
 }
 
-/** Why wmux cannot save over the file (undefined when it can). */
-export function saveBlock(state: ProjectConfigState, shows: SaveShows): ProjectConfigSaveBlock | undefined {
+/** Why wmux cannot save over the file (undefined when it can). `doc` is the
+ *  file as read (readConfigDoc), for a save that shows only some keys. */
+export function saveBlock(state: ProjectConfigState, shows: SaveShows, doc?: Record<string, unknown>): ProjectConfigSaveBlock | undefined {
   if (!state.found) return undefined;
   if (state.invalid) return 'invalid';
   // 'denied' is sticky: the trust dialog is where it is lifted.
   if (state.trust === 'denied') return 'review-first';
-  if (state.trust !== 'trusted' && hasRunnables(state.config, shows)) return 'review-first';
+  if (state.trust !== 'trusted' && (hasRunnables(state.config, shows) || holdsUnshown(doc, shows))) return 'review-first';
   if (awaitsPrepReview(state)) return 'review-first';
   return undefined;
 }
@@ -126,6 +167,9 @@ export function saveBlock(state: ProjectConfigState, shows: SaveShows): ProjectC
  * asked for ('invalid-input'). `grant` turns the grant on the bytes being
  * replaced (both false unless they are trusted) into the one on the new bytes.
  * `shows` is what the save put on screen, which it may approve unreviewed.
+ * `expectedPath` is the wmux.json the caller decided to save into; another
+ * one found from `cwd` is not written ('changed'). The written bytes are
+ * trusted only for the file they were written to.
  */
 export async function writeProjectConfig(
   cwd: string,
@@ -134,10 +178,12 @@ export async function writeProjectConfig(
   grant: (prior: ProjectTrustGrant) => ProjectTrustGrant,
   shows: SaveShows,
   deps: ProjectConfigWriteDeps,
+  expectedPath?: string,
 ): Promise<ProjectConfigWriteResult> {
   const found = await locateProjectConfig(cwd, deps);
   if (!found) return { ok: false, error: 'no-project' };
   const configPath = path.join(found.dir, WMUX_PROJECT_CONFIG_FILENAME);
+  if (expectedPath !== undefined && !sameConfigFile(configPath, expectedPath)) return { ok: false, error: 'changed' };
 
   let before: Buffer | null = null;
   try {
@@ -165,7 +211,7 @@ export async function writeProjectConfig(
     const config = normalizeWmuxProjectConfig(doc);
     if (state.invalid) return { ok: false, error: 'invalid' };
     if (state.trust === 'denied') return { ok: false, error: 'review-first' };
-    if (!trustedNow(state, liveHash) && hasRunnables(config, shows)) return { ok: false, error: 'review-first' };
+    if (!trustedNow(state, liveHash) && (hasRunnables(config, shows) || holdsUnshown(doc, shows))) return { ok: false, error: 'review-first' };
     if (awaitsPrepReview(state)) return { ok: false, error: 'review-first' };
   }
 
@@ -192,8 +238,11 @@ export async function writeProjectConfig(
   // symlinked spelling git's top resolves away), read back from the file
   // just written.
   const after = await deps.getState(cwd).catch((): ProjectConfigState => ({ found: false }));
-  // Something rewrote the file in between: approve nothing rather than guess.
-  if (!after.found || after.contentHash !== contentHash || !after.root) return { ok: false, error: 'changed' };
+  // Something rewrote the file in between, or the bytes read back are another
+  // file's: approve nothing rather than guess.
+  if (!after.found || after.contentHash !== contentHash || !after.root || !after.configPath || !sameConfigFile(after.configPath, configPath)) {
+    return { ok: false, error: 'changed' };
+  }
   const root = after.root;
   // What the old grant held carries over only from bytes that were trusted.
   const prior = trustedNow(found.state, liveHash) && liveHash !== undefined
