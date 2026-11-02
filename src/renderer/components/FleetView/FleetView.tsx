@@ -422,6 +422,13 @@ export default function FleetView() {
   const matchCount = filter === 'tickets' ? visibleTickets.length
     : visibleGroups.needsYou.length + attentionTickets.length + visibleReview.length + visibleGroups.finished.length
       + visibleGroups.running.length + visibleGroups.idle.length + visibleHandOut.length;
+  // Where the add form would be drawn, as the render decides it: the To hand
+  // out column or list section, under the empty page's call to action too.
+  const handOutFormHost = tab === 'fleet' && (empty
+    ? visibleHandOut.length > 0
+    : matchCount > 0 && filter !== 'tickets' && (boardColumns
+      ? visibleHandOut.length > 0 || filter === 'all' || filter === 'handOut'
+      : handOutListOpen));
   const idleOldestMs = visibleGroups.idle.reduce<number | undefined>(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
@@ -739,6 +746,11 @@ export default function FleetView() {
   useEffect(() => {
     if (handOutPick && !handOutPickItem) setHandOutPick(null);
   }, [handOutPick, handOutPickItem]);
+  // A form whose place is no longer drawn (the section folded, a status
+  // filter, the other layout) is closed, so Escape never goes to it.
+  useEffect(() => {
+    if (handOutAdding && !handOutFormHost) setHandOutAdding(false);
+  }, [handOutAdding, handOutFormHost]);
 
   // A row closes only its own confirm: another row's may be open by now.
   // Focus goes back to the list only when this confirm was the one open.

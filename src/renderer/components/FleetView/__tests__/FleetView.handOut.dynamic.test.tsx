@@ -110,6 +110,29 @@ describe('FleetView — To hand out cards', () => {
   });
 });
 
+describe('FleetView — the add form', () => {
+  it('closes once its place is not drawn, so it does not come back and Escape is not spent on it', async () => {
+    seed(true);
+    act(() => useStore.getState().setFleetLayout('board'));
+    mount();
+    await settle();
+    act(() => container.querySelector<HTMLButtonElement>('[data-fleet-hand-out-add]')!.click());
+    expect(container.querySelector('[data-fleet-hand-out-form]')).not.toBeNull();
+    // A status filter hides the To hand out column, and the form with it.
+    act(() => container.querySelector<HTMLButtonElement>('[data-filter="running"]')!.click());
+    await settle();
+    expect(container.querySelector('[data-fleet-hand-out-form]')).toBeNull();
+    act(() => container.querySelector<HTMLButtonElement>('[data-filter="running"]')!.click());
+    await settle();
+    expect(container.querySelector('[data-fleet-hand-out-form]')).toBeNull();
+    // Escape goes to Fleet itself.
+    act(() => {
+      container.querySelector('[data-fleet-view]')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+    });
+    expect(useStore.getState().fleetViewVisible).toBe(false);
+  });
+});
+
 describe('FleetView — an empty fleet with To hand out items', () => {
   it('keeps the call to action and lists the open items under it', async () => {
     items = [item('ho-1', 'Port the scrollback fix')];
