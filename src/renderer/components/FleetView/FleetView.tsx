@@ -919,8 +919,10 @@ export default function FleetView() {
     // Search, filters and tabs retain focus while the results change.
     if (active !== panel && (!(active instanceof HTMLElement) || active.getAttribute('role') !== 'option')) return;
     const raf = requestAnimationFrame(() => {
-      // A kept-open jump may have moved focus since this frame was queued.
-      if (panel.contains(document.activeElement)) focusActiveItem();
+      // A kept-open jump, or an inline confirm taking focus, may have moved
+      // it since this frame was queued: only a row or the panel gives it up.
+      const now = document.activeElement;
+      if (panel.contains(now) && (now === panel || (now instanceof HTMLElement && now.getAttribute('role') === 'option'))) focusActiveItem();
     });
     return () => cancelAnimationFrame(raf);
   }, [focusActiveItem]);
