@@ -1688,10 +1688,22 @@ leaves the page.
     trusted or its setup command or copy list waits for a review, **Also in
     this file** ("approving trusts them too", and with a layout, that new
     workspaces in this folder can then open with it) with its commands,
-    layout panes, setup command and copy list verbatim. The review shows the
-    file as it was when it opened; when another read of the file differs (an
-    edit, a save, the workspace moving to another folder) it keeps that file
-    on screen, says "This file changed while this was open." and keeps the
+    layout panes, setup command and copy list verbatim. Under them, always,
+    the quiet underlined text button **Show the whole file** ("approving
+    trusts all of it") reads the file again and shows it whole, for what the
+    groups do not list (a key wmux does not know, an entry it dropped), in
+    mono under a `--line` left rule, scrolling past 240px, drawn left to
+    right in byte order. A CRLF line end shows as a line break. Every other
+    character a reader would not see (controls, format characters such as
+    the bidi marks, zero-width and other default-ignorable characters) is
+    shown where it sits as its code point, such as a semibold `⟨U+202E⟩`;
+    every run of bytes that is not UTF-8 shows as `⟨U+FFFD⟩`. Both are
+    counted in a muted line above the text and never removed; past the
+    first 2,000, the marks are plain text.
+    The review shows the file as it was when it opened; when another read of
+    the file differs (an edit, a save, the workspace moving to another
+    folder, or the read for Show the whole file) it keeps that file on
+    screen, says "This file changed while this was open." and keeps the
     primary off until it is opened again. Approving does not lay the
     file's layout over the workspace it was picked from, and a company's
     workspace never gets a layout laid over it on its own. An agent
@@ -2457,6 +2469,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-02 | To hand out on the Company board (owner decision 2026-11-02, insight 163): the board shows the open items for the company's folder between Waiting on you and Seats, each with Fleet's Hand out… (the company offered as its CEO), Add a task… with the company's folder first, and "From To hand out" on a picked job; the section's place is provisional until the board's direction is chosen | A company's next work belongs where its CEO and seats are watched; the same list, popover and add form keep one way of handing out work, and the CEO's brief teaches the hand_out tool so the CEO picks from the same list |
 | 2026-11-02 | A folder's company (owner decision 2026-11-02, insight 170): a company is kept in the folder's wmux.json under `company`, holding only its name, mission, standing orders, the CEO seat, and each seat's name, what it owns and its agent's registry slug; never a launch line, flag, environment, token, path or a seat on another PC. A refused company drops alone and is reported. It starts only from a trust grant that showed it (the review, or a save from the New company dialog, which trusts the bytes it writes); a grant that did not show it, from the wmux.json dialog or an older wmux, does not start it, and nothing starts it on its own | A company tuned in the New company dialog was lost once the dialog closed. The repository is where a team already shares its wmux setup, and the existing per-file trust keeps a checked-in company from starting before its seats and their first prompts are reviewed on this PC |
 | 2026-11-02 | This folder's company in the app (owner decision 2026-11-02, insight 170, mockup option A): the + menu lists the active workspace's folder company first under Company; a pick opens its review while it waits for one, else the New company dialog filled from it, and the menu never makes it. The New company dialog saves its company to the folder's wmux.json from a quiet footer text button through an inline confirm, and stays open. The review shows each seat with its agent, what wmux starts and where it works, the mission and standing orders verbatim and, for a file not trusted here, the rest of it; **Approve and make company** is its one primary and makes the company only from the bytes it showed | A folder's company is made where the other companies are made, beside the presets. Reviewing it on its first start, from the copy of the file the approval covers, means every agent's first message is read on this PC before that agent runs. Option B, the company inside the wmux.json dialog, kept it away from the + menu where a company is made |
+| 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
 
 ### Desktop conversation view
 

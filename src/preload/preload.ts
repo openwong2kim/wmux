@@ -1821,6 +1821,8 @@ const electronAPI = {
   projectConfig: {
     get: (cwd: string) =>
       ipcRenderer.invoke(IPC.PROJECT_CONFIG_GET, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigState>,
+    text: (cwd: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_TEXT, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigText | null>,
     // `companyReviewed`: the approving dialog showed the file's company.
     setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string, unattended?: boolean, companyReviewed?: boolean) =>
       ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash, unattended === true, companyReviewed === true) as Promise<{ ok: boolean }>,

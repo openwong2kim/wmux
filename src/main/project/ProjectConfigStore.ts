@@ -27,6 +27,7 @@ import {
   PROJECT_CONFIG_MAX_FILE_BYTES,
   WMUX_PROJECT_CONFIG_FILENAME,
   type ProjectConfigState,
+  type ProjectConfigText,
   type ProjectTrustState,
   type WmuxProjectConfig,
 } from '../../shared/wmuxProjectConfig';
@@ -224,6 +225,29 @@ export class ProjectConfigStore {
     }
     this.configCache.set(configPath, { mtimeMs: stat.mtimeMs, size: stat.size, contentHash, config });
     return { contentHash, config };
+  }
+
+  /** The wmux.json `getState` reads for `dir`, whole, with the hash of the
+   *  bytes returned (read now, not from the cache). It is decoded as getState
+   *  decodes it: bytes that are not UTF-8 become U+FFFD, and a byte-order mark
+   *  is kept. `dir` is taken as given, not trimmed: it is the folder of a
+   *  configPath. */
+  readText(dir: string): ProjectConfigText | null {
+    if (typeof dir !== 'string' || dir.length === 0) return null;
+    const found = this.findConfigDir(dir);
+    if (found === null) return null;
+    const configPath = path.join(found, WMUX_PROJECT_CONFIG_FILENAME);
+    let raw: Buffer;
+    try {
+      const stat = fs.statSync(configPath);
+      if (!stat.isFile() || stat.size > PROJECT_CONFIG_MAX_FILE_BYTES) return null;
+      raw = fs.readFileSync(configPath);
+    } catch {
+      return null;
+    }
+    // It may have grown between the stat and the read.
+    if (raw.length > PROJECT_CONFIG_MAX_FILE_BYTES) return null;
+    return { configPath, contentHash: sha256Hex(raw), text: new TextDecoder('utf-8', { ignoreBOM: true }).decode(raw) };
   }
 
   // ── State for the renderer ─────────────────────────────────────────────────

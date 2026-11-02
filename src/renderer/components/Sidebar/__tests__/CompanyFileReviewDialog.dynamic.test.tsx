@@ -3,7 +3,8 @@
 // The review of a folder's company before it first starts here: each seat
 // with what wmux starts and where it works, the text verbatim, the rest of an
 // untrusted file; Approve trusts the shown bytes with the company reviewed
-// and only then makes the company, from the file's folder.
+// and only then makes the company, from the file's folder. The whole file is
+// shown on request, only while it is the one on screen.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, createElement } from 'react';
@@ -42,12 +43,14 @@ const UNTRUSTED: ProjectConfigState = {
   },
 };
 const APPROVED: ProjectConfigState = { ...UNTRUSTED, trust: 'trusted', unattended: false, companyReviewed: true };
+const WHOLE = '{\r\n  "version": 1,\r\n  "portRange": [3000, 3100],\r\n  "x": "a\u202eb",\r\n  "company": {}\r\n}';
 
 let container: HTMLDivElement;
 let root: Root;
 let saved: Partial<ReturnType<typeof useStore.getState>>;
 const setTrust = vi.fn();
 const get = vi.fn();
+const text = vi.fn();
 const seatLaunches = vi.fn();
 const workerAgents = vi.fn();
 const onClose = vi.fn();
@@ -82,6 +85,7 @@ beforeEach(() => {
   root = createRoot(container);
   setTrust.mockReset().mockResolvedValue({ ok: true });
   get.mockReset().mockResolvedValue(APPROVED);
+  text.mockReset().mockResolvedValue({ configPath: '/dev/shop/wmux.json', contentHash: 'h1', text: WHOLE });
   seatLaunches.mockReset().mockResolvedValue({
     ok: true,
     labels: ['ceo', 'web', 'api', 'notes'],
@@ -94,7 +98,7 @@ beforeEach(() => {
   ]);
   onClose.mockReset();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
-    projectConfig: { setTrust, get },
+    projectConfig: { setTrust, get, text },
     company: { seatLaunches },
     factory: { workerAgents },
   };
@@ -162,6 +166,76 @@ describe('CompanyFileReviewDialog', () => {
     await flush();
     expect(setTrust).not.toHaveBeenCalled();
     expect(seatLaunches).not.toHaveBeenCalled();
+  });
+
+  it('shows the whole file on request, each hidden character as its code point, even with nothing else to list', async () => {
+    await render({ ...UNTRUSTED, config: { version: 1, company: COMPANY } });
+    expect(container.querySelector('[data-company-review-also]')).toBeNull();
+    expect(container.querySelector('[data-company-review-file]')).toBeNull();
+    await act(async () => button('Show the whole file').click());
+    await flush();
+    expect(text).toHaveBeenCalledWith('/dev/shop');
+    expect(container.querySelector('[data-company-review-file]')?.textContent)
+      .toBe('{\n  "version": 1,\n  "portRange": [3000, 3100],\n  "x": "a⟨U+202E⟩b",\n  "company": {}\n}');
+    expect(container.querySelector('[data-company-review-hidden]')?.textContent)
+      .toBe('Hidden characters in this file: 1. Each is shown as ⟨U+…⟩ where it sits.');
+    expect(button('Approve and make company').disabled).toBe(false);
+    await act(async () => button('Hide the whole file').click());
+    expect(container.querySelector('[data-company-review-file]')).toBeNull();
+  });
+
+  it.each([
+    ['other bytes', { configPath: '/dev/shop/wmux.json', contentHash: 'h2', text: '{"version": 1}' }],
+    ['another file', { configPath: '/dev/wmux.json', contentHash: 'h1', text: '{"version": 1}' }],
+    ['no file', null],
+  ])('does not show a whole file with %s, and turns Approve off though the store still holds the file on screen', async (_what, read) => {
+    text.mockResolvedValue(read);
+    // The re-probe still reads the bytes on screen, as main's cache can after a same-size edit.
+    get.mockResolvedValue(UNTRUSTED);
+    await render(UNTRUSTED);
+    await act(async () => button('Show the whole file').click());
+    await flush();
+    expect(get).toHaveBeenCalledWith('/dev/shop');
+    expect(useStore.getState().projectConfigs['ws-1']?.contentHash).toBe('h1');
+    expect(container.querySelector('[data-company-review-file]')).toBeNull();
+    expect(container.querySelector('[data-company-review-moved]')).not.toBeNull();
+    const approve = button('Approve and make company');
+    expect(approve.disabled).toBe(true);
+    await act(async () => approve.click());
+    await flush();
+    expect(setTrust).not.toHaveBeenCalled();
+  });
+
+  it('marks bytes that are not UTF-8 where they sit', async () => {
+    text.mockResolvedValue({ configPath: '/dev/shop/wmux.json', contentHash: 'h1', text: '{"a": "x\ufffdy"}' });
+    await render(UNTRUSTED);
+    await act(async () => button('Show the whole file').click());
+    await flush();
+    expect(container.querySelector('[data-company-review-file]')?.textContent).toBe('{"a": "x⟨U+FFFD⟩y"}');
+  });
+
+  it('keeps a file dense in hidden characters to a bounded number of elements, every one still marked', async () => {
+    text.mockResolvedValue({ configPath: '/dev/shop/wmux.json', contentHash: 'h1', text: `{"pad": "${'\u200b'.repeat(2500)}"}` });
+    await render(UNTRUSTED);
+    await act(async () => button('Show the whole file').click());
+    await flush();
+    expect(container.querySelectorAll('[data-hidden-char]').length).toBe(2000);
+    const shown = container.querySelector('[data-company-review-file]')?.textContent ?? '';
+    expect(shown).toBe(`{"pad": "${'⟨U+200B⟩'.repeat(2500)}"}`);
+    expect(container.querySelector('[data-company-review-hidden]')?.textContent).toContain('Hidden characters in this file: 2500.');
+  });
+
+  it('still hides the whole file once the file on screen has changed', async () => {
+    await render(UNTRUSTED);
+    await act(async () => button('Show the whole file').click());
+    await flush();
+    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...UNTRUSTED, contentHash: 'h2' } } } as never));
+    expect(button('Approve and make company').disabled).toBe(true);
+    const hide = button('Hide the whole file');
+    expect(hide.disabled).toBe(false);
+    await act(async () => hide.click());
+    expect(container.querySelector('[data-company-review-file]')).toBeNull();
+    expect(button('Show the whole file').disabled).toBe(true);
   });
 
   it('lists the setup of trusted bytes whose grant never showed it, since approving covers it', async () => {

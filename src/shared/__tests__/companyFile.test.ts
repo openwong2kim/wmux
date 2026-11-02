@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { companyFileJson, normalizeCompanyFile } from '../companyFile';
+import { companyFileJson, normalizeCompanyFile, splitHiddenCharacters } from '../companyFile';
 import { COMPANY_PRESET_MAX_SEATS, COMPANY_TEXT_MAX } from '../companyPreset';
 
 const shop = {
@@ -80,6 +80,8 @@ describe('normalizeCompanyFile', () => {
     ['a zero-width space in the mission', { ...shop, mission: `Ship${ZERO_WIDTH_SPACE}refunds` }],
     ['a tag character in a seat name', { ...shop, ceo: `api${TAG_A}`, seats: [{ name: `api${TAG_A}` }] }],
     ['a variation selector in the standing orders', { ...shop, standingOrders: `Review${VARIATION_SELECTOR_17}` }],
+    ['a Hangul filler in the name', { ...shop, name: 'shop\u3164team' }],
+    ['a musical format character in the mission', { ...shop, mission: 'Ship\u{1d173}refunds' }],
     ['a mission that is not text', { ...shop, mission: ['a'] }],
   ])('refuses the whole company for %s', (_why, raw) => {
     expect(normalizeCompanyFile(raw)).toBeNull();
@@ -89,5 +91,27 @@ describe('normalizeCompanyFile', () => {
     expect(normalizeCompanyFile(null)).toBeNull();
     expect(normalizeCompanyFile([shop])).toBeNull();
     expect(normalizeCompanyFile('shop')).toBeNull();
+  });
+});
+
+describe('splitHiddenCharacters', () => {
+  it('cuts out each character a reader would not see, one per odd entry', () => {
+    expect(splitHiddenCharacters('"a": "x\u202ey\u200bz"')).toEqual(['"a": "x', '\u202e', 'y', '\u200b', 'z"']);
+    // A tag character is one entry, though it takes two UTF-16 units.
+    expect(splitHiddenCharacters('a\u{e0041}b')).toEqual(['a', '\u{e0041}', 'b']);
+    expect(splitHiddenCharacters('\u0000')).toEqual(['', '\u0000', '']);
+    // Format characters outside the bidi and zero-width ranges, and characters that draw a blank.
+    for (const c of ['\u2065', '\u206a', '\ufff9', '\ufff0', '\u{1d173}', '\u{13430}', '\u3164', '\u115f', '\uffa0', '\u180b', '\u17b4', '\u{e0080}', '\u{e0fff}']) {
+      expect(splitHiddenCharacters(`a${c}b`)).toEqual(['a', c, 'b']);
+    }
+  });
+
+  it('cuts out the replacement character, which stands for bytes that are not UTF-8', () => {
+    expect(splitHiddenCharacters('a\ufffdb')).toEqual(['a', '\ufffd', 'b']);
+  });
+
+  it('keeps a tab and a line end, CRLF as LF, and cuts out a lone carriage return', () => {
+    expect(splitHiddenCharacters('{\r\n\t"a": 1\n}')).toEqual(['{\n\t"a": 1\n}']);
+    expect(splitHiddenCharacters('a\rb')).toEqual(['a', '\r', 'b']);
   });
 });
