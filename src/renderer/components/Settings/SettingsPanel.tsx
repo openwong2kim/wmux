@@ -2,6 +2,7 @@ import { TerminalEngineSetting } from './TerminalEngineSetting';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
+import type { LabsStatus } from '../../../shared/labsSettings';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
 import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
@@ -282,6 +283,14 @@ function IconNotifications() {
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <path d="M3.5 9.5c.7-.7.9-1.7.9-2.9a2.6 2.6 0 0 1 5.2 0c0 1.2.2 2.2.9 2.9z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       <path d="M5.9 11.2a1.2 1.2 0 0 0 2.2 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconLabs() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <path d="M5.4 2h3.2M6 2v3.6L2.8 11a.7.7 0 0 0 .6 1h7.2a.7.7 0 0 0 .6-1L8 5.6V2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -5059,6 +5068,56 @@ function TabFirstRunSetup() {
   );
 }
 
+function TabLabs() {
+  const t = useT();
+  const compactScrollback = useStore((s) => s.terminalCompactScrollback);
+  const setCompactScrollback = useStore((s) => s.setTerminalCompactScrollback);
+  const sharedWebgl = useStore((s) => s.terminalSharedWebgl);
+  const setSharedWebgl = useStore((s) => s.setTerminalSharedWebgl);
+  const [labs, setLabs] = useState<LabsStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const live = useRef(true);
+  const run = useCallback((request: () => Promise<LabsStatus>) => {
+    setBusy(true);
+    request().then(
+      (r) => { if (live.current) { setLabs(r); setFailed(false); } },
+      () => { if (live.current) setFailed(true); },
+    ).finally(() => { if (live.current) setBusy(false); });
+  }, []);
+  useEffect(() => {
+    live.current = true;
+    run(() => window.electronAPI.settings.getLabs());
+    return () => { live.current = false; };
+  }, [run]);
+  const ringOn = !!labs && (labs.saved.ringCompression || labs.ringCompressionInConfig);
+  return (
+    <SettingsSection description={t('settings.labsIntro')}>
+      <SettingRow id="labs-compact-scrollback" label={t('settings.labsCompactScrollback')} description={t('settings.labsCompactScrollbackDesc')}>
+        <Toggle checked={compactScrollback} onChange={setCompactScrollback} label={t('settings.labsCompactScrollback')} />
+      </SettingRow>
+      <SettingRow id="labs-shared-webgl" label={t('settings.labsSharedWebgl')} description={t('settings.labsSharedWebglDesc')}>
+        <Toggle checked={sharedWebgl} onChange={setSharedWebgl} label={t('settings.labsSharedWebgl')} />
+      </SettingRow>
+      <SettingRow id="labs-ring-compression" label={t('settings.labsRingCompression')} description={t('settings.labsRingCompressionDesc')}>
+        <Toggle
+          checked={ringOn}
+          disabled={!labs || busy || labs.ringCompressionInConfig}
+          onChange={(on) => run(() => window.electronAPI.settings.setLabs({ ringCompression: on }))}
+          label={t('settings.labsRingCompression')}
+        />
+      </SettingRow>
+      {labs?.ringCompressionInConfig && <SettingNote>{t('settings.labsRingCompressionInConfig')}</SettingNote>}
+      {labs && !labs.ringCompressionInConfig && labs.restartRequired && <SettingNote>
+        {t('settings.labsRestartDaemon')}<br /><code className="ui-code">{labs.stopCommand}</code>
+      </SettingNote>}
+      {failed && <SettingNote tone="danger" role="alert">{t('settings.labsError')}{' '}
+        <Button variant="secondary" disabled={busy} onClick={() => run(() => window.electronAPI.settings.getLabs())}>{t('settings.terminalEngineRetry')}</Button>
+      </SettingNote>}
+    </SettingsSection>
+  );
+}
+
 function TabAbout() {
   const t = useT();
 
@@ -5342,6 +5401,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     terminal:             { label: t('settings.tabTerminal'),      icon: <IconTerminal /> },
     shortcuts:            { label: t('settings.tabKeyboard'),      icon: <IconShortcuts /> },
     notifications:        { label: t('settings.tabNotifications'), icon: <IconNotifications /> },
+    labs:                 { label: t('settings.tabLabs'),          icon: <IconLabs /> },
     'claude-integration': { label: t('settings.tabClaudeCode'),    icon: <IconClaude /> },
     accounts:             { label: t('settings.tabAccounts'),      icon: <IconUsers /> },
     factory:              { label: t('settings.tabFactory'),       icon: <IconRobot /> },
@@ -5529,6 +5589,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'terminal'           && <TabTerminal />}
                     {activeTab === 'shortcuts'          && <TabShortcuts />}
                     {activeTab === 'notifications'      && <TabNotifications />}
+                    {activeTab === 'labs'               && <TabLabs />}
                     {activeTab === 'claude-integration' && <TabClaudeCode />}
                     {activeTab === 'accounts'           && <><AccountsSection /><AgyAccountsSection /></>}
                     {activeTab === 'factory'            && <FactoryTab />}

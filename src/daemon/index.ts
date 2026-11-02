@@ -3,6 +3,7 @@ import '../shared/exeSearchGuard';
 import { isInternalForkPayload } from '../shared/hooks/internalFork';
 import { releaseDaemonFiles, replaceFileOrWrite, unlinkIfContent } from '../shared/daemon/daemonFiles';
 import { terminalCoreRuntime, terminalCoreSelection } from '../shared/terminalCoreSettings';
+import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { collectDaemonMemoryDiagnostics } from './memoryDiagnostics';
 import { createStartupRecovery } from './startupRecovery';
 import { loadChatSkills } from './transcript/chatSkills';
@@ -6733,6 +6734,7 @@ function registerRpcHandlers(
     return {
       status: 'ok',
       ...(params?.includeTerminalCore === true ? { terminalCore: terminalCoreRuntime() } : {}),
+      ...(params?.includeLabs === true ? { labs: labsSettingsAtStartup() } : {}),
       pid: process.pid,
       uptime,
       sessions: sessions.length,
@@ -9128,6 +9130,7 @@ function logExitHandoff(via: string): void {
 
 async function main(): Promise<void> {
   terminalCoreSelection();
+  labsSettingsAtStartup();
   const startTime = Date.now();
   markDaemonBoot('main-start');
   log('info', `wmux-daemon starting (PID ${process.pid})`);
