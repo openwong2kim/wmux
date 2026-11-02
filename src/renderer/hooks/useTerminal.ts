@@ -1,5 +1,5 @@
 import { createOsc8LinkHandler } from '../terminal/osc8LinkHandler';
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
@@ -1009,9 +1009,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const inlineImagesEnabled = useStore((s) => s.inlineImagesEnabled);
   const theme = useStore((s) => s.theme) as ThemeId;
   const customThemeColors = useStore((s) => s.customThemeColors);
-  const xtermTheme = theme === 'custom' && customThemeColors
-    ? extractXtermColors(customThemeColors)
-    : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha'];
+  // Memoised on identity, not just value — same as RemoteMirrorTerminal.
+  // `extractXtermColors` builds a new object every call, so a custom theme
+  // handed the font/theme effect below a dep that never compared equal:
+  // `options.theme` was re-assigned on EVERY render of every terminal. xterm
+  // compares options by identity, so each assignment rebuilt the ColorSet and
+  // fired onChangeColors; the webgl addon's link layer and renderer then
+  // re-acquired the glyph atlas with two different deviceMaxTextureSize values
+  // (2048 vs the GPU's), creating and dropping a TextureAtlas — two canvases —
+  // per terminal per render. With ~10 streaming agent panes that was ~500
+  // canvases/s, V8's external-memory limit, and a permanent major-GC storm
+  // (#3000). Builtin themes come from a module constant and were already
+  // stable; this makes custom ones behave the same.
+  const xtermTheme = useMemo(
+    () => (theme === 'custom' && customThemeColors
+      ? extractXtermColors(customThemeColors)
+      : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha']),
+    [theme, customThemeColors],
+  );
   // Apps that emit true-color RGB foreground text (e.g. Claude Code, some
   // TUI tools) bypass our indexed ANSI palette mapping entirely — the color
   // renders exactly as specified, in BOTH directions: literal white on a
@@ -1022,7 +1037,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // resolveMinimumContrastRatio for why dark themes get a lower (2.5, not
   // 4.5) floor — it rescues genuinely-invisible text without forcing every
   // dark theme's intentionally-muted secondary text up to full AA.
-  const minimumContrastRatio = resolveMinimumContrastRatio(xtermTheme.background);
+  const minimumContrastRatio = useMemo(
+    () => resolveMinimumContrastRatio(xtermTheme.background),
+    [xtermTheme],
+  );
 
   // Resize the daemon PTY without letting a rejected RPC float as an
   // "Uncaught (in promise)". Two transient daemon errors are expected here and
