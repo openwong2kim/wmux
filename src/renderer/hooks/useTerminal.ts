@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { preloadSharedWebgl, sharedWebglAddonClassFor } from '../terminal/sharedWebgl/load';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
@@ -665,6 +666,25 @@ export async function attachForWrite(ptyId: string, promote = true): Promise<'un
 // a fast unmount→remount can briefly run two instances on the same ptyId, and
 // the pool's accounting must treat them as distinct slots.
 let webglTokenSeq = 0;
+
+// EXPERIMENTAL (uiSlice.terminalSharedWebgl, default off): every pane draws
+// through one shared WebGL2 context (terminal/sharedWebgl) instead of one of
+// its own. Read when a pane's addon is built, so a change applies to addons
+// built after it. Such a pane holds no context, so it takes no slot in the
+// context pool and is never evicted to the DOM renderer.
+//
+// The renderer is a separate chunk, loaded once the flag is seen on (at start,
+// on session restore, or when it is switched on). A pane built before the chunk
+// has loaded gets the stock addon, as with the flag off, and keeps it. A load
+// that failed is retried the next time the flag is switched on.
+function sharedWebglAddonClass(replaces?: WebglAddon) {
+  return sharedWebglAddonClassFor(useStore.getState().terminalSharedWebgl === true, replaces);
+}
+webglContextPool.setUnbudgeted(() => sharedWebglAddonClass() !== null);
+if (useStore.getState().terminalSharedWebgl === true) void preloadSharedWebgl();
+useStore.subscribe((state, prev) => {
+  if (state.terminalSharedWebgl === true && prev.terminalSharedWebgl !== true) void preloadSharedWebgl();
+});
 
 // A hidden terminal KEEPS its WebGL context. It gives the context back only
 // when webglContextPool evicts it (LRU, once more terminals want one than the
@@ -1831,10 +1851,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // recently shown terminals, so persistence can restore an arbitrary session
     // count without any pane going blank. loadWebgl is the pool's "acquire"
     // callback; disposeWebgl is its "evict" callback (reverts to DOM renderer).
-    function loadWebgl() {
+    // `replaces`: the addon a rebuild replaces, whose kind (stock or shared
+    // context) the new one keeps — see sharedWebglAddonClassFor.
+    function loadWebgl(replaces?: WebglAddon) {
       if (webglAddonRef.current) return; // already loaded
       try {
-        const addon = new WebglAddon();
+        const SharedContextWebglAddon = sharedWebglAddonClass(replaces);
+        const addon: WebglAddon = SharedContextWebglAddon
+          ? new SharedContextWebglAddon({ sharedContext: true })
+          : new WebglAddon();
         addon.onContextLoss(() => {
           // A real GPU driver reset (not our pool eviction): the context is
           // gone. Dispose, drop to xterm's DOM renderer, and free our pool slot
@@ -1984,9 +2009,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // recreating — this runs once per terminal on mount, so on a multi-pane
         // restore it is a burst of dispose+create pairs; leaking the old
         // contexts here is a prime zombie-context source.
-        teardownWebglAddon(webglAddonRef.current, terminal);
+        const replaced = webglAddonRef.current;
+        teardownWebglAddon(replaced, terminal);
         webglAddonRef.current = null;
-        loadWebgl();
+        loadWebgl(replaced);
       }
       // runFit carries the selection guard, the #1255 floor gate and — unlike
       // a direct addon fit — the sendResize, which a re-measured cell needs:

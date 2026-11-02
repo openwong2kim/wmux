@@ -40,6 +40,10 @@ interface PoolEntry {
   dispose: () => void;
   /** True while this terminal currently holds a live WebGL context. */
   granted: boolean;
+  /** Whether the grant counts against the budget. False for a terminal
+   *  granted while the unbudgeted predicate held: it draws through the shared
+   *  context (terminal/sharedWebgl) and holds no context of its own. */
+  budgeted: boolean;
   /** Monotonic last-touch counter for LRU ordering. Higher = more recent. */
   seq: number;
 }
@@ -53,11 +57,21 @@ export class WebglContextPool {
   private entries = new Map<string, PoolEntry>();
   private seqCounter = 0;
   private readonly max: number;
+  private isUnbudgeted: () => boolean = () => false;
 
   constructor(max: number = MAX_WEBGL_CONTEXTS) {
     // Defensive: a non-positive budget would dead-lock every terminal on the
     // DOM renderer. Clamp to at least 1 so the focused terminal always gets GPU.
     this.max = Math.max(1, Math.floor(max));
+  }
+
+  /**
+   * Decide, at each grant, whether the terminal will hold a context of its
+   * own. While `predicate` returns true a grant is unbudgeted: it never waits
+   * for or evicts another terminal, and is never evicted itself.
+   */
+  setUnbudgeted(predicate: () => boolean): void {
+    this.isUnbudgeted = predicate;
   }
 
   /**
@@ -70,7 +84,7 @@ export class WebglContextPool {
   acquire(token: string, acquire: () => void, dispose: () => void): void {
     let entry = this.entries.get(token);
     if (!entry) {
-      entry = { acquire, dispose, granted: false, seq: 0 };
+      entry = { acquire, dispose, granted: false, budgeted: true, seq: 0 };
       this.entries.set(token, entry);
     } else {
       // Refresh callbacks — a remount reuses the token with new closures.
@@ -80,7 +94,8 @@ export class WebglContextPool {
     entry.seq = ++this.seqCounter;
     if (entry.granted) return;
 
-    if (this.grantedCount() >= this.max) {
+    entry.budgeted = !this.isUnbudgeted();
+    if (entry.budgeted && this.grantedCount() >= this.max) {
       this.evictLruExcept(token);
     }
     entry.granted = true;
@@ -127,13 +142,15 @@ export class WebglContextPool {
    */
   acquireWouldEvict(token: string): boolean {
     if (this.entries.get(token)?.granted) return false;
+    if (this.isUnbudgeted()) return false;
     return this.grantedCount() >= this.max;
   }
 
-  /** Number of terminals currently holding a live context. */
+  /** Number of terminals currently holding a live context of their own
+   *  (unbudgeted grants hold none). */
   grantedCount(): number {
     let n = 0;
-    for (const e of this.entries.values()) if (e.granted) n++;
+    for (const e of this.entries.values()) if (e.granted && e.budgeted) n++;
     return n;
   }
 
@@ -148,7 +165,7 @@ export class WebglContextPool {
     let victim: string | null = null;
     let victimSeq = Infinity;
     for (const [token, e] of this.entries) {
-      if (!e.granted || token === exceptToken) continue;
+      if (!e.granted || !e.budgeted || token === exceptToken) continue;
       if (e.seq < victimSeq) {
         victimSeq = e.seq;
         victim = token;
