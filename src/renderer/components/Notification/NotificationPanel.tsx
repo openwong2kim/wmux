@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, type ReactElement } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactElement } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { useShortcutLabel } from '../../utils/shortcutLabel';
@@ -212,6 +212,9 @@ interface SecurityNoticesSectionProps {
  */
 function SecurityNoticesSection(props: SecurityNoticesSectionProps): ReactElement {
   const { items, headingLabel, goToPaneLabel, ackLabel, onGoToPane, onAcknowledge } = props;
+  // Every notice has the same two buttons; each names its notice's title as
+  // its description so a screen reader can tell them apart.
+  const titleIdBase = useId();
   return (
     <section
       aria-label={headingLabel}
@@ -220,30 +223,40 @@ function SecurityNoticesSection(props: SecurityNoticesSectionProps): ReactElemen
       style={{ borderBottom: '1px solid var(--surface-hairline)' }}
     >
       <div className="ui-note px-4 pt-2.5">{headingLabel}</div>
-      {items.map(({ notice, location }) => (
+      {items.map(({ notice, location }) => {
+        const titleId = `${titleIdBase}-${notice.id}`;
+        return (
         <div key={notice.id} data-security-notice={notice.id} className="flex items-start gap-2.5 px-4 py-3">
           <span className="mt-[3px] shrink-0 text-[var(--accent-yellow)]" aria-hidden="true" {...tokenAttrs('warning', 'accent')}>
             <IconWarning size={13} />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="text-[13px] font-medium leading-5 text-[var(--text-main)]">{notice.title}</div>
+            <div id={titleId} className="text-[13px] font-medium leading-5 text-[var(--text-main)]">{notice.title}</div>
             <p className="m-0 mt-0.5 text-[11px] leading-4 text-[var(--text-sub2)]" data-derived="textSub2">{notice.body}</p>
             {location && <p className="m-0 mt-0.5 truncate text-[11px] leading-4 text-[var(--text-sub)]" title={location}>{location}</p>}
             <div className="-ml-2.5 mt-1.5 flex items-center gap-1">
               {location !== null && (
-                <Button variant="secondary" size="sm" onClick={() => onGoToPane(notice)}>
+                <Button variant="secondary" size="sm" aria-describedby={titleId} onClick={() => onGoToPane(notice)}>
                   {goToPaneLabel}
                 </Button>
               )}
-              <Button variant="ghost" size="sm" onClick={() => onAcknowledge(notice)}>
+              <Button variant="ghost" size="sm" aria-describedby={titleId} onClick={() => onAcknowledge(notice)}>
                 {ackLabel}
               </Button>
             </div>
           </div>
         </div>
-      ))}
+        );
+      })}
     </section>
   );
+}
+
+/** The first button of the pinned notice `id` (the first notice when null). */
+function firstPinnedButton(panel: HTMLElement | null, id: string | null): HTMLButtonElement | null {
+  const notices = [...(panel?.querySelectorAll<HTMLElement>('[data-security-notice]') ?? [])];
+  const notice = id === null ? notices[0] : notices.find((el) => el.dataset.securityNotice === id);
+  return notice?.querySelector('button') ?? null;
 }
 
 // ─── Pure view (exported for tests) ───────────────────────────────────────────
@@ -376,7 +389,8 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
       {/* List */}
       <div ref={listRef} onScroll={onListScroll} data-notification-list className="flex-1 overflow-y-auto">
         {notifications.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-[13px] text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
+          // A pinned notice above is not "no notifications".
+          securityNotices && securityNotices.length > 0 ? null : <div className="flex items-center justify-center h-full text-[13px] text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
             {emptyLabel}
           </div>
         ) : (
@@ -564,10 +578,27 @@ export default function NotificationPanel() {
         firstUnreadRef.current.focus();
       } else if (markAllReadBtnRef.current) {
         markAllReadBtnRef.current.focus();
+      } else {
+        // No ordinary notifications: the first pinned security notice.
+        firstPinnedButton(panelRef.current, null)?.focus();
       }
     });
     return () => cancelAnimationFrame(raf);
   }, [notificationPanelVisible]);
+
+  // ─── Focus after acknowledging a pinned notice ─────────────────────────────
+  // Its buttons leave the DOM with it; focus goes to the notice that took its
+  // place, else Mark all read (acknowledging adds a read row, so it is there),
+  // never to <body>.
+  const focusAfterAckRef = useRef<{ nextId: string | null } | null>(null);
+  useLayoutEffect(() => {
+    const pending = focusAfterAckRef.current;
+    if (!pending) return;
+    focusAfterAckRef.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    (firstPinnedButton(panelRef.current, pending.nextId) ?? markAllReadBtnRef.current)?.focus();
+  }, [securityNotices]);
 
   // ─── Scroll-position restore (cmux parity) ─────────────────────────────────
   // On open: restore the offset saved at close, unless new notifications
@@ -644,6 +675,9 @@ export default function NotificationPanel() {
   // Acknowledging is the store (unpin; a read row joins the list) and main
   // (forget it, so a reload or another window does not pin it again).
   const handleSecurityAcknowledge = (notice: SecurityNotice) => {
+    const idx = securityNotices.findIndex((n) => n.id === notice.id);
+    const rest = securityNotices.filter((n) => n.id !== notice.id);
+    focusAfterAckRef.current = { nextId: rest[Math.min(idx, rest.length - 1)]?.id ?? null };
     useStore.getState().acknowledgeSecurityNotice(notice.id);
     void window.electronAPI?.notification?.acknowledgeSecurityNotice?.(notice.id)?.catch(() => undefined);
   };
