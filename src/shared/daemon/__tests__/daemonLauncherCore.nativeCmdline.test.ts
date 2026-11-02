@@ -1,3 +1,4 @@
+// @wmux-lane unit — 'win32' here is the platform the launcher is told it runs on; the native reads, process.kill and execFileSync are all fakes.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**

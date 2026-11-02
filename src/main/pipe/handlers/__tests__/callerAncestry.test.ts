@@ -1,3 +1,4 @@
+// @wmux-lane unit — 'win32' here is the platform the ancestry read is told it runs on; the native table, creation times and execFile are all fakes.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 const native = vi.hoisted(() => ({
