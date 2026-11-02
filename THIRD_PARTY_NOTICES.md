@@ -107,6 +107,40 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## xterm.js (xtermjs/xterm.js)
+
+- Source: https://github.com/xtermjs/xterm.js/tree/08829c7eb6279dda2a9e86df901353a1a89858ca
+  (`addons/addon-webgl/src/`, the build behind `@xterm/addon-webgl@0.20.0-beta.329`,
+  and the `src/browser/` and `src/common/` modules it imports)
+- Used in: `src/renderer/terminal/sharedWebgl/` (a fork of the WebGL renderer
+  that can draw every pane through one shared WebGL2 context). Each copied
+  file keeps its original header, its `browser/` and `common/` imports are
+  rewritten as relative paths, and `xterm/common/CoreTerminal.ts` keeps only
+  the `ICoreTerminal` interface.
+- License text, verbatim from `addons/addon-webgl/LICENSE`:
+
+```
+Copyright (c) 2018, The xterm.js authors (https://github.com/xtermjs/xterm.js)
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```
+
 ## Cua Driver (trycua/cua)
 
 - Source: https://github.com/trycua/cua/tree/a9902d272655b65180fa713a8b1f2f1c1935e70b/libs/cua-driver

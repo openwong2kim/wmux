@@ -196,6 +196,18 @@ export const en = {
   'settings.terminalEngineRestartApp': "Restart wmux after finishing your sessions to apply the saved choice.",
   'settings.terminalEngineError': "Could not read or save the terminal engine setting.",
   'settings.terminalEngineRetry': "Refresh",
+  'settings.tabLabs': "Labs",
+  'settings.labsIntro': "Experimental memory savers. Each is off by default and may change or go away.",
+  'settings.labsCompactScrollback': "Compact scrollback",
+  'settings.labsCompactScrollbackDesc': "Keeps scrollback rows well above the screen packed, at about a third of the memory. Searching the whole scrollback gets slower. Applies to terminals opened after the change.",
+  'settings.labsSharedWebgl': "Shared WebGL renderer",
+  'settings.labsSharedWebglDesc': "Every pane draws through one WebGL context and one glyph atlas. Saves GPU memory when many panes show many different glyphs. Applies to panes opened after the change.",
+  'settings.labsRingCompression': "Compress session output",
+  'settings.labsRingCompressionDesc': "The terminal service keeps each session's recent output compressed, at about a ninth of the memory. Applies after the terminal service restarts.",
+  'settings.labsError': "Could not read or save this setting.",
+  'settings.labsRingCompressionNodeOnly': "Applies only to the Node terminal engine.",
+  'settings.labsRingCompressionInConfig': "session.ringCompression is on in config.json, so session output is always compressed. Remove it there to control it here.",
+  'settings.labsRestartDaemon': "Applies after the terminal service restarts. When your sessions are done, quit wmux, run the command below in a separate terminal (PowerShell on Windows), then reopen wmux.",
   'chat.closeManaged': 'Close chat',
   'chat.reviewChanges': 'Review changes',
   'chat.activity': 'Agent activity',
@@ -755,6 +767,7 @@ export const en = {
   'statusbar.notifSingular': 'notification',
   'statusbar.notifPlural': 'notifications',
   'statusbar.unreadAria': '{count} unread {noun}, click to open panel',
+  'statusbar.securityAria': 'Security notices waiting: {count}',
 
   // Usage meter (Anthropic 5h/7d widget)
   'usage.tooltipSession': '5h: {pct}%',
@@ -1015,6 +1028,9 @@ export const en = {
   'notification.needsYou.question': "Needs you: “{question}”",
   'notification.needsYou.noQuestion': "Needs you. No question text; see its terminal.",
   'notification.needsYou.over': "No longer waiting on you.",
+  'notification.security.heading': 'Security · stays until you acknowledge it',
+  'notification.security.goToPane': 'Go to pane',
+  'notification.security.ack': 'Got it',
 
   // Command palette
   'palette.placeholder': 'Type a command...',
@@ -3084,6 +3100,7 @@ export const en = {
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
   'deck.limit.window': 'usage',
   'deck.brainTerminal': 'Brain terminal',
+  'deck.expiredDecision': "A decision an earlier wmux version asked for in {workspace} was closed, because this version has no card to answer it: \"{question}\"",
   'deck.limit.resetsSoon': 'resets soon',
   'deck.limit.resetsIn': 'resets in {rel}',
   'deck.limit.onAccount': ' on {account}',
@@ -6399,6 +6416,10 @@ export const en = {
   'remoteSpawn.code.declined': "declined on {pc}",
   'remoteSpawn.code.app-not-ready': "wmux on {pc} was not ready",
   'remoteSpawn.code.failed': "the agent could not start on {pc}",
+  // Spoken by the screen-reader announcer (components/Accessibility/AgentStateAnnouncer.tsx).
+  'a11y.agent.needsYou': '{tag} {agent} needs you',
+  'a11y.agent.finished': '{tag} {agent} finished',
+  'a11y.agent.error': '{tag} {agent} stopped with an error',
 } as const;
 
 export type TranslationKey = keyof typeof en;

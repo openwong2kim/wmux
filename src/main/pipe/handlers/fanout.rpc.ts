@@ -103,7 +103,6 @@ import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
-import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
 import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
 import { FANOUT_LIVE_TASK_CAP, getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
@@ -174,31 +173,6 @@ import { countOpenBotWorkers, openBotWorkers, verdictedTaskIds } from '../../fac
 const CONNECTOR_AGENT_REFUSAL: Readonly<Record<string, (c: Connector) => string | null>> = { codex: codexConnectorRefusal };
 
 type GetWindow = () => BrowserWindow | null;
-
-/**
- * Additive `warnings` on the accepted reply: conditions that do not refuse the
- * fan-out but WILL break the loop it starts.
- *
- * The only one so far is the pending decision gate (dogfood finding 12). A
- * workspace with an unanswered decision — including one raised in a previous
- * app session and never seen — cannot be auto-woken at all, so every worker
- * stop routed back to it is held rather than delivered. Fanning out from such
- * a workspace looks perfectly healthy and then never reports anything, so the
- * accept says so at the one moment the caller is reading a reply.
- * Never throws: a torn decision store yields no warning, not a failed fan-out.
- */
-function acceptWarnings(ownerWorkspaceId: string): string[] {
-  try {
-    const decision = loadWorkspaceDecision(ownerWorkspaceId);
-    if (!decision || decision.status !== 'pending') return [];
-    return [
-      `owner workspace ${ownerWorkspaceId} has a pending decision ${decision.id}; ` +
-        'worker events will not wake the brain until it is answered',
-    ];
-  } catch {
-    return [];
-  }
-}
 
 /**
  * R1 — the agent command wire callers get, always. NEVER read from params:
@@ -2309,7 +2283,7 @@ export function registerFanOutRpc(
       }
     })();
 
-    const warnings = [...(selection.kind === 'agents' ? selection.warnings : []), ...acceptWarnings(callerWorkspaceId)];
+    const warnings = selection.kind === 'agents' ? selection.warnings : [];
     return {
       ok: true as const,
       status: 'accepted' as const,

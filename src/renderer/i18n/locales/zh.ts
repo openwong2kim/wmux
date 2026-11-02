@@ -482,6 +482,7 @@ export const zh = {
   'statusbar.notifSingular': '通知',
   'statusbar.notifPlural': '通知',
   'statusbar.unreadAria': '{count} 条未读{noun}，点击打开面板',
+  'statusbar.securityAria': '{count} 条安全通知待确认',
 
   // Usage meter (Anthropic 5h/7d widget)
   'usage.tooltipSession': '5 小时：{pct}%',
@@ -581,6 +582,9 @@ export const zh = {
   'notification.needsYou.question': "等你回应：“{question}”",
   'notification.needsYou.noQuestion': "等你回应。没有问题内容，请看它的终端。",
   'notification.needsYou.over': "已不再等你。",
+  'notification.security.heading': '安全 · 确认前会一直保留',
+  'notification.security.goToPane': '前往窗格',
+  'notification.security.ack': '知道了',
 
   // Command palette
   'palette.placeholder': '输入命令...',
@@ -599,6 +603,7 @@ export const zh = {
   'palette.cmd.splitRight': '向右分割',
   'palette.cmd.splitDown': '向下分割',
   'palette.cmd.stashPane': '收起面板（会话继续运行）',
+  'palette.cmd.balanceLayout': '均分布局（等宽列与等高行）',
   'palette.cmd.showNotifications': '显示通知',
   'palette.cmd.openSettings': '打开设置',
   'palette.cmd.openBrowser': '打开浏览器',
@@ -3029,6 +3034,7 @@ export const zh = {
   'pane.enforcedSkipPermissions': '跳过权限确认（{flag}）',
   'deck.limit.window': '用量',
   'deck.brainTerminal': '大脑终端',
+  'deck.expiredDecision': "早期 wmux 版本在 {workspace} 中请求的一项决定已关闭,因为此版本没有可回答它的卡片:\"{question}\"",
   'deck.limit.resetsSoon': '即将重置',
   'deck.limit.resetsIn': '{rel} 后重置',
   'deck.limit.onAccount': ' 于 {account}',
@@ -3428,6 +3434,7 @@ export const zh = {
   'settings.prefix.swapPanePrev': '与上一个面板交换',
   'settings.prefix.swapPaneNext': '与下一个面板交换',
   'settings.prefix.stashPane': '收起面板',
+  'settings.prefix.balanceLayout': '均分布局',
   'settings.token.accentSecondary': '链接强调色',
   'firstRunWizard.title': '欢迎使用 wmux',
   'firstRunWizard.subtitle': "先准备好一个代理，再打开项目文件夹。",

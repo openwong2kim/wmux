@@ -1,7 +1,8 @@
 //! Compatibility interpreter for the daemon's OutputModeTracker and OscParser.
 //! Policy (titles, notifications, agent state, timestamps) remains in the host.
 //! Preserve their chunk semantics, including the 256 UTF-16-unit mode carry and
-//! same-chunk OSC introducer/terminator contract; this is not a new VT parser.
+//! the ESC a chunk ends on, held for the next one so an OSC introducer or
+//! terminator split across chunks is still read; this is not a new VT parser.
 
 const MODES: [(u32, bool); 14] = [
     (1, false),
@@ -37,6 +38,8 @@ pub struct OutputInterpreter {
     alt_mode: u32,
     osc: Vec<u16>,
     in_osc: bool,
+    /// The last chunk ended in an ESC whose pair (`]` or `\`) may start the next one.
+    pending_esc: bool,
 }
 
 impl Default for OutputInterpreter {
@@ -49,6 +52,7 @@ impl Default for OutputInterpreter {
             alt_mode: 0,
             osc: Vec::new(),
             in_osc: false,
+            pending_esc: false,
         }
     }
 }
@@ -59,7 +63,9 @@ impl OutputInterpreter {
             return Vec::new();
         }
         self.feed_modes(text, end);
-        if include_osc && (self.in_osc || text.contains("\x1b]")) {
+        if include_osc
+            && (self.in_osc || self.pending_esc || text.contains("\x1b]") || text.ends_with('\x1b'))
+        {
             self.feed_osc(&text.encode_utf16().collect::<Vec<_>>())
         } else {
             Vec::new()
@@ -167,6 +173,15 @@ impl OutputInterpreter {
 
     fn feed_osc(&mut self, chunk: &[u16]) -> Vec<OscEvent> {
         let mut events = Vec::new();
+        // A chunk can end between ESC and `]` or `\`: the ESC held back from
+        // the last one goes in front of this one, so the pair is read whole.
+        let held;
+        let chunk = if std::mem::take(&mut self.pending_esc) {
+            held = [&[ESC][..], chunk].concat();
+            &held[..]
+        } else {
+            chunk
+        };
         let mut i = 0;
         while i < chunk.len() {
             let c = chunk[i];
@@ -184,6 +199,9 @@ impl OutputInterpreter {
                     self.clear_osc();
                     self.in_osc = false;
                     i += if st { 2 } else { 1 };
+                } else if c == ESC && i + 1 == chunk.len() {
+                    self.pending_esc = true;
+                    break;
                 } else {
                     // Match the reference's UTF-16-unit cap and resumption point.
                     if self.osc.len() == MAX_OSC {
@@ -198,6 +216,9 @@ impl OutputInterpreter {
                 self.clear_osc();
                 self.in_osc = true;
                 i += 2;
+            } else if c == ESC && i + 1 == chunk.len() {
+                self.pending_esc = true;
+                break;
             } else {
                 i += 1;
             }
@@ -328,6 +349,26 @@ mod tests {
         p.feed(&format!("\x1b]7;{}", "x".repeat(MAX_OSC)), 0.0, true);
         assert!(p.feed("\x07", 0.0, true).is_empty());
         assert_eq!(p.feed("\x1b]133;C\x1b\\", 0.0, true)[0].data, "C");
+    }
+    #[test]
+    fn osc_introducer_and_terminator_split_across_chunks() {
+        for (osc, data) in [("\x1b]133;D;0\x07", "D;0"), ("\x1b]133;A\x1b\\", "A")] {
+            let stream = format!("out{osc}put");
+            for at in 0..=stream.len() {
+                let mut p = OutputInterpreter::default();
+                let mut events = p.feed(&stream[..at], 0.0, true);
+                events.extend(p.feed(&stream[at..], 0.0, true));
+                let want = vec![OscEvent {
+                    code: 133.0,
+                    data: data.into(),
+                }];
+                assert_eq!(events, want, "split at {at}");
+            }
+        }
+        // An ESC inside an OSC that the next chunk does not pair stays payload.
+        let mut p = OutputInterpreter::default();
+        assert!(p.feed("\x1b]2;ti\x1b", 0.0, true).is_empty());
+        assert_eq!(p.feed("tle\x07", 0.0, true)[0].data, "ti\x1btle");
     }
     #[test]
     fn mode_seeding_does_not_reemit_historical_osc() {

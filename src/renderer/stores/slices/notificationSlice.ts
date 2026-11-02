@@ -2,6 +2,8 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Notification } from '../../../shared/types';
 import { generateId } from '../../../shared/types';
+import type { SecurityNotice } from '../../../shared/securityNotice';
+import { findWorkspaceSurfaceByPtyId } from '../../utils/paneTraversal';
 
 export interface NotificationSlice {
   notifications: Notification[];
@@ -16,6 +18,13 @@ export interface NotificationSlice {
   markAllReadForWorkspace: (workspaceId: string) => void;
   jumpToUnread: () => string | null;
   clearNotifications: () => void;
+  // Daemon security notices still waiting on the user (shared/securityNotice.ts),
+  // oldest first. Pinned above the list: the read / clear actions above never
+  // touch them; only acknowledging one moves it into `notifications`.
+  securityNotices: SecurityNotice[];
+  setSecurityNotices: (list: SecurityNotice[]) => void;
+  addSecurityNotice: (notice: SecurityNotice) => void;
+  acknowledgeSecurityNotice: (id: string) => void;
 }
 
 // Decrement a surfaceId bucket, clamping at 0 and deleting zeroed keys so the
@@ -58,6 +67,7 @@ function assertUnreadInvariant(state: StoreState): void {
 export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer', never]], [], NotificationSlice> = (set, get) => ({
   notifications: [],
   unreadBySurfaceId: {},
+  securityNotices: [],
 
   addNotification: (notification) => set((state: StoreState) => {
     const added: Notification = {
@@ -148,6 +158,52 @@ export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer'
   clearNotifications: () => set((state: StoreState) => {
     state.notifications = [];
     state.unreadBySurfaceId = {};
+    assertUnreadInvariant(state);
+  }),
+
+  setSecurityNotices: (list) => set((state: StoreState) => {
+    // Merge: a notice heard on `added` before the initial list resolved stays.
+    const known = new Set(state.securityNotices.map((n) => n.id));
+    for (const notice of list) {
+      if (!known.has(notice.id)) state.securityNotices.push(notice);
+    }
+    state.securityNotices.sort((a, b) => a.timestamp - b.timestamp);
+  }),
+
+  addSecurityNotice: (notice) => set((state: StoreState) => {
+    if (state.securityNotices.some((n) => n.id === notice.id)) return;
+    state.securityNotices.push(notice);
+  }),
+
+  acknowledgeSecurityNotice: (id) => set((state: StoreState) => {
+    const idx = state.securityNotices.findIndex((n) => n.id === id);
+    if (idx === -1) return;
+    const [notice] = state.securityNotices.splice(idx, 1);
+    // It stays in the record as an ordinary read row, filed under the
+    // workspace that holds its pane, else the active one. No category, so a
+    // Settings category mute cannot hide it; read, so no unread bookkeeping.
+    let workspaceId = state.activeWorkspaceId;
+    let surfaceId: string | undefined;
+    if (notice.ptyId) {
+      for (const ws of state.workspaces) {
+        const found = findWorkspaceSurfaceByPtyId(ws, notice.ptyId);
+        if (!found) continue;
+        workspaceId = ws.id;
+        surfaceId = found.surfaceId;
+        break;
+      }
+    }
+    state.notifications.push({
+      id: generateId('notif'),
+      workspaceId,
+      ...(surfaceId ? { surfaceId } : {}),
+      ...(notice.ptyId ? { ptyId: notice.ptyId } : {}),
+      type: 'warning',
+      title: notice.title,
+      body: notice.body,
+      timestamp: notice.timestamp,
+      read: true,
+    });
     assertUnreadInvariant(state);
   }),
 });

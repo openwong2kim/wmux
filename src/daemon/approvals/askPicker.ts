@@ -65,6 +65,7 @@
 
 import type { DecisionForm } from './types';
 import { UNKNOWN_CELL } from '../sessionTextReplay';
+import { showsScreenReaderKeyRow } from './screenReaderKeyRow';
 import { terminalCharWidth } from '../../shared/terminalUnicode';
 
 export type AskFormQuestion = NonNullable<DecisionForm['questions']>[number];
@@ -532,11 +533,12 @@ export function parseAskPicker(rawRows: readonly string[]): AskPickerScreen | nu
  * Some AskUserQuestion picker is still up, even when too little of it is drawn
  * to read (a short pane scrolls its rows): Claude's key hint (`Enter to select
  * · … · Esc to cancel`, however many rows a narrow pane wraps it over) among
- * the grid's last rows, a picker the parse reads, or a review screen's own
- * rows. Biased to "up": a record is never retired on a live picker.
+ * the grid's last rows, a picker the parse reads, a review screen's own rows,
+ * or the key row of Claude Code's screen-reader layout, which draws none of
+ * them. Biased to "up": a record is never retired on a live picker.
  */
 export function askPickerOnScreen(rawRows: readonly string[]): boolean {
-  if (parseAskPicker(rawRows)) return true;
+  if (parseAskPicker(rawRows) || showsScreenReaderKeyRow(rawRows)) return true;
   const rows = withoutSessionName(rawRows.map((row) => row.replace(/\s+$/, '')))
     .map((row) => normalize(row)).filter((row) => row.length > 0);
   if (rows.some((row) => REVIEW_ROWS.has(row))) return true;

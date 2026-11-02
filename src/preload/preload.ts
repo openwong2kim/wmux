@@ -11,6 +11,7 @@ import {
 } from '../shared/browserBackend';
 import { WORKFLOW_OWNER_IPC } from '../shared/botWorkflow';
 import type { TerminalCoreSettings, TerminalEngine } from '../shared/terminalCoreSettings';
+import type { LabsSettings, LabsStatus } from '../shared/labsSettings';
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
@@ -167,6 +168,8 @@ import type {
 import type { PcRailFeedEvent } from '../main/remote/pcRailWire';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary, SshAddProgress, SshAddResult, SshConfirmResult, SshServiceResult, SshTunnelState } from '../shared/remoteHosts';
 import { REMOTE_SSH_IPC } from '../shared/remoteHosts';
+import { SCREEN_READER_IPC } from '../shared/screenReader';
+import { SECURITY_NOTICE_IPC, type SecurityNotice } from '../shared/securityNotice';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -589,6 +592,14 @@ const electronAPI = {
     /** Windows: the system asks for reduced motion (Animation effects off).
      *  False elsewhere, where the media query already says it. */
     getReducedMotion: () => ipcRenderer.invoke(IPC.SYSTEM_REDUCED_MOTION) as Promise<boolean>,
+    /** A screen reader is on (main/screenReader.ts). */
+    getScreenReader: () => ipcRenderer.invoke(SCREEN_READER_IPC.get) as Promise<boolean>,
+    /** A screen reader turned on or off. Returns the unsubscribe. */
+    onScreenReaderChanged: (callback: (on: boolean) => void) => {
+      const listener = (_event: unknown, on: boolean) => callback(on === true);
+      ipcRenderer.on(SCREEN_READER_IPC.changed, listener);
+      return () => { ipcRenderer.removeListener(SCREEN_READER_IPC.changed, listener); };
+    },
   },
   // Keep the computer awake (main/power/sleepPrevention.ts).
   power: {
@@ -604,6 +615,8 @@ const electronAPI = {
   settings: {
     getTerminalCore: () => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_GET) as Promise<TerminalCoreSettings>,
     setTerminalCore: (engine: TerminalEngine) => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_SET, engine) as Promise<TerminalCoreSettings>,
+    getLabs: () => ipcRenderer.invoke(IPC.LABS_SETTINGS_GET) as Promise<LabsStatus>,
+    setLabs: (settings: LabsSettings) => ipcRenderer.invoke(IPC.LABS_SETTINGS_SET, settings) as Promise<LabsStatus>,
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
     setMutedNotificationCategories: (categories: NotificationCategory[]) =>
       ipcRenderer.send(IPC.MUTED_NOTIFICATION_CATEGORIES, categories),
@@ -664,6 +677,15 @@ const electronAPI = {
       ipcRenderer.send(IPC.NOTIFICATION_OS_TOAST, payload),
     // E5 — push unread count to main for the dock/tray badge.
     setBadgeCount: (count: number) => ipcRenderer.send(IPC.NOTIFICATION_BADGE_COUNT, count),
+    // Daemon security notices (shared/securityNotice.ts): main keeps each one
+    // until it is acknowledged, outside the notification policy.
+    securityNotices: () => ipcRenderer.invoke(SECURITY_NOTICE_IPC.list) as Promise<SecurityNotice[]>,
+    onSecurityNotice: (callback: (notice: SecurityNotice) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, notice: SecurityNotice) => callback(notice);
+      ipcRenderer.on(SECURITY_NOTICE_IPC.added, listener);
+      return () => { ipcRenderer.removeListener(SECURITY_NOTICE_IPC.added, listener); };
+    },
+    acknowledgeSecurityNotice: (id: string) => ipcRenderer.invoke(SECURITY_NOTICE_IPC.acknowledge, id) as Promise<void>,
     // Fired once when useNotificationListener's effect mounts and subscribes
     // — confirms to main that IPC.NOTIFICATION sends will actually reach a
     // live listener, not just a live (but reloading/unmounted) window.
@@ -1035,6 +1057,12 @@ const electronAPI = {
         return () => { ipcRenderer.removeListener(IPC.DECK_MOA_CHANGED, listener); };
       },
     },
+    // The pending decisions an earlier version raised that this startup
+    // removed (no card answers them), taken once for a one-time notice.
+    expiredDecisions: () =>
+      ipcRenderer.invoke(IPC.DECK_EXPIRED_DECISIONS) as Promise<{
+        decisions: import('../main/deck/deckDecisionStore').ExpiredDecision[];
+      }>,
     // Claude Code hook bridge (in-app `wmux setup-hooks`). STATUS feeds the
     // install prompt (launch + off→assist/auto mode switch); INSTALL is the
     // explicit user-clicked install — never auto-run.

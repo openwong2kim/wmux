@@ -235,7 +235,9 @@ section); that result says `delivery: "foreground"`. A posted one says
 - **Per action.** Checked first, before any window state is read: what the
   action asks for.
   - `click`: a single left click with no modifiers, after the UIA ladder
-    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern.
+    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern. Under
+    `foreground: 'refuse'`, a ladder pattern on a target that is not in
+    front answers `needs_foreground` instead (see below).
     Right and middle buttons, double and triple clicks, and modifiers go the
     real way: posted messages carry no keyboard state, and the rest was not
     measured.
@@ -271,9 +273,12 @@ section); that result says `delivery: "foreground"`. A posted one says
     posted: a trailing `\n` (backslash, n) types Enter in the same action.
   - `hotkey` with modifiers and `scroll`: always the real way (a chord
     cannot be posted; `WM_MOUSEWHEEL` was not measured).
-  - `setValue` and the UIA click ladder are not input; their results say
-    `background` unless the target window came to the front during the call
-    (the foreground is read before the call's checks).
+  - `setValue` and the UIA click ladder are not input, but each of their
+    pattern calls (Invoke, Toggle, SelectionItem, ExpandCollapse, Value)
+    brought a covered target window to the front, with WinForms and with
+    Electron (a ScrollIntoView or a property read did not). Their results
+    say `background` unless the target window came to the front during the
+    call (the foreground is read before the call's checks).
 - **Refused before posting** (`not_delivered`, then real input), besides
   the above: the target window is minimized, hidden or cloaked, on another
   virtual desktop (`IVirtualDesktopManager`; if that call fails it is no
@@ -328,8 +333,23 @@ section); that result says `delivery: "foreground"`. A posted one says
   began becomes `needs_foreground`; a stop after posting started (no focus
   after the click, the field moved, the keys refused) keeps its own answer.
   `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
-  `setValue` and the UIA click ladder are pattern calls, not input, and
-  nothing in them raises the window, so `refuse` changes nothing for them.
+  The pattern calls of `setValue` and the UIA click ladder raise a covered
+  target, so they are foreground input (Core
+  `Background.PatternCallAllowed`). Under `refuse` one is made only when
+  the target window is the foreground window, read right before the call
+  and after the element checks (gone, stale, elevated), where it cannot
+  take the front from anyone. Otherwise the action answers
+  `needs_foreground` before the call (`not_delivered`), and main re-sends
+  it under its foreground lease with `allow`, where the ladder and
+  `setValue` run as before. The click is not posted instead: a posted
+  click lands on whatever is at the element's point, and the pattern call
+  presses exactly that element. An index click on an element with no
+  ladder pattern is posted as before.
+  Under `allow` such a call can still bring a covered target to the
+  front: an Invoke or ExpandCollapse call did with WinForms and Electron
+  (a ScrollIntoView did not). A result then says `foreground`, and an
+  error says so in its message, as does a click that went on another way
+  after such a call certainly did not run.
   The sent counter's baseline for a request is taken after the release of
   keys a dead helper left down, so those up events never decide an
   action's `not_delivered` or `needs_foreground`. The helper's stderr says
@@ -373,19 +393,54 @@ section); that result says `delivery: "foreground"`. A posted one says
     (no element, a UIA timeout) are both `app_blocked`.
 - Semantic actions (UIA Invoke, Toggle, SelectionItem, ExpandCollapse,
   Value) check the input desktop, elevation and that the element's process
-  and top-level window are the target's before every call. Like AXPress on
-  macOS they work on a covered background window, because they are not
-  input. Once a pattern call was made, an ambiguous error (a timeout behind a
+  and top-level window are the target's before every call. They are not
+  input, but each of them brought a covered target window to the front, so
+  under `refuse` they are made only for a target in front (see
+  `foreground: 'refuse'` above). Once a pattern call was made, an ambiguous error (a timeout behind a
   modal dialog, say) ends the action saying it may have taken effect; the
   helper falls back to another pattern or a synthetic click only when the
   pattern is absent or certainly did not run.
 - Foreground: the helper never uses `AttachThreadInput` or Alt-key tricks to
   take the foreground. A covered pointer target gets one UIA focus request;
   if the window still is not in front, the answer is `window_not_focused`.
+  A hidden target window (no `WS_VISIBLE`) or a cloaked one (another
+  virtual desktop) gets no real input at all: it could take a click or keys
+  only by being shown, given the foreground or switched to, so the answer
+  is `window_not_focused` before anything is done to it.
+- The user's cursor: a `scroll` notch moves the cursor to the point (a real
+  wheel event goes to the window under the cursor), turns the wheel and
+  moves the cursor back to where it was before the scroll (read under the
+  input lock before the first notch), each notch one `SendInput` call, so
+  the notch lands at the point and the cursor ends where it was. If Windows
+  takes only part of a notch's batch, the error says the cursor may have
+  been left at the point. An app that reads the cursor position itself while it
+  handles the wheel, instead of the message's point, would see the user's
+  position. A `click` leaves the cursor at the click, as a user's would.
 - `type`: Unicode key events (`KEYEVENTF_UNICODE`) in chunks of at most 16
   UTF-16 units, never splitting a surrogate pair or a grapheme; newline and
   tab are Enter and Tab presses. **The clipboard is never used**, whatever
   the length (`TYPE_PASTE_THRESHOLD` does not apply to either helper).
+  With an index, the field is focused with UIA `SetFocus`. That is a
+  keyboard (Tab-like) focus, on which a field may select its whole text (a
+  WinForms `TextBox` does on its first focus), and the keys would replace
+  it. So the field's selection is read before the focus and, if focusing
+  changed it, selected again and read back, and the field must still have
+  keyboard focus. It is read through UIA `TextPattern` (one range; a caret
+  is an empty one), or, for a Win32 edit control without it
+  (`RealGetWindowClass` "Edit", such as a .NET Framework WinForms
+  `TextBox`, which exposes no `TextPattern`), with `EM_GETSEL` and put back
+  with `EM_SETSEL` (no pointers, so they work across processes). The text
+  then goes where the field's own caret was. Nothing is typed
+  (`action_not_supported`) when the selection cannot be put back, when an
+  edit control's selection cannot be read before the focus (a message
+  unanswered within 1 s, or text longer than 65,534 characters, whose
+  selection EM_GETSEL's packed answer cannot hold unambiguously; Core
+  `EditSelection.Unpack`), or when a `TextPattern`
+  selection could not be read before and is not a caret after the focus.
+  An edit control no longer in the target window answers `element_stale`.
+  Any other field is focused as before. Not covered: a field that selects
+  its text from a posted message after the focus (the read-back is a sent
+  message, handled first); WinForms selects all synchronously.
   `verified` means the focused value after equals the value before with
   exactly the typed text inserted at one position; text that was already
   there never verifies a failed insert.
