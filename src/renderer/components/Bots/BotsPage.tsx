@@ -37,7 +37,7 @@ import { dmThreadId, type RoomCard, type ThreadId } from '../../../shared/room';
 import { timelineKey } from '../../stores/slices/roomSlice';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
-import { IconMoreHorizontal, IconPlus, IconSearch } from '../icons';
+import { IconCheck, IconMoreHorizontal, IconPlus, IconSearch } from '../icons';
 import Popover from '../ui/Popover';
 import { getFactoryBotPort, getFactorySettingsPort, type FactoryBotPort, type FactoryBotRow, type FactorySettingsPort } from '../Room/factoryPorts';
 import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
@@ -59,7 +59,7 @@ import { blocksStart, bridgeEnginePort, useEngineReadiness, type EnginePort } fr
 import { CLAUDE_CODE_INSTALL_URL } from '../../../shared/factoryEngine';
 import { BOT_NAME_MAX, isCoordinatorBot, normalizeBotName, type BotProfile } from '../../../shared/bot';
 import { listedWorkspaces } from '../../../shared/pcRail';
-import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, splitFolders, type Conversation } from './botsModel';
+import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, rangeBetween, splitFolders, type Conversation } from './botsModel';
 import { getBotFolderPort, type BotFolderPort } from '../Room/botFolders';
 import { BotFolderMenu, FolderActionsMenu, FolderHeader, FolderNameInput } from './BotFolderUi';
 import BotsGroupDialog, { type GroupDialogStart } from './BotsGroupDialog';
@@ -134,8 +134,10 @@ function UnreadBadge({ count }: { count: number }) {
   return <span data-bots-unread={count} aria-hidden="true" className="wmux-bots-unread">{count > 99 ? '99+' : count}</span>;
 }
 
-function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread = 0, toggleRoom = false }: {
-  c: Conversation; title: string; preview: string; selected: boolean; t: T; onSelect: () => void; now?: number;
+function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread = 0, toggleRoom = false, checked = false }: {
+  c: Conversation; title: string; preview: string; selected: boolean; t: T; onSelect: (e: React.MouseEvent) => void; now?: number;
+  /** Checked for moving to a folder (a check mark; never the selection pill). */
+  checked?: boolean;
   /** The workers' fold toggle sits at the end of the preview line. */
   toggleRoom?: boolean;
   /** Bot messages after the conversation was last read (this session). */
@@ -153,6 +155,7 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       data-bots-row={c.id}
       data-bots-kind={c.kind}
       data-bots-removed={removed ? 'true' : undefined}
+      data-bots-checked={checked ? 'true' : undefined}
       aria-current={selected ? 'true' : undefined}
       aria-label={name}
       onClick={onSelect}
@@ -167,6 +170,7 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-1.5">
           <span className={`min-w-0 truncate text-[13px] font-[var(--title-weight,500)] ${removed ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'}`}>{title}</span>
+          {checked && <span className="wmux-bots-row-check" role="img" aria-label={t('botsPage.folders.checkedMark')}><IconCheck size={12} /></span>}
           {shownAt !== null && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{formatCardTime(shownAt, now)}</span>}
         </span>
         <span className={`flex items-center gap-1.5 ${toggleRoom ? 'pr-[34px]' : ''}`}>
@@ -674,12 +678,12 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   // owner collapsed it (main keeps that), and open while searching.
   const { unfiled: unfiledLive, sections: folderSections } = splitFolders(shownLive, folders, !!q);
   const foldersOn = foldersPort.available;
-  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; botId: string } | null>(null);
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; botIds: string[] } | null>(null);
   const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; folderId: string } | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   // A folder being named: from "+", or from a bot's menu (the bot then moves in).
-  const [naming, setNaming] = useState<{ botId: string | null } | null>(null);
+  const [naming, setNaming] = useState<{ botIds: string[] } | null>(null);
   const [folderError, setFolderError] = useState<string | null>(null);
   const [folderBusy, setFolderBusy] = useState(false);
   const folderCall = async (run: () => Promise<{ ok: boolean; message?: string }>) => {
@@ -695,17 +699,121 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
     }
   };
   const folderOfBot = (botId: string) => folders.find((f) => f.botIds.includes(botId))?.id ?? null;
-  const moveBot = (botId: string, folderId: string | null) => {
-    setRowMenu(null);
-    void folderCall(() => foldersPort.assign(botId, folderId));
+
+  // Several bots checked for moving (DESIGN.md › Bots › Folders): a set of
+  // bot ids and the anchor a Shift-click extends from. The open conversation
+  // (`selectedId`) is a separate thing and never changes with these. Only live
+  // 1:1 bots are checkable; the set is pruned to the rows on screen.
+  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set());
+  const [anchor, setAnchor] = useState<string | null>(null);
+  const clearChecked = () => { setChecked(new Set()); setAnchor(null); };
+  const fileableId = (r: { c: Conversation }) => foldersOn && r.c.kind === 'bot' && !r.c.removed;
+  // The checkable bots in on-screen order: each open folder's rows, then the
+  // unfiled ones.
+  const checkOrder: string[] = [];
+  if (foldersOn) {
+    for (const { folder, rows: members } of folderSections) {
+      if (!q && folder.collapsed) continue;
+      for (const r of members) if (r.c.kind === 'bot' && !r.c.removed) checkOrder.push(r.c.row.bot.id);
+    }
+    for (const r of unfiledLive) if (r.c.kind === 'bot' && !r.c.removed) checkOrder.push(r.c.row.bot.id);
+  }
+  const checkOrderKey = checkOrder.join('\n');
+  useEffect(() => {
+    const live = new Set(checkOrderKey ? checkOrderKey.split('\n') : []);
+    setChecked((cur) => {
+      if ([...cur].every((id) => live.has(id))) return cur;
+      return new Set([...cur].filter((id) => live.has(id)));
+    });
+    setAnchor((cur) => (cur !== null && live.has(cur) ? cur : null));
+  }, [checkOrderKey]);
+  const toggleCheck = (botId: string) => {
+    setChecked((cur) => {
+      const next = new Set(cur);
+      if (!next.delete(botId)) next.add(botId);
+      return next;
+    });
+    setAnchor(botId);
   };
-  const createFolder = (name: string, botId: string | null) => {
+  const checkRange = (botId: string) => setChecked(new Set(rangeBetween(checkOrder, anchor, botId)));
+  /** The checked bots, in on-screen order. */
+  const checkedIds = () => checkOrder.filter((id) => checked.has(id));
+
+  /** File bots (a batch is one call), then drop the check marks. */
+  const moveBots = (botIds: string[], folderId: string | null) => {
+    setRowMenu(null);
+    if (botIds.length > 1) clearChecked();
+    if (botIds.length === 0) return;
+    void folderCall(() => (botIds.length === 1 ? foldersPort.assign(botIds[0], folderId) : foldersPort.assignMany(botIds, folderId)));
+  };
+  const createFolder = (name: string, botIds: string[]) => {
     setNaming(null);
+    if (botIds.length > 1) clearChecked();
     void folderCall(async () => {
       const r = await foldersPort.create(name);
-      if (r.ok && botId) return foldersPort.assign(botId, r.folder.id);
-      return r;
+      if (!r.ok || botIds.length === 0) return r;
+      return botIds.length === 1 ? foldersPort.assign(botIds[0], r.folder.id) : foldersPort.assignMany(botIds, r.folder.id);
     });
+  };
+
+  // Dragging rows onto a folder (or the unfiled rows): native drag and drop as
+  // the Sidebar's workspace rows do it. The source is held here, not read back
+  // from `dataTransfer` (which a foreign drag fills too), the dragged look is
+  // inline `opacity` so the source is never re-rendered mid-drag, and a click
+  // within 200 ms of a drag is not a click.
+  const dragIds = useRef<string[] | null>(null);
+  const dragStartedAt = useRef(0);
+  const dimmed = useRef<HTMLElement[]>([]);
+  const rowsRef = useRef<HTMLDivElement>(null);
+  const [dropOn, setDropOn] = useState<string | null>(null);
+  const UNFILED_DROP = '';
+  const dragStart = (e: React.DragEvent<HTMLElement>, botId: string) => {
+    const ids = checked.has(botId) ? checkedIds() : [botId];
+    dragIds.current = ids;
+    dragStartedAt.current = Date.now();
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('application/x-wmux-bots', ids.join(' '));
+    dimmed.current = [];
+    for (const id of ids) {
+      const el = rowsRef.current?.querySelector<HTMLElement>(`[data-bots-entry="${botConversationId(id)}"]`);
+      if (!el) continue;
+      el.style.opacity = '0.4';
+      dimmed.current.push(el);
+    }
+  };
+  const dragEnd = () => {
+    for (const el of dimmed.current) el.style.opacity = '';
+    dimmed.current = [];
+    dragIds.current = null;
+    dragStartedAt.current = Date.now();
+    setDropOn(null);
+  };
+  /** Handlers for a drop target: a folder id, or null for the unfiled rows. */
+  const dropTarget = (folderId: string | null) => {
+    const key = folderId ?? UNFILED_DROP;
+    // Only our own drag, and only when it would change something.
+    const accepts = () => !!dragIds.current?.some((id) => folderOfBot(id) !== folderId);
+    return {
+      onDragOver: (e: React.DragEvent<HTMLElement>) => {
+        if (!accepts()) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        setDropOn((cur) => (cur === key ? cur : key));
+      },
+      onDragLeave: (e: React.DragEvent<HTMLElement>) => {
+        if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+        setDropOn((cur) => (cur === key ? null : cur));
+      },
+      onDrop: (e: React.DragEvent<HTMLElement>) => {
+        if (!accepts()) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const live = new Set(checkOrder);
+        const ids = (dragIds.current ?? []).filter((id) => live.has(id) && folderOfBot(id) !== folderId);
+        dragEnd();
+        moveBots(ids, folderId);
+      },
+    };
   };
 
   const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
@@ -946,7 +1054,21 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
       const tree = r.c.kind === 'bot' ? r.c.tree : [];
       const botId = r.c.kind === 'bot' ? r.c.row.bot.id : '';
       // A live bot's 1:1 can be filed in a folder (a group chat or a removed bot cannot).
-      const fileable = foldersOn && r.c.kind === 'bot' && !r.c.removed;
+      const fileable = fileableId(r);
+      const isChecked = fileable && checked.has(botId);
+      // A click: Ctrl/Cmd toggles the row's check mark and Shift checks the
+      // range from the anchor, neither opening the chat; any other click opens
+      // it (and leaves the check marks alone).
+      const onRowClick = (e: React.MouseEvent) => {
+        if (Date.now() - dragStartedAt.current < 200) { e.preventDefault(); return; }
+        if (fileable) {
+          const toggle = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+          if (toggle) { e.preventDefault(); toggleCheck(botId); return; }
+          if (e.shiftKey && anchor !== null) { e.preventDefault(); checkRange(botId); return; }
+          if (e.shiftKey) { e.preventDefault(); toggleCheck(botId); return; }
+        }
+        openRow(r.c);
+      };
       const isSelected = selected?.c.id === r.c.id || (!!starting && r.c.id === pendingId);
       const open = tree.length > 0 && (unfolded[r.c.id] ?? isSelected);
       const treeId = `bots-tree-${r.c.id}`;
@@ -958,17 +1080,20 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
           {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- the menu is reached from the row button's own keys (Shift+F10, the Menu key) */}
           <div
             className={`wmux-bots-row-wrap ${tree.length > 0 ? 'has-toggle' : ''}`}
+            draggable={fileable}
+            onDragStart={fileable ? (e) => dragStart(e, botId) : undefined}
+            onDragEnd={fileable ? dragEnd : undefined}
             onContextMenu={fileable ? (e) => {
               e.preventDefault();
               setFolderMenu(null);
-              setRowMenu({ x: e.clientX, y: e.clientY, botId });
+              setRowMenu({ x: e.clientX, y: e.clientY, botIds: isChecked && checked.size > 1 ? checkedIds() : [botId] });
             } : undefined}
             onKeyDown={fileable ? (e) => {
               if (!((e.key === 'F10' && e.shiftKey) || e.key === 'ContextMenu')) return;
               e.preventDefault();
               const rect = e.currentTarget.getBoundingClientRect();
               setFolderMenu(null);
-              setRowMenu({ x: rect.left + 24, y: rect.bottom - 4, botId });
+              setRowMenu({ x: rect.left + 24, y: rect.bottom - 4, botIds: isChecked && checked.size > 1 ? checkedIds() : [botId] });
             } : undefined}
           >
             <ConversationRow
@@ -979,7 +1104,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               t={t}
               now={now}
               unread={r.unread}
-              onSelect={() => openRow(r.c)}
+              onSelect={onRowClick}
+              checked={isChecked}
               toggleRoom={tree.length > 0}
             />
             {tree.length > 0 && (
@@ -1035,7 +1161,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                 onGuests={guestsPort.available ? () => setGuestsOpen(true) : null}
               />
             )}
-            <AddMenu t={t} onAddBot={startAdd} onAddTeam={startTeam} onNewGroup={newGroup} onNewFolder={foldersOn ? () => setNaming({ botId: null }) : null} />
+            <AddMenu t={t} onAddBot={startAdd} onAddTeam={startTeam} onNewGroup={newGroup} onNewFolder={foldersOn ? () => setNaming({ botIds: [] }) : null} />
           </div>
           {teamMade && newGroup && (
             <TeamNotice
@@ -1079,20 +1205,48 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               />
             </div>
           )}
-          <div className="wmux-bots-rows">
+          {foldersOn && checked.size > 0 && (
+            <div className="wmux-bots-selbar" data-bots-selbar role="group" aria-label={t('botsPage.folders.move')}>
+              <span className="wmux-bots-selbar-count" data-bots-selbar-count aria-live="polite">{t('botsPage.folders.selected', { count: checked.size })}</span>
+              <button
+                type="button"
+                data-bots-selbar-move
+                className={FOCUS_RING}
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setFolderMenu(null);
+                  setRowMenu({ x: rect.left, y: rect.bottom, botIds: checkedIds() });
+                }}
+              >
+                {t('botsPage.folders.moveSelected')}
+              </button>
+              <button type="button" data-bots-selbar-clear className={FOCUS_RING} onClick={clearChecked}>{t('botsPage.folders.clearSelection')}</button>
+            </div>
+          )}
+          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape clears the check marks from wherever focus is in the list */}
+          <div
+            ref={rowsRef}
+            className="wmux-bots-rows"
+            onKeyDown={(e) => {
+              if (e.key !== 'Escape' || checked.size === 0 || rowMenu || folderMenu) return;
+              e.preventDefault();
+              clearChecked();
+            }}
+          >
             {shown.length === 0 && rows.length > 0 && <p className="px-4 py-3 text-[12px] text-[var(--text-muted)]">{t('botsPage.noMatch')}</p>}
             {rows.length === 0 && !starting && <p data-bots-empty className="px-4 py-3 text-[12px] text-[var(--text-muted)]">{t('botsPage.noConversations')}</p>}
             {folderError !== null && <p data-bots-folder-error role="alert" className="px-4 py-2 text-[12px] text-[var(--text-muted)]">{t('botsPage.folders.failed', { reason: folderError })}</p>}
             {naming && (
               <div className="wmux-bots-folder-head" data-bots-folder-draft>
-                <FolderNameInput initial="" label={t('botsPage.folders.nameLabel')} testId="bots-folder-new" onCommit={(name) => createFolder(name, naming.botId)} onCancel={() => setNaming(null)} />
+                <FolderNameInput initial="" label={t('botsPage.folders.nameLabel')} testId="bots-folder-new" onCommit={(name) => createFolder(name, naming.botIds)} onCancel={() => setNaming(null)} />
               </div>
             )}
             {folderSections.map(({ folder, rows: members }) => {
               const open = !!q || !folder.collapsed;
               const listId = `bots-folder-${folder.id}`;
               return (
-                <section key={folder.id} data-bots-folder={folder.id} className="wmux-bots-folder">
+                // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a drop target for a dragged bot; the keyboard path is the row menu
+                <section key={folder.id} data-bots-folder={folder.id} className="wmux-bots-folder" {...dropTarget(folder.id)}>
                   <FolderHeader
                     folder={folder}
                     count={members.length}
@@ -1100,6 +1254,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                     listId={listId}
                     renaming={renamingId === folder.id}
                     renameLabel={t('botsPage.folders.nameLabel')}
+                    dropActive={dropOn === folder.id}
                     onToggle={() => void folderCall(() => foldersPort.setCollapsed(folder.id, open))}
                     onMenu={(x, y) => { setRowMenu(null); setFolderMenu({ x, y, folderId: folder.id }); }}
                     onRename={(name) => { setRenamingId(null); void folderCall(() => foldersPort.rename(folder.id, name)); }}
@@ -1124,16 +1279,20 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                 </section>
               );
             })}
-            {unfiledLive.map(renderEntry)}
+            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a drop target for a dragged bot; the keyboard path is the row menu */}
+            <div data-bots-unfiled className={`wmux-bots-unfiled ${dropOn === UNFILED_DROP ? 'is-drop' : ''}`} {...(foldersOn ? dropTarget(null) : {})}>
+              {unfiledLive.map(renderEntry)}
+            </div>
             {rowMenu && (
               <BotFolderMenu
                 t={t}
                 x={rowMenu.x}
                 y={rowMenu.y}
                 folders={folders}
-                currentId={folderOfBot(rowMenu.botId)}
-                onMove={(folderId) => moveBot(rowMenu.botId, folderId)}
-                onNew={() => { setNaming({ botId: rowMenu.botId }); setRowMenu(null); }}
+                currentId={rowMenu.botIds.every((id) => folderOfBot(id) === folderOfBot(rowMenu.botIds[0])) ? folderOfBot(rowMenu.botIds[0]) : null}
+                canRemove={rowMenu.botIds.some((id) => folderOfBot(id) !== null)}
+                onMove={(folderId) => moveBots(rowMenu.botIds, folderId)}
+                onNew={() => { setNaming({ botIds: rowMenu.botIds }); setRowMenu(null); }}
                 onClose={() => setRowMenu(null)}
               />
             )}

@@ -82,6 +82,15 @@ export function assignBotToFolder(raw: unknown, deps: FolderIpcDeps): BotFolderO
   return store.assign(p.botId, p.folderId as string | null);
 }
 
+export function assignBotsToFolder(raw: unknown, deps: FolderIpcDeps): BotFolderOkResult {
+  const store = deps.store();
+  if (!store) return NOT_STARTED;
+  const p = params(raw);
+  if (!Array.isArray(p.botIds)) return { ok: false, code: 'invalid', field: 'bot', message: 'Pick the bots to move.' };
+  if (p.folderId !== null && (typeof p.folderId !== 'string' || !BOT_FOLDER_ID_RE.test(p.folderId))) return NO_FOLDER;
+  return store.assignMany(p.botIds, p.folderId as string | null);
+}
+
 export function removeFolder(raw: unknown, deps: FolderIpcDeps): BotFolderOkResult {
   const store = deps.store();
   if (!store) return NOT_STARTED;
@@ -118,6 +127,7 @@ export function registerFolderIpc(getWindow: () => BrowserWindow | null, deps: F
   ipcMain.handle(BOT_FOLDER_IPC.rename, guard((req) => renameFolder(req, deps)));
   ipcMain.handle(BOT_FOLDER_IPC.setCollapsed, guard((req) => setFolderCollapsed(req, deps)));
   ipcMain.handle(BOT_FOLDER_IPC.assign, guard((req) => assignBotToFolder(req, deps)));
+  ipcMain.handle(BOT_FOLDER_IPC.assignMany, guard((req) => assignBotsToFolder(req, deps)));
   ipcMain.handle(BOT_FOLDER_IPC.remove, guard((req) => removeFolder(req, deps)));
   return () => {
     for (const c of channels) ipcMain.removeHandler(c);

@@ -787,3 +787,14 @@ export function splitFolders<R extends { c: Conversation }>(
   });
   return { unfiled, sections };
 }
+
+/** The ids from `anchor` to `id`, both included, in the on-screen `order`
+ *  (either way round). Without an anchor in `order` it is just `id`; an `id`
+ *  not in `order` gives none. Pure. */
+export function rangeBetween(order: readonly string[], anchor: string | null, id: string): string[] {
+  const to = order.indexOf(id);
+  if (to < 0) return [];
+  const from = anchor === null ? -1 : order.indexOf(anchor);
+  if (from < 0) return [id];
+  return order.slice(Math.min(from, to), Math.max(from, to) + 1);
+}

@@ -51,6 +51,38 @@ function mustFolder(r: { ok: boolean }): { id: string } {
 }
 
 describe('BotFolderStore', () => {
+  it('assignMany files a set in one change, moves bots out of other folders, and unfiles with null', () => {
+    const { store, changes } = rig();
+    const f1 = mustFolder(store.create('One')).id;
+    const f2 = mustFolder(store.create('Two')).id;
+    expect(store.assign(C, f2)).toEqual({ ok: true });
+    const before = changes();
+    expect(store.assignMany([A, B, C], f1)).toEqual({ ok: true });
+    expect(changes()).toBe(before + 1);
+    expect(store.get(f1)?.botIds).toEqual([A, B, C]);
+    expect(store.get(f2)?.botIds).toEqual([]);
+    // Nothing to change, nothing announced.
+    expect(store.assignMany([A, B], f1)).toEqual({ ok: true });
+    expect(changes()).toBe(before + 1);
+    expect(store.assignMany([A, C], null)).toEqual({ ok: true });
+    expect(changes()).toBe(before + 2);
+    expect(store.get(f1)?.botIds).toEqual([B]);
+  });
+
+  it('assignMany is all-or-none: an unknown bot, folder or malformed id changes nothing', () => {
+    const { store, changes } = rig();
+    const f1 = mustFolder(store.create('One')).id;
+    expect(store.assign(A, f1)).toEqual({ ok: true });
+    const before = changes();
+    expect(store.assignMany([B, 'bot-000000ff'], f1)).toMatchObject({ ok: false, code: 'invalid', field: 'bot' });
+    expect(store.assignMany([B, 'nope'], f1)).toMatchObject({ ok: false, code: 'invalid', field: 'bot' });
+    expect(store.assignMany([B], 'fld-ffffffff')).toMatchObject({ ok: false, code: 'not_found' });
+    expect(store.assignMany([], f1)).toMatchObject({ ok: false, code: 'invalid', field: 'bot' });
+    expect(store.assignMany(Array.from({ length: 65 }, (_, i) => `bot-${i.toString(16).padStart(8, '0')}`), f1)).toMatchObject({ ok: false, code: 'invalid' });
+    expect(changes()).toBe(before);
+    expect(store.get(f1)?.botIds).toEqual([A]);
+  });
+
   it('creates, renames and collapses a folder; ids are fld-<8hex>', () => {
     const { store, changes } = rig();
     const made = store.create('  Ship\n it  ');

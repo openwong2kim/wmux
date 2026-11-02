@@ -29,6 +29,8 @@ export interface BotFolder {
 export const BOT_FOLDER_LIMITS = {
   NAME_MAX: 60,
   FOLDERS_MAX: 200,
+  /** Bots one batch assign may name (the bot store's cap, BOTS_MAX). */
+  ASSIGN_MANY_MAX: 64,
 } as const;
 
 export const BOT_FOLDER_IPC = {
@@ -37,6 +39,7 @@ export const BOT_FOLDER_IPC = {
   rename: 'factory:folder:rename',
   setCollapsed: 'factory:folder:set-collapsed',
   assign: 'factory:folder:assign',
+  assignMany: 'factory:folder:assign-many',
   remove: 'factory:folder:remove',
 } as const;
 
@@ -58,6 +61,13 @@ export interface BotFolderCollapsedRequest {
  *  A bot filed elsewhere moves. */
 export interface BotFolderAssignRequest {
   botId: string;
+  folderId: string | null;
+}
+
+/** File several bots in a folder (or out of theirs, `folderId: null`) in one
+ *  step: all of them move or none does. */
+export interface BotFolderAssignManyRequest {
+  botIds: string[];
   folderId: string | null;
 }
 

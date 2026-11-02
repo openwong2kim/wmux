@@ -13,6 +13,10 @@ describe('botsPage.folders.* copy', () => {
   it('has keys', () => {
     expect(KEYS.length).toBeGreaterThan(0);
   });
+  it('carries the multi-select copy, with the count in the selected line', () => {
+    for (const key of ['selected', 'clearSelection', 'moveSelected', 'checkedMark']) expect(KEYS).toContain(`botsPage.folders.${key}`);
+    for (const dict of [en, ko, pl, zh] as Record<string, string>[]) expect(dict['botsPage.folders.selected']).toContain('{count}');
+  });
   for (const [name, dict] of Object.entries({ ko, pl, zh }) as [string, Record<string, string>][]) {
     it(`${name}: every key, same placeholders as en`, () => {
       for (const key of KEYS) {

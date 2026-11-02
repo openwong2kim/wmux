@@ -1622,6 +1622,8 @@ const electronAPI = {
         ipcRenderer.invoke(BOT_FOLDER_IPC.setCollapsed, { id, collapsed }) as Promise<import('../shared/botFolder').BotFolderResult>,
       assign: (botId: string, folderId: string | null) =>
         ipcRenderer.invoke(BOT_FOLDER_IPC.assign, { botId, folderId }) as Promise<import('../shared/botFolder').BotFolderOkResult>,
+      assignMany: (botIds: string[], folderId: string | null) =>
+        ipcRenderer.invoke(BOT_FOLDER_IPC.assignMany, { botIds, folderId }) as Promise<import('../shared/botFolder').BotFolderOkResult>,
       remove: (id: string) =>
         ipcRenderer.invoke(BOT_FOLDER_IPC.remove, { id }) as Promise<import('../shared/botFolder').BotFolderOkResult>,
     },

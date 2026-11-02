@@ -153,22 +153,24 @@ export class BotFolderStore {
     if (folderId !== null && !this.folders.some((x) => x.id === folderId)) return notFound;
     const known = this.opts.bots?.() ?? null;
     if (folderId !== null && known && !known.includes(botId)) return invalid('bot', 'That bot no longer exists.');
-    const at = this.now();
-    let touched = false;
-    this.folders = this.folders.map((f) => {
-      const has = f.botIds.includes(botId);
-      if (f.id === folderId) {
-        if (has) return f;
-        touched = true;
-        return { ...f, botIds: [...f.botIds, botId], updatedAt: at };
-      }
-      if (has) {
-        touched = true;
-        return { ...f, botIds: f.botIds.filter((b) => b !== botId), updatedAt: at };
-      }
-      return f;
-    });
-    if (touched) this.changed();
+    if (this.move([botId], folderId)) this.changed();
+    return { ok: true };
+  }
+
+  /** `assign` for several bots at once: every bot and the folder are checked
+   *  first, so either all of them move or none does, and the change is
+   *  announced once. */
+  assignMany(botIds: readonly string[], folderId: string | null): BotFolderStoreOk {
+    const why = this.writeRefusal();
+    if (why) return { ok: false, code: 'store_unreadable', message: why };
+    if (!Array.isArray(botIds) || botIds.length === 0 || botIds.length > BOT_FOLDER_LIMITS.ASSIGN_MANY_MAX) {
+      return invalid('bot', 'Pick the bots to move.');
+    }
+    if (!botIds.every((b) => typeof b === 'string' && BOT_ID_RE.test(b))) return invalid('bot', 'Pick a bot.');
+    if (folderId !== null && !this.folders.some((x) => x.id === folderId)) return notFound;
+    const known = this.opts.bots?.() ?? null;
+    if (folderId !== null && known && !botIds.every((b) => known.includes(b))) return invalid('bot', 'That bot no longer exists.');
+    if (this.move([...new Set(botIds)], folderId)) this.changed();
     return { ok: true };
   }
 
@@ -187,6 +189,25 @@ export class BotFolderStore {
     // An unreadable file is never written over, flush included.
     if (this.unreadable) return Promise.resolve();
     return this.persister.schedule();
+  }
+
+  /** Files `ids` in `folderId` (null: nowhere), taking each out of any other
+   *  folder. True when anything changed. Does not notify. */
+  private move(ids: readonly string[], folderId: string | null): boolean {
+    const at = this.now();
+    let touched = false;
+    this.folders = this.folders.map((f) => {
+      if (f.id === folderId) {
+        const add = ids.filter((b) => !f.botIds.includes(b));
+        if (add.length === 0) return f;
+        touched = true;
+        return { ...f, botIds: [...f.botIds, ...add], updatedAt: at };
+      }
+      if (!ids.some((b) => f.botIds.includes(b))) return f;
+      touched = true;
+      return { ...f, botIds: f.botIds.filter((b) => !ids.includes(b)), updatedAt: at };
+    });
+    return touched;
   }
 
   private replace(next: BotFolder): BotFolderStoreResult {

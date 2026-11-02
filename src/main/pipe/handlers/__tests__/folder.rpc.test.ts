@@ -18,6 +18,7 @@ import { BotFolderStore, botFoldersFilePath, getBotFolderStore } from '../../../
 import { BOT_FOLDER_IPC } from '../../../../shared/botFolder';
 import {
   assignBotToFolder,
+  assignBotsToFolder,
   createFolder,
   createFolderModule,
   listFolders,
@@ -76,6 +77,20 @@ describe('folder IPC functions', () => {
     expect(removeFolder({ id }, deps)).toMatchObject({ ok: false, code: 'not_found' });
   });
 
+  it('assignBotsToFolder files a batch and refuses a malformed request', () => {
+    const { deps } = rig();
+    const made = createFolder({ name: 'Ship' }, deps);
+    if (!made.ok) throw new Error('refused');
+    const id = made.folder.id;
+    expect(assignBotsToFolder({ botIds: [A, B], folderId: id }, deps)).toEqual({ ok: true });
+    expect(listFolders({}, deps)).toMatchObject({ ok: true, folders: [{ id, botIds: [A, B] }] });
+    expect(assignBotsToFolder({ botIds: [A, B], folderId: null }, deps)).toEqual({ ok: true });
+    expect(assignBotsToFolder({ botIds: 'x', folderId: id }, deps)).toMatchObject({ ok: false, code: 'invalid', field: 'bot' });
+    expect(assignBotsToFolder({ botIds: [A, 7], folderId: id }, deps)).toMatchObject({ ok: false, code: 'invalid', field: 'bot' });
+    expect(assignBotsToFolder({ botIds: [A] }, deps)).toMatchObject({ ok: false, code: 'invalid', field: 'folder' });
+    expect(assignBotsToFolder({ botIds: [A], folderId: 'fld-ffffffff' }, deps)).toMatchObject({ ok: false, code: 'not_found' });
+  });
+
   it('every call answers not_started without a store', () => {
     const deps = { store: () => null };
     for (const r of [
@@ -84,6 +99,7 @@ describe('folder IPC functions', () => {
       renameFolder({}, deps),
       setFolderCollapsed({}, deps),
       assignBotToFolder({}, deps),
+      assignBotsToFolder({}, deps),
       removeFolder({}, deps),
     ]) expect(r).toMatchObject({ ok: false, code: 'not_started' });
   });
@@ -121,6 +137,13 @@ describe('folder IPC at boot (before the factory starts)', () => {
       send.mockClear();
       expect(await handlerFor(BOT_FOLDER_IPC.create)({}, { name: 'Ship' })).toMatchObject({ ok: true, folder: { name: 'Ship' } });
       expect(send).toHaveBeenCalledWith(expect.any(String), { type: 'folders-changed' });
+
+      // A batch pushes one folders-changed, not one per bot.
+      const id = (await handlerFor(BOT_FOLDER_IPC.create)({}, { name: 'Two' }) as { folder: { id: string } }).folder.id;
+      send.mockClear();
+      expect(await handlerFor(BOT_FOLDER_IPC.assignMany)({}, { botIds: [A, B], folderId: id })).toEqual({ ok: true });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(send).toHaveBeenCalledWith(expect.any(String), { type: 'folders-changed' });
     } finally {
       await getBotFolderStore()?.flush().catch(() => undefined);
       await mod.dispose?.();
@@ -134,7 +157,7 @@ describe('folder IPC at boot (before the factory starts)', () => {
       await mod.start?.();
       sender.allowed = false;
       for (const channel of Object.values(BOT_FOLDER_IPC)) {
-        expect(await handlerFor(channel)({}, { name: 'x', id: 'fld-00000001', botId: A, folderId: null, collapsed: true })).toMatchObject({ ok: false, code: 'not_authorized' });
+        expect(await handlerFor(channel)({}, { name: 'x', id: 'fld-00000001', botId: A, botIds: [A], folderId: null, collapsed: true })).toMatchObject({ ok: false, code: 'not_authorized' });
       }
       expect(getBotFolderStore()?.list()).toEqual([]);
     } finally {

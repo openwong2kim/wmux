@@ -449,6 +449,22 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   commits; 60 characters) and **Delete folder** (InlineConfirm; its bots go
   back to the list, none is deleted). "+" also offers New folder. Folders are
   the owner's alone: a bot never sees or changes one.
+  **Several at once (owner decision 2026-11-02):** Ctrl-click (⌘-click on
+  macOS) checks or unchecks a live bot's row and Shift-click checks the range
+  from the last checked row, over the rows on screen (open folders, then the
+  unfiled ones); neither opens the chat, and a plain click still does and
+  leaves the checks. A checked row carries a check mark after its title and
+  never the `--selection` pill (one selected thing per list: the open
+  conversation). While anything is checked a slim text bar above the rows
+  reads "N selected", **Move to folder…** and **Clear** (no fill, no rule);
+  Escape clears too. The row menu acts on the whole checked set when opened on
+  a checked row. **Dragging** (native, as the Sidebar's workspace rows): a live
+  bot's row drags, a checked row drags the whole checked set; the dragged rows
+  dim, a folder (header or body) under the pointer takes `--hover-fill` on its
+  header as the drop mark, and dropping files them; dropping on the unfiled
+  rows (tinted `--hover-fill` likewise) takes them out of their folder. A drop
+  that would change nothing is not offered, and a drag from outside the list is
+  never accepted. The menu stays the keyboard path.
 - **Workers in the list (owner decision 2026-10-14):** a bot's workers nest
   under its row the way the Sidebar nests a workspace's fan-out tasks: an
   indented row each on a `--stroke` guide under the avatar — the Sidebar's
@@ -2389,6 +2405,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
 | 2026-11-01 | Owner-approved (handoff mockup, boards A and C): at 90% of the 5-hour window (the pane's own statusline reading) the usage chip shows the share and the reset and opens the usage-limit card with the handoffs; nothing switches by itself. After a handoff at or near the limit, the tab it left offers to bring the work back once the limit resets, with a note from the other agent's transcript typed in, never sent | A handoff chosen before work stops loses nothing; bringing the work back closes the loop the owner otherwise did by hand, reading the other tab to tell the first agent what changed |
 | 2026-11-01 | Owner decision: Bots list folders. The owner can file bots in named, collapsible folders (a folder section header per folder, a bot's right-click or Shift+F10 menu with Move to folder, "+" › New folder, Rename inline and Delete asked in place). Folders are the one exception to "nothing is pinned" in the Bots list: they are grouped above the unfiled conversations, which still follow latest activity; inside a folder rows keep that order and folders follow their newest member. Archive is unchanged and sits at the foot under the folders and the unfiled rows; a folder never holds a removed bot or a group chat. The header is the Sidebar's settled-group header (disclosure chevron right → down, name, count; no fill or rule; no uppercase or tracking; no count at zero), colour carries no state | A long list of bots from several workspaces had no way to be kept in order but by activity; the owner asked to group them by hand. The Sidebar already has a collapsible group header, so the list reuses its grammar instead of inventing a new control, and the one place the list stops being purely by activity is stated here |
+| 2026-11-02 | Owner decision: Bots list folders take drag and drop and multi-select. Ctrl/⌘-click checks rows and Shift-click checks the range; a checked row shows a check mark, not the selection pill, and the open conversation is unchanged. A "N selected · Move to folder… · Clear" text bar shows while anything is checked. A bot (or the whole checked set) drags onto a folder, which lights its header with `--hover-fill`, or onto the unfiled rows to leave its folder. No new colour, no fill-and-rule pairing | The menu filed one bot at a time; moving a handful meant repeating it. A check mark keeps "selected for moving" apart from "open", the one selection a list has, and the drop mark reuses the hover fill the header already takes |
 
 ### Desktop conversation view
 

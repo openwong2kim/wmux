@@ -60,13 +60,15 @@ export function FolderNameInput({ initial, label, testId, onCommit, onCancel }: 
 /** A folder's section header: a disclosure button (chevron right, turned down
  *  while open), the name and the count of its bots (none drawn at zero).
  *  Right-click or Shift+F10 opens the folder's menu. */
-export function FolderHeader({ folder, count, open, listId, renaming, renameLabel, onToggle, onMenu, onRename, onCancelRename }: {
+export function FolderHeader({ folder, count, open, listId, renaming, renameLabel, dropActive = false, onToggle, onMenu, onRename, onCancelRename }: {
   folder: BotFolder;
   count: number;
   open: boolean;
   listId: string;
   renaming: boolean;
   renameLabel: string;
+  /** A dragged bot is over this folder. */
+  dropActive?: boolean;
   onToggle: () => void;
   onMenu: (x: number, y: number) => void;
   onRename: (name: string) => void;
@@ -103,7 +105,7 @@ export function FolderHeader({ folder, count, open, listId, renaming, renameLabe
             onMenu(r.left + 24, r.bottom - 4);
           }
         }}
-        className={`wmux-bots-folder-head ${FOCUS_RING}`}
+        className={`wmux-bots-folder-head ${dropActive ? 'is-drop' : ''} ${FOCUS_RING}`}
       >
         {chevron}
         <span className="min-w-0 flex-1 truncate text-left">{folder.name}</span>
@@ -153,13 +155,15 @@ export function BotsContextMenu({ x, y, label, onClose, children }: {
 }
 
 /** A bot row's menu: Move to folder (each folder, New folder…) and Remove
- *  from folder. */
-export function BotFolderMenu({ t, x, y, folders, currentId, onMove, onNew, onClose }: {
+ *  from folder. It acts on one bot, or on every checked bot: `currentId` is
+ *  the folder they all share (else null) and `canRemove` says any is filed. */
+export function BotFolderMenu({ t, x, y, folders, currentId, canRemove, onMove, onNew, onClose }: {
   t: T;
   x: number;
   y: number;
   folders: readonly BotFolder[];
   currentId: string | null;
+  canRemove: boolean;
   onMove: (folderId: string | null) => void;
   onNew: () => void;
   onClose: () => void;
@@ -184,7 +188,7 @@ export function BotFolderMenu({ t, x, y, folders, currentId, onMove, onNew, onCl
       <button type="button" role="menuitem" autoFocus={folders.length === 0} data-bots-move-new className={FOLDER_MENU_ITEM} onClick={onNew}>
         {t('botsPage.folders.newEllipsis')}
       </button>
-      {currentId && (
+      {canRemove && (
         <button type="button" role="menuitem" data-bots-move-out className={FOLDER_MENU_ITEM} onClick={() => onMove(null)}>
           {t('botsPage.folders.remove')}
         </button>

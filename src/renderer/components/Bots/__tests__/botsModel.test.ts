@@ -10,7 +10,7 @@ import { timelineKey, ALL_THREADS } from '../../../stores/slices/roomSlice';
 import type { BotGroup } from '../../../../shared/botGroup';
 import type { BotFolder } from '../../../../shared/botFolder';
 import {
-  splitFolders, awaitsApproval, botConversationCards, botWorkScope, botWorkerTree, botWorkers, buildBots, botsNeedsYou, botsRooms, conversationCards, groupViewCards, isBotSystemCard,
+  splitFolders, rangeBetween, awaitsApproval, botConversationCards, botWorkScope, botWorkerTree, botWorkers, buildBots, botsNeedsYou, botsRooms, conversationCards, groupViewCards, isBotSystemCard,
   livePlanIds, openApprovalsBy, openQuestionsBy, roomCardsByWorkspace, roomViewCards, taskBubbles,
   type BotsInput, type Conversation,
 } from '../botsModel';
@@ -650,5 +650,19 @@ describe('splitFolders', () => {
   it('while searching, a folder without a matching row is left out', () => {
     const { sections } = splitFolders([bot('b1')], [fld('f1', 'A', ['b1']), fld('f2', 'B', ['b9']), fld('f3', 'C', [])], true);
     expect(sections.map((s) => s.folder.id)).toEqual(['f1']);
+  });
+});
+
+describe('rangeBetween', () => {
+  const order = ['a', 'b', 'c', 'd', 'e'];
+  it('is inclusive and works in either direction', () => {
+    expect(rangeBetween(order, 'b', 'd')).toEqual(['b', 'c', 'd']);
+    expect(rangeBetween(order, 'd', 'b')).toEqual(['b', 'c', 'd']);
+    expect(rangeBetween(order, 'c', 'c')).toEqual(['c']);
+  });
+  it('without a usable anchor it is the clicked id; an unknown id gives none', () => {
+    expect(rangeBetween(order, null, 'c')).toEqual(['c']);
+    expect(rangeBetween(order, 'zz', 'c')).toEqual(['c']);
+    expect(rangeBetween(order, 'a', 'zz')).toEqual([]);
   });
 });

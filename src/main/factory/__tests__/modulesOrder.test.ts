@@ -9,5 +9,7 @@ describe('factory module order', () => {
     const { registeredFactoryModules } = await import('../factoryHost');
     await import('../modules');
     expect(registeredFactoryModules()).toEqual(['secrets', 'connectors', 'facts', 'bot-runtime', 'triggerEngine', 'wiring', 'wakeTaint', 'rooms', 'groups', 'bot-folders', 'handoffs', 'roles', 'mergeLane', 'acts', 'approvals', 'skills', 'routines', 'worker-resume', 'worker-message', 'workflows', 'memory', 'bot-commands']);
-  });
+  // The dynamic import loads every factory module; that takes about 5 s on a
+  // cold transform, the same as the default timeout, so give it room.
+  }, 30_000);
 });

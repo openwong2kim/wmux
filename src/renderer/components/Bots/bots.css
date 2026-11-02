@@ -167,6 +167,27 @@ button.wmux-bots-folder-head:hover { background: var(--hover-fill); color: var(-
   height: 12px;
   transition: transform 120ms;
 }
+.wmux-bots-folder-head.is-drop { background: var(--hover-fill); color: var(--text-main); }
+/* The unfiled rows: a drop here takes a dragged bot out of its folder. The
+   tint is the same --hover-fill a folder header takes. */
+.wmux-bots-unfiled { min-height: 24px; border-radius: 10px; }
+.wmux-bots-unfiled.is-drop { background: var(--hover-fill); }
+/* A checked row (multi-select for moving) carries a check mark, never the
+   --selection pill: one selection per list is the open conversation. */
+.wmux-bots-row-check { display: inline-flex; flex: none; color: var(--text-sub); }
+/* The bar while anything is checked: text only, no fill and no rule. */
+.wmux-bots-selbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 12px 4px;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+.wmux-bots-selbar-count { flex: 1; min-width: 0; }
+.wmux-bots-selbar button { padding: 2px 8px; border-radius: 6px; color: var(--text-main); }
+.wmux-bots-selbar button:hover { background: var(--hover-fill); }
 .wmux-bots-folder-count { font-weight: 400; color: var(--text-muted); }
 .wmux-bots-folder-input {
   flex: 1;

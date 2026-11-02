@@ -13,6 +13,7 @@ export interface BotFolderPort {
   rename(id: string, name: string): Promise<BotFolderResult>;
   setCollapsed(id: string, collapsed: boolean): Promise<BotFolderResult>;
   assign(botId: string, folderId: string | null): Promise<BotFolderOkResult>;
+  assignMany(botIds: string[], folderId: string | null): Promise<BotFolderOkResult>;
   remove(id: string): Promise<BotFolderOkResult>;
 }
 
@@ -22,6 +23,7 @@ interface Bridge {
   rename?: (id: string, name: string) => Promise<BotFolderResult>;
   setCollapsed?: (id: string, collapsed: boolean) => Promise<BotFolderResult>;
   assign?: (botId: string, folderId: string | null) => Promise<BotFolderOkResult>;
+  assignMany?: (botIds: string[], folderId: string | null) => Promise<BotFolderOkResult>;
   remove?: (id: string) => Promise<BotFolderOkResult>;
 }
 
@@ -37,6 +39,7 @@ function bridgePort(): BotFolderPort {
     rename: (id, name) => b?.rename?.(id, name) ?? Promise.resolve(UNAVAILABLE),
     setCollapsed: (id, collapsed) => b?.setCollapsed?.(id, collapsed) ?? Promise.resolve(UNAVAILABLE),
     assign: (botId, folderId) => b?.assign?.(botId, folderId) ?? Promise.resolve(UNAVAILABLE),
+    assignMany: (botIds, folderId) => b?.assignMany?.(botIds, folderId) ?? Promise.resolve(UNAVAILABLE),
     remove: (id) => b?.remove?.(id) ?? Promise.resolve(UNAVAILABLE),
   };
 }
