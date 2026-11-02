@@ -17,12 +17,13 @@ const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v 
  * The link for a task the renderer just created, from its `a2a.task.send`
  * reply ({ ok, taskId, toWorkspaceId, task }). Read synchronously: the caller
  * strips `task` from the reply right after. Null when the reply is not a new
- * task. A send from a commander brain is a Moa delegation; anything else is
+ * task. A send that picked a To hand out item (`handOutId`) is that item's
+ * work; a send from a commander brain is a Moa delegation; anything else is
  * manual.
  */
 export function workLinkFromSentTask(
   reply: unknown,
-  opts: { fromCommander: boolean; workLinkId?: string },
+  opts: { fromCommander: boolean; workLinkId?: string; handOutId?: string },
 ): WorkLinkUpsert | null {
   if (!isRecord(reply) || reply.ok !== true || !isRecord(reply.task)) return null;
   const task = reply.task;
@@ -39,7 +40,8 @@ export function workLinkFromSentTask(
   const title = str(meta.title);
   return {
     ...(opts.workLinkId ? { id: opts.workLinkId } : {}),
-    origin: opts.fromCommander ? 'moa' : 'manual',
+    origin: opts.handOutId ? 'hand-out' : opts.fromCommander ? 'moa' : 'manual',
+    ...(opts.handOutId ? { handOutId: opts.handOutId } : {}),
     a2aTaskId: taskId,
     a2aState: stateOfTask(task) ?? 'submitted',
     owner: { workspaceId: ownerWs, ...(toPane ? { paneId: toPane } : {}) },
@@ -62,10 +64,13 @@ export function workLinkFromRemoteSend(input: {
   title: string;
   message: string;
   fromCommander: boolean;
+  /** The To hand out item the send picked. */
+  handOutId?: string;
 }): WorkLinkUpsert {
   const title = input.title || input.message.slice(0, 100);
   return {
-    origin: input.fromCommander ? 'moa' : 'manual',
+    origin: input.handOutId ? 'hand-out' : input.fromCommander ? 'moa' : 'manual',
+    ...(input.handOutId ? { handOutId: input.handOutId } : {}),
     a2aTaskId: input.taskId,
     a2aState: 'submitted',
     owner: { workspaceId: remoteWorkspaceId(input.linkId), ...(input.alias ? { name: input.alias } : {}) },
