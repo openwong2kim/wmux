@@ -232,16 +232,32 @@ describe('daemon runtime staging', () => {
       return dir;
     };
 
-    it("is removed on the next stage run; this process's own partial is left", async () => {
+    it('is removed on the next stage run, also one named after this pid for another build (a reused pid)', async () => {
       const earlier = partialOf(process.pid + 1);
       const longerPid = partialOf(Number(`${process.pid}1`));
-      const own = partialOf(process.pid);
+      const reusedPid = partialOf(process.pid);
       const staged = await stage();
       expect(staged).not.toBeNull();
       expect(fs.existsSync(earlier)).toBe(false);
       expect(fs.existsSync(longerPid)).toBe(false);
-      expect(fs.existsSync(own)).toBe(true);
+      expect(fs.existsSync(reusedPid)).toBe(false);
       expect(stagedDaemonScripts(stageRoot)).toEqual([staged!.script]);
+    });
+
+    it("leaves this process's partial of the build it is copying alone while the copy runs", async () => {
+      const own = `${path.join(stageRoot, stageKey('4.13.0', fs.statSync(path.join(appDir, 'resources', 'daemon-bundle', 'index.js')).mtimeMs))}.partial-${process.pid}`;
+      let seenDuringCopy = false;
+      const copy = vi.fn(async (from: string, to: string) => {
+        expect(to).toBe(own);
+        await fs.promises.cp(from, to, { recursive: true });
+        await deliberateSleep(50, 'latency inside the copy stub: the prune, which runs beside the copy, gets its turn before the rename');
+        seenDuringCopy = fs.existsSync(path.join(to, 'wmux.exe'));
+      });
+      const staged = await stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0', copy });
+      expect(staged).not.toBeNull();
+      expect(seenDuringCopy).toBe(true);
+      expect(fs.existsSync(own)).toBe(false);
+      expect(fs.readFileSync(staged!.script, 'utf8')).toBe('daemon');
     });
   });
 });

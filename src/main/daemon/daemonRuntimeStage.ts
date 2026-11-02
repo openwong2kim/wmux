@@ -46,8 +46,12 @@ export function treeFsFor(electronVersion: string | undefined, loadOriginalFs: (
   return electronVersion ? (loadOriginalFs() as TreeFs) : fs;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports -- Electron's built-in module; external in vite.main.config.ts
-const defaultTreeFs = treeFsFor(process.versions.electron, () => require('original-fs'));
+let defaultTreeFs: TreeFs | undefined;
+/** Resolved on first use: staging only ever runs on a packaged Windows install. */
+function lazyTreeFs(): TreeFs {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- Electron's built-in module; external in vite.main.config.ts
+  return (defaultTreeFs ??= treeFsFor(process.versions.electron, () => require('original-fs')));
+}
 
 export function isSquirrelInstall(appDir: string): boolean {
   return fs.existsSync(path.join(appDir, '..', 'Update.exe'));
@@ -63,7 +67,7 @@ export function stagedDaemonScripts(stageRoot: string): string[] {
   let names: string[];
   try { names = fs.readdirSync(stageRoot); } catch { return []; }
   return names
-    .filter((n) => !n.includes(PARTIAL_INFIX) && !n.includes('.trash-'))
+    .filter((n) => !n.includes(PARTIAL_INFIX))
     .map((n) => path.join(stageRoot, n, ...SCRIPT))
     .filter((p) => fs.existsSync(p));
 }
@@ -99,7 +103,7 @@ export async function stageDaemonRuntime(opts: {
   /** Test seam: the fs for the tree (treeFsFor). original-fs under Electron. */
   treeFs?: TreeFs;
 }): Promise<StagedDaemon | null> {
-  const treeFs = opts.treeFs ?? defaultTreeFs;
+  const treeFs = opts.treeFs ?? lazyTreeFs();
   const warn = opts.warn ?? (() => { /* silent */ });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -169,18 +173,19 @@ async function copyStage(
  * root sits in the suffixed wmux dir, and the app holds the single-instance
  * lock for the matching suffixed userData until it exits. So a partial named
  * after any other pid was left by a process that has exited part way (a crash,
- * a kill), and nothing will finish it. It goes here; this process's own
- * partial is left to copyStage.
+ * a kill), and nothing will finish it. So is one named after this pid for
+ * another build (Windows reuses pids). It goes here; this process's partial of
+ * the build it copies now is left to copyStage.
  */
 async function pruneStages(treeFs: TreeFs, stageRoot: string, keep: string, exeName: string): Promise<void> {
   let names: string[];
   try { names = await treeFs.promises.readdir(stageRoot); } catch { return; }
-  const ownPartial = `${PARTIAL_INFIX}${process.pid}`;
+  const ownPartial = `${keep}${PARTIAL_INFIX}${process.pid}`;
   for (const name of names) {
     if (name === keep) continue;
     const full = path.join(stageRoot, name);
     if (name.includes(PARTIAL_INFIX)) {
-      if (name.endsWith(ownPartial)) continue;
+      if (name === ownPartial) continue;
       try { await treeFs.promises.rm(full, { recursive: true, force: true }); } catch { /* retried on the next spawn */ }
       continue;
     }
