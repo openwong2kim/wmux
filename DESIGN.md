@@ -1652,6 +1652,49 @@ leaves the page.
   mission and standing orders, who it reports to, its worktree and branch,
   and for the CEO the other seats with their branches and the brief a task
   to them needs. The board is not opened for it; the row menu opens it.
+  - **This folder's company** (owner decision 2026-11-02, insight 170):
+    when the active workspace's folder keeps a company in its wmux.json, the
+    + menu lists it first under Company, before the built-ins: its name, a
+    muted `N seats` on the right, the muted line "This folder's company, from
+    wmux.json in `…/a/b`" and, while it waits for a review on this PC,
+    "Review it before it starts". Opening the menu reads the file again. A
+    pick never makes the company: while it waits for a review it opens the
+    review, else the New company dialog filled from the file (`New company:
+    <name>`). A company the file holds but cannot be read is a muted row
+    that does nothing and says to fix it in wmux.json. The New company
+    dialog's footer holds, on the left, the quiet underlined text button
+    **Save as this folder's company** (never a second primary), enabled once
+    a folder is chosen and the seats are valid. It reads the folder's
+    wmux.json and confirms in the body, in a hairline box: where it saves,
+    what the file holds (the name, mission, standing orders, the CEO, each
+    seat with what it owns and its agent), what it never holds (launch
+    flags, environment, tokens, folders, seats on other PCs), that a commit
+    shares it and anyone who opens the folder reviews it before it starts,
+    and which company it replaces; Cancel and Save, both secondary. A file
+    in another folder, one holding settings not approved here, a folder
+    outside a git repository or a file that cannot be read says why in
+    place of Save. A save leaves the muted line "Saved to …/wmux.json." and
+    the dialog open; Make company works as before. The review (Dialog
+    anatomy) is titled `Review <name> before it starts` and names the file,
+    then the warning notice (approving covers what is shown and the rest of
+    the file, a changed file is asked about again, each agent reads the
+    mission and standing orders as its first message; "You denied this file
+    on this PC." or "This file changed since it was approved." when so), the
+    seats as a table (Seat in bold with a muted CEO tag, Owns, Agent,
+    Starts: the launch stem in mono or "plain shell", Works in: "this
+    folder" or "own worktree"), the Mission and Standing orders verbatim
+    under a `--line` left rule in `--text-sub`, and, while the file is not
+    trusted, **Also in this file** ("approving trusts them too") with its
+    commands, layout panes, setup command and copy list verbatim. An agent
+    not installed here is named under the table and keeps the primary off.
+    Footer: Deny on the left (not when already denied), Not now, and
+    **Approve and make company**, the one primary: it approves the bytes
+    shown with the company reviewed and makes the company in the file's
+    folder only while the file still holds those bytes; otherwise the dialog
+    shows the file as it is now with "wmux.json changed. Review it again."
+    The wmux.json dialog lists the company in a Company group, with its seat
+    count and "Approved to start from the + menu" or "Reviewed on its first
+    start from the + menu"; its Trust does not approve the company.
 - **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
   `treeitem`) with one Tab stop — the row the keyboard was last on, else the
   selected row, else the first. ↑ ↓ Home End move between rows in screen
@@ -2402,6 +2445,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-02 | To hand out (owner decision 2026-11-02, insight 163): a main-process list of work nobody has been given yet, the first column of Fleet's board and a quiet folded section after Idle in its list, with an add form, item cards and a Hand out… popover that sends an item to an agent pane on this PC, a new worktree or a company's CEO; the item leaves the list once the agent has it, and an undelivered send puts it back | The next things to hand out lived outside wmux; keeping them beside the agents that take them, and picking through the existing send paths, closes that loop without a second queue or a new attention signal |
 | 2026-11-02 | To hand out on the Company board (owner decision 2026-11-02, insight 163): the board shows the open items for the company's folder between Waiting on you and Seats, each with Fleet's Hand out… (the company offered as its CEO), Add a task… with the company's folder first, and "From To hand out" on a picked job; the section's place is provisional until the board's direction is chosen | A company's next work belongs where its CEO and seats are watched; the same list, popover and add form keep one way of handing out work, and the CEO's brief teaches the hand_out tool so the CEO picks from the same list |
 | 2026-11-02 | A folder's company (owner decision 2026-11-02, insight 170): a company is kept in the folder's wmux.json under `company`, holding only its name, mission, standing orders, the CEO seat, and each seat's name, what it owns and its agent's registry slug; never a launch line, flag, environment, token, path or a seat on another PC. A refused company drops alone and is reported. It starts only from a trust grant that showed it (the review, or a save from the New company dialog, which trusts the bytes it writes); a grant that did not show it, from the wmux.json dialog or an older wmux, does not start it, and nothing starts it on its own | A company tuned in the New company dialog was lost once the dialog closed. The repository is where a team already shares its wmux setup, and the existing per-file trust keeps a checked-in company from starting before its seats and their first prompts are reviewed on this PC |
+| 2026-11-02 | This folder's company in the app (owner decision 2026-11-02, insight 170, mockup option A): the + menu lists the active workspace's folder company first under Company; a pick opens its review while it waits for one, else the New company dialog filled from it, and the menu never makes it. The New company dialog saves its company to the folder's wmux.json from a quiet footer text button through an inline confirm, and stays open. The review shows each seat with its agent, what wmux starts and where it works, the mission and standing orders verbatim and, for a file not trusted here, the rest of it; **Approve and make company** is its one primary and makes the company only from the bytes it showed | A folder's company is made where the other companies are made, beside the presets. Reviewing it on its first start, from the copy of the file the approval covers, means every agent's first message is read on this PC before that agent runs. Option B, the company inside the wmux.json dialog, kept it away from the + menu where a company is made |
 
 ### Desktop conversation view
 
