@@ -97,7 +97,7 @@ export interface DaemonLauncherDeps {
    * run the daemon from (main/daemon/daemonRuntimeStage.ts), so a reinstall
    * does not kill it. Null: run it from the install.
    */
-  stageDaemonRuntime?(): { script: string; nodePath: string; dir: string } | null;
+  stageDaemonRuntime?(): Promise<{ script: string; nodePath: string; dir: string } | null>;
   /**
    * Diagnostic logging for the spawn/reuse/recovery chain — candidate paths
    * tried, PID found, recovery decisions. Omit to get the historical
@@ -858,7 +858,10 @@ export function daemonProcessArgs(daemonScript: string): string[] {
   return [...DAEMON_V8_FLAGS, daemonScript];
 }
 
-function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
+function spawnDaemon(
+  deps: DaemonLauncherDeps,
+  staged: { script: string; nodePath: string; dir: string } | null,
+): Promise<number> {
   deps.markBoot?.('daemon-spawn-start');
   return new Promise((resolve, reject) => {
     // Set once pollDaemonReady starts below. The 'error' handler needs this
@@ -874,7 +877,6 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     const candidates = deps.resolveDaemonScriptCandidates();
     (deps.log ?? console.log)(`[launcher] Daemon script candidates:`, candidates);
     (deps.log ?? console.log)(`[launcher] Exists:`, candidates.map(c => fs.existsSync(c)));
-    const staged = deps.stageDaemonRuntime?.() ?? null;
     const daemonScript = staged?.script ?? candidates.find(c => fs.existsSync(c));
     if (!daemonScript) {
       reject(new Error(`Daemon script not found in: ${candidates.join(', ')}. Run 'npm run build:daemon' first.`));
@@ -1726,22 +1728,19 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
 
   // 3. Clean stale files before spawning — prevents new daemon from seeing
   //    zombie lock/pipe state left by a crashed predecessor.
-  (deps.log ?? console.log)('[launcher] No running daemon found. Cleaning stale files...');
-  // 'daemon-booting' (#546) joins the list: a marker left by a daemon that
-  // crashed mid-recovery must not outlive it into the fresh spawn.
   let cleanupCandidates: string[] = [];
   try { cleanupCandidates = deps.resolveDaemonScriptCandidates(); } catch { /* shape-only */ }
-  const liveOwner = liveDaemonFileOwner(
+  const findLiveOwner = (): number | null => liveDaemonFileOwner(
     wmuxDir,
     existingPid,
     staleCleanupOwnerFilter(process.platform, cleanupCandidates),
   );
-  if (liveOwner !== null) {
-    // A live process holds these files (the daemon's pid file was lost, or
-    // another starter's daemon appeared after our judgment). Keep them, point daemon.pid
-    // at it, and run detection again: the reuse / boot-wait / verified-kill
-    // path above then judges that pid like any other, and this branch cannot
-    // repeat for it (it becomes the judged pid).
+  // A live process holds these files (the daemon's pid file was lost, or
+  // another starter's daemon appeared after our judgment). Keep them, point daemon.pid
+  // at it, and run detection again: the reuse / boot-wait / verified-kill
+  // path above then judges that pid like any other, and this branch cannot
+  // repeat for it (it becomes the judged pid).
+  const reuseLiveOwner = (liveOwner: number): Promise<DaemonInfo> => {
     const warn = deps.warn ?? console.warn;
     warn(`[launcher] daemon files name live PID ${liveOwner} — not cleaning them`);
     // The recursion judges whatever daemon.pid names, so it must name the owner.
@@ -1749,7 +1748,23 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
       throw new Error(`[launcher] daemon files name live PID ${liveOwner}, but ${pidFile} could not be updated to it`);
     }
     return ensureDaemonUnlocked(deps);
+  };
+  // Checked before the copy below, so an already-live daemon is reused
+  // without waiting for it.
+  let liveOwner = findLiveOwner();
+  if (liveOwner !== null) return reuseLiveOwner(liveOwner);
+
+  // The first spawn of a build waits here for its copy outside the install.
+  // The owner check runs again after it, so a daemon that another starter
+  // brought up meanwhile is found and reused.
+  const staged = (await deps.stageDaemonRuntime?.()) ?? null;
+  if (deps.stageDaemonRuntime) liveOwner = findLiveOwner();
+  if (liveOwner !== null) {
+    return reuseLiveOwner(liveOwner);
   } else {
+    (deps.log ?? console.log)('[launcher] No running daemon found. Cleaning stale files...');
+    // 'daemon-booting' (#546) joins the list: a marker left by a daemon that
+    // crashed mid-recovery must not outlive it into the fresh spawn.
     const staleFiles = ['daemon.lock', 'daemon.pid', 'daemon-pipe', 'daemon-booting'];
     for (const name of staleFiles) {
       try { fs.unlinkSync(path.join(wmuxDir, name)); } catch { /* ignore */ }
@@ -1758,7 +1773,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
 
   let pid: number;
   try {
-    pid = await spawnDaemon(deps);
+    pid = await spawnDaemon(deps, staged);
   } catch (err) {
     if ((err as NodeJS.ErrnoException | undefined)?.code === 'EDAEMON_ALREADY_RUNNING') {
       // The daemon we spawned yielded to a live daemon already owning the
