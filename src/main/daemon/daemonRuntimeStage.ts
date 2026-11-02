@@ -50,6 +50,13 @@ export function stagedDaemonScripts(stageRoot: string): string[] {
 const copies = new Map<string, Promise<void>>();
 
 /**
+ * Longest a spawn waits for the copy. Past it the daemon runs from the
+ * install, so a copy that hangs (a stuck drive, a scanner) cannot keep the app
+ * without a daemon; the copy goes on, for the next spawn.
+ */
+const COPY_WAIT_MS = 180_000;
+
+/**
  * Copies `appDir` (the folder holding wmux.exe) to `stageRoot\<key>` unless
  * that copy exists, and removes the other copies no running process holds.
  * Everything that touches the ~450 MB tree is async, so the main thread is
@@ -65,8 +72,11 @@ export async function stageDaemonRuntime(opts: {
   log?: (msg: string) => void;
   /** Test seam: copies a folder. fs.promises.cp by default. */
   copy?: (from: string, to: string) => Promise<void>;
+  /** Test seam: COPY_WAIT_MS by default. */
+  maxWaitMs?: number;
 }): Promise<StagedDaemon | null> {
   const warn = opts.warn ?? (() => { /* silent */ });
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     const source = path.join(opts.appDir, ...SCRIPT);
     const dir = path.join(opts.stageRoot, stageKey(opts.version, fs.statSync(source).mtimeMs));
@@ -82,12 +92,18 @@ export async function stageDaemonRuntime(opts: {
         copies.set(dir, copied);
       }
     }
+    const waitMs = opts.maxWaitMs ?? COPY_WAIT_MS;
+    const tooLong = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`still copying after ${waitMs} ms`)), waitMs);
+    });
     // The old copies go while this one is made; the prune skips it and any partial copy.
-    await Promise.all([copied, pruneStages(opts.stageRoot, path.basename(dir), opts.exeName)]);
+    await Promise.race([Promise.all([copied, pruneStages(opts.stageRoot, path.basename(dir), opts.exeName)]), tooLong]);
     return staged;
   } catch (err) {
     warn(`[launcher] could not copy the daemon runtime out of the install (${err instanceof Error ? err.message : String(err)}); running it from the install`);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

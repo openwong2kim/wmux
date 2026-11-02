@@ -155,6 +155,21 @@ describe('daemon runtime staging', () => {
       expect(fs.readFileSync(again!.script, 'utf8')).toBe('daemon');
     });
 
+    it('runs the daemon from the install when the copy takes too long, and the next spawn gets the copy', async () => {
+      const { copy, release } = heldCopy();
+      const warn = vi.fn();
+      const late = await stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0', copy, warn, maxWaitMs: 50 });
+      expect(late).toBeNull();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('still copying after 50 ms'));
+      // The copy goes on: the next spawn shares it and runs from it.
+      const next = stageWith(copy);
+      release();
+      const staged = await next;
+      expect(staged).not.toBeNull();
+      expect(fs.readFileSync(staged!.script, 'utf8')).toBe('daemon');
+      expect(copy).toHaveBeenCalledTimes(1);
+    });
+
     it('never uses a copy that returned without the daemon script', async () => {
       const partial = vi.fn(async (_from: string, to: string) => {
         fs.mkdirSync(to, { recursive: true });
