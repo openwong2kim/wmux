@@ -402,7 +402,7 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   bots, when main offers it) and `+` (a menu: Add bot — the Settings add
   form in a dialog; the bot it adds is selected — Add team — the same
   dialog with only the workspace and the repository (Add team, below) — and
-  New group chat) as 28px icon buttons, in every state
+  New group chat — and New folder) as 28px icon buttons, in every state
   of the page; Search opens a filter field under the header (Escape closes
   and clears it). One row per conversation (8px 10px padding, inset 8px): a 32px avatar, the 13px/500 name
   with the newest message's time, and one 12px muted preview line (the
@@ -417,8 +417,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   (`group:<id>`) with the work started from it; neither shows the other. A
   workspace whose General is no group's shows what its bots say there in
   their 1:1s. Groups and bots follow by latest activity; nothing is pinned
-  (the workspace an earlier version made the HQ is a workspace like any
-  other). The selected row is the `--selection` pill
+  but the owner's folders (Folders, below; the workspace an earlier version
+  made the HQ is a workspace like any other). The selected row is the `--selection` pill
   (10px radius), hover `--hover-fill`. A row with unread bot messages
   (this session) carries a neutral count — a 16px `--selection-emphasis`
   pill — and its preview in `--text-sub`; when the row needs the owner the
@@ -433,6 +433,22 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   asks in place (InlineConfirm: the chat leaves the list for good, its
   messages stay saved and what it wrote in group chats keeps its name).
   The tombstone stays, marked, so its cards keep its name and face.
+- **Folders (owner decision 2026-11-01):** the owner files live bots in named
+  folders, which sit above the unfiled conversations (and above Archive). A
+  folder's header is the Sidebar's settled-group header: a 12px/500 button in
+  70% `--text-main`, a disclosure chevron (right, turned 90° down while open),
+  the name and the count of its bots — no fill or rule, no uppercase or
+  tracking, no count drawn at zero, hover `--hover-fill`. Open or collapsed is
+  the owner's and is kept; a search opens the folders holding a match and hides
+  the others. Inside a folder the rows are the list's rows, newest first;
+  folders follow their newest member and an empty folder comes last, by name.
+  A bot is in one folder; a group chat and an Archive row are never filed.
+  Right-click or Shift+F10 / the Menu key on a bot row opens **Move to
+  folder** (each folder, New folder…, Remove from folder); on a header,
+  **Rename** (in place: Enter commits, Escape cancels, leaving the field
+  commits; 60 characters) and **Delete folder** (InlineConfirm; its bots go
+  back to the list, none is deleted). "+" also offers New folder. Folders are
+  the owner's alone: a bot never sees or changes one.
 - **Workers in the list (owner decision 2026-10-14):** a bot's workers nest
   under its row the way the Sidebar nests a workspace's fan-out tasks: an
   indented row each on a `--stroke` guide under the avatar — the Sidebar's
@@ -2372,6 +2388,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-01 | Owner-approved (external sessions, placement B of the mockup): a coding agent started outside wmux (tmux, screen, zellij, ssh into this computer, another terminal app) that reports through the hook bridge is kept as an external session. One whose folder is a workspace's folder, or sits under it (the deepest folder wins; a workspace inside the session's folder never matches), is a row in that workspace's roster: the roster recipe with a muted `outside` in the agent-kind slot, its activity or where it runs, the time since its last signal. Waiting on you, it draws its question line in `--attention-text`, lights the workspace row as a pane's agent does (ring, hairline, Needs you, the question) and counts in the rail's Fleet badge. The rest sit in an **Outside wmux** group at the list's foot after Snoozed and Settled (their header recipe, open by default, the folder on a second line; folded, a muted count and `N need you` in the attention colour). A click opens a detail popover — state and question, Folder, Where, Last activity, a `tmux attach -t …` / `screen -r …` command with Copy attach command as the one primary only when tmux or screen is known (else Open a wmux pane here is the primary), and Hide. No new colour | wmux never shows or types into that terminal, so the row cannot jump to a pane: the popover says where the session lives and how to reach it. Joining the workspace keeps one list and one attention grammar (2026-09-27); the foot group catches folders no workspace holds |
 | 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
 | 2026-11-01 | Owner-approved (handoff mockup, boards A and C): at 90% of the 5-hour window (the pane's own statusline reading) the usage chip shows the share and the reset and opens the usage-limit card with the handoffs; nothing switches by itself. After a handoff at or near the limit, the tab it left offers to bring the work back once the limit resets, with a note from the other agent's transcript typed in, never sent | A handoff chosen before work stops loses nothing; bringing the work back closes the loop the owner otherwise did by hand, reading the other tab to tell the first agent what changed |
+| 2026-11-01 | Owner decision: Bots list folders. The owner can file bots in named, collapsible folders (a folder section header per folder, a bot's right-click or Shift+F10 menu with Move to folder, "+" › New folder, Rename inline and Delete asked in place). Folders are the one exception to "nothing is pinned" in the Bots list: they are grouped above the unfiled conversations, which still follow latest activity; inside a folder rows keep that order and folders follow their newest member. Archive is unchanged and sits at the foot under the folders and the unfiled rows; a folder never holds a removed bot or a group chat. The header is the Sidebar's settled-group header (disclosure chevron right → down, name, count; no fill or rule; no uppercase or tracking; no count at zero), colour carries no state | A long list of bots from several workspaces had no way to be kept in order but by activity; the owner asked to group them by hand. The Sidebar already has a collapsible group header, so the list reuses its grammar instead of inventing a new control, and the one place the list stops being purely by activity is stated here |
 
 ### Desktop conversation view
 

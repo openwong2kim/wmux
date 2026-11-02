@@ -558,6 +558,7 @@ export interface BotSetJobParams {
  *  - `connectors-changed`: the connection library changed
  *    (shared/botConnector.ts);
  *  - `groups-changed`: the owner's group chats changed (shared/botGroup.ts);
+ *  - `folders-changed`: the owner's bot folders changed (shared/botFolder.ts);
  *  - `skills-changed`: a bot's skills changed (shared/botSkill.ts);
  *  - `memory-changed`: a bot's notes or the owner's profile changed
  *    (shared/botMemory.ts);
@@ -573,6 +574,7 @@ export type BotEventPayload =
   | { type: 'secrets-changed' }
   | { type: 'connectors-changed' }
   | { type: 'groups-changed' }
+  | { type: 'folders-changed' }
   | { type: 'skills-changed'; botId?: string }
   | { type: 'memory-changed'; botId?: string }
   | { type: 'commands-changed'; botId?: string }

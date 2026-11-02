@@ -139,6 +139,52 @@
   color: var(--text-muted);
 }
 .wmux-bots-archive-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
+/* A folder's section header (DESIGN.md › Bots › Folders): the Sidebar's
+   settled-group header — a disclosure chevron (right, turned down while
+   open), the name and the count; no fill or rule of its own, the colour
+   neutral. */
+.wmux-bots-folder { margin-top: 4px; }
+.wmux-bots-folder-head-wrap { min-width: 0; }
+.wmux-bots-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-main) 70%, transparent);
+}
+button.wmux-bots-folder-head:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-bots-folder-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms;
+}
+.wmux-bots-folder-count { font-weight: 400; color: var(--text-muted); }
+.wmux-bots-folder-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-main);
+}
+.wmux-bots-folder-input:focus { border-color: var(--line-strong); }
+.wmux-bots-menu-label {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .wmux-bots-tree {
   display: flex;
   flex-direction: column;

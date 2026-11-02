@@ -23,6 +23,8 @@ import { getFactoryBotPort, type FactoryBotPort, type FactoryBotRow } from '../R
 import { useFactoryBots } from '../Room/useFactoryBots';
 import { useBotGroups, type BotGroupPort } from '../Room/botGroups';
 import type { BotGroup } from '../../../shared/botGroup';
+import { useBotFolders, type BotFolderPort } from '../Room/botFolders';
+import type { BotFolder } from '../../../shared/botFolder';
 import { buildBots, botsRooms, EMPTY_BOTS, latestThreadOf, roomCardsByWorkspace, type BotsModel, type RemovedBotRef } from './botsModel';
 import { selectBotTaskOwners } from '../Sidebar/botTasks';
 import { displayWorkspaceName } from '../../utils/fanoutProvenance';
@@ -51,9 +53,12 @@ export interface BotsState {
   listed: boolean;
   /** The owner's group chats. */
   groups: readonly BotGroup[];
+  /** The owner's bot folders, and a re-read of them. */
+  folders: readonly BotFolder[];
+  reloadFolders: () => void;
 }
 
-export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsState {
+export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort, folderPort?: BotFolderPort): BotsState {
   const status = useStore((s) => s.roomStatus);
   const bots = useFactoryBots(null, port);
   // useFactoryBots hands back its initial empty list until the first read
@@ -69,6 +74,7 @@ export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsSt
   const names = useStore(useShallow(selectWorkspaceIdName));
   const on = !!status?.enabled;
   const { groups } = useBotGroups(groupPort);
+  const { folders, reload: reloadFolders } = useBotFolders(folderPort);
   const actors = useStore((s) => s.roomActors);
   const removed = useMemo(() => removedBotRefs(actors), [actors]);
   const model = useMemo(() => {
@@ -87,7 +93,7 @@ export function useBots(port?: FactoryBotPort, groupPort?: BotGroupPort): BotsSt
       removed,
     });
   }, [status, on, bots, groups, timelines, previews, threads, botTaskOf, workerClass, names, removed]);
-  return { status, bots, model, on, listed, groups };
+  return { status, bots, model, on, listed, groups, folders, reloadFolders };
 }
 
 /** Read one thread from its first card, page by page (CATCH_UP_MAX_PAGES

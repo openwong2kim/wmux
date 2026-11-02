@@ -32,6 +32,7 @@ import { BOT_SKILL_IPC } from '../shared/botSkill';
 import { BOT_MEMORY_IPC } from '../shared/botMemory';
 import { BOT_COMMAND_IPC } from '../shared/botCommand';
 import { BOT_GROUP_IPC } from '../shared/botGroup';
+import { BOT_FOLDER_IPC } from '../shared/botFolder';
 import type { PaneLabelRejection } from '../shared/paneLabelRules';
 import type { RemoteSendResult, RemoteSendSource, RemoteWriteResult } from '../shared/remoteUpload';
 import { CHROME_PANE_IPC, type ChromePaneBindings } from '../shared/chromePaneBinding';
@@ -1608,6 +1609,21 @@ const electronAPI = {
         ipcRenderer.invoke(BOT_GROUP_IPC.update, req) as Promise<import('../shared/botGroup').BotGroupResult>,
       remove: (id: string) =>
         ipcRenderer.invoke(BOT_GROUP_IPC.remove, { id }) as Promise<import('../shared/botGroup').BotGroupRemoveResult>,
+    },
+    // The owner's bot folders (shared/botFolder.ts); changes arrive as
+    // BOT_EVENT {type:'folders-changed'}.
+    folders: {
+      list: () => ipcRenderer.invoke(BOT_FOLDER_IPC.list, {}) as Promise<import('../shared/botFolder').BotFolderListResult>,
+      create: (name: string) =>
+        ipcRenderer.invoke(BOT_FOLDER_IPC.create, { name }) as Promise<import('../shared/botFolder').BotFolderResult>,
+      rename: (id: string, name: string) =>
+        ipcRenderer.invoke(BOT_FOLDER_IPC.rename, { id, name }) as Promise<import('../shared/botFolder').BotFolderResult>,
+      setCollapsed: (id: string, collapsed: boolean) =>
+        ipcRenderer.invoke(BOT_FOLDER_IPC.setCollapsed, { id, collapsed }) as Promise<import('../shared/botFolder').BotFolderResult>,
+      assign: (botId: string, folderId: string | null) =>
+        ipcRenderer.invoke(BOT_FOLDER_IPC.assign, { botId, folderId }) as Promise<import('../shared/botFolder').BotFolderOkResult>,
+      remove: (id: string) =>
+        ipcRenderer.invoke(BOT_FOLDER_IPC.remove, { id }) as Promise<import('../shared/botFolder').BotFolderOkResult>,
     },
   },
   // Owner approvals of what bots ask for (main/ipc/handlers/approval.handler.ts:

@@ -25,6 +25,8 @@ import type { Conversation } from '../botsModel';
 import { refreshApprovals, setApprovalsApiForTests, type ApprovalsApi } from '../../Room/approvalsStore';
 import { setBotGroupPort, type BotGroupPort } from '../../Room/botGroups';
 import type { BotGroup } from '../../../../shared/botGroup';
+import { setBotFolderPort, type BotFolderPort } from '../../Room/botFolders';
+import type { BotFolder } from '../../../../shared/botFolder';
 import { botHueIndex } from '../../Room/BotAvatar';
 
 // A worker's panel mounts its pane; these tests check the panel, not the
@@ -2835,5 +2837,182 @@ describe('BotsChat helpers', () => {
     const b = card({ workspaceId: 'w1', actor: by('w1', LEAD), threadId: 'task:t1' });
     expect(chatCards(room, [a, b], null)).toEqual([a, b]);
     expect(chatCards(room, [a, b], 'task:t1')).toEqual([b]);
+  });
+});
+
+describe('Bots page folders', () => {
+  let folders: BotFolder[];
+  let folderCalls: Array<{ op: string; args: unknown[] }>;
+  const FLD = 'fld-00000001';
+  const folder = (id: string, name: string, botIds: string[], collapsed = false): BotFolder => ({ id, name, botIds, collapsed, createdAt: 1, updatedAt: 1 });
+  const folderPort: BotFolderPort = {
+    available: true,
+    list: async () => ({ ok: true, folders: folders.map((f) => ({ ...f, botIds: [...f.botIds] })) }),
+    create: async (name) => {
+      folderCalls.push({ op: 'create', args: [name] });
+      const f = folder(`fld-${(0x10 + folders.length).toString(16).padStart(8, '0')}`, name, []);
+      folders = [...folders, f];
+      return { ok: true, folder: f };
+    },
+    rename: async (id, name) => {
+      folderCalls.push({ op: 'rename', args: [id, name] });
+      folders = folders.map((f) => (f.id === id ? { ...f, name } : f));
+      return { ok: true, folder: folders.find((f) => f.id === id)! };
+    },
+    setCollapsed: async (id, collapsed) => {
+      folderCalls.push({ op: 'setCollapsed', args: [id, collapsed] });
+      folders = folders.map((f) => (f.id === id ? { ...f, collapsed } : f));
+      return { ok: true, folder: folders.find((f) => f.id === id)! };
+    },
+    assign: async (botId, folderId) => {
+      folderCalls.push({ op: 'assign', args: [botId, folderId] });
+      folders = folders.map((f) => ({ ...f, botIds: f.botIds.filter((b) => b !== botId).concat(f.id === folderId ? [botId] : []) }));
+      return { ok: true };
+    },
+    remove: async (id) => {
+      folderCalls.push({ op: 'remove', args: [id] });
+      folders = folders.filter((f) => f.id !== id);
+      return { ok: true };
+    },
+  };
+  beforeEach(() => {
+    folders = [];
+    folderCalls = [];
+    setBotFolderPort(folderPort);
+  });
+  afterEach(() => setBotFolderPort(null));
+
+  const settle = async () => { await act(async () => { for (let i = 0; i < 4; i++) await Promise.resolve(); }); };
+  const contextMenu = (el: Element) => act(() => { el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 })); });
+  const key = (el: Element, k: string) => act(() => { el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); });
+  const typeName = (el: HTMLInputElement, v: string) => { el.value = v; };
+  const inFolder = (id: string) => [...container.querySelectorAll(`[data-bots-folder="${id}"] [data-bots-row]`)].map((e) => e.getAttribute('data-bots-row'));
+
+  it('lists a folder\'s bots under its header, apart from the unfiled ones', async () => {
+    folders = [folder(FLD, 'Backend', [LEAD])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    const head = q(`[data-bots-folder-head="${FLD}"]`)!;
+    expect(head.textContent).toBe('Backend1');
+    expect(head.getAttribute('aria-expanded')).toBe('true');
+    expect(inFolder(FLD)).toEqual([`bot:${LEAD}`]);
+    expect(rowIds()[0]).toBe(`bot:${LEAD}`);
+    expect(rowIds()).toContain(`bot:${MOA}`);
+  });
+
+  it('collapses and expands, kept through the port', async () => {
+    folders = [folder(FLD, 'Backend', [LEAD])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    act(() => q(`[data-bots-folder-head="${FLD}"]`)!.click());
+    await settle();
+    expect(folderCalls).toEqual([{ op: 'setCollapsed', args: [FLD, true] }]);
+    expect(q(`[data-bots-folder-head="${FLD}"]`)!.getAttribute('aria-expanded')).toBe('false');
+    expect(rowIds()).not.toContain(`bot:${LEAD}`);
+    act(() => q(`[data-bots-folder-head="${FLD}"]`)!.click());
+    await settle();
+    expect(folderCalls[1]).toEqual({ op: 'setCollapsed', args: [FLD, false] });
+    expect(inFolder(FLD)).toEqual([`bot:${LEAD}`]);
+  });
+
+  it('moves a bot into a folder, a new folder and out again from its menu', async () => {
+    folders = [folder(FLD, 'Backend', [])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    contextMenu(q(`[data-bots-row="bot:${LEAD}"]`)!);
+    expect(q('[data-bots-move-out]')).toBeNull();
+    act(() => q(`[data-bots-move-to="${FLD}"]`)!.click());
+    await settle();
+    expect(folderCalls).toEqual([{ op: 'assign', args: [LEAD, FLD] }]);
+    expect(inFolder(FLD)).toEqual([`bot:${LEAD}`]);
+
+    // A new folder from the menu: named inline, then the bot moves into it.
+    contextMenu(q(`[data-bots-row="bot:${MOA}"]`)!);
+    act(() => q('[data-bots-move-new]')!.click());
+    const input = q<HTMLInputElement>('[data-testid="bots-folder-new"]')!;
+    typeName(input, 'Ops');
+    key(input, 'Enter');
+    await settle();
+    expect(folderCalls.slice(1)).toEqual([{ op: 'create', args: ['Ops'] }, { op: 'assign', args: [MOA, 'fld-00000011'] }]);
+    expect(inFolder('fld-00000011')).toEqual([`bot:${MOA}`]);
+
+    contextMenu(q(`[data-bots-row="bot:${LEAD}"]`)!);
+    act(() => q('[data-bots-move-out]')!.click());
+    await settle();
+    expect(folderCalls[folderCalls.length - 1]).toEqual({ op: 'assign', args: [LEAD, null] });
+    expect(inFolder(FLD)).toEqual([]);
+  });
+
+  it('makes a folder from the + menu', async () => {
+    seedRooms(true);
+    await render(<BotsPage />);
+    act(() => q('[data-bots-add]')!.click());
+    act(() => q('[data-bots-new-folder]')!.click());
+    const input = q<HTMLInputElement>('[data-testid="bots-folder-new"]')!;
+    typeName(input, 'Docs');
+    key(input, 'Enter');
+    await settle();
+    expect(folderCalls).toEqual([{ op: 'create', args: ['Docs'] }]);
+    expect(q('[data-bots-folder-head="fld-00000010"]')!.textContent).toBe('Docs');
+  });
+
+  it('renames in place: Enter commits, Escape cancels', async () => {
+    folders = [folder(FLD, 'Backend', [LEAD])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    contextMenu(q(`[data-bots-folder-head="${FLD}"]`)!);
+    act(() => q('[data-bots-folder-rename]')!.click());
+    let input = q<HTMLInputElement>('[data-testid="bots-folder-rename"]')!;
+    expect(input.value).toBe('Backend');
+    expect(input.maxLength).toBe(60);
+    typeName(input, 'Nope');
+    key(input, 'Escape');
+    await settle();
+    expect(folderCalls).toEqual([]);
+    expect(q(`[data-bots-folder-head="${FLD}"]`)!.textContent).toBe('Backend1');
+
+    contextMenu(q(`[data-bots-folder-head="${FLD}"]`)!);
+    act(() => q('[data-bots-folder-rename]')!.click());
+    input = q<HTMLInputElement>('[data-testid="bots-folder-rename"]')!;
+    typeName(input, 'API');
+    key(input, 'Enter');
+    await settle();
+    expect(folderCalls).toEqual([{ op: 'rename', args: [FLD, 'API'] }]);
+    expect(q(`[data-bots-folder-head="${FLD}"]`)!.textContent).toBe('API1');
+  });
+
+  it('deleting a folder asks first and returns its bots to the list', async () => {
+    folders = [folder(FLD, 'Backend', [LEAD])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    contextMenu(q(`[data-bots-folder-head="${FLD}"]`)!);
+    act(() => q('[data-bots-folder-delete]')!.click());
+    expect(folderCalls).toEqual([]);
+    act(() => q('[data-testid="bots-folder-delete-confirm"]')!.click());
+    await settle();
+    expect(folderCalls).toEqual([{ op: 'remove', args: [FLD] }]);
+    expect(q('[data-bots-folder]')).toBeNull();
+    expect(rowIds()).toContain(`bot:${LEAD}`);
+  });
+
+  it('searching opens a collapsed folder with a match and hides the others', async () => {
+    folders = [folder(FLD, 'Backend', [LEAD], true), folder('fld-00000002', 'Empty', [])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    expect(rowIds()).not.toContain(`bot:${LEAD}`);
+    act(() => q('[data-bots-search-toggle]')!.click());
+    const search = q<HTMLInputElement>('[data-bots-search]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'Lead');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(inFolder(FLD)).toEqual([`bot:${LEAD}`]);
+    expect(q('[data-bots-folder="fld-00000002"]')).toBeNull();
   });
 });
