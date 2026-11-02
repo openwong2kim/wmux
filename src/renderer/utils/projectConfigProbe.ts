@@ -100,11 +100,13 @@ export async function applyProjectLayoutFresh(workspaceId: string): Promise<bool
 /** Persist a trust decision, re-probe, and (on trust) try the auto-apply.
  * `unattended` is the explicit unattended reboot-survival consent — only
  * meaningful for a 'trusted' decision (main forces it false otherwise). The
- * caller passes the checkbox's current value every time (no carry-forward). */
+ * caller passes the checkbox's current value every time (no carry-forward).
+ * `companyReviewed`: the approving dialog showed the file's company. */
 export async function decideProjectTrust(
   workspaceId: string,
   decision: 'trusted' | 'denied' | 'clear',
   unattended = false,
+  companyReviewed = false,
 ): Promise<void> {
   const project = useStore.getState().projectConfigs[workspaceId];
   if (!project?.root) return;
@@ -116,6 +118,7 @@ export async function decideProjectTrust(
       // while the dialog was open, main evaluates the live file as 'stale'.
       decision === 'clear' ? undefined : project.contentHash,
       decision === 'trusted' && unattended,
+      decision === 'trusted' && companyReviewed,
     );
   } catch (err) {
     useStore.getState().pushToast({
