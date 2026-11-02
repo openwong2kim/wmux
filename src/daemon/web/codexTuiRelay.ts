@@ -426,6 +426,8 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         tracked.set(m.id,m.method);
       }
       if (m.method === 'thread/sample' && isRequestId(m.id)) {
+        // The first answer would end both, leaving the other uncancellable.
+        if (samples.has(m.id)) { refuse(frame.message,'a sample with this request id is still running');return; }
         if (samples.size >= MAX_TRACKED_REQUESTS) { retire();return; }
         samples.add(m.id);
       }

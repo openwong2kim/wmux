@@ -392,6 +392,23 @@ describe.skipIf(process.platform === 'win32')('relay request policy',()=>{
     } finally { await f.cleanup(); }
   });
 
+  it('refuses a thread/sample that reuses the id of one still running, so a cancel still reaches the running one', async () => {
+    const seen:Req[]=[];const p=policy();p.owners.set(threadId,'pty-a');
+    const f=await fixture({policy:p,respond:(r)=>r.method==='thread/sample'?null:r.method==='thread/sample/cancel'?{result:{}}:undefined,
+      onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      const sample={method:'thread/sample',params:{threadId,expectedTurnId:'u1',prompt:'x'}};
+      client.send(JSON.stringify({id:1,...sample}));
+      let got=reply(client);client.send(JSON.stringify({id:1,...sample}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:2,method:'thread/sample/cancel',params:{requestId:1}}));
+      expect(await got).toMatchObject({id:2,result:{}});
+      expect(seen.filter(r=>r.method==='thread/sample').map(r=>r.id)).toEqual([1]);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
   it('refuses a resume of a thread owned by another live pane, or already loaded elsewhere', async () => {
     const seen:Req[]=[];const p=policy();p.owners.set(otherThreadId,'pty-b');
     const f=await fixture({policy:p,respond:respondWith([systemThreadId]),onUpstreamRequest:r=>seen.push(r)});
