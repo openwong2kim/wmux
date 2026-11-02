@@ -3,6 +3,9 @@
 // background, so a launch never waits on `claude --version`, and the oldest of
 // every claude install a pane's shell might run.
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 vi.mock('electron', () => ({
   app: { accessibilitySupportEnabled: false, on: () => undefined },
@@ -58,6 +61,24 @@ describe('launcherVersionsIn', () => {
     await readUntil(() => ok('2.1.316'), '2.1.316');
     fake.installs = [];
     await readUntil(() => ok('2.1.316'), null);
+  });
+
+  it('knows no version once an install it read is replaced, until a read of the new one lands', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-sr-version-'));
+    const exe = path.join(dir, 'claude');
+    fs.writeFileSync(exe, '');
+    try {
+      fake.installs = [exe];
+      await readUntil(() => ok('2.1.316'), '2.1.316');
+      // An older claude reinstalled in its place: the read under way may not
+      // know yet, and the last one's version is not this install's.
+      const later = new Date(Date.now() + 60_000);
+      fs.utimesSync(exe, later, later);
+      expect(launcherVersion('claude')).toBeNull();
+      await readUntil(() => ok('2.1.100'), '2.1.100');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('starts no second read while one runs', () => {
