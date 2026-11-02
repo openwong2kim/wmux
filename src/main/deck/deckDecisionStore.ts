@@ -543,6 +543,49 @@ export async function resolveDecision(
   return transitioned ? result : null;
 }
 
+export interface ExpiredDecision {
+  workspaceId: string;
+  id: string;
+  question: string;
+}
+
+/**
+ * Remove every decision nothing in this version can answer or consume: one
+ * with no origin, raised by a workspace brain, which no longer exists (#2943).
+ * A pending one has no card to answer it, and a resolved one is never
+ * consumed; either way it holds its thread's slot, so an ask_person question
+ * raised there would queue behind it forever. Main-owned cards are left
+ * alone. Writes, and tells the listeners, only when something was removed.
+ * Returns the removed decisions that were still pending (the operator's
+ * notice); never throws.
+ */
+export async function expireUnanswerableDecisions(dir?: string): Promise<ExpiredDecision[]> {
+  try {
+    return await serialize(async () => {
+      const all = loadAllDeckDecisions(dir);
+      const expired: ExpiredDecision[] = [];
+      let removed = false;
+      for (const [workspaceId, list] of Object.entries(all)) {
+        const kept = list.filter((d) => {
+          if (d.origin) return true;
+          removed = true;
+          if (d.status === 'pending') expired.push({ workspaceId, id: d.id, question: d.question });
+          return false;
+        });
+        if (kept.length === 0) delete all[workspaceId];
+        else all[workspaceId] = kept;
+      }
+      if (!removed) return expired;
+      await atomicWriteJSON(getDeckDecisionPath(dir), all);
+      notifyDecisionsChanged();
+      return expired;
+    });
+  } catch (err) {
+    console.warn(`[deck] could not expire unanswerable decisions: ${String(err)}`);
+    return [];
+  }
+}
+
 /** Remove a workspace's `general` decision (called when its loop is cleared,
  *  or as a hard reset). Other threads are left alone. */
 export async function clearDecision(workspaceId: string, dir?: string): Promise<void> {

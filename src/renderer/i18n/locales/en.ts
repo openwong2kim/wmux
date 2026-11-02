@@ -3100,6 +3100,7 @@ export const en = {
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
   'deck.limit.window': 'usage',
   'deck.brainTerminal': 'Brain terminal',
+  'deck.expiredDecision': "A decision an earlier wmux version asked for in {workspace} was closed, because this version has no card to answer it: \"{question}\"",
   'deck.limit.resetsSoon': 'resets soon',
   'deck.limit.resetsIn': 'resets in {rel}',
   'deck.limit.onAccount': ' on {account}',

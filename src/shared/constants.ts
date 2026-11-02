@@ -225,6 +225,10 @@ export const IPC = {
   //   DECK_MOA_CHANGED (send, main → renderer, no payload) says it moved.
   DECK_MOA_CHANGED: 'deck:moa:changed',
   DECK_MOA_DECISIONS: 'deck:moa:decisions',
+  //   DECK_EXPIRED_DECISIONS — the pending decisions an earlier version raised
+  //   that this startup removed, taken once for a one-time notice (a second
+  //   call gets none) ({ decisions: ExpiredDecision[] }, main/deck/deckDecisionStore.ts).
+  DECK_EXPIRED_DECISIONS: 'deck:expired-decisions',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as
