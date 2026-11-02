@@ -64,6 +64,14 @@ describe('handOutTargets — Send to an agent', () => {
     expect(names(panes)).toEqual(['#dev']);
     expect(companies.map((c) => [c.name, c.target.paneId])).toEqual([['wmux co.', 'p-ceo']]);
   });
+
+  it('never offers the coordinator pane as a pane, even when no CEO target resolved', () => {
+    const { panes, companies } = handOutTargets(item, [pane('ceo', { workspaceId: 'ws-co' }), pane('dev', { workspaceId: 'ws-co' })], [
+      { workspaceId: 'ws-co', name: 'wmux co.', folder: '/code/wmux', company: { folder: '/code/wmux', coordinatorPaneId: 'p-ceo' } },
+    ]);
+    expect(names(panes)).toEqual(['#dev']);
+    expect(companies).toEqual([]);
+  });
 });
 
 describe('handOutTargets — Start in a new worktree', () => {

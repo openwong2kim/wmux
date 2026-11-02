@@ -9,7 +9,7 @@ import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import * as terminalTail from '../../../utils/terminalTail';
 import FleetView from '../FleetView';
-import { handOutPickNotices, placeHandOutPopover } from '../HandOutPopover';
+import { handOutPickNotices, handOutWorkspaceCandidates, placeHandOutPopover } from '../HandOutPopover';
 import type { HandOutOption } from '../handOutTargets';
 import { useStore } from '../../../stores';
 import type { HandOutEntry } from '../../../../shared/handOut';
@@ -217,5 +217,37 @@ describe('placeHandOutPopover', () => {
     expect(placeHandOutPopover({ left: 69, top: 600, right: 380, bottom: 700 }, 300, sheet).top).toBe(600 - 4 - 300);
     const narrow = placeHandOutPopover({ left: 60, top: 100, right: 300, bottom: 200 }, 200, { left: 48, top: 40, right: 348, bottom: 800 });
     expect(narrow).toEqual({ left: 56, top: 204, width: 284 });
+  });
+});
+
+describe('handOutWorkspaceCandidates — a company\'s CEO', () => {
+  const shell: Surface = { id: 's-sh', ptyId: 'pty-sh', title: 'zsh', shell: 'zsh', cwd: '/code/wmux', surfaceType: 'terminal' };
+  const agentTab: Surface = { id: 's-ag', ptyId: 'pty-ag', title: 'Claude Code', shell: 'zsh', cwd: '/code/wmux', surfaceType: 'terminal' };
+  const company = (rootPane: Pane, stashed: Pane[] = []) => ({
+    ...workspace('ws-co', 'wmux co.', rootPane, rootPane.id),
+    profile: { startupCwd: '/code/wmux' },
+    company: { v: 1, id: 'co-1', coordinatorPaneId: 'p-ceo' },
+    stashedPanes: stashed.map((pane) => ({ pane })),
+  }) as unknown as Workspace;
+  const state = (ws: Workspace) => ({
+    workspaces: [ws],
+    surfaceAgent: { 'pty-ag': { name: 'Claude Code', status: 'idle' as const, slug: 'claude' as const } },
+    agentAliveByPtyId: {},
+    commandRunningByPtyId: {},
+  }) as unknown as Parameters<typeof handOutWorkspaceCandidates>[0];
+
+  it('is the coordinator\'s tab where an agent runs, though a plain shell is in front', () => {
+    const ws = company(leaf('p-ceo', [shell, agentTab]));
+    const [candidate] = handOutWorkspaceCandidates(state(ws), [ws]);
+    expect(candidate.company?.ceo?.ptyId).toBe('pty-ag');
+    expect(candidate.company?.coordinatorPaneId).toBe('p-ceo');
+    expect(candidate.company?.folder).toBe('/code/wmux');
+  });
+
+  it('is not offered while the coordinator pane is stashed, though the pane is still named', () => {
+    const ws = company(leaf('p-dev', [surface('s-dev', 'pty-dev')]), [leaf('p-ceo', [agentTab])]);
+    const [candidate] = handOutWorkspaceCandidates(state(ws), [ws]);
+    expect(candidate.company?.ceo).toBeUndefined();
+    expect(candidate.company?.coordinatorPaneId).toBe('p-ceo');
   });
 });

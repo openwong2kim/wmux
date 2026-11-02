@@ -5,12 +5,12 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { HandOutEntry, HandOutPickResult, HandOutPickTarget } from '../../../shared/handOut';
-import { prepNoticeToast } from '../../../shared/gitHandoff';
+import { prepNoticeToast, type HandoffTarget } from '../../../shared/gitHandoff';
 import { agentDisplayToSlug } from '../../../shared/agentIdentity';
 import { isRemoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
-import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
+import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import type { Workspace } from '../../../shared/types';
-import { useStore } from '../../stores';
+import { useStore, type StoreState } from '../../stores';
 import type { FleetRow } from '../../stores/selectors/fleet';
 import { renderSentence } from '../../i18n/renderSentence';
 import { displayPath } from '../../utils/displayPath';
@@ -104,6 +104,39 @@ function FolderText({ folder }: { folder: string }) {
   );
 }
 
+/**
+ * The workspaces as the targets read them. A company's CEO is the first
+ * terminal tab of its coordinator pane (the active one first) where an agent
+ * runs, so a plain shell in front does not hide it. A stashed coordinator is
+ * off screen, as stashed agent panes are, so its company is not offered;
+ * the coordinator pane is named either way, so it is never offered as a pane.
+ */
+export function handOutWorkspaceCandidates(
+  state: Pick<StoreState, 'workspaces' | 'surfaceAgent' | 'agentAliveByPtyId' | 'commandRunningByPtyId'>,
+  workspaces: readonly Workspace[],
+): HandOutWorkspaceCandidate[] {
+  return workspaces.filter((ws) => !isRemoteWorkspaceId(ws.id)).map((ws): HandOutWorkspaceCandidate => {
+    const folder = workspaceFolder(ws);
+    if (!ws.company) return { workspaceId: ws.id, name: ws.name, folder };
+    const coordinatorPaneId = ws.company.coordinatorPaneId ?? undefined;
+    const visible = coordinatorPaneId ? getLeafPanes(ws.rootPane).find((l) => l.id === coordinatorPaneId) : undefined;
+    const anyLeaf = visible ?? (coordinatorPaneId ? getWorkspaceLeafPanes(ws).find((l) => l.id === coordinatorPaneId) : undefined);
+    const terminals = (visible?.surfaces ?? []).filter((sf) => (sf.surfaceType ?? 'terminal') === 'terminal' && sf.ptyId);
+    const ordered = [...terminals.filter((sf) => sf.id === visible?.activeSurfaceId), ...terminals.filter((sf) => sf.id !== visible?.activeSurfaceId)];
+    let ceo: HandoffTarget | undefined;
+    for (const sf of ordered) {
+      const target = sf.ptyId ? handoffTargetForPty(state, sf.ptyId) : null;
+      if (target?.agentName) { ceo = target; break; }
+    }
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      folder,
+      company: { folder: companyFolder(ws, anyLeaf), ...(coordinatorPaneId ? { coordinatorPaneId } : {}), ...(ceo ? { ceo } : {}) },
+    };
+  });
+}
+
 /** The agent panes and workspaces of this PC as the targets read them. */
 function useCandidates(rows: readonly FleetRow[], workspaces: readonly Workspace[]) {
   const paneLabel = useStore((s) => s.paneLabel);
@@ -130,21 +163,7 @@ function useCandidates(rows: readonly FleetRow[], workspaces: readonly Workspace
         idleForMs: row?.idleForMs,
       }];
     });
-    const spaces = local.map((ws): HandOutWorkspaceCandidate => {
-      if (!ws.company) return { workspaceId: ws.id, name: ws.name, folder: workspaceFolder(ws) };
-      const ceoLeaf = ws.company.coordinatorPaneId
-        ? getWorkspaceLeafPanes(ws).find((l) => l.id === ws.company?.coordinatorPaneId) : undefined;
-      const terminals = (ceoLeaf?.surfaces ?? []).filter((sf) => (sf.surfaceType ?? 'terminal') === 'terminal' && sf.ptyId);
-      const ptyId = (terminals.find((sf) => sf.id === ceoLeaf?.activeSurfaceId) ?? terminals[0])?.ptyId;
-      const ceo = ptyId ? handoffTargetForPty(state, ptyId) : null;
-      return {
-        workspaceId: ws.id,
-        name: ws.name,
-        folder: workspaceFolder(ws),
-        company: { folder: companyFolder(ws, ceoLeaf), ...(ceo && ceo.agentName ? { ceo } : {}) },
-      };
-    });
-    return { panes, spaces };
+    return { panes, spaces: handOutWorkspaceCandidates(state, local) };
   }, [rows, workspaces, paneLabel, surfaceAgent, agentAlive]);
 }
 

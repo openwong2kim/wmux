@@ -23,8 +23,9 @@ export interface HandOutWorkspaceCandidate {
   name: string;
   /** The folder the workspace stands for. */
   folder?: string;
-  /** A company: its folder, and its CEO pane while an agent runs there. */
-  company?: { folder?: string; ceo?: HandoffTarget };
+  /** A company: its folder, its coordinator pane, and that pane as a target
+   *  while an agent runs there and it is not stashed. */
+  company?: { folder?: string; coordinatorPaneId?: string; ceo?: HandoffTarget };
 }
 
 export interface HandOutPaneOption extends HandOutPaneCandidate {
@@ -76,7 +77,11 @@ export function handOutTargets(
   panes: readonly HandOutPaneCandidate[],
   workspaces: readonly HandOutWorkspaceCandidate[],
 ): HandOutTargets {
-  const ceos = new Set(workspaces.flatMap((ws) => (ws.company?.ceo ? [paneId(ws.company.ceo)] : [])));
+  // A company's coordinator pane is offered as its company (or not at all).
+  const ceos = new Set(workspaces.flatMap((ws) => [
+    ...(ws.company?.coordinatorPaneId ? [paneId({ workspaceId: ws.workspaceId, paneId: ws.company.coordinatorPaneId })] : []),
+    ...(ws.company?.ceo ? [paneId(ws.company.ceo)] : []),
+  ]));
   const paneOptions = panes
     .filter((pane) => pane.section !== 'needsYou' && !ceos.has(paneId(pane.target)))
     .map((pane): HandOutPaneOption => ({
