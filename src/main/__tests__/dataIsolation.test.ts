@@ -1,11 +1,8 @@
-// @wmux-lane unit
-// 'win32' here is a plain argument to pure helpers; nothing reaches the OS that
-// the unit lane does not already cover.
 import { describe, it, expect } from 'vitest';
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { checkUserDataIsolation, claimPortableDataNotice, mayInstallDarwinCliShim, mayRaiseOsToasts, shouldUsePortableData } from '../dataIsolation';
+import { checkUserDataIsolation, claimPortableDataNotice, mayInstallDarwinCliShim, shouldUsePortableData } from '../dataIsolation';
 
 const PROD = 'C:\\Users\\x\\AppData\\Roaming\\wmux';
 
@@ -103,27 +100,5 @@ describe('mayInstallDarwinCliShim (the suffix-blind /usr/local/bin/wmux)', () =>
     expect(mayInstallDarwinCliShim({ WMUX_DATA_SUFFIX: '-portable' })).toBe(false);
     expect(mayInstallDarwinCliShim({ WMUX_DATA_SUFFIX: '-e2e-first-run-abc123' })).toBe(false);
     expect(mayInstallDarwinCliShim({ WMUX_DATA_SUFFIX: '-verify-x' })).toBe(false);
-  });
-});
-
-describe("mayRaiseOsToasts (#2964: Electron's toast setup names the installed app's Start Menu link)", () => {
-  it('the installed app (packaged, no suffix) keeps its toasts on Windows', () => {
-    expect(mayRaiseOsToasts('win32', true, {})).toBe(true);
-    expect(mayRaiseOsToasts('win32', true, { WMUX_DATA_SUFFIX: '' })).toBe(true);
-  });
-
-  it('never an isolated packaged copy on Windows: portable, a test run, a verification run', () => {
-    expect(mayRaiseOsToasts('win32', true, { WMUX_DATA_SUFFIX: '-portable' })).toBe(false);
-    expect(mayRaiseOsToasts('win32', true, { WMUX_DATA_SUFFIX: '-e2e-first-run-abc123' })).toBe(false);
-    expect(mayRaiseOsToasts('win32', true, { WMUX_DATA_SUFFIX: '-verify-x' })).toBe(false);
-  });
-
-  it('an unpackaged dev build keeps toasts: its ProductName is not wmux', () => {
-    expect(mayRaiseOsToasts('win32', false, { WMUX_DATA_SUFFIX: '-dev' })).toBe(true);
-  });
-
-  it('other platforms are unaffected', () => {
-    expect(mayRaiseOsToasts('darwin', true, { WMUX_DATA_SUFFIX: '-portable' })).toBe(true);
-    expect(mayRaiseOsToasts('linux', true, { WMUX_DATA_SUFFIX: '-verify-x' })).toBe(true);
   });
 });

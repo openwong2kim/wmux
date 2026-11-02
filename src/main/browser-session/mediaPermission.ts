@@ -14,30 +14,35 @@ import { osToastsAllowed } from '../notification/osToastGate';
 
 type PermissionSession = Pick<Session, 'setPermissionRequestHandler' | 'setPermissionCheckHandler'>;
 
+const MEDIA = new Set(['media']);
+const MEDIA_AND_NOTIFICATIONS = new Set(['media', 'notifications']);
+const NOTIFICATIONS = new Set(['notifications']);
+
 function refuse(ses: PermissionSession, refused: ReadonlySet<string>): void {
   ses.setPermissionRequestHandler((_wc, permission, callback) => callback(!refused.has(permission)));
   ses.setPermissionCheckHandler((_wc, permission) => !refused.has(permission));
 }
 
+/** wmux's own window: left alone, except that it refuses `notifications`
+ *  where OS toasts are not allowed. */
+function guardDefaultSession(ses: PermissionSession): void {
+  if (!osToastsAllowed()) refuse(ses, NOTIFICATIONS);
+}
+
 /** Refuse `media` (audio and video) on `ses`, and `notifications` where OS
  *  toasts are not allowed; allow everything else. */
 export function denyMediaPermissions(ses: PermissionSession): void {
-  refuse(ses, new Set(osToastsAllowed() ? ['media'] : ['media', 'notifications']));
+  refuse(ses, osToastsAllowed() ? MEDIA : MEDIA_AND_NOTIFICATIONS);
 }
 
 /** Every session created from now on, except the default one, refuses media.
- *  The default one refuses only `notifications`, and only where OS toasts are
- *  not allowed. A session with its own stricter handler (the HTML preview's)
- *  replaces this one when it sets its own. Call before the first partition is
- *  opened. */
+ *  A session with its own stricter handler (the HTML preview's) replaces this
+ *  one when it sets its own. Call before the first partition is opened. */
 export function denyMediaOutsideMainWindow(): void {
   app.on('session-created', (ses) => {
-    if (ses === session.defaultSession) {
-      if (!osToastsAllowed()) refuse(ses, new Set(['notifications']));
-      return;
-    }
-    denyMediaPermissions(ses);
+    if (ses === session.defaultSession) guardDefaultSession(ses);
+    else denyMediaPermissions(ses);
   });
   // Called after ready, the default session already exists and emits nothing.
-  if (app.isReady() && !osToastsAllowed()) refuse(session.defaultSession, new Set(['notifications']));
+  if (app.isReady()) guardDefaultSession(session.defaultSession);
 }

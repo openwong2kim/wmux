@@ -82,7 +82,12 @@ export class ToastManager {
 
     // Before isSupported(): its first call already runs Electron's Windows
     // toast setup, which an isolated packaged copy must never reach (#2964).
-    if (!osToastsAllowed()) return false;
+    // The taskbar flash does not touch that setup, so it still runs; the
+    // false return tells callers that no OS toast was shown.
+    if (!osToastsAllowed()) {
+      this.attractAttention(context);
+      return false;
+    }
     if (!Notification.isSupported()) return false;
 
     const notification = new Notification({
@@ -115,7 +120,11 @@ export class ToastManager {
     });
 
     notification.show();
+    this.attractAttention(context);
+    return true;
+  }
 
+  private attractAttention(context?: ToastFocusContext): void {
     // OS-aware "attract attention" behavior:
     //   - Windows: flashFrame(true) until window regains focus, then flashFrame(false).
     //   - macOS:   one-shot dock bounce (Apple HIG; no listener needed — bounce is fire-and-forget).
@@ -143,7 +152,6 @@ export class ToastManager {
       }
       // Linux: intentionally no-op beyond the Notification.show() above.
     }
-    return true;
   }
 }
 
