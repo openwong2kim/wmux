@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore, type StoreState } from '../../stores';
 import { createWorkspaceAgentRosterSelector, type WorkspaceAgentRosterRow } from '../../stores/selectors/workspaceAgentRoster';
@@ -69,13 +69,13 @@ type Rect = { top: number; left: number; right: number; bottom: number };
  * folder first. With no items it is one line, the heading and Add a task…,
  * so the company has a way in. It reads the list only while the board shows.
  */
-function HandOutSection({ workspaceId, folder, isActive, now, boundsRef }: {
+function HandOutSection({ workspaceId, folder, isActive, now, scrollRef }: {
   workspaceId: string;
   folder: string;
   isActive: boolean;
   now: number;
-  /** The board: the popover stays inside it. */
-  boundsRef: RefObject<HTMLDivElement | null>;
+  /** The board's scroll container: scrolling it closes the popover. */
+  scrollRef: RefObject<HTMLDivElement | null>;
 }) {
   const t = useT();
   const workspaces = useStore((s) => s.workspaces);
@@ -95,6 +95,17 @@ function HandOutSection({ workspaceId, folder, isActive, now, boundsRef }: {
   useEffect(() => {
     if (pick && (!pickItem || !isActive)) setPick(null);
   }, [pick, pickItem, isActive]);
+  // The row moves when the list changes above it: the popover follows the row.
+  useLayoutEffect(() => {
+    if (!pick) return;
+    const row = [...(scrollRef.current?.querySelectorAll<HTMLElement>('[data-board-hand-out]') ?? [])]
+      .find((el) => el.dataset.boardHandOut === pick.id);
+    if (!row) return;
+    const r = row.getBoundingClientRect();
+    const at = pick.anchor;
+    if (r.top === at.top && r.left === at.left && r.right === at.right && r.bottom === at.bottom) return;
+    setPick({ ...pick, anchor: { top: r.top, left: r.left, right: r.right, bottom: r.bottom } });
+  });
 
   // A pane of this company that added an item needs no workspace name here.
   const workspaceName = (id: string) => (id === workspaceId ? '' : workspaces.find((ws) => ws.id === id)?.name ?? '');
@@ -103,13 +114,8 @@ function HandOutSection({ workspaceId, folder, isActive, now, boundsRef }: {
     const row = trigger.closest<HTMLElement>('[data-board-hand-out]');
     if (!row) return;
     const r = row.getBoundingClientRect();
-    const pane = boundsRef.current?.getBoundingClientRect();
-    const bounds = {
-      top: Math.max(0, pane?.top ?? 0),
-      left: Math.max(0, pane?.left ?? 0),
-      right: Math.min(window.innerWidth, pane?.right ?? window.innerWidth),
-      bottom: Math.min(window.innerHeight, pane?.bottom ?? window.innerHeight),
-    };
+    // The window, not the board's pane: a narrow board would squeeze the popover.
+    const bounds = { top: 0, left: 0, right: window.innerWidth, bottom: window.innerHeight };
     // Every Fleet row, read as the popover opens: where it finds a pane's
     // section (a pane that needs you is not offered) and idle time.
     const { groups } = selectFleetBoard(useStore.getState(), { now: Date.now(), sortMode: 'attention' });
@@ -126,9 +132,17 @@ function HandOutSection({ workspaceId, folder, isActive, now, boundsRef }: {
     // Back to the row's Hand out…, unless the press that closed it focused something else.
     requestAnimationFrame(() => {
       const active = document.activeElement;
-      if ((!active || active === document.body) && pickTrigger.current?.isConnected) pickTrigger.current.focus();
+      if ((!active || active === document.body) && pickTrigger.current?.isConnected) pickTrigger.current.focus({ preventScroll: true });
     });
   }, []);
+  // A scroll moves the row out from under the popover: close it.
+  const picking = pick !== null;
+  useEffect(() => {
+    const board = scrollRef.current;
+    if (!picking || !board) return undefined;
+    board.addEventListener('scroll', closePick, { passive: true });
+    return () => board.removeEventListener('scroll', closePick);
+  }, [picking, closePick, scrollRef]);
   const closeForm = useCallback(() => {
     setAdding(false);
     requestAnimationFrame(() => addRef.current?.focus());
@@ -511,7 +525,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive, visible = tru
           )}
 
           {/* Placed here until the board's direction is chosen (DESIGN.md). */}
-          {folder && <HandOutSection workspaceId={workspaceId} folder={folder} isActive={shown} now={now} boundsRef={rootRef} />}
+          {folder && <HandOutSection workspaceId={workspaceId} folder={folder} isActive={shown} now={now} scrollRef={rootRef} />}
 
           <Section
             title={t('company.board.seats')}

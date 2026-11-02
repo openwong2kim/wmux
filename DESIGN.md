@@ -1845,8 +1845,10 @@ A pane is a terminal column plus, when it needs one, a work area.
     "any agent") and who added it and when ("Added by #ceo · 3h"; a pane of
     this company is named without its workspace), and on the right a quiet
     muted **Hand out…** that opens Fleet's Hand out… popover anchored to the
-    row and kept inside the board's pane, where the company is offered as
-    its CEO. Under the rows, the quiet underlined **Add a task…** (Fleet's add
+    row, where the company is offered as its CEO. The popover keeps its own
+    width inside the window, past the edge of a narrow board; it follows its
+    row when the list changes, and a scroll of the board or the board going
+    out of sight closes it. Under the rows, the quiet underlined **Add a task…** (Fleet's add
     form in place, the company's folder first; Escape cancels) and the muted
     line "Items for `…/a/b`, this company's folder. The CEO picks from here
     too." (the folder in mono as its last two segments, the full path as its
