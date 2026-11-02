@@ -178,8 +178,8 @@ function TypeIcon({ type }: { type: string }): ReactElement {
 /** A pending security notice as the panel pins it. */
 export interface PinnedSecurityNotice {
   notice: SecurityNotice;
-  /** "workspace › tab" of its pane while the pane is still open, else null
-   *  (and no Go to pane). */
+  /** "workspace › tab" of its pane while the pane is still open (empty when
+   *  neither has a name), else null (and no Go to pane). */
   location: string | null;
 }
 
@@ -189,7 +189,7 @@ export function pinSecurityNotices(notices: readonly SecurityNotice[], workspace
     if (notice.ptyId) {
       for (const ws of workspaces) {
         const found = findWorkspaceSurfaceByPtyId(ws, notice.ptyId);
-        if (found) return { notice, location: describeNotificationSource(ws, found.surfaceId) || ws.name };
+        if (found) return { notice, location: describeNotificationSource(ws, found.surfaceId) };
       }
     }
     return { notice, location: null };
@@ -230,7 +230,7 @@ function SecurityNoticesSection(props: SecurityNoticesSectionProps): ReactElemen
             <p className="m-0 mt-0.5 text-[11px] leading-4 text-[var(--text-sub2)]" data-derived="textSub2">{notice.body}</p>
             {location && <p className="m-0 mt-0.5 truncate text-[11px] leading-4 text-[var(--text-sub)]" title={location}>{location}</p>}
             <div className="-ml-2.5 mt-1.5 flex items-center gap-1">
-              {location && (
+              {location !== null && (
                 <Button variant="secondary" size="sm" onClick={() => onGoToPane(notice)}>
                   {goToPaneLabel}
                 </Button>

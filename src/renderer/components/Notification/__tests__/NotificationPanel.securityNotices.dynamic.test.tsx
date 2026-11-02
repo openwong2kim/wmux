@@ -9,7 +9,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import NotificationPanel from '../NotificationPanel';
+import NotificationPanel, { pinSecurityNotices } from '../NotificationPanel';
 import { useStore } from '../../../stores';
 import type { Workspace } from '../../../../shared/types';
 import type { SecurityNotice } from '../../../../shared/securityNotice';
@@ -118,5 +118,14 @@ describe('NotificationPanel pinned security notices', () => {
   it('draws no section when nothing is pending', () => {
     act(() => useStore.setState({ securityNotices: [] }));
     expect(section()).toBeNull();
+  });
+});
+
+describe('pinSecurityNotices', () => {
+  it('a pane in an unnamed workspace and untitled tab is still known', () => {
+    const ws = mkWorkspace('', 'pty-9');
+    if (ws.rootPane.type === 'leaf') ws.rootPane.surfaces[0].title = '';
+    expect(pinSecurityNotices([notice('s9', 'pty-9', 1)], [ws])[0].location).toBe('');
+    expect(pinSecurityNotices([notice('s9', 'pty-gone', 1)], [ws])[0].location).toBeNull();
   });
 });
