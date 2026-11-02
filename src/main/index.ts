@@ -90,6 +90,7 @@ import { registerPaneRpc } from './pipe/handlers/pane.rpc';
 import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
 import { gatedSubmitTaskContext } from './pipe/handlers/a2aOpenTasks';
 import { registerGitHandoffHandlers } from './ipc/handlers/gitHandoff.handler';
+import { registerHandOutHandlers } from './ipc/handlers/handOut.handler';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
@@ -150,6 +151,7 @@ import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerRemoteSpawnRpc } from './pipe/handlers/remoteSpawn.rpc';
+import { registerHandOutRpc } from './pipe/handlers/handOut.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
 import { registerTaskPushRpc } from './pipe/handlers/taskPush.rpc';
 import { registerVerifyRpc } from './pipe/handlers/verify.rpc';
@@ -1426,8 +1428,17 @@ registerGitHandoffHandlers({
   invoke: (method, params) => invokeRendererRpc(method, params),
   startFanOut: (req) => startGuiFanOut(fanOutService, req),
 });
+// To hand out: the list for the renderer, and a pick to an agent pane, a
+// company's CEO or a new worktree over the same two lanes.
+registerHandOutHandlers({
+  getWindow: () => mainWindow,
+  invoke: (method, params) => invokeRendererRpc(method, params),
+  startFanOut: (req) => startGuiFanOut(fanOutService, req),
+});
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerRemoteSpawnRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
+// To hand out for agent panes (MCP hand_out): read the list, add to it.
+registerHandOutRpc(rpcRouter, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow, {
   // A completion on a no-changes skip asks the no-changes check again.
   noChangesCheck: liveNoChangesCheck({

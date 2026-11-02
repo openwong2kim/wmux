@@ -629,11 +629,12 @@ export function isFencedMode(mode: PermissionMode | undefined): boolean {
  *  (`mcp__wmux__<tool>`): they run code, type into a pane, open a pane or a
  *  remote worker, drive the desktop, or move a file in or out of the
  *  browser, all from wmux's own processes, which the OS sandbox does not
- *  cover, or start more workers. The reads, task_push and send_message
- *  stay (send_message without `execute` on a new task: a2a.rpc.ts). */
+ *  cover, or start more workers, or take work from or add it to the owner's
+ *  To hand out list. The reads, task_push and send_message stay
+ *  (send_message without `execute` on a new task: a2a.rpc.ts). */
 export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
   'repl_run', 'browser_repl', 'terminal_send', 'terminal_send_key', 'surface_new', 'pane_split', 'remote_spawn', 'computer', 'fanout_start',
-  'browser_file_upload', 'browser_download', 'browser_wait_for_download', 'browser_pdf', 'browser_trace',
+  'hand_out', 'browser_file_upload', 'browser_download', 'browser_wait_for_download', 'browser_pdf', 'browser_trace',
 ].map((t) => `mcp__wmux__${t}`);
 
 /** The pipe methods behind those of WORKER_FENCE_REFUSED_WMUX_TOOLS that
@@ -642,6 +643,7 @@ export const WORKER_FENCE_REFUSED_WMUX_TOOLS: readonly string[] = [
  *  itself and are refused by the fence's settings and hook only. */
 export const WORKER_FENCE_REFUSED_RPC: ReadonlySet<string> = new Set([
   'input.send', 'input.sendKey', 'surface.new', 'pane.split', 'a2a.remote.spawn', 'computer.act', 'task.fanout.start',
+  'handOut.list', 'handOut.add',
 ]);
 
 /** Top-level settings keys: a sandbox of their own, or hooks turned off. */

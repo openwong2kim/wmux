@@ -103,7 +103,7 @@ describe('FleetView — Needs you is decisions only', () => {
     mount();
     await flushRaf();
     expect([...container.querySelectorAll<HTMLElement>('[data-fleet-section]')].map((el) => el.dataset.fleetSection))
-      .toEqual(['needsYou', 'finished', 'running']);
+      .toEqual(['needsYou', 'finished', 'running', 'handOut']);
     expect(rows().map((r) => r.dataset.ptyId)).toEqual(['pty-1', 'pty-2', 'pty-5']);
     expect(container.querySelector('[data-fleet-finished-toggle]')?.textContent).toBe('Finished 2 · newest 2m');
   });

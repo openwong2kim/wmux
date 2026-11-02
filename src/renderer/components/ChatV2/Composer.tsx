@@ -5,6 +5,7 @@ import { CHATV2_MAX_PROMPT_BYTES, utf8Bytes } from '../../../shared/chatv2/limit
 import { CHAT_ATTACHMENT_LIMIT, validChatImagePath } from '../../../shared/transcript/chatAttachments';
 import { registerChatDropTarget, registerChatInsertTarget, spliceAtCaret } from '../Chat/chatAttachments';
 import { DictationButton, dictationAvailable } from '../Dictation/DictationButton';
+import { shortDir } from '../../utils/shortDir';
 import { getChatV2Bridge } from './bridge';
 import { S } from './strings';
 
@@ -38,12 +39,6 @@ export interface ComposerChips {
 }
 
 interface Staged { path: string; name: string }
-
-/** The last two segments of a directory, for a chip (the full path is its tooltip). */
-export function shortDir(dir: string): string {
-  const parts = dir.split(/[\\/]+/).filter(Boolean);
-  return parts.length <= 2 ? dir : `…/${parts.slice(-2).join('/')}`;
-}
 
 export function Composer({ paneId, draftKey, chips, placeholder, disabled, running, canStop, canAttach, onSend, onStop, extra }: {
   paneId: string;
