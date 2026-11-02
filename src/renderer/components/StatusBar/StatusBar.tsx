@@ -80,6 +80,8 @@ export function formatBellAriaLabel(unreadCount: number): string {
 
 interface NotificationBellBadgeProps {
   unreadCount: number;
+  /** Daemon security notices still waiting on the user (notificationSlice). */
+  securityCount?: number;
   onActivate: () => void;
 }
 
@@ -97,12 +99,16 @@ export const NOTIFICATION_TOGGLE_ATTR = 'data-notification-toggle';
  * env — no jsdom).
  *
  * Renders nothing when unreadCount <= 0 (matches pre-T9 behavior where the
- * bell hid entirely on empty count).
+ * bell hid entirely on empty count) and no security notice is pending. A
+ * pending notice counts in, and turns the dot the caution yellow.
  */
-export function NotificationBellBadgeView({ unreadCount, onActivate }: NotificationBellBadgeProps) {
-  const label = formatBellContent(unreadCount);
+export function NotificationBellBadgeView({ unreadCount, securityCount = 0, onActivate }: NotificationBellBadgeProps) {
+  const label = formatBellContent(Math.max(unreadCount, 0) + securityCount);
   if (label === null) return null;
-  const ariaLabel = formatBellAriaLabel(unreadCount);
+  const unreadAria = formatBellAriaLabel(unreadCount);
+  const ariaLabel = securityCount > 0
+    ? `${t('statusbar.securityAria', { count: securityCount })}, ${unreadAria}`
+    : unreadAria;
   return (
     <button
       type="button"
@@ -114,7 +120,13 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
       className="text-[var(--text-sub)] hover:text-[var(--text-main)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
       {...tokenAttrs('textSub', 'text')}
     >
-      {label}
+      {securityCount > 0 ? (
+        <>
+          {/* The label's leading "●" drawn on its own, in the caution yellow. */}
+          <span className="text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'accent')}>●</span>
+          {label.slice(1)}
+        </>
+      ) : label}
     </button>
   );
 }
@@ -142,6 +154,7 @@ export default function StatusBar() {
   const activeWs = useStore(useShallow(selectActiveWorkspaceSummary));
   const taskOwner = useStore(useShallow(selectActiveTaskOwner));
   const unreadCount = useStore((s) => computeUnreadCount(s.notifications, s.workspaces));
+  const securityCount = useStore((s) => s.securityNotices.length);
 
   // E5 — push unread count to main for the dock/tray badge whenever it changes.
   useEffect(() => {
@@ -264,7 +277,7 @@ export default function StatusBar() {
         {!onFleetPage && <StatusClockUsage />}
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
-        <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
+        <NotificationBellBadgeView unreadCount={unreadCount} securityCount={securityCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
       </div>
