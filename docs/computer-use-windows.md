@@ -416,7 +416,9 @@ section); that result says `delivery: "foreground"`. A posted one says
   then goes where the field's own caret was. Nothing is typed
   (`action_not_supported`) when the selection cannot be put back, when an
   edit control's selection cannot be read before the focus (no answer
-  within 1 s, or a position past 65,535), or when a `TextPattern`
+  within 1 s, or text longer than 65,535 characters, which EM_GETSEL's
+  packed answer cannot hold; Core `EditSelection.Unpack`), when the edit
+  control is no longer in the target window, or when a `TextPattern`
   selection could not be read before and is not a caret after the focus.
   Any other field is focused as before.
   `verified` means the focused value after equals the value before with

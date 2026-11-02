@@ -87,6 +87,21 @@ internal static unsafe class Win
         return n > 0 ? new string(buffer[..n]) : "";
     }
 
+    /// <summary>
+    /// The window's base class (RealGetWindowClass): "Edit" for a superclassed
+    /// edit control such as WinForms' WindowsForms10.EDIT.*.
+    /// </summary>
+    public static string RealClassName(HWND hwnd)
+    {
+        Span<char> buffer = stackalloc char[256];
+        uint n;
+        fixed (char* p = buffer)
+        {
+            n = PInvoke.RealGetWindowClass(hwnd, p, (uint)buffer.Length);
+        }
+        return n > 0 ? new string(buffer[..(int)n]) : "";
+    }
+
     public static uint OwnerPid(HWND hwnd)
     {
         PInvoke.GetWindowThreadProcessId(hwnd, out var pid);

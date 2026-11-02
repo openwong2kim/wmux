@@ -711,15 +711,15 @@ internal static unsafe class Actions
             // Framework WinForms TextBox exposes none), EM_GETSEL/EM_SETSEL.
             Focus.RequireShown(target);
             var selection = Selection(el);
-            var edit = selection == null ? EditWindow(el, target) : HWND.Null;
+            var edit = selection == null ? EditWindow(el, target, index) : HWND.Null;
             (uint Start, uint End)? editBefore = null;
             if (edit != HWND.Null)
             {
-                editBefore = EditSelection(edit);
+                // Read before anything is done to the field; `selection` is null here.
+                editBefore = ReadEditSelection(edit);
                 if (editBefore == null)
                 {
-                    if (selection != null) selection->Release();
-                    throw new HelperError("action_not_supported", $"wmux could not read element {index}'s selection (the field holds more than 65,535 characters or did not answer), so nothing was typed: focusing it may select its whole text. Click where the text should go, then type without an index");
+                    throw new HelperError("action_not_supported", $"wmux could not read element {index}'s selection (the field did not answer, or holds more than 65,535 characters), so nothing was typed: focusing it may select its whole text. Click where the text should go, then type without an index");
                 }
             }
             bool kept = selection != null || edit != HWND.Null;
@@ -849,15 +849,18 @@ internal static unsafe class Actions
 
     private const uint EmGetSel = 0x00B0;
     private const uint EmSetSel = 0x00B1;
+    private const uint WmGetTextLength = 0x000E;
     private const uint EditMessageTimeoutMs = 1000;
 
     /// <summary>
     /// The element's own window when it is a Win32 edit control
     /// (RealGetWindowClass "Edit", so a WinForms TextBox's
-    /// WindowsForms10.EDIT.* counts) inside the target window and process;
-    /// otherwise null.
+    /// WindowsForms10.EDIT.* counts);
+    /// null when it is not one. An edit control outside the target window
+    /// or process is refused: its selection could not be kept, and it would
+    /// be focused unprotected.
     /// </summary>
-    private static HWND EditWindow(IUIAutomationElement* el, ControlTarget target)
+    private static HWND EditWindow(IUIAutomationElement* el, ControlTarget target, int index)
     {
         HWND hwnd;
         try
@@ -868,39 +871,39 @@ internal static unsafe class Actions
         {
             return HWND.Null;
         }
-        if (hwnd == HWND.Null || !PInvoke.IsWindow(hwnd) || Win.OwnerPid(hwnd) != target.Pid || Win.Root(hwnd) != target.Window) return HWND.Null;
-        Span<char> buffer = stackalloc char[64];
-        uint n;
-        fixed (char* p = buffer)
+        if (hwnd == HWND.Null || !PInvoke.IsWindow(hwnd) || Win.RealClassName(hwnd) != "Edit") return HWND.Null;
+        if (Win.OwnerPid(hwnd) != target.Pid || Win.Root(hwnd) != target.Window)
         {
-            n = PInvoke.RealGetWindowClass(hwnd, p, (uint)buffer.Length);
+            throw new HelperError("element_stale", $"element {index}'s edit window is no longer in the target window; nothing was typed");
         }
-        return n > 0 && buffer[..(int)n].SequenceEqual("Edit") ? hwnd : HWND.Null;
+        return hwnd;
     }
 
     /// <summary>
-    /// An edit control's selection (EM_GETSEL with no pointers, so it works
-    /// across processes). Null when it did not answer in time or reports -1
-    /// (a position past 65,535 does not fit the packed answer).
+    /// An edit control's selection: EM_GETSEL with no pointers (so it works
+    /// across processes), trusted only for text that EM_GETSEL's packed
+    /// answer can hold (Core EditSelection.Unpack). Null when either message
+    /// went unanswered or the answer cannot be trusted.
     /// </summary>
-    private static (uint Start, uint End)? EditSelection(HWND edit)
+    private static (uint Start, uint End)? ReadEditSelection(HWND edit)
     {
-        nuint result;
-        if (PInvoke.SendMessageTimeout(edit, EmGetSel, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &result) == 0) return null;
-        uint packed = (uint)result;
-        if (packed == uint.MaxValue) return null;
-        return (packed & 0xFFFF, packed >> 16);
+        nuint length, packed;
+        if (PInvoke.SendMessageTimeout(edit, WmGetTextLength, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &length) == 0) return null;
+        if (PInvoke.SendMessageTimeout(edit, EmGetSel, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &packed) == 0) return null;
+        return EditSelection.Unpack((uint)packed, (uint)length);
     }
 
-    /// <summary>The edit control's selection is `before` again: put back with EM_SETSEL if focusing changed it, then read back.</summary>
+    /// <summary>
+    /// The edit control's selection is `before` again. Unless it already
+    /// reads back as `before`, it is put back with EM_SETSEL (also when the
+    /// read failed) and read back once more.
+    /// </summary>
     private static bool KeepEditSelection(HWND edit, (uint Start, uint End) before)
     {
-        var now = EditSelection(edit);
-        if (now == null) return false;
-        if (now.Value == before) return true;
+        if (ReadEditSelection(edit) == before) return true;
         nuint ignored;
         if (PInvoke.SendMessageTimeout(edit, EmSetSel, before.Start, (nint)before.End, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &ignored) == 0) return false;
-        return EditSelection(edit) == before;
+        return ReadEditSelection(edit) == before;
     }
 
     private static bool SameRange(IUIAutomationTextRange* a, IUIAutomationTextRange* b)
