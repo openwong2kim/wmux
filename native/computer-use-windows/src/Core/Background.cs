@@ -429,9 +429,11 @@ public static class Background
     /// WinForms and with Electron, so it is foreground input. Under
     /// `foreground: 'refuse'` main holds no foreground lease, so none is made
     /// unless the target already is the foreground window (then it cannot
-    /// take the front from anyone). Otherwise a click goes on as a posted
-    /// click, and what cannot be posted answers needs_foreground, so main
-    /// re-sends it under the lease.
+    /// take the front from anyone). Otherwise the action answers
+    /// needs_foreground before the call, and main re-sends it under the
+    /// lease. The click is not posted instead: a posted click lands on
+    /// whatever is at the element's point, and the pattern call presses
+    /// exactly that element.
     /// </summary>
     public static bool PatternCallAllowed(bool refuseForeground, bool targetInFront) => !refuseForeground || targetInFront;
 

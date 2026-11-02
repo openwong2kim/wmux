@@ -236,9 +236,8 @@ section); that result says `delivery: "foreground"`. A posted one says
   action asks for.
   - `click`: a single left click with no modifiers, after the UIA ladder
     (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern. Under
-    `foreground: 'refuse'` the ladder runs only when the target window is
-    already in front (see below); otherwise the click goes straight to
-    posting.
+    `foreground: 'refuse'`, a ladder pattern on a target that is not in
+    front answers `needs_foreground` instead (see below).
     Right and middle buttons, double and triple clicks, and modifiers go the
     real way: posted messages carry no keyboard state, and the rest was not
     measured.
@@ -336,15 +335,16 @@ section); that result says `delivery: "foreground"`. A posted one says
   `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
   The pattern calls of `setValue` and the UIA click ladder raise a covered
   target, so they are foreground input (Core
-  `Background.PatternCallAllowed`). Under `refuse` they are made only when
-  the target window already is the foreground window, where they cannot
-  take the front from anyone. Otherwise an index click skips the ladder and
-  is posted, or answers `needs_foreground` when it cannot be posted, and
-  `setValue` answers `needs_foreground` before anything is sent. Main then
-  re-sends either one under its foreground lease with `allow`, where the
-  ladder and `setValue` run as before. A posted click can land where the
-  ladder would have raised the window: a Chromium or Electron button is
-  pressed in the background.
+  `Background.PatternCallAllowed`). Under `refuse` one is made only when
+  the target window is the foreground window, read right before the call
+  and after the element checks (gone, stale, elevated), where it cannot
+  take the front from anyone. Otherwise the action answers
+  `needs_foreground` before the call (`not_delivered`), and main re-sends
+  it under its foreground lease with `allow`, where the ladder and
+  `setValue` run as before. The click is not posted instead: a posted
+  click lands on whatever is at the element's point, and the pattern call
+  presses exactly that element. An index click on an element with no
+  ladder pattern is posted as before.
   The sent counter's baseline for a request is taken after the release of
   keys a dead helper left down, so those up events never decide an
   action's `not_delivered` or `needs_foreground`. The helper's stderr says

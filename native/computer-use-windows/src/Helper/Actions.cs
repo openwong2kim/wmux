@@ -193,14 +193,17 @@ internal static unsafe class Focus
 
     /// <summary>
     /// Before every UIA pattern call (Invoke, Toggle, SetValue, SetFocus…).
-    /// Parity with the macOS helper: AXPress works on a covered background
-    /// window, so a semantic action here does not need the target in front
-    /// either; it is not input. But it still needs the normal input desktop,
-    /// a target that is not elevated, a helper that is not shutting down, and
-    /// the element itself still in the target process and inside the target
-    /// window.
+    /// A pattern call is not input, but it brings a covered target window to
+    /// the front (Core Background.PatternCallAllowed), so it is foreground
+    /// input for the lanes. It needs the normal input desktop, a target that
+    /// is not elevated, a helper that is not shutting down, and the element
+    /// itself still in the target process and inside the target window.
+    /// Under `refuse` (no foreground lease in main) the target window must
+    /// also be the foreground window right now, read last, right before the
+    /// call; otherwise needs_foreground, and main re-sends the action under
+    /// its lease.
     /// </summary>
-    public static void RequireSemantic(ControlTarget target, IUIAutomationElement* el)
+    public static void RequireSemantic(ControlTarget target, IUIAutomationElement* el, bool refuseForeground = false)
     {
         Input.ThrowIfStopping();
         InputDesktop.Require();
@@ -223,6 +226,11 @@ internal static unsafe class Focus
         if (pid != target.Pid || top != target.Window)
         {
             throw new HelperError("element_stale", "the element is no longer in the target window");
+        }
+        if (!Background.PatternCallAllowed(refuseForeground, Win.Root(PInvoke.GetForegroundWindow()) == target.Window))
+        {
+            Wire.Log("accessibility call: needs foreground (it would bring the target window to the front)");
+            throw new HelperError("needs_foreground", "an accessibility call would bring the target window to the front; nothing was sent");
         }
     }
 }
@@ -332,7 +340,7 @@ internal static unsafe class Actions
     /// UIA pattern (Invoke; Toggle for a check box; SelectionItem; then
     /// ExpandCollapse). Null when no pattern applies; then the caller clicks.
     /// </summary>
-    private static string? ClickSemantically(ControlTarget target, IUIAutomationElement* el)
+    private static string? ClickSemantically(ControlTarget target, IUIAutomationElement* el, bool refuse)
     {
         int type;
         try
@@ -350,7 +358,7 @@ internal static unsafe class Actions
             {
                 try
                 {
-                    Focus.RequireSemantic(target, el);
+                    Focus.RequireSemantic(target, el, refuse);
                     Input.CountSemantic();
                     invoke->Invoke();
                     return "pressed through accessibility (Invoke)";
@@ -370,7 +378,7 @@ internal static unsafe class Actions
         {
             try
             {
-                Focus.RequireSemantic(target, el);
+                Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 toggle->Toggle();
                 return "toggled through accessibility (Toggle)";
@@ -389,7 +397,7 @@ internal static unsafe class Actions
         {
             try
             {
-                Focus.RequireSemantic(target, el);
+                Focus.RequireSemantic(target, el, refuse);
                 Input.CountSemantic();
                 select->Select();
                 return "selected through accessibility (SelectionItem)";
@@ -419,7 +427,7 @@ internal static unsafe class Actions
                 }
                 try
                 {
-                    Focus.RequireSemantic(target, el);
+                    Focus.RequireSemantic(target, el, refuse);
                     Input.CountSemantic();
                     if (collapsed) expand->Expand();
                     else expand->Collapse();
@@ -501,16 +509,10 @@ internal static unsafe class Actions
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
             bool frontBefore = InFront(target);
-            // The ladder's pattern calls bring a covered target to the front
-            // (Core Background.PatternCallAllowed): under `refuse` they are
-            // made only for a target already in front. Otherwise the click is
-            // posted, or answers needs_foreground and comes back under the
-            // lease, where the ladder runs.
-            if (Background.PatternCallAllowed(refuse, frontBefore))
-            {
-                var note = ClickSemantically(target, (IUIAutomationElement*)element);
-                if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
-            }
+            // Under `refuse` a pattern call on a covered target answers
+            // needs_foreground (Focus.RequireSemantic) before it is made.
+            var note = ClickSemantically(target, (IUIAutomationElement*)element, refuse);
+            if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
         }
         // Background first; RequirePointer (which may raise the window) only on the real-input path.
         Input.ThrowIfStopping();
@@ -536,10 +538,9 @@ internal static unsafe class Actions
 
     public static JsonObject SetValue(Params p)
     {
-        // A UIA ValuePattern call brings a covered target to the front (Core
-        // Background.PatternCallAllowed), so under `refuse` it is made only
-        // for a target already in front; otherwise needs_foreground, before
-        // anything is sent.
+        // A UIA ValuePattern call brings a covered target to the front, so
+        // under `refuse` it is made only for a target in front; otherwise
+        // needs_foreground before anything is sent (Focus.RequireSemantic).
         bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
@@ -562,12 +563,7 @@ internal static unsafe class Actions
             if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
             // Read before the checks, as the click path does.
             bool frontBefore = InFront(target);
-            if (!Background.PatternCallAllowed(refuse, frontBefore))
-            {
-                Wire.Log("setValue: needs foreground (a UIA call would bring the target window to the front)");
-                throw new HelperError("needs_foreground", "setValue brings a window that is not in front to the front; nothing was sent");
-            }
-            Focus.RequireSemantic(target, el);
+            Focus.RequireSemantic(target, el, refuse);
             var bstr = Marshal.StringToBSTR(value);
             try
             {

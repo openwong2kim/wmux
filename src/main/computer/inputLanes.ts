@@ -193,8 +193,8 @@ export interface LaneRequest {
  *   - type: text that can move focus (Core `Background.MovesFocus`);
  *   - pressKey, setValue: never. setValue is a UIA call, which brings a
  *     covered window to the front, so the helper answers needs_foreground
- *     for it (and for an index click it cannot post) when the target is not
- *     in front, and the upgrade takes the lease (#2978).
+ *     for it (and for an index click's ladder) when the target is not in
+ *     front, and the upgrade takes the lease (#2978).
  * openApp has no row there (it is not a posted action).
  *
  * darwin, the rows of the macOS helper's `foregroundReason` that depend on
