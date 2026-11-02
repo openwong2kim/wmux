@@ -369,12 +369,16 @@ export class DaemonPTYBridge extends EventEmitter {
   static transcriptTurnEndProbe: ((sessionId: string) => number | undefined) | null = null;
 
   /**
-   * The live agent a pane's shell runs as its own child right now
-   * (shellChildAgent), with its start time (epoch ms), or undefined. Installed
-   * by the daemon on Windows only, where the process tracker names an agent
-   * after its OSC 7501 query (answerProgramStatusProbe).
+   * Installed by the daemon on Windows only, where the process tracker names
+   * an agent after its OSC 7501 query (answerProgramStatusProbe). `read`: the
+   * live agent a pane's shell runs as its own child right now, started no
+   * earlier than `since` (shellChildAgent), with its start time (epoch ms), or
+   * undefined. `accepted`: the pane took that agent as its own.
    */
-  static shellChildAgentProbe: ((sessionId: string, shellPid: number) => { slug: string; startedAt: number } | undefined) | null = null;
+  static shellChildAgentProbe: {
+    read: (shellPid: number, since: number) => { slug: string; pid: number; startedAt: number } | undefined;
+    accepted: (sessionId: string, shellPid: number) => void;
+  } | null = null;
 
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
@@ -1472,13 +1476,13 @@ export class DaemonPTYBridge extends EventEmitter {
   private agentCommandStarts = 0;
   /** When the latest OSC 133 command start arrived (0 = never). */
   private lastCommandStartAt = 0;
-  /** The last shell-child read, reused within one command for SHELL_CHILD_READ_REUSE_MS. */
-  private shellChildRead: { at: number; commandStarts: number; agent: { slug: string; startedAt: number } | undefined } | null = null;
+  /** The last shell-child read, reused for SHELL_CHILD_READ_REUSE_MS. */
+  private shellChildRead: { at: number; agent: { slug: string; pid: number; startedAt: number } | undefined } | null = null;
   /**
-   * The launch edge that read gave, kept when the tracker names the same agent
-   * later. The next agent's query replaces it before the tracker names that one.
+   * The launch edge that read gave, kept when the tracker names the same
+   * process later. The next agent's query replaces it before the tracker names that one.
    */
-  private probeLaunch: { slug: string; commandStarts: number } | null = null;
+  private probeLaunch: { pid: number; slug: string; commandStarts: number } | null = null;
   private parsesOsc133 = false;
 
   /**
@@ -1551,11 +1555,16 @@ export class DaemonPTYBridge extends EventEmitter {
       // shell's own child, read now, is the evidence and the launch edge, if
       // the shell's latest command started it: one started before that
       // command runs behind it. The command start is read a moment after the
-      // process starts, hence the skew.
-      const agent = this.readShellChildAgent(ptyProcess.pid);
-      if (!agent || agent.startedAt < this.lastCommandStartAt - COMMAND_START_SKEW_MS) return;
+      // process starts, hence the skew. A read reused from before that start
+      // is checked against it again.
+      const since = this.lastCommandStartAt - COMMAND_START_SKEW_MS;
+      const agent = this.readShellChildAgent(ptyProcess.pid, since);
+      if (!agent || agent.startedAt < since) return;
+      const known = this.probeLaunch?.pid === agent.pid;
       this.agentCommandStarts = this.commandStarts;
-      this.probeLaunch = { slug: agent.slug, commandStarts: this.commandStarts };
+      this.probeLaunch = { pid: agent.pid, slug: agent.slug, commandStarts: this.commandStarts };
+      // The tracker probes now, once per agent it is told about.
+      if (!known && this.sessionId) DaemonPTYBridge.shellChildAgentProbe?.accepted(this.sessionId, ptyProcess.pid);
     }
     // A command the shell started since the agent launched (after Ctrl+Z, the
     // agent stays alive behind it) owns the keyboard: the reply would be typed
@@ -1570,18 +1579,19 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
-   * shellChildAgentProbe, read at most once per SHELL_CHILD_READ_REUSE_MS
-   * within one command: a program can print the query thousands of times a
-   * second, and each read walks the whole process table.
+   * shellChildAgentProbe, read at most once per SHELL_CHILD_READ_REUSE_MS: a
+   * program can print the query thousands of times a second, command starts
+   * included (OSC 133 is output too), and each read walks the whole process
+   * table.
    */
-  private readShellChildAgent(shellPid: number): { slug: string; startedAt: number } | undefined {
+  private readShellChildAgent(shellPid: number, since: number): { slug: string; pid: number; startedAt: number } | undefined {
     const probe = DaemonPTYBridge.shellChildAgentProbe;
     if (!probe || !this.sessionId) return undefined;
     const now = Date.now();
     const last = this.shellChildRead;
-    if (last && last.commandStarts === this.commandStarts && now - last.at < SHELL_CHILD_READ_REUSE_MS) return last.agent;
-    const agent = probe(this.sessionId, shellPid);
-    this.shellChildRead = { at: now, commandStarts: this.commandStarts, agent };
+    if (last && now - last.at < SHELL_CHILD_READ_REUSE_MS) return last.agent;
+    const agent = probe.read(shellPid, since);
+    this.shellChildRead = { at: now, agent };
     return agent;
   }
 
@@ -1779,7 +1789,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * die. Only the watched pid's death is reported, so a relaunch the tracker
    * already picked is never ended by its predecessor's late death edge.
    */
-  noteAgentProcess(state: { slug?: string; alive: boolean; observedAt?: number; replacedLive?: true; identityEpoch?: number | null }): void {
+  noteAgentProcess(state: { slug?: string; pid?: number; alive: boolean; observedAt?: number; replacedLive?: true; identityEpoch?: number | null }): void {
     const detector = this.agentDetector;
     const now = Date.now();
     const boundaryAt = Math.max(this.identityLifetimeAt, detector?.getIdentityBoundaryAt() ?? 0);
@@ -1803,10 +1813,10 @@ export class DaemonPTYBridge extends EventEmitter {
     if (!state.alive || ((state.observedAt !== undefined || state.replacedLive) && state.slug && previous && previous !== state.slug)) this.noteAgentEnded();
     // The agent's launch edge: shell commands counted after it run behind it.
     if (state.alive && (this.trackedAgent?.alive !== true || this.trackedAgent.slug !== state.slug || state.replacedLive)) {
-      // An edge the shell-child read already took stands: a command started
-      // since then runs behind the agent.
+      // An edge the shell-child read already took for this process stands: a
+      // command started since then runs behind the agent.
       const launch = this.probeLaunch;
-      this.agentCommandStarts = launch && launch.slug === state.slug ? launch.commandStarts : this.commandStarts;
+      this.agentCommandStarts = launch && launch.pid === state.pid && launch.slug === state.slug ? launch.commandStarts : this.commandStarts;
       this.probeLaunch = null;
     }
     this.trackedAgent = { ...(state.slug ? { slug: state.slug } : {}), alive: state.alive };

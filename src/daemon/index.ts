@@ -6110,12 +6110,11 @@ function registerRpcHandlers(
       ? transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at
       : undefined;
   // Windows only: the tracker names a new agent after its OSC 7501 query
-  // (#2838). An agent found here is launch evidence: the tracker probes now.
+  // (#2838). An agent the pane took is launch evidence: the tracker probes now.
   if (process.platform === 'win32') {
-    DaemonPTYBridge.shellChildAgentProbe = (sessionId, pid) => {
-      const agent = shellChildAgent(pid);
-      if (agent) agentProcessTracker.rearm(sessionId, pid);
-      return agent;
+    DaemonPTYBridge.shellChildAgentProbe = {
+      read: (pid, since) => shellChildAgent(pid, since),
+      accepted: (sessionId, pid) => agentProcessTracker.rearm(sessionId, pid),
     };
   }
   // Versioned method name is a rolling-upgrade safety boundary. An older
@@ -10337,7 +10336,7 @@ async function main(): Promise<void> {
     // The bridge validates the observation before retiring a previous owner,
     // so a stale async probe cannot invalidate the replacement launch.
     // The process truth the bridge's running-title path reads.
-    managed.bridge.noteAgentProcess(state);
+    managed.bridge.noteAgentProcess({ ...state, pid: agentProcessTracker.pidFor(sessionId) });
     const screenSlug = managed.bridge.getLastAgent();
     const canonical = canonicalIdentityFor(
       agentProcessTracker,

@@ -9,8 +9,9 @@
  * Only the shell itself (an exec-rooted pane) and its direct children count:
  * an agent the shell started in the foreground is its child, and a `cat` of a
  * file holding the query (a cmdlet or builtin in PowerShell and cmd.exe)
- * starts none. The naming is the tracker's own (selectAgentProcess). The
- * caller compares the start time with the shell's latest command start.
+ * starts none. The naming is the tracker's own (selectAgentProcess), over
+ * the processes still running that started no earlier than the caller's
+ * `since` (the shell's latest command start).
  */
 import { readProcessCommandLine, readProcessExitState, tryProcessCreatedAt, tryProcessFamily } from '../main/pty/winSnapshotNative';
 import { selectAgentProcess, type ProcessTreeEntry } from './AgentProcessTracker';
@@ -35,17 +36,27 @@ const UNIX_EPOCH_FILETIME_MS = 11_644_473_600_000n;
 
 /**
  * The running agent `shellPid` is, or runs as a direct child, with its start
- * time (epoch ms); undefined when none can be named. A process that has
- * exited can stay listed while its last handles close, so only a running one counts.
+ * time (epoch ms); undefined when none can be named. Processes are filtered
+ * before the naming: one that exited can stay listed while its last handles
+ * close, and one started before `since` runs behind the latest command, and
+ * either would otherwise stand in for, or hide, the agent that command started.
  */
-export function shellChildAgent(shellPid: number, read: ShellChildReaders = NATIVE_READERS): { slug: AgentSlug; pid: number; startedAt: number } | undefined {
+export function shellChildAgent(shellPid: number, since: number, read: ShellChildReaders = NATIVE_READERS): { slug: AgentSlug; pid: number; startedAt: number } | undefined {
   const family = read.family(shellPid);
   if (!family) return undefined;
-  // A runtime (node.exe) is named by its script, which only its command line holds.
-  const entries: ProcessTreeEntry[] = family.map((p) => ({ ...p, cmdline: read.commandLine(p.pid) ?? undefined }));
+  const startedAt = new Map<number, number>();
+  const entries: ProcessTreeEntry[] = [];
+  for (const p of family) {
+    if (read.exitState(p.pid) !== 'running') continue;
+    const created = read.createdAt(p.pid);
+    if (created === null) continue;
+    const at = Number(created / TICKS_PER_MS - UNIX_EPOCH_FILETIME_MS);
+    if (at < since) continue;
+    startedAt.set(p.pid, at);
+    // A runtime (node.exe) is named by its script, which only its command line holds.
+    entries.push({ ...p, cmdline: read.commandLine(p.pid) ?? undefined });
+  }
   const pick = selectAgentProcess(entries, shellPid);
-  if (!pick?.slug || read.exitState(pick.pid) !== 'running') return undefined;
-  const created = read.createdAt(pick.pid);
-  if (created === null) return undefined;
-  return { slug: pick.slug, pid: pick.pid, startedAt: Number(created / TICKS_PER_MS - UNIX_EPOCH_FILETIME_MS) };
+  const at = pick?.slug ? startedAt.get(pick.pid) : undefined;
+  return pick?.slug && at !== undefined ? { slug: pick.slug, pid: pick.pid, startedAt: at } : undefined;
 }

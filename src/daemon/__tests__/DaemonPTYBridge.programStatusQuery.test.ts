@@ -302,14 +302,23 @@ describe('DaemonPTYBridge — Claude Code with its query unanswered', () => {
 // own child there (shellChildAgent); macOS never installs it.
 describe('DaemonPTYBridge — the query before the tracker names the agent', () => {
   const SHELL_PID = 4242;
+  const AGENT_PID = 5150;
   const C = '\x1b]133;C\x07';
   const PROMPT = '\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07';
   let bridge: DaemonPTYBridge;
   let fake: ReturnType<typeof makeFakePty>;
-  let asked: Array<[string, number]>;
-  /** The shell's agent child, started at `startedAt` (epoch ms); undefined: none. */
-  const childAgent = (agent: () => { slug: string; startedAt: number } | undefined) => {
-    DaemonPTYBridge.shellChildAgentProbe = (sessionId, pid) => { asked.push([sessionId, pid]); return agent(); };
+  let asked: Array<[number, number]>;
+  let accepted: Array<[string, number]>;
+  /** The shell's agent child (pid AGENT_PID unless given), started at `startedAt` (epoch ms); undefined: none. */
+  const childAgent = (agent: () => { slug: string; startedAt: number; pid?: number } | undefined) => {
+    DaemonPTYBridge.shellChildAgentProbe = {
+      read: (pid, since) => {
+        asked.push([pid, since]);
+        const found = agent();
+        return found && { pid: AGENT_PID, ...found };
+      },
+      accepted: (sessionId, pid) => { accepted.push([sessionId, pid]); },
+    };
   };
 
   beforeEach(() => {
@@ -319,6 +328,7 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
     Object.assign(fake.pty, { pid: SHELL_PID });
     bridge.setupDataForwarding(fake.pty, new RingBuffer(65536), 'sess-1', new PromptEventLog());
     asked = [];
+    accepted = [];
   });
 
   afterEach(() => {
@@ -329,17 +339,19 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
 
   it('answers when the shell\'s latest command started the agent, and its reports drive the pane once the tracker names it', () => {
     fake.feed(C); // the shell runs `claude`
-    const launchedAt = Date.now() + 40; // its process starts just after the mark
+    const commandAt = Date.now();
+    const launchedAt = commandAt + 40; // its process starts just after the mark
     childAgent(() => ({ slug: 'claude', startedAt: launchedAt }));
     vi.advanceTimersByTime(2_600); // measured: the query comes about 2.6 s after Enter
     fake.feed(`${CLAUDE_BANNER}${QUERY_BEL}\x1b[c`);
     expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY]);
-    expect(asked).toEqual([['sess-1', SHELL_PID]]);
+    expect(asked).toEqual([[SHELL_PID, commandAt - 1_000]]);
+    expect(accepted).toEqual([['sess-1', SHELL_PID]]);
     // Claude reports before the tracker sees it: held, then applied.
     fake.feed('\x1b]7501;state=idle:app=claude-code\x07');
     expect(bridge.isProgramStatusDriving()).toBe(false);
     vi.advanceTimersByTime(1_200);
-    bridge.noteAgentProcess({ slug: 'claude', alive: true });
+    bridge.noteAgentProcess({ slug: 'claude', pid: AGENT_PID, alive: true });
     expect(bridge.isProgramStatusDriving()).toBe(true);
   });
 
@@ -359,9 +371,10 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
     fake.feed(`before${QUERY_BEL}after`);
     expect(fake.writes).toEqual([]);
     expect(asked).toHaveLength(1);
+    expect(accepted).toEqual([]);
   });
 
-  it('stays closed for an agent started before the shell\'s latest command (`start claude`, then `cat`)', () => {
+  it('stays closed for an agent started before the shell\'s latest command (`start claude`, then `cat`), and tells the tracker nothing', () => {
     fake.feed(C);
     const launchedAt = Date.now();
     childAgent(() => ({ slug: 'claude', startedAt: launchedAt }));
@@ -370,14 +383,27 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
     fake.feed(C); // `cat probe-file`, with the agent still running in its own window
     fake.feed(QUERY_BEL);
     expect(fake.writes).toEqual([]);
+    expect(accepted).toEqual([]);
   });
 
-  it('reads the shell once for a flood of queries within one command', () => {
+  it('checks a reused read against a command start that came after it', () => {
+    fake.feed(C);
+    const launchedAt = Date.now();
+    childAgent(() => ({ slug: 'claude', startedAt: launchedAt }));
+    vi.advanceTimersByTime(2_600);
+    fake.feed(QUERY_BEL);
+    vi.advanceTimersByTime(300);
+    fake.feed(`${C}${QUERY_BEL}`); // within the second the read is reused for
+    expect(asked).toHaveLength(1);
+    expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY]);
+  });
+
+  it('reads the shell at most once a second for a flood of queries, command starts printed between them included', () => {
     childAgent(() => undefined);
     fake.feed(C);
     fake.feed(QUERY_BEL.repeat(500));
     vi.advanceTimersByTime(500);
-    fake.feed(QUERY_BEL.repeat(500));
+    fake.feed(`${C}${QUERY_BEL}`.repeat(500));
     expect(asked).toHaveLength(1);
     vi.advanceTimersByTime(600);
     fake.feed(QUERY_BEL);
@@ -385,19 +411,16 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
     expect(fake.writes).toEqual([]);
   });
 
-  it('reads again for a new command within that second: `cat`, then `claude` right after', () => {
-    const shell: { agent?: { slug: string; startedAt: number } } = {};
-    childAgent(() => shell.agent);
-    fake.feed(C); // `cat probe-file`
+  it('tells the tracker once per agent it takes', () => {
+    fake.feed(C);
+    childAgent(() => ({ slug: 'claude', startedAt: Date.now() }));
+    vi.advanceTimersByTime(2_600);
     fake.feed(QUERY_BEL);
-    vi.advanceTimersByTime(200);
-    fake.feed(PROMPT);
-    fake.feed(C); // `claude`
-    shell.agent = { slug: 'claude', startedAt: Date.now() };
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(1_500);
     fake.feed(QUERY_BEL);
     expect(asked).toHaveLength(2);
-    expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY]);
+    expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY, PROGRAM_STATUS_PROBE_REPLY]);
+    expect(accepted).toEqual([['sess-1', SHELL_PID]]);
   });
 
   it('keeps the launch edge it read when the tracker names the agent after a later command started', () => {
@@ -410,15 +433,35 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
     // A background agent: the shell runs another command before the tracker names it.
     fake.feed(PROMPT);
     fake.feed(C);
-    bridge.noteAgentProcess({ slug: 'claude', alive: true });
+    bridge.noteAgentProcess({ slug: 'claude', pid: AGENT_PID, alive: true });
     fake.feed(QUERY_BEL);
     expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY]);
+  });
+
+  it('does not hold the next agent to the launch edge of one that exited before the tracker named it', () => {
+    fake.feed(C); // `claude`
+    const shell: { agent?: { slug: string; startedAt: number } } = { agent: { slug: 'claude', startedAt: Date.now() } };
+    childAgent(() => shell.agent);
+    vi.advanceTimersByTime(2_600);
+    fake.feed(QUERY_BEL);
+    expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY]);
+    // It exits (Ctrl+C) unnamed; the user runs `cls`, then `claude` again,
+    // and the tracker names this one before its query.
+    shell.agent = undefined;
+    fake.feed(PROMPT);
+    fake.feed(C);
+    fake.feed(PROMPT);
+    fake.feed(C);
+    bridge.noteAgentProcess({ slug: 'claude', pid: AGENT_PID + 1, alive: true });
+    vi.advanceTimersByTime(2_600);
+    fake.feed(QUERY_BEL);
+    expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY, PROGRAM_STATUS_PROBE_REPLY]);
   });
 
   it('is not consulted once the tracker names the agent: its own launch edge decides', () => {
     childAgent(() => ({ slug: 'claude', startedAt: Date.now() }));
     fake.feed(C);
-    bridge.noteAgentProcess({ slug: 'claude', alive: true });
+    bridge.noteAgentProcess({ slug: 'claude', pid: AGENT_PID, alive: true });
     fake.feed(PROMPT);
     fake.feed(C);
     fake.feed(QUERY_BEL);
