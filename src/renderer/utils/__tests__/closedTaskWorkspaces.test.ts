@@ -140,6 +140,23 @@ describe('taskWorkspacesToClose (#2934)', () => {
     expect(decide(closed, {}, workspace('t1', [remote]))).toEqual([]);
   });
 
+  it('keeps a workspace that only views a remote terminal, with no agent read from it', () => {
+    const viewed = surface('r', '', { surfaceType: 'remote-terminal', remoteHostId: 'h', remoteSessionId: 'rs' });
+    expect(decide(closed, {}, workspace('t1', [surface('t1-s', 't1-pty'), viewed]))).toEqual([]);
+  });
+
+  it('keeps a workspace whose stashed pane holds an agent in a tab its roster row does not show', () => {
+    const stashed = workspace('t1');
+    stashed.stashedPanes = [{
+      pane: { id: 'sp', type: 'leaf', surfaces: [surface('a', 'a-pty'), surface('b', 'b-pty')], activeSurfaceId: 'a' },
+      stashedAt: 1,
+    }];
+    const agents = { 'a-pty': { name: 'Claude Code', status: 'complete' }, 'b-pty': { name: 'Codex', status: 'running' } };
+    expect(decide(closed, { surfaceAgent: agents }, stashed)).toEqual([]);
+    // Known gone: nothing of it is left to finish.
+    expect(decide(closed, { surfaceAgent: agents, agentAliveByPtyId: { 'b-pty': false } }, stashed)).toEqual(['t1']);
+  });
+
   it('never closes the last workspace, counting the ones it already closes', () => {
     expect(taskWorkspacesToClose(open, closed, state([workspace('t1')]))).toEqual([]);
     const prev = { t1: task('t1', 'open'), t2: task('t2', 'open') };

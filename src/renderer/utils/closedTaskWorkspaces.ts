@@ -7,9 +7,10 @@
 
 import type { AgentStatus, Workspace } from '../../shared/types';
 import type { WorkTask } from '../../shared/workTask';
-import { getWorkspaceLeafPanes, getWorkspacePtyIds, getWorkspaceRemoteSessions } from '../../shared/paneUtils';
+import { getWorkspaceLeafPanes, getWorkspacePtyIds } from '../../shared/paneUtils';
 import type { StoreState } from '../stores';
 import { selectWorkspaceAgentRoster, type WorkspaceAgentRosterRow } from '../stores/selectors/workspaceAgentRoster';
+import { pickStashedRepresentativeSurface } from '../stores/selectors/fleet';
 import { isWorkspaceShown } from '../stores/selectors/surfaceShown';
 import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
 
@@ -45,11 +46,24 @@ function runsOtherCommand(state: StoreState, ws: Workspace, rows: readonly Works
   return getWorkspacePtyIds(ws).some((ptyId) => !agents.has(ptyId) && state.commandRunningByPtyId[ptyId] === true);
 }
 
+/** The roster shows a stashed pane by one tab (pickStashedRepresentativeSurface):
+ *  an agent in another tab of it is not seen to finish, unless known gone. */
+function stashedTabHoldsAgent(state: StoreState, ws: Workspace): boolean {
+  return (ws.stashedPanes ?? []).some((entry) => {
+    const leaf = entry?.pane;
+    if (!leaf || leaf.type !== 'leaf') return false;
+    const shown = pickStashedRepresentativeSurface(leaf, state.surfaceAgent);
+    return leaf.surfaces.some((s) => s.id !== shown?.id && !!s.ptyId
+      && !!state.surfaceAgent[s.ptyId]?.name && state.agentAliveByPtyId[s.ptyId] !== false);
+  });
+}
+
 /** An editor tab (stash included): its edits may be unsaved, and nothing
- *  tracks whether they are. Browser, diff and preview tabs reopen from their
- *  URL or the disk. */
-function holdsEditor(ws: Workspace): boolean {
-  return getWorkspaceLeafPanes(ws).some((leaf) => leaf.surfaces.some((s) => s.surfaceType === 'editor'));
+ *  tracks whether they are. A remote terminal, owned or only viewed: closing
+ *  ends that session on the other machine or drops the view of it. Browser,
+ *  diff and preview tabs reopen from their URL or the disk. */
+function holdsKeptTab(ws: Workspace): boolean {
+  return getWorkspaceLeafPanes(ws).some((leaf) => leaf.surfaces.some((s) => s.surfaceType === 'editor' || s.surfaceType === 'remote-terminal'));
 }
 
 /**
@@ -59,8 +73,7 @@ function holdsEditor(ws: Workspace): boolean {
  * so a workspace kept once stays the user's. A workspace is kept when the task
  * was detached or left to its caller, the workspace is gone or shown, an agent
  * in it has not finished or a shell runs a command, it holds an editor or a
- * remote session (closing would end it on another machine), or closing it
- * would be refused (the last workspace).
+ * remote terminal, or closing it would be refused (the last workspace).
  */
 export function taskWorkspacesToClose(
   prev: Readonly<Record<string, WorkTask>>,
@@ -79,8 +92,8 @@ export function taskWorkspacesToClose(
     const ws = workspaces.find((w) => w.id === wsId);
     if (!ws || isWorkspaceShown(state, wsId)) continue;
     const rows = selectWorkspaceAgentRoster(state, wsId).rows;
-    if (rows.some((row) => agentKeepsWorkspace(row.status)) || runsOtherCommand(state, ws, rows)) continue;
-    if (holdsEditor(ws) || getWorkspaceRemoteSessions(ws).length > 0) continue;
+    if (rows.some((row) => agentKeepsWorkspace(row.status)) || stashedTabHoldsAgent(state, ws) || runsOtherCommand(state, ws, rows)) continue;
+    if (holdsKeptTab(ws)) continue;
     if (workspaceCloseRefusal({ workspaces }, wsId)) continue;
     out.push(wsId);
     workspaces = workspaces.filter((w) => w.id !== wsId);
