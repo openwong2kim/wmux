@@ -554,6 +554,12 @@ export interface ExpiredDecision {
   question: string;
 }
 
+/** An expired decision as the renderer's notice shows it. */
+export interface ExpiredDecisionNotice extends ExpiredDecision {
+  /** The workspace's display name when the desktop knows it. */
+  workspaceName?: string;
+}
+
 /**
  * Expire every PENDING decision nothing in this version can answer: one with
  * no origin, raised by a workspace brain, which no longer exists (#2943). Each

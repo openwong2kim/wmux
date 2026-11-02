@@ -26,7 +26,7 @@ import { sweepOrphanAtomicTemps } from '../../../daemon/util/atomicWrite';
 import { eventBus } from '../../events/EventBus';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { setWorkspaceMode } from '../../deck/deckAutonomyStore';
-import { expireUnanswerableDecisions, loadDeckDecisions, onDecisionsChanged, type ExpiredDecision } from '../../deck/deckDecisionStore';
+import { expireUnanswerableDecisions, loadDeckDecisions, onDecisionsChanged, type ExpiredDecisionNotice } from '../../deck/deckDecisionStore';
 import { operatorDecisionContext, setDeckWorkBootId } from '../../deck/deckWorkStore';
 import { createWorkTaskReconciler, getTaskLedger, installLedgerChannelEmitter } from '../../deck/taskLedgerHost';
 import { installFanoutCallerLedgerNotify, notifyFanoutCaller } from '../../deck/fanoutCallerNotify';
@@ -49,12 +49,6 @@ export interface RegisterDeckHandlerOptions {
   getDaemonClient?: () => DeckDaemonClient | null;
   /** Data directory override for tests. */
   dir?: string;
-}
-
-/** A decision expired at this startup, as the renderer shows it. */
-export interface ExpiredDecisionNotice extends ExpiredDecision {
-  /** The workspace's display name when the desktop knows it. */
-  workspaceName?: string;
 }
 
 /** No workspace has a brain of its own any more: every owner is told. */
