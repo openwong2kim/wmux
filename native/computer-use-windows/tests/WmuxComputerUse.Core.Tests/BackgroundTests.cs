@@ -682,4 +682,17 @@ public class BackgroundTests
             Assert.Equal(AfterAttempt.UseResult, Background.Next(outcome, refuseForeground: true, sentDuringAction: true));
         }
     }
+
+    // A UIA action-pattern call brings a covered target window to the front
+    // (measured with WinForms and Electron), so without the foreground lease
+    // (`refuse`) it is made only for a target already in front (#2978).
+    [Theory]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, true)]
+    [InlineData(true, true, true)]
+    [InlineData(true, false, false)]
+    public void PatternCallsNeedTheLeaseUnlessTheTargetIsInFront(bool refuseForeground, bool targetInFront, bool allowed)
+    {
+        Assert.Equal(allowed, Background.PatternCallAllowed(refuseForeground, targetInFront));
+    }
 }

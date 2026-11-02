@@ -803,6 +803,8 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
     // #977 — stash the active pane. `!` is tmux's break-pane, which is the
     // closest gesture in muscle memory: take this pane out of the layout.
     '!': 'stashPane',
+    // Rebalance the whole layout: every column and row back to an equal share.
+    '=': 'balanceLayout',
     'K': 'movePaneUp',
     'J': 'movePaneDown',
     'H': 'movePaneLeft',
@@ -940,6 +942,10 @@ export interface SessionData {
   titlebarVitalsAlwaysVisible?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.paneNewTerminalButton. */
   paneNewTerminalButton?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalCompactScrollback. */
+  terminalCompactScrollback?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalSharedWebgl. */
+  terminalSharedWebgl?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

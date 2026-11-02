@@ -755,6 +755,7 @@ export const en = {
   'statusbar.notifSingular': 'notification',
   'statusbar.notifPlural': 'notifications',
   'statusbar.unreadAria': '{count} unread {noun}, click to open panel',
+  'statusbar.securityAria': 'Security notices waiting: {count}',
 
   // Usage meter (Anthropic 5h/7d widget)
   'usage.tooltipSession': '5h: {pct}%',
@@ -1015,6 +1016,9 @@ export const en = {
   'notification.needsYou.question': "Needs you: “{question}”",
   'notification.needsYou.noQuestion': "Needs you. No question text; see its terminal.",
   'notification.needsYou.over': "No longer waiting on you.",
+  'notification.security.heading': 'Security · stays until you acknowledge it',
+  'notification.security.goToPane': 'Go to pane',
+  'notification.security.ack': 'Got it',
 
   // Command palette
   'palette.placeholder': 'Type a command...',
@@ -1033,6 +1037,7 @@ export const en = {
   'palette.cmd.splitRight': 'Split right',
   'palette.cmd.splitDown': 'Split down',
   'palette.cmd.stashPane': 'Stash pane (keep the session running)',
+  'palette.cmd.balanceLayout': 'Balance layout (equal columns and rows)',
   'palette.cmd.movePane.left': 'Move pane left',
   'palette.cmd.movePane.right': 'Move pane right',
   'palette.cmd.movePane.up': 'Move pane up',
@@ -3769,6 +3774,7 @@ export const en = {
   'settings.sc.zoomReset': 'Reset font size',
   'settings.sc.mentionAgent': 'Mention an agent',
   'settings.sc.stashPane': 'Stash pane (keep the session running)',
+  'settings.sc.balanceLayout': 'Balance layout (equal columns and rows)',
   'settings.sc.movePaneLeft': 'Move pane left',
   'settings.sc.movePaneRight': 'Move pane right',
   'settings.sc.movePaneUp': 'Move pane up',
@@ -3859,6 +3865,7 @@ export const en = {
   'settings.prefix.swapPanePrev': 'Swap with previous pane',
   'settings.prefix.swapPaneNext': 'Swap with next pane',
   'settings.prefix.stashPane': 'Stash pane',
+  'settings.prefix.balanceLayout': 'Balance layout',
 
   // Custom keybindings
   'settings.customKeybindings': 'Custom keybindings',
@@ -6396,6 +6403,10 @@ export const en = {
   'remoteSpawn.code.declined': "declined on {pc}",
   'remoteSpawn.code.app-not-ready': "wmux on {pc} was not ready",
   'remoteSpawn.code.failed': "the agent could not start on {pc}",
+  // Spoken by the screen-reader announcer (components/Accessibility/AgentStateAnnouncer.tsx).
+  'a11y.agent.needsYou': '{tag} {agent} needs you',
+  'a11y.agent.finished': '{tag} {agent} finished',
+  'a11y.agent.error': '{tag} {agent} stopped with an error',
 } as const;
 
 export type TranslationKey = keyof typeof en;

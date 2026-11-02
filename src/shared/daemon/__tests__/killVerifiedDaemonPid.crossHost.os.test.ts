@@ -23,6 +23,26 @@ import { deliberateSleep } from '../../../test-utils/waitFor';
  * own `path.basename(process.execPath)` — exactly the shape of "a daemon
  * some other host spawned."
  */
+/**
+ * A copy of this runner's node under another name. A node linked against its
+ * own libnode (Homebrew's: `@rpath/libnode.*.dylib` from `@loader_path/../lib`)
+ * does not start from a bare copy: dyld aborts it, and a probe then meets a
+ * dying process or none. So the copy goes in `bin/` beside a link to that
+ * `lib` folder; a statically linked node never reads it.
+ */
+function renamedNodeIn(tmpDir: string): string {
+  const bin = path.join(tmpDir, 'bin');
+  fs.mkdirSync(bin);
+  const renamed = path.join(bin, process.platform === 'win32' ? 'other-host-node.exe' : 'other-host-node');
+  fs.copyFileSync(process.execPath, renamed);
+  if (process.platform !== 'win32') {
+    fs.chmodSync(renamed, 0o755);
+    const lib = path.join(path.dirname(process.execPath), '..', 'lib');
+    if (fs.existsSync(lib)) fs.symlinkSync(lib, path.join(tmpDir, 'lib'));
+  }
+  return renamed;
+}
+
 describe('killVerifiedDaemonPid — cross-host image mismatch (#1019)', () => {
   let tmpDir: string;
   let child: ChildProcess | null = null;
@@ -53,10 +73,7 @@ describe('killVerifiedDaemonPid — cross-host image mismatch (#1019)', () => {
 
   it('still verifies and kills a live process whose image differs from this host\'s own execPath, via the cmdline marker', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-crosshost-'));
-    const renamedNodeName = process.platform === 'win32' ? 'other-host-node.exe' : 'other-host-node';
-    const renamedNodePath = path.join(tmpDir, renamedNodeName);
-    fs.copyFileSync(process.execPath, renamedNodePath);
-    if (process.platform !== 'win32') fs.chmodSync(renamedNodePath, 0o755);
+    const renamedNodePath = renamedNodeIn(tmpDir);
 
     // The command line must carry the daemon entry-script shape for the
     // argv check to accept it — since #1025's redo that is EXACTLY
@@ -88,10 +105,7 @@ describe('killVerifiedDaemonPid — cross-host image mismatch (#1019)', () => {
 
   it('still refuses an unrelated process even when definitiveOnly is false, via the cmdline marker mismatch', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-crosshost-unrelated-'));
-    const renamedNodeName = process.platform === 'win32' ? 'other-host-node.exe' : 'other-host-node';
-    const renamedNodePath = path.join(tmpDir, renamedNodeName);
-    fs.copyFileSync(process.execPath, renamedNodePath);
-    if (process.platform !== 'win32') fs.chmodSync(renamedNodePath, 0o755);
+    const renamedNodePath = renamedNodeIn(tmpDir);
 
     // No daemon-script marker in this command line — an unrelated process
     // that merely happens to reuse a renamed node binary must still be
@@ -118,10 +132,7 @@ describe('killVerifiedDaemonPid — cross-host image mismatch (#1019)', () => {
     // is one path segment that does not START WITH 'daemon-bundle', so it
     // must not be read as "wmux's daemon-bundle directory, renamed."
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-crosshost-substring-'));
-    const renamedNodeName = process.platform === 'win32' ? 'other-host-node.exe' : 'other-host-node';
-    const renamedNodePath = path.join(tmpDir, renamedNodeName);
-    fs.copyFileSync(process.execPath, renamedNodePath);
-    if (process.platform !== 'win32') fs.chmodSync(renamedNodePath, 0o755);
+    const renamedNodePath = renamedNodeIn(tmpDir);
 
     const lookalikeDir = path.join(tmpDir, 'my-daemon-bundle-backup');
     fs.mkdirSync(lookalikeDir);
