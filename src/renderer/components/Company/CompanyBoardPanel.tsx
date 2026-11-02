@@ -242,8 +242,16 @@ function HandOutSection({ workspaceId, folder, isActive, now, boundsRef }: {
  * holds each seat of the workspace's company and what each seat is doing, from
  * the roster and the delegated-work tickets.
  */
-export default function CompanyBoardPanel({ workspaceId, isActive }: { workspaceId: string; isActive: boolean }) {
+export default function CompanyBoardPanel({ workspaceId, isActive, visible = true }: {
+  workspaceId: string;
+  /** The active tab of its pane. */
+  isActive: boolean;
+  /** Its workspace is on screen and no other pane is zoomed over it. */
+  visible?: boolean;
+}) {
   const t = useT();
+  // What the board reads, and its pick, wait for it to be seen.
+  const shown = isActive && visible;
   const workspaces = useStore((s) => s.workspaces);
   const workspace = workspaces.find((w) => w.id === workspaceId);
   const company = workspace?.company;
@@ -252,12 +260,12 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const roster = useStore(rosterSelector);
   const paneRole = useStore((s) => s.paneRole);
   const paneLabel = useStore((s) => s.paneLabel);
-  const surfaceAgent = useStore((s) => (isActive ? s.surfaceAgent : NO_AGENTS));
+  const surfaceAgent = useStore((s) => (shown ? s.surfaceAgent : NO_AGENTS));
   // The task mirror only fills in a request or report a link lacks; a hidden
   // board need not redraw on every task update in the app.
-  const a2aTasks = useStore((s) => (isActive ? s.a2aTasks : NO_TASKS));
-  const links = useWorkLinks(isActive && !!company);
-  const { decisions } = useMoaDecisions(isActive && !!company);
+  const a2aTasks = useStore((s) => (shown ? s.a2aTasks : NO_TASKS));
+  const links = useWorkLinks(shown && !!company);
+  const { decisions } = useMoaDecisions(shown && !!company);
   const remoteLinks = useStore((s) => s.a2aRemote.links);
   const remoteHosts = useStore((s) => s.a2aRemote.hosts);
   // What the CEO pane asked other PCs to start; not in the store, so read
@@ -270,7 +278,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
     const v = await read().catch(() => null);
     if (v && Array.isArray(v.requests)) setRequests(v.requests);
   }, []);
-  const readsRequests = REMOTE_SPAWN_UI_ENABLED && isActive && !!company;
+  const readsRequests = REMOTE_SPAWN_UI_ENABLED && shown && !!company;
   useEffect(() => {
     if (!readsRequests) return undefined;
     void readRequests();
@@ -280,11 +288,11 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
   const [hireSeat, setHireSeat] = useState(false);
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    if (!isActive) return undefined;
+    if (!shown) return undefined;
     setNow(Date.now());
     const id = window.setInterval(() => setNow(Date.now()), IDLE_TICK_MS);
     return () => window.clearInterval(id);
-  }, [isActive]);
+  }, [shown]);
 
   const leaves = useMemo(() => (workspace ? getWorkspaceLeafPanes(workspace) : []), [workspace]);
   const agentPaneIds = useMemo(
@@ -503,7 +511,7 @@ export default function CompanyBoardPanel({ workspaceId, isActive }: { workspace
           )}
 
           {/* Placed here until the board's direction is chosen (DESIGN.md). */}
-          {folder && <HandOutSection workspaceId={workspaceId} folder={folder} isActive={isActive} now={now} boundsRef={rootRef} />}
+          {folder && <HandOutSection workspaceId={workspaceId} folder={folder} isActive={shown} now={now} boundsRef={rootRef} />}
 
           <Section
             title={t('company.board.seats')}

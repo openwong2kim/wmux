@@ -48,8 +48,8 @@ let list: ReturnType<typeof vi.fn<() => Promise<HandOutEntry[]>>>;
 
 const q = <E extends Element = HTMLElement>(sel: string) => el.querySelector<E>(sel);
 
-async function render(isActive = true): Promise<void> {
-  act(() => root.render(createElement(CompanyBoardPanel, { workspaceId: 'ws-co', isActive })));
+async function render(isActive = true, visible = true): Promise<void> {
+  act(() => root.render(createElement(CompanyBoardPanel, { workspaceId: 'ws-co', isActive, visible })));
   await act(async () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
@@ -123,6 +123,20 @@ describe('Company board: To hand out', () => {
     expect(popover!.querySelector('[data-hand-out-option="company:ws-co"]')).not.toBeNull();
     // The CEO pane is the company's way in, never a pane of its own.
     expect(popover!.querySelector('[data-hand-out-option="pane:pty-1"]')).toBeNull();
+  });
+
+  it('closes Hand out… once its workspace is hidden or another pane is zoomed', async () => {
+    items = [item('ho-root', '/code/wmux')];
+    seed(company('/code/wmux'));
+    await render();
+    act(() => q<HTMLButtonElement>('[data-board-hand-out-pick]')!.click());
+    expect(document.body.querySelector('[data-testid="fleet-hand-out"]')).not.toBeNull();
+    // Still the active tab of its pane, but the pane is out of sight.
+    await render(true, false);
+    expect(document.body.querySelector('[data-testid="fleet-hand-out"]')).toBeNull();
+    const reads = list.mock.calls.length;
+    await render(true, false);
+    expect(list).toHaveBeenCalledTimes(reads);
   });
 
   it('opens the add form with the company\'s folder first, and Escape closes it', async () => {

@@ -1790,7 +1790,7 @@ function SplitSurfaceView({
       );
     }
     if (surface.surfaceType === 'board') {
-      return <CompanyBoardPanel key={surface.id} workspaceId={workspaceId} isActive={drawn} />;
+      return <CompanyBoardPanel key={surface.id} workspaceId={workspaceId} isActive={drawn} visible={isWorkspaceVisible && !isZoomHidden} />;
     }
     if (surface.surfaceType === 'browser') {
       return (
