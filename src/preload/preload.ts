@@ -1821,14 +1821,21 @@ const electronAPI = {
   projectConfig: {
     get: (cwd: string) =>
       ipcRenderer.invoke(IPC.PROJECT_CONFIG_GET, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigState>,
-    setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string, unattended?: boolean) =>
-      ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash, unattended === true) as Promise<{ ok: boolean }>,
+    // `companyReviewed`: the approving dialog showed the file's company.
+    setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string, unattended?: boolean, companyReviewed?: boolean) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash, unattended === true, companyReviewed === true) as Promise<{ ok: boolean }>,
     // New workspace setup: read the section, and save it (the save is the
     // trust approval of the written bytes).
     prepGet: (cwd: string) =>
       ipcRenderer.invoke(IPC.PROJECT_PREP_GET, cwd) as Promise<import('../shared/workspacePrepSettings').WorkspacePrepSettingsView>,
     prepSave: (cwd: string, settings: import('../shared/workspacePrepSettings').WorkspacePrepSettings, expectedHash?: string) =>
       ipcRenderer.invoke(IPC.PROJECT_PREP_SAVE, cwd, settings, expectedHash ?? null) as Promise<import('../shared/workspacePrepSettings').WorkspacePrepSaveResult>,
+    // The folder's company: read before saving, and save (the save is the
+    // trust approval of the written bytes, the company marked reviewed).
+    companyGet: (folder: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_COMPANY_GET, folder) as Promise<import('../shared/companyFile').CompanyFileView>,
+    companySave: (folder: string, company: Record<string, unknown>, expectedHash?: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_COMPANY_SAVE, folder, company, expectedHash ?? null) as Promise<import('../shared/companyFile').CompanyFileSaveResult>,
   },
   // A new worktree's preparation notice from main (a Quick Launch worktree,
   // whose composer closes on start): shown as a toast in this window.

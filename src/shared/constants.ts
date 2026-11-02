@@ -929,6 +929,10 @@ export const IPC = {
   WORKSPACE_PREP_NOTICE: 'workspace-prep:notice',
   PROJECT_PREP_GET: 'project-config:prep-get',
   PROJECT_PREP_SAVE: 'project-config:prep-save',
+  // The folder's company in its wmux.json (insight 170): what the New
+  // company dialog reads, and its save (which trusts the written bytes).
+  PROJECT_COMPANY_GET: 'project-config:company-get',
+  PROJECT_COMPANY_SAVE: 'project-config:company-save',
   WORKSPACE_PREP_EVENT: 'workspace-prep:event',
   WORKSPACE_PREP_LIST: 'workspace-prep:list',
   WORKSPACE_PREP_DECIDE: 'workspace-prep:decide',
