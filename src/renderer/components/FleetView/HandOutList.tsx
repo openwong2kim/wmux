@@ -109,7 +109,8 @@ export function HandOutLaneButton({ item, layout, shown, onHandOut, t }: {
     : 'opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto';
   return (
     <Button variant="secondary" size="sm" tabIndex={-1} aria-hidden="true"
-      className={`absolute right-[36px] !min-h-[24px] h-[24px] ${place} ${visibility}`}
+      // Opaque, since on hover it sits over the card's title.
+      className={`absolute right-[36px] !min-h-[24px] h-[24px] !bg-[var(--bg-base)] ${place} ${visibility}`}
       onClick={(e) => { e.stopPropagation(); onHandOut(item); }} data-fleet-hand-out-lane>
       {t('fleet.handOut.handOut')}
     </Button>
