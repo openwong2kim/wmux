@@ -62,8 +62,13 @@ import {
   type BotTrigger,
   type RemovedBot,
   BOT_IDENTITY_SLOTS,
+  HERMES_BOT_ENGINE,
+  MY_HERMES_DEFAULT_PROFILE,
   identityHueIndexes,
+  isHermesProfileName,
   isIdentitySlot,
+  myHermesEngine,
+  ownHermesProfile,
 } from '../../shared/bot';
 import { CLAUDE_EFFORT_LEVELS } from '../../shared/claudeModels';
 import { isFactKind, type FactFilter } from '../../shared/facts';
@@ -155,7 +160,16 @@ export function sanitizeBotEngine(raw: unknown, opts: { read?: boolean } = {}): 
       if (!r.args.every((a) => typeof a === 'string' && a.length <= ACP_ARG_MAX)) return null;
       // The Hermes preset: an unknown preset is a plain ACP command (refused
       // outside test builds); a missing or unknown mode reads as managed.
-      if (r.preset === 'hermes') return { kind: 'acp', command, args: [...(r.args as string[])], preset: 'hermes', mode: 'managed' };
+      // `own` keeps its profile: a malformed one is refused on a write and
+      // reads as managed (never another profile than the one picked).
+      if (r.preset === 'hermes') {
+        if (r.mode === 'own') {
+          const profile = r.profile === undefined ? MY_HERMES_DEFAULT_PROFILE : r.profile;
+          if (isHermesProfileName(profile)) return myHermesEngine(profile);
+          if (!read) return null;
+        }
+        return { kind: 'acp', command, args: [...(r.args as string[])], preset: 'hermes', mode: 'managed' };
+      }
       return { kind: 'acp', command, args: [...(r.args as string[])] };
     }
     default:
@@ -350,6 +364,12 @@ function withTemplateBrain(engine: BotEngine | null, template: BotTemplate): Bot
   return { ...engine, model: brain.model };
 }
 
+/** The refusal when the owner's Hermes `profile` is taken by `holder`. Pure. */
+export function myHermesInUseMessage(holder: string, profile: string): string {
+  const where = profile === MY_HERMES_DEFAULT_PROFILE ? '~/.hermes' : `the Hermes profile ${profile}`;
+  return `${holder} already uses ${where}. One bot can use a Hermes profile at a time; switch ${holder} to another engine first.`;
+}
+
 function copyProfile(p: BotProfile): BotProfile {
   return parseBotProfile(JSON.parse(JSON.stringify(p))) as BotProfile;
 }
@@ -516,6 +536,16 @@ export class BotStore implements BotDirectoryApi {
       // file, a bot from before the flag) is turned off, not dropped: the
       // owner sees why and fixes it. Only a workspace known to be a guest
       // one: a list that cannot be read changes nothing on disk.
+      // One bot per Hermes profile on My Hermes: a later one on a profile
+      // another bot holds (a hand-edited or copied file) reads as managed,
+      // the same safe fallback an older build takes, and is written back.
+      const ownProfile = ownHermesProfile(bot.engine);
+      if (ownProfile !== null && this.ownHermesHolder(ownProfile)) {
+        bot.engine = { ...HERMES_BOT_ENGINE };
+        bot.updatedAt = this.now();
+        migrated = true;
+        console.warn(`[factory] bots.json: bot ${bot.id} was on My Hermes profile ${ownProfile}, which another bot uses; it is on wmux's Hermes now`);
+      }
       const broken = bot.enabled && this.isGuestWs(bot.workspaceId) === true ? guestWorkspaceBotRefusals(bot) : [];
       if (broken.length > 0) {
         bot.enabled = false;
@@ -628,6 +658,24 @@ export class BotStore implements BotDirectoryApi {
     return b ? copyProfile(b) : null;
   }
 
+  /** The bot (on or off) bound to the owner's Hermes `profile` on My
+   *  Hermes, other than `exceptBotId`, or null. */
+  ownHermesHolder(profile: string, exceptBotId?: string): BotProfile | null {
+    for (const b of this.bots.values()) {
+      if (b.id !== exceptBotId && ownHermesProfile(b.engine) === profile) return copyProfile(b);
+    }
+    return null;
+  }
+
+  /** The refusal for `engine` on `botId` (null: a new bot) when another bot
+   *  holds its My Hermes profile, else null. */
+  private ownHermesRefusal(engine: BotEngine, botId: string | null): string | null {
+    const profile = ownHermesProfile(engine);
+    if (profile === null) return null;
+    const holder = this.ownHermesHolder(profile, botId ?? undefined);
+    return holder ? myHermesInUseMessage(holder.name, profile) : null;
+  }
+
   create(input: BotCreateInput): BotStoreResult {
     if (input.template !== undefined && !isBotTemplate(input.template)) {
       return refuse('invalid_argument', 'template must be one of coordinator, developer, reviewer, issue, researcher, custom');
@@ -647,6 +695,8 @@ export class BotStore implements BotDirectoryApi {
     if (!name) return refuse('invalid_argument', `name must be 1-${NAME_MAX} characters, no control characters or slashes`);
     const engine = input.engine === undefined ? withTemplateBrain(sanitizeBotEngine(this.defaultEngine()), template) : sanitizeBotEngine(input.engine);
     if (!engine) return refuse('invalid_argument', ENGINE_MALFORMED);
+    const inUse = this.ownHermesRefusal(engine, null);
+    if (inUse) return refuse('invalid_argument', inUse);
     let workerAgent = TEMPLATE_MODEL_DEFAULTS[template]?.worker;
     if (input.workerAgent !== undefined) {
       const v = validateBotWorkerAgent(input.workerAgent, this.platform);
@@ -740,6 +790,8 @@ export class BotStore implements BotDirectoryApi {
       if (engine.kind === 'claude-sdk' && engine.model === undefined && cur.engine.kind === 'claude-sdk' && cur.engine.model !== undefined && !validateBotBrainModel(cur.engine.model).ok) {
         engine.model = cur.engine.model;
       }
+      const inUse = this.ownHermesRefusal(engine, botId);
+      if (inUse) return refuse('invalid_argument', inUse);
       next.engine = engine;
     }
     if (patch.workerAgent !== undefined) {

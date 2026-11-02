@@ -9,6 +9,7 @@
 //                         └──release (nothing was written)──▶ pending
 //   uncertain ──settle (a read of GitHub)──▶ done | refused | pending
 //   pending, never started ──settle (its approval aged out)──▶ refused
+//   pending or uncertain, claimed, stalled ──settle (a read found nothing)──▶ refused
 //
 // A row is journaled inFlight, on disk, before its write is sent; a row found
 // inFlight on load is uncertain (the write may or may not have landed) and is
@@ -26,6 +27,13 @@
 // or a read GitHub did not answer, in between leaves it open, and the next
 // sweep decides it. A row an earlier build refused has no flag: its draft
 // was decided then.
+//
+// A claimed row whose reads keep failing (a read before the write, or the
+// reconcile read) counts them (noteReadUnanswered). Past ACT_STALL_MAX_MS
+// from its first try and ACT_STALL_MIN_TRIES such reads (actStalledTooLong),
+// no write is sent for it again: a read that finds nothing refuses it, one
+// that finds the act settles it, and while reads still cannot say the owner
+// is told it may have gone through (approvals.ts onActStalled).
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,6 +70,10 @@ export interface ActEffect {
    *  (DRAFT_OPEN_MAX_MS and DRAFT_OPEN_MIN_TRIES bound them). */
   draftUnansweredAt?: number;
   draftUnansweredTries?: number;
+  /** Reads of a claimed row GitHub did not answer (ACT_STALL_MIN_TRIES), and
+   *  the last one's error, clipped. */
+  readUnansweredTries?: number;
+  lastReadError?: string;
   createdAt: number;
   updatedAt: number;
 }
@@ -84,6 +96,8 @@ function wellFormed(v: unknown): v is ActEffect {
     && (e.draftOpen === undefined || e.draftOpen === true)
     && (e.draftUnansweredAt === undefined || Number.isSafeInteger(e.draftUnansweredAt))
     && (e.draftUnansweredTries === undefined || (Number.isSafeInteger(e.draftUnansweredTries) && e.draftUnansweredTries > 0))
+    && (e.readUnansweredTries === undefined || (Number.isSafeInteger(e.readUnansweredTries) && e.readUnansweredTries > 0))
+    && (e.lastReadError === undefined || typeof e.lastReadError === 'string')
     && Number.isSafeInteger(e.createdAt) && Number.isSafeInteger(e.updatedAt);
 }
 
@@ -110,6 +124,19 @@ export const DRAFT_OPEN_MIN_TRIES = 12;
 export function draftUnansweredTooLong(e: Pick<ActEffect, 'draftUnansweredAt' | 'draftUnansweredTries'>, now: number): boolean {
   return e.draftUnansweredAt !== undefined && now - e.draftUnansweredAt >= DRAFT_OPEN_MAX_MS
     && (e.draftUnansweredTries ?? 0) >= DRAFT_OPEN_MIN_TRIES;
+}
+
+/** How long from a claimed row's first try, and for how many reads GitHub
+ *  did not answer at least, it is tried; past both, no write is sent for it
+ *  again. Both, as for a draft: a long time off counts no reads. */
+export const ACT_STALL_MAX_MS = 24 * 60 * 60_000;
+export const ACT_STALL_MIN_TRIES = 12;
+const READ_ERROR_MAX = 200;
+
+/** Whether a claimed row's reads have failed past both bounds. Pure. */
+export function actStalledTooLong(e: Pick<ActEffect, 'status' | 'attempt' | 'draftId' | 'firstStartedAt' | 'createdAt' | 'readUnansweredTries'>, now: number): boolean {
+  return actRowClaimed(e) && now - (e.firstStartedAt ?? e.createdAt) >= ACT_STALL_MAX_MS
+    && (e.readUnansweredTries ?? 0) >= ACT_STALL_MIN_TRIES;
 }
 
 /** Whether a refused release row's draft is still to be deleted or kept. Pure. */
@@ -238,6 +265,21 @@ export class ActEffectStore {
       ...row,
       draftUnansweredAt: row.draftUnansweredAt ?? at,
       draftUnansweredTries: (row.draftUnansweredTries ?? 0) + 1,
+    };
+    return this.put(next) ? next : row;
+  }
+
+  /** A read of a claimed row GitHub did not answer, counted with its error
+   *  (not a move of the row: updatedAt is kept, as noteDraftUnanswered).
+   *  The row as counted (as it was for a row not claimed, pending or
+   *  uncertain); null when there is no row. Not journaled: the row as it was. */
+  noteReadUnanswered(id: string, error: string): ActEffect | null {
+    const row = this.rows.get(id);
+    if (!row || !actRowClaimed(row) || (row.status !== 'pending' && row.status !== 'uncertain')) return row ?? null;
+    const next: ActEffect = {
+      ...row,
+      readUnansweredTries: (row.readUnansweredTries ?? 0) + 1,
+      lastReadError: error.replace(/\s+/g, ' ').trim().slice(0, READ_ERROR_MAX),
     };
     return this.put(next) ? next : row;
   }

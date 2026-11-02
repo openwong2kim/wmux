@@ -1137,16 +1137,16 @@ export function GitTab({
         {/* Plain-language summary — changed files + verify result. */}
         <div className="text-[var(--text-muted)]">
           {session.phase === 'conflicted'
-            ? t('git.mergeSummary.conflicted', { count: session.conflicts.length })
+            ? t(session.conflicts.length === 1 ? 'git.mergeSummary.conflictedOne' : 'git.mergeSummary.conflicted', { count: session.conflicts.length })
             : session.phase === 'verifying'
-              ? t('git.mergeSummary.verifying', { count: session.changedFiles })
+              ? t(session.changedFiles === 1 ? 'git.mergeSummary.verifyingOne' : 'git.mergeSummary.verifying', { count: session.changedFiles })
               : session.phase === 'verified'
                 ? session.changedFiles > 0
-                  ? t('git.mergeSummary.verified', { count: session.changedFiles })
+                  ? t(session.changedFiles === 1 ? 'git.mergeSummary.verifiedOne' : 'git.mergeSummary.verified', { count: session.changedFiles })
                   : t('git.mergeSummary.nothing')
                 : session.phase === 'failed'
-                  ? `${t('git.mergeSummary.failed', { count: session.changedFiles })}${session.verify?.failedStep ? ` (${session.verify.failedStep})` : ''}${session.verify?.timedOut ? ` · ${t('git.mergeSummary.timedOut')}` : ''}`
-                  : t('git.mergeSummary.changed', { count: session.changedFiles })}
+                  ? `${t(session.changedFiles === 1 ? 'git.mergeSummary.failedOne' : 'git.mergeSummary.failed', { count: session.changedFiles })}${session.verify?.failedStep ? ` (${session.verify.failedStep})` : ''}${session.verify?.timedOut ? ` · ${t('git.mergeSummary.timedOut')}` : ''}`
+                  : t(session.changedFiles === 1 ? 'git.mergeSummary.changedOne' : 'git.mergeSummary.changed', { count: session.changedFiles })}
         </div>
         <div className="flex items-center gap-1.5">
           {session.phase === 'conflicted' && (

@@ -11,7 +11,7 @@
 // the workspace's is refused. A bot without a repository still talks; its
 // fan-outs are refused until it has one. The picture is a preview main made
 // with IPC.FACTORY_BOT_PICK_AVATAR (main checks it again). Everything else
-// (engine, triggers, budget) takes the store's defaults, as `bot.create`
+// (triggers, budget, and the engine unless Add bot picked one) takes the store's defaults, as `bot.create`
 // does. A bot added here wakes once on its own (wake reason `intro`) to greet
 // the owner and ask what to do.
 //
@@ -48,6 +48,11 @@ export interface FactoryBotCreateRequest {
   noInherit?: boolean;
   /** A picture from FACTORY_BOT_PICK_AVATAR (BotProfile.avatar's shape). */
   avatar?: string;
+  /** The engine picked in Add bot; absent = the store's default (Claude).
+   *  `my-hermes` is asked in main's own confirm before the bot is made. */
+  engine?: 'claude-sdk' | 'hermes' | 'my-hermes';
+  /** My Hermes: the owner's Hermes profile (absent = `default`, ~/.hermes). */
+  hermesProfile?: string;
 }
 
 export type FactoryBotCreateCode =
@@ -60,7 +65,9 @@ export type FactoryBotCreateCode =
   | 'not_a_repo'
   | 'repo_untrusted'
   | 'no_remote'
-  | 'repo_mismatch';
+  | 'repo_mismatch'
+  /** The owner said no in main's My Hermes confirm. */
+  | 'cancelled';
 
 export type FactoryBotCreateResult =
   | { ok: true; bot: BotProfile }
@@ -129,7 +136,7 @@ export function roleWorksOnRepo(role: BotRole): boolean {
  *  folder its reason (`message`, which says how to fix it). */
 export type FactoryBotRepoSuggestion =
   | { ok: true; repoKey: string; root: string; displayRoot: string; inherited: boolean }
-  | { ok: false; code: 'operator_only' | 'invalid_argument' | 'no_folder' | 'none' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message?: string };
+  | { ok: false; code: 'operator_only' | 'invalid_argument' | 'no_folder' | 'none' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message?: string; originSet?: boolean };
 
 /** FACTORY_BOT_PICK_AVATAR: the picked image as a stored-avatar preview (not
  *  saved yet), or why there is none. */

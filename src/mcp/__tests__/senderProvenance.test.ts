@@ -111,6 +111,13 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     expect(tokens - decls).toBeGreaterThanOrEqual(5);
   });
 
+  it('a2a_task_cancel names the caller pane, so the pane that created a company task can cancel it', () => {
+    const handler = /server\.tool\(\s*'a2a_task_cancel'[\s\S]*?\n\);/.exec(mcpIndexSrc)?.[0] ?? '';
+    expect(handler).not.toBe('');
+    expect(handler).toMatch(/const senderPtyId = getTaskSenderPtyId\(\);\s*if \(senderPtyId\) params\.senderPtyId = senderPtyId;/);
+    expect(handler).toMatch(/callRpc\('a2a\.task\.cancel', params\)/);
+  });
+
   it('a2a_task_send is send_message\'s own handler, so a fenced worker\'s execute is refused on the same a2a.task.send path', () => {
     // The worker fence refuses a new task with execute in a2a.rpc.ts, not by
     // tool name: the alias must reach that one pipe method.

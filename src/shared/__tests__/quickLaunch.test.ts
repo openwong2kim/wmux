@@ -47,9 +47,9 @@ describe('isGlobalAccelerator', () => {
 
 describe('formatAccelerator', () => {
   it('spells the keys per platform', () => {
-    expect(formatAccelerator('CommandOrControl+Shift+Space', true)).toBe('⌘+Shift+Space');
+    expect(formatAccelerator('CommandOrControl+Shift+Space', true)).toBe('⇧⌘Space');
     expect(formatAccelerator('CommandOrControl+Shift+Space', false)).toBe('Ctrl+Shift+Space');
-    expect(formatAccelerator('CommandOrControl+Alt+K', true)).toBe('⌘+⌥+K');
+    expect(formatAccelerator('CommandOrControl+Alt+K', true)).toBe('⌥⌘K');
   });
 });
 

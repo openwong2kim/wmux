@@ -11,6 +11,7 @@ import { ACP_TEST_ONLY_MESSAGE, acpEnginesAllowed, runnableDefaultEngine, create
 import { ClaudeSdkAdapter } from '../../deck/ClaudeSdkAdapter';
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
 import { DEFAULT_BOT_BUDGETS, type BotEngine, type BotProfile } from '../../../shared/bot';
+import { MY_HERMES_UNAVAILABLE_MESSAGE, classifyEngineError } from '../engineError';
 import { buildWakePrompt, fenceData, taskFactId, taskIdOfFactId } from '../wakePrompt';
 
 function input(engine: BotEngine, acpStub = false): BotEngineSpawnInput {
@@ -85,6 +86,23 @@ describe('bot engines', () => {
     if (!d.ok) throw new Error(d.message);
     expect((d.adapter as unknown as { bot?: { commandReviewer?: () => boolean } }).bot?.commandReviewer?.()).toBe(true);
     d.adapter.dispose();
+  });
+
+  it('My Hermes runs on its own profile host, never on the managed Hermes; Windows refuses it', () => {
+    const hermes = vi.fn();
+    const own = { mode: 'own' as const, kind: 'acp' as const, command: 'hermes', args: ['acp'], preset: 'hermes' as const, profile: 'coder' };
+    const policy = { mode: 'own' as const };
+    const host = { profile: 'coder', policyFor: vi.fn(() => policy), register: vi.fn() };
+    const ownHermes = vi.fn(() => host);
+    const r = factory({ hermes: hermes as never, ownHermes: ownHermes as never, platform: 'darwin' })(input(own));
+    expect(r.ok && r.adapter).toBeInstanceOf(AcpBrainAdapter);
+    expect(ownHermes).toHaveBeenCalledWith('coder');
+    expect(host.register).toHaveBeenCalledTimes(1);
+    expect(hermes).not.toHaveBeenCalled();
+    if (r.ok) r.adapter.dispose();
+    const win = factory({ hermes: hermes as never, ownHermes: ownHermes as never, platform: 'win32' })(input(own));
+    expect(win).toEqual({ ok: false, code: 'engine_unavailable', message: MY_HERMES_UNAVAILABLE_MESSAGE });
+    expect(classifyEngineError(MY_HERMES_UNAVAILABLE_MESSAGE)).toBe('my_hermes_unavailable');
   });
 
   it('acp builds an AcpBrainAdapter when its command resolves', () => {

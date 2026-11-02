@@ -192,6 +192,41 @@ describe('FleetView — review follow-ups', () => {
       .toBe('Keep going with the next file?');
   });
 
+  it('an agent asking with no question text says Needs you once: no "asks" block, no second wording', async () => {
+    act(() => { useStore.setState({
+      surfaceAgentStatus: { ...useStore.getState().surfaceAgentStatus, 'pty-3': 'awaiting_input' },
+    }); });
+    mount();
+    await flushRaf();
+    const asking = row('pty-3');
+    expect(asking.querySelector('.wmux-fleet-status')?.textContent).toBe('Needs you');
+    expect(asking.textContent).not.toMatch(/Needs (your )?input/);
+    act(() => asking.focus());
+    key(asking, ' ');
+    await flushRaf();
+    const request = container.querySelector<HTMLElement>('[data-fleet-request="input"]')!;
+    expect(request).not.toBeNull();
+    expect(request.querySelector('h3')).toBeNull();
+    expect(request.querySelector('[data-fleet-request-text]')).toBeNull();
+    expect(request.querySelector('[data-fleet-request-jump]')).not.toBeNull();
+  });
+
+  it('a shell waiting at a stdin prompt shows that prompt as what it asks', async () => {
+    act(() => { useStore.setState({
+      surfaceShellPrompt: { ...useStore.getState().surfaceShellPrompt, 'pty-3': { shape: 'yes-no', question: 'Push anyway? [y/N]' } },
+    }); });
+    mount();
+    await flushRaf();
+    const asking = row('pty-3');
+    act(() => asking.focus());
+    key(asking, ' ');
+    await flushRaf();
+    const request = container.querySelector<HTMLElement>('[data-fleet-request="input"]')!;
+    expect(request).not.toBeNull();
+    expect(request.querySelector('h3')).not.toBeNull();
+    expect(request.querySelector('[data-fleet-request-text]')?.textContent).toBe('Push anyway? [y/N]');
+  });
+
   it('the detail shows the error line with the same sanitizing as the row', async () => {
     TAILS['pty-2'] = ['> build', 'Error: bad\u202E txt.exe\u202C\u200B path', 'exit 1'];
     try {

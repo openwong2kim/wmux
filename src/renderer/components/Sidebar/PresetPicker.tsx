@@ -8,6 +8,8 @@ import AttachRemoteModal from './AttachRemoteModal';
 import { selectPcRailVisible } from '../../stores/selectors/pcRail';
 import AddRemotePaneModal from '../Remote/AddRemotePaneModal';
 import { showWorkspaces } from '../../utils/showWorkspaces';
+import { BUILTIN_COMPANY_PRESETS, type CompanyPreset } from '../../../shared/companyPreset';
+import CompanyPresetDialog from './CompanyPresetDialog';
 
 interface PresetPickerProps {
   onClose: () => void;
@@ -69,6 +71,8 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   // Same swap as attachRemoteOpen: the dropdown gives way to the host picker
   // the ⋮ menu's remote entries open (AddRemotePaneModal).
   const [remotePaneOpen, setRemotePaneOpen] = useState(false);
+  // A company preset picked: its dialog replaces the dropdown.
+  const [companyPreset, setCompanyPreset] = useState<CompanyPreset | null>(null);
   // The modal calls onCreated after its host round-trip (up to the request
   // timeout) with no check that it is still on screen, and every way out of it
   // (Escape, backdrop, a repair) unmounts this picker. A mint that lands after
@@ -151,6 +155,9 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
   if (attachRemoteOpen) {
     return <AttachRemoteModal onClose={onClose} />;
   }
+  if (companyPreset) {
+    return <CompanyPresetDialog preset={companyPreset} onClose={onClose} />;
+  }
   if (remotePaneOpen) {
     // The heading is the row's own label (#1148: the dialog names the entry
     // that opened it).
@@ -204,6 +211,22 @@ export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps
         >
           <div className="font-semibold">{t(`preset.${preset.id}.name`)}</div>
           <div className="text-[var(--text-sub)] text-[11px]">{t(`preset.${preset.id}.description`)}</div>
+        </button>
+      ))}
+
+      <div className="border-t border-[var(--bg-surface)] my-0.5" />
+
+      {/* Company presets: a workspace that is a company from the start. */}
+      <div className="px-3 pt-1 text-[11px] text-[var(--text-muted)]">{t('companyPreset.section')}</div>
+      {BUILTIN_COMPANY_PRESETS.map((preset) => (
+        <button
+          key={preset.id}
+          className="w-full text-left px-3 py-1.5 hover:bg-[var(--bg-surface)] text-[var(--text-main)] transition-colors"
+          onClick={() => setCompanyPreset(preset)}
+          data-company-preset={preset.id}
+        >
+          <div className="font-semibold">{t(`companyPreset.${preset.id}.name`)}</div>
+          <div className="text-[var(--text-sub)] text-[11px]">{t(`companyPreset.${preset.id}.description`)}</div>
         </button>
       ))}
 

@@ -1046,14 +1046,14 @@ export type ReleaseFound =
   | { status: 'done'; result: { url: string; id?: number } }
   | { status: 'refused'; reason: string; result?: { url: string; id?: number }; draft?: number }
   | { status: 'none'; draft?: number; tagMade?: true }
-  | { status: 'unknown' };
+  | { status: 'unknown'; error?: string };
 
 /** Whether the release is on GitHub as approved, read for a row that may
  *  have run. `draft`: this act's own draft, still a draft; `tagMade`: its
  *  tag is made at the commit (a publish stopped after making it). */
 export async function findRelease(gh: GhActPort, p: RepoPath, act: ApprovalReleaseAct, login: string, draftId: number | undefined): Promise<ReleaseFound> {
   const tag = await readTagTarget(gh, p, act.tagName);
-  if (isFail(tag)) return { status: 'unknown' };
+  if (isFail(tag)) return { status: 'unknown', error: tag.error };
   if (act.mode === 'workflow') {
     // The write is the tag itself: at the commit, it is this act's (no one
     // else's push of that ref would differ from it).
@@ -1062,7 +1062,7 @@ export async function findRelease(gh: GhActPort, p: RepoPath, act: ApprovalRelea
     return { status: 'done', result: { url: tagRunsUrl(p, act) } };
   }
   const all = await readReleases(gh, p);
-  if (isFail(all)) return { status: 'unknown' };
+  if (isFail(all)) return { status: 'unknown', error: all.error };
   const same = all.filter((r) => r.tagName === act.tagName);
   const published = same.find((r) => !r.draft);
   if (published) {

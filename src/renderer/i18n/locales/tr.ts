@@ -5,10 +5,10 @@ export const tr = {
   // Sidebar
   'sidebar.workspaces': 'Çalışma alanları',
   'sidebar.newWorkspace': 'Yeni çalışma alanı',
-  'sidebar.newWorkspaceTooltip': 'Yeni çalışma alanı (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Yeni çalışma alanı',
   'sidebar.newRemoteWorkspace': '{name} üzerinde yeni çalışma alanı',
-  'sidebar.hideTooltip': 'Kenar çubuğunu gizle (Ctrl+B)',
-  'sidebar.expandTooltip': 'Kenar çubuğunu genişlet (Ctrl+B)',
+  'sidebar.hideTooltip': 'Kenar çubuğunu gizle',
+  'sidebar.expandTooltip': 'Kenar çubuğunu genişlet',
   'sidebar.unreadCount': '{count} okunmamış',
 
   // Workspace
@@ -17,7 +17,6 @@ export const tr = {
   'workspace.agentError': 'Aracı hatası',
   'workspace.agentWaiting': 'Aracı bekliyor',
 
-  'workspace.agentAwaitingInput': 'Aracı girdi bekliyor',
   'workspace.needsYou': 'Seni bekliyor',
   'workspace.agentIdle': 'Aracı boşta',
   'workspace.agentUnverifiable': '{time} boyunca güncelleme yok',
@@ -66,9 +65,9 @@ export const tr = {
 
   // Search
   'search.placeholder': 'Ara...',
-  'search.prevTooltip': 'Önceki sonuç (Shift+Enter)',
-  'search.nextTooltip': 'Sonraki sonuç (Enter)',
-  'search.closeTooltip': 'Kapat (ESC)',
+  'search.prevTooltip': 'Önceki sonuç',
+  'search.nextTooltip': 'Sonraki sonuç',
+  'search.closeTooltip': 'Kapat',
   'search.regexTooltip': 'Düzenli ifade kullan',
   'search.allPanes': 'Tüm bölmeler',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const tr = {
   'notification.markAllRead': 'Tümünü okundu olarak işaretle',
   'notification.clear': 'Temizle',
   'notification.empty': 'Bildirim yok',
-  'notification.toggle': 'Değiştirmek için Ctrl+I',
+  'notification.toggle': 'Değiştirmek için {key}',
+  'notification.needsYou.question': "Seni bekliyor: “{question}”",
+  'notification.needsYou.noQuestion': "Seni bekliyor. Soru metni yok; terminaline bak.",
+  'notification.needsYou.over': "Artık seni beklemiyor.",
 
   // Command palette
   'palette.placeholder': 'Bir komut yazın...',
@@ -96,7 +98,7 @@ export const tr = {
   'palette.close': 'kapat',
   'palette.cmd.toggleSidebar': 'Kenar çubuğunu değiştir',
   'palette.cmd.newWorkspace': 'Yeni çalışma alanı',
-  'palette.cmd.newSurface': 'Yeni yüzey',
+  'palette.cmd.newSurface': 'Yeni sekme',
   'palette.cmd.splitRight': 'Sağa böl',
   'palette.cmd.splitDown': 'Aşağı böl',
   'palette.cmd.stashPane': 'Bölmeyi kenara al (oturum çalışmaya devam eder)',
@@ -106,7 +108,7 @@ export const tr = {
   'palette.cmd.saveLayout': 'Geçerli düzeni şablon olarak kaydet',
   'palette.cmd.layoutPrefix': 'Düzen: ',
   'palette.catWorkspace': 'Çalışma alanı',
-  'palette.catSurface': 'Yüzey',
+  'palette.catSurface': 'Sekme',
   'palette.catCommand': 'Komut',
   'palette.catRecent': 'Son kullanılan',
 
@@ -246,8 +248,6 @@ export const tr = {
   'viCopy.visual': '-- GÖRSEL --',
 
   // StatusBar
-  'statusBar.company': 'ŞİRKET',
-  'statusBar.session': 'Oturum: {min} dk',
   'statusBar.settingsTooltip': 'Ayarlar (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const tr = {
   'settings.checkFailed': 'Denetim başarısız',
   'settings.unknownError': 'Bilinmeyen hata',
   'settings.notificationBehavior': 'Bildirim davranışı',
-  'settings.soundDesc': 'Web Audio API — harici dosya gerekmez',
+  'settings.soundDesc': 'Bir bildirim geldiğinde kısa, yerleşik bir ses çalar.',
   'settings.toast': 'Toast bildirimler',
   'settings.toastDesc': 'Aracı tamamlandığında toast göster',
   'settings.ring': 'Kenarlık animasyonu',
   'settings.ringDesc': 'Okunmamış bildirimi olan bölmelerde kenarlık nabız atışı',
   'settings.sc.toggleSidebar': 'Kenar çubuğunu değiştir',
-  'settings.sc.splitHorizontal': 'Yatay böl',
-  'settings.sc.splitVertical': 'Dikey böl',
+  'settings.sc.splitHorizontal': 'Sağa böl',
+  'settings.sc.splitVertical': 'Aşağı böl',
   'settings.sc.newWorkspace': 'Yeni çalışma alanı',
   'settings.sc.closeSurface': 'Aktif sekmeyi kapat',
   'settings.sc.closePane': 'Bölünmüş bölmeyi kapat',
@@ -406,8 +406,8 @@ export const tr = {
   'settings.prefixAddBinding': 'Bağlama ekle',
   'settings.prefixReset': 'Varsayılanlara sıfırla',
   'settings.prefixResetConfirm': 'Tüm önek ayarlarını varsayılana sıfırlamak istiyor musunuz?',
-  'settings.prefix.splitHorizontal': 'Yatay böl',
-  'settings.prefix.splitVertical': 'Dikey böl',
+  'settings.prefix.splitHorizontal': 'Sağa böl',
+  'settings.prefix.splitVertical': 'Aşağı böl',
   'settings.prefix.closePane': 'Bölmeyi kapat',
   'settings.prefix.newWorkspace': 'Yeni çalışma alanı',
   'settings.prefix.nextWorkspace': 'Sonraki çalışma alanı',
@@ -482,16 +482,16 @@ export const tr = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude entegrasyonu',
-  'claudeIntegration.signalHealth.title': 'Eklenti sinyal durumu',
+  'claudeIntegration.signalHealth.title': 'Claude Code eklentisi',
   'claudeIntegration.signalHealth.unknownBody':
-    'Eklenti durumu: henüz gözlemlenmedi. Claude Code içinde aşağıdaki komutla yükleyin. İlk kanca tetiklendiğinde wmux algılamayı onaylar.',
+    'wmux eklentisinden henüz sinyal yok. Aşağıdaki kurulum komutunu Claude Code’da çalıştırın; eklenti ilk kez bildirdiğinde bu güncellenir.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Son sinyal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Gecikme P50 {p50}ms · P95 {p95}ms · {count} örnek',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Çalışma alanı eşleşmesi: {matched}/{total} kanca bir wmux bölmesine çözümlendi',
   'claudeIntegration.signalHealth.staleBody':
-    'Eklenti durumu: eski. Son kanca {rel} geldi — eklenti tetiklemeyi durdurmuş olabilir ya da Claude Code boşta.',
+    'Eklentinin son sinyali {rel} geldi. Durmuş olabilir ya da Claude Code boşta.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Yükleme komutunu kopyala',
   'claudeIntegration.signalHealth.copySuccess': 'Kopyalandı — Claude Code içine yapıştırın',
   'claudeIntegration.signalHealth.copyError': 'Kopyalama başarısız — pano kilitli',
@@ -499,7 +499,7 @@ export const tr = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic kullanım ölçer (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Claude Code oturumunuzla (yerel depolamadaki OAuth jetonu) her 15 dakikada bir Anthropic\'in kullanım uç noktasından kullanımınızı okur. Yalnızca kullanımı okur — modele istek gönderilmez ve kota harcanmaz. Jeton asla geri yazılmaz, asla günlüğe kaydedilmez, yalnızca api.anthropic.com adresine gönderilir.',
+    "Claude Code oturumunuzla her 15 dakikada bir Anthropic'in kullanım uç noktasından kullanımınızı okur. Yalnızca kullanımı okur — modele istek gönderilmez ve kota harcanmaz. Jeton asla geri yazılmaz, asla günlüğe kaydedilmez, yalnızca api.anthropic.com adresine gönderilir.",
   'claudeIntegration.usage.enableLabel': 'Durum çubuğunda 5h / 7d kullanımını göster',
   'claudeIntegration.usage.refreshButton': 'Şimdi yenile',
   'claudeIntegration.usage.refreshCooldown': 'Yenileme {seconds}sn içinde kullanılabilir',
@@ -641,6 +641,7 @@ export const tr = {
   'pcSwitcher.manage': "{name} ayarları",
   'app.portableData.notice': "Bu wmux kopyası Uygulamalar klasörünün dışında çalışıyor, bu yüzden ayrı veriler kullanıyor. Mevcut oturumlarınızı görmek için onu Uygulamalar klasörüne taşıyın.",
   'pcSwitcher.othersNeedYou': "Diğer bilgisayarlarda {count} öğe sizi bekliyor",
+  'pcSwitcher.othersNeedYouOne': 'Diğer bilgisayarlarda {count} öğe sizi bekliyor',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "wmux'tan çıkıp tüm oturumlar durdurulsun mu?",
   'quitAndStop.detail': "Şu an çalışan: {agents} ajan oturumu, toplam {sessions} terminal. Hepsi durdurulacak. Normal Çıkış onları arka planda çalışır bırakır.",

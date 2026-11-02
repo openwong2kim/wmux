@@ -49,6 +49,7 @@ describe.skipIf(!live)('the worktree patterns, live', () => {
       const wt = path.join(base, 'task-1');
       git(repo, 'worktree', 'add', '-q', '-b', 'wmux/task-1', wt);
       git(repo, 'worktree', 'add', '-q', '-b', 'wmux/task-2', path.join(base, 'task-2'));
+      git(repo, 'branch', 'other');
       const facts = readWorktreeGitFacts(wt);
       const denies = worktreeComplementDenies(facts, 'darwin');
       expect(denies.length).toBeGreaterThan(0);
@@ -65,6 +66,8 @@ describe.skipIf(!live)('the worktree patterns, live', () => {
       const settings = path.join(base, 'settings.json');
       fs.writeFileSync(settings, JSON.stringify(fence.settings));
       const worktrees = path.join(facts.gitCommonDir, 'worktrees');
+      const refsHeads = path.join(facts.gitCommonDir, 'refs', 'heads');
+      const otherRefBefore = fs.readFileSync(path.join(refsHeads, 'other'), 'utf8');
       const committed = path.join(wt, 'committed');
       const control = path.join(wt, 'control');
       // Made after launch, so no snapshot names them: one per kind of pattern.
@@ -77,6 +80,16 @@ describe.skipIf(!live)('the worktree patterns, live', () => {
         `touch ${shellQuote(path.join(worktrees, 'task-2', 'probe'))}`,
         ...later.map((n) => `touch ${shellQuote(path.join(worktrees, n, 'probe'))}`),
         `mkdir ${shellQuote(path.join(worktrees, 'added'))}`,
+        // Ancestor directories of denied paths can't be renamed either: the
+        // profile denies create/unlink on every ancestor, so moving the
+        // `worktrees` dir away (and writing a sibling via the moved path)
+        // stays closed. A move back is denied too.
+        `mv ${shellQuote(worktrees)} ${shellQuote(path.join(facts.gitCommonDir, 'wt-moved'))} && touch ${shellQuote(path.join(wt, 'renamed'))}`,
+        `touch ${shellQuote(path.join(facts.gitCommonDir, 'wt-moved', 'task-2', 'probe'))}`,
+        // The same for `refs/heads`: an ancestor of each other branch's denied
+        // ref file, so it can't be renamed to reach a denied ref through it.
+        `mv ${shellQuote(refsHeads)} ${shellQuote(path.join(facts.gitCommonDir, 'refs', 'h2'))} && touch ${shellQuote(path.join(wt, 'renamed-refs'))}`,
+        `echo x >> ${shellQuote(path.join(facts.gitCommonDir, 'refs', 'h2', 'other'))}`,
       ].join('; '));
       const env = {
         PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CLAUDE_CODE_TMPDIR: tmp,
@@ -93,6 +106,14 @@ describe.skipIf(!live)('the worktree patterns, live', () => {
       expect(fs.existsSync(path.join(worktrees, 'task-2', 'probe'))).toBe(false);
       for (const n of later) expect(fs.existsSync(path.join(worktrees, n, 'probe')), n).toBe(false);
       expect(fs.existsSync(path.join(worktrees, 'added'))).toBe(false);
+      // The rename of the ancestor dir did not happen, and nothing leaked through a moved path.
+      expect(fs.existsSync(path.join(wt, 'renamed'))).toBe(false);
+      expect(fs.existsSync(path.join(facts.gitCommonDir, 'wt-moved'))).toBe(false);
+      expect(fs.existsSync(path.join(worktrees, 'task-2'))).toBe(true);
+      // refs/heads is unmoved and another branch's ref is untouched.
+      expect(fs.existsSync(path.join(wt, 'renamed-refs'))).toBe(false);
+      expect(fs.existsSync(path.join(facts.gitCommonDir, 'refs', 'h2'))).toBe(false);
+      expect(fs.readFileSync(path.join(refsHeads, 'other'), 'utf8')).toBe(otherRefBefore);
     } finally {
       api?.close();
     }

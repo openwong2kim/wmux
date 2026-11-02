@@ -21,7 +21,7 @@ export { relTime };
 
 export interface GithubBridge {
   prList: (repoPath: string, force?: boolean) => Promise<
-    { ok: true; prs: PrSummary[] } | { ok: false; code: string; message: string; provider?: 'github' | 'gitlab' }
+    { ok: true; prs: PrSummary[] } | { ok: false; code: string; message: string; provider?: 'github' | 'gitlab'; originSet?: boolean }
   >;
   prDetail: (repoPath: string, number: number, updatedAt: string) => Promise<
     { ok: true; detail: PrDetail } | { ok: false; code: string; message: string }
@@ -63,7 +63,7 @@ export function usePrList(repoPath: string | null, { refreshKey, shown, poll, la
     const res = await bridge.prList(repoPath, force);
     if (res.ok) return { ok: true, data: res.prs };
     if (res.code === 'error') return { ok: false, kind: 'error', message: res.message };
-    return { ok: false, kind: 'gate', gate: { code: res.code, message: res.message, provider: res.provider } };
+    return { ok: false, kind: 'gate', gate: { code: res.code, message: res.message, provider: res.provider, ...(res.originSet ? { originSet: true } : {}) } };
   }, [repoPath, t]);
   return useGitList({ listKey: repoPath, read, shown, poll, lazy, refreshKey });
 }
@@ -111,7 +111,7 @@ export function PrRow({ pr, repoPath, selected, onSelect, dragContext, tag }: {
   );
 }
 
-export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true, lazy = false, selected = null, onSelect, onItems, dragContext }: {
+export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true, lazy = false, selected = null, onSelect, onItems, dragContext, onRefreshPage }: {
   repoPath: string | null;
   refreshKey?: number;
   /** The list is on screen. */
@@ -127,6 +127,9 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
   onItems?: (prs: PrSummary[]) => void;
   /** The repo a dragged row comes from (for the drop's "Start in a new worktree"). */
   dragContext?: GitDragOwner;
+  /** The page's own refresh: a no-remote card's Check again reads the repo
+   *  (its name, link and remote) again, not only this list. */
+  onRefreshPage?: () => void;
 }): React.ReactElement | null {
   const t = useT();
   const list = usePrList(repoPath, { refreshKey, shown, poll, lazy });
@@ -148,7 +151,7 @@ export function PrSection({ repoPath, refreshKey = 0, shown = true, poll = true,
       {list.gate && (
         <GhGateNotice
           gate={list.gate}
-          onRecheck={() => list.reload(true)}
+          onRecheck={list.gate.code === 'no-remote' && onRefreshPage ? onRefreshPage : () => list.reload(true)}
           fallback={list.gate.code === 'no-remote'
             ? t('git.noRemote')
             : list.gate.message || (list.gate.code === 'cli-missing' ? t('git.ghMissing') : t('git.ghUnauth'))}

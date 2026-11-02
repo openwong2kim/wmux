@@ -32,6 +32,12 @@
 // started (actRowClaimed) a day after its approval is refused
 // `approval-stale` before it is claimed (approvals.ts authorizeAct): a try
 // whose reads keep failing gives itself back, so its count never runs out.
+// A claimed row has its own bound (actEffectStore.ts actStalledTooLong): its
+// reads GitHub did not answer are counted, and past the bound no write is
+// sent for it again. A read that finds nothing then refuses it
+// `approval-stale` (nothing was done), one that finds the act settles it as
+// ever, and while reads still cannot say the owner is told it may have gone
+// through (`stalled`).
 //
 // A release (releaseAct.ts) runs its own steps after the pins: the default
 // branch, the commit on it, the tag and the release still free, the checks
@@ -53,9 +59,9 @@
 import type { GhActAnswer, GhActPort } from '../github/GhActService';
 import type { ApprovalAct, ApprovalActRepo, ApprovalReleaseAct } from '../../shared/botApproval';
 import { actMarker, bodyWithMarker, normalizeActText } from './actPayload';
-import { ACT_MAX_ATTEMPTS, actRowClaimed, draftUndecided, draftUnansweredTooLong, runnableAct, type ActEffect, type ActEffectStore } from './actEffectStore';
+import { ACT_MAX_ATTEMPTS, actRowClaimed, actStalledTooLong, draftUndecided, draftUnansweredTooLong, runnableAct, type ActEffect, type ActEffectStore } from './actEffectStore';
 import type { StoredApproval } from './approvals';
-import { failed, isFail, loginOf, readPaged, readRefusal, rec, repoPath, str, type Read } from './actRead';
+import { failed, isFail, loginOf, readPaged, readRefusal, rec, repoPath, str, type Read, type ReadFail } from './actRead';
 import { laneRefusalLine } from './laneRefusalText';
 import {
   type DraftFate, deleteDraft, draftBody, draftWritten, findRelease, mapRelease, publishBody, publishedWritten, readTagTarget, releasePrecondition,
@@ -95,6 +101,9 @@ export interface ActExecutorPorts {
   gh: GhActPort;
   approval: ActApprovalPort;
   emit?: (effect: ActEffect) => void;
+  /** A claimed row past its bound whose read still cannot say whether it
+   *  went through (told on every such sweep; the listener tells once). */
+  stalled?: (effect: ActEffect) => void;
   now?: () => number;
   log?: (line: string) => void;
   reconcileAfterMs?: number;
@@ -227,13 +236,16 @@ type Found =
   | { status: 'done'; result: NonNullable<ActEffect['result']> }
   | { status: 'refused'; reason: string; result?: ActEffect['result']; draft?: number }
   | { status: 'none'; draft?: number; tagMade?: true }
-  | { status: 'unknown' };
+  | { status: 'unknown'; error?: string };
+
+/** What the owner is told of a read that could not say, with no error of its own. */
+const READ_UNSAID = 'GitHub could not be read';
 
 /** How one claimed try ends (runOnce's own moves). */
 interface TryEnds {
   gate: () => string | null;
   end: (status: 'done' | 'refused' | 'uncertain', reason?: string, result?: ActEffect['result']) => Promise<ActEffect | null>;
-  back: (reason: string) => ActEffect | null;
+  back: (reason: string, error?: string) => ActEffect | null;
 }
 
 export class ActExecutor {
@@ -387,9 +399,12 @@ export class ActExecutor {
       return out;
     };
     // Nothing of this try reached GitHub: it is given back (a row whose
-    // draft is on GitHub stays claimed by its draftId, not its count).
-    const back = (reason: string): ActEffect | null => {
-      const out = effects.release(id, reason);
+    // draft is on GitHub stays claimed by its draftId, not its count). A
+    // read that failed is counted towards the row's bound (only a claimed
+    // row's: an unclaimed one has its approval's).
+    const back = (reason: string, error?: string): ActEffect | null => {
+      let out = effects.release(id, reason);
+      if (out && reason === 'read-failed') out = effects.noteReadUnanswered(id, error ?? READ_UNSAID) ?? out;
       this.emit(out);
       return out;
     };
@@ -403,20 +418,20 @@ export class ActExecutor {
       const p = r ? repoPath(r.repoKey) : null;
       if (!r || !act || !p || !r.actRepo || !r.ghLogin) return end('refused', 'approval-mismatch');
       const login = await readIdentity(this.ports.gh, p.host);
-      if (isFail(login)) return login.status === undefined ? back('read-failed') : end('refused', 'identity-unknown');
+      if (isFail(login)) return login.status === undefined ? back('read-failed', login.error) : end('refused', 'identity-unknown');
       if (login !== r.ghLogin) return end('refused', 'identity-changed');
       // Its default branch is the one a release reads (not pinned).
       const repo = await readRepo(this.ports.gh, r.repoKey);
       if (isFail(repo)) {
         const why = readRefusal(repo, 'repo-changed');
-        return why === 'read-failed' ? back(why) : end('refused', why);
+        return why === 'read-failed' ? back(why, repo.error) : end('refused', why);
       }
       // The name, node id and numeric id the request read (a rename or a
       // transfer changes the name; a repository made again changes the ids).
       if (repo.fullName.toLowerCase() !== r.actRepo.fullName.toLowerCase() || repo.nodeId !== r.actRepo.nodeId || repo.id !== r.actRepo.id) return end('refused', 'repo-changed');
       if (act.kind === 'release') return await this.runRelease(id, claimed, { login: r.ghLogin, branch: repo.defaultBranch }, act, p, { gate, end, back });
       const pre = await this.precondition(r.repoKey, act);
-      if (pre === 'read-failed') return back(pre);
+      if (isFail(pre)) return back('read-failed', pre.error);
       if (pre) return end('refused', pre);
       const late = gate();
       if (late) return await stop(late);
@@ -476,7 +491,7 @@ export class ActExecutor {
     const tag = await readTagTarget(gh, p, act.tagName);
     if (isFail(tag)) {
       const why = readRefusal(tag, 'tag-taken');
-      return why === 'read-failed' ? t.back(why) : t.end('refused', why);
+      return why === 'read-failed' ? t.back(why, tag.error) : t.end('refused', why);
     }
     if (tag !== null && !tagIsOurs(act, tag, draft)) return t.end('refused', 'tag-taken');
     if (act.mode === 'workflow') {
@@ -521,20 +536,25 @@ export class ActExecutor {
     return row;
   }
 
-  /** Why the act may not run on GitHub as it stands now, `read-failed`, or null. */
-  private async precondition(repoKey: string, act: OneWriteAct): Promise<string | null> {
+  /** Why the act may not run on GitHub as it stands now, the read that
+   *  failed (`read-failed`), or null. */
+  private async precondition(repoKey: string, act: OneWriteAct): Promise<string | ReadFail | null> {
     const gh = this.ports.gh;
+    const refusal = (e: ReadFail): string | ReadFail => {
+      const why = readRefusal(e, 'target-gone');
+      return why === 'read-failed' ? e : why;
+    };
     if (act.kind === 'issue_create') return null;
     if (act.kind === 'pr_close') {
       const pr = await readPull(gh, repoKey, act.number);
-      if (isFail(pr)) return readRefusal(pr, 'target-gone');
+      if (isFail(pr)) return refusal(pr);
       if (pr.nodeId !== act.targetNodeId) return 'target-changed';
       if (pr.merged) return 'merged';
       if (pr.state === 'closed') return 'already-closed';
       return pr.headSha === act.headSha ? null : 'head-moved';
     }
     const issue = await readIssue(gh, repoKey, act.number);
-    if (isFail(issue)) return readRefusal(issue, 'target-gone');
+    if (isFail(issue)) return refusal(issue);
     if (issue.nodeId !== act.targetNodeId) return 'target-changed';
     if (act.kind === 'issue_close') {
       if (issue.isPr) return 'target-changed';
@@ -544,7 +564,7 @@ export class ActExecutor {
     if (issue.locked) return 'locked';
     if (act.target === 'issue') return issue.state === 'closed' ? 'already-closed' : null;
     const pr = await readPull(gh, repoKey, act.number);
-    if (isFail(pr)) return readRefusal(pr, 'target-gone');
+    if (isFail(pr)) return refusal(pr);
     if (pr.merged) return 'merged';
     if (pr.state === 'closed') return 'already-closed';
     return pr.headSha === act.headSha ? null : 'head-moved';
@@ -565,12 +585,21 @@ export class ActExecutor {
   }
 
   /** Settle a row that may have run from a read of GitHub; `unknown` when
-   *  the read cannot say (nothing is sent then). */
+   *  the read cannot say (nothing is sent then: the read is counted, and a
+   *  row past its bound is told). Past its bound, a row the read finds
+   *  nothing of is refused, not tried again. */
   private async reconcile(row: ActEffect): Promise<ActEffect | null | 'unknown'> {
     const r = this.ports.approval.request(row.requestId);
     if (!r?.act || !r.ghLogin) return 'unknown';
-    const found = await this.find(r, r.act, row).catch((): Found => ({ status: 'unknown' }));
-    if (found.status === 'unknown') return 'unknown';
+    const found = await this.find(r, r.act, row).catch((err: unknown): Found => ({ status: 'unknown', error: String(err) }));
+    if (found.status === 'unknown') {
+      const counted = this.ports.effects.noteReadUnanswered(row.id, found.error ?? READ_UNSAID);
+      if (counted && actStalledTooLong(counted, this.now())) {
+        this.ports.log?.(`[factory] act ${row.action} ${row.requestId}: GitHub has not said for a day whether it went through; nothing more is sent (${counted.lastReadError ?? READ_UNSAID})`);
+        try { this.ports.stalled?.(counted); } catch { /* a listener never breaks the outbox */ }
+      }
+      return 'unknown';
+    }
     // A release's own draft found: journaled before the row is settled, so
     // the next try publishes it and a refusal (attempts exhausted included)
     // deletes it. Not journaled: nothing is settled, and the next sweep reads
@@ -581,11 +610,15 @@ export class ActExecutor {
       return 'unknown';
     }
     let next: ActEffect | null;
+    // Its tag made with the release still a draft, and no try left: the
+    // draft is kept for the owner to publish or delete (refusedDraft). Its
+    // reads failed past its bound (actStalledTooLong): nothing of it is on
+    // GitHub (a tag made aside), and no write is sent for it again.
+    const stalled = actStalledTooLong(row, this.now());
     if (found.status === 'done') next = this.ports.effects.settle(row.id, 'done', undefined, found.result);
     else if (found.status === 'refused') next = this.ports.effects.settle(row.id, 'refused', found.reason, found.result);
-    // Its tag made with the release still a draft, and no try left: the
-    // draft is kept for the owner to publish or delete (refusedDraft).
-    else if (found.tagMade && row.attempt >= ACT_MAX_ATTEMPTS) next = this.ports.effects.settle(row.id, 'refused', 'tag-made-not-published');
+    else if (found.tagMade && (row.attempt >= ACT_MAX_ATTEMPTS || stalled)) next = this.ports.effects.settle(row.id, 'refused', 'tag-made-not-published');
+    else if (stalled) next = this.ports.effects.settle(row.id, 'refused', 'approval-stale');
     else next = this.ports.effects.settle(row.id, 'pending', 'not-found');
     next = await this.refusedDraft(next);
     if (next && (next.status !== row.status || next.reason !== row.reason)) this.emit(next);
@@ -605,7 +638,7 @@ export class ActExecutor {
         ? `${p.base}/issues/${act.number}/comments?since=${since}`
         : `${p.base}/issues?creator=${r.ghLogin}&state=all&since=${since}`;
       const list = await readPaged(gh, p.host, endpoint);
-      if (isFail(list)) return { status: 'unknown' };
+      if (isFail(list)) return { status: 'unknown', error: list.error };
       const mine = list.map(rec).filter((v): v is Record<string, unknown> => !!v
         && loginOf(v.user) === r.ghLogin && str(v.body).includes(marker) && (act.kind === 'comment' || rec(v.pull_request) === null));
       if (mine.length === 0) return { status: 'none' };
@@ -623,14 +656,14 @@ export class ActExecutor {
     // after this request's first try started.
     if (act.kind === 'pr_close') {
       const pr = await readPull(gh, r.repoKey, act.number);
-      if (isFail(pr)) return { status: 'unknown' };
+      if (isFail(pr)) return { status: 'unknown', error: pr.error };
       if (pr.nodeId !== act.targetNodeId) return { status: 'refused', reason: 'target-changed' };
       if (pr.merged) return { status: 'refused', reason: 'merged' };
       if (pr.state === 'open') return { status: 'none' };
       if (pr.headSha !== act.headSha) return { status: 'refused', reason: 'head-moved' };
     }
     const issue = await readIssue(gh, r.repoKey, act.number);
-    if (isFail(issue)) return { status: 'unknown' };
+    if (isFail(issue)) return { status: 'unknown', error: issue.error };
     if (act.kind === 'issue_close' && (issue.nodeId !== act.targetNodeId || issue.isPr)) return { status: 'refused', reason: 'target-changed' };
     if (issue.state === 'open') return { status: 'none' };
     if (issue.closedBy !== null && issue.closedBy !== r.ghLogin) return { status: 'refused', reason: 'closed-by-other' };

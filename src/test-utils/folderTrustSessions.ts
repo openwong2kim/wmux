@@ -20,11 +20,11 @@ function sessionWith(bytes: string, cols: number, rows: number, muted = false): 
     meta: { state: 'attached', cols, rows },
     ptyProcess: { cols, rows },
     ringBuffer: ring,
-    bridge: { isMuted: muted, outputModes: null, heldOutput: () => (muted ? { data: '', full: true } : null) },
+    bridge: { isMuted: muted, outputModes: null, heldOutput: () => null },
   };
 }
 
-/** `pane-trust` (Claude's dialog at 120x40), `pane-shell` (a prompt), `pane-unknown` (muted, hold overflowed). */
+/** `pane-trust` (Claude's dialog at 120x40), `pane-shell` (a prompt), `pane-unknown` (muted, no held output to read). */
 export function folderTrustSessions(): FolderTrustSessions {
   const dialog = trustFixtureRows('claude-folder-trust-120x40');
   const sessions = new Map<string, FolderTrustSession>([

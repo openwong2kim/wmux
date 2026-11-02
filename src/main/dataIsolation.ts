@@ -58,6 +58,32 @@ export function mayInstallDarwinCliShim(env: NodeJS.ProcessEnv): boolean {
 }
 
 /**
+ * win32: may this process raise OS toasts, either through Electron's
+ * `Notification` or through a web page's Notification API? Not from a
+ * packaged copy that runs isolated (any non-empty WMUX_DATA_SUFFIX: a portable
+ * copy, a test or verification build).
+ *
+ * The first use of Electron's Windows notification presenter, including
+ * `Notification.isSupported()`, runs its toast activator setup
+ * (shell/browser/notifications/win/windows_toast_activator.cc,
+ * `EnsureShortcut` and `EnsureCLSIDRegistry`). That setup writes
+ * `Start Menu\Programs\<ProductName>.lnk` and an HKCU toast COM server
+ * entry, both pointing at the running exe. It rewrites an existing link
+ * whose target, working dir, AppUserModelID or activator CLSID differ.
+ *
+ * Every packaged copy has the ProductName `wmux`, so an isolated copy would
+ * repoint the installed app's Start Menu entry and its toast activation at
+ * itself (#2964). A different AppUserModelID does not help: the link's name
+ * comes from ProductName, and the mismatch is itself a reason to rewrite.
+ *
+ * Unpackaged dev builds keep toasts: their ProductName is Electron's, so
+ * they never name the installed app's link.
+ */
+export function mayRaiseOsToasts(platform: NodeJS.Platform, isPackaged: boolean, env: NodeJS.ProcessEnv): boolean {
+  return !(platform === 'win32' && isPackaged && env.WMUX_DATA_SUFFIX);
+}
+
+/**
  * darwin: should a PACKAGED app use isolated data because it is not installed?
  * A copy run from a DMG mount, AppTranslocation, an electron-forge `out/` dir,
  * or ~/Downloads would otherwise share production data, sockets, token and the

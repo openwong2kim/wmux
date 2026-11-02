@@ -17,50 +17,26 @@ const idle: FirstBootQueueState = {
   surfaceShowing: false,
   autoUpdatePromptPending: false,
   featureNoticePending: false,
-  firstRunCompleted: true,
-  onboardingCompleted: true,
-  onFleetPage: false,
-  cheatSheetPending: false,
 };
 
 describe('nextFirstBootSurface — ordering', () => {
-  it('upgrader with everything pending: update question → New toast → tour → cheat sheet, one at a time', () => {
-    let s: FirstBootQueueState = {
-      ...idle,
-      autoUpdatePromptPending: true,
-      featureNoticePending: true,
-      onboardingCompleted: false,
-      onFleetPage: true,
-      cheatSheetPending: true,
-    };
+  it('upgrader with everything pending: update question → New toast, one at a time, then nothing', () => {
+    let s: FirstBootQueueState = { ...idle, autoUpdatePromptPending: true, featureNoticePending: true };
     expect(nextFirstBootSurface(s)).toBe('autoUpdatePrompt');
     // While it is on screen (its own modal layer counts too), nothing else starts.
     expect(nextFirstBootSurface({ ...s, surfaceShowing: true, otherSurfaceOpen: true })).toBeNull();
     s = { ...s, autoUpdatePromptPending: false };
     expect(nextFirstBootSurface(s)).toBe('featureNotice');
-    // The toast is up (not a modal layer): the tour waits until it is dismissed.
     s = { ...s, featureNoticePending: false, surfaceShowing: true };
     expect(nextFirstBootSurface(s)).toBeNull();
-    s = { ...s, surfaceShowing: false };
-    expect(nextFirstBootSurface(s)).toBe('onboarding');
+    // After the toast: no tour, no cheat sheet.
+    expect(nextFirstBootSurface({ ...s, surfaceShowing: false })).toBeNull();
+  });
+
+  it('a tour or cheat sheet the user opened holds the queue back', () => {
+    const s = { ...idle, featureNoticePending: true };
     expect(nextFirstBootSurface({ ...s, surfaceShowing: true })).toBeNull();
-    s = { ...s, onboardingCompleted: true };
-    expect(nextFirstBootSurface(s)).toBe('cheatSheet');
-    s = { ...s, cheatSheetPending: false };
-    expect(nextFirstBootSurface(s)).toBeNull();
-  });
-
-  it('an upgrader with the announcement toast still up gets neither the tour nor the cheat sheet', () => {
-    const toastUp = { ...idle, surfaceShowing: true };
-    expect(nextFirstBootSurface({ ...toastUp, onboardingCompleted: false, onFleetPage: true })).toBeNull();
-    expect(nextFirstBootSurface({ ...toastUp, cheatSheetPending: true, onFleetPage: true })).toBeNull();
-    expect(nextFirstBootSurface({ ...idle, cheatSheetPending: true, onFleetPage: true })).toBe('cheatSheet');
-  });
-
-  it('the cheat sheet opens by itself only on the Fleet page, never over the panes', () => {
-    // Left Fleet before it opened (a jump to a worker's pane): it waits.
-    expect(nextFirstBootSurface({ ...idle, cheatSheetPending: true, onFleetPage: false })).toBeNull();
-    expect(nextFirstBootSurface({ ...idle, cheatSheetPending: true, onFleetPage: true })).toBe('cheatSheet');
+    expect(nextFirstBootSurface(s)).toBe('featureNotice');
   });
 
   it('waits for the probes and the launch-time hooks check to settle', () => {
@@ -73,38 +49,22 @@ describe('nextFirstBootSurface — ordering', () => {
   });
 
   it('never opens over the wizard, a dialog or the Settings panel', () => {
-    const s = { ...idle, onboardingCompleted: false, onFleetPage: true };
+    const s = { ...idle, autoUpdatePromptPending: true };
     expect(nextFirstBootSurface({ ...s, wizardOpen: true })).toBeNull();
     expect(nextFirstBootSurface({ ...s, otherSurfaceOpen: true })).toBeNull();
     // The next one waits; once the dialog closes it starts.
-    expect(nextFirstBootSurface(s)).toBe('onboarding');
+    expect(nextFirstBootSurface(s)).toBe('autoUpdatePrompt');
   });
 });
 
 describe('nextFirstBootSurface — fresh install', () => {
-  const fresh: FirstBootQueueState = {
-    ...idle,
-    wizardRanThisBoot: true,
-    onboardingCompleted: false,
-    cheatSheetPending: true,
-  };
+  const fresh: FirstBootQueueState = { ...idle, wizardRanThisBoot: true };
 
-  it('hides "New: …" toasts and the separate update modal (the wizard row asked)', () => {
+  it('opens nothing after the wizard: no toast, no update modal, no tour, no cheat sheet', () => {
     const s = { ...fresh, featureNoticePending: true, autoUpdatePromptPending: true };
     expect(nextFirstBootSurface({ ...s, wizardOpen: true })).toBeNull();
-    // After the wizard closes, still nothing: no toast, no modal, no tour, no sheet.
     expect(nextFirstBootSurface(s)).toBeNull();
-  });
-
-  it('starts the tour only on the first visit to the Fleet page, after the wizard', () => {
-    expect(nextFirstBootSurface({ ...fresh, firstRunCompleted: false, onFleetPage: true })).toBeNull();
     expect(nextFirstBootSurface(fresh)).toBeNull();
-    expect(nextFirstBootSurface({ ...fresh, onFleetPage: true })).toBe('onboarding');
-  });
-
-  it('never auto-opens the cheat sheet before the tour is done', () => {
-    expect(nextFirstBootSurface({ ...fresh, onFleetPage: false })).toBeNull();
-    expect(nextFirstBootSurface({ ...fresh, onboardingCompleted: true, onFleetPage: true })).toBe('cheatSheet');
   });
 });
 

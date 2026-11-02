@@ -197,7 +197,11 @@ export function createPathLinkProvider(
           end: { x: match.end, y: bufferLineNumber },
         },
         text: match.text,
-        activate: () => openPath(match.text),
+        // #2901: xterm activates on mouseup of any button; only a left click opens.
+        activate: (event: MouseEvent) => {
+          if (event.button !== 0) return;
+          openPath(match.text);
+        },
       }));
       callback(links);
     },

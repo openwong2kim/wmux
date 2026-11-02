@@ -2,12 +2,13 @@
 // The Bots rail page: the first screen, the conversation list (by latest
 // activity, no pinned HQ; needs-you on the bot rows), adding a bot, a 1:1 and a group chat, the thread chip,
 // sending to one bot, a worker's Open, the rail item's route and badge (the
-// sum of the page's own rows) and the Toggle Company View shortcut.
+// sum of the page's own rows) and the Toggle Bots shortcut.
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
 import { loadLocale } from '../../../i18n';
+import { en } from '../../../i18n/locales/en';
 import { ALL_THREADS, timelineKey } from '../../../stores/slices/roomSlice';
 import { setRoomsApiForTests, type RoomsApi } from '../../../hooks/useRoomSync';
 import { setFactoryBotPort, type FactoryBotPort, type FactoryBotRow } from '../../Room/factoryPorts';
@@ -735,7 +736,7 @@ describe('Bots page', () => {
     expect(q('[data-bots-messages] [data-room-card-id="c6"]')).toBeNull();
   });
 
-  it('Stop in a bot\'s profile asks in place, then stops its turn and workers and says so', async () => {
+  it('Stop on a bot\'s settings page asks in place, then stops its turn and workers and says so', async () => {
     seedRooms();
     const stop = { stopBot: vi.fn(async () => ({ ok: true, workersStopped: 2 })) };
     act(() => useStore.setState({ toasts: [] } as never));
@@ -754,7 +755,7 @@ describe('Bots page', () => {
     expect(useStore.getState().toasts.at(-1)?.message).toBe('Stopped Lead and 2 of its workers.');
   });
 
-  it('New conversation in a bot\'s profile asks in place, then starts it; mid-turn it says to stop the turn first', async () => {
+  it('New conversation on a bot\'s settings page asks in place, then starts it; mid-turn it says to stop the turn first', async () => {
     seedRooms();
     let running = false;
     const stop = { newConversation: vi.fn(async () => (running ? { ok: false, code: 'running', message: 'stop the turn first' } : { ok: true })) };
@@ -774,7 +775,7 @@ describe('Bots page', () => {
     expect(useStore.getState().toasts.at(-1)).toMatchObject({ message: 'Lead is in a turn. Stop the turn first.', level: 'error' });
   });
 
-  it('Pause in a bot\'s profile parks it at once (no confirm), and the profile then shows Paused with Resume', async () => {
+  it('Pause on a bot\'s settings page parks it at once (no confirm), and its status strip then shows Paused with the one Resume', async () => {
     const act$ = vi.fn(async (action: string, botId: string) => {
       if (action === 'park') {
         bots = bots.map((b) => (b.bot.id === botId ? { ...b, bot: { ...b.bot, parked: { reason: 'human' as const, at: 1 } }, status: { ...b.status!, presence: 'parked' as const } } : b));
@@ -793,12 +794,13 @@ describe('Bots page', () => {
     await act(async () => { q<HTMLButtonElement>('[data-testid="bots-pause-bot"]')!.click(); });
     expect(act$).toHaveBeenCalledWith('park', LEAD);
     for (let i = 0; i < 5 && !q('[data-bots-profile-parked="human"]'); i++) await act(async () => { await Promise.resolve(); });
-    expect(q('[data-bots-profile-parked="human"]')?.textContent).toContain('Paused by you.');
-    expect(q('[data-testid="bots-resume-bot"]')).not.toBeNull();
+    // One state, not "On · Parked".
+    expect(q('[data-bots-profile-parked="human"]')?.textContent).toBe('Paused by you');
+    expect(container.querySelectorAll('[data-testid="bots-resume-bot"]')).toHaveLength(1);
     expect(q('[data-testid="bots-pause-bot"]')).toBeNull();
   });
 
-  it('right after Resume the profile reads Resuming… until the runtime reports, not Not reported yet', async () => {
+  it('right after Resume the status strip reads Resuming… until the runtime reports, not Not reported yet', async () => {
     const notify: Array<() => void> = [];
     const setLead = (over: Partial<FactoryBotRow['bot']>, presence: 'parked' | 'unknown' | 'idle') => {
       bots = bots.map((b) => (b.bot.id === LEAD ? { ...b, bot: { ...b.bot, ...over }, status: { ...b.status!, presence } } : b));
@@ -815,7 +817,7 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
-    expect(q('[data-bots-profile-state]')?.textContent).toBe('On · Parked');
+    expect(q('[data-bots-profile-state]')?.textContent).toBe('Paused by you');
     await act(async () => { q<HTMLButtonElement>('[data-testid="bots-resume-bot"]')!.click(); });
     for (let i = 0; i < 5 && q('[data-bots-profile-state]')?.textContent !== 'On · Resuming…'; i++) await act(async () => { await Promise.resolve(); });
     expect(q('[data-bots-profile-state]')?.textContent).toBe('On · Resuming…');
@@ -838,7 +840,7 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
-    expect(q('[data-bots-profile-state]')?.textContent).toBe('On · Parked');
+    expect(q('[data-bots-profile-state]')?.textContent).toBe('Paused by you');
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
     try {
       await act(async () => { q<HTMLButtonElement>('[data-testid="bots-resume-bot"]')!.click(); });
@@ -853,7 +855,7 @@ describe('Bots page', () => {
     }
   });
 
-  it('a parked bot\'s profile says why and offers Resume (budget or errors); a bot that is not parked shows none', async () => {
+  it('a parked bot\'s settings page says why and offers Resume (budget or errors); a bot that is not parked shows none', async () => {
     const act$ = vi.fn(async () => ({ ok: true }));
     bots[1] = { ...bots[1], bot: { ...bots[1].bot, parked: { reason: 'budget', at: 1 } }, status: { ...bots[1].status!, presence: 'parked' } };
     bots[2] = { ...bots[2], bot: { ...bots[2].bot, parked: { reason: 'error', at: 1 } }, status: { ...bots[2].status!, presence: 'parked' } };
@@ -890,8 +892,8 @@ describe('Bots page', () => {
     act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
     expect(q('[data-bots-engine-error="not_logged_in"]')?.textContent).toContain('not signed in for the account Work');
-    // In the narrow profile popover the buttons wrap below the text, which
-    // keeps a readable width instead of shrinking to nothing.
+    // In a narrow page the buttons wrap below the text, which keeps a
+    // readable width instead of shrinking to nothing.
     const row = q('[data-bots-engine-error-row]')!;
     expect(row.className).toContain('flex-wrap');
     expect(row.firstElementChild?.className).toMatch(/min-w-\[10rem\]/);
@@ -2057,7 +2059,7 @@ describe('Bots page', () => {
     }
   });
 
-  it('the profile under the pill says what the bot can do, whom it reports to and its workers now (read-only)', async () => {
+  it('the settings page says what the bot can do, and its strip today\'s turns and live workers', async () => {
     seedRooms();
     act(() => useStore.setState({
       workspaces: [ws('hq', 'Headquarters'), ws('w1', 'api'), {
@@ -2069,32 +2071,31 @@ describe('Bots page', () => {
     } as never));
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
-    act(() => q('[data-bots-pill]')!.click());
-    const profile = q(`[data-bots-profile="${LEAD}"]`)!;
-    const canDo = [...profile.querySelectorAll('[data-can-do]')].map((el) => el.textContent);
+    act(() => q('[data-bots-settings]')!.click());
+    const page = q(`[data-bot-settings="${LEAD}"]`)!;
+    const canDo = [...page.querySelectorAll('[data-can-do]')].map((el) => el.textContent);
     expect(canDo).toContain('Start workers in their own worktrees');
     expect(canDo).toContain('Ask you questions, with choices');
     expect(canDo).toContain('Record review verdicts (evidence, not a merge)');
     expect(canDo).not.toContain('Read every workspace\'s rooms and facts');
-    expect(profile.querySelector('[data-bots-profile-reports-to]')?.textContent).toBe('You');
-    expect(profile.querySelector('[data-bots-profile-workers]')?.textContent).toBe('1 running');
+    expect(page.querySelector('[data-cannot-do]')).toBeNull();
     // Turns used and left today (no hourly cap is shown).
-    expect(profile.querySelector('[data-bots-profile-turns]')?.textContent).toBe(`${DEFAULT_BOT_BUDGETS.lead.maxTurnsPerDay - 30} used · 30 left`);
-    // Nothing on it edits the bot's powers: its one control is Pause.
-    expect([...profile.querySelectorAll('input, button, select')].map((el) => el.getAttribute('data-testid'))).toEqual(['bots-pause-bot']);
+    expect(page.querySelector('[data-bots-profile-turns]')?.textContent).toBe(`${DEFAULT_BOT_BUDGETS.lead.maxTurnsPerDay - 30} used · 30 left`);
+    // Back returns to the chat.
+    act(() => q('[data-bot-settings-back]')!.click());
+    expect(q('[data-bot-settings]')).toBeNull();
+    expect(q(`[data-bots-chat="bot:${LEAD}"]`)).not.toBeNull();
 
     act(() => q(`[data-bots-row="bot:${MOA}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
-    const moa = q(`[data-bots-profile="${MOA}"]`)!;
-    expect(moa.querySelector('[data-bots-profile-reports-to]')?.textContent).toBe('You');
+    const moa = q(`[data-bot-settings="${MOA}"]`)!;
     const moaCanDo = [...moa.querySelectorAll('[data-can-do]')].map((el) => el.textContent);
     expect(moaCanDo).toContain('Propose plans for your approval');
     expect(moaCanDo).toContain('Start workers in their own worktrees');
     expect(moaCanDo).toContain('Read every workspace\'s rooms and facts');
-    expect(moa.querySelector('[data-bots-profile-workers]')?.textContent).toBe('0 running');
   });
 
-  it('the profile changes the repository through the folder picker, as Add bot does, and says why main refused', async () => {
+  it('the settings page changes the repository through the folder picker on Save, and says why main refused', async () => {
     const update = vi.fn(async (_id: string, patch: { repoFolder?: string }) => (patch.repoFolder === '/src/other'
       ? { ok: false, message: "This workspace's other bots work on github.com/acme/api." }
       : { ok: true }));
@@ -2105,38 +2106,44 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
-    const profile = q(`[data-bots-profile="${LEAD}"]`)!;
-    expect(profile.querySelector('[data-bots-profile-repo-key]')?.textContent).toBe('github.com/acme/api');
+    const page = q(`[data-bot-settings="${LEAD}"]`)!;
+    expect(page.querySelector('[data-bots-profile-repo-key]')?.textContent).toBe('acme/api');
     // A linked bot needs no hint about what a repository must be.
-    expect(profile.querySelector('[data-bots-profile-repo-hint]')).toBeNull();
-    const change = profile.querySelector<HTMLButtonElement>('[data-testid="bots-profile-repo-change"]')!;
+    expect(page.querySelector('[data-bots-profile-repo-hint]')).toBeNull();
+    const change = page.querySelector<HTMLButtonElement>('[data-testid="bots-profile-repo-change"]')!;
     expect(change.textContent).toBe('Change…');
     await act(async () => change.click());
+    // Picked, not saved yet: Save sends it.
+    expect(update).not.toHaveBeenCalled();
+    expect(page.querySelector('[data-bots-profile-repo-key]')?.textContent).toBe('/src/api-2');
+    await act(async () => q<HTMLButtonElement>('[data-testid="bot-settings-save"]')!.click());
     expect(update).toHaveBeenCalledWith(LEAD, { repoFolder: '/src/api-2' });
-    expect(profile.querySelector('[data-bots-profile-repo-error]')).toBeNull();
+    expect(q('[data-bot-settings-foot] [role="alert"]')).toBeNull();
     pickFolder.mockResolvedValueOnce(['/src/other']);
     await act(async () => change.click());
-    expect(profile.querySelector('[data-bots-profile-repo-error]')?.textContent).toContain('github.com/acme/api');
-    // Cancelling the picker sends nothing.
+    await act(async () => q<HTMLButtonElement>('[data-testid="bot-settings-save"]')!.click());
+    expect(q('[data-bot-settings-foot] [role="alert"]')?.textContent).toContain('github.com/acme/api');
+    // Cancelling the picker changes nothing.
     pickFolder.mockResolvedValueOnce([]);
     await act(async () => change.click());
     expect(update).toHaveBeenCalledTimes(2);
   });
 
-  it('the profile of a bot with no repository says what a repository must be', async () => {
+  it('the settings page of a bot with no repository says what a repository must be, in the Add bot dialog\'s words', async () => {
     setFactoryBotPort({ ...port, update: vi.fn(async () => ({ ok: true })) } as unknown as FactoryBotPort);
     bots = bots.map((r) => (r.bot.id === LEAD ? { ...r, bot: { ...r.bot, repo: undefined } } : r));
     seedRooms();
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
-    const profile = q(`[data-bots-profile="${LEAD}"]`)!;
-    expect(profile.querySelector('[data-bots-profile-repo-key]')?.textContent).toBe('None');
-    expect(profile.querySelector('[data-bots-profile-repo-hint]')?.textContent)
-      .toBe('A folder whose origin is an owner/repo address on a git host, such as GitHub. A local path cannot be used.');
+    const page = q(`[data-bot-settings="${LEAD}"]`)!;
+    expect(page.querySelector('[data-bots-profile-repo-key]')?.textContent).toBe('None');
+    const hint = page.querySelector('[data-bots-profile-repo-hint]')?.textContent ?? '';
+    expect(hint).toBe('A git checkout; its origin remote names the repository the bot works on.');
+    expect(en['settings.factory.addBotRepoHint']).toContain(hint);
   });
 
-  it('the profile shows the template and the job, and edits the job through the bot port', async () => {
+  it('the settings page edits the job and saves it through the bot port with Save', async () => {
     const update = vi.fn(async () => ({ ok: true }));
     setFactoryBotPort({ ...port, update } as FactoryBotPort);
     bots = bots.map((r) => (r.bot.id === LEAD ? { ...r, bot: { ...r.bot, template: 'issue', job: 'Fix every open issue.' } } : r));
@@ -2144,20 +2151,21 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
-    const profile = q(`[data-bots-profile="${LEAD}"]`)!;
-    expect(profile.querySelector('[data-bots-profile-template]')?.textContent).toBe('Issues');
-    expect(profile.querySelector('[data-bots-profile-job-text]')?.textContent).toBe('Fix every open issue.');
-    act(() => profile.querySelector<HTMLButtonElement>('[data-testid="bots-profile-job-edit"]')!.click());
-    const input = profile.querySelector<HTMLTextAreaElement>('[data-testid="bots-profile-job-input"]')!;
+    const page = q(`[data-bot-settings="${LEAD}"]`)!;
+    const input = page.querySelector<HTMLTextAreaElement>('[data-testid="bots-profile-job-input"]')!;
+    expect(input.value).toBe('Fix every open issue.');
+    const save = q<HTMLButtonElement>('[data-testid="bot-settings-save"]')!;
+    expect(save.disabled).toBe(true);
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(input, '  Review PRs.  ');
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    await act(async () => profile.querySelector<HTMLButtonElement>('[data-testid="bots-profile-job-save"]')!.click());
+    expect(save.disabled).toBe(false);
+    await act(async () => save.click());
     expect(update).toHaveBeenCalledWith(LEAD, { job: 'Review PRs.' });
   });
 
-  it('the profile picks what the workers run on: default or an installed engine, saved through the bot port', async () => {
+  it('the settings page picks what the workers run on: default or an installed engine, saved with Save', async () => {
     const update = vi.fn(async () => ({ ok: true }));
     const workerAgents = vi.fn(async () => [
       { agent: 'claude', label: 'Claude Code', installed: true, supported: true },
@@ -2168,7 +2176,7 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     await act(async () => q('[data-bots-pill]')!.click());
-    const profile = q(`[data-bots-profile="${LEAD}"]`)!;
+    const profile = q(`[data-bot-settings="${LEAD}"]`)!;
     const select = profile.querySelector<HTMLSelectElement>('[data-testid="bots-profile-workers-engine"]')!;
     expect([...select.options].map((o) => [o.value, o.textContent, o.disabled])).toEqual([['', 'Default (Claude Code)', false], ['codex', 'Codex', false]]);
     expect(select.value).toBe('');
@@ -2176,9 +2184,10 @@ describe('Bots page', () => {
       select.value = 'codex';
       select.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    expect(update).toHaveBeenCalledWith(LEAD, { workerAgent: { agent: 'codex' } });
-    // The pick shows at once, before the profile is read again.
+    expect(update).not.toHaveBeenCalled();
     expect(select.value).toBe('codex');
+    await act(async () => q<HTMLButtonElement>('[data-testid="bot-settings-save"]')!.click());
+    expect(update).toHaveBeenCalledWith(LEAD, { workerAgent: { agent: 'codex' } });
   });
 
   it('keeps a stored pick visible when the engines cannot be listed, and an explicit Claude pick', async () => {
@@ -2188,7 +2197,7 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     await act(async () => q('[data-bots-pill]')!.click());
-    const select = q(`[data-bots-profile="${LEAD}"] [data-testid="bots-profile-workers-engine"]`) as HTMLSelectElement;
+    const select = q(`[data-bot-settings="${LEAD}"] [data-testid="bots-profile-workers-engine"]`) as HTMLSelectElement;
     expect(select.value).toBe('claude');
     expect([...select.options].map((o) => o.value)).toEqual(['', 'claude']);
   });
@@ -2199,19 +2208,119 @@ describe('Bots page', () => {
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
     await act(async () => q('[data-bots-pill]')!.click());
-    const select = q(`[data-bots-profile="${LEAD}"] [data-testid="bots-profile-workers-engine"]`) as HTMLSelectElement;
+    const select = q(`[data-bot-settings="${LEAD}"] [data-testid="bots-profile-workers-engine"]`) as HTMLSelectElement;
     expect([...select.options].map((o) => [o.value, o.textContent, o.disabled])).toEqual([['', 'Default (Claude Code)', false], ['codex', 'Codex (not installed)', true]]);
   });
 
-  it('a bot without a job of its own shows its template\'s starting job, in the UI language', async () => {
+  it('a bot without a job of its own shows its template\'s starting job as its one job value, in the UI language', async () => {
+    const update = vi.fn(async () => ({ ok: true }));
+    setFactoryBotPort({ ...port, update } as FactoryBotPort);
     bots = bots.map((r) => (r.bot.id === MOA ? { ...r, bot: { ...r.bot, template: 'coordinator', job: undefined } } : r));
     seedRooms();
     await render(<BotsPage />);
     act(() => q(`[data-bots-row="bot:${MOA}"]`)!.click());
     act(() => q('[data-bots-pill]')!.click());
-    const profile = q(`[data-bots-profile="${MOA}"]`)!;
-    expect(profile.querySelector('[data-bots-profile-job-text]')?.textContent).toMatch(/^Coordinate the team/);
-    expect(profile.querySelector('[data-bots-profile-job-default]')?.textContent).toBe('Its starting job, until you give it one.');
+    const page = q(`[data-bot-settings="${MOA}"]`)!;
+    expect(page.querySelector<HTMLTextAreaElement>('[data-testid="bots-profile-job-input"]')!.value).toMatch(/^Coordinate the team/);
+    expect(page.querySelector('[data-bots-profile-job-default]')?.textContent).toMatch(/^The Coordinator starting job, until you give it one\./);
+    // Untouched, the starting job is never written into the profile.
+    const name = page.querySelector<HTMLInputElement>('[data-testid="bot-settings-name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'Boss');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await act(async () => q<HTMLButtonElement>('[data-testid="bot-settings-save"]')!.click());
+    expect(update).toHaveBeenCalledWith(MOA, { name: 'Boss' });
+  });
+
+  it('the chat header\'s ⚙ and its name pill open the bot\'s settings page in place of the chat; there is no profile popover', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    const gear = q<HTMLButtonElement>('[data-bots-settings]')!;
+    expect(gear.getAttribute('aria-label')).toBe('Lead settings');
+    expect(gear.title).toBe('Lead settings');
+    expect(q('[data-bots-pill]')!.hasAttribute('aria-expanded')).toBe(false);
+    act(() => gear.click());
+    expect(q(`[data-bot-settings="${LEAD}"]`)).not.toBeNull();
+    expect(q('[data-bots-chat]')).toBeNull();
+    expect(q('.wmux-bots-profile')).toBeNull();
+    act(() => q('[data-bot-settings-back]')!.click());
+    act(() => q('[data-bots-pill]')!.click());
+    expect(q(`[data-bot-settings="${LEAD}"]`)).not.toBeNull();
+    // A group chat's pill still opens the group's own settings, never a bot page.
+    act(() => q('[data-bots-row="group:grp-000000a1"]')!.click());
+    expect(q('[data-bots-settings]')).toBeNull();
+  });
+
+  it('Settings › Bots and every other way in open a bot\'s page through the store', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => useStore.getState().openBotSettings(VERIFIER));
+    expect(q(`[data-bot-settings="${VERIFIER}"]`)).not.toBeNull();
+    // The ask is taken once: coming back to the page shows the chat.
+    expect(useStore.getState().botsSettingsAsk).toBeNull();
+  });
+
+  it('leaving a settings page with unsaved changes asks first: Keep editing stays, Discard leaves', async () => {
+    setFactoryBotPort({ ...port, update: vi.fn(async () => ({ ok: true })) } as FactoryBotPort);
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-settings]')!.click());
+    // Unchanged: Back leaves at once.
+    act(() => q('[data-bot-settings-back]')!.click());
+    expect(q('[data-bot-settings]')).toBeNull();
+    act(() => q('[data-bots-settings]')!.click());
+    const name = q<HTMLInputElement>('[data-testid="bot-settings-name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'Leader');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => q('[data-bot-settings-back]')!.click());
+    expect(q(`[data-bot-settings="${LEAD}"]`)).not.toBeNull();
+    expect(q('[data-testid="bot-settings-leave-confirm-row"]')?.textContent).toContain('Leave without saving? Your changes to Lead will be lost.');
+    act(() => q('[data-testid="bot-settings-leave-cancel"]')!.click());
+    expect(q('[data-testid="bot-settings-leave-confirm-row"]')).toBeNull();
+    expect(q<HTMLInputElement>('[data-testid="bot-settings-name"]')!.value).toBe('Leader');
+    // Another conversation in the list asks too; Discard goes there.
+    act(() => q(`[data-bots-row="bot:${VERIFIER}"]`)!.click());
+    expect(q(`[data-bot-settings="${LEAD}"]`)).not.toBeNull();
+    act(() => q('[data-testid="bot-settings-leave-confirm"]')!.click());
+    expect(q('[data-bot-settings]')).toBeNull();
+    expect(q(`[data-bots-chat="bot:${VERIFIER}"]`)).not.toBeNull();
+  });
+
+  it('leaving the Bots page with unsaved settings asks first, as Back does; Discard then goes', async () => {
+    setFactoryBotPort({ ...port, update: vi.fn(async () => ({ ok: true })) } as FactoryBotPort);
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => useStore.getState().setAppRoute('bots'));
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-settings]')!.click());
+    const name = q<HTMLInputElement>('[data-testid="bot-settings-name"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(name, 'Leader');
+      name.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => useStore.getState().setAppRoute('fleet'));
+    expect(useStore.getState().appRoute).toBe('bots');
+    expect(q('[data-testid="bot-settings-leave-confirm-row"]')).not.toBeNull();
+    act(() => q('[data-testid="bot-settings-leave-cancel"]')!.click());
+    act(() => useStore.getState().toggleBotsView());
+    expect(useStore.getState().appRoute).toBe('bots');
+    act(() => q('[data-testid="bot-settings-leave-confirm"]')!.click());
+    expect(useStore.getState().appRoute).toBe('workspaces');
+  });
+
+  it('leaving the Bots page with nothing unsaved goes at once', async () => {
+    seedRooms();
+    await render(<BotsPage />);
+    act(() => useStore.getState().setAppRoute('bots'));
+    act(() => q(`[data-bots-row="bot:${LEAD}"]`)!.click());
+    act(() => q('[data-bots-settings]')!.click());
+    act(() => useStore.getState().setAppRoute('fleet'));
+    expect(useStore.getState().appRoute).toBe('fleet');
   });
 
   it('a bot\'s job_changed card offers Undo, which writes the previous job back', async () => {

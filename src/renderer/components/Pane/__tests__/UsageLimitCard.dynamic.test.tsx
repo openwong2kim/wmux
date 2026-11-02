@@ -153,14 +153,16 @@ describe('usage-limit card', () => {
     await render();
     // Never the agent that is out.
     expect(q('[data-usage-limit-card-agent="claude"]')).toBeNull();
+    // Handing off a held pane turns its automatic resume off, and the card says so.
+    expect(q('[data-usage-limit-card-handoff-resume]')!.textContent).toBe('Handing off turns off Resume automatically for this pane: the work stays in the new tab until you bring it back.');
     // The note it types in, previewed with its length; the unsent draft only once ticked.
-    const memo = q('[data-usage-limit-card-memo]')!;
-    expect(memo.textContent).toContain('The last request was:\nfix the login bug');
+    const memo = q('[data-handoff-note]')!;
+    expect(memo.textContent).toContain('\nAsked: fix the login bug\n');
     expect(memo.textContent).not.toContain('and the logout one');
     await act(async () => q('[data-usage-limit-card-action="carry-draft"]')!.click());
-    const note = q('[data-usage-limit-card-memo]')!.textContent!;
-    expect(note).toContain('A draft that was never sent:\nand the logout one');
-    expect(q('[data-usage-limit-card-memo-length]')!.textContent).toBe(`${note.length} characters`);
+    const note = q('[data-handoff-note]')!.textContent!;
+    expect(note).toContain('\nUnsent draft: and the logout one');
+    expect(q('[data-handoff-note-length]')!.textContent).toBe(`${note.length} characters`);
     await act(async () => q('[data-usage-limit-card-agent="codex"]')!.click());
     expect(continueInAgent).toHaveBeenCalledWith({ heldPtyId: 'pty-1', fromAgent: 'Claude Code', agent: 'codex', workspaceId: 'ws-1', paneId: 'pane-1', cwd: '/repo', note });
     expect(card()).toBeNull();
@@ -293,5 +295,33 @@ describe('usage-limit card', () => {
     hold();
     await render();
     expect(q('[data-usage-limit-card-all-out]')?.textContent).toMatch(/^Every account is out until /);
+  });
+
+  it('close to the limit: the chip shows the share and the reset; the card offers other agents and accounts, nothing armed', async () => {
+    stubApi({ accounts: 2 });
+    useStore.setState({ usageLimits: {}, usageWindows: { 'pty-1': { pct: 89, resetsAt: Date.now() + 2 * HOUR } } } as never);
+    await render();
+    // Under the threshold: no chip.
+    expect(q('[data-pane-usage-limit]')).toBeNull();
+    await act(async () => { useStore.setState({ usageWindows: { 'pty-1': { pct: 91, resetsAt: Date.now() + 2 * HOUR } } } as never); });
+    const chip = q('[data-pane-usage-limit="near"]')!;
+    expect(chip.textContent).toMatch(/^5h91%· resets /);
+    // It never opens by itself: the pane is still working.
+    expect(card()).toBeNull();
+    await act(async () => q('[data-usage-limit-action="card"]')!.click());
+    for (let i = 0; i < 3; i++) await act(async () => { await Promise.resolve(); });
+    expect(card()!.getAttribute('data-usage-limit-card')).toBe('near');
+    expect(card()!.textContent).toContain('Close to the 5-hour limit');
+    expect(q('[data-usage-limit-card-status]')!.textContent).toMatch(/^91% used\. It resets at .+, in (?:2h|1h 59m)\. This pane keeps working until then\.$/);
+    expect(q('[data-usage-limit-card-action="auto-resume"]')).toBeNull();
+    expect(q('[data-usage-limit-card-action="resume"]')).toBeNull();
+    expect(document.querySelectorAll('[data-usage-limit-card-account]')).toHaveLength(2);
+    expect(q('[data-usage-limit-card-action="always-switch"]')).toBeNull();
+    expect(q('[data-usage-limit-card-agent="codex"]')).not.toBeNull();
+    expect(q('[data-usage-limit-card-near-footer]')).not.toBeNull();
+    // Nothing is held, so nothing to turn off.
+    expect(q('[data-usage-limit-card-handoff-resume]')).toBeNull();
+    await act(async () => q<HTMLButtonElement>('[data-usage-limit-card-agent="codex"]')!.click());
+    expect(continueInAgent).toHaveBeenCalledWith(expect.objectContaining({ heldPtyId: 'pty-1', agent: 'codex', fromAgent: 'Claude Code' }));
   });
 });

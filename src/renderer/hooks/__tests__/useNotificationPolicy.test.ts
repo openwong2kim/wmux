@@ -329,9 +329,48 @@ describe('decideNotificationActions', () => {
 
   it('muting one category leaves the others loud', () => {
     const result = decideNotificationActions(
-      { ...samplePayload, type: 'agent', category: 'approval' },
+      { ...samplePayload, type: 'agent', category: 'agent-turn' },
       sampleTarget,
       baseCtx({ mutedCategories: ['subagent'] }),
+    );
+    expect(result.some((a) => a.kind === 'pushToast')).toBe(true);
+  });
+
+  // Needs you is drawn at most twice (DESIGN.md › Attention renditions): the
+  // sidebar row and the rail's Fleet badge. An in-app toast would be a third.
+  it('needs you (approval) records and rings but never pops an in-app toast', () => {
+    const result = decideNotificationActions(
+      { ...samplePayload, type: 'agent', category: 'approval' },
+      sampleTarget,
+      baseCtx(),
+    );
+    expect(result.map((a) => a.kind)).toEqual(['addNotification', 'playSound', 'setPaneRing']);
+  });
+
+  it('needs you still reaches the OS toast while the window is out of focus', () => {
+    const result = decideNotificationActions(
+      { ...samplePayload, type: 'agent', category: 'approval' },
+      sampleTarget,
+      baseCtx({ windowFocused: false }),
+    );
+    expect(result.map((a) => a.kind)).toEqual(['addNotification', 'playSound', 'setPaneRing', 'flashFrame', 'osToast']);
+  });
+
+  it('a turn that ended on a question still waiting is needs you: no in-app toast', () => {
+    const result = decideNotificationActions(
+      { ...samplePayload, type: 'agent', category: 'agent-turn' },
+      sampleTarget,
+      baseCtx({ asksForYou: true }),
+    );
+    expect(result.some((a) => a.kind === 'pushToast')).toBe(false);
+    expect(result[0].kind).toBe('addNotification');
+  });
+
+  it('a finished turn keeps its in-app toast', () => {
+    const result = decideNotificationActions(
+      { ...samplePayload, type: 'agent', category: 'agent-turn' },
+      sampleTarget,
+      baseCtx(),
     );
     expect(result.some((a) => a.kind === 'pushToast')).toBe(true);
   });

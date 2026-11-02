@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v4.12.0 sources.** This file is produced by
+> **Generated from wmux v4.13.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **307** methods (`ALL_RPC_METHODS` in
+Total: **294** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -238,6 +238,14 @@ Total: **307** methods (`ALL_RPC_METHODS` in
 | `a2a.remote.spawn.outgoing` | `wmux.internal` |  |
 | `a2a.remote.spawn` | `a2a.execute` | `a2a` |
 | `a2a.remote.spawnStatus` | `a2a.read` | `a2a` |
+| `a2a.remote.continue.work` | `wmux.internal` |  |
+| `a2a.remote.continue.claim` | `wmux.internal` |  |
+| `a2a.remote.continue.place` | `wmux.internal` |  |
+| `a2a.remote.continue.unplace` | `wmux.internal` |  |
+| `a2a.remote.continue.binding` | `wmux.internal` |  |
+| `a2a.remote.continue.started` | `wmux.internal` |  |
+| `a2a.remote.continue.failed` | `wmux.internal` |  |
+| `a2a.remote.continue.state` | `wmux.internal` |  |
 | `a2a.resolve.identity` | `a2a.read` | `a2a` |
 | `a2a.whoami` | `a2a.read` | `a2a` |
 | `a2a.discover` | `a2a.read` | `a2a` |
@@ -269,41 +277,6 @@ Total: **307** methods (`ALL_RPC_METHODS` in
 | `a2a.principal.upsert` | `wmux.internal` |  |
 | `a2a.principal.remove` | `wmux.internal` |  |
 | `a2a.principal.markStaleWorkspace` | `wmux.internal` |  |
-
-### `company.a2a`
-
-| Method | Capability | Risk class |
-|---|---|---|
-| `company.a2a.whoami` | `wmux.internal` |  |
-| `company.a2a.send` | `wmux.internal` |  |
-| `company.a2a.broadcast` | `wmux.internal` |  |
-| `company.a2a.inbox` | `wmux.internal` |  |
-| `company.a2a.ack` | `wmux.internal` |  |
-| `company.a2a.status` | `wmux.internal` |  |
-
-### `company`
-
-| Method | Capability | Risk class |
-|---|---|---|
-| `company.create` | `wmux.internal` |  |
-| `company.destroy` | `wmux.internal` |  |
-| `company.status` | `wmux.internal` |  |
-| `company.addDept` | `wmux.internal` |  |
-| `company.removeDept` | `wmux.internal` |  |
-| `company.addMember` | `wmux.internal` |  |
-| `company.removeMember` | `wmux.internal` |  |
-| `company.broadcast` | `wmux.internal` |  |
-| `company.sendDept` | `wmux.internal` |  |
-| `company.sendMember` | `wmux.internal` |  |
-| `company.message` | `wmux.internal` |  |
-| `company.save` | `wmux.internal` |  |
-| `company.restore` | `wmux.internal` |  |
-| `company.templates` | `wmux.internal` |  |
-| `company.worktreeSetup` | `wmux.internal` |  |
-| `company.mergeDept` | `wmux.internal` |  |
-| `company.provision` | `wmux.internal` |  |
-| `company.provisionAll` | `wmux.internal` |  |
-| `company.provisionCeo` | `wmux.internal` |  |
 
 ### `lanlink`
 
@@ -414,6 +387,10 @@ Total: **307** methods (`ALL_RPC_METHODS` in
 | `routine.set` | `wmux.internal` |  |
 | `routine.list` | `wmux.internal` |  |
 | `routine.pause` | `wmux.internal` |  |
+| `routine.ownerSet` | `wmux.internal` |  |
+| `routine.ownerPause` | `wmux.internal` |  |
+| `routine.ownerRemove` | `wmux.internal` |  |
+| `routine.ownerRun` | `wmux.internal` |  |
 | `workflow.create` | `wmux.internal` |  |
 | `workflow.read` | `wmux.internal` |  |
 | `workflow.advance` | `wmux.internal` |  |

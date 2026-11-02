@@ -577,9 +577,32 @@ describe('parseTranscriptLine — pasted images and ESC interrupts', () => {
     expect(queued({ type: 'queued_command', prompt: '/compact', commandMode: 'bash' })).toEqual([]);
     expect(queued({ type: 'hook_success', content: 'x' })).toEqual([]);
   });
+
+  it('shows a queued prompt with photos, which Claude Code records as content blocks (2.1.312)', () => {
+    const events = parseFixture('queued-image-steer.jsonl');
+    // Three rows: the queued shell command (q2) stays off the conversation.
+    expect(events.map((e) => e.kind)).toEqual(['user_text', 'tool_use', 'user_text']);
+    expect(events[2]).toMatchObject({ id: 'q1', kind: 'user_text', text: '[Image #4] [Image #5] [Image #6] [Image #7]', hasImage: true });
+  });
+
+  it('reads a queued photo prompt as the operator typed it, as its string form is: no meta row', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } };
+    const line = JSON.stringify({ type: 'attachment', uuid: 'q', attachment: { type: 'queued_command', commandMode: 'prompt',
+      prompt: [{ type: 'text', text: '<command-name>/review</command-name> [Image #1]' }, image] } });
+    expect(parseTranscriptLine(line, 0)).toEqual([
+      expect.objectContaining({ id: 'q', kind: 'user_text', text: '<command-name>/review</command-name> [Image #1]', hasImage: true }),
+    ]);
+  });
 });
 
 describe('extractCodeBlocks', () => {
+  it('takes a list fence\'s own indentation off its body lines, as the TUI shows them', () => {
+    const listed = extractCodeBlocks('1. Install:\n   ```bash\n   python -c "\n   print(1)\n     indented\n   "\n   ```\n2. Done', 0);
+    expect(listed.bodies.get(1)).toBe('python -c "\nprint(1)\n  indented\n"');
+    const top = extractCodeBlocks('```\n    four\n```', 0);
+    expect(top.bodies.get(1)).toBe('    four');
+  });
+
   it('is a no-op on prose with no fences', () => {
     const out = extractCodeBlocks('just words', 10);
     expect(out).toEqual({ text: 'just words', refs: [], bodies: new Map() });
@@ -680,6 +703,23 @@ describe('parseTranscriptLine — tool bodies', () => {
     expect(ev.input?.inline).toContain('ls -la');
     expect(ev.input?.n).toBe(1);
     expect(ev.input?.srcOffset).toBe(0);
+  });
+
+  it('hands out a relative SendUserFile path resolved against the call line\'s cwd', () => {
+    const cwd = path.resolve('/work/repo');
+    const sendLine = (input: unknown, name = 'SendUserFile') => line({
+      type: 'assistant', uuid: 'a-2', cwd,
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tu-2', name, input }] },
+    });
+    const filesOf = (raw: string): unknown => {
+      const [ev] = parseTranscriptLine(raw, 0);
+      if (ev.kind !== 'tool_use') throw new Error('expected tool_use');
+      return (JSON.parse(ev.input?.inline ?? '{}') as { files?: unknown }).files;
+    };
+    const abs = path.resolve('/elsewhere/b.png');
+    expect(filesOf(sendLine({ files: ['./tiny.png', abs], status: 'normal' }))).toEqual([path.join(cwd, 'tiny.png'), abs]);
+    // Only SendUserFile is rewritten.
+    expect(filesOf(sendLine({ files: ['./tiny.png'] }, 'Other'))).toEqual(['./tiny.png']);
   });
 
   it('carries a small tool output inline', () => {

@@ -5,10 +5,10 @@ export const uk = {
   // Sidebar
   'sidebar.workspaces': 'Робочі простори',
   'sidebar.newWorkspace': 'Новий робочий простір',
-  'sidebar.newWorkspaceTooltip': 'Новий робочий простір (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Новий робочий простір',
   'sidebar.newRemoteWorkspace': 'Новий робочий простір на {name}',
-  'sidebar.hideTooltip': 'Сховати бічну панель (Ctrl+B)',
-  'sidebar.expandTooltip': 'Розгорнути бічну панель (Ctrl+B)',
+  'sidebar.hideTooltip': 'Сховати бічну панель',
+  'sidebar.expandTooltip': 'Розгорнути бічну панель',
   'sidebar.unreadCount': '{count} непрочитаних',
 
   // Workspace
@@ -17,7 +17,6 @@ export const uk = {
   'workspace.agentError': 'Помилка агента',
   'workspace.agentWaiting': 'Агент очікує',
 
-  'workspace.agentAwaitingInput': 'Агент очікує введення',
   'workspace.needsYou': 'Чекає на вас',
   'workspace.agentIdle': 'Агент простоює',
   'workspace.agentUnverifiable': 'Немає оновлень {time}',
@@ -66,9 +65,9 @@ export const uk = {
 
   // Search
   'search.placeholder': 'Пошук...',
-  'search.prevTooltip': 'Попередній результат (Shift+Enter)',
-  'search.nextTooltip': 'Наступний результат (Enter)',
-  'search.closeTooltip': 'Закрити (ESC)',
+  'search.prevTooltip': 'Попередній результат',
+  'search.nextTooltip': 'Наступний результат',
+  'search.closeTooltip': 'Закрити',
   'search.regexTooltip': 'Використати регулярний вираз',
   'search.allPanes': 'Усі панелі',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const uk = {
   'notification.markAllRead': 'Позначити всі як прочитані',
   'notification.clear': 'Очистити',
   'notification.empty': 'Немає сповіщень',
-  'notification.toggle': 'Ctrl+I для перемикання',
+  'notification.toggle': '{key} для перемикання',
+  'notification.needsYou.question': "Чекає на вас: «{question}»",
+  'notification.needsYou.noQuestion': "Чекає на вас. Тексту питання немає; перегляньте термінал.",
+  'notification.needsYou.over': "Більше не чекає на вас.",
 
   // Command palette
   'palette.placeholder': 'Введіть команду...',
@@ -96,7 +98,7 @@ export const uk = {
   'palette.close': 'закрити',
   'palette.cmd.toggleSidebar': 'Перемкнути бічну панель',
   'palette.cmd.newWorkspace': 'Новий робочий простір',
-  'palette.cmd.newSurface': 'Нова поверхня',
+  'palette.cmd.newSurface': 'Нова вкладка',
   'palette.cmd.splitRight': 'Розділити праворуч',
   'palette.cmd.splitDown': 'Розділити вниз',
   'palette.cmd.stashPane': 'Відкласти панель (сесія продовжить працювати)',
@@ -106,7 +108,7 @@ export const uk = {
   'palette.cmd.saveLayout': 'Зберегти поточний макет як шаблон',
   'palette.cmd.layoutPrefix': 'Макет: ',
   'palette.catWorkspace': 'Робочий простір',
-  'palette.catSurface': 'Поверхня',
+  'palette.catSurface': 'Вкладка',
   'palette.catCommand': 'Команда',
   'palette.catRecent': 'Нещодавні',
 
@@ -246,8 +248,6 @@ export const uk = {
   'viCopy.visual': '-- ВІЗУАЛЬНИЙ --',
 
   // StatusBar
-  'statusBar.company': 'КОМПАНІЯ',
-  'statusBar.session': 'Сесія: {min} хв',
   'statusBar.settingsTooltip': 'Налаштування (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const uk = {
   'settings.checkFailed': 'Перевірку не вдалося',
   'settings.unknownError': 'Невідома помилка',
   'settings.notificationBehavior': 'Поведінка сповіщень',
-  'settings.soundDesc': 'Web Audio API — зовнішній файл не потрібен',
+  'settings.soundDesc': 'Відтворює короткий вбудований сигнал, коли надходить сповіщення.',
   'settings.toast': 'Спливаючі сповіщення',
   'settings.toastDesc': 'Показувати спливаюче сповіщення після завершення роботи агента',
   'settings.ring': 'Анімація рамки',
   'settings.ringDesc': 'Пульсування рамки на панелях із непрочитаними сповіщеннями',
   'settings.sc.toggleSidebar': 'Перемкнути бічну панель',
-  'settings.sc.splitHorizontal': 'Розділити горизонтально',
-  'settings.sc.splitVertical': 'Розділити вертикально',
+  'settings.sc.splitHorizontal': 'Розділити праворуч',
+  'settings.sc.splitVertical': 'Розділити вниз',
   'settings.sc.newWorkspace': 'Новий робочий простір',
   'settings.sc.closeSurface': 'Закрити активну вкладку',
   'settings.sc.closePane': 'Закрити розділену панель',
@@ -406,8 +406,8 @@ export const uk = {
   'settings.prefixAddBinding': 'Додати прив’язку',
   'settings.prefixReset': 'Скинути до типових',
   'settings.prefixResetConfirm': 'Скинути всі налаштування префікса до типових?',
-  'settings.prefix.splitHorizontal': 'Розділити горизонтально',
-  'settings.prefix.splitVertical': 'Розділити вертикально',
+  'settings.prefix.splitHorizontal': 'Розділити праворуч',
+  'settings.prefix.splitVertical': 'Розділити вниз',
   'settings.prefix.closePane': 'Закрити панель',
   'settings.prefix.newWorkspace': 'Новий робочий простір',
   'settings.prefix.nextWorkspace': 'Наступний робочий простір',
@@ -482,16 +482,16 @@ export const uk = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Інтеграція з Claude',
-  'claudeIntegration.signalHealth.title': 'Стан сигналу плагіна',
+  'claudeIntegration.signalHealth.title': 'Плагін Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'Стан плагіна: ще не зафіксовано. Установіть його за допомогою наведеної нижче команди в Claude Code. wmux підтвердить виявлення, щойно спрацює перший хук.',
+    'Від плагіна wmux ще немає сигналу. Виконайте команду встановлення нижче в Claude Code; статус оновиться, коли плагін уперше озветься.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Останній сигнал {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Затримка P50 {p50}ms · P95 {p95}ms · {count} зразків',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Збіг робочого простору: {matched}/{total} хуків зіставлено з панеллю wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'Стан плагіна: застарілий. Останній хук надійшов {rel} — можливо, плагін перестав спрацьовувати або Claude Code простоює.',
+    'Останній сигнал від плагіна був {rel}. Можливо, він зупинився, або Claude Code простоює.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Скопіювати команду встановлення',
   'claudeIntegration.signalHealth.copySuccess': 'Скопійовано — вставте в Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Не вдалося скопіювати — буфер обміну заблоковано',
@@ -499,7 +499,7 @@ export const uk = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Лічильник використання Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Кожні 15 хвилин зчитує ваше використання з ендпоінта використання Anthropic за вашим входом у Claude Code (OAuth-токен із локального сховища). Лише читання використання — запити до моделі не надсилаються, квота не витрачається. Токен ніколи не записується назад, ніколи не логується, а лише надсилається до api.anthropic.com.',
+    'Кожні 15 хвилин зчитує ваше використання з ендпоінта використання Anthropic за вашим входом у Claude Code. Лише читання використання — запити до моделі не надсилаються, квота не витрачається. Токен ніколи не записується назад, ніколи не логується, а лише надсилається до api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Показувати використання 5h / 7d у рядку стану',
   'claudeIntegration.usage.refreshButton': 'Оновити зараз',
   'claudeIntegration.usage.refreshCooldown': 'Оновлення буде доступне через {seconds} с',
@@ -641,6 +641,7 @@ export const uk = {
   'pcSwitcher.manage': "Налаштування {name}",
   'app.portableData.notice': "Ця копія wmux запущена не з папки «Програми», тому використовує окремі дані. Перемістіть її в «Програми», щоб побачити наявні сеанси.",
   'pcSwitcher.othersNeedYou': "{count} чекають на вас на інших комп'ютерах",
+  'pcSwitcher.othersNeedYouOne': "{count} чекає на вас на іншому комп'ютері",
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Вийти з wmux і зупинити всі сеанси?",
   'quitAndStop.detail': "Зараз працюють: сеанси агентів — {agents}, усього терміналів — {sessions}. Усі їх буде зупинено. Звичайний вихід залишає їх працювати у фоні.",

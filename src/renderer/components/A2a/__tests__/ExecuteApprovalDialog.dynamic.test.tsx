@@ -186,4 +186,16 @@ describe('ExecuteApprovalDialog', () => {
     show(approval('a', { fanout: { taskCount: 2, repoPath: '/repo' } }));
     expect(container.querySelector('[data-approval-auto-approve]')).toBeNull();
   });
+
+  it('says which consent a fan-out or a task action is outside of, and never names a PC it cannot know', () => {
+    act(() => root.render(createElement(ExecuteApprovalDialog)));
+    show(approval('a'));
+    expect(container.textContent).toContain('Another agent wants to start Claude Code with');
+    expect(container.textContent).not.toContain('another PC');
+    show(approval('b', { fanout: { taskCount: 2, repoPath: '/repo' } }));
+    expect(container.textContent).toContain('you turned on approval for fan-out');
+    show(approval('c', { task: { taskId: 't1', title: 'Fix', branch: 'b', worktreePath: '/w', action: 'pr', effect: 'push and open a PR' } }));
+    expect(container.textContent).toContain('does not cover task actions');
+    expect(container.textContent).not.toContain('approval for fan-out');
+  });
 });

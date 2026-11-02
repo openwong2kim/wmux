@@ -5,10 +5,10 @@ export const da = {
   // Sidebar
   'sidebar.workspaces': 'Arbejdsområder',
   'sidebar.newWorkspace': 'Nyt arbejdsområde',
-  'sidebar.newWorkspaceTooltip': 'Nyt arbejdsområde (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Nyt arbejdsområde',
   'sidebar.newRemoteWorkspace': 'Nyt arbejdsområde på {name}',
-  'sidebar.hideTooltip': 'Skjul sidepanel (Ctrl+B)',
-  'sidebar.expandTooltip': 'Udvid sidepanel (Ctrl+B)',
+  'sidebar.hideTooltip': 'Skjul sidepanel',
+  'sidebar.expandTooltip': 'Udvid sidepanel',
   'sidebar.unreadCount': '{count} ulæste',
 
   // Workspace
@@ -17,7 +17,6 @@ export const da = {
   'workspace.agentError': 'Agentfejl',
   'workspace.agentWaiting': 'Agent venter',
 
-  'workspace.agentAwaitingInput': 'Agent afventer input',
   'workspace.needsYou': 'Venter på dig',
   'workspace.agentIdle': 'Agent inaktiv',
   'workspace.agentUnverifiable': 'Ingen opdatering i {time}',
@@ -66,9 +65,9 @@ export const da = {
 
   // Search
   'search.placeholder': 'Søg...',
-  'search.prevTooltip': 'Forrige resultat (Shift+Enter)',
-  'search.nextTooltip': 'Næste resultat (Enter)',
-  'search.closeTooltip': 'Luk (ESC)',
+  'search.prevTooltip': 'Forrige resultat',
+  'search.nextTooltip': 'Næste resultat',
+  'search.closeTooltip': 'Luk',
   'search.regexTooltip': 'Brug regulært udtryk',
   'search.allPanes': 'Alle paneler',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const da = {
   'notification.markAllRead': 'Marker alle som læst',
   'notification.clear': 'Ryd',
   'notification.empty': 'Ingen notifikationer',
-  'notification.toggle': 'Ctrl+I for at skifte',
+  'notification.toggle': '{key} for at skifte',
+  'notification.needsYou.question': "Venter på dig: “{question}”",
+  'notification.needsYou.noQuestion': "Venter på dig. Ingen spørgsmålstekst; se terminalen.",
+  'notification.needsYou.over': "Venter ikke længere på dig.",
 
   // Command palette
   'palette.placeholder': 'Indtast en kommando...',
@@ -96,7 +98,7 @@ export const da = {
   'palette.close': 'luk',
   'palette.cmd.toggleSidebar': 'Skift sidepanel',
   'palette.cmd.newWorkspace': 'Nyt arbejdsområde',
-  'palette.cmd.newSurface': 'Ny overflade',
+  'palette.cmd.newSurface': 'Ny fane',
   'palette.cmd.splitRight': 'Opdel til højre',
   'palette.cmd.splitDown': 'Opdel nedad',
   'palette.cmd.stashPane': 'Læg panelet til side (sessionen kører videre)',
@@ -106,7 +108,7 @@ export const da = {
   'palette.cmd.saveLayout': 'Gem nuværende layout som skabelon',
   'palette.cmd.layoutPrefix': 'Layout: ',
   'palette.catWorkspace': 'Arbejdsområde',
-  'palette.catSurface': 'Overflade',
+  'palette.catSurface': 'Fane',
   'palette.catCommand': 'Kommando',
   'palette.catRecent': 'Seneste',
 
@@ -246,8 +248,6 @@ export const da = {
   'viCopy.visual': '-- VISUEL --',
 
   // StatusBar
-  'statusBar.company': 'VIRKSOMHED',
-  'statusBar.session': 'Session: {min} min',
   'statusBar.settingsTooltip': 'Indstillinger (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const da = {
   'settings.checkFailed': 'Tjek mislykkedes',
   'settings.unknownError': 'Ukendt fejl',
   'settings.notificationBehavior': 'Notifikationsadfærd',
-  'settings.soundDesc': 'Web Audio API — ingen ekstern fil nødvendig',
+  'settings.soundDesc': 'Afspiller en kort indbygget tone, når der kommer en notifikation.',
   'settings.toast': 'Toast-notifikationer',
   'settings.toastDesc': 'Vis toast når agenten er færdig',
   'settings.ring': 'Kantanimation',
   'settings.ringDesc': 'Pulserende kant på paneler med ulæste notifikationer',
   'settings.sc.toggleSidebar': 'Skift sidepanel',
-  'settings.sc.splitHorizontal': 'Opdel horisontalt',
-  'settings.sc.splitVertical': 'Opdel vertikalt',
+  'settings.sc.splitHorizontal': 'Opdel til højre',
+  'settings.sc.splitVertical': 'Opdel nedad',
   'settings.sc.newWorkspace': 'Nyt arbejdsområde',
   'settings.sc.closeSurface': 'Luk aktiv fane',
   'settings.sc.closePane': 'Luk opdelt panel',
@@ -406,8 +406,8 @@ export const da = {
   'settings.prefixAddBinding': 'Tilføj binding',
   'settings.prefixReset': 'Nulstil til standard',
   'settings.prefixResetConfirm': 'Nulstil alle præfiksindstillinger til standard?',
-  'settings.prefix.splitHorizontal': 'Opdel horisontalt',
-  'settings.prefix.splitVertical': 'Opdel vertikalt',
+  'settings.prefix.splitHorizontal': 'Opdel til højre',
+  'settings.prefix.splitVertical': 'Opdel nedad',
   'settings.prefix.closePane': 'Luk panel',
   'settings.prefix.newWorkspace': 'Nyt arbejdsområde',
   'settings.prefix.nextWorkspace': 'Næste arbejdsområde',
@@ -481,16 +481,16 @@ export const da = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude-integration',
-  'claudeIntegration.signalHealth.title': 'Plugin-signaltilstand',
+  'claudeIntegration.signalHealth.title': 'Claude Code-plugin',
   'claudeIntegration.signalHealth.unknownBody':
-    'Plugin-status: endnu ikke observeret. Installer med kommandoen nedenfor i Claude Code. wmux bekræfter registrering, når den første hook udløses.',
+    'Intet signal fra wmux-pluginnet endnu. Kør installationskommandoen nedenfor i Claude Code; dette opdateres, når pluginnet melder sig første gang.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Seneste signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latenstid P50 {p50}ms · P95 {p95}ms · {count} målinger',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Arbejdsområde-match: {matched}/{total} hooks knyttet til et wmux-panel',
   'claudeIntegration.signalHealth.staleBody':
-    'Plugin-status: forældet. Seneste hook ankom {rel} — pluginnet er måske holdt op med at udløse, eller Claude Code er inaktiv.',
+    'Pluginnets seneste signal var {rel}. Det er måske stoppet, eller Claude Code er inaktiv.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Kopiér installationskommando',
   'claudeIntegration.signalHealth.copySuccess': 'Kopieret — indsæt i Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Kopiering mislykkedes — udklipsholderen er låst',
@@ -498,7 +498,7 @@ export const da = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic-forbrugsmåler (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Læser dit forbrug fra Anthropics forbrugsendpoint hvert 15. minut med dit Claude Code-login (OAuth-tokenet i lokal lagring). Det læser kun forbrug — der sendes ingen modelforespørgsel, og der bruges ingen kvote. Tokenet skrives aldrig tilbage, logges aldrig og sendes kun til api.anthropic.com.',
+    'Læser dit forbrug fra Anthropics forbrugsendpoint hvert 15. minut med dit Claude Code-login. Det læser kun forbrug — der sendes ingen modelforespørgsel, og der bruges ingen kvote. Tokenet skrives aldrig tilbage, logges aldrig og sendes kun til api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Vis 5h / 7d-udnyttelse i statuslinjen',
   'claudeIntegration.usage.refreshButton': 'Opdater nu',
   'claudeIntegration.usage.refreshCooldown': 'Opdatering tilgængelig om {seconds}s',
@@ -639,6 +639,7 @@ export const da = {
   'pcSwitcher.manage': "Indstillinger for {name}",
   'app.portableData.notice': "Denne kopi af wmux kører uden for Programmer og bruger derfor separate data. Flyt den til Programmer for at se dine eksisterende sessioner.",
   'pcSwitcher.othersNeedYou': "{count} venter på dig på andre computere",
+  'pcSwitcher.othersNeedYouOne': '{count} venter på dig på en anden computer',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Afslut wmux og stop alle sessioner?",
   'quitAndStop.detail': "Kørende agentsessioner: {agents}. Terminaler i alt: {sessions}. De bliver alle stoppet. Almindelig Afslut lader dem køre videre i baggrunden.",

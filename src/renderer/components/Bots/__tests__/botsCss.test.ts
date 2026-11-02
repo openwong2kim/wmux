@@ -1,6 +1,5 @@
-// The bot profile popover must fit a short window: at 800px it ran past the
-// chat's foot and its Stop could not be reached. Layout does not run in
-// jsdom, so this reads the stylesheet.
+// Layout does not run in jsdom, so this reads the stylesheet: the bot's
+// settings page in the chat's place, the chat header's right end.
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -14,18 +13,20 @@ function rule(selector: string): string {
 }
 
 describe('bots.css', () => {
-  it('the profile popover is bounded by the chat and scrolls inside', () => {
-    const body = rule('.wmux-bots-profile');
-    expect(body).toMatch(/position:\s*absolute/);
-    expect(body).toMatch(/max-height:\s*calc\(100% - \d+px\)/);
-    expect(body).toMatch(/overflow-y:\s*auto/);
-    // The chat it is placed in is the positioned box that bounds it.
+  it('a bot\'s settings page is laid out in the chat\'s place: its back button always shows, its section nav folds away when narrow', () => {
     expect(rule('.wmux-bots-chat')).toMatch(/position:\s*relative/);
+    expect(css).toMatch(/\.wmux-bot-settings-head > \.wmux-bot-settings-back \{ display: inline-flex; \}/);
+    expect(rule('.wmux-bot-settings-scroll')).toMatch(/overflow-y:\s*auto/);
+    const narrow = css.indexOf('@container botsettings (max-width: 639px) {');
+    expect(narrow).toBeGreaterThan(-1);
+    expect(css.indexOf('.wmux-bot-settings-nav { display: none; }', narrow)).toBeGreaterThan(narrow);
+    // The old profile popover is gone.
+    expect(css).not.toContain('.wmux-bots-profile');
   });
 
   it('the chat header\'s workers button shows only in the one-column layout, mirroring the back button', () => {
     expect(rule('.wmux-bots-head-workers')).toMatch(/display:\s*none/);
-    expect(rule('.wmux-bots-head-workers')).toMatch(/right:\s*16px/);
+    expect(rule('.wmux-bots-head-end')).toMatch(/right:\s*16px/);
     const narrow = css.indexOf('@container bots (max-width: 799px) {');
     expect(narrow).toBeGreaterThan(-1);
     expect(css.indexOf('.wmux-bots-head-workers { display: inline-flex; }', narrow)).toBeGreaterThan(narrow);

@@ -2127,3 +2127,93 @@ describe('a WSL caller pane is resolved to the Windows path of its directory', (
     expect(h.daemonRpc).not.toHaveBeenCalled();
   });
 });
+
+describe('workers inherit bypass from the pane that fans out', () => {
+  const COMMANDER: RpcContext = { origin: 'local', commanderWorkspace: CALLER_WS };
+  /** A Claude Code MCP caller — the only caller that inherits. */
+  const CLAUDE: RpcContext = { origin: 'local', clientName: 'claude-code' };
+  /** A daemon row for pane `id`: whether the daemon reports its live Claude in bypass. */
+  const pane = (id: string, liveClaudeBypass: boolean) => ({
+    id,
+    liveAgent: 'claude',
+    ...(liveClaudeBypass ? { liveClaudeBypass: true } : {}),
+    // The raw binding is not what decides: here it always says bypass.
+    resumeBinding: { agent: 'claude', sessionId: 's', cwd: CALLER_CWD, ts: 1, permissionMode: 'bypassPermissions' },
+  });
+  const launchedWith = async (h: Harness): Promise<FanOutRequest> => {
+    await h.flush();
+    await h.flush();
+    expect(h.start).toHaveBeenCalledTimes(1);
+    return h.request();
+  };
+
+  it('a calling pane in bypass launches its workers in bypass, and the records say why', async () => {
+    const g = guardsIn(tmp());
+    const h = setup({ guards: g, daemonSessions: [pane('pty-sibling', false), pane('pty-1', true)] });
+    await h.call(goodParams(), CLAUDE);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('bypassPermissions');
+    expect(h.preview()).toContain('(inherited bypass from the calling pane)');
+    const [launched, rec] = g.recentAudit(2);
+    expect(rec).toMatchObject({ workerPermissionMode: 'bypassPermissions', workerPermissionModeSource: 'inherited-caller-pane' });
+    expect(launched).toMatchObject({ kind: 'launched', workerPermissionMode: 'bypassPermissions', workerPermissionModeSource: 'inherited-caller-pane' });
+  });
+
+  it('a manual setting is overridden only by a bypass parent', async () => {
+    const h = setup({ workerMode: () => 'manual', daemonSessions: [pane('pty-1', true)] });
+    await h.call(goodParams(), CLAUDE);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('bypassPermissions');
+  });
+
+  it('a pane the daemon does not report in bypass keeps the setting, whatever its binding says', async () => {
+    const g = guardsIn(tmp());
+    const h = setup({ guards: g, workerMode: () => 'manual', daemonSessions: [pane('pty-1', false)] });
+    await h.call(goodParams(), CLAUDE);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('manual');
+    expect(g.recentAudit(2).every((r) => r.workerPermissionModeSource === undefined)).toBe(true);
+    expect(h.preview()).not.toContain('inherited');
+  });
+
+  it('no session for the pane keeps the setting', async () => {
+    const h = setup({ daemonSessions: [pane('pty-sibling', true)] });
+    await h.call(goodParams(), CLAUDE);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('auto');
+  });
+
+  it('no daemon keeps the setting', async () => {
+    const h = setup();
+    await h.call(goodParams(), CLAUDE);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('auto');
+  });
+
+  it.each([
+    ['a Codex caller', { origin: 'local', clientName: 'codex-mcp-client' }],
+    ['a caller without a client name', { origin: 'local' }],
+    ['a plugin-host caller', { origin: 'local', clientName: 'claude-code', hostedWorkspace: CALLER_WS }],
+  ] as Array<[string, RpcContext]>)('%s naming a bypass pane keeps the setting', async (_who, ctx) => {
+    const h = setup({ daemonSessions: [pane('pty-1', true)] });
+    await h.call(goodParams(), ctx);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('auto');
+    expect(h.daemonRpc).not.toHaveBeenCalledWith('daemon.listSessions', expect.anything());
+  });
+
+  it('a caller cannot claim bypass through its request', async () => {
+    const h = setup({ daemonSessions: [pane('pty-1', false)] });
+    await h.call(goodParams({
+      workerPermissionMode: 'bypassPermissions',
+      permissionMode: 'bypassPermissions',
+      parentPermissionMode: 'bypassPermissions',
+      workerPermissionModeSource: 'inherited-caller-pane',
+      liveClaudeBypass: true,
+    }), CLAUDE);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('auto');
+  });
+
+  it("a brain never inherits from the pane it anchors on", async () => {
+    // pty-1 is the commander workspace's active pane: a brain can focus a
+    // bypass pane, so its mode must not become the brain's workers' mode.
+    const h = setup({ daemonSessions: [pane('pty-1', true)] });
+    await h.call({ ...goodParams(), senderPtyId: undefined }, COMMANDER);
+    expect((await launchedWith(h)).workerPermissionMode).toBe('auto');
+    expect(h.daemonRpc).not.toHaveBeenCalledWith('daemon.listSessions', expect.anything());
+  });
+});

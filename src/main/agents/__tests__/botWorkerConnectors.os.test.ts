@@ -222,7 +222,7 @@ describe('the session record carries the launch', () => {
     expect(guarded.initialCommand).toBe(`claude --settings="${w.settings}" --mcp-config="${w.mcp}" --strict-mcp-config --setting-sources=project --dangerously-skip-permissions "$(cat '/w/.wtask/prompt.md')"`);
     const hooks = readJson(w.settings).hooks as Record<string, Array<{ matcher: string; hooks: Array<{ command: string }> }>>;
     expect(readJson(w.settings).disableAllHooks).toBe(false);
-    expect(Object.keys(hooks).sort()).toEqual(['Notification', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
+    expect(Object.keys(hooks).sort()).toEqual(['Notification', 'PermissionRequest', 'PostToolUse', 'PreToolUse', 'SessionEnd', 'SessionStart', 'Stop', 'StopFailure', 'SubagentStop', 'UserPromptSubmit']);
     expect(hooks.Stop[0].hooks[0].command).toBe(`node "${BRIDGE}" Stop`);
     // Signals only: no per-tool-call gate.
     expect(hooks.PreToolUse.map((g) => g.matcher)).toEqual(['AskUserQuestion']);

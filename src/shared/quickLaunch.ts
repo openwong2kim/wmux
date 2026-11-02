@@ -7,6 +7,7 @@
 // Electron accelerators instead of tauri-plugin-global-shortcut chords.
 
 import { FANOUT_AGENTS, type FanoutAgentChoice } from './fanoutPreset';
+import { displayCombo } from './keymap';
 import { ORCH_ROLES } from './orchestratorRole';
 import { FANOUT_PROMPT_MAX_BYTES } from './workTask';
 
@@ -196,14 +197,8 @@ export function acceleratorFromKeyEvent(
   return isGlobalAccelerator(accelerator) ? accelerator : null;
 }
 
-/** An accelerator as the keys a person presses on this OS, spelled like the
- *  Settings keyboard list (displayCombo): `⌘+Shift+Space`, `Ctrl+Shift+Space`. */
+/** An accelerator as the keys a person presses on this OS, in the one
+ *  shortcut notation (displayCombo): `⇧⌘Space`, `Ctrl+Shift+Space`. */
 export function formatAccelerator(accelerator: string, mac: boolean): string {
-  const names: Record<string, string> = mac
-    ? { CommandOrControl: '⌘', Command: '⌘', Control: 'Ctrl', Alt: '⌥' }
-    : { CommandOrControl: 'Ctrl', Command: 'Win', Control: 'Ctrl' };
-  return accelerator
-    .split('+')
-    .map((p) => names[p] ?? p)
-    .join('+');
+  return displayCombo(accelerator, mac ? 'darwin' : 'win32');
 }

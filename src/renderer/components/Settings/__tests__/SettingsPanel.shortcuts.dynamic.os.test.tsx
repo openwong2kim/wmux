@@ -76,8 +76,8 @@ afterEach(() => {
 
 describe('Settings → Shortcuts (#1455)', () => {
   it('lists every configurable built-in with its current key', () => {
-    expect(badge(PREV).textContent).toBe('Alt+ArrowUp');
-    expect(badge('Next workspace').textContent).toBe('Alt+ArrowDown');
+    expect(badge(PREV).textContent).toBe('Alt+↑');
+    expect(badge('Next workspace').textContent).toBe('Alt+↓');
     expect(badge('Switch to workspace 3').textContent).toBe('Ctrl+3');
   });
 
@@ -192,7 +192,7 @@ describe('Settings → Shortcuts search', () => {
   it('finds macOS symbol combos by modifier name', () => {
     (window as unknown as { electronAPI: { platform: string } }).electronAPI.platform = 'darwin';
     act(() => root.render(createElement(Harness)));
-    expect(badge(PREV).textContent).toBe('⌥+ArrowUp');
+    expect(badge(PREV).textContent).toBe('⌥↑');
     type('option arrowup');
     expect(shown().some((l) => l.startsWith(`${PREV} (`))).toBe(true);
     expect(shown().some((l) => l.startsWith('Next workspace ('))).toBe(false);
@@ -240,7 +240,7 @@ describe('Settings → Shortcuts: keys custom keybindings use (#1885)', () => {
     click(cancel());
     expect(dialog()).toBeNull();
     expect(overrides()).toEqual({});
-    expect(badge(PREV).textContent).toBe('Alt+ArrowUp');
+    expect(badge(PREV).textContent).toBe('Alt+↑');
   });
 
   it('Use anyway moves the built-in onto F7, as before', () => {

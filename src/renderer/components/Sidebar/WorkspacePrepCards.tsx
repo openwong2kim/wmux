@@ -85,7 +85,7 @@ export default function WorkspacePrepCards() {
     <div className="px-2 pb-1 space-y-0.5" data-testid="workspace-prep-cards" aria-live="polite">
       {cards.map((card) => {
         const copyLine = [
-          card.copied > 0 ? t('prepCard.copied', { count: card.copied }) : null,
+          card.copied > 0 ? t(card.copied === 1 ? 'prepCard.copiedOne' : 'prepCard.copied', { count: card.copied }) : null,
           card.missing > 0 ? t('prepCard.missing', { count: card.missing }) : null,
           card.refused > 0 ? t('prepCard.refused', { count: card.refused }) : null,
         ].filter(Boolean).join(', ');

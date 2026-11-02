@@ -3,6 +3,7 @@ import type { AgentSlug } from '../../../shared/agentIdentity';
 import type { SessionPromptSchedule } from '../../../shared/sessionPromptSchedule';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { ptyLocationName } from '../../utils/paneNaming';
 import Button from '../ui/Button';
 import Badge from '../ui/Badge';
 import Popover from '../ui/Popover';
@@ -82,6 +83,8 @@ export default function SessionSchedulesPopover({
 }) {
   const t = useT();
   const setPopover = useStore((state) => state.setToolbarPopover);
+  const workspaces = useStore((state) => state.workspaces);
+  const paneLabel = useStore((state) => state.paneLabel);
   const resolvedApi = api ?? window.electronAPI?.pty?.schedules;
   const promptRef = useRef<HTMLTextAreaElement>(null);
   const firstManageRef = useRef<HTMLButtonElement>(null);
@@ -231,8 +234,8 @@ export default function SessionSchedulesPopover({
             <span id="session-schedules-title">{t('sessionSchedule.title')}</span>
             {activeCount > 0 && <Badge>{activeCount}</Badge>}
           </div>
-          <div className="ui-note truncate" title={`${agentName ?? t('sessionSchedule.noAgent')} · ${ptyId}`}>
-            {agentName ?? t('sessionSchedule.noAgent')} · {ptyId}
+          <div className="ui-note truncate" title={agentName ?? t('sessionSchedule.noAgent')}>
+            {agentName ?? t('sessionSchedule.noAgent')}
           </div>
         </div>
         <Button
@@ -293,9 +296,7 @@ export default function SessionSchedulesPopover({
                   </div>
                   <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5 text-[11px] leading-4 text-[var(--text-sub)]">
                     {schedule.ptyId !== ptyId && (
-                      <span title={schedule.ptyId}>
-                        {t('sessionSchedule.otherSession', { ptyId: schedule.ptyId })}
-                      </span>
+                      <span>{ptyLocationName(workspaces, paneLabel, schedule.ptyId) ?? t('sessionSchedule.otherSession')}</span>
                     )}
                     <span className="font-mono">{formatWhen(schedule.nextRunAt)}</span>
                     {schedule.intervalMinutes && (() => {

@@ -99,14 +99,14 @@ function PcSwitcherMenu({ anchor, triggerRef, onDone, onAddSsh, onCheckSsh, onSe
   const select = (id: string) => useStore.getState().setActivePc(id);
   const hostLine = (host: PcRailHost) => {
     const [, state] = hostSummary(host, feeds[host.id], t);
-    return host.attention.needsYou > 0 ? `${state} · ${t('pcRail.needsYouCount', { count: host.attention.needsYou })}` : state;
+    return host.attention.needsYou > 0 ? `${state} · ${t(host.attention.needsYou === 1 ? 'pcRail.needsYouCountOne' : 'pcRail.needsYouCount', { count: host.attention.needsYou })}` : state;
   };
 
   const mainItems: PaneActionItem[] = [
     {
       key: `pc-${LOCAL_PC_ID}`,
       label: t('pcRail.thisComputer'),
-      ...(localNeeds > 0 ? { detail: t('pcRail.needsYouCount', { count: localNeeds }) } : {}),
+      ...(localNeeds > 0 ? { detail: t(localNeeds === 1 ? 'pcRail.needsYouCountOne' : 'pcRail.needsYouCount', { count: localNeeds }) } : {}),
       icon: <IconComputer size={14} />,
       active: active === LOCAL_PC_ID,
       onSelect: () => select(LOCAL_PC_ID),
@@ -250,7 +250,7 @@ export function PcSwitcherTitle({ title }: { title: string }) {
         {name && <span className="min-w-0 truncate wmux-pc-switcher-name" data-pc-switcher-name>· {name}</span>}
         <span className="shrink-0 rotate-90 opacity-70" aria-hidden="true"><IconChevron size={12} /></span>
       </button>
-      <OthersBadge count={othersNeedYou} label={t('pcSwitcher.othersNeedYou', { count: othersNeedYou })} />
+      <OthersBadge count={othersNeedYou} label={t(othersNeedYou === 1 ? 'pcSwitcher.othersNeedYouOne' : 'pcSwitcher.othersNeedYou', { count: othersNeedYou })} />
       {anchor && <PcSwitcherMenu anchor={anchor} triggerRef={buttonRef} onDone={close} onAddSsh={() => setAddSsh(true)} onCheckSsh={setCheckSsh} onServiceSsh={setServiceSsh} />}
       {addSsh && <AddSshPcDialog onClose={() => setAddSsh(false)} />}
       {checkSsh && <SshHostCheckDialog hostId={checkSsh.id} label={checkSsh.label} onClose={() => setCheckSsh(null)} />}
@@ -285,7 +285,7 @@ export function PcSwitcherRailItem() {
     const left = sidebarPosition === 'right' ? r.left - 4 - PANE_ACTIONS_MENU_WIDTH : r.right + 4;
     setAnchor({ top: r.top, bottom: r.top, left, right: left + PANE_ACTIONS_MENU_WIDTH });
   };
-  const label = [name, ...(othersNeedYou > 0 ? [t('pcSwitcher.othersNeedYou', { count: othersNeedYou })] : [])].join(', ');
+  const label = [name, ...(othersNeedYou > 0 ? [t(othersNeedYou === 1 ? 'pcSwitcher.othersNeedYouOne' : 'pcSwitcher.othersNeedYou', { count: othersNeedYou })] : [])].join(', ');
   return (
     <div className="flex justify-center pb-1" data-pc-switcher-rail-slot>
       <button

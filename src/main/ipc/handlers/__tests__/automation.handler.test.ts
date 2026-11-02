@@ -170,7 +170,7 @@ describe('automation grant — browser identity', () => {
     const { identityConfirmCopy } = await import('../automation.handler');
     const view = { paneLabel: 'Shop', profileId: 'Work', hosts: ['a.test'] };
     expect(identityConfirmCopy('en', 'N', { ...view, mode: 'bypass' }).detail).toContain('without asking for approval');
-    expect(identityConfirmCopy('en', 'N', { ...view, mode: 'bypass' }).confirm).toContain('Bypass');
+    expect(identityConfirmCopy('en', 'N', { ...view, mode: 'bypass' }).confirm).toContain('Full access');
     expect(identityConfirmCopy('en', 'N', { ...view, mode: 'auto' }).detail).toContain("Claude's auto mode");
     expect(identityConfirmCopy('en', 'N', { ...view, mode: 'auto' }).detail).not.toContain('none of');
     expect(identityConfirmCopy('ko', 'N', { ...view, mode: 'bypass' }).detail).toContain('승인을 묻지 않고');

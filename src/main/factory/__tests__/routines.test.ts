@@ -542,3 +542,76 @@ describe('one-time routines and quiet hours', () => {
     expect(again.list()).toEqual([made.routine]);
   });
 });
+
+describe('the owner\'s routines', () => {
+  it('the author is kept on reload; one an older build rewrote without it reads as the bot\'s', async () => {
+    const r = rig();
+    const owner = r.store.ownerSet({ botId: A, workspaceId: 'ws-1' }, { botId: A, title: 'Build', prompt: 'Check the build.', schedule: hourly });
+    if (!owner.ok) throw new Error('ownerSet');
+    await r.store.flush();
+    const again = r.make();
+    again.load();
+    expect(again.get(owner.routine.id)).toMatchObject({ author: 'owner', threadId: `dm:${A}` });
+    // An older build rewrites the file field by field and drops `author`.
+    const raw = JSON.parse(fs.readFileSync(routinesPath(dir), 'utf8')) as { routines: Array<Record<string, unknown>> };
+    for (const x of raw.routines) delete x.author;
+    fs.writeFileSync(routinesPath(dir), JSON.stringify(raw));
+    const downgraded = r.make();
+    downgraded.load();
+    expect(downgraded.get(owner.routine.id)?.author).toBeUndefined();
+  });
+
+  it('a refused routine is paused once (reason refused); only the owner resumes it, and a bot never touches the owner\'s', () => {
+    const r = rig();
+    const made = set(r);
+    if (!made.ok) throw new Error('create');
+    // Another bot's id pauses nothing.
+    r.store.pauseRefused(B, made.routine.id);
+    expect(r.store.get(made.routine.id)?.state).toBe('active');
+    expect(r.store.pauseRefused(A, made.routine.id)).toBe(true);
+    // Already paused for that: nothing new to tell.
+    expect(r.store.pauseRefused(A, made.routine.id)).toBe(false);
+    expect(r.store.get(made.routine.id)).toMatchObject({ state: 'paused', paused: { reason: 'refused' } });
+    r.store.resumeFor(A, 'park');
+    expect(r.store.pause({ kind: 'bot', botId: A, workspaceId: 'ws-1' }, made.routine.id, false)).toMatchObject({ ok: false, code: 'not_authorized' });
+    expect(r.store.get(made.routine.id)?.state).toBe('paused');
+    expect(r.store.pause({ kind: 'owner' }, made.routine.id, false)).toMatchObject({ ok: true, routine: { state: 'active' } });
+    const owner = r.store.ownerSet({ botId: A, workspaceId: 'ws-1' }, { botId: A, title: 'Build', prompt: 'Check the build.', schedule: hourly });
+    if (!owner.ok) throw new Error('ownerSet');
+    expect(r.store.pause({ kind: 'bot', botId: A, workspaceId: 'ws-1' }, owner.routine.id, true)).toMatchObject({ ok: false, code: 'not_found' });
+  });
+
+  it('a done one-time routine refused stays done, and its refusal is still told', () => {
+    const r = rig();
+    const made = set(r, A, { schedule: { kind: 'once', at: clock + HOUR } });
+    if (!made.ok) throw new Error('create');
+    clock += HOUR;
+    r.store.tick();
+    expect(r.store.get(made.routine.id)?.state).toBe('done');
+    expect(r.store.pauseRefused(A, made.routine.id)).toBe(true);
+    expect(r.store.get(made.routine.id)?.state).toBe('done');
+  });
+
+  it('run now: only the owner\'s own active routine, recorded as fired', () => {
+    const r = rig();
+    const owner = r.store.ownerSet({ botId: A, workspaceId: 'ws-1' }, { botId: A, title: 'Build', prompt: 'Check the build.', schedule: hourly });
+    if (!owner.ok) throw new Error('ownerSet');
+    expect(r.store.runNow(A, owner.routine.id)).toMatchObject({ ok: true, routine: { lastFiredAt: clock } });
+    expect(r.wakes).toHaveLength(1);
+    r.store.pause({ kind: 'owner' }, owner.routine.id, true);
+    expect(r.store.runNow(A, owner.routine.id)).toMatchObject({ ok: false, message: expect.stringMatching(/paused/) });
+    const bots = set(r);
+    if (!bots.ok) throw new Error('create');
+    expect(r.store.runNow(A, bots.routine.id)).toMatchObject({ ok: false, code: 'not_found' });
+  });
+
+  it('run now on a one-time routine uses its one run: its slot does not fire it again', () => {
+    const r = rig();
+    const owner = r.store.ownerSet({ botId: A, workspaceId: 'ws-1' }, { botId: A, title: 'Once', prompt: 'Check once.', schedule: { kind: 'once', at: clock + HOUR } });
+    if (!owner.ok) throw new Error('ownerSet');
+    expect(r.store.runNow(A, owner.routine.id)).toMatchObject({ ok: true, routine: { state: 'done' } });
+    clock += HOUR;
+    expect(r.store.tick()).toEqual([]);
+    expect(r.wakes).toHaveLength(1);
+  });
+});

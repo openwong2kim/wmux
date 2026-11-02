@@ -70,7 +70,7 @@ function ChatThread({ ptyId, data, onTerminal }: { ptyId: string; data: ReturnTy
     (sendEffect ? sendEffect === 'uncertain' : sendState === 'error' || sendState === 'unconfirmed');
   const messages = useMemo(() => transcriptMessages(data.events, true), [data.events]);
   const capabilities = managed ? undefined : data.status.terminal?.capabilities;
-  // Claude queues a prompt typed mid-turn; other agents are sent to after the reply.
+  // Claude and Codex queue a prompt typed mid-turn; other agents are sent to after the reply.
   const canQueue = !!capabilities?.queue;
   const interrupt = window.electronAPI?.chat?.interrupt;
   const canStop = !!capabilities?.cancel && !!interrupt;

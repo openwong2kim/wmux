@@ -46,6 +46,7 @@ import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { looksLikeApprovalPrompt, readFolderTrustScreen } from '../../../daemon/approvals/approvalKeystrokes';
 import type { FolderTrustState } from '../../../daemon/folderTrustState';
 import { parseTerminalPrompt } from '../../../daemon/approvals/terminalPromptParse';
+import { showsScreenReaderKeyRow } from '../../../daemon/approvals/screenReaderKeyRow';
 import { loadWorkspaceMode, type AgentMode } from '../../deck/deckAutonomyStore';
 import { workspaceFactsSettled } from '../../workspace/workspaceFactsFeed';
 
@@ -240,15 +241,16 @@ export function answerPolicyFor(
 }
 
 /**
- * Is an approval dialog on this screen right now? Either shape counts: an
+ * Is an approval dialog on this screen right now? Any of these counts: an
  * option row under a selection cursor (a select, or the permission dialog's
- * "❯ 1. Yes"), or a whole permission dialog the parser recognises. Only the
- * tail is looked at — the live dialog is at the bottom of the grid.
+ * "❯ 1. Yes"), a whole permission dialog the parser recognises, or a
+ * screen-reader layout key row. Only the tail is looked at — the live dialog
+ * is at the bottom of the grid.
  */
 export function approvalOnScreen(screenText: string): boolean {
   const rows = screenText.split('\n').slice(-60);
   if (rows.length === 0) return false;
-  return looksLikeApprovalPrompt(rows) || parseTerminalPrompt(rows) !== null;
+  return looksLikeApprovalPrompt(rows) || parseTerminalPrompt(rows) !== null || showsScreenReaderKeyRow(rows);
 }
 
 /**
@@ -269,8 +271,24 @@ export function folderTrustGateMessage(op: string, ptyId: string): string {
 }
 
 /** The refusal when neither the renderer nor the daemon could say whether a folder-trust prompt is up,
- *  or the screen shows a trust question over choices too narrow to read. */
-export function folderTrustUnknownMessage(op: string, ptyId: string): string {
+ *  or the screen shows a trust question over choices too narrow to read. `read`: where the verdict
+ *  came from, the screen text main had, or the daemon's read of the session's output for a pane with
+ *  no terminal on screen (`parked`) or no screen read at all (`output`). `reason`: the daemon's tag for
+ *  why its read could not decide, when it sent one. */
+export function folderTrustUnknownMessage(op: string, ptyId: string, read: 'screen' | 'parked' | 'output' = 'screen', reason?: string): string {
+  // A read cut at its deadline leaves the daemon's whole-ring parse running, and its verdict answers
+  // the next request; any other 'unknown' from a whole read is kept until the pane prints or resizes,
+  // so a timed retry does not change it.
+  const next = reason === 'timeout'
+    ? 'A retry in a few seconds may get past it; if this repeats, show the pane.'
+    : 'If this repeats, show the pane, or wait until it prints again.';
+  const why = reason ? ` (${reason})` : '';
+  if (read === 'parked') {
+    return `${op}: pane "${ptyId}" is not on screen (it is stashed, or its workspace was unloaded while hidden), and its screen could not be read whole from its output${why}, so a folder-trust prompt cannot be ruled out. ${next}`;
+  }
+  if (read === 'output') {
+    return `${op}: pane "${ptyId}" gave no screen to read, and its screen could not be read whole from its output${why}, so a folder-trust prompt cannot be ruled out. ${next}`;
+  }
   return `${op}: pane "${ptyId}" has no screen that reads whole (none was read, or a trust question's choices are cut too short), so a folder-trust prompt cannot be ruled out; retry once the pane is shown wide enough.`;
 }
 

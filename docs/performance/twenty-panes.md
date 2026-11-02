@@ -379,6 +379,17 @@ node scripts/twenty-pane-stability.mjs --app ~/test/wmux.app --engine node --cla
 
 Then run the same command with `--engine rust --out out/twenty-pane-stability/ab-rust`.
 
+Linux runs on CI: **Actions › Twenty-pane engine A/B (Linux) › Run workflow**
+(`.github/workflows/twenty-pane-ab-linux.yml`). One ubuntu-22.04 runner
+packages the app with the Rust module, then runs the default scenario with
+`--claude 0` under Xvfb, node first and then rust, for the minutes you enter
+(1 to 140; 120 by default, about 4.5 hours in all). Each run must have
+completed on its engine, at start and at end, with one daemon throughout,
+recorded daemon and process-tree memory, and be torn down cleanly before the
+next starts (`scripts/twenty-pane-ab-check.mjs`),
+or the job fails. The job summary has a table of both runs' headline numbers,
+and the `twenty-pane-ab-linux` artifact has both output directories.
+
 ## How to run
 
 Prerequisites:

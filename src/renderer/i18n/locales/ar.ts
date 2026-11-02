@@ -5,10 +5,10 @@ export const ar = {
   // Sidebar
   'sidebar.workspaces': 'مساحات العمل',
   'sidebar.newWorkspace': 'مساحة عمل جديدة',
-  'sidebar.newWorkspaceTooltip': 'مساحة عمل جديدة (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'مساحة عمل جديدة',
   'sidebar.newRemoteWorkspace': 'مساحة عمل جديدة على {name}',
-  'sidebar.hideTooltip': 'إخفاء الشريط الجانبي (Ctrl+B)',
-  'sidebar.expandTooltip': 'إظهار الشريط الجانبي (Ctrl+B)',
+  'sidebar.hideTooltip': 'إخفاء الشريط الجانبي',
+  'sidebar.expandTooltip': 'إظهار الشريط الجانبي',
   'sidebar.unreadCount': '{count} غير مقروء',
 
   // Workspace
@@ -17,7 +17,6 @@ export const ar = {
   'workspace.agentError': 'خطأ في الوكيل',
   'workspace.agentWaiting': 'الوكيل في الانتظار',
 
-  'workspace.agentAwaitingInput': 'الوكيل يحتاج إدخالاً',
   'workspace.needsYou': 'ينتظر ردك',
   'workspace.agentIdle': 'الوكيل خامل',
   'workspace.agentUnverifiable': 'لا تحديث منذ {time}',
@@ -66,9 +65,9 @@ export const ar = {
 
   // Search
   'search.placeholder': 'بحث...',
-  'search.prevTooltip': 'النتيجة السابقة (Shift+Enter)',
-  'search.nextTooltip': 'النتيجة التالية (Enter)',
-  'search.closeTooltip': 'إغلاق (ESC)',
+  'search.prevTooltip': 'النتيجة السابقة',
+  'search.nextTooltip': 'النتيجة التالية',
+  'search.closeTooltip': 'إغلاق',
   'search.regexTooltip': 'استخدام التعبير النمطي',
   'search.allPanes': 'كل الأجزاء',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const ar = {
   'notification.markAllRead': 'تعليم الكل كمقروء',
   'notification.clear': 'مسح',
   'notification.empty': 'لا توجد إشعارات',
-  'notification.toggle': 'Ctrl+I للتبديل',
+  'notification.toggle': '{key} للتبديل',
+  'notification.needsYou.question': "ينتظر ردك: «{question}»",
+  'notification.needsYou.noQuestion': "ينتظر ردك. لا يوجد نص للسؤال؛ راجع الطرفية.",
+  'notification.needsYou.over': "لم يعد ينتظرك.",
 
   // Command palette
   'palette.placeholder': 'اكتب أمراً...',
@@ -96,7 +98,7 @@ export const ar = {
   'palette.close': 'إغلاق',
   'palette.cmd.toggleSidebar': 'تبديل الشريط الجانبي',
   'palette.cmd.newWorkspace': 'مساحة عمل جديدة',
-  'palette.cmd.newSurface': 'سطح جديد',
+  'palette.cmd.newSurface': 'علامة تبويب جديدة',
   'palette.cmd.splitRight': 'تقسيم إلى اليمين',
   'palette.cmd.splitDown': 'تقسيم إلى الأسفل',
   'palette.cmd.stashPane': 'وضع الجزء جانبًا (مع استمرار تشغيل الجلسة)',
@@ -106,7 +108,7 @@ export const ar = {
   'palette.cmd.saveLayout': 'حفظ التخطيط الحالي كقالب',
   'palette.cmd.layoutPrefix': 'التخطيط: ',
   'palette.catWorkspace': 'مساحة العمل',
-  'palette.catSurface': 'السطح',
+  'palette.catSurface': 'علامة تبويب',
   'palette.catCommand': 'أمر',
   'palette.catRecent': 'الأحدث',
 
@@ -246,8 +248,6 @@ export const ar = {
   'viCopy.visual': '-- مرئي --',
 
   // StatusBar
-  'statusBar.company': 'الشركة',
-  'statusBar.session': 'الجلسة: {min} د',
   'statusBar.settingsTooltip': 'الإعدادات (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const ar = {
   'settings.checkFailed': 'فشل التحقق',
   'settings.unknownError': 'خطأ غير معروف',
   'settings.notificationBehavior': 'سلوك الإشعارات',
-  'settings.soundDesc': 'Web Audio API — لا يلزم ملف خارجي',
+  'settings.soundDesc': 'يشغّل نغمة قصيرة مدمجة عند وصول إشعار.',
   'settings.toast': 'إشعارات منبثقة',
   'settings.toastDesc': 'إظهار إشعار منبثق عند اكتمال الوكيل',
   'settings.ring': 'حركة الإطار',
   'settings.ringDesc': 'نبض الحدود على الأجزاء التي بها إشعارات غير مقروءة',
   'settings.sc.toggleSidebar': 'تبديل الشريط الجانبي',
-  'settings.sc.splitHorizontal': 'تقسيم أفقي',
-  'settings.sc.splitVertical': 'تقسيم عمودي',
+  'settings.sc.splitHorizontal': 'تقسيم إلى اليمين',
+  'settings.sc.splitVertical': 'تقسيم إلى الأسفل',
   'settings.sc.newWorkspace': 'مساحة عمل جديدة',
   'settings.sc.closeSurface': 'إغلاق علامة التبويب النشطة',
   'settings.sc.closePane': 'إغلاق الجزء المقسم',
@@ -406,8 +406,8 @@ export const ar = {
   'settings.prefixAddBinding': 'إضافة ارتباط',
   'settings.prefixReset': 'إعادة التعيين إلى الافتراضي',
   'settings.prefixResetConfirm': 'هل تريد إعادة تعيين جميع إعدادات البادئة إلى الافتراضي؟',
-  'settings.prefix.splitHorizontal': 'تقسيم أفقي',
-  'settings.prefix.splitVertical': 'تقسيم عمودي',
+  'settings.prefix.splitHorizontal': 'تقسيم إلى اليمين',
+  'settings.prefix.splitVertical': 'تقسيم إلى الأسفل',
   'settings.prefix.closePane': 'إغلاق الجزء',
   'settings.prefix.newWorkspace': 'مساحة عمل جديدة',
   'settings.prefix.nextWorkspace': 'مساحة العمل التالية',
@@ -482,16 +482,16 @@ export const ar = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'تكامل Claude',
-  'claudeIntegration.signalHealth.title': 'سلامة إشارة الإضافة',
+  'claudeIntegration.signalHealth.title': 'إضافة Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'حالة الإضافة: لم تُرصد بعد. ثبِّتها باستخدام الأمر أدناه في Claude Code. يؤكد wmux الكشف بمجرد تشغيل أول خطّاف.',
+    'لم تصل أي إشارة من إضافة wmux بعد. شغّل أمر التثبيت أدناه في Claude Code؛ يتحدّث هذا عندما ترسل الإضافة أول إشارة.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'آخر إشارة {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'زمن الاستجابة P50 {p50}ms · P95 {p95}ms · {count} عيّنة',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'تطابق مساحة العمل: {matched}/{total} خطّاف تم ربطه بجزء wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'حالة الإضافة: قديمة. وصل آخر خطّاف {rel} — ربما توقفت الإضافة عن العمل أو أن Claude Code خامل.',
+    'آخر إشارة من الإضافة كانت {rel}. ربما توقفت، أو أن Claude Code خامل.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'نسخ أمر التثبيت',
   'claudeIntegration.signalHealth.copySuccess': 'تم النسخ — الصقه في Claude Code',
   'claudeIntegration.signalHealth.copyError': 'فشل النسخ — الحافظة مقفلة',
@@ -499,7 +499,7 @@ export const ar = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'عدّاد استخدام Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'يقرأ استخدامك من نقطة نهاية الاستخدام في Anthropic كل 15 دقيقة باستخدام تسجيل دخولك إلى Claude Code (رمز OAuth في التخزين المحلي). إنه يقرأ الاستخدام فقط — لا يُرسَل أي طلب إلى النموذج ولا تُستهلك أي حصة. لا يُعاد كتابة الرمز أبداً، ولا يُسجَّل أبداً، ويُرسَل فقط إلى api.anthropic.com.',
+    'يقرأ استخدامك من نقطة نهاية الاستخدام في Anthropic كل 15 دقيقة باستخدام تسجيل دخولك إلى Claude Code. إنه يقرأ الاستخدام فقط — لا يُرسَل أي طلب إلى النموذج ولا تُستهلك أي حصة. لا يُعاد كتابة الرمز أبداً، ولا يُسجَّل أبداً، ويُرسَل فقط إلى api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'عرض استخدام 5h / 7d في شريط الحالة',
   'claudeIntegration.usage.refreshButton': 'تحديث الآن',
   'claudeIntegration.usage.refreshCooldown': 'التحديث متاح خلال {seconds} ث',
@@ -637,6 +637,7 @@ export const ar = {
   'pcSwitcher.manage': "إعدادات {name}",
   'app.portableData.notice': "تعمل هذه النسخة من wmux خارج مجلد التطبيقات، لذا تستخدم بيانات منفصلة. انقلها إلى مجلد التطبيقات لرؤية جلساتك الحالية.",
   'pcSwitcher.othersNeedYou': "{count} بانتظارك على أجهزة كمبيوتر أخرى",
+  'pcSwitcher.othersNeedYouOne': '{count} بانتظارك على أجهزة كمبيوتر أخرى',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "هل تريد إنهاء wmux وإيقاف جميع الجلسات؟",
   'quitAndStop.detail': "جلسات الوكلاء قيد التشغيل: {agents}. إجمالي الطرفيات: {sessions}. سيتم إيقافها جميعًا. الإنهاء العادي يتركها تعمل في الخلفية.",

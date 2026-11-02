@@ -148,9 +148,9 @@ export default function ExecuteApprovalDialog() {
               : sameWs
                 ? renderSentence(t('approval.sameWsSentence'), {
                     workspace: danger(t('approval.sameWsWorkspace')),
-                    mode: danger('bypassPermissions'),
+                    mode: danger(t('settings.fanoutWorkerMode.bypassPermissions')),
                   })
-                : renderSentence(t('approval.remoteSentence'), { mode: danger('bypassPermissions') })
+                : renderSentence(t('approval.remoteSentence'), { mode: danger(t('settings.fanoutWorkerMode.bypassPermissions')) })
         }
       />
       <DialogBody className="!gap-3">
@@ -204,7 +204,9 @@ export default function ExecuteApprovalDialog() {
           // No auto-approve affordance on a fan-out or a task action: the
           // toggle is scoped to A2A background execution and neither rides
           // it, so offering it here would promise something it does not do.
-          <p className="m-0 text-[11px] text-[var(--text-sub)]">{t('approval.fanoutAutoApproveHint')}</p>
+          <p className="m-0 text-[11px] text-[var(--text-sub)]">
+            {t(task ? 'approval.taskAutoApproveHint' : 'approval.fanoutAutoApproveHint')}
+          </p>
         ) : (
           <label className="flex items-center gap-2 text-[13px] text-[var(--text-sub)] cursor-pointer">
             <Checkbox

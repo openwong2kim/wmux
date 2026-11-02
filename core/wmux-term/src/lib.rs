@@ -66,3 +66,16 @@ mod wake_gate;
     not(target_arch = "wasm32")
 ))]
 mod native_interpreter;
+
+#[cfg(all(
+    windows,
+    any(
+        test,
+        all(
+            feature = "native-core",
+            feature = "bindings",
+            not(target_arch = "wasm32")
+        )
+    )
+))]
+mod process_table;

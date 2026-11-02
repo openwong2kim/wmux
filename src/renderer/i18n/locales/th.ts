@@ -5,10 +5,10 @@ export const th = {
   // Sidebar
   'sidebar.workspaces': 'พื้นที่ทำงาน',
   'sidebar.newWorkspace': 'พื้นที่ทำงานใหม่',
-  'sidebar.newWorkspaceTooltip': 'พื้นที่ทำงานใหม่ (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'พื้นที่ทำงานใหม่',
   'sidebar.newRemoteWorkspace': 'เวิร์กสเปซใหม่บน {name}',
-  'sidebar.hideTooltip': 'ซ่อนแถบด้านข้าง (Ctrl+B)',
-  'sidebar.expandTooltip': 'ขยายแถบด้านข้าง (Ctrl+B)',
+  'sidebar.hideTooltip': 'ซ่อนแถบด้านข้าง',
+  'sidebar.expandTooltip': 'ขยายแถบด้านข้าง',
   'sidebar.unreadCount': 'ยังไม่ได้อ่าน {count}',
 
   // Workspace
@@ -17,7 +17,6 @@ export const th = {
   'workspace.agentError': 'ข้อผิดพลาดของเอเจนต์',
   'workspace.agentWaiting': 'เอเจนต์รออยู่',
 
-  'workspace.agentAwaitingInput': 'เอเจนต์รอการป้อนข้อมูล',
   'workspace.needsYou': 'รอคุณอยู่',
   'workspace.agentIdle': 'เอเจนต์ว่าง',
   'workspace.agentUnverifiable': 'ไม่มีการอัปเดตมา {time}',
@@ -66,9 +65,9 @@ export const th = {
 
   // Search
   'search.placeholder': 'ค้นหา...',
-  'search.prevTooltip': 'ผลลัพธ์ก่อนหน้า (Shift+Enter)',
-  'search.nextTooltip': 'ผลลัพธ์ถัดไป (Enter)',
-  'search.closeTooltip': 'ปิด (ESC)',
+  'search.prevTooltip': 'ผลลัพธ์ก่อนหน้า',
+  'search.nextTooltip': 'ผลลัพธ์ถัดไป',
+  'search.closeTooltip': 'ปิด',
   'search.regexTooltip': 'ใช้นิพจน์ทั่วไป',
   'search.allPanes': 'พาเนลทั้งหมด',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const th = {
   'notification.markAllRead': 'ทำเครื่องหมายว่าอ่านแล้วทั้งหมด',
   'notification.clear': 'ล้าง',
   'notification.empty': 'ไม่มีการแจ้งเตือน',
-  'notification.toggle': 'Ctrl+I เพื่อสลับ',
+  'notification.toggle': '{key} เพื่อสลับ',
+  'notification.needsYou.question': "รอคุณอยู่: “{question}”",
+  'notification.needsYou.noQuestion': "รอคุณอยู่ ไม่มีข้อความคำถาม ดูที่เทอร์มินัล",
+  'notification.needsYou.over': "ไม่ได้รอคุณแล้ว",
 
   // Command palette
   'palette.placeholder': 'พิมพ์คำสั่ง...',
@@ -96,7 +98,7 @@ export const th = {
   'palette.close': 'ปิด',
   'palette.cmd.toggleSidebar': 'สลับแถบด้านข้าง',
   'palette.cmd.newWorkspace': 'พื้นที่ทำงานใหม่',
-  'palette.cmd.newSurface': 'พื้นผิวใหม่',
+  'palette.cmd.newSurface': 'แท็บใหม่',
   'palette.cmd.splitRight': 'แบ่งไปทางขวา',
   'palette.cmd.splitDown': 'แบ่งลงล่าง',
   'palette.cmd.stashPane': 'เก็บพาเนลไว้ก่อน (เซสชันยังทำงานต่อ)',
@@ -106,7 +108,7 @@ export const th = {
   'palette.cmd.saveLayout': 'บันทึกเลย์เอาต์ปัจจุบันเป็นเทมเพลต',
   'palette.cmd.layoutPrefix': 'เลย์เอาต์: ',
   'palette.catWorkspace': 'พื้นที่ทำงาน',
-  'palette.catSurface': 'พื้นผิว',
+  'palette.catSurface': 'แท็บ',
   'palette.catCommand': 'คำสั่ง',
   'palette.catRecent': 'ล่าสุด',
 
@@ -246,8 +248,6 @@ export const th = {
   'viCopy.visual': '-- วิชวล --',
 
   // StatusBar
-  'statusBar.company': 'บริษัท',
-  'statusBar.session': 'เซสชัน: {min} นาที',
   'statusBar.settingsTooltip': 'การตั้งค่า (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const th = {
   'settings.checkFailed': 'การตรวจสอบล้มเหลว',
   'settings.unknownError': 'ข้อผิดพลาดที่ไม่รู้จัก',
   'settings.notificationBehavior': 'พฤติกรรมการแจ้งเตือน',
-  'settings.soundDesc': 'Web Audio API — ไม่ต้องใช้ไฟล์ภายนอก',
+  'settings.soundDesc': 'เล่นเสียงสั้น ๆ ในตัวเมื่อมีการแจ้งเตือน',
   'settings.toast': 'การแจ้งเตือนแบบ toast',
   'settings.toastDesc': 'แสดง toast เมื่อเอเจนต์เสร็จสิ้น',
   'settings.ring': 'แอนิเมชันขอบ',
   'settings.ringDesc': 'ขอบกะพริบบนพาเนลที่มีการแจ้งเตือนที่ยังไม่ได้อ่าน',
   'settings.sc.toggleSidebar': 'สลับแถบด้านข้าง',
-  'settings.sc.splitHorizontal': 'แบ่งแนวนอน',
-  'settings.sc.splitVertical': 'แบ่งแนวตั้ง',
+  'settings.sc.splitHorizontal': 'แบ่งไปทางขวา',
+  'settings.sc.splitVertical': 'แบ่งลงล่าง',
   'settings.sc.newWorkspace': 'พื้นที่ทำงานใหม่',
   'settings.sc.closeSurface': 'ปิดแท็บที่ใช้งาน',
   'settings.sc.closePane': 'ปิดพาเนลที่แบ่ง',
@@ -406,8 +406,8 @@ export const th = {
   'settings.prefixAddBinding': 'เพิ่มการผูก',
   'settings.prefixReset': 'รีเซ็ตเป็นค่าเริ่มต้น',
   'settings.prefixResetConfirm': 'รีเซ็ตการตั้งค่าคำนำหน้าทั้งหมดเป็นค่าเริ่มต้น?',
-  'settings.prefix.splitHorizontal': 'แบ่งแนวนอน',
-  'settings.prefix.splitVertical': 'แบ่งแนวตั้ง',
+  'settings.prefix.splitHorizontal': 'แบ่งไปทางขวา',
+  'settings.prefix.splitVertical': 'แบ่งลงล่าง',
   'settings.prefix.closePane': 'ปิดพาเนล',
   'settings.prefix.newWorkspace': 'พื้นที่ทำงานใหม่',
   'settings.prefix.nextWorkspace': 'พื้นที่ทำงานถัดไป',
@@ -481,16 +481,16 @@ export const th = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'การเชื่อมต่อ Claude',
-  'claudeIntegration.signalHealth.title': 'สถานะสัญญาณปลั๊กอิน',
+  'claudeIntegration.signalHealth.title': 'ปลั๊กอิน Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'สถานะปลั๊กอิน: ยังไม่พบสัญญาณ ติดตั้งโดยใช้คำสั่งด้านล่างนี้ใน Claude Code แล้ว wmux จะยืนยันการตรวจพบเมื่อ hook แรกทำงาน',
+    'ยังไม่มีสัญญาณจากปลั๊กอิน wmux เรียกใช้คำสั่งติดตั้งด้านล่างใน Claude Code แล้วส่วนนี้จะอัปเดตเมื่อปลั๊กอินรายงานครั้งแรก',
   'claudeIntegration.signalHealth.detectedLastReceived': 'สัญญาณล่าสุดเมื่อ {rel}',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'ความหน่วง P50 {p50}ms · P95 {p95}ms · {count} ตัวอย่าง',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'การจับคู่พื้นที่ทำงาน: {matched}/{total} hook เชื่อมโยงกับพาเนลของ wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'สถานะปลั๊กอิน: ค้าง hook ล่าสุดมาถึงเมื่อ {rel} — ปลั๊กอินอาจหยุดส่งสัญญาณ หรือ Claude Code กำลังว่างอยู่',
+    'สัญญาณล่าสุดจากปลั๊กอินคือ {rel} ปลั๊กอินอาจหยุดทำงาน หรือ Claude Code ไม่ได้ใช้งานอยู่',
   'claudeIntegration.signalHealth.copyInstallCommand': 'คัดลอกคำสั่งติดตั้ง',
   'claudeIntegration.signalHealth.copySuccess': 'คัดลอกแล้ว — วางลงใน Claude Code',
   'claudeIntegration.signalHealth.copyError': 'คัดลอกไม่สำเร็จ — คลิปบอร์ดถูกล็อก',
@@ -498,7 +498,7 @@ export const th = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'มาตรวัดการใช้งาน Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'อ่านการใช้งานของคุณจากปลายทางการใช้งานของ Anthropic ทุก 15 นาทีด้วยการล็อกอิน Claude Code ของคุณ (โทเค็น OAuth ในที่จัดเก็บภายในเครื่อง) เป็นการอ่านการใช้งานเท่านั้น ไม่มีการส่งคำขอไปยังโมเดลและไม่ใช้โควตา โทเค็นจะไม่ถูกเขียนกลับ ไม่ถูกบันทึก และส่งไปยัง api.anthropic.com เท่านั้น',
+    'อ่านการใช้งานของคุณจากปลายทางการใช้งานของ Anthropic ทุก 15 นาทีด้วยการล็อกอิน Claude Code ของคุณ เป็นการอ่านการใช้งานเท่านั้น ไม่มีการส่งคำขอไปยังโมเดลและไม่ใช้โควตา โทเค็นจะไม่ถูกเขียนกลับ ไม่ถูกบันทึก และส่งไปยัง api.anthropic.com เท่านั้น',
   'claudeIntegration.usage.enableLabel': 'แสดงการใช้งาน 5h / 7d ในแถบสถานะ',
   'claudeIntegration.usage.refreshButton': 'รีเฟรชเดี๋ยวนี้',
   'claudeIntegration.usage.refreshCooldown': 'รีเฟรชได้ในอีก {seconds} วินาที',
@@ -635,6 +635,7 @@ export const th = {
   'pcSwitcher.manage': "การตั้งค่า {name}",
   'app.portableData.notice': "สำเนา wmux นี้ทำงานอยู่นอกโฟลเดอร์แอปพลิเคชัน จึงใช้ข้อมูลแยกต่างหาก ย้ายไปไว้ในแอปพลิเคชันเพื่อดูเซสชันที่มีอยู่",
   'pcSwitcher.othersNeedYou': "{count} รายการรอคุณอยู่บนคอมพิวเตอร์เครื่องอื่น",
+  'pcSwitcher.othersNeedYouOne': '{count} รายการรอคุณอยู่บนคอมพิวเตอร์เครื่องอื่น',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "ออกจาก wmux และหยุดเซสชันทั้งหมดหรือไม่",
   'quitAndStop.detail': "กำลังทำงาน: เซสชันเอเจนต์ {agents} รายการ เทอร์มินัลทั้งหมด {sessions} รายการ ทั้งหมดจะถูกหยุด การออกตามปกติจะปล่อยให้ทำงานต่อในเบื้องหลัง",

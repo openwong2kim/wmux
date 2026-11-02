@@ -1,7 +1,7 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { memo, useId } from 'react';
 import type { FleetPane, FleetRow } from '../../stores/selectors/fleet';
-import { fleetRow, fleetTargetPtyId, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
+import { fleetRow, fleetTargetPtyId, GENERIC_TERMINAL_TITLE, selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
 import type { WorkTask } from '../../../shared/workTask';
 import type { Task } from '../../../shared/types';
 import { isVerifiedItem } from '../../../shared/completionEvidence';
@@ -73,6 +73,15 @@ const AGENT_DISPLAY_BY_NAME = new Map<string, string>(
 export function agentDisplayName(raw: string): string {
   const clean = raw.replace(/^[✳✻✽✶✢◐◑*]\s*/, '').trim();
   return AGENT_DISPLAY_BY_NAME.get(clean.toLowerCase()) ?? clean;
+}
+
+/** The agent a row names: the detected agent, else a terminal title that
+ *  names one. A shell's name ("Zsh") is not an agent, so it names nothing. */
+export function fleetAgentName(card: Pick<FleetPane, 'agentName' | 'surfaceType' | 'title'>): string {
+  if (card.agentName) return agentDisplayName(card.agentName);
+  if (card.surfaceType !== 'terminal') return card.surfaceType;
+  const name = agentDisplayName(card.title);
+  return GENERIC_TERMINAL_TITLE.test(name) && !AGENT_DISPLAY_BY_NAME.has(name.toLowerCase()) ? '' : name;
 }
 
 /** An accessible name clips agent text so a long question does not drown it. */
@@ -171,7 +180,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
   // A fan-out task names who asked for it in every section, not only once it
   // is ready to review. Undefined for a workspace that is not a task.
   const requester = useStore(useShallow((s) => fleetRequesterText(s, card.workspaceId, t)));
-  const agentName = agentDisplayName(card.agentName || (card.surfaceType === 'terminal' ? card.title : card.surfaceType));
+  const agentName = fleetAgentName(card);
   const supervision = card.supervision;
   const supervisionStopped = supervision?.status === 'stopped';
   const supervisionLabel = supervision
@@ -301,7 +310,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
           data-fleet-activity={(showActivity && !usageLimit) || undefined}
           data-fleet-now={usageLimit ? undefined : line.kind}
           data-fleet-usage-limit={usageLimit ? 'true' : undefined}
-          title={usageLimit?.message ? `${detail}\n${usageLimit.message}` : detail}>
+          title={usageLimit?.message ? `${detail}\n${usageLimit.message}` : detail || undefined}>
           {/* The agent's own question reads as speech. */}
           {line.kind === 'question' && !usageLimit ? `“${detail}”` : detail}
         </span>

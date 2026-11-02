@@ -1,20 +1,3 @@
-// === Company Mode Types (canonical source: src/company/types.ts) ===
-import type {
-  AgentPreset as _AgentPreset,
-  MemberStatus as _MemberStatus,
-  TeamMember as _TeamMember,
-  Department as _Department,
-  Company as _Company,
-  CompanyTemplateMember as _CompanyTemplateMember,
-  CompanyTemplateDepartment as _CompanyTemplateDepartment,
-  CompanyTemplate as _CompanyTemplate,
-  WorktreeInfo as _WorktreeInfo,
-  RiskLevel as _RiskLevel,
-  ApprovalRequest as _ApprovalRequest,
-  MessageRouteEvent as _MessageRouteEvent,
-  InboxMessage as _InboxMessage,
-} from '../company/types';
-import { MAX_INBOX_SIZE as _MAX_INBOX_SIZE } from '../company/types';
 // Type-only: the workspace color tag id set lives with its palette + the
 // normalize boundary in ./workspaceColors, so the values and the type cannot
 // drift apart.
@@ -30,8 +13,8 @@ import type { StarPromptState } from './starPrompt';
 import type { AgentSignalKind } from './hooks/signal-types';
 import type { DeadPaneRecovery } from './ptyRecovery';
 import type { ShellPromptSignal } from './shellPrompt';
+import type { WorkspaceCompany } from './company';
 
-// Re-export for backward compatibility
 /** BYOB M0 — which runtime serves as a workspace's orchestrator brain.
  *  'claude' = the Claude Agent SDK (default); 'hermes' = the generic ACP
  *  adapter with the Hermes Agent spawn spec; 'claude-pty' = the user's own
@@ -42,22 +25,19 @@ import type { ShellPromptSignal } from './shellPrompt';
  *  have no registry row), so this union is not derived from agentIdentity.ts. */
 export type BrainVendor = 'claude' | 'hermes' | 'claude-pty';
 
-export type AgentPreset = _AgentPreset;
-export type MemberStatus = _MemberStatus;
-export type TeamMember = _TeamMember;
-export type Department = _Department;
-export type Company = _Company;
-export type CompanyTemplateMember = _CompanyTemplateMember;
-export type CompanyTemplateDepartment = _CompanyTemplateDepartment;
-export type CompanyTemplate = _CompanyTemplate;
-export type WorktreeInfo = _WorktreeInfo;
-export type RiskLevel = _RiskLevel;
-export type ApprovalRequest = _ApprovalRequest;
-export type MessageRouteEvent = _MessageRouteEvent;
-export type InboxMessage = _InboxMessage;
-export const MAX_INBOX_SIZE = _MAX_INBOX_SIZE;
-
 // === Surface: a single terminal instance within a Pane ===
+/** A handoff from a tab at or close to its usage limit (Surface.handoff). */
+export interface SurfaceHandoff {
+  /** Epoch ms of the handoff. */
+  at: number;
+  /** Epoch ms the limit resets: from then the work can come back. */
+  resetsAt: number;
+  /** The commit checked out at the handoff: the other agent's changes are counted from it. */
+  head?: string;
+  /** The handoff note's first line: the request there that carries the note is not the owner's. */
+  noteHead?: string;
+}
+
 export interface Surface {
   /** Presentation only: both views share the same live PTY. */
   viewMode?: 'terminal' | 'chat';
@@ -68,7 +48,7 @@ export interface Surface {
   cwd: string;
   /** `placeholder` is minted only by the browser build (wmux web `/app`) for a
    *  tab it cannot show; the desktop never creates or persists one. */
-  surfaceType?: 'terminal' | 'browser' | 'editor' | 'preview' | 'diff' | 'git' | 'review' | 'remote-terminal' | 'placeholder';
+  surfaceType?: 'terminal' | 'browser' | 'editor' | 'preview' | 'diff' | 'board' | 'git' | 'review' | 'remote-terminal' | 'placeholder';
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;
@@ -144,6 +124,9 @@ export interface Surface {
    *  that tab, the held one it came from. Each tab's tooltip names the other. */
   continuedIn?: string;
   continuedFrom?: string;
+  /** On the tab a handoff left from at (or close to) its usage limit: once
+   *  that limit resets, the tab offers to bring the work back. */
+  handoff?: SurfaceHandoff;
   /**
    * #2398 — this surface replaces a session the daemon confirmed dead, and has
    * not created its replacement yet. Carried with the surface (and so saved
@@ -283,8 +266,8 @@ export interface Workspace {
   metadata?: WorkspaceMetadata;
   /** Per-workspace process profile (env + startup command) for new panes. */
   profile?: WorkspaceProfile;
-  companyRole?: 'ceo' | 'lead' | 'member';
-  companyDeptName?: string;
+  /** Set when the workspace is a company-mode company (shared/company.ts). */
+  company?: WorkspaceCompany;
   /**
    * Optional user-assigned color tag (see shared/workspaceColors.ts). Purely a
    * visual label for telling workspaces apart at a glance — it never carries
@@ -820,6 +803,8 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
     // #977 — stash the active pane. `!` is tmux's break-pane, which is the
     // closest gesture in muscle memory: take this pane out of the layout.
     '!': 'stashPane',
+    // Rebalance the whole layout: every column and row back to an equal share.
+    '=': 'balanceLayout',
     'K': 'movePaneUp',
     'J': 'movePaneDown',
     'H': 'movePaneLeft',
@@ -957,6 +942,10 @@ export interface SessionData {
   titlebarVitalsAlwaysVisible?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.paneNewTerminalButton. */
   paneNewTerminalButton?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalCompactScrollback. */
+  terminalCompactScrollback?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalSharedWebgl. */
+  terminalSharedWebgl?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting
@@ -1085,6 +1074,8 @@ export interface SessionData {
   surfaceDismissedQuestion?: Record<string, string>;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
+  /** Multiview groups, the one on screen first (renderer/utils/multiviewGroups.ts). Shape-checked on load. */
+  multiviewGroups?: string[][];
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;
@@ -1120,10 +1111,6 @@ export interface SessionData {
   customThemeColors?: CustomThemeColors;
   /** PC rail: the selected computer, the last workspace per computer, muted hosts. Never a shadow id. */
   pcRail?: PcRailPersisted;
-  sidebarMode?: 'workspaces' | 'company';
-  company?: Company | null;
-  memberCosts?: Record<string, number>;
-  sessionStartTime?: number;
   onboardingCompleted?: boolean;
   // First-run wizard (Plan 1.15) — magical-moment onboarding marker.
   // Optional so older saved sessions deserialize cleanly (default: false on read).
@@ -1253,7 +1240,9 @@ export interface TaskStatus {
 export const VALID_TRANSITIONS: Record<TaskState, readonly TaskState[]> = {
   submitted: ['working', 'canceled'],
   working: ['completed', 'failed', 'canceled', 'input-required'],
-  'input-required': ['working', 'canceled'],
+  // -> completed: a report is accepted as done (a company task's coordinator
+  // marks a seat's report done).
+  'input-required': ['working', 'completed', 'canceled'],
   completed: [],
   failed: [],
   canceled: [],

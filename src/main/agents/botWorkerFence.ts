@@ -49,6 +49,7 @@ import { tokenize, type PermissionMode } from '../../shared/agentResume';
 import { splitModelEnvMarker } from '../../shared/workerLaunch';
 import { contentFileName } from '../../shared/botWorkerMcp';
 import { WORKER_TEMP_NAME, isClaudeLauncher, isFencedMode, linePermissionMode, namesClaude, readJsonObject, settingsDefaultMode, workerFenceFolderRefusal, workerTempRoot } from '../../shared/botWorkerGuard';
+import { claudeProjectFolder } from '../../shared/claudeProjectFolder';
 import { agentExecEnv } from '../../shared/execEnv';
 import { shellQuote } from '../../shared/resumeShell';
 import { getWmuxDir } from '../../daemon/config';
@@ -736,12 +737,6 @@ export function claudeTempRoots(platform: NodeJS.Platform = process.platform): s
   return platform === 'darwin' ? [root, `/private${root}`] : [root];
 }
 
-/** Claude's name for a session's project folder: its folder with every
- *  character but a letter or digit written `-`. */
-function claudeProjectFolderName(cwd: string): string {
-  return cwd.replace(/[^A-Za-z0-9]/g, '-');
-}
-
 /**
  * The other sessions' project folders in claude's temp folder, closed to the
  * worker's commands: on macOS every `-*` folder by one pattern (the
@@ -752,7 +747,8 @@ function claudeProjectFolderName(cwd: string): string {
  */
 export function claudeTempDenies(worktree: string, platform: NodeJS.Platform, roots: readonly string[] = claudeTempRoots(platform), listDir: (dir: string) => string[] = listDirSafe): string[] {
   if (platform === 'darwin') return roots.map((r) => path.join(r, '-*'));
-  const own = claudeProjectFolderName(worktree);
+  // Named as Claude names it: a long path is cut and given a hash (claudeProjectFolder).
+  const own = claudeProjectFolder(worktree);
   return roots.flatMap((r) => listDir(r).filter((n) => n.startsWith('-') && n !== own).map((n) => path.join(r, n)));
 }
 

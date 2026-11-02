@@ -4,9 +4,9 @@
 // regress silently is the WIRING: mapping over the raw list again, or letting
 // the display position leak into the Ctrl+N label / reorder payload, which
 // would renumber the shortcuts the moment a row got pinned. The store-connected
-// <Sidebar /> can't be mounted in this repo's node-env harness (see
-// Sidebar.companyMode.test.tsx for why), so this is a source-scan lockstep
-// guard in the same style.
+// <Sidebar /> can't be mounted in this repo's node-env harness
+// (renderToStaticMarkup runs no effects, and the store can't be seeded without
+// a mount), so this is a source-scan lockstep guard.
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';

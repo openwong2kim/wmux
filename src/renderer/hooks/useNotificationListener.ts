@@ -397,6 +397,8 @@ export interface NotificationHandlerDeps {
     paneFlashEnabled: boolean;
     taskbarFlashEnabled: boolean;
     mutedNotificationCategories: NotificationCategory[];
+    /** A pane's question still waiting on the user (optional for fixtures). */
+    surfacePendingQuestion?: Record<string, string>;
     addNotification: (n: { workspaceId: string; surfaceId?: string; ptyId?: string; type: NotificationType; title: string; body: string; category?: NotificationCategory }) => void;
     pushToast: (t: {
       message: string;
@@ -467,6 +469,9 @@ export function createNotificationHandler(deps: NotificationHandlerDeps) {
     const ctx: PolicyContext = {
       windowFocused: deps.isWindowFocused(),
       isActiveSurface: isActive,
+      // The turn-boundary metadata (pendingQuestion) is broadcast before the
+      // turn's notification, so a turn that ended on a question reads here.
+      asksForYou: data.category === 'agent-turn' && !!ptyId && !!state.surfacePendingQuestion?.[ptyId]?.trim(),
       isMutedWorkspace: ws?.metadata?.notificationsMuted === true,
       // Only a notification the pane itself sent: one without a ptyId is
       // resolved onto the workspace's ACTIVE pane, and muting that pane must

@@ -36,6 +36,8 @@ const WAIT_MS = 60000;
 // DEFERRED_UNMUTE_DELAY_MS is 100; give the timer room on a busy runner.
 const UNMUTE_SETTLE_MS = 500;
 const HOLD_CAP = 256 * 1024;
+/** The newest output held past the head (DaemonPTYBridge heldTail). */
+const TAIL_CAP = 2 * 1024 * 1024;
 
 const HISTORY = 'WMUX-HISTORY-1464';
 const HEAD = 'WMUX-HEAD-1464';
@@ -44,6 +46,7 @@ const TAIL = 'WMUX-TAIL-1464';
 interface HoldState {
   heldWhileMuted: string[] | null;
   heldFull: boolean;
+  heldTail: { readAll(): Buffer } | null;
 }
 
 interface Client {
@@ -172,7 +175,7 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
     await waitFor(() => client.live.join('').includes(TAIL), `${TAIL} to arrive live`);
   }, WAIT_MS * 2 + 10000);
 
-  it('(c) over the hold cap: the head (the first prompt) survives', async () => {
+  it('(c) over the hold cap: the head (the first prompt) and then the newest output are replayed', async () => {
     const { mgr, managed, client } = await recoverWithHeldHead(`rt-1464-cap-${Date.now()}`);
 
     // Well past 256 KiB of output while still muted. The caret keeps the TAIL
@@ -182,15 +185,18 @@ describe.skipIf(!onWindows)('recovery replay — real ConPTY (win32 only; elsewh
     const escapedTail = `${TAIL.slice(0, -4)}^${TAIL.slice(-4)}`;
     managed.ptyProcess.write(`(for /L %i in (1,1,10000) do @echo ${line}) & echo ${escapedTail}\r`);
     await waitFor(() => holdState(managed).heldFull, 'the hold cap to be reached', WAIT_MS * 2);
+    // The burst (about 1 MB) ends while still muted, inside the tail's cap.
+    await waitFor(() => holdState(managed).heldTail?.readAll().toString('utf8').includes(TAIL) === true, 'the end of the burst to be held', WAIT_MS * 2);
 
+    // The same size: no repaint follows, so the replay is what the pane shows.
     mgr.resizeSession(managed.meta.id, 80, 24);
     await waitFor(() => !managed.bridge.isMuted, 'unmute');
     await deliberateSleep(UNMUTE_SETTLE_MS, 'real timer: the deferred unmute (100ms) must fire');
 
     const replayed = client.replayed.join('');
     expect(replayed).toContain(HEAD);
-    expect(Buffer.byteLength(replayed, 'utf8')).toBeLessThanOrEqual(HOLD_CAP);
-    // Nothing past the cap is replayed, so the end of the burst is not in it.
-    expect(replayed).not.toContain(TAIL);
+    // The end of the burst, past the head's cap, is replayed after it.
+    expect(replayed).toContain(TAIL);
+    expect(Buffer.byteLength(replayed, 'utf8')).toBeLessThanOrEqual(HOLD_CAP + TAIL_CAP);
   }, WAIT_MS * 3 + 10000);
 });

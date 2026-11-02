@@ -70,6 +70,55 @@ describe('BotStore', () => {
     expect(parseBotProfile(stored)?.engine).toMatchObject({ preset: 'hermes', mode: 'managed' });
   });
 
+  it('My Hermes round-trips with its profile; a build that does not know `own` reads it as managed', async () => {
+    const s = newStore();
+    const r = s.create({ workspaceId: 'ws-1', name: 'Mine', engine: { kind: 'acp', command: 'hermes', args: ['acp'], preset: 'hermes', mode: 'own' } });
+    if (!r.ok) throw new Error(r.message);
+    // No profile named: ~/.hermes itself.
+    expect(r.bot.engine).toEqual({ kind: 'acp', command: 'hermes', args: ['acp'], preset: 'hermes', mode: 'own', profile: 'default' });
+    await s.flush();
+    const again = new BotStore(botsFilePath(dir), { now, platform: 'darwin' });
+    again.load();
+    expect(again.get(r.bot.id)?.engine).toMatchObject({ mode: 'own', profile: 'default' });
+    // The stored shape keeps preset/command/args, so a build without `own`
+    // keeps the bot, and its parser (origin/main botStore.ts sanitizeBotEngine:
+    // any preset 'hermes' becomes mode 'managed') runs it on wmux's managed
+    // Hermes, never on the owner's. This build reads an unknown mode the same way.
+    const raw = JSON.parse(fs.readFileSync(botsFilePath(dir), 'utf8')) as { bots: Array<{ engine: Record<string, unknown> }> };
+    expect(raw.bots[0].engine).toMatchObject({ kind: 'acp', command: 'hermes', args: ['acp'], preset: 'hermes', mode: 'own' });
+    expect(parseBotProfile({ ...again.get(r.bot.id)!, engine: { ...raw.bots[0].engine, mode: 'next-mode' } })?.engine).toEqual(
+      { kind: 'acp', command: 'hermes', args: ['acp'], preset: 'hermes', mode: 'managed' });
+    // A malformed profile: refused on a write, managed on a read.
+    expect(s.update(r.bot.id, { engine: { kind: 'acp', command: 'hermes', args: ['acp'], preset: 'hermes', mode: 'own', profile: '../x' } })).toMatchObject({ ok: false, code: 'invalid_argument' });
+    expect(parseBotProfile({ ...again.get(r.bot.id)!, engine: { ...raw.bots[0].engine, profile: '../x' } })?.engine).toMatchObject({ mode: 'managed' });
+  });
+
+  it('one bot per Hermes profile: a second bind names the bot already on it, on create, update and load', async () => {
+    const s = newStore();
+    const own = { kind: 'acp', command: 'hermes', args: ['acp'], preset: 'hermes', mode: 'own', profile: 'default' };
+    const a = s.create({ workspaceId: 'ws-1', name: 'Alpha', engine: own });
+    if (!a.ok) throw new Error(a.message);
+    const b = s.create({ workspaceId: 'ws-1', name: 'Beta' });
+    if (!b.ok) throw new Error(b.message);
+    expect(s.create({ workspaceId: 'ws-1', name: 'Gamma', engine: own })).toMatchObject({ ok: false, message: expect.stringContaining('Alpha already uses ~/.hermes') });
+    expect(s.update(b.bot.id, { engine: own })).toMatchObject({ ok: false, message: expect.stringContaining('Alpha') });
+    // Another profile is free; the holder may keep its own.
+    expect(s.update(b.bot.id, { engine: { ...own, profile: 'coder' } })).toMatchObject({ ok: true });
+    expect(s.update(a.bot.id, { engine: own })).toMatchObject({ ok: true });
+    expect(s.ownHermesHolder('coder')?.name).toBe('Beta');
+    // A copied file with two bots on one profile: the later one is managed.
+    await s.flush();
+    const raw = JSON.parse(fs.readFileSync(botsFilePath(dir), 'utf8')) as { bots: Array<{ engine: Record<string, unknown> }> };
+    raw.bots[1].engine = { ...own };
+    fs.writeFileSync(botsFilePath(dir), JSON.stringify(raw));
+    const again = new BotStore(botsFilePath(dir), { now, platform: 'darwin' });
+    pendingFlush.push(() => again.flush());
+    again.load();
+    expect(again.get(a.bot.id)?.engine).toMatchObject({ mode: 'own', profile: 'default' });
+    expect(again.get(b.bot.id)?.engine).toMatchObject({ preset: 'hermes', mode: 'managed' });
+    expect(again.ownHermesHolder('default')?.id).toBe(a.bot.id);
+  });
+
   it('keeps the owner\'s worker engine: set, cleared, validated on update and on read', async () => {
     const s = newStore();
     const r = s.create({ workspaceId: 'ws-1', name: 'Dev' });

@@ -64,9 +64,8 @@ src/
 │   └── browser-session/  CDP proxy, profile manager, port allocation
 ├── renderer/          React 19 UI
 │   ├── components/    Terminal, Browser, Pane, Sidebar, Palette
-│   ├── stores/        Zustand slices (workspace, surface, a2a, company, ui)
-│   ├── hooks/         useRpcBridge, useKeyboard, useTerminal
-│   └── company/       Company-mode message queue and templates
+│   ├── stores/        Zustand slices (workspace, surface, a2a, ui)
+│   └── hooks/         useRpcBridge, useKeyboard, useTerminal
 ├── mcp/               MCP server (Claude Code integration)
 │   ├── playwright/    Browser automation tools (30+ Playwright tools)
 │   └── a2a/           wmux-a2a MCP server (company mode comms)

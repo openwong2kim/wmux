@@ -232,6 +232,25 @@ describe('createNotificationHandler (R4-R10)', () => {
     expect(harness.spies.showOsToast).not.toHaveBeenCalled();
   });
 
+  // Needs you is drawn at most twice (DESIGN.md › Attention renditions): an
+  // awaiting-input / permission notification, or a turn that ended on a
+  // question still waiting, is recorded but never pops an in-app toast.
+  it('needs you: recorded, no in-app toast; the OS toast still fires out of focus', () => {
+    handle('pty-1', { type: 'agent', title: 'Claude Code: Awaiting input', body: 'Awaiting input', category: 'approval' });
+    expect(harness.spies.addNotification).toHaveBeenCalledTimes(1);
+    expect(harness.spies.pushToast).not.toHaveBeenCalled();
+    expect(harness.spies.showOsToast).toHaveBeenCalledTimes(1);
+
+    harness.state.surfacePendingQuestion = { 'pty-1': 'Add a test too?' };
+    handle('pty-1', { type: 'agent', title: 'Claude Code: Task finished', body: 'Ready for input', category: 'agent-turn' });
+    expect(harness.spies.addNotification).toHaveBeenCalledTimes(2);
+    expect(harness.spies.pushToast).not.toHaveBeenCalled();
+
+    harness.state.surfacePendingQuestion = {};
+    handle('pty-1', { type: 'agent', title: 'Claude Code: Task finished', body: 'Task finished', category: 'agent-turn' });
+    expect(harness.spies.pushToast).toHaveBeenCalledTimes(1);
+  });
+
   // R4c — the chronic false-negative fix: active surface + UNFOCUSED window
   // (second monitor / alt-tabbed) is NOT watched → full fan-out including
   // the relayed OS toast, carrying the pane's click-jump context.

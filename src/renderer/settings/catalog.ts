@@ -178,6 +178,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'usagereserve', tab: 'claude-integration', labelKey: 'claudeIntegration.usageReserve', descKey: 'claudeIntegration.usageReserveDesc', synonyms: 'usage reserve quota limit 5h keep schedule fan-out bot worker unattended 사용량 예비 남기기 예약 팬아웃 봇' },
   { id: 'scheduledretry', tab: 'claude-integration', labelKey: 'claudeIntegration.scheduledRetry', descKey: 'claudeIntegration.scheduledRetryDesc', synonyms: 'schedule scheduled run retry network server error overloaded continue 예약 재시도 오류' },
   { id: 'clauderesumeonstart', tab: 'claude-integration', labelKey: 'claudeIntegration.resumeOnStart', descKey: 'claudeIntegration.resumeOnStartDesc', synonyms: 'resume restart recover continue launch boot session 재시작 이어가기 복원' },
+  { id: 'claudefilesend', tab: 'claude-integration', labelKey: 'claudeIntegration.fileSend', descKey: 'claudeIntegration.fileSendDesc', synonyms: 'send file attachment phone mobile SendUserFile remote control 파일 보내기 첨부 휴대폰 폰' },
   { id: 'mcp', tab: 'claude-integration', labelKey: 'settings.mcpServers', synonyms: 'mcp plugin tools broker register codex' },
 
   { id: 'claudeacct', tab: 'accounts', labelKey: 'accounts.title', synonyms: 'claude account login subscription max usage quota 계정' },
@@ -190,6 +191,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'factoryclaudeauth', tab: 'factory', labelKey: 'settings.factory.claudeAuth.mode', descKey: 'settings.factory.claudeAuth.modeDesc', synonyms: 'api key anthropic claude subscription sign in login billing connection check 연결 키 구독 로그인' },
   { id: 'factoryconcurrency', tab: 'factory', labelKey: 'settings.factory.concurrency', descKey: 'settings.factory.concurrencyDesc', synonyms: 'concurrent bots limit cap parallel turn' },
   { id: 'factorymaxagents', tab: 'factory', labelKey: 'settings.factory.maxAgents', descKey: 'settings.factory.maxAgentsDesc', synonyms: 'agents workers memory budget slots limit cap queue' },
+  { id: 'companymaxworking', tab: 'factory', labelKey: 'settings.factory.companyMaxWorking', descKey: 'settings.factory.companyMaxWorkingDesc', synonyms: 'company seats staff working heavy jobs per pc machine cap limit slots hold queue 회사 좌석 동시 작업' },
   { id: 'factorycommandreviewer', tab: 'factory', labelKey: 'bots.commands.reviewerSetting', synonyms: 'bot command reviewer review unlisted shell sandbox model 명령 검토' },
   { id: 'factorylaneautomerge', tab: 'factory', labelKey: 'settings.factory.laneAutoMerge', descKey: 'settings.factory.laneAutoMergeDesc', synonyms: 'merge lane auto merge automatic pull request verifier ci 자동 머지' },
   { id: 'factorylanedailycap', tab: 'factory', labelKey: 'settings.factory.laneDailyCap', descKey: 'settings.factory.laneDailyCapDesc', synonyms: 'merge lane daily cap limit per day' },

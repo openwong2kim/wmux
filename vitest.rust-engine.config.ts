@@ -8,6 +8,7 @@ import { hashbangLf } from './scripts/lib/vitest-hashbang-lf.mjs';
 // Run by .github/workflows/rust-engine-daemon.yml after `npm run build:terminal-core`:
 //
 //   WMUX_TERMINAL_CORE=rust WMUX_REQUIRE_RUST_CORE=1 \
+//   WMUX_TERMINAL_CORE_MODULE="$PWD/core/wmux-term/dist/native-core/index.cjs" \
 //     npx vitest run --config vitest.rust-engine.config.ts
 //
 // src/test-utils/requireRustEngine.ts fails the run when the native module
@@ -22,16 +23,20 @@ const nodeOnly = [
   // starts a real shell (cmd.exe on a mocked win32 fails to start at all).
   'src/daemon/__tests__/DaemonSessionManager.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.wslSecretEnv.os.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.shellMarks.os.test.ts',
   'src/daemon/__tests__/DaemonSessionManager.secretEnv.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.hostWindow.test.ts',
   'src/daemon/__tests__/spawnCwdRefusal.os.test.ts',
   'src/daemon/__tests__/spawnStartTimeRetry.os.test.ts',
   'src/daemon/__tests__/wslDistroSpawnArgs.os.test.ts',
   'src/daemon/__tests__/createSessionPid.test.ts',
   'src/daemon/__tests__/createSessionPersistence.test.ts',
+  'src/daemon/__tests__/DaemonSessionManager.claudeFileSend.test.ts',
   'src/daemon/__tests__/runSnapshotOnce.test.ts',
   // Test the opt-in WMUX_RUST_SNAPSHOT path with a stubbed module; the rust
   // engine selects the built module and the text backend instead.
   'src/daemon/__tests__/TextSnapshotBackend.test.ts',
+  'src/daemon/__tests__/AnsiSnapshotBackend.test.ts',
   'src/daemon/__tests__/RustSnapshot.test.ts',
 ];
 // A renamed file would otherwise drop out of this list and back into the run.

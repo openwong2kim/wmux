@@ -146,6 +146,7 @@ impl NativeTransport {
         rows: u32,
         notify: Function<(), ()>,
         conpty_dll: Option<String>,
+        parent_window: Option<Uint8Array>,
     ) -> Result<Self> {
         let size = size(cols, rows)?;
         let gate = Arc::new(WakeGate::default());
@@ -165,7 +166,7 @@ impl NativeTransport {
         });
         #[cfg(unix)]
         let pair = {
-            let _ = conpty_dll;
+            let _ = (conpty_dll, parent_window);
             native_pty_system().openpty(size).map_err(error)?
         };
         #[cfg(windows)]
@@ -174,6 +175,11 @@ impl NativeTransport {
         }
         .openpty(size)
         .map_err(error)?;
+        // Before the shell starts, so a window it opens right away already has an owner.
+        #[cfg(windows)]
+        if let Some(hwnd) = parent_window.as_deref().and_then(native_window_handle) {
+            pair.master.set_parent_window(hwnd);
+        }
         #[cfg(unix)]
         let (unix_io, cancel) = UnixIo::new(
             pair.master
@@ -487,6 +493,22 @@ impl NativeTransport {
         }
     }
 
+    /// Make a top-level window the owner of the pane's console window (Windows, the
+    /// bundled conpty.dll only), so a window a console program parents to it, such as
+    /// a sign-in prompt, opens above that window. `handle` is the HWND's bytes in native
+    /// byte order, as BrowserWindow.getNativeWindowHandle() returns it. Returns whether
+    /// the request reached ConPTY, which applies it asynchronously; false for a handle
+    /// of the wrong size or a NULL one, a closed PTY, or a ConPTY without the call.
+    #[napi]
+    pub fn set_parent_window(&self, handle: Uint8Array) -> bool {
+        let Some(hwnd) = native_window_handle(&handle[..]) else {
+            return false;
+        };
+        self.master
+            .as_ref()
+            .is_some_and(|master| master.set_parent_window(hwnd))
+    }
+
     #[napi]
     pub fn kill(&self, signal: Option<u32>) -> Result<()> {
         let exited = self.state.exited.lock().map_err(error)?;
@@ -655,6 +677,15 @@ fn size(cols: u32, rows: u32) -> Result<PtySize> {
         pixel_width: 0,
         pixel_height: 0,
     })
+}
+/// An HWND from its bytes in native byte order, as BrowserWindow.getNativeWindowHandle()
+/// returns it; None for a handle of the wrong size or a NULL one, which never reaches
+/// ConPTY (Windows drops a destroyed owner window by itself).
+fn native_window_handle(handle: &[u8]) -> Option<isize> {
+    <[u8; std::mem::size_of::<isize>()]>::try_from(handle)
+        .ok()
+        .map(isize::from_ne_bytes)
+        .filter(|&hwnd| hwnd != 0)
 }
 fn signal_number(signal: Option<&str>) -> Option<u32> {
     #[cfg(unix)]

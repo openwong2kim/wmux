@@ -1,16 +1,16 @@
 // What a bot's profile says it can do comes from the shared surface alone:
 // every surface tool has a phrase or is a listed event feed, every bot shows
-// the same powers, and only a Coordinator adds reads in every workspace.
+// the same powers, and only a Coordinator adds reads in every workspace. A
+// bot on My Hermes holds only room_post and says so.
 
 import { describe, expect, it } from 'vitest';
-import { SHARED_SURFACE } from '../../../../shared/botSurface';
+import { ROOM_POST_SURFACE_TOOLS, SHARED_SURFACE } from '../../../../shared/botSurface';
 import { en } from '../../../i18n/locales/en';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { BOT_ROLES, DEFAULT_BOT_BUDGETS, type BotEngine, type BotProfile } from '../../../../shared/bot';
-import type { FactoryBotRow } from '../../Room/factoryPorts';
-import { BrainModelLine } from '../BotModelLines';
-import { CAN_DO_COORDINATOR, CAN_DO_PHRASES, CAN_DO_UNLISTED, botCanDo, botModelSummary, brainEngine, unusableBrainModel, workerAgentPick } from '../botsProfile';
+import { BOT_ROLES, myHermesEngine, type BotEngine } from '../../../../shared/bot';
+import { BrainModelFields } from '../BotModelLines';
+import { CAN_DO_COORDINATOR, CAN_DO_MY_HERMES, CAN_DO_PHRASES, CAN_DO_UNLISTED, CANNOT_DO_MY_HERMES, botCanDo, botModelSummary, brainEngine, unusableBrainModel, workerAgentPick } from '../botsProfile';
 
 describe('bot profile: can do', () => {
   it('every tool on the surface has an owner phrase or is an event feed', () => {
@@ -31,6 +31,17 @@ describe('bot profile: can do', () => {
     for (const key of ['botsPage.canDo.fanout', 'botsPage.canDo.verdict', 'botsPage.canDo.plan', 'botsPage.canDo.ask', 'botsPage.canDo.approval', 'botsPage.canDo.secrets']) {
       expect(lead).toContain(key);
     }
+  });
+
+  it('a My Hermes bot lists only what its room_post surface and its own Hermes give it, and says what it cannot do', () => {
+    const engine = myHermesEngine();
+    const keys = botCanDo({ role: 'lead', template: 'coordinator', engine });
+    expect(keys).toEqual(CAN_DO_MY_HERMES.map((p) => p.key));
+    // Every phrase is backed by a tool of the narrowed surface, never a shared one.
+    for (const p of CAN_DO_MY_HERMES) for (const tool of p.tools) expect(ROOM_POST_SURFACE_TOOLS.has(tool)).toBe(true);
+    for (const shared of CAN_DO_PHRASES) expect(keys).not.toContain(shared.key);
+    expect(keys).not.toContain(CAN_DO_COORDINATOR);
+    for (const key of [...keys, CANNOT_DO_MY_HERMES]) expect((en as Record<string, string>)[key]).toBeTruthy();
   });
 
   it('only a Coordinator (template, or a legacy Moa) reads every workspace', () => {
@@ -98,18 +109,14 @@ describe('bot profile: models', () => {
     expect(unusableBrainModel({ kind: 'claude-sdk', model: arn })).toBeNull();
     expect(unusableBrainModel({ kind: 'claude-sdk', model: 'opus; rm -rf ~' })).toBe('opus; rm -rf ~');
     expect(botModelSummary({ engine: { kind: 'claude-sdk', model: 'opus; rm -rf ~' } }, t)).toBe('');
-    const render = (engine: BotEngine) => {
-      const bot: BotProfile = {
-        version: 1, id: 'bot-0000000a', workspaceId: 'ws-1', role: 'moa', template: 'coordinator', name: 'Coordinator',
-        engine, triggers: [], budget: DEFAULT_BOT_BUDGETS.moa, enabled: true, createdAt: 1, updatedAt: 1,
-      };
-      return renderToStaticMarkup(createElement(BrainModelLine, { row: { bot, status: null } as unknown as FactoryBotRow, t }));
-    };
-    const bad = render({ kind: 'claude-sdk', model: 'opus; rm -rf ~' });
+    // The page's form opens a model main would not pass on empty (botSettings.ts settingsForm).
+    const render = (engine: BotEngine, model: string) =>
+      renderToStaticMarkup(createElement(BrainModelFields, { engine, model, effort: '', onModel: () => undefined, onEffort: () => undefined, t }));
+    const bad = render({ kind: 'claude-sdk', model: 'opus; rm -rf ~' }, '');
     expect(bad).toContain('data-testid="bots-profile-brain-warning"');
     expect(bad).toContain('The saved model');
     expect(bad).toContain('Default model');
-    const good = render({ kind: 'claude-sdk', model: arn });
+    const good = render({ kind: 'claude-sdk', model: arn }, arn);
     expect(good).not.toContain('bots-profile-brain-warning');
     expect(good).toContain(arn);
   });

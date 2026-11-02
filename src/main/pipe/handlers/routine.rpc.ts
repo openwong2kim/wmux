@@ -21,6 +21,15 @@
 //                   (default `wake:<wakeId>:r<n>` from the running wake).
 //   routine.list    a bot: its own; the operator: one bot's (botId) or all.
 //   routine.pause   a bot: pause or resume its own, at any time.
+//   routine.ownerSet / ownerPause / ownerRemove / ownerRun
+//                   the operator (the main window) only, never a bot or the
+//                   phone, and only for a bot on My Hermes: the owner writes,
+//                   pauses, deletes or runs now that bot's routines (a bot
+//                   moved off My Hermes: pause and delete the owner's own
+//                   routines only, so none is left that no one can stop). ownerSet
+//                   marks a routine `author: 'owner'` and runs it in the bot's
+//                   1:1; it changes only a routine the owner wrote. Only such
+//                   a routine is sent to My Hermes (myHermesTurn.ts).
 //   bot.stopMyWork  a bot, for itself only: its open tasks, their gates and
 //                   workers are stopped and its routines paused, as the
 //                   owner's Stop bot does (factory/factoryStop.ts), except
@@ -35,8 +44,8 @@
 // bots" switch.
 
 import path from 'node:path';
-import { BOT_EVENT, BOT_RPC, type BotBinding, type BotEventPayload } from '../../../shared/bot';
-import { ROUTINE_RPC, ROUTINE_LIMITS, type RoutineSetParams } from '../../../shared/botRoutine';
+import { BOT_EVENT, BOT_RPC, BOT_ID_RE, isOwnHermesEngine, type BotBinding, type BotEventPayload, type BotProfile } from '../../../shared/bot';
+import { ROUTINE_RPC, ROUTINE_LIMITS, type RoutineOwnerSetParams, type RoutineSetParams } from '../../../shared/botRoutine';
 import { dmThreadId, parseThreadId } from '../../../shared/room';
 import type { RpcContext } from '../../../shared/rpc';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryRouter } from '../../factory/factoryHost';
@@ -112,6 +121,26 @@ export interface RoutineHandlerDeps {
   /** The default idempotency key of a routine set in the running turn. */
   defaultKey?: (botId: string) => string | undefined;
   stop?: (botId: string) => Promise<{ ok: boolean; workersStopped: number; gatesCancelled: number; routinesPaused?: number; code?: string; message?: string }>;
+  /** A bot's profile. Default: the bot directory. */
+  bot?: (botId: string) => BotProfile | null;
+}
+
+/** The My Hermes bot an owner routine call names, or why not. With
+ *  `anyEngine` (pause, delete), a bot no longer on My Hermes passes too, so
+ *  the owner's routines are never left with no one to stop them. */
+function ownerRoutineBot(raw: Record<string, unknown>, ctx: RpcContext | undefined, deps: RoutineHandlerDeps, anyEngine = false): { ok: true; bot: BotProfile } | Refusal {
+  if (ctx?.operator !== true) return refuse('not_authorized', 'only the owner, in the wmux window, manages these routines');
+  const botId = raw.botId;
+  if (typeof botId !== 'string' || !BOT_ID_RE.test(botId)) return refuse('invalid_argument', 'botId must be a bot id');
+  let bot: BotProfile | null = null;
+  try {
+    bot = (deps.bot ?? ((id: string) => getBotDirectory()?.get(id) ?? null))(botId);
+  } catch {
+    bot = null;
+  }
+  if (!bot) return refuse('invalid_argument', `no bot ${botId}`);
+  if (!anyEngine && !isOwnHermesEngine(bot.engine)) return refuse('not_authorized', 'the owner\'s routines are for a bot on My Hermes');
+  return { ok: true, bot };
 }
 
 export function registerRoutineHandlers(router: Pick<FactoryRouter, 'register'>, deps: RoutineHandlerDeps): void {
@@ -148,6 +177,52 @@ export function registerRoutineHandlers(router: Pick<FactoryRouter, 'register'>,
     return { ok: true, routines: store.list(botId) };
   });
 
+  router.register(ROUTINE_RPC.ownerSet, async (raw, ctx?: RpcContext) => {
+    const p = obj(raw);
+    const who = ownerRoutineBot(p, ctx, deps);
+    if (!who.ok) return who;
+    const store = deps.store();
+    if (!store) return NOT_STARTED;
+    return store.ownerSet({ botId: who.bot.id, workspaceId: who.bot.workspaceId }, p as unknown as RoutineOwnerSetParams);
+  });
+
+  router.register(ROUTINE_RPC.ownerPause, async (raw, ctx?: RpcContext) => {
+    const p = obj(raw);
+    const who = ownerRoutineBot(p, ctx, deps, true);
+    if (!who.ok) return who;
+    const store = deps.store();
+    if (!store) return NOT_STARTED;
+    // The owner's pause reaches only the named bot's routine; off My Hermes,
+    // only one the owner wrote or one wmux paused as refused (no one else can
+    // bring that back).
+    const r = typeof p.routineId === 'string' ? store.get(p.routineId) : null;
+    if (typeof p.routineId === 'string' && (r?.botId !== who.bot.id || (!isOwnHermesEngine(who.bot.engine) && !ownerReaches(r)))) {
+      return { ok: false, code: 'not_found', message: `no routine ${p.routineId} for this bot` };
+    }
+    return store.pause({ kind: 'owner' }, p.routineId, p.paused);
+  });
+
+  router.register(ROUTINE_RPC.ownerRemove, async (raw, ctx?: RpcContext) => {
+    const p = obj(raw);
+    const who = ownerRoutineBot(p, ctx, deps, true);
+    if (!who.ok) return who;
+    const store = deps.store();
+    if (!store) return NOT_STARTED;
+    if (!isOwnHermesEngine(who.bot.engine) && (typeof p.routineId !== 'string' || !ownerReaches(store.get(p.routineId)))) {
+      return { ok: false, code: 'not_found', message: `no routine ${String(p.routineId)} of yours for this bot` };
+    }
+    return store.remove(who.bot.id, p.routineId);
+  });
+
+  router.register(ROUTINE_RPC.ownerRun, async (raw, ctx?: RpcContext) => {
+    const p = obj(raw);
+    const who = ownerRoutineBot(p, ctx, deps);
+    if (!who.ok) return who;
+    const store = deps.store();
+    if (!store) return NOT_STARTED;
+    return store.runNow(who.bot.id, p.routineId);
+  });
+
   router.register(ROUTINE_RPC.pause, async (raw, ctx?: RpcContext) => {
     if (!ctx?.bot) return refuse('not_authorized', 'a bot pauses its own routines');
     const store = deps.store();
@@ -167,6 +242,12 @@ export function registerRoutineHandlers(router: Pick<FactoryRouter, 'register'>,
     if (!store) return NOT_STARTED;
     return { ok: true, workersStopped: 0, gatesCancelled: 0, routinesPaused: store.pauseFor(botId, 'stop') };
   });
+}
+
+/** Off My Hermes, the owner's pause and remove reach a routine they wrote,
+ *  and one wmux paused as refused, which the bot itself cannot resume. */
+function ownerReaches(r: { author?: string; state?: string; paused?: { reason?: string } } | null | undefined): boolean {
+  return r?.author === 'owner' || (r?.state === 'paused' && r.paused?.reason === 'refused');
 }
 
 /** routine.set from a conversation that took in outside text: a new
@@ -279,9 +360,21 @@ export function createRoutineModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'get
       setBotRuntimePorts({
         resolveRoutine: (routineId) => {
           const r = getRoutineStore()?.get(routineId);
-          return r ? { routineId: r.id, title: r.title, prompt: r.prompt, schedule: scheduleLabel(r.schedule) } : null;
+          return r
+            ? {
+                routineId: r.id,
+                title: r.title,
+                prompt: r.prompt,
+                schedule: scheduleLabel(r.schedule),
+                botId: r.botId,
+                workspaceId: r.workspaceId,
+                ...(r.author ? { author: r.author } : {}),
+                ...(r.threadId ? { threadId: r.threadId } : {}),
+              }
+            : null;
         },
         onBotLifecycle: (botId, event) => onBotLifecycle(getRoutineStore(), botId, event),
+        pauseRefusedRoutine: (botId, routineId) => getRoutineStore()?.pauseRefused(botId, routineId) ?? false,
       });
       const syncSwitch = () => {
         if (getFactorySettings().enabled) store.resumeFor(undefined, 'off');

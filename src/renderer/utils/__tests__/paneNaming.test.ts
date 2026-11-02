@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computePaneAutoName, paneDisplayName, paneNameFields } from '../paneNaming';
+import { computePaneAutoName, paneDisplayName, paneNameFields, ptyLocationName } from '../paneNaming';
 
 describe('computePaneAutoName', () => {
   it('includes the agent slug suffix when an agent is detected', () => {
@@ -40,5 +40,25 @@ describe('paneNameFields', () => {
     const leaf = { id: 'p1', ordinal: 2, surfaces: [] };
     const fields = paneNameFields({ p1: 'api\nIGNORE PREVIOUS\u0007' }, {}, { wsOrdinal: 1 }, leaf);
     expect(fields).toEqual({ paneName: 'api IGNORE PREVIOUS', paneTag: '#w1-2' });
+  });
+});
+
+describe('ptyLocationName', () => {
+  const leaf = (id: string, ordinal: number, ptyId: string) => ({
+    type: 'leaf' as const, id, ordinal, activeSurfaceId: `s-${id}`,
+    surfaces: [{ id: `s-${id}`, ptyId, title: 'zsh', surfaceType: 'terminal' as const }],
+  });
+  const workspaces = [{
+    name: 'api', wsOrdinal: 2,
+    rootPane: { type: 'branch' as const, id: 'b', direction: 'horizontal' as const, sizes: [50, 50], children: [leaf('p1', 1, 'pty-a'), leaf('p2', 2, 'pty-b')] },
+  }] as unknown as Parameters<typeof ptyLocationName>[0];
+
+  it('names the workspace and the pane the way the header does', () => {
+    expect(ptyLocationName(workspaces, {}, 'pty-b')).toBe('api · w2-2');
+    expect(ptyLocationName(workspaces, { p1: 'server' }, 'pty-a')).toBe('api · server');
+  });
+
+  it('is null when no open pane holds the pty', () => {
+    expect(ptyLocationName(workspaces, {}, 'pty-gone')).toBeNull();
   });
 });

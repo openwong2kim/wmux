@@ -69,7 +69,8 @@ describe('browser tour step', () => {
     expect(terms).toEqual([en['onboarding.step3.builtin'], en['onboarding.step3.chrome'], en['onboarding.step3.external']]);
     expect(terms).toHaveLength(BROWSER_BACKENDS.length);
     expect(uses).toEqual([en['onboarding.step3.builtinUse'], en['onboarding.step3.chromeUse'], en['onboarding.step3.externalUse']]);
-    expect(q('onboarding-card').textContent).toContain(en['onboarding.step3.statusBar']);
+    // Three short lines and the Settings link: no note about other chrome.
+    expect(q('onboarding-card').querySelector('.onboarding-note')).toBeNull();
     // The card's accessible description covers the choices too.
     expect(q('onboarding-card').getAttribute('aria-describedby')).toContain(items.id);
   });

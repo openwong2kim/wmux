@@ -1,6 +1,7 @@
 import type { AgentSlug } from '../../shared/events';
 import type { PaneLabelRejection } from '../../shared/paneLabelRules';
 import type { TranslationKey } from '../i18n/locales/en';
+import { getWorkspaceLeafPanes, type WorkspacePaneOwner } from '../../shared/paneUtils';
 
 // === P2 pane self-naming (pure helpers) ===
 //
@@ -71,6 +72,22 @@ export function activeAgentSlug(
   return surface?.ptyId ? surfaceAgent?.[surface.ptyId]?.slug : undefined;
 }
 
+/**
+ * Where a PTY lives, as the user reads it: "<workspace> · <pane name>", or
+ * null when no open pane holds it. For lists that would otherwise show a raw
+ * pty id to tell sessions apart.
+ */
+export function ptyLocationName(
+  workspaces: ReadonlyArray<WorkspacePaneOwner & { name: string; wsOrdinal?: number }>,
+  paneLabel: Record<string, string> | undefined,
+  ptyId: string,
+): string | null {
+  for (const ws of workspaces) {
+    const leaf = getWorkspaceLeafPanes(ws).find((l) => l.surfaces.some((s) => s.ptyId === ptyId));
+    if (leaf) return `${ws.name} · ${leafDisplayName(paneLabel, ws, leaf)}`;
+  }
+  return null;
+}
 
 /** The always-unique tag of a pane: its auto coordinate without the agent
  *  suffix, e.g. `#w1-2`. */
@@ -110,4 +127,22 @@ export function paneLabelRejectionKey(code: string | undefined): TranslationKey 
   return code && Object.prototype.hasOwnProperty.call(LABEL_REJECTION_KEYS, code)
     ? LABEL_REJECTION_KEYS[code as PaneLabelRejection]
     : 'pane.renameError.failed';
+}
+
+/**
+ * How an A2A party is named in the message a receiving agent reads:
+ * `<workspace>.<pane>` (e.g. `Simply.release`), so a pane can tell which pane
+ * of a workspace is talking. Falls back to the bare workspace name when the
+ * pane is unknown (an unverified sender, a pty that no open pane holds).
+ * Display only: task metadata keeps the workspace name.
+ */
+export function a2aPartyName(
+  ws: WorkspacePaneOwner & { name: string; wsOrdinal?: number },
+  paneLabel: Record<string, string> | undefined,
+  surfaceAgent: Record<string, { slug?: AgentSlug }> | undefined,
+  ptyId?: string,
+): string {
+  if (!ptyId) return ws.name;
+  const leaf = getWorkspaceLeafPanes(ws).find((l) => l.surfaces.some((s) => s.ptyId === ptyId));
+  return leaf ? `${ws.name}.${leafDisplayName(paneLabel, ws, leaf, activeAgentSlug(surfaceAgent, leaf))}` : ws.name;
 }

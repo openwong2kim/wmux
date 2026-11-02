@@ -17,6 +17,7 @@ import {
 import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
+import { companyBriefOf } from '../../shared/company';
 import { TERMINAL_STATES } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
@@ -33,7 +34,7 @@ import { OutboxStore } from './outboxStore';
 import { PeerFeatureStore } from './peerFeatureStore';
 import type { A2aRouteTable } from './routes';
 import { addressPromoter } from './remoteHostStore';
-import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming } from './session';
+import { JoinerSession, taskOfEnvelope, type SessionClient, type SessionTiming, type StreamedGet } from './session';
 import type { PinnedClientOptions } from './pinnedClient';
 import { A2aStreamHub } from './streamHub';
 import { errMsg, isPlainObject, isSafeId } from './storeFile';
@@ -73,6 +74,10 @@ export interface A2aRemoteDeliveryDeps {
   offers?: A2aOffers;
   /** Remote spawn requests, results and targets (link envelopes; see `spawnReceiver.ts`). */
   spawn?: InboundDeps['spawn'];
+  /** Conversations other PCs continue here (link envelopes; see `continueReceiver.ts`). */
+  continue?: InboundDeps['continue'];
+  /** Their bytes (continueBundle.ts): the routes a PC that joined this one uploads them to. */
+  continueBytes?: { registerRoutes(table: A2aRouteTable): void };
   /** Links a remote start made here (spawnStarter.ts): redacted, no images, follow-ups held for their card. */
   spawnLinks?: NonNullable<InboundDeps['spawnLinks']>;
   /** This PC's requests to start agents on other PCs (spawnRequester.ts): told when the other PC refuses one for good. */
@@ -259,6 +264,17 @@ export class A2aRemoteDelivery {
   registerRoutes(table: A2aRouteTable): void {
     this.hub.register(table);
     if (this.images) registerImageRoutes(table, { store: this.images, outbox: this.outbox, log: this.deps.log });
+    this.deps.continueBytes?.registerRoutes(table);
+  }
+
+  /**
+   * A streamed GET from `hostId` while this PC joined it: the files of a
+   * conversation that PC hands this one are pulled. Null when this PC did not
+   * join it (it joined this one, and uploads them).
+   */
+  continueFetch(hostId: HostId): StreamedGet | null {
+    const session = this.sessions.get(hostId)?.session;
+    return session ? (route, opts, consume) => session.fetchStream(route, opts, consume) : null;
   }
 
   // --- lifecycle ------------------------------------------------------------
@@ -475,6 +491,9 @@ export class A2aRemoteDelivery {
       if (!from || typeof from['workspaceId'] !== 'string' || (from['paneId'] !== undefined && typeof from['paneId'] !== 'string') || typeof p['text'] !== 'string') {
         return { ok: false, error: 'bad-request: linkId, from{workspaceId, paneId?} and text are required' };
       }
+      // A company brief for this PC's copy: only a complete version-1 one, and only its own fields.
+      const brief = p['brief'] === undefined ? undefined : companyBriefOf(p['brief']);
+      if (brief === null) return { ok: false, error: 'bad-request: brief must be a complete version-1 company brief' };
       return sendRemoteTask(this.outboundDeps(), {
         linkId: str(p, 'linkId'),
         from: {
@@ -486,6 +505,7 @@ export class A2aRemoteDelivery {
         title: str(p, 'title'),
         text: p['text'],
         ...(images ? { images } : {}),
+        ...(brief ? { brief } : {}),
       });
     });
 
@@ -689,6 +709,7 @@ export class A2aRemoteDelivery {
       ...(this.deps.localWorkspaceName ? { localWorkspaceName: this.deps.localWorkspaceName } : {}),
       ...(this.deps.offers ? { offers: this.deps.offers } : {}),
       ...(this.deps.spawn ? { spawn: this.deps.spawn } : {}),
+      ...(this.deps.continue ? { continue: this.deps.continue } : {}),
       ...(this.deps.spawnLinks ? { spawnLinks: this.deps.spawnLinks } : {}),
       ...(this.images ? { images: { store: this.images, pullAttempts: this.pullAttempts } } : {}),
       taskBudget: this.taskBudget,

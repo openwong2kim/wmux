@@ -75,7 +75,7 @@ export type IssueGateCode ='no-remote' | 'unsupported-host' | 'cli-missing' | 'u
 export type IssueListResult =
   | { ok: true; issues: IssueSummary[]; repo: IssueRepo | null }
   | { ok: false; code: 'rate-limited'; message: string; retryAt: number }
-  | { ok: false; code: IssueGateCode; message: string; provider?: 'github' | 'gitlab' };
+  | { ok: false; code: IssueGateCode; message: string; provider?: 'github' | 'gitlab'; originSet?: boolean };
 
 export type IssueDetailResult =
   | { ok: true; detail: IssueDetail }

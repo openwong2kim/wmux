@@ -34,6 +34,12 @@ export const CHATV2_BATCH_MS = 120;
 export const CHATV2_MAX_EVENTS_PER_PUSH = 512;
 /** An approval or question is answerable this long after it was requested (registry rule). */
 export const CHATV2_ANSWER_ARM_MS = 1_500;
+/**
+ * How long a turn may stay open after Stop before the view says the stop is
+ * overdue (`stop.overdue`) and can offer a force stop. An agent that takes
+ * the interrupt ends its turn within a second or two.
+ */
+export const CHATV2_STOP_GRACE_MS = 10_000;
 /** The folded record is persisted at most this long after a change (sooner on turn end, decisions, handoff, close). */
 export const CHATV2_PERSIST_DEBOUNCE_MS = 1_000;
 /** clientMessageIds remembered per record for duplicate detection. */

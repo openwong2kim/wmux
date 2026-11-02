@@ -39,7 +39,7 @@ export function nowDoingLine(row: FleetRow, lastActivity: string | undefined, t:
       if (now) return { text: now, kind: 'now' };
     }
     // Only a turn that is over says what it did last: a pane asking for input
-    // (a permission prompt, no question text) keeps "Needs your input".
+    // (a permission prompt, no question text) shows no line.
     const ended = row.pane.agentStatus === 'complete' || row.pane.agentStatus === 'idle' || row.pane.agentStatus === 'waiting';
     if (ended && row.pane.surfaceType === 'terminal') {
       const last = activitySentence(flattenAgentText(lastActivity ?? ''), t);
@@ -47,6 +47,11 @@ export function nowDoingLine(row: FleetRow, lastActivity: string | undefined, t:
     }
     if (row.detailSource === 'lastMessage' && row.detail) return { text: row.detail, kind: 'reply' };
   }
+  // A pane asking with no question text (a permission prompt) says nothing
+  // here: its status already reads "Needs you", and a second wording of the
+  // same state is noise. `fleet.needsYourInput` stays the row's detailKey for
+  // fleet_triage, which reports it as the reason.
+  if (row.detailKey === 'fleet.needsYourInput') return { text: '', kind: 'status' };
   return { text: t(row.detailKey), kind: 'status' };
 }
 

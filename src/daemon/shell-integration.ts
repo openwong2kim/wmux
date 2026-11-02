@@ -65,7 +65,13 @@ import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
 // 'cd X; claude' the pane's tracked cwd stayed at the folder of the last
 // prompt for as long as the program ran, and a daemon restart in that window
 // recovered the pane there. See $global:__wmux_lookup in PWSH_INIT.
-const INTEGRATION_VERSION = 13;
+// v14: the pwsh integration's D always carries an integer exit code, and its
+// Enter handler writes C only for a line PSReadLine accepts (#2771). A
+// `$LASTEXITCODE` set to $null or a non-number wrote `D;` or `D;True`, and
+// Enter on an incomplete line (a continuation prompt) wrote a C for a command
+// that had not started. Both read as a program's marks to the daemon's
+// shell-mark ingress (shared/terminal/shellMarkIngress.ts).
+const INTEGRATION_VERSION = 14;
 
 // -----------------------------------------------------------------------
 // Codex shared-server seed guard (v12) — shared by the bash and zsh scripts.
@@ -448,8 +454,13 @@ function global:prompt {
     # 1 rather than its own code. Both are non-zero, the consumer is a
     # failed/succeeded signal, and exit 1 — far and away the most common failure
     # code — reports as exactly itself.
+    #
+    # Only an integer is an exit code. A script can set $LASTEXITCODE to
+    # anything ($null, $true, a string); D must still carry a number, or the
+    # daemon reads this prompt's D as a running program's (#2771). Such a
+    # value falls back to $?, as a cmdlet does.
     $__wmux_le_moved = $__wmux_le -ne $global:__wmux_prev_le
-    $ec = if ($__wmux_le_moved) { $__wmux_le } elseif ($__wmux_ok) { 0 } else { 1 }
+    $ec = if ($__wmux_le_moved -and $__wmux_le -is [int]) { $__wmux_le } elseif ($__wmux_ok) { 0 } else { 1 }
     $global:__wmux_prev_le = $__wmux_le
 
     # The command line is over: the mid-line cwd hook (#1941) must not stay
@@ -507,6 +518,21 @@ function global:prompt {
     return $pre + [string]$body + $post
 }
 
+# Whether PSReadLine's AcceptLine runs the line rather than opening a
+# continuation prompt: it does not when the parse ends in incomplete input
+# (an open brace, quote or here-string). Never throws: the Enter handler
+# below must not fall into its catch after AcceptLine already ran.
+$global:__wmux_line_complete = {
+    param([string]$line)
+    try {
+        $tokens = $null
+        $errors = $null
+        $null = [System.Management.Automation.Language.Parser]::ParseInput($line, [ref]$tokens, [ref]$errors)
+        foreach ($e in $errors) { if ($e.IncompleteInput) { return $false } }
+    } catch { }
+    return $true
+}
+
 # Command_start (C) is emitted when the user submits a line. PSReadLine's
 # AcceptLine handler is the cleanest hook; wrap it so custom bindings keep
 # working. The script block itself runs on every Enter, so we wrap its body
@@ -517,8 +543,13 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
     try {
         Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
             try {
+                $line = $null
+                $cursor = $null
+                [Microsoft.PowerShell.PSConsoleReadLine]::GetBufferState([ref]$line, [ref]$cursor)
                 [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-                [Console]::Write([char]27 + ']133;C' + [char]7)
+                # A continuation prompt starts no command: C would be read
+                # as a running program's mark (#2771).
+                if (& $global:__wmux_line_complete $line) { [Console]::Write([char]27 + ']133;C' + [char]7) }
                 # Arm the mid-line cwd hook (#1941) here, after the line
                 # editor's own command lookups (PSConsoleHostReadLine and what
                 # it calls) are behind us.

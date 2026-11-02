@@ -46,7 +46,7 @@ export function useIssueList(repoPath: string | null, filter: IssueFilter, { ref
     if (res.ok) return { ok: true, data: res.issues };
     if (res.code === 'rate-limited') return { ok: false, kind: 'rate', retryAt: res.retryAt };
     if (res.code === 'error') return { ok: false, kind: 'error', message: res.message };
-    return { ok: false, kind: 'gate', gate: { code: res.code, message: res.message, provider: res.provider } };
+    return { ok: false, kind: 'gate', gate: { code: res.code, message: res.message, provider: res.provider, ...(res.originSet ? { originSet: true } : {}) } };
     // filter is identified by fkey.
   }, [repoPath, fkey, t]);
   return useGitList({ listKey: repoPath ? `${repoPath}\0${fkey}` : null, read, shown, poll, lazy, refreshKey });
@@ -155,7 +155,7 @@ export function IssueRow({ issue, repoPath, selected, onSelect, dragContext, tag
 }
 
 export function IssueSection({
-  repoPath, filter, onFilter, refreshKey = 0, shown = true, poll = true, lazy = false, selected = null, onSelect, onItems, dragContext,
+  repoPath, filter, onFilter, refreshKey = 0, shown = true, poll = true, lazy = false, selected = null, onSelect, onItems, dragContext, onRefreshPage,
 }: {
   repoPath: string | null;
   filter: IssueFilter;
@@ -169,6 +169,9 @@ export function IssueSection({
   onItems?: (issues: IssueSummary[]) => void;
   /** The repo a dragged row comes from (for the drop's "Start in a new worktree"). */
   dragContext?: GitDragOwner;
+  /** The page's own refresh: a no-remote card's Check again reads the repo
+   *  (its name, link and remote) again, not only this list. */
+  onRefreshPage?: () => void;
 }): React.ReactElement | null {
   const t = useT();
   const list = useIssueList(repoPath, filter, { refreshKey, shown, poll, lazy });
@@ -193,7 +196,7 @@ export function IssueSection({
       {list.gate && (
         <GhGateNotice
           gate={list.gate}
-          onRecheck={() => list.reload(true)}
+          onRecheck={list.gate.code === 'no-remote' && onRefreshPage ? onRefreshPage : () => list.reload(true)}
           fallback={list.gate.code === 'unsupported-host'
             ? t('git.issues.githubOnly')
             : list.gate.code === 'no-remote'

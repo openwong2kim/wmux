@@ -42,6 +42,10 @@ import { isExecutableFile, liveResolveEnv, programOnPath } from '../claude/resol
 import { atomicWriteJSON } from '../../daemon/util/atomicWrite';
 
 const MARKER_FILENAME = '.first-run';
+/** A skipped first run's marker body starts with this; a completed one is the
+ *  bare ISO timestamp (the only body older builds wrote, so those read as
+ *  completed). Either body counts as "first run shown". */
+const SKIPPED_PREFIX = 'skipped ';
 /** Paths the user typed in an agent card ("installed but not found"). */
 const AGENT_PATHS_FILENAME = 'agent-paths.json';
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -369,13 +373,19 @@ export class FirstRunOrchestrator {
   }
 
   async complete(): Promise<void> {
-    await this.writeMarker();
+    await this.writeMarker(new Date().toISOString());
   }
 
+  /**
+   * Skip, Later, × or Escape. Marks the first run as shown without calling it
+   * completed. Closing a reopened wizard leaves the marker as it was, so a
+   * completed first run never turns into a skipped one.
+   */
   async dismiss(): Promise<void> {
     this.activeAbort?.abort();
     this.activeAbort = null;
-    await this.writeMarker();
+    if (await this.markerExists()) return;
+    await this.writeMarker(`${SKIPPED_PREFIX}${new Date().toISOString()}`);
   }
 
   async reopen(): Promise<FirstRunCheckResult> {
@@ -525,9 +535,9 @@ export class FirstRunOrchestrator {
     }
   }
 
-  private async writeMarker(): Promise<void> {
+  private async writeMarker(body: string): Promise<void> {
     try {
-      await fs.writeFile(this.markerPath(), new Date().toISOString(), 'utf8');
+      await fs.writeFile(this.markerPath(), body, 'utf8');
     } catch (err) {
       console.error('[FirstRunOrchestrator] writeMarker failed:', err);
     }
@@ -537,6 +547,8 @@ export class FirstRunOrchestrator {
     try {
       const raw = await fs.readFile(this.markerPath(), 'utf8');
       const trimmed = raw.trim();
+      // A skipped first run has no completion date to report.
+      if (trimmed.startsWith(SKIPPED_PREFIX)) return undefined;
       return trimmed.length > 0 ? trimmed : undefined;
     } catch {
       return undefined;

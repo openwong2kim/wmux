@@ -26,6 +26,8 @@ import { PaneTaskGroup, usePaneTaskSplit } from './SidebarTaskGroup';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import type { Workspace } from '../../../shared/types';
+import { selectWorkspaceExternalSessions } from '../../stores/selectors/externalSessions';
+import ExternalSessionRow from './ExternalSessionRow';
 
 /**
  * The roster row's `@`: insert this agent's reference into the focused agent's
@@ -149,11 +151,15 @@ export function groupChipAgents(agents: readonly RosterChipAgent[]): RosterChipA
 /**
  * Whether a roster row names its agent kind after the title: only non-Claude
  * agents, only beside a real title, and not when the title already is the
- * agent ("Codex" beside "Codex CLI" says the same thing twice).
+ * agent ("Codex" beside "Codex CLI" says the same thing twice). A company's
+ * coordinator row puts the CEO word in that slot instead.
  */
-export function rosterShowsAgentKind(row: Pick<WorkspaceAgentRosterRow, 'surfaceTitle' | 'slug' | 'agentName'>): boolean {
-  if (!row.surfaceTitle || !row.slug || row.slug === 'claude') return false;
-  const title = row.surfaceTitle.trim().toLowerCase();
+export function rosterShowsAgentKind(
+  row: Pick<WorkspaceAgentRosterRow, 'surfaceTitle' | 'slug' | 'agentName' | 'seatTitle' | 'coordinator'>,
+): boolean {
+  const lead = row.seatTitle || row.surfaceTitle;
+  if (row.coordinator || !lead || !row.slug || row.slug === 'claude') return false;
+  const title = lead.trim().toLowerCase();
   const name = (row.agentName ?? '').trim().toLowerCase();
   if (!name) return true;
   const startsWord = (a: string, b: string) => a === b || a.startsWith(`${b} `);
@@ -165,7 +171,8 @@ export function rosterPrimaryLabel(row: WorkspaceAgentRosterRow): string {
   // let `''` win the lead. The trailer already tests truthiness, so `??` here
   // meant an empty title erased BOTH labels — no name led the row and the
   // vendor was withheld from the trailer as "already shown".
-  return row.surfaceTitle ? row.surfaceTitle : row.agentName;
+  // A company seat's title (the pane label) leads over both.
+  return row.seatTitle || (row.surfaceTitle ? row.surfaceTitle : row.agentName);
 }
 
 /**
@@ -270,7 +277,7 @@ function WorkspaceRosterSummary({
       ? (open ? t('workspace.hideAgents') : t('workspace.showAgents'))
       : rosterSummaryAriaLabel(roster, open, t),
     showTasks ? (paneTaskCount === 1 ? t('sidebar.tasks.countOne') : t('sidebar.tasks.count', { count: paneTaskCount })) : undefined,
-    showTasks && paneTaskNeedYou > 0 ? t('strip.needsYou', { count: paneTaskNeedYou }) : undefined,
+    showTasks && paneTaskNeedYou > 0 ? t(paneTaskNeedYou === 1 ? 'strip.needsYouOne' : 'strip.needsYou', { count: paneTaskNeedYou }) : undefined,
   ].filter(Boolean).join(', ');
 
   return (
@@ -383,7 +390,10 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   // the per-PTY stamps: those move on every throttled output write, and the
   // label only changes once a minute. Stamps are read at render time.
   const [now, setNow] = useState(() => Date.now());
-  const hasRows = roster.rows.length > 0;
+  // Sessions started outside wmux in this workspace's folder (placement B,
+  // 2026-11-01): listed after the panes' rows, never focusable as a pane.
+  const externals = useRowStore((s) => selectWorkspaceExternalSessions(s, workspaceId));
+  const hasRows = roster.rows.length > 0 || externals.length > 0;
   useEffect(() => {
     if (!hasRows) return;
     setNow(Date.now());
@@ -409,7 +419,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
   const barePaneIds = [...taskSplit.byPane.keys()].filter((paneId) => !firstRowOfPane.has(paneId));
   const bareRows = useRowStore(useShallow((s) => barePanesOf(s, workspaceId, barePaneIds)));
 
-  if (roster.agentCount === 0 && roster.stashedCount === 0 && taskSplit.byPane.size === 0) return null;
+  if (roster.agentCount === 0 && roster.stashedCount === 0 && taskSplit.byPane.size === 0 && externals.length === 0) return null;
 
   // Computed once per render, not per row: the vendor column earns its width
   // only when the workspace actually mixes vendors.
@@ -490,7 +500,7 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
               ? (exited ? t('roster.recoverAction') : t('roster.unstashAction'))
               : undefined;
             const stashedAgo = row.stashedAt ? timeAgo(row.stashedAt) : undefined;
-            const rowAriaLabel = [row.ptyId && unseenByPtyId[row.ptyId] ? t('sidebar.changedSinceSeen') : undefined, primary, agentLabel !== primary ? agentLabel : undefined, secondary, stuck ? t('agentStall.label') : undefined, unverifiableLabel ?? statusLabel, subagentLabel, elapsed, stashedAgo, detail, verb]
+            const rowAriaLabel = [row.ptyId && unseenByPtyId[row.ptyId] ? t('sidebar.changedSinceSeen') : undefined, primary, row.coordinator ? t('company.ceo') : undefined, agentLabel !== primary ? agentLabel : undefined, secondary, stuck ? t('agentStall.label') : undefined, unverifiableLabel ?? statusLabel, subagentLabel, elapsed, stashedAgo, detail, verb]
               .filter(Boolean)
               .join(', ');
             const rowTaskIds = firstRowOfPane.get(row.paneId) === index ? taskSplit.byPane.get(row.paneId) : undefined;
@@ -606,6 +616,11 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
                     {rosterShowsAgentKind(row) && (
                       <span className="max-w-[35%] flex-none truncate text-[11px] text-[var(--text-muted)]" data-roster-agent-kind>
                         {agentLabel}
+                      </span>
+                    )}
+                    {row.coordinator && (
+                      <span className="flex-none whitespace-nowrap text-[11px] text-[var(--text-muted)]" data-roster-ceo>
+                        {t('company.ceo')}
                       </span>
                     )}
                     {row.ptyId && unseenByPtyId[row.ptyId] && (
@@ -785,6 +800,9 @@ function WorkspaceAgentRoster({ workspaceId, pulsingPaneId, taskIds, renderTask,
               </PaneTaskGroup>
             );
           })}
+          {externals.map((session) => (
+            <ExternalSessionRow key={session.id} session={session} workspaceId={workspaceId} now={now} />
+          ))}
       </div>
     </div>
   );

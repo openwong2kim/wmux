@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useT } from '../../hooks/useT';
+import { displayCombo } from '../../../shared/keymap';
+import { shortcutPlatform } from '../../utils/shortcutBindings';
+import { withShortcut } from '../../utils/shortcutLabel';
 import { useStore } from '../../stores';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import type { PaneSearchResult } from '../../../shared/types';
@@ -25,6 +28,7 @@ function truncateMatch(text: string, max = 80): string {
 
 export default function SearchBar({ onFindNext, onFindPrevious, onClose }: SearchBarProps) {
   const t = useT();
+  const keyPlatform = shortcutPlatform();
   const [query, setQuery] = useState('');
   const [useRegex, setUseRegex] = useState(false);
   const [allPanes, setAllPanes] = useState(false);
@@ -291,7 +295,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
                 if (regexError) return;
                 onFindPrevious(query, useRegex);
               }}
-              title={t('search.prevTooltip')}
+              title={withShortcut(t('search.prevTooltip'), displayCombo('Shift+Enter', keyPlatform))}
               className={`ui-icon-btn ${FOCUS_RING} w-5 h-5 shrink-0`}
             >
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -305,7 +309,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
                 if (regexError) return;
                 onFindNext(query, useRegex);
               }}
-              title={t('search.nextTooltip')}
+              title={withShortcut(t('search.nextTooltip'), displayCombo('Enter', keyPlatform))}
               className={`ui-icon-btn ${FOCUS_RING} w-5 h-5 shrink-0`}
             >
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
@@ -319,7 +323,7 @@ export default function SearchBar({ onFindNext, onFindPrevious, onClose }: Searc
         {/* Close */}
         <button
           onClick={onClose}
-          title={t('search.closeTooltip')}
+          title={withShortcut(t('search.closeTooltip'), displayCombo('Escape', keyPlatform))}
           className={`ui-icon-btn ui-icon-btn-danger ${FOCUS_RING} w-5 h-5 shrink-0`}
         >
           <svg width="10" height="10" viewBox="0 0 10 10" fill="none">

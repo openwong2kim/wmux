@@ -31,7 +31,7 @@ beforeEach(() => {
     github: { prList: vi.fn(), prDetail: vi.fn(async () => ({ ok: true, detail: { number: 9, comments: [] } })) },
     workLinks: { list, get: vi.fn(), onChanged: vi.fn((cb: (ids: string[]) => void) => { changed = cb; return () => undefined; }) },
   };
-  act(() => useStore.setState({ workspaces: [{ id: 'ws-1', name: 'Widgets WS' }] as never }));
+  act(() => useStore.setState({ workspaces: [{ id: 'ws-1', name: 'Widgets WS', rootPane: { id: 'p-1', type: 'leaf', surfaces: [], activeSurfaceId: '' } }] as never }));
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -71,6 +71,27 @@ describe('who acts next', () => {
     await act(async () => { changed(['l1']); });
     await flush();
     expect(slot().textContent).toBe('Next: Widgets WS · CI failing');
+  });
+
+  it('names the pane the agent reported back to, the CEO when it holds that seat', async () => {
+    const leaf = (id: string, ordinal: number) => ({ id, type: 'leaf', ordinal, surfaces: [], activeSurfaceId: '' });
+    act(() => useStore.setState({
+      workspaces: [{
+        id: 'ws-home', name: 'Eng', wsOrdinal: 1,
+        rootPane: { id: 'b', type: 'branch', direction: 'horizontal', sizes: [50, 50], children: [leaf('pane-ceo', 1), leaf('pane-m2', 2)] },
+        company: { v: 1, id: 'co', coordinatorPaneId: 'pane-ceo' },
+      }] as never,
+      paneLabel: {},
+    }));
+    list.mockResolvedValue([link({ a2aState: 'input-required', requester: { workspaceId: 'ws-home', paneId: 'pane-ceo' } })]);
+    render();
+    await flush();
+    expect(slot().textContent).toBe('Next: CEO · report to check');
+    expect(slot().querySelector('[data-git-next]')?.getAttribute('data-git-next')).toBe('requester');
+    list.mockResolvedValue([link({ a2aState: 'input-required', requester: { workspaceId: 'ws-home', paneId: 'pane-m2' } })]);
+    await act(async () => { changed(['l1']); });
+    await flush();
+    expect(slot().textContent).toBe('Next: #w1-2 · report to check');
   });
 
   it('says nothing when no work is linked', async () => {

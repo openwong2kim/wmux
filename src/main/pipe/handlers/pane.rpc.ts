@@ -194,6 +194,9 @@ export function registerPaneRpc(
       consecutiveFailures: number;
     };
     const supervisionByPtyId = new Map<string, SupervisionSummary>();
+    // Sessions whose live agent runs from a deleted executable (the daemon's
+    // agentImageMissing), joined the same way.
+    const imageMissingPtyIds = new Set<string>();
     const dc = getDaemonClient?.();
     if (dc?.isConnected) {
       try {
@@ -205,9 +208,11 @@ export function registerPaneRpc(
             restartCount?: number;
             consecutiveFailures?: number;
           };
+          agentImageMissing?: boolean;
         }>;
         if (Array.isArray(sessions)) {
           for (const s of sessions) {
+            if (s.agentImageMissing === true) imageMissingPtyIds.add(s.id);
             if (!s.supervision) continue;
             supervisionByPtyId.set(s.id, {
               restart: s.supervision.restart ?? 'on-failure',
@@ -247,12 +252,16 @@ export function registerPaneRpc(
       // The agent's last refused tool call, until it moves past it
       // (shared/toolRefusal.ts). Additive, like `supervision`.
       const refusal = lastRefusal(surfacePtyIds);
+      // The pane's agent is running from a deleted install: restarting it is
+      // the fix. Additive, like `supervision`.
+      const imageMissing = surfacePtyIds.some((ptyId) => imageMissingPtyIds.has(ptyId));
       return {
         ...pane,
         metadata: found?.metadata ?? rendererMetadata ?? {},
         version: found?.version ?? 0,
         ...(supervision ? { supervision } : {}),
         ...(refusal ? { lastRefusal: refusal } : {}),
+        ...(imageMissing ? { agentImageMissing: true } : {}),
       };
     });
 

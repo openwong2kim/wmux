@@ -217,8 +217,10 @@
   padding: 0 16px;
 }
 .wmux-bots-chat-head > .wmux-bots-back { position: absolute; left: 16px; }
-/* The narrow layout's workers button mirrors the back button on the right. */
-.wmux-bots-head-workers { position: absolute; right: 16px; display: none; }
+/* The header's right end: the narrow layout's workers button (mirroring the
+   back button) and the bot's ⚙ Settings. */
+.wmux-bots-head-end { position: absolute; right: 16px; display: flex; align-items: center; gap: 6px; }
+.wmux-bots-head-workers { position: relative; display: none; }
 .wmux-bots-back.wmux-bots-head-workers-button { width: auto; gap: 5px; padding: 0 10px; font-size: 12px; }
 .wmux-bots-head-workers-pop {
   position: absolute;
@@ -257,21 +259,67 @@
   color: var(--text-sub);
 }
 .wmux-bots-back:hover { color: var(--text-main); }
-/* The profile fits the chat: a short window scrolls it inside (16px off the
-   chat's foot), so Stop at its end stays reachable. */
-.wmux-bots-profile {
-  position: absolute;
-  top: 48px;
-  left: max(16px, calc((100% - 44rem) / 2));
-  z-index: 3;
-  width: min(360px, calc(100% - 32px));
-  max-height: calc(100% - 64px);
+/* A bot's settings page, in place of its chat (BotSettingsPage.tsx): the
+   44px header band (back, then the name), the status strip, a section nav
+   beside the scrolling sections, and the Save footer. One hairline under the
+   strip and one over the footer; the nav and the sections share the body. */
+.wmux-bot-settings { container-type: inline-size; container-name: botsettings; }
+.wmux-bot-settings-head { justify-content: flex-start; padding-left: 60px; }
+.wmux-bot-settings-head > .wmux-bot-settings-back { display: inline-flex; }
+.wmux-bot-settings-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  flex-shrink: 0;
+  padding: 8px 24px 12px;
+  border-bottom: 1px solid var(--stroke);
+  font-size: 12px;
+}
+.wmux-bot-settings-body { display: flex; flex: 1; min-height: 0; }
+.wmux-bot-settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 180px;
+  flex-shrink: 0;
+  padding: 16px 12px;
   overflow-y: auto;
-  overscroll-behavior: contain;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--bg-base);
-  box-shadow: var(--shadow-popover);
+}
+.wmux-bot-settings-nav-item {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text-sub);
+}
+.wmux-bot-settings-nav-item:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-bot-settings-nav-item[aria-current='true'] { background: var(--selection); box-shadow: var(--select-ring); color: var(--text-main); }
+.wmux-bot-settings-scroll { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 28px 32px 16px; }
+.wmux-bot-settings-form { min-width: 0; max-width: 680px; margin: 0; padding: 0; border: 0; display: flex; flex-direction: column; gap: 28px; }
+.wmux-bot-settings-form + .wmux-bot-settings-form { margin-top: 28px; }
+.wmux-bot-settings-section { display: flex; flex-direction: column; gap: 6px; scroll-margin-top: 8px; }
+.wmux-bot-settings-heading { margin: 0 0 4px; font-size: 13px; font-weight: 400; color: var(--text-sub); }
+/* Labels sit level with a 30px control's text; plain values use the same
+   line height. The profile's reused rows (engine, commands, today, skills,
+   memory) take the page's label column. */
+.wmux-bot-settings-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 16px; padding: 4px 0; }
+.wmux-bot-settings-label { width: 140px; flex-shrink: 0; font-size: 13px; line-height: 30px; color: var(--text-sub); }
+.wmux-bot-settings-value { display: block; padding: 5px 0; font-size: 13px; line-height: 20px; color: var(--text-main); }
+.wmux-bot-settings-form .w-\[112px\] { width: 140px; margin-right: 4px; font-size: 13px; color: var(--text-sub); }
+.wmux-bot-settings-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  padding: 10px 24px;
+  border-top: 1px solid var(--stroke);
+}
+@container botsettings (max-width: 639px) {
+  .wmux-bot-settings-nav { display: none; }
+  .wmux-bot-settings-scroll { padding-left: 16px; padding-right: 16px; }
+  .wmux-bot-settings-strip, .wmux-bot-settings-foot { padding-left: 16px; padding-right: 16px; }
 }
 
 .wmux-bots-messages {

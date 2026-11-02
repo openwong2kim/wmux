@@ -36,7 +36,7 @@ import { GhConnectPage } from './GhConnectPage';
 import { ghAuthStateOf, useGhAuthGate } from './ghAuthGate';
 import { selectRemoteScopeName } from './thisComputerOnly';
 import type { GitDragOwner } from './gitPageState';
-import { saveGitAllLayout, saveGitRepoChoice, saveGitTab, type GitAllLayout, type GitPageState, type GitPageTab, type GitSelection } from './gitPageState';
+import { saveGitAllLayout, saveGitRepoChoice, saveGitTab, shownGitTab, type GitAllLayout, type GitPageState, type GitPageTab, type GitSelection } from './gitPageState';
 import type { PrSummary } from '../../../shared/prSurface';
 import type { IssueFilter, IssueSummary } from '../../../shared/issueSurface';
 
@@ -54,8 +54,9 @@ const itemsKey = (repoPath: string, kind: GitSelection['kind']) => `${repoPath}\
 /** One count read's answer, tagged with its repo and the refresh it came under. */
 interface CountAnswer { repoPath: string; gen: number; count?: number }
 /** The gate's PR list read: its count, plus the list itself (or that the
- *  repo has none to read) for the Worktrees tab's No open PR. */
-interface GatePrAnswer extends CountAnswer { prs?: PrSummary[]; gated?: boolean }
+ *  repo has none to read) for the Worktrees tab's No open PR, and whether
+ *  the repo has no origin remote at all. */
+interface GatePrAnswer extends CountAnswer { prs?: PrSummary[]; gated?: boolean; noRemote?: boolean }
 
 export default function GitPage() {
   const t = useT();
@@ -127,8 +128,16 @@ export default function GitPage() {
     setGatePrs({
       repoPath, gen: generation.current,
       ...(res.ok ? { count: res.prs.length, prs: res.prs } : ghAuthStateOf(res) === 'not-github' ? { gated: true } : {}),
+      ...(!res.ok && res.code === 'no-remote' ? { noRemote: true } : {}),
     });
   });
+  // A repo with no origin remote has no issues or pull requests to list:
+  // known from its remote key at once, then from the gate's read.
+  const noRemote = page.scope === 'repo' && !!resolved
+    && (gatePrs.repoPath === resolved.repoPath ? !!gatePrs.noRemote : resolved.remoteKey === null);
+  // The repo the viewer last picked a tab in (this visit): that pick is kept.
+  const [tabPickedIn, setTabPickedIn] = useState<string | null>(null);
+  const shownTab = shownGitTab(page.tab, { noRemote, pickedHere: !!resolved && tabPickedIn === resolved.repoPath });
   const recheck = () => setRefreshKey((k) => k + 1);
   // Back from the connect card: the lists mounted while the gate was still
   // re-checking read main's stale signed-out answer, so read them once more,
@@ -201,7 +210,7 @@ export default function GitPage() {
   const issuesRead = useRef('');
   const issuesRefresh = useRef(refreshKey);
   const countsRepo = page.scope === 'repo' ? resolved?.repoPath ?? null : null;
-  const needIssues = page.tab !== 'issues' || page.issueFilter.kind !== 'all';
+  const needIssues = shownTab !== 'issues' || page.issueFilter.kind !== 'all';
   useEffect(() => {
     const issues = getIssueBridge();
     if (!countsRepo || !needIssues || !issues) return undefined;
@@ -224,9 +233,11 @@ export default function GitPage() {
   const setTab = (tab: GitPageTab) => {
     setGitPage({ tab });
     saveGitTab(tab);
+    // Only a pick made while one repo is shown belongs to that repo.
+    if (page.scope === 'repo') setTabPickedIn(resolved?.repoPath ?? null);
   };
   const onTabKey = (e: KeyboardEvent<HTMLButtonElement>) => {
-    const i = TABS.indexOf(page.tab);
+    const i = TABS.indexOf(shownTab);
     let next: GitPageTab | null = null;
     if (e.key === 'ArrowRight') next = TABS[(i + 1) % TABS.length];
     else if (e.key === 'ArrowLeft') next = TABS[(i + TABS.length - 1) % TABS.length];
@@ -238,7 +249,7 @@ export default function GitPage() {
     document.getElementById(`${tabIds}-${next}`)?.focus();
   };
 
-  const kind: GitSelection['kind'] = page.tab === 'issues' ? 'issue' : 'pr';
+  const kind: GitSelection['kind'] = shownTab === 'issues' ? 'issue' : 'pr';
   const select = (repoPath: string, number: number) => setGitPage({ selected: { kind, repoPath, number } });
   // In This repo, a selection from another repo (the active pane moved) is not shown.
   const sel = page.selected && page.selected.kind === kind
@@ -255,6 +266,10 @@ export default function GitPage() {
   const selPath = selGroup ? selGroup.prPath : sel?.repoPath ?? '';
   const selList = sel ? items[itemsKey(selPath, sel.kind)] : undefined;
   const selItem = sel && selList ? (selList as Array<PrSummary | IssueSummary>).find((x) => x.number === sel.number) ?? null : null;
+  // "Select one to see it here" only while a shown list has a row to select.
+  const listHasRows = page.scope === 'repo'
+    ? !!resolved && (items[itemsKey(resolved.repoPath, kind)]?.length ?? 0) > 0
+    : Object.entries(items).some(([key, list]) => key.endsWith(`\0${kind}`) && list.length > 0);
   // A repo's full name: owner/repo, or its folder without a remote.
   const groupLabel = (g: RepoGroup) => repoWeb(g.key)?.label ?? g.name;
   // In All repos the detail names the selection's repo the way its row tag does.
@@ -354,9 +369,10 @@ export default function GitPage() {
             </p>
           )}
           {counts.length > 0 && <p className="wmux-git-page-summary" data-git-page-counts>{counts.join(' · ')}</p>}
-          {page.scope === 'all' && page.allLayout === 'flat' && page.tab !== 'worktrees' && turnCounts && <GitTurnSummary counts={turnCounts} />}
+          {page.scope === 'all' && page.allLayout === 'flat' && shownTab !== 'worktrees' && turnCounts && <GitTurnSummary counts={turnCounts} />}
           {/* Same gating as the lists it sums: no line for another computer's workspace when following it. */}
-          {page.tab === 'worktrees' && (page.scope === 'all' || !remoteFiles) && (
+          {/* One section alone is its own header right below: no line for it. */}
+          {shownTab === 'worktrees' && (page.scope === 'all' || !remoteFiles) && wtTotals.length > 1 && (
             <SectionSummary kind="wt" label={t('git.wt.summaryLabel')} entries={wtTotals} onJump={(k) => openWtSection(k as WorktreeSection)} />
           )}
         </div>
@@ -382,9 +398,9 @@ export default function GitPage() {
               id={`${tabIds}-${tab}`}
               type="button"
               role="tab"
-              aria-selected={page.tab === tab}
+              aria-selected={shownTab === tab}
               aria-controls={`${tabIds}-panel`}
-              tabIndex={page.tab === tab ? 0 : -1}
+              tabIndex={shownTab === tab ? 0 : -1}
               className={`wmux-git-tab ${tab === 'worktrees' ? 'wmux-git-tab-aside ' : ''}${FOCUS_RING}`}
               onClick={() => setTab(tab)}
               onKeyDown={onTabKey}
@@ -394,7 +410,7 @@ export default function GitPage() {
             </button>
           ))}
         </div>
-        {page.scope === 'all' && page.tab !== 'worktrees' && (
+        {page.scope === 'all' && shownTab !== 'worktrees' && (
           <SegmentedControl<GitAllLayout>
             value={page.allLayout}
             options={[{ value: 'flat', label: t('git.flat.layoutFlat') }, { value: 'repo', label: t('git.flat.layoutByRepo') }]}
@@ -405,8 +421,8 @@ export default function GitPage() {
         )}
       </div>
 
-      <div id={`${tabIds}-panel`} role="tabpanel" aria-labelledby={`${tabIds}-${page.tab}`} className="wmux-git-panel">
-        {page.tab === 'worktrees' ? (
+      <div id={`${tabIds}-panel`} role="tabpanel" aria-labelledby={`${tabIds}-${shownTab}`} className="wmux-git-panel">
+        {shownTab === 'worktrees' ? (
           <div className="wmux-git-scroll" data-git-worktrees-tab>
             {/* The active workspace's branch (Diff, Go to terminal, the ship
                 button), unless a picked repo it is not in is shown. With
@@ -423,11 +439,11 @@ export default function GitPage() {
           </div>
         ) : (
           <div className="wmux-git-split" data-git-split>
-            <ListPane scrollKey={`${page.scope}:${page.tab}${page.scope === 'all' ? `:${page.allLayout}` : ''}`} ready={itemsVersion}>
+            <ListPane scrollKey={`${page.scope}:${shownTab}${page.scope === 'all' ? `:${page.allLayout}` : ''}`} ready={itemsVersion}>
               {page.scope === 'repo' ? (
                 resolved && (
                   <RepoList
-                    tab={page.tab}
+                    tab={shownTab}
                     repoPath={resolved.repoPath}
                     refreshKey={refreshKey}
                     active
@@ -437,12 +453,13 @@ export default function GitPage() {
                     onSelect={(n) => select(resolved.repoPath, n)}
                     onItems={publish(resolved.repoPath, kind)}
                     dragContext={repoContext}
+                    onRefreshPage={recheck}
                   />
                 )
               ) : page.allLayout === 'flat' ? (
                 <FlatLists
                   groups={groups}
-                  tab={page.tab}
+                  tab={shownTab}
                   refreshKey={refreshKey}
                   filter={page.issueFilter}
                   onFilter={(issueFilter) => setGitPage({ issueFilter })}
@@ -456,7 +473,7 @@ export default function GitPage() {
               ) : (
                 <AllLists
                   groups={groups}
-                  tab={page.tab}
+                  tab={shownTab}
                   refreshKey={refreshKey}
                   filter={page.issueFilter}
                   onFilter={(issueFilter) => setGitPage({ issueFilter })}
@@ -478,9 +495,9 @@ export default function GitPage() {
                   issue={kind === 'issue' ? (selItem as IssueSummary) : null}
                   repo={page.scope === 'repo' ? repoContext : groupContext(selPath)}
                 />
-              ) : (
+              ) : listHasRows ? (
                 <GitDetail kind={kind} repoPath="" repoLabel="" />
-              )}
+              ) : null}
             </div>
           </div>
         )}
@@ -531,7 +548,7 @@ function ListPane({ scrollKey, ready, children }: { scrollKey: string; ready: nu
   );
 }
 
-function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selected, onSelect, onItems, dragContext }: {
+function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selected, onSelect, onItems, dragContext, onRefreshPage }: {
   tab: GitPageTab;
   repoPath: string;
   refreshKey: number;
@@ -543,6 +560,8 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
   onSelect: (n: number) => void;
   onItems: (list: PrSummary[] | IssueSummary[]) => void;
   dragContext?: GitDragOwner;
+  /** The page's refresh, for a no-remote card's Check again. */
+  onRefreshPage?: () => void;
 }) {
   return tab === 'issues' ? (
     <IssueSection
@@ -556,6 +575,7 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
       onSelect={(i) => onSelect(i.number)}
       onItems={onItems}
       dragContext={dragContext}
+      onRefreshPage={onRefreshPage}
     />
   ) : (
     <PrSection
@@ -567,6 +587,7 @@ function RepoList({ tab, repoPath, refreshKey, active, filter, onFilter, selecte
       onSelect={(p) => onSelect(p.number)}
       onItems={onItems}
       dragContext={dragContext}
+      onRefreshPage={onRefreshPage}
     />
   );
 }
@@ -609,7 +630,7 @@ function AllLists({ groups, tab, refreshKey, filter, onFilter, sel, onSelect, pu
             >
               <span className="wmux-git-chevron" data-open={isOpen ? 'true' : undefined} aria-hidden="true"><IconChevron size={12} /></span>
               <span className="wmux-git-group-name">{g.name}</span>
-              <span className="wmux-git-group-meta">{t('git.allRepos.workspaces', { count: g.workspaceCount })}</span>
+              <span className="wmux-git-group-meta">{t(g.workspaceCount === 1 ? 'git.allRepos.workspacesOne' : 'git.allRepos.workspaces', { count: g.workspaceCount })}</span>
             </button>
             {isOpen && (
               <RepoList
@@ -650,7 +671,7 @@ function AllWorktrees({ groups, refreshKey, reportCounts, prListOf }: {
         <section key={g.key} className="wmux-git-group" data-git-repo-group={g.name} aria-label={g.name}>
           <h2 className="wmux-git-group-title">
             {g.name}
-            <span className="wmux-git-group-meta">{t('git.allRepos.workspaces', { count: g.workspaceCount })}</span>
+            <span className="wmux-git-group-meta">{t(g.workspaceCount === 1 ? 'git.allRepos.workspacesOne' : 'git.allRepos.workspaces', { count: g.workspaceCount })}</span>
           </h2>
           <GroupWorktrees group={g} refreshKey={refreshKey} reportCounts={reportCounts} prList={prListOf(g)} />
         </section>

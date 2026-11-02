@@ -133,7 +133,7 @@ export default function WorkTabs({
           line and lift the tabs off the strip's bottom edge. */}
       <div className="wmux-surface-tablist flex items-center gap-1 px-1 flex-1 min-w-0 overflow-x-auto h-full [scrollbar-width:none] [&::-webkit-scrollbar]:hidden" role="tablist">
         {surfaces.map((s) => {
-          const title = workTabTitle(s, t('browser.title'));
+          const title = workTabTitle(s, s.surfaceType === 'board' ? t('company.board') : t('browser.title'));
           const active = s.id === shownId;
           return (
             <div

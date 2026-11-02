@@ -17,7 +17,7 @@
 import fs from 'node:fs';
 import { dialog, ipcMain, nativeImage, type BrowserWindow, type OpenDialogOptions } from 'electron';
 import { IPC } from '../../../shared/constants';
-import { BOT_ID_RE, HERMES_BOT_ENGINE, isCoordinatorBot, type BotProfile, type BotStatus } from '../../../shared/bot';
+import { BOT_ID_RE, HERMES_BOT_ENGINE, MY_HERMES_DEFAULT_PROFILE, isCoordinatorBot, myHermesEngine, ownHermesProfile, type BotProfile, type BotStatus } from '../../../shared/bot';
 import { wrapHandler } from '../wrapHandler';
 import { getBotStore } from '../../factory/botStore';
 import { getBotRuntime, type BotRuntime } from '../../factory/BotRuntime';
@@ -54,7 +54,9 @@ import { loadClaudeCredential } from '../../claude/claudeCredential';
 import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { ShellDetector } from '../../../shared/ShellDetector';
 import { getHermesHost, type HermesHost } from '../../factory/hermesHost';
-import type { HermesReadiness } from '../../../shared/hermesEngine';
+import type { HermesReadiness, MyHermesStatus } from '../../../shared/hermesEngine';
+import { confirmMyHermesNatively, myHermesBindRefusal, myHermesStatus, type MyHermesBindDeps, type MyHermesConfirm } from '../../factory/myHermesBind';
+import { getGroupStore } from '../../factory/groupStore';
 import { checkClaudeApiKey, getClaudeApiKeyStore, type ClaudeApiKeyCheck, type ClaudeApiKeySetResult, type ClaudeApiKeyStatus, type ClaudeApiKeyStore } from '../../factory/claudeApiKey';
 
 export interface FactoryBotRow {
@@ -337,13 +339,44 @@ export function factoryHermesSetupHandler(
   };
 }
 
-/** FACTORY_BOT_SET_ENGINE: the owner moves a bot to Claude or to Hermes.
- *  Main window only: the pipe's bot.create/update cannot move a bot onto or
- *  off an ACP engine (bot.rpc.ts acpEngineRefusal). The bot's next turn
- *  starts on the new engine (BotRuntime.profileChanged). */
+/** FACTORY_MY_HERMES: the owner's own Hermes profiles and, for `{profile}`,
+ *  whether it could serve a bot (read-only; myHermes.ts). Main window only. */
+export function factoryMyHermesHandler(
+  getWindow: () => BrowserWindow | null,
+  deps: Parameters<typeof myHermesStatus>[2] & { store?: typeof getBotStore } = {},
+): (e: { sender?: unknown; senderFrame?: unknown }, req?: unknown) => Promise<MyHermesStatus> {
+  return async (e, req) => {
+    if (!isMainWindowSender(e, getWindow())) return { supported: false, profiles: [] };
+    return myHermesStatus((deps.store ?? getBotStore)(), req, deps);
+  };
+}
+
+type EngineChoice = { kind: 'claude-sdk' } | { kind: 'hermes' } | { kind: 'my-hermes'; profile: string };
+
+/** The engine a request picks (`engine`, and `hermesProfile` for My
+ *  Hermes), or null when it names none wmux offers. Pure. */
+export function engineChoiceOf(engine: unknown, profile: unknown): EngineChoice | null {
+  if (engine === 'claude-sdk' || engine === 'hermes') return { kind: engine };
+  if (engine === 'my-hermes') return { kind: 'my-hermes', profile: profile === undefined ? MY_HERMES_DEFAULT_PROFILE : (profile as string) };
+  return null;
+}
+
+export interface MyHermesHandlerDeps extends MyHermesBindDeps {
+  /** The native confirm (default: main's own dialog). */
+  confirm?: MyHermesConfirm;
+}
+
+const defaultGroups = (): ReturnType<NonNullable<MyHermesBindDeps['groups']>> => getGroupStore()?.list() ?? null;
+
+/** FACTORY_BOT_SET_ENGINE: the owner moves a bot to Claude, to wmux's
+ *  Hermes, or to My Hermes (the owner's own Hermes profile; asked first in
+ *  main's own native confirm). Main window only: the pipe's
+ *  bot.create/update cannot move a bot onto or off an ACP engine (bot.rpc.ts
+ *  acpEngineRefusal). The bot's next turn starts on the new engine
+ *  (BotRuntime.profileChanged). */
 export function factoryBotSetEngineHandler(
   getWindow: () => BrowserWindow | null,
-  deps: { store?: typeof getBotStore; runtime?: () => Pick<NonNullable<ReturnType<typeof getBotRuntime>>, 'profileChanged'> | null } = {},
+  deps: MyHermesHandlerDeps & { store?: typeof getBotStore; runtime?: () => Pick<NonNullable<ReturnType<typeof getBotRuntime>>, 'profileChanged'> | null } = {},
 ): (e: { sender?: unknown; senderFrame?: unknown }, req: unknown) => Promise<{ ok: boolean; code?: string; message?: string }> {
   return async (e, req) => {
     if (!isMainWindowSender(e, getWindow())) return { ok: false, code: 'operator_only', message: 'only the main window may change a bot\'s engine' };
@@ -351,12 +384,30 @@ export function factoryBotSetEngineHandler(
     if (!s) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
     const r = req && typeof req === 'object' && !Array.isArray(req) ? (req as Record<string, unknown>) : {};
     if (typeof r.botId !== 'string' || !BOT_ID_RE.test(r.botId)) return { ok: false, code: 'invalid_argument', message: 'botId must be a bot id' };
-    if (r.engine !== 'claude-sdk' && r.engine !== 'hermes') return { ok: false, code: 'invalid_argument', message: 'engine must be claude-sdk or hermes' };
+    const choice = engineChoiceOf(r.engine, r.hermesProfile);
+    if (!choice) return { ok: false, code: 'invalid_argument', message: 'engine must be claude-sdk, hermes or my-hermes' };
     const current = s.get(r.botId);
     if (!current) return { ok: false, code: 'not_found', message: `no bot ${r.botId}` };
+    const ownNow = ownHermesProfile(current.engine);
     // Already there: keep the engine as it is (a Claude bot keeps its model).
-    if (r.engine === 'claude-sdk' ? current.engine.kind === 'claude-sdk' : current.engine.kind === 'acp' && current.engine.preset === 'hermes') return { ok: true };
-    const saved = s.update(r.botId, { engine: r.engine === 'hermes' ? { ...HERMES_BOT_ENGINE } : { kind: 'claude-sdk' } });
+    if (choice.kind === 'claude-sdk' && current.engine.kind === 'claude-sdk') return { ok: true };
+    if (choice.kind === 'hermes' && current.engine.kind === 'acp' && current.engine.preset === 'hermes' && ownNow === null) return { ok: true };
+    if (choice.kind === 'my-hermes' && ownNow === choice.profile) return { ok: true };
+    let engine: BotProfile['engine'];
+    if (choice.kind === 'my-hermes') {
+      const groups = { groups: defaultGroups, ...deps };
+      const refusal = myHermesBindRefusal(s, r.botId, choice.profile, groups);
+      if (refusal) return { ok: false, code: 'invalid_argument', message: refusal };
+      const yes = await (deps.confirm ?? confirmMyHermesNatively)(getWindow(), current.name, choice.profile, true);
+      if (!yes) return { ok: false, code: 'cancelled', message: 'Kept the bot\'s engine.' };
+      // Checked again: the bot or the profile may have changed while asked.
+      const again = myHermesBindRefusal(s, r.botId, choice.profile, groups);
+      if (again) return { ok: false, code: 'invalid_argument', message: again };
+      engine = myHermesEngine(choice.profile);
+    } else {
+      engine = choice.kind === 'hermes' ? { ...HERMES_BOT_ENGINE } : { kind: 'claude-sdk' };
+    }
+    const saved = s.update(r.botId, { engine });
     if (!saved.ok) return { ok: false, code: saved.code, message: saved.message };
     (deps.runtime ?? getBotRuntime)()?.profileChanged(r.botId);
     return { ok: true };
@@ -375,11 +426,24 @@ function greetAddedBot(bot: BotProfile): void {
  *  new bot's greeting wake. */
 export function factoryBotCreateHandler(
   getWindow: () => BrowserWindow | null,
-  deps: BotRepoDeps & { store?: typeof getBotStore; greet?: (bot: BotProfile) => void } = {},
+  deps: BotRepoDeps & MyHermesHandlerDeps & { store?: typeof getBotStore; greet?: (bot: BotProfile) => void } = {},
 ): (e: { sender?: unknown; senderFrame?: unknown }, req: unknown) => Promise<FactoryBotCreateResult> {
   return async (e, req) => {
     if (!isMainWindowSender(e, getWindow())) return NOT_OPERATOR;
-    const r = await createBotFromFolder((deps.store ?? getBotStore)(), req, deps);
+    const store = (deps.store ?? getBotStore)();
+    const q = req && typeof req === 'object' && !Array.isArray(req) ? (req as Record<string, unknown>) : {};
+    // My Hermes: checked, then asked in main's own confirm, before the bot
+    // is made (the store refuses a taken profile again on create).
+    if (store && q.engine === 'my-hermes') {
+      const profile = q.hermesProfile === undefined ? MY_HERMES_DEFAULT_PROFILE : q.hermesProfile;
+      const refusal = myHermesBindRefusal(store, null, profile, deps);
+      if (refusal) return { ok: false, code: 'invalid_argument', message: refusal };
+      const name = typeof q.name === 'string' ? q.name : '';
+      if (!(await (deps.confirm ?? confirmMyHermesNatively)(getWindow(), name, profile as string, false))) {
+        return { ok: false, code: 'cancelled', message: 'The bot was not added.' };
+      }
+    }
+    const r = await createBotFromFolder(store, req, deps);
     if (r.ok) (deps.greet ?? greetAddedBot)(r.bot);
     return r;
   };
@@ -609,6 +673,7 @@ export function registerFactoryHandlers(
     IPC.FACTORY_HERMES_READINESS,
     IPC.FACTORY_HERMES_SETUP,
     IPC.FACTORY_BOT_SET_ENGINE,
+    IPC.FACTORY_MY_HERMES,
     IPC.FACTORY_WORKER_AGENTS,
     IPC.FACTORY_TASK_FOLDERS_USAGE,
     IPC.FACTORY_TASK_FOLDERS_CLEAN,
@@ -674,6 +739,8 @@ export function registerFactoryHandlers(
   ipcMain.handle(IPC.FACTORY_HERMES_SETUP, wrapHandler(IPC.FACTORY_HERMES_SETUP, factoryHermesSetupHandler(getWindow, defaultEngineLoginDeps(getWindow))));
 
   ipcMain.handle(IPC.FACTORY_BOT_SET_ENGINE, wrapHandler(IPC.FACTORY_BOT_SET_ENGINE, factoryBotSetEngineHandler(getWindow)));
+
+  ipcMain.handle(IPC.FACTORY_MY_HERMES, wrapHandler(IPC.FACTORY_MY_HERMES, factoryMyHermesHandler(getWindow)));
 
   ipcMain.handle(IPC.FACTORY_WORKER_AGENTS, wrapHandler(IPC.FACTORY_WORKER_AGENTS, factoryWorkerAgentsHandler(getWindow)));
 

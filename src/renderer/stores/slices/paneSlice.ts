@@ -8,6 +8,7 @@ import {
   generateId,
 } from '../../../shared/types';
 import {
+  balancePaneSizes,
   findPane,
   findParent,
   collectLeafIds,
@@ -173,6 +174,8 @@ export interface PaneSlice {
   updatePaneSizes: (branchId: string, sizes: number[], workspaceId?: string) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
+  /** Rebalance every split of the active workspace's whole layout (see balancePaneSizes). */
+  balanceLayout: () => void;
   // Sparse map of per-pane visual notification rings. Missing entry = no ring.
   // T11 will consume this for the flash→glow CSS treatment around each pane.
   paneNotificationRing: Record<string, 'flash' | 'glow'>;
@@ -753,7 +756,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     if (!resolvedName) return;
     // P2: same retention rule for the slug — a status-only update keeps the
     // previously-detected slug so the `(<agent>)` auto-name suffix is stable.
-    const resolvedSlug = slug ?? existing?.slug;
+    // A new name is another agent: the old slug is not kept for it.
+    const resolvedSlug = slug ?? (resolvedName === existing?.name ? existing?.slug : undefined);
     state.surfaceAgent[ptyId] = {
       name: resolvedName,
       status: status ?? existing?.status ?? 'running',
@@ -1760,6 +1764,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     if (!parent || parent.type !== 'branch') return;
     const equal = 100 / parent.children.length;
     parent.sizes = parent.children.map(() => equal);
+  }),
+
+  balanceLayout: () => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+    if (ws) balancePaneSizes(ws.rootPane);
   }),
 
   focusPaneDirection: (direction) => {

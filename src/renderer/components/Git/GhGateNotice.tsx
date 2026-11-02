@@ -5,19 +5,23 @@ import { useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
+import { useCopyText } from '../../hooks/useCopyText';
 import { GH_LOGIN_COMMAND, openGithubLoginTab } from './connectGithub';
+import { originCommand } from './originCommand';
 
 export interface GhGate {
   code: string;
   message: string;
   provider?: 'github' | 'gitlab';
+  /** no-remote only: origin is set but names no host (a local path). */
+  originSet?: boolean;
 }
 
 export function GhGateNotice({ gate, onRecheck, fallback }: {
   gate: GhGate;
   /** Check again: a read that probes past main's gate cache. */
   onRecheck: () => void;
-  /** The line for any other code (no remote, another host, an error). */
+  /** The line for any other code (another host, an error). */
   fallback: string;
 }): React.ReactElement {
   const t = useT();
@@ -25,6 +29,7 @@ export function GhGateNotice({ gate, onRecheck, fallback }: {
   // shown to copy instead.
   const [loginFallback, setLoginFallback] = useState(false);
   const [copied, setCopied] = useState(false);
+  const originCopy = useCopyText();
   // One sign-in tab per click: the button is off while one is opening.
   const [connecting, setConnecting] = useState(false);
 
@@ -89,6 +94,36 @@ export function GhGateNotice({ gate, onRecheck, fallback }: {
             </button>
           </div>
         )}
+      </div>
+    );
+  }
+
+  if (gate.code === 'no-remote') {
+    // Nothing to list until origin exists: say so once, with the command
+    // that sets it and a re-check. "Copied" only once the write went through;
+    // the command stays in view to select by hand either way.
+    const command = originCommand(gate.originSet);
+    return (
+      <div className="wmux-git-connect" data-git-no-remote>
+        <p className="wmux-git-connect-title">{t('git.noRemote')}</p>
+        <p className="wmux-git-connect-desc">{t('git.noRemote.desc')}</p>
+        <div className="wmux-git-connect-cmd" data-git-no-remote-command>
+          <code className="select-all">{command}</code>
+          <button
+            type="button"
+            className={`wmux-git-button ${FOCUS_RING}`}
+            data-git-no-remote-copy
+            data-copy-state={originCopy.state}
+            onClick={() => void originCopy.copy(command)}
+          >
+            {originCopy.state === 'copied' ? t('git.connect.copied') : t('git.connect.copy')}
+          </button>
+        </div>
+        <div className="wmux-git-connect-actions">
+          <button type="button" className={`wmux-git-button ${FOCUS_RING}`} onClick={onRecheck} data-git-connect-recheck>
+            {t('git.connect.recheck')}
+          </button>
+        </div>
       </div>
     );
   }

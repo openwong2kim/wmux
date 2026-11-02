@@ -5,10 +5,10 @@ export const vi = {
   // Sidebar
   'sidebar.workspaces': 'Không gian làm việc',
   'sidebar.newWorkspace': 'Không gian làm việc mới',
-  'sidebar.newWorkspaceTooltip': 'Không gian làm việc mới (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Không gian làm việc mới',
   'sidebar.newRemoteWorkspace': 'Không gian làm việc mới trên {name}',
-  'sidebar.hideTooltip': 'Ẩn thanh bên (Ctrl+B)',
-  'sidebar.expandTooltip': 'Mở thanh bên (Ctrl+B)',
+  'sidebar.hideTooltip': 'Ẩn thanh bên',
+  'sidebar.expandTooltip': 'Mở thanh bên',
   'sidebar.unreadCount': '{count} chưa đọc',
 
   // Workspace
@@ -17,7 +17,6 @@ export const vi = {
   'workspace.agentError': 'Lỗi tác nhân',
   'workspace.agentWaiting': 'Tác nhân đang chờ',
 
-  'workspace.agentAwaitingInput': 'Tác nhân cần phản hồi',
   'workspace.needsYou': 'Đang chờ bạn',
   'workspace.agentIdle': 'Tác nhân nhàn rỗi',
   'workspace.agentUnverifiable': 'Không có cập nhật trong {time}',
@@ -66,9 +65,9 @@ export const vi = {
 
   // Search
   'search.placeholder': 'Tìm kiếm...',
-  'search.prevTooltip': 'Kết quả trước (Shift+Enter)',
-  'search.nextTooltip': 'Kết quả tiếp theo (Enter)',
-  'search.closeTooltip': 'Đóng (ESC)',
+  'search.prevTooltip': 'Kết quả trước',
+  'search.nextTooltip': 'Kết quả tiếp theo',
+  'search.closeTooltip': 'Đóng',
   'search.regexTooltip': 'Dùng biểu thức chính quy',
   'search.allPanes': 'Tất cả khung',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const vi = {
   'notification.markAllRead': 'Đánh dấu đã đọc tất cả',
   'notification.clear': 'Xoá',
   'notification.empty': 'Không có thông báo',
-  'notification.toggle': 'Ctrl+I để bật/tắt',
+  'notification.toggle': '{key} để bật/tắt',
+  'notification.needsYou.question': "Đang chờ bạn: “{question}”",
+  'notification.needsYou.noQuestion': "Đang chờ bạn. Không có nội dung câu hỏi; xem terminal.",
+  'notification.needsYou.over': "Không còn chờ bạn nữa.",
 
   // Command palette
   'palette.placeholder': 'Nhập lệnh...',
@@ -96,7 +98,7 @@ export const vi = {
   'palette.close': 'đóng',
   'palette.cmd.toggleSidebar': 'Bật/tắt thanh bên',
   'palette.cmd.newWorkspace': 'Không gian làm việc mới',
-  'palette.cmd.newSurface': 'Bề mặt mới',
+  'palette.cmd.newSurface': 'Thẻ mới',
   'palette.cmd.splitRight': 'Chia sang phải',
   'palette.cmd.splitDown': 'Chia xuống dưới',
   'palette.cmd.stashPane': 'Cất khung (phiên vẫn tiếp tục chạy)',
@@ -106,7 +108,7 @@ export const vi = {
   'palette.cmd.saveLayout': 'Lưu bố cục hiện tại làm mẫu',
   'palette.cmd.layoutPrefix': 'Bố cục: ',
   'palette.catWorkspace': 'Không gian làm việc',
-  'palette.catSurface': 'Bề mặt',
+  'palette.catSurface': 'Thẻ',
   'palette.catCommand': 'Lệnh',
   'palette.catRecent': 'Gần đây',
 
@@ -246,8 +248,6 @@ export const vi = {
   'viCopy.visual': '-- TRỰC QUAN --',
 
   // StatusBar
-  'statusBar.company': 'CÔNG TY',
-  'statusBar.session': 'Phiên: {min} phút',
   'statusBar.settingsTooltip': 'Cài đặt (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const vi = {
   'settings.checkFailed': 'Kiểm tra thất bại',
   'settings.unknownError': 'Lỗi không xác định',
   'settings.notificationBehavior': 'Hành vi thông báo',
-  'settings.soundDesc': 'Web Audio API — không cần tệp ngoài',
+  'settings.soundDesc': 'Phát một âm ngắn có sẵn khi có thông báo.',
   'settings.toast': 'Thông báo toast',
   'settings.toastDesc': 'Hiện toast khi tác nhân hoàn tất',
   'settings.ring': 'Hiệu ứng viền',
   'settings.ringDesc': 'Viền nhấp nháy trên khung có thông báo chưa đọc',
   'settings.sc.toggleSidebar': 'Bật/tắt thanh bên',
-  'settings.sc.splitHorizontal': 'Chia ngang',
-  'settings.sc.splitVertical': 'Chia dọc',
+  'settings.sc.splitHorizontal': 'Chia sang phải',
+  'settings.sc.splitVertical': 'Chia xuống dưới',
   'settings.sc.newWorkspace': 'Không gian làm việc mới',
   'settings.sc.closeSurface': 'Đóng tab đang hoạt động',
   'settings.sc.closePane': 'Đóng khung chia',
@@ -406,8 +406,8 @@ export const vi = {
   'settings.prefixAddBinding': 'Thêm ràng buộc',
   'settings.prefixReset': 'Khôi phục mặc định',
   'settings.prefixResetConfirm': 'Khôi phục tất cả cài đặt tiền tố về mặc định?',
-  'settings.prefix.splitHorizontal': 'Chia ngang',
-  'settings.prefix.splitVertical': 'Chia dọc',
+  'settings.prefix.splitHorizontal': 'Chia sang phải',
+  'settings.prefix.splitVertical': 'Chia xuống dưới',
   'settings.prefix.closePane': 'Đóng khung',
   'settings.prefix.newWorkspace': 'Không gian làm việc mới',
   'settings.prefix.nextWorkspace': 'Không gian làm việc tiếp theo',
@@ -481,16 +481,16 @@ export const vi = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Tích hợp Claude',
-  'claudeIntegration.signalHealth.title': 'Tình trạng tín hiệu plugin',
+  'claudeIntegration.signalHealth.title': 'Plugin Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'Trạng thái plugin: chưa quan sát được. Hãy cài đặt bằng lệnh bên dưới trong Claude Code. wmux sẽ xác nhận phát hiện khi hook đầu tiên kích hoạt.',
+    'Chưa có tín hiệu từ plugin wmux. Chạy lệnh cài đặt bên dưới trong Claude Code; mục này sẽ cập nhật khi plugin báo lần đầu.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Tín hiệu cuối {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Độ trễ P50 {p50}ms · P95 {p95}ms · {count} mẫu',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Khớp không gian làm việc: {matched}/{total} hook đã phân giải về một khung wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'Trạng thái plugin: đã cũ. Hook cuối đến {rel} — plugin có thể đã ngừng kích hoạt hoặc Claude Code đang nhàn rỗi.',
+    'Tín hiệu cuối cùng của plugin là {rel}. Có thể plugin đã dừng, hoặc Claude Code đang rảnh.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Sao chép lệnh cài đặt',
   'claudeIntegration.signalHealth.copySuccess': 'Đã sao chép — dán vào Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Sao chép thất bại — bộ nhớ tạm bị khoá',
@@ -498,7 +498,7 @@ export const vi = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Đồng hồ sử dụng Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Đọc mức sử dụng của bạn từ endpoint sử dụng của Anthropic mỗi 15 phút bằng thông tin đăng nhập Claude Code của bạn (token OAuth trong bộ nhớ cục bộ). Chỉ đọc mức sử dụng — không gửi yêu cầu nào tới mô hình và không tiêu tốn hạn mức. Token không bao giờ được ghi ngược lại, không bao giờ được ghi log, chỉ gửi tới api.anthropic.com.',
+    'Đọc mức sử dụng của bạn từ endpoint sử dụng của Anthropic mỗi 15 phút bằng thông tin đăng nhập Claude Code của bạn. Chỉ đọc mức sử dụng — không gửi yêu cầu nào tới mô hình và không tiêu tốn hạn mức. Token không bao giờ được ghi ngược lại, không bao giờ được ghi log, chỉ gửi tới api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Hiện mức sử dụng 5h / 7d trên thanh trạng thái',
   'claudeIntegration.usage.refreshButton': 'Làm mới ngay',
   'claudeIntegration.usage.refreshCooldown': 'Có thể làm mới sau {seconds}s',
@@ -635,6 +635,7 @@ export const vi = {
   'pcSwitcher.manage': "Cài đặt {name}",
   'app.portableData.notice': "Bản sao wmux này đang chạy bên ngoài thư mục Ứng dụng nên dùng dữ liệu riêng. Hãy chuyển nó vào Ứng dụng để thấy các phiên hiện có.",
   'pcSwitcher.othersNeedYou': "{count} đang chờ bạn trên máy tính khác",
+  'pcSwitcher.othersNeedYouOne': '{count} đang chờ bạn trên máy tính khác',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Thoát wmux và dừng tất cả phiên?",
   'quitAndStop.detail': "Đang chạy: {agents} phiên agent, tổng cộng {sessions} terminal. Tất cả sẽ bị dừng. Thoát thông thường để chúng tiếp tục chạy ở chế độ nền.",

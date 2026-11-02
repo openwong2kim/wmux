@@ -113,6 +113,6 @@ describe('WorkspaceItem unverifiable ring', () => {
     await render();
     expect(dot().className).not.toContain('sidebar-dot-unverifiable');
     expect(mark().getAttribute('data-status-mark')).toBe('ring');
-    expect(mark().getAttribute('title')).toBe('Needs input');
+    expect(mark().getAttribute('title')).toBe('Needs you');
   });
 });

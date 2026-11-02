@@ -2225,7 +2225,11 @@ export class ApprovalService {
     };
     this.put(next);
     this.clearTimer(next.requestId);
-    this.outcomeCard(next);
+    // A claimed row its failed reads stopped (actStalledTooLong): the last
+    // read's error, for the owner to fix.
+    const readError = !done && laneRefusalCodes(e.reason ?? '').includes('approval-stale') && e.readUnansweredTries && e.lastReadError
+      ? `GitHub could not be read for this request for a day, so wmux stopped trying. Last read error: ${redactStoredSecrets(e.lastReadError)}` : '';
+    this.outcomeCard(next, undefined, readError);
     this.closeCard(next);
     this.changed(next.workspaceId);
     if (done) {
@@ -2234,6 +2238,43 @@ export class ApprovalService {
       this.tellDecided(next, `Not done: ${ACTION_TITLE[next.action]} ${subject(next)} (${laneRefusalLine(next.refusal ?? '', next.repoKey) || 'refused'}).`,
         next.act?.kind === 'release' ? releaseRefusalAdvice(next.refusal ?? '', next.draftWait === true) : ASK_AGAIN);
     }
+  }
+
+  /** A claimed act row whose reads failed past its bound (actEffectStore.ts
+   *  actStalledTooLong) and still cannot say whether it went through: no
+   *  write is sent for it again, and the request stays approved while the
+   *  outbox keeps reading. The owner is told once, in its thread (what is
+   *  known: it may be on GitHub, and the last read's error), and its bots
+   *  not to ask again meanwhile; its outcome is told as ever once a read
+   *  settles it. Called on every such sweep: the card is keyed, and once it
+   *  is in the room nothing more is told, so a sweep the rooms were not up
+   *  for is told on the next. */
+  onActStalled(e: ActEffect): void {
+    const r = this.requests.get(e.requestId);
+    if (!r?.act || r.state !== 'approved') return;
+    const title = `Not confirmed: ${ACTION_TITLE[r.action]} ${subject(r)} (GitHub has not said for a day whether it went through)`;
+    const error = e.lastReadError ? redactStoredSecrets(e.lastReadError) : '';
+    const body = [
+      'It may be on GitHub: check there before asking for it again. wmux sends nothing more for it; it keeps reading GitHub and posts the outcome once it can tell.',
+      error ? `Last read error: ${error}` : '',
+    ].filter(Boolean).join('\n\n');
+    try {
+      const posted = this.ports.rooms()?.post({
+        workspaceId: r.workspaceId,
+        threadId: r.threadId,
+        kind: 'status',
+        actor: { kind: 'system' },
+        title,
+        body,
+        refs: { approvalId: r.requestId, ...(r.prNumber !== undefined ? { pr: r.prNumber } : {}), ...(r.issueNumber !== undefined ? { issue: r.issueNumber } : {}) },
+        clientPostId: `approval-outcome:${r.requestId}:stalled`,
+      });
+      // Told on an earlier sweep: its bots were told then.
+      if (posted?.ok && posted.duplicate) return;
+    } catch {
+      /* the request is the record; the card only shows it */
+    }
+    this.tellDecided(r, `${title}.`, 'It may be on GitHub: do not ask for it again until you are told its outcome.', 'stalled');
   }
 
   /** The executor's run-time gate for an effect behind a request. */
@@ -2321,7 +2362,7 @@ export class ApprovalService {
   /** A request was decided: its bot, and the bots that spoke in its thread
    *  since its card, are told once (once per `again`: a later word on the
    *  same decision, under a key of its own). */
-  private tellDecided(r: StoredApproval, title: string, body?: string, again?: 'draft'): void {
+  private tellDecided(r: StoredApproval, title: string, body?: string, again?: 'draft' | 'stalled'): void {
     const cardSeq = r.cardId ? this.ports.rooms()?.get(r.workspaceId, r.cardId)?.seq ?? null : null;
     const bots = new Set([r.botId, ...this.speakersAfter(r.workspaceId, r.threadId, cardSeq)]);
     // As guest-sourced as the request (an older one without the field: as
@@ -2506,8 +2547,8 @@ export class ApprovalService {
   }
 
   /** `amend`: the card that tells a refusal amended after it was told (its
-   *  own clientPostId, so it is posted once). */
-  private outcomeCard(r: StoredApproval, amend?: 'draft'): void {
+   *  own clientPostId, so it is posted once); `note`: a line for the body. */
+  private outcomeCard(r: StoredApproval, amend?: 'draft', note = ''): void {
     const writer = this.ports.rooms();
     if (!writer) return;
     const by = r.decidedBy === 'rule' ? 'a rule you set' : 'you';
@@ -2533,7 +2574,7 @@ export class ApprovalService {
     // What became of a refused release's draft (its refusal's `draft-*`
     // code), in the body too: a long title is cut.
     const draft = done ? '' : laneRefusalLine(codes.filter(isDraft).join(', '), r.repoKey);
-    const body = [draft, r.act ? r.result?.url ?? '' : ''].filter(Boolean).join('\n\n');
+    const body = [draft, note, r.act ? r.result?.url ?? '' : ''].filter(Boolean).join('\n\n');
     writer.post({
       workspaceId: r.workspaceId,
       threadId: r.threadId,

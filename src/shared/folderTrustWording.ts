@@ -18,3 +18,14 @@ export const FOLDER_TRUST_LAUNCH_REFUSAL = 'the pane is on a folder-trust prompt
 /** The reason an automated launch line was not typed because the screen could
  *  not be read: unlike the prompt itself, this may pass by itself. */
 export const FOLDER_TRUST_UNREADABLE_REFUSAL = 'the pane has no readable screen, so a folder-trust prompt cannot be ruled out';
+
+/** The daemon's folder-trust read budget by default (main waits a margin
+ *  past it): a person's own launch line or key waits on the read before it
+ *  is typed. */
+export const FOLDER_TRUST_DEFAULT_BUDGET_MS = 250;
+
+/** The folder-trust read budget for a writer no person waits on (an agent's
+ *  message or key, a scheduled prompt, a wake nudge, an automated launch
+ *  line) into a pane with no screen: it may wait for a whole-ring parse that
+ *  FOLDER_TRUST_DEFAULT_BUDGET_MS would cut. */
+export const FOLDER_TRUST_DELIVERY_BUDGET_MS = 1000;

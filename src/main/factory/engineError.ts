@@ -21,6 +21,8 @@ export type EngineErrorCode =
   | 'hermes_mcp_missing'
   /** Hermes offered a Hermes bot a tool outside wmux's allowlist. */
   | 'hermes_tools_changed'
+  /** The bot is set to My Hermes, which this version does not run. */
+  | 'my_hermes_unavailable'
   | 'other';
 
 /** How the Claude brain adapters (ClaudeSdkAdapter, ClaudePtyBrainAdapter)
@@ -36,6 +38,10 @@ export function claudeNotFoundMessage(brain: string): string {
 export const HERMES_NOT_READY_LEAD = 'Hermes is not ready for wmux bots:';
 export const HERMES_MCP_MISSING_LEAD = 'Hermes did not load the wmux tools:';
 export const HERMES_TOOLS_CHANGED_LEAD = 'Hermes offered a tool wmux does not allow:';
+/** Why a bot set to My Hermes does not run here (botEngines.ts): v1 runs
+ *  on macOS and Linux. */
+export const MY_HERMES_UNAVAILABLE_MESSAGE =
+  'My Hermes is not available on this computer: it runs on macOS and Linux. Switch this bot to Hermes or Claude in its profile.';
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -51,6 +57,7 @@ const RULES: readonly { code: EngineErrorCode; re: RegExp }[] = [
   { code: 'hermes_not_ready', re: new RegExp(escapeRe(HERMES_NOT_READY_LEAD), 'i') },
   { code: 'hermes_mcp_missing', re: new RegExp(escapeRe(HERMES_MCP_MISSING_LEAD), 'i') },
   { code: 'hermes_tools_changed', re: new RegExp(escapeRe(HERMES_TOOLS_CHANGED_LEAD), 'i') },
+  { code: 'my_hermes_unavailable', re: /my hermes is not available/i },
   { code: 'acp_test_only', re: /acp engines run bots only in a test build|acp stub is not available/i },
   // The SDK's own launch failures: the process did not spawn, the native
   // binary is there and fails to start, or claude exited with an error code.

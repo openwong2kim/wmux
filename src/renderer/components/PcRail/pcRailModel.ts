@@ -144,7 +144,7 @@ export function hostSummary(host: PcRailHost, feed: PcRailHostFeed | undefined, 
   if (feed && isPcRailFeedStale(feed) && feed.fetchedAt !== null && state !== 'offline') {
     lines.push(t('pcRail.updatedAgo', { time: timeAgo(feed.fetchedAt, now) }));
   }
-  if (host.attention.needsYou > 0) lines.push(t('pcRail.needsYouCount', { count: host.attention.needsYou }));
+  if (host.attention.needsYou > 0) lines.push(t(host.attention.needsYou === 1 ? 'pcRail.needsYouCountOne' : 'pcRail.needsYouCount', { count: host.attention.needsYou }));
   if (host.attention.finished > 0) lines.push(t('pcRail.finishedCount', { count: host.attention.finished }));
   // An unreachable host keeps its last-known counts; say how old they are.
   if (state === 'offline' && host.lastSeenAt !== null && (host.attention.needsYou > 0 || host.attention.finished > 0)) {

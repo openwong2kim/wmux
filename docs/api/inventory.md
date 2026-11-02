@@ -13,7 +13,7 @@
 | Tier | Meaning | Breaking-change policy |
 |---|---|---|
 | **stable** | Covered by the v3.0 substrate contract. Wire shape + semantics frozen. | Only on a major version bump. Additive changes (new optional fields, new event types) allowed within a major. |
-| **experimental** | Shipped and supported, but the wire shape or semantics may evolve before being promoted to stable. Includes Company Mode and the browser/CDP surface. | Breaking changes allowed within a major; release notes flag them. |
+| **experimental** | Shipped and supported, but the wire shape or semantics may evolve before being promoted to stable. Includes the browser/CDP surface. | Breaking changes allowed within a major; release notes flag them. |
 | **internal** | Implementation detail. Not part of the external contract. Documented here only so external tooling knows what *not* to depend on. | May change without notice. |
 
 The stability tier is reported by `system.capabilities` in v3.0 (planned addition). Today, callers can read this document as the source of truth.
@@ -125,10 +125,10 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 | `a2a.resolve.identity` | `{ workspaceId? }` | stable | Returns `{ mappings }` — the current PID→ptyId map (from `~/.wmux/pid-map`) that a caller walks up its own process tree to resolve its owning workspace (PROTOCOL.md §6.1 path B). Not a finished identity; the pty→workspace edge is resolved live. |
 | `a2a.whoami` | — | stable | The calling MCP's claimed identity. |
 | `a2a.discover` | `{ filter? }` | stable | Lists other agents in the local wmux instance. |
-| `a2a.task.send` | `{ to, paneId?, surfaceId?, title?, taskId?, message, execute?, silent?, data? }` | stable | `execute:true` is new-task only; approval is gated before task creation unless global A2A execute auto-approve is enabled. |
+| `a2a.task.send` | `{ to, paneId?, surfaceId?, title?, taskId?, message, execute?, silent?, data? }` | stable | `execute:true` is new-task only; approval is gated before task creation unless global A2A execute auto-approve is enabled. In company mode a workspace is a company: one of its panes is the coordinator and the others are its staff. A new task to a company pane must come from a pane wmux can identify and name its receiver pane. The coordinator takes a request from anyone, with or without a brief. A staff pane takes a task only from inside the company, with a brief in `data` (`{"kind":"wmux.company.brief","v":1,"goal","scope","acceptance","verify","report"}`); work from outside goes to the coordinator. The human's own sends are exempt. This is a brake on runaway agents, not a security boundary: a pane's identity can be forged by any process of the same user. Tasks from another PC and channel mentions are not checked yet. |
 | `a2a.task.query` | `{ id }` | stable | |
 | `a2a.task.update` | `{ id, status, result? }` | stable | |
-| `a2a.task.cancel` | `{ id }` | stable | |
+| `a2a.task.cancel` | `{ id }` | stable | A company task (one whose first message carries a brief) is canceled only by the pane that created it; the receiver reports `failed` with evidence instead. |
 | `a2a.broadcast` | `{ kind, payload }` | stable | |
 | `a2a.channel.list` | `{ workspaceId }` | stable | Lists channels in the caller's company. Closes Path D — explicit `workspaceId` is required (no `activeWorkspaceId` fallback). |
 | `a2a.channel.create` | `{ workspaceId, name, visibility, topic?, createdBy }` | stable | Creates a channel and auto-adds the creator as a member (KTD10). Capability `a2a.channel.send`. |
@@ -178,13 +178,6 @@ retain their existing Linux profile selection and user WSLENV entries. Login
 tabs normalize flags only for the selected account key. This is not a workspace/profile setting.
 A home WSL cannot translate (a UNC path into another distro or a network share) is not
 forwarded; the login tab prints why instead of leaving the login on the default home.
-
-### Company Mode (deferred to Phase 4 gate)
-
-| Method | Tier | Notes |
-|---|---|---|
-| `company.{create, destroy, status, addDept, removeDept, addMember, removeMember, broadcast, sendDept, sendMember, message, save, restore, templates, worktreeSetup, mergeDept, provision, provisionAll, provisionCeo}` | **experimental** | 3-tier orchestration (CEO → Department → Teammate). Per the Substrate 3.0 decision (memory `project_company_mode_vision.md`), Company Mode is being re-evaluated at the post-v3.0 gate as a first-party reference orchestrator on top of the substrate, not a core wmux feature. |
-| `company.a2a.{whoami, send, broadcast, inbox, ack, status}` | **experimental** | Company-scoped A2A surface. **Currently has no caller.** The six `company_a2a_*` MCP tools were its only entry point and have been removed (see [Company A2A (removed)](#company-a2a-removed)); no renderer, preload, or daemon path reaches these handlers. They are retained rather than deleted pending the Company mode re-evaluation. |
 
 ---
 
@@ -248,7 +241,7 @@ Backed by **no RPC method**: the sessions are child processes of the MCP server 
 | `a2a_set_skills` | `meta.setSkills` | Registers the calling agent's skill tags. |
 | `a2a_task_send` | `a2a.task.send` | Sends a structured task to another workspace. Unlisted literal alias of `send_message` — same handler and shape, still callable via `tools/call`; use `send_message` in new prompts. |
 | `a2a_task_query` | `a2a.task.query` | Pulls tasks by id / status / role (sender or receiver); flags `orphaned: true` when the addressed receiver pane is gone. |
-| `a2a_task_update` | `a2a.task.update` | Transitions a task to working / completed / failed / input-required, or canceled by the receiver (with a reason). |
+| `a2a_task_update` | `a2a.task.update` | Transitions a task to working / completed / failed / input-required, or canceled by the receiver (with a reason). A company task is completed by its coordinator (CEO) pane or the human, not by the staff seat that did it; the seat reports input-required. A pane in no company finishes a briefed task itself. Before a company task is marked done from any lane but the human's, wmux reads (through `gh`) every GitHub PR the task names after its brief, and refuses with the reason until each is merged, or open with every required check green on its current head (the base branch's required list included, so a check that never ran counts), no open review threads, no conflicts and not behind its base. Each passing PR adds a verified inspection item to the evidence. GitLab merge requests are not checked yet. |
 | `a2a_task_cancel` | `a2a.task.cancel` | Cancels a task you sent (sender-only). |
 | `a2a_broadcast` | `a2a.broadcast` | Broadcasts an announcement to every workspace. |
 | `channel_list` | `a2a.channel.list` | Lists channels in the caller's company. |
@@ -263,7 +256,7 @@ There is intentionally no `channel_archive` MCP tool: archiving tears a channel 
 
 **Deprecation — the six `company_a2a_*` MCP tools (`whoami`, `send`, `broadcast`, `inbox`, `ack`, `status`) were removed from every profile.** They were never driven by any prompt, skill, or documented flow, and each one cost schema bytes in the `tools/list` every session pays for before it does any work.
 
-**Company mode's UI is unaffected** — the panel, spawn, and the `company.*` provisioning/mutation RPCs behind them work exactly as before. **Company A2A messaging (the member inbox) currently has no caller**, however: these six tools were the only entry point into `company.a2a.*`, and no renderer, preload, or daemon path reaches those handlers. The pipe handlers are retained rather than deleted, pending the Company mode re-evaluation.
+The `company.*` and `company.a2a.*` RPCs behind them were removed later, together with the rest of the old company mode.
 
 Two of the six have a direct workspace-level equivalent. The other four do not — department/CEO name routing, the member inbox, and the department tree were Company-mode-only features and are removed from MCP outright:
 
@@ -416,7 +409,6 @@ The capability column below summarises the table. Three sentinels:
 | `workspace.new` / `workspace.focus` / `workspace.close` | `wmux.internal` | — | — |
 | `surface.list` / `surface.new` / `surface.focus` / `surface.close` | `wmux.internal` | — | — |
 | `daemon.*` | `wmux.internal` | — | — |
-| `company.*` | `wmux.internal` | — | — |
 | `notify` | `wmux.internal` | — | — |
 | `hooks.signal` | `wmux.internal` | — | — |
 | `usage.rateLimits` | `wmux.internal` | — | — |

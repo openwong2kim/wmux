@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
-// One Needs you count everywhere (owner decision on #1812): the titlebar, the
-// rail's Fleet badge and Fleet's Needs you chip show the same number for the
-// same store — errors included, as Fleet counts them (#1807). The fixture
-// holds two input requests and a remote agent in error, which the titlebar
-// used to leave out.
+// One Needs you count everywhere (owner decision on #1812): the rail's Fleet
+// badge and Fleet's Needs you chip show the same number for the same store —
+// errors included, as Fleet counts them (#1807). The titlebar draws no count
+// of its own (DESIGN.md › Attention renditions: the evidence row plus one
+// global count). The fixture holds two input requests and a remote agent in
+// error.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -49,17 +50,16 @@ afterEach(() => {
 const digits = (text: string | null | undefined) => Number((text ?? '').match(/\d+/)?.[0] ?? NaN);
 
 describe('one Needs you count', () => {
-  it('titlebar === rail badge === Fleet chip, errors included', () => {
+  it('rail badge === Fleet chip, errors included; the titlebar draws none', () => {
     const titlebar = mount(React.createElement(StatusBar));
     const rail = mount(React.createElement(SidebarNavigation, { compact: true, home: true }));
     const fleet = mount(React.createElement(FleetView));
 
-    const titlebarCount = digits(titlebar.querySelector('[data-statusbar-needs]')?.textContent);
     const railCount = digits(rail.querySelector('[data-fleet-nav-count="needsYou"]')?.textContent);
     const chipCount = digits(fleet.querySelector('button[data-filter="attention"]')?.textContent);
 
-    expect(titlebarCount).toBe(3);
-    expect(railCount).toBe(titlebarCount);
-    expect(chipCount).toBe(titlebarCount);
+    expect(railCount).toBe(3);
+    expect(chipCount).toBe(railCount);
+    expect(titlebar.querySelector('[data-statusbar-needs]')).toBeNull();
   });
 });

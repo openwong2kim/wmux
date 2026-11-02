@@ -85,12 +85,18 @@ async function loadForPlatform(
   platform: NodeJS.Platform,
   routes?: (url: string) => FakeRoute | undefined,
   arch: string = platform === 'darwin' ? 'arm64' : 'x64',
-  { isPackaged = true }: { isPackaged?: boolean } = {},
+  // os.release(): the Darwin version on macOS. The default is macOS 15, so a
+  // darwin load does not depend on the OS this suite runs on.
+  { isPackaged = true, osRelease = '24.6.0' }: { isPackaged?: boolean; osRelease?: string } = {},
 ) {
   vi.resetModules();
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
   Object.defineProperty(process, 'arch', { value: arch, configurable: true });
   delete process.env.WMUX_DATA_SUFFIX;
+  vi.doMock('node:os', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('node:os')>()),
+    release: () => osRelease,
+  }));
 
   const requestUrls: string[] = [];
   const ipcHandlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -345,6 +351,38 @@ describe('AutoUpdater platform gating', () => {
       updater.stop();
     },
   );
+
+  // Releases on Electron 44 or later need macOS 13; installing one on macOS 12
+  // leaves an app that macOS will not open. Darwin 21 is macOS 12, 22 is 13.
+  it('darwin-arm64 on macOS 12: no update is offered, by poll or by "check for updates"', async () => {
+    vi.useFakeTimers();
+    const { AutoUpdater, ipcHandlers, requestUrls } = await loadForPlatform('darwin', undefined, 'arm64', { osRelease: '21.6.0' });
+
+    const updater = new AutoUpdater(() => null, quitHooks());
+    updater.start();
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+
+    const checkHandler = ipcHandlers.get(IPC.UPDATE_CHECK);
+    if (typeof checkHandler !== 'function') throw new Error('UPDATE_CHECK handler was not registered');
+    await expect(checkHandler()).resolves.toEqual({ status: 'not-available' });
+    expect(requestUrls).toHaveLength(0);
+    updater.stop();
+  });
+
+  it('darwin-arm64 on macOS 13: the update feed is polled', async () => {
+    vi.useFakeTimers();
+    const { AutoUpdater, ipcHandlers, requestUrls } = await loadForPlatform('darwin', undefined, 'arm64', { osRelease: '22.1.0' });
+
+    const updater = new AutoUpdater(() => null, quitHooks());
+    updater.start();
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    expect(requestUrls).toContain(EXPECTED_DARWIN_FEED);
+    const checkHandler = ipcHandlers.get(IPC.UPDATE_CHECK);
+    if (typeof checkHandler !== 'function') throw new Error('UPDATE_CHECK handler was not registered');
+    await expect(checkHandler()).resolves.toEqual({ status: 'checking' });
+    updater.stop();
+  });
 
   it('win32: UPDATE_CHECK reports checking (updater is active)', async () => {
     vi.useFakeTimers();

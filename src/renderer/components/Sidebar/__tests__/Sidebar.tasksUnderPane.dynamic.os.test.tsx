@@ -185,7 +185,7 @@ describe('fan-out tasks under the requesting pane', () => {
     expect(namesIn(group('pane:w1:p2'))).toEqual(['beta']);
     const paneToggle = group('pane:w1:p2')!.querySelector('[data-pane-task-toggle]')!;
     expect(paneToggle.getAttribute('data-pane-task-needs-you')).toBe('1');
-    expect(paneToggle.getAttribute('aria-label')).toContain('1 need you');
+    expect(paneToggle.getAttribute('aria-label')).toContain('1 needs you');
     // Folded, the pane row's count carries the red.
     act(() => { (paneToggle as HTMLButtonElement).click(); });
     expect(group('pane:w1:p2')!.querySelector('[data-pane-task-red]')?.textContent).toBe('1');
@@ -228,7 +228,7 @@ describe('fan-out tasks under the pane — review fixes', () => {
     const tasks = document.querySelector('[data-roster-chip-tasks]') as HTMLElement;
     expect(tasks.getAttribute('data-roster-chip-needs-you')).toBe('1');
     expect(tasks.querySelector('.text-\\[var\\(--attention-text\\)\\]')?.textContent).toBe('1');
-    expect(chip().getAttribute('aria-label')).toContain('1 need you');
+    expect(chip().getAttribute('aria-label')).toContain('1 needs you');
     // A second task starts needing you while folded: the roster opens again.
     act(() => useStore.setState({
       surfaceAgent: { ...useStore.getState().surfaceAgent, 'pty-t1': { name: 'Claude Code', status: 'awaiting_input' } },

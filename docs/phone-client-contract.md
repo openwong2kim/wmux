@@ -2413,10 +2413,10 @@ final anyway):
 
 | `deliver` | When it is typed |
 | --- | --- |
-| `next-turn` | After the running turn ends, one item per ended turn, as above. The default |
-| `steer` | Claude only: as soon as the pane allows, **during** the running turn. It goes into Claude's own composer queue, which applies it at the next tool boundary, exactly like a message typed into a running Claude in Terminal |
+| `next-turn` | After the running turn ends, one item per ended turn, as above. The default. On Codex it is submitted with Tab, which Codex queues for the next turn if one started meanwhile; a `!` shell command or a `/` command, which Tab does not submit, keeps Enter |
+| `steer` | Claude and Codex: as soon as the pane allows, **during** the running turn. On Claude it goes into Claude's own composer queue, which applies it at the next tool boundary, exactly like a message typed into a running Claude in Terminal. On Codex it is submitted with Enter, which Codex applies to the running turn (codex-cli 0.162.1); a `!` shell command or a `/` command waits for the turn's end instead |
 
-On a Codex or OpenCode pane, `steer` behaves as `next-turn`, and the item
+On an OpenCode pane, `steer` behaves as `next-turn`, and the item
 reads `deliver:"next-turn"` everywhere (send answer, `/turns`, SSE, the PATCH
 answer), so the app can tell that "send now" was not available there.
 
@@ -2429,14 +2429,14 @@ and in `/turns`. When nothing would hold it, it is sent directly, as without
 the capability. Omitted `deliver` is `next-turn`.
 
 **Order.** The queue stays FIFO per pane, with one exception: while a Claude
-turn runs, the oldest `steer` item goes ahead of `next-turn` items, of any
+or Codex turn runs, the oldest `steer` item goes ahead of `next-turn` items, of any
 owner, that wait for the turn's end. A steer item is not held by them, so a
 pane whose queue is blocked by the any-owner rule can be unblocked by
 switching your item to steer. When the turn is not running, the head is
 delivered first, whatever its mode.
 
 **Same safety as a direct send.** A steer item is typed through the same
-guarded paste: bracketed paste, then Enter; only into Claude's empty composer
+guarded paste: bracketed paste, then Enter; only into the agent's empty composer
 on screen (a draft there holds it); never while an approval, a dialog or a
 screen without the composer is up (it is held, as `queued`, and fails as
 `blocked` or `prompt-active` only when its idle lifetime runs out); never while
@@ -2454,7 +2454,7 @@ other body is 400 `invalid-chat-request`. There is no switch back.
 
 | Status | Body |
 | --- | --- |
-| 200 | `{state:"queued", deliver, clientMessageId}`: `deliver:"steer"`, also on a repeat; `deliver:"next-turn"` on Codex/OpenCode (unchanged). The delivery itself follows on SSE `chat.queue` |
+| 200 | `{state:"queued", deliver, clientMessageId}`: `deliver:"steer"`, also on a repeat; `deliver:"next-turn"` on OpenCode (unchanged). The delivery itself follows on SSE `chat.queue` |
 | 409 | `already-delivered` `{state}` |
 | 409 | `delivery-in-progress` `{state}` |
 | 409 | `queue-item-final` `{state, reason}`: `canceled`, `failed` or `uncertain` |
@@ -4890,6 +4890,8 @@ worded (the values listed); a value not listed means the English `title`.
 | `thread.stopped` | `title` string | `Stopped: {title}` | — |
 | `skill.archived` | `skill` string | `Skill archived: {skill}` | `skill`: the skill's name. |
 | `secret.deleted` | `name` string | `Key deleted: {name}` | `name`: the key's name (never its value). |
+| `wake.refused` | `refusal` string | `My Hermes runs only routines you set for it yourself; a bot wrote this one, so it is paused.`<br>`My Hermes runs routines only in its 1:1 chat, so this one is paused.`<br>`wmux could not check that this conversation is clean, so this run of the routine was not sent to My Hermes.`<br>`This conversation has taken in outside text, so wmux paused this routine; start a new conversation with My Hermes, then resume it.`<br>`Another bot or a guest has written in this chat, so wmux no longer sends it to My Hermes. The routine is paused.`<br>`My Hermes answers only your own messages in its 1:1 chat, so this was not sent to it.`<br>`My Hermes talks with you one to one, so a message outside its 1:1 chat was not sent to it.`<br>`wmux could not confirm this message is yours alone, so it was not sent to My Hermes.`<br>`wmux could not read this chat to check who wrote in it, so this was not sent to My Hermes.`<br>`Another bot or a guest has written in this chat, so wmux no longer sends it to My Hermes.` | A bot on My Hermes was not sent a wake. One title per `refusal`, in this order: `routineBotWritten`, `routineOutsideDm`, `routineCleanUnknown`, `routineTainted`, `roomDirtyPaused`, `notOwnerMessage`, `outsideDm`, `notAttended`, `roomUnreadable`, `roomDirty`. |
+| `turn.unsettled` | — | `My Hermes did not stop the last turn cleanly, so wmux closed its connection to Hermes. Your next message reconnects, in a new conversation if this one cannot resume.` | A bot on My Hermes: its stopped turn did not end within wmux's bound, so wmux closed the Hermes process it started for the bot (never the owner's gateway). |
 
 #### The Bots page (`bots`, `botMessages`, `/api/bots`, `/api/rooms/:workspaceId/messages`)
 
@@ -5394,7 +5396,11 @@ anything was sent: its reads kept failing, say) ends `refused` with
 `decidedAt`, or once the clock reads more than 24 hours earlier than
 `decidedAt` (a clock less far behind waits, as in the Undo window); nothing was
 sent, and the bot asks again with a new request if it is still wanted. An act a try of which may
-have reached GitHub is not aged out: a read of GitHub settles it.
+have reached GitHub is not aged out: a read of GitHub settles it. Once its
+reads have failed for 24 hours from its first try (12 failed reads at least),
+nothing more is sent for it: a read that then finds nothing on GitHub ends it
+`refused` with `approval-stale`, and while reads still cannot say it stays
+`approved`, and its thread gets one `status` card saying it may be on GitHub.
 
 `refusal` may be a list of codes joined by `, `; show one sentence per code.
 A refused `release` that made a draft adds one last code saying what became
@@ -6180,7 +6186,7 @@ drops both the note and the unwritten grant, and the roster on disk stays author
 ## Native chat
 
 The phone's Chat surface drives the **native conversation already running in the
-pane's terminal** (Claude, Codex, OpenCode): same PTY, same native session id.
+pane's terminal** (Claude, Codex, OpenCode, Hermes Agent): same PTY, same native session id.
 Opening Chat never spawns an agent, creates a native session or sends a prompt.
 Approvals, native permission dialogs and Stop stay in Terminal; there is no file
 undo. The only thing Chat can start is an agent in an empty shell (launch, below).
@@ -6216,8 +6222,8 @@ chat but never gets a composer.
 ### Reading: the `chat` object on `/turns`
 
 `GET /api/sessions/<id>/turns` stays the one reading route. With `chatBinding`
-the daemon resolves the pane the way the desktop Chat does — OpenCode TUI
-plugin first, then a managed record (only with no live agent and no
+the daemon resolves the pane the way the desktop Chat does — the OpenCode TUI
+plugin or Hermes Agent's own session database first, then a managed record (only with no live agent and no
 transcript), then the Claude/Codex transcript file — and adds `chat` to every
 200, including `available:false`:
 
@@ -6250,7 +6256,7 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   per token) and absent for OpenCode. A `managed` binding has `history:true`
   and every other capability `false` or absent. `cancel` is `false` unless you
   sent the `chat-cancel` capability (see Chat cancel); for OpenCode it also
-  needs a plugin that advertises abort. `queue:true` (live Claude) means a send
+  needs a plugin that advertises abort. `queue:true` (live Claude or Codex) means a send
   during a running turn can be accepted and answered with `queued:true`. A
   `chat-queue` caller sees `queue` for all three agents instead (see Chat queue).
 - **`blocked` is authoritative and computed at read time**: a pending approval
@@ -6268,8 +6274,8 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   preview is cheap and never enumerates processes, so `shell-has-children` only
   ever arrives from the launch POST, which re-verifies everything. So does
   `worker-fence`, which the preview never reads.
-- **`historyEpoch`** is `h1:` (transcript file), `t1:` (OpenCode, a hash — the
-  raw plugin epoch never leaves the daemon) or `m1:` (managed). Compare it for
+- **`historyEpoch`** is `h1:` (transcript file), `t1:` (OpenCode or Hermes, a
+  hash — the raw epoch never leaves the daemon) or `m1:` (managed). Compare it for
   equality; never parse it. Evicting old rows sets `historyTruncated` and keeps
   the epoch.
 
@@ -6289,7 +6295,7 @@ error. A v1 cursor from before the upgrade therefore resets once.
 | `older` | (`dir=back`) prepend ids you do not have |
 
 `reset` is present **only** on the answer to a read that carried a cursor.
-OpenCode (`tui`) and managed reads are full bounded pages every time, so a forward
+OpenCode and Hermes (`tui`) and managed reads are full bounded pages every time, so a forward
 read with a cursor on those always answers `mode:"snapshot", reset:true`; they
 have no back paging (`dir=back` answers an empty `older` page with
 `hasMore:false`). `reset` is a merge instruction only. To tell a refresh from a
@@ -6301,6 +6307,27 @@ conversation change, compare the `chat` you held with the one you got:
 When a pane that had a conversation has none any more, a read with a cursor
 answers `{available:false, reason, reset:true, events:[], chat:{binding:"none", …}}`
 with **no** `cursor`. Drop the rows and read again without one.
+
+**Hermes Agent panes** (`chat.agent: "hermes"`). A pane running the classic
+Hermes REPL is read from Hermes' own session database (`<HERMES_HOME>/state.db`,
+read-only), the way an OpenCode pane is read from its plugin: a full bounded
+page of the newest rows on every read (`t1:` epoch, `mode:"snapshot"`, no back
+paging, `truncatedHead` when older rows are left out). It binds the newest
+interactive (`cli`) Hermes session recorded in the pane's folder since Hermes
+started there, so `/new` moves the binding (a new `agentSessionId`). Hermes
+records a session with its first message: until then the pane is
+`binding:"none"` with `launch.reason:"agent-running"`, so the first message is
+typed in Terminal. Two Hermes panes in one folder, a Hermes started with a
+profile (`-p`) or a `HERMES_HOME` the pane did not start with, and the Ink TUI
+(`--tui`, which records no folder) are not bound. History is read while
+Hermes runs; once it exits the pane reads as any other pane does.
+`capabilities.send` is true only while Hermes waits at its empty prompt:
+during a turn Hermes takes typed text as an interrupt, and in an approval or a
+question as the answer, so `agentStatus` is `running` or `awaiting_input` and
+`send` is `false` there. A send is pasted into the prompt, then Enter; Hermes
+itself turns a paste of five or more lines (or 2,000 characters) into a file
+reference. `cancel`, `queue`, images and `maxSendBytes` are absent or false.
+Tool calls and results are rows; Hermes' reasoning text is not sent.
 
 ### Sending: `POST /api/sessions/<id>/chat/messages`
 
@@ -6319,6 +6346,8 @@ with **no** `cursor`. Drop the rows and read again without one.
   Never POST an entry older than 24 h minus 10 minutes; settle it as
   "check Terminal".
 - `historyEpoch` must equal the current one; a mismatch is `session-changed`.
+  An `agentSessionId` over 256 or a `historyEpoch` over 64 UTF-16 code units is
+  no daemon identity and is refused as `400 invalid-chat-request`.
 - `text`: non-blank, at most 16,000 UTF-16 code units (`String.utf16.count`,
   not graphemes). When `chat.maxSendBytes` is present, also at most that many
   UTF-8 bytes; the daemon's own measurement of the exact OpenCode request stays
@@ -6351,6 +6380,17 @@ stored outcome (`replayed:true`), or answers `202 {state:"pending"}` while the
 first dispatch is still running. It never dispatches twice. A `pending` receipt
 found after a daemon restart is final-uncertain: a re-POST replays
 `{result:"unconfirmed", error:"delivery-unconfirmed", effect:"uncertain"}`.
+
+A send the pane refuses before anything is dispatched (`no-conversation`,
+`chat-unavailable`, `managed-read-only`, `session-changed`) is stored too, as a
+final refusal: its receipt reads `refused`, and a re-POST of the same id replays
+it (`replayed:true`) instead of checking the pane again; a new Send mints a new
+id as usual. Refusals of the request itself (`invalid-chat-request`,
+`text-too-long`, `message-id-*`) and the store's own failures
+(`message-history-full`, `chat-persist-failed`) store nothing; a pane refusal
+the store cannot record answers with that store failure instead. Daemons before
+this stored nothing for those pane refusals either, so their receipt read
+`unknown`. No response field changed.
 
 Two refinements of the draft contract, on purpose:
 
@@ -6444,9 +6484,9 @@ rides on a `submitted` receipt the agent queued behind its running turn.
 | --- | --- |
 | `pending` | dispatch still running; check again in 5 s |
 | `submitted` | final |
-| `refused` | final, `effect:"none"`; text back to the draft |
+| `refused` | final, `effect:"none"`; text back to the draft. Also a send the pane refused before dispatch (see Idempotency) |
 | `uncertain` | final-uncertain; check Terminal. A `pending` found after a daemon restart reads `uncertain` |
-| `unknown` | no receipt for this owner, pane and id: the POST never reached the store. Safe to POST again **with the same id**, only while the id is younger than 24 h and `/turns` still shows the same `agentSessionId` and `historyEpoch` |
+| `unknown` | no receipt for this owner, pane and id: the POST never reached the store, or the request itself was refused (and, on an older daemon, any refusal before dispatch). Safe to POST again **with the same id**, only while the id is younger than 24 h and `/turns` still shows the same `agentSessionId` and `historyEpoch` |
 
 Poll every `unknown` or `pending` entry every 5 s, even with a healthy SSE —
 nothing on `/api/events` names a send. `404` means the pane is gone: settle the

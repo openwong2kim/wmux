@@ -66,6 +66,8 @@ interface Route {
   method: string;
   segments: string[];
   handler: A2aRouteHandler;
+  /** The route exists only while this holds (absent: always). */
+  when?: () => boolean;
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -74,9 +76,13 @@ const TERMINAL = new Set(['revoked', 'broken']);
 export class A2aRouteTable implements WebA2aRoutes {
   private readonly routes: Route[] = [];
 
-  /** Register `method pattern`; `pattern` segments starting with ':' capture. */
-  add(method: string, pattern: string, handler: A2aRouteHandler): this {
-    this.routes.push({ method, segments: pattern.split('/'), handler });
+  /**
+   * Register `method pattern`; `pattern` segments starting with ':' capture.
+   * With `when`, the route exists only while it answers true: otherwise a
+   * request to it gets what one to a path never registered gets.
+   */
+  add(method: string, pattern: string, handler: A2aRouteHandler, opts: { when?: () => boolean } = {}): this {
+    this.routes.push({ method, segments: pattern.split('/'), handler, ...(opts.when ? { when: opts.when } : {}) });
     return this;
   }
 
@@ -84,6 +90,7 @@ export class A2aRouteTable implements WebA2aRoutes {
     const parts = pathname.split('/');
     let pathMatched = false;
     for (const route of this.routes) {
+      if (route.when && !route.when()) continue;
       const params = matchSegments(route.segments, parts);
       if (!params) continue;
       pathMatched = true;

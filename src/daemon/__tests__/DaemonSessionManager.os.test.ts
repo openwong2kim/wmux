@@ -1142,20 +1142,20 @@ describe('DaemonSessionManager', () => {
       }
     });
 
-    it('#1464: past the hold cap the head is kept, so the first prompt survives', () => {
+    it('#1464: past the hold cap the head is kept, so the first prompt survives, and the rest follows it (#2855)', () => {
       vi.useFakeTimers();
       try {
         manager.createSession({ id: 'rec-big', cmd: '/bin/zsh', cwd: '.', cols: 62, rows: 44, deferOutput: true });
         const managed = manager.getSession('rec-big');
         lastMockPty?.simulateData('first-prompt % ');
-        // A burst past the 256 KiB cap (a busy recovered pane) is not held…
+        // A burst past the 256 KiB head (a busy recovered pane) goes to the tail…
         lastMockPty?.simulateData('x'.repeat(300 * 1024));
-        // …and nothing after it either, or the replay would have a hole in it.
+        // …and so does what follows, so the replay has no hole in it.
         lastMockPty?.simulateData('tail');
         manager.resizeSession('rec-big', 62, 44);
         vi.advanceTimersByTime(100);
         expect(managed?.bridge.isMuted).toBe(false);
-        expect(managed?.ringBuffer.readAll().toString()).toBe('first-prompt % ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe(`first-prompt % ${'x'.repeat(300 * 1024)}tail`);
       } finally {
         vi.useRealTimers();
       }

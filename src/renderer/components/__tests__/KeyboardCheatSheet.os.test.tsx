@@ -5,7 +5,7 @@
  * library installed (no jsdom / happy-dom / @testing-library/react), so we
  * test the cheat sheet via two complementary strategies:
  *   1. Pure helpers exported from KeyboardCheatSheet.tsx
- *      (formatModifier, buildShortcuts).
+ *      (buildShortcuts).
  *   2. React DOM Server's `renderToStaticMarkup` for snapshot-style
  *      assertions against the presentational `KeyboardCheatSheetView`
  *      component. Effects do NOT run in renderToStaticMarkup so behaviour
@@ -24,31 +24,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  formatModifier,
   buildShortcuts,
   KeyboardCheatSheetView,
   CHEAT_SHEET_DURATION_MS,
 } from '../KeyboardCheatSheet';
 
 // ─── Pure helper tests ────────────────────────────────────────────────────────
-
-describe('formatModifier', () => {
-  it('returns ⌘ on darwin', () => {
-    expect(formatModifier('darwin')).toBe('⌘');
-  });
-
-  it('returns "Ctrl+" on win32', () => {
-    expect(formatModifier('win32')).toBe('Ctrl+');
-  });
-
-  it('returns "Ctrl+" on linux', () => {
-    expect(formatModifier('linux')).toBe('Ctrl+');
-  });
-
-  it('returns "Ctrl+" when platform is undefined (defensive default)', () => {
-    expect(formatModifier(undefined)).toBe('Ctrl+');
-  });
-});
 
 describe('buildShortcuts', () => {
   it('darwin entries use ⌘ for the OS-aware shortcuts', () => {
@@ -71,28 +52,28 @@ describe('buildShortcuts', () => {
     expect(newWs?.combo).toBe('Ctrl+N');
   });
 
-  it('tmux prefix is always literal "Ctrl+B" regardless of platform', () => {
+  it('tmux prefix is literal Ctrl+B on every platform (⌃B on macOS)', () => {
     const macList = buildShortcuts('darwin');
     const winList = buildShortcuts('win32');
     const macTmux = macList.find((e) => e.label === 'tmux prefix');
     const winTmux = winList.find((e) => e.label === 'tmux prefix');
-    expect(macTmux?.combo).toBe('Ctrl+B');
+    expect(macTmux?.combo).toBe('⌃B');
     expect(macTmux?.literal).toBe(true);
     expect(winTmux?.combo).toBe('Ctrl+B');
     expect(winTmux?.literal).toBe(true);
   });
 
-  it('bookmark line is always literal "Ctrl+M" regardless of platform', () => {
+  it('bookmark line is literal Ctrl+M on every platform (⌃M on macOS)', () => {
     const macList = buildShortcuts('darwin');
     const winList = buildShortcuts('win32');
-    expect(macList.find((e) => e.label === 'Bookmark line')?.combo).toBe('Ctrl+M');
+    expect(macList.find((e) => e.label === 'Bookmark line')?.combo).toBe('⌃M');
     expect(winList.find((e) => e.label === 'Bookmark line')?.combo).toBe('Ctrl+M');
   });
 
-  it('toggleSidebar is always literal "Ctrl+Shift+B" regardless of platform', () => {
+  it('toggleSidebar is literal Ctrl+Shift+B on every platform (⌃⇧B on macOS)', () => {
     const macList = buildShortcuts('darwin');
     const winList = buildShortcuts('win32');
-    expect(macList.find((e) => e.label === 'cheatSheet.toggleSidebar')?.combo).toBe('Ctrl+Shift+B');
+    expect(macList.find((e) => e.label === 'cheatSheet.toggleSidebar')?.combo).toBe('⌃⇧B');
     expect(winList.find((e) => e.label === 'cheatSheet.toggleSidebar')?.combo).toBe('Ctrl+Shift+B');
   });
 
@@ -101,10 +82,10 @@ describe('buildShortcuts', () => {
     expect(buildShortcuts('win32').length).toBe(12);
   });
 
-  it('includes the Maximize pane entry (literal "Ctrl+B Z" on every platform)', () => {
+  it('includes the Maximize pane entry (the literal Ctrl+B prefix, then Z)', () => {
     const macList = buildShortcuts('darwin');
     const winList = buildShortcuts('win32');
-    expect(macList.find((e) => e.label === 'Maximize pane')?.combo).toBe('Ctrl+B Z');
+    expect(macList.find((e) => e.label === 'Maximize pane')?.combo).toBe('⌃B Z');
     expect(winList.find((e) => e.label === 'Maximize pane')?.combo).toBe('Ctrl+B Z');
     expect(macList.find((e) => e.label === 'Maximize pane')?.literal).toBe(true);
   });
@@ -112,19 +93,20 @@ describe('buildShortcuts', () => {
   it('includes the Ctrl+Shift+Arrow move-focus entry (literal Ctrl on every platform)', () => {
     const macList = buildShortcuts('darwin');
     const winList = buildShortcuts('win32');
-    expect(macList.find((e) => e.label === 'Move focus')?.combo).toBe('Ctrl+Shift+Arrows');
+    expect(macList.find((e) => e.label === 'Move focus')?.combo).toBe('⌃⇧Arrows');
     expect(winList.find((e) => e.label === 'Move focus')?.combo).toBe('Ctrl+Shift+Arrows');
   });
 
   it('includes the Alt+Up/Down workspace-switch entry', () => {
     const winList = buildShortcuts('win32');
-    expect(winList.find((e) => e.label === 'Switch workspace')?.combo).toBe('Alt+Up/Down');
+    expect(winList.find((e) => e.label === 'Switch workspace')?.combo).toBe('Alt+↑ / Alt+↓');
+    expect(buildShortcuts('darwin').find((e) => e.label === 'Switch workspace')?.combo).toBe('⌥↑ / ⌥↓');
   });
 
   it('cyclePane combo is literal "Ctrl+Tab" on every platform', () => {
     const macList = buildShortcuts('darwin');
     const winList = buildShortcuts('win32');
-    expect(macList.find((e) => e.label === 'cheatSheet.cyclePane')?.combo).toBe('Ctrl+Tab');
+    expect(macList.find((e) => e.label === 'cheatSheet.cyclePane')?.combo).toBe('⌃Tab');
     expect(winList.find((e) => e.label === 'cheatSheet.cyclePane')?.combo).toBe('Ctrl+Tab');
   });
 });
@@ -140,11 +122,8 @@ function renderView(overrides: Partial<Parameters<typeof KeyboardCheatSheetView>
     createElement(KeyboardCheatSheetView, {
       shortcuts: buildShortcuts('win32'),
       title: 'Keyboard shortcuts',
-      dontShowAgainLabel: "Don't show again",
       dismissLabel: 'Dismiss',
       progress: 1,
-      dontShowAgain: false,
-      onDontShowAgainChange: noop,
       onDismiss: noop,
       onMouseEnter: noop,
       onMouseLeave: noop,
@@ -180,31 +159,24 @@ describe('KeyboardCheatSheetView (renderToStaticMarkup)', () => {
     expect(html).toContain('Ctrl+K');
   });
 
-  it('renders the literal Ctrl+B tmux prefix on darwin', () => {
+  it('renders the literal Ctrl tmux prefix on darwin as ⌃B', () => {
     const html = renderView({ shortcuts: buildShortcuts('darwin') });
-    // Even on darwin the tmux prefix is literal.
-    expect(html).toContain('Ctrl+B');
+    // Even on darwin the tmux prefix is literal Ctrl, never ⌘.
+    expect(html).toContain('⌃B');
     expect(html).toContain('tmux prefix');
   });
 
   it('renders the literal Ctrl+M bookmark on every platform', () => {
     const macHtml = renderView({ shortcuts: buildShortcuts('darwin') });
     const winHtml = renderView({ shortcuts: buildShortcuts('win32') });
-    expect(macHtml).toContain('Ctrl+M');
+    expect(macHtml).toContain('⌃M');
     expect(winHtml).toContain('Ctrl+M');
   });
 
-  it('renders an unchecked "Don\'t show again" checkbox by default', () => {
-    const html = renderView({ dontShowAgain: false });
-    // The token checkbox (ui/Checkbox), unchecked, with its visible label.
-    expect(html).toContain('role="checkbox"');
-    expect(html).toContain('aria-checked="false"');
-    expect(html).toMatch(/<label[^>]*for="[^"]+"[^>]*>Don(&#x27;|')t show again<\/label>/);
-  });
-
-  it('renders a checked "Don\'t show again" checkbox when dontShowAgain=true', () => {
-    const html = renderView({ dontShowAgain: true });
-    expect(html).toContain('aria-checked="true"');
+  it('has no "Don\'t show again": it opens only when asked', () => {
+    const html = renderView();
+    expect(html).not.toContain('role="checkbox"');
+    expect(html).not.toMatch(/show again/i);
   });
 
   it('renders the close button with proper aria-label', () => {
@@ -241,35 +213,6 @@ describe('KeyboardCheatSheetView (renderToStaticMarkup)', () => {
     // (`<li[\s>]`, not `<li`: the close icon's SVG <line>s would match too.)
     const liMatches = html.match(/<li[\s>]/g) ?? [];
     expect(liMatches.length).toBe(12);
-  });
-});
-
-// ─── Persistence call site (uiSlice integration) ─────────────────────────────
-
-describe('uiSlice persistence wiring', () => {
-  it("checking 'Don't show again' calls setCheatSheetDismissed(true)", () => {
-    // Simulate the wiring in the default export: the checkbox handler calls
-    // setCheatSheetDismissed only when checked === true.  We re-implement the
-    // tiny callback inline so we don't have to mount the timer-driven default
-    // export.
-    const setCheatSheetDismissed = vi.fn();
-    const handler = (checked: boolean) => {
-      if (checked) setCheatSheetDismissed(true);
-    };
-    handler(true);
-    expect(setCheatSheetDismissed).toHaveBeenCalledTimes(1);
-    expect(setCheatSheetDismissed).toHaveBeenCalledWith(true);
-  });
-
-  it("unchecking does not toggle setCheatSheetDismissed back to false", () => {
-    // Per D11, dismissal is permanent — the only way to reactivate the cheat
-    // sheet is via Settings → "Show keyboard cheat sheet" (T8b).
-    const setCheatSheetDismissed = vi.fn();
-    const handler = (checked: boolean) => {
-      if (checked) setCheatSheetDismissed(true);
-    };
-    handler(false);
-    expect(setCheatSheetDismissed).not.toHaveBeenCalled();
   });
 });
 
@@ -448,8 +391,8 @@ describe('KeyboardCheatSheet default export — early return', () => {
     const mod = await import('../KeyboardCheatSheet');
     const html = renderToStaticMarkup(createElement(mod.default));
     expect(html).toContain('⌘D');
-    // tmux prefix still literal.
-    expect(html).toContain('Ctrl+B');
+    // tmux prefix still literal Ctrl.
+    expect(html).toContain('⌃B');
   });
 
   // Force-show override (Ctrl+B ? prefix action). The selector branch must

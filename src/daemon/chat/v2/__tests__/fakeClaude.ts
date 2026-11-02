@@ -20,12 +20,16 @@ export class FakeClaude {
   handshake = true;
   /** Ignore stdin EOF and kills (a process that will not die). */
   stubborn = false;
+  /** Ignore stdin EOF but die on a kill (a hung agent). */
+  ignoresEof = false;
+  /** Tree kills the backend sent. */
+  kills = 0;
   private child: (EventEmitter & { stdout: PassThrough; stderr: PassThrough; exitCode: number | null; pid: number }) | null = null;
 
   backend(): ChildBackend {
     return new ChildBackend(
       (_command, args, cwd, env) => this.spawn(args, cwd, env),
-      () => { if (!this.stubborn) this.exit(null, 'SIGKILL'); },
+      () => { this.kills += 1; if (!this.stubborn) this.exit(null, 'SIGKILL'); },
       (pid) => this.reaped.push(pid),
     );
   }
@@ -54,7 +58,7 @@ export class FakeClaude {
         callback();
       },
     });
-    stdin.on('finish', () => { if (!this.stubborn) this.exit(0, null); });
+    stdin.on('finish', () => { if (!this.stubborn && !this.ignoresEof) this.exit(0, null); });
     const child = Object.assign(new EventEmitter(), { stdin, stdout, stderr, pid: nextPid++, exitCode: null as number | null, signalCode: null });
     this.child = child;
     setImmediate(() => child.emit('spawn'));

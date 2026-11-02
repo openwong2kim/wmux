@@ -80,12 +80,12 @@ describe('titlebar workspace chrome', () => {
   it('the sidebar toggle shows and hides the sidebar and keeps one name, state in aria-pressed', () => {
     mount({});
     expect(toggle().getAttribute('aria-label')).toBe('Show sidebar');
-    expect(toggle().getAttribute('title')).toBe('Hide sidebar (Ctrl+Shift+B)');
+    expect(toggle().getAttribute('title')).toBe('Hide sidebar (⌃⇧B)');
     act(() => toggle().click());
     expect(useStore.getState().sidebarVisible).toBe(false);
     expect(toggle().getAttribute('aria-label')).toBe('Show sidebar');
     expect(toggle().getAttribute('aria-pressed')).toBe('false');
-    expect(toggle().getAttribute('title')).toBe('Show sidebar (Ctrl+Shift+B)');
+    expect(toggle().getAttribute('title')).toBe('Show sidebar (⌃⇧B)');
     act(() => toggle().click());
     expect(useStore.getState().sidebarVisible).toBe(true);
   });

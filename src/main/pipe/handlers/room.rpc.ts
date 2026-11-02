@@ -335,6 +335,12 @@ export async function handleRoomPost(raw: unknown, ctx: RpcContext | undefined, 
       if (threadId !== dmThreadId(bot.botId)) return refusal('not_now', signedInRefusal('post outside your 1:1 with the owner', bot.botId));
       if (mentions?.some((m) => m !== bot.botId)) return refusal('not_now', signedInRefusal('mention another bot', bot.botId));
     }
+    // A bot on My Hermes (a `room-post` token) talks with the owner one to
+    // one: it posts in its own 1:1 only and mentions no other bot.
+    if (ctx?.botSurface === 'room-post') {
+      if (threadId !== dmThreadId(bot.botId)) return refusal('not_now', `a bot on My Hermes posts only in its 1:1 with the owner (thread_id "dm:${bot.botId}")`);
+      if (mentions?.some((m) => m !== bot.botId)) return refusal('not_now', 'a bot on My Hermes mentions no other bot');
+    }
     const wake = runningWake(ports, bot.botId);
     // Decided now, before the file copy waits: the card keeps its wake's
     // provenance even if that wake ends meanwhile.

@@ -427,8 +427,8 @@ describe('Add bot: the repository comes from the workspace', () => {
   });
 
   it('a refused folder says why in one muted line; adding past it remembers nothing, so a folder fixed later is offered again', async () => {
-    const why = '/home/me/notes has no origin remote. Set it with "git remote add origin <address>".';
-    const { port, create } = formPort([], async () => ({ ok: false, code: 'no_remote', message: why }));
+    const why = '/src/notes is not a git checkout.';
+    const { port, create } = formPort([], async () => ({ ok: false, code: 'not_a_repo', message: why }));
     await renderForm(port, []);
     await typeInto('factory-add-bot-name', 'Dev');
     expect(q('factory-add-bot-no-repo')).not.toBeNull();
@@ -440,6 +440,67 @@ describe('Add bot: the repository comes from the workspace', () => {
     expect(q('factory-add-bot-repo-reason')).toBeNull();
     await act(async () => q<HTMLButtonElement>('factory-add-bot-submit')!.click());
     expect(create).toHaveBeenLastCalledWith({ workspaceId: WS, name: 'Dev', repoFolder: '/src/picked' });
+  });
+
+  it('a folder with no origin remote: one plain line, Copy command, and main\'s reason behind Show details; adding still works', async () => {
+    const why = '/src/notes has no origin remote. Set it with "git remote add origin <address>".';
+    const writeText = vi.fn(async () => undefined);
+    (window as unknown as { clipboardAPI?: unknown }).clipboardAPI = { writeText };
+    try {
+      const { port, create } = formPort([], async () => ({ ok: false, code: 'no_remote', message: why }));
+      await renderForm(port, []);
+      await typeInto('factory-add-bot-name', 'Dev');
+      const note = q('factory-add-bot-repo-reason')!;
+      expect(note.getAttribute('data-repo-reason')).toBe('no_remote');
+      expect(note.textContent).toContain('settings.factory.addBotRepoNoRemote');
+      // The long reason (with the folder's path) waits behind the disclosure.
+      expect(note.textContent).not.toContain(why);
+      expect(q('factory-add-bot-repo-detail')).toBeNull();
+      await act(async () => q<HTMLButtonElement>('factory-add-bot-repo-details')!.click());
+      expect(q('factory-add-bot-repo-detail')!.textContent).toBe(why);
+      expect(q('factory-add-bot-repo-details')!.getAttribute('aria-expanded')).toBe('true');
+      await act(async () => q<HTMLButtonElement>('factory-add-bot-repo-copy')!.click());
+      expect(writeText).toHaveBeenCalledWith('git remote add origin <address>');
+      expect(q('factory-add-bot-repo-copy')!.textContent).toBe('git.connect.copied');
+      await act(async () => q<HTMLButtonElement>('factory-add-bot-submit')!.click());
+      expect(create).toHaveBeenLastCalledWith({ workspaceId: WS, name: 'Dev' });
+    } finally {
+      delete (window as unknown as { clipboardAPI?: unknown }).clipboardAPI;
+    }
+  });
+
+  it('no origin remote: a refused copy never says Copied and shows the command; an origin naming no host offers set-url', async () => {
+    const why = '/src/notes: the origin remote is not an owner/repo address.';
+    const writeText = vi.fn(async () => { throw new Error('denied'); });
+    (window as unknown as { clipboardAPI?: unknown }).clipboardAPI = { writeText };
+    try {
+      const { port } = formPort([], async () => ({ ok: false, code: 'no_remote', message: why, originSet: true }));
+      await renderForm(port, []);
+      expect(q('factory-add-bot-repo-copy')!.getAttribute('title')).toBe('git remote set-url origin <address>');
+      await act(async () => q<HTMLButtonElement>('factory-add-bot-repo-copy')!.click());
+      expect(writeText).toHaveBeenCalledWith('git remote set-url origin <address>');
+      expect(q('factory-add-bot-repo-copy')!.textContent).toBe('settings.factory.addBotRepoCopyCommand');
+      expect(q('factory-add-bot-repo-command')!.textContent).toBe('git remote set-url origin <address>');
+    } finally {
+      delete (window as unknown as { clipboardAPI?: unknown }).clipboardAPI;
+    }
+  });
+
+  it('no origin remote: Check again asks main once more, and a folder fixed since is what Add sends', async () => {
+    const answers: FactoryBotRepoSuggestion[] = [
+      { ok: false, code: 'no_remote', message: '/src/notes has no origin remote.' },
+      { ok: true, repoKey: 'github.com/acme/notes', root: '/src/notes', displayRoot: '~/src/notes', inherited: false },
+    ];
+    let n = 0;
+    const { port, create, suggestRepo } = formPort([], async () => answers[Math.min(n++, 1)]);
+    await renderForm(port, []);
+    await typeInto('factory-add-bot-name', 'Dev');
+    expect(q('factory-add-bot-no-repo')).not.toBeNull();
+    await act(async () => q<HTMLButtonElement>('factory-add-bot-repo-recheck')!.click());
+    expect(suggestRepo).toHaveBeenCalledTimes(2);
+    expect(q('factory-add-bot-repo-row')!.getAttribute('data-repo-kind')).toBe('suggested');
+    await act(async () => q<HTMLButtonElement>('factory-add-bot-submit')!.click());
+    expect(create).toHaveBeenLastCalledWith({ workspaceId: WS, name: 'Dev', repoFolder: '/src/notes' });
   });
 
   it('a remembered None: no repository, the remembered line and Choose folder…, never a suggestion', async () => {
@@ -470,7 +531,7 @@ describe('Add bot: the repository comes from the workspace', () => {
     expect(addBotRepoView(own, 'ws-b', sug, null)).toMatchObject({ kind: 'suggested', root: '/r/api' });
     expect(addBotRepoView([], WS, sug, '/x')).toEqual({ kind: 'picked', folder: '/x' });
     expect(addBotRepoView([], WS, { ok: false, code: 'no_remote' }, null)).toEqual({ kind: 'none' });
-    expect(addBotRepoView([], WS, { ok: false, code: 'no_remote', message: 'why' }, null)).toEqual({ kind: 'none', reason: 'why' });
+    expect(addBotRepoView([], WS, { ok: false, code: 'no_remote', message: 'why' }, null)).toEqual({ kind: 'none', reason: 'why', reasonCode: 'no_remote' });
     expect(addBotRepoView([], WS, { ok: false, code: 'none' }, null)).toEqual({ kind: 'none', remembered: true });
     expect(addBotRepoView([], WS, null, null, false, true)).toEqual({ kind: 'checking' });
     // A picked folder or None does not wait for main.
@@ -481,38 +542,39 @@ describe('Add bot: the repository comes from the workspace', () => {
     expect(repoKeyLabel('ghe.example.com/acme/app')).toBe('ghe.example.com/acme/app');
   });
 
-  it('the profile editor shows a bot\'s repository read-only', async () => {
-    const rows = [row('bot-00000001', { role: 'lead', repo: APP })];
-    const update = vi.fn(async () => ({ ok: true }));
-    const botPort: FactoryBotPort = { available: true, list: async () => rows, subscribe: () => () => undefined, act: async () => ({ ok: true }), update };
-    const settingsPort = { available: true, get: vi.fn(async () => null), set: vi.fn(async () => null) };
-    useStore.setState({ workspaces: [{ id: WS, name: 'App' }] as never, activeWorkspaceId: WS });
+  it('with the bots off, Settings › Bots rows are disabled under one line saying why, never a dead click', async () => {
+    const rows = [row('bot-00000001', { role: 'lead' })];
+    const botPort: FactoryBotPort = { available: true, list: async () => rows, subscribe: () => () => undefined, act: async () => ({ ok: true }) };
+    const off = { version: 1 as const, enabled: false, hqWorkspaceId: null, trustedAuthors: [], morning: { hour: 9, weekdays: [1] }, verifierOnOwnerPrs: true, defaultEngine: { kind: 'claude-sdk' as const }, globalConcurrentBots: 2, laneAutoMerge: false, laneDailyCap: 5 };
+    const settingsPort = { available: true, get: vi.fn(async () => off), set: vi.fn(async () => off) };
+    const openBotSettings = vi.fn();
+    useStore.setState({ workspaces: [{ id: WS, name: 'App' }] as never, activeWorkspaceId: WS, openBotSettings });
     await render(createElement(FactoryTab, { settingsPort, botPort }));
-    await act(async () => q<HTMLButtonElement>('factory-bot-row')!.click());
-    const editor = q('factory-bot-editor')!;
-    expect(editor.querySelector('[data-testid="factory-bot-repo"]')!.textContent).toBe('acme/app·/home/me/code/app');
-    expect(editor.querySelector('[data-testid="factory-add-bot-folder"]')).toBeNull();
-    expect(editor.querySelector('input[value="/home/me/code/app"]')).toBeNull();
+    expect(q('factory-bots-off-note')?.textContent).toBe(en['botsPage.settings.botsOffNote']);
+    const link = q<HTMLButtonElement>('factory-bot-row')!;
+    expect(link.disabled).toBe(true);
+    expect(link.textContent).not.toContain(en['botsPage.settings.openRow']);
+    await act(async () => link.click());
+    expect(openBotSettings).not.toHaveBeenCalled();
   });
 
-  it('the profile editor edits the job and the hourly cap (empty: none) and sends only what changed', async () => {
-    const rows = [row('bot-00000001', { role: 'lead', job: 'Old job.', budget: { ...DEFAULT_BOT_BUDGETS.lead, maxTurnsPerHour: 6 } })];
+  it('Settings › Bots lists each bot as a link to its own settings page, with no editor of its own', async () => {
+    const rows = [row('bot-00000001', { role: 'lead', repo: APP, job: 'Old job.' })];
     const update = vi.fn(async () => ({ ok: true }));
     const botPort: FactoryBotPort = { available: true, list: async () => rows, subscribe: () => () => undefined, act: async () => ({ ok: true }), update };
     const settingsPort = { available: true, get: vi.fn(async () => null), set: vi.fn(async () => null) };
-    useStore.setState({ workspaces: [{ id: WS, name: 'App' }] as never, activeWorkspaceId: WS });
+    const openBotSettings = vi.fn();
+    useStore.setState({ workspaces: [{ id: WS, name: 'App' }] as never, activeWorkspaceId: WS, openBotSettings });
     await render(createElement(FactoryTab, { settingsPort, botPort }));
-    await act(async () => q<HTMLButtonElement>('factory-bot-row')!.click());
-    expect(q<HTMLTextAreaElement>('factory-bot-job')!.value).toBe('Old job.');
-    await typeInto('factory-bot-job', 'New job.');
-    const hour = container.querySelector<HTMLInputElement>('[data-testid="factory-bot-editor"] input[type="number"]')!;
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(hour, '');
-      hour.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    const save = [...container.querySelectorAll<HTMLButtonElement>('[data-testid="factory-bot-editor"] button')].find((b) => b.textContent === en['settings.factory.save'])!;
-    await act(async () => save.click());
-    expect(update).toHaveBeenCalledWith('bot-00000001', expect.objectContaining({ job: 'New job.', budget: expect.objectContaining({ maxTurnsPerHour: null }) }));
+    const link = q<HTMLButtonElement>('factory-bot-row')!;
+    expect(link.textContent).toContain(en['botsPage.settings.openRow']);
+    expect(link.hasAttribute('aria-expanded')).toBe(false);
+    await act(async () => link.click());
+    expect(openBotSettings).toHaveBeenCalledWith('bot-00000001');
+    // No in-place editor: name, job, limits and On live on the bot's page.
+    expect(q('factory-bot-editor')).toBeNull();
+    expect(q('factory-bot-job')).toBeNull();
+    expect(update).not.toHaveBeenCalled();
   });
 });
 

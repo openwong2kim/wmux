@@ -109,6 +109,12 @@ export interface PolicyContext {
    * ring/badge would just be noise.
    */
   isActiveSurface: boolean;
+  /**
+   * The notification is a turn that ended on a question still waiting on the
+   * user (the pane's pendingQuestion is set) — needs you, like an 'approval'.
+   * Optional: unset reads as no question.
+   */
+  asksForYou?: boolean;
   /** Target workspace's metadata.notificationsMuted === true. */
   isMutedWorkspace: boolean;
   /**
@@ -215,7 +221,12 @@ export function decideNotificationActions(
   //    workspace lastNotification metadata bump inside addNotification.
   const actions: NotificationAction[] = [addAction];
 
-  if (ctx.settings.toastEnabled) {
+  // No in-app toast for needs you (an agent waiting on an approval, category
+  // 'approval', or a turn that ended on a question): inside the window the
+  // sidebar row and the rail's Fleet badge already say it, and DESIGN.md caps
+  // one attention event at two renditions. The OS toast below still fires
+  // while the window is out of focus, where neither of those can be seen.
+  if (ctx.settings.toastEnabled && payload.category !== 'approval' && !ctx.asksForYou) {
     actions.push({ kind: 'pushToast', payload });
   }
 

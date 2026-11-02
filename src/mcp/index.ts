@@ -16,7 +16,7 @@ import { COMMANDER_TOOL_SURFACE, COMMANDER_ONLY_TOOLS } from '../shared/commande
 import { CORE_TOOL_SURFACE } from '../shared/coreSurface';
 import { ROLE_TOOL_SURFACES, resolveRoleName } from '../shared/roleSurfaces';
 import { isBotRole, type BotRole } from '../shared/bot';
-import { SHARED_SURFACE } from '../shared/botSurface';
+import { botSurfaceTools } from '../shared/botSurface';
 import { installBotTools, pinToolName } from './toolModules';
 // The factory's bot tool modules register themselves on import.
 import './botModules';
@@ -114,6 +114,9 @@ export interface WmuxServerCtx {
    *  lane narrowed to that factory role's surface (shared/botSurface.ts);
    *  `commanderToken` is then the bot token. */
   botRole?: string;
+  /** --bot-surface=<narrowing> value (from argv), unvalidated: a narrowed
+   *  bot lists fewer tools (shared/botSurface.ts botSurfaceTools). */
+  botSurface?: string;
   /** The pid identity walks start from (self pid, or the shim's pid). */
   callerPid: number;
   /** That pid's parent when already known (process.ppid); null → resolve lazily. */
@@ -319,7 +322,7 @@ const A2A_TASK_UPDATE_SHAPE = {
   task_id: z.string().describe('Task ID to update'),
   status: z
     .enum(['working', 'completed', 'failed', 'input-required', 'canceled'])
-    .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working; any open state->canceled (drop a superseded task).'),
+    .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working|completed; any open state->canceled (drop a superseded task).'),
   message: z.string().optional().describe('Optional status message'),
   artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
   artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),
@@ -910,7 +913,7 @@ if (ROLE_SURFACE) {
 // the role's tools register; every name that does is recorded, so the bot
 // tool lane at the end can serve the rest of the surface.
 const BOT_SURFACE: ReadonlySet<string> | null =
-  BOT_ROLE === undefined ? null : BOT_ROLE === null ? new Set<string>() : SHARED_SURFACE.tools;
+  BOT_ROLE === undefined ? null : BOT_ROLE === null ? new Set<string>() : botSurfaceTools(ctx.botSurface);
 const botRegistered = new Set<string>();
 if (BOT_SURFACE) {
   const tool = server.tool.bind(server);
@@ -2330,7 +2333,7 @@ server.tool(
 // 5. a2a_task_update — Update task status
 server.tool(
   'a2a_task_update',
-  'Update a task\'s status. Only the receiver workspace can change it; a pane-pinned task only from that pane, or from any pane of the workspace once it is closed (orphaned: true in a2a_task_query). Transitions follow a state machine (see `status`): completed/failed/canceled are final, and a rejected transition names the allowed next states. `evidence` is required for completed, failed, and canceled; a rejection names what to attach. A completion with no verified item (command+passed, or inspection/artifact+verified) is still accepted but graded unverified (verifiedItemCount=0). Optionally attach an artifact on completion.',
+  'Update a task\'s status. Only the receiver workspace can change it; a pane-pinned task only from that pane, or from any pane of the workspace once it is closed (orphaned: true in a2a_task_query). A company task is completed only by its CEO pane or the human; its seat reports input-required. Transitions follow a state machine (see `status`): completed/failed/canceled are final, and a rejected transition names the allowed next states. `evidence` is required for completed, failed, and canceled; a rejection names what to attach. A completion with no verified item (command+passed, or inspection/artifact+verified) is still accepted but graded unverified (verifiedItemCount=0). Optionally attach an artifact on completion.',
   A2A_TASK_UPDATE_SHAPE,
   async ({ task_id, status, message, artifact_name, artifact_data, evidence }) => {
     const wsId = await requireWorkspaceId();
@@ -2364,7 +2367,12 @@ server.tool(
   A2A_TASK_CANCEL_SHAPE,
   async ({ task_id, reason }) => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.task.cancel', { workspaceId: wsId, taskId: task_id, reason });
+    const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, reason };
+    // The caller's pane, as for an update: a company task is canceled only
+    // by the pane that created it.
+    const senderPtyId = getTaskSenderPtyId();
+    if (senderPtyId) params.senderPtyId = senderPtyId;
+    return callRpc('a2a.task.cancel', params);
   },
 );
 
@@ -2396,9 +2404,8 @@ server.tool(
 // and their jobs are all covered by the workspace-level A2A and channel tools
 // (whoami → a2a_whoami, send → send_message / a2a_task_send, broadcast →
 // a2a_broadcast, ack → channel_ack, inbox → channel_read / channel_unread,
-// status → a2a_discover + workspace_list). Company mode itself is untouched:
-// its renderer UI and the `company.*` RPC handlers behind it stay exactly as
-// they were — only the MCP projection is gone.
+// status → a2a_discover + workspace_list). The `company.*` RPC handlers behind
+// them were removed later with the rest of the old company mode.
 
 // === A2A channel tools ===
 // Ten channel tools plus three WorkTask mission tools expose the
@@ -2670,6 +2677,7 @@ if (BOT_ROLE) {
     rawRegisterTool: registerCatalogToolUnfiltered as (name: string, ...rest: unknown[]) => unknown,
     deps: { role: BOT_ROLE, callRpc: (method, params, timeoutMs) => callRpc(method, params, timeoutMs) },
     registered: botRegistered,
+    surface: botSurfaceTools(ctx.botSurface),
   });
 }
 

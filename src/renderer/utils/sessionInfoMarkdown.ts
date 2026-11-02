@@ -99,6 +99,10 @@ function renderSurfaceLines(
       out.push(...paneLines);
       out.push(`   - Surface ID: ${s.id}`);
       if (s.previewFilePath) out.push(`   - File: ${s.previewFilePath}`);
+    } else if (surfaceType === 'board') {
+      out.push(`${idx}. ${activeTag}Company board`);
+      out.push(...paneLines);
+      out.push(`   - Surface ID: ${s.id}`);
     } else if (surfaceType === 'diff') {
       // J2 — diff 서피스는 PTY 없음. taskId만 표시(PTY ID 오표기 방지).
       out.push(`${idx}. ${activeTag}Diff`);

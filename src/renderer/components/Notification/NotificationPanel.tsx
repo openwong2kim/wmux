@@ -1,10 +1,14 @@
-import { useEffect, useMemo, useRef, type ReactElement } from 'react';
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, type ReactElement } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { useShortcutLabel } from '../../utils/shortcutLabel';
 import { timeAgo } from '../../utils/timeAgo';
 import { tokenAttrs } from '../../themes';
-import type { Notification, NotificationType } from '../../../shared/types';
-import { focusNotificationTarget } from '../../hooks/useNotificationListener';
+import type { AgentStatus, Notification, NotificationType, Workspace } from '../../../shared/types';
+import type { SecurityNotice } from '../../../shared/securityNotice';
+import { findWorkspaceSurfaceByPtyId } from '../../utils/paneTraversal';
+import { describeNotificationSource, focusNotificationTarget, osToastBody } from '../../hooks/useNotificationListener';
+import { AGENT_IDENTITIES } from '../../../shared/agentIdentity';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import { IconBell, IconRobot, IconWarning, IconX } from '../icons';
@@ -35,13 +39,81 @@ export function notifTypeName(type: NotificationType): string {
 
 /**
  * Build the screen-reader announce string for a notification row.
- * Shape: "{typeName}, {title}, {timeAgo}, {read|unread}"
+ * Shape: "{typeName}, {title}, {timeAgo}, {read|unread}" — or, when the row
+ * is drawn from `display`, "{typeName}, {title}, {body}, {timeAgo}, …" so the
+ * spoken name says what the row shows.
  */
-export function buildNotifAriaLabel(notif: Notification, now: number = Date.now()): string {
+export function buildNotifAriaLabel(notif: Notification, now: number = Date.now(), display?: NotifDisplay): string {
   const typeName = notifTypeName(notif.type);
   const rel = timeAgo(notif.timestamp, now);
   const state = notif.read ? 'read' : 'unread';
-  return `${typeName}, ${notif.title}, ${rel}, ${state}`;
+  const said = display ? `${display.title}, ${display.body}` : notif.title;
+  return `${typeName}, ${said}, ${rel}, ${state}`;
+}
+
+// ─── What a row says ─────────────────────────────────────────────────────────
+
+/** A row as drawn: a headline and one line under it. */
+export interface NotifDisplay {
+  title: string;
+  body: string;
+}
+
+/** The store slices a row's wording reads. */
+export interface NotifDisplayState {
+  workspaces: Workspace[];
+  surfaceAgent: Record<string, { name: string; status: AgentStatus } | undefined>;
+  surfaceAgentStatus: Record<string, AgentStatus | undefined>;
+  surfacePendingQuestion: Record<string, string | undefined>;
+}
+
+const KNOWN_AGENT_NAMES = new Set(AGENT_IDENTITIES.map((a) => a.display.toLowerCase()));
+
+/** The agent a hook title names ("Claude Code: Awaiting input" → "Claude
+ *  Code"), when it is a known agent. */
+function agentFromTitle(title: string): string | undefined {
+  const head = title.split(': ')[0]?.trim();
+  return head && head !== title && KNOWN_AGENT_NAMES.has(head.toLowerCase()) ? head : undefined;
+}
+
+/**
+ * What a panel row says, from data the store already has. A needs-you row
+ * (an agent in a local pane waiting on an approval, or whose turn ended on a
+ * question it still waits on) names where
+ * it waits — workspace · agent — and what it asks: the agent's question while
+ * it still waits (on its newest row only), a plain sentence when no question
+ * text was captured, another when it no longer waits. It never repeats the
+ * state word main put in the title and body ("Awaiting input" twice). Any
+ * other row keeps its title; a body that only repeats the title gives way to
+ * where the notification came from, as the OS toast does.
+ */
+export function describeNotification(
+  notif: Notification,
+  state: NotifDisplayState,
+  t: (key: string, vars?: Record<string, string | number>) => string,
+  latestForPty: boolean,
+): NotifDisplay {
+  const ws = state.workspaces.find((w) => w.id === notif.workspaceId);
+  const ptyId = notif.ptyId;
+  const question = latestForPty && ptyId ? state.surfacePendingQuestion[ptyId]?.trim() : undefined;
+  // A turn that ended on a question still waiting is needs you too.
+  const needsYou = !!ptyId && (notif.category === 'approval' || (notif.category === 'agent-turn' && !!question));
+  if (needsYou && ptyId) {
+    // The agent the notification itself names: the pane may run another
+    // agent by now. The pane's live agent only when the title names none.
+    const agent = agentFromTitle(notif.title) || state.surfaceAgent[ptyId]?.name;
+    const title = [ws?.name?.trim(), agent].filter(Boolean).join(' · ') || notif.title;
+    const waiting = latestForPty && (!!question
+      || state.surfaceAgent[ptyId]?.status === 'awaiting_input'
+      || state.surfaceAgentStatus[ptyId] === 'awaiting_input');
+    const body = question ? t('notification.needsYou.question', { question })
+      : waiting ? t('notification.needsYou.noQuestion')
+      : t('notification.needsYou.over');
+    return { title, body };
+  }
+  const source = describeNotificationSource(ws, notif.surfaceId);
+  const body = source && osToastBody(notif.title, notif.body, source) === source ? source : notif.body;
+  return { title: notif.title, body };
 }
 
 /**
@@ -101,10 +173,99 @@ function TypeIcon({ type }: { type: string }): ReactElement {
   }
 }
 
+// ─── Pinned security notices ─────────────────────────────────────────────────
+
+/** A pending security notice as the panel pins it. */
+export interface PinnedSecurityNotice {
+  notice: SecurityNotice;
+  /** "workspace › tab" of its pane while the pane is still open (empty when
+   *  neither has a name), else null (and no Go to pane). */
+  location: string | null;
+}
+
+/** Where each pending notice's pane is now, oldest notice first. */
+export function pinSecurityNotices(notices: readonly SecurityNotice[], workspaces: readonly Workspace[]): PinnedSecurityNotice[] {
+  return notices.map((notice) => {
+    if (notice.ptyId) {
+      for (const ws of workspaces) {
+        const found = findWorkspaceSurfaceByPtyId(ws, notice.ptyId);
+        if (found) return { notice, location: describeNotificationSource(ws, found.surfaceId) };
+      }
+    }
+    return { notice, location: null };
+  });
+}
+
+interface SecurityNoticesSectionProps {
+  items: readonly PinnedSecurityNotice[];
+  headingLabel: string;
+  goToPaneLabel: string;
+  ackLabel: string;
+  onGoToPane: (notice: SecurityNotice) => void;
+  onAcknowledge: (notice: SecurityNotice) => void;
+}
+
+/**
+ * Notices a paired phone's risky agent start raised, pinned above the list
+ * until acknowledged. Warning icon in the caution yellow (a warning, not the
+ * needs-you orange); the read and clear actions never reach them.
+ */
+function SecurityNoticesSection(props: SecurityNoticesSectionProps): ReactElement {
+  const { items, headingLabel, goToPaneLabel, ackLabel, onGoToPane, onAcknowledge } = props;
+  // Every notice has the same two buttons; each names its notice's title as
+  // its description so a screen reader can tell them apart.
+  const titleIdBase = useId();
+  return (
+    <section
+      aria-label={headingLabel}
+      data-security-notices
+      className="max-h-[50%] shrink-0 overflow-y-auto"
+      style={{ borderBottom: '1px solid var(--surface-hairline)' }}
+    >
+      <div className="ui-note px-4 pt-2.5">{headingLabel}</div>
+      {items.map(({ notice, location }) => {
+        const titleId = `${titleIdBase}-${notice.id}`;
+        return (
+        <div key={notice.id} data-security-notice={notice.id} className="flex items-start gap-2.5 px-4 py-3">
+          <span className="mt-[3px] shrink-0 text-[var(--accent-yellow)]" aria-hidden="true" {...tokenAttrs('warning', 'accent')}>
+            <IconWarning size={13} />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div id={titleId} className="text-[13px] font-medium leading-5 text-[var(--text-main)]">{notice.title}</div>
+            <p className="m-0 mt-0.5 text-[11px] leading-4 text-[var(--text-sub2)]" data-derived="textSub2">{notice.body}</p>
+            {location && <p className="m-0 mt-0.5 truncate text-[11px] leading-4 text-[var(--text-sub)]" title={location}>{location}</p>}
+            <div className="-ml-2.5 mt-1.5 flex items-center gap-1">
+              {location !== null && (
+                <Button variant="secondary" size="sm" aria-describedby={titleId} onClick={() => onGoToPane(notice)}>
+                  {goToPaneLabel}
+                </Button>
+              )}
+              <Button variant="ghost" size="sm" aria-describedby={titleId} onClick={() => onAcknowledge(notice)}>
+                {ackLabel}
+              </Button>
+            </div>
+          </div>
+        </div>
+        );
+      })}
+    </section>
+  );
+}
+
+/** The first button of the pinned notice `id` (the first notice when null). */
+function firstPinnedButton(panel: HTMLElement | null, id: string | null): HTMLButtonElement | null {
+  const notices = [...(panel?.querySelectorAll<HTMLElement>('[data-security-notice]') ?? [])];
+  const notice = id === null ? notices[0] : notices.find((el) => el.dataset.securityNotice === id);
+  return notice?.querySelector('button') ?? null;
+}
+
 // ─── Pure view (exported for tests) ───────────────────────────────────────────
 
 export interface NotificationPanelViewProps {
   notifications: Notification[];     // pre-sorted (DESC) by caller
+  /** How each row reads (describeNotification), by id; a row without an
+   *  entry shows its raw title and body. */
+  displayById?: Readonly<Record<string, NotifDisplay>>;
   unreadCount: number;
   dialogLabel: string;               // t('notification.title') equivalent
   emptyLabel: string;                // t('notification.empty')
@@ -119,6 +280,13 @@ export interface NotificationPanelViewProps {
   onMarkAllRead: () => void;         // global
   onMarkWorkspaceRead: () => void;   // active workspace only
   onClear: () => void;
+  /** Pending security notices, pinned above the list; none = no section. */
+  securityNotices?: readonly PinnedSecurityNotice[];
+  securityHeadingLabel?: string;     // t('notification.security.heading')
+  securityGoToPaneLabel?: string;    // t('notification.security.goToPane')
+  securityAckLabel?: string;         // t('notification.security.ack')
+  onSecurityGoToPane?: (notice: SecurityNotice) => void;
+  onSecurityAcknowledge?: (notice: SecurityNotice) => void;
   firstUnreadRef?: React.Ref<HTMLDivElement>;
   markAllReadBtnRef?: React.Ref<HTMLButtonElement>;
   listRef?: React.Ref<HTMLDivElement>;
@@ -132,10 +300,12 @@ export interface NotificationPanelViewProps {
  */
 export function NotificationPanelView(props: NotificationPanelViewProps): ReactElement {
   const {
-    notifications, unreadCount, dialogLabel, emptyLabel, toggleHintLabel,
+    notifications, displayById, unreadCount, dialogLabel, emptyLabel, toggleHintLabel,
     markAllReadLabel, markWorkspaceReadLabel, clearLabel, closeLabel,
     onNotifClick, onNotifKeyDown, onClose,
     onMarkAllRead, onMarkWorkspaceRead, onClear,
+    securityNotices, securityHeadingLabel = '', securityGoToPaneLabel = '', securityAckLabel = '',
+    onSecurityGoToPane, onSecurityAcknowledge,
     firstUnreadRef, markAllReadBtnRef, listRef, onListScroll, panelRef,
   } = props;
 
@@ -205,21 +375,39 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
         )}
       </div>
 
+      {securityNotices && securityNotices.length > 0 && (
+        <SecurityNoticesSection
+          items={securityNotices}
+          headingLabel={securityHeadingLabel}
+          goToPaneLabel={securityGoToPaneLabel}
+          ackLabel={securityAckLabel}
+          onGoToPane={(notice) => onSecurityGoToPane?.(notice)}
+          onAcknowledge={(notice) => onSecurityAcknowledge?.(notice)}
+        />
+      )}
+
       {/* List */}
       <div ref={listRef} onScroll={onListScroll} data-notification-list className="flex-1 overflow-y-auto">
         {notifications.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-[13px] text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
+          // A pinned notice above is not "no notifications".
+          securityNotices && securityNotices.length > 0 ? null : <div className="flex items-center justify-center h-full text-[13px] text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
             {emptyLabel}
           </div>
         ) : (
-          notifications.map((notif, idx) => (
+          notifications.map((notif, idx) => {
+            const display = displayById?.[notif.id];
+            return (
             <div
               key={notif.id}
               ref={idx === firstUnreadIdx ? firstUnreadRef : undefined}
               role="button"
               tabIndex={0}
-              aria-label={buildNotifAriaLabel(notif)}
-              className={`px-4 py-3 cursor-pointer hover:bg-[var(--surface-fill)] transition-colors ${
+              aria-label={buildNotifAriaLabel(notif, Date.now(), display)}
+              data-notification-row
+              data-category={notif.category}
+              // The focused row (the panel focuses the first unread one) wears
+              // the neutral selection, never the OS focus colour (ui.css).
+              className={`wmux-notification-row px-4 py-3 cursor-pointer hover:bg-[var(--surface-fill)] transition-colors ${
                 notif.read ? 'opacity-60' : ''
               }`}
               style={{ borderBottom: '1px solid var(--surface-hairline)' }}
@@ -231,35 +419,42 @@ export function NotificationPanelView(props: NotificationPanelViewProps): ReactE
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
                     <span className={`text-[13px] leading-5 font-medium truncate ${notif.read ? 'text-[var(--text-sub)]' : 'text-[var(--text-main)]'}`}>
-                      {notif.title}
+                      {display?.title ?? notif.title}
                     </span>
                     <span className="text-[11px] text-[var(--text-sub)] flex-shrink-0 ml-2">
                       {timeAgo(notif.timestamp)}
                     </span>
                   </div>
-                  <p className="m-0 mt-0.5 text-[11px] leading-4 text-[var(--text-sub2)] truncate" {...tokenAttrs('textMain', 'text')} data-derived="textSub2">{notif.body}</p>
+                  <p className="m-0 mt-0.5 text-[11px] leading-4 text-[var(--text-sub2)] truncate" {...tokenAttrs('textMain', 'text')} data-derived="textSub2" title={display?.body}>{display?.body ?? notif.body}</p>
                 </div>
                 {!notif.read && (
                   <div className="w-1.5 h-1.5 rounded-full bg-[var(--accent)] mt-2 flex-shrink-0" {...tokenAttrs('accent', 'accent')} />
                 )}
               </div>
             </div>
-          ))
+            );
+          })
         )}
       </div>
 
       {/* Footer */}
-      <div className="ui-note px-4 py-2.5" style={{ borderTop: '1px solid var(--surface-hairline)' }}>
-        {toggleHintLabel}
-      </div>
+      {toggleHintLabel && (
+        <div className="ui-note px-4 py-2.5" style={{ borderTop: '1px solid var(--surface-hairline)' }}>
+          {toggleHintLabel}
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Container (store-wired) ──────────────────────────────────────────────────
 
+const NONE: Workspace[] = [];
+const EMPTY: Record<string, never> = {};
+
 export default function NotificationPanel() {
   const t = useT();
+  const toggleKey = useShortcutLabel('toggleNotifications');
   const notifications = useStore((s) => s.notifications);
   const notificationPanelVisible = useStore((s) => s.notificationPanelVisible);
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
@@ -267,6 +462,7 @@ export default function NotificationPanel() {
   const markAllReadForWorkspace = useStore((s) => s.markAllReadForWorkspace);
   const clearNotifications = useStore((s) => s.clearNotifications);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const securityNotices = useStore((s) => s.securityNotices);
 
   const firstUnreadRef = useRef<HTMLDivElement>(null);
   const markAllReadBtnRef = useRef<HTMLButtonElement>(null);
@@ -279,6 +475,30 @@ export default function NotificationPanel() {
   const firstUnreadIdAtRenderRef = useRef<string | null>(null);
 
   const sorted = useMemo(() => sortNotificationsDesc(notifications), [notifications]);
+  // Read only while the panel is open: a closed panel must not re-render on
+  // every agent status change.
+  const workspaces = useStore((s) => (s.notificationPanelVisible ? s.workspaces : NONE));
+  const surfaceAgent = useStore((s) => (s.notificationPanelVisible ? s.surfaceAgent : EMPTY));
+  const surfaceAgentStatus = useStore((s) => (s.notificationPanelVisible ? s.surfaceAgentStatus : EMPTY));
+  const surfacePendingQuestion = useStore((s) => (s.notificationPanelVisible ? s.surfacePendingQuestion : EMPTY));
+  const displayById = useMemo(() => {
+    const out: Record<string, NotifDisplay> = {};
+    if (!notificationPanelVisible) return out;
+    const seenPty = new Set<string>();
+    const state = { workspaces, surfaceAgent, surfaceAgentStatus, surfacePendingQuestion };
+    for (const n of sorted) {
+      // Newest first: a pane's newest agent row is the one its live question
+      // belongs to.
+      const latest = (n.category === 'approval' || n.category === 'agent-turn') && !!n.ptyId && !seenPty.has(n.ptyId);
+      if (latest && n.ptyId) seenPty.add(n.ptyId);
+      out[n.id] = describeNotification(n, state, t, latest);
+    }
+    return out;
+  }, [notificationPanelVisible, sorted, workspaces, surfaceAgent, surfaceAgentStatus, surfacePendingQuestion, t]);
+  const pinnedSecurityNotices = useMemo(
+    () => pinSecurityNotices(securityNotices, workspaces),
+    [securityNotices, workspaces],
+  );
   // Capture at render time which notification the firstUnreadRef will point
   // at; consumed by the focus rAF below to detect the race window.
   firstUnreadIdAtRenderRef.current = sorted.find((n) => !n.read)?.id ?? null;
@@ -358,10 +578,27 @@ export default function NotificationPanel() {
         firstUnreadRef.current.focus();
       } else if (markAllReadBtnRef.current) {
         markAllReadBtnRef.current.focus();
+      } else {
+        // No ordinary notifications: the first pinned security notice.
+        firstPinnedButton(panelRef.current, null)?.focus();
       }
     });
     return () => cancelAnimationFrame(raf);
   }, [notificationPanelVisible]);
+
+  // ─── Focus after acknowledging a pinned notice ─────────────────────────────
+  // Its buttons leave the DOM with it; focus goes to the notice that took its
+  // place, else Mark all read (acknowledging adds a read row, so it is there),
+  // never to <body>.
+  const focusAfterAckRef = useRef<{ nextId: string | null } | null>(null);
+  useLayoutEffect(() => {
+    const pending = focusAfterAckRef.current;
+    if (!pending) return;
+    focusAfterAckRef.current = null;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    (firstPinnedButton(panelRef.current, pending.nextId) ?? markAllReadBtnRef.current)?.focus();
+  }, [securityNotices]);
 
   // ─── Scroll-position restore (cmux parity) ─────────────────────────────────
   // On open: restore the offset saved at close, unless new notifications
@@ -435,6 +672,21 @@ export default function NotificationPanel() {
     }
   };
 
+  // Acknowledging is the store (unpin; a read row joins the list) and main
+  // (forget it, so a reload or another window does not pin it again).
+  const handleSecurityAcknowledge = (notice: SecurityNotice) => {
+    const idx = securityNotices.findIndex((n) => n.id === notice.id);
+    const rest = securityNotices.filter((n) => n.id !== notice.id);
+    focusAfterAckRef.current = { nextId: rest[Math.min(idx, rest.length - 1)]?.id ?? null };
+    useStore.getState().acknowledgeSecurityNotice(notice.id);
+    void window.electronAPI?.notification?.acknowledgeSecurityNotice?.(notice.id)?.catch(() => undefined);
+  };
+
+  const handleSecurityGoToPane = (notice: SecurityNotice) => {
+    focusNotificationTarget(() => useStore.getState(), { ptyId: notice.ptyId });
+    handleSecurityAcknowledge(notice);
+  };
+
   const handleGlobalMarkAllRead = () => {
     // T2 is merged — call the slice action directly. The action also clears
     // paneNotificationRing as part of the global "seen everything" semantics
@@ -445,10 +697,11 @@ export default function NotificationPanel() {
   return (
     <NotificationPanelView
       notifications={sorted}
+      displayById={displayById}
       unreadCount={unreadCount}
       dialogLabel={t('notification.title')}
       emptyLabel={t('notification.empty')}
-      toggleHintLabel={t('notification.toggle')}
+      toggleHintLabel={toggleKey ? t('notification.toggle', { key: toggleKey }) : ''}
       markAllReadLabel={t('notification.markAllRead')}
       markWorkspaceReadLabel={t('notification.markWorkspaceRead')}
       closeLabel={t('notification.close')}
@@ -459,6 +712,12 @@ export default function NotificationPanel() {
       onMarkAllRead={handleGlobalMarkAllRead}
       onMarkWorkspaceRead={() => markAllReadForWorkspace(activeWorkspaceId)}
       onClear={clearNotifications}
+      securityNotices={pinnedSecurityNotices}
+      securityHeadingLabel={t('notification.security.heading')}
+      securityGoToPaneLabel={t('notification.security.goToPane')}
+      securityAckLabel={t('notification.security.ack')}
+      onSecurityGoToPane={handleSecurityGoToPane}
+      onSecurityAcknowledge={handleSecurityAcknowledge}
       firstUnreadRef={firstUnreadRef}
       markAllReadBtnRef={markAllReadBtnRef}
       listRef={listRef}

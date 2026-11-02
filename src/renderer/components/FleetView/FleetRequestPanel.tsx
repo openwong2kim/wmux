@@ -10,7 +10,8 @@ export interface FleetRequestPanelProps {
   kind: 'input' | 'check';
   /** input: the agent's question; check: the last error line, if any. */
   text?: string;
-  /** Shown when there is no `text`: the row's status sentence. */
+  /** Shown for a `check` with no `text`: the row's status sentence. An
+   *  `input` with no `text` shows no ask at all. */
   fallback: string;
   choices: readonly PromptChoice[];
   /** An Approvals row waits on this agent's workspace. */
@@ -23,12 +24,18 @@ export interface FleetRequestPanelProps {
 
 export default function FleetRequestPanel({ kind, text, fallback, choices, onOpenApproval, onReply, onJump, t }: FleetRequestPanelProps) {
   const heading = kind === 'input' ? t('fleet.request.asks') : t('fleet.request.lastError');
+  // "The agent asks" only over a real question. With none (a permission
+  // prompt), the prompt's choices and the actions are the whole block; the
+  // row above already says it needs you.
+  const showAsk = kind === 'check' || !!text;
   return (
-    <section className="wmux-fleet-request" data-fleet-request={kind} aria-label={heading}>
-      <h3>{heading}</h3>
-      <p className={`wmux-fleet-request-text${kind === 'check' && text ? ' is-evidence' : ''}`} data-fleet-request-text>
-        {text ?? fallback}
-      </p>
+    <section className="wmux-fleet-request" data-fleet-request={kind} aria-label={showAsk ? heading : undefined}>
+      {showAsk && <h3>{heading}</h3>}
+      {showAsk && (
+        <p className={`wmux-fleet-request-text${kind === 'check' && text ? ' is-evidence' : ''}`} data-fleet-request-text>
+          {text ?? fallback}
+        </p>
+      )}
       {choices.length > 0 && (
         <ol className="wmux-fleet-request-choices" data-fleet-request-choices aria-label={t('fleet.request.choices')}>
           {choices.map((choice) => (

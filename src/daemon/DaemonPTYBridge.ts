@@ -18,6 +18,7 @@ import { isFreshSessionSource } from '../shared/hooks/signal-types';
 import { ESCAPE_WIN32 } from '../shared/win32InputKeys';
 import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { stripPassiveInput } from '../shared/terminal/passiveInput';
+import { ShellMarkIngress } from '../shared/terminal/shellMarkIngress';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
 import { titleShowsFinishedTurn, titleShowsRunningTurn, type TitleEvidence } from './transcript/chatScreenGate';
 import { AWAITING_TITLE, CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, RUNNING_TITLE } from '../shared/agentTitleRules';
@@ -43,6 +44,13 @@ export const STARTUP_DA1_REPLY = '\x1b[?62;4;9;22c';
  * front of its query is 4 bytes (`CSI 1 t`).
  */
 const STARTUP_DA1_SCAN_BYTES = 64;
+
+/**
+ * After an Esc closes a dialog, how often the transcript is read for the turn
+ * end it records (watchDialogCancel), within ESC_INTERRUPT_CONFIRM_MS. Claude
+ * Code wrote it 0.8 s after the Esc in a live capture.
+ */
+const DIALOG_CANCEL_PROBE_MS = 500;
 
 // eslint-disable-next-line no-control-regex
 const CSI_SEQUENCE = /^\x1b\[[0-?]*[ -/]*[@-~]/;
@@ -131,6 +139,21 @@ const PROGRAM_SETTLED_MESSAGE: Record<'idle' | 'done' | 'error', string> = {
 /** How long an open episode must stay without a transcript turn before noteNoTranscriptTurn closes it. */
 const NO_TRANSCRIPT_TURN_GRACE_MS = 2_000;
 
+/**
+ * A held tail's bytes, oldest first. Once it has dropped some, its oldest kept
+ * byte may be inside a sequence, so it then starts at its first line or
+ * escape sequence, whichever comes first; `lost` counts every byte before.
+ */
+function tailBytes(tail: RingBuffer | null): { bytes: Buffer; lost: number } {
+  const data = tail?.readAll() ?? Buffer.alloc(0);
+  const lost = (tail?.totalBytesWritten ?? 0) - data.length;
+  if (lost === 0) return { bytes: data, lost: 0 };
+  const lf = data.indexOf(0x0a);
+  const esc = data.indexOf(0x1b);
+  const cut = Math.min(lf === -1 ? data.length : lf + 1, esc === -1 ? data.length : esc);
+  return { bytes: data.subarray(cut), lost: lost + cut };
+}
+
 export class DaemonPTYBridge extends EventEmitter {
   private outputInterpreter: OutputInterpreter | null = null;
   private modeTracker: OutputModes | null = null;
@@ -169,13 +192,25 @@ export class DaemonPTYBridge extends EventEmitter {
    * prompt leaves the pane blank until a key is pressed. `null` = not holding.
    *
    * Bounded by keeping the HEAD: once the cap is reached later chunks are not
-   * held (`heldFull`), but what was held stays — the shell's prompt, or a
+   * held for the unmute (`heldFull`), but what was held stays — the shell's prompt, or a
    * TUI's first frame, is printed first, so it is the part worth keeping.
    */
   private heldWhileMuted: string[] | null = null;
   private heldBytes = 0;
   private heldFull = false;
   private static readonly MAX_HELD_BYTES = 256 * 1024;
+  /**
+   * #2855: the output that arrived after the head filled, its newest
+   * MAX_HELD_TAIL_BYTES kept, so a screen read (heldOutput) still sees the
+   * live screen, and the unmute releases it after the head: an unmute at the
+   * same size brings no repaint, and the head alone would leave the pane
+   * showing the start of the output, not the screen the program last drew.
+   * Created at the first chunk past the head; a quarter of the 8 MB session
+   * ring the same output would fill unmuted, and that ring takes nothing
+   * while muted.
+   */
+  private heldTail: RingBuffer | null = null;
+  private static readonly MAX_HELD_TAIL_BYTES = 2 * 1024 * 1024;
   /** The unmuted capture path, set by setupDataForwarding; replays held chunks. */
   private captureChunk: ((data: string, buf: Buffer) => void) | null = null;
 
@@ -332,6 +367,15 @@ export class DaemonPTYBridge extends EventEmitter {
   private lastEscAt = 0;
   /** The `lastEscAt` an idle title already reported as an interrupt (#2264). */
   private titleEdgeEscAt = 0;
+  /**
+   * The lone Esc that closed a dialog (watchDialogCancel) and the episode it
+   * landed in (`turnSeq`). A transcript end recorded after it, inside the Esc
+   * confirm window and in that same episode, is its interrupt. Cleared once
+   * reported.
+   */
+  private dialogCancel: { sessionId: string; escAt: number; turnSeq: number } | null = null;
+  /** Pending transcript read after an Esc closed a dialog (watchDialogCancel). */
+  private dialogCancelTimer: ReturnType<typeof setTimeout> | null = null;
   /** Latest OSC 0/2 window title (sanitized) and when it arrived (0 = never). */
   private lastTitle = '';
   private lastTitleAt = 0;
@@ -606,6 +650,60 @@ export class DaemonPTYBridge extends EventEmitter {
     }
     if (!answered) return;
     this.startAnsweredTurn(wasAwaiting, 'input', promptSubmitted);
+    if (answerKey && isEscapeChunk(keyProbe)) this.watchDialogCancel();
+  }
+
+  /**
+   * A lone Esc closed the dialog the turn was blocked on. Claude Code ends the
+   * turn there (`[Request interrupted by user for tool use]`) with no Stop
+   * hook, and a declined question prints "User declined to answer questions",
+   * not the `Interrupted` row, so nothing on screen confirms it. The pane went
+   * back to running on the answer and stayed there until the next prompt.
+   * The transcript records the end, and an end written after this Esc settles
+   * the turn as the interrupt it is (noteTranscriptTurnEnd reports it). With a
+   * Chat view open, the append push delivers that end; with none, nothing
+   * pushes it, so it is read back here inside the Esc confirm window.
+   */
+  private watchDialogCancel(): void {
+    const sessionId = this.sessionId;
+    if (!sessionId) return;
+    const escAt = this.lastEscAt;
+    // Captured after the answer resumed the episode: a Stop hook and a new
+    // prompt before the end lands start another one, which this Esc never touched.
+    this.dialogCancel = { sessionId, escAt, turnSeq: this.turnSeq };
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    this.dialogCancelTimer = null;
+    if (!DaemonPTYBridge.transcriptTurnEndProbe) return;
+    const probe = (): void => {
+      this.dialogCancelTimer = null;
+      // Already reported, or a later dialog Esc owns its own read.
+      if (this.dialogCancel?.escAt !== escAt) return;
+      const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(sessionId);
+      // An end from before this Esc was recorded behind the dialog: the answer resumed past it.
+      if (endedAt !== undefined && endedAt >= escAt) this.noteTranscriptTurnEnd(endedAt);
+      if (this.dialogCancel?.escAt === escAt && Date.now() - escAt + DIALOG_CANCEL_PROBE_MS < ESC_INTERRUPT_CONFIRM_MS) {
+        this.dialogCancelTimer = setTimeout(probe, DIALOG_CANCEL_PROBE_MS);
+      }
+    };
+    this.dialogCancelTimer = setTimeout(probe, DIALOG_CANCEL_PROBE_MS);
+  }
+
+  /**
+   * Whether a transcript end recorded at `at` is the interrupt of the dialog a
+   * lone Esc declined (watchDialogCancel): recorded after that Esc, inside its
+   * confirm window, in the episode it landed in, and not already reported by
+   * the idle title. Consumes the watch when it is.
+   */
+  private takeDialogCancel(at: number): boolean {
+    const watch = this.dialogCancel;
+    if (!watch || watch.sessionId !== this.sessionId || watch.turnSeq !== this.turnSeq) return false;
+    if (watch.escAt !== this.lastEscAt || watch.escAt === this.titleEdgeEscAt) return false;
+    if (at < watch.escAt || Date.now() - watch.escAt >= ESC_INTERRUPT_CONFIRM_MS) return false;
+    this.dialogCancel = null;
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    this.dialogCancelTimer = null;
+    this.titleEdgeEscAt = watch.escAt;
+    return true;
   }
 
   /**
@@ -1321,12 +1419,18 @@ export class DaemonPTYBridge extends EventEmitter {
    * The agent's transcript recorded a turn end (completed or interrupted) at
    * `at`. An interrupt fires no Stop hook, so without this the episode would
    * stay open and the next prompt would join it. Ignored behind a dialog, or
-   * when the end predates the latest turn evidence.
+   * when the end predates the latest turn evidence. An end that follows a lone
+   * Esc which declined a dialog is that Esc's interrupt (watchDialogCancel):
+   * reported as `turnInterrupted`, since a hook-governed pane settles only on that.
    */
   noteTranscriptTurnEnd(at: number): void {
     if ((this.turnOpen || this.turnSoftClosed) && !this.awaitingHuman && at >= this.turnOpenedAt) {
+      const declined = this.takeDialogCancel(at);
       this.closeTurn();
       this.transcriptTurnEndAt = Date.now();
+      if (declined && this.sessionId) {
+        this.emit('turnInterrupted', { sessionId: this.sessionId, agent: this.agentDetector?.getLastAgent() || 'Claude Code' });
+      }
     }
   }
   /**
@@ -1985,6 +2089,14 @@ export class DaemonPTYBridge extends EventEmitter {
     ringBuffer: RingBuffer,
     sessionId: string,
     promptLog?: PromptEventLog,
+    /**
+     * #2771 — how the pane's process writes OSC 133 marks: `exec` runs a
+     * program with no shell (it never prompts), `integrated` is a shell with
+     * wmux's integration (it marks every prompt with `D;<n>` and `A`),
+     * `plain` anything else, whose marks are passed through unread. Absent:
+     * `plain`.
+     */
+    shellMarks: 'exec' | 'integrated' | 'plain' = 'plain',
   ): void {
     const interpreter = new OutputInterpreter((ptyProcess as TerminalPty).backend === 'rust' ? 'rust' : 'node');
     this.outputInterpreter = interpreter;
@@ -2005,6 +2117,11 @@ export class DaemonPTYBridge extends EventEmitter {
     if (prefilled.length > 0) {
       interpreter.seedModes(prefilled.toString('utf8'), ringBuffer.totalBytesWritten);
     }
+    // A bridge is built only for a freshly spawned process (a recovered
+    // ring holds the dead one's scrollback), so an integrated shell starts at
+    // its prompt and an exec unit's program starts running.
+    const marks = shellMarks === 'plain' ? null : new ShellMarkIngress(shellMarks === 'exec' ? 'running' : 'idle',
+      () => console.log(`[pty] ${sessionId}: program-written OSC 133 marks lowercased (shell command running)`));
 
     // With OSC 133 parsed here, the detector ends the agent on its markers in
     // stream order itself (see the command start/end branch below).
@@ -2430,6 +2547,19 @@ export class DaemonPTYBridge extends EventEmitter {
       if (this.startupDa1) this.checkStartupDa1(data, ptyProcess);
       this.lastOutputAt = Date.now();
 
+      // #2771 — before anything reads the chunk: a mark the running program
+      // wrote (not the shell) gets a lowercase kind, so the detector, the
+      // held chunks, the ring, the interpreter and live data all read the
+      // same decision. Only a chunk that can hold a mark is scanned.
+      if (marks) {
+        const decided = marks.apply(data);
+        if (decided !== data) {
+          data = decided;
+          // The native chunk's bytes no longer match: it leaves the zero-copy
+          // path. A chunk with only the shell's marks keeps it.
+          nativeChunk = undefined;
+        }
+      }
       const buf = nativeChunk ? undefined : Buffer.from(data);
       const byteLength = nativeChunk ? nativeChunk.byteLength : (buf?.length ?? 0);
 
@@ -2484,6 +2614,10 @@ export class DaemonPTYBridge extends EventEmitter {
             this.heldBytes += byteLength;
             this.heldWhileMuted.push(data);
           }
+        }
+        if (this.heldWhileMuted && this.heldFull) {
+          this.heldTail ??= new RingBuffer(DaemonPTYBridge.MAX_HELD_TAIL_BYTES, 'node');
+          this.heldTail.write(buf ?? nativeChunk?.readBytes() ?? Buffer.from(data));
         }
         return;
       }
@@ -2581,8 +2715,9 @@ export class DaemonPTYBridge extends EventEmitter {
    * the caller before forwarding starts) is preserved.
    *
    * Muting starts holding the dropped chunks. Unmuting with `replayHeld`
-   * pushes them through the normal capture path (ring + clients) in order;
-   * without it they are discarded, as before (#1464).
+   * pushes them through the normal capture path (ring + clients) in order,
+   * the head and then the tail (see heldTail); without it they are
+   * discarded, as before (#1464).
    *
    * The replay goes out as LIVE bytes (after the attach flush), so terminal
    * queries in it — DA1/DSR/OSC color probes the program sent at startup and
@@ -2599,14 +2734,17 @@ export class DaemonPTYBridge extends EventEmitter {
     // empty and the storm would otherwise clear the threshold on its own.
     if (this.muted && !muted) this.lastResizeAtMs = Date.now();
     const held = this.heldWhileMuted;
+    // Read before the hold is reset below, which releases the tail.
+    const replay = !muted && opts?.replayHeld && held ? Buffer.concat([Buffer.from(held.join('')), tailBytes(this.heldTail).bytes]) : null;
     if (muted !== this.muted) {
       this.heldWhileMuted = muted ? [] : null;
       this.heldBytes = 0;
       this.heldFull = false;
+      this.dropHeldTail();
     }
     this.muted = muted;
-    if (!muted && opts?.replayHeld && held && held.length > 0 && this.captureChunk) {
-      const buf = stripReplayQuerySequences(Buffer.from(held.join('')));
+    if (replay && replay.length > 0 && this.captureChunk) {
+      const buf = stripReplayQuerySequences(replay);
       if (buf.length > 0) this.captureChunk(buf.toString(), buf);
     }
   }
@@ -2623,6 +2761,12 @@ export class DaemonPTYBridge extends EventEmitter {
     this.heldWhileMuted = [];
     this.heldBytes = 0;
     this.heldFull = false;
+    this.dropHeldTail();
+  }
+
+  private dropHeldTail(): void {
+    this.heldTail?.dispose();
+    this.heldTail = null;
   }
 
   /**
@@ -2650,12 +2794,25 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
-   * The output held while muted (see heldWhileMuted), oldest first, and
-   * whether later output was dropped once the cap was reached; null when not
-   * muted. Read-only: the unmute still releases it.
+   * The output that arrived while muted, for a screen read; null when not
+   * muted. `total`: its bytes so far. `read()`: the bytes, oldest first, all of
+   * them while the head and tail (see heldWhileMuted, heldTail) still join up,
+   * else the tail alone (tailBytes), `dropped` being the bytes before it.
+   * Read-only: the unmute still releases the hold.
    */
-  heldOutput(): { data: string; full: boolean } | null {
-    return this.heldWhileMuted ? { data: this.heldWhileMuted.join(''), full: this.heldFull } : null;
+  heldOutput(): { total: number; read(): { data: Buffer; dropped: number } } | null {
+    const head = this.heldWhileMuted;
+    if (!head) return null;
+    const tail = this.heldTail;
+    const headBytes = this.heldBytes;
+    return {
+      total: headBytes + (tail?.totalBytesWritten ?? 0),
+      read: () => {
+        const { bytes, lost } = tailBytes(tail);
+        if (lost === 0) return { data: Buffer.concat([Buffer.from(head.join('')), bytes]), dropped: 0 };
+        return { data: bytes, dropped: headBytes + lost };
+      },
+    };
   }
 
   cleanup(): void {
@@ -2676,6 +2833,9 @@ export class DaemonPTYBridge extends EventEmitter {
 
     if (this.resizeGuardTimer) clearTimeout(this.resizeGuardTimer);
     this.resizeGuardTimer = null;
+    if (this.dialogCancelTimer) clearTimeout(this.dialogCancelTimer);
+    this.dialogCancelTimer = null;
+    this.dialogCancel = null;
 
     // AgentDetector subscriptions: without explicit unsubscribe, recovered
     // sessions or repeated setupDataForwarding calls would accumulate

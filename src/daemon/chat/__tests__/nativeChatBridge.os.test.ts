@@ -19,7 +19,22 @@ import { agentAliveVerdict } from '../../canonicalAgent';
 import { trustFixtureRows } from '../../../test-utils/folderTrustSessions';
 import { OPENCODE_MAX_SEND_BYTES, fileHistoryEpoch, projectChatBlocked, tuiHistoryEpoch, type ChatQueueEvent } from '../chatBridge';
 
+// Delegates to the real delivery unless a test stands in for it (the write
+// invariant tests: what a delivery may answer after it already wrote).
+type DeliverChatPrompt = typeof import('../../transcript/deliverChatPrompt').deliverChatPrompt;
+const delivery = vi.hoisted(() => ({ override: undefined as DeliverChatPrompt | undefined }));
+vi.mock('../../transcript/deliverChatPrompt', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../../transcript/deliverChatPrompt')>();
+  return { ...real, deliverChatPrompt: ((...args) => (delivery.override ?? real.deliverChatPrompt)(...args)) as DeliverChatPrompt };
+});
+/** A delivery that pastes, then answers `result` without pressing Enter. */
+const pasteThen = (result: Awaited<ReturnType<DeliverChatPrompt>>): DeliverChatPrompt => async (_session, text, deps) => {
+  if (deps.write(`\x1b[200~${text}\x1b[201~`)) deps.onWrite?.('paste');
+  return result;
+};
+
 const dirs: string[] = [];
+afterEach(() => { delivery.override = undefined; });
 afterEach(() => { for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
 
 const msgId = () => `${Date.now()}-${randomUUID()}`;
@@ -366,7 +381,7 @@ describe('send', () => {
     expect(stages).toEqual(['first-write', 'submit', 'first-write']);
   });
 
-  it('refuses before any receipt: bad ids, blank or long text, identity changes, no conversation, managed', async () => {
+  it('refuses before any dispatch: bad ids, blank or long text, identity changes, no conversation, managed', async () => {
     const f = fixture(); f.liveClaude();
     expect(await f.bridge.send(phoneSend('x', { clientMessageId: 'nope' }))).toMatchObject({ error: 'invalid-chat-request', effect: 'none' });
     expect(await f.bridge.send(phoneSend('x', { clientMessageId: `${Date.now() - 25 * 3600_000}-${randomUUID()}` })))
@@ -383,6 +398,86 @@ describe('send', () => {
     expect(await f.bridge.send(phoneSend())).toMatchObject({ error: 'managed-read-only', effect: 'none' });
     expect(f.managed.send).not.toHaveBeenCalled();
     expect(f.written).toEqual([]);
+  });
+
+  it('keeps a refusal before dispatch as a final receipt and one log line, without the text', async () => {
+    const f = fixture(); f.liveClaude();
+    // The agent is not verified: the pane cannot take a send.
+    f.state.agent.agentVerified = false;
+    const req = phoneSend('secret words');
+    expect(await f.bridge.send(req)).toMatchObject({ error: 'chat-unavailable', result: 'unavailable', effect: 'none', replayed: false });
+    expect(f.bridge.receipt('device:a', 'pane', req.clientMessageId))
+      .toEqual({ clientMessageId: req.clientMessageId, state: 'refused', result: 'unavailable', error: 'chat-unavailable',
+        agentSessionId: 'conv', historyEpoch: req.historyEpoch, at: Number(req.clientMessageId.slice(0, 13)) });
+    const lines = f.log.mock.calls.filter(([, message]) => String(message).includes(req.clientMessageId));
+    expect(lines).toEqual([['info', `[chat] send ${req.clientMessageId} pane=pane refused chat-unavailable at send-capability`]]);
+    expect(JSON.stringify(f.log.mock.calls)).not.toContain('secret');
+    // Final: a re-post replays the refusal even once the pane could take it.
+    f.state.agent.agentVerified = true;
+    const again = await f.bridge.send(req);
+    expect(again).toMatchObject({ error: 'chat-unavailable', effect: 'none', replayed: true });
+    expect(again).not.toHaveProperty('gate');
+    expect(f.written).toEqual([]);
+    // The branch is on disk for diagnostics, and loads back final.
+    expect(new ChatSendReceiptStore(f.dir).lookup('device:a', req.clientMessageId))
+      .toMatchObject({ state: 'final', outcome: { effect: 'none', error: 'chat-unavailable', gate: 'send-capability' } });
+    // A desktop send keeps no receipt for it: its retry is checked again.
+    f.state.agent.agentVerified = false;
+    const requestId = msgId();
+    expect(await f.bridge.desktopSend({ id: 'pane', agentSessionId: 'conv', text: 'hi', requestId })).toMatchObject({ result: 'unavailable', effect: 'none' });
+    expect(f.bridge.receipt('desktop', 'pane', requestId).state).toBe('unknown');
+  });
+
+  it('refuses an identity longer than a receipt holds before any gate, and the store still loads and sends', async () => {
+    const f = fixture(); f.liveClaude();
+    const long = phoneSend('x', { historyEpoch: 'h'.repeat(65) });
+    expect(await f.bridge.send(long)).toMatchObject({ error: 'invalid-chat-request', detail: 'historyEpoch', effect: 'none' });
+    expect(await f.bridge.send(phoneSend('x', { agentSessionId: 'a'.repeat(257) })))
+      .toMatchObject({ error: 'invalid-chat-request', detail: 'agentSessionId', effect: 'none' });
+    expect(f.bridge.receipt('device:a', 'pane', long.clientMessageId).state).toBe('unknown');
+    // A daemon restart loads the store, and the next send goes through.
+    const restarted = createChatBridge({ ...f.deps, receipts: new ChatSendReceiptStore(f.dir) });
+    expect(await restarted.send(phoneSend())).toMatchObject({ result: 'sent', effect: 'submitted' });
+  });
+
+  it('answers a refusal it could not record as the store failure, not the pane refusal', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.agent.agentVerified = false;
+    const full = createChatBridge({ ...f.deps, receipts: new ChatSendReceiptStore(fs.mkdtempSync(path.join(f.dir, 'x')), { limit: 0 }) });
+    const req = phoneSend();
+    expect(await full.send(req)).toMatchObject({ error: 'message-history-full', effect: 'none' });
+    const failing = createChatBridge({ ...f.deps, receipts: new ChatSendReceiptStore(fs.mkdtempSync(path.join(f.dir, 'y')), { write: () => { throw new Error('disk'); } }) });
+    expect(await failing.send(phoneSend())).toMatchObject({ error: 'chat-persist-failed', effect: 'none' });
+    expect(f.log.mock.calls.filter(([, m]) => String(m).includes(req.clientMessageId)))
+      .toEqual([['info', `[chat] send ${req.clientMessageId} pane=pane refused message-history-full at receipt-store gate=send-capability`]]);
+    expect(f.written).toEqual([]);
+  });
+
+  it('never reports a send that wrote anything as none, whatever the delivery answers after the write', async () => {
+    const f = fixture(); f.liveClaude();
+    for (const result of ['busy', 'blocked', 'unconfirmed', 'unavailable', 'session_changed', 'error'] as const) {
+      delivery.override = pasteThen(result);
+      const req = phoneSend(result);
+      expect(await f.bridge.send(req)).toMatchObject({ result: 'error', error: 'send-interrupted', effect: 'uncertain' });
+      expect(f.bridge.receipt('device:a', 'pane', req.clientMessageId).state).toBe('uncertain');
+    }
+    // A first paste the PTY refused wrote nothing: none, and no bytes.
+    delivery.override = undefined;
+    f.deps.write = () => false;
+    const refused = phoneSend('refused');
+    expect(await createChatBridge(f.deps).send(refused)).toMatchObject({ result: 'unavailable', error: 'chat-unavailable', effect: 'none' });
+    expect(f.written).toEqual(['busy', 'blocked', 'unconfirmed', 'unavailable', 'session_changed', 'error'].map((t) => `\x1b[200~${t}\x1b[201~`));
+  });
+
+  it('is uncertain when the agent state is gone right after the first paste', async () => {
+    const f = fixture(); f.liveClaude();
+    f.state.screen = ['● done', '─'.repeat(40), '❯ ', '─'.repeat(40)];
+    const original = f.deps.write;
+    // The pane's agent reads as gone once the first image path is pasted.
+    f.deps.write = (id, data) => { const ok = original(id, data); f.state.agent = { ...f.state.agent, agentVerified: false }; return ok; };
+    const req = phoneSend('look', { attachments: ['/tmp/a.png'] });
+    expect(await createChatBridge(f.deps).send(req)).toMatchObject({ result: 'error', error: 'send-interrupted', effect: 'uncertain' });
+    expect(f.written).toEqual(['\x1b[200~/tmp/a.png\x1b[201~']);
   });
 
   it('maps the file results the phone must tell apart', async () => {
@@ -2051,6 +2146,22 @@ describe('daemon queue (chat-queue)', () => {
     expect(q.bridge.delivered('device:b', 'pane')).toEqual([]);
   });
 
+  it('never pastes an item again once its dispatch wrote, whatever the delivery answered', async () => {
+    const f = fixture(); f.liveClaude(); runningTurn(f, 1);
+    const q = queued(f);
+    const answer = await q.send('one');
+    expect(answer).toMatchObject({ queueState: 'queued' });
+    // A delivery that pastes and then answers as if it were held (`busy`).
+    delivery.override = pasteThen('busy');
+    idleTurn(f, 1);
+    await q.bridge.kickQueue('pane');
+    idleTurn(f, 2);
+    await q.bridge.kickQueue('pane');
+    expect(pastes(f)).toEqual(['\x1b[200~one\x1b[201~']);
+    expect(q.bridge.queue('device:a', 'pane').map((item) => [item.state, item.reason])).toEqual([['uncertain', 'delivery-unconfirmed']]);
+    expect(q.bridge.receipt('device:a', 'pane', answer.clientMessageId)).toMatchObject({ state: 'uncertain' });
+  });
+
   it('the episode a delivery opens must be seen running before the next item goes', async () => {
     const f = fixture(); f.liveClaude(); runningTurn(f, 1);
     // As in the daemon: the Enter opens the next episode at once, while the
@@ -2614,16 +2725,52 @@ describe('steer and passive input (a send into a running Claude turn)', () => {
     expect(q.bridge.receipt('device:a', 'pane', clientMessageId)).not.toMatchObject({ queued: true });
   });
 
-  it('Codex: steer falls back to next-turn', async () => {
-    const f = fixture();
+  // Captured live on codex-cli 0.162.1 (2026-10-31): the composer stays empty
+  // under the status row mid-turn, and under the last answer after it.
+  const codexScreen = (top: string) => Object.assign(
+    [top, '', '› Ask Codex to do anything', '', '  GPT-6-Luna medium · ~/work', '  ? for shortcuts'],
+    { undimmed: [top, '', '›', '', '  GPT-6-Luna medium · ~/work', '  ? for shortcuts'] });
+  const CODEX_EPOCH = fileHistoryEpoch('codex', 'conv', 'a.jsonl');
+  const runningCodex = (f: ReturnType<typeof fixture>) => {
     f.state.projector = { ...FILE, terminal: { ...FILE.terminal!, agent: 'codex' } };
     f.state.agent = { ...f.state.agent, agentName: 'Codex CLI', agentVerified: true };
     running(f);
+    f.state.screen = codexScreen('• Working (2s • esc to interrupt)');
+  };
+
+  it('Codex: steer types into the running turn and presses Enter, which Codex applies to that turn', async () => {
+    const f = fixture(); runningCodex(f);
     const q = withQueue(f);
-    const answer = await q.send('now', { historyEpoch: fileHistoryEpoch('codex', 'conv', 'a.jsonl'), queue: { authorized: allow, deliver: 'steer' } });
+    const answer = await q.send('now', { historyEpoch: CODEX_EPOCH, queue: { authorized: allow, deliver: 'steer' } });
+    expect(answer).toMatchObject({ queueState: 'queued', queueDeliver: 'steer' });
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual(['\x1b[200~now\x1b[201~', '\r']);
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ state: 'delivered', deliver: 'steer' });
+    expect(q.bridge.receipt('device:a', 'pane', answer.clientMessageId)).toMatchObject({ queued: true });
+  });
+
+  it('Codex: next-turn waits for the turn to end, then submits with Tab, not Enter', async () => {
+    const f = fixture(); runningCodex(f);
+    const q = withQueue(f);
+    const { clientMessageId } = await q.send('later', { historyEpoch: CODEX_EPOCH });
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual([]);
+    f.state.agent = { ...f.state.agent, agentStatus: 'complete', turn: { id: 't1:n.1', state: 'idle', startedAt: 1 } };
+    f.state.screen = codexScreen('• Done.');
+    await q.bridge.kickQueue('pane');
+    expect(f.written).toEqual(['\x1b[200~later\x1b[201~', '\t']);
+    expect(q.bridge.queue('device:a', 'pane')[0]).toMatchObject({ clientMessageId, state: 'delivered', deliver: 'next-turn' });
+  });
+
+  it('a composer that takes no prompt mid-turn (OpenCode): steer falls back to next-turn', async () => {
+    const f = fixture();
+    f.state.native = { status: { ...TUI_STATUS, agentStatus: 'running' }, page: page('raw:ses_one') };
+    const q = withQueue(f);
+    const answer = await q.bridge.send({ owner: 'device:a', id: 'pane', agentSessionId: 'ses_one', historyEpoch: tuiHistoryEpoch('raw:ses_one'),
+      clientMessageId: msgId(), text: 'now', managedReadOnly: true, queue: { authorized: allow, deliver: 'steer' } });
     expect(answer).toMatchObject({ queueState: 'queued', queueDeliver: 'next-turn' });
     expect(q.bridge.steer('device:a', 'pane', answer.clientMessageId)).toEqual({ ok: true, state: 'queued', deliver: 'next-turn' });
     await q.bridge.kickQueue('pane');
-    expect(f.written).toEqual([]);
+    expect(f.tuiSend).not.toHaveBeenCalled();
   });
 });

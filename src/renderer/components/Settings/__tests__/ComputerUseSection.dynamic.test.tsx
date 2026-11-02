@@ -51,9 +51,9 @@ async function render(api: {
 describe('formatStopKey', () => {
   it('names the keys a person presses on each OS', () => {
     expect(formatStopKey('CommandOrControl+Alt+Shift+Escape', false)).toBe('Ctrl+Alt+Shift+Esc');
-    expect(formatStopKey('CommandOrControl+Alt+Shift+Escape', true)).toBe('Cmd+Option+Shift+Esc');
+    expect(formatStopKey('CommandOrControl+Alt+Shift+Escape', true)).toBe('⌥⇧⌘Esc');
     // The macOS chord (Cmd would force-quit the front app).
-    expect(formatStopKey('Control+Alt+Shift+Escape', true)).toBe('Control+Option+Shift+Esc');
+    expect(formatStopKey('Control+Alt+Shift+Escape', true)).toBe('⌃⌥⇧Esc');
   });
 });
 
@@ -79,7 +79,7 @@ describe('Settings › Computer use', () => {
     const sw = el.querySelector('[role="switch"]') as HTMLButtonElement;
     expect(sw.getAttribute('aria-checked')).toBe('false');
     expect(el.textContent).toContain('Not in this build yet');
-    expect(el.textContent).toMatch(/(Ctrl|Cmd)\+(Alt|Option)\+Shift\+Esc/);
+    expect(el.textContent).toMatch(/Ctrl\+Alt\+Shift\+Esc|⌥⇧⌘Esc/);
     for (const id of ['computeruse', 'computerusehelper', 'computerusestop', 'computeruseask', 'computeruseoverlay']) {
       expect(el.querySelector(`[data-setting-id="${id}"]`), id).not.toBeNull();
     }

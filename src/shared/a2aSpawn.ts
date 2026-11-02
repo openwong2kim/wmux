@@ -409,6 +409,8 @@ export interface A2aSpawnOutgoingSummary {
   sub?: string;
   /** The pane here that gets the replies. */
   from: A2aSpawnFromV1;
+  /** This PC's name for the agent it asked for (`A2aSpawnAskInput.label`). */
+  label?: string;
   state: A2aSpawnOutgoingState;
   code?: A2aSpawnCode;
   linkId?: string;
@@ -435,6 +437,11 @@ export interface A2aSpawnAskInput {
    * so a retry after an unclear failure starts nothing twice. Never sent.
    */
   requestKey?: string;
+  /**
+   * The name this PC gives the started agent: its link's remote label, so
+   * the alias reads `<PC>/<workspace>/<label>`. Never sent.
+   */
+  label?: string;
 }
 
 /**
@@ -450,6 +457,8 @@ export interface A2aSpawnUiAsk {
   end: { workspaceId: string; paneId: string };
   /** Minted once per dialog and reused on a retry (`A2aSpawnAskInput.requestKey`). */
   requestKey?: string;
+  /** The name this PC gives the started agent (`A2aSpawnAskInput.label`). */
+  label?: string;
 }
 
 /**
@@ -588,15 +597,15 @@ export function parseSpawnRequest(raw: unknown): A2aSpawnRequestV1 | null {
 
 /**
  * Whether a request is inside its time window by B's clock: not sent from the
- * future (past the allowed skew), not living longer than 72 h from either its
- * send time or now, and not expired.
+ * future (past the allowed skew), not living longer than `ttlMaxMs` (72 h for
+ * a spawn) from either its send time or now, and not expired.
  */
-export function spawnClockOk(sentAt: string, expiresAt: string, now: number): boolean {
+export function spawnClockOk(sentAt: string, expiresAt: string, now: number, ttlMaxMs = SPAWN_TTL_MAX_MS): boolean {
   const sent = Date.parse(sentAt);
   const expires = Date.parse(expiresAt);
   if (Number.isNaN(sent) || Number.isNaN(expires)) return false;
   if (sent > now + SPAWN_CLOCK_SKEW_MS) return false;
-  if (expires > now + SPAWN_TTL_MAX_MS || expires > sent + SPAWN_TTL_MAX_MS) return false;
+  if (expires > now + ttlMaxMs || expires > sent + ttlMaxMs) return false;
   return now <= expires;
 }
 

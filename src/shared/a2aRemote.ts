@@ -37,6 +37,7 @@
 
 import type { CompletionEvidence, TaskState } from './types';
 import type { A2aSpawnRequestV1, A2aSpawnResultV1, A2aSpawnTargetsV1 } from './a2aSpawn';
+import type { A2aContinueLinkState, A2aContinueManifestV1, A2aContinueRequestV1, A2aContinueResultV1, A2aContinueStatusQueryV1 } from './a2aContinue';
 
 // ─── Versions ───────────────────────────────────────────────────────────────
 
@@ -84,6 +85,13 @@ export const A2A_ROUTES = Object.freeze({
    * fetches one the server's stream named. Path: /api/a2a/blobs/:sha256
    */
   blobs: '/api/a2a/blobs',
+  /**
+   * One file of a conversation another PC continues (continue), by its
+   * SHA-256 in the request's manifest: `PUT` — A uploads it to B when B is
+   * the server; `HEAD` — whether B holds it already; `GET` — B, the joiner,
+   * fetches it from A. Path: /api/a2a/continue/:continueId/:sha256
+   */
+  continue: '/api/a2a/continue',
 } as const);
 
 /**
@@ -112,6 +120,12 @@ export const A2A_FEATURE_IMAGES = 'images.1';
  * one only to a PC that advertises it.
  */
 export const A2A_FEATURE_SPAWN = 'spawn.1';
+/**
+ * The PC takes a Claude conversation another PC continues here
+ * (`shared/a2aContinue.ts`). A requester sends one only to a PC that
+ * advertises it.
+ */
+export const A2A_FEATURE_CONTINUE = 'continue.1';
 /**
  * Stream liveness both ways. A joiner with it acks its stream cursor every
  * `A2A_STREAM_PING_MS` while the stream is up (to a server whose hello lists
@@ -654,7 +668,7 @@ export interface A2aRemoteEnvelope {
    * payload is in `offer`. An older receiver refuses them as an unknown link.
    */
   link?: {
-    state: 'active' | 'revoked' | 'broken' | 'offer' | 'offer-withdrawn' | 'spawn' | 'spawn-result' | 'spawn-targets';
+    state: 'active' | 'revoked' | 'broken' | 'offer' | 'offer-withdrawn' | 'spawn' | 'spawn-result' | 'spawn-targets' | A2aContinueLinkState;
     version: number;
     reason?: A2aLinkRecordV1['endedReason'];
   };
@@ -668,6 +682,16 @@ export interface A2aRemoteEnvelope {
   spawn?: A2aSpawnRequestV1;
   spawnResult?: A2aSpawnResultV1;
   spawnTargets?: A2aSpawnTargetsV1;
+  /**
+   * Continuing a conversation on another PC (`shared/a2aContinue.ts`), each on
+   * a 'link' envelope of the state `continue`, `continue-manifest`,
+   * `continue-result` or `continue-status`. `linkId` is the continueId; these
+   * never touch a link record. An older receiver refuses them as an unknown link.
+   */
+  continue?: A2aContinueRequestV1;
+  continueManifest?: A2aContinueManifestV1;
+  continueResult?: A2aContinueResultV1;
+  continueStatus?: A2aContinueStatusQueryV1;
   /** For 'receipt' (with `taskId`). */
   receipt?: A2aRemoteReceipt;
   /**
@@ -934,6 +958,12 @@ export interface A2aRemoteTaskMarkerV1 {
    * task stored before it was recorded (treated as a pane task).
    */
   kind?: A2aEndpointKind;
+  /**
+   * Outbound company task: the peer's state messageId of the `completed` held
+   * here as a report (the task is input-required) until this host marks it
+   * done. Cleared by the peer's next state that is not a report.
+   */
+  reported?: string;
 }
 
 /**

@@ -16,19 +16,18 @@
 //   3. the wizard reads MCP as registered from the sandbox's ~/.claude.json
 //      (seeded: a suffixed instance never writes agent configs) and installs
 //      the hook bridge into the sandbox home;
-//   4. the bot's first task: the active pane is moved into a fixture git
-//      repository (GitHub-shaped origin, one commit), the folder row reads it
-//      as ok, Send and the usage consent create the first-run bot, the task
-//      reaches the fake Claude through the Agent SDK (its log), the bot's
-//      answer card shows `Fake answer:`, and bots.json holds that one bot;
-//   5. when the wizard still offers it, "Try sample task" types the agent's
-//      launch line into a pane, the wizard reports success; the agent really
-//      ran in that pane (its own log), the sidebar lists it, and its status
-//      leaves `running` for a status at rest.
+//   4. the wizard is one screen whose one primary is "Open a folder…" (no
+//      sample task, no bot task); the folder picker is native, so the run
+//      takes the other way out: Skip closes it, and main reports the first
+//      run shown but not completed (check() and the `.first-run` marker);
+//   5. nothing opens by itself after it: no tour and no keyboard cheat sheet,
+//      on the Fleet page (where the tour used to start) or on Workspaces;
+//   6. the user's next step, run by hand in the workspace's pane: `claude`
+//      with a prompt starts the fake agent there (its own log), the sidebar
+//      lists it, and its status leaves `running` for a status at rest.
 //
-// The bot's claude is the one main resolves (resolveClaudeExecutable, the
-// same lookup the "Agent ready" card shows): step 2's 9.9.9 is what proves
-// the bot turn runs on the fake, not a real install.
+// The pane's claude is checked to be the fake before it is run (step 6), and
+// step 2's 9.9.9 proves main resolves the fake too, not a real install.
 //
 // Isolation: a unique WMUX_DATA_SUFFIX, and a sandbox home (HOME, and on
 // Windows USERPROFILE/APPDATA/LOCALAPPDATA) under the temp dir, so nothing is
@@ -61,14 +60,11 @@ import {
   agentRanInPane,
   appEnvExtras,
   fakeAgentShims,
-  firstTaskRepoFixture,
   INTERRUPT_EXIT_CODES,
   killSurvivors,
   mergeTrees,
   normalizeProcessRows,
   onceAsync,
-  oneBotProfile,
-  paneCdCommand,
   paneProbeCommand,
   paneProbeRefusal,
   parseRunArgs,
@@ -78,7 +74,6 @@ import {
   sandboxBase,
   sandboxEnv,
   sandboxShellProfiles,
-  sdkPromptWith,
   seededClaudeJson,
   squirrelInstallRefusal,
   survivors,
@@ -128,10 +123,8 @@ fs.mkdirSync(runDir, { recursive: true });
 const sandbox = fs.mkdtempSync(path.join(sandboxBase(), SANDBOX_PREFIX));
 const fakeBin = path.join(sandbox, 'fake-bin');
 const fakeAgentLog = path.join(runDir, 'fake-agents.jsonl');
-// The first task's folder, and where the app keeps its bots (the suffixed
-// wmux dir under the sandbox home).
-const repoDir = path.join(sandbox, 'first-run-e2e');
-const botsFile = path.join(sandbox, `.wmux${suffix}`, 'factory', 'bots.json');
+/** What the user types into the pane after the wizard: the agent, with a prompt. */
+const AGENT_LINE = 'claude "Say hello from the first-run e2e"';
 const envFile = path.join(runDir, 'app-env.json');
 // Electron's userData goes into the sandbox (wmux appends the suffix to it),
 // never to %APPDATA% or ~/Library/Application Support.
@@ -213,26 +206,7 @@ function wmuxCli(cliArgs, timeoutMs = 30_000) {
   });
 }
 
-/** git in the sandbox, reading no system config and never prompting. */
-function git(gitArgs, cwd) {
-  return new Promise((resolve) => {
-    execFile('git', gitArgs, {
-      cwd,
-      env: { ...driverEnv, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
-      timeout: 30_000,
-      windowsHide: true,
-    }, (err, stdout, stderr) => resolve({ ok: !err, out: `${stdout}${stderr}`.trim().slice(0, 500) }));
-  });
-}
-
 const readFakeAgentLog = () => (fs.existsSync(fakeAgentLog) ? fs.readFileSync(fakeAgentLog, 'utf8') : '');
-
-/** Two paths name the same folder (both resolved; any case on Windows). */
-function sameFolder(a, b) {
-  const real = (p) => { try { return fs.realpathSync.native(p); } catch { return path.resolve(p); } };
-  const [x, y] = [real(a), real(b)];
-  return WIN ? x.toLowerCase() === y.toLowerCase() : x === y;
-}
 
 async function step(name, fn) {
   const started = Date.now();
@@ -546,15 +520,7 @@ async function scenario() {
       fs.mkdirSync(driverEnv.APPDATA, { recursive: true });
       fs.mkdirSync(driverEnv.LOCALAPPDATA, { recursive: true });
     }
-    // The first task's folder: a repository the bot can read, never fetched.
-    fs.mkdirSync(repoDir, { recursive: true });
-    const fixture = firstTaskRepoFixture();
-    for (const f of fixture.files) fs.writeFileSync(path.join(repoDir, f.name), f.content);
-    for (const g of fixture.git) {
-      const r = await git(g, repoDir);
-      if (!r.ok) throw new StepError(`could not build the first task's repository (git ${g.join(' ')}): ${r.out}`);
-    }
-    return { fakeBin, sandbox, repoDir };
+    return { fakeBin, sandbox };
   });
 
   await step('launch', async () => {
@@ -573,27 +539,6 @@ async function scenario() {
     // By now the app has started its daemon: tie it to the run while the app
     // is alive, so a daemon that outlives an early app exit is still ours.
     await recordTree();
-  });
-
-  await step('pane is in the repo', async () => {
-    // The folder row suggests the active pane's folder. Choose opens a real
-    // folder dialog (WMUX_NO_DIALOG does not cover it), so the pane goes to
-    // the repository first, as early as possible, through the run's own CLI.
-    const landed = path.join(sandbox, 'pane-cwd.txt');
-    const line = paneCdCommand(repoDir, landed);
-    const deadline = Date.now() + 30_000;
-    let sent = await wmuxCli(['send', '--active', '--submit', line]);
-    while (!sent.ok && Date.now() < deadline) {
-      await sleep(1000);
-      sent = await wmuxCli(['send', '--active', '--submit', line]);
-    }
-    if (!sent.ok) throw new StepError(`could not move the active pane into the repository: ${sent.out}`);
-    while (!fs.existsSync(landed) && Date.now() < deadline) await sleep(250);
-    await sleep(250);
-    if (!fs.existsSync(landed)) throw new StepError(`the active pane never ran the cd into ${repoDir}`);
-    const printed = fs.readFileSync(landed, 'utf8').replace(/^\uFEFF/, '').trim();
-    if (!sameFolder(printed, repoDir)) throw new StepError(`the active pane is in "${printed}", not ${repoDir}`);
-    return { cwd: printed };
   });
 
   await step('Claude card ready', async () => {
@@ -630,18 +575,68 @@ async function scenario() {
     return { clicked: false, installed: await exists('first-run-wizard-hooks-installed') };
   });
 
-  // What follows the agent steps: the first task (the wizard's last step)
-  // and, when the wizard still offers it, the sample task. Whichever shows
-  // first runs first, so the scenario follows the wizard's own order.
-  const next = await nextWizardStep();
-  if (next === 'first-task') {
-    await firstTask();
-    if (await exists('first-run-wizard-try')) await sampleTask({ wizardCloses: true });
-    else result.observed.sampleTask = 'not offered after the first task';
-  } else {
-    await sampleTask({ wizardCloses: false });
-    await firstTask();
-  }
+  await step('wizard offers Open a folder', async () => {
+    const r = await cw(['wait-settle', '--testid', 'first-run-wizard-open-folder', '--quiet', '0', '--timeout', '30000'], { timeoutMs: 60_000 });
+    const seen = await read(`(() => {
+      const dialog = document.querySelector('[data-testid="first-run-wizard"]');
+      const q = (id) => document.querySelector('[data-testid="' + id + '"]');
+      const open = q('first-run-wizard-open-folder');
+      return {
+        wizard: !!dialog,
+        primaries: dialog ? [...dialog.querySelectorAll('.ui-btn-primary')].map((b) => b.dataset.testid ?? b.textContent) : [],
+        openFolder: open ? { text: open.textContent, disabled: open.disabled } : null,
+        removed: ['first-run-wizard-try', 'first-run-first-task', 'first-run-folder-row', 'first-run-wizard-statusline-offer'].filter((id) => q(id)),
+      };
+    })()`);
+    result.observed.wizardActions = seen;
+    if (!r.ok || !seen?.openFolder) throw new StepError(`no "Open a folder…" button (first-run-wizard-open-folder) in the wizard${seen?.wizard === false ? '; the wizard closed' : ''}`);
+    if (seen.openFolder.disabled) throw new StepError('"Open a folder…" is disabled');
+    // Agent ready, MCP registered, hooks installed: nothing else unblocks first.
+    if (seen.primaries.length !== 1 || seen.primaries[0] !== 'first-run-wizard-open-folder') {
+      throw new StepError(`the wizard's one primary should be "Open a folder…", but the primaries are ${JSON.stringify(seen.primaries)}`);
+    }
+    if (seen.removed.length) throw new StepError(`the one-screen wizard still shows ${seen.removed.join(', ')}`);
+    return seen;
+  });
+
+  await step('Skip marks the first run shown, not completed', async () => {
+    await must(['click', '--testid', 'first-run-wizard-skip']);
+    const r = await cw(['wait-settle', '--testid', 'first-run-wizard', '--state', 'hidden', '--quiet', '0', '--timeout', '20000'], { timeoutMs: 45_000 });
+    if (!r.ok) throw new StepError('the wizard stayed open after Skip');
+    // What main reports now (the same call a reopened wizard and Settings make).
+    const check = await read(`window.electronAPI.firstRun.check().then((c) => ({ shown: c.shown, completedAt: c.completedAt ?? null }), (e) => ({ error: String(e) }))`);
+    result.observed.afterSkip = check;
+    if (!check || check.error) throw new StepError(`firstRun.check() failed after Skip: ${check?.error ?? 'no answer'}`);
+    if (check.shown !== true) throw new StepError('after Skip, main does not report the first run as shown: the wizard would open again on the next launch');
+    if (check.completedAt !== null) throw new StepError(`after Skip, main reports the first run completed on ${check.completedAt}`);
+    // The marker itself, where the app logged its userData.
+    const marker = result.observed.userData?.path ? path.join(result.observed.userData.path, '.first-run') : null;
+    if (marker && fs.existsSync(marker)) {
+      const body = fs.readFileSync(marker, 'utf8').trim();
+      if (!body.startsWith('skipped ')) throw new StepError(`the .first-run marker reads "${body.slice(0, 80)}", not a skip`);
+      return { check, marker: body };
+    }
+    return { check, marker: `not found where expected (${marker ?? 'no userData path'}; informational)` };
+  });
+
+  await step('nothing opens by itself', async () => {
+    // The tour used to start on the first visit to Fleet, and the cheat sheet
+    // after it: visit Fleet, then Workspaces, and watch for either.
+    const watch = async (page) => {
+      await must(['click', '--selector', `[data-sidebar-nav="${page}"]`]);
+      const until = Date.now() + 8_000;
+      while (Date.now() < until) {
+        const open = await read(`['onboarding-overlay', 'keyboard-cheat-sheet', 'first-run-wizard'].filter((id) => document.querySelector('[data-testid="' + id + '"]'))`);
+        if (open?.length) throw new StepError(`${open.join(', ')} opened by itself on the ${page} page after the first run`);
+        await sleep(500);
+      }
+    };
+    await watch('fleet');
+    await watch('home');
+    return { watched: ['fleet', 'home'] };
+  });
+
+  await agentInPane();
 
   await step('evidence', async () => {
     const snap = await cw(['snapshot', '--as', 'final'], { timeoutMs: 30_000 });
@@ -650,178 +645,44 @@ async function scenario() {
   });
 }
 
-/** Which step the wizard offers after its agent steps: 'first-task' (the
- *  folder row) or 'sample' ("Try sample task"); the folder row wins when both
- *  show. */
-async function nextWizardStep() {
-  let seen = null;
-  await step('wizard offers the next step', async () => {
-    const deadline = Date.now() + 60_000;
-    while (Date.now() < deadline) {
-      const shown = await read(`({ folder: !!document.querySelector('[data-testid="first-run-folder-row"]'), sample: !!document.querySelector('[data-testid="first-run-wizard-try"]'), wizard: !!document.querySelector('[data-testid="first-run-wizard"]') })`);
-      if (shown?.folder) { seen = 'first-task'; return { next: seen }; }
-      if (shown?.sample) { seen = 'sample'; return { next: seen }; }
-      if (shown && !shown.wizard) throw new StepError('the wizard closed before offering the first task');
-      await sleep(500);
-    }
-    throw new StepError('the wizard shows neither the folder row (first-run-folder-row) nor "Try sample task" (first-run-wizard-try)');
-  });
-  return seen;
-}
-
-/** The bot's first task, from the folder row to its answer and its one bot. */
-async function firstTask() {
-  await step('folder row reads the repo', async () => {
-    const sel = '[data-testid="first-run-folder-status"][data-status="ok"]';
-    const r = await cw(['wait-settle', '--selector', sel, '--quiet', '0', '--timeout', '45000'], { timeoutMs: 75_000 });
-    const row = await read(`(() => { const row = document.querySelector('[data-testid="first-run-folder-row"]'); const st = document.querySelector('[data-testid="first-run-folder-status"]'); return row ? { status: st ? st.dataset.status ?? null : null, text: row.textContent } : null; })()`);
-    result.observed.folderRow = row;
-    if (!r.ok) {
-      if (!row) throw new StepError('no folder row (first-run-folder-row) in the wizard');
-      throw new StepError(`the folder row never read ${repoDir} as ok (status ${row.status}, row "${row.text}")${row.status === 'not_a_repo' ? '; the active pane was moved there: does the row follow the pane\'s folder after it changes?' : ''}`);
-    }
-    return row;
-  });
-
-  let taskText = null;
-  await step('first task sent', async () => {
-    const shown = await cw(['wait-settle', '--testid', 'first-run-first-task', '--quiet', '0', '--timeout', '20000'], { timeoutMs: 45_000 });
-    if (!shown.ok) throw new StepError('no first-task card (first-run-first-task) after the folder row read ok');
-    // The task as Send will post it (its data-task-text: the chosen
-    // example's, "explain" by default).
-    const card = await read(`(() => {
-      const send = document.querySelector('[data-testid="first-run-first-task-send"]');
-      return { task: send ? send.dataset.taskText ?? null : null, send: send ? !send.disabled : null };
-    })()`);
-    result.observed.firstTaskCard = card;
-    taskText = (card?.task || '').trim() || null;
-    if (card?.send !== true) throw new StepError(card?.send === false ? 'Send (first-run-first-task-send) is disabled' : 'no Send button (first-run-first-task-send) on the first-task card');
-    await must(['click', '--testid', 'first-run-first-task-send']);
-    const consent = await cw(['wait-settle', '--testid', 'first-run-first-task-consent', '--quiet', '0', '--timeout', '20000'], { timeoutMs: 45_000 });
-    if (!consent.ok) throw new StepError('no usage consent screen (first-run-first-task-consent) after Send');
-    await must(['click', '--testid', 'first-run-first-task-consent-confirm']);
-    return { task: taskText };
-  });
-
-  await step('first answer', async () => {
-    const deadline = Date.now() + 180_000;
-    let waited = false;
-    while (Date.now() < deadline) {
-      const s = await read(`(() => {
-        const q = (id) => document.querySelector('[data-testid="' + id + '"]');
-        const answer = q('first-run-first-task-answer');
-        if (answer) return { state: 'answer', text: answer.textContent };
-        const error = q('first-run-first-task-error');
-        if (error) return { state: 'error', text: error.textContent };
-        if (q('first-run-first-task-waiting')) return { state: 'waiting' };
-        return { state: q('first-run-wizard') ? 'other' : 'closed' };
-      })()`);
-      if (s?.state === 'waiting') waited = true;
-      if (s?.state === 'answer') {
-        result.observed.firstAnswer = s.text;
-        if (!s.text.includes('Fake answer:')) throw new StepError(`the answer card does not hold the fake's answer: "${s.text.slice(0, 200)}"`);
-        return { answer: s.text.slice(0, 200) };
-      }
-      if (s?.state === 'error') throw new StepError(`the first task failed: ${s.text}`);
-      if (s?.state === 'closed') throw new StepError('the wizard closed before the first answer showed');
-      await sleep(1000);
-    }
-    const prompts = sdkPromptWith(readFakeAgentLog(), '').prompts.length;
-    throw new StepError(`no answer card (first-run-first-task-answer) within 180 s${waited ? ', the wizard kept waiting' : ''}; the fake Claude got ${prompts} Agent SDK prompt(s)`);
-  });
-
-  await step('the bot got the task', async () => {
-    if (!taskText) throw new StepError('the task text could not be read from the first-task card');
-    const { prompts, match } = sdkPromptWith(readFakeAgentLog(), taskText);
-    if (!match) {
-      throw new StepError(prompts.length
-        ? `no Agent SDK prompt holds the task "${taskText}" (${prompts.length} prompt(s); the first starts "${prompts[0].slice(0, 160)}")`
-        : 'the fake Claude never got an Agent SDK prompt: the bot turn did not run on the fake');
-    }
-    return { prompts: prompts.length };
-  });
-
-  await step('one bot exists', async () => {
-    // The store writes bots.json shortly after a change.
-    const deadline = Date.now() + 15_000;
-    let check = { ok: false, reason: `${botsFile} not found` };
-    while (Date.now() < deadline) {
-      if (fs.existsSync(botsFile)) check = oneBotProfile(fs.readFileSync(botsFile, 'utf8'));
-      if (check.ok) break;
-      await sleep(500);
-    }
-    if (!check.ok) throw new StepError(check.reason);
-    result.observed.bot = check.bot;
-    if (!check.bot.repoPath || !sameFolder(check.bot.repoPath, repoDir)) {
-      throw new StepError(`the bot's repository is ${check.bot.repoPath ?? 'unset'}, not ${repoDir}`);
-    }
-    return check.bot;
-  });
-}
-
-/** "Try sample task" and the agent it starts in a pane. `wizardCloses`: the
- *  sample task is the wizard's last step, so it must close after it. */
-async function sampleTask({ wizardCloses }) {
+/** The user's next step after the wizard: the agent, started by hand in the
+ *  workspace's pane, really runs there and the sidebar follows it. */
+async function agentInPane() {
   await step('pane runs the fake claude', async () => {
-    // "Try sample task" types `claude ...` into a pane. Before it may, prove
-    // that the pane's shell resolves `claude` to the fake: a login shell's
-    // profile can put a real install first, which would spend the owner's
-    // account. Asked in the active pane, through the run's own CLI.
+    // Before `claude` is typed into a pane, prove that the pane's shell
+    // resolves it to the fake: a login shell's profile can put a real install
+    // first, which would spend the owner's account. Asked in the active pane,
+    // through the run's own CLI.
     const probe = path.join(sandbox, 'claude-probe.txt');
-    const sent = await wmuxCli(['send', '--active', '--submit', paneProbeCommand(probe)]);
-    if (!sent.ok) throw new StepError(`could not ask a pane which claude it runs: ${sent.out}`);
     const deadline = Date.now() + 30_000;
+    let sent = await wmuxCli(['send', '--active', '--submit', paneProbeCommand(probe)]);
+    while (!sent.ok && Date.now() < deadline) {
+      await sleep(1000);
+      sent = await wmuxCli(['send', '--active', '--submit', paneProbeCommand(probe)]);
+    }
+    if (!sent.ok) throw new StepError(`could not ask a pane which claude it runs: ${sent.out}`);
     while (!fs.existsSync(probe) && Date.now() < deadline) await sleep(250);
     await sleep(250);
-    if (!fs.existsSync(probe)) throw new StepError('the pane never answered which claude it runs; refusing to start the sample task');
+    if (!fs.existsSync(probe)) throw new StepError('the pane never answered which claude it runs; refusing to start the agent');
     const raw = fs.readFileSync(probe);
     const refusal = paneProbeRefusal(raw, fakeBin);
-    result.observed.paneClaude = raw.toString('utf8').replace(/^\uFEFF/, '').trim();
-    if (refusal) throw new StepError(`refusing to start the sample task: ${refusal}`);
+    result.observed.paneClaude = raw.toString('utf8').replace(/^﻿/, '').trim();
+    if (refusal) throw new StepError(`refusing to start the agent: ${refusal}`);
     return { resolved: result.observed.paneClaude };
   });
 
-  await step('sample task runs the agent in a pane', async () => {
-    const enabled = await read(`(() => { const b = document.querySelector('[data-testid="first-run-wizard-try"]'); return b ? !b.disabled : null; })()`);
-    if (enabled !== true) {
-      throw new StepError(enabled === null ? 'no "Try sample task" button in the wizard' : '"Try sample task" is disabled (wizard not ready: Claude not found or MCP not registered)');
-    }
-    await must(['click', '--testid', 'first-run-wizard-try']);
-    // Success, the OSC 133 timeout fallback, or an error: whichever shows first.
-    const deadline = Date.now() + 45_000;
-    while (Date.now() < deadline) {
-      const state = await read(`['success','fallback','error'].find((s) => document.querySelector('[data-testid="first-run-wizard-sample-' + s + '"]')) ?? (document.querySelector('[data-testid="first-run-wizard"]') ? 'running' : 'closed')`);
-      if (state === 'success' || state === 'closed') return { outcome: state };
-      if (state === 'fallback') throw new StepError('the sample task timed out waiting for the shell prompt (no OSC 133 prompt mark in the pane)');
-      if (state === 'error') throw new StepError('the sample task failed to open its pane');
-      await sleep(500);
-    }
-    throw new StepError('the sample task did not report success within 45 s');
-  });
-
-  if (wizardCloses) {
-    await step('wizard finishes', async () => {
-      // After the bot's first answer the wizard stays on it, with "Open the
-      // conversation"; that (or Close) ends it. Before this step, nothing.
-      const open = await read(`(() => { const b = document.querySelector('[data-testid="first-run-first-task-open"]'); return b ? !b.disabled : null; })()`);
-      if (open === true) await must(['click', '--testid', 'first-run-first-task-open']);
-      const r = await cw(['wait-settle', '--testid', 'first-run-wizard', '--state', 'hidden', '--quiet', '0', '--timeout', '20000'], { timeoutMs: 45_000 });
-      if (!r.ok) throw new StepError(open === true ? 'the wizard stayed open after "Open the conversation"' : 'the wizard stayed open after the sample task succeeded');
-      const marker = result.observed.userData?.path ? path.join(result.observed.userData.path, '.first-run') : null;
-      return { completionMarker: marker && fs.existsSync(marker) ? marker : 'not found where expected (informational)' };
-    });
-  }
-
   await step('agent ran in the pane', async () => {
+    const sent = await wmuxCli(['send', '--active', '--submit', AGENT_LINE]);
+    if (!sent.ok) throw new StepError(`could not type the agent's line into the pane: ${sent.out}`);
     const deadline = Date.now() + 30_000;
     let seen = { started: false, prompted: false };
     while (Date.now() < deadline) {
-      seen = agentRanInPane(fs.existsSync(fakeAgentLog) ? fs.readFileSync(fakeAgentLog, 'utf8') : '');
+      seen = agentRanInPane(readFakeAgentLog());
       if (seen.started && seen.prompted) return seen;
       await sleep(500);
     }
     throw new StepError(seen.started
-      ? 'the fake Claude started in a pane but never received the sample prompt'
+      ? 'the fake Claude started in a pane but never received its prompt'
       : 'no fake Claude ever started in a terminal (the pane ran something else)');
   });
 

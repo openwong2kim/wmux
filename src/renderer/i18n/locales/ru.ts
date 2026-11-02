@@ -5,10 +5,10 @@ export const ru = {
   // Sidebar
   'sidebar.workspaces': 'Рабочие пространства',
   'sidebar.newWorkspace': 'Новое рабочее пространство',
-  'sidebar.newWorkspaceTooltip': 'Новое рабочее пространство (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Новое рабочее пространство',
   'sidebar.newRemoteWorkspace': 'Новое рабочее пространство на {name}',
-  'sidebar.hideTooltip': 'Скрыть боковую панель (Ctrl+B)',
-  'sidebar.expandTooltip': 'Развернуть боковую панель (Ctrl+B)',
+  'sidebar.hideTooltip': 'Скрыть боковую панель',
+  'sidebar.expandTooltip': 'Развернуть боковую панель',
   'sidebar.unreadCount': '{count} непрочитанных',
 
   // Workspace
@@ -17,7 +17,6 @@ export const ru = {
   'workspace.agentError': 'Ошибка агента',
   'workspace.agentWaiting': 'Агент ожидает',
 
-  'workspace.agentAwaitingInput': 'Агент ждёт ввода',
   'workspace.needsYou': 'Ждёт вас',
   'workspace.agentIdle': 'Агент простаивает',
   'workspace.agentUnverifiable': 'Нет обновлений {time}',
@@ -66,9 +65,9 @@ export const ru = {
 
   // Search
   'search.placeholder': 'Поиск...',
-  'search.prevTooltip': 'Предыдущий результат (Shift+Enter)',
-  'search.nextTooltip': 'Следующий результат (Enter)',
-  'search.closeTooltip': 'Закрыть (ESC)',
+  'search.prevTooltip': 'Предыдущий результат',
+  'search.nextTooltip': 'Следующий результат',
+  'search.closeTooltip': 'Закрыть',
   'search.regexTooltip': 'Использовать регулярное выражение',
   'search.allPanes': 'Все панели',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const ru = {
   'notification.markAllRead': 'Отметить все прочитанными',
   'notification.clear': 'Очистить',
   'notification.empty': 'Нет уведомлений',
-  'notification.toggle': 'Ctrl+I для переключения',
+  'notification.toggle': '{key} для переключения',
+  'notification.needsYou.question': "Ждёт вас: «{question}»",
+  'notification.needsYou.noQuestion': "Ждёт вас. Текста вопроса нет; посмотрите терминал.",
+  'notification.needsYou.over': "Больше не ждёт вас.",
 
   // Command palette
   'palette.placeholder': 'Введите команду...',
@@ -96,7 +98,7 @@ export const ru = {
   'palette.close': 'закрыть',
   'palette.cmd.toggleSidebar': 'Переключить боковую панель',
   'palette.cmd.newWorkspace': 'Новое рабочее пространство',
-  'palette.cmd.newSurface': 'Новая поверхность',
+  'palette.cmd.newSurface': 'Новая вкладка',
   'palette.cmd.splitRight': 'Разделить вправо',
   'palette.cmd.splitDown': 'Разделить вниз',
   'palette.cmd.stashPane': 'Отложить панель (сессия продолжит работать)',
@@ -106,7 +108,7 @@ export const ru = {
   'palette.cmd.saveLayout': 'Сохранить текущий макет как шаблон',
   'palette.cmd.layoutPrefix': 'Макет: ',
   'palette.catWorkspace': 'Рабочее пространство',
-  'palette.catSurface': 'Поверхность',
+  'palette.catSurface': 'Вкладка',
   'palette.catCommand': 'Команда',
   'palette.catRecent': 'Недавнее',
 
@@ -246,8 +248,6 @@ export const ru = {
   'viCopy.visual': '-- ВИЗУАЛЬНЫЙ --',
 
   // StatusBar
-  'statusBar.company': 'КОМПАНИЯ',
-  'statusBar.session': 'Сессия: {min} мин',
   'statusBar.settingsTooltip': 'Настройки (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const ru = {
   'settings.checkFailed': 'Проверка не удалась',
   'settings.unknownError': 'Неизвестная ошибка',
   'settings.notificationBehavior': 'Поведение уведомлений',
-  'settings.soundDesc': 'Web Audio API — внешний файл не требуется',
+  'settings.soundDesc': 'Воспроизводит короткий встроенный сигнал при новом уведомлении.',
   'settings.toast': 'Всплывающие уведомления',
   'settings.toastDesc': 'Показывать всплывающее уведомление по завершении работы агента',
   'settings.ring': 'Анимация рамки',
   'settings.ringDesc': 'Пульсация границы у панелей с непрочитанными уведомлениями',
   'settings.sc.toggleSidebar': 'Переключить боковую панель',
-  'settings.sc.splitHorizontal': 'Разделить по горизонтали',
-  'settings.sc.splitVertical': 'Разделить по вертикали',
+  'settings.sc.splitHorizontal': 'Разделить вправо',
+  'settings.sc.splitVertical': 'Разделить вниз',
   'settings.sc.newWorkspace': 'Новое рабочее пространство',
   'settings.sc.closeSurface': 'Закрыть активную вкладку',
   'settings.sc.closePane': 'Закрыть разделённую панель',
@@ -406,8 +406,8 @@ export const ru = {
   'settings.prefixAddBinding': 'Добавить привязку',
   'settings.prefixReset': 'Сбросить к значениям по умолчанию',
   'settings.prefixResetConfirm': 'Сбросить все настройки префикса к значениям по умолчанию?',
-  'settings.prefix.splitHorizontal': 'Разделить по горизонтали',
-  'settings.prefix.splitVertical': 'Разделить по вертикали',
+  'settings.prefix.splitHorizontal': 'Разделить вправо',
+  'settings.prefix.splitVertical': 'Разделить вниз',
   'settings.prefix.closePane': 'Закрыть панель',
   'settings.prefix.newWorkspace': 'Новое рабочее пространство',
   'settings.prefix.nextWorkspace': 'Следующее рабочее пространство',
@@ -482,16 +482,16 @@ export const ru = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Интеграция с Claude',
-  'claudeIntegration.signalHealth.title': 'Состояние сигнала плагина',
+  'claudeIntegration.signalHealth.title': 'Плагин Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'Статус плагина: ещё не зафиксирован. Установите его командой ниже в Claude Code. wmux подтвердит обнаружение, как только сработает первый хук.',
+    'От плагина wmux пока нет сигнала. Выполните команду установки ниже в Claude Code; статус обновится, когда плагин впервые отзовётся.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Последний сигнал {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Задержка P50 {p50}ms · P95 {p95}ms · {count} измерений',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Совпадение рабочих пространств: {matched}/{total} хуков сопоставлены с панелью wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'Статус плагина: устарел. Последний хук пришёл {rel} — возможно, плагин перестал срабатывать или Claude Code простаивает.',
+    'Последний сигнал от плагина был {rel}. Возможно, он остановился, или Claude Code простаивает.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Копировать команду установки',
   'claudeIntegration.signalHealth.copySuccess': 'Скопировано — вставьте в Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Не удалось скопировать — буфер обмена заблокирован',
@@ -499,7 +499,7 @@ export const ru = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Счётчик использования Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Каждые 15 минут считывает ваше использование с эндпоинта использования Anthropic по вашему входу в Claude Code (OAuth-токен из локального хранилища). Только чтение использования — запросы к модели не отправляются, квота не расходуется. Токен никогда не записывается обратно, никогда не логируется и отправляется только на api.anthropic.com.',
+    'Каждые 15 минут считывает ваше использование с эндпоинта использования Anthropic по вашему входу в Claude Code. Только чтение использования — запросы к модели не отправляются, квота не расходуется. Токен никогда не записывается обратно, никогда не логируется и отправляется только на api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Показывать использование 5h / 7d в строке состояния',
   'claudeIntegration.usage.refreshButton': 'Обновить сейчас',
   'claudeIntegration.usage.refreshCooldown': 'Обновление будет доступно через {seconds} с',
@@ -641,6 +641,7 @@ export const ru = {
   'pcSwitcher.manage': "Настройки {name}",
   'app.portableData.notice': "Эта копия wmux запущена не из папки «Программы», поэтому использует отдельные данные. Переместите её в «Программы», чтобы увидеть существующие сеансы.",
   'pcSwitcher.othersNeedYou': "{count} ждут вас на других компьютерах",
+  'pcSwitcher.othersNeedYouOne': '{count} ждёт вас на другом компьютере',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Выйти из wmux и остановить все сеансы?",
   'quitAndStop.detail': "Сейчас работают: сеансы агентов — {agents}, всего терминалов — {sessions}. Все они будут остановлены. Обычный выход оставляет их работать в фоне.",

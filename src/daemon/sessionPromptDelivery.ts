@@ -29,8 +29,9 @@ export interface ScheduledPromptDeliveryDeps {
   /** Returns false if the session disappeared before this write. */
   write: (data: string) => boolean;
   delay?: (ms: number) => Promise<void>;
-  /** Native composer submission, when different from Claude multiline input. */
-  submitKeys?: '\r';
+  /** Native composer submission, when different from Claude multiline input
+   *  (Codex: Tab queues a prompt instead of steering a running turn). */
+  submitKeys?: '\r' | '\t';
   /** Chat only: the agent's composer queues a prompt typed during a turn. */
   acceptRunning?: boolean;
   /** The usage-limit continue only: a turn that died on the limit leaves the
@@ -43,9 +44,11 @@ export interface ScheduledPromptDeliveryDeps {
    *  again as the last await before the submit write (`submit`).
    *  `false` stops with `error` and writes nothing further. */
   authorized?: (stage: 'first-write' | 'submit') => Promise<boolean>;
-  /** Called immediately before each write is attempted, so a caller can tell
-   *  "nothing reached the PTY" from "the paste may be visible". `queued` is
-   *  true on `submit` when the prompt was accepted while the turn ran. */
+  /** `paste`: called once each paste write succeeded (or threw: it may have
+   *  reached the PTY), never for a write that returned false, so a caller can
+   *  tell "nothing reached the PTY" from "the paste may be visible".
+   *  `submit`: called immediately before the submit write; `queued` is true
+   *  when the prompt was accepted while the turn ran. */
   onWrite?: (stage: 'paste' | 'submit', queued?: boolean) => void;
   /** The folder-trust verdict that stops a write, or null. Asked first,
    *  again right before the paste, and again right before Enter. Before
@@ -147,21 +150,30 @@ export async function deliverScheduledPrompt(
     return 'error';
   }
 
+  /** A paste write that throws may still have reached the PTY: it counts as written. */
+  const paste = (data: string): boolean => {
+    let ok = true;
+    try {
+      ok = deps.write(data);
+      return ok;
+    } finally {
+      if (ok) deps.onWrite?.('paste');
+    }
+  };
+
   try {
-    for (const [index, paste] of leading.entries()) {
+    for (const [index, item] of leading.entries()) {
       // Only the first write can still be refused cleanly; after it the
       // composer already holds our input.
       if (index > 0 && !untouched(index)) return 'error';
-      deps.onWrite?.('paste');
-      if (!deps.write(formatBracketedPastePayload(paste))) return index === 0 ? 'unavailable' : 'error';
+      if (!paste(formatBracketedPastePayload(item))) return index === 0 ? 'unavailable' : 'error';
       await (deps.delay ?? sleep)(SESSION_PROMPT_ATTACHMENT_DELAY_MS);
     }
     // Leading pastes are already in the composer: the prompt paste is a
     // later write, so it is checked again, and a block now is final.
     if (leading.length && (await trustBlock())) return 'error';
     if (leading.length && !untouched(leading.length)) return 'error';
-    deps.onWrite?.('paste');
-    if (!deps.write(formatBracketedPastePayload(leading.length ? ` ${prompt}` : prompt))) return leading.length ? 'error' : 'unavailable';
+    if (!paste(formatBracketedPastePayload(leading.length ? ` ${prompt}` : prompt))) return leading.length ? 'error' : 'unavailable';
   } catch {
     return 'error';
   }

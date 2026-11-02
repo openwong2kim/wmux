@@ -5,10 +5,10 @@ export const hi = {
   // Sidebar
   'sidebar.workspaces': 'कार्यक्षेत्र',
   'sidebar.newWorkspace': 'नया कार्यक्षेत्र',
-  'sidebar.newWorkspaceTooltip': 'नया कार्यक्षेत्र (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'नया कार्यक्षेत्र',
   'sidebar.newRemoteWorkspace': '{name} पर नया वर्कस्पेस',
-  'sidebar.hideTooltip': 'साइडबार छिपाएँ (Ctrl+B)',
-  'sidebar.expandTooltip': 'साइडबार दिखाएँ (Ctrl+B)',
+  'sidebar.hideTooltip': 'साइडबार छिपाएँ',
+  'sidebar.expandTooltip': 'साइडबार दिखाएँ',
   'sidebar.unreadCount': '{count} अपठित',
 
   // Workspace
@@ -17,7 +17,6 @@ export const hi = {
   'workspace.agentError': 'एजेंट त्रुटि',
   'workspace.agentWaiting': 'एजेंट प्रतीक्षारत',
 
-  'workspace.agentAwaitingInput': 'एजेंट को इनपुट चाहिए',
   'workspace.needsYou': 'आपका इंतज़ार',
   'workspace.agentIdle': 'एजेंट निष्क्रिय',
   'workspace.agentUnverifiable': '{time} से कोई अपडेट नहीं',
@@ -66,9 +65,9 @@ export const hi = {
 
   // Search
   'search.placeholder': 'खोजें...',
-  'search.prevTooltip': 'पिछला परिणाम (Shift+Enter)',
-  'search.nextTooltip': 'अगला परिणाम (Enter)',
-  'search.closeTooltip': 'बंद करें (ESC)',
+  'search.prevTooltip': 'पिछला परिणाम',
+  'search.nextTooltip': 'अगला परिणाम',
+  'search.closeTooltip': 'बंद करें',
   'search.regexTooltip': 'रेगुलर एक्सप्रेशन का उपयोग करें',
   'search.allPanes': 'सभी पैनल',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const hi = {
   'notification.markAllRead': 'सभी पढ़ा हुआ करें',
   'notification.clear': 'साफ़ करें',
   'notification.empty': 'कोई सूचना नहीं',
-  'notification.toggle': 'टॉगल करने के लिए Ctrl+I',
+  'notification.toggle': 'टॉगल करने के लिए {key}',
+  'notification.needsYou.question': "आपका इंतज़ार: “{question}”",
+  'notification.needsYou.noQuestion': "आपका इंतज़ार। प्रश्न का पाठ नहीं; उसका टर्मिनल देखें।",
+  'notification.needsYou.over': "अब आपका इंतज़ार नहीं कर रहा।",
 
   // Command palette
   'palette.placeholder': 'कमांड टाइप करें...',
@@ -96,7 +98,7 @@ export const hi = {
   'palette.close': 'बंद करें',
   'palette.cmd.toggleSidebar': 'साइडबार टॉगल करें',
   'palette.cmd.newWorkspace': 'नया कार्यक्षेत्र',
-  'palette.cmd.newSurface': 'नया सरफ़ेस',
+  'palette.cmd.newSurface': 'नया टैब',
   'palette.cmd.splitRight': 'दाईं ओर विभाजित करें',
   'palette.cmd.splitDown': 'नीचे विभाजित करें',
   'palette.cmd.stashPane': 'पैनल किनारे रखें (सेशन चलता रहेगा)',
@@ -106,7 +108,7 @@ export const hi = {
   'palette.cmd.saveLayout': 'वर्तमान लेआउट को टेम्प्लेट के रूप में सहेजें',
   'palette.cmd.layoutPrefix': 'लेआउट: ',
   'palette.catWorkspace': 'कार्यक्षेत्र',
-  'palette.catSurface': 'सरफ़ेस',
+  'palette.catSurface': 'टैब',
   'palette.catCommand': 'कमांड',
   'palette.catRecent': 'हाल का',
 
@@ -246,8 +248,6 @@ export const hi = {
   'viCopy.visual': '-- विज़ुअल --',
 
   // StatusBar
-  'statusBar.company': 'कंपनी',
-  'statusBar.session': 'सेशन: {min} मिनट',
   'statusBar.settingsTooltip': 'सेटिंग्स (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const hi = {
   'settings.checkFailed': 'जाँच विफल',
   'settings.unknownError': 'अज्ञात त्रुटि',
   'settings.notificationBehavior': 'सूचना व्यवहार',
-  'settings.soundDesc': 'Web Audio API — बाहरी फ़ाइल आवश्यक नहीं',
+  'settings.soundDesc': 'सूचना आने पर एक छोटी अंतर्निहित ध्वनि बजाता है।',
   'settings.toast': 'टोस्ट सूचनाएँ',
   'settings.toastDesc': 'एजेंट पूर्ण होने पर ओवरले टोस्ट दिखाएँ',
   'settings.ring': 'रिंग एनिमेशन',
   'settings.ringDesc': 'अपठित सूचनाओं वाले पैनलों पर बॉर्डर पल्स',
   'settings.sc.toggleSidebar': 'साइडबार टॉगल करें',
-  'settings.sc.splitHorizontal': 'क्षैतिज विभाजित करें',
-  'settings.sc.splitVertical': 'ऊर्ध्वाधर विभाजित करें',
+  'settings.sc.splitHorizontal': 'दाईं ओर विभाजित करें',
+  'settings.sc.splitVertical': 'नीचे विभाजित करें',
   'settings.sc.newWorkspace': 'नया कार्यक्षेत्र',
   'settings.sc.closeSurface': 'सक्रिय टैब बंद करें',
   'settings.sc.closePane': 'विभाजित पैनल बंद करें',
@@ -406,8 +406,8 @@ export const hi = {
   'settings.prefixAddBinding': 'बाइंडिंग जोड़ें',
   'settings.prefixReset': 'डिफ़ॉल्ट पर रीसेट करें',
   'settings.prefixResetConfirm': 'सभी प्रीफ़िक्स सेटिंग्स डिफ़ॉल्ट पर रीसेट करें?',
-  'settings.prefix.splitHorizontal': 'क्षैतिज विभाजित करें',
-  'settings.prefix.splitVertical': 'ऊर्ध्वाधर विभाजित करें',
+  'settings.prefix.splitHorizontal': 'दाईं ओर विभाजित करें',
+  'settings.prefix.splitVertical': 'नीचे विभाजित करें',
   'settings.prefix.closePane': 'पैनल बंद करें',
   'settings.prefix.newWorkspace': 'नया कार्यक्षेत्र',
   'settings.prefix.nextWorkspace': 'अगला कार्यक्षेत्र',
@@ -481,16 +481,16 @@ export const hi = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude एकीकरण',
-  'claudeIntegration.signalHealth.title': 'प्लगइन सिग्नल स्थिति',
+  'claudeIntegration.signalHealth.title': 'Claude Code प्लगइन',
   'claudeIntegration.signalHealth.unknownBody':
-    'प्लगइन स्थिति: अभी तक नहीं देखा गया। Claude Code में नीचे दिए गए कमांड से इंस्टॉल करें। पहला हुक चलते ही wmux पता लगने की पुष्टि कर देता है।',
+    'wmux प्लगइन से अभी तक कोई सिग्नल नहीं मिला। नीचे दिया गया इंस्टॉल कमांड Claude Code में चलाएँ; प्लगइन के पहली बार रिपोर्ट करने पर यह अपडेट हो जाएगा।',
   'claudeIntegration.signalHealth.detectedLastReceived': 'अंतिम सिग्नल {rel}।',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'विलंबता P50 {p50}ms · P95 {p95}ms · {count} नमूने',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'वर्कस्पेस मिलान: {matched}/{total} हुक किसी wmux पेन से मैप हुए',
   'claudeIntegration.signalHealth.staleBody':
-    'प्लगइन स्थिति: पुरानी। अंतिम हुक {rel} आया — हो सकता है प्लगइन ने चलना बंद कर दिया हो या Claude Code निष्क्रिय हो।',
+    'प्लगइन का आख़िरी सिग्नल {rel} आया था। हो सकता है वह रुक गया हो, या Claude Code निष्क्रिय हो।',
   'claudeIntegration.signalHealth.copyInstallCommand': 'इंस्टॉल कमांड कॉपी करें',
   'claudeIntegration.signalHealth.copySuccess': 'कॉपी हो गया — Claude Code में पेस्ट करें',
   'claudeIntegration.signalHealth.copyError': 'कॉपी विफल — क्लिपबोर्ड लॉक है',
@@ -498,7 +498,7 @@ export const hi = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic उपयोग मीटर (5h / 7d)',
   'claudeIntegration.usage.description':
-    'हर 15 मिनट में आपके Claude Code लॉगिन (लोकल स्टोरेज का OAuth टोकन) से Anthropic के उपयोग एंडपॉइंट से आपका उपयोग पढ़ता है। यह केवल उपयोग पढ़ता है — कोई मॉडल अनुरोध नहीं भेजा जाता और कोई कोटा खर्च नहीं होता। टोकन कभी वापस नहीं लिखा जाता, कभी लॉग नहीं होता, केवल api.anthropic.com को भेजा जाता है।',
+    'हर 15 मिनट में आपके Claude Code लॉगिन से Anthropic के उपयोग एंडपॉइंट से आपका उपयोग पढ़ता है। यह केवल उपयोग पढ़ता है — कोई मॉडल अनुरोध नहीं भेजा जाता और कोई कोटा खर्च नहीं होता। टोकन कभी वापस नहीं लिखा जाता, कभी लॉग नहीं होता, केवल api.anthropic.com को भेजा जाता है।',
   'claudeIntegration.usage.enableLabel': 'स्टेटस बार में 5h / 7d उपयोग दिखाएँ',
   'claudeIntegration.usage.refreshButton': 'अभी रिफ्रेश करें',
   'claudeIntegration.usage.refreshCooldown': 'रिफ्रेश {seconds}s में उपलब्ध होगा',
@@ -636,6 +636,7 @@ export const hi = {
   'pcSwitcher.manage': "{name} सेटिंग्स",
   'app.portableData.notice': "wmux की यह कॉपी Applications फ़ोल्डर के बाहर चल रही है, इसलिए यह अलग डेटा का उपयोग करती है। अपने मौजूदा सत्र देखने के लिए इसे Applications में ले जाएँ।",
   'pcSwitcher.othersNeedYou': "अन्य कंप्यूटरों पर {count} आपकी प्रतीक्षा में",
+  'pcSwitcher.othersNeedYouOne': 'अन्य कंप्यूटरों पर {count} आपकी प्रतीक्षा में',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "wmux बंद करें और सभी सेशन रोकें?",
   'quitAndStop.detail': "अभी चल रहे हैं: {agents} एजेंट सेशन, कुल {sessions} टर्मिनल। ये सभी रोक दिए जाएंगे। सामान्य Quit इन्हें बैकग्राउंड में चलता छोड़ देता है।",

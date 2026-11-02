@@ -96,7 +96,6 @@ export const ONBOARDING_STEPS: OnboardingStep[] = [
       { termKey: 'onboarding.step3.chrome', textKey: 'onboarding.step3.chromeUse' },
       { termKey: 'onboarding.step3.external', textKey: 'onboarding.step3.externalUse' },
     ],
-    noteKey: 'onboarding.step3.statusBar',
     settingsLink: { labelKey: 'onboarding.step3.settingsLink', tab: 'browser' },
   },
   {

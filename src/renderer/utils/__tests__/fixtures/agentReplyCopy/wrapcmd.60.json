@@ -1,0 +1,24 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ show wrapcmd                                              ",
+  "",
+  "⏺ Run this: docker compose -f docker-compose.prod.yml up ",
+  "  --build --force-recreate --remove-orphans then wait.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Run this: `docker compose -f docker-compose.prod.yml up --build --force-recreate --remove-orphans` then wait."
+   }
+  ]
+ ]
+}

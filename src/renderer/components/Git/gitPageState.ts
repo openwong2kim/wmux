@@ -86,6 +86,15 @@ export function readGitTab(): GitPageTab {
   }
 }
 
+/** The tab the page shows: the remembered one, except that a repo with no
+ *  origin remote opens on Worktrees, since its Issues and Pull requests can
+ *  never list anything. A tab the viewer picked while that repo is shown is
+ *  kept. Nothing here is saved, so a repo with a remote still opens on the
+ *  remembered tab. Pure. */
+export function shownGitTab(tab: GitPageTab, p: { noRemote: boolean; pickedHere: boolean }): GitPageTab {
+  return p.noRemote && !p.pickedHere ? 'worktrees' : tab;
+}
+
 export function saveGitTab(tab: GitPageTab): void {
   try {
     localStorage.setItem(GIT_TAB_KEY, tab);

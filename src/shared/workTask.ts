@@ -322,7 +322,8 @@ export type WorktaskScanCategoryWire =
   | 'disk-missing'
   | 'preserved'
   | 'orphan-dir'
-  | 'phone-worktree';
+  | 'phone-worktree'
+  | 'company-seat';
 
 export interface WorktaskScanEntryWire {
   category: WorktaskScanCategoryWire;
@@ -332,6 +333,10 @@ export interface WorktaskScanEntryWire {
   ownerWorkspaceId?: string;
   worktreePath?: string;
   closedAt?: number;
+  /** company-seat: the company its stamp names. */
+  company?: string;
+  /** company-seat `seat-unpushed`: how many commits are only on this PC. */
+  commitCount?: number;
   /** Stable code for the detail line; absent from an older main. */
   detailCode?: WorktaskScanDetailCodeWire;
   /** English detail text; the fallback when `detailCode` is absent or unknown. */
@@ -346,14 +351,25 @@ export type WorktaskScanDetailCodeWire =
   | 'orphan-ended'
   | 'orphan-unlinked'
   | 'orphan-meta'
-  | 'disk-missing';
+  | 'disk-missing'
+  | 'seat-uncommitted'
+  | 'seat-unpushed'
+  | 'seat-locked'
+  | 'seat-unregistered';
 
 /** worktask:scan 결과(핸들러 반환 미러). */
 export type WorktaskScanResultWire =
   | { ok: true; scannedRoot: string; entries: WorktaskScanEntryWire[] }
   | { ok: false; error: string; scannedRoot: string; entries: WorktaskScanEntryWire[] };
 
-/** worktask:remove-phone result (PhoneWorktreeRemoval mirror). */
+/** worktask:sweep-company-seats result. `run` numbers the sweep: requests
+ *  that waited for the same one get the same answer. */
+export type CompanySeatSweepResultWire =
+  | { ok: true; run: number; removed: number }
+  | { ok: false; error: string };
+
+/** worktask:remove-phone and worktask:remove-company-seat result (PhoneWorktreeRemoval mirror). */
 export type RemovePhoneWorktreeResultWire =
-  | { ok: true; branch?: string; repo?: string }
-  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'error'; error?: string };
+  /** `oid`: a company seat's branch commit at removal, which the branch delete must still find. */
+  | { ok: true; branch?: string; repo?: string; oid?: string }
+  | { ok: false; reason: 'invalid' | 'in-use' | 'held' | 'dirty' | 'locked' | 'unregistered' | 'unpushed' | 'error'; error?: string };

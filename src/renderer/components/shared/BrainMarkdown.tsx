@@ -284,6 +284,13 @@ function ExternalLink({ url, children }: { url: string; children: React.ReactNod
 
 /** Inline subset: `code`, **bold**, *italic*, [label](url), and with links on
  *  bare http(s) URLs. Bold before italic so ** never half-matches. */
+// The browser's word selection stops at `-`, `.` and `/`, which splits a path
+// or a flag, so a double-click on inline code takes the whole span. Mirrors
+// T3 Code's ChatMarkdown inline code (MIT, see THIRD_PARTY_NOTICES).
+function selectWholeCode(event: React.MouseEvent<HTMLElement>): void {
+  window.getSelection()?.selectAllChildren(event.currentTarget);
+}
+
 function renderInline(raw: string, keyPrefix: string, opts: MarkdownOptions = {}): React.ReactNode[] {
   // GitHub HTML is reduced once, at the outer call; nested calls get plain text.
   const text = opts.githubHtml ? reduceInlineHtml(raw) : raw;
@@ -317,6 +324,7 @@ function renderInline(raw: string, keyPrefix: string, opts: MarkdownOptions = {}
           key={`${keyPrefix}c${match.index}`}
           data-brain-md-code-inline
           className="px-1 rounded font-mono text-[12px] bg-[var(--selection)] text-[var(--text-sub)]"
+          onDoubleClick={selectWholeCode}
         >
           {m.slice(1, -1)}
         </code>,

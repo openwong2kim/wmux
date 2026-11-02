@@ -37,10 +37,10 @@ import {
   HERMES_VERSION_BELOW,
   HERMES_VERSION_MIN,
   hermesVersionStatus,
-  parseHermesVersion,
   type HermesReadiness,
 } from '../../shared/hermesEngine';
 import { HERMES_NOT_READY_LEAD } from './engineError';
+import { hermesInstallVersion } from './hermesInstall';
 
 /** wmux's Hermes home for this data dir. */
 export function hermesRoot(wmuxDir: string): string {
@@ -486,6 +486,10 @@ export async function probeHermesMcp(exe: string, env: Record<string, string>, o
 export interface HermesReadinessDeps {
   root: string;
   resolveExe: () => string | null;
+  /** The version of the install `exe` runs, read from its files (default:
+   *  hermesInstall.ts hermesInstallVersion). Never `hermes --version`, whose
+   *  update check fetches in that install. */
+  version?: (exe: string) => string | null;
   run: HermesRun;
   env: (root: string) => Record<string, string>;
   /** The probe (default probeHermesMcp); `null` result: skipped. */
@@ -513,9 +517,10 @@ export async function hermesReadiness(deps: HermesReadinessDeps): Promise<Hermes
     if (!exe) return notReady('not-installed', 'Hermes is not installed (no hermes executable found).');
     fs.mkdirSync(deps.root, { recursive: true, mode: 0o700 });
     const env = deps.env(deps.root);
-    const v = await deps.run(exe, ['--version'], { env, timeoutMs: 20_000 });
-    const version = v.code === 0 ? parseHermesVersion(v.stdout) : null;
-    if (!version) return notReady('unknown', 'Hermes did not report its version.');
+    // Read from the install's files: `hermes --version` would run Hermes's
+    // update check, which fetches in the install `hermes` resolves to.
+    const version = (deps.version ?? hermesInstallVersion)(exe);
+    if (!version) return notReady('unknown', 'wmux could not read the version of the Hermes install that `hermes` runs.');
     const status = hermesVersionStatus(version);
     if (status === 'outdated') return notReady('outdated', `Hermes ${version} is older than ${HERMES_VERSION_MIN}.`, version);
     if (status === 'unsupported') return notReady('unsupported', `Hermes ${version} is newer than the versions wmux was tested with (below ${HERMES_VERSION_BELOW}).`, version);

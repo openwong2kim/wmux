@@ -34,7 +34,7 @@
 // token and could call the pipe directly.
 // What the scoped allowlist buys over a blanket bypass is that even an
 // impersonator only reaches the curated method set, never daemon.*,
-// workspace.new, company mutation, or other reserved surface. Cryptographic
+// workspace.new, or other reserved surface. Cryptographic
 // first-party identity (peer-PID, per-launch nonce) was evaluated and deferred
 // to a remote/multi-user transport (issue #113). Full residual-risk writeup +
 // the curated-allowlist invariant: docs/api/mcp-plugin-spec.md §2.4.
@@ -155,9 +155,9 @@ export function __resetConfiguredFirstPartyClientsForTests(): void {
 // src/mcp/playwright/* helpers) invokes. Kept in lockstep with that surface by
 // `firstParty.test.ts`, which parses src/mcp/ for every callRpc/sendRpc method
 // literal and fails if any is missing here. Least privilege: methods the
-// bundled server does NOT call (e.g. daemon.shutdown, workspace.new,
-// company.create) are intentionally absent, so a clientName impersonator can
-// never reach them through the first-party path.
+// bundled server does NOT call (e.g. daemon.shutdown, workspace.new) are
+// intentionally absent, so a clientName impersonator can never reach them
+// through the first-party path.
 export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // identity / workspace bootstrap
   'mcp.identify',
@@ -406,13 +406,6 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'automation.propose',
   'automation.list',
   'automation.runs',
-  // `company.a2a.*` used to be granted here for the six company_a2a_* tools.
-  // Those tools are gone, so the grants went with them (least privilege — a
-  // reserved wmux.internal method must not stay reachable by a clientName
-  // impersonator once nothing in src/mcp/** calls it). The pipe handlers
-  // themselves remain registered but currently have no caller: those six tools
-  // were the only one they ever had. They are kept, not deleted, pending the
-  // Company mode re-evaluation.
 ]);
 
 /**

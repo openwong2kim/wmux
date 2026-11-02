@@ -68,6 +68,18 @@ describe('formatted terminal hyperlinks', () => {
     expect(window.open).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [0, true],
+    [1, false],
+    [2, false],
+  ])('mouse button %i asks and opens: %s (#2901)', async (button, opens) => {
+    const link = await hyperlink('https://example.com/report');
+    link!.activate(new MouseEvent('mouseup', { button }), link!.text);
+    expect(window.confirm).toHaveBeenCalledTimes(opens ? 1 : 0);
+    expect(openExternal).toHaveBeenCalledTimes(opens ? 1 : 0);
+    expect(window.open).not.toHaveBeenCalled();
+  });
+
   it.each(['file:///C:/Windows/notepad.exe', 'javascript:alert(1)', 'custom:launch'])('does not activate non-web OSC 8 destinations: %s', async (url) => {
     expect(await hyperlink(url)).toBeUndefined();
     expect(openExternal).not.toHaveBeenCalled();

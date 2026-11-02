@@ -95,7 +95,7 @@ export const WORKSPACES_ONLY_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<Sh
   'focusUpAlt', 'focusDownAlt', 'focusLeftAlt', 'focusRightAlt',
   'clearMultiview', 'openBrowser', 'openPrivateBrowser', 'addBookmark', 'zoomIn', 'zoomOut', 'zoomReset',
   'stashPane', 'movePaneLeft', 'movePaneRight', 'movePaneUp', 'movePaneDown',
-  'multiTask', 'showGitDiff', 'renameTab', 'dictatePane',
+  'multiTask', 'showGitDiff', 'renameTab', 'dictatePane', 'balanceLayout',
 ]);
 
 const STOP_PROPAGATION_ACTIONS: ReadonlySet<ShortcutActionId> = new Set<ShortcutActionId>([
@@ -284,6 +284,7 @@ export function createPrefixActions(deps: PrefixActionDeps): Record<string, () =
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (ws) state.togglePaneZoom(ws.activePaneId);
     },
+    balanceLayout: () => { store.getState().balanceLayout(); },
     commandPalette: () => { store.getState().toggleCommandPalette(); },
     focusUp: () => { store.getState().focusPaneDirection('up'); },
     focusDown: () => { store.getState().focusPaneDirection('down'); },
@@ -573,7 +574,6 @@ export function useKeyboard() {
       openSettings: () => { store.getState().toggleSettingsPanel(); },
       // S-C1 cockpit — every agent, one screen.
       toggleFleetView: () => { store.getState().toggleFleetView(); },
-      toggleCompanyView: () => { store.getState().toggleCompanyView(); },
       toggleBotsView: () => { store.getState().toggleBotsView(); },
       togglePluginsView: () => { store.getState().togglePluginsView(); },
       // Back to single view.
@@ -593,7 +593,6 @@ export function useKeyboard() {
         // A line that already has a bookmark keeps its dot and says nothing.
         if (addScrollbackBookmark(target.term, target.ptyId, store) === 'added') showBookmarkToast();
       },
-      toggleMessageFeed: () => { store.getState().toggleMessageFeed(); },
       toggleFileTree: () => { toggleFileTreePanel(store.getState()); },
       zoomIn: () => { if (!zoomBrowserPage('in')) zoomFont(FONT_SIZE_STEP); },
       zoomOut: () => { if (!zoomBrowserPage('out')) zoomFont(-FONT_SIZE_STEP); },
@@ -611,6 +610,7 @@ export function useKeyboard() {
       // binds one, from the command palette or Settings → Shortcuts. Each
       // runs exactly what its palette row runs.
       stashPane: stashActivePane,
+      balanceLayout: () => { store.getState().balanceLayout(); },
       movePaneLeft: () => { store.getState().moveActivePaneDirection('left'); },
       movePaneRight: () => { store.getState().moveActivePaneDirection('right'); },
       movePaneUp: () => { store.getState().moveActivePaneDirection('up'); },

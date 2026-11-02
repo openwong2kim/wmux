@@ -19,7 +19,7 @@
 
 import path from 'node:path';
 import { ipcMain, type BrowserWindow } from 'electron';
-import { BOT_EVENT } from '../../../shared/bot';
+import { BOT_EVENT, isOwnHermesEngine } from '../../../shared/bot';
 import {
   BOT_GROUP_IPC,
   GROUP_ID_RE,
@@ -158,7 +158,7 @@ export function migrateRoomsToGroups(store: GroupStore, bots: readonly GroupBotR
 
 function botRefs(): GroupBotRef[] | null {
   const bots = getBotStore();
-  return bots ? bots.list().map((b) => ({ id: b.id, workspaceId: b.workspaceId, createdAt: b.createdAt })) : null;
+  return bots ? bots.list().map((b) => ({ id: b.id, workspaceId: b.workspaceId, createdAt: b.createdAt, name: b.name, ...(isOwnHermesEngine(b.engine) ? { ownHermes: true } : {}) })) : null;
 }
 
 export function createGroupModule(deps: Pick<FactoryHostDeps, 'wmuxDir' | 'getMainWindow'>, opts: { waitMs?: number } = {}): FactoryModuleHandle {

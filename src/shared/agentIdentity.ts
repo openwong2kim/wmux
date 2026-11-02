@@ -109,8 +109,9 @@ export interface AgentTerminalChatSpec {
   readonly send?: true;
   readonly cancel?: true;
   readonly images?: true;
-  /** The agent's own composer queues a prompt typed mid-turn, so a queued
-   *  phone message can also be steered into the running turn. */
+  /** The agent's own composer takes a prompt typed mid-turn into the running
+   *  turn (Claude queues it for the next tool boundary, Codex steers the turn
+   *  with it), so a queued phone message can also be steered into that turn. */
   readonly queue?: true;
 }
 
@@ -255,6 +256,11 @@ export interface AgentIdentityRow {
    *  exact resume under that account's CLAUDE_CONFIG_DIR picks the copy up
    *  (src/daemon/continueOnAccount.ts). */
   readonly continueOnAccount?: true;
+  /** A conversation can continue on another paired PC: its transcript is one
+   *  `projects/<folder>/<id>.jsonl` and a `<id>/` folder beside it, <folder>
+   *  named by claudeProjectFolder, and the exact resume there picks it up
+   *  (src/shared/a2aContinue.ts). */
+  readonly continueOnPc?: true;
   /** wmux reads this agent's per-account 5h usage (the statusline push and
    *  the usage API), so the usage reserve can hold its unattended starts
    *  (src/main/usage/usageReserve.ts). */
@@ -323,6 +329,7 @@ export const AGENT_IDENTITIES = [
     terminalChat: { send: true, cancel: true, images: true, queue: true },
     accounts: 'account-store',
     continueOnAccount: true,
+    continueOnPc: true,
     usageReserve: true,
     rewindPicker: true,
     continueInChat: true,
@@ -369,7 +376,9 @@ export const AGENT_IDENTITIES = [
     },
     tuiComposer: true,
     sendQueue: true,
-    terminalChat: { send: true, cancel: true },
+    // queue: measured on codex-cli 0.162.1, Enter typed mid-turn goes into the
+    // running turn, and Tab queues the prompt for the next one.
+    terminalChat: { send: true, cancel: true, queue: true },
     accounts: 'account-store',
     tokenUsage: true,
     modelCatalog: true,
@@ -865,6 +874,24 @@ export const AGENT_IDENTITIES = [
     display: 'DeepSeek Harness',
     roleBinding: false,
     process: { packages: ['@deepseek-ai/dsh'] },
+  },
+  {
+    // Hermes Agent (Nous Research), https://github.com/NousResearch/hermes-agent.
+    // Read from the installed sources of v0.19.0 and v0.22.5, 2026-10-29.
+    // `hermes` is a Python console script (pyproject `[project.scripts]`
+    // hermes = "hermes_cli.main:main"), so the process is the environment's
+    // interpreter running it: measured `…/venv/bin/python3 …/venv/bin/hermes`.
+    // The tracker names it by that script, which is the slug; its optional Ink
+    // TUI is a node child of that process. Its installer is an editable install
+    // of a git checkout, so the image check also accepts the `hermes_agent`
+    // dist-info (AgentProcessTracker isAgentImage).
+    // No hooks and no screen profile. Its conversation is read from its own
+    // session database, not a transcript file (transcript/HermesChatService.ts). No `resume`:
+    // its `--resume` / `-c` grammar is not verified here. No `mcp`: wmux's
+    // Hermes integration (Bots) owns that configuration.
+    slug: 'hermes',
+    display: 'Hermes Agent',
+    roleBinding: false,
   },
 ] as const satisfies readonly AgentIdentityRow[];
 

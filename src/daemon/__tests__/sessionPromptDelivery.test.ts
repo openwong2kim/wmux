@@ -362,7 +362,7 @@ describe('deliverScheduledPrompt at a folder-trust prompt', () => {
     }
     expect(lines).toEqual([
       '[folder-trust] refused scheduled prompt on pane pane-trust: folder-trust trust',
-      '[folder-trust] refused scheduled prompt on pane pane-unknown: folder-trust unknown',
+      '[folder-trust] refused scheduled prompt on pane pane-unknown: folder-trust unknown (muted)',
     ]);
   });
 });

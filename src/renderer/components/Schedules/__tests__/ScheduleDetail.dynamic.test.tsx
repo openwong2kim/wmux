@@ -195,6 +195,6 @@ describe('ScheduleDetail output snapshot', () => {
     await act(async () => button.click());
     expect(grant).toHaveBeenCalledWith('a1', 'bypass', undefined);
     expect(useStore.getState().toasts.map((x) => x.message))
-      .toContain("Bypass was not granted; this schedule's runs are skipped until you grant it again.");
+      .toContain("Full access was not granted; this schedule's runs are skipped until you grant it again.");
   });
 });

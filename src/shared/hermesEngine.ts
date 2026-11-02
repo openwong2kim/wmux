@@ -36,17 +36,11 @@ export interface HermesReadiness {
   ready: boolean;
   /** Set when `ready` is false. */
   reason?: HermesNotReadyReason;
-  /** The version `hermes --version` reported, when one was read. */
+  /** The version of the install `hermes` runs, when it was read (from the
+   *  install's files, main/factory/hermesInstall.ts). */
   version?: string;
   /** A short, credential-free detail for the owner (English). */
   message?: string;
-}
-
-/** `X.Y.Z` (or `X.Y.Z-<pre>`) from `hermes --version` output ("Hermes Agent
- *  v0.22.5 (…)"), or null. Pure. */
-export function parseHermesVersion(text: string): string | null {
-  const m = /\bv?(\d{1,4})\.(\d{1,4})\.(\d{1,6})(?:-([0-9A-Za-z.]{1,40}))?\b/.exec(typeof text === 'string' ? text.split('\n', 1)[0] : '');
-  return m ? `${Number(m[1])}.${Number(m[2])}.${Number(m[3])}${m[4] ? `-${m[4]}` : ''}` : null;
 }
 
 function compareVersions(a: string, b: string): number {
@@ -67,4 +61,92 @@ export function hermesVersionStatus(version: string): 'ok' | 'outdated' | 'unsup
   if (min < 0 || (min === 0 && pre !== undefined)) return 'outdated';
   if (compareVersions(core, HERMES_VERSION_BELOW) >= 0) return 'unsupported';
   return 'ok';
+}
+
+// ─── My Hermes: the owner's own Hermes profile (FACTORY_MY_HERMES) ─────────
+//
+// A bot on "My Hermes" (BotEngine `mode: 'own'`) would use the owner's own
+// Hermes profile: `~/.hermes` (profile `default`) or `~/.hermes/profiles/<n>`.
+// wmux never writes there; its readiness is read-only (main/factory/
+// myHermes.ts). This version stores the choice but does not run it.
+
+/** What the owner runs to update their own Hermes (wmux never does). */
+export const HERMES_UPDATE_COMMAND = 'hermes update';
+
+export type MyHermesNotReadyReason =
+  /** v1 runs on macOS and Linux only. */
+  | 'unsupported-os'
+  | 'not-installed'
+  /** The `hermes` found is not the one installed in this Hermes home. */
+  | 'foreign-install'
+  | 'outdated'
+  | 'unsupported'
+  /** The profile's folder is gone. */
+  | 'profile-missing'
+  /** `hermes acp --check` failed (its ACP support is missing). */
+  | 'acp-missing'
+  | 'no-model'
+  /** approvals.mode is `off`: every command would run unasked. */
+  | 'approvals-off'
+  /** An MCP server named wmux (or mcp-wmux) is in the profile's config. */
+  | 'wmux-mcp'
+  /** A messaging platform is turned on in the profile's config or `.env`. */
+  | 'messengers'
+  /** The profile's gateway is running messaging platforms now. */
+  | 'gateway-messengers'
+  | 'unknown';
+
+/** What the owner should know but that does not stop the bot. */
+export type MyHermesNotice =
+  /** approvals.mode `smart`: a helper model approves most commands. */
+  | { kind: 'approvals-smart' }
+  /** Commands that run without asking (command_allowlist). */
+  | { kind: 'allowlist'; count: number }
+  /** The profile's other MCP servers, which attach to the bot's session. */
+  | { kind: 'mcp-servers'; names: string[] };
+
+export interface MyHermesReadiness {
+  ready: boolean;
+  reason?: MyHermesNotReadyReason;
+  version?: string;
+  /** Messaging platforms found on (`messengers`, `gateway-messengers`). */
+  platforms?: string[];
+  /** A short, credential-free detail for the owner (English). */
+  message?: string;
+  notices: MyHermesNotice[];
+}
+
+/** One Hermes profile the owner could pick. */
+export interface MyHermesProfile {
+  /** `default` (`~/.hermes`) or a named profile's id. */
+  name: string;
+  /** Where it lives, as the owner reads it (`~/.hermes/profiles/coder`). */
+  dir: string;
+  /** The bot already on it, when one is. */
+  usedBy?: { botId: string; name: string };
+}
+
+export interface MyHermesStatus {
+  /** False on Windows (v1 is macOS and Linux only). */
+  supported: boolean;
+  profiles: MyHermesProfile[];
+  /** The requested profile's readiness, when one was asked for. */
+  readiness?: MyHermesReadiness;
+}
+
+/** The env names that turn a messaging platform on when set in a Hermes
+ *  home's `.env` (Hermes gateway/config.py PLATFORM_TOKEN_ENV_NAMES). wmux
+ *  reads only the names in that file, never a value. */
+export const HERMES_MESSENGER_TOKEN_ENV: Readonly<Record<string, string>> = {
+  TELEGRAM_BOT_TOKEN: 'telegram',
+  DISCORD_BOT_TOKEN: 'discord',
+  SLACK_BOT_TOKEN: 'slack',
+  MATTERMOST_TOKEN: 'mattermost',
+  MATRIX_ACCESS_TOKEN: 'matrix',
+  WEIXIN_TOKEN: 'weixin',
+};
+
+/** `profile`'s folder as the owner reads it. Pure. */
+export function myHermesProfileLabel(profile: string): string {
+  return profile === 'default' ? '~/.hermes' : `~/.hermes/profiles/${profile}`;
 }

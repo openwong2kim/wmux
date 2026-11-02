@@ -3,11 +3,12 @@ import { foldShortcutText, matchesShortcutQuery } from '../shortcutSearch';
 
 describe('foldShortcutText', () => {
   it('spells macOS modifier symbols and their word aliases the same way', () => {
-    expect(foldShortcutText('⌘+⇧+K')).toBe('cmdshiftk');
-    expect(foldShortcutText('command shift k')).toBe('cmdshiftk');
-    expect(foldShortcutText('⌥⌃P')).toBe('altctrlp');
-    expect(foldShortcutText('Option Control p')).toBe('altctrlp');
-    expect(foldShortcutText('opt+ctrl+p')).toBe('altctrlp');
+    expect(foldShortcutText('⌘+⇧+K')).toBe('shiftcmdk');
+    expect(foldShortcutText('command shift k')).toBe('shiftcmdk');
+    expect(foldShortcutText('⇧⌘K')).toBe('shiftcmdk');
+    expect(foldShortcutText('⌥⌃P')).toBe('ctrlaltp');
+    expect(foldShortcutText('Option Control p')).toBe('ctrlaltp');
+    expect(foldShortcutText('opt+ctrl+p')).toBe('ctrlaltp');
   });
 });
 
@@ -36,6 +37,16 @@ describe('matchesShortcutQuery', () => {
     expect(matchesShortcutQuery('controlk', 'Kill line', '⌃+K')).toBe(true);
     expect(matchesShortcutQuery('cmdshiftd', 'Split down', '⌘+⇧+D')).toBe(true);
     expect(matchesShortcutQuery('optk', 'Some action', '⌥+K')).toBe(true);
+  });
+
+  it('finds the macOS glyph form (⇧⌘D, ⌥↑, Esc) from words in any order', () => {
+    expect(matchesShortcutQuery('cmd shift d', 'Split down', '⇧⌘D')).toBe(true);
+    expect(matchesShortcutQuery('shift cmd d', 'Split down', '⇧⌘D')).toBe(true);
+    expect(matchesShortcutQuery('option up', 'Previous workspace', '⌥↑')).toBe(true);
+    expect(matchesShortcutQuery('alt arrowup', 'Previous workspace', 'Alt+↑')).toBe(true);
+    expect(matchesShortcutQuery('escape', 'Stop', 'Esc')).toBe(true);
+    // A query that folds to nothing does not match every row.
+    expect(matchesShortcutQuery('arrow', 'Split down', '⇧⌘D')).toBe(false);
   });
 
   it('does not match a different modifier', () => {

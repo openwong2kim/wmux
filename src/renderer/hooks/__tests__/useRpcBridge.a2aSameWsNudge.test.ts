@@ -83,7 +83,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
   it('a pane_id-addressed send nudges only the addressed pane', async () => {
     const sent = await sendAtoB('review the login fix');
     expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
-    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared — title: "review the login fix" — a2a_task_query task_id:${sent.taskId}`);
+    expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared.w0-0(claude) — title: "review the login fix" — a2a_task_query task_id:${sent.taskId}`);
     expect(writesTo(PTY_B)).not.toContain('please review');
     expect(writesTo(PTY_A)).toBe('');
   });
@@ -92,7 +92,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
     const sent = await sendAtoB();
     expect(sent.delivery).toMatchObject({ notified: true, mode: 'nudge' });
     const line = writesTo(PTY_B);
-    expect(line).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared — a2a_task_query task_id:${sent.taskId}`);
+    expect(line).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared.w0-0(claude) — a2a_task_query task_id:${sent.taskId}`);
     expect(line).not.toContain('please review');
     expect(line).not.toContain('title:');
   });
@@ -127,7 +127,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
       workspaceId: WS.id, taskId: sent.taskId, status: 'working', message: 'on it', senderPtyId: PTY_B,
     });
     const afterUpdate = writesTo(PTY_A);
-    expect(afterUpdate).toContain(`[wmux] reply on A2A task ${id8} from Shared — a2a_task_query`);
+    expect(afterUpdate).toContain(`[wmux] reply on A2A task ${id8} from Shared.w0-0(claude) — a2a_task_query`);
     expect(afterUpdate).not.toContain('new A2A task');
     expect(writesTo(PTY_B)).toBe('');
 
@@ -136,7 +136,7 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
       workspaceId: WS.id, taskId: sent.taskId, message: 'done', senderPtyId: PTY_B,
     });
     const afterReply = writesTo(PTY_A);
-    expect(afterReply).toContain(`[wmux] reply on A2A task ${id8} from Shared — a2a_task_query`);
+    expect(afterReply).toContain(`[wmux] reply on A2A task ${id8} from Shared.w0-0(claude) — a2a_task_query`);
     expect(afterReply).not.toContain('new A2A task');
     expect(writesTo(PTY_B)).toBe('');
   });

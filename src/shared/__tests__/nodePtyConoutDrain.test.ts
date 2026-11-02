@@ -1,5 +1,5 @@
 // #2398 — node-pty's conout drain is one worker for every pty, not a worker
-// per pty (patches/node-pty+1.2.0-beta.15.patch). Each worker is a whole V8
+// per pty (patches/node-pty+1.2.0-beta.17.patch). Each worker is a whole V8
 // isolate, about 12 MB private on Windows, so a daemon with 120 panes held
 // 1.4 GB in idle drain workers.
 //

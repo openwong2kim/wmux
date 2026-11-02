@@ -2,7 +2,7 @@
 // profile offers for each reason.
 import { describe, expect, it } from 'vitest';
 import { HERMES_MCP_FIX_COMMAND } from '../../../../shared/hermesEngine';
-import { hermesReadinessView, readHermesReadiness } from '../botsHermes';
+import { hermesReadinessView, myHermesReadinessView, readHermesReadiness } from '../botsHermes';
 
 describe('readHermesReadiness', () => {
   it('reads anything unreadable as unknown, and an unknown reason as unknown', () => {
@@ -40,5 +40,12 @@ describe('hermesReadinessView', () => {
   it('a ready answer has no fix and names the version when known', () => {
     expect(hermesReadinessView({ ready: true, version: '0.22.6' })).toEqual({ key: 'botsPage.hermes.ready', vars: { version: '0.22.6' } });
     expect(hermesReadinessView({ ready: true })).toEqual({ key: 'botsPage.hermes.readyNoVersion', vars: {} });
+  });
+});
+
+describe('myHermesReadinessView', () => {
+  it('names the config file of the profile that has the wmux MCP server', () => {
+    expect(myHermesReadinessView({ ready: false, reason: 'wmux-mcp', notices: [] })).toEqual({ key: 'botsPage.myHermes.wmuxMcp', vars: { file: '~/.hermes/config.yaml' } });
+    expect(myHermesReadinessView({ ready: false, reason: 'wmux-mcp', notices: [] }, 'coder').vars).toEqual({ file: '~/.hermes/profiles/coder/config.yaml' });
   });
 });

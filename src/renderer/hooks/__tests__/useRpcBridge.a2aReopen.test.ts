@@ -198,6 +198,40 @@ describe('only a verified sender reopens (same workspace)', () => {
   });
 });
 
+describe('the preflight names a company task its sender hands back to its seat', () => {
+  const BRIEF = { kind: 'wmux.company.brief', v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' };
+  function companyTask(state: Task['status']['state'], brief = true): string {
+    const id = sameWsTask(state);
+    useStore.setState((s) => {
+      s.a2aTasks[id].history = [{
+        kind: 'message', messageId: 'm-brief', role: 'user',
+        parts: [{ kind: 'text', text: 'do it' }, ...(brief ? [{ kind: 'data' as const, data: BRIEF }] : [])],
+      }];
+    });
+    return id;
+  }
+  const preflight = async (method: string, taskId: string, senderPtyId: string) =>
+    (await rpc(method, { workspaceId: SAME.id, taskId, message: 'fix it', senderPtyId, reopenPreflight: true })).preflight;
+  const seat = { workspaceId: SAME.id, paneId: 'pane-to' };
+
+  it('a reported company task, from its sender, on a reply or a message-only update', async () => {
+    const taskId = companyTask('input-required');
+    expect(await preflight('a2a.task.send', taskId, 'pty-from')).toEqual({ reopen: false, handBack: true, seat });
+    expect(await preflight('a2a.task.update', taskId, 'pty-from')).toEqual({ reopen: false, handBack: true, seat });
+    expect(state(taskId)).toBe('input-required');
+  });
+
+  it('an ended company task reopens and names its seat', async () => {
+    expect(await preflight('a2a.task.send', companyTask('completed'), 'pty-from')).toEqual({ reopen: true, seat });
+  });
+
+  it('nothing for the seat itself, a task still worked on, or a task without a brief', async () => {
+    expect(await preflight('a2a.task.send', companyTask('input-required'), 'pty-to')).toEqual({ reopen: false });
+    expect(await preflight('a2a.task.send', companyTask('working'), 'pty-from')).toEqual({ reopen: false });
+    expect(await preflight('a2a.task.send', companyTask('input-required', false), 'pty-from')).toEqual({ reopen: false });
+  });
+});
+
 describe('message-only updates carry the reply round cap', () => {
   it('refuses once one side exceeded its message ceiling, before storing anything', async () => {
     const taskId = await newTask();

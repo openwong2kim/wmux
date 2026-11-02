@@ -679,6 +679,12 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect(res.status).toBe(400);
       res = await postJson(url(), h, '[1,2]');
       expect(res.status).toBe(400);
+      // Longer than any daemon identity (and than a send receipt holds).
+      res = await postJson(url(), h, sendBody({ historyEpoch: 'h'.repeat(65) }));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'invalid-chat-request', detail: 'historyEpoch too long', effect: 'none' });
+      res = await postJson(url(), h, sendBody({ agentSessionId: 'a'.repeat(257) }));
+      expect(res.status).toBe(400);
       expect(chat.send).not.toHaveBeenCalled();
     });
 
@@ -1586,6 +1592,61 @@ describe('native chat routes (contract v0.3.1)', () => {
       expect((await turns({ ...h, ...QUEUE_CAP })).body.events[0]).toMatchObject({ kind: 'user_text', text: 'snap', clientMessageId: cmid });
       expect((await turns(h)).body.events[0]).not.toHaveProperty('clientMessageId');
       expect((await turns({ ...device('dev-3'), ...QUEUE_CAP })).body.events[0]).not.toHaveProperty('clientMessageId');
+    });
+
+    it('/turns: a photo row pairs by its placeholders with the upload paths the daemon typed', async () => {
+      const dir = '/Users/me/.wmux/uploads/phone';
+      Object.assign((server as unknown as { deps: Record<string, unknown> }).deps, { uploadsDir: dir });
+      const info = await start();
+      const h = { ...bearer(info.token as string), ...QUEUE_CAP };
+      const fns = wireQueue();
+      const shot = (n: number) => `${dir}/photo-2026-10-30T20-53-5${n}-000Z-0a1b2c3${n}.jpg`;
+      const [steer, normal, literal, short] = [freshId(), freshId(), freshId(), freshId()];
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: steer, text: [1, 2, 3, 4].map(shot).join(' '), at: 0 },
+        { clientMessageId: normal, text: `${shot(5)} this crashes`, at: 0 },
+        { clientMessageId: literal, text: `${shot(6)} see [Image #1]`, at: 0 },
+        { clientMessageId: short, text: `${shot(7)} ${shot(8)}`, at: 0 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        // The queued steer (Claude Code 2.1.312) and an ordinary photo prompt.
+        { id: 'q1', kind: 'user_text', text: '[Image #4] [Image #5] [Image #6] [Image #7]', hasImage: true, ts: 10 },
+        { id: 'u2', kind: 'user_text', text: '[Image #8]this crashes', hasImage: true, ts: 10 },
+        // Text that reads like placeholders, without a photo: exact match only.
+        { id: 'u3', kind: 'user_text', text: '[Image #1] see [Image #1]' },
+        // Two paths typed, one placeholder recorded.
+        { id: 'u4', kind: 'user_text', text: '[Image #9]', hasImage: true, ts: 10 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const events = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(events.map((e) => e.clientMessageId)).toEqual([steer, normal, undefined, undefined]);
+
+      // Two photo-only sends of the same count, 3 s apart, read alike: the
+      // older row is in time for both, yet each row keeps its own send.
+      const [older, newer] = [freshId(), freshId()];
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: older, text: shot(1), at: 1_000 },
+        { clientMessageId: newer, text: shot(2), at: 4_000 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'u5', kind: 'user_text', text: '[Image #1]', hasImage: true, ts: 3_000 },
+        { id: 'u6', kind: 'user_text', text: '[Image #2]', hasImage: true, ts: 5_000 },
+        // No time: it cannot be placed against the sends, so the photo rule skips it.
+        { id: 'u7', kind: 'user_text', text: '[Image #3]', hasImage: true },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      const alike = (await turns(h)).body.events as Array<Record<string, unknown>>;
+      expect(alike.map((e) => e.clientMessageId)).toEqual([older, newer, undefined]);
+
+      // A live page holding only the newest row: a same-count send minutes
+      // earlier (its row already shown) must not take the new row's id.
+      const [old, fresh] = [freshId(), freshId()];
+      fns.delivered.mockImplementation(() => [
+        { clientMessageId: old, text: shot(1), at: 1_000 },
+        { clientMessageId: fresh, text: shot(2), at: 300_000 },
+      ]);
+      projectorMock.snapshot.mockReturnValue(page([
+        { id: 'u8', kind: 'user_text', text: '[Image #5]', hasImage: true, ts: 301_000 },
+      ], { headOffset: 0, tailOffset: 50, fileSize: 50, mtimeMs: 1 }));
+      expect((await turns(h)).body.events[0]).toMatchObject({ id: 'u8', clientMessageId: fresh });
     });
 
     it('send: only a request carrying the cap opts into the queue, and a queued answer is 202 effect queued', async () => {

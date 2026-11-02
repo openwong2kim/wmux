@@ -36,7 +36,7 @@
 // RpcContext.bot and confines to the role's surface (shared/botSurface.ts).
 
 import { randomUUID } from 'node:crypto';
-import { isBotBinding, type BotBinding } from '../../shared/bot';
+import { isBotBinding, type BotBinding, type BotSurfaceNarrowing } from '../../shared/bot';
 
 /** What a live token is bound to. */
 export interface CommanderTokenBinding {
@@ -45,6 +45,9 @@ export interface CommanderTokenBinding {
   workspaceId: string;
   /** Present only for a bot token. */
   bot?: BotBinding;
+  /** A bot token's narrowed surface (shared/bot.ts BotSurfaceNarrowing);
+   *  absent for every other token. */
+  surface?: BotSurfaceNarrowing;
 }
 
 /** token → its binding. */
@@ -65,11 +68,11 @@ export function mintCommanderToken(workspaceId: string): string {
 /** Mint and register a bot token bound to `binding` (one per bot session
  *  spawn). Throws on a malformed binding: a bot token is never minted
  *  without a workspace, a bot id and a known role. */
-export function mintBotToken(binding: BotBinding): string {
+export function mintBotToken(binding: BotBinding, surface?: BotSurfaceNarrowing): string {
   if (!isBotBinding(binding)) throw new Error('mintBotToken: malformed bot binding');
   const token = newToken();
   const bot: BotBinding = { workspaceId: binding.workspaceId, botId: binding.botId, role: binding.role };
-  live.set(token, { workspaceId: bot.workspaceId, bot });
+  live.set(token, { workspaceId: bot.workspaceId, bot, ...(surface ? { surface } : {}) });
   return token;
 }
 
@@ -139,7 +142,7 @@ export function resolveCommanderToken(token: unknown): CommanderTokenBinding | n
   if (typeof token !== 'string' || token.length === 0) return null;
   const b = live.get(token);
   if (!b || !b.workspaceId) return null;
-  return b.bot ? { workspaceId: b.workspaceId, bot: { ...b.bot } } : { workspaceId: b.workspaceId };
+  return b.bot ? { workspaceId: b.workspaceId, bot: { ...b.bot }, ...(b.surface ? { surface: b.surface } : {}) } : { workspaceId: b.workspaceId };
 }
 
 /** The bot a live token is bound to, or null (also for a commander token). */

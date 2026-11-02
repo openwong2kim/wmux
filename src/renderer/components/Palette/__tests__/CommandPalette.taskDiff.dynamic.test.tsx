@@ -65,7 +65,7 @@ function openPalette(activeWorkspaceId: string, task: WorkTask | undefined): voi
 
 function taskDiffItem(): HTMLElement | undefined {
   return Array.from(container.querySelectorAll<HTMLElement>('.overflow-y-auto > div')).find(
-    (row) => row.textContent?.includes('Show Task Diff'),
+    (row) => row.textContent?.includes('Show task diff'),
   );
 }
 
@@ -126,7 +126,7 @@ describe('CommandPalette — Show Task Diff (#1461)', () => {
     openPalette('ws-o', mission());
     expect(taskDiffItem()).toBeUndefined();
     // The read-only workspace diff is still there.
-    expect(container.textContent).toContain('Show Git Diff');
+    expect(container.textContent).toContain('Show Git diff');
   });
 
   it('is not listed for a closed task, whose worktree was removed', () => {

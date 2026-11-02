@@ -59,6 +59,8 @@ import type { FactorySettings } from '../../shared/factorySettings';
 import { ROOM_LIMITS, dmThreadBot, dmThreadId, inAnotherBotsDm, isGuestSourcedCard, parseThreadId, taskThreadOf } from '../../shared/room';
 import { registerFactoryRpcModule, type FactoryHostDeps, type FactoryModuleHandle } from './factoryHost';
 import { getFactLog, type FactLog } from './factLog';
+import { noticeBot } from './botNotices';
+import { ownHermesRoomClean } from './myHermesTurn';
 import { currentWakeItem, currentWakeThread, getWakeQueue } from './wakeQueue';
 import { enabledBotsIncludingGuest, getBotDirectory, getBotStore } from './botStore';
 import { endRunsOfEndedRows, setWorkerStopsConfirmed } from './workerRunEnds';
@@ -867,6 +869,23 @@ export function createFactoryWiring(deps: Pick<FactoryHostDeps, 'wmuxDir'> & Par
     // The taint tracker too: no turn's conversation is marked by a guess
     // (BotRuntime.ts taintReady waits for it past this wait as well).
     contextReady: () => getRoomWriter() !== null && getHandoffRouter() !== null && getRoutineStore() !== null && getWakeTaint() !== null,
+    // A bot on My Hermes (myHermesTurn.ts): its 1:1 chat must hold no other
+    // bot's or guest's card, and a wake it is not sent says why there.
+    ownHermesRoomClean: (profile) => ownHermesRoomClean(getRoomWriter(), profile.workspaceId, profile.id),
+    noteOwnHermesRefusal: (profile, item, why, code) => {
+      noticeBot({ factLog: getFactLog, wakes: getWakeQueue }, {
+        quiet: true,
+        card: true,
+        botId: profile.id,
+        workspaceId: profile.workspaceId,
+        key: `my-hermes-refused:${item.id}`,
+        topic: 'wake.refused',
+        title: why,
+        ...(item.threadId ? { threadId: item.threadId } : {}),
+        // The English title stays for a reader that does not know the code.
+        ...(code ? { notice: { code: 'wake.refused', args: { refusal: code } } } : {}),
+      });
+    },
   });
 
   const offHookFacts = onBotHook((ev) => {

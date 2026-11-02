@@ -229,6 +229,13 @@ export interface WakeRoutineSummary {
   prompt: string;
   /** e.g. "every 60 min", "daily at 09:00". */
   schedule: string;
+  /** Whose routine it is and where it runs: a bot on My Hermes is sent a
+   *  routine only when the owner wrote it (`author`), it is that bot's, and
+   *  it runs in that bot's 1:1 (BotRuntime.ts, myHermesTurn.ts). */
+  author?: 'owner';
+  botId?: string;
+  workspaceId?: string;
+  threadId?: ThreadId;
 }
 
 const DATA_MAX_CHARS = 4_000;

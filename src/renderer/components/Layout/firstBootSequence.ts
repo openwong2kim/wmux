@@ -10,9 +10,13 @@
  * through this queue: the next one starts only when nothing else is on
  * screen, and the caller latches the start (mount → own modal layer → "a
  * dialog is open" must not unmount it again).
+ *
+ * The spotlight tour and the keyboard cheat sheet are not in the queue: they
+ * open only when asked (Settings › Setup and reset, the `?` prefix action).
+ * A first launch is the setup wizard and nothing after it.
  */
 
-export type FirstBootSurface = 'autoUpdatePrompt' | 'featureNotice' | 'onboarding' | 'cheatSheet';
+export type FirstBootSurface = 'autoUpdatePrompt' | 'featureNotice';
 
 export interface FirstBootQueueState {
   /** firstRun.check has answered, failed or is unavailable. */
@@ -33,31 +37,20 @@ export interface FirstBootQueueState {
   /** Some modal layer (a Dialog, the tour card) or the Settings panel is open. */
   otherSurfaceOpen: boolean;
   /** A queued surface is already on screen (latched by the caller), including
-   *  the announcement toast until it is dismissed. */
+   *  the announcement toast until it is dismissed, or the tour or the cheat
+   *  sheet the user opened. */
   surfaceShowing: boolean;
 
   /** An upgrade from a build that never stored the auto-update choice. */
   autoUpdatePromptPending: boolean;
   /** A one-time "New: …" announcement has not been shown on this profile. */
   featureNoticePending: boolean;
-
-  firstRunCompleted: boolean;
-  onboardingCompleted: boolean;
-  /** The user is on the Fleet page — the tour starts on the first visit
-   *  there, and the cheat sheet opens there after it. */
-  onFleetPage: boolean;
-
-  /** "Show keyboard shortcuts once" has not been used up (or was re-armed in Settings). */
-  cheatSheetPending: boolean;
 }
 
 /**
  * The surface that may open now, or null. Order: the legacy auto-update
- * question (upgraders whose choice was never stored), the one-time feature
- * announcement (upgraders), the spotlight tour (first Fleet visit), and the
- * keyboard cheat sheet (once, after the tour, on the Fleet page: it sits in
- * the window's corner, so it never opens by itself over the panes or a page's
- * composer; `?` and Settings still show it anywhere).
+ * question (upgraders whose choice was never stored), then the one-time
+ * feature announcement (upgraders).
  */
 export function nextFirstBootSurface(s: FirstBootQueueState): FirstBootSurface | null {
   if (!s.firstRunSettled || !s.sessionSettled || !s.launchChecksSettled) return null;
@@ -66,13 +59,6 @@ export function nextFirstBootSurface(s: FirstBootQueueState): FirstBootSurface |
   // previous version to announce changes against.
   if (!s.wizardRanThisBoot && s.autoUpdatePromptPending) return 'autoUpdatePrompt';
   if (!s.wizardRanThisBoot && s.featureNoticePending) return 'featureNotice';
-  if (!s.firstRunCompleted || !s.onboardingCompleted) {
-    if (s.firstRunCompleted && s.onFleetPage) return 'onboarding';
-    // The cheat sheet comes after the tour, so a user who never opens Fleet
-    // is never shown either.
-    return null;
-  }
-  if (s.cheatSheetPending && s.onFleetPage) return 'cheatSheet';
   return null;
 }
 

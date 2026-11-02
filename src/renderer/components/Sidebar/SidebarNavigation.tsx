@@ -8,6 +8,7 @@ export const SPRING_LOAD_MS = 500;
 import WebToggle from '../StatusBar/WebToggle';
 import { useStore } from '../../stores';
 import { selectFleetSectionCounts } from '../../stores/selectors/fleet';
+import { selectExternalNeedsYouCount } from '../../stores/selectors/externalSessions';
 import { ownerFleetState } from './botTasks';
 import { selectScheduleNavSummary } from '../../stores/selectors/schedules';
 import { formatNextShort } from '../Schedules/format';
@@ -34,7 +35,12 @@ export default function SidebarNavigation({ compact = false, home = false }: {
   const fleetOpen = route === 'fleet';
   // The Fleet board's own Needs you / Running sections, counted (bot
   // workers are the Bots page's).
-  const fleetCounts = useStore(useShallow((s) => selectFleetSectionCounts(ownerFleetState(s))));
+  const paneFleetCounts = useStore(useShallow((s) => selectFleetSectionCounts(ownerFleetState(s))));
+  // Agents started outside wmux that wait on you count here too (placement
+  // B, 2026-11-01): their evidence row is in the sidebar, the badge is the
+  // one global count.
+  const externalNeedsYou = useStore(selectExternalNeedsYouCount);
+  const fleetCounts = { ...paneFleetCounts, needsYou: paneFleetCounts.needsYou + externalNeedsYou };
   const needsText = fleetCounts.needsYou > 0 ? t('sidebar.fleetNeedsYou', { count: fleetCounts.needsYou }) : '';
   const runningText = fleetCounts.running > 0 ? t('sidebar.fleetRunning', { count: fleetCounts.running }) : '';
   // Built from the visible strings, so the spoken name contains what is shown.

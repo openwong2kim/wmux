@@ -273,9 +273,24 @@ describe('createPathLinkProvider', () => {
     provider.provideLinks(1, cb);
     const link = cb.mock.calls[0][0][0];
     // MouseEvent is a DOM type; vitest's default node env doesn't provide
-    // it. The provider's `activate` ignores the event arg, so an empty
-    // object is fine for the test.
-    link.activate({} as unknown as MouseEvent, link.text);
+    // it. The provider's `activate` reads only `button`, so a plain object
+    // is fine for the test.
+    link.activate({ button: 0 } as MouseEvent, link.text);
     expect(openPath).toHaveBeenCalledWith('/var/log/syslog');
+  });
+
+  it.each([
+    [0, true],
+    [1, false],
+    [2, false],
+  ])('activate() with mouse button %i opens the path: %s (#2901)', (button, opens) => {
+    const terminal = makeTerminal([{ text: 'see /var/log/syslog.' }]);
+    const openPath = vi.fn();
+    const provider = createPathLinkProvider(terminal, openPath, 'linux');
+    const cb = vi.fn();
+    provider.provideLinks(1, cb);
+    const link = cb.mock.calls[0][0][0];
+    link.activate({ button } as MouseEvent, link.text);
+    expect(openPath).toHaveBeenCalledTimes(opens ? 1 : 0);
   });
 });

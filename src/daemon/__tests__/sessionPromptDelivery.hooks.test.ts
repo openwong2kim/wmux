@@ -21,7 +21,7 @@ describe('deliverScheduledPrompt re-authorization hooks', () => {
   it('re-authorizes right before the paste and again as the last await before Enter', async () => {
     const h = harness(() => true);
     expect(await h.run()).toBe('sent');
-    expect(h.log).toEqual(['state', 'alive', 'auth:first-write', 'on:paste', 'write:"\\u001b[200~hi\\u001b[201~"', 'delay',
+    expect(h.log).toEqual(['state', 'alive', 'auth:first-write', 'write:"\\u001b[200~hi\\u001b[201~"', 'on:paste', 'delay',
       'alive', 'auth:submit', 'state', 'on:submit', 'write:"\\r"']);
   });
 
@@ -41,8 +41,8 @@ describe('deliverScheduledPrompt re-authorization hooks', () => {
   it('fences the first leading paste and Enter after the pastes', async () => {
     const ok = harness(() => true, ['/tmp/a.png']);
     expect(await ok.run()).toBe('sent');
-    expect(ok.log).toEqual(['state', 'alive', 'auth:first-write', 'on:paste', 'write:"\\u001b[200~/tmp/a.png\\u001b[201~"', 'delay',
-      'state', 'on:paste', 'write:"\\u001b[200~ hi\\u001b[201~"', 'delay', 'alive', 'auth:submit', 'state', 'on:submit', 'write:"\\r"']);
+    expect(ok.log).toEqual(['state', 'alive', 'auth:first-write', 'write:"\\u001b[200~/tmp/a.png\\u001b[201~"', 'on:paste', 'delay',
+      'state', 'write:"\\u001b[200~ hi\\u001b[201~"', 'on:paste', 'delay', 'alive', 'auth:submit', 'state', 'on:submit', 'write:"\\r"']);
 
     // Revoked before the first write: not even the image path reaches the PTY.
     const early = harness(() => false, ['/tmp/a.png']);
@@ -55,5 +55,23 @@ describe('deliverScheduledPrompt re-authorization hooks', () => {
     expect(late.log.filter(entry => entry.startsWith('write'))).toEqual([
       'write:"\\u001b[200~/tmp/a.png\\u001b[201~"', 'write:"\\u001b[200~ hi\\u001b[201~"']);
     expect(late.log).not.toContain('on:submit');
+  });
+
+  it('reports a paste only once its write succeeded, or threw (it may have reached the PTY)', async () => {
+    const run = (write: (data: string) => boolean) => {
+      const log: string[] = [];
+      const state: ScheduledPromptAgentState = { slug: 'claude', incarnationId: 'i', status: 'complete', inputQuiet: true, inputRevision: 0 };
+      const result = deliverScheduledPrompt('claude', 'i', 'hi', {
+        getAgentState: () => state, isAgentProcessAlive: async () => true, write, delay: async () => undefined,
+        onWrite: (stage) => { log.push(`on:${stage}`); },
+      });
+      return { result, log };
+    };
+    const refused = run(() => false);
+    expect(await refused.result).toBe('unavailable');
+    expect(refused.log).toEqual([]);
+    const threw = run(() => { throw new Error('EPIPE'); });
+    expect(await threw.result).toBe('error');
+    expect(threw.log).toEqual(['on:paste']);
   });
 });

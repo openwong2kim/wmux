@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hermesVersionStatus, parseHermesVersion } from '../../../shared/hermesEngine';
+import { hermesVersionStatus } from '../../../shared/hermesEngine';
 import {
   HERMES_SETTINGS,
   clearHermesProbeCache,
@@ -17,8 +17,9 @@ import {
 } from '../hermesEngine';
 
 // A fake `hermes` over an in-memory config: `config get --json`, `config set`
-// (YAML-ish scalars and `[a, b]` lists), `config unset`, `--version`.
-function fakeHermes(opts: { version?: string; config?: Record<string, unknown>; sticky?: Record<string, unknown> } = {}) {
+// (YAML-ish scalars and `[a, b]` lists), `config unset`. `--version` fails the
+// test: its update check fetches in the install, so wmux never runs it.
+function fakeHermes(opts: { config?: Record<string, unknown>; sticky?: Record<string, unknown> } = {}) {
   const config = new Map<string, unknown>(Object.entries(opts.config ?? {}));
   const calls: string[][] = [];
   const parse = (s: string): unknown => {
@@ -29,7 +30,7 @@ function fakeHermes(opts: { version?: string; config?: Record<string, unknown>; 
   };
   const run: HermesRun = async (_exe, args) => {
     calls.push(args);
-    if (args[0] === '--version') return { code: 0, stdout: `Hermes Agent v${opts.version ?? '0.22.5'} (2026.10.1)\n`, stderr: '' };
+    if (args.includes('--version') || args.includes('-V') || args[0] === 'version') throw new Error('hermes --version must never run: its update check fetches in the install');
     const key = args[args.length - 1];
     if (args[1] === 'get') {
       const v = opts.sticky && key in opts.sticky ? opts.sticky[key] : config.get(key);
@@ -117,9 +118,23 @@ describe('hermesReadiness', () => {
   afterEach(() => {
     fs.rmSync(root, { recursive: true, force: true });
   });
-  const deps = (run: HermesRun, probe = okProbe) => ({
-    root, run, probe, resolveExe: () => '/bin/hermes', env: (r: string) => ({ HERMES_HOME: r }),
-  });
+  /** An installer-shaped install of `version` under `root`, and its launcher. */
+  const install = (version: string): string => {
+    const dir = path.join(root, `install-${version}`);
+    const venvExe = path.join(dir, 'hermes-agent', 'venv', 'bin', 'hermes');
+    fs.mkdirSync(path.dirname(venvExe), { recursive: true });
+    fs.writeFileSync(venvExe, '#!/usr/bin/env python3\n', { mode: 0o755 });
+    fs.mkdirSync(path.join(dir, 'hermes-agent', 'hermes_cli'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'hermes-agent', 'hermes_cli', '__init__.py'), `__version__ = "${version}"\n`);
+    const launcher = path.join(dir, 'bin', 'hermes');
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(launcher, `#!/usr/bin/env bash\nexec "${venvExe}" "$@"\n`, { mode: 0o755 });
+    return launcher;
+  };
+  const deps = (run: HermesRun, probe = okProbe, version = '0.22.5') => {
+    const exe = install(version);
+    return { root, run, probe, resolveExe: () => exe, env: (r: string) => ({ HERMES_HOME: r }) };
+  };
 
   it('writes wmux\'s settings, unsets MCP servers and the command allowlist, then is ready', async () => {
     const h = fakeHermes({ config: { model: { default: 'm1' }, mcp_servers: { fs: {} }, command_allowlist: ['ls'] } });
@@ -133,8 +148,8 @@ describe('hermesReadiness', () => {
     const sticky = fakeHermes({ config: { model: 'm1' }, sticky: { 'platform_toolsets.acp': ['web', 'todo', 'terminal'] } });
     expect(await hermesReadiness(deps(sticky.run))).toMatchObject({ ready: false, reason: 'config-mismatch' });
 
-    expect(await hermesReadiness(deps(fakeHermes({ version: '0.19.0' }).run))).toMatchObject({ ready: false, reason: 'outdated', version: '0.19.0' });
-    expect(await hermesReadiness(deps(fakeHermes({ version: '0.23.0' }).run))).toMatchObject({ ready: false, reason: 'unsupported' });
+    expect(await hermesReadiness(deps(fakeHermes().run, okProbe, '0.19.0'))).toMatchObject({ ready: false, reason: 'outdated', version: '0.19.0' });
+    expect(await hermesReadiness(deps(fakeHermes().run, okProbe, '0.23.0'))).toMatchObject({ ready: false, reason: 'unsupported' });
     expect(await hermesReadiness(deps(fakeHermes().run))).toMatchObject({ ready: false, reason: 'not-set-up' });
 
     const missing = async (): Promise<HermesProbeResult> => ({ ok: false, reason: 'mcp-missing', detail: 'no mcp' });
@@ -142,6 +157,27 @@ describe('hermesReadiness', () => {
     expect(await hermesReadiness(deps(fixed.run, missing))).toMatchObject({ ready: false, reason: 'mcp-missing' });
     // The extra added in a terminal leaves the executable as it was: probed again.
     expect(await hermesReadiness(deps(fixed.run))).toEqual({ ready: true, version: '0.22.5' });
+  });
+});
+
+describe('hermesReadiness reads the version from the install', () => {
+  let root: string;
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-ver-'));
+    clearHermesProbeCache();
+  });
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('a version that cannot be read is unknown, before any Hermes command runs', async () => {
+    const h = fakeHermes({ config: { model: 'm1' } });
+    const exe = path.join(root, 'bin', 'hermes');
+    fs.mkdirSync(path.dirname(exe), { recursive: true });
+    fs.writeFileSync(exe, '#!/bin/sh\n', { mode: 0o755 });
+    expect(await hermesReadiness({ root, run: h.run, probe: async () => ({ ok: true }), resolveExe: () => exe, env: (r: string) => ({ HERMES_HOME: r }) }))
+      .toMatchObject({ ready: false, reason: 'unknown', message: expect.stringMatching(/could not read the version/) });
+    expect(h.calls).toEqual([]);
   });
 });
 
@@ -168,7 +204,6 @@ describe('liveGatewayOf and the version range', () => {
     expect(parseWindowsProcess('1792896367670\r\nC:\\py\\python.exe -m hermes_cli.main gateway run\r\n')).toEqual({ command: 'C:\\py\\python.exe -m hermes_cli.main gateway run', createdAt: 1792896367670 });
     expect(parseWmicProcess('\r\nCommandLine=python -m hermes_cli.main gateway run\r\nCreationDate=20261025120607.670000+540\r\n')).toEqual({ command: 'python -m hermes_cli.main gateway run', createdAt: Date.UTC(2026, 9, 25, 3, 6, 7, 670) });
 
-    expect(parseHermesVersion('Hermes Agent v0.22.5-rc1 (x)')).toBe('0.22.5-rc1');
     expect(hermesVersionStatus('0.22.5-rc1')).toBe('outdated');
     expect(hermesVersionStatus('0.22.6-rc1')).toBe('ok');
     expect(hermesVersionStatus('0.23.0-rc1')).toBe('unsupported');

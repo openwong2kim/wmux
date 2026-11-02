@@ -5,10 +5,10 @@ export const ja = {
   // Sidebar
   'sidebar.workspaces': 'ワークスペース',
   'sidebar.newWorkspace': '新しいワークスペース',
-  'sidebar.newWorkspaceTooltip': '新しいワークスペース (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': '新しいワークスペース',
   'sidebar.newRemoteWorkspace': '{name} に新しいワークスペース',
-  'sidebar.hideTooltip': 'サイドバーを隠す (Ctrl+B)',
-  'sidebar.expandTooltip': 'サイドバーを展開する (Ctrl+B)',
+  'sidebar.hideTooltip': 'サイドバーを隠す',
+  'sidebar.expandTooltip': 'サイドバーを展開する',
   'sidebar.unreadCount': '未読 {count}件',
 
   // Workspace
@@ -17,7 +17,6 @@ export const ja = {
   'workspace.agentError': 'エージェントエラー',
   'workspace.agentWaiting': 'エージェント待機中',
 
-  'workspace.agentAwaitingInput': 'エージェント入力待ち',
   'workspace.needsYou': '応答待ち',
   'workspace.agentIdle': 'エージェントアイドル',
   'workspace.agentUnverifiable': '{time} 更新なし',
@@ -66,9 +65,9 @@ export const ja = {
 
   // Search
   'search.placeholder': '検索...',
-  'search.prevTooltip': '前の結果 (Shift+Enter)',
-  'search.nextTooltip': '次の結果 (Enter)',
-  'search.closeTooltip': '閉じる (ESC)',
+  'search.prevTooltip': '前の結果',
+  'search.nextTooltip': '次の結果',
+  'search.closeTooltip': '閉じる',
   'search.regexTooltip': '正規表現を使用',
   'search.allPanes': '全パネル',
   'search.regexMode': '正規表現',
@@ -86,7 +85,10 @@ export const ja = {
   'notification.markAllRead': 'すべて既読',
   'notification.clear': 'クリア',
   'notification.empty': '通知なし',
-  'notification.toggle': 'Ctrl+Iで切替',
+  'notification.toggle': '{key}で切替',
+  'notification.needsYou.question': "応答待ち:「{question}」",
+  'notification.needsYou.noQuestion': "応答待ち。質問の本文なし。ターミナルを確認してください。",
+  'notification.needsYou.over': "もう待っていません。",
 
   // Command palette
   'palette.placeholder': 'コマンドを入力...',
@@ -96,7 +98,7 @@ export const ja = {
   'palette.close': '閉じる',
   'palette.cmd.toggleSidebar': 'サイドバー切替',
   'palette.cmd.newWorkspace': '新しいワークスペース',
-  'palette.cmd.newSurface': '新しいサーフェス',
+  'palette.cmd.newSurface': '新しいタブ',
   'palette.cmd.splitRight': '右に分割',
   'palette.cmd.splitDown': '下に分割',
   'palette.cmd.stashPane': 'ペインを退避 (セッションは動き続けます)',
@@ -106,7 +108,7 @@ export const ja = {
   'palette.cmd.saveLayout': '現在のレイアウトをテンプレートとして保存',
   'palette.cmd.layoutPrefix': 'レイアウト: ',
   'palette.catWorkspace': 'ワークスペース',
-  'palette.catSurface': 'サーフェス',
+  'palette.catSurface': 'タブ',
   'palette.catCommand': 'コマンド',
   'palette.catRecent': '最近',
 
@@ -248,8 +250,6 @@ export const ja = {
   'viCopy.visual': '-- ビジュアル --',
 
   // StatusBar
-  'statusBar.company': '会社',
-  'statusBar.session': 'セッション: {min}分',
   'statusBar.settingsTooltip': '設定 (Ctrl+,)',
 
   // Settings
@@ -371,14 +371,14 @@ export const ja = {
   'settings.checkFailed': '確認に失敗しました',
   'settings.unknownError': '不明なエラー',
   'settings.notificationBehavior': '通知の動作',
-  'settings.soundDesc': 'Web Audio API — 外部ファイル不要',
+  'settings.soundDesc': '通知が届いたときに短い内蔵の音を鳴らします。',
   'settings.toast': 'トースト通知',
   'settings.toastDesc': 'エージェント完了時にトーストを表示',
   'settings.ring': 'リングアニメーション',
   'settings.ringDesc': '未読通知のあるペインにパルスボーダー',
   'settings.sc.toggleSidebar': 'サイドバー切替',
-  'settings.sc.splitHorizontal': '水平分割',
-  'settings.sc.splitVertical': '垂直分割',
+  'settings.sc.splitHorizontal': '右に分割',
+  'settings.sc.splitVertical': '下に分割',
   'settings.sc.newWorkspace': '新ワークスペース',
   'settings.sc.closeSurface': 'アクティブなタブを閉じる',
   'settings.sc.closePane': '分割ペインを閉じる',
@@ -410,8 +410,8 @@ export const ja = {
   'settings.prefixAddBinding': 'バインド追加',
   'settings.prefixReset': 'デフォルトに戻す',
   'settings.prefixResetConfirm': 'すべてのプレフィックス設定をデフォルトに戻しますか？',
-  'settings.prefix.splitHorizontal': '水平分割',
-  'settings.prefix.splitVertical': '垂直分割',
+  'settings.prefix.splitHorizontal': '右に分割',
+  'settings.prefix.splitVertical': '下に分割',
   'settings.prefix.closePane': 'ペインを閉じる',
   'settings.prefix.newWorkspace': '新ワークスペース',
   'settings.prefix.nextWorkspace': '次のワークスペース',
@@ -526,16 +526,16 @@ export const ja = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude 連携',
-  'claudeIntegration.signalHealth.title': 'プラグインのシグナル状態',
+  'claudeIntegration.signalHealth.title': 'Claude Code プラグイン',
   'claudeIntegration.signalHealth.unknownBody':
-    'プラグインの状態: まだ検出されていません。Claude Code で下記のコマンドを実行してインストールしてください。最初のフックが発火すると、wmux が検出を確認します。',
+    'wmux プラグインからの信号はまだありません。下のインストールコマンドを Claude Code で実行してください。プラグインが最初に報告すると更新されます。',
   'claudeIntegration.signalHealth.detectedLastReceived': '最後のシグナル: {rel}',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'レイテンシ P50 {p50}ms · P95 {p95}ms · サンプル {count} 件',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'ワークスペースの一致: {matched}/{total} 件のフックが wmux のペインに対応付けられました',
   'claudeIntegration.signalHealth.staleBody':
-    'プラグインの状態: 古くなっています。最後のフックが届いたのは {rel} です — プラグインの発火が止まったか、Claude Code がアイドル状態の可能性があります。',
+    'プラグインの最後の信号は {rel} です。停止したか、Claude Code がアイドル状態の可能性があります。',
   'claudeIntegration.signalHealth.copyInstallCommand': 'インストールコマンドをコピー',
   'claudeIntegration.signalHealth.copySuccess': 'コピーしました — Claude Code に貼り付けてください',
   'claudeIntegration.signalHealth.copyError': 'コピーに失敗しました — クリップボードがロックされています',
@@ -543,7 +543,7 @@ export const ja = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic 使用量メーター (5h / 7d)',
   'claudeIntegration.usage.description':
-    '15 分ごとに Claude Code のログイン (ローカルストレージの OAuth トークン) を使って Anthropic の使用量エンドポイントから使用量を読み取ります。使用量を読むだけなので、モデルへのリクエストは送信されず、クォータも消費しません。トークンは書き戻されることもログに記録されることもなく、api.anthropic.com にのみ送信されます。',
+    '15 分ごとに Claude Code のログイン を使って Anthropic の使用量エンドポイントから使用量を読み取ります。使用量を読むだけなので、モデルへのリクエストは送信されず、クォータも消費しません。トークンは書き戻されることもログに記録されることもなく、api.anthropic.com にのみ送信されます。',
   'claudeIntegration.usage.enableLabel': 'ステータスバーに 5h / 7d の使用率を表示',
   'claudeIntegration.usage.refreshButton': '今すぐ更新',
   'claudeIntegration.usage.refreshCooldown': '{seconds} 秒後に更新できます',
@@ -689,6 +689,7 @@ export const ja = {
   'pcSwitcher.manage': "{name} の設定",
   'app.portableData.notice': "この wmux のコピーはアプリケーションフォルダの外で実行されているため、別のデータを使用しています。既存のセッションを表示するには、アプリケーションフォルダに移動してください。",
   'pcSwitcher.othersNeedYou': "他のコンピュータで {count} 件が対応待ち",
+  'pcSwitcher.othersNeedYouOne': '他のコンピュータで {count} 件が対応待ち',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "wmux を終了してすべてのセッションを停止しますか？",
   'quitAndStop.detail': "実行中: エージェントセッション {agents} 件、ターミナル合計 {sessions} 件。すべて停止します。通常の終了ではバックグラウンドで実行し続けます。",

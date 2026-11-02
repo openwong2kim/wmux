@@ -37,7 +37,8 @@ describe('pty:write-launch', () => {
     const handler = body.slice(body.indexOf('ipcMain.handle(IPC.PTY_WRITE_LAUNCH'));
     expect(handler).toMatch(/^[^\n]*submit: unknown, origin: unknown\) => \{/);
     expect(handler).toContain("const human = origin === 'human';");
-    const ask = handler.indexOf("folderTrustLaunchRefusal(dc, id, human ? 'launch line' : 'automated launch line', { refuseUnknown: !human })");
+    expect(handler).toContain('const trustOpts = human ? { refuseUnknown: false } : { refuseUnknown: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS };');
+    const ask = handler.indexOf("folderTrustLaunchRefusal(dc, id, human ? 'launch line' : 'automated launch line', trustOpts)");
     expect(ask).toBeGreaterThan(0);
     expect(handler.slice(ask)).toMatch(/^[^\n]*\n\s*if \(trustRefusal\) throw new Error\(`PTY_WRITE_LAUNCH: \$\{trustRefusal\}`\);/);
     expect(ask).toBeLessThan(handler.indexOf('launchAllowedByChat(dc, id, text)'));

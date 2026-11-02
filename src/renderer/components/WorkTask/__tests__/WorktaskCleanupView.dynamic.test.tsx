@@ -174,6 +174,107 @@ describe('WorktaskCleanupView', () => {
     confirm.mockRestore();
   });
 
+  describe('company seat worktree', () => {
+    const SEAT = '/cw/abc123def456/dev-1-456789ab';
+    const seatApi = () => {
+      const api = (window as unknown as { electronAPI: { workTask: Record<string, ReturnType<typeof vi.fn>> } }).electronAPI.workTask;
+      api.scan = vi.fn(async () => ({
+        ok: true,
+        scannedRoot: '/wt',
+        entries: [{ category: 'company-seat', title: 'dev-1', company: 'checkout', worktreePath: SEAT, detailCode: 'seat-uncommitted' }],
+      }));
+      api.removeCompanySeat = vi.fn()
+        .mockResolvedValueOnce({ ok: false, reason: 'dirty' })
+        .mockResolvedValueOnce({ ok: true, branch: 'company/dev-1-456789ab', repo: '/repo/.git', oid: 'c'.repeat(40) });
+      api.deleteCompanySeatBranch = vi.fn(async () => ({ ok: true }));
+      return api;
+    };
+    const el = (testId: string) => container.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement | null;
+
+    it('scans with every folder a pane here is in', async () => {
+      const api = seatApi();
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      expect(api.scan).toHaveBeenCalledWith('ws-task', expect.any(Array), ['/wt/fix-parser']);
+      expect(container.textContent).toContain('dev-1 · checkout');
+    });
+
+    it('says how many commits are only on this PC', async () => {
+      const api = seatApi();
+      api.scan = vi.fn(async () => ({
+        ok: true,
+        scannedRoot: '/wt',
+        entries: [{ category: 'company-seat', title: 'dev-1', worktreePath: SEAT, detailCode: 'seat-unpushed', commitCount: 3, detail: 'RAW-FROM-MAIN' }],
+      }));
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      expect(container.textContent).toContain('Company seat worktree');
+      expect(container.textContent).toContain('3 commit(s) only on this PC — push them, or remove the worktree and keep its branch.');
+      expect(container.textContent).not.toContain('RAW-FROM-MAIN');
+    });
+
+    it('asks in place before removing a seat with changes, then asks before deleting its branch', async () => {
+      const api = seatApi();
+      const confirm = vi.spyOn(window, 'confirm');
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      act(() => (container.querySelector('[data-cleanup-remove-seat]') as HTMLButtonElement).click());
+      await flush();
+      expect(api.removeCompanySeat.mock.calls).toEqual([[SEAT, false]]);
+      expect(el('cleanup-seat-remove-confirm-row')).not.toBeNull();
+      act(() => el('cleanup-seat-remove-confirm')!.click());
+      await flush();
+      expect(api.removeCompanySeat.mock.calls).toEqual([[SEAT, false], [SEAT, true]]);
+      // The row stays until the branch question is answered.
+      expect(api.scan).toHaveBeenCalledTimes(1);
+      expect(el('cleanup-seat-branch-confirm-row')?.textContent).toContain(
+        'Also delete the branch company/dev-1-456789ab? Commits that are only on this PC go with it.',
+      );
+      act(() => el('cleanup-seat-branch-confirm')!.click());
+      await flush();
+      expect(api.deleteCompanySeatBranch).toHaveBeenCalledWith(SEAT, '/repo/.git', 'company/dev-1-456789ab', 'c'.repeat(40));
+      expect(api.scan).toHaveBeenCalledTimes(2);
+      expect(confirm).not.toHaveBeenCalled();
+      confirm.mockRestore();
+    });
+
+    it('asks in place before removing a seat whose commits are on no branch', async () => {
+      const api = seatApi();
+      api.removeCompanySeat = vi.fn()
+        .mockResolvedValueOnce({ ok: false, reason: 'unpushed' })
+        .mockResolvedValueOnce({ ok: true });
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      act(() => (container.querySelector('[data-cleanup-remove-seat]') as HTMLButtonElement).click());
+      await flush();
+      expect(el('cleanup-seat-remove-confirm-row')?.textContent).toContain(
+        'Its commits are on no branch and only on this PC. Removing the worktree loses them. Remove it anyway?',
+      );
+      act(() => el('cleanup-seat-remove-confirm')!.click());
+      await flush();
+      expect(api.removeCompanySeat.mock.calls).toEqual([[SEAT, false], [SEAT, true]]);
+    });
+
+    it('keeps the seat on Cancel, and its branch on the second question\'s cancel', async () => {
+      const api = seatApi();
+      act(() => root.render(createElement(WorktaskCleanupView)));
+      await flush();
+      act(() => (container.querySelector('[data-cleanup-remove-seat]') as HTMLButtonElement).click());
+      await flush();
+      act(() => el('cleanup-seat-remove-cancel')!.click());
+      await flush();
+      expect(api.removeCompanySeat).toHaveBeenCalledTimes(1);
+      expect(el('cleanup-seat-remove-confirm-row')).toBeNull();
+      act(() => (container.querySelector('[data-cleanup-remove-seat]') as HTMLButtonElement).click());
+      await flush();
+      expect(el('cleanup-seat-remove-confirm-row')).toBeNull();
+      act(() => el('cleanup-seat-branch-cancel')!.click());
+      await flush();
+      expect(api.deleteCompanySeatBranch).not.toHaveBeenCalled();
+      expect(api.scan).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('detail line', () => {
     const scanReturns = (entries: unknown[]) => {
       const api = (window as unknown as { electronAPI: { workTask: Record<string, unknown> } }).electronAPI.workTask;

@@ -93,7 +93,7 @@ describe('sendWorkspaceSettleCommand', () => {
     const toasts = useStore.getState().toasts;
     expect(toasts).toHaveLength(1);
     expect(toasts[0].level).toBe('warn');
-    expect(toasts[0].message).toBe('Not changed: the HQ workspace always stays in view');
+    expect(toasts[0].message).toBe("Not changed: the bots' main workspace always stays in view");
   });
 });
 

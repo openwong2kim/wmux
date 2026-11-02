@@ -50,7 +50,6 @@ CDP로 렌더러를 몰거나(pixel/DOM), MCP 서버의 신원 해석(process-tr
 |---|---|---|---|
 | `channel-dock-dogfood.mjs` | 채널 dock reflow (bounding box CDP) | keep→E2E | 순수 렌더러 픽셀(요소 rect diff) — E2E-1 계열 |
 | `channel-members-dogfood.mjs` | 채널 members roster UI (CDP DOM) | keep→E2E | 렌더러 DOM. **멤버십 정본(getMembers)은 S3가 데몬측 흡수** |
-| `channels-company-dogfood.mjs` | company-mode UI 배선 + hydration (CDP) | keep→E2E | 렌더러 sidebar/hydration — SIM 밖 |
 
 ### Fleet · 플러그인 (렌더러/MCP — keep)
 

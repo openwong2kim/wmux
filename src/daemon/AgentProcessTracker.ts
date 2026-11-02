@@ -54,6 +54,7 @@ import os from 'os';
 import { AGENT_ROWS, AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
 import { customProcessNameForm } from '../shared/customAgents';
 import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
+import { readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
 
 const execFileAsync = promisify(execFile);
 
@@ -85,6 +86,16 @@ export interface PidWatcher {
  *  Membership test uses AGENT_SLUG_SET (ReadonlySet<string>) so raw stems
  *  narrow without a cast dance. */
 const RUNTIME_STEMS: ReadonlySet<string> = new Set(['node', 'bun', 'deno', 'python', 'python3']);
+
+/** An image stem as RUNTIME_STEMS names it: a versioned or windowed Python
+ *  (`python3.12`, `python3.13`, `pythonw`) is its family, and Debian's `nodejs`
+ *  is node. A console script's shebang names the interpreter it was installed
+ *  with, version included (`<venv>/bin/python3.12 <venv>/bin/hermes`). */
+function runtimeStem(stem: string): string {
+  if (stem === 'nodejs') return 'node';
+  const python = /^pythonw?(\d*)(?:\.\d+)?$/.exec(stem);
+  return python ? (python[1] === '3' ? 'python3' : 'python') : stem;
+}
 
 /** Windows images that may hold a Claude conversation when their command
  *  line cannot be read (processesWithArg). */
@@ -282,6 +293,18 @@ export function parsePipeDelimited(stdout: string): ProcessTreeEntry[] {
   return entries;
 }
 
+/** A native process-table row in parsePipeDelimited's shape: an unreadable
+ *  or empty command line and an unknown creation time are absent. */
+export function fromNativeRow(row: NativeProcessRow): ProcessTreeEntry {
+  return {
+    pid: row.pid,
+    ppid: row.ppid,
+    name: row.name,
+    ...(row.cmdline ? { cmdline: row.cmdline } : {}),
+    ...(row.created != null ? { created: row.created } : {}),
+  };
+}
+
 /**
  * Parse `ps -axo pid=,ppid=,args=` output. `comm` is gone entirely (macOS
  * comm is a full path; spaces in it misaligned every column) — argv[0] (the
@@ -458,7 +481,7 @@ export function selectAgentProcess(
     return AGENT_SLUG_SET.has(stem)
       ? (stem as AgentSlug)
       : NATIVE_STEM_TO_SLUG.get(stem) ??
-        (RUNTIME_STEMS.has(stem) ? resolveAgentSlug(entry.cmdline) : nativeInstallSlug(entry, userHome));
+        (RUNTIME_STEMS.has(runtimeStem(stem)) ? resolveAgentSlug(entry.cmdline) : nativeInstallSlug(entry, userHome));
   };
   const root = entries.find((e) => e.pid === shellPid);
   const rootSlug = root ? slugOf(root) : undefined;
@@ -485,7 +508,7 @@ export function selectAgentProcess(
         } else if (childDepth === attributed.depth && slug !== attributed.slug) {
           ambiguous = true;
         }
-      } else if (RUNTIME_STEMS.has(stem) && (!sluglessRuntime || childDepth < sluglessRuntime.depth)) {
+      } else if (RUNTIME_STEMS.has(runtimeStem(stem)) && (!sluglessRuntime || childDepth < sluglessRuntime.depth)) {
         sluglessRuntime = { pid: child.pid, depth: childDepth };
       }
       queue.push({ pid: child.pid, depth: childDepth });
@@ -610,6 +633,20 @@ export async function readExecutableImage(
   }
 }
 
+export type ImageFileState = 'present' | 'missing' | 'unknown';
+
+/** Whether `file` is on disk. Only ENOENT and ENOTDIR say it is gone; any
+ *  other failure (a permission error, an I/O error) is no verdict. */
+export function imageFileState(file: string): ImageFileState {
+  try {
+    fs.lstatSync(file);
+    return 'present';
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unknown';
+  }
+}
+
 /** npm packages a runtime-hosted agent ships in: each registry row's
  *  `process.packages`, plus the packages of agents whose rows name none. */
 const EXTRA_AGENT_PACKAGES: Partial<Record<AgentSlug, readonly string[]>> = {
@@ -623,7 +660,13 @@ const AGENT_PACKAGES: ReadonlyMap<AgentSlug, ReadonlySet<string>> = new Map(
 );
 
 /** Python packages a python-hosted agent ships in (`site-packages/aider`). */
-const PYTHON_PACKAGES: Partial<Record<AgentSlug, string>> = { aider: 'aider' };
+const PYTHON_PACKAGES: Partial<Record<AgentSlug, string>> = { aider: 'aider', hermes: 'hermes_cli' };
+
+/** Python distributions whose `<name>-<version>.dist-info` in an environment
+ *  also proves the agent is installed there. An editable install (Hermes'
+ *  own installer runs `pip install -e` on its git checkout) leaves no package
+ *  directory under site-packages, only that record. */
+const PYTHON_DISTRIBUTIONS: Partial<Record<AgentSlug, string>> = { hermes: 'hermes_agent' };
 
 /** Native agents whose installer names each binary by its version, in a
  *  directory under the user's home (`~/.local/share/claude/versions/2.1.307`,
@@ -698,7 +741,21 @@ function inPythonPackage(real: string, slug: AgentSlug): boolean {
   const lib = path.posix.join(path.posix.dirname(bin), 'lib');
   try {
     return fs.readdirSync(lib).some((dir) => /^python\d*(?:\.\d+)?$/.test(dir) &&
-      fs.statSync(path.posix.join(lib, dir, 'site-packages', pkg), { throwIfNoEntry: false })?.isDirectory() === true);
+      installedIn(path.posix.join(lib, dir, 'site-packages'), pkg, PYTHON_DISTRIBUTIONS[slug]));
+  } catch {
+    return false;
+  }
+}
+
+/** `site` holds the package directory `pkg`, or the `dist` distribution's
+ *  dist-info directory. */
+function installedIn(site: string, pkg: string, dist: string | undefined): boolean {
+  if (fs.statSync(path.posix.join(site, pkg), { throwIfNoEntry: false })?.isDirectory() === true) return true;
+  if (!dist) return false;
+  const record = new RegExp(`^${dist}-[^/]+\\.dist-info$`);
+  try {
+    return fs.readdirSync(site).some((name) => record.test(name) &&
+      fs.statSync(path.posix.join(site, name), { throwIfNoEntry: false })?.isDirectory() === true);
   } catch {
     return false;
   }
@@ -726,14 +783,14 @@ export function isAgentImage(
   realpath: (file: string) => string = fs.realpathSync,
 ): boolean {
   if (!image || !path.posix.isAbsolute(image)) return false;
-  if (!RUNTIME_STEMS.has(imageStem(entry.name))) {
+  if (!RUNTIME_STEMS.has(runtimeStem(imageStem(entry.name)))) {
     const stem = imageStem(image).replace(NATIVE_TARGET_SUFFIX, '');
     if ((AGENT_SLUG_SET.has(stem) ? stem : NATIVE_STEM_TO_SLUG.get(stem)) === slug) return true;
     if (!NATIVE_INSTALL_DIRS.has(slug)) return false;
     // The image path is resolved, so compare against the resolved home too.
     return inNativeInstallDir(image, userHome) === slug;
   }
-  const runtime = imageStem(image).replace(/^nodejs$/, 'node').replace(/^(python3)\.\d+$/, '$1');
+  const runtime = runtimeStem(imageStem(image));
   if (!RUNTIME_STEMS.has(runtime)) return false;
   const argv = tokenizeCmdline(entry.cmdline ?? '');
   const script = argv[1]?.startsWith('-') ? argv.slice(2).find((t) => !t.startsWith('-')) : argv[1];
@@ -755,13 +812,16 @@ export function isAgentImage(
   return AGENT_PACKAGES.get(slug)?.has(pkg) === true;
 }
 
-/** One full process-table snapshot (pid/ppid/name[/cmdline]). Windows has no
- *  PPID in tasklist, so this shells out to Windows PowerShell 5.1 (always
+/** One full process-table snapshot (pid/ppid/name[/cmdline]). Windows reads
+ *  the native core's table when it is packaged (nativeProcessTable.ts); else,
+ *  as tasklist has no PPID, it shells out to Windows PowerShell 5.1 (always
  *  present, absolute System32 path — no PATH trust) for a single CIM
  *  enumeration. POSIX uses one `ps`. Throws on failure — the caller stays
  *  undecided. */
 async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
   if (process.platform === 'win32') {
+    const rows = await readNativeProcessTable(true);
+    if (rows) return rows.map(fromNativeRow);
     const psPath = path.join(
       process.env.SystemRoot || 'C:\\Windows',
       'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
@@ -802,6 +862,11 @@ interface TrackedAgent {
   /** #2673 — the pane's launch count (setLaunchCounter) when this process was
    *  picked: a later command start in the pane may have launched its successor. */
   launchSeq?: number;
+  /** agentImageMissingFor's read of `pid`'s executable: `path` once read
+   *  (null for an image outside the agent's native install directory), absent
+   *  while the read started at `readAt` is pending or after it failed.
+   *  `missing` latches: a running process never gets its file back. */
+  exe?: { readAt: number; path?: string | null; missing?: true };
 }
 
 /** #1727 — what the tracker needs to follow agents inside WSL panes. All
@@ -834,6 +899,19 @@ export interface TrackedAgentState {
   replacedLive?: true;
   /** Captured detector epoch on a fresh probe; null means its owner changed. */
   identityEpoch?: number | null;
+}
+
+/**
+ * The `agent.processExit` event a state change broadcasts: the death edge
+ * only. A launch edge, including a successor that replaced the watched
+ * process (`replacedLive`), is no death, so it settles nothing and drops no
+ * agent row.
+ */
+export function agentProcessExitEvent(
+  sessionId: string,
+  state: TrackedAgentState,
+): { type: 'agent.processExit'; sessionId: string; data: { slug: AgentSlug | null } } | null {
+  return state.alive ? null : { type: 'agent.processExit', sessionId, data: { slug: state.slug ?? null } };
 }
 
 export class AgentProcessTracker {
@@ -870,6 +948,8 @@ export class AgentProcessTracker {
    *  stillRunning() verdict on that entry is a verdict on that agent. */
   private readonly treeRoots = new WeakMap<ProcessTreeEntry, { sessionId: string; state: TrackedAgent }>();
   private snapshotStartedAt = 0;
+  /** An agentImageMissingFor image read is running. */
+  private agentImageReading = false;
   private identityProbeGuard?: (sessionId: string) => { epoch: number; isCurrent: () => boolean } | undefined;
   private launchCounter?: (sessionId: string) => number | undefined;
   private stateListener: ((sessionId: string, state: TrackedAgentState) => void) | undefined;
@@ -895,8 +975,21 @@ export class AgentProcessTracker {
     const ok = isAgentImage(entry, slug, image, this.userHome);
     // A failed read (a timeout, a permission error) is not a verdict: the
     // next check reads again.
-    if (cache && image !== undefined) cache.image = { key, ok };
+    if (cache && image !== undefined) {
+      cache.image = { key, ok };
+      if (cache.exe?.path === undefined) this.noteAgentImage(cache, image);
+    }
     return ok;
+  }
+
+  /** Record the executable `state.pid` runs for agentImageMissingFor. Only a
+   *  version binary in the agent's own install directory is kept: that is
+   *  the file an update deletes, and anything else the read can name (a
+   *  runtime, a mount point lsof reports for an unlinked file) is no verdict. */
+  private noteAgentImage(state: TrackedAgent, image: string): void {
+    const native = state.slug !== undefined && path.posix.isAbsolute(image) &&
+      inNativeInstallDir(image, this.userHome) === state.slug;
+    state.exe = { readAt: state.exe?.readAt ?? Date.now(), path: native ? image : null };
   }
 
   private isWsl(sessionId: string): boolean {
@@ -1285,6 +1378,50 @@ export class AgentProcessTracker {
     const s = this.states.get(sessionId);
     if (!s) return undefined;
     return { ...(s.slug ? { slug: s.slug } : {}), alive: s.alive };
+  }
+
+  /**
+   * Whether the pane's live agent runs from an executable file that is no
+   * longer on disk. A native installer that deletes the previous version on
+   * update (`~/.local/share/claude/versions/<x.y.z>`) leaves every session
+   * still running that version without its own binary: on macOS it loses
+   * folder access, and tool runs fail. true = gone, false = still there,
+   * undefined = unknown: no live named agent, a WSL agent, Windows (a running
+   * executable is locked and cannot be deleted), an image outside the agent's
+   * native install directory (a runtime-hosted `node …/cli.js` among them: an
+   * npm update rewrites the package in place), the image not read yet, or a
+   * stat that failed for another reason than the file being gone.
+   *
+   * The first call for a tracked process starts one image read (macOS: one
+   * lsof, which still names a deleted file; Linux: a readlink, whose
+   * ` (deleted)` suffix readExecutableImage strips) and answers undefined; a
+   * failed read is retried after ARM_BACKOFF_MS. One read runs at a time, so
+   * a session list over many panes starts one, not one per pane. Every later
+   * call is one stat of the known path. Never enumerates.
+   */
+  agentImageMissingFor(sessionId: string, probe: (file: string) => ImageFileState = imageFileState): boolean | undefined {
+    const s = this.states.get(sessionId);
+    if (!s?.alive || !s.slug || s.wsl || (this.platform !== 'darwin' && this.platform !== 'linux')) return undefined;
+    const exe = s.exe;
+    if (exe?.path === undefined) {
+      if (!this.agentImageReading && (!exe || Date.now() - exe.readAt >= ARM_BACKOFF_MS)) {
+        this.agentImageReading = true;
+        s.exe = { readAt: Date.now() };
+        void this.readImage(s.pid).catch(() => undefined).then((image) => {
+          this.agentImageReading = false;
+          if (image !== undefined && this.states.get(sessionId) === s && s.exe?.path === undefined) {
+            this.noteAgentImage(s, image);
+          }
+        });
+      }
+      return undefined;
+    }
+    if (exe.path === null) return undefined;
+    if (exe.missing) return true;
+    const state = probe(exe.path);
+    if (state === 'unknown') return undefined;
+    if (state === 'missing') exe.missing = true;
+    return state === 'missing';
   }
 
   /** True while the session's agent is a live process inside WSL, attributed

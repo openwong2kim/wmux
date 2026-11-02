@@ -27,6 +27,16 @@ export const ROUTINE_RPC = {
   list: 'routine.list',
   /** `routine_pause`: pause or resume one of the caller's routines. */
   pause: 'routine.pause',
+  /** The owner's routine for a bot on My Hermes (operator only): create
+   *  one, or change one the owner wrote (routineId). It runs in the bot's
+   *  1:1 chat. */
+  ownerSet: 'routine.ownerSet',
+  /** The owner pauses or resumes one of a My Hermes bot's routines (operator only). */
+  ownerPause: 'routine.ownerPause',
+  /** The owner deletes one of a My Hermes bot's routines (operator only). */
+  ownerRemove: 'routine.ownerRemove',
+  /** The owner runs one of their own routines of a My Hermes bot now (operator only). */
+  ownerRun: 'routine.ownerRun',
 } as const;
 
 export const ROUTINE_LIMITS = {
@@ -55,7 +65,10 @@ export type RoutineSchedule =
  *  A daily or one-time routine runs at the time chosen for it regardless. */
 export interface RoutineQuietHours { start: string; end: string; }
 
-export type RoutinePauseReason = 'bot' | 'owner' | 'stop' | 'park' | 'off';
+/** `refused`: a bot on My Hermes was not sent its wake for a reason that
+ *  stays until the owner acts (main/factory/myHermesTurn.ts), so it is
+ *  paused rather than refused at every slot. */
+export type RoutinePauseReason = 'bot' | 'owner' | 'stop' | 'park' | 'off' | 'refused';
 
 /** How a one-time routine ended: it fired, or its time passed unfired (the
  *  app was off for longer than the grace window, or the bot could not run). */
@@ -82,6 +95,13 @@ export interface BotRoutine {
   lastFiredAt?: number;
   /** Main's next due time while active. */
   nextDueAt?: number;
+  /** `owner`: the owner wrote it (routine.ownerSet, main's operator-only
+   *  path); only such a routine is sent to a bot on My Hermes. Absent: the
+   *  bot wrote it (routine_set, or the owner's Approve on the bot's proposal,
+   *  whose text the bot wrote). Never set from a bot's call. An older build
+   *  drops it when it rewrites routines.json, so after a downgrade and a
+   *  re-upgrade those routines read as the bot's and are refused. */
+  author?: 'owner';
 }
 
 /** `routine.set` params (the bot and workspace come from the binding). */
@@ -103,6 +123,18 @@ export interface RoutineListParams { botId?: string; }
 
 /** `routine.pause` params: `paused: false` resumes. */
 export interface RoutinePauseParams { routineId: string; paused: boolean; }
+
+/** `routine.ownerSet` params: the bot, and a routine's fields. Its thread is
+ *  always the bot's 1:1 chat. */
+export interface RoutineOwnerSetParams {
+  botId: string;
+  /** Change this routine (one the owner wrote); absent = create one. */
+  routineId?: string;
+  title: string;
+  prompt: string;
+  schedule: RoutineSchedule;
+  quietHours?: RoutineQuietHours;
+}
 
 export type RoutineResult =
   | { ok: true; routine: BotRoutine }

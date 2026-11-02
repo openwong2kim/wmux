@@ -466,7 +466,7 @@ describe('IntegrationSetupSection — hook set update', () => {
     return { api, calls };
   }
 
-  it('offers Update, naming the missing hook, for an install from before #2390', async () => {
+  it('offers Update for an install from before #2390, without raw hook names', async () => {
     const { api, calls } = driftedApi();
     const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
     cleanups.push(cleanup);
@@ -475,7 +475,8 @@ describe('IntegrationSetupSection — hook set update', () => {
     expect(state(container, 'hooks')).toBe('outdated');
     expect(action(container, 'hooks')!.textContent).toBe('Update');
     const note = row(container, 'hooks').querySelector('[data-setup-row-note]')!.textContent!;
-    expect(note).toContain('Notification:permission_prompt');
+    expect(note).toContain('older than the hooks this wmux needs');
+    expect(note).not.toContain('Notification:permission_prompt');
     expect(note).not.toContain('Stop');
 
     await act(async () => { action(container, 'hooks')!.click(); await Promise.resolve(); });
@@ -669,7 +670,7 @@ describe('IntegrationSetupSection — account folder hook update', () => {
     return { api, calls };
   }
 
-  it('lists each drifted account folder with its missing hooks and writes only on its own click', async () => {
+  it('lists each drifted account folder and writes only on its own click', async () => {
     const { api, calls } = accountsApi();
     const { container, cleanup } = render(<IntegrationSetupSection api={api} />);
     cleanups.push(cleanup);
@@ -678,7 +679,8 @@ describe('IntegrationSetupSection — account folder hook update', () => {
     expect(state(container, 'hooks')).toBe('installed');
     expect(state(container, 'hooks-account-a')).toBe('outdated');
     expect(row(container, 'hooks-account-a').textContent).toContain('Work');
-    expect(row(container, 'hooks-account-a').querySelector('[data-setup-row-note]')!.textContent).toContain('StopFailure');
+    expect(row(container, 'hooks-account-a').querySelector('[data-setup-row-note]')!.textContent).toContain('older than the hooks this wmux needs');
+    expect(row(container, 'hooks-account-a').querySelector('[data-setup-row-note]')!.textContent).not.toContain('StopFailure');
     expect(calls).toEqual([]);
 
     await act(async () => { action(container, 'hooks-account-b')!.click(); await Promise.resolve(); });

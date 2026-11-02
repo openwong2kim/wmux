@@ -246,8 +246,9 @@ bar is a drag region; each interactive child opts out with `no-drag`.
   right cluster; the whole gap drags the window. The command palette has no
   titlebar entry: ⌘K (Ctrl+K on Windows and Linux) opens it, and the rail's
   More menu lists it so it stays discoverable.
-- **Right:** Fleet vitals as appearing chips (`N running`, `N need you`; only
-  when nonzero, and dropped while Fleet is the page), the account usage when
+- **Right:** Fleet vitals as an appearing chip (`N running`; only when
+  nonzero, and dropped while Fleet is the page) — no Needs you count, which
+  is the rail's Fleet badge (see Attention renditions) — the account usage when
   it matters. The file tree toggle is not here: it is the agent bar's Files
   button (see File tree column). There is no room or bot panel toggle: bot
   conversations live on the Bots page.
@@ -522,27 +523,75 @@ status bar badges, `fleet_triage` or the phone's sidebar.
 - **Chat:** a centred name pill (avatar, name, presence; a group's bot
   count) in the chat's 44px header row, the messages under it with no rule
   between. A group's pill opens its settings (Group chats, above); a bot's
-  pill opens
-  the bot's profile (template, job — the owner's words, with Edit —
-  workspace, repository — with Change, Add bot's folder picker, checked
-  as at creation (a refusal says why in one line); the repository set
-  there is the workspace's, remembered for it and given to its bots that
-  have none, while another repository is refused — the model it thinks
-  on (its own model and effort, as text with a muted Change that opens the
-  model combobox of Settings › Agents roles and an effort Select, with
-  Cancel and Save; an invalid model id is refused in one red line before
-  main is asked, and main checks it again) — what its workers run on — a native Select:
-  Default (the presets' engine) or an installed engine that has a worker
-  guard, one not installed listed but disabled — its workers' model and
-  effort (the same model line, for that engine) — on/off and presence
-  (right after Resume, "Resuming…" until the runtime reports, for 10 s at
-  most; then as any bot with no turn yet),
-  then Today (owner decision 2026-10-16): on top, one muted line naming the
-  first thing that keeps the bot from new work — paused by the owner,
+  pill, and a 28px ⚙ icon button at the header's right end (named and
+  titled "<name> settings"), open the bot's settings page (Bot settings
+  page, below) in place of the chat. There is no profile popover. The pill floats
+  centred at the top (a room's shows up to three of its bots' avatars
+  overlapping in a row); the narrow layout's back button stays on the left.
+  The messages, the rail and the composer sit in one column capped at
+  **44rem**, centred; while a side panel is open the column fills the
+  chat's width instead.
+- **Bot settings page (owner decision 2026-10-29):** a bot's settings
+  live only here; Settings › Bots keeps what applies to every bot, and its
+  bot rows are link rows ("Open settings ›") that open this page on the
+  Bots page (while the bots are off the rows are disabled under one muted
+  line, "Turn Bots on to change a bot's settings.", since the Bots page is
+  not there). Every way in (the chat's ⚙ and pill, Settings › Bots, any
+  "Open settings") goes through one store ask (`openBotSettings`), so it
+  lands on the page, never at the top of Settings. The page takes the
+  chat's place in the body (the list stays; under the 800px layout it opens
+  over the list as the chat does): the 44px header band with a round back
+  button (back to the chat, shown in both layouts) and "<name> · Settings";
+  a status strip under one `--stroke` hairline — one state: Off, "Paused
+  by you", Parked (with what parked it beside it), or On with its presence
+  ("On · Idle", "On · Resuming…" after Resume as before); the first thing
+  that keeps it from new work (Today's blocker, below); today's turns of
+  the cap, worker time, workers in use; then the page's one Pause, Resume
+  while parked, or Turn on while off; then a 180px section nav (32px rows,
+  the selected one on `--selection` with the look's `--select-ring`;
+  hidden under a 640px page) beside the scrolling sections, each a 13px
+  `--text-sub` heading over 140px-label rows: **Basics** (name and
+  picture, job — one value: its own, else its template's starting job with
+  a hint naming the template — workspace, read-only, and repository, Add
+  bot's folder picker and wording), **Engine** (the engine picker with its
+  readiness, as below; Thinks on: model combobox and effort Select, or the
+  Hermes model as text), **Work** (workers run on, worker model and effort,
+  the commands switch with its log and rules, and Wakes up on: its
+  messages and handoffs, then one phrase per kind of fact its triggers
+  name, then the routines it set itself), **Limits** (turns a day, turns an
+  hour — empty for none — workers at once; a muted line with its worker
+  time a day; then Today, below, without its own blocker line or Resume,
+  an engine error keeping its Fix), **Connections** (every enabled library
+  connection with a checkbox, ticked where its workers get it; a tick acts
+  at once; Add connection opens the dialog scoped to this bot; the recipe's
+  checklist), **Memory & skills** (Skills and Memory, below), **What it can
+  do** (by engine, below) and **Stop or remove** (New conversation, Stop,
+  Delete bot, below). A My Hermes bot shows no Work or
+  Connections, and no worker limits in the strip, Limits or Today: it starts no wmux workers and holds only `room_post`, so it
+  can do two things — talk with the owner in its own chat, and use its
+  Hermes's own tools under that Hermes's approvals — with one muted line
+  on what it cannot (start wmux workers, read other chats or rooms,
+  schedule wmux routines). The form fields — name, picture, job,
+  repository, limits, models and effort, workers run on, the commands
+  switch — are a draft saved by one footer Save (primary) beside Cancel,
+  both disabled until something changed, with the muted line "Changes apply
+  from the bot's next turn." or the refusal in red; Save sends one
+  bot.update patch, then the picture, then the commands switch, and a bad
+  model id or limit is refused before main is asked. Actions act at once:
+  Pause / Resume / Turn on, the engine switch (with My Hermes's native
+  confirm), connection ticks and Add connection, skills and memory, New
+  conversation, Stop and Delete bot. Leaving with unsaved changes (back,
+  another conversation, another bot's page) replaces the footer with an
+  InlineConfirm ("Leave without saving? …", Discard changes as the primary,
+  Keep editing); leaving the Bots page itself (the rail, a shortcut,
+  Settings) asks the same way, through the route's leave guard. While the bots
+  are off the form is disabled and only Delete bot acts.
+  Today (owner decision 2026-10-16): the status strip names the first
+  thing that keeps the bot from new work — paused by the owner,
   stopped after errors, the usage limit until a time, out of turns until a
   time, out of worker time for today (with its reset), its workers at its
-  cap, the factory's workers or agent slots full, its queue full — with a
-  secondary Resume while it is parked; under it one muted line per limit in
+  cap, the factory's workers or agent slots full, its queue full — beside its one
+  Resume; Today, under Limits, has one muted line per limit in
   tabular figures: turns this hour (only with an hourly cap) and today,
   used and left; worker time used of its cap; worker slots in use of its cap (the cap counts slots held, so a task in
   review whose worker still holds one is named: "2 of 3 · 2 held by tasks in
@@ -555,36 +604,27 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   below them, once a turn reported one, the engine's cost estimate, "Cost
   ≈ $0.50 today · ≈ $2.25 in all (API-equivalent)", never a charge (a
   subscription is not billed it; the hint says so). Every Today row is one
-  two-column grid: labels never wrap and every value starts at the same x,
-  its routines, its connections — each library connection that applies to
-  it, an every-bot one with a switch that turns it off for this bot alone,
-  a picked one with Edit and Remove from this bot, then Add connection and
-  Manage (Settings › Bots › Connections); its skills and memory (Skills, Memory, below); then, read-only, what it can do in the owner's words — one phrase per power of
-  the shared surface, plus a Coordinator's reads in every workspace, never
-  per-bot settings — whom it reports to (You), and its workers now; last,
-  Pause — a neutral secondary that parks the bot at once, with no confirm
-  (it is undone by Today's Resume, which then shows with "Paused by you"),
-  shown while the bot is on and not parked — then
-  New conversation — a neutral secondary that asks in place ("Start a new
+  two-column grid: labels never wrap and every value starts at the same x.
+  The models: its own model and effort (claude-sdk) and its workers' model
+  and effort, each the model combobox of Settings › Agents roles and an
+  effort Select; an invalid model id is refused in one red line before main
+  is asked, and main checks it again; a stored model main would not pass on
+  shows a warning and opens empty. Workers run on: a native Select of
+  Default (the presets' engine) and each installed engine with a worker
+  guard, one not installed listed but disabled.
+  Pause (in the strip) is a neutral secondary that parks the bot at once,
+  with no confirm; New conversation a neutral secondary that asks in place ("Start a new
   conversation with <name>? It forgets this conversation; its open cards
-  and queued work stay."); its result is a toast, and mid-turn it says to
-  stop the turn first — then
-  Stop — the bot's turn and its workers — a
-  destructive secondary that asks in place, the solid red only on its
-  final confirm, never a window dialog; under it Delete bot, the same
-  destructive secondary asking in place, its confirm saying what happens:
-  its messages stay, its running workers stop, its routines go) as a popover that fits the chat: on a
-  short window it scrolls inside (16px off the chat's foot), so Stop at its
-  end stays reachable. A stop's result is a
-  toast naming what stopped (counts at zero left out). The pill floats
-  centred at the top (a room's shows up to three of its bots' avatars
-  overlapping in a row); the narrow layout's back button stays on the left.
-  The messages, the rail and the composer sit in one column capped at
-  **44rem**, centred; while a side panel is open the column fills the
-  chat's width instead.
+  and queued work stay."), its result a toast, mid-turn saying to stop the
+  turn first; Stop — the bot's turn and its workers — a destructive
+  secondary that asks in place, the solid red only on its final confirm,
+  never a window dialog; under it Delete bot, the same, its confirm saying
+  what happens: its messages stay, its running workers stop, its routines
+  go. A stop's result is a toast naming what stopped (counts at zero left
+  out).
 - **Skills (2026-10-16):** a bot writes its own skills — procedures, not
-  facts — and the owner approves each one. In the profile, under its
-  connections, a Skills row lists them one line each: the name, then muted
+  facts — and the owner approves each one. On its settings page, under
+  Memory & skills, a Skills row lists them one line each: the name, then muted
   where it stands ("approved 1.1.0", "waiting for your approval (1.0.0)",
   "approved 1.0.0 · update 1.1.0 waiting for your approval", "archived",
   or after "approved 1.0.0" the muted note that it changed since approval
@@ -599,7 +639,7 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   has a muted text button, Archive, which acts at once (a skill is
   proposed again by the bot, never restored by hand); a failure is one red
   line under the list. With none, one muted line says when a bot proposes
-  one. There is no Approve in the profile: a proposal is decided on its
+  one. There is no Approve on the settings page: a proposal is decided on its
   approval card in the chat, the same card as every other approval
   (Approve / Deny, no Always allow — a rule never covers a skill, and the
   owner's typed "ok" does not approve one), titled "Add the skill <name>
@@ -629,7 +669,7 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   what it does, which services it reads, "needs your own OAuth client"
   where it does, "macOS and Linux only" on Windows, and that nothing is
   connected by it. It grants nothing. A bot made from one has a Recipe row
-  in its profile, above its connections: the recipe's name in the main
+  on its settings page, in Connections: the recipe's name in the main
   text, then one line per service it needs — the name (main text once
   ready, muted otherwise) and its state as a muted text button (Checking…
   until the library and its sign-in are read, Sign in needed or Token
@@ -772,7 +812,7 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   Each bot whose turn runs, on one line: a steady 6px muted dot, "<name>
   working · 0:14" (the elapsed time in tabular figures, ticking each
   second), its queue ("2 queued") when it has one, and **Stop** — a neutral
-  secondary that interrupts the turn only (the profile's Stop also ends the
+  secondary that interrupts the turn only (the settings page's Stop also ends the
   bot's workers); the outcome is a toast. The workers themselves are rows
   under their bot in the list (above), not here; the rail keeps only the
   tasks the list cannot show — waiting for an agent slot, or done and
@@ -900,7 +940,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   at most; when main cannot be asked (one red line) or does not answer in
   time (one muted line) Add makes the bot without a repository and
   remembers nothing; a refused folder shows "No repository" with one muted
-  line saying why and how to fix it, and an add from there remembers
+  line saying why and how to fix it (a folder with no origin remote a bot
+  can push to: one plain line, then Copy command — `git remote add origin
+  <address>`, or `set-url` when origin is set but names no host; a copy the
+  clipboard refused shows the command to select instead of Copied — Check
+  again, which asks main for the folder once more, and Show details, which
+  holds main's full reason with the folder's path), and an add from there remembers
   nothing, so the folder is offered again once it is fixed; None is
   remembered for the workspace ("You chose no repository for this
   workspace…", with Choose folder…), so later adds and Add team do not ask
@@ -908,12 +953,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   takes it: one no bot holds is offered with Change and forgotten when it
   no longer resolves to the same repository (a picked folder replaces it);
   one its bots hold that no longer works refuses the add in one line
-  ("The workspace's repository folder no longer works (…); change it on a
-  bot's profile."), and no bot is re-pointed. Removing the workspace
+  ("The workspace's repository folder no longer works (…); change it in a
+  bot's settings."), and no bot is re-pointed. Removing the workspace
   forgets it. A folder picked, or None pressed, is for the workspace
   chosen then: choosing another workspace starts from its own
   suggestion. Whenever the workspace gets a repository (Add
-  bot, Add team, the first run, a profile's Change) its bots without one
+  bot, Add team, the first run, a settings page's Change) its bots without one
   take it. No role
   picker. In Settings › Bots, Add is there whether the bots are on or off;
   while they are off it asks once in place ("Bots are off. Adding <name>
@@ -949,11 +994,13 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   adds the bot to the current workspace and opens its 1:1, where its
   greeting arrives. When the Claude engine cannot sign in the panel says why in
   one line and offers Log in to Claude (and Check again); Start waits until
-  it can. A build that cannot tell never blocks Start. Beside Start, a
-  secondary **Add a team (lead + 4 roles)** does the same for the five-bot
-  team (no name to type), opens the lead's chat and offers the group chat
-  row (Add bot, above). Under them the repository line of Add bot, with its
-  Checking state and its reason line; Start and Add a team wait while it
+  it can. A build that cannot tell never blocks Start. Under it the
+  repository line of Add bot, with its Checking state and its reason line;
+  then one muted line of text links: **Add a team (lead + 4 roles)**, which
+  does the same for the five-bot team (no name to type), opens the lead's
+  chat and offers the group chat row (Add bot, above), and Start from a
+  recipe…. Start is the only button beside the name, so the card leads
+  with one action; Start and Add a team wait while the repository line
   checks.
 
 ### Fleet
@@ -1017,10 +1064,12 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   **Connect a PC…** (secondary).
 - **This computer — one line** on a `--selection-subtle` band: this PC's
   name, phone access (`off` / this computer only / local network / Tailnet),
-  the A2A state (`A2A :45660 listening`, `A2A: port 45660 in use`,
-  `A2A: port 45660 unavailable` for a port Windows reserves or refuses,
-  `A2A: no firewall rule for port 45660`, another listener error, or
-  `A2A off`; never "not reachable", which the host cannot know) and a
+  the A2A state, worded for people as PC messages (`PC messages on ·
+  port 45660`, `PC messages: port 45660 in use`,
+  `PC messages: port 45660 unavailable` for a port Windows reserves or
+  refuses, `PC messages: no firewall rule for port 45660`, another listener
+  error, or `PC messages off`; never "not reachable", which the host cannot
+  know; the UI never says "A2A") and a
   **Details** toggle. While phone access is off, Share & pair sits on
   the line (its popover leads with Pair a phone, which starts sharing and
   shows the QR in the same click. It is offered only once the address will
@@ -1031,7 +1080,7 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   the QR survives sharing turning on.
   Details unfolds in place: the phone
   address without its token (copy), whether input is allowed, Share & pair,
-  the A2A port and the full security code (the certificate fingerprint;
+  the PC messages port and the full security code (the certificate fingerprint;
   plain mono values; the code wraps anywhere, copy), and while A2A listens
   a **Firewall** line: what the last check said ("Allowed on private
   networks · TCP 45660", with "Another PC reached this one at 14:02" once
@@ -1178,11 +1227,16 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     of explanation and Connect a PC… as the primary.
 - **Recent activity:** its own short list (paired, revoked, host added,
   connects seen while the page is open).
-- **Connect a PC dialog:** three tabs, and opening it has no side effect. It
-  opens on **Invite this PC** only while the A2A listener is already up;
-  otherwise on **Paste an invite**, and choosing Invite is what turns the
-  listener on (one muted line says so, and the page's line follows at once).
-  Invite opens an invite and copies it at once (Copy reads "Copied" for
+- **Connect a PC dialog:** three tabs, and neither opening it nor showing a
+  tab has a side effect: both only read state. It opens on **Invite this PC**
+  only while the A2A listener is already up; otherwise on **Paste an
+  invite**. Focus starts on the tab's first field or primary (the paste
+  field, or Create invite), never on the close ×. Invite shows **Create
+  invite** as the primary; with the listener off it reads **Turn on and
+  create invite**, with one muted line above it naming what it turns on and
+  the port it listens on, and pressing it is what turns the listener on (a
+  muted line says so after, and the page's line follows at once). Create
+  invite opens an invite and copies it (Copy reads "Copied" for
   1.5 s, is the primary and stays for re-copying), shows the 8-character
   code grouped as ABCD-EFGH under it for reading out (display only: the
   whole invite is what is copied and pasted), lists the addresses the
@@ -1193,7 +1247,8 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   button and shows it masked; it routes by shape: `wmux-a2a://` joins over
   A2A (then offers Link a pane now), and every remote-host shape — a pairing
   link, a `wmux web` URL with its token, an address and a code — pairs a
-  workspace share. Nothing connects before Connect.
+  workspace share. Nothing connects before Connect, which is secondary
+  while there is nothing to connect or a connect is in flight.
   Under Paste, one ghost link, "No invite? Add a PC over SSH…", opens the
   Add PC over SSH dialog for a computer that cannot send an invite.
   **LAN** pairs a message link with a PC on this network by a 6-digit PIN:
@@ -1252,9 +1307,11 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   a detached HEAD, no upstream, behind the upstream, the default branch).
   Commit needs no upstream; Push and Create PR do. main re-checks each step.
 - **Tabs:** text tabs **Issues · Pull requests**, then **Worktrees** as a
-  quieter, secondary tab at the end (the active one carries the 2px accent
-  bar; a first visit opens on Issues, then the last tab is kept) over a
-  hairline. All repos (from the switcher) shows Issues and Pull requests
+  quieter, secondary tab at the end, set apart by a gap with no rule (the
+  active one carries the 2px accent bar; a first visit opens on Issues,
+  then the last tab is kept; a repo with no origin remote opens on
+  Worktrees, shown but not saved, until a tab is picked while it is shown)
+  over a hairline. All repos (from the switcher) shows Issues and Pull requests
   as **one flat list** across repos, newest update first, each row ending
   in a small neutral **repo tag** (`--selection`, `--chip-radius`, 11px;
   the full owner/repo in its tooltip). Over it, a row of **repo chips**,
@@ -1322,7 +1379,8 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   task boxes, blockquotes and tables. GitHub's HTML is never rendered as
   HTML: comments and scripts vanish, `<details>` becomes a collapsed
   disclosure labelled by its summary, other tags reduce to their text.
-  Nothing selected is one quiet line.
+  Nothing selected is one quiet line, drawn only while the list has a row
+  to select; otherwise the pane stays empty.
 - **Worktrees tab:** the new-worktree line and, while one runs, the merge
   session on top, then the worktrees in the flat list's who-acts-next
   grammar, as fold sections in order: **In use** (a workspace on it),
@@ -1345,9 +1403,9 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   with their pushed PR status and live agent status, and the open PR list
   of the header's read or a Pull requests list; the tab reads no PR list
   of its own. All headers stay neutral (no orange: none of these is a
-  question waiting on the owner), every section starts open, and under the
-  page title a summary line names each non-empty section with its count
-  and jumps to it. A row in Uncommitted changes, No open PR or Cleanup
+  question waiting on the owner), every section starts open, and while two
+  or more sections are non-empty a summary line under the page title names
+  each with its count and jumps to it (one section is its own header). A row in Uncommitted changes, No open PR or Cleanup
   candidates can be **snoozed** (1 hour, 1 day, 1 week, or until it
   changes): it moves to a folded **Snoozed** group at the end, with
   Unsnooze, until its time passes or its state changes (another section,
@@ -1414,6 +1472,14 @@ refresh button. Nothing about branches or worktrees sits above the lists.
   (`gh auth login --web`, or the command to copy when no tab can show it).
   gh not installed shows the install command for the OS and Check again.
   gh keeps the credential; wmux stores no token.
+- **No remote:** a repo with no origin remote shows, on Issues and Pull
+  requests, one card in the list's place: "This repository has no origin
+  remote.", one line saying the lists are read from origin on GitHub or
+  GitLab, the command in mono with Copy (`git remote add origin <address>`,
+  or `git remote set-url origin <address>` when origin is set but names no
+  host), and Check again, which refreshes the whole page (the repo's name
+  and link too). Copy says Copied only once the clipboard took it. No
+  primary: nothing on the card does the fix itself.
 - **Cost:** pull-only and only while the page is shown. The shown PR or
   issue list polls every 30s while the window is visible.
 - **Rail dot:** a red dot on the Git icon while an open workspace's open or
@@ -1508,6 +1574,84 @@ leaves the page.
   actions reveal wherever the card shows its hover fill, and keyboard focus on
   the row reveals the same layout. Hovering a nested task row reveals only
   that row's actions, never its owner's. The list never scrolls sideways.
+- **Company row** (owner-approved 2026-10-30): the row menu's **Make
+  company…** opens a dialog (Mission; CEO, a radio list of the workspace's
+  panes in one grouped container, a pane with no agent listed but disabled;
+  optional Standing orders; **Make company** the one primary). A company's
+  menu offers **Open board** (the board tab, see "Pane: terminals and work
+  area"), **Company settings…** (the same dialog, filled in), **Add a seat
+  on this PC…** and **Add a seat on another PC…** (both below) and
+  **Dissolve company**. Line 2 is the mission
+  after a small muted org-chart glyph where the branch icon sits, never the
+  git line: the row has no branch, PR badge or sync badge, since with panes
+  in different worktrees they are
+  whichever pane reported last. No mission leaves line 2 empty; a needs-you
+  question still takes it. In the roster the coordinator's row comes first
+  with a muted `CEO` after its title, in the agent-kind slot and style; a
+  row's title is its pane label (Rename pane) when it has one, and the trailer
+  keeps live activity, else the coordinate. The company adds no colour.
+  **Add a seat on another PC…** (owner-approved 2026-11-01, mockup round for
+  other-PC seats), also the link that ends the board's Seats, is the Remote
+  page's Start an agent… for the company, with the replies going to the CEO
+  pane. One dialog: the title, then `Asks that PC to start an agent for
+  <company>. Its replies come to <CEO>, the CEO.` Fields two to a row: PC
+  (the paired PCs this one may ask, each marked online or offline) and Agent;
+  Folder (one that PC lists) and Subfolder (optional); Name (the pane-label
+  rules, a free `<pc>-dev` by default; it names that agent here) and Wait for
+  that PC; then Owns (optional) and the First message, read-only and sent
+  exactly as shown: who the seat is, for which company and on which PC, what
+  it owns, who its CEO is, that briefs come as tasks with Goal, Scope,
+  Acceptance, Verify and Report, how it finishes one, and the standing
+  orders. The Remote page's rules hold: an offline PC gets the note on how
+  long the ask waits, a message the final pass would change is shown changed
+  and goes on the next Send, a refusal keeps the form and says why. The
+  footer's muted hint says that PC asks its owner first unless it always
+  allows this one, and the agent works in its own worktree there; Cancel and
+  `Ask <PC>`, the one primary. With no PC to ask, each paired PC's reason
+  shows, with Open Remote page (secondary) and no primary. While the CEO seat is
+  vacant the menu item is disabled and says why, and the board has no link.
+  **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan), right
+  before the other-PC item and also a link at the end of the board's Seats,
+  adds a staff seat here the way a preset makes one. One dialog: the title,
+  then `Starts an agent for <company> on this PC. It takes briefs from <CEO>,
+  the CEO.` Name (the pane-label rules, the first free `dev`, `dev-2`… by
+  default; a name another pane carries is refused, never suffixed) and Agent
+  (the installed agents a preset offers, Claude Code by default) side by
+  side; Owns (optional); then a read-only **Works in** line, a muted label
+  over `--text-sub`: the seat's own worktree of the company folder on a new
+  branch when that folder is a git repository, else the company folder. A
+  seat that would share a folder that is not a repository with another
+  staff agent gets a note saying so and cannot be added. A refusal keeps the
+  form and says why, as the other-PC dialog does; at the pane cap the
+  split's own message shows. Cancel and **Add seat**, the one primary. The
+  company comes forward and the seat opens as a new pane below its last
+  staff pane (right of the CEO when it has none), named and started like a
+  preset seat with its brief as the agent's first prompt. Once that agent
+  is up, the CEO pane gets one line through the gated delivery, never
+  before: `wmux: #<name> joined the company (owns <what>; branch <branch>).
+  Brief it like your other seats.` While the CEO seat is vacant the menu
+  item is disabled and says why, and the board has no link.
+- **Company presets** (owner-approved 2026-10-31, mockup round 6): the
+  titlebar + menu lists them under a muted **Company** heading, below the
+  layout presets, as label + description rows like theirs
+  (CEO + researcher + 3 devs, Lead + reviewer). A pick swaps the menu for a
+  dialog: Name and Folder side by side, Mission, Standing orders (filled
+  from the preset), then the seats as a table (a CEO radio, Seat, Owns,
+  Agent; an agent that is not installed is listed but disabled), a **Tell
+  each agent its seat** checkbox, on by default, and **Make company** the
+  one primary. A bad or repeated seat name, or two agent seats besides the
+  CEO with no folder, says why under the table and disables the primary.
+  Making it opens a new workspace with the CEO's pane on the left at half
+  the width and the other seats stacked top to bottom on the right, each
+  pane named after its seat (a name another pane answers to gets `-2`,
+  `-3`…), carrying what it owns, started with its agent, and the CEO seated
+  before any agent is up. Every seat but the CEO that starts an agent works
+  in its own worktree of the folder's repository, on its own branch from
+  origin's default branch; the CEO works in the folder. With the checkbox
+  on, each agent's first message is its seat: its name, what it owns, the
+  mission and standing orders, who it reports to, its worktree and branch,
+  and for the CEO the other seats with their branches and the brief a task
+  to them needs. The board is not opened for it; the row menu opens it.
 - **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
   `treeitem`) with one Tab stop — the row the keyboard was last on, else the
   selected row, else the first. ↑ ↓ Home End move between rows in screen
@@ -1605,8 +1749,8 @@ A pane is a terminal column plus, when it needs one, a work area.
 
 - **Two kinds of surface.** Terminals (local and remote, and the
   placeholders a mirror shows for a slot it cannot draw) keep the pane tab
-  strip and draw in the left column. Browser, editor, preview and diff tabs
-  are work surfaces and draw in the work area on the right. A pane holding only one
+  strip and draw in the left column. Browser, editor, preview, diff and board
+  tabs are work surfaces and draw in the work area on the right. A pane holding only one
   kind draws it across the whole pane under one strip, as before.
 - **One header line.** The work strip sits on the pane header's line, split
   where the body is split: the body's separator continues up through the
@@ -1649,6 +1793,46 @@ A pane is a terminal column plus, when it needs one, a work area.
   with an Open button. The header adds View source, which opens the file
   as text. A change in the page's folder reloads it in place, keeping the
   scroll and the focus.
+- **Board tab** (company mode). One per company workspace, opened from the
+  row menu's Open board beside the CEO's terminal (in the active pane while
+  the seat is vacant). Top to bottom, 16px sides: the workspace name (16px),
+  the mission (`--text-sub`) and the standing orders (muted, three lines at
+  most); then muted 11px headings over `--stroke`-divided rows. **Waiting on
+  you** (jobs to or from the company that need the owner), **Seats** (every
+  pane, the CEO first: status mark, the muted CEO word, the title, the
+  coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
+  needs-you one in `--attention-text`, and a muted `Next:` line; then the
+  company's seats on other PCs, see below), **Handed out** (open jobs sent to
+  other workspaces, or to panes on other PCs that are not the company's
+  seats, named by their alias), **Not on a seat** and **Log**
+  (finished jobs, newest first, the last ten however old). A section with nothing in it is
+  not drawn, Seats aside; a pane with no agent keeps its seat with a muted
+  `No agent in this pane` under its title, and the coordinate gives way
+  before the title in a narrow pane. A seat row focuses its pane. One muted
+  closing line says work sent to fan-out workers is not shown yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
+  colour beyond the status marks and needs-you. Dissolve company closes the
+  board tab; a pane holding nothing else keeps it, saying the workspace is no
+  longer a company. A pane with a board can be stashed (the board keeps no
+  state of its own), and while the board is the active tab Fleet still reads
+  the pane by the terminal beside it.
+  - **Seats on other PCs** (owner-approved 2026-11-01, mockup round for
+    other-PC seats). A seat on another PC is every active link from the CEO
+    pane to a pane on a paired PC that this side may send work over; nothing
+    is stored for it, and a link that ends drops it (its open jobs go back to
+    Handed out). After the panes, one row each: status mark (running while it
+    holds an open job, else idle), the name in the title weight (the link's
+    label), muted `on <PC>` where a pane shows its coordinate, then its open
+    jobs and `Next:` as for a pane. A job it reported back reads as the muted
+    `Reported to CEO`, never needs-you, and Waiting on you and Log name its
+    jobs by the seat. The row is not a button: there is no pane here to
+    focus. An ask the CEO pane made follows with a dashed muted ring, the
+    asked name in `--text-sub`, `on <PC>` and a muted `Waiting for <PC> to
+    approve · asked <age>` (or `<PC> is offline; the ask waits until
+    <time>`); an ask that ended without a seat stays a day as a muted
+    `Not started: <why> · <age>`. While the company has a CEO pane, quiet
+    underlined text links (`--text-sub`, a `--line` underline) end Seats:
+    **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan; see
+    "Company row") and, beside it, **Add a seat on another PC…**.
 
 ## The one-boundary rule
 
@@ -1702,13 +1886,23 @@ always neutral (the fill ladder).
     - In that dialog (and on the Remote page) the prompt is sent only as shown. While a typed value would still be masked, a `wmux-a2a-note` line says how many. Send then puts the masked text in the box and asks for a review, and the next Send sends it.
     - When every account is out, one line with the earliest time one reopens.
   - **Colour.** None beyond the armed clock.
+- **Continue in another agent, from the pane menu** (owner approval 2026-11-01).
+  - **The entry.** "Continue in another agent…" in the pane ⋮ menu (and the header's right-click menu), after Continue on another account and before Rewind, on a terminal whose agent wmux knows; never in a shadow workspace.
+  - **The dialog.** A `Dialog` 400px wide: the title, one description line (a new tab of this pane, the note typed in, this tab keeps its session), one secondary button per other agent that is installed and signed in (one muted line when there is none), the "Include the unsent draft" checkbox (off) when the input holds a draft, then the note in the usage-limit card's preview block with its length. No primary: choosing an agent is the action. A click closes the dialog and takes the usage-limit card's path: a new tab, the note typed in, nothing sent.
+  - **The note.** The same note as the usage-limit card's, written by wmux from the pane's transcript: the folder and branch, the first and latest requests, the end of the last reply, the files touched (with their uncommitted line counts), the transcript, and the draft only when ticked.
+  - **Colour.** None.
+- **Close to the limit, and back after the reset** (owner approval 2026-11-01, handoff mockup boards A and C).
+  - **Close to the limit.** When the pane's own statusline says its account has used 90% of the 5-hour window, the usage-limit chip's place shows a muted clock, a muted "5h", the share in `--accent-yellow` and "· resets 3:16 PM" (compact: clock and share). It never opens by itself and has no ×: the pane is still working, and it goes at the reset. Clicking it opens the usage-limit card in its close-to-the-limit form: the title "Close to the 5-hour limit", one line with the share, the reset and that the pane keeps working until then, Continue in another agent (with the note) and Continue on another account (2+ accounts, without the Always switch checkbox), then one muted line that the new tab opens beside this one with the note typed in and nothing is sent until Enter. Nothing is armed, held or switched by itself.
+  - **A handoff waits for the reset.** A handoff from a pane at or close to its limit is recorded on the tab it left, and a held pane's Resume automatically is turned off: the work goes on in the other tab until the owner brings it back. In the usage-limit card of a held pane, one muted line under the agent buttons says so. The two tabs carry a muted mark before their titles (an out-arrow on the tab the work left, a back-arrow on the tab it went to) whose name, like the tooltip, says "Continued in …" / "Continued from …".
+  - **Back after the reset.** From the reset, the chip of either tab reads a muted clock, "Limit has reset" in `--text-sub` and "Bring back" in `--text-main` at the title weight, then × (leave the work there). It opens the bring-back card, the usage-limit card's popover: "<agent> is back", one line with the reset and since when the other agent had the work, "What <other> did" with the note wmux writes from the other agent's own transcript (the latest request there, the commits it made, the files with their line counts since the handoff, the end of its last reply, its transcript) in the preview block with its length, a "Close the <other> tab after" checkbox (off), then Stay in <other> (ghost) and Bring back to <agent> (primary), and one muted line that the note is typed into that tab, which comes to the front, and nothing is sent until Enter.
+  - **Colour.** The share in `--accent-yellow` (caution) while close to the limit; nothing else.
 - **Stuck-turn chip and card** (owner approval 2026-10-25).
   - **The chip.** A pane whose Claude turn the daemon reads as stuck (no transcript progress, no tool in flight, nobody asked) shows one chip in its tab strip's flow beside the usage-limit chip: the word "Seems stuck" in `--accent-yellow`, nothing else coloured. It shows only while the stall lasts. Clicking it opens the card.
   - **The card.** The usage-limit card's popover (`placePopover`; Escape, an outside click or a resize closes it): one line saying how long nothing moved and that wmux never stops a turn on its own, then Stop and prefill (secondary) and Keep waiting (ghost). Stop and prefill interrupts the turn and puts the last prompt back into an empty input, unsent. A stop that fails keeps the card open with one line.
   - **The sidebar.** The agent row's trailer reads "Seems stuck" in `--accent-yellow` in place of the live activity. The running mark and the status word stay; no new status mark, never the attention orange.
 - **Needs you is the attention orange everywhere** — the sidebar ring, hairline,
   labels and counts, the collapsed rail's mark, the rail badge and dot,
-  Fleet's Needs you chip, section dot and row word, and the titlebar count —
+  and Fleet's Needs you chip, section dot and row word —
   so one state never wears two colours (and a white-accent look still reads
   it). One orange hue family (≈21–29°), its own value per look
   (`ATTENTION_COLORS` in `themes.ts`, emitted into each look's block in
@@ -1745,9 +1939,18 @@ always neutral (the fill ladder).
   closing message (`pendingQuestion`). A turn that finished with no question
   draws no hairline; it shows the done dot until its workspace is viewed. The Attention blink
   pulse (Motion) is a momentary opacity overlay, not a resting wash.
-- **Attention renditions:** one event is drawn at most twice (the evidence
-  row plus one global count). The titlebar vitals step aside on the Fleet
-  page, whose summary line already says them.
+- **Attention renditions:** one event is drawn at most twice: the evidence
+  row (the sidebar row, its hairline and its "Needs you") plus one global
+  count, the rail's Fleet badge. The titlebar carries no Needs you count, and
+  needs you raises no in-app toast (other notifications still toast; while
+  the window is out of focus the OS notification still fires, since neither
+  rendition can be seen). One state, one word: "Needs you" in the sidebar,
+  Fleet and the notification panel. The notification panel is opened on
+  demand and keeps the record; a needs-you row there names the workspace and
+  agent and says what it asks — the question while it still waits, or plainly
+  that no question text came — never the state word twice. Its focused row is
+  the neutral `--selection` fill with the accent focus ring, never the OS
+  focus colour.
 - **No dead gauges:** a count, chip or column at zero is not drawn.
 
 ## Typography and density
@@ -2154,6 +2357,21 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-26 | Custom agents: a last section on Settings › Roles & fan-out, not a new tab. One ui-group of rows (name · command line · "Known by its process" and unattended line, a "Used by" line while a role or preset launches it, with Edit / Delete), "Add custom agent" as the last row, and an inline stacked editor like Fan-out presets (Name, Command, Arguments, First prompt flag, Model flag, Unattended flags, Process names). Edit opens in place of its own row and the list keeps its order. Delete is disabled while the agent is used. The section description states the limits: process-only identity, no screen status, approvals or resume. Unattended starts empty and empty means not offered | Custom agents exist to be picked by roles and fan-out, so they sit beside them. The same shapes as Fan-out presets keep one editing grammar on the tab. Stating the limits and never defaulting unattended keeps a user-typed CLI from looking as supported as a registry agent, or from running unattended by surprise; blocking Delete keeps a role or preset from silently launching something else |
 | 2026-10-26 | An approved release is carried out. Its card's title names the tag, the repository and the short commit, and says it cannot be undone ("Publish release v1.2.3 of owner/repo at abc1234 — publishes a release, cannot be undone"; with a tag workflow, "Push tag … — starts its release workflow, cannot be undone"). The body is the bot's one line, one plain sentence of what Approve does, as whom and when, and that wmux cannot take it back, then "Marked Latest." or "Prerelease, never Latest." (with a tag workflow: "The workflow decides whether it is marked Latest."), then one plain line per workflow with no push filter that runs on the tag push as well ("<file> also runs on this tag push."), then what main read as plain lines (the default branch and how far the commit is behind its head, the checks on the commit, package.json's version), then a line naming the blocks and each published field in its own `wmux-payload` code block. Approve / Deny only, with the usual 10 s Undo; typed words, the chip and rules never approve it. The outcome card reads "Published release …" with its link, or with a tag workflow "Tag pushed — the release workflow is building it" with the Actions run linked when it can be read; nothing is tinted | A release is the one act that starts other machinery (a tag workflow publishes installers and packages), so the card states the commit, its checks and the version before Approve, and the hash covers every field that is published |
 | 2026-10-28 | Owner-approved (Settings clean-up, part 3): terminal font size, font and cursor move from Appearance to the top of Terminal; the Settings › Plugins tab (a single link to the rail page) is removed, reversing the 2026-10-21 line that kept it. A row or note that only applies on another OS is hidden there (the agy accounts section off Windows, Start on login on Linux), and settings search hides it too; a row that works everywhere but is named after one OS reads in the platform's words (Finder, the Dock, ⌘G, macOS or Linux in About). A switch whose children act on nothing while it is off disables them: the pane ring's flash, and the Bots morning report and phone bot. A row that limits what bots may do (trusted authors, caps, the command reviewer, auto-merge) stays editable while the bots are off, so it can be set before they start. Accounts' quota switches are standard switches. The Company View toggle loses its default key (Ctrl+Shift+O, which it swallowed) and its Shortcuts row: it has opened nothing since #503; a key a user saved still binds and lists it | Settings read as cluttered: text settings sat on the wrong page, an empty tab took a nav row, macOS users read Windows-only text, and child rows looked live while their parent was off. Hiding by platform through the catalog keeps the row and its search hit in step |
+| 2026-10-28 | Owner-approved (first launch): the first launch is one short welcome dialog — the agents (once one is signed in, only the signed-in ones, the rest under Other agents), the Claude Code MCP and hooks rows, the update switch — ending on **Open a folder…**, the one primary once nothing needs setting up; it opens a workspace on that folder. No sample task, no bot task and no statusline offer in it (the statusline stays in Settings). Nothing opens by itself after it: the spotlight tour and the keyboard cheat sheet are on demand (Settings › Setup and reset, the `?` prefix action), and the cheat sheet loses its Don't show again. A check marks done or installed only; a switch row has no glyph. Opening a folder completes the first run; Skip, Later, × and Escape only mark it shown, and closing a reopened wizard never rewrites that. Existing profiles keep their seen flags and never see the first run again | A design critique found a first launch that stacked a long scrolling wizard with two primaries, a four-step tour that pulled the user from Fleet back to Workspaces, and an automatic cheat sheet; a reopened wizard said a skipped sample task was "Already completed". A new user needs an agent and their project, and the rest is found when it is needed |
+| 2026-10-28 | Owner-approved (quieter needs-you signal, after a design critique): one awaiting-input event is drawn as the sidebar row plus the rail's Fleet badge only. The titlebar's `N need you` chip is gone and needs you raises no in-app toast (the OS notification still fires while the window is out of focus). One word, "Needs you", in the sidebar, Fleet and the notification panel; Fleet drops "Needs input", "Needs your input" and the empty "The agent asks" block; a shell name is never shown as the agent. A needs-you notification row names workspace · agent and the question (or says no question text came); the panel's focused row is the neutral selection with the accent ring | One state was drawn about six times in three colours (blue toast, gold focus outline, orange) and four wordings, against the two-rendition cap. The rail badge stays over the titlebar chip because it is a number (no plural to get wrong), sits beside the Bots and Remote badges, and survives a collapsed sidebar |
+| 2026-10-28 | Owner-approved (design critique, harden): the Git page and the Bots first run lose their dead ends. A repo with no origin remote opens the Git page on Worktrees (shown, never saved; a tab picked there is kept) and its Issues and Pull requests show a no-remote card with the `git remote add origin <address>` command to copy and Check again; the detail pane's "Select…" line shows only while a list has a row; the Worktrees summary line needs two non-empty sections; the rule before the Worktrees tab is gone. In the Bots first run, Start is the only button beside the name and Add a team and Start from a recipe… are one muted line of links; a folder with no origin remote a bot can push to reads as one plain line with Copy command and Show details instead of main's whole reason. Amends Git › Tabs, Worktrees tab and Detail, and Bots › Add bot and First run | The Git page opened on an empty Issues tab whose detail pane asked for a selection that could not exist, while the useful Worktrees tab sat behind it. The Bots welcome card showed a blocking-looking grey paragraph with the full folder path and set-url instructions, and three equal buttons competed for the first action |
+| 2026-10-28 | Connect a PC: showing the Invite tab no longer turns the A2A listener on or opens an invite. Invite has a Create invite primary (Turn on and create invite while the listener is off, with a line naming the port it listens on); focus starts on the first field or primary, not the close ×; Connect is secondary until there is something to connect. Amends the Connect a PC dialog bullet | A design check found that merely looking at the Invite tab bound a port (and failed on one already in use) and wrote the clipboard. Showing a tab is not consent; the person turns messaging on by pressing a button that says so |
+| 2026-10-29 | Owner-approved (clarify, after a design critique): one vocabulary and one shortcut notation. Shortcuts are written by one formatter (`displayCombo`): macOS modifier glyphs in Apple's order with no separator (`⇧⌘D`, `⌃B`), Windows and Linux words joined by `+` (`Ctrl+Shift+D`); `Esc` and arrow glyphs on both. A hint that names a key reads the live binding, so a rebound key is shown as rebound. Internal words leave the UI: Surface → tab, A2A → PC messages / messages between PCs, HQ → the bots' main workspace, merge lane → auto-merge, hook bridge → Claude Code hooks, Bypass (schedules) → Full access; raw ids (`bypassPermissions`, pty ids, hook event names, `mcp__name__tool`) are not shown. Commands and labels are sentence case; split commands say the result (Split right / Split down) | The same thing had three names and one shortcut had four spellings, some wrong (Ctrl on macOS, a ⌘ prefix that is really ⌃). Coordinator and Verifier stay: they are the role names on the Bots pages |
+| 2026-10-29 | Owner-approved: one settings page per bot, opened by ⚙ in its chat header, its name pill, or its row in Settings › Bots; the profile popover and the Settings row editor are gone. A status strip, a section nav, form fields saved by one footer Save; actions act at once; a My Hermes bot's page leaves out Work and Connections | A bot's settings lived in two places that disagreed: name and limits only in Settings, engine, models and readiness only in the popover, the job empty in one and the starting job in the other, and a Manage that dumped the owner at the top of Settings. One page with one value per setting removes the disagreement; one Save makes clear when a change is sent, while the acts that were immediate stay so |
+| 2026-10-30 | Owner-approved (old company mode removed): the Toggle Company View and Toggle message feed actions go with the components they opened, which rendered nothing. A key a user saved on either is dropped on load and no Shortcuts row lists it, and Ctrl+Shift+M (Toggle message feed's default) reaches the pane. Amends the 2026-10-28 line that kept a saved Company View key | Both actions opened components that drew nothing, and the components are deleted with the rest of the old company mode; a saved key bound to nothing would only swallow that key |
+| 2026-10-30 | Owner-approved (mockup round 5): company mode's first UI. Make company…, Company settings… and Dissolve company on the workspace row menu; a company row shows its mission instead of the git line and hides the branch, PR badge and sync badge; the coordinator's row leads the roster with a muted CEO word in the agent-kind slot; staff titles come from the pane label | A workspace's branch, PR and sync come from whichever pane reported last, which says nothing when a company's panes work in different worktrees; the mission is what the row is for. The CEO word reuses an existing slot and style, and the pane label is already the name a pane is addressed by |
+| 2026-10-31 | Owner-approved (mockup round 6, company presets): a company can be made in one pick from the + menu. Two built-ins, CEO + researcher + 3 devs (the owner's own shape: a CEO who orchestrates and writes no code, a researcher, developers not split by stack) and Lead + reviewer; each seat's agent is told its seat on its first turn | Making panes, starting agents and filling the company dialog by hand was the cost of every company. Agents that do not know their seat leave the company a set of empty roles, so the first message carries it. Seats on other PCs and saved presets come later: the other PC has to approve a start, and saving needs each pane's launch line |
+| 2026-10-30 | Owner-approved (mockup round 5, board as a tab): company mode's board is a work tab in the company workspace, opened beside the CEO's terminal, not a rail page or sidebar view. Seats are the workspace's panes, so a pane between agent runs keeps its seat and its jobs | The owner rejected a board that took over the sidebar; a work tab keeps the CEO's terminal beside it and expands with ◫. Seating by pane, not by detected agent, keeps a job sent to a restarting pane on that pane |
+| 2026-10-31 | Owner-approved (company done gate plan, "only the CEO or the owner marks done"): a task that reported back (`input-required`) to the pane that handed it out waits on that pane, not on the owner, so it is never needs-you: no attention orange, no Fleet report, out of the board's Waiting on you. It reads as working, its state word in muted text: Fleet "Reported, waiting on its sender", the board's seat line and job rows "Reported to CEO" (or the seat or workspace it went back to), the Git page "Next: CEO · report to check". A task handed out by a workspace with no pane, or reported to a pane that has closed since, still needs you. Applies to every agent-to-agent task, not only a company's | The owner was paged for a seat's report meant for the CEO, who checks it and marks the task done; the phone keeps its five ticket words |
+| 2026-10-31 | Owner decision: multiview holds several groups, one on screen. A Ctrl+click from a workspace in no group starts a new group and saves the one on screen instead of dropping it; selecting any member of a saved group puts its grid back. A workspace is in one group at a time. Each grouped row carries a small grid-glyph number badge (rail: a corner number), numbered by the group's first row in the stored order; the group on screen reads in the accent, saved groups neutral. The badge is the row's only group marker: it replaces the 2px blue left border, which belongs to the color tag, and no edge bar is added. Groups persist in the session | One grid meant a second grid erased the first. The left border could not say which group and collided with the color tag; one marker per row keeps the sidebar rows free of a new edge (maintainer decision on #2906) |
+| 2026-11-01 | Owner-approved (external sessions, placement B of the mockup): a coding agent started outside wmux (tmux, screen, zellij, ssh into this computer, another terminal app) that reports through the hook bridge is kept as an external session. One whose folder is a workspace's folder, or sits under it (the deepest folder wins; a workspace inside the session's folder never matches), is a row in that workspace's roster: the roster recipe with a muted `outside` in the agent-kind slot, its activity or where it runs, the time since its last signal. Waiting on you, it draws its question line in `--attention-text`, lights the workspace row as a pane's agent does (ring, hairline, Needs you, the question) and counts in the rail's Fleet badge. The rest sit in an **Outside wmux** group at the list's foot after Snoozed and Settled (their header recipe, open by default, the folder on a second line; folded, a muted count and `N need you` in the attention colour). A click opens a detail popover — state and question, Folder, Where, Last activity, a `tmux attach -t …` / `screen -r …` command with Copy attach command as the one primary only when tmux or screen is known (else Open a wmux pane here is the primary), and Hide. No new colour | wmux never shows or types into that terminal, so the row cannot jump to a pane: the popover says where the session lives and how to reach it. Joining the workspace keeps one list and one attention grammar (2026-09-27); the foot group catches folders no workspace holds |
+| 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
+| 2026-11-01 | Owner-approved (handoff mockup, boards A and C): at 90% of the 5-hour window (the pane's own statusline reading) the usage chip shows the share and the reset and opens the usage-limit card with the handoffs; nothing switches by itself. After a handoff at or near the limit, the tab it left offers to bring the work back once the limit resets, with a note from the other agent's transcript typed in, never sent | A handoff chosen before work stops loses nothing; bringing the work back closes the loop the owner otherwise did by hand, reading the other tab to tell the first agent what changed |
 
 ### Desktop conversation view
 
@@ -2212,7 +2430,8 @@ no empty reply row or reserved gap under the latest prompt.
   name, e.g. `Codex CLI`, truncating before the title does), and only when the
   row has its own title that is not the agent itself — a `Codex` title beside
   `Codex CLI` would say it twice, and the title slot already is the agent.
-  The trailer no longer repeats the vendor. Shells get nothing.
+  The trailer no longer repeats the vendor. Shells get nothing. A company's
+  coordinator row puts a muted `CEO` in this slot instead (2026-10-30).
   The name stays in the tooltip and accessible name. Never a vendor logo or
   favicon (trademarks; written permission required).
 - **Fan-out nesting:** a task workspace renders under the workspace that fanned
@@ -2361,12 +2580,14 @@ differently in the two places, and in the order `fleet_triage` returns.
   is not drawn. Plain shells sit only in Idle and never keep the empty state
   from showing.
 - **One count:** the Needs you chip and the Needs you head read the same
-  two arrays (pane rows and decision tickets); the rail badge and the titlebar's `N need you` count the
-  same pane rows (`selectFleetSectionCounts`) and leave tickets out, which
-  the rail's tooltip says — so the titlebar and the rail badge always agree,
-  and match the chip whenever no ticket waits on a decision. A polite live region announces the count when it
+  two arrays (pane rows and decision tickets); the rail badge, the one
+  global count (the titlebar has none), counts the same pane rows
+  (`selectFleetSectionCounts`) and leaves tickets out, which the rail's
+  tooltip says — so it matches the chip whenever no ticket waits on a
+  decision. A polite live region announces the count when it
   changes, never when Fleet opens.
-- **Row:** status (dot and word), the title (an open ticket's title when the
+- **Row:** status (dot and word; an agent asking reads "Needs you", the
+  sidebar's word), the title (an open ticket's title when the
   pane holds one, else the task or pane name), workspace · agent · role ·
   stash, the now-doing line, elapsed time under it and one verb (Respond,
   See result, Check, Open). One word for a finished turn — Finished — in
@@ -2384,7 +2605,10 @@ differently in the two places, and in the order `fleet_triage` returns.
   foo.ts`, `Running npm test`); a finished or idle one says `Last: …` in the
   past tense (`Last: Ran npm test`), from the last tool it ran, which
   outlives the turn's end. An agent that reports no tools (Codex, others)
-  shows its last reply; a question shows in quotes and wraps to two lines;
+  shows its last reply; a question shows in quotes and wraps to two lines,
+  and a request with no question text (a permission prompt) shows no line —
+  the status already says Needs you; a shell's name ("Zsh") is never shown as
+  the agent;
   an error row shows the last `Error:` / stderr-shaped line of its terminal
   (mono), else its label; stopped and unconfirmed rows keep their label.
 - **Completion checks:** a finished pane's evidence badge reads its most
@@ -2401,8 +2625,10 @@ differently in the two places, and in the order `fleet_triage` returns.
   hidden at zero; pressing the pressed chip shows everything again. Then
   approvals, LAN messages, account usage, the next schedule and phones
   watching, each only when it is not zero, and Settled. While Fleet is the
-  page, the titlebar drops its own running / need you counts and usage.
-- **Detail area:** under the list, opened by a deliberate selection (an
+  page, the titlebar drops its own running count and usage.
+- **Detail area:** under the list — right after its last row, not pinned to
+  the page's foot (the list scrolls once the two fill the page) — opened by a
+  deliberate selection (an
   arrow move, the row's details button, Space) and never by the focus Fleet
   takes when it opens; Esc closes it before it closes Fleet. It shows the
   selected agent's last 20 lines of output (40 for an error row, its error
@@ -2411,7 +2637,8 @@ differently in the two places, and in the order `fleet_triage` returns.
   live, in the mantle fill. The sidebar's Tasks line opens Fleet on that
   task with the detail open. For a
   Needs you row the detail leads with what it asks, above the output: the
-  question in full (never truncated), the numbered choices of the prompt
+  question in full (never truncated; with no question text there is no
+  "The agent asks" block at all), the numbered choices of the prompt
   drawn at the bottom of its terminal (read-only), then Open approval (when
   an Approvals row waits on that workspace), Reply… (the row's composer;
   never on a permission prompt) and Jump to pane. An error row leads with

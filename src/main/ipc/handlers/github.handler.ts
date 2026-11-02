@@ -8,7 +8,7 @@ import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { resolveAccessiblePath } from './fs.handler';
-import { detectRemote, isGithubForgeHost } from '../../github/PrProvider';
+import { detectRemote, isGithubForgeHost, originUrlSet } from '../../github/PrProvider';
 import type { PrSummary, PrDetail, PrProvider } from '../../github/PrProvider';
 import { ghPrService } from '../../github/GhPrService';
 import { glabPrService } from '../../github/GlabPrService';
@@ -24,11 +24,18 @@ export type GithubPrListResult =
       message: string;
       /** Which CLI the gate is about, so the page offers the right sign-in. */
       provider?: 'github' | 'gitlab';
+      /** no-remote only: origin is set but names no host (a local path). */
+      originSet?: boolean;
     };
 
 export type GithubPrDetailResult =
   | { ok: true; detail: PrDetail }
   | { ok: false; code: 'error'; message: string };
+
+/** The no-remote answer, saying whether origin exists but names no host. */
+async function noRemote(repoPath: string): Promise<{ ok: false; code: 'no-remote'; message: string; originSet?: boolean }> {
+  return { ok: false, code: 'no-remote', message: 'no origin remote', ...(await originUrlSet(repoPath) ? { originSet: true } : {}) };
+}
 
 /** hostname → provider. github.com 계열은 gh, 그 외 전부 glab 경로. */
 function providerFor(host: string): PrProvider {
@@ -37,7 +44,7 @@ function providerFor(host: string): PrProvider {
 
 async function prList(repoPath: string, force: boolean): Promise<GithubPrListResult> {
   const remote = await detectRemote(repoPath, force);
-  if (!remote) return { ok: false, code: 'no-remote', message: 'no origin remote' };
+  if (!remote) return noRemote(repoPath);
   const { host } = remote;
   const provider = providerFor(host);
   const gate = await provider.gate(repoPath, host, force);
@@ -64,7 +71,7 @@ function repoOfKey(key: string | null): IssueRepo | null {
 
 async function issueList(repoPath: string, filter: IssueFilter, force: boolean): Promise<IssueListResult> {
   const remote = await detectRemote(repoPath, force);
-  if (!remote) return { ok: false, code: 'no-remote', message: 'no origin remote' };
+  if (!remote) return noRemote(repoPath);
   // Every other host is GitLab, through glab and the PR list's glab gate.
   if (!isGithubForgeHost(remote.host)) {
     const glabGate = await glabPrService.gate(repoPath, remote.host, force);

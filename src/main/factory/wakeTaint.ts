@@ -805,3 +805,21 @@ export function runningWakeAttended(botId: string): boolean {
     return false;
   }
 }
+
+/** Whether `item`, a wake of `botId`, and the conversation it runs in are
+ *  known clean: no outside text came with the wake, and none is in the
+ *  conversation (a tainted or signed-in one never is, conversationMarks.ts).
+ *  No wake kind is required, so it holds for a routine's wake too. Used only
+ *  for a My Hermes bot's owner routine (BotRuntime.ts), together with the
+ *  routine's author and the wake's signed-in check; ATTENDED_WAKE_KINDS and
+ *  runningWakeAttended stay as they are. Null when it cannot be told (no
+ *  tracker yet, an error): that refuses the run without pausing the routine. */
+export function ownerRoutineWakeClean(item: WakeItem, botId: string): boolean | null {
+  const c = current;
+  if (!c) return null;
+  try {
+    return c.taint.wakeTainted(item) === false && conversationTainted(botId) === false;
+  } catch {
+    return null;
+  }
+}

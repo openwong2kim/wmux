@@ -9,15 +9,13 @@ import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspacePr
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24 } from '../hitArea';
 import { IconGear, IconCornerUpLeft } from '../icons';
-import { selectFleetPanes, sortFleetPanes, selectFleetSectionCounts, type FleetPane } from '../../stores/selectors/fleet';
-import { ownerFleetState, selectOwnerWorkspaces } from '../Sidebar/botTasks';
+import { selectFleetPanes, type FleetPane } from '../../stores/selectors/fleet';
+import { selectOwnerWorkspaces } from '../Sidebar/botTasks';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
-import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import { FOCUS_RING } from '../focusRing';
 import type { StoreState } from '../../stores';
 import { RAIL_PAGE_TITLE_KEYS, workspaceChromeInTitlebar } from '../Titlebar/railPageTitle';
 import { displayWorkspaceName, resolveTaskLink } from '../../utils/fanoutProvenance';
-import { showWorkspaces } from '../../utils/showWorkspaces';
 
 /**
  * #1481 — when the active workspace is a fan-out task, the workspace that fanned
@@ -82,6 +80,8 @@ export function formatBellAriaLabel(unreadCount: number): string {
 
 interface NotificationBellBadgeProps {
   unreadCount: number;
+  /** Daemon security notices still waiting on the user (notificationSlice). */
+  securityCount?: number;
   onActivate: () => void;
 }
 
@@ -99,12 +99,16 @@ export const NOTIFICATION_TOGGLE_ATTR = 'data-notification-toggle';
  * env — no jsdom).
  *
  * Renders nothing when unreadCount <= 0 (matches pre-T9 behavior where the
- * bell hid entirely on empty count).
+ * bell hid entirely on empty count) and no security notice is pending. A
+ * pending notice counts in, and turns the dot the caution yellow.
  */
-export function NotificationBellBadgeView({ unreadCount, onActivate }: NotificationBellBadgeProps) {
-  const label = formatBellContent(unreadCount);
+export function NotificationBellBadgeView({ unreadCount, securityCount = 0, onActivate }: NotificationBellBadgeProps) {
+  const label = formatBellContent(Math.max(unreadCount, 0) + securityCount);
   if (label === null) return null;
-  const ariaLabel = formatBellAriaLabel(unreadCount);
+  const unreadAria = formatBellAriaLabel(unreadCount);
+  const ariaLabel = securityCount > 0
+    ? `${t('statusbar.securityAria', { count: securityCount })}, ${unreadAria}`
+    : unreadAria;
   return (
     <button
       type="button"
@@ -116,7 +120,13 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
       className="text-[var(--text-sub)] hover:text-[var(--text-main)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
       {...tokenAttrs('textSub', 'text')}
     >
-      {label}
+      {securityCount > 0 ? (
+        <>
+          {/* The label's leading "●" drawn on its own, in the caution yellow. */}
+          <span className="text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'accent')}>●</span>
+          {label.slice(1)}
+        </>
+      ) : label}
     </button>
   );
 }
@@ -127,7 +137,7 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
  * A local row needs a spawned PTY on a terminal surface. #1343 — a remote row
  * has neither: `surfaceType` is 'remote-terminal' and its ptyId is the
  * synthetic remote key, so it is admitted on `remote` alone. The chip is a
- * fleet-wide READOUT (and a jump target), not a command surface, which is why
+ * fleet-wide READOUT, not a command surface, which is why
  * remote agents belong here but not in DeckFleet.
  */
 function isFleetAgentRow(p: FleetPane): boolean {
@@ -144,6 +154,7 @@ export default function StatusBar() {
   const activeWs = useStore(useShallow(selectActiveWorkspaceSummary));
   const taskOwner = useStore(useShallow(selectActiveTaskOwner));
   const unreadCount = useStore((s) => computeUnreadCount(s.notifications, s.workspaces));
+  const securityCount = useStore((s) => s.securityNotices.length);
 
   // E5 — push unread count to main for the dock/tray badge whenever it changes.
   useEffect(() => {
@@ -170,37 +181,9 @@ export default function StatusBar() {
       };
     }),
   );
-  // One Needs you count everywhere: the same rows the rail badge and Fleet's
-  // chip count (selectFleetSectionCounts) — questions, errors, stopped
-  // supervision and unconfirmed panes — so the three numbers never differ.
-  // Bot workers are the Bots page's, never counted here (botTasks.ts).
-  const needsYouCount = useStore((s) => selectFleetSectionCounts(ownerFleetState(s)).needsYou);
-  // Jump to the most urgent pane — computed at click time (no subscription).
-  const jumpToUrgent = () => {
-    const s = useStore.getState();
-    const panes = sortFleetPanes(
-      selectFleetPanes({
-        workspaces: selectOwnerWorkspaces(s),
-        surfaceAgentStatus: s.surfaceAgentStatus,
-        surfaceActivity: s.surfaceActivity,
-        surfaceAgent: s.surfaceAgent,
-        surfacePendingQuestion: s.surfacePendingQuestion,
-        remoteWorkspaces: s.remoteWorkspaces,
-        usageLimitWaiting: s.usageLimitWaiting,
-      }).filter((p) => isFleetAgentRow(p)),
-      'attention',
-    );
-    const target = panes[0];
-    if (!target) return;
-    s.setActiveWorkspace(target.workspaceId);
-    // #977 — the chip counts stashed panes (they are still agents and they
-    // still get blocked), so the jump has to be able to REACH one. setActivePane
-    // only accepts panes in the visible tree, so without this the chip would
-    // count a pane it cannot take you to and the click would do nothing.
-    if (target.stashed) s.unstashPane(target.paneId, target.workspaceId);
-    s.setActivePane(target.paneId);
-    showWorkspaces(useStore.getState());
-  };
+  // No Needs you count here (DESIGN.md › Colour grammar › Attention
+  // renditions): one event is drawn at most twice — the sidebar row that is its
+  // evidence and one global count, the rail's Fleet badge.
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   // The Fleet page has its own summary line; the titlebar's would repeat it.
   const onFleetPage = useStore((s) => s.appRoute === 'fleet');
@@ -215,17 +198,7 @@ export default function StatusBar() {
   const prefixMode = useStore((s) => s.prefixMode);
   const prefixError = useStore((s) => s.prefixError);
 
-  // Company 모드 여부(사이드바 모드 기준). 비용/경과 분·시각·메모리는 시계
-  // 커서에 의존하므로 A5에서 StatusClock{Usage,Time}로 분리됐다 — 시계 틱이
-  // StatusBar 본체를 리렌더하지 않게 하기 위함.
-  const sidebarMode = useStore((s) => s.sidebarMode);
-
   const branch = activeWs.branch;
-  // Company-mode UI is gated behind COMPANY_MODE_ENABLED (paid "wmux max").
-  // Even with a leftover persisted `sidebarMode === 'company'` (from a build
-  // where company mode was reachable), the status-bar badge + cost must stay
-  // hidden so the deactivated build shows zero company traces.
-  const isCompanyMode = COMPANY_MODE_ENABLED && sidebarMode === 'company';
 
   // Bridge redesign P1.5 — the status strip lives INSIDE the custom titlebar
   // now (owner feedback: the empty titlebar center read as wasted space, and
@@ -280,12 +253,6 @@ export default function StatusBar() {
             <span className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>⎇</span> {branch}
           </button>
         )}
-        {/* Company 모드 배지 */}
-        {isCompanyMode && (
-          <span className="text-[10px] font-mono px-1.5 py-px bg-[var(--bg-surface)] text-[var(--accent-blue)] rounded">
-            {t('statusBar.company')}
-          </span>
-        )}
         {/* Plugin status-bar widgets (B-1 ui.statusbar, left-aligned) */}
         <PluginStatusBarWidgets alignment="left" />
       </div>
@@ -306,28 +273,11 @@ export default function StatusBar() {
             {(t('strip.running') || '{count} running').replace('{count}', String(fleetVitals.running))}
           </span>
         )}
-        {!onFleetPage && needsYouCount > 0 && (
-          <button
-            type="button"
-            data-statusbar-needs
-            onClick={jumpToUrgent}
-            // min-h only: the chip is text, so it is already wide enough — it
-            // was the 13px line-height that put it under the pointer floor, and
-            // the 40px titlebar absorbs the extra height with no layout change.
-            // Needs you wears one colour everywhere — the attention orange: the
-            // sidebar's ring and label, the rail badge and this count.
-            className="flex items-center gap-1.5 min-h-[24px] font-semibold text-[var(--attention-text)] hover:opacity-80 transition-opacity"
-            title={t('strip.needsYouTooltip') || 'Jump to the pane that needs you'}
-          >
-            <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--attention)]" />
-            {(t('strip.needsYou') || '{count} need you').replace('{count}', String(needsYouCount))}
-          </button>
-        )}
-        {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
-        {!onFleetPage && <StatusClockUsage isCompanyMode={isCompanyMode} />}
+        {/* A5: 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
+        {!onFleetPage && <StatusClockUsage />}
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
-        <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
+        <NotificationBellBadgeView unreadCount={unreadCount} securityCount={securityCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
       </div>

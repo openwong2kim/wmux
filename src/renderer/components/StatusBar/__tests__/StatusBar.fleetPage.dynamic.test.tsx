@@ -41,10 +41,8 @@ describe('titlebar fleet vitals', () => {
     }));
     act(() => root.render(<StatusBar />));
     expect(container.querySelector('[data-statusbar-running]')).not.toBeNull();
-    expect(container.querySelector('[data-statusbar-needs]')).not.toBeNull();
     act(() => useStore.getState().setAppRoute('fleet'));
     expect(container.querySelector('[data-statusbar-running]')).toBeNull();
-    expect(container.querySelector('[data-statusbar-needs]')).toBeNull();
     act(() => useStore.getState().setAppRoute('settings'));
     expect(container.querySelector('[data-statusbar-running]')).not.toBeNull();
   });
@@ -57,6 +55,16 @@ describe('titlebar fleet vitals', () => {
     }));
     act(() => root.render(<StatusBar />));
     expect(container.querySelector('[data-statusbar-running]')?.textContent).toContain('1');
-    expect(container.querySelector('[data-statusbar-needs]')?.textContent).toContain('1');
+  });
+
+  it('never draw a Needs you count: the rail badge is the one global count', () => {
+    act(() => useStore.setState({
+      workspaces: [ws('a'), ws('b')], activeWorkspaceId: 'a', appRoute: 'workspaces', fleetViewVisible: false,
+      surfaceAgent: { 'pty-b': { name: 'Codex', status: 'awaiting_input' } },
+      surfaceAgentStatus: { 'pty-b': 'awaiting_input' },
+    }));
+    act(() => root.render(<StatusBar />));
+    expect(container.querySelector('[data-statusbar-needs]')).toBeNull();
+    expect(container.textContent).not.toMatch(/need/i);
   });
 });

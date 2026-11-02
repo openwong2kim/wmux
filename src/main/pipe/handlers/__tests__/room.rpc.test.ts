@@ -829,6 +829,24 @@ describe('a bot whose conversation holds data from a signed-in task', () => {
     expect(s.writer.read('ws1').cards.map((c) => c.threadId)).toEqual([dm]);
   });
 
+  it('a bot on My Hermes (a room-post token) posts only in its own 1:1 and mentions no bot, whatever its conversation holds', async () => {
+    const mine = bot('ws1', 'lead');
+    const dev = bot('ws1', 'lead');
+    const s = setup([mine, dev]);
+    const clean = { ...s.deps, signedIn: () => false };
+    const own: RpcContext = { ...asBot(mine), botSurface: 'room-post' };
+    const dm = `dm:${mine.id}`;
+    s.wake.thread = dm;
+    s.wake.id = { wakeId: 'w-own', attempt: 1 };
+    expect(await handleRoomPost({ kind: 'status', title: 'Done' }, own, clean)).toMatchObject({ ok: true, card: { threadId: dm } });
+    expect(await handleRoomPost({ kind: 'status', title: 'hi', threadId: 'general' }, own, clean))
+      .toMatchObject({ ok: false, code: 'not_now', message: expect.stringContaining('posts only in its 1:1') });
+    expect(await handleRoomPost({ kind: 'status', title: 'over to you', mentions: [dev.id] }, own, clean))
+      .toMatchObject({ ok: false, code: 'not_now', message: expect.stringContaining('mentions no other bot') });
+    // The same bot without the narrowed token is not confined by this rule.
+    expect(await handleRoomPost({ kind: 'status', title: 'hi', threadId: 'general' }, asBot(mine), clean)).toMatchObject({ ok: true });
+  });
+
   it('another bot reads none of its 1:1, by thread or by search; it reads its own, and the owner reads both', async () => {
     const a = bot('ws1', 'lead');
     const b = bot('ws1', 'lead');

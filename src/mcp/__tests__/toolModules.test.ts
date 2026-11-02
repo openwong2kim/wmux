@@ -9,7 +9,7 @@ import {
   registeredToolModules,
   type ToolModule,
 } from '../toolModules';
-import { ROLE_SURFACES } from '../../shared/botSurface';
+import { ROLE_SURFACES, ROOM_POST_SURFACE_TOOLS, SHARED_SURFACE, botSurfaceTools } from '../../shared/botSurface';
 
 function fakeServer() {
   const names: string[] = [];
@@ -54,6 +54,16 @@ describe('installBotTools', () => {
     expect(s.names[0]).toBe('fact_poll');
     expect(s.names).not.toContain('pr_read');
     expect(new Set([...registered])).toEqual(new Set(ROLE_SURFACES.verifier.tools));
+  });
+
+  it('a bot on My Hermes (--bot-surface=room-post) lists exactly room_post; any other value lists nothing', () => {
+    const s = fakeServer();
+    const registered = new Set<string>();
+    installBotTools({ role: 'lead', ...s, deps, registered, modules: [], surface: botSurfaceTools('room-post') });
+    expect([...registered]).toEqual(['room_post']);
+    expect(botSurfaceTools('room-post')).toBe(ROOM_POST_SURFACE_TOOLS);
+    expect(botSurfaceTools(undefined)).toBe(SHARED_SURFACE.tools);
+    expect(botSurfaceTools('wide').size).toBe(0);
   });
 
   it('drops a module tool that is off the bot surface', () => {

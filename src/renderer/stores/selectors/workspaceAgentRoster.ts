@@ -1,4 +1,4 @@
-import type { AgentStatus } from '../../../shared/types';
+import type { AgentStatus, PaneLeaf, Workspace } from '../../../shared/types';
 import { isBrainPtyId } from '../../../shared/constants';
 import { getLeafPanes } from '../../../shared/paneUtils';
 import { stashedPaneLiveness, type StashedLiveness } from '../../../shared/paneStash';
@@ -78,6 +78,11 @@ export interface WorkspaceAgentRosterRow {
   usageLimitWaiting?: true;
   /** When it was stashed, for the "2h ago" trailer. Stashed rows only. */
   stashedAt?: number;
+  /** On a company workspace, the pane's label: the seat's title, which leads
+   *  the row. `paneName` then holds only the coordinate. */
+  seatTitle?: string;
+  /** This pane is the company's coordinator (shown as the CEO). */
+  coordinator?: true;
 }
 
 export interface WorkspaceAgentRosterProjection {
@@ -122,6 +127,29 @@ export function agentSurfaceTitle(surface: { title?: string; titleLocked?: boole
   return trimmed && !isBareShellTitle(trimmed) ? trimmed : undefined;
 }
 
+/**
+ * The pane's name for the trailer, and its company seat. On a company
+ * workspace the label leads the row as the seat's title, so the trailer keeps
+ * only the coordinate instead of repeating it.
+ */
+function paneSeat(
+  state: StoreState,
+  workspace: Workspace,
+  leaf: PaneLeaf,
+  showCoordinates: boolean,
+): Pick<WorkspaceAgentRosterRow, 'paneName' | 'seatTitle' | 'coordinator'> {
+  const label = state.paneLabel[leaf.id];
+  const coordinate = showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '';
+  const company = workspace.company;
+  if (!company) return { paneName: paneDisplayName(label, coordinate) };
+  const seatTitle = nonEmpty(label);
+  return {
+    paneName: seatTitle ? coordinate : paneDisplayName(label, coordinate),
+    ...(seatTitle ? { seatTitle } : {}),
+    ...(company.coordinatorPaneId === leaf.id ? { coordinator: true as const } : {}),
+  };
+}
+
 function needsAttention(status: AgentStatus): boolean {
   return status === 'awaiting_input' || status === 'waiting' || status === 'error';
 }
@@ -149,10 +177,7 @@ export function selectWorkspaceAgentRoster(
 
   const rows: WorkspaceAgentRosterRow[] = [];
   for (const leaf of getLeafPanes(workspace.rootPane)) {
-    const paneName = paneDisplayName(
-      state.paneLabel[leaf.id],
-      showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
-    );
+    const seat = paneSeat(state, workspace, leaf, showCoordinates);
 
     leaf.surfaces.forEach((surface, surfaceIndex) => {
       // #1163 — a remote-terminal surface has ptyId '' by contract and is
@@ -177,7 +202,7 @@ export function selectWorkspaceAgentRoster(
           ptyId: remoteAgentKey(hostId, sessionId),
           agentName: remoteAgent.agentName,
           slug: agentDisplayToSlug(remoteAgent.agentName),
-          paneName,
+          ...seat,
           surfaceTitle: agentSurfaceTitle(surface),
           surfaceIndex,
           surfaceCount: leaf.surfaces.length,
@@ -263,7 +288,7 @@ export function selectWorkspaceAgentRoster(
         ptyId,
         agentName: agent.name,
         slug: agent.slug ?? agentDisplayToSlug(agent.name),
-        paneName,
+        ...seat,
         surfaceTitle: agentSurfaceTitle(surface),
         surfaceIndex,
         surfaceCount: leaf.surfaces.length,
@@ -285,6 +310,10 @@ export function selectWorkspaceAgentRoster(
       });
     });
   }
+
+  // The coordinator leads a company's roster; the rest keep the layout order.
+  // Visible rows only, so the stashed rows below stay one group at the end.
+  if (workspace.company) rows.sort((a, b) => Number(!!b.coordinator) - Number(!!a.coordinator));
 
   const agentCount = rows.length;
 
@@ -357,10 +386,7 @@ export function selectWorkspaceAgentRoster(
       ptyId,
       agentName: agent?.name ?? '',
       slug: agent ? agent.slug ?? agentDisplayToSlug(agent.name) : undefined,
-      paneName: paneDisplayName(
-        state.paneLabel[leaf.id],
-        showCoordinates ? computePaneAutoName(workspace.wsOrdinal ?? 0, leaf.ordinal ?? 0) : '',
-      ),
+      ...paneSeat(state, workspace, leaf, showCoordinates),
       surfaceTitle: agent ? agentSurfaceTitle(surface) : nonEmpty(surface.title),
       surfaceIndex: Math.max(0, leaf.surfaces.findIndex((s) => s.id === surface.id)),
       surfaceCount: leaf.surfaces.length,
@@ -424,6 +450,8 @@ function rowsEqual(
       a.stashedLiveness !== b.stashedLiveness ||
       a.usageLimitWaiting !== b.usageLimitWaiting ||
       a.stashedAt !== b.stashedAt ||
+      a.seatTitle !== b.seatTitle ||
+      a.coordinator !== b.coordinator ||
       a.remote?.hostId !== b.remote?.hostId ||
       a.remote?.hostLabel !== b.remote?.hostLabel
     ) {

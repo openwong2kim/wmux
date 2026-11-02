@@ -5,10 +5,10 @@ export const es = {
   // Sidebar
   'sidebar.workspaces': 'Espacios de trabajo',
   'sidebar.newWorkspace': 'Nuevo espacio de trabajo',
-  'sidebar.newWorkspaceTooltip': 'Nuevo espacio de trabajo (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Nuevo espacio de trabajo',
   'sidebar.newRemoteWorkspace': 'Nuevo espacio de trabajo en {name}',
-  'sidebar.hideTooltip': 'Ocultar barra lateral (Ctrl+B)',
-  'sidebar.expandTooltip': 'Expandir barra lateral (Ctrl+B)',
+  'sidebar.hideTooltip': 'Ocultar barra lateral',
+  'sidebar.expandTooltip': 'Expandir barra lateral',
   'sidebar.unreadCount': '{count} sin leer',
 
   // Workspace
@@ -17,7 +17,6 @@ export const es = {
   'workspace.agentError': 'Error del agente',
   'workspace.agentWaiting': 'Agente en espera',
 
-  'workspace.agentAwaitingInput': 'Agente requiere entrada',
   'workspace.needsYou': 'Te espera',
   'workspace.agentIdle': 'Agente inactivo',
   'workspace.agentUnverifiable': 'Sin novedades desde hace {time}',
@@ -66,9 +65,9 @@ export const es = {
 
   // Search
   'search.placeholder': 'Buscar...',
-  'search.prevTooltip': 'Resultado anterior (Shift+Enter)',
-  'search.nextTooltip': 'Resultado siguiente (Enter)',
-  'search.closeTooltip': 'Cerrar (ESC)',
+  'search.prevTooltip': 'Resultado anterior',
+  'search.nextTooltip': 'Resultado siguiente',
+  'search.closeTooltip': 'Cerrar',
   'search.regexTooltip': 'Usar expresión regular',
   'search.allPanes': 'Todos los paneles',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const es = {
   'notification.markAllRead': 'Marcar todas como leídas',
   'notification.clear': 'Limpiar',
   'notification.empty': 'Sin notificaciones',
-  'notification.toggle': 'Ctrl+I para alternar',
+  'notification.toggle': '{key} para alternar',
+  'notification.needsYou.question': "Te espera: «{question}»",
+  'notification.needsYou.noQuestion': "Te espera. Sin texto de pregunta; mira su terminal.",
+  'notification.needsYou.over': "Ya no te espera.",
 
   // Command palette
   'palette.placeholder': 'Escribe un comando...',
@@ -96,7 +98,7 @@ export const es = {
   'palette.close': 'cerrar',
   'palette.cmd.toggleSidebar': 'Alternar barra lateral',
   'palette.cmd.newWorkspace': 'Nuevo espacio de trabajo',
-  'palette.cmd.newSurface': 'Nueva superficie',
+  'palette.cmd.newSurface': 'Nueva pestaña',
   'palette.cmd.splitRight': 'Dividir a la derecha',
   'palette.cmd.splitDown': 'Dividir hacia abajo',
   'palette.cmd.stashPane': 'Apartar panel (la sesión sigue en ejecución)',
@@ -106,7 +108,7 @@ export const es = {
   'palette.cmd.saveLayout': 'Guardar diseño actual como plantilla',
   'palette.cmd.layoutPrefix': 'Diseño: ',
   'palette.catWorkspace': 'Espacio de trabajo',
-  'palette.catSurface': 'Superficie',
+  'palette.catSurface': 'Pestaña',
   'palette.catCommand': 'Comando',
   'palette.catRecent': 'Reciente',
 
@@ -246,8 +248,6 @@ export const es = {
   'viCopy.visual': '-- VISUAL --',
 
   // StatusBar
-  'statusBar.company': 'EMPRESA',
-  'statusBar.session': 'Sesión: {min} min',
   'statusBar.settingsTooltip': 'Ajustes (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const es = {
   'settings.checkFailed': 'Comprobación fallida',
   'settings.unknownError': 'Error desconocido',
   'settings.notificationBehavior': 'Comportamiento de notificaciones',
-  'settings.soundDesc': 'Web Audio API — sin archivo externo',
+  'settings.soundDesc': 'Reproduce un tono breve integrado cuando llega una notificación.',
   'settings.toast': 'Notificaciones toast',
   'settings.toastDesc': 'Mostrar toast cuando el agente termina',
   'settings.ring': 'Animación de anillo',
   'settings.ringDesc': 'Pulso en el borde de paneles con notificaciones sin leer',
   'settings.sc.toggleSidebar': 'Alternar barra lateral',
-  'settings.sc.splitHorizontal': 'Dividir horizontal',
-  'settings.sc.splitVertical': 'Dividir vertical',
+  'settings.sc.splitHorizontal': 'Dividir a la derecha',
+  'settings.sc.splitVertical': 'Dividir hacia abajo',
   'settings.sc.newWorkspace': 'Nuevo espacio de trabajo',
   'settings.sc.closeSurface': 'Cerrar pestaña activa',
   'settings.sc.closePane': 'Cerrar panel dividido',
@@ -406,8 +406,8 @@ export const es = {
   'settings.prefixAddBinding': 'Añadir asignación',
   'settings.prefixReset': 'Restaurar valores predeterminados',
   'settings.prefixResetConfirm': '¿Restaurar todos los ajustes de prefijo a los predeterminados?',
-  'settings.prefix.splitHorizontal': 'Dividir horizontal',
-  'settings.prefix.splitVertical': 'Dividir vertical',
+  'settings.prefix.splitHorizontal': 'Dividir a la derecha',
+  'settings.prefix.splitVertical': 'Dividir hacia abajo',
   'settings.prefix.closePane': 'Cerrar panel',
   'settings.prefix.newWorkspace': 'Nuevo espacio de trabajo',
   'settings.prefix.nextWorkspace': 'Siguiente espacio de trabajo',
@@ -482,16 +482,16 @@ export const es = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Integración con Claude',
-  'claudeIntegration.signalHealth.title': 'Estado de la señal del plugin',
+  'claudeIntegration.signalHealth.title': 'Plugin de Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'Estado del plugin: aún no observado. Instálalo con el comando de abajo en Claude Code. wmux confirma la detección en cuanto se dispara el primer hook.',
+    'Aún no hay señal del plugin de wmux. Ejecuta el comando de instalación de abajo en Claude Code; esto se actualiza cuando el plugin informe por primera vez.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Última señal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latencia P50 {p50}ms · P95 {p95}ms · {count} muestras',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Coincidencia de espacio de trabajo: {matched}/{total} hooks resueltos a un panel de wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'Estado del plugin: obsoleto. El último hook llegó {rel} — puede que el plugin haya dejado de dispararse o que Claude Code esté inactivo.',
+    'La última señal del plugin fue {rel}. Puede que se haya detenido o que Claude Code esté inactivo.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Copiar comando de instalación',
   'claudeIntegration.signalHealth.copySuccess': 'Copiado — pégalo en Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Error al copiar — portapapeles bloqueado',
@@ -499,7 +499,7 @@ export const es = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Medidor de uso de Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Lee tu uso desde el endpoint de uso de Anthropic cada 15 minutos con tu inicio de sesión de Claude Code (el token OAuth del almacenamiento local). Solo lee el uso: no envía ninguna petición al modelo ni consume cuota. El token nunca se vuelve a escribir, nunca se registra y solo se envía a api.anthropic.com.',
+    'Lee tu uso desde el endpoint de uso de Anthropic cada 15 minutos con tu inicio de sesión de Claude Code. Solo lee el uso: no envía ninguna petición al modelo ni consume cuota. El token nunca se vuelve a escribir, nunca se registra y solo se envía a api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Mostrar uso de 5h / 7d en la barra de estado',
   'claudeIntegration.usage.refreshButton': 'Actualizar ahora',
   'claudeIntegration.usage.refreshCooldown': 'Podrás actualizar en {seconds}s',
@@ -641,6 +641,7 @@ export const es = {
   'pcSwitcher.manage': "Ajustes de {name}",
   'app.portableData.notice': "Esta copia de wmux se está ejecutando fuera de Aplicaciones, así que usa datos independientes. Muévela a Aplicaciones para ver tus sesiones existentes.",
   'pcSwitcher.othersNeedYou': "{count} te necesitan en otros equipos",
+  'pcSwitcher.othersNeedYouOne': '{count} te necesita en otro equipo',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "¿Salir de wmux y detener todas las sesiones?",
   'quitAndStop.detail': "Sesiones de agentes en ejecución: {agents}. Terminales en total: {sessions}. Se detendrán todas. Salir normalmente las deja en ejecución en segundo plano.",

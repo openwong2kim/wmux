@@ -5,6 +5,7 @@ import {
   gateInputIsCritical,
   routeSignal,
   sameConversation,
+  shellAtPrompt,
   type DetectorHeldEventData,
   type HookAgentEventData,
   type HookIngestSession,
@@ -16,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { lifecycleAlarmScenarios, type AlarmReplayOutput } from '../../../shared/__tests__/fixtures/lifecycleAlarmScenarios';
 import { replayTimeline } from '../../../shared/__tests__/fixtures/replayTimeline';
+import { PromptEventLog, parseOsc133Payload } from '../../PromptEventLog';
 
 // A transcript path the guard accepts: inside the real Claude projects root and
 // named after the agent session id. Built from `os.homedir()` so the test is
@@ -1603,6 +1605,21 @@ describe('routeSignal', () => {
     expect(resolveRoute(makeSignal({ cwd: '/repo/sub', agentSessionId: 'conv-1' }), unbound)).toBeNull();
   });
 
+  it('does not first-bind a pane whose shell sits at its prompt', () => {
+    // A shell-only pane at the session's folder ("Open a wmux pane here", a
+    // restored pane): nothing runs there for the hook to come from.
+    const unbound = [session({ id: 'pty-a', cwd: '/repo', env: {} })];
+    const outside = makeSignal({ cwd: '/repo', agentSessionId: 'conv-1' });
+    expect(routeSignal(outside, unbound, { shellAtPromptFor: () => true })).toEqual({
+      sessionId: null,
+      drops: [{ sessionId: 'pty-a', reason: 'shell-at-prompt' }],
+    });
+    // The pane runs a command (`tmux attach`, `ssh`): the first bind holds.
+    expect(resolveRoute(outside, unbound, { shellAtPromptFor: () => false })).toBe('pty-a');
+    // A live agent process outranks the prompt mark.
+    expect(resolveRoute(outside, unbound, { shellAtPromptFor: () => true, liveAgentFor: () => 'claude' })).toBe('pty-a');
+  });
+
   it('takes a bound pane for its own conversation, without a pid, even by prefix', () => {
     const bound = [
       session({ id: 'pty-a', cwd: '/repo', env: {}, lastActivity: '2026-02-01T00:00:00.000Z', resumeBinding: { agent: 'claude', sessionId: 'conv-1' } }),
@@ -1644,6 +1661,37 @@ describe('routeSignal', () => {
     expect(resolveRoute(codex, pane, { liveAgentFor: () => 'claude' })).toBeNull();
     // A stale detector marker is not a live process.
     expect(resolveRoute(codex, [{ ...pane[0], lastDetectedAgent: 'codex' }])).toBeNull();
+  });
+});
+
+describe('shellAtPrompt', () => {
+  // Marks as the daemon logs them: each at the ring's byte count when it was read.
+  function shell(...steps: Array<string | number>) {
+    const log = new PromptEventLog();
+    let written = 0;
+    for (const step of steps) {
+      const event = typeof step === 'string' ? parseOsc133Payload(step, 0, written) : null;
+      if (event) log.append(event);
+      if (typeof step === 'number') written += step;
+    }
+    return shellAtPrompt(log, written);
+  }
+
+  it('reads a shell at its first prompt with no line read', () => {
+    expect(shell('D;0', 'A', 20, 'B')).toBe(true);
+    expect(shell('D;0', 'A', 20, 'B', 8)).toBe(true);
+  });
+
+  it('reads a shell back at its prompt after a command', () => {
+    expect(shell('A', 'B', 'C', 900, 'D;0', 'A', 20, 'B', 300)).toBe(true);
+  });
+
+  it('is false while a command runs, and when the marks cannot tell', () => {
+    expect(shell('A', 'B', 'C', 900)).toBe(false);
+    // No command-start yet, but output after the prompt: a shell without PS0 running a program.
+    expect(shell('A', 'B', 4_000)).toBe(false);
+    // No marks at all: no shell integration.
+    expect(shell(4_000)).toBe(false);
   });
 });
 

@@ -216,7 +216,7 @@ export interface ChannelHistoryDeps {
   /** The channel's current `nextSeq` (from the hydrated catalog). Floors
    *  `sinceSeq` so we only fetch the most recent `limit` messages. */
   nextSeq: number;
-  /** Renderer "self" workspace (Company CEO ws, else active ws). */
+  /** Renderer "self" workspace (the human's reserved HUMAN_WORKSPACE_ID). */
   workspaceId: string;
   /** Store action that merges the fetched rows (`channelsSlice.hydrateChannelMessages`). */
   apply: (channelId: string, messages: ChannelMessage[]) => void;
@@ -235,9 +235,9 @@ export interface ChannelHistoryDeps {
  *
  * Identity alignment (critical): `workspaceId` is stamped as BOTH the read
  * scope and `verifiedWorkspaceId`, and MUST be the same workspace the
- * ChannelView uses to pick its `viewer` (`company?.ceoWorkspaceId ??
- * activeWorkspaceId`). Otherwise the daemon's per-member `historyFromSeq`
- * floor and the view's visibility filter disagree and silently drop rows.
+ * ChannelView uses to pick its `viewer` (`HUMAN_WORKSPACE_ID`). Otherwise the
+ * daemon's per-member `historyFromSeq` floor and the view's visibility filter
+ * disagree and silently drop rows.
  */
 export async function loadChannelHistory(deps: ChannelHistoryDeps): Promise<number> {
   const { rpc, channelId, nextSeq, workspaceId, apply } = deps;

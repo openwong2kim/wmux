@@ -1,7 +1,7 @@
 name: Native terminal core
 on:
   pull_request:
-    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/native-interpreter-verify.ts', 'bench/fixtures/**', 'scripts/*native*', 'scripts/*rust*', 'scripts/__tests__/generateRustUnicode11.os.test.mjs', 'scripts/__tests__/nativeTerminalPackage.os.test.mjs', '.github/workflows/release.yml', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml', '.github/workflows/rust-engine-daemon.yml', 'vitest.rust-engine.config.ts', 'src/test-utils/requireRustEngine.ts']
+    paths: ['core/wmux-term/**', 'src/daemon/**', 'src/shared/**', 'src/main/pty/**', 'src/main/ipc/handlers/*terminalCore*', 'src/renderer/components/Settings/**', 'bench/native-core-verify.ts', 'bench/native-interpreter-verify.ts', 'bench/fixtures/**', 'scripts/*native*', 'scripts/lib/native-terminal-targets.mjs', 'scripts/*rust*', 'scripts/__tests__/generateRustUnicode11.os.test.mjs', 'scripts/__tests__/nativeTerminalPackage.os.test.mjs', '.github/workflows/release.yml', 'forge.config.ts', 'package.json', 'package-lock.json', '.github/workflows/native-terminal-core.yml', '.github/workflows/rust-engine-daemon.yml', 'vitest.rust-engine.config.ts', 'src/test-utils/requireRustEngine.ts']
   workflow_dispatch:
     inputs:
       soak:
@@ -13,12 +13,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022, ubuntu-22.04]
+        os: [macos-15, windows-2022, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '>=24.21.0 <25'
           cache: npm
@@ -31,7 +31,7 @@ jobs:
         run: node -e "const r=require('node:child_process').spawnSync(process.execPath,['bench/fixtures/windows-input-control.cjs'],{stdio:'inherit',timeout:330000,killSignal:'SIGKILL'}); if(r.error) console.error(r.error.message);"
       - name: Retain Windows input baseline
         if: runner.os == 'Windows' && always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-input-control
           path: |
@@ -56,16 +56,21 @@ jobs:
         if: runner.os == 'Linux'
         run: xvfb-run -a npx electron --no-sandbox core/wmux-term/spike/native-transport-electron.cjs
       - name: Backend, snapshot, input and lifecycle contracts
-        run: npx vitest run src/shared/__tests__/terminalPty.os.test.ts src/shared/__tests__/terminalCoreSettings.os.test.ts src/daemon/__tests__/RingBuffer.test.ts src/daemon/__tests__/BufferHibernation.os.test.ts src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts src/daemon/__tests__/DaemonPTYBridge.nativeOutput.test.ts src/daemon/__tests__/SessionPipe.inputBackpressure.os.test.ts src/main/pty/__tests__/PTYManager.wsl.test.ts src/main/ipc/handlers/__tests__/terminalCore.handler.test.ts src/renderer/components/Settings/__tests__/TerminalEngineSetting.test.tsx src/daemon/__tests__/sessionReattach.engines.os.test.ts
+        run: npx vitest run src/shared/__tests__/terminalPty.os.test.ts src/shared/__tests__/terminalCoreSettings.os.test.ts src/daemon/__tests__/RingBuffer.test.ts src/daemon/__tests__/BufferHibernation.os.test.ts src/daemon/__tests__/DaemonPTYBridge.nativeOutput.test.ts src/daemon/__tests__/SessionPipe.inputBackpressure.os.test.ts src/main/pty/__tests__/PTYManager.wsl.test.ts src/main/ipc/handlers/__tests__/terminalCore.handler.test.ts src/renderer/components/Settings/__tests__/TerminalEngineSetting.test.tsx src/daemon/__tests__/sessionReattach.engines.os.test.ts src/daemon/__tests__/nativeProcessTable.parity.os.test.ts
         env:
           # The module is built above, so on macOS and Linux its rust cases
           # must run, not skip. The suite is POSIX only: Windows skips it.
           WMUX_REQUIRE_RUST_CORE: '1'
+          # The checkout's build is never found on its own: name it.
+          WMUX_TERMINAL_CORE_MODULE: ${{ github.workspace }}/core/wmux-term/dist/native-core/index.cjs
+      # Stub WMUX_RUST_SNAPSHOT_MODULE, which WMUX_TERMINAL_CORE_MODULE would override.
+      - name: Opt-in snapshot module contracts
+        run: npx vitest run src/daemon/__tests__/TextSnapshotBackend.test.ts src/daemon/__tests__/AnsiSnapshotBackend.test.ts src/daemon/__tests__/RustSnapshot.test.ts
       - name: Output interpretation contracts
         run: npx vitest run src/daemon/__tests__/OutputInterpreter.test.ts src/daemon/util/__tests__/outputModeTracker.test.ts src/main/pty/__tests__/OscParser.test.ts
       - name: Retain native verification evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-terminal-${{ matrix.os }}
           path: |
@@ -83,14 +88,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022, ubuntu-22.04]
+        os: [macos-15, windows-2022, ubuntu-22.04]
     runs-on: ${{ matrix.os }}
     # This job is a four-hour screening run. The continuous eight-hour gate
     # uses the documented local command; do not combine shorter runs as evidence.
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '>=24.21.0 <25'
       - run: npm install -g npm@11
@@ -101,7 +106,7 @@ jobs:
           WMUX_NATIVE_SOAK_MS: '14400000'
       - name: Retain soak evidence
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-terminal-soak-${{ matrix.os }}
           path: |

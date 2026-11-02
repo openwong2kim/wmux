@@ -189,6 +189,8 @@ const NOTICE_CODES: ReadonlyMap<string, boolean> = new Map([
   ['skill.archived', true],
   ['secret.deleted', true],
   ['worker.reportAfterEnd', true],
+  // A bot on My Hermes (main/factory/myHermesTurn.ts, myHermesHost.ts).
+  ['wake.refused', false], ['turn.unsettled', false],
 ]);
 
 /** The notice codes whose title names their subject by a `title` arg, with
@@ -237,6 +239,8 @@ const NOTICE_WORDS: Readonly<Record<string, ReadonlySet<string>>> = {
   cause: new Set(['fetch', 'worktree', 'repository', 'promptFile', 'slot', 'pane', 'setupStep', 'setup']),
   // Whose worker slots are full (roomWriter.ts `workers.full`).
   scope: new Set(['bot', 'factory', 'wmux']),
+  // Why a wake was not sent to My Hermes (myHermesTurn.ts OwnHermesRefusalCode).
+  refusal: new Set(['routineBotWritten', 'routineOutsideDm', 'routineCleanUnknown', 'routineTainted', 'roomDirtyPaused', 'notOwnerMessage', 'outsideDm', 'notAttended', 'roomUnreadable', 'roomDirty']),
 };
 
 /** Why wmux moved a task to input_required (roomWriter.ts inputRequiredWhy). */
@@ -337,6 +341,11 @@ export function noticeText(card: Pick<RoomCard, 'actor' | 'body' | 'notice'>, t:
     if (args.scope === undefined) return null;
     // Only a held request starts by itself (`held`: 1).
     return { title: t(`room.notice.workers.full.${args.scope}`, vars), body: t(args.held === 1 ? 'room.notice.workers.full.held' : 'room.notice.workers.full.body', vars) };
+  }
+  // One title per reason a wake was not sent to My Hermes.
+  if (notice.code === 'wake.refused') {
+    if (args.refusal === undefined) return null;
+    return { title: t(`room.notice.wake.refused.${args.refusal}`), body: card.body ?? '' };
   }
   // A hop says what it carried: one template per kind, forwarded by wmux
   // for a coordinator's relay.

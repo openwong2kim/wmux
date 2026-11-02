@@ -26,49 +26,16 @@ jobs:
   # ── wmux-server (headless Linux runtime for "Add PC over SSH") ───────────
   # Built FIRST: every packaging job below bakes these artifacts' sha256 into
   # the app as resources/server-manifest.json, and the desktop app hands that
-  # hash to the host it installs on. node-pty is native, so each arch builds on
-  # its own runner — never cross-built — inside a glibc 2.28 image, so the
-  # artifact also runs on Ubuntu 20.04, Debian 11 and RHEL 8. The tarballs reach the release through
-  # the one release-creating step in `build`, so prerelease/latest gating is
-  # the same as for every other asset.
+  # hash to the host it installs on. The per-arch build inside a glibc 2.28
+  # image, its proof on the rust engine and the upload live in
+  # server-artifact.yml, which pull requests that change them run too. The
+  # tarballs reach the release through the one release-creating step in
+  # `build`, so prerelease/latest gating is the same as for every other asset.
   server:
-    name: Build wmux-server (linux-${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
+    name: Build wmux-server
     permissions:
       contents: read
-    strategy:
-      # A failed leg blocks the release either way; keeping the other one
-      # means "Re-run failed jobs" only redoes that leg.
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x64
-            runner: ubuntu-22.04
-          - arch: arm64
-            runner: ubuntu-22.04-arm
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Only fetches and checks the pinned Node on the runner; everything else
-      # runs in the container on that Node.
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: 22
-
-      # In a manylinux_2_28 image pinned by digest: `npm ci` (compiling
-      # node-pty against glibc 2.28), the bundles, staging, a real PTY with the
-      # staged Node, then the tarball. Fails if anything needs glibc > 2.28.
-      - name: Build the server artifact
-        env:
-          ARCH: ${{ matrix.arch }}
-        run: bash scripts/build-server-artifact-container.sh "$ARCH" out/server
-
-      - name: Upload the server artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: wmux-server-${{ matrix.arch }}
-          path: out/server/
-          if-no-files-found: error
+    uses: ./.github/workflows/server-artifact.yml
 
   build:
     needs: server
@@ -97,7 +64,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           # Same npm cache the CI workflows use. Release builds ran a cold
@@ -112,8 +79,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Ship the module on every desktop target; engine selection stays Node
-      # until the user opts into Rust in Settings. Forge checks the copied
+      # Ship the module on every desktop target. With no saved engine choice,
+      # defaultTerminalEngine (src/shared/terminalCoreSettings.ts) decides
+      # whether it runs; Node runs when it cannot load. Forge checks the copied
       # module and runs a PTY with the packaged executable before making assets.
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
@@ -122,7 +90,7 @@ jobs:
         run: npm run build:terminal-core
 
       - name: Download the server artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wmux-server-*
           path: out/server
@@ -151,7 +119,7 @@ jobs:
       - name: Upload unsigned computer-use helper for signing
         id: upload-helper-unsigned
         if: env.HELPER_SIGNING_ENABLED == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wmux-computer-use-unsigned
           path: native/computer-use-windows/dist/wmux-computer-use.exe
@@ -271,7 +239,7 @@ jobs:
       - name: Upload unsigned Setup.exe for signing
         id: upload-unsigned
         if: env.SIGNPATH_ENABLED == 'true'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wmux-setup-unsigned
           path: out/make/squirrel.windows/x64/*.Setup.exe
@@ -432,7 +400,7 @@ jobs:
         shell: pwsh
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wmux-windows
           path: out/make/**/*
@@ -497,7 +465,7 @@ jobs:
       - name: Publish to winget
         if: github.event_name == 'push' && env.WINGET_TOKEN != ''
         continue-on-error: true
-        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
         with:
           identifier: openwong2kim.wmux
           version: ${{ needs.build.outputs.version }}
@@ -522,13 +490,14 @@ jobs:
     permissions:
       contents: write
     strategy:
-      # Keep both arches building so one regressing doesn't hide the other.
+      # Only arm64 (macos-15) builds today; fail-fast stays off so a re-added
+      # leg reports on its own.
       fail-fast: false
       matrix:
-        # macos-14 = Apple Silicon (arm64). macos-13 (Intel/x64) was dropped: the
+        # macos-15 = Apple Silicon (arm64). macos-13 (Intel/x64) was dropped: the
         # hosted runner cancels the job within ~1s on this repo, which only ever
         # showed up as a spurious red leg. Re-add when an Intel build is needed.
-        os: [macos-14]
+        os: [macos-15]
     env:
       APPLE_ID: ${{ secrets.APPLE_ID }}
       APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
@@ -539,7 +508,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           # Same npm cache the CI workflows use. Release builds ran a cold
@@ -554,8 +523,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Ship the module on every desktop target; engine selection stays Node
-      # until the user opts into Rust in Settings. Forge checks the copied
+      # Ship the module on every desktop target. With no saved engine choice,
+      # defaultTerminalEngine (src/shared/terminalCoreSettings.ts) decides
+      # whether it runs; Node runs when it cannot load. Forge checks the copied
       # module and runs a PTY with the packaged executable before making assets.
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
@@ -564,7 +534,7 @@ jobs:
         run: npm run build:terminal-core
 
       - name: Download the server artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wmux-server-*
           path: out/server
@@ -687,7 +657,7 @@ jobs:
       # continue-on-error: an upload hiccup must not fail the whole release.
       - name: Upload macOS preview artifacts
         if: always() && steps.bundle-check.outcome == 'success' && github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wmux-macos-arm64
           path: |
@@ -788,7 +758,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
           # Same npm cache the CI workflows use. Release builds ran a cold
@@ -839,8 +809,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # Ship the module on every desktop target; engine selection stays Node
-      # until the user opts into Rust in Settings. Forge checks the copied
+      # Ship the module on every desktop target. With no saved engine choice,
+      # defaultTerminalEngine (src/shared/terminalCoreSettings.ts) decides
+      # whether it runs; Node runs when it cannot load. Forge checks the copied
       # module and runs a PTY with the packaged executable before making assets.
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal
@@ -849,7 +820,7 @@ jobs:
         run: npm run build:terminal-core
 
       - name: Download the server artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wmux-server-*
           path: out/server
@@ -890,7 +861,7 @@ jobs:
       # sequence, so one failing maker must not discard the ones that succeeded.
       - name: Upload Linux preview artifacts
         if: always() && steps.bundle-check.outcome == 'success' && github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wmux-linux
           path: |

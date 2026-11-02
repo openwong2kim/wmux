@@ -39,9 +39,6 @@ function installBridge(statuses: AgentSetupStatus[]) {
     complete: vi.fn().mockResolvedValue(undefined),
     dismiss: vi.fn().mockResolvedValue(undefined),
     registerMcp: vi.fn(),
-    startSampleTask: vi.fn(),
-    onSampleTaskReady: vi.fn(() => () => undefined),
-    onSampleTaskTimeout: vi.fn(() => () => undefined),
     agentStatus: vi.fn().mockResolvedValue(statuses),
     agentPlan: vi.fn().mockResolvedValue({
       agent: 'claude',
@@ -94,6 +91,19 @@ describe('FirstRunWizard agent ready step', () => {
     expect(primaries().map((b) => b.dataset.testid)).not.toContain('first-run-agent-claude-install');
     expect(byId('first-run-wizard-skip')?.textContent).not.toBe('Later');
     expect(byId('first-run-agent-codex')?.dataset.status).toBe('ok');
+  });
+
+  it('once an agent is signed in, only it is listed; the rest wait under Other agents', async () => {
+    installBridge([notInstalled('claude'), ready('codex')]);
+    await act(async () => { root.render(createElement(FirstRunWizard, { mode: 'firstRun', onClose: vi.fn() })); });
+    await settle();
+    expect(byId('first-run-agent-codex')).not.toBeNull();
+    expect(byId('first-run-agent-claude')).toBeNull();
+    const more = byId('first-run-agent-show-others') as HTMLButtonElement;
+    expect(more.textContent).toMatch(/^Other agents \(\d+\)$/);
+    await act(async () => { more.click(); });
+    expect(byId('first-run-agent-claude')).not.toBeNull();
+    expect(byId('first-run-agent-show-others')).toBeNull();
   });
 
   it('Install shows the exact line and runs nothing until Run; then the dialog steps aside', async () => {
@@ -158,6 +168,33 @@ describe('FirstRunWizard agent ready step', () => {
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-agent-claude-run']);
   });
 
+  it('a row opened from Other agents stays listed through a failed install and Retry', async () => {
+    installBridge([notInstalled('claude'), ready('codex')]);
+    let onData: ((id: string, data: string, replay: boolean) => void) | null = null;
+    (window as unknown as { electronAPI: { pty: Record<string, unknown> } }).electronAPI.pty.onData =
+      vi.fn((cb: typeof onData) => { onData = cb; return () => undefined; });
+    tab.open.mockResolvedValue({ workspaceId: 'ws-1', ptyId: 'pty-1' });
+    await act(async () => { root.render(createElement(FirstRunWizard, { mode: 'firstRun', onClose: vi.fn() })); });
+    await settle();
+    expect(byId('first-run-agent-claude')).toBeNull();
+    await act(async () => { byId('first-run-agent-show-others')?.click(); });
+    await act(async () => { byId('first-run-agent-claude-install')?.click(); });
+    await settle();
+    await act(async () => { byId('first-run-agent-claude-run')?.click(); });
+    await settle();
+    // The dialog stepped aside to the corner card while the install ran.
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    await act(async () => { onData?.('pty-1', '\x1b]133;C\x07\x1b]133;D;1\x07', false); });
+    await settle();
+    expect(byId('first-run-agent-claude')?.dataset.status).toBe('error');
+    await act(async () => {
+      (Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Retry') as HTMLButtonElement).click();
+    });
+    await settle();
+    // Retry cleared the failed run; the row is still there, on its confirm step.
+    expect(byId('first-run-agent-claude-command')?.textContent).toBe(INSTALL);
+  });
+
   it('an agent whose sign-in wmux cannot check shows installed, says so, and offers Sign in as a secondary', async () => {
     installBridge([notInstalled('claude'), notInstalled('codex'), {
       agent: 'grok', readiness: 'installed', executable: '/home/u/.grok/bin/grok', version: '1.0.67', updateRecommended: false, loginKnown: false, candidates: [],
@@ -189,6 +226,9 @@ describe('FirstRunWizard agent ready step', () => {
     });
     await act(async () => { root.render(createElement(FirstRunWizard, { mode: 'firstRun', onClose: vi.fn() })); });
     await settle();
+    // Claude is ready, so the agents not installed wait under "Other agents".
+    expect(byId('first-run-agent-grok')).toBeNull();
+    await act(async () => { byId('first-run-agent-show-others')?.click(); });
 
     await act(async () => { byId('first-run-agent-grok-install')?.click(); });
     await settle();

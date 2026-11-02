@@ -93,4 +93,37 @@ describe('ChatSendReceiptStore', () => {
     expect(ChatSendReceiptStore.fingerprint('q', 'conv', 'h1:x', 'hi')).not.toBe(base);
     expect(ChatSendReceiptStore.fingerprint('p', 'conv', 'h1:x', 'hi!')).not.toBe(base);
   });
+
+  it('stores a refusal before dispatch as final, with its gate on disk only, and loads it back', () => {
+    const dir = tempDir();
+    const store = new ChatSendReceiptStore(dir, { now: () => NOW });
+    const outcome = { result: 'unavailable' as const, effect: 'none' as const, error: 'chat-unavailable' as const, gate: 'send-capability' };
+    expect(store.insertFinal('device:a', id(1), receipt(), outcome)).toBe('inserted');
+    expect(store.insertFinal('device:a', id(1), receipt(), outcome)).toBe('exists');
+    expect(store.insertPending('device:a', id(1), receipt())).toBe('exists');
+    expect(store.complete('device:a', id(1), { result: 'sent', effect: 'submitted' })).toBe(false);
+    const view = store.view('device:a', 'pane-1', id(1));
+    expect(view).toMatchObject({ state: 'refused', result: 'unavailable', error: 'chat-unavailable' });
+    expect(view).not.toHaveProperty('gate');
+    expect(new ChatSendReceiptStore(dir, { now: () => NOW }).lookup('device:a', id(1)))
+      .toMatchObject({ state: 'final', outcome });
+    // A gate name this daemon does not know (a newer one wrote it) still loads.
+    const file = path.join(dir, 'chat-send-receipts.json');
+    const disk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    for (const entry of Object.values(disk.entries) as Array<{ outcome: { gate: string } }>) entry.outcome.gate = 'some-future-gate';
+    fs.writeFileSync(file, JSON.stringify(disk));
+    expect(new ChatSendReceiptStore(dir, { now: () => NOW }).view('device:a', 'pane-1', id(1)).state).toBe('refused');
+  });
+
+  it('never writes a row its own loader would reject, so the file always loads', () => {
+    const dir = tempDir();
+    const store = new ChatSendReceiptStore(dir, { now: () => NOW });
+    expect(store.insertFinal('device:a', id(1), { ...receipt(), historyEpoch: 'h'.repeat(65) }, { effect: 'none', error: 'session-changed' }))
+      .toBe('invalid');
+    expect(store.insertPending('device:a', id(2), { ...receipt(), agentSessionId: 'a'.repeat(257) })).toBe('invalid');
+    expect(store.insertPending('device:a', id(3), receipt())).toBe('inserted');
+    const reloaded = new ChatSendReceiptStore(dir, { now: () => NOW });
+    expect(reloaded.view('device:a', 'pane-1', id(1)).state).toBe('unknown');
+    expect(reloaded.view('device:a', 'pane-1', id(3)).state).toBe('uncertain');
+  });
 });

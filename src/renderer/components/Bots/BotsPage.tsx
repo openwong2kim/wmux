@@ -27,7 +27,7 @@
 // and some added, the page stays: the conversations and live workers
 // read-only under a "Bots are off" banner with Turn bots on. The header's
 // menu holds Stop all bots (an inline confirm).
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -50,6 +50,7 @@ import BotAvatar from '../Room/BotAvatar';
 import { RoomAvatar } from './BotsAvatar';
 import BotsWorkerTree, { TreeToggle } from './BotsWorkerTree';
 import { BotsChat } from './BotsChat';
+import { BotSettingsPage } from './BotSettingsPage';
 import { createBot, openFactorySettings, turnBotsOn } from './botsAddBot';
 import { confirmBotsAlreadyOn, useBotsPlanConsent } from './BotsPlanConsent';
 import { showWorkspaces } from '../../utils/showWorkspaces';
@@ -346,33 +347,39 @@ function FirstBotPanel({ t, workspace, botPort, settings, confirmOn, on, engine,
           <Button type="submit" size="sm" variant={startable ? 'primary' : 'secondary'} data-bots-first-start disabled={!startable}>
             {t('botsPage.onboarding.start')}
           </Button>
-          {botPort.createTeam && (
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              data-bots-first-team
-              disabled={!teamable}
-              title={t('settings.factory.addTeamHint', { names: TEAM_TEMPLATES.map((tpl) => names[tpl]).join(', '), lead: names.coordinator })}
-              onClick={() => void startTeam()}
-            >
-              {t('botsPage.onboarding.addTeam')}
-            </Button>
-          )}
         </form>
         {workspace && (
-          <AddBotRepoRow view={repo.view} t={t} busy={busy} onChoose={() => void repo.choose()} onNone={repo.chooseNone} />
+          <AddBotRepoRow view={repo.view} t={t} busy={busy} onChoose={() => void repo.choose()} onNone={repo.chooseNone} onRecheck={repo.recheck} />
         )}
+        {/* The other ways to begin are quiet links, so Start stays the one
+            action the card leads with. */}
         {workspace && (
-          <button
-            type="button"
-            data-bots-first-recipe
-            disabled={busy}
-            onClick={onRecipe}
-            className={`self-start text-[12px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
-          >
-            {t('botsPage.onboarding.fromRecipe')}
-          </button>
+          <div className="flex flex-wrap items-center gap-x-1 text-[12px] text-[var(--text-muted)]">
+            {botPort.createTeam && (
+              <>
+                <button
+                  type="button"
+                  data-bots-first-team
+                  disabled={!teamable}
+                  title={t('settings.factory.addTeamHint', { names: TEAM_TEMPLATES.map((tpl) => names[tpl]).join(', '), lead: names.coordinator })}
+                  onClick={() => void startTeam()}
+                  className={`hover:text-[var(--text-main)] disabled:opacity-50 disabled:hover:text-[var(--text-muted)] ${FOCUS_RING}`}
+                >
+                  {t('botsPage.onboarding.addTeam')}
+                </button>
+                <span aria-hidden="true">·</span>
+              </>
+            )}
+            <button
+              type="button"
+              data-bots-first-recipe
+              disabled={busy}
+              onClick={onRecipe}
+              className={`hover:text-[var(--text-main)] disabled:opacity-50 ${FOCUS_RING}`}
+            >
+              {t('botsPage.onboarding.fromRecipe')}
+            </button>
+          </div>
         )}
         {blocked && name.trim() !== '' && <p data-bots-first-blocked className="text-[11px] text-[var(--text-muted)]">{t(blocked, { max: BOT_NAME_MAX })}</p>}
         {!workspace && <p data-bots-first-blocked className="text-[11px] text-[var(--text-muted)]">{t('settings.factory.addBotNeedWorkspace')}</p>}
@@ -653,12 +660,52 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const [archiveOpen, setArchiveOpen] = useState(false);
 
   const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
-  const select = (id: string) => {
+  // A bot's settings page, shown in place of its chat (BotSettingsPage).
+  // Leaving it with unsaved changes asks first: the leave waits in `leaveAsk`
+  // until the owner discards or keeps editing.
+  const [settingsBotId, setSettingsBotId] = useState<string | null>(null);
+  const settingsDirty = useRef(false);
+  const onSettingsDirty = useCallback((dirty: boolean) => { settingsDirty.current = dirty; }, []);
+  const [leaveAsk, setLeaveAsk] = useState<{ go: () => void } | null>(null);
+  // Leaving the Bots page itself (the rail, a shortcut, Settings) asks too.
+  useEffect(() => {
+    const st = useStore.getState();
+    st.setBotsLeaveGuard((go) => {
+      if (!settingsDirty.current) return false;
+      setLeaveAsk({ go });
+      return true;
+    });
+    return () => useStore.getState().setBotsLeaveGuard(null);
+  }, []);
+  // A leave asked of a page that has since gone (its bot deleted) is dropped.
+  useEffect(() => { if (!settingsBotId) setLeaveAsk(null); }, [settingsBotId]);
+  const guard = (go: () => void) => {
+    if (settingsDirty.current) setLeaveAsk({ go });
+    else go();
+  };
+  const select = (id: string) => guard(() => {
+    setSettingsBotId(null);
     setSelectedId(id);
     setView('chat');
     // A thread a bot row asked to open is opened once, never on a later visit.
     setThreadAsk(null);
-  };
+  });
+  const openSettingsOf = (botId: string) => () => openSettings(botId);
+  const openSettings = (botId: string) => guard(() => {
+    setSelectedId(botConversationId(botId));
+    setView('chat');
+    setThreadAsk(null);
+    setSettingsBotId(botId);
+  });
+  // Every way in (Settings › Bots, …) asks through the store; the ask is
+  // taken once.
+  const settingsAsk = useStore((s) => s.botsSettingsAsk);
+  useEffect(() => {
+    if (!settingsAsk) return;
+    useStore.setState({ botsSettingsAsk: null });
+    openSettings(settingsAsk.botId);
+    // `openSettings` is a fresh closure each render; only a new ask matters.
+  }, [settingsAsk]);
   // A bot row whose waiting cards are all in a group chat leads there, with
   // the newest one's thread beside the group's chat (its own thread is the
   // chat itself): the needs-you count on the row is answered where it is.
@@ -842,6 +889,9 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   } else if (status && (listed || bots.length > 0 || !!pending)) {
     // (Before the bot list is read, nothing: an empty list is not "no bot".)
     const paused = !on;
+    // The settings page shows for the selected bot it was opened for; a bot
+    // deleted from it falls back to its chat.
+    const settingsOf = settingsBotId && selected?.c.kind === 'bot' && !selected.c.removed && selected.c.row.bot.id === settingsBotId ? selected.c : null;
     const archiveShown = archiveOpen || !!q || shownArchived.some((a) => a.c.id === selected?.c.id);
     const renderEntry = (r: (typeof rows)[number]) => {
       const tree = r.c.kind === 'bot' ? r.c.tree : [];
@@ -977,6 +1027,23 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
         </nav>
         {starting ? (
           <StartingChat bot={starting} t={t} onBack={() => setView('list')} />
+        ) : settingsOf ? (
+          <BotSettingsPage
+            key={`settings:${settingsOf.row.bot.id}`}
+            row={settingsOf.row}
+            workers={settingsOf.workers}
+            workspaceName={nameOf(settingsOf.workspaceId) ?? settingsOf.workspaceId}
+            t={t}
+            port={botPort}
+            stopPort={stopPort}
+            readOnly={paused}
+            onBack={() => guard(() => setSettingsBotId(null))}
+            onDirtyChange={onSettingsDirty}
+            leaveAsk={leaveAsk ? {
+              onDiscard: () => { settingsDirty.current = false; setLeaveAsk(null); leaveAsk.go(); },
+              onKeep: () => setLeaveAsk(null),
+            } : null}
+          />
         ) : selected ? (
           <BotsChat
             key={selected.c.id}
@@ -984,7 +1051,6 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             roomCards={selected.c.kind === 'bot' ? everyCard : cardsByWs.get(selected.c.workspaceId) ?? []}
             bots={bots}
             title={selected.title}
-            workspaceName={nameOf(selected.c.workspaceId) ?? selected.c.workspaceId}
             t={t}
             api={api}
             now={now}
@@ -994,6 +1060,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             jobPort={botPort}
             resumePort={botPort}
             onOpenBot={(botId) => select(botConversationId(botId))}
+            {...(selected.c.kind === 'bot' && !selected.c.removed ? { onOpenSettings: openSettingsOf(selected.c.row.bot.id) } : {})}
             {...(botPort.clearRemoved && selected.c.kind === 'bot' && selected.c.removed ? { onClearArchived: clearArchived(selected.c.row.bot.id) } : {})}
             {...(threadAsk && threadAsk.conversationId === selected.c.id ? { threadAsk } : {})}
             {...(shownGroup && groupsPort.available ? { onEditGroup: () => setGroupDialog({ kind: 'edit', group: shownGroup }) } : {})}

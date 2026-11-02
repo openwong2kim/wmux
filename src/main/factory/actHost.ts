@@ -60,6 +60,7 @@ export function createActModule(deps: Pick<FactoryHostDeps, 'wmuxDir'>): { start
           },
         },
         emit: (e) => getApprovalService()?.onActEffect(e),
+        stalled: (e) => getApprovalService()?.onActStalled(e),
         log: (l) => console.log(l),
       });
       executor = run;

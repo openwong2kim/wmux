@@ -2,7 +2,7 @@ import type { WslTarget } from './wslTarget';
 // === JSON-RPC Protocol Types ===
 
 import type { ResumeBinding } from './agentResume';
-import type { BotBinding } from './bot';
+import type { BotBinding, BotSurfaceNarrowing } from './bot';
 
 export interface RpcRequest {
   id: string;
@@ -272,6 +272,9 @@ export interface RpcContext {
    * a raw envelope field.
    */
   bot?: BotBinding;
+  /** A bot token's narrowed surface (a bot on My Hermes: `room-post`).
+   *  Set by RpcRouter from the token's binding only. */
+  botSurface?: BotSurfaceNarrowing;
   /**
    * #922 — the workspace the PLUGIN HOST derived for this caller, not one the
    * caller named. Set by RpcRouter only from the `hostedWorkspace` dispatch
@@ -642,6 +645,14 @@ export type RpcMethod =
   | 'a2a.remote.spawn.outgoing'
   | 'a2a.remote.spawn'
   | 'a2a.remote.spawnStatus'
+  | 'a2a.remote.continue.work'
+  | 'a2a.remote.continue.claim'
+  | 'a2a.remote.continue.place'
+  | 'a2a.remote.continue.unplace'
+  | 'a2a.remote.continue.binding'
+  | 'a2a.remote.continue.started'
+  | 'a2a.remote.continue.failed'
+  | 'a2a.remote.continue.state'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -651,31 +662,6 @@ export type RpcMethod =
   | 'a2a.task.cancel'
   | 'a2a.broadcast'
   | 'meta.setSkills'
-  | 'company.create'
-  | 'company.destroy'
-  | 'company.status'
-  | 'company.addDept'
-  | 'company.removeDept'
-  | 'company.addMember'
-  | 'company.removeMember'
-  | 'company.broadcast'
-  | 'company.sendDept'
-  | 'company.sendMember'
-  | 'company.message'
-  | 'company.save'
-  | 'company.restore'
-  | 'company.templates'
-  | 'company.worktreeSetup'
-  | 'company.mergeDept'
-  | 'company.a2a.whoami'
-  | 'company.a2a.send'
-  | 'company.a2a.broadcast'
-  | 'company.a2a.inbox'
-  | 'company.a2a.ack'
-  | 'company.a2a.status'
-  | 'company.provision'
-  | 'company.provisionAll'
-  | 'company.provisionCeo'
   | 'hooks.signal'
   | 'usage.rateLimits'
   | 'usage.trail'
@@ -782,6 +768,10 @@ export type RpcMethod =
   | 'routine.set'
   | 'routine.list'
   | 'routine.pause'
+  | 'routine.ownerSet'
+  | 'routine.ownerPause'
+  | 'routine.ownerRemove'
+  | 'routine.ownerRun'
   | 'workflow.create'
   | 'workflow.read'
   | 'workflow.advance'
@@ -1002,6 +992,14 @@ export const ALL_RPC_METHODS = [
   'a2a.remote.spawn.outgoing',
   'a2a.remote.spawn',
   'a2a.remote.spawnStatus',
+  'a2a.remote.continue.work',
+  'a2a.remote.continue.claim',
+  'a2a.remote.continue.place',
+  'a2a.remote.continue.unplace',
+  'a2a.remote.continue.binding',
+  'a2a.remote.continue.started',
+  'a2a.remote.continue.failed',
+  'a2a.remote.continue.state',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',
@@ -1011,31 +1009,6 @@ export const ALL_RPC_METHODS = [
   'a2a.task.cancel',
   'a2a.broadcast',
   'meta.setSkills',
-  'company.create',
-  'company.destroy',
-  'company.status',
-  'company.addDept',
-  'company.removeDept',
-  'company.addMember',
-  'company.removeMember',
-  'company.broadcast',
-  'company.sendDept',
-  'company.sendMember',
-  'company.message',
-  'company.save',
-  'company.restore',
-  'company.templates',
-  'company.worktreeSetup',
-  'company.mergeDept',
-  'company.a2a.whoami',
-  'company.a2a.send',
-  'company.a2a.broadcast',
-  'company.a2a.inbox',
-  'company.a2a.ack',
-  'company.a2a.status',
-  'company.provision',
-  'company.provisionAll',
-  'company.provisionCeo',
   'hooks.signal',
   'usage.rateLimits',
   'usage.trail',
@@ -1108,6 +1081,10 @@ export const ALL_RPC_METHODS = [
   'routine.set',
   'routine.list',
   'routine.pause',
+  'routine.ownerSet',
+  'routine.ownerPause',
+  'routine.ownerRemove',
+  'routine.ownerRun',
   'workflow.create',
   'workflow.read',
   'workflow.advance',

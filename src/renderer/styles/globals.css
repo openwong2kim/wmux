@@ -795,6 +795,12 @@ select option {
   animation: notification-slide-in 0.2s ease-out;
 }
 
+/* The focused row (the panel focuses the first unread one on open) is the
+ * neutral selection, and keyboard focus the accent ring — never the
+ * browser's own ring, which takes the OS accent colour (gold on some Macs). */
+.wmux-notification-row:focus { outline: none; background: var(--selection); }
+.wmux-notification-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 /* Pane flash highlight — Ctrl+Shift+H */
 @keyframes pane-flash {
   0%   { opacity: 0; }

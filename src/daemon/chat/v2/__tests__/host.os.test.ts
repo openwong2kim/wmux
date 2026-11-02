@@ -8,6 +8,8 @@ import { ApprovalRegistry } from '../../../approvals/ApprovalRegistry';
 import { DECISION_V2_WEB_ANSWER } from '../../../approvals/types';
 import type { DaemonEvent } from '../../../../shared/rpc';
 import { ChatSessionService } from '../../ChatSessionService';
+import { CHATV2_STOP_GRACE_MS } from '../../../../shared/chatv2/limits';
+import { sessionNeedsInput } from '../../../../shared/chatv2/session';
 import { ChildBackend } from '../childBackend';
 import { ClaudeDriver } from '../claude/claudeDriver';
 import { createChatV2Host } from '../host';
@@ -766,6 +768,167 @@ describe('chat v2 host: handoff and interrupt guards', () => {
     expect(await r.host.call('interrupt', { ...base, epoch: 'f'.repeat(16) }, 'main')).toMatchObject({ ok: false, error: { code: 'stale-epoch' } });
     expect(await r.host.call('interrupt', { ...base, epoch: b.epoch, turnId: '9.1' }, 'main')).toEqual({ ok: true, interrupted: false });
     expect(await r.host.call('interrupt', { ...base, epoch: b.epoch, turnId }, 'main')).toMatchObject({ ok: true });
+    await r.host.dispose();
+  });
+});
+
+/**
+ * Settle `pending` under fake timers, moving the clock in steps and letting
+ * real I/O (the registry's and the store's writes) run in between.
+ */
+async function settleOnFakeClock<T>(pending: Promise<T>): Promise<T> {
+  let done = false;
+  void pending.finally(() => { done = true; });
+  for (let i = 0; i < 200 && !done; i++) {
+    await vi.advanceTimersByTimeAsync(100);
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  return pending;
+}
+
+describe('chat v2 host: Stop always ends the turn', () => {
+  const stopRequests = (fake: FakeClaude) => fake.stdin.filter((line) => (line.request as { subtype?: string } | undefined)?.subtype === 'interrupt');
+
+  it('marks a Stop the agent ignores as overdue after the grace period, and clears it when the turn ends', async () => {
+    const r = rig();
+    await created(r);
+    await sent(r);
+    const b = r.host.bindingForPane(PANE)!;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      expect(await r.host.call('interrupt', { paneId: PANE, chatSessionId: b.chatSessionId }, 'main')).toEqual({ ok: true, interrupted: true });
+      expect(stopRequests(r.fake())).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(CHATV2_STOP_GRACE_MS - 1);
+      expect(r.host.sessionForPane(PANE)!.stopOverdue).toBeUndefined();
+      // A second Stop keeps the first deadline.
+      await r.host.call('interrupt', { paneId: PANE, chatSessionId: b.chatSessionId }, 'main');
+      await vi.advanceTimersByTimeAsync(1);
+      expect(r.host.sessionForPane(PANE)).toMatchObject({ busy: true, stopOverdue: true });
+      expect(r.host.statusForPane(PANE)).toBe('running');
+    } finally {
+      vi.useRealTimers();
+    }
+    r.fake().result();
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    expect(r.host.sessionForPane(PANE)!.stopOverdue).toBeUndefined();
+    await r.host.dispose();
+  });
+
+  it('never marks a Stop overdue when the agent ends the turn in time', async () => {
+    const r = rig();
+    await created(r);
+    await sent(r);
+    const b = r.host.bindingForPane(PANE)!;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await r.host.call('interrupt', { paneId: PANE, chatSessionId: b.chatSessionId }, 'main');
+      r.fake().result();
+      await vi.advanceTimersByTimeAsync(CHATV2_STOP_GRACE_MS * 2);
+    } finally {
+      vi.useRealTimers();
+    }
+    await until(() => r.host.statusForPane(PANE) === 'idle');
+    const session = r.host.sessionForPane(PANE)!;
+    expect(session.stopOverdue).toBeUndefined();
+    expect(session.blocks.find((x) => x.role === 'user')!.outcome).toBe('interrupted');
+    await r.host.dispose();
+  });
+
+  it('force stops a hung agent: process group killed, turn interrupted, approval settled, next send resumes', async () => {
+    const r = rig();
+    const binding = await created(r);
+    await sent(r);
+    r.fake().canUseTool('req-9', 'Bash', { command: 'sleep 1000' }, 'toolu_9');
+    await until(() => r.registry!.list().pending.length === 1);
+    expect(r.host.statusForPane(PANE)).toBe('needs-input');
+    const hung = r.fake();
+    hung.ignoresEof = true;
+    const pid = hung.pid!;
+    const base = { paneId: PANE, chatSessionId: binding.chatSessionId };
+
+    expect(await r.host.call('forceStop', { ...base, epoch: 'f'.repeat(16) }, 'main')).toMatchObject({ ok: false, error: { code: 'stale-epoch' } });
+    expect(await r.host.call('forceStop', { ...base, turnId: '9.1' }, 'main')).toEqual({ ok: true, stopped: false });
+
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let result;
+    try {
+      const pending = r.host.call('forceStop', base, 'main');
+      // A second click while the first runs says it is still stopping.
+      expect(await r.host.call('forceStop', base, 'main')).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+      // No turn starts on the dying agent, nor a handoff.
+      const userLines = hung.stdin.filter((line) => line.type === 'user').length;
+      expect(await sent(r, 'too soon', 'msg-00003')).toMatchObject({ ok: false, error: { code: 'turn-running' } });
+      expect(await r.host.call('toTerminal', base, 'main')).toMatchObject({ ok: false, error: { code: 'handoff-refused' } });
+      expect(hung.stdin.filter((line) => line.type === 'user')).toHaveLength(userLines);
+      // What the dying agent still asks reopens nothing.
+      hung.canUseTool('req-late', 'Bash', { command: 'rm -r build' }, 'toolu_late');
+      hung.out({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'late' } } });
+      // stdin EOF is ignored: the tree kill follows the backend's grace.
+      result = await settleOnFakeClock(pending);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(result).toEqual({ ok: true, stopped: true });
+    expect(hung.kills).toBe(1);
+    expect(hung.reaped).toContain(pid);
+
+    const session = r.host.sessionForPane(PANE)!;
+    expect(session.busy).toBeFalsy();
+    expect(session.blocks.find((x) => x.role === 'user')).toMatchObject({ text: 'hello', outcome: 'interrupted' });
+    expect(session.blocks.find((x) => x.approval)!.approval!.decided).toBe('cancelled');
+    expect(sessionNeedsInput(session)).toBe(false);
+    expect(session.blocks.some((x) => x.role === 'assistant')).toBe(false);
+    await until(() => r.registry!.list().pending.length === 0);
+    expect(await r.host.call('answer', { ...base, requestId: 'req-9', decision: 'allow' }, 'main')).toMatchObject({ ok: false, error: { code: 'approval-not-found' } });
+    expect(r.host.statusForPane(PANE)).toBe('stopped');
+    expect(r.host.bindingForPane(PANE)!.error).toBeUndefined();
+    // Nothing left to stop.
+    expect(await r.host.call('forceStop', base, 'main')).toEqual({ ok: true, stopped: false });
+
+    // The next send starts a new process on the same conversation.
+    expect(await sent(r, 'carry on', 'msg-00002')).toMatchObject({ ok: true });
+    expect(r.fakes).toHaveLength(2);
+    expect(r.fake().args.join(' ')).toContain(`--resume ${binding.providerSessionId}`);
+    expect(r.host.sessionForPane(PANE)!.blocks.filter((x) => x.role === 'user').map((x) => x.text)).toEqual(['hello', 'carry on']);
+    await r.host.dispose();
+  });
+
+  it('ends the turn even when the process does not exit, refuses sends until it does, and kills it again on a retry', async () => {
+    const r = rig({ stubborn: true });
+    const binding = await created(r);
+    await sent(r);
+    const base = { paneId: PANE, chatSessionId: binding.chatSessionId };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    let result;
+    try {
+      result = await settleOnFakeClock(r.host.call('forceStop', base, 'main'));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(result).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
+    expect(r.host.sessionForPane(PANE)!.busy).toBeFalsy();
+    expect(r.host.sessionForPane(PANE)!.blocks.find((x) => x.role === 'user')!.outcome).toBe('interrupted');
+    expect(await sent(r, 'again', 'msg-00002')).toMatchObject({ ok: false, error: { code: 'driver-failed' } });
+    expect(r.host.statusForPane(PANE)).toBe('failed');
+    // The process that outlived the kill cannot reopen the ended turn.
+    r.fake().canUseTool('req-zombie', 'Bash', { command: 'ls' }, 'toolu_z');
+    r.fake().out({ type: 'stream_event', session_id: 's', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'zombie' } } });
+    await tick(50);
+    expect(r.registry!.list().pending).toHaveLength(0);
+    expect(sessionNeedsInput(r.host.sessionForPane(PANE)!)).toBe(false);
+    expect(r.host.sessionForPane(PANE)!.blocks.some((x) => x.role === 'assistant')).toBe(false);
+    // The retry the error asks for kills it again; this time it dies.
+    r.fake().stubborn = false;
+    const kills = r.fake().kills;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      result = await settleOnFakeClock(r.host.call('forceStop', base, 'main'));
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(result).toEqual({ ok: true, stopped: true });
+    expect(r.fake().kills).toBe(kills + 1);
+    expect(r.host.statusForPane(PANE)).toBe('stopped');
     await r.host.dispose();
   });
 });

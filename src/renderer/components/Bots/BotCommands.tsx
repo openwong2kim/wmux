@@ -111,7 +111,9 @@ export function reviewText(e: BotCommandLogEntry, t: T): string {
   return `${risk}${r.rationale ? ` · ${r.rationale}` : ''}`;
 }
 
-export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: FactoryBotRow; t: T; port?: BotCommandPort }): React.ReactElement | null {
+/** `enabled` / `onEnabledChange`: the switch as a field of a form that saves
+ *  it later (the bot's settings page); absent, the switch saves at once. */
+export function BotCommands({ row, t, port: p = getBotCommandPort(), enabled, onEnabledChange }: { row: FactoryBotRow; t: T; port?: BotCommandPort; enabled?: boolean; onEnabledChange?: (enabled: boolean) => void }): React.ReactElement | null {
   const botId = row.bot.id;
   const view = useBotCommands(botId, p);
   const [shown, setShown] = useState(COMMANDS_PAGE);
@@ -142,11 +144,11 @@ export function BotCommands({ row, t, port: p = getBotCommandPort() }: { row: Fa
         <div className="flex items-center gap-2">
           <span className="min-w-0 flex-1 text-[var(--text-main)]">{t('bots.commands.switch')}</span>
           <Switch
-            checked={view.enabled}
+            checked={enabled ?? view.enabled}
             disabled={busy}
             aria-label={t('bots.commands.switch')}
             data-testid="bot-commands-switch"
-            onCheckedChange={(v) => act(() => p.setEnabled({ botId, enabled: v }), t('bots.commands.switchFailed'))}
+            onCheckedChange={(v) => (onEnabledChange ? onEnabledChange(v) : act(() => p.setEnabled({ botId, enabled: v }), t('bots.commands.switchFailed')))}
           />
         </div>
         <p className="text-[11px] text-[var(--text-muted)]">{t('bots.commands.hint')}</p>

@@ -18,6 +18,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { TERMINAL_WRITE_DELIVERY_BUDGET_MS, terminalStartWindowMs } from '../../../shared/terminalWriteBudget';
 import { TERMINAL_SEND_NEW_TASK_TIMEOUT_MS } from '../../../shared/freshContext';
+import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../shared/folderTrustWording';
 import { sanitizePtyText } from '../../../shared/types';
 import {
   formatBracketedPastePayload,
@@ -70,7 +71,7 @@ import { taskSignedIn } from '../../factory/wakeTaint';
 import { hasRedactedSecrets, redactStoredSecrets } from '../../factory/secretRedaction';
 import type { TaskLedger } from '../../../daemon/ledger/TaskLedger';
 import { STOP_KEYS, nothingToStopMessage } from '../../../shared/stopKeys';
-import { daemonFolderTrustVerdict, folderTrustStops } from '../../folderTrustCheck';
+import { daemonFolderTrustReading, folderTrustStops } from '../../folderTrustCheck';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -922,13 +923,26 @@ export interface ApprovalInputGate {
   /** The pane's visible screen (see ScreenRead). */
   readScreenText: (ptyId: string) => Promise<ScreenRead>;
   /** The daemon's folder-trust verdict from the session's own output, asked
-   *  only when the renderer gave no screen; null when there is none to have
-   *  (no daemon, an older one, a pane main runs itself). */
-  daemonFolderTrust?: (ptyId: string) => Promise<FolderTrustState | null>;
+   *  only when the renderer gave no screen, with its reason tag for an
+   *  'unknown' when it sent one; null when there is none to have (no daemon,
+   *  an older one, a pane main runs itself). `budgetMs`: the daemon's read
+   *  budget for a caller no person waits on (a delivery). */
+  daemonFolderTrust?: (
+    ptyId: string,
+    opts?: { budgetMs?: number },
+  ) => Promise<FolderTrustState | { state: FolderTrustState; reason?: string } | null>;
 }
 
 /** The gate could not decide: a delivery found the screen unreadable (any policy). */
 class ApprovalGateUnavailable extends Error {}
+
+/** A folder-trust verdict, where it was read (see folderTrustUnknownMessage),
+ *  and the daemon's reason tag for an 'unknown' it read. */
+interface FolderTrustRead {
+  verdict: FolderTrustState | null;
+  read: 'screen' | 'parked' | 'output';
+  reason?: string;
+}
 
 /**
  * The folder-trust verdict for a pane: from the screen the renderer read, or,
@@ -936,14 +950,19 @@ class ApprovalGateUnavailable extends Error {}
  * a blank one: an empty buffer or a terminal that failed to hydrate), from
  * the daemon's ring. A read that returned text costs nothing more. With no
  * daemon verdict to have, null: the check stands aside, as before it had a
- * fallback.
+ * fallback. Every caller is a writer no person waits on (an operator's own
+ * input never reaches the check), so the daemon may parse the whole ring:
+ * it reads on the delivery budget.
  */
-async function folderTrustVerdict(gate: ApprovalInputGate, ptyId: string, screen: ScreenRead): Promise<FolderTrustState | null> {
-  if (typeof screen === 'string' && screen.trim() !== '') return folderTrustOnScreen(screen);
-  const verdict = (await gate.daemonFolderTrust?.(ptyId)) ?? null;
+async function folderTrustVerdict(gate: ApprovalInputGate, ptyId: string, screen: ScreenRead): Promise<FolderTrustRead> {
+  if (typeof screen === 'string' && screen.trim() !== '') return { verdict: folderTrustOnScreen(screen), read: 'screen' };
+  const answer = (await gate.daemonFolderTrust?.(ptyId, { budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS })) ?? null;
+  const verdict = typeof answer === 'object' && answer !== null ? answer.state : answer;
+  const parked = typeof screen === 'object' && screen !== null && 'parked' in screen;
   // No daemon verdict for a parked read: its ring text decides, as before.
-  if (verdict === null && typeof screen === 'object' && screen !== null && 'parked' in screen) return folderTrustOnScreen(screen.parked);
-  return verdict;
+  if (verdict === null && parked) return { verdict: folderTrustOnScreen(screen.parked), read: 'screen' };
+  const reason = typeof answer === 'object' && answer !== null ? answer.reason : undefined;
+  return { verdict, read: parked ? 'parked' : 'output', ...(reason ? { reason } : {}) };
 }
 
 /**
@@ -953,15 +972,15 @@ async function folderTrustVerdict(gate: ApprovalInputGate, ptyId: string, screen
  * input already reached the pane.
  */
 function refuseAtFolderTrust(
-  verdict: FolderTrustState | null,
+  { verdict, read, reason }: FolderTrustRead,
   op: string,
   ptyId: string,
   refuseUnknown: boolean,
   stage = '',
 ): void {
-  if (!folderTrustStops(verdict, op, ptyId, refuseUnknown)) return;
+  if (!folderTrustStops(verdict, op, ptyId, refuseUnknown, { reason })) return;
   if (verdict === 'trust') throw new Error(`${folderTrustGateMessage(op, ptyId)}${stage}`);
-  throw new ApprovalGateUnavailable(`${folderTrustUnknownMessage(op, ptyId)}${stage}`);
+  throw new ApprovalGateUnavailable(`${folderTrustUnknownMessage(op, ptyId, read, reason)}${stage}`);
 }
 
 /** What a refusal before any write says. */
@@ -1042,10 +1061,10 @@ async function assertNotTypingAtAnApproval(
 
 /**
  * The gate for a message pasted into a pane and submitted with Enter on a
- * non-operator's behalf: agent-to-agent tasks, company messages, channel
- * mention nudges. Those used to be written by the renderer outside
- * `input.send`, so they never met the raw-input guard above, and an Enter into
- * a pane showing an approval selects its highlighted option.
+ * non-operator's behalf: agent-to-agent tasks and channel mention nudges.
+ * Those used to be written by the renderer outside `input.send`, so they
+ * never met the raw-input guard above, and an Enter into a pane showing an
+ * approval selects its highlighted option.
  *
  * Same guard as `input.send` (pending record, folder-trust prompt, workspace
  * policy, live screen), stricter on one point: an unreadable screen is refused
@@ -1362,10 +1381,10 @@ export function registerInputRpc(
       }),
     daemonFolderTrust:
       deps.daemonFolderTrust ??
-      (async (ptyId) => {
+      (async (ptyId, opts) => {
         // A pty main runs itself (local, pre-adoption) has no daemon ring.
         if (ptyManager.get(ptyId)) return null;
-        return daemonFolderTrustVerdict(getDaemonClient?.(), ptyId);
+        return daemonFolderTrustReading(getDaemonClient?.(), ptyId, opts);
       }),
   };
 

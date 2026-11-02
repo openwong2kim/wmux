@@ -54,6 +54,17 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${OPENCLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" SessionEnd"
+          }
+        ]
+      }
     ]
   }
 }

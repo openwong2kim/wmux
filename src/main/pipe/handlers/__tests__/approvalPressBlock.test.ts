@@ -19,6 +19,7 @@ import type { BrowserWindow } from 'electron';
 import type { PTYManager } from '../../../pty/PTYManager';
 import type { TaskLedger } from '../../../../daemon/ledger/TaskLedger';
 import type { FolderTrustState } from '../../../../daemon/folderTrustState';
+import { FOLDER_TRUST_DELIVERY_BUDGET_MS } from '../../../../shared/folderTrustWording';
 
 vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
 
@@ -51,8 +52,10 @@ const live: {
   policy: AnswerPolicy;
   screen: string | { parked: string } | { deferred: true } | null;
   /** The daemon's verdict from the session's ring (null: none to have), and how often it was asked. */
-  daemonVerdict: FolderTrustState | null;
+  daemonVerdict: FolderTrustState | { state: FolderTrustState; reason?: string } | null;
   daemonAsks: number;
+  /** The read budget each ask named (undefined: the daemon's default). */
+  daemonBudgets: Array<number | undefined>;
   /** Whether main holds a writable pipe to the session (false: a write attaches it first). */
   pipeWritable?: boolean;
   betweenPasteAndEnter?: () => void;
@@ -64,6 +67,7 @@ const live: {
   screen: '',
   daemonVerdict: 'clear',
   daemonAsks: 0,
+  daemonBudgets: [],
 };
 
 /** Claude Code's own permission dialog, as the renderer's screen read shows it. */
@@ -118,8 +122,9 @@ function wire(options: {
         live.afterScreenRead?.();
         return screen;
       },
-      daemonFolderTrust: async () => {
+      daemonFolderTrust: async (_ptyId, opts) => {
         live.daemonAsks++;
+        live.daemonBudgets.push(opts?.budgetMs);
         return live.daemonVerdict;
       },
       // The gap between paste and Enter: tests may redraw the screen in it.
@@ -148,6 +153,7 @@ beforeEach(() => {
   live.screen = '';
   live.daemonVerdict = 'clear';
   live.daemonAsks = 0;
+  live.daemonBudgets = [];
   live.pipeWritable = undefined;
   live.betweenPasteAndEnter = undefined;
   live.afterScreenRead = undefined;
@@ -474,7 +480,7 @@ describe('a terminal_prompt record (the agent\'s own dialog)', () => {
   });
 });
 
-// Non-operator deliveries (A2A, company, channel nudges) are pasted and
+// Non-operator deliveries (A2A, channel nudges) are pasted and
 // submitted by main's gated submit: the input.send guard, before the paste and
 // again before the Enter.
 describe('the gated submit for non-operator deliveries', () => {
@@ -818,6 +824,20 @@ describe('a folder-trust verdict for a pane with no screen', () => {
     expect(w.writes.map((x) => x.data)).toEqual(['\x1b[200~hello\x1b[201~']);
   });
 
+  it("a delivery, and an agent's own text and keys, ask the daemon on a delivery's budget: no person waits on them", async () => {
+    live.policy = { allowed: true };
+    live.screen = '';
+    live.daemonVerdict = 'clear';
+    expect((await asBrain('input.send', { ptyId: 'pty-w', text: 'hello' })).ok).toBe(true);
+    expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' })).ok).toBe(true);
+    const keystrokes = live.daemonBudgets.length;
+    expect(keystrokes).toBeGreaterThan(0);
+    expect(live.daemonBudgets).toEqual(Array(keystrokes).fill(FOLDER_TRUST_DELIVERY_BUDGET_MS));
+    // Before the paste and before the Enter.
+    expect(await w.gatedSubmit('pty-w', 'hi')).toEqual({ ok: true });
+    expect(live.daemonBudgets.slice(keystrokes)).toEqual([FOLDER_TRUST_DELIVERY_BUDGET_MS, FOLDER_TRUST_DELIVERY_BUDGET_MS]);
+  });
+
   it('a delivery to an unreadable screen is refused without asking the daemon', async () => {
     live.screen = null;
     live.daemonVerdict = 'clear';
@@ -839,6 +859,29 @@ describe('a folder-trust verdict for a pane with no screen', () => {
     expect((await asBrain('input.send', { ptyId: 'pty-w', text: 'hello' })).ok).toBe(true);
     live.screen = { parked: (JSON.parse(fs.readFileSync(path.join(TRUST_FIXTURES, 'codex-folder-trust-60x30.json'), 'utf8')) as { screen: string[] }).screen.join('\n') };
     expect((await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' })).ok).toBe(false);
+  });
+
+  it("a parked read's 'unknown' says the pane is not on screen, not that it is too narrow", async () => {
+    live.policy = { allowed: true };
+    live.screen = { parked: '% ' };
+    live.daemonVerdict = 'unknown';
+    const res = await asBrain('input.send', { ptyId: 'pty-w', text: 'hello', submit: true });
+    expect(res.error).toContain('is not on screen (it is stashed, or its workspace was unloaded while hidden)');
+    expect(res.error).not.toContain('wide enough');
+    // A whole read's 'unknown' outlives a timed retry, so the message names what clears it.
+    expect(res.error).toContain('If this repeats, show the pane, or wait until it prints again.');
+    // A read cut at its deadline is tried afresh: a retry may get past it.
+    live.daemonVerdict = { state: 'unknown', reason: 'timeout' };
+    const cut = await asBrain('input.send', { ptyId: 'pty-w', text: 'hello', submit: true });
+    expect(cut.error).toContain('(timeout)');
+    expect(cut.error).toContain('A retry in a few seconds may get past it; if this repeats, show the pane.');
+    live.daemonVerdict = 'unknown';
+    // No screen read at all: the daemon's read of the output is named, not the width.
+    live.screen = null;
+    const unread = await asBrain('input.send', { ptyId: 'pty-w', text: 'hello' });
+    expect(unread.error).toContain('gave no screen to read');
+    expect(unread.error).not.toContain('wide enough');
+    expect(w.writes).toHaveLength(0);
   });
 
   it("the human operator is never asked about, whatever the verdict", async () => {
@@ -875,10 +918,14 @@ describe('a folder-trust verdict for a pane with no screen', () => {
       live.screen = null;
       live.daemonVerdict = 'unknown';
       await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' });
-      const lines = warn.mock.calls.map((args) => args.join(' '));
-      expect(lines).toEqual([
+      // The daemon's reason tag, when it sent one, in the line and the refusal.
+      live.daemonVerdict = { state: 'unknown', reason: 'unseen-cells' };
+      const tagged = await asBrain('input.sendKey', { ptyId: 'pty-w', key: 'enter' });
+      expect(tagged.error).toContain('could not be read whole from its output (unseen-cells), so a folder-trust prompt cannot be ruled out');
+      expect(warn.mock.calls.map((args) => args.join(' '))).toEqual([
         '[folder-trust] refused input.sendKey on pane pty-w: folder-trust trust',
         '[folder-trust] refused input.sendKey on pane pty-w: folder-trust unknown',
+        '[folder-trust] refused input.sendKey on pane pty-w: folder-trust unknown (unseen-cells)',
       ]);
     } finally {
       warn.mockRestore();
@@ -894,14 +941,14 @@ describe('the default screen read and daemon verdict', () => {
   });
 
   function wireDefault(options: { localPty?: boolean; answer?: unknown } = {}) {
-    const asked: Array<{ id: string; timeoutMs: number }> = [];
+    const asked: Array<{ id: string; timeoutMs: number; budgetMs?: number }> = [];
     const writes: string[] = [];
     const dc = {
       isConnected: true,
       rpc: async () => ({ pending: [] }),
       writeToSession: (_id: string, data: string) => { writes.push(data); return true; },
-      folderTrustState: async (id: string, timeoutMs: number) => {
-        asked.push({ id, timeoutMs });
+      folderTrustState: async (id: string, timeoutMs: number, budgetMs?: number) => {
+        asked.push({ id, timeoutMs, budgetMs });
         return options.answer ?? { state: 'trust' };
       },
     };
@@ -917,19 +964,19 @@ describe('the default screen read and daemon verdict', () => {
     return { asked, writes, send };
   }
 
-  it("a deferred read asks the daemon, with a client wait above the daemon's 250 ms budget", async () => {
+  it("a deferred read asks the daemon on a delivery's budget, with a client wait above it", async () => {
     vi.mocked(sendToRenderer).mockImplementation(async (_win, method) =>
       method === 'input.readScreen' ? { ptyId: 'pty-d', text: '', deferred: true } : undefined);
     const { asked, send } = wireDefault();
     const res = await send('input.sendKey', { ptyId: 'pty-d', key: 'escape' });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('folder-trust prompt; answer it in the pane');
-    expect(asked).toEqual([{ id: 'pty-d', timeoutMs: 400 }]);
+    expect(asked).toEqual([{ id: 'pty-d', timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS + 150, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }]);
   });
 
   it.each([
     ['an older daemon', { unavailable: 'daemon predates daemon.folderTrustState' }],
-    ['a daemon that does not answer in time', { unavailable: 'RPC timeout: daemon.folderTrustState (400ms)' }],
+    ['a daemon that does not answer in time', { unavailable: 'RPC timeout: daemon.folderTrustState (1150ms)' }],
   ])('%s gives no verdict: sends pass as before, with one log line', async (_name, answer) => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
@@ -953,7 +1000,7 @@ describe('the default screen read and daemon verdict', () => {
     const { asked, writes, send } = wireDefault();
     const res = await send('input.send', { ptyId: 'pty-p', text: 'hello', submit: true });
     expect(res.error).toContain('folder-trust prompt; answer it in the pane');
-    expect(asked).toEqual([{ id: 'pty-p', timeoutMs: 400 }]);
+    expect(asked).toEqual([{ id: 'pty-p', timeoutMs: FOLDER_TRUST_DELIVERY_BUDGET_MS + 150, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS }]);
     expect(writes).toEqual([]);
   });
 

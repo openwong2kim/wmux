@@ -1274,6 +1274,8 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 .wmux-board-foot-stack > .wmux-board-preview { margin: 0; }
 .wmux-fleet-request { min-width: 0; padding: 10px 14px; border-radius: 10px; background: var(--bg-mantle); font-size: 13px; color: var(--text-main); }
 .wmux-fleet-request h3 { margin: 0 0 4px; font-size: 11px; font-weight: 500; color: var(--text-subtle); }
+/* No question text: the actions (or the prompt's choices) open the block. */
+.wmux-fleet-request > .wmux-fleet-ticket-actions:first-child, .wmux-fleet-request > .wmux-fleet-request-choices:first-child { margin-top: 0; }
 .wmux-fleet-request-text { margin: 0; max-height: 160px; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
 .wmux-fleet-request-text.is-evidence { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; }
 .wmux-fleet-request-choices { margin: 8px 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--text-sub); overflow-wrap: anywhere; }
@@ -1281,6 +1283,12 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
 /* The selection's detail at the foot: the terminal preview and, for a
  * fan-out task, its conversation, side by side when both are open. */
 .wmux-board-foot { flex: none; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; margin: 0 20px 8px; }
+/* While the detail is open the list takes only its rows' height (scrolling
+ * once the page is full), so the detail follows right under its last row
+ * instead of sitting at the page's foot; the space left goes below it. */
+/* The list layout only: Board columns keep the full height. */
+.wmux-board-body:has(> .wmux-fleet-list):has(+ .wmux-board-foot) { flex: 0 1 auto; }
+.wmux-board-body:has(> .wmux-fleet-list) + .wmux-board-foot { margin-bottom: auto; }
 .wmux-board-foot > .wmux-board-preview { margin: 0; max-width: none; }
 .wmux-board-conversation { min-width: 0; padding: 8px 12px; border-radius: 10px; background: var(--bg-mantle); }
 .wmux-board-conversation-log { display: flex; flex-direction: column; gap: 8px; max-height: 260px; overflow-y: auto; outline: none; }
@@ -1903,14 +1911,6 @@ details[open] > .wmux-chatv2-tool-line .wmux-chatv2-chevron { transform: rotate(
   background: color-mix(in srgb, var(--accent-red) 7%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent-red) 28%, transparent);
 }
-.wmux-welcome-sample { display: flex; flex-direction: column; gap: 12px; }
-/* The statusline clip inside the checklist: a short strip anchored to the
- * bottom of the frame, where the statusline sits, so the dialog's actions stay
- * above the fold at 1280x800. */
-.ui-media.wmux-welcome-statusline-clip { aspect-ratio: auto; height: 160px; }
-.ui-media.wmux-welcome-statusline-clip > video,
-.ui-media.wmux-welcome-statusline-clip > img { object-position: bottom center; }
-.wmux-welcome-running-dot { width: 6px; height: 6px; border-radius: 9999px; background: var(--accent-cursor, var(--accent)); }
 /* Agent ready step: the confirmed install line, row actions, the
  * "installed but not found" candidate list and path field. */
 .wmux-agent-setup-line { display: block; margin-top: 6px; padding: 6px 8px; white-space: pre-wrap; }
@@ -2744,8 +2744,7 @@ html[data-glass] .wmux-frame-row > .wmux-shell-body {
 .wmux-git-tab:hover { color: var(--text-main); background: var(--hover-fill); }
 .wmux-git-tab[aria-selected='true'] { color: var(--text-main); font-weight: var(--title-weight, 500); box-shadow: inset 0 -2px 0 var(--accent); }
 /* Worktrees: the secondary tab, set apart by a gap and a hairline, quieter at rest. */
-.wmux-git-tab-aside { position: relative; margin-left: 13px; font-size: 12px; }
-.wmux-git-tab-aside::before { content: ''; position: absolute; left: -8px; top: 10px; bottom: 10px; width: 1px; background: var(--line); }
+.wmux-git-tab-aside { margin-left: 13px; font-size: 12px; }
 .wmux-git-toolbar .ui-segmented { margin-bottom: 4px; }
 .wmux-git-panel { display: flex; flex: 1; min-height: 0; }
 .wmux-git-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 0 32px; }
@@ -2829,8 +2828,8 @@ html[data-glass] .wmux-frame-row > .wmux-shell-body {
 .wmux-git-connect-desc { margin: 0; color: var(--text-sub); }
 .wmux-git-connect-actions { display: flex; gap: 8px; }
 .wmux-git-primary { height: 28px; padding: 0 12px; border-radius: 6px; background: var(--primary-fill); color: var(--primary-ink); font-size: 12px; font-weight: 500; }
-.wmux-git-connect-cmd { display: flex; align-items: center; gap: 8px; }
-.wmux-git-connect-cmd code { font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; color: var(--text-main); }
+.wmux-git-connect-cmd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.wmux-git-connect-cmd code { min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono, ui-monospace, 'SF Mono', Menlo, monospace); font-size: 11px; color: var(--text-main); }
 /* The Git rail icon's signal: red, because a failing check or a conflict is an error. */
 .wmux-sidebar-nav .wmux-nav-count.wmux-nav-alert { background: var(--accent-red); }
 

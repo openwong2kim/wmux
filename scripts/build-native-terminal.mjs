@@ -4,21 +4,18 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { nativeTerminalTarget } from './lib/native-terminal-targets.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const require = createRequire(import.meta.url);
 const cli = path.join(path.dirname(require.resolve('@napi-rs/cli/package.json')), require('@napi-rs/cli/package.json').bin.napi);
-const targets = { 'darwin-arm64': 'aarch64-apple-darwin', 'linux-x64': 'x86_64-unknown-linux-gnu', 'win32-x64': 'x86_64-pc-windows-msvc' };
-const target = targets[`${process.platform}-${process.arch}`];
-if (!target) throw new Error(`Unqualified terminal-core target: ${process.platform}-${process.arch}`);
+const { target, binary } = nativeTerminalTarget(process.platform, process.arch);
 execFileSync(process.execPath, ['scripts/generate-rust-unicode11.mjs', '--check'], { cwd: root, stdio: 'inherit' });
 execFileSync(process.execPath, [cli, 'build', '--manifest-path', './Cargo.toml', '--features', 'native-core',
   '--target', target, '--output-dir', './dist/native-core', '--platform', '--release', '--js', 'index.cjs', '--dts', 'index.d.ts'],
 { cwd: path.join(root, 'core/wmux-term'), stdio: 'inherit' });
 
 const output = path.join(root, 'core/wmux-term/dist/native-core');
-const suffix = { darwin: 'darwin-arm64', linux: 'linux-x64-gnu', win32: 'win32-x64-msvc' }[process.platform];
-const binary = `wmux-term.${suffix}.node`;
 const stage = path.join(root, 'dist/wmux-native');
 fs.mkdirSync(stage, { recursive: true });
 fs.copyFileSync(path.join(output, binary), path.join(stage, binary));

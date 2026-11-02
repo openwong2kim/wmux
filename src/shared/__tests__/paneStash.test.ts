@@ -51,8 +51,8 @@ describe('canStashPaneSurfaces', () => {
     expect(canStashPaneSurfaces(leaf('p', []))).toEqual({ ok: false, reason: 'empty' });
   });
 
-  it('keeps the allow-list to the two types the ring can actually restore', () => {
-    expect([...STASHABLE_SURFACE_TYPES].sort()).toEqual(['browser', 'terminal']);
+  it('keeps the allow-list to the types that come back whole: the ring restores terminals, a browser reloads its URL, a board rereads its data', () => {
+    expect([...STASHABLE_SURFACE_TYPES].sort()).toEqual(['board', 'browser', 'terminal']);
   });
 });
 

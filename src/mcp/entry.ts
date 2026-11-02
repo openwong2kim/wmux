@@ -15,7 +15,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { COMMANDER_MODE_ARG } from '../shared/commanderSurface';
 import { CORE_MODE_ARG } from '../shared/coreSurface';
 import { roleArgValue } from '../shared/roleSurfaces';
-import { botArgValue } from '../shared/bot';
+import { botArgValue, botSurfaceArgValue } from '../shared/bot';
 import { readBotTokenFromArgv } from './botTokenHandoff';
 import { clearClientIdentity } from './wmux-client';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
@@ -33,6 +33,7 @@ async function main(): Promise<void> {
     commanderToken: botRole !== undefined ? readBotTokenFromArgv(process.argv) : process.env.WMUX_COMMANDER_TOKEN,
     commanderMode: process.argv.includes(COMMANDER_MODE_ARG),
     botRole,
+    botSurface: botSurfaceArgValue(process.argv),
     coreMode: process.argv.includes(CORE_MODE_ARG),
     roleSurface: roleArgValue(process.argv),
     callerPid: process.pid,

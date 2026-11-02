@@ -48,6 +48,39 @@ function pick(value: string): void {
 }
 
 describe('Bots profile Engine line', () => {
+  it('My Hermes: lists the owner\'s profiles (one in use disabled), shows its readiness, and saves through main\'s verb', async () => {
+    const setBotEngine = vi.fn(async () => ({ ok: false, code: 'cancelled', message: 'Kept the bot\'s engine.' }));
+    const factoryMyHermes = vi.fn(async (req?: { profile?: string }) => ({
+      supported: true,
+      profiles: [{ name: 'default', dir: '~/.hermes' }, { name: 'coder', dir: '~/.hermes/profiles/coder', usedBy: { botId: 'bot-0000000b', name: 'Bea' } }],
+      ...(req?.profile ? { readiness: { ready: false, reason: 'outdated', version: '0.19.0', notices: [] } } : {}),
+    }));
+    vi.stubGlobal('electronAPI', { factory: { setBotEngine, factoryMyHermes } });
+    act(() => root.render(<BotEngineLine row={row({ kind: 'claude-sdk' })} t={t} />));
+    await flush();
+    const options = [...host.querySelectorAll('option')].map((o) => [o.value, o.textContent, o.disabled]);
+    expect(options).toContainEqual(['my-hermes:default', 'My Hermes (~/.hermes)', false]);
+    expect(options).toContainEqual(['my-hermes:coder', 'My Hermes (~/.hermes/profiles/coder) — used by Bea', true]);
+    // Listing the profiles runs no Hermes check.
+    expect(factoryMyHermes).toHaveBeenCalledWith(undefined);
+    pick('my-hermes:default');
+    await flush();
+    expect(factoryMyHermes).toHaveBeenLastCalledWith({ profile: 'default' });
+    expect(q('[data-bots-my-hermes-readiness="outdated"]')?.textContent).toContain('Update Hermes with `hermes update`');
+    await act(async () => { q('[data-testid="bots-profile-engine-switch-confirm"]')!.click(); });
+    expect(setBotEngine).toHaveBeenCalledWith('bot-0000000a', 'my-hermes', 'default');
+    // A no in main's confirm says nothing.
+    expect(q('[role="alert"]')).toBeNull();
+  });
+
+  it('on Windows My Hermes is listed disabled with one line why', async () => {
+    vi.stubGlobal('electronAPI', { factory: { setBotEngine: vi.fn(), factoryMyHermes: vi.fn(async () => ({ supported: false, profiles: [] })) } });
+    act(() => root.render(<BotEngineLine row={row({ kind: 'claude-sdk' })} t={t} />));
+    await flush();
+    expect(q<HTMLOptionElement>('option[value="my-hermes:default"]')?.disabled).toBe(true);
+    expect(q('[data-bots-my-hermes-unsupported]')?.textContent).toBe('My Hermes works on macOS and Linux in this version.');
+  });
+
   it('picking Hermes shows its readiness, then switches with setBotEngine; back to Claude saves at once', async () => {
     const setBotEngine = vi.fn(async (_botId: string, engine: string) => (engine === 'hermes' ? { ok: true } : { ok: false, message: 'refused by main' }));
     const factoryHermesReadiness = vi.fn(async () => ({ ready: true, version: '0.22.6' }));

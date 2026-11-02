@@ -5,10 +5,10 @@ export const ms = {
   // Sidebar
   'sidebar.workspaces': 'Ruang kerja',
   'sidebar.newWorkspace': 'Ruang kerja baharu',
-  'sidebar.newWorkspaceTooltip': 'Ruang kerja baharu (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Ruang kerja baharu',
   'sidebar.newRemoteWorkspace': 'Ruang kerja baharu di {name}',
-  'sidebar.hideTooltip': 'Sembunyikan bar sisi (Ctrl+B)',
-  'sidebar.expandTooltip': 'Kembangkan bar sisi (Ctrl+B)',
+  'sidebar.hideTooltip': 'Sembunyikan bar sisi',
+  'sidebar.expandTooltip': 'Kembangkan bar sisi',
   'sidebar.unreadCount': '{count} belum dibaca',
 
   // Workspace
@@ -17,7 +17,6 @@ export const ms = {
   'workspace.agentError': 'Ralat ejen',
   'workspace.agentWaiting': 'Ejen menunggu',
 
-  'workspace.agentAwaitingInput': 'Ejen perlukan input',
   'workspace.needsYou': 'Menunggu anda',
   'workspace.agentIdle': 'Ejen melahu',
   'workspace.agentUnverifiable': 'Tiada kemas kini selama {time}',
@@ -66,9 +65,9 @@ export const ms = {
 
   // Search
   'search.placeholder': 'Cari...',
-  'search.prevTooltip': 'Hasil sebelumnya (Shift+Enter)',
-  'search.nextTooltip': 'Hasil seterusnya (Enter)',
-  'search.closeTooltip': 'Tutup (ESC)',
+  'search.prevTooltip': 'Hasil sebelumnya',
+  'search.nextTooltip': 'Hasil seterusnya',
+  'search.closeTooltip': 'Tutup',
   'search.regexTooltip': 'Guna ungkapan biasa',
   'search.allPanes': 'Semua panel',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const ms = {
   'notification.markAllRead': 'Tanda semua dibaca',
   'notification.clear': 'Kosongkan',
   'notification.empty': 'Tiada pemberitahuan',
-  'notification.toggle': 'Ctrl+I untuk togol',
+  'notification.toggle': '{key} untuk togol',
+  'notification.needsYou.question': "Menunggu anda: “{question}”",
+  'notification.needsYou.noQuestion': "Menunggu anda. Tiada teks soalan; lihat terminalnya.",
+  'notification.needsYou.over': "Tidak lagi menunggu anda.",
 
   // Command palette
   'palette.placeholder': 'Taip arahan...',
@@ -96,7 +98,7 @@ export const ms = {
   'palette.close': 'tutup',
   'palette.cmd.toggleSidebar': 'Togol bar sisi',
   'palette.cmd.newWorkspace': 'Ruang kerja baharu',
-  'palette.cmd.newSurface': 'Permukaan baharu',
+  'palette.cmd.newSurface': 'Tab baharu',
   'palette.cmd.splitRight': 'Bahagi ke kanan',
   'palette.cmd.splitDown': 'Bahagi ke bawah',
   'palette.cmd.stashPane': 'Ketepikan panel (sesi terus berjalan)',
@@ -106,7 +108,7 @@ export const ms = {
   'palette.cmd.saveLayout': 'Simpan susun atur semasa sebagai templat',
   'palette.cmd.layoutPrefix': 'Susun atur: ',
   'palette.catWorkspace': 'Ruang kerja',
-  'palette.catSurface': 'Permukaan',
+  'palette.catSurface': 'Tab',
   'palette.catCommand': 'Arahan',
   'palette.catRecent': 'Terkini',
 
@@ -246,8 +248,6 @@ export const ms = {
   'viCopy.visual': '-- VISUAL --',
 
   // StatusBar
-  'statusBar.company': 'SYARIKAT',
-  'statusBar.session': 'Sesi: {min} min',
   'statusBar.settingsTooltip': 'Tetapan (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const ms = {
   'settings.checkFailed': 'Pemeriksaan gagal',
   'settings.unknownError': 'Ralat tidak diketahui',
   'settings.notificationBehavior': 'Kelakuan pemberitahuan',
-  'settings.soundDesc': 'Web Audio API — tiada fail luar diperlukan',
+  'settings.soundDesc': 'Memainkan nada pendek terbina dalam apabila pemberitahuan tiba.',
   'settings.toast': 'Pemberitahuan toast',
   'settings.toastDesc': 'Tunjuk toast tindanan apabila ejen selesai',
   'settings.ring': 'Animasi cincin',
   'settings.ringDesc': 'Denyut sempadan pada panel dengan pemberitahuan belum dibaca',
   'settings.sc.toggleSidebar': 'Togol bar sisi',
-  'settings.sc.splitHorizontal': 'Bahagi mendatar',
-  'settings.sc.splitVertical': 'Bahagi menegak',
+  'settings.sc.splitHorizontal': 'Bahagi ke kanan',
+  'settings.sc.splitVertical': 'Bahagi ke bawah',
   'settings.sc.newWorkspace': 'Ruang kerja baharu',
   'settings.sc.closeSurface': 'Tutup tab aktif',
   'settings.sc.closePane': 'Tutup panel terbahagi',
@@ -406,8 +406,8 @@ export const ms = {
   'settings.prefixAddBinding': 'Tambah pengikatan',
   'settings.prefixReset': 'Set semula ke lalai',
   'settings.prefixResetConfirm': 'Set semula semua tetapan awalan ke lalai?',
-  'settings.prefix.splitHorizontal': 'Bahagi mendatar',
-  'settings.prefix.splitVertical': 'Bahagi menegak',
+  'settings.prefix.splitHorizontal': 'Bahagi ke kanan',
+  'settings.prefix.splitVertical': 'Bahagi ke bawah',
   'settings.prefix.closePane': 'Tutup panel',
   'settings.prefix.newWorkspace': 'Ruang kerja baharu',
   'settings.prefix.nextWorkspace': 'Ruang kerja seterusnya',
@@ -482,16 +482,16 @@ export const ms = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Penyepaduan Claude',
-  'claudeIntegration.signalHealth.title': 'Kesihatan isyarat pemalam',
+  'claudeIntegration.signalHealth.title': 'Plugin Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'Status pemalam: belum diperhatikan. Pasang dengan arahan di bawah dalam Claude Code. wmux akan mengesahkan pengesanan sebaik sahaja hook pertama dicetuskan.',
+    'Belum ada isyarat daripada plugin wmux. Jalankan arahan pasang di bawah dalam Claude Code; ini dikemas kini apabila plugin melapor buat kali pertama.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Isyarat terakhir {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Kependaman P50 {p50}ms · P95 {p95}ms · {count} sampel',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Padanan ruang kerja: {matched}/{total} hook dipadankan ke panel wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'Status pemalam: basi. Hook terakhir tiba {rel} — pemalam mungkin telah berhenti dicetuskan atau Claude Code sedang tidak aktif.',
+    'Isyarat terakhir plugin ialah {rel}. Ia mungkin telah berhenti, atau Claude Code sedang melahu.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Salin arahan pemasangan',
   'claudeIntegration.signalHealth.copySuccess': 'Disalin — tampal ke dalam Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Gagal menyalin — papan keratan dikunci',
@@ -499,7 +499,7 @@ export const ms = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Meter penggunaan Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Membaca penggunaan anda daripada titik akhir penggunaan Anthropic setiap 15 minit dengan log masuk Claude Code anda (token OAuth dalam storan tempatan). Ia hanya membaca penggunaan — tiada permintaan model dihantar dan tiada kuota digunakan. Token tidak pernah ditulis semula, tidak pernah dilog, hanya dihantar ke api.anthropic.com.',
+    'Membaca penggunaan anda daripada titik akhir penggunaan Anthropic setiap 15 minit dengan log masuk Claude Code anda. Ia hanya membaca penggunaan — tiada permintaan model dihantar dan tiada kuota digunakan. Token tidak pernah ditulis semula, tidak pernah dilog, hanya dihantar ke api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Tunjukkan penggunaan 5h / 7d dalam bar status',
   'claudeIntegration.usage.refreshButton': 'Segar semula sekarang',
   'claudeIntegration.usage.refreshCooldown': 'Segar semula tersedia dalam {seconds}s',
@@ -641,6 +641,7 @@ export const ms = {
   'pcSwitcher.manage': "Tetapan {name}",
   'app.portableData.notice': "Salinan wmux ini berjalan di luar Aplikasi, jadi ia menggunakan data berasingan. Alihkannya ke Aplikasi untuk melihat sesi sedia ada anda.",
   'pcSwitcher.othersNeedYou': "{count} menunggu anda di komputer lain",
+  'pcSwitcher.othersNeedYouOne': '{count} menunggu anda di komputer lain',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Keluar daripada wmux dan hentikan semua sesi?",
   'quitAndStop.detail': "Sedang berjalan: {agents} sesi ejen, jumlah {sessions} terminal. Semuanya akan dihentikan. Keluar biasa membiarkannya terus berjalan di latar belakang.",

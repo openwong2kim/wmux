@@ -233,6 +233,16 @@ export class ChatV2Controller {
     return result.ok ? result.interrupted : this.fail(result.error);
   }
 
+  /** For a turn that ignored Stop (`view.session.stopOverdue`): end it and stop the agent process. */
+  async forceStop(): Promise<boolean> {
+    const view = this.state.view;
+    if (!view) return false;
+    this.set({ error: null });
+    const result = await this.bridge.call('forceStop', { paneId: this.paneId, chatSessionId: view.binding.chatSessionId, epoch: view.epoch });
+    if (this.disposed) return false;
+    return result.ok ? result.stopped : this.fail(result.error);
+  }
+
   async answer(requestId: string, decision: 'allow' | 'deny', answers?: Array<{ keys: string[]; other?: string }>): Promise<boolean> {
     const view = this.state.view;
     if (!view) return false;

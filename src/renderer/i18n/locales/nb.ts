@@ -5,10 +5,10 @@ export const nb = {
   // Sidebar
   'sidebar.workspaces': 'Arbeidsområder',
   'sidebar.newWorkspace': 'Nytt arbeidsområde',
-  'sidebar.newWorkspaceTooltip': 'Nytt arbeidsområde (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Nytt arbeidsområde',
   'sidebar.newRemoteWorkspace': 'Nytt arbeidsområde på {name}',
-  'sidebar.hideTooltip': 'Skjul sidepanel (Ctrl+B)',
-  'sidebar.expandTooltip': 'Vis sidepanel (Ctrl+B)',
+  'sidebar.hideTooltip': 'Skjul sidepanel',
+  'sidebar.expandTooltip': 'Vis sidepanel',
   'sidebar.unreadCount': '{count} uleste',
 
   // Workspace
@@ -17,7 +17,6 @@ export const nb = {
   'workspace.agentError': 'Agentfeil',
   'workspace.agentWaiting': 'Agent venter',
 
-  'workspace.agentAwaitingInput': 'Agent venter på input',
   'workspace.needsYou': 'Venter på deg',
   'workspace.agentIdle': 'Agent inaktiv',
   'workspace.agentUnverifiable': 'Ingen oppdatering på {time}',
@@ -66,9 +65,9 @@ export const nb = {
 
   // Search
   'search.placeholder': 'Søk...',
-  'search.prevTooltip': 'Forrige treff (Shift+Enter)',
-  'search.nextTooltip': 'Neste treff (Enter)',
-  'search.closeTooltip': 'Lukk (ESC)',
+  'search.prevTooltip': 'Forrige treff',
+  'search.nextTooltip': 'Neste treff',
+  'search.closeTooltip': 'Lukk',
   'search.regexTooltip': 'Bruk regulært uttrykk',
   'search.allPanes': 'Alle paneler',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const nb = {
   'notification.markAllRead': 'Merk alle som lest',
   'notification.clear': 'Tøm',
   'notification.empty': 'Ingen varsler',
-  'notification.toggle': 'Ctrl+I for å veksle',
+  'notification.toggle': '{key} for å veksle',
+  'notification.needsYou.question': "Venter på deg: «{question}»",
+  'notification.needsYou.noQuestion': "Venter på deg. Ingen spørsmålstekst; se terminalen.",
+  'notification.needsYou.over': "Venter ikke lenger på deg.",
 
   // Command palette
   'palette.placeholder': 'Skriv en kommando...',
@@ -96,7 +98,7 @@ export const nb = {
   'palette.close': 'lukk',
   'palette.cmd.toggleSidebar': 'Veksle sidepanel',
   'palette.cmd.newWorkspace': 'Nytt arbeidsområde',
-  'palette.cmd.newSurface': 'Ny overflate',
+  'palette.cmd.newSurface': 'Ny fane',
   'palette.cmd.splitRight': 'Del til høyre',
   'palette.cmd.splitDown': 'Del nedover',
   'palette.cmd.stashPane': 'Legg panelet til side (økten fortsetter å kjøre)',
@@ -106,7 +108,7 @@ export const nb = {
   'palette.cmd.saveLayout': 'Lagre gjeldende oppsett som mal',
   'palette.cmd.layoutPrefix': 'Oppsett: ',
   'palette.catWorkspace': 'Arbeidsområde',
-  'palette.catSurface': 'Overflate',
+  'palette.catSurface': 'Fane',
   'palette.catCommand': 'Kommando',
   'palette.catRecent': 'Nylige',
 
@@ -246,8 +248,6 @@ export const nb = {
   'viCopy.visual': '-- VISUELL --',
 
   // StatusBar
-  'statusBar.company': 'SELSKAP',
-  'statusBar.session': 'Økt: {min} min',
   'statusBar.settingsTooltip': 'Innstillinger (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const nb = {
   'settings.checkFailed': 'Sjekk mislyktes',
   'settings.unknownError': 'Ukjent feil',
   'settings.notificationBehavior': 'Varselatferd',
-  'settings.soundDesc': 'Web Audio API — ingen ekstern fil nødvendig',
+  'settings.soundDesc': 'Spiller en kort innebygd tone når et varsel kommer.',
   'settings.toast': 'Toast-varsler',
   'settings.toastDesc': 'Vis toast når agenten er ferdig',
   'settings.ring': 'Kantanimasjon',
   'settings.ringDesc': 'Pulserende kant på paneler med uleste varsler',
   'settings.sc.toggleSidebar': 'Veksle sidepanel',
-  'settings.sc.splitHorizontal': 'Del horisontalt',
-  'settings.sc.splitVertical': 'Del vertikalt',
+  'settings.sc.splitHorizontal': 'Del til høyre',
+  'settings.sc.splitVertical': 'Del nedover',
   'settings.sc.newWorkspace': 'Nytt arbeidsområde',
   'settings.sc.closeSurface': 'Lukk aktiv fane',
   'settings.sc.closePane': 'Lukk delt panel',
@@ -406,8 +406,8 @@ export const nb = {
   'settings.prefixAddBinding': 'Legg til binding',
   'settings.prefixReset': 'Tilbakestill til standard',
   'settings.prefixResetConfirm': 'Tilbakestille alle prefiksinnstillinger til standard?',
-  'settings.prefix.splitHorizontal': 'Del horisontalt',
-  'settings.prefix.splitVertical': 'Del vertikalt',
+  'settings.prefix.splitHorizontal': 'Del til høyre',
+  'settings.prefix.splitVertical': 'Del nedover',
   'settings.prefix.closePane': 'Lukk panel',
   'settings.prefix.newWorkspace': 'Nytt arbeidsområde',
   'settings.prefix.nextWorkspace': 'Neste arbeidsområde',
@@ -482,16 +482,16 @@ export const nb = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude-integrasjon',
-  'claudeIntegration.signalHealth.title': 'Signaltilstand for programtillegg',
+  'claudeIntegration.signalHealth.title': 'Claude Code-tillegg',
   'claudeIntegration.signalHealth.unknownBody':
-    'Status for programtillegg: ikke observert ennå. Installer med kommandoen nedenfor i Claude Code. wmux bekrefter oppdagelse så snart den første kroken utløses.',
+    'Ingen signal fra wmux-tillegget ennå. Kjør installasjonskommandoen nedenfor i Claude Code; dette oppdateres når tillegget melder seg første gang.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Siste signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Forsinkelse P50 {p50}ms · P95 {p95}ms · {count} prøver',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Treff på arbeidsområde: {matched}/{total} kroker løst til et wmux-panel',
   'claudeIntegration.signalHealth.staleBody':
-    'Status for programtillegg: foreldet. Siste krok kom {rel} — programtillegget kan ha sluttet å utløses, eller Claude Code er inaktiv.',
+    'Tilleggets siste signal var {rel}. Det kan ha stoppet, eller Claude Code er inaktiv.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Kopier installasjonskommando',
   'claudeIntegration.signalHealth.copySuccess': 'Kopiert — lim inn i Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Kopiering mislyktes — utklippstavlen er låst',
@@ -499,7 +499,7 @@ export const nb = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic-bruksmåler (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Leser forbruket ditt fra Anthropics forbruksendepunkt hvert 15. minutt med Claude Code-innloggingen din (OAuth-tokenet i lokal lagring). Den leser bare forbruk — ingen modellforespørsel sendes og ingen kvote brukes. Tokenet skrives aldri tilbake, logges aldri, og sendes bare til api.anthropic.com.',
+    'Leser forbruket ditt fra Anthropics forbruksendepunkt hvert 15. minutt med Claude Code-innloggingen din. Den leser bare forbruk — ingen modellforespørsel sendes og ingen kvote brukes. Tokenet skrives aldri tilbake, logges aldri, og sendes bare til api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Vis 5h / 7d-utnyttelse i statuslinjen',
   'claudeIntegration.usage.refreshButton': 'Oppdater nå',
   'claudeIntegration.usage.refreshCooldown': 'Oppdatering tilgjengelig om {seconds}s',
@@ -640,6 +640,7 @@ export const nb = {
   'pcSwitcher.manage': "Innstillinger for {name}",
   'app.portableData.notice': "Denne kopien av wmux kjører utenfor Programmer, så den bruker egne data. Flytt den til Programmer for å se de eksisterende øktene dine.",
   'pcSwitcher.othersNeedYou': "{count} venter på deg på andre datamaskiner",
+  'pcSwitcher.othersNeedYouOne': '{count} venter på deg på en annen datamaskin',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Avslutt wmux og stopp alle økter?",
   'quitAndStop.detail': "Agentøkter som kjører: {agents}. Terminaler totalt: {sessions}. Alle blir stoppet. Vanlig Avslutt lar dem kjøre videre i bakgrunnen.",

@@ -28,6 +28,7 @@ import {
   CHATV2_PERSIST_DEBOUNCE_MS,
   CHATV2_ANSWER_ARM_MS,
   CHATV2_SEND_LEDGER_MAX,
+  CHATV2_STOP_GRACE_MS,
   truncateUtf8,
   utf8Bytes,
 } from '../../../shared/chatv2/limits';
@@ -151,6 +152,16 @@ interface Live {
   batchBase: Session;
   persistTimer: ReturnType<typeof setTimeout> | null;
   lastBindingKey: string;
+  /** Armed by the first Stop of a turn: stamps `stop.overdue` if the turn is still open at CHATV2_STOP_GRACE_MS. */
+  stopTimer: ReturnType<typeof setTimeout> | null;
+  /** A force stop is running: no turn starts, and no second force stop, until it ends. */
+  forceStopping: boolean;
+  /**
+   * The driver a force stop ended the turn of, until its process is gone:
+   * what it still says is dropped, its exit aside, even after a kill that
+   * did not see it exit.
+   */
+  supersededDriver: ChatV2Driver | null;
   /** The pid of the last driver spawned, kept after a failed start: a rollback proves it exited first. */
   lastPid?: number;
   /** The last driver's `marker`, kept with lastPid. */
@@ -347,6 +358,7 @@ class Host implements ChatV2Host {
     if (timer) clearTimeout(timer);
     for (const live of lives) {
       if (live.persistTimer) clearTimeout(live.persistTimer);
+      this.clearStopTimer(live);
       live.batcher.dispose();
     }
   }
@@ -503,6 +515,7 @@ class Host implements ChatV2Host {
     },
     send: (p) => this.send(p),
     interrupt: (p) => this.interrupt(p),
+    forceStop: (p) => this.forceStop(p),
     answer: (p) => this.answer(p),
     bodies: async (p) => this.bodies(p),
     toTerminal: (p) => this.toTerminal(p),
@@ -673,6 +686,7 @@ class Host implements ChatV2Host {
     if (sessionNeedsInput(live.record.session)) return chatV2Error('needs-input', 'Answer the pending request first.');
     if (live.record.session.busy || live.sending || live.starting) return chatV2Error('turn-running', 'The agent is still working.');
     if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
+    if (live.forceStopping) return chatV2Error('turn-running', 'The agent is being stopped.');
     const attachments = this.checkAttachments(attachmentPaths);
     if (!attachments) return chatV2Error('attachment-refused', 'An attachment could not be used.');
     live.sending = true;
@@ -730,11 +744,96 @@ class Host implements ChatV2Host {
     if (p.epoch !== undefined && p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
     if (!live.driver || !live.record.session.busy) return { ok: true, interrupted: false };
     if (p.turnId !== undefined && openTurnId(live.record.session) !== p.turnId) return { ok: true, interrupted: false };
+    // Armed whatever the agent says: a turn the host holds open must end, or be offered a force stop.
+    this.armStopTimer(live);
     try {
       return { ok: true, interrupted: await live.driver.interrupt() };
     } catch {
       return chatV2Error('driver-failed', 'The agent did not take the stop request.');
     }
+  }
+
+  // Mirrors T3 Code's unresponsive-interrupt mark and force stop (MIT, see THIRD_PARTY_NOTICES).
+  /**
+   * Start the stop grace period for the open turn (a repeated Stop keeps the
+   * first deadline). Past it, a turn still open is marked `stop.overdue`.
+   */
+  private armStopTimer(live: Live): void {
+    if (live.stopTimer) return;
+    const turnId = openTurnId(live.record.session);
+    live.stopTimer = setTimeout(() => {
+      live.stopTimer = null;
+      const { session } = live.record;
+      if (live.closed || !session.busy || session.stopOverdue || openTurnId(session) !== turnId) return;
+      // Behind any driver output still queued, so a turn end already on its way wins.
+      this.enqueue(live, { kind: 'stamp', event: { type: 'stop.overdue' } });
+    }, CHATV2_STOP_GRACE_MS);
+    live.stopTimer.unref?.();
+  }
+
+  private clearStopTimer(live: Live): void {
+    if (!live.stopTimer) return;
+    clearTimeout(live.stopTimer);
+    live.stopTimer = null;
+  }
+
+  /**
+   * Stop for an agent that ignores `interrupt`: the open turn ends as
+   * interrupted first (so the driver's exit folds as a no-op, not `failed`),
+   * its decisions are settled, then the driver's process tree is stopped the
+   * way close does it. The record stays; the next send starts a driver that
+   * resumes the conversation (startDriver).
+   */
+  private async forceStop(p: ChatV2ParamsByMethod['forceStop']): Promise<Result<'forceStop'>> {
+    const live = this.liveFor(p.paneId, p.chatSessionId);
+    if (!live) return chatV2Error('session-not-found', 'No chat for this pane.');
+    if (p.epoch !== undefined && p.epoch !== live.epoch) return chatV2Error('stale-epoch', 'The transcript changed; load it again.');
+    // Not `stopped: false`: the turn is not over yet, so the view keeps offering the force stop.
+    if (live.forceStopping) return chatV2Error('turn-running', 'The agent is already being stopped.');
+    // A turn already ended by an earlier force stop whose process did not exit: kill it again.
+    const retry = !live.record.session.busy && live.unreaped && !!live.driver;
+    if (!live.record.session.busy && !retry) return { ok: true, stopped: false };
+    if (!retry && p.turnId !== undefined && openTurnId(live.record.session) !== p.turnId) return { ok: true, stopped: false };
+    // send() is between its user turn and the driver write: its own failure path would end the turn.
+    if (live.sending) return chatV2Error('turn-running', 'The message is still being sent. Try again in a moment.');
+    this.deps.log('info', `[chatv2] force stopping the turn on ${live.record.paneId}`);
+    this.clearStopTimer(live);
+    live.forceStopping = true;
+    const driver = live.driver;
+    live.supersededDriver = driver;
+    const held = [...live.decisions.values()];
+    let stopped: boolean;
+    try {
+      if (!retry) {
+        // The turn's cards and question settle as cancelled, as when the agent drops them.
+        for (const h of held) {
+          this.enqueue(live, {
+            kind: 'stamp',
+            event: h.kind === 'permission'
+              ? { type: 'approval.resolved', requestId: h.requestId, decision: 'cancelled' }
+              : { type: 'question.resolved', requestId: h.requestId, decision: 'cancelled' },
+          });
+        }
+        this.enqueue(live, { kind: 'stamp', event: { type: 'turn.ended', outcome: 'interrupted' } });
+        // Off the books before the stop's wait, so no answer reaches the agent meanwhile.
+        await this.expireDecisions(live, 'turn-ended');
+      }
+      stopped = await this.stopDriver(live);
+      await live.drained;
+      // Decisions that were still being recorded when the turn ended: their
+      // registry cards may have been made after the expiry above. No other
+      // driver can have raised one: no turn starts while this runs.
+      if (live.driver === null || live.driver === driver) await this.expireDecisions(live, 'turn-ended');
+      const registry = this.deps.approvals();
+      for (const h of held) {
+        if (h.registryId) await registry?.expireNative(live.record.paneId, h.native, 'turn-ended').catch(() => undefined);
+      }
+    } finally {
+      live.forceStopping = false;
+    }
+    await this.persistNow(live);
+    if (!stopped) return chatV2Error('driver-failed', 'The agent did not exit. Try again.');
+    return { ok: true, stopped: true };
   }
 
   private async answer(p: ChatV2ParamsByMethod['answer']): Promise<Result<'answer'>> {
@@ -807,7 +906,7 @@ class Host implements ChatV2Host {
     if (handedOff) return handedOff;
     if (!CHATV2_AGENT_CAPS[live.record.agent].terminalHandoff) return chatV2Error('handoff-refused', 'Only a Claude chat can continue in the terminal.');
     const { session } = live.record;
-    if (session.busy || sessionNeedsInput(session) || live.sending || live.starting) {
+    if (session.busy || sessionNeedsInput(session) || live.sending || live.starting || live.forceStopping) {
       return chatV2Error('handoff-refused', 'The agent is still working. Stop the turn first.');
     }
     const current = live;
@@ -962,6 +1061,7 @@ class Host implements ChatV2Host {
   /** A tombstone another record replaced: off the pane and out of the store. */
   private async retire(live: Live): Promise<void> {
     live.closed = true;
+    this.clearStopTimer(live);
     live.batcher.dispose();
     if (live.persistTimer) clearTimeout(live.persistTimer);
     await live.saveChain;
@@ -1150,6 +1250,7 @@ class Host implements ChatV2Host {
       return chatV2Error('driver-failed', 'The agent did not stop. Try again.');
     }
     await this.expireDecisions(live, 'session-start');
+    this.clearStopTimer(live);
     live.batcher.flush();
     if (live.persistTimer) clearTimeout(live.persistTimer);
     live.batcher.dispose();
@@ -1221,6 +1322,9 @@ class Host implements ChatV2Host {
       batchBase: record.session,
       persistTimer: null,
       lastBindingKey: '',
+      stopTimer: null,
+      forceStopping: false,
+      supersededDriver: null,
       driverTag: newEpoch(),
     };
     live.lastBindingKey = this.bindingKey(this.binding(live));
@@ -1235,6 +1339,7 @@ class Host implements ChatV2Host {
     const handedOff = handedOffRefusal(record);
     if (handedOff) return handedOff;
     if (live.unreaped) return chatV2Error('driver-failed', 'The last agent process has not exited yet.');
+    if (live.forceStopping) return chatV2Error('turn-running', 'The agent is being stopped.');
     // Only a pid this start spawns may decide a rollback (dropFailedStart).
     live.lastPid = undefined;
     live.lastMarker = undefined;
@@ -1376,6 +1481,7 @@ class Host implements ChatV2Host {
 
   /** The driver's process is gone (exit or stop). */
   private onDriverGone(live: Live, driver: ChatV2Driver, code: number | null | undefined): void {
+    if (live.supersededDriver === driver) live.supersededDriver = null;
     if (live.driver !== driver) return;
     live.driver = null;
     live.exitPending = false;
@@ -1392,6 +1498,12 @@ class Host implements ChatV2Host {
 
   private enqueue(live: Live, item: InboxItem): void {
     if (live.closed && item.kind !== 'exited') return;
+    // The turn already ended as interrupted: nothing the dying agent says may reopen it.
+    if (live.supersededDriver && (item.kind === 'decision' || item.kind === 'event') && item.driver === live.supersededDriver
+      && !(item.kind === 'event' && item.event.type === 'session.ended')) {
+      if (item.kind === 'decision') void item.driver.answer(item.decision.requestId, { decision: 'deny', formKind: item.decision.kind }).catch(() => 'unavailable');
+      return;
+    }
     if ((item.kind === 'exited' || (item.kind === 'event' && item.event.type === 'session.ended')) && item.driver === live.driver) {
       live.exitPending = true;
     }
@@ -1586,6 +1698,7 @@ class Host implements ChatV2Host {
     switch (event.type) {
       case 'turn.ended':
       case 'session.ended':
+        this.clearStopTimer(live);
         // Harvest now, while the shadow still holds the full values; the
         // write itself is queued.
         this.harvestBodies(live);

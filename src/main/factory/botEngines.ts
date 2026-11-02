@@ -27,7 +27,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { app } from 'electron';
-import { isHermesEngine, type BotBinding, type BotEngine, type BotProfile } from '../../shared/bot';
+import { isHermesEngine, isOwnHermesEngine, ownHermesProfile, type BotBinding, type BotEngine, type BotProfile } from '../../shared/bot';
 import { CLAUDE_EFFORT_LEVELS, type ClaudeEffort } from '../../shared/claudeModels';
 import { validateBotBrainModel } from '../../shared/fanoutPreset';
 import type { BrainAdapter } from '../deck/BrainAdapter';
@@ -40,7 +40,8 @@ import { recordBotAuthSource, resolveBotClaudeAuth, type BotClaudeAuth } from '.
 import { markBotExecFailed, probeBotExecSupport, type BotExecSupport } from './botExecSandbox';
 import { getFactorySettings } from './factorySettings';
 import { getHermesHost, type HermesHost } from './hermesHost';
-import { HERMES_NOT_READY_LEAD } from './engineError';
+import { HERMES_NOT_READY_LEAD, MY_HERMES_UNAVAILABLE_MESSAGE } from './engineError';
+import { getOwnHermesHost, type OwnHermesHost } from './myHermesHost';
 
 export interface BotEngineSpawnInput {
   profile: BotProfile;
@@ -131,6 +132,10 @@ export interface DefaultBotEngineDeps {
   commandReviewer?: () => boolean;
   /** The Hermes engine host (default getHermesHost). */
   hermes?: () => HermesHost;
+  /** The own-mode host of a Hermes profile (default getOwnHermesHost). */
+  ownHermes?: (profile: string) => OwnHermesHost;
+  /** The OS My Hermes reads as (default process.platform; v1: macOS, Linux). */
+  platform?: NodeJS.Platform;
 }
 
 /** ACP bots may start: an unpackaged build on isolated data (a test
@@ -168,6 +173,8 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
   const execSupport = deps.execSupport ?? ((exe: string | null) => probeBotExecSupport(exe));
   const commandReviewer = deps.commandReviewer ?? (() => getFactorySettings().botCommandReviewer);
   const hermesHost = deps.hermes ?? getHermesHost;
+  const ownHermesHost = deps.ownHermes ?? ((profile: string) => getOwnHermesHost(profile));
+  const platform = deps.platform ?? process.platform;
   const refuse = (message: string): BotEngineSpawn => ({ ok: false, code: 'engine_unavailable', message });
 
   return (input) => {
@@ -216,6 +223,22 @@ export function createDefaultBotEngineFactory(deps: DefaultBotEngineDeps = {}): 
         };
       }
       case 'acp': {
+        // My Hermes: the owner's own Hermes profile, on its own host
+        // (myHermesHost.ts: every start condition before each spawn, no
+        // write to the profile, no gateway stop). Never run on wmux's
+        // managed Hermes instead. v1: macOS and Linux.
+        if (isOwnHermesEngine(engine)) {
+          if (platform === 'win32') return refuse(MY_HERMES_UNAVAILABLE_MESSAGE);
+          const host = ownHermesHost(ownHermesProfile(engine) as string);
+          const adapter = new AcpBrainAdapter({
+            spawnSpec: { command: 'hermes', args: ['-p', host.profile, 'acp'] },
+            mcpBundlePath: bundle,
+            bot,
+            hermes: host.policyFor(input.binding),
+          });
+          host.register(adapter);
+          return { ok: true, adapter };
+        }
         if (isHermesEngine(engine)) {
           // Readiness, the settings read back and the gateway check run
           // before each agent spawn (the adapter's `hermes.prepare`); a

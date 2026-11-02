@@ -4,6 +4,7 @@ import type { ChatSkillCatalog } from '../../shared/transcript/chatSkills';
 import type { TerminalLaunchAgent, TerminalLaunchMode } from '../../shared/transcript/terminalChat';
 import type { ChatQueueReason, ChatQueueState } from './ChatQueue';
 import type { ChatCancelProgress } from '../../shared/phoneChatCancelOutcome';
+import { UPLOAD_NAME_RE } from '../../shared/roomAttachments';
 
 /**
  * Phone native chat bridge (contract v0.3.1, N1-N19): the daemon-side seam the
@@ -466,4 +467,41 @@ export const OPENCODE_MAX_SEND_BYTES = Math.floor((OPENCODE_REQUEST_MAX_BYTES - 
 /** The exact serialized plugin request, measured before any receipt exists (N16). */
 export function openCodeSendBytes(sessionId: string, rawEpoch: string, text: string, requestId: string): number {
   return Buffer.byteLength(JSON.stringify({ action: 'send', sessionId, epoch: rawEpoch, text, requestId }));
+}
+
+const IMAGE_PLACEHOLDER = /\[Image #\d+\]/g;
+const IMAGE_TOKEN = '\u0000img\u0000';
+
+/** Each image token with the whitespace around it dropped, the rest collapsed. */
+function photoShape(text: string): string {
+  return text.split(IMAGE_TOKEN).map((part) => part.trim().replace(/\s+/g, ' ')).join(IMAGE_TOKEN);
+}
+
+/**
+ * Whether a photo row (`user_text` with `hasImage`) is the message the daemon
+ * typed. The typed text holds the upload paths the phone attached, and Claude
+ * Code records each one as an `[Image #N]` placeholder instead, so the exact
+ * text match can never pair them. Each photo upload path under `uploadsDir`
+ * (a name the upload route wrote, `UPLOAD_NAME_RE`) stands in for one
+ * placeholder: N is ignored, the counts must agree, and the whitespace around a
+ * placeholder is not compared (Claude Code drops the space after one). A
+ * placeholder the person typed literally stays one on both sides. Built once
+ * per uploads directory; callers use it for photo rows only, so a text row
+ * keeps the exact match.
+ */
+export function typedPhotoTextMatcher(uploadsDir: string | undefined): (typed: string, rowText: string) => boolean {
+  if (!uploadsDir) return () => false;
+  const dir = uploadsDir.replace(/[\\/]+$/, '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const candidates = new RegExp(`${dir}[\\\\/]([^\\s\\\\/\\u0000]+)(?=\\s|$)`, 'g');
+  return (typed, rowText) => {
+    let uploads = 0;
+    const tokenized = typed.replace(candidates, (path: string, name: string) => {
+      if (!name.startsWith('photo-') || !UPLOAD_NAME_RE.test(name)) return path;
+      uploads += 1;
+      return IMAGE_TOKEN;
+    }).replace(IMAGE_PLACEHOLDER, IMAGE_TOKEN);
+    if (uploads === 0) return false;
+    const row = rowText.replace(IMAGE_PLACEHOLDER, IMAGE_TOKEN);
+    return photoShape(tokenized) === photoShape(row);
+  };
 }

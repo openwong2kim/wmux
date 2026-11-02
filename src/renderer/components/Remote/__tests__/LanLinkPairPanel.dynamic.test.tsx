@@ -203,6 +203,10 @@ describe('Connect a PC › LAN', () => {
     await settle();
     await act(async () => { tab('Invite this PC').click(); });
     await settle();
+    // Showing the tab opens nothing: Create invite does.
+    expect(a2a.pairBegin).not.toHaveBeenCalled();
+    await act(async () => { q<HTMLButtonElement>('remote-connect-create')!.click(); });
+    await settle();
     a2a.pairStatus.mockResolvedValue({ active: false, expiresAt: null, attemptsLeft: 3, lockedUntil: null });
     a2a.peersList.mockResolvedValue({ peers: [{ v: 1, peerId: 'p1', hostId: 'h1', name: 'DESK', createdAt: '' }] });
     await act(async () => { vi.advanceTimersByTime(CONNECT_PAIR_POLL_MS); });

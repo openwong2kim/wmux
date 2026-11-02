@@ -4448,7 +4448,7 @@ const PREFIX_ACTION_IDS = [
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
   'movePaneUp', 'movePaneDown', 'movePaneLeft', 'movePaneRight',
   'swapPanePrev', 'swapPaneNext',
-  'stashPane',
+  'stashPane', 'balanceLayout',
 ] as const;
 
 function prefixActionLabel(actionId: string, t: (key: string) => string): string {
@@ -4548,7 +4548,8 @@ export function TabShortcuts() {
     const combo = typeof override === 'string' ? override : concreteCombo(entry, platform);
     return matchesShortcut(describe(entry.action), displayCombo(combo, platform));
   });
-  const prefixRowVisible = matchesShortcut(t('settings.prefixMode'), prefixKeyDisplay);
+  const prefixKeyLabel = displayCombo(prefixKeyDisplay, platform);
+  const prefixRowVisible = matchesShortcut(t('settings.prefixMode'), prefixKeyLabel);
   // Palette commands that ship with no key: listed so a key given to one (here
   // or from the palette) can be seen, changed and taken off again.
   const unsetLabel = t('settings.sc.unset');
@@ -4557,7 +4558,7 @@ export function TabShortcuts() {
   const pluginPages = railPagePlugins(plugins).map((p) => pluginPageShortcut(p.name));
   const orphanedPages = (Object.keys(shortcutOverrides) as ShortcutActionId[])
     .filter((action) => isPluginPageShortcut(action) && !pluginPages.includes(action));
-  const visibleUnbound = [...settingsUnboundRows(shortcutOverrides), ...pluginPages, ...orphanedPages].filter((action) => {
+  const visibleUnbound = [...settingsUnboundRows(), ...pluginPages, ...orphanedPages].filter((action) => {
     const override = shortcutOverrides[action];
     return matchesShortcut(describe(action), typeof override === 'string' ? displayCombo(override, platform) : '');
   });
@@ -4598,7 +4599,7 @@ export function TabShortcuts() {
           </p>
         )}
         {/* The prefix row keeps its own config below — no toggle. */}
-        {prefixRowVisible && <KbdRow keys={prefixKeyDisplay} description={t('settings.prefixMode')} />}
+        {prefixRowVisible && <KbdRow keys={prefixKeyLabel} description={t('settings.prefixMode')} />}
         {visibleShortcuts.map((entry) => {
           const override = shortcutOverrides[entry.action];
           const disabled = override === null;

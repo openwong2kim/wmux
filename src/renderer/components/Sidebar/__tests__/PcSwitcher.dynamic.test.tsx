@@ -75,7 +75,7 @@ describe('PcSwitcherTitle', () => {
     act(() => root.render(<PcSwitcherTitle title="Workspaces" />));
     act(() => q('[data-pc-switcher]')!.click());
     expect(menuKeys()).toEqual(['pc-local', 'pc-h1', 'pc-manage-h1', 'pc-add-ssh']);
-    expect(q('[data-pane-menu-action="pc-h1"] [data-pane-menu-detail]')?.textContent).toBe('Online · 1 need you');
+    expect(q('[data-pane-menu-action="pc-h1"] [data-pane-menu-detail]')?.textContent).toBe('Online · 1 needs you');
     act(() => q('[data-pane-menu-action="pc-h1"]')!.click());
     expect(useStore.getState().pcRail.activePcId).toBe('h1');
     expect(q('[data-pane-actions-menu]')).toBeNull();

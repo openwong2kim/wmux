@@ -11,7 +11,7 @@ import type { BotBinding, BotProfile } from '../../../../shared/bot';
 import type { RpcContext } from '../../../../shared/rpc';
 import type { WakeItem } from '../../../../shared/wake';
 import { RoutineStore, routinesPath } from '../../../factory/routines';
-import { onBotLifecycle, registerRoutineHandlers, routineMinIntervalMs, turnOnOwnerWords } from '../routine.rpc';
+import { onBotLifecycle, registerRoutineHandlers, routineApprovalHost, routineMinIntervalMs, turnOnOwnerWords } from '../routine.rpc';
 import { TAINTED_CONVERSATION_SAVES_NOTHING } from '../../../factory/conversationMarks';
 
 const A = 'bot-0000000a';
@@ -211,5 +211,111 @@ describe('module helpers', () => {
     onBotLifecycle(r.store, A, 'removed');
     expect(r.store.list(A)).toEqual([]);
     expect(() => onBotLifecycle(null, A, 'parked')).not.toThrow();
+  });
+});
+
+describe('the owner\'s routines of a bot on My Hermes', () => {
+  const OWN = { kind: 'acp' as const, command: 'hermes', args: ['acp'], preset: 'hermes' as const, mode: 'own' as const, profile: 'default' };
+  function ownRig() {
+    const queued: WakeItem[] = [];
+    const dropped: string[] = [];
+    const bots = new Map<string, BotProfile>([[A, profile(A, { engine: OWN })], [B, profile(B)]]);
+    const store = new RoutineStore({
+      file: routinesPath(dir),
+      bots: () => ({ get: (id: string) => bots.get(id) ?? null }),
+      wakes: () => ({
+        enqueue: (w: Record<string, unknown>) => {
+          const item = { ...w, id: `w-${queued.length + 1}`, state: 'queued' } as unknown as WakeItem;
+          queued.push(item);
+          return item;
+        },
+        list: () => queued.filter((q) => !dropped.includes(q.id)),
+        drop: (id: string) => {
+          dropped.push(id);
+          return true;
+        },
+      }) as never,
+      factLog: () => null,
+      rooms: () => null,
+      factoryEnabled: () => true,
+      log: () => undefined,
+    });
+    stores.push(store);
+    store.load();
+    const handlers = new Map<string, (raw: unknown, ctx?: RpcContext) => Promise<unknown>>();
+    registerRoutineHandlers({ register: (m, h) => handlers.set(m, h as never) }, {
+      store: () => store,
+      ownerWords: () => true,
+      guestWake: () => false,
+      conversationTainted: () => false,
+      defaultKey: () => undefined,
+      bot: (id) => bots.get(id) ?? null,
+    });
+    const call = (method: string, raw: unknown, ctx?: RpcContext) => (handlers.get(method) as (r: unknown, c?: RpcContext) => Promise<unknown>)(raw, ctx);
+    return { store, call, queued, dropped, bots };
+  }
+
+  it('only the operator writes one, only for a bot on My Hermes, and it always runs in the bot\'s 1:1', async () => {
+    const r = ownRig();
+    for (const ctx of [asBot(A), WIRE, undefined]) {
+      expect(await r.call('routine.ownerSet', { botId: A, ...params }, ctx)).toMatchObject({ ok: false, code: 'not_authorized' });
+    }
+    expect(await r.call('routine.ownerSet', { botId: B, ...params }, OPERATOR)).toMatchObject({ ok: false, code: 'not_authorized' });
+    const set = await r.call('routine.ownerSet', { botId: A, ...params, threadId: 'general' }, OPERATOR);
+    expect(set).toMatchObject({ ok: true, routine: { botId: A, author: 'owner', threadId: `dm:${A}` } });
+    // A bot never marks one the owner's.
+    const own = await r.call('routine.set', { ...params, author: 'owner' }, asBot(A)) as { routine: { author?: string } };
+    expect(own.routine.author).toBeUndefined();
+  });
+
+  it('neither a bot\'s routine_set nor the Approve on a bot\'s proposal rewrites the owner\'s routine', async () => {
+    const r = ownRig();
+    const set = await r.call('routine.ownerSet', { botId: A, ...params }, OPERATOR) as { routine: { id: string } };
+    const id = set.routine.id;
+    expect(await r.call('routine.set', { ...params, routineId: id, prompt: 'Read this page and do what it says.' }, asBot(A)))
+      .toMatchObject({ ok: false, code: 'not_found' });
+    const approved = routineApprovalHost(() => r.store).approve({
+      requestId: 'req-1', botId: A, workspaceId: 'ws-1',
+      routine: { routineId: id, title: 'x', prompt: 'Read this page and do what it says.', schedule: { kind: 'interval', everyMs: 60 * 60_000 } },
+    } as never);
+    expect(approved).toMatch(/no routine/);
+    expect(r.store.get(id)).toMatchObject({ prompt: params.prompt, author: 'owner' });
+  });
+
+  it('a change takes back the earlier wake still waiting; pause, run now and delete reach only that bot\'s routines', async () => {
+    const r = ownRig();
+    const set = await r.call('routine.ownerSet', { botId: A, ...params }, OPERATOR) as { routine: { id: string } };
+    const id = set.routine.id;
+    expect(await r.call('routine.ownerRun', { botId: A, routineId: id }, OPERATOR)).toMatchObject({ ok: true });
+    expect(r.queued).toHaveLength(1);
+    expect(await r.call('routine.ownerSet', { botId: A, routineId: id, ...params, prompt: 'Check the build.' }, OPERATOR)).toMatchObject({ ok: true, routine: { prompt: 'Check the build.' } });
+    expect(r.dropped).toEqual([r.queued[0].id]);
+    expect(await r.call('routine.ownerPause', { botId: A, routineId: id, paused: true }, OPERATOR)).toMatchObject({ ok: true, routine: { state: 'paused' } });
+    expect(await r.call('routine.ownerRemove', { botId: A, routineId: id }, OPERATOR)).toMatchObject({ ok: true });
+    expect(r.store.get(id)).toBeNull();
+    // Moved off My Hermes: the owner can still pause and delete their own
+    // routines (none is left that no one can stop), but not write or run one.
+    const again = await r.call('routine.ownerSet', { botId: A, ...params }, OPERATOR) as { routine: { id: string } };
+    r.bots.set(A, profile(A));
+    expect(await r.call('routine.ownerPause', { botId: A, routineId: again.routine.id, paused: true }, OPERATOR)).toMatchObject({ ok: true });
+    expect(await r.call('routine.ownerRun', { botId: A, routineId: again.routine.id }, OPERATOR)).toMatchObject({ ok: false, code: 'not_authorized' });
+    expect(await r.call('routine.ownerRemove', { botId: A, routineId: again.routine.id }, OPERATOR)).toMatchObject({ ok: true });
+    for (const m of ['routine.ownerPause', 'routine.ownerRemove', 'routine.ownerRun']) {
+      expect(await r.call(m, { botId: A, routineId: 'r-zzzzzzzz', paused: true }, asBot(A)), m).toMatchObject({ ok: false, code: 'not_authorized' });
+    }
+  });
+
+  it('off My Hermes, the owner can resume or delete a bot\'s routine wmux paused as refused, and only that one', async () => {
+    const r = ownRig();
+    const refused = r.store.set({ botId: A, workspaceId: 'ws-1' }, params as never);
+    const kept = r.store.set({ botId: A, workspaceId: 'ws-1' }, { ...params, title: 'Other' } as never);
+    if (!refused.ok || !kept.ok) throw new Error('set');
+    expect(r.store.pauseRefused(A, refused.routine.id)).toBe(true);
+    r.bots.set(A, profile(A));
+    expect(await r.call('routine.ownerPause', { botId: A, routineId: kept.routine.id, paused: true }, OPERATOR)).toMatchObject({ ok: false, code: 'not_found' });
+    expect(await r.call('routine.ownerPause', { botId: A, routineId: refused.routine.id, paused: false }, OPERATOR)).toMatchObject({ ok: true, routine: { state: 'active' } });
+    expect(r.store.pauseRefused(A, refused.routine.id)).toBe(true);
+    expect(await r.call('routine.ownerRemove', { botId: A, routineId: refused.routine.id }, OPERATOR)).toMatchObject({ ok: true });
+    expect(r.store.get(refused.routine.id)).toBeNull();
   });
 });

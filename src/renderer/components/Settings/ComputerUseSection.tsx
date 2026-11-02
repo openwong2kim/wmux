@@ -1,22 +1,15 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { ComputerUseSettingsPayload } from '../../../shared/computer/config';
+import { displayCombo } from '../../../shared/keymap';
 import { useT } from '../../hooks/useT';
 import Badge from '../ui/Badge';
 import UiButton from '../ui/Button';
 import Switch from '../ui/Switch';
 import { SettingNote, SettingRow, SettingsSection } from './SettingsLayout';
 
-/** Electron accelerator → the keys a person presses on this OS. */
+/** Electron accelerator → the keys a person presses on this OS (displayCombo). */
 export function formatStopKey(accelerator: string, mac: boolean): string {
-  return accelerator
-    .split('+')
-    .map((part) => {
-      if (part === 'CommandOrControl') return mac ? 'Cmd' : 'Ctrl';
-      if (part === 'Alt' && mac) return 'Option';
-      if (part === 'Escape') return 'Esc';
-      return part;
-    })
-    .join('+');
+  return displayCombo(accelerator, mac ? 'darwin' : 'win32');
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac/i.test(navigator.platform);

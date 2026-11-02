@@ -49,7 +49,7 @@ jobs:
       # already runs on windows-latest, and was the slowest job on every PR.
       matrix:
         os:
-          - macos-14         # Apple Silicon
+          - macos-15         # Apple Silicon
           - ubuntu-22.04     # Linux baseline
 
     steps:
@@ -57,7 +57,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node.js + npm 11
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           # Node 22, not ci.yml's 24 floor (#984, a Windows-only libuv bug): on
           # Node 24 macOS rejects the >104-byte unix socket paths the
@@ -113,7 +113,7 @@ jobs:
           apt_retry update
           apt_retry install -y build-essential libxss1
 
-      # macos-14 (Apple Silicon) ships with Xcode Command Line Tools preinstalled.
+      # macos-15 (Apple Silicon) ships with Xcode Command Line Tools preinstalled.
       # We only verify presence — do NOT attempt to install, that would burn
       # ~10 minutes and is unnecessary on GitHub-hosted runners.
       - name: Verify macOS Xcode CLT
@@ -137,7 +137,7 @@ jobs:
       # No type check here. Type errors do not depend on the OS, and the one
       # disk-dependent case, an import whose casing differs from the file, is
       # checked by scripts/typecheck.mjs against the disk itself. Running it on
-      # three runners added no signal, and on macos-14 (7 GB RAM) the old
+      # three runners added no signal, and on macos-15 (7 GB RAM) the old
       # single-program check ran out of the default V8 heap. ci.yml type-checks
       # once with scripts/typecheck.mjs; the mcp and daemon programs are
       # compiled by the checks job's build:mcp and build:daemon steps.
@@ -158,7 +158,7 @@ jobs:
 
       - name: Upload test report
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-report-baseline-${{ matrix.os }}
           path: test-results/
@@ -169,7 +169,7 @@ jobs:
       # and nothing else, so a run without a retry costs it no API call.
       - name: Upload retry report
         if: ${{ !cancelled() && steps.flaky.outputs.retried == 'true' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-report-retries-baseline-${{ matrix.os }}
           path: test-results/retries-*.json

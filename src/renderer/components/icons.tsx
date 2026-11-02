@@ -523,6 +523,18 @@ export function IconFanOut({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Org chart — one box over two. Marks a company workspace's mission line. */
+export function IconOrgChart({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="5" y="1.5" width="4" height="3" rx="0.6" />
+      <rect x="1.5" y="9.5" width="4" height="3" rx="0.6" />
+      <rect x="8.5" y="9.5" width="4" height="3" rx="0.6" />
+      <path d="M7 4.5V7M3.5 9.5V7h7v2.5" />
+    </Icon>
+  );
+}
+
 /** Corner up-left — "go up to the parent". The task workspace's link back to
  *  the workspace that fanned it out. */
 export function IconCornerUpLeft({ size = 14 }: { size?: number }) {

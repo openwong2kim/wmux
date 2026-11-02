@@ -112,13 +112,16 @@ export interface InstallBotToolsInput {
   registered: Set<string>;
   /** Modules to install (default: every registered module). */
   modules?: readonly ToolModule[];
+  /** The tools to list (default: the shared bot surface); a narrowed bot
+   *  (`--bot-surface=`, shared/botSurface.ts botSurfaceTools) lists fewer. */
+  surface?: ReadonlySet<string>;
 }
 
 /** Install the modules' tools and the placeholders for the rest of the
  *  role's surface. A module that throws is logged and skipped; its tools then
  *  get placeholders. */
 export function installBotTools(input: InstallBotToolsInput): void {
-  const surface = isBotRole(input.role) ? SHARED_SURFACE.tools : new Set<string>();
+  const surface = isBotRole(input.role) ? input.surface ?? SHARED_SURFACE.tools : new Set<string>();
   for (const module of input.modules ?? modules) {
     const owned = new Set<string>(module.tools);
     const gate = (raw: RawTool): RawTool => (name, ...rest) => {

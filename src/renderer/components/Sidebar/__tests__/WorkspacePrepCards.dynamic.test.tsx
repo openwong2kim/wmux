@@ -72,7 +72,7 @@ describe('WorkspacePrepCards', () => {
     await act(async () => root.render(createElement(WorkspacePrepCards)));
     act(() => emit(card({ phase: 'setup', copied: 2, setupStartedAt: Date.now() - 80_000, setupTimeoutMs: 300_000 })));
     const el = container.querySelector('[data-testid="workspace-prep-card"]') as HTMLElement;
-    expect(el.textContent).toContain('2 file(s) copied');
+    expect(el.textContent).toContain('2 files copied');
     expect(el.textContent).toMatch(/running setup… 1:2\d of 5:00/);
   });
 

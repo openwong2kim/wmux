@@ -34,6 +34,7 @@ import { metaDirForWorktree } from './TaskWorktreeManager';
 import { git } from '../git/git';
 import { workerGitPreflight } from './workerGit';
 import { PHONE_WORKTREE_DIR_PREFIX } from '../../shared/phoneGitV1';
+import type { SeatListedReason } from '../company/seatCleanupRule';
 
 const execFileAsync = promisify(execFile);
 
@@ -42,7 +43,8 @@ export type WorktaskScanCategory =
   | 'disk-missing'
   | 'preserved'
   | 'orphan-dir'
-  | 'phone-worktree';
+  | 'phone-worktree'
+  | 'company-seat';
 
 export interface WorktaskScanEntry {
   category: WorktaskScanCategory;
@@ -56,6 +58,10 @@ export interface WorktaskScanEntry {
   worktreePath?: string;
   /** task.json의 closedAt(GC된 closed 태스크의 orphan에서만 관측). */
   closedAt?: number;
+  /** company-seat: the company its stamp names. */
+  company?: string;
+  /** company-seat `seat-unpushed`: how many commits are only on this PC. */
+  commitCount?: number;
   /** Stable code for the detail line; the renderer localizes it. */
   detailCode?: WorktaskScanDetailCode;
   /** 사람용 부가 설명. */
@@ -70,7 +76,11 @@ export type WorktaskScanDetailCode =
   | 'orphan-ended'
   | 'orphan-unlinked'
   | 'orphan-meta'
-  | 'disk-missing';
+  | 'disk-missing'
+  | 'seat-uncommitted'
+  | 'seat-unpushed'
+  | 'seat-locked'
+  | 'seat-unregistered';
 
 /** English detail text for consumers that do not localize (kept in step with
  *  the renderer's `worktask.cleanup.detail.*` strings in en.ts). */
@@ -82,6 +92,29 @@ export const WORKTASK_SCAN_DETAIL: Record<WorktaskScanDetailCode, string> = {
   'orphan-unlinked': 'No task or task record links to it — check it, then delete it.',
   'orphan-meta': 'Only the task record is left, not the worktree (a removal was interrupted) — check it, then delete it.',
   'disk-missing': 'The worktree is missing from disk (deleted outside wmux, or a crash) — close the task to clear it.',
+  'seat-uncommitted': 'A company seat worktree with uncommitted changes — commit or discard them, then remove it.',
+  'seat-unpushed': 'A company seat worktree with commits only on this PC — push them, or remove it and keep its branch.',
+  'seat-locked': 'A company seat worktree git keeps locked — check it, then remove it.',
+  'seat-unregistered': 'A company seat folder git does not track as a worktree (an interrupted creation) — check it, then delete it.',
+};
+
+/** A company seat folder the seat cleanup keeps for a person to look at
+ *  (company/seatCleanup.ts listCompanySeatLeftovers). */
+export interface CompanySeatLeftover {
+  worktreePath: string;
+  reason: SeatListedReason;
+  /** `unpushed`: how many commits are only on this PC. */
+  commits?: number;
+  /** From the seat's stamp, when it has one. */
+  label?: string;
+  company?: string;
+}
+
+const SEAT_DETAIL: Record<SeatListedReason, WorktaskScanDetailCode> = {
+  uncommitted: 'seat-uncommitted',
+  unpushed: 'seat-unpushed',
+  locked: 'seat-locked',
+  unregistered: 'seat-unregistered',
 };
 
 export interface WorktaskScanResult {
@@ -148,9 +181,11 @@ export class WorktaskScanService {
 
   /**
    * 정리 스캔(§1). openTasks는 데몬 projection의 open 태스크(호출측이 필터). 반환은
-   * 이상 항목만(clean+linked 정상 작업은 제외).
+   * 이상 항목만(clean+linked 정상 작업은 제외). `companySeats`: the company seat
+   * folders kept for a person, listed as they are (named by their stamp's label,
+   * else the folder).
    */
-  async scan(openTasks: ScanOpenTask[]): Promise<WorktaskScanResult> {
+  async scan(openTasks: ScanOpenTask[], companySeats: readonly CompanySeatLeftover[] = []): Promise<WorktaskScanResult> {
     const entries: WorktaskScanEntry[] = [];
 
     // ── projection 측: 물질화 필드 기준 인덱스 ──
@@ -267,6 +302,19 @@ export class WorktaskScanService {
         worktreePath: meta.impliedWorktreePath,
         detailCode: 'orphan-meta',
         detail: WORKTASK_SCAN_DETAIL['orphan-meta'],
+      });
+    }
+
+    for (const seat of companySeats) {
+      const detailCode = SEAT_DETAIL[seat.reason];
+      entries.push({
+        category: 'company-seat',
+        title: seat.label ?? path.basename(seat.worktreePath),
+        ...(seat.company ? { company: seat.company } : {}),
+        worktreePath: seat.worktreePath,
+        ...(seat.reason === 'unpushed' && seat.commits !== undefined ? { commitCount: seat.commits } : {}),
+        detailCode,
+        detail: WORKTASK_SCAN_DETAIL[detailCode],
       });
     }
 

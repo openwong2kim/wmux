@@ -45,12 +45,13 @@ import path from 'node:path';
 import type { BotEventPayload, BotProfile } from '../../shared/bot';
 import type { FactDraft } from '../../shared/facts';
 import type { Party } from '../../shared/handoff';
-import { GENERAL_THREAD, parseThreadId, type ThreadId } from '../../shared/room';
+import { GENERAL_THREAD, dmThreadId, parseThreadId, type ThreadId } from '../../shared/room';
 import {
   ROUTINE_ID_RE,
   ROUTINE_LIMITS,
   type BotRoutine,
   type RoutineDoneReason,
+  type RoutineOwnerSetParams,
   type RoutinePauseReason,
   type RoutineQuietHours,
   type RoutineResult,
@@ -88,7 +89,7 @@ interface StoredRoutine extends BotRoutine {
   clientRoutineId?: string;
 }
 
-const PAUSE_REASONS: readonly RoutinePauseReason[] = ['bot', 'owner', 'stop', 'park', 'off'];
+const PAUSE_REASONS: readonly RoutinePauseReason[] = ['bot', 'owner', 'stop', 'park', 'off', 'refused'];
 const DONE_REASONS: readonly RoutineDoneReason[] = ['fired', 'missed'];
 const HHMM_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 /** An ISO 8601 date and time (seconds optional; no offset = local time). */
@@ -250,6 +251,7 @@ function parseStored(raw: unknown): StoredRoutine | null {
     ...(Number.isSafeInteger(r.lastFiredAt) ? { lastFiredAt: r.lastFiredAt as number } : {}),
     ...(r.state === 'active' && Number.isSafeInteger(r.nextDueAt) ? { nextDueAt: r.nextDueAt as number } : {}),
     ...(isClientId(r.clientRoutineId) ? { clientRoutineId: r.clientRoutineId } : {}),
+    ...(r.author === 'owner' ? { author: 'owner' as const } : {}),
   };
 }
 
@@ -414,27 +416,13 @@ export class RoutineStore {
     if (p.clientRoutineId !== undefined && !isClientId(p.clientRoutineId)) return bad('clientRoutineId is not a valid key');
     if (p.routineId !== undefined) {
       const r = this.routines.find((x) => x.id === p.routineId);
-      if (!r || r.botId !== bot.botId) return { ok: false, code: 'not_found', message: `you have no routine ${String(p.routineId)}` };
+      // A routine the owner wrote is theirs to change (ownerSet): neither a
+      // bot's routine_set nor the owner's Approve on a bot's proposal (which
+      // calls this too, routine.rpc.ts routineApprovalHost) rewrites it. A
+      // routine saved through set is never the owner's: its text is the bot's.
+      if (!r || r.botId !== bot.botId || r.author === 'owner') return { ok: false, code: 'not_found', message: `you have no routine ${String(p.routineId)}` };
       if (r.state === 'done' && this.atCap(bot.botId)) return tooMany();
-      r.title = title;
-      r.prompt = prompt;
-      r.schedule = schedule;
-      if (quietHours) r.quietHours = quietHours;
-      else delete r.quietHours;
-      if (threadId) r.threadId = threadId;
-      else delete r.threadId;
-      r.updatedAt = now;
-      // A wake of it still waiting would run the changed routine early (and
-      // a one-time routine again at its new time), so it goes.
-      this.dropQueued(r);
-      // A done one-time routine given a new time runs again.
-      if (r.state === 'done') {
-        r.state = 'active';
-        delete r.done;
-      }
-      if (r.state === 'active') r.nextDueAt = nextSlot(schedule, now);
-      this.card(r, { kind: 'bot', workspaceId: r.workspaceId, botId: r.botId }, 'Routine changed');
-      this.changed([r.botId]);
+      this.change(r, f.fields, { kind: 'bot', workspaceId: r.workspaceId, botId: r.botId });
       return { ok: true, routine: publicCopy(r) };
     }
     if (p.clientRoutineId) {
@@ -463,6 +451,122 @@ export class RoutineStore {
     return { ok: true, routine: publicCopy(r) };
   }
 
+  /** Rewrite a routine's fields. A wake of it still waiting would run the
+   *  changed routine early (and a one-time routine again at its new time),
+   *  so it goes; a done one-time routine given a new time runs again. */
+  private change(r: StoredRoutine, fields: RoutineFields, actor: Party): void {
+    const now = this.now();
+    r.title = fields.title;
+    r.prompt = fields.prompt;
+    r.schedule = fields.schedule;
+    if (fields.quietHours) r.quietHours = fields.quietHours;
+    else delete r.quietHours;
+    if (fields.threadId) r.threadId = fields.threadId;
+    else delete r.threadId;
+    r.updatedAt = now;
+    this.dropQueued(r);
+    if (r.state === 'done') {
+      r.state = 'active';
+      delete r.done;
+    }
+    if (r.state === 'active') r.nextDueAt = nextSlot(fields.schedule, now);
+    this.card(r, actor, 'Routine changed');
+    this.changed([r.botId]);
+  }
+
+  /** The owner creates a routine for a bot on My Hermes, or changes one they
+   *  wrote (`routineId`). It is marked `author: 'owner'` and always runs in
+   *  the bot's 1:1 chat. The caller (routine.rpc.ts) checked that the owner
+   *  asks and that the bot is on My Hermes. */
+  ownerSet(bot: { botId: string; workspaceId: string }, params: RoutineOwnerSetParams): RoutineResult {
+    const p = (params ?? {}) as Partial<RoutineOwnerSetParams>;
+    const threadId = dmThreadId(bot.botId);
+    const f = this.fields({ title: p.title, prompt: p.prompt, schedule: p.schedule, quietHours: p.quietHours, threadId } as RoutineSetParams);
+    if (!f.ok) return f;
+    const owner: Party = { kind: 'human' };
+    if (p.routineId !== undefined) {
+      const r = this.routines.find((x) => x.id === p.routineId);
+      if (!r || r.botId !== bot.botId || r.author !== 'owner') return { ok: false, code: 'not_found', message: `no routine ${String(p.routineId)} of yours for this bot` };
+      if (r.state === 'done' && this.atCap(bot.botId)) return tooMany();
+      this.change(r, f.fields, owner);
+      return { ok: true, routine: publicCopy(r) };
+    }
+    if (this.atCap(bot.botId)) return tooMany();
+    const now = this.now();
+    const { title, prompt, schedule, quietHours } = f.fields;
+    const r: StoredRoutine = {
+      id: this.newId(),
+      botId: bot.botId,
+      workspaceId: bot.workspaceId,
+      title,
+      prompt,
+      schedule,
+      ...(quietHours ? { quietHours } : {}),
+      threadId,
+      state: 'active',
+      createdAt: now,
+      updatedAt: now,
+      nextDueAt: nextSlot(schedule, now),
+      author: 'owner',
+    };
+    this.routines.push(r);
+    this.card(r, owner, 'Routine created');
+    this.changed([r.botId]);
+    return { ok: true, routine: publicCopy(r) };
+  }
+
+  /** The owner deletes a routine of `botId`; its wake still waiting goes too. */
+  remove(botId: string, routineId: unknown): RoutineResult {
+    if (typeof routineId !== 'string' || !ROUTINE_ID_RE.test(routineId)) return bad('routineId is not a routine id');
+    const r = this.routines.find((x) => x.id === routineId);
+    if (!r || r.botId !== botId) return { ok: false, code: 'not_found', message: `no routine ${routineId} for this bot` };
+    this.dropQueued(r);
+    this.routines = this.routines.filter((x) => x !== r);
+    this.card(r, { kind: 'human' }, 'Routine deleted');
+    this.changed([r.botId]);
+    return { ok: true, routine: publicCopy(r) };
+  }
+
+  /** A bot on My Hermes was not sent a wake of this routine for a reason
+   *  that stays until the owner acts: an active one is paused (`refused`)
+   *  rather than refused at every slot. Returns whether to tell the owner:
+   *  false only for one already paused for that (a wake queued before the
+   *  pause tells nothing new). A done one-time routine stays done. */
+  pauseRefused(botId: string, routineId: string): boolean {
+    const r = this.routines.find((x) => x.id === routineId);
+    if (!r || r.botId !== botId) return true;
+    if (r.state === 'paused' && r.paused?.reason === 'refused') return false;
+    if (r.state === 'active') {
+      this.pauseOne(r, 'refused');
+      this.changed([r.botId]);
+    }
+    return true;
+  }
+
+  /** The owner runs one of their routines of `botId` now: its wake is
+   *  queued like a slot's (and checked like one when it runs). */
+  runNow(botId: string, routineId: unknown): RoutineResult {
+    if (typeof routineId !== 'string' || !ROUTINE_ID_RE.test(routineId)) return bad('routineId is not a routine id');
+    const r = this.routines.find((x) => x.id === routineId);
+    if (!r || r.botId !== botId || r.author !== 'owner') return { ok: false, code: 'not_found', message: `no routine ${routineId} of yours for this bot` };
+    if (r.state === 'done') return bad('this one-time routine is done; give it a new time first');
+    if (r.state === 'paused') return bad('this routine is paused; resume it first');
+    const bot = this.botOf(r.botId);
+    if (!bot || !this.canRun(bot)) return { ok: false, code: 'not_authorized', message: 'the bot cannot run now (it is off or parked, or bots are off)' };
+    const now = this.now();
+    if (!this.fire(r, bot, now)) return { ok: false, code: 'not_authorized', message: 'the run was not queued' };
+    r.lastFiredAt = now;
+    // A one-time routine run now has used its one run: its slot must not fire it again later.
+    if (r.schedule.kind === 'once') {
+      r.state = 'done';
+      r.done = { reason: 'fired', at: now };
+      r.updatedAt = now;
+      delete r.nextDueAt;
+    }
+    this.changed([r.botId]);
+    return { ok: true, routine: publicCopy(r) };
+  }
+
   /** A done one-time routine is history, not a routine the bot keeps. */
   private atCap(botId: string): boolean {
     return this.routines.filter((x) => x.botId === botId && x.state !== 'done').length >= ROUTINE_LIMITS.MAX_PER_BOT;
@@ -473,8 +577,15 @@ export class RoutineStore {
     if (typeof routineId !== 'string' || !ROUTINE_ID_RE.test(routineId)) return bad('routineId is not a routine id');
     if (typeof paused !== 'boolean') return bad('paused must be true or false');
     const r = this.routines.find((x) => x.id === routineId);
-    if (!r || (actor.kind === 'bot' && r.botId !== actor.botId)) return { ok: false, code: 'not_found', message: `you have no routine ${routineId}` };
-    if (!paused && r.state === 'done') return bad('this one-time routine is done; give it a new time with routine_set (routineId)');
+    // A bot pauses or resumes its own routines, never one the owner wrote.
+    if (!r || (actor.kind === 'bot' && (r.botId !== actor.botId || r.author === 'owner'))) return { ok: false, code: 'not_found', message: `you have no routine ${routineId}` };
+    // Paused because My Hermes refused it: only the owner resumes it.
+    if (!paused && actor.kind === 'bot' && r.state === 'paused' && r.paused?.reason === 'refused') {
+      return { ok: false, code: 'not_authorized', message: 'wmux paused this routine until the owner resumes it' };
+    }
+    if (!paused && r.state === 'done') {
+      return bad(actor.kind === 'bot' || r.author !== 'owner' ? 'this one-time routine is done; give it a new time with routine_set (routineId)' : 'this one-time routine is done; give it a new time first');
+    }
     const party: Party = actor.kind === 'bot' ? { kind: 'bot', workspaceId: r.workspaceId, botId: r.botId } : { kind: 'human' };
     if (paused && r.state === 'active') {
       this.pauseOne(r, actor.kind === 'bot' ? 'bot' : 'owner');
@@ -614,7 +725,7 @@ export class RoutineStore {
       if (r.state !== 'active' || r.nextDueAt === undefined || r.nextDueAt > now) continue;
       touched.add(r.botId);
       const bot = this.botOf(r.botId);
-      const runner = bot && bot.enabled && bot.parked?.reason !== 'human' && bot.parked?.reason !== 'error' && this.deps.factoryEnabled() ? bot : null;
+      const runner = bot && this.canRun(bot) ? bot : null;
       if (r.schedule.kind === 'once') {
         // Its one slot, after a restart too: it fires when at most
         // ONCE_GRACE_MS late and its bot can run; otherwise it is missed.
@@ -675,6 +786,12 @@ export class RoutineStore {
       this.log(`wake for routine ${r.id} not queued: ${String(err)}`);
       return false;
     }
+  }
+
+  /** Whether a routine of `bot` fires now: it is on, not parked by the
+   *  owner or an error, and "Run bots" is on. */
+  private canRun(bot: BotProfile): boolean {
+    return bot.enabled && bot.parked?.reason !== 'human' && bot.parked?.reason !== 'error' && this.deps.factoryEnabled();
   }
 
   private botOf(botId: string): BotProfile | null {

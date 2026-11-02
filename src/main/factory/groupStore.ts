@@ -32,7 +32,16 @@ interface StoredGroup extends BotGroup {
 }
 
 /** A bot as the store needs it: where it lives and when it was made. */
-export interface GroupBotRef { id: string; workspaceId: string; createdAt: number }
+export interface GroupBotRef {
+  id: string;
+  workspaceId: string;
+  createdAt: number;
+  /** On My Hermes (the owner's own Hermes): it talks with the owner one to
+   *  one and joins no group. */
+  ownHermes?: boolean;
+  /** Its name, for the refusal that names it. */
+  name?: string;
+}
 
 export interface GroupStoreOptions {
   now?: () => number;
@@ -43,6 +52,11 @@ export interface GroupStoreOptions {
   bots?: () => readonly GroupBotRef[] | null;
   /** Told after every change. */
   onChange?: () => void;
+}
+
+/** Why a bot on My Hermes is not in a group chat. Pure. */
+export function myHermesNoGroupMessage(bot: string): string {
+  return `${bot} uses your own Hermes, so it talks with you one to one and cannot join a group chat.`;
 }
 
 export type GroupStoreResult = { ok: true; group: BotGroup } | BotGroupRefusal;
@@ -173,7 +187,10 @@ export class GroupStore {
    *  made before (even if deleted since) or nothing can be saved. */
   adoptRoom(workspaceId: string, memberIds: readonly string[]): BotGroup | null {
     if (this.writeRefusal() || !isRoomWorkspaceId(workspaceId) || this.hadRoomGroup(workspaceId)) return null;
-    const ids = [...new Set(memberIds.filter((m) => BOT_ID_RE.test(m)))].slice(0, BOT_GROUP_LIMITS.MEMBERS_MAX);
+    const own = new Set((this.opts.bots?.() ?? []).filter((b) => b.ownHermes === true).map((b) => b.id));
+    const ids = [...new Set(memberIds.filter((m) => BOT_ID_RE.test(m) && !own.has(m)))].slice(0, BOT_GROUP_LIMITS.MEMBERS_MAX);
+    // Without its My Hermes bots the room may be too small to be a group; it stays a room.
+    if (ids.length < BOT_GROUP_LIMITS.MEMBERS_MIN) return null;
     const at = this.now();
     const g: StoredGroup = { id: this.mintId(), workspaceId, name: '', memberIds: ids, threadId: GENERAL_THREAD, createdAt: at, updatedAt: at };
     this.groups = [...this.groups, g];
@@ -237,6 +254,8 @@ export class GroupStore {
     if (bots) {
       const here = new Set(bots.filter((b) => b.workspaceId === workspaceId).map((b) => b.id));
       if (ids.some((m) => !here.has(m))) return invalid('members', 'Every bot of a group chat is from its workspace.');
+      const own = bots.find((b) => b.ownHermes === true && ids.includes(b.id));
+      if (own) return invalid('members', myHermesNoGroupMessage(own.name ?? own.id));
     }
     return { ok: true, ids };
   }

@@ -2,13 +2,15 @@
 //
 // The welcome dialog end to end on the Dialog primitive: it is a labelled
 // modal, focus starts on its close button, Escape dismisses through the
-// firstRun bridge, and exactly one action is drawn as the primary.
+// firstRun bridge, exactly one action is drawn as the primary, and Open a
+// folder is where a ready first run ends.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import FirstRunWizard from '../FirstRunWizard';
 import { useStore } from '../../stores';
+import { resetAgentSetupForTests } from '../../utils/agentSetupRuns';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -16,26 +18,32 @@ let container: HTMLDivElement;
 let root: Root;
 let bridge: Record<string, ReturnType<typeof vi.fn>>;
 let hooksInstall: ReturnType<typeof vi.fn>;
+let pickFolder: ReturnType<typeof vi.fn>;
 
 const checkResult = (mcpRegistered: boolean) => ({
   shown: false,
   status: { claudeFound: true, mcpRegistered, claudeJsonPath: '/tmp/.claude.json' },
 });
 
+const claudeReady = {
+  agent: 'claude', readiness: 'ready', executable: '/home/u/.local/bin/claude', version: '9.9.9',
+  updateRecommended: false, loginKnown: true, candidates: [],
+};
+
 function installBridge({ mcpRegistered, hooksInstalled }: { mcpRegistered: boolean; hooksInstalled: boolean }) {
   hooksInstall = vi.fn();
+  pickFolder = vi.fn().mockResolvedValue([]);
   bridge = {
     check: vi.fn().mockResolvedValue(checkResult(mcpRegistered)),
     reopen: vi.fn().mockResolvedValue(checkResult(mcpRegistered)),
     complete: vi.fn().mockResolvedValue(undefined),
     dismiss: vi.fn().mockResolvedValue(undefined),
     registerMcp: vi.fn(),
-    startSampleTask: vi.fn(),
-    onSampleTaskReady: vi.fn(() => () => undefined),
-    onSampleTaskTimeout: vi.fn(() => () => undefined),
+    agentStatus: vi.fn().mockResolvedValue([claudeReady]),
   };
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     firstRun: bridge,
+    dialog: { pickFolder },
     deck: {
       hooksBridge: {
         status: vi.fn().mockResolvedValue({ installed: hooksInstalled }),
@@ -49,14 +57,15 @@ async function mount(onClose = vi.fn(), mode: 'firstRun' | 'reopen' = 'firstRun'
   await act(async () => {
     root.render(createElement(FirstRunWizard, { mode, onClose }));
   });
-  // Let the check() / hooks status() promises settle.
+  // Let the check(), agentStatus() and hooks status() promises settle.
   await act(async () => {
-    await Promise.resolve();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
   });
   return onClose;
 }
 
 beforeEach(() => {
+  resetAgentSetupForTests();
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -65,6 +74,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  resetAgentSetupForTests();
   delete (window as unknown as { electronAPI?: unknown }).electronAPI;
 });
 
@@ -92,16 +102,21 @@ describe('FirstRunWizard dialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('ready: the sample task is the single primary', async () => {
+  it('ready: Open a folder is the single primary, and nothing else is offered', async () => {
     installBridge({ mcpRegistered: true, hooksInstalled: true });
     await mount();
-    expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-try']);
+    expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-open-folder']);
+    // One short screen: no sample task, no bot task, no statusline offer.
+    expect(byId('first-run-wizard-try')).toBeNull();
+    expect(byId('first-run-first-task')).toBeNull();
+    expect(byId('first-run-wizard-statusline-offer')).toBeNull();
   });
 
-  it('hooks missing: installing hooks is the single primary, the sample task steps back', async () => {
+  it('hooks missing: installing hooks is the single primary, Open a folder steps back', async () => {
     installBridge({ mcpRegistered: true, hooksInstalled: false });
     await mount();
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-hooks-install']);
+    expect(byId('first-run-wizard-open-folder').className).toContain('ui-btn-secondary');
   });
 
   it('MCP unregistered: Register is the single primary', async () => {
@@ -110,11 +125,13 @@ describe('FirstRunWizard dialog', () => {
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-register']);
   });
 
-  it('reopen mode with MCP unregistered: Register is the primary, the disabled Try is not', async () => {
+  it('reopen mode with MCP unregistered: Register is the primary, and the footer closes', async () => {
     installBridge({ mcpRegistered: false, hooksInstalled: true });
     await mount(vi.fn(), 'reopen');
     expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-register']);
-    expect(byId('first-run-wizard-try').disabled).toBe(true);
+    expect(byId('first-run-wizard-skip').textContent).toBe('Close');
+    // Nothing claims an earlier first run was completed.
+    expect(container.textContent).not.toMatch(/completed/i);
   });
 
   it('while registering, nothing is primary; afterwards focus stays in the dialog', async () => {
@@ -135,10 +152,10 @@ describe('FirstRunWizard dialog', () => {
     expect(byId('first-run-wizard-register')).toBeNull();
     const panel = container.querySelector('[role="dialog"]') as HTMLElement;
     expect(panel.contains(document.activeElement)).toBe(true);
-    expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-try']);
+    expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-open-folder']);
   });
 
-  it('while hooks install, the primary does not jump to Try sample task', async () => {
+  it('while hooks install, the primary does not jump to Open a folder', async () => {
     installBridge({ mcpRegistered: true, hooksInstalled: false });
     hooksInstall.mockReturnValue(new Promise(() => undefined));
     await mount();
@@ -147,28 +164,42 @@ describe('FirstRunWizard dialog', () => {
     expect(primaries()).toEqual([]);
   });
 
-  it('timeout fallback: Continue is the single primary', async () => {
+  it('Open a folder opens a workspace on it, completes the first run and closes', async () => {
     installBridge({ mcpRegistered: true, hooksInstalled: true });
-    let onTimeout: () => void = () => undefined;
-    bridge.onSampleTaskTimeout.mockImplementation((cb: () => void) => { onTimeout = cb; return () => undefined; });
-    bridge.startSampleTask.mockResolvedValue(undefined);
-    // A workspace whose top-left pane already has a pty, so the task starts at once.
-    act(() => {
-      useStore.setState({
-        activeWorkspaceId: 'w1',
-        workspaces: [{
-          id: 'w1',
-          rootPane: { id: 'l1', type: 'leaf', surfaces: [{ id: 's1', ptyId: 'p1' }], activeSurfaceId: 's1' },
-        }],
-        applyLayoutTemplate: () => undefined,
-      } as never);
-    });
-    await mount();
-    await act(async () => byId('first-run-wizard-try').click());
+    pickFolder.mockResolvedValue(['/home/u/code/my-app']);
+    const before = useStore.getState().workspaces.length;
+    const onClose = await mount();
+    await act(async () => byId('first-run-wizard-open-folder').click());
     await settle();
-    expect(bridge.startSampleTask).toHaveBeenCalledWith({ ptyId: 'p1' });
-    await act(async () => onTimeout());
-    expect(primaries().map((b) => b.dataset.testid)).toEqual(['first-run-wizard-fallback-continue']);
+    const ws = useStore.getState().workspaces;
+    expect(ws).toHaveLength(before + 1);
+    expect(ws[ws.length - 1].name).toBe('my-app');
+    expect(ws[ws.length - 1].profile?.startupCwd).toBe('/home/u/code/my-app');
+    expect(useStore.getState().appRoute).toBe('workspaces');
+    expect(bridge.complete).toHaveBeenCalledTimes(1);
+    expect(bridge.dismiss).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancelling the folder picker keeps the wizard open and records nothing', async () => {
+    installBridge({ mcpRegistered: true, hooksInstalled: true });
+    const onClose = await mount();
+    await act(async () => byId('first-run-wizard-open-folder').click());
+    await settle();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(bridge.complete).not.toHaveBeenCalled();
+    expect(bridge.dismiss).not.toHaveBeenCalled();
+  });
+
+  it('Skip for now is a dismiss, not a completion', async () => {
+    installBridge({ mcpRegistered: true, hooksInstalled: true });
+    const onClose = await mount();
+    expect(byId('first-run-wizard-skip').textContent).toBe('Skip for now');
+    await act(async () => byId('first-run-wizard-skip').click());
+    await settle();
+    expect(bridge.dismiss).toHaveBeenCalledTimes(1);
+    expect(bridge.complete).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
 

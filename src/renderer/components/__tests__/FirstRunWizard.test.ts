@@ -4,11 +4,11 @@
  * The repository's vitest config runs in `node` environment without a DOM
  * library installed (no jsdom / happy-dom / @testing-library/react), so this
  * suite tests the wizard via two complementary strategies:
- *   1. Pure helpers exported from FirstRunWizard.tsx (decideUiState,
- *      findTopLeftLeafId, formatCompletedAt, getRegisterErrorKeys).
+ *   1. Pure helpers exported from FirstRunWizard.tsx (decidePrimaryAction,
+ *      folderWorkspaceName, getRegisterErrorKeys).
  *   2. React DOM Server's `renderToStaticMarkup` for snapshot-style assertions
  *      against the conditionally rendered sub-blocks (ClaudeStatusBlock,
- *      SampleTaskBlock). Effects do NOT run in renderToStaticMarkup, so
+ *      HooksBlock, AutoUpdateBlock). Effects do NOT run in renderToStaticMarkup, so
  *      effect-driven assertions (e.g. "calls firstRun.check on mount") are
  *      covered by inspecting the IPC mock surface directly.
  */
@@ -16,162 +16,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
-  decideUiState,
-  findTopLeftLeafId,
-  findLeafById,
-  formatCompletedAt,
+  folderWorkspaceName,
   getRegisterErrorKeys,
+  AutoUpdateBlock,
   ClaudeStatusBlock,
-  SampleTaskBlock,
-  StatuslineBlock,
   HooksBlock,
-  decideStatuslineOffer,
   decidePrimaryAction,
   withInlineCode,
 } from '../FirstRunWizard';
-import type { FirstRunCheckResult } from '../../../shared/firstRun';
-import type { Pane } from '../../../shared/types';
-
-// ─── Test fixtures ────────────────────────────────────────────────────────────
-
-const checkResult = (
-  partial: Partial<FirstRunCheckResult> & { claudeFound?: boolean; mcpRegistered?: boolean },
-): FirstRunCheckResult => ({
-  shown: partial.shown ?? false,
-  status: {
-    claudeFound: partial.claudeFound ?? true,
-    mcpRegistered: partial.mcpRegistered ?? true,
-    claudeJsonPath: '/home/test/.claude.json',
-  },
-  completedAt: partial.completedAt,
-});
-
-const leaf = (id: string): Pane => ({
-  id,
-  type: 'leaf',
-  surfaces: [],
-  activeSurfaceId: '',
-});
-
-const grid2x2: Pane = {
-  id: 'root-branch',
-  type: 'branch',
-  direction: 'vertical',
-  sizes: [50, 50],
-  children: [
-    {
-      id: 'top-row',
-      type: 'branch',
-      direction: 'horizontal',
-      sizes: [50, 50],
-      children: [leaf('top-left'), leaf('top-right')],
-    },
-    {
-      id: 'bot-row',
-      type: 'branch',
-      direction: 'horizontal',
-      sizes: [50, 50],
-      children: [leaf('bot-left'), leaf('bot-right')],
-    },
-  ],
-};
 
 // ─── Pure helper tests ────────────────────────────────────────────────────────
 
-describe('decideUiState', () => {
-  it('returns null when result is not yet loaded', () => {
-    expect(decideUiState(null, 'firstRun')).toBeNull();
-  });
-
-  it('returns "claude-missing" when Claude is not detected (firstRun)', () => {
-    const r = checkResult({ claudeFound: false, mcpRegistered: false });
-    expect(decideUiState(r, 'firstRun')).toBe('claude-missing');
-  });
-
-  it('returns "needs-register" when Claude is found but MCP is not registered', () => {
-    const r = checkResult({ claudeFound: true, mcpRegistered: false });
-    expect(decideUiState(r, 'firstRun')).toBe('needs-register');
-  });
-
-  it('returns "ready" when Claude is found and MCP is registered (firstRun)', () => {
-    const r = checkResult({ claudeFound: true, mcpRegistered: true });
-    expect(decideUiState(r, 'firstRun')).toBe('ready');
-  });
-
-  it('returns "reopen" regardless of detection state when mode=reopen (D9)', () => {
-    expect(decideUiState(checkResult({ claudeFound: true, mcpRegistered: true }), 'reopen')).toBe(
-      'reopen',
-    );
-    expect(decideUiState(checkResult({ claudeFound: false, mcpRegistered: false }), 'reopen')).toBe(
-      'reopen',
-    );
-  });
-});
-
-describe('findTopLeftLeafId', () => {
-  it('returns the id when the root itself is a leaf', () => {
-    expect(findTopLeftLeafId(leaf('only'))).toBe('only');
-  });
-
-  it('returns the upper-left leaf id for a 2x2 grid', () => {
-    expect(findTopLeftLeafId(grid2x2)).toBe('top-left');
-  });
-
-  it('descends children[0] recursively for deeply nested trees', () => {
-    const deep: Pane = {
-      id: 'b1',
-      type: 'branch',
-      direction: 'horizontal',
-      children: [
-        {
-          id: 'b2',
-          type: 'branch',
-          direction: 'vertical',
-          children: [leaf('deep-leaf'), leaf('other')],
-        },
-        leaf('right-leaf'),
-      ],
-    };
-    expect(findTopLeftLeafId(deep)).toBe('deep-leaf');
-  });
-
-  it('returns null for a branch with no children (defensive)', () => {
-    const empty: Pane = {
-      id: 'b',
-      type: 'branch',
-      direction: 'horizontal',
-      children: [],
-    };
-    expect(findTopLeftLeafId(empty)).toBeNull();
-  });
-});
-
-describe('findLeafById', () => {
-  it('returns the leaf for a matching id', () => {
-    expect(findLeafById(grid2x2, 'top-left')?.id).toBe('top-left');
-    expect(findLeafById(grid2x2, 'bot-right')?.id).toBe('bot-right');
-  });
-
-  it('returns null when id resolves to a branch', () => {
-    expect(findLeafById(grid2x2, 'top-row')).toBeNull();
-  });
-
-  it('returns null for unknown ids', () => {
-    expect(findLeafById(grid2x2, 'nope')).toBeNull();
-  });
-});
-
-describe('formatCompletedAt', () => {
-  it('formats an ISO timestamp to YYYY-MM-DD', () => {
-    expect(formatCompletedAt('2026-04-29T12:34:56.000Z')).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-  });
-
-  it('returns empty string for undefined input', () => {
-    expect(formatCompletedAt(undefined)).toBe('');
-  });
-
-  it('returns empty string for malformed input', () => {
-    expect(formatCompletedAt('not a date')).toBe('');
+describe('folderWorkspaceName', () => {
+  it('names the workspace after the folder', () => {
+    expect(folderWorkspaceName('/Users/me/code/wmux')).toBe('wmux');
+    expect(folderWorkspaceName('/Users/me/code/wmux/')).toBe('wmux');
+    expect(folderWorkspaceName('C:\\Users\\me\\project')).toBe('project');
+    expect(folderWorkspaceName('/')).toBe('Workspace');
   });
 });
 
@@ -268,95 +129,6 @@ describe('ClaudeStatusBlock (renderToStaticMarkup)', () => {
   });
 });
 
-describe('SampleTaskBlock (renderToStaticMarkup)', () => {
-  it('renders an enabled "Try sample task" button when ready and idle', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'ready',
-        sampleState: 'idle',
-        completedAt: undefined,
-        onTry: noop,
-        onFallbackContinue: noop,
-      }),
-    );
-    expect(html).toContain('first-run-wizard-try');
-    // Enabled button should NOT carry the `disabled` attribute.
-    expect(html).not.toMatch(/<button[^>]*\bdisabled\b[^>]*data-testid="first-run-wizard-try"/);
-  });
-
-  it('disables the sample task button and shows "Already completed on …" in reopen mode (D9)', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'reopen',
-        sampleState: 'idle',
-        completedAt: '2026-04-29T12:00:00.000Z',
-        onTry: noop,
-        onFallbackContinue: noop,
-      }),
-    );
-    expect(html).toContain('first-run-wizard-try');
-    expect(html).toMatch(/<button[^>]*\bdisabled\b[^>]*data-testid="first-run-wizard-try"/);
-    expect(html).toContain('2026-04-29');
-  });
-
-  it('disables the sample task button when claude is missing (firstRun, not ready)', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'claude-missing',
-        sampleState: 'idle',
-        completedAt: undefined,
-        onTry: noop,
-        onFallbackContinue: noop,
-      }),
-    );
-    expect(html).toMatch(/<button[^>]*\bdisabled\b[^>]*data-testid="first-run-wizard-try"/);
-  });
-
-  it('renders the timeout fallback "Continue" button when sampleState=timeout-fallback', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'ready',
-        sampleState: 'timeout-fallback',
-        completedAt: undefined,
-        onTry: noop,
-        onFallbackContinue: noop,
-      }),
-    );
-    expect(html).toContain('first-run-wizard-sample-fallback');
-    expect(html).toContain('first-run-wizard-fallback-continue');
-  });
-
-  it('renders the success block when sampleState=success', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'ready',
-        sampleState: 'success',
-        completedAt: undefined,
-        onTry: noop,
-        onFallbackContinue: noop,
-      }),
-    );
-    expect(html).toContain('first-run-wizard-sample-success');
-  });
-
-  it('a failed sample task shows its own message, not the MCP step\'s', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'ready',
-        sampleState: 'error',
-        completedAt: undefined,
-        onTry: noop,
-        onFallbackContinue: noop,
-      }),
-    );
-    expect(html).toContain('first-run-wizard-sample-error');
-    expect(html).toContain('The sample task could not start in the terminal.');
-    expect(html).not.toContain('Registration failed.');
-  });
-});
-
-// ─── electronAPI.firstRun integration shape ───────────────────────────────────
-//
 // This proves the test surface knows about every IPC method the wizard relies
 // on. Useful as a regression alarm if T1 ever drops or renames a method.
 
@@ -368,9 +140,6 @@ describe('electronAPI.firstRun mock surface', () => {
       dismiss: vi.fn(),
       reopen: vi.fn(),
       registerMcp: vi.fn(),
-      startSampleTask: vi.fn(),
-      onSampleTaskReady: vi.fn(() => noop),
-      onSampleTaskTimeout: vi.fn(() => noop),
     };
     (globalThis as unknown as { window: { electronAPI: { firstRun: typeof mock } } }).window = {
       electronAPI: { firstRun: mock },
@@ -387,61 +156,6 @@ describe('electronAPI.firstRun mock surface', () => {
     expect(typeof api.dismiss).toBe('function');
     expect(typeof api.reopen).toBe('function');
     expect(typeof api.registerMcp).toBe('function');
-    expect(typeof api.startSampleTask).toBe('function');
-    expect(typeof api.onSampleTaskReady).toBe('function');
-    expect(typeof api.onSampleTaskTimeout).toBe('function');
-  });
-});
-
-// ─── Statusline opt-in (onboarding install offer) ─────────────────────────────
-
-describe('decideStatuslineOffer', () => {
-  const status = (
-    installed: boolean,
-    states: Array<'none' | 'wmux' | 'foreign' | 'corrupt' | 'missing'>,
-  ) => ({
-    installed,
-    outcome: { targets: states.map((state) => ({ state })) },
-  });
-
-  it('offers when not installed and a target is installable', () => {
-    expect(decideStatuslineOffer(status(false, ['none']))).toBe('offer');
-    expect(decideStatuslineOffer(status(false, ['foreign', 'missing']))).toBe('offer');
-  });
-
-  it('hides when installed, when null, or when no target can accept', () => {
-    expect(decideStatuslineOffer(null)).toBe('hidden');
-    expect(decideStatuslineOffer(status(true, ['wmux']))).toBe('hidden');
-    expect(decideStatuslineOffer(status(false, ['foreign']))).toBe('hidden');
-    expect(decideStatuslineOffer(status(false, ['corrupt', 'foreign']))).toBe('hidden');
-  });
-});
-
-describe('StatuslineBlock', () => {
-  it('renders the enable button in offer state and disables it while installing', () => {
-    const offer = renderToStaticMarkup(
-      createElement(StatuslineBlock, { state: 'offer', onInstall: () => undefined }),
-    );
-    expect(offer).toContain('first-run-wizard-statusline-offer');
-    expect(offer).toContain('first-run-wizard-statusline-install');
-    expect(offer).not.toContain('disabled');
-
-    const installing = renderToStaticMarkup(
-      createElement(StatuslineBlock, { state: 'installing', onInstall: () => undefined }),
-    );
-    expect(installing).toContain('disabled');
-  });
-
-  it('renders success and error variants', () => {
-    const installed = renderToStaticMarkup(
-      createElement(StatuslineBlock, { state: 'installed', onInstall: () => undefined }),
-    );
-    expect(installed).toContain('first-run-wizard-statusline-installed');
-
-    const error = renderToStaticMarkup(
-      createElement(StatuslineBlock, { state: 'error', onInstall: () => undefined }),
-    );
-    expect(error).toContain('first-run-wizard-statusline-error');
   });
 });
 
@@ -460,8 +174,7 @@ describe('HooksBlock', () => {
     expect(installing).toContain('disabled');
   });
 
-  // Unlike the statusline offer, the installed state RENDERS rather than
-  // hides: hooks are a requirement, and a checklist that silently omits its
+  // The installed state RENDERS rather than hides: hooks are a requirement, and a checklist that silently omits its
   // most important item teaches the operator it does not exist.
   it('renders the installed state as a receipt, not as nothing', () => {
     const installed = renderToStaticMarkup(
@@ -483,84 +196,37 @@ const primaryCount = (html: string) => (html.match(/ui-btn-primary/g) ?? []).len
 
 describe('decidePrimaryAction', () => {
   const base = {
-    uiState: 'ready' as const,
     claudeFound: true,
     mcpRegistered: true,
     registering: false,
     hooksState: 'installed' as const,
-    sampleState: 'idle' as const,
+    agentReady: true,
   };
 
-  it('prefers what unblocks the operator first', () => {
-    expect(decidePrimaryAction({ ...base, sampleState: 'timeout-fallback', hooksState: 'offer' })).toBe('fallback');
-    expect(decidePrimaryAction({ ...base, uiState: 'needs-register', mcpRegistered: false, hooksState: 'offer' })).toBe('register');
+  it('prefers what unblocks the user first, and ends on opening a folder', () => {
+    expect(decidePrimaryAction({ ...base, agentAction: true, agentReady: false, hooksState: 'offer' })).toBe('agent');
+    expect(decidePrimaryAction({ ...base, mcpRegistered: false, hooksState: 'offer' })).toBe('register');
     expect(decidePrimaryAction({ ...base, hooksState: 'offer' })).toBe('hooks');
     expect(decidePrimaryAction({ ...base, hooksState: 'error' })).toBe('hooks');
-    expect(decidePrimaryAction(base)).toBe('try');
+    expect(decidePrimaryAction(base)).toBe('folder');
   });
 
   it('never makes a disabled or in-flight action primary, and does not hand the emphasis on mid-flight', () => {
-    // Registering: Register is disabled, and nothing else takes over.
-    expect(decidePrimaryAction({ ...base, uiState: 'needs-register', mcpRegistered: false, registering: true })).toBeNull();
-    // Installing hooks: Try must not become primary while the install runs.
+    expect(decidePrimaryAction({ ...base, mcpRegistered: false, registering: true })).toBeNull();
+    // Installing hooks: Open a folder must not become primary while the install runs.
     expect(decidePrimaryAction({ ...base, hooksState: 'installing' })).toBeNull();
-    // The sample task itself running.
-    expect(decidePrimaryAction({ ...base, sampleState: 'awaiting-prompt' })).toBeNull();
-    expect(decidePrimaryAction({ ...base, sampleState: 'splitting' })).toBeNull();
   });
 
-  it('reopen mode still offers Register as the primary when MCP is unregistered', () => {
-    expect(decidePrimaryAction({ ...base, uiState: 'reopen', mcpRegistered: false })).toBe('register');
-    // With nothing to set up, reopen has no primary (the sample task is disabled).
-    expect(decidePrimaryAction({ ...base, uiState: 'reopen' })).toBeNull();
+  it('any set-up agent is enough for the folder to be the primary, Claude Code or not', () => {
+    expect(decidePrimaryAction({ ...base, claudeFound: false, mcpRegistered: false, hooksState: 'unknown' })).toBe('folder');
   });
 
-  it('the first task: Send after setup and before the sample task, nothing while it runs, then Open', () => {
-    expect(decidePrimaryAction({ ...base, firstTask: 'send' })).toBe('send');
-    // Setup that unblocks first keeps the emphasis.
-    expect(decidePrimaryAction({ ...base, hooksState: 'offer', firstTask: 'send' })).toBe('hooks');
-    expect(decidePrimaryAction({ ...base, mcpRegistered: false, firstTask: 'send' })).toBe('register');
-    expect(decidePrimaryAction({ ...base, agentAction: true, firstTask: 'send' })).toBe('agent');
-    // The consent screen and the wait are in flight: Try does not take over.
-    expect(decidePrimaryAction({ ...base, firstTask: 'busy' })).toBeNull();
-    expect(decidePrimaryAction({ ...base, firstTask: 'open' })).toBe('open');
-    expect(decidePrimaryAction({ ...base, firstTask: 'none' })).toBe('try');
-  });
-
-  it('has no primary when Claude is missing', () => {
-    expect(decidePrimaryAction({ ...base, uiState: 'claude-missing', claudeFound: false, mcpRegistered: false, hooksState: 'unknown' })).toBeNull();
+  it('has no primary while no agent is set up and no card offers an action', () => {
+    expect(decidePrimaryAction({ ...base, claudeFound: false, mcpRegistered: false, hooksState: 'unknown', agentReady: false })).toBeNull();
   });
 });
 
 describe('primary styling follows the decision', () => {
-  it('draws the sample task as secondary when another action owns the primary', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'ready', sampleState: 'idle', completedAt: undefined,
-        onTry: noop, onFallbackContinue: noop, primary: false,
-      }),
-    );
-    expect(primaryCount(html)).toBe(0);
-    expect(html).toContain('ui-btn-secondary');
-  });
-
-  it('never draws a disabled Try as the primary', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'reopen', sampleState: 'idle', completedAt: undefined,
-        onTry: noop, onFallbackContinue: noop, primary: true,
-      }),
-    );
-    expect(primaryCount(html)).toBe(0);
-  });
-
-  it('keeps the optional statusline offer secondary', () => {
-    const html = renderToStaticMarkup(
-      createElement(StatuslineBlock, { state: 'offer', onInstall: noop }),
-    );
-    expect(primaryCount(html)).toBe(0);
-  });
-
   it('never draws a disabled Register or Install hooks as primary', () => {
     const reg = renderToStaticMarkup(
       createElement(ClaudeStatusBlock, { claudeFound: true, mcpRegistered: false, registering: true, onRegister: noop, primary: true }),
@@ -581,27 +247,12 @@ describe('primary styling follows the decision', () => {
   });
 });
 
-describe('welcome typography and media', () => {
-  it('keeps the sample task card text only: its copy describes the task, not a clip', () => {
-    const html = renderToStaticMarkup(
-      createElement(SampleTaskBlock, {
-        uiState: 'ready', sampleState: 'idle', completedAt: undefined,
-        onTry: noop, onFallbackContinue: noop,
-      }),
-    );
-    expect(html).toContain('first-run-wizard-try');
-    expect(html).not.toContain('first-run-wizard-sample-preview');
-    expect(html).not.toContain('<video');
-  });
-
-  it('shows the statusline clip, labelled by the row copy, only while the statusline is offered', () => {
-    const offer = renderToStaticMarkup(createElement(StatuslineBlock, { state: 'offer', onInstall: noop }));
-    expect(offer).toContain('first-run-wizard-statusline-preview');
-    expect(offer).toMatch(/aria-label="Show model, context usage, and rate limits/);
-    expect(offer).toMatch(/statusline[^"]*\.webm/);
-
-    const installed = renderToStaticMarkup(createElement(StatuslineBlock, { state: 'installed', onInstall: noop }));
-    expect(installed).not.toContain('first-run-wizard-statusline-preview');
+describe('welcome typography and glyphs', () => {
+  it('the auto-update row draws no check: the switch carries its state', () => {
+    const html = renderToStaticMarkup(createElement(AutoUpdateBlock));
+    expect(html).toContain('first-run-wizard-auto-update');
+    expect(html).toContain('data-status="none"');
+    expect(html).not.toContain('wmux-welcome-glyph-ok');
   });
 
   it('draws no emoji-style status glyphs in the chrome', () => {

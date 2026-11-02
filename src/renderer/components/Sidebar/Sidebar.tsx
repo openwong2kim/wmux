@@ -11,10 +11,12 @@ import WorkspaceSettleGroup from './WorkspaceSettleGroup';
 import SidebarTaskGroup, { ClosedPaneTaskGroup } from './SidebarTaskGroup';
 import SidebarResizeHandle from './SidebarResizeHandle';
 import { resolveTaskLink } from '../../utils/fanoutProvenance';
+import { multiviewGroupNumbers } from '../../utils/multiviewGroups';
 import WorkspaceItem from './WorkspaceItem';
 import HostWorkspaceList from './HostWorkspaceList';
 import { PcSwitcherTitle } from './PcSwitcher';
 import OrphanSessions from './OrphanSessions';
+import ExternalSessionsGroup from './ExternalSessionsGroup';
 import AgentNotReadyRow from './AgentNotReadyRow';
 import StarPromptRow from './StarPromptRow';
 import ArchivedWorkspaces from './ArchivedWorkspaces';
@@ -25,6 +27,7 @@ import { getWorkspacePtyIds } from '../../../shared/paneUtils';
 import { destroyWorkspaceRemoteSessions } from '../../utils/remoteSessionTeardown';
 import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
 import { useT } from '../../hooks/useT';
+import { useShortcutLabel, withShortcut } from '../../utils/shortcutLabel';
 import { useRemoteWorkspaceCreate } from './useRemoteWorkspaceCreate';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
@@ -35,7 +38,6 @@ import { IconPlus, IconChevronDir, IconGear } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
 import PluginPanels from '../../plugins/PluginPanels';
-import CompanyPanel from './CompanyPanel';
 import SidebarNavigation from './SidebarNavigation';
 import WorkspaceFilterPopover, { filterChipKey } from './WorkspaceFilterPopover';
 import {
@@ -43,7 +45,6 @@ import {
 } from './workspaceFilter';
 
 import PresetPicker from './PresetPicker';
-import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
 import { listedWorkspaces, refuseWorkspaceClose } from '../Moa/moaHqGuard';
 
@@ -74,6 +75,7 @@ const NO_FACTS: Record<string, string> = {};
  */
 export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet' } = {}) {
   const t = useT();
+  const sidebarKey = useShortcutLabel('toggleSidebar');
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   // A1: 통트리 구독 해체. Sidebar는 목록 구조(id·name·순서)만 구독하고, 각
   // WorkspaceItem이 자기 ws를 self-subscribe한다. 배경 ws의 metadata/surface
@@ -211,12 +213,16 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const toggleMultiviewWorkspace = useStore((s) => s.toggleMultiviewWorkspace);
   const multiviewIds = useStore((s) => s.multiviewIds);
-  // sidebarMode toggles the sidebar's central content between the workspace
-  // list and the company tree (CompanyPanel). The palette's "Company: …"
-  // commands flip this to 'company'; without a consumer here the flip was a
-  // no-op (the bug: company commands appeared to do nothing). The palette
-  // remains the entry/exit point for company mode.
-  const sidebarMode = useStore((s) => s.sidebarMode);
+  const multiviewSavedGroups = useStore((s) => s.multiviewSavedGroups);
+  // The grid is on screen only while the active workspace is one of its tiles.
+  const shownGridIds = useMemo(
+    () => (shownActiveId && multiviewIds.includes(shownActiveId) ? multiviewIds : []),
+    [shownActiveId, multiviewIds],
+  );
+  const multiviewGroupById = useMemo(
+    () => multiviewGroupNumbers(workspaces.map((w) => w.id), multiviewIds, multiviewSavedGroups),
+    [workspaces, multiviewIds, multiviewSavedGroups],
+  );
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -374,7 +380,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
     <WorkspaceItem
       workspaceId={id}
       isActive={id === shownActiveId}
-      isMultiview={multiviewIds.includes(id)}
+      isMultiview={shownGridIds.includes(id)}
+      multiviewGroup={multiviewGroupById.get(id)}
       index={workspaces.findIndex((w) => w.id === id)}
       shortcutNumber={workspaceShortcutNumber(numbered.findIndex((w) => w.id === id), numbered.length)}
       onSelect={setActiveWorkspace}
@@ -388,7 +395,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
       taskRow
       tabStop={id === tabStopId}
     />
-  ), [tabStopId, shownActiveId, multiviewIds, workspaces, numbered, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
+  ), [tabStopId, shownActiveId, shownGridIds, multiviewGroupById, workspaces, numbered, setActiveWorkspace, handleCtrlSelect, renameWorkspace, handleClose, handleArchive, handleCopySessionInfo, duplicateWorkspace, reorderWorkspace]);
 
   // One top-level node: a task row whose owner is filtered out, or a
   // workspace row with its nested tasks. `inSettleGroup` rows sit out of
@@ -404,7 +411,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         <WorkspaceItem
           workspaceId={ws.id}
           isActive={ws.id === shownActiveId}
-          isMultiview={multiviewIds.includes(ws.id)}
+          isMultiview={shownGridIds.includes(ws.id)}
+          multiviewGroup={multiviewGroupById.get(ws.id)}
           index={workspaces.indexOf(ws)}
           shortcutNumber={workspaceShortcutNumber(numbered.findIndex((w) => w.id === ws.id), numbered.length)}
           onSelect={setActiveWorkspace}
@@ -548,14 +556,8 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         </div>
       )}
 
-      {/* Central content: company tree when in company mode, else the
-          workspace list. This is the consumer of `sidebarMode` that was
-          missing — CompanyPanel was orphaned (never rendered) so the
-          palette's company commands had no visible surface. */}
       {scopedHostId ? (
         <HostWorkspaceList hostId={scopedHostId} />
-      ) : COMPANY_MODE_ENABLED && sidebarMode === 'company' ? (
-        <CompanyPanel />
       ) : (
       /* The list container absorbs dragover for sidebar-internal reorder
           drags so the gaps between WorkspaceItem rows (and the empty area
@@ -639,6 +641,10 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
         ))}
         </div>
 
+        {/* Agents started outside wmux whose folder no workspace holds
+            (placement B, 2026-11-01). Empty → invisible. */}
+        {!readOnly && <ExternalSessionsGroup />}
+
         {/* #1011 — put-away workspaces: configuration snapshots, one click
             back to live. Collapsed by default; empty → invisible. */}
         {!readOnly && <ArchivedWorkspaces />}
@@ -679,7 +685,7 @@ export default function Sidebar({ chrome = 'full' }: { chrome?: 'full' | 'sheet'
           data-sidebar-collapse
           className={`${HIT_TARGET_24} rounded-md text-[color-mix(in_srgb,var(--text-main)_50%,transparent)] hover:text-[var(--text-main)] hover:bg-[var(--hover-fill)] transition-colors duration-150 ${FOCUS_RING}`}
           onClick={() => useStore.getState().toggleSidebar()}
-          title={t('sidebar.hideTooltip')}
+          title={withShortcut(t('sidebar.hideTooltip'), sidebarKey)}
           aria-label={t('sidebar.hideTooltip')}
         >
           <IconChevronDir dir={collapseDirection(sidebarPosition)} />

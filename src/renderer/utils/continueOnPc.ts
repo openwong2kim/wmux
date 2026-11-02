@@ -21,7 +21,7 @@ import { t } from '../i18n';
 import { REDACTED, redactSecretsCounted } from '../../shared/redactSecrets';
 import { finalizeSpawnPrompt, stripBidi } from '../../shared/a2aSpawnPrompt';
 import { SPAWN_TEXT_MAX } from '../../shared/a2aSpawn';
-import { HANDOFF_FILES_MAX, HANDOFF_REPLY_MAX, HANDOFF_REQUEST_MAX, type HandoffFacts } from './continueInAgent';
+import { HANDOFF_FILES_MAX, HANDOFF_REPLY_MAX, HANDOFF_REQUEST_MAX, type HandoffFacts } from './handoffNote';
 
 /** The note's budget, in UTF-8 bytes: under the request's cap. */
 export const REMOTE_HANDOFF_MAX_BYTES = SPAWN_TEXT_MAX - 2 * 1024;

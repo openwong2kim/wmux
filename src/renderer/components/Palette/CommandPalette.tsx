@@ -17,7 +17,6 @@ import { railPagePlugins } from '../../plugins/railPagePlugins';
 import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
 import { runProjectCommand } from '../../utils/projectCommands';
 import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
-import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 import { isChatV2Covering } from '../ChatV2/coverage';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { comboFromEvent, displayCombo, effectiveBindings, pluginPageShortcut, type ShortcutActionId } from '../../../shared/keymap';
@@ -314,6 +313,11 @@ export default function CommandPalette() {
         shortcut: 'stashPane',
         action: () => { stashActivePane(); setVisible(false); },
       },
+      {
+        label: t('palette.cmd.balanceLayout'),
+        shortcut: 'balanceLayout',
+        action: () => { useStore.getState().balanceLayout(); showWorkspaces(useStore.getState()); setVisible(false); },
+      },
       // #645 — move the active pane. Four entries rather than one "move pane"
       // with a follow-up prompt: the palette is a single-stage list, and
       // typing "move pane l" should just do it.
@@ -469,127 +473,6 @@ export default function CommandPalette() {
           openTaskDiff(task.id, activeWorkspaceId, task.title, task.owner.verifiedWorkspaceId);
           // The diff opens in a pane, which is on the Workspaces page.
           showWorkspaces(useStore.getState());
-          setVisible(false);
-        },
-      });
-    }
-
-    // Company commands
-    const state = useStore.getState();
-    const hasCompany = !!state.company;
-
-    if (COMPANY_MODE_ENABLED && !hasCompany) {
-      const templates = [
-        { name: 'Full-Stack Team', label: 'Company: Create Full-Stack Team' },
-        { name: 'Startup MVP', label: 'Company: Create Startup MVP' },
-        { name: 'Code Review Squad', label: 'Company: Create Code Review Squad' },
-      ];
-      templates.forEach((tpl) => {
-        items.push({
-          id: `company-create-${tpl.name}`,
-          label: tpl.label,
-          category: 'command' as PaletteCategory,
-          icon: <IconCommand />,
-          action: () => {
-            import('../../../company/core/builtinTemplates').then(({ BUILTIN_TEMPLATES }) => {
-              const template = BUILTIN_TEMPLATES.find((t) => t.name === tpl.name);
-              if (!template) return;
-              const s = useStore.getState();
-              s.createCompany(tpl.name);
-              for (const dept of template.departments) {
-                s.addDepartment(dept.name, dept.leadName, dept.leadPreset);
-                const fresh = useStore.getState();
-                const lastDept = fresh.company?.departments[fresh.company.departments.length - 1];
-                if (lastDept) {
-                  for (const member of dept.members) {
-                    useStore.getState().addMember(lastDept.id, member.name, member.preset);
-                  }
-                }
-              }
-              // Set CEO to current workspace
-              const current = useStore.getState();
-              if (current.company) {
-                current.setCeoWorkspace(current.activeWorkspaceId);
-                useStore.setState((s) => {
-                  const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
-                  if (ws) ws.companyRole = 'ceo';
-                });
-              }
-              useStore.getState().setSidebarMode('company');
-            });
-            setVisible(false);
-          },
-        });
-      });
-
-      items.push({
-        id: 'company-create-custom',
-        label: 'Company: Create Custom...',
-        category: 'command' as PaletteCategory,
-        icon: <IconCommand />,
-        action: () => {
-          const name = prompt('Company name:');
-          if (name?.trim()) {
-            useStore.getState().createCompany(name.trim());
-            const s = useStore.getState();
-            if (s.company) {
-              s.setCeoWorkspace(s.activeWorkspaceId);
-              useStore.setState((st) => {
-                const ws = st.workspaces.find((w) => w.id === st.activeWorkspaceId);
-                if (ws) ws.companyRole = 'ceo';
-              });
-            }
-            useStore.getState().setSidebarMode('company');
-          }
-          setVisible(false);
-        },
-      });
-    } else if (COMPANY_MODE_ENABLED) {
-      items.push({
-        id: 'company-provision-all',
-        label: 'Company: Provision All Members',
-        category: 'command' as PaletteCategory,
-        icon: <IconCommand />,
-        action: () => {
-          import('../../../company/renderer/provisioner').then(({ spawnCompany }) => {
-            const s = useStore.getState();
-            const c = s.company;
-            if (!c) return;
-            spawnCompany({
-              companyName: c.name,
-              skipPermissions: c.skipPermissions || false,
-              workDir: c.workDir,
-              departments: c.departments.map((d) => ({
-                name: d.name,
-                leadName: d.members.find((m) => m.id === d.leadId)?.name || 'Lead',
-                members: d.members.filter((m) => m.id !== d.leadId).map((m) => ({ name: m.name, preset: m.preset })),
-              })),
-            });
-          });
-          setVisible(false);
-        },
-      });
-
-      items.push({
-        id: 'company-destroy',
-        label: 'Company: Destroy',
-        category: 'command' as PaletteCategory,
-        icon: <IconCommand />,
-        action: () => {
-          useStore.getState().destroyCompany();
-          useStore.getState().setSidebarMode('workspaces');
-          setVisible(false);
-        },
-      });
-
-      items.push({
-        id: 'company-view-tab',
-        label: 'Company: Show Company Tab',
-        category: 'command' as PaletteCategory,
-        icon: <IconCommand />,
-        action: () => {
-          useStore.getState().setSidebarMode('company');
-          if (!useStore.getState().sidebarVisible) useStore.getState().toggleSidebar();
           setVisible(false);
         },
       });
@@ -940,7 +823,7 @@ export default function CommandPalette() {
   };
 
   const activeShortcut = results[activeIdx]?.shortcut;
-  const setShortcutKeyHint = platform === 'darwin' ? '⌘Enter' : 'Ctrl+Enter';
+  const setShortcutKeyHint = displayCombo('CmdOrCtrl+Enter', platform);
 
   if (!visible) return null;
 
@@ -998,7 +881,7 @@ export default function CommandPalette() {
           />
           )}
           <kbd className="ui-kbd shrink-0" {...tokenAttrs('textSub', 'text')}>
-            ESC
+            {displayCombo('Escape', platform)}
           </kbd>
         </div>
 

@@ -9,8 +9,7 @@
  * and not even on screen. Two effects: one consumes, one owns the timer keyed on
  * what it is timing.
  *
- * A source-scan guard, in the house style (Sidebar.companyMode, appLayout
- * invariants): the store-connected roster has no render fixture here, and the
+ * A source-scan guard, in the house style (appLayout invariants): the store-connected roster has no render fixture here, and the
  * bug is a hook-dependency shape rather than a value any assertion could read.
  */
 import { describe, expect, it } from 'vitest';

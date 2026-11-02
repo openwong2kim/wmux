@@ -2,11 +2,11 @@ import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
-import { DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type BrainVendor, type Company, type Pane, type SessionData, type Workspace } from '../../../../shared/types';
+import { DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type BrainVendor, type Pane, type SessionData, type Workspace } from '../../../../shared/types';
 
 // Fix 0 — minimum cross-slice state surface that workspaceSlice.loadSession
 // and clearAllPtyState mutate. We intentionally don't pull in the full
-// uiSlice / companySlice creators here — those creators have
+// uiSlice creator here — that creator has
 // side effects (apply DOM theme classes, sync i18n locale, register
 // listeners). The tests below only need the FIELDS those slices declare,
 // so we hand-roll them as initial state.
@@ -40,7 +40,6 @@ type TestState = WorkspaceSlice & {
   fleetLayout: 'list' | 'board';
   customKeybindings: unknown[];
   autoUpdateEnabled: boolean;
-  sidebarMode: 'workspaces' | 'company';
   customThemeColors: null;
   layoutTemplates: unknown[];
   recentCommands: string[];
@@ -50,10 +49,6 @@ type TestState = WorkspaceSlice & {
   cheatSheetDismissed: boolean;
   floatingPanePtyId: string | null;
   terminalBookmarks: Record<string, number[]>;
-  // companySlice fields
-  company: Company | null;
-  memberCosts: Record<string, number>;
-  sessionStartTime: number | null;
   // agentToolbarSlice fields touched by loadSession
   agentToolbarEnabled: boolean;
   toolbarSnippets: { id: string; label: string; text: string }[];
@@ -104,7 +99,6 @@ function createTestStore() {
       fleetLayout: 'list',
       customKeybindings: [],
       autoUpdateEnabled: true,
-      sidebarMode: 'workspaces',
       customThemeColors: null,
       layoutTemplates: [],
       recentCommands: [],
@@ -114,9 +108,6 @@ function createTestStore() {
       cheatSheetDismissed: false,
       floatingPanePtyId: null,
       terminalBookmarks: {},
-      company: null,
-      memberCosts: {},
-      sessionStartTime: null,
       agentToolbarEnabled: true,
       toolbarSnippets: [],
       // #517 — main-owned backend mirror. Seeded here so the non-persistence
@@ -397,6 +388,66 @@ describe('WorkspaceSlice.loadSession — Fix 0 contract', () => {
   });
 });
 
+describe('loadSession — companies', () => {
+  function load(workspaces: unknown[]) {
+    const store = createTestStore();
+    store.getState().loadSession({
+      workspaces,
+      activeWorkspaceId: 'ws-a',
+      sidebarVisible: true,
+    } as unknown as SessionData);
+    return store.getState().workspaces as unknown as Record<string, unknown>[];
+  }
+  const tree = () => makeNestedTree('pty-a', 'pty-b', 'pty-c');
+
+  it("drops the old company role and department name, so a saved 'lead' is no company", () => {
+    const [ws] = load([{ id: 'ws-a', name: 'A', rootPane: tree(), activePaneId: 'pane-left', companyRole: 'lead', companyDeptName: 'Eng' }]);
+    expect(ws).not.toHaveProperty('companyRole');
+    expect(ws).not.toHaveProperty('companyDeptName');
+    expect(ws).not.toHaveProperty('company');
+  });
+
+  it('keeps a valid company record and drops a broken one', () => {
+    const home = { v: 1, id: 'co-eng', coordinatorPaneId: 'pane-left' };
+    const [a, b] = load([
+      { id: 'ws-a', name: 'A', rootPane: tree(), activePaneId: 'pane-left', company: home },
+      { id: 'ws-b', name: 'B', rootPane: tree(), activePaneId: 'pane-left', company: { v: 9, id: 'x', coordinatorPaneId: null } },
+    ]);
+    expect(a.company).toEqual(home);
+    expect(b).not.toHaveProperty('company');
+  });
+});
+
+describe('loadSession — a session saved by the removed company mode', () => {
+  it('restores the workspaces and keeps the old company keys out of the store', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-1',
+      name: 'CEO',
+      rootPane: makeNestedTree('pty-a', 'pty-b', 'pty-c'),
+      activePaneId: 'pane-left',
+    };
+    const data = {
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      sidebarMode: 'company',
+      company: { id: 'co-1', name: 'Acme', createdAt: 1, ceoWorkspaceId: ws.id, departments: [] },
+      memberCosts: { 'm-1': 1.5 },
+      sessionStartTime: 1_700_000_000_000,
+    } as unknown as SessionData;
+
+    store.getState().loadSession(data);
+
+    expect(store.getState().workspaces.map((w) => w.name)).toEqual(['CEO']);
+    expect(store.getState().activeWorkspaceId).toBe('ws-1');
+    const state = store.getState() as unknown as Record<string, unknown>;
+    for (const key of ['sidebarMode', 'company', 'memberCosts', 'sessionStartTime']) {
+      expect(state).not.toHaveProperty(key);
+    }
+  });
+});
+
 describe('WorkspaceSlice.clearAllPtyState — Fix 0 fallback', () => {
   it('clears terminal surface ptyId across nested split panes', () => {
     const store = createTestStore();
@@ -466,52 +517,6 @@ describe('WorkspaceSlice.clearAllPtyState — Fix 0 fallback', () => {
 
     expect(store.getState().floatingPanePtyId).toBeNull();
     expect(store.getState().terminalBookmarks).toEqual({});
-  });
-
-  it('clears company member.ptyId across all departments when company mode active', () => {
-    const store = createTestStore();
-    const company: Company = {
-      id: 'co-1',
-      name: 'Acme',
-      createdAt: Date.now(),
-      departments: [
-        {
-          id: 'dept-eng',
-          name: 'Engineering',
-          leadId: 'm-1',
-          members: [
-            // @ts-expect-error — partial fixture, runtime tolerates extra/missing optionals
-            { id: 'm-1', name: 'Alice', preset: 'engineer', workspaceId: 'ws-1', status: 'idle', ptyId: 'pty-alice' },
-            // @ts-expect-error — partial fixture
-            { id: 'm-2', name: 'Bob', preset: 'engineer', workspaceId: 'ws-2', status: 'idle', ptyId: 'pty-bob' },
-          ],
-        },
-        {
-          id: 'dept-pm',
-          name: 'Product',
-          leadId: 'm-3',
-          // @ts-expect-error — partial fixture
-          members: [{ id: 'm-3', name: 'Carol', preset: 'pm', workspaceId: 'ws-3', status: 'idle', ptyId: 'pty-carol' }],
-        },
-      ],
-    };
-    store.setState((s) => {
-      s.company = company;
-    });
-
-    store.getState().clearAllPtyState();
-
-    const c = store.getState().company!;
-    expect(c.departments[0].members[0].ptyId).toBeUndefined();
-    expect(c.departments[0].members[1].ptyId).toBeUndefined();
-    expect(c.departments[1].members[0].ptyId).toBeUndefined();
-  });
-
-  it('is a no-op for company state when company is null', () => {
-    const store = createTestStore();
-    expect(store.getState().company).toBeNull();
-    expect(() => store.getState().clearAllPtyState()).not.toThrow();
-    expect(store.getState().company).toBeNull();
   });
 });
 

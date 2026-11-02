@@ -362,7 +362,7 @@ export function ShipButton({ repoPath, mergeActive, refreshKey = 0, changeKey = 
           <DialogHeader
             title={t(dialog === 'commit' ? 'git.ship.commitTitle' : 'git.ship.createPrTitle')}
             description={dialog === 'commit'
-              ? t('git.ship.commitDesc', { count: status.dirty })
+              ? t(status.dirty === 1 ? 'git.ship.commitDescOne' : 'git.ship.commitDesc', { count: status.dirty })
               : t('git.ship.createPrDesc', { branch: status.branch ?? '' })}
             closeLabel={t('git.ship.cancel')}
             closeDisabled={busy !== null}

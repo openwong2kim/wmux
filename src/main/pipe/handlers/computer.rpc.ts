@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { RpcRouter } from '../RpcRouter';
 import type { RpcContext } from '../../../shared/rpc';
-import { ComputerError, encodeComputerErrorMessage } from '../../../shared/computer/errors';
+import { ComputerError, encodeComputerErrorMessage, withDisposition } from '../../../shared/computer/errors';
 import { COMPUTER_CONTROL_ACTIONS, isControlAction, type ObservationMode } from '../../../shared/computer/protocol';
 import type { ComputerAgent, ComputerService, ControlParams } from '../../computer/ComputerService';
 
@@ -66,7 +66,10 @@ export function registerComputerRpc(
           ? await callerAgent(ctx, params, resolvePtyWorkspace, workspaceName)
           : identity === 'optional' ? { key: '', label: name } : unkeyed(name);
         return await fn(params, agent);
-      } catch (err) {
+      } catch (caught) {
+        // An input action refused here, before the service (which stamps
+        // its own errors), sent nothing.
+        const err = method === 'computer.act' ? withDisposition(caught, 'not_delivered') : caught;
         if (err instanceof ComputerError) throw new Error(encodeComputerErrorMessage(err.toPayload()));
         throw new Error(encodeComputerErrorMessage({ code: 'internal', message: err instanceof Error ? err.message : String(err) }));
       }

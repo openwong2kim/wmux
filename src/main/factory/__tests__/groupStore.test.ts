@@ -52,6 +52,21 @@ function rig(bots: GroupBotRef[] = [
 }
 
 describe('GroupStore', () => {
+  it('a bot on My Hermes talks one to one: no group takes it, by create, update or the room move', () => {
+    const r = rig([
+      { id: A, workspaceId: 'ws1', createdAt: 1, name: 'Alpha', ownHermes: true },
+      { id: B, workspaceId: 'ws1', createdAt: 2, name: 'Beta' },
+      { id: C, workspaceId: 'ws1', createdAt: 3, name: 'Gamma' },
+    ]);
+    expect(r.store.create({ workspaceId: 'ws1', name: 'Team', memberIds: [A, B] })).toMatchObject({ ok: false, field: 'members', message: expect.stringContaining('Alpha uses your own Hermes') });
+    const made = r.store.create({ workspaceId: 'ws1', name: 'Team', memberIds: [B, C] });
+    if (!made.ok) throw new Error(made.message);
+    expect(r.store.update(made.group.id, { memberIds: [A, B, C] })).toMatchObject({ ok: false, field: 'members' });
+    // One bot left is no group: the room stays a room and can still be adopted later.
+    expect(r.store.adoptRoom('ws1', [A, B])).toBeNull();
+    expect(r.store.adoptRoom('ws1', [A, B, C])?.memberIds).toEqual([B, C]);
+  });
+
   it('creates a named group of two or more bots of one workspace, in its own thread', () => {
     const r = rig();
     const made = r.store.create({ workspaceId: 'ws1', name: '  Ship\nit  ', memberIds: [B, A, B] });

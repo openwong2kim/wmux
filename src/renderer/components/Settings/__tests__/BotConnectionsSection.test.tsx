@@ -111,26 +111,33 @@ describe('BotConnectionsSection', () => {
   });
 });
 
-describe('a bot profile\'s connections', () => {
-  it('profileConnections: every-bot ones (on or switched off) and the ones picked for it, never disabled ones', () => {
+describe('a bot\'s settings page: its connections', () => {
+  it('profileConnections: every enabled one, ticked where it applies to the bot (an every-bot one unless switched off)', () => {
     const lib = [
       view({ id: 'con-00000001', name: 'all', offFor: [A] }),
       view({ id: 'con-00000002', name: 'mine', scope: { kind: 'bots', botIds: [A] } }),
       view({ id: 'con-00000003', name: 'theirs', scope: { kind: 'bots', botIds: ['bot-0000000b'] } }),
       view({ id: 'con-00000004', name: 'off', enabled: false }),
     ];
-    expect(profileConnections(lib, A).map((x) => [x.c.name, x.source, x.on])).toEqual([['all', 'all', false], ['mine', 'bot', true]]);
+    expect(profileConnections(lib, A).map((x) => [x.c.name, x.source, x.on])).toEqual([['all', 'all', false], ['mine', 'bot', true], ['theirs', 'bot', false]]);
   });
 
-  it('the switch turns an every-bot connection off for this bot alone; Remove from this bot narrows the picked scope', async () => {
-    const port = fakePort([view({ name: 'all' }), view({ id: 'con-00000002', name: 'mine', scope: { kind: 'bots', botIds: [A, 'bot-0000000b'] } })]);
+  it('a tick acts at once: an every-bot one is switched off for this bot alone; a picked one gains or loses this bot in its scope', async () => {
+    const port = fakePort([
+      view({ name: 'all' }),
+      view({ id: 'con-00000002', name: 'mine', scope: { kind: 'bots', botIds: [A, 'bot-0000000b'] } }),
+      view({ id: 'con-00000003', name: 'theirs', scope: { kind: 'bots', botIds: ['bot-0000000b'] } }),
+    ]);
     const row = { bot: { id: A, name: 'Dev' } } as unknown as FactoryBotRow;
     await mount(<BotConnections row={row} t={t} port={port} />);
+    expect(q('[data-testid="bot-connection-manage"]')).toBeNull();
     await act(async () => { q('[data-testid="bot-connection-on-all"]')!.click(); });
     expect(port.setOffForBot).toHaveBeenCalledWith({ id: 'con-00000001', botId: A, off: true });
-    await act(async () => { q('[data-testid="bot-connection-remove-mine"]')!.click(); });
-    const saved = port.save.mock.calls[0][0];
-    expect(saved.connector).toMatchObject({ id: 'con-00000002', scope: { kind: 'bots', botIds: ['bot-0000000b'] } });
-    expect('missingKeys' in saved.connector).toBe(false);
+    await act(async () => { q('[data-testid="bot-connection-on-mine"]')!.click(); });
+    const removed = port.save.mock.calls[0][0];
+    expect(removed.connector).toMatchObject({ id: 'con-00000002', scope: { kind: 'bots', botIds: ['bot-0000000b'] } });
+    expect('missingKeys' in removed.connector).toBe(false);
+    await act(async () => { q('[data-testid="bot-connection-on-theirs"]')!.click(); });
+    expect(port.save.mock.calls[1][0].connector).toMatchObject({ id: 'con-00000003', scope: { kind: 'bots', botIds: ['bot-0000000b', A] } });
   });
 });

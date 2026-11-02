@@ -38,13 +38,13 @@ export function bypassConfirmCopy(locale: AutomationUiLocale, automationName: st
     ? {
       message: `"${name}"을(를) 승인 없이 실행할까요?`,
       detail: '정한 시각에, 자리에 없을 때도 승인을 묻지 않고 실행합니다.',
-      confirm: '바이패스 사용',
+      confirm: '전체 권한 사용',
       cancel: '취소',
     }
     : {
       message: `Run "${name}" without asking for approval?`,
       detail: 'It runs at the scheduled time without asking for approval, including while you are away.',
-      confirm: 'Use Bypass',
+      confirm: 'Use Full access',
       cancel: 'Cancel',
     };
 }

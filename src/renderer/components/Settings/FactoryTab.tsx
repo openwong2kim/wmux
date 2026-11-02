@@ -25,14 +25,13 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { BOT_JOB_MAX, BOT_NAME_MAX, TEMPLATE_LEGACY_ROLE, isCoordinatorBot, normalizeBotJob, normalizeBotName, type BotProfile, type BotRole, type BotTemplate } from '../../../shared/bot';
 import { TEAM_TEMPLATES, teamTemplatesPresent, type FactoryBotAvatarPickResult, type FactoryBotRepoSuggestion } from '../../../shared/botCreate';
-import { FACTORY_LANE_DAILY_CAP_MAX } from '../../../shared/factorySettings';
+import { COMPANY_MAX_WORKING_MAX, COMPANY_MAX_WORKING_MIN, DEFAULT_COMPANY_MAX_WORKING, FACTORY_LANE_DAILY_CAP_MAX } from '../../../shared/factorySettings';
 import type { FactoryTaskFolderUsage } from '../../../shared/botTask';
 import { getLocale } from '../../i18n';
 import { refreshRoomStatus } from '../../hooks/useRoomSync';
 import {
   getFactoryBotPort,
   getFactorySettingsPort,
-  type BotProfilePatch,
   type FactoryBotPort,
   type FactoryBotRow,
   type FactorySettingsPort,
@@ -49,10 +48,14 @@ import Switch from '../ui/Switch';
 import Select from '../ui/Select';
 import Input from '../ui/Input';
 import { FOCUS_RING } from '../focusRing';
+import { originCommand } from '../Git/originCommand';
+import { useCopyText } from '../../hooks/useCopyText';
 import { BotSecretsSection, PhoneBotSelect } from './BotSecretsSection';
 import { BotConnectionsSection } from './BotConnectionsSection';
 import { ClaudeAuthSection, bridgeClaudeAuthPort, type ClaudeAuthPort } from './ClaudeAuthSection';
 import { InlineConfirm } from '../Bots/InlineConfirm';
+import { AddBotEngineRow } from '../Bots/BotEngineLine';
+import type { EnginePick, HermesPort } from '../Bots/botsHermes';
 import { selectBotTaskOwners, withoutBotTasks } from '../Sidebar/botTasks';
 import { listedWorkspaces } from '../../../shared/pcRail';
 import { createBot, turnBotsOn, type TurnBotsOnResult } from '../Bots/botsAddBot';
@@ -69,6 +72,7 @@ const WEEKDAYS = [1, 2, 3, 4, 5, 6, 0];
 const CONCURRENCY = [1, 2, 3, 4, 5];
 /** shared/factorySettings.ts FACTORY_MAX_AGENTS_MIN..MAX. */
 const MAX_AGENTS = Array.from({ length: 15 }, (_, i) => i + 2);
+const COMPANY_MAX_WORKING = Array.from({ length: COMPANY_MAX_WORKING_MAX - COMPANY_MAX_WORKING_MIN + 1 }, (_, i) => i + COMPANY_MAX_WORKING_MIN);
 
 /** A comma / space separated list of logins → the list. */
 export function parseAuthors(text: string): string[] {
@@ -146,127 +150,6 @@ function RepoLine({ repoKey, folder, testId }: { repoKey: string; folder: string
   );
 }
 
-function BotProfileEditor({ row, port, t, onDone }: { row: FactoryBotRow; port: FactoryBotPort; t: T; onDone: () => void }) {
-  const [name, setName] = useState(row.bot.name);
-  const [job, setJob] = useState(row.bot.job ?? '');
-  const [enabled, setEnabled] = useState(row.bot.enabled);
-  // Empty: no hourly cap.
-  const [perHour, setPerHour] = useState(row.bot.budget.maxTurnsPerHour === undefined ? '' : String(row.bot.budget.maxTurnsPerHour));
-  const [perDay, setPerDay] = useState(String(row.bot.budget.maxTurnsPerDay));
-  const [workers, setWorkers] = useState(String(row.bot.budget.maxConcurrentWorkers));
-  // undefined = unchanged, a string = the new picture, null = remove it.
-  const [picture, setPicture] = useState<string | null | undefined>(undefined);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const shownAvatar = picture === undefined ? row.bot.avatar : picture ?? undefined;
-
-  const save = async () => {
-    if (!port.update) return;
-    const n = (v: string) => (v.trim() !== '' && Number.isInteger(Number(v)) && Number(v) >= 0 ? Number(v) : undefined);
-    // An hourly cap is 1 or more; empty (or 0) removes it.
-    const hour = n(perHour);
-    const nextHour = hour === undefined || hour === 0 ? null : hour;
-    const nextJob = job.trim() === '' ? null : job.trim();
-    const patch: BotProfilePatch = {
-      ...(name.trim() && name.trim() !== row.bot.name ? { name: name.trim() } : {}),
-      ...(nextJob !== (row.bot.job ?? null) ? { job: nextJob } : {}),
-      ...(enabled !== row.bot.enabled ? { enabled } : {}),
-      budget: {
-        ...(nextHour !== (row.bot.budget.maxTurnsPerHour ?? null) ? { maxTurnsPerHour: nextHour } : {}),
-        ...(n(perDay) !== undefined ? { maxTurnsPerDay: n(perDay) } : {}),
-        ...(n(workers) !== undefined ? { maxConcurrentWorkers: n(workers) } : {}),
-      },
-    };
-    setBusy(true);
-    setError(null);
-    try {
-      // The profile first: a refused profile saves no picture either.
-      const r = await port.update(row.bot.id, patch);
-      if (!r.ok) { setError(r.message ?? t('settings.factory.saveFailed')); return; }
-      if (picture !== undefined && port.setAvatar) {
-        const saved = await port.setAvatar(row.bot.id, picture);
-        if (!saved.ok) { setError(saved.message || t('settings.factory.saveFailed')); return; }
-        setPicture(undefined);
-      }
-      onDone();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div data-testid="factory-bot-editor" className="flex flex-col gap-2 px-3 py-2">
-      <label className="flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
-        <span className="w-[120px] shrink-0">{t('settings.factory.botName')}</span>
-        <Input value={name} maxLength={BOT_NAME_MAX} onChange={(e) => setName(e.target.value)} className="flex-1 text-[13px]" />
-      </label>
-      <label className="flex items-start gap-2 text-[12px] text-[var(--text-sub)]">
-        <span className="w-[120px] shrink-0 pt-[5px]">{t('settings.factory.addBotJob')}</span>
-        <textarea
-          data-testid="factory-bot-job"
-          value={job}
-          rows={3}
-          maxLength={BOT_JOB_MAX}
-          onChange={(e) => setJob(e.target.value)}
-          onKeyDown={(e) => e.stopPropagation()}
-          className={`min-w-0 flex-1 rounded-[6px] border border-[var(--line)] focus:border-[var(--line-strong)] bg-transparent px-2 py-1.5 text-[13px] text-[var(--text-main)] outline-none ${FOCUS_RING}`}
-        />
-      </label>
-      {port.pickAvatar && port.setAvatar && (
-        <PicturePicker
-          bot={{ id: row.bot.id, name: name.trim() || row.bot.name, role: row.bot.role }}
-          avatar={shownAvatar}
-          port={port}
-          t={t}
-          busy={busy}
-          onPicked={setPicture}
-          onRemove={() => setPicture(null)}
-          onError={setError}
-          chooseLabel={t('settings.factory.changePicture')}
-          removeLabel={t('settings.factory.removePicture')}
-        />
-      )}
-      <label className="flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
-        <span className="w-[120px] shrink-0">{t('settings.factory.botEnabled')}</span>
-        <Switch checked={enabled} onCheckedChange={setEnabled} aria-label={t('settings.factory.botEnabled')} />
-      </label>
-      {([
-        ['settings.factory.turnsPerHour', perHour, setPerHour],
-        ['settings.factory.turnsPerDay', perDay, setPerDay],
-        ['settings.factory.workers', workers, setWorkers],
-      ] as const).map(([key, value, setter]) => (
-        <label key={key} className="flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
-          <span className="w-[120px] shrink-0">{t(key)}</span>
-          <Input
-            type="number"
-            min={0}
-            value={value}
-            {...(key === 'settings.factory.turnsPerHour' ? { placeholder: t('settings.factory.noHourlyLimit') } : {})}
-            onChange={(e) => setter(e.target.value)}
-            className="w-[80px] text-[13px]"
-          />
-        </label>
-      ))}
-      {row.bot.repo && (
-        <div className="flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
-          <span className="w-[120px] shrink-0">{t('settings.factory.addBotRepo')}</span>
-          <RepoLine repoKey={row.bot.repo.repoKey} folder={row.bot.repo.repoPath} testId="factory-bot-repo" />
-        </div>
-      )}
-      <div className="text-[11px] text-[var(--text-muted)]">
-        {t('settings.factory.botTriggers', { count: row.bot.triggers.length })}
-      </div>
-      {error && <SettingNote tone="danger">{error}</SettingNote>}
-      <div className="flex justify-end gap-1.5">
-        <Button size="sm" variant="ghost" onClick={onDone} disabled={busy}>{t('settings.factory.cancel')}</Button>
-        <Button size="sm" variant="primary" onClick={() => void save()} disabled={busy}>{t('settings.factory.save')}</Button>
-      </div>
-    </div>
-  );
-}
-
 /** The templates "Add bot" offers as chips, in order (Custom is the
  *  default when none is picked). */
 export const ADDABLE_TEMPLATES: readonly BotTemplate[] = ['coordinator', 'developer', 'reviewer', 'issue', 'researcher'];
@@ -296,7 +179,7 @@ export type AddBotRepoView =
   | { kind: 'suggested'; repoKey: string; root: string; displayRoot: string }
   | { kind: 'picked'; folder: string }
   | { kind: 'checking' }
-  | { kind: 'none'; reason?: string; remembered?: boolean; unchecked?: 'failed' | 'slow' };
+  | { kind: 'none'; reason?: string; reasonCode?: string; originSet?: boolean; remembered?: boolean; unchecked?: 'failed' | 'slow' };
 
 export function addBotRepoView(
   rows: readonly FactoryBotRow[],
@@ -325,7 +208,7 @@ export function addBotRepoView(
   if (pending) return { kind: 'checking' };
   if (suggestion && !suggestion.ok) {
     if (suggestion.code === 'none') return { kind: 'none', remembered: true };
-    if (suggestion.message) return { kind: 'none', reason: suggestion.message };
+    if (suggestion.message) return { kind: 'none', reason: suggestion.message, reasonCode: suggestion.code, ...(suggestion.originSet ? { originSet: true } : {}) };
   }
   return { kind: 'none' };
 }
@@ -363,6 +246,8 @@ export interface AddBotFormProps {
   /** 'team': only the workspace and the repository, and Add team as the
    *  primary (the Bots page's "+" › Add team). Default: one bot. */
   mode?: 'bot' | 'team';
+  /** The engine picker's Hermes verbs (default: the preload's). */
+  hermesPort?: HermesPort;
 }
 
 /** Why Add cannot be pressed, as one line's key, or null. Pure. */
@@ -379,12 +264,14 @@ export function addBotBlockedReason(p: { canCreate: boolean; workspaceId: string
 /** "Works on acme/app · ~/code/app" with Change and None, or "No
  *  repository" with Choose folder…: what a new bot will work on, always in
  *  view (addBotRepoView). Shared with the Bots page's first screen. */
-export function AddBotRepoRow({ view, t, busy, onChoose, onNone }: {
+export function AddBotRepoRow({ view, t, busy, onChoose, onNone, onRecheck }: {
   view: AddBotRepoView;
   t: T;
   busy: boolean;
   onChoose: () => void;
   onNone: () => void;
+  /** Ask main for the workspace's folder again (after its origin is fixed). */
+  onRecheck?: () => void;
 }): React.ReactElement {
   const works = view.kind !== 'none' && view.kind !== 'checking';
   return (
@@ -418,11 +305,50 @@ export function AddBotRepoRow({ view, t, busy, onChoose, onNone }: {
           {t(view.unchecked === 'failed' ? 'settings.factory.addBotRepoCheckFailed' : 'settings.factory.addBotRepoCheckSlow')}
         </p>
       )}
-      {view.kind === 'none' && !view.unchecked && (view.reason || view.remembered) && (
+      {view.kind === 'none' && !view.unchecked && view.reasonCode === 'no_remote' && view.reason && (
+        <RepoNoRemoteNote reason={view.reason} originSet={view.originSet} onRecheck={onRecheck} t={t} />
+      )}
+      {view.kind === 'none' && !view.unchecked && view.reasonCode !== 'no_remote' && (view.reason || view.remembered) && (
         <p data-testid="factory-add-bot-repo-reason" className="basis-full text-[11px] leading-snug text-[var(--text-muted)]">
           {view.reason ?? t('settings.factory.addBotRepoRemembered')}
         </p>
       )}
+    </div>
+  );
+}
+
+/** A folder whose origin a bot cannot push to: one plain line, the command
+ *  that sets origin (add, or set-url when origin names no host), Check
+ *  again (asks main once more, so a fixed folder is offered), and main's
+ *  full reason behind Show details. "Copied" only once the write went
+ *  through; a failed copy shows the command to select by hand. */
+function RepoNoRemoteNote({ reason, originSet, onRecheck, t }: { reason: string; originSet?: boolean; onRecheck?: () => void; t: T }): React.ReactElement {
+  const [open, setOpen] = useState(false);
+  const { state: copyState, copy } = useCopyText();
+  const command = originCommand(originSet);
+  const link = `hover:text-[var(--text-main)] ${FOCUS_RING}`;
+  return (
+    <div data-testid="factory-add-bot-repo-reason" data-repo-reason="no_remote" className="flex basis-full flex-col gap-1">
+      <p className="text-[12px] leading-snug text-[var(--text-sub)]">{t('settings.factory.addBotRepoNoRemote')}</p>
+      <span className="flex flex-wrap items-center gap-x-1 text-[12px] text-[var(--text-muted)]">
+        <button type="button" data-testid="factory-add-bot-repo-copy" data-copy-state={copyState} title={command} className={link} onClick={() => void copy(command)}>
+          {copyState === 'copied' ? t('git.connect.copied') : t('settings.factory.addBotRepoCopyCommand')}
+        </button>
+        {onRecheck && (
+          <>
+            <span aria-hidden="true">·</span>
+            <button type="button" data-testid="factory-add-bot-repo-recheck" className={link} onClick={onRecheck}>
+              {t('botsPage.onboarding.checkAgain')}
+            </button>
+          </>
+        )}
+        <span aria-hidden="true">·</span>
+        <button type="button" data-testid="factory-add-bot-repo-details" aria-expanded={open} className={link} onClick={() => setOpen((v) => !v)}>
+          {t(open ? 'botsPage.engineError.hideDetails' : 'botsPage.engineError.showDetails')}
+        </button>
+      </span>
+      {copyState === 'failed' && <code data-testid="factory-add-bot-repo-command" className="select-all break-all font-mono text-[11px] text-[var(--text-main)]">{command}</code>}
+      {open && <p data-testid="factory-add-bot-repo-detail" className="break-words text-[11px] leading-snug text-[var(--text-muted)]">{reason}</p>}
     </div>
   );
 }
@@ -460,7 +386,10 @@ export function useAddBotRepo(port: FactoryBotPort, rows: readonly FactoryBotRow
   // its folders change (they only trigger the ask; main reads its own).
   const shownCwd = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.metadata?.cwd ?? '');
   const shownStartup = useStore((s) => s.workspaces.find((w) => w.id === workspaceId)?.profile?.startupCwd ?? '');
-  const ask = [workspaceId, ownKey, shownCwd, shownStartup].join('\0');
+  // Check again: the same workspace asked once more (its folder's origin may
+  // have been fixed since).
+  const [recheckSeq, setRecheckSeq] = useState(0);
+  const ask = [workspaceId, ownKey, shownCwd, shownStartup, recheckSeq].join('\0');
   useEffect(() => {
     if (!port.suggestRepo || !workspaceId) return;
     let live = true;
@@ -495,7 +424,7 @@ export function useAddBotRepo(port: FactoryBotPort, rows: readonly FactoryBotRow
       setError(err instanceof Error ? err.message : String(err));
     }
   };
-  return { view, repoFolder, request, pending: view.kind === 'checking', choose, chooseNone: () => setChoice({ workspaceId, folder: null, none: true }), error };
+  return { view, repoFolder, request, pending: view.kind === 'checking', choose, chooseNone: () => setChoice({ workspaceId, folder: null, none: true }), recheck: () => setRecheckSeq((n) => n + 1), error };
 }
 
 /** The names "Add team" gives its bots, in the owner's language. */
@@ -565,6 +494,8 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
   const [busy, setBusy] = useState(false);
   // The bots are off: Add (or Add team) first asks, in place, to turn them on.
   const [confirmOn, setConfirmOn] = useState<'bot' | 'team' | null>(null);
+  // The engine: Claude unless the owner picks a Hermes.
+  const [engine, setEngine] = useState<EnginePick>({ engine: 'claude-sdk' });
   const repo = useAddBotRepo(port, rows, workspaceId, pickFolder);
   // A name is required; a job is optional but, when written, one the store keeps.
   const typedName = normalizeBotName(name);
@@ -616,9 +547,12 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
         ...(typedJob ? { job: typedJob } : {}),
         ...repo.request,
         ...(avatar ? { avatar } : {}),
+        ...(engine.engine !== 'claude-sdk' ? { engine: engine.engine } : {}),
+        ...(engine.engine === 'my-hermes' && engine.profile ? { hermesProfile: engine.profile } : {}),
       });
       if (r.ok) onDone(r.bot);
-      else setError(r.message || t('settings.factory.addBotFailed'));
+      // Declined in main's My Hermes confirm: the form stays as it was.
+      else if (r.code !== 'cancelled') setError(r.message || t('settings.factory.addBotFailed'));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -746,11 +680,12 @@ export function AddBotForm(props: AddBotFormProps): React.ReactElement {
       </>)}
       <div className="flex items-center gap-2 text-[12px] text-[var(--text-sub)]">
         <span className="w-[120px] shrink-0">{t('settings.factory.addBotRepo')}</span>
-        <AddBotRepoRow view={repo.view} t={t} busy={busy} onChoose={() => void repo.choose()} onNone={repo.chooseNone} />
+        <AddBotRepoRow view={repo.view} t={t} busy={busy} onChoose={() => void repo.choose()} onNone={repo.chooseNone} onRecheck={repo.recheck} />
       </div>
       <div className="text-[11px] text-[var(--text-muted)]">
         {t(repo.view.kind === 'inherited' ? 'settings.factory.addBotRepoInherited' : 'settings.factory.addBotRepoHint')}
       </div>
+      {!teamMode && <AddBotEngineRow value={engine} onPick={setEngine} t={t} port={props.hermesPort} disabled={busy} />}
       {teamMode && teamLine && <p data-testid="factory-add-team-plan" className="text-[12px] leading-snug text-[var(--text-sub)]">{teamLine}</p>}
       {shownError && <SettingNote tone="danger" role="alert" data-testid="factory-add-bot-error">{shownError}</SettingNote>}
       {confirmOn ? (
@@ -820,7 +755,6 @@ function BotsList({ t, port, workspaceName, workspaces, defaultWorkspaceId, pick
   turnOn: () => Promise<TurnBotsOnResult>;
 }) {
   const rows = useFactoryBots(null, port);
-  const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const groups = useMemo(() => {
     const by = new Map<string, FactoryBotRow[]>();
@@ -843,7 +777,7 @@ function BotsList({ t, port, workspaceName, workspaces, defaultWorkspaceId, pick
     />
   ) : canAdd ? (
     <div className="flex justify-end px-3 py-2">
-      <Button size="sm" variant="secondary" data-testid="factory-add-bot-open" onClick={() => { setEditing(null); setAdding(true); }}>
+      <Button size="sm" variant="secondary" data-testid="factory-add-bot-open" onClick={() => setAdding(true)}>
         {t('settings.factory.addBot')}
       </Button>
     </div>
@@ -858,29 +792,31 @@ function BotsList({ t, port, workspaceName, workspaces, defaultWorkspaceId, pick
   }
   return (
     <div data-testid="factory-bots" className="flex flex-col">
+      {/* A bot's page is on the Bots page, which is there only while the
+          bots are on: off, the rows say so instead of leading nowhere. */}
+      {botsOff && <p data-testid="factory-bots-off-note" className="px-3 pt-2 text-[11px] text-[var(--text-muted)]">{t('botsPage.settings.botsOffNote')}</p>}
       {groups.map(([ws, list]) => (
         <div key={ws} className="flex flex-col">
           <div className="px-3 pt-2 text-[11px] text-[var(--text-muted)]">{workspaceName(ws)}</div>
           {list.map((row) => (
-            <div key={row.bot.id}>
-              <button
-                type="button"
-                data-testid="factory-bot-row"
-                data-bot-id={row.bot.id}
-                aria-expanded={editing === row.bot.id}
-                disabled={!port.update}
-                onClick={() => { setAdding(false); setEditing((cur) => (cur === row.bot.id ? null : row.bot.id)); }}
-                className={`w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] rounded-[6px] hover:bg-[var(--hover-fill)] disabled:hover:bg-transparent ${FOCUS_RING}`}
-              >
-                <BotAvatar bot={row.bot} size={20} t={t} />
-                <PresenceDot presence={botPresence(row)} />
-                <span className="truncate text-[var(--text-main)]">{row.bot.name}</span>
-                <span className="text-[11px] text-[var(--text-muted)]">{botKindLabel(row.bot, t)}</span>
-                {botModelSummary(row.bot, t) && <span data-testid="factory-bot-models" className="min-w-0 truncate text-[11px] text-[var(--text-muted)]">{botModelSummary(row.bot, t)}</span>}
-                {!row.bot.enabled && <span className="ml-auto text-[11px] text-[var(--text-muted)]">{t('settings.factory.botOff')}</span>}
-              </button>
-              {editing === row.bot.id && <BotProfileEditor row={row} port={port} t={t} onDone={() => setEditing(null)} />}
-            </div>
+            <button
+              key={row.bot.id}
+              type="button"
+              data-testid="factory-bot-row"
+              data-bot-id={row.bot.id}
+              aria-label={t('botsPage.settings.open', { name: row.bot.name })}
+              disabled={botsOff}
+              onClick={() => useStore.getState().openBotSettings(row.bot.id)}
+              className={`group w-full flex items-center gap-2 px-3 py-1.5 text-left text-[13px] rounded-[6px] hover:bg-[var(--hover-fill)] disabled:hover:bg-transparent ${FOCUS_RING}`}
+            >
+              <BotAvatar bot={row.bot} size={20} t={t} />
+              <PresenceDot presence={botPresence(row)} />
+              <span className="truncate text-[var(--text-main)]">{row.bot.name}</span>
+              <span className="text-[11px] text-[var(--text-muted)]">{botKindLabel(row.bot, t)}</span>
+              {botModelSummary(row.bot, t) && <span data-testid="factory-bot-models" className="min-w-0 truncate text-[11px] text-[var(--text-muted)]">{botModelSummary(row.bot, t)}</span>}
+              {!row.bot.enabled && <span className="text-[11px] text-[var(--text-muted)]">{t('settings.factory.botOff')}</span>}
+              {!botsOff && <span className="ml-auto shrink-0 text-[11px] text-[var(--text-muted)] group-hover:text-[var(--text-main)]">{t('botsPage.settings.openRow')}</span>}
+            </button>
           ))}
         </div>
       ))}
@@ -1118,6 +1054,16 @@ export function FactoryTab({ settingsPort, botPort, pickFolder, claudeAuthPort }
             onChange={(e) => void patch({ maxConcurrentAgents: Number(e.target.value) })}
           >
             {MAX_AGENTS.map((n) => <option key={n} value={n}>{n}</option>)}
+          </Select>
+        </SettingRow>
+        <SettingRow id="companymaxworking" label={t('settings.factory.companyMaxWorking')} description={t('settings.factory.companyMaxWorkingDesc')}>
+          <Select
+            disabled={off}
+            data-testid="company-max-working"
+            value={String(settings?.companyMaxWorking ?? DEFAULT_COMPANY_MAX_WORKING)}
+            onChange={(e) => void patch({ companyMaxWorking: Number(e.target.value) })}
+          >
+            {COMPANY_MAX_WORKING.map((n) => <option key={n} value={n}>{n}</option>)}
           </Select>
         </SettingRow>
         <SettingRow id="factorylaneautomerge" label={t('settings.factory.laneAutoMerge')} description={t('settings.factory.laneAutoMergeDesc')}>

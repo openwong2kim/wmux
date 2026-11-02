@@ -27,7 +27,8 @@ export interface FirstRunStatus {
 
 // === Check / reopen IPC payload ===
 // `shown` — true if marker file already exists (caller should NOT mount wizard for mode='firstRun')
-// `completedAt` — ISO timestamp of last completion, used for "Already completed on YYYY-MM-DD" copy
+// `completedAt` — ISO timestamp of the last completion (Settings › Setup and reset);
+//   absent when the first run was skipped
 export interface FirstRunCheckResult {
   shown: boolean;
   status: FirstRunStatus;

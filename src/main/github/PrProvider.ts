@@ -120,6 +120,14 @@ export async function detectRemote(repoPath: string, force = false, now: () => n
   return value;
 }
 
+/** Whether `origin` is set at all: a repo detectRemote finds no remote for
+ *  may still have one that names no host (a local path), which wants
+ *  `git remote set-url` rather than `git remote add`. */
+export async function originUrlSet(repoPath: string): Promise<boolean> {
+  const r = await git(['remote', 'get-url', 'origin'], repoPath).catch(() => null);
+  return !!r && r.code === 0 && r.stdout.trim() !== '';
+}
+
 /** Test seam. */
 export function clearRemoteCache(): void {
   remoteCache.clear();

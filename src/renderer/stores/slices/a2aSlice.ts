@@ -8,6 +8,7 @@ import { isChannelMentionTask } from '../../hooks/channelMentionFlush';
 import { recordApprovalRemoval } from './approvalInboxSlice';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { isReceiverPaneGone } from '../../../shared/a2aOrphanedTask';
+import { isCompanyTask } from '../../../shared/company';
 import type { A2aRemoteTaskMarkerV1 } from '../../../shared/a2aRemote';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
@@ -301,7 +302,12 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     // callerAddr ⇒ ws-authz, unconditionally.
     // #1598: unless that pane is gone from the receiver workspace — then any
     // verified pane of that workspace may move the task (same rule as the daemon).
-    if (callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== callerAddr.paneId) {
+    // A company task is marked done by the company's coordinator, which is not
+    // the receiver pane: its done skips this check (same rule as the daemon).
+    const coordinatorDone = newState === 'completed' && !!callerAddr?.paneId
+      && get().workspaces.find((w) => w.id === callerWorkspaceId)?.company?.coordinatorPaneId === callerAddr.paneId
+      && isCompanyTask(task.history);
+    if (!coordinatorDone && callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== callerAddr.paneId) {
       const receiverWs = get().workspaces.find((w) => w.id === callerWorkspaceId);
       const livePaneIds = receiverWs ? getWorkspaceLeafPanes(receiverWs).map((p) => p.id) : undefined;
       if (!isReceiverPaneGone(task.metadata.to, callerWorkspaceId, livePaneIds)) {

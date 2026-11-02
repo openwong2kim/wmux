@@ -137,7 +137,7 @@ export function identityConfirmCopy(locale: AutomationUiLocale, automationName: 
     return {
       message: `"${name}"이(가) "${pane}" 창의 브라우저를 쓰도록 할까요?`,
       detail: `Chrome 프로필: ${profile}\n허용 사이트: ${sites}\n\n${modeLine('ko')}\n정한 시각에${unattended ? ', 자리에 없을 때도' : ''} 이 계정으로 위 사이트만 엽니다. 이 실행에서는 wmux 도구 중 브라우저만 쓸 수 있습니다. 창의 정책이 바뀌면 다시 허용할 때까지 브라우저 호출이 거부됩니다.`,
-      confirm: view.mode === 'bypass' ? '바이패스와 브라우저 허용' : view.mode === 'auto' ? '자동 모드와 브라우저 허용' : '브라우저 허용',
+      confirm: view.mode === 'bypass' ? '전체 권한과 브라우저 허용' : view.mode === 'auto' ? '자동 모드와 브라우저 허용' : '브라우저 허용',
       cancel,
     };
   }
@@ -145,7 +145,7 @@ export function identityConfirmCopy(locale: AutomationUiLocale, automationName: 
   return {
     message: `Let "${name}" use the browser of pane "${pane}"?`,
     detail: `Chrome profile: ${profile}\nAllowed sites: ${sites}\n\n${modeLine('en')}\nAt the scheduled time${unattended ? ', including while you are away,' : ''} it opens only these sites as this account. The run gets wmux's browser tools and nothing else of wmux. If the pane's policy changes, its browser calls are refused until you grant it again.`,
-    confirm: view.mode === 'bypass' ? 'Use Bypass and allow browser' : view.mode === 'auto' ? 'Use Auto and allow browser' : 'Allow browser',
+    confirm: view.mode === 'bypass' ? 'Use Full access and allow browser' : view.mode === 'auto' ? 'Use Auto and allow browser' : 'Allow browser',
     cancel,
   };
 }

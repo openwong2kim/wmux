@@ -80,7 +80,7 @@ export function planTranscriptCopy(
 }
 
 /** Whether `prefix`'s bytes start `file`'s. */
-async function isBytePrefix(prefix: string, file: string): Promise<boolean> {
+export async function isBytePrefix(prefix: string, file: string): Promise<boolean> {
   const [a, b] = await Promise.all([fs.promises.open(prefix, 'r'), fs.promises.open(file, 'r')]);
   try {
     const [sa, sb] = await Promise.all([a.stat(), b.stat()]);

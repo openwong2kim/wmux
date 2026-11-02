@@ -30,8 +30,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { BotProfile, BotTemplate } from '../../shared/bot';
-import { normalizeBotName } from '../../shared/bot';
+import type { BotEngine, BotProfile, BotTemplate } from '../../shared/bot';
+import { HERMES_BOT_ENGINE, MY_HERMES_DEFAULT_PROFILE, myHermesEngine, normalizeBotName } from '../../shared/bot';
 import { TEAM_TEMPLATES, teamTemplatesPresent, type FactoryBotCreateResult, type FactoryBotCreateTeamResult, type FactoryBotRepoSuggestion } from '../../shared/botCreate';
 import { BOTS_MAX } from './botStore';
 import type { WakeItem } from '../../shared/wake';
@@ -68,7 +68,7 @@ function recordsOf(deps: Pick<BotRepoDeps, 'records'>): WorkspaceRepoStore | nul
 
 export type BotRepoResult =
   | { ok: true; repo: { repoKey: string; repoPath: string; originPin?: string } }
-  | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string };
+  | { ok: false; code: 'invalid_argument' | 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string; originSet?: boolean };
 
 /** A repository inside WSL (`\\wsl.localhost\<distro>\…`, `\\wsl$\…`): its bot's
  *  task worktrees on Windows are checked by their own path too, so the hint
@@ -117,7 +117,7 @@ export async function resolveBotRepo(folder: unknown, deps: BotRepoDeps = {}): P
   const raw = await readRawOriginUrl(git, repoPath);
   const rawKey = raw === null ? null : normalizeRepoKey(parseRemoteKey(raw));
   const repoKey = rawKey ?? normalizeRepoKey(parseRemoteKey(url));
-  if (!repoKey) return { ok: false, code: 'no_remote', message: `The origin remote of ${repoPath} is not an owner/repo address on a git host. ${NEEDS_HOSTED_ORIGIN}` };
+  if (!repoKey) return { ok: false, code: 'no_remote', originSet: true, message: `The origin remote of ${repoPath} is not an owner/repo address on a git host. ${NEEDS_HOSTED_ORIGIN}` };
   const originPin = rawKey && isOriginPin(raw) ? raw : null;
   return { ok: true, repo: { repoKey, repoPath, ...(originPin ? { originPin } : {}) } };
 }
@@ -162,7 +162,7 @@ async function repoBroken(repo: WorkspaceRepo, deps: BotRepoDeps): Promise<Broke
  *  works: never bound to a new bot, never re-pointed here; a bot profile's
  *  Change is the fix. */
 export function brokenRepoRefusal(b: BrokenRepo): { ok: false } & BrokenRepo {
-  return { ok: false, code: b.code, message: `The workspace's repository folder no longer works (${b.message.replace(/\.$/, '')}); change it on a bot's profile.` };
+  return { ok: false, code: b.code, message: `The workspace's repository folder no longer works (${b.message.replace(/\.$/, '')}); change it in a bot's settings.` };
 }
 
 /** The workspace's repository as a new bot there takes it, resolved again
@@ -252,6 +252,12 @@ export async function createBotFromFolder(
 ): Promise<FactoryBotCreateResult> {
   if (!store) return { ok: false, code: 'not_started', message: 'The factory is not running.' };
   const r = req && typeof req === 'object' && !Array.isArray(req) ? (req as Record<string, unknown>) : {};
+  // The engine Add bot picked (absent or Claude: the store's default, with
+  // the template's model).
+  let engine: BotEngine | undefined;
+  if (r.engine === 'hermes') engine = { ...HERMES_BOT_ENGINE };
+  else if (r.engine === 'my-hermes') engine = myHermesEngine(r.hermesProfile === undefined ? MY_HERMES_DEFAULT_PROFILE : (r.hermesProfile as string));
+  else if (r.engine !== undefined && r.engine !== 'claude-sdk') return { ok: false, code: 'invalid_argument', message: 'engine must be claude-sdk, hermes or my-hermes' };
   return withWorkspaceRepoLock(r.workspaceId, async (): Promise<FactoryBotCreateResult> => {
     const chosen = await repoForNewBot(store, r.workspaceId, r, deps);
     if (!chosen.ok) return chosen;
@@ -269,6 +275,7 @@ export async function createBotFromFolder(
       ...(r.job !== undefined ? { job: r.job } : {}),
       ...(r.recipe !== undefined ? { recipe: r.recipe } : {}),
       ...(r.avatar !== undefined ? { avatar: r.avatar } : {}),
+      ...(engine !== undefined ? { engine } : {}),
     });
     if (!created.ok) return created;
     rememberWorkspaceAnswer(store, created.bot.workspaceId, repo, r.repoFolder === undefined && r.noRepo === true, heldBefore, deps);
@@ -544,7 +551,7 @@ export async function suggestBotRepo(
     ...(deps.platform ? { platform: deps.platform } : {}),
     ...(deps.daemonRpc ? { daemonRpc: deps.daemonRpc } : {}),
   });
-  let refusal: { code: 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string } | null = null;
+  let refusal: { code: 'not_a_repo' | 'repo_untrusted' | 'no_remote'; message: string; originSet?: boolean } | null = null;
   let found: WorkspaceRepo | null = null;
   if (list.opened && 'error' in list.opened) {
     refusal = { code: 'not_a_repo', message: list.opened.error };
@@ -556,7 +563,7 @@ export async function suggestBotRepo(
         found = resolved.repo;
         break;
       }
-      if (!refusal && resolved.code !== 'invalid_argument') refusal = { code: resolved.code, message: resolved.message };
+      if (!refusal && resolved.code !== 'invalid_argument') refusal = { code: resolved.code, message: resolved.message, ...(resolved.originSet ? { originSet: true } : {}) };
     }
   }
   // Read after the awaits: a bot given a repo, or a None saved, meanwhile.
@@ -564,5 +571,5 @@ export async function suggestBotRepo(
   if (since) return since;
   if (found) return offer(found, false);
   if (!refusal) return { ok: false, code: 'no_folder' };
-  return { ok: false, code: refusal.code, message: refusal.message };
+  return { ok: false, code: refusal.code, message: refusal.message, ...(refusal.originSet ? { originSet: true } : {}) };
 }

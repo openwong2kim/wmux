@@ -2,9 +2,12 @@ import { isWslShell, resolveWslCwd, type WslTarget, type ResolvedWslCwd } from '
 import { buildWslInjection } from '../../shared/wslIntegration';
 import { BASH_INIT } from '../../daemon/shell-integration';
 import { getWmuxDir } from '../../daemon/config';
+import { claudeFileSendEnv } from '../../shared/claudeFileSend';
+import { readClaudeFileSend } from '../../daemon/claudeFileSendSetting';
 import type { IPty } from 'node-pty';
 import type { TerminalPty } from '../../shared/terminalPty';
 import { spawnPty, spawnPtySync, type SpawnPtyRequest } from '../../shared/spawnPty';
+import { applyParentWindow } from '../../shared/conptyParentWindow';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -64,9 +67,23 @@ export class PTYManager {
   private instances = new Map<string, PTYInstance>();
   private nextId = 0;
   private onDisposeCallback: ((ptyId: string) => void) | null = null;
+  /** The window that owns each pane's console window (shared/conptyParentWindow.ts). */
+  private hostWindow: Buffer | null = null;
 
   onDispose(callback: (ptyId: string) => void): void {
     this.onDisposeCallback = callback;
+  }
+
+  /**
+   * Make `handle` the owner of every pane's console window, now and for each
+   * pane spawned later (Windows, bundled ConPTY; a no-op elsewhere). Null only
+   * stops handing one to new panes, as DaemonSessionManager.setHostWindow does.
+   */
+  setHostWindow(handle: Buffer | null): void {
+    if (handle === this.hostWindow || (handle && this.hostWindow?.equals(handle))) return;
+    this.hostWindow = handle;
+    if (!handle) return;
+    for (const instance of this.instances.values()) applyParentWindow(instance.process, handle);
   }
 
   /**
@@ -348,6 +365,10 @@ export class PTYManager {
     // on its own process (see shared/exeSearch.ts), so cmd.exe in the pane
     // keeps its usual lookup. Same rule as DaemonSessionManager.createSession.
     const env = withoutExeSearchGuard(resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), policy, accountEnv));
+    // Claude file send (shared/claudeFileSend.ts): added after the overlays
+    // and nesting-marker strip, read from the setting at each spawn. Off adds
+    // nothing, so a value the user exported themselves is left alone.
+    Object.assign(env, claudeFileSendEnv(readClaudeFileSend(getWmuxDir())));
     // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄로 남긴다.
     // 침묵이 신고 사건의 실제 원인이었다 — "왜 없지?"를 로그로 즉시 답한다.
     if (policy === 'gated') {
@@ -407,6 +428,7 @@ export class PTYManager {
         if (level === 'warn') console.error(`[PTYManager] pane ${id}: ${message}`);
         else console.log(`[PTYManager] pane ${id}: ${message}`);
       },
+      parentWindow: () => this.hostWindow,
     };
   }
 

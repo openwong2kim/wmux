@@ -413,12 +413,35 @@ describe('display', () => {
     expect(concreteCombo({ combo: 'Alt+ArrowUp' }, 'darwin')).toBe('Alt+ArrowUp');
   });
 
-  it('labels keys the way the keyboard does', () => {
-    expect(displayCombo('Meta+Shift+D', 'darwin')).toBe('⌘+Shift+D');
-    expect(displayCombo('Alt+ArrowUp', 'darwin')).toBe('⌥+ArrowUp');
-    expect(displayCombo('Ctrl+M', 'darwin')).toBe('Ctrl+M');
-    expect(displayCombo('Alt+ArrowUp', 'win32')).toBe('Alt+ArrowUp');
+  it('macOS: modifier glyphs in Apple order (⌃⌥⇧⌘), no separator', () => {
+    expect(displayCombo('Meta+Shift+D', 'darwin')).toBe('⇧⌘D');
+    expect(displayCombo('Meta+D', 'darwin')).toBe('⌘D');
+    expect(displayCombo('Ctrl+M', 'darwin')).toBe('⌃M');
+    expect(displayCombo('Ctrl+Shift+B', 'darwin')).toBe('⌃⇧B');
+    expect(displayCombo('Meta+Alt+ArrowUp', 'darwin')).toBe('⌥⌘↑');
+    expect(displayCombo('Alt+ArrowUp', 'darwin')).toBe('⌥↑');
+    expect(displayCombo('Meta+,', 'darwin')).toBe('⌘,');
+    expect(displayCombo('Escape', 'darwin')).toBe('Esc');
+  });
+
+  it('Windows and Linux: words joined by +, in Win, Ctrl, Alt, Shift order', () => {
+    expect(displayCombo('Ctrl+Shift+D', 'win32')).toBe('Ctrl+Shift+D');
+    expect(displayCombo('Ctrl+Shift+Alt+X', 'linux')).toBe('Ctrl+Alt+Shift+X');
+    expect(displayCombo('Alt+ArrowUp', 'win32')).toBe('Alt+↑');
     expect(displayCombo('Meta+K', 'win32')).toBe('Win+K');
+    expect(displayCombo('Meta+K', 'linux')).toBe('Super+K');
+    expect(displayCombo('Shift+Enter', 'linux')).toBe('Shift+Enter');
+  });
+
+  it('keeps a + key and reads Electron accelerators', () => {
+    expect(displayCombo('Ctrl++', 'win32')).toBe('Ctrl++');
+    expect(displayCombo('Meta++', 'darwin')).toBe('⌘+');
+    expect(displayCombo('CommandOrControl+Shift+Space', 'darwin')).toBe('⇧⌘Space');
+    expect(displayCombo('CmdOrCtrl+Enter', 'win32')).toBe('Ctrl+Enter');
+    expect(displayCombo('Control+Option+Escape', 'darwin')).toBe('⌃⌥Esc');
+    expect(displayCombo('CommandOrControl+Up', 'darwin')).toBe('⌘↑');
+    expect(displayCombo('CommandOrControl+Return', 'darwin')).toBe('⌘Enter');
+    expect(displayCombo('CommandOrControl+Shift+Left', 'win32')).toBe('Ctrl+Shift+←');
   });
 });
 
@@ -597,22 +620,18 @@ describe('workspaceShortcutNumber', () => {
   });
 });
 
-describe('the dead Company View toggle', () => {
-  it('takes no key by default, so Ctrl+Shift+O reaches the pane', () => {
+describe('the removed company-mode toggles', () => {
+  it('take no key, so Ctrl+Shift+O and Ctrl+Shift+M reach the pane', () => {
     for (const platform of ['win32', 'darwin', 'linux'] as const) {
       const bindings = effectiveBindings(platform, {});
-      expect(bindings.some((b) => b.action === 'toggleCompanyView')).toBe(false);
       expect(resolveShortcut(ev({ key: 'O', code: 'KeyO', ctrlKey: true, shiftKey: true }), bindings)).toBeNull();
-      expect(resolveShortcut(ev({ key: 'O', code: 'KeyO', metaKey: true, shiftKey: true }), bindings)).toBeNull();
+      expect(resolveShortcut(ev({ key: 'M', code: 'KeyM', ctrlKey: true, shiftKey: true }), bindings)).toBeNull();
     }
   });
 
-  it('still binds a key the user saved, and is listed only while it holds one', () => {
-    const overrides = sanitizeShortcutOverrides({ toggleCompanyView: 'Ctrl+Alt+O' });
-    expect(overrides).toEqual({ toggleCompanyView: 'Ctrl+Alt+O' });
-    expect(resolveShortcut(ev({ key: 'o', code: 'KeyO', ctrlKey: true, altKey: true }), effectiveBindings('win32', overrides))).toBe('toggleCompanyView');
-    expect(settingsUnboundRows({})).not.toContain('toggleCompanyView');
-    expect(settingsUnboundRows(overrides)).toContain('toggleCompanyView');
-    expect(settingsUnboundRows({})).toContain('stashPane');
+  it('drop a key a user saved on them, and Settings lists neither', () => {
+    expect(sanitizeShortcutOverrides({ toggleCompanyView: 'Ctrl+Alt+O', toggleMessageFeed: 'Ctrl+Alt+M' })).toEqual({});
+    expect(settingsUnboundRows()).not.toContain('toggleCompanyView');
+    expect(settingsUnboundRows()).toContain('stashPane');
   });
 });

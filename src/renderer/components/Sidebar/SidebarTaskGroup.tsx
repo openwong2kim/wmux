@@ -391,7 +391,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
 
   const toReview = rollup.toReview;
   const rollupText = rollup.tasks === 1 ? t('sidebar.tasks.countOne') : t('sidebar.tasks.count', { count: rollup.tasks });
-  const toggleLabel = [label, rollupText, anyNeedsYou ? t('strip.needsYou', { count: rollup.needYou }) : undefined,
+  const toggleLabel = [label, rollupText, anyNeedsYou ? t(rollup.needYou === 1 ? 'strip.needsYouOne' : 'strip.needsYou', { count: rollup.needYou }) : undefined,
     expanded ? t('sidebar.tasks.collapse') : t('sidebar.tasks.expand')].filter(Boolean).join(', ');
 
   return (
@@ -422,7 +422,7 @@ function SidebarTaskGroup({ groupKey, foldKey, taskIds, ownerActive, label, owne
                     blocked task shows. Unfolded, the task row itself carries
                     the amber (attention grammar: two renditions, not three). */}
                 <span className={expanded ? '' : 'font-semibold text-[var(--attention-text)]'}>
-                  {t('strip.needsYou', { count: rollup.needYou })}
+                  {t(rollup.needYou === 1 ? 'strip.needsYouOne' : 'strip.needsYou', { count: rollup.needYou })}
                 </span>
               </>
             )}
@@ -497,7 +497,7 @@ function PaneTaskGroupInner({ ownerId, paneId, paneName, taskIds, ownerActive, r
   if (!rollup) return <>{children(null)}</>;
 
   const rollupText = rollup.tasks === 1 ? t('sidebar.tasks.countOne') : t('sidebar.tasks.count', { count: rollup.tasks });
-  const toggleLabel = [rollupText, anyNeedsYou ? t('strip.needsYou', { count: rollup.needYou }) : undefined,
+  const toggleLabel = [rollupText, anyNeedsYou ? t(rollup.needYou === 1 ? 'strip.needsYouOne' : 'strip.needsYou', { count: rollup.needYou }) : undefined,
     rollup.toReview > 0 ? t('sidebar.tasks.toReview', { count: rollup.toReview }) : undefined,
     expanded ? t('sidebar.tasks.collapse') : t('sidebar.tasks.expand')].filter(Boolean).join(', ');
   const redCount = anyNeedsYou && !expanded;

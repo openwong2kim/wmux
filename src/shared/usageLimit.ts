@@ -102,6 +102,23 @@ export interface UsageWindowReading {
   resetsAt?: number | null;
 }
 
+/** 5-hour usage at or above this puts a pane close to its limit: its chip
+ *  shows the share and offers a handoff before work stops. */
+export const NEAR_LIMIT_PCT = 90;
+
+/** A pane's 5-hour window as its own statusline last reported it. */
+export interface PaneUsageWindow {
+  /** 0–100. */
+  pct: number;
+  /** Epoch ms. */
+  resetsAt: number;
+}
+
+/** The window while the pane is close to its limit and it has not reset, else null. */
+export function nearLimitWindow(w: PaneUsageWindow | null | undefined, now: number): PaneUsageWindow | null {
+  return w && w.pct >= NEAR_LIMIT_PCT && w.resetsAt > now ? w : null;
+}
+
 /** The latest reset among exhausted (>= 100%) windows: that is when the pane can work again. */
 export function exhaustedWindowResetAt(windows: ReadonlyArray<UsageWindowReading | null | undefined>): number | null {
   let latest: number | null = null;

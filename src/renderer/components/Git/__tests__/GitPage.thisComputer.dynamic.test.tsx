@@ -129,6 +129,8 @@ describe('Git page with another computer selected', () => {
   });
 
   it('following: the Worktrees summary line goes with the list when another computer is picked', async () => {
+    // feat with no workspace on it: two sections, so the summary line is drawn.
+    act(() => useStore.setState({ workspaces: [workspace('a', '/code/alpha'), workspace('c', '/code/beta')] }));
     act(() => root.render(createElement(GitPage)));
     act(() => worktreesTab().click());
     await settle();
@@ -148,6 +150,8 @@ describe('Git page with another computer selected', () => {
   });
 
   it('All repos: this computer\'s worktrees show with no remote note or branch card above them', async () => {
+    // feat with no workspace on it: two sections, so the summary line is drawn.
+    act(() => useStore.setState({ workspaces: [workspace('a', '/code/alpha'), workspace('c', '/code/beta')] }));
     selectPc('h1');
     act(() => useStore.setState({ gitPage: { ...initialGitPageState(), scope: 'all', tab: 'worktrees' } }));
     act(() => root.render(createElement(GitPage)));

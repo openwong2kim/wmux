@@ -5,10 +5,10 @@ export const ptBR = {
   // Sidebar
   'sidebar.workspaces': 'Espaços de trabalho',
   'sidebar.newWorkspace': 'Novo espaço de trabalho',
-  'sidebar.newWorkspaceTooltip': 'Novo espaço de trabalho (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Novo espaço de trabalho',
   'sidebar.newRemoteWorkspace': 'Novo workspace em {name}',
-  'sidebar.hideTooltip': 'Ocultar barra lateral (Ctrl+B)',
-  'sidebar.expandTooltip': 'Expandir barra lateral (Ctrl+B)',
+  'sidebar.hideTooltip': 'Ocultar barra lateral',
+  'sidebar.expandTooltip': 'Expandir barra lateral',
   'sidebar.unreadCount': '{count} não lido(s)',
 
   // Workspace
@@ -17,7 +17,6 @@ export const ptBR = {
   'workspace.agentError': 'Erro do agente',
   'workspace.agentWaiting': 'Agente aguardando',
 
-  'workspace.agentAwaitingInput': 'Agente aguarda entrada',
   'workspace.needsYou': 'Espera por você',
   'workspace.agentIdle': 'Agente inativo',
   'workspace.agentUnverifiable': 'Sem atualização há {time}',
@@ -66,9 +65,9 @@ export const ptBR = {
 
   // Search
   'search.placeholder': 'Pesquisar...',
-  'search.prevTooltip': 'Resultado anterior (Shift+Enter)',
-  'search.nextTooltip': 'Próximo resultado (Enter)',
-  'search.closeTooltip': 'Fechar (ESC)',
+  'search.prevTooltip': 'Resultado anterior',
+  'search.nextTooltip': 'Próximo resultado',
+  'search.closeTooltip': 'Fechar',
   'search.regexTooltip': 'Usar expressão regular',
   'search.allPanes': 'Todos os painéis',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const ptBR = {
   'notification.markAllRead': 'Marcar todas como lidas',
   'notification.clear': 'Limpar',
   'notification.empty': 'Sem notificações',
-  'notification.toggle': 'Ctrl+I para alternar',
+  'notification.toggle': '{key} para alternar',
+  'notification.needsYou.question': "Espera por você: “{question}”",
+  'notification.needsYou.noQuestion': "Espera por você. Sem texto da pergunta; veja o terminal.",
+  'notification.needsYou.over': "Não está mais esperando por você.",
 
   // Command palette
   'palette.placeholder': 'Digite um comando...',
@@ -96,7 +98,7 @@ export const ptBR = {
   'palette.close': 'fechar',
   'palette.cmd.toggleSidebar': 'Alternar barra lateral',
   'palette.cmd.newWorkspace': 'Novo espaço de trabalho',
-  'palette.cmd.newSurface': 'Nova superfície',
+  'palette.cmd.newSurface': 'Nova aba',
   'palette.cmd.splitRight': 'Dividir à direita',
   'palette.cmd.splitDown': 'Dividir abaixo',
   'palette.cmd.stashPane': 'Guardar painel (a sessão continua rodando)',
@@ -106,7 +108,7 @@ export const ptBR = {
   'palette.cmd.saveLayout': 'Salvar layout atual como modelo',
   'palette.cmd.layoutPrefix': 'Layout: ',
   'palette.catWorkspace': 'Espaço de trabalho',
-  'palette.catSurface': 'Superfície',
+  'palette.catSurface': 'Aba',
   'palette.catCommand': 'Comando',
   'palette.catRecent': 'Recente',
 
@@ -246,8 +248,6 @@ export const ptBR = {
   'viCopy.visual': '-- VISUAL --',
 
   // StatusBar
-  'statusBar.company': 'EMPRESA',
-  'statusBar.session': 'Sessão: {min} min',
   'statusBar.settingsTooltip': 'Configurações (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const ptBR = {
   'settings.checkFailed': 'Verificação falhou',
   'settings.unknownError': 'Erro desconhecido',
   'settings.notificationBehavior': 'Comportamento das notificações',
-  'settings.soundDesc': 'Web Audio API — sem arquivo externo necessário',
+  'settings.soundDesc': 'Toca um som curto embutido quando chega uma notificação.',
   'settings.toast': 'Notificações toast',
   'settings.toastDesc': 'Mostrar toast quando o agente concluir',
   'settings.ring': 'Animação de anel',
   'settings.ringDesc': 'Pulsar borda em painéis com notificações não lidas',
   'settings.sc.toggleSidebar': 'Alternar barra lateral',
-  'settings.sc.splitHorizontal': 'Dividir horizontal',
-  'settings.sc.splitVertical': 'Dividir vertical',
+  'settings.sc.splitHorizontal': 'Dividir à direita',
+  'settings.sc.splitVertical': 'Dividir abaixo',
   'settings.sc.newWorkspace': 'Novo espaço de trabalho',
   'settings.sc.closeSurface': 'Fechar aba ativa',
   'settings.sc.closePane': 'Fechar painel dividido',
@@ -406,8 +406,8 @@ export const ptBR = {
   'settings.prefixAddBinding': 'Adicionar atalho',
   'settings.prefixReset': 'Restaurar padrões',
   'settings.prefixResetConfirm': 'Restaurar todas as configurações de prefixo para o padrão?',
-  'settings.prefix.splitHorizontal': 'Dividir horizontal',
-  'settings.prefix.splitVertical': 'Dividir vertical',
+  'settings.prefix.splitHorizontal': 'Dividir à direita',
+  'settings.prefix.splitVertical': 'Dividir abaixo',
   'settings.prefix.closePane': 'Fechar painel',
   'settings.prefix.newWorkspace': 'Novo espaço de trabalho',
   'settings.prefix.nextWorkspace': 'Próximo espaço de trabalho',
@@ -482,16 +482,16 @@ export const ptBR = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Integração com Claude',
-  'claudeIntegration.signalHealth.title': 'Integridade do sinal do plugin',
+  'claudeIntegration.signalHealth.title': 'Plugin do Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'Status do plugin: ainda não observado. Instale com o comando abaixo no Claude Code. O wmux confirma a detecção assim que o primeiro hook é disparado.',
+    'Ainda não há sinal do plugin do wmux. Execute o comando de instalação abaixo no Claude Code; isto é atualizado quando o plugin se reportar pela primeira vez.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Último sinal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latência P50 {p50}ms · P95 {p95}ms · {count} amostras',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Correspondência de espaço de trabalho: {matched}/{total} hooks resolvidos para um painel do wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'Status do plugin: desatualizado. O último hook chegou {rel} — o plugin pode ter parado de disparar ou o Claude Code está ocioso.',
+    'O último sinal do plugin foi {rel}. Ele pode ter parado, ou o Claude Code está ocioso.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Copiar comando de instalação',
   'claudeIntegration.signalHealth.copySuccess': 'Copiado — cole no Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Falha ao copiar — área de transferência bloqueada',
@@ -499,7 +499,7 @@ export const ptBR = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Medidor de uso da Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Lê seu uso no endpoint de uso da Anthropic a cada 15 minutos com o seu login do Claude Code (o token OAuth do armazenamento local). Apenas lê o uso — nenhuma requisição ao modelo é enviada e nenhuma cota é consumida. O token nunca é gravado de volta, nunca é registrado, apenas enviado para api.anthropic.com.',
+    'Lê seu uso no endpoint de uso da Anthropic a cada 15 minutos com o seu login do Claude Code. Apenas lê o uso — nenhuma requisição ao modelo é enviada e nenhuma cota é consumida. O token nunca é gravado de volta, nunca é registrado, apenas enviado para api.anthropic.com.',
   'claudeIntegration.usage.enableLabel': 'Mostrar utilização de 5h / 7d na barra de status',
   'claudeIntegration.usage.refreshButton': 'Atualizar agora',
   'claudeIntegration.usage.refreshCooldown': 'Atualização disponível em {seconds}s',
@@ -641,6 +641,7 @@ export const ptBR = {
   'pcSwitcher.manage': "Configurações de {name}",
   'app.portableData.notice': "Esta cópia do wmux está sendo executada fora de Aplicativos, por isso usa dados separados. Mova-a para Aplicativos para ver suas sessões existentes.",
   'pcSwitcher.othersNeedYou': "{count} precisam de você em outros computadores",
+  'pcSwitcher.othersNeedYouOne': '{count} precisa de você em outro computador',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Sair do wmux e encerrar todas as sessões?",
   'quitAndStop.detail': "Sessões de agentes em execução: {agents}. Terminais no total: {sessions}. Todas serão encerradas. Sair normalmente as mantém rodando em segundo plano.",

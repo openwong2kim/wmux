@@ -8,9 +8,12 @@ import {
   decodeTcpTableV6,
   decodeProcessEntry,
   PROCESSENTRY32W_SIZE,
+  readProcessExitState,
   TCP_ROW4_SIZE,
   TCP_ROW6_SIZE,
   tryProcessCreatedAt,
+  tryProcessHandleApi,
+  tryProcessIdentity,
 } from '../winSnapshotNative';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
@@ -157,6 +160,25 @@ describe.skipIf(process.platform !== 'win32')('tryProcessCreatedAt (Windows, liv
     }
     expect(tryProcessCreatedAt(0)).toBeNull();
     expect(tryProcessCreatedAt(-1)).toBeNull();
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('a gone process (Windows, live)', () => {
+  it('reads a pid no process has as gone, and a live process as not gone', () => {
+    // Windows pids are multiples of 4 and stay far below this one. (An exited
+    // child of ours would not do: node keeps its process handle open.)
+    const pid = 0x7ffffff0;
+    expect(readProcessExitState(pid)).toBe('exited');
+    expect(tryProcessIdentity(pid)).toMatchObject({ gone: true });
+    expect(tryProcessHandleApi()?.open(pid)).toEqual({ gone: true });
+
+    // System (pid 4) is always running; whatever its open returns, it is not gone.
+    expect(readProcessExitState(4)).not.toBe('exited');
+    expect(tryProcessIdentity(4)).not.toMatchObject({ gone: true });
+    const api = tryProcessHandleApi();
+    const system = api?.open(4);
+    if (system && 'handle' in system) api?.close(system.handle);
+    expect(system).not.toEqual({ gone: true });
   });
 });
 

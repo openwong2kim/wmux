@@ -1,53 +1,37 @@
 /**
- * FirstRunWizard (T6 of 1.15 first-run wizard batch).
+ * FirstRunWizard — the first launch, on one short screen.
  *
- * Magical-moment onboarding modal. Detects Claude Code, offers 1-click
- * MCP registration, and runs a deterministic sample task that splits the
- * window 2x2 and launches Claude in the upper-left pane's shell — that pane
- * is a plain shell, so the sample task runs `claude` there (#452).
+ * Is an agent ready (install or sign in from its row if not), is wmux
+ * connected to Claude Code (MCP registration, hooks), and should wmux update
+ * itself. Then one action: open a project folder as a workspace. Nothing else
+ * opens by itself after it: the tour and the keyboard cheat sheet are on
+ * demand (Settings › Setup and reset, the `?` prefix action).
  *
- * See:
- *   - progress.md (T6 spec)
- *   - decisions.md D1 (skip-friendly when no Claude)
- *   - decisions.md D2 (1-click register)
- *   - decisions.md D3 (OSC133 fallback UX)
- *   - decisions.md D9 (reopen disables sample task)
- *   - decisions.md D10 (registerMcp Tier 2 inline error)
+ * Opening a folder completes the first run; Skip, Later, × or Escape only
+ * mark it shown (firstRun:dismiss), so a reopened wizard and Settings never
+ * call a skipped first run completed.
  *
  * Renderer-only. Glues to main via window.electronAPI.firstRun.* (T1/T4).
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   FirstRunCheckResult,
   FirstRunMode,
   RegisterMcpResult,
   RegisterMcpErrorCode,
-  SampleTaskStartPayload,
 } from '../../shared/firstRun';
-import type { Pane, PaneLeaf } from '../../shared/types';
-import { isInstallTake } from '../../shared/statuslineOutcome';
 import { useStore } from '../stores';
 import { useT } from '../hooks/useT';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from './ui/Dialog';
 import Button from './ui/Button';
 import Switch from './ui/Switch';
-import MediaPreview from './ui/MediaPreview';
-import { MEDIA_CLIPS } from '../assets/media';
 import { IconCheck, IconWarning } from './icons';
 import { FOCUS_RING } from './focusRing';
-import { AgentReadyGroup, AgentSetupCorner, cornerRun, decideAgentPrimary } from './FirstRunAgentCards';
+import { AgentReadyGroup, AgentSetupCorner, agentRowsToList, cornerRun, decideAgentPrimary } from './FirstRunAgentCards';
 import { refreshAgentStatus, useAgentSetup } from '../utils/agentSetupRuns';
 import { anyAgentSetUp, type AgentId } from '../../shared/agentSetup';
-import { DEFAULT_BOT_ENGINE_AGENT } from '../../shared/bot';
 import { FIRST_RUN_REOPEN_EVENT } from '../../shared/firstRun';
-import {
-  FirstTaskBlock,
-  FirstTaskFooterAction,
-  firstTaskPrimary,
-  openFirstTaskConversation,
-  useFirstTask,
-  type FirstTaskPrimary,
-} from './FirstRunFirstTask';
+import { showWorkspaces } from '../utils/showWorkspaces';
 
 // ─── Local type narrowing for electronAPI.firstRun ────────────────────────────
 //
@@ -60,9 +44,6 @@ interface FirstRunBridge {
   dismiss: () => Promise<void>;
   reopen: () => Promise<FirstRunCheckResult>;
   registerMcp: () => Promise<RegisterMcpResult>;
-  startSampleTask: (payload: SampleTaskStartPayload) => Promise<void>;
-  onSampleTaskReady: (cb: () => void) => () => void;
-  onSampleTaskTimeout: (cb: () => void) => () => void;
 }
 
 function firstRunBridge(): FirstRunBridge {
@@ -75,30 +56,8 @@ function firstRunBridge(): FirstRunBridge {
   return api.firstRun;
 }
 
-// Statusline bridge (preload `deck.statuslineBridge`). Optional: older preloads
-// may not expose it, so the accessor returns null instead of throwing and the
-// wizard simply hides the statusline offer.
-interface StatuslineBridge {
-  status: () => Promise<{
-    installed: boolean;
-    outcome: {
-      scriptDest: string;
-      scriptExists: boolean;
-      targets: Array<{ label: string; settingsPath: string; state: StatuslineTargetState }>;
-    };
-  }>;
-  install: () => Promise<{
-    ok: boolean;
-    error: string | null;
-    targets: Array<{ label: string; settingsPath: string; outcome: string }>;
-  }>;
-}
-
-export type StatuslineTargetState = 'none' | 'wmux' | 'foreign' | 'corrupt' | 'missing';
-
-// Hook bridge (preload `deck.hooksBridge`). Same shape of contract as the
-// statusline: an opt-in install the user clicks, never an edit behind their
-// back. Unlike the statusline this one is not cosmetic — without it every
+// Hook bridge (preload `deck.hooksBridge`). An opt-in install the user
+// clicks, never an edit behind their back. Not cosmetic: without it every
 // lifecycle signal degrades to the regex detector, so the wizard is the one
 // place a new install is guaranteed to see the offer.
 interface HooksBridge {
@@ -106,26 +65,13 @@ interface HooksBridge {
   install: () => Promise<{ ok: boolean; error: string | null }>;
 }
 
-/** Exported for the same contract test as {@link statuslineBridge}. */
+/** Exported for the contract test: the accessor and the preload must agree
+ *  on where the bridge lives, and reading the wrong path fails silently. */
 export function hooksBridge(): HooksBridge | null {
   const api = (window as unknown as {
     electronAPI?: { deck?: { hooksBridge?: HooksBridge } };
   }).electronAPI;
   return api?.deck?.hooksBridge ?? null;
-}
-
-// Exported for the contract test: the accessor and the preload must agree on
-// where the bridge lives, and reading the wrong path fails silently by design.
-export function statuslineBridge(): StatuslineBridge | null {
-  // The bridge lives under `deck` (preload.ts) — reading it off the root of
-  // electronAPI returned undefined in every real build, and the "older preload"
-  // fallback below turned that into silence: the statusline offer has never
-  // rendered outside tests. Read the real path, keep the null fallback for
-  // preloads that genuinely predate the bridge.
-  const api = (window as unknown as {
-    electronAPI?: { deck?: { statuslineBridge?: StatuslineBridge } };
-  }).electronAPI;
-  return api?.deck?.statuslineBridge ?? null;
 }
 
 function shellOpenExternal(url: string): Promise<void> {
@@ -136,83 +82,13 @@ function shellOpenExternal(url: string): Promise<void> {
   return api.shell.openExternal(url);
 }
 
+/** The folder picker; null when cancelled or unavailable. */
+async function pickFolder(): Promise<string | null> {
+  const picked = await window.electronAPI?.dialog?.pickFolder?.();
+  return picked && picked.length > 0 ? picked[0] : null;
+}
+
 // ─── Pure helpers (exported for unit tests) ───────────────────────────────────
-
-/**
- * Top-level UI state derived from {@link FirstRunCheckResult} + mode.
- *
- * - `claude-missing` → render install link, sample task disabled
- * - `needs-register` → render Register button
- * - `ready` → all green, sample task enabled (mode='firstRun' only)
- * - `reopen` → mode='reopen'; sample task always disabled (D9)
- */
-export type WizardUiState = 'claude-missing' | 'needs-register' | 'ready' | 'reopen';
-
-export function decideUiState(
-  result: FirstRunCheckResult | null,
-  mode: FirstRunMode,
-): WizardUiState | null {
-  if (!result) return null;
-  if (mode === 'reopen') return 'reopen';
-  if (!result.status.claudeFound) return 'claude-missing';
-  if (!result.status.mcpRegistered) return 'needs-register';
-  return 'ready';
-}
-
-/**
- * Recursively descend `children[0]` to find the upper-left leaf in a pane tree.
- *
- * For the builtin-grid 2x2 layout (vertical[ horizontal[L, L], horizontal[L, L] ]),
- * this returns the top-left leaf id.
- */
-export function findTopLeftLeafId(root: Pane): string | null {
-  if (root.type === 'leaf') return root.id;
-  if (root.children.length === 0) return null;
-  return findTopLeftLeafId(root.children[0]);
-}
-
-/** Recursively find a leaf pane by id. Returns null if not found or if `id` resolves to a branch. */
-export function findLeafById(root: Pane, id: string): PaneLeaf | null {
-  if (root.id === id && root.type === 'leaf') return root;
-  if (root.type === 'branch') {
-    for (const child of root.children) {
-      const found = findLeafById(child, id);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-/** ISO timestamp → YYYY-MM-DD. Returns empty string for invalid input. */
-export function formatCompletedAt(iso: string | undefined): string {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-/**
- * Whether the wizard should offer the statusline install.
- *
- * Hidden when already installed, and when no target could accept an install
- * (every settings.json is foreign-owned or corrupt) — offering a button that
- * can only no-op would be noise. 'none'/'missing' targets are installable
- * (install creates missing settings files).
- */
-export function decideStatuslineOffer(status: {
-  installed: boolean;
-  outcome: { targets: Array<{ state: StatuslineTargetState }> };
-} | null): 'offer' | 'hidden' {
-  if (!status) return 'hidden';
-  if (status.installed) return 'hidden';
-  const installable = status.outcome.targets.some(
-    (t) => t.state === 'none' || t.state === 'missing',
-  );
-  return installable ? 'offer' : 'hidden';
-}
 
 /** i18n keys for Tier 2 error display (D10). Falls back to UNKNOWN for unrecognized codes. */
 export function getRegisterErrorKeys(code: RegisterMcpErrorCode | string): {
@@ -229,6 +105,11 @@ export function getRegisterErrorKeys(code: RegisterMcpErrorCode | string): {
   };
 }
 
+/** The workspace name for a picked folder: its last path segment. */
+export function folderWorkspaceName(folder: string): string {
+  return folder.split(/[/\\]/).filter(Boolean).pop() || 'Workspace';
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export interface FirstRunWizardProps {
@@ -236,25 +117,13 @@ export interface FirstRunWizardProps {
   onClose: () => void;
 }
 
-type SampleSubState =
-  | 'idle'
-  | 'splitting'
-  | 'awaiting-prompt'
-  | 'success'
-  | 'timeout-fallback'
-  | 'error';
-
-export type StatuslineSubState =
-  | 'unknown'   // status not fetched yet (or bridge unavailable) — block hidden
+/** Hooks row lifecycle; `unknown` keeps the row hidden. */
+export type HooksSubState =
+  | 'unknown'   // status not fetched yet (or bridge unavailable)
   | 'offer'     // installable, waiting for the user's click
   | 'installing'
   | 'installed'
   | 'error';
-
-/** Same lifecycle as the statusline block; `unknown` keeps it hidden. */
-export type HooksSubState = StatuslineSubState;
-
-const PTYID_WAIT_TIMEOUT_MS = 10_000;
 
 export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   const t = useT();
@@ -265,9 +134,6 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   const [registerError, setRegisterError] = useState<
     { code: RegisterMcpErrorCode; message: string } | null
   >(null);
-  const [sampleState, setSampleState] = useState<SampleSubState>('idle');
-  const [statuslineState, setStatuslineState] = useState<StatuslineSubState>('unknown');
-  const [statuslineError, setStatuslineError] = useState<string | null>(null);
   const [hooksState, setHooksState] = useState<HooksSubState>('unknown');
   const [hooksError, setHooksError] = useState<string | null>(null);
 
@@ -277,11 +143,8 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // ─── Mount guard (I3) ──────────────────────────────────────────────────
-  // The ptyId-wait subscription inside handleTrySampleTask schedules state
-  // updates after async work (10s timeout + store subscription). Without a
-  // guard, dismissing the wizard mid-handshake would call setState on an
-  // unmounted component AND leak the store subscription / pending timer.
+  // Async work (the hooks probe and install) must not set state after the
+  // wizard closed.
   const isMountedRef = useRef(true);
   useEffect(() => () => { isMountedRef.current = false; }, []);
 
@@ -297,8 +160,8 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
           : await firstRunBridge().check();
       setResult(next);
     } catch {
-      // If main is unreachable, default to a "claude-missing" UI so the
-      // user can still skip out cleanly.
+      // If main is unreachable, show the agent rows only so the user can
+      // still skip out cleanly.
       setResult({
         shown: false,
         status: { claudeFound: false, mcpRegistered: false, claudeJsonPath: '' },
@@ -370,40 +233,17 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
     if (before !== null && before !== installedKey) void refresh({ quiet: true });
   }, [installedKey, refresh]);
   const agentPrimary = decideAgentPrimary(statuses, runs);
-  const noAgentReady = statuses !== null && !anyAgentSetUp(statuses);
-
-  // ─── The bot's first task (first run only, once an agent is ready) ─────────
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  // The bot runs on its engine's agent (Claude Code): another agent being
-  // ready does not let its first task run.
-  const showFirstTask = mode === 'firstRun' && statuses !== null && statuses.some((s) => s.agent === DEFAULT_BOT_ENGINE_AGENT && s.readiness === 'ready');
-  const firstTask = useFirstTask({ enabled: showFirstTask, workspaceId: activeWorkspaceId });
-  // The first run ends with the bot's first task: while that step is shown,
-  // the sample task's end leaves the dialog open on it. Read by the sample
-  // task's callbacks, which outlive the render that started them.
-  const firstTaskShownRef = useRef(showFirstTask);
-  firstTaskShownRef.current = showFirstTask;
-  const openConversation = useCallback(() => {
-    openFirstTaskConversation(firstTask.botId);
-    onCloseRef.current();
-  }, [firstTask.botId]);
-
-  // ─── Statusline offer (opt-in; never auto-installs — owner decision 2026-07-17) ──
-  // Fetched once on mount; the block renders only when Claude is detected AND
-  // there is at least one installable settings target.
+  const agentReady = statuses !== null && anyAgentSetUp(statuses);
+  // Which agents wait under "Other agents": decided on the first status read
+  // and kept (here, not in the group, which unmounts while the dialog steps
+  // aside), so a row the user is installing in never folds away.
+  const [foldedAgents, setFoldedAgents] = useState<AgentId[] | null>(null);
+  const folded = foldedAgents ?? (statuses ? agentRowsToList(statuses, runs).folded : []);
   useEffect(() => {
-    const bridge = statuslineBridge();
-    if (!bridge) return;
-    bridge
-      .status()
-      .then((s) => {
-        if (!isMountedRef.current) return;
-        setStatuslineState(decideStatuslineOffer(s) === 'offer' ? 'offer' : 'unknown');
-      })
-      .catch(() => {
-        // Status probe failing is not worth surfacing — just keep the block hidden.
-      });
-  }, []);
+    if (foldedAgents === null && statuses !== null) setFoldedAgents(folded);
+  }, [foldedAgents, statuses, folded]);
+  const showAllAgents = useCallback(() => setFoldedAgents([]), []);
+  const noAgentReady = statuses !== null && !agentReady;
 
   // ─── Hook bridge offer ─────────────────────────────────────────────────────
   // Already-installed shows as a ✓ line rather than hiding: this one is a
@@ -444,32 +284,6 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
     }
   }, []);
 
-  const handleInstallStatusline = useCallback(async () => {
-    const bridge = statuslineBridge();
-    if (!bridge) return;
-    setStatuslineState('installing');
-    setStatuslineError(null);
-    try {
-      const outcome = await bridge.install();
-      if (!isMountedRef.current) return;
-      // ok:true still means "nothing broke", not "something was installed" —
-      // every target can be skipped (foreign/corrupt) if settings changed
-      // between the status probe and the click. Only report success when a
-      // target actually took the install.
-      const installedSomewhere = outcome.targets.some((t) => isInstallTake(t.outcome));
-      if (outcome.ok && installedSomewhere) {
-        setStatuslineState('installed');
-      } else {
-        setStatuslineError(outcome.error);
-        setStatuslineState('error');
-      }
-    } catch (err) {
-      if (!isMountedRef.current) return;
-      setStatuslineError(err instanceof Error ? err.message : null);
-      setStatuslineState('error');
-    }
-  }, []);
-
   // ─── Dismiss ───────────────────────────────────────────────────────────────
   // Escape, the close button and focus handling come from <Dialog>: Escape is
   // caught in the capture phase (so a focused terminal cannot swallow it) and
@@ -479,6 +293,28 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
       await firstRunBridge().dismiss();
     } catch {
       // ignore — closing is best-effort
+    }
+    onCloseRef.current();
+  }, []);
+
+  // ─── Open a folder ─────────────────────────────────────────────────────────
+  // The first run's one goal: a workspace on the user's project. Cancelling
+  // the picker leaves the wizard open.
+  const openFolder = useCallback(async () => {
+    let folder: string | null = null;
+    try {
+      folder = await pickFolder();
+    } catch {
+      folder = null;
+    }
+    if (!folder || !isMountedRef.current) return;
+    const st = useStore.getState();
+    st.addWorkspace(folderWorkspaceName(folder), { startupCwd: folder });
+    showWorkspaces(useStore.getState());
+    try {
+      await firstRunBridge().complete();
+    } catch {
+      // ignore — the workspace is open either way
     }
     onCloseRef.current();
   }, []);
@@ -505,147 +341,14 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
     }
   }, [refresh]);
 
-  // ─── Sample task ───────────────────────────────────────────────────────────
-  // TODO(I1): the 2x2 grid created by applyLayoutTemplate('builtin-grid')
-  // is not rolled back if the user dismisses (Skip / Escape / ×) while we
-  // are still in 'splitting' or 'awaiting-prompt'. The store currently has
-  // no public set-rootPane / restore-layout primitive (we only mutate
-  // ws.rootPane through paneSlice's split/close and uiSlice's
-  // applyLayoutTemplate). Adding a new store action is out of scope for
-  // this fix-up; revisit alongside paneSlice undo/redo work.
-  const handleTrySampleTask = useCallback(async () => {
-    if (sampleState !== 'idle') return;
-    setSampleState('splitting');
-
-    // 1. Apply 2x2 grid layout to the active workspace.
-    const store = useStore.getState();
-    store.applyLayoutTemplate('builtin-grid');
-
-    // 2. Find the top-left leaf id in the (now-rebuilt) workspace tree.
-    const stateAfter = useStore.getState();
-    const ws = stateAfter.workspaces.find((w) => w.id === stateAfter.activeWorkspaceId);
-    const topLeftLeafId = ws ? findTopLeftLeafId(ws.rootPane) : null;
-    if (!ws || !topLeftLeafId) {
-      setSampleState('error');
-      return;
-    }
-
-    // 3. Wait for the top-left leaf's first surface to acquire a non-empty ptyId.
-    //    The Terminal component creates the pty asynchronously when it mounts;
-    //    we subscribe to the store and resolve as soon as ptyId is populated.
-    //    I3 guard: if the wizard unmounts mid-wait (Skip / Escape / × click)
-    //    we tear down the subscription + timer immediately and resolve null
-    //    so no setState lands on the unmounted component.
-    const ptyId = await new Promise<string | null>((resolve) => {
-      const tryGet = (): string | null => {
-        const s = useStore.getState();
-        const w = s.workspaces.find((x) => x.id === ws.id);
-        if (!w) return null;
-        const leaf = findLeafById(w.rootPane, topLeftLeafId);
-        if (leaf && leaf.surfaces.length > 0 && leaf.surfaces[0].ptyId) {
-          return leaf.surfaces[0].ptyId;
-        }
-        return null;
-      };
-
-      const initial = tryGet();
-      if (initial) {
-        resolve(initial);
-        return;
-      }
-
-      const unsub = useStore.subscribe(() => {
-        if (!isMountedRef.current) {
-          unsub();
-          clearTimeout(timer);
-          resolve(null);
-          return;
-        }
-        const got = tryGet();
-        if (got) {
-          unsub();
-          clearTimeout(timer);
-          resolve(got);
-        }
-      });
-      const timer = setTimeout(() => {
-        unsub();
-        resolve(null);
-      }, PTYID_WAIT_TIMEOUT_MS);
-    });
-
-    if (!isMountedRef.current) return;
-
-    if (!ptyId) {
-      setSampleState('error');
-      return;
-    }
-
-    // 4. Subscribe to ready/timeout BEFORE starting the task to avoid races.
-    setSampleState('awaiting-prompt');
-    const noop = (): void => undefined;
-    let unsubReady: () => void = noop;
-    let unsubTimeout: () => void = noop;
-
-    const cleanup = () => {
-      unsubReady();
-      unsubTimeout();
-    };
-
-    const bridge = firstRunBridge();
-    unsubReady = bridge.onSampleTaskReady(() => {
-      cleanup();
-      if (!isMountedRef.current) return;
-      setSampleState('success');
-      if (firstTaskShownRef.current) return;
-      // Auto-complete + close after a brief moment so the user can read the success copy.
-      setTimeout(() => {
-        void firstRunBridge().complete().catch(() => undefined);
-        onCloseRef.current();
-      }, 2_000);
-    });
-
-    unsubTimeout = bridge.onSampleTaskTimeout(() => {
-      cleanup();
-      if (!isMountedRef.current) return;
-      setSampleState('timeout-fallback');
-    });
-
-    // 5. Hand the ptyId off to main; SampleTaskRunner will scan for OSC133.
-    try {
-      await bridge.startSampleTask({ ptyId });
-    } catch {
-      cleanup();
-      if (!isMountedRef.current) return;
-      setSampleState('error');
-    }
-  }, [sampleState]);
-
-  const handleFallbackContinue = useCallback(async () => {
-    if (firstTaskShownRef.current) {
-      setSampleState('success');
-      return;
-    }
-    try {
-      await firstRunBridge().complete();
-    } catch {
-      // ignore
-    }
-    onCloseRef.current();
-  }, []);
-
-  const ui = useMemo(() => decideUiState(result, mode), [result, mode]);
   const primary = decidePrimaryAction({
-    uiState: ui,
     claudeFound: result?.status.claudeFound ?? false,
     mcpRegistered: result?.status.mcpRegistered ?? false,
     registering,
     hooksState: result?.status.claudeFound ? hooksState : 'unknown',
-    sampleState,
     agentAction: agentPrimary !== null,
-    firstTask: showFirstTask ? firstTaskPrimary(firstTask.phase, firstTask.canSend) : 'none',
+    agentReady,
   });
-  const firstTaskDone = showFirstTask && (firstTask.phase === 'answered' || firstTask.phase === 'late');
 
   if (aside && asideRun) {
     return <AgentSetupCorner agent={asideRun.agent} onExpand={() => setAside(null)} />;
@@ -681,14 +384,18 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
 
         {!loading && result && (
           <>
-            {/* Setup checklist: one grouped container, one row per item. Rows
-                that need an action are notice rows with the action on the right. */}
-            {/* Agent ready: Claude Code and Codex, one is enough to go on. */}
-            <AgentReadyGroup primary={primary === 'agent' ? agentPrimary : null} onShowPane={stepAside} />
+            {/* Agent ready: one set-up agent is enough to go on. */}
+            <AgentReadyGroup
+              primary={primary === 'agent' ? agentPrimary : null}
+              onShowPane={stepAside}
+              folded={folded}
+              onShowAll={showAllAgents}
+            />
 
+            {/* wmux's connection to Claude Code, and updates: one grouped
+                container, one row per item. Rows that need an action are
+                notice rows with the action on the right. */}
             <div className="ui-group" data-testid="first-run-wizard-checklist">
-              {/* The Claude card above says installed or not; this keeps the
-                  MCP registration row, which needs Claude. */}
               {result.status.claudeFound && (
                 <ClaudeStatusBlock
                   claudeFound={result.status.claudeFound}
@@ -700,23 +407,12 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
                 />
               )}
 
-              {/* Hook bridge — the required half of the integration. Shown even
-                  when already installed, as a check, so the checklist is complete. */}
               {result.status.claudeFound && hooksState !== 'unknown' && (
                 <HooksBlock
                   state={hooksState}
                   errorDetail={hooksError}
                   onInstall={() => void handleInstallHooks()}
                   primary={primary === 'hooks'}
-                />
-              )}
-
-              {/* Statusline opt-in (only when Claude detected & installable) */}
-              {result.status.claudeFound && statuslineState !== 'unknown' && (
-                <StatuslineBlock
-                  state={statuslineState}
-                  errorDetail={statuslineError}
-                  onInstall={() => void handleInstallStatusline()}
                 />
               )}
 
@@ -754,18 +450,6 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
                 })()}
               </div>
             )}
-
-            {/* Sample task block */}
-            <SampleTaskBlock
-              uiState={ui}
-              sampleState={sampleState}
-              completedAt={result.completedAt}
-              onTry={handleTrySampleTask}
-              onFallbackContinue={handleFallbackContinue}
-              primary={primary === 'try' || primary === 'fallback'}
-            />
-
-            {showFirstTask && <FirstTaskBlock task={firstTask} />}
           </>
         )}
       </DialogBody>
@@ -778,17 +462,18 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
             onClick={() => void dismiss()}
             data-testid="first-run-wizard-skip"
           >
-            {noAgentReady
-              ? t('firstRunWizard.agent.later')
-              : firstTaskDone ? t('firstRunWizard.closeButton') : t('firstRunWizard.skipButton')}
+            {mode === 'reopen'
+              ? t('firstRunWizard.closeButton')
+              : noAgentReady ? t('firstRunWizard.agent.later') : t('firstRunWizard.skipButton')}
           </Button>
-          {showFirstTask && (
-            <FirstTaskFooterAction
-              task={firstTask}
-              primary={primary === 'send' || primary === 'open'}
-              onOpen={openConversation}
-            />
-          )}
+          <Button
+            size="md"
+            variant={primary === 'folder' ? 'primary' : 'secondary'}
+            onClick={() => void openFolder()}
+            data-testid="first-run-wizard-open-folder"
+          >
+            {t('firstRunWizard.openFolder')}
+          </Button>
         </DialogFooter>
       )}
     </Dialog>
@@ -797,50 +482,38 @@ export default function FirstRunWizard({ mode, onClose }: FirstRunWizardProps) {
 
 /**
  * Which action gets the dialog's single solid (primary) button. DESIGN.md:
- * at most one filled warm action per surface, and never one that is disabled
- * or already running. Order follows what unblocks the operator first: the
- * timeout fallback's Continue, then MCP registration, then the required hook
- * install, then the bot's first task, then the sample task. While any of
- * those is in flight, nothing is primary — the emphasis does not jump to the
- * next step mid-install. The optional statusline offer is never primary.
- * Once the first task is answered, opening its conversation is.
+ * at most one filled action per surface, and never one that is disabled or
+ * already running. Order follows what unblocks the user first: getting an
+ * agent ready, then MCP registration, then the required hook install, then
+ * opening a folder. While a registration or hook install is in flight,
+ * nothing is primary — the emphasis does not jump to the next step
+ * mid-install.
  */
-export type WizardPrimaryAction = 'fallback' | 'agent' | 'register' | 'hooks' | 'send' | 'open' | 'try' | null;
+export type WizardPrimaryAction = 'agent' | 'register' | 'hooks' | 'folder' | null;
 
 export function decidePrimaryAction({
-  uiState,
   claudeFound,
   mcpRegistered,
   registering,
   hooksState,
-  sampleState,
   agentAction = false,
-  firstTask = 'none',
+  agentReady = false,
 }: {
-  uiState: WizardUiState | null;
   claudeFound: boolean;
   mcpRegistered: boolean;
   registering: boolean;
   hooksState: HooksSubState;
-  sampleState: SampleSubState;
   /** No agent is ready yet and an agent card has an action (install / sign in). */
   agentAction?: boolean;
-  /** The first-task step: Send ready, the task on its way (consent screen
-   *  included), Open the conversation, or nothing to offer. */
-  firstTask?: FirstTaskPrimary;
+  /** At least one agent is set up (any agent, not only Claude Code). */
+  agentReady?: boolean;
 }): WizardPrimaryAction {
-  if (sampleState === 'timeout-fallback') return 'fallback';
-  if (sampleState === 'splitting' || sampleState === 'awaiting-prompt') return null;
-  if (firstTask === 'busy') return null;
-  if (firstTask === 'open') return 'open';
   // Nothing below works without an agent: getting one ready comes first.
   if (agentAction) return 'agent';
-  // Read from the check result, not uiState: reopen mode still offers Register.
   if (claudeFound && !mcpRegistered) return registering ? null : 'register';
   if (hooksState === 'installing') return null;
   if (hooksState === 'offer' || hooksState === 'error') return 'hooks';
-  if (firstTask === 'send') return 'send';
-  if (uiState === 'ready' && sampleState === 'idle') return 'try';
+  if (agentReady) return 'folder';
   return null;
 }
 
@@ -865,7 +538,9 @@ export function withInlineCode(text: string): React.ReactNode {
 
 // ─── Sub-blocks (exported for unit tests) ─────────────────────────────────────
 
-type RowStatus = 'ok' | 'todo' | 'warn' | 'error';
+/** `none`: a setting row whose control carries its own state (a switch),
+ *  so no status glyph — a check means done or installed, never "on". */
+type RowStatus = 'ok' | 'todo' | 'warn' | 'error' | 'none';
 
 /**
  * One row of a grouped list: status icon, title + optional muted detail, and
@@ -991,7 +666,7 @@ export function AutoUpdateBlock() {
   };
   return (
     <SetupRow
-      status={enabled ? 'ok' : 'todo'}
+      status="none"
       testId="first-run-wizard-auto-update"
       title={t('settings.autoUpdate')}
       detail={t('settings.autoUpdateDesc')}
@@ -1058,178 +733,5 @@ export function HooksBlock({
         </p>
       )}
     </SetupRow>
-  );
-}
-
-export function StatuslineBlock({
-  state,
-  errorDetail,
-  onInstall,
-}: {
-  state: StatuslineSubState;
-  errorDetail?: string | null;
-  onInstall: () => void;
-}) {
-  const t = useT();
-
-  if (state === 'installed') {
-    return (
-      <SetupRow
-        status="ok"
-        testId="first-run-wizard-statusline-installed"
-        title={t('firstRunWizard.statuslineInstalled')}
-        detail={t('firstRunWizard.statuslineInstalledHint')}
-      />
-    );
-  }
-
-  // Optional and cosmetic, so never the primary action. The clip spans the
-  // full group width under the row: the statusline is one long line of small
-  // text, unreadable at the width of the row's text column.
-  return (
-    <div>
-      <SetupRow
-        status={state === 'error' ? 'error' : 'todo'}
-        testId="first-run-wizard-statusline-offer"
-        title={t('firstRunWizard.statuslineHeading')}
-        detail={t('firstRunWizard.statuslineDescription')}
-        action={
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={onInstall}
-            disabled={state === 'installing'}
-            data-testid="first-run-wizard-statusline-install"
-          >
-            {state === 'installing'
-              ? t('firstRunWizard.statuslineInstalling')
-              : t('firstRunWizard.statuslineEnableButton')}
-          </Button>
-        }
-      >
-        {state === 'error' && (
-          <p className="ui-row-error" data-testid="first-run-wizard-statusline-error">
-            {withInlineCode(t('firstRunWizard.statuslineError'))}
-            {errorDetail ? <> (<code className="ui-code">{errorDetail}</code>)</> : null}
-          </p>
-        )}
-      </SetupRow>
-      <div className="px-3 pb-3">
-        <MediaPreview
-          clip={MEDIA_CLIPS.statusline}
-          label={t('firstRunWizard.statuslineDescription')}
-          className="wmux-welcome-statusline-clip"
-          data-testid="first-run-wizard-statusline-preview"
-        />
-      </div>
-    </div>
-  );
-}
-
-/**
- * The sample task offer: a notice row (title + description ·
- * divider · action). Try / Continue are the dialog's primary only when
- * {@link decidePrimaryAction} says so, and never while disabled.
- */
-export function SampleTaskBlock({
-  uiState,
-  sampleState,
-  completedAt,
-  onTry,
-  onFallbackContinue,
-  primary = true,
-}: {
-  uiState: WizardUiState | null;
-  sampleState: SampleSubState;
-  completedAt: string | undefined;
-  onTry: () => void;
-  onFallbackContinue: () => void;
-  /** Draw Try / Continue as the dialog's primary action. */
-  primary?: boolean;
-}) {
-  const t = useT();
-
-  const enabled = uiState === 'ready' && sampleState === 'idle';
-  const isReopen = uiState === 'reopen';
-  const date = formatCompletedAt(completedAt);
-
-  const frame = (testId: string, row: React.ReactNode) => (
-    <section className="ui-group wmux-welcome-sample" data-testid={testId}>
-      {row}
-    </section>
-  );
-
-  // Sample task in progress — show progress states.
-  if (sampleState === 'splitting' || sampleState === 'awaiting-prompt') {
-    return frame(
-      'first-run-wizard-sample-running',
-      <div className="ui-row">
-        <span className="ui-row-icon" aria-hidden="true"><span className="wmux-welcome-running-dot" /></span>
-        <div className="ui-row-text">
-          <p className="ui-row-title">{t('firstRunWizard.sampleTaskHeading')}</p>
-          <p className="ui-row-detail">{t('firstRunWizard.sampleTaskDescription')}</p>
-        </div>
-      </div>,
-    );
-  }
-
-  if (sampleState === 'success') {
-    return frame(
-      'first-run-wizard-sample-success',
-      <SetupRow status="ok" title={t('firstRunWizard.sampleTaskHeading')} />,
-    );
-  }
-
-  if (sampleState === 'timeout-fallback') {
-    return frame(
-      'first-run-wizard-sample-fallback',
-      <SetupRow
-        status="todo"
-        title={t('firstRunWizard.fallbackPressEnter')}
-        action={
-          <Button
-            size="sm"
-            variant={primary ? 'primary' : 'secondary'}
-            onClick={onFallbackContinue}
-            data-testid="first-run-wizard-fallback-continue"
-          >
-            {t('firstRunWizard.fallbackButton')}
-          </Button>
-        }
-      />,
-    );
-  }
-
-  if (sampleState === 'error') {
-    return frame(
-      'first-run-wizard-sample-error',
-      <SetupRow status="error" title={t('firstRunWizard.sampleTaskFailed')} />,
-    );
-  }
-
-  // idle — render the trigger / disabled trigger.
-  return frame(
-    'first-run-wizard-sample-idle',
-    <div className="ui-row">
-      <div className="ui-row-text">
-        <h3 className="ui-row-title">{t('firstRunWizard.sampleTaskHeading')}</h3>
-        <p className="ui-row-detail">
-          {isReopen
-            ? t('firstRunWizard.alreadyCompleted', { date: date || '—' })
-            : t('firstRunWizard.sampleTaskDescription')}
-        </p>
-      </div>
-      <div className="ui-row-action">
-        <Button
-          size="sm"
-          variant={enabled && primary ? 'primary' : 'secondary'}
-          onClick={onTry}
-          disabled={!enabled}
-          data-testid="first-run-wizard-try"
-        >
-          {t('firstRunWizard.tryItButton')}
-        </Button>
-      </div>
-    </div>,
   );
 }

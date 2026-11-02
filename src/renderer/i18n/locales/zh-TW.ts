@@ -5,10 +5,10 @@ export const zhTW = {
   // Sidebar
   'sidebar.workspaces': '工作區',
   'sidebar.newWorkspace': '新增工作區',
-  'sidebar.newWorkspaceTooltip': '新增工作區 (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': '新增工作區',
   'sidebar.newRemoteWorkspace': '在 {name} 上新增工作區',
-  'sidebar.hideTooltip': '隱藏側邊欄 (Ctrl+B)',
-  'sidebar.expandTooltip': '展開側邊欄 (Ctrl+B)',
+  'sidebar.hideTooltip': '隱藏側邊欄',
+  'sidebar.expandTooltip': '展開側邊欄',
   'sidebar.unreadCount': '{count} 則未讀',
 
   // Workspace
@@ -17,7 +17,6 @@ export const zhTW = {
   'workspace.agentError': '代理發生錯誤',
   'workspace.agentWaiting': '代理等待中',
 
-  'workspace.agentAwaitingInput': '代理等待輸入',
   'workspace.needsYou': '等你回應',
   'workspace.agentIdle': '代理閒置',
   'workspace.agentUnverifiable': '{time} 無更新',
@@ -66,9 +65,9 @@ export const zhTW = {
 
   // Search
   'search.placeholder': '搜尋...',
-  'search.prevTooltip': '上一個結果 (Shift+Enter)',
-  'search.nextTooltip': '下一個結果 (Enter)',
-  'search.closeTooltip': '關閉 (ESC)',
+  'search.prevTooltip': '上一個結果',
+  'search.nextTooltip': '下一個結果',
+  'search.closeTooltip': '關閉',
   'search.regexTooltip': '使用正規表示式',
   'search.allPanes': '所有面板',
   'search.regexMode': '正規式',
@@ -86,7 +85,10 @@ export const zhTW = {
   'notification.markAllRead': '全部標為已讀',
   'notification.clear': '清除',
   'notification.empty': '沒有通知',
-  'notification.toggle': '按 Ctrl+I 切換',
+  'notification.toggle': '按 {key} 切換',
+  'notification.needsYou.question': "等你回應：「{question}」",
+  'notification.needsYou.noQuestion': "等你回應。沒有問題內容，請看它的終端機。",
+  'notification.needsYou.over': "已不再等你。",
 
   // Command palette
   'palette.placeholder': '輸入命令...',
@@ -96,7 +98,7 @@ export const zhTW = {
   'palette.close': '關閉',
   'palette.cmd.toggleSidebar': '切換側邊欄',
   'palette.cmd.newWorkspace': '新增工作區',
-  'palette.cmd.newSurface': '新增介面',
+  'palette.cmd.newSurface': '新增分頁',
   'palette.cmd.splitRight': '向右分割',
   'palette.cmd.splitDown': '向下分割',
   'palette.cmd.stashPane': '收起面板（工作階段繼續執行）',
@@ -106,7 +108,7 @@ export const zhTW = {
   'palette.cmd.saveLayout': '將目前版面儲存為範本',
   'palette.cmd.layoutPrefix': '版面: ',
   'palette.catWorkspace': '工作區',
-  'palette.catSurface': '介面',
+  'palette.catSurface': '分頁',
   'palette.catCommand': '命令',
   'palette.catRecent': '最近',
 
@@ -246,8 +248,6 @@ export const zhTW = {
   'viCopy.visual': '-- 視覺 --',
 
   // StatusBar
-  'statusBar.company': '公司',
-  'statusBar.session': '工作階段: {min} 分',
   'statusBar.settingsTooltip': '設定 (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const zhTW = {
   'settings.checkFailed': '檢查失敗',
   'settings.unknownError': '未知錯誤',
   'settings.notificationBehavior': '通知行為',
-  'settings.soundDesc': 'Web Audio API — 不需外部檔案',
+  'settings.soundDesc': '收到通知時播放一段簡短的內建提示音。',
   'settings.toast': '快顯通知',
   'settings.toastDesc': '代理完成時顯示覆蓋快顯',
   'settings.ring': '邊框動畫',
   'settings.ringDesc': '有未讀通知的面板邊框會脈動',
   'settings.sc.toggleSidebar': '切換側邊欄',
-  'settings.sc.splitHorizontal': '水平分割',
-  'settings.sc.splitVertical': '垂直分割',
+  'settings.sc.splitHorizontal': '向右分割',
+  'settings.sc.splitVertical': '向下分割',
   'settings.sc.newWorkspace': '新增工作區',
   'settings.sc.closeSurface': '關閉作用中分頁',
   'settings.sc.closePane': '關閉分割面板',
@@ -406,8 +406,8 @@ export const zhTW = {
   'settings.prefixAddBinding': '新增繫結',
   'settings.prefixReset': '還原為預設值',
   'settings.prefixResetConfirm': '將所有前綴設定還原為預設值?',
-  'settings.prefix.splitHorizontal': '水平分割',
-  'settings.prefix.splitVertical': '垂直分割',
+  'settings.prefix.splitHorizontal': '向右分割',
+  'settings.prefix.splitVertical': '向下分割',
   'settings.prefix.closePane': '關閉面板',
   'settings.prefix.newWorkspace': '新增工作區',
   'settings.prefix.nextWorkspace': '下一個工作區',
@@ -481,16 +481,16 @@ export const zhTW = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude 整合',
-  'claudeIntegration.signalHealth.title': '外掛訊號健康狀態',
+  'claudeIntegration.signalHealth.title': 'Claude Code 外掛',
   'claudeIntegration.signalHealth.unknownBody':
-    '外掛狀態：尚未偵測到。請在 Claude Code 中使用下方指令安裝。第一個 hook 觸發後，wmux 即會確認偵測結果。',
+    '尚未收到 wmux 外掛的訊號。請在 Claude Code 中執行下方的安裝指令；外掛首次回報後這裡會更新。',
   'claudeIntegration.signalHealth.detectedLastReceived': '上次收到訊號：{rel}。',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     '延遲 P50 {p50}ms · P95 {p95}ms · {count} 個樣本',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     '工作區比對：{matched}/{total} 個 hook 對應到 wmux 面板',
   'claudeIntegration.signalHealth.staleBody':
-    '外掛狀態：已停滯。上次 hook 於 {rel} 送達 — 外掛可能已停止觸發，或 Claude Code 處於閒置狀態。',
+    '外掛最後一次訊號在 {rel}。它可能已停止，或 Claude Code 處於閒置。',
   'claudeIntegration.signalHealth.copyInstallCommand': '複製安裝指令',
   'claudeIntegration.signalHealth.copySuccess': '已複製 — 貼到 Claude Code',
   'claudeIntegration.signalHealth.copyError': '複製失敗 — 剪貼簿已鎖定',
@@ -498,7 +498,7 @@ export const zhTW = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Anthropic 用量計 (5h / 7d)',
   'claudeIntegration.usage.description':
-    '每 15 分鐘以你的 Claude Code 登入（本機儲存中的 OAuth 權杖）從 Anthropic 的用量端點讀取你的用量。只讀取用量——不會送出任何模型請求，也不會消耗配額。權杖絕不會回寫、絕不會記錄，只會傳送至 api.anthropic.com。',
+    '每 15 分鐘以你的 Claude Code 登入從 Anthropic 的用量端點讀取你的用量。只讀取用量——不會送出任何模型請求，也不會消耗配額。權杖絕不會回寫、絕不會記錄，只會傳送至 api.anthropic.com。',
   'claudeIntegration.usage.enableLabel': '在狀態列顯示 5h / 7d 使用率',
   'claudeIntegration.usage.refreshButton': '立即重新整理',
   'claudeIntegration.usage.refreshCooldown': '{seconds} 秒後可重新整理',
@@ -551,7 +551,7 @@ export const zhTW = {
   'toolbar.schedule': '排程',
   'toolbar.scheduleTooltip': '管理這個 session 的排程提示',
   'sessionSchedule.title': 'Session 排程',
-  'sessionSchedule.hint': 'wmux 會等待這個 agent 安靜且可接收新任務，再安全貼上並送出提示。投遞需要 daemon mode；到期提示可跨 app 重啟保留。',
+  'sessionSchedule.hint': 'wmux 會等智慧體安靜且可輸入時，再貼上並送出提示。排定的提示在應用程式重新啟動後仍會保留。',
   'sessionSchedule.empty': '這個 session 尚無排程提示。',
   'sessionSchedule.promptPlaceholder': '時間到時，要讓這個 agent 做什麼？',
   'sessionSchedule.quick': '快速設定',
@@ -571,7 +571,7 @@ export const zhTW = {
   'sessionSchedule.statusSent': '已送出',
   'sessionSchedule.statusError': '投遞失敗',
   'sessionSchedule.statusPaused': '已暫停',
-  'sessionSchedule.daemonRequired': 'Session 排程需要 daemon mode。請重新連接 daemon 後再試。',
+  'sessionSchedule.daemonRequired': '排程需要 wmux 背景服務，但目前未連線。重新連線後再試一次。',
   'sessionSchedule.promptLabel': '排程提示',
   'sessionSchedule.whenLabel': '投遞時間',
   'sessionSchedule.repeatLabel': '重複間隔',
@@ -585,7 +585,7 @@ export const zhTW = {
   'sessionSchedule.resume': '繼續',
   'sessionSchedule.delete': '刪除',
   'sessionSchedule.add': '新增排程',
-  'sessionSchedule.otherSession': '其他 session · {ptyId}',
+  'sessionSchedule.otherSession': '其他工作階段',
 
   // ─── Fan-out 對話框（1 個提示 → N 個隔離任務）───
   'fanout.title': 'Fan-out — 1 個提示 → N 個隔離任務',
@@ -677,6 +677,7 @@ export const zhTW = {
   'pcSwitcher.manage': "{name} 設定",
   'app.portableData.notice': "這個 wmux 副本在「應用程式」資料夾外執行，因此使用獨立的資料。將它移到「應用程式」資料夾即可看到現有的工作階段。",
   'pcSwitcher.othersNeedYou': "其他電腦上有 {count} 個需要你",
+  'pcSwitcher.othersNeedYouOne': '其他電腦上有 {count} 個需要你',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "結束 wmux 並停止所有工作階段？",
   'quitAndStop.detail': "正在執行：{agents} 個代理工作階段，共 {sessions} 個終端機。它們都會被停止。一般結束會讓它們在背景繼續執行。",

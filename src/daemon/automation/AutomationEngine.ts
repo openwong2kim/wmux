@@ -150,7 +150,7 @@ export interface AutomationEnginePorts {
   sendKey: (id: string, sequence: string) => Promise<void>;
   readAgent: (id: string) => AutomationAgentView;
   armAgentTracker: (id: string) => void;
-  /** `onWrite('paste')` fires right before the paste is written: after it, the composer may hold the prompt. */
+  /** `onWrite('paste')` fires once the paste write succeeded (or threw): after it, the composer may hold the prompt. */
   deliverPrompt: (
     id: string, slug: AgentSlug, incarnationId: string, prompt: string,
     onWrite?: (stage: 'paste' | 'submit') => void,

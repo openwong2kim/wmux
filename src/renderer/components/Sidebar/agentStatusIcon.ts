@@ -32,6 +32,6 @@ export const AGENT_STATUS_ICON: Record<AgentStatus, {
   complete:       { dot: '●', className: 'text-[var(--text-sub)]',      labelKey: 'workspace.agentComplete',      dotVar: 'var(--text-sub)',  glowClass: '',                    shape: 'dot', mark: 'check' },
   error:          { dot: '●', className: 'text-[var(--accent-red)]',    labelKey: 'workspace.agentError',         dotVar: 'var(--accent-red)',    glowClass: 'sidebar-dot-error',   shape: 'cross', mark: 'cross' },
   waiting:        { dot: '●', className: 'text-[var(--attention)]', labelKey: 'workspace.agentWaiting',       dotVar: 'var(--attention)', glowClass: 'sidebar-dot-waiting', shape: 'dot', mark: 'ring' },
-  awaiting_input: { dot: '●', className: 'text-[var(--attention)]', labelKey: 'workspace.agentAwaitingInput', dotVar: 'var(--attention)', glowClass: 'sidebar-dot-waiting', shape: 'dot', mark: 'ring' },
+  awaiting_input: { dot: '●', className: 'text-[var(--attention)]', labelKey: 'workspace.needsYou', dotVar: 'var(--attention)', glowClass: 'sidebar-dot-waiting', shape: 'dot', mark: 'ring' },
   idle:           { dot: '●', className: 'text-[var(--text-muted)]',    labelKey: 'workspace.agentIdle',          dotVar: 'var(--text-muted)',    glowClass: '',                    shape: 'dot', mark: 'none' },
 };

@@ -123,7 +123,7 @@ describe('Remote page', () => {
     expect($('[data-remote-summary]')?.textContent).toBe('1 of 1 phones connected');
     expect($('[data-remote-machine]')?.textContent).toContain('MacBook');
     expect($('[data-remote-server]')?.textContent).toBe('Phone access: This computer only');
-    expect($('[data-remote-a2a]')?.textContent).toBe('A2A :45660 listening');
+    expect($('[data-remote-a2a]')?.textContent).toBe('PC messages on · port 45660');
     const phone = $('[data-remote-entry="phone"]')!;
     expect(phone.getAttribute('data-live')).toBe('true');
     expect(phone.querySelector('[data-remote-viewing]')?.textContent).toBe('Viewing api / build · Can type once input is on');
@@ -346,7 +346,7 @@ describe('Remote page', () => {
     expect($('[data-remote-notice]')?.textContent).toBe('office-win can still connect to this PC: revoking its pairing here failed. Try Remove again.');
   });
 
-  it('says A2A is listening as soon as Connect a PC turns it on, not at the next poll', async () => {
+  it('says A2A is listening as soon as Connect a PC turns it on (on its button, never on showing the tab), not at the next poll', async () => {
     stub([]);
     const off = { enabled: false, port: 45660, listening: false, hostId: 'me', name: 'MacBook', fingerprint256: null, lastError: null };
     api.a2aRemote.status.mockResolvedValue(off);
@@ -354,14 +354,19 @@ describe('Remote page', () => {
     api.a2aRemote.pairBegin = vi.fn(async () => ({ invite: 'wmux-a2a://x:45660/K7M2QX9P#AA', expiresAt: Date.now() + 600_000, addresses: [] }));
     api.a2aRemote.pairStatus = vi.fn(async () => ({ active: true, expiresAt: null, attemptsLeft: 3, lockedUntil: null }));
     await render();
-    expect($('[data-remote-a2a]')?.textContent).toBe('A2A off');
+    expect($('[data-remote-a2a]')?.textContent).toBe('PC messages off');
     await act(async () => { $<HTMLButtonElement>('[data-remote-connect]')!.click(); });
     for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
     const invite = [...document.querySelectorAll<HTMLButtonElement>('[data-testid="remote-connect-tabs"] button')].find((b) => b.textContent === 'Invite this PC')!;
     await act(async () => { invite.click(); });
     for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
+    // Showing the Invite tab turns nothing on; its Turn on and create invite button does.
+    expect(api.a2aRemote.configure).not.toHaveBeenCalled();
+    expect($('[data-remote-a2a]')?.textContent).toBe('PC messages off');
+    await act(async () => { $<HTMLButtonElement>('[data-testid="remote-connect-create"]')!.click(); });
+    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve(); });
     expect(api.a2aRemote.configure).toHaveBeenCalledWith({ enabled: true });
-    expect($('[data-remote-a2a]')?.textContent).toBe('A2A :45660 listening');
+    expect($('[data-remote-a2a]')?.textContent).toBe('PC messages on · port 45660');
   });
 
   it('keeps Share & pair open when a pairing started there turns phone access on', async () => {
@@ -412,12 +417,12 @@ describe('Remote page: the A2A port', () => {
   it('a reserved or denied port reads "unavailable" on the band, a held one "in use"', async () => {
     stubPort('port-denied');
     await render();
-    expect($('[data-remote-a2a]')?.textContent).toBe('A2A: port 45660 unavailable');
+    expect($('[data-remote-a2a]')?.textContent).toBe('PC messages: port 45660 unavailable');
     act(() => root.unmount());
     root = createRoot(container);
     stubPort('port-in-use');
     await render();
-    expect($('[data-remote-a2a]')?.textContent).toBe('A2A: port 45660 in use');
+    expect($('[data-remote-a2a]')?.textContent).toBe('PC messages: port 45660 in use');
   });
 
   it('Use port N that fails while the old listener keeps serving says so beside the notices', async () => {

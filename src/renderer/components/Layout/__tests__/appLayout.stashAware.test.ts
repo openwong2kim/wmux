@@ -9,7 +9,7 @@
  * recovery".
  *
  * These are SOURCE-SCAN guards (house pattern: appLayout.sessionSaveInvariants,
- * Sidebar.companyMode, firstParty). AppLayout and the teardown call sites have
+ * firstParty). AppLayout and the teardown call sites have
  * no jsdom fixture, and the walks they perform cannot be observed from outside.
  * A source pin cannot prove behavior — which is exactly why the DERIVED-liveness
  * transition, the one thing a scan would miss entirely, gets a real end-to-end

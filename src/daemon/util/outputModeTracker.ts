@@ -152,7 +152,10 @@ export class OutputModeTracker {
     }
     for (const [mode, index] of changedAt) this.lastChangeOffset.set(mode, offsetOf.get(index) ?? streamEndOffset);
     if (altEntryIndex >= 0) this.lastAltEntryOffset = offsetOf.get(altEntryIndex) ?? streamEndOffset;
-    this.carry = text.slice(-CARRY_CHARS);
+    // slice() would keep the whole of `text` alive (a V8 sliced string), which
+    // is the entire ring on the priming feed. Copy the few chars instead;
+    // split('') keeps UTF-16 units, so a cut surrogate pair stays verbatim.
+    this.carry = text.slice(-CARRY_CHARS).split('').join('');
   }
 
   /** Back to power-on defaults, as RIS (`ESC c`) does to a real terminal. */

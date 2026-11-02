@@ -16,7 +16,7 @@ import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
-import { botMcpArgs, isBotBinding, type BotBinding } from '../../shared/bot';
+import { botMcpArgs, isBotBinding, type BotBinding, type BotSurfaceNarrowing } from '../../shared/bot';
 
 export interface BotTokenHandoff {
   /** The file holding the token until the MCP child reads it. */
@@ -39,7 +39,7 @@ export function botTokenHandoffDir(dir: string = getWmuxDir()): string {
 export function writeBotTokenHandoff(
   binding: BotBinding,
   token: string,
-  opts: { dir?: string; keep?: boolean } = {},
+  opts: { dir?: string; keep?: boolean; surface?: BotSurfaceNarrowing } = {},
 ): BotTokenHandoff {
   if (!isBotBinding(binding)) throw new Error('writeBotTokenHandoff: malformed bot binding');
   if (typeof token !== 'string' || token.length === 0) throw new Error('writeBotTokenHandoff: empty token');
@@ -50,7 +50,7 @@ export function writeBotTokenHandoff(
   fs.writeFileSync(filePath, token, { encoding: 'utf8', mode: 0o600, flag: 'wx' });
   return {
     filePath,
-    mcpArgs: botMcpArgs(binding.role, filePath, opts.keep === true),
+    mcpArgs: botMcpArgs(binding.role, filePath, opts.keep === true, opts.surface),
     dispose: () => {
       try {
         fs.unlinkSync(filePath);

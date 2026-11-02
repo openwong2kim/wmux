@@ -43,9 +43,9 @@ describe('nowDoingLine', () => {
     expect(nowDoingLine(fleetRow(pane({ activity: '✎ foo.ts' })), undefined, t, 'Error: x').kind).toBe('now');
   });
 
-  it('a pane asking for input with no question (a permission prompt) keeps saying so', () => {
+  it('a pane asking for input with no question (a permission prompt) adds no second wording', () => {
     const line = nowDoingLine(fleetRow(pane({ agentStatus: 'awaiting_input' })), '$ npm test', t);
-    expect(line).toEqual({ text: 'Needs your input', kind: 'status' });
+    expect(line).toEqual({ text: '', kind: 'status' });
   });
 });
 

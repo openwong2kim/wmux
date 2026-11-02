@@ -8,9 +8,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { A2A_ROUTES, formatPeerCredential, type A2aLinkRecordV1 } from '../../../shared/a2aRemote';
+import { A2A_REMOTE_PROTOCOL, A2A_ROUTES, formatPeerCredential, type A2aLinkRecordV1 } from '../../../shared/a2aRemote';
 import { A2A_REMOTE_NOTIFY_METHOD, A2A_REMOTE_RPC } from '../../../shared/a2aRemoteDelivery';
 import { applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
+import { COMPANY_BRIEF_KIND } from '../../../shared/company';
 import type { DaemonConfig } from '../../types';
 import { RemoteA2aBridge } from '../../../main/a2a/RemoteA2aBridge';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
@@ -19,6 +20,7 @@ import { A2aRemoteController } from '../controller';
 import { A2aRemoteDelivery, NO_AGENT_SUMMARY, WAITING_SUMMARY } from '../delivery';
 import { ExposedPaneCache } from '../exposedPanes';
 import { ExposureStore } from '../exposureStore';
+import { remoteTaskId } from '../ids';
 import { joinRemoteHost } from '../joiner';
 import { registerA2aLinkRpc } from '../linkRpc';
 import { LinkStore } from '../linkStore';
@@ -837,4 +839,93 @@ describe('cross-host completion, end to end', () => {
     expect(a.tasks.getTask(taskId)!.status.evidence?.summary).toBe('done');
     await until(() => b.delivery.outbox.pending(a.hostId).length === 0);
   }, 20_000);
+});
+
+describe('a company task on another PC, end to end', () => {
+  it('B completes: A holds a report, keeps it once across a restart, and the CEO\'s done on A never reaches B', async () => {
+    const b = await makePc('PC-B');
+    let a = await makePc('PC-A');
+    const linkId = await linked(a, b);
+
+    // A's copy carries the brief, as the sending side records it; the wire carries the text only.
+    const briefId = 'brief-1';
+    const taskId = remoteTaskId(linkId, briefId);
+    expect((await a.tasks.createTask({
+      id: taskId,
+      title: 'ship the fix',
+      from: { workspaceId: 'ws-a', name: 'Web', paneId: 'pane-a' },
+      to: { workspaceId: `remote:${linkId}`, name: 'PC-B/Backend/codex' },
+      history: [{
+        kind: 'message',
+        messageId: briefId,
+        role: 'user',
+        parts: [
+          { kind: 'text', text: 'ship the fix' },
+          { kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } },
+        ],
+      }],
+      remote: { v: 1, linkId, hostId: b.hostId, messageId: briefId, direction: 'outbound', kind: 'pane' },
+    })).ok).toBe(true);
+    a.delivery.outbox.enqueue(b.hostId, {
+      protocol: A2A_REMOTE_PROTOCOL, linkId, linkVersion: a.links.get(linkId)!.version, messageId: briefId, kind: 'task', text: 'ship the fix', sentAt: new Date().toISOString(),
+    });
+    await until(() => (b.tasks.getTask(taskId)?.metadata.remote as { delivered?: boolean })?.delivered === true);
+
+    // B has no company: its agent finishes the task itself.
+    expect((await b.tasks.transition({ taskId, to: 'working', callerWorkspaceId: 'ws-b' })).ok).toBe(true);
+    expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'working' })).toMatchObject({ ok: true });
+    await until(() => a.tasks.getTask(taskId)?.status.state === 'working');
+    const evidence = {
+      summary: 'PR #7 merged',
+      items: [{ kind: 'command' as const, status: 'passed' as const, command: 'npm test', summary: 'tests pass' }],
+    };
+    expect((await b.tasks.transition({
+      taskId, to: 'completed', callerWorkspaceId: 'ws-b', evidence,
+      message: { kind: 'message', messageId: 'st-b', role: 'agent', parts: [{ kind: 'text', text: 'PR #7 merged at abc123.' }] },
+    })).ok).toBe(true);
+    expect(await b.rpc(A2A_REMOTE_RPC.state, { taskId, state: 'completed' })).toMatchObject({ ok: true });
+
+    // On A it is a report: input-required with B's message and evidence.
+    const marker = (pc: Pc) => pc.tasks.getTask(taskId)!.metadata.remote as { reported?: string; inbox?: Array<{ kind: string; state?: string; reported?: true }> };
+    await until(() => marker(a).reported !== undefined);
+    expect(a.tasks.getTask(taskId)!.status).toMatchObject({ state: 'input-required', evidence });
+    expect(a.tasks.getTask(taskId)!.history.at(-1)?.parts).toEqual([{ kind: 'text', text: 'PR #7 merged at abc123.' }]);
+    expect(marker(a).inbox?.filter((i) => i.kind === 'state')).toMatchObject([{ state: 'working' }, { state: 'completed', reported: true }]);
+    await until(() => b.delivery.outbox.pending(a.hostId).length === 0);
+    const isReport = (e: unknown): boolean => {
+      const env = e as { kind?: string; taskId?: string; state?: string };
+      return env.kind === 'state' && env.taskId === taskId && env.state === 'completed';
+    };
+    const report = a.received.find(isReport);
+    expect(report).toBeDefined();
+    const reportId = (report as { messageId: string }).messageId;
+
+    // A's daemon restarts; B's envelope redelivered reads as a duplicate.
+    const aDir = a.dir;
+    const aPort = a.port;
+    pcs.splice(pcs.indexOf(a), 1);
+    await a.stop();
+    a = await makePc('PC-A', { dir: aDir, port: aPort });
+    expect(a.tasks.getTask(taskId)!.status.state).toBe('input-required');
+    expect(marker(a).reported).toBeDefined();
+    expect(await a.delivery.accept(report, { hostId: b.hostId })).toMatchObject({ ok: true, duplicate: true });
+    expect(a.tasks.getTask(taskId)!.history.filter((m) => m.messageId === reportId)).toHaveLength(1);
+
+    // A's CEO pane marks it done on A.
+    const done = await a.tasks.transition({
+      taskId, to: 'completed', callerWorkspaceId: 'ws-a', callerAddr: { paneId: 'pane-a' }, callerCompanySeat: 'coordinator',
+      evidence: { summary: 'PR checked', items: [{ kind: 'inspection', status: 'verified', summary: 'PR head matches the report' }] },
+    });
+    expect(done.ok).toBe(true);
+    expect(await a.delivery.accept(report, { hostId: b.hostId })).toMatchObject({ ok: true, duplicate: true });
+
+    // Nothing goes to B for that task: not queued, not received.
+    await a.delivery.syncAll();
+    await deliberateSleep(300, 'negative: the done on A is never sent to B');
+    const statesFor = (envs: unknown[]): unknown[] => envs.filter((e) => (e as { kind?: string; taskId?: string }).kind === 'state' && (e as { taskId?: string }).taskId === taskId);
+    expect(statesFor(a.delivery.outbox.pending(b.hostId).map((r) => r.envelope))).toEqual([]);
+    expect(statesFor(b.received)).toEqual([]);
+    expect(a.tasks.getTask(taskId)!.status.state).toBe('completed');
+    expect(b.tasks.getTask(taskId)!.status.state).toBe('completed');
+  });
 });

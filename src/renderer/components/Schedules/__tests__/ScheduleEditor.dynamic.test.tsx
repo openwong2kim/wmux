@@ -117,8 +117,8 @@ describe('ScheduleEditor', () => {
     api.grant.mockResolvedValue({ ok: true, automation: a });
     const onSaved = mount(a);
     openMore();
-    act(() => radio('Bypass').click());
-    expect(radio('Bypass').getAttribute('aria-checked')).toBe('true');
+    act(() => radio('Full access').click());
+    expect(radio('Full access').getAttribute('aria-checked')).toBe('true');
     await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
     expect(api.update).toHaveBeenCalledTimes(1);
     expect(api.update.mock.calls[0][1]).not.toHaveProperty('permission');
@@ -212,11 +212,11 @@ describe('ScheduleEditor', () => {
     api.grant.mockResolvedValue({ ok: false, error: 'cancelled' });
     const onSaved = mount(a);
     openMore();
-    act(() => radio('Bypass').click());
+    act(() => radio('Full access').click());
     await act(async () => q<HTMLButtonElement>('[data-schedule-save]')!.click());
     expect(onSaved).not.toHaveBeenCalled();
     expect(q('[data-schedule-error]')!.textContent)
-      .toBe('Bypass was not granted; the schedule keeps its current permission.');
+      .toBe('Full access was not granted; the schedule keeps its current permission.');
   });
 
   it('names a new schedule from the prompt\'s first line until the name is typed over', () => {
@@ -294,15 +294,15 @@ describe('browser tools and the browser publish template', () => {
     mountNew({ ...emptyForm(), cwd: '/repo' });
     openMore();
     expect(note()).toBe('Browser tools are not included in Auto.');
-    act(() => radio('Bypass').click());
-    expect(note()).toBe('Browser tools are not included in Bypass.');
+    act(() => radio('Full access').click());
+    expect(note()).toBe('Browser tools are not included in Full access.');
     act(() => radio('Scoped').click());
     expect(note()).toBeNull();
     act(() => radio('Approval').click());
     expect(note()).toBeNull();
     openChip('agent');
     act(() => radio('Codex').click());
-    act(() => radio('Bypass').click());
+    act(() => radio('Full access').click());
     expect(note()).toBeNull();
   });
 

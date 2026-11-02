@@ -5,10 +5,10 @@ export const fr = {
   // Sidebar
   'sidebar.workspaces': 'Espaces de travail',
   'sidebar.newWorkspace': 'Nouvel espace de travail',
-  'sidebar.newWorkspaceTooltip': 'Nouvel espace de travail (Ctrl+N)',
+  'sidebar.newWorkspaceTooltip': 'Nouvel espace de travail',
   'sidebar.newRemoteWorkspace': 'Nouvel espace de travail sur {name}',
-  'sidebar.hideTooltip': 'Masquer la barre latérale (Ctrl+B)',
-  'sidebar.expandTooltip': 'Afficher la barre latérale (Ctrl+B)',
+  'sidebar.hideTooltip': 'Masquer la barre latérale',
+  'sidebar.expandTooltip': 'Afficher la barre latérale',
   'sidebar.unreadCount': '{count} non lus',
 
   // Workspace
@@ -17,7 +17,6 @@ export const fr = {
   'workspace.agentError': 'Erreur de l\'agent',
   'workspace.agentWaiting': 'Agent en attente',
 
-  'workspace.agentAwaitingInput': 'Agent attend une réponse',
   'workspace.needsYou': 'Vous attend',
   'workspace.agentIdle': 'Agent inactif',
   'workspace.agentUnverifiable': 'Aucune mise à jour depuis {time}',
@@ -66,9 +65,9 @@ export const fr = {
 
   // Search
   'search.placeholder': 'Rechercher...',
-  'search.prevTooltip': 'Résultat précédent (Maj+Entrée)',
-  'search.nextTooltip': 'Résultat suivant (Entrée)',
-  'search.closeTooltip': 'Fermer (ÉCHAP)',
+  'search.prevTooltip': 'Résultat précédent',
+  'search.nextTooltip': 'Résultat suivant',
+  'search.closeTooltip': 'Fermer',
   'search.regexTooltip': 'Utiliser une expression régulière',
   'search.allPanes': 'Tous les panneaux',
   'search.regexMode': 'Regex',
@@ -86,7 +85,10 @@ export const fr = {
   'notification.markAllRead': 'Tout marquer comme lu',
   'notification.clear': 'Effacer',
   'notification.empty': 'Aucune notification',
-  'notification.toggle': 'Ctrl+I pour basculer',
+  'notification.toggle': '{key} pour basculer',
+  'notification.needsYou.question': "Vous attend : « {question} »",
+  'notification.needsYou.noQuestion': "Vous attend. Pas de texte de question ; voir son terminal.",
+  'notification.needsYou.over': "Ne vous attend plus.",
 
   // Command palette
   'palette.placeholder': 'Tapez une commande...',
@@ -96,7 +98,7 @@ export const fr = {
   'palette.close': 'fermer',
   'palette.cmd.toggleSidebar': 'Basculer la barre latérale',
   'palette.cmd.newWorkspace': 'Nouvel espace de travail',
-  'palette.cmd.newSurface': 'Nouvelle surface',
+  'palette.cmd.newSurface': 'Nouvel onglet',
   'palette.cmd.splitRight': 'Diviser à droite',
   'palette.cmd.splitDown': 'Diviser en bas',
   'palette.cmd.stashPane': 'Mettre le panneau de côté (la session continue de tourner)',
@@ -106,7 +108,7 @@ export const fr = {
   'palette.cmd.saveLayout': 'Enregistrer la disposition actuelle comme modèle',
   'palette.cmd.layoutPrefix': 'Disposition : ',
   'palette.catWorkspace': 'Espace de travail',
-  'palette.catSurface': 'Surface',
+  'palette.catSurface': 'Onglet',
   'palette.catCommand': 'Commande',
   'palette.catRecent': 'Récent',
 
@@ -246,8 +248,6 @@ export const fr = {
   'viCopy.visual': '-- VISUEL --',
 
   // StatusBar
-  'statusBar.company': 'ENTREPRISE',
-  'statusBar.session': 'Session : {min} min',
   'statusBar.settingsTooltip': 'Paramètres (Ctrl+,)',
 
   // Settings
@@ -367,14 +367,14 @@ export const fr = {
   'settings.checkFailed': 'Vérification échouée',
   'settings.unknownError': 'Erreur inconnue',
   'settings.notificationBehavior': 'Comportement des notifications',
-  'settings.soundDesc': 'Web Audio API — aucun fichier externe requis',
+  'settings.soundDesc': 'Joue un court son intégré à l’arrivée d’une notification.',
   'settings.toast': 'Notifications toast',
   'settings.toastDesc': 'Afficher un toast lorsque l\'agent termine',
   'settings.ring': 'Animation d\'anneau',
   'settings.ringDesc': 'Pulsation de bordure sur les panneaux avec notifications non lues',
   'settings.sc.toggleSidebar': 'Basculer la barre latérale',
-  'settings.sc.splitHorizontal': 'Diviser horizontalement',
-  'settings.sc.splitVertical': 'Diviser verticalement',
+  'settings.sc.splitHorizontal': 'Diviser à droite',
+  'settings.sc.splitVertical': 'Diviser en bas',
   'settings.sc.newWorkspace': 'Nouvel espace de travail',
   'settings.sc.closeSurface': 'Fermer l\'onglet actif',
   'settings.sc.closePane': 'Fermer le panneau divisé',
@@ -406,8 +406,8 @@ export const fr = {
   'settings.prefixAddBinding': 'Ajouter une liaison',
   'settings.prefixReset': 'Réinitialiser aux valeurs par défaut',
   'settings.prefixResetConfirm': 'Réinitialiser tous les paramètres de préfixe aux valeurs par défaut ?',
-  'settings.prefix.splitHorizontal': 'Diviser horizontalement',
-  'settings.prefix.splitVertical': 'Diviser verticalement',
+  'settings.prefix.splitHorizontal': 'Diviser à droite',
+  'settings.prefix.splitVertical': 'Diviser en bas',
   'settings.prefix.closePane': 'Fermer le panneau',
   'settings.prefix.newWorkspace': 'Nouvel espace de travail',
   'settings.prefix.nextWorkspace': 'Espace de travail suivant',
@@ -482,16 +482,16 @@ export const fr = {
 
   // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Intégration Claude',
-  'claudeIntegration.signalHealth.title': 'État du signal du plugin',
+  'claudeIntegration.signalHealth.title': 'Plugin Claude Code',
   'claudeIntegration.signalHealth.unknownBody':
-    'État du plugin : pas encore observé. Installez-le avec la commande ci-dessous dans Claude Code. wmux confirme la détection dès le déclenchement du premier hook.',
+    'Aucun signal du plugin wmux pour l’instant. Lancez la commande d’installation ci-dessous dans Claude Code ; cet état se met à jour au premier signal du plugin.',
   'claudeIntegration.signalHealth.detectedLastReceived': 'Dernier signal {rel}.',
   'claudeIntegration.signalHealth.detectedLatencyFormat':
     'Latence P50 {p50}ms · P95 {p95}ms · {count} échantillons',
   'claudeIntegration.signalHealth.workspaceMatchFormat':
     'Correspondance d\'espace de travail : {matched}/{total} hooks associés à un panneau wmux',
   'claudeIntegration.signalHealth.staleBody':
-    'État du plugin : obsolète. Le dernier hook est arrivé {rel} — le plugin a peut-être cessé de se déclencher ou Claude Code est inactif.',
+    'Dernier signal du plugin : {rel}. Il s’est peut-être arrêté, ou Claude Code est inactif.',
   'claudeIntegration.signalHealth.copyInstallCommand': 'Copier la commande d\'installation',
   'claudeIntegration.signalHealth.copySuccess': 'Copié — collez dans Claude Code',
   'claudeIntegration.signalHealth.copyError': 'Échec de la copie — presse-papiers verrouillé',
@@ -499,7 +499,7 @@ export const fr = {
   // Phase 2 — Anthropic 5h/7d usage meter
   'claudeIntegration.usage.title': 'Indicateur d\'utilisation Anthropic (5h / 7d)',
   'claudeIntegration.usage.description':
-    'Lit votre utilisation depuis le point de terminaison d\'utilisation d\'Anthropic toutes les 15 minutes avec votre connexion Claude Code (le jeton OAuth du stockage local). Il ne fait que lire l\'utilisation : aucune requête au modèle n\'est envoyée et aucun quota n\'est consommé. Le jeton n\'est jamais réécrit, jamais journalisé, et envoyé uniquement à api.anthropic.com.',
+    "Lit votre utilisation depuis le point de terminaison d'utilisation d'Anthropic toutes les 15 minutes avec votre connexion Claude Code. Il ne fait que lire l'utilisation : aucune requête au modèle n'est envoyée et aucun quota n'est consommé. Le jeton n'est jamais réécrit, jamais journalisé, et envoyé uniquement à api.anthropic.com.",
   'claudeIntegration.usage.enableLabel': 'Afficher l\'utilisation 5h / 7d dans la barre d\'état',
   'claudeIntegration.usage.refreshButton': 'Actualiser maintenant',
   'claudeIntegration.usage.refreshCooldown': 'Actualisation possible dans {seconds}s',
@@ -640,6 +640,7 @@ export const fr = {
   'pcSwitcher.manage': "Réglages de {name}",
   'app.portableData.notice': "Cette copie de wmux s’exécute en dehors du dossier Applications et utilise donc des données distinctes. Déplacez-la dans Applications pour retrouver vos sessions existantes.",
   'pcSwitcher.othersNeedYou': "{count} vous attendent sur d'autres ordinateurs",
+  'pcSwitcher.othersNeedYouOne': '{count} vous attend sur un autre ordinateur',
   // Quit and Stop Sessions (main-process native confirm)
   'quitAndStop.message': "Quitter wmux et arrêter toutes les sessions ?",
   'quitAndStop.detail': "Sessions d'agent en cours : {agents}. Terminaux au total : {sessions}. Toutes seront arrêtées. Quitter normalement les laisse tourner en arrière-plan.",

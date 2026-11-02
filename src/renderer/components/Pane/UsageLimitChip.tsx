@@ -9,6 +9,15 @@
 // because it means the system will act on its own. The card opens by itself
 // once per limit when the pane is the one in front, for a limit hit since the
 // app started (a restart does not reopen it).
+//
+// Two more states share the chip:
+//   - close to the limit (NEAR_LIMIT_PCT of the 5-hour window, from the pane's
+//     own statusline): "5h 91% · resets 3:16 PM", the share in caution
+//     yellow; the card offers a handoff while the pane keeps working. Nothing
+//     switches by itself.
+//   - back after the reset, on a tab whose work went on in another agent (and
+//     on that other tab): "Limit reset · Bring back", opening the bring-back
+//     card; × leaves the work where it is.
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -19,7 +28,11 @@ import { FOCUS_RING } from '../focusRing';
 import { usageLimitStatusText, usageLimitView } from './usageLimitPresentation';
 import { usePaneContinueOnAccount } from './usePaneContinueOnAccount';
 import UsageLimitCard, { type UsageLimitPcHandoff } from './UsageLimitCard';
+import BringBackCard from './BringBackCard';
 import RemoteSpawnAskDialog from '../Remote/RemoteSpawnAskDialog';
+import { formatResetClock, nearLimitWindow } from '../../../shared/usageLimit';
+import { bringBackAt, findBringBackPair } from '../../utils/continueInAgent';
+import { agentRow } from '../../../shared/agentIdentity';
 
 /** Re-render every 30s while `active`, so countdowns stay current. */
 export function useUsageLimitNow(active: boolean): number {
@@ -52,9 +65,19 @@ export default function UsageLimitChip({ ptyId, compact, readOnly = false, works
 }) {
   const t = useT();
   const limit = useStore((s) => (ptyId ? s.usageLimits[ptyId] : undefined));
-  const now = useUsageLimitNow(!!limit);
+  const usageWindow = useStore((s) => (ptyId ? s.usageWindows[ptyId] : undefined));
+  // A handoff whose work can come back here: the source tab's record, while both tabs are open.
+  const handoff = useStore((s) => (ptyId ? findBringBackPair(s, ptyId)?.source.handoff : undefined));
+  const now = useUsageLimitNow(!!limit || !!usageWindow || !!handoff);
+  const pair = handoff && ptyId ? findBringBackPair(useStore.getState(), ptyId) : null;
+  const backAt = pair ? bringBackAt(pair, useStore.getState()) : undefined;
+  const back = !readOnly && pair && backAt !== undefined && now >= backAt ? pair : null;
+  // Only while the pane runs an agent whose 5-hour usage wmux reads: the
+  // window outlives the agent in its pane (a shell, or another agent, after it).
+  const readsUsage = useStore((s) => (ptyId ? !!agentRow(s.surfaceAgent[ptyId]?.slug)?.usageReserve : false));
+  const near = !limit && !back && readsUsage ? nearLimitWindow(usageWindow, now) : null;
   // Another Claude account can take the conversation over while this one waits.
-  const continueAccount = usePaneContinueOnAccount({ ptyId, allowed: !!limit && !readOnly, workspaceId });
+  const continueAccount = usePaneContinueOnAccount({ ptyId, allowed: (!!limit || !!near) && !readOnly, workspaceId });
   const reloadContinueAccount = continueAccount.reload;
   useEffect(() => { reloadContinueAccount(); }, [reloadContinueAccount]);
   const cardBtnRef = useRef<HTMLButtonElement>(null);
@@ -68,11 +91,123 @@ export default function UsageLimitChip({ ptyId, compact, readOnly = false, works
     && s.workspaces.find((w) => w.id === workspaceId)?.activePaneId === paneId);
   const limitKey = limit && ptyId && limit.detectedAt >= STARTED_AT ? `${ptyId}:${limit.detectedAt}` : null;
   useEffect(() => {
-    if (!limitKey || !canOpenCard || !inFront || autoOpened.has(limitKey) || !cardBtnRef.current) return;
+    if (!limitKey || !canOpenCard || !inFront || autoOpened.has(limitKey) || !cardBtnRef.current || back) return;
     autoOpened.add(limitKey);
     setCardAnchor(cardBtnRef.current.getBoundingClientRect());
-  }, [limitKey, canOpenCard, inFront]);
-  if (!limit || !ptyId) return null;
+  }, [limitKey, canOpenCard, inFront, back]);
+  // A card opened for one state does not stay up as another's (a card that
+  // opened by itself with its state stays).
+  const mode = back ? 'back' : limit ? 'limit' : near ? 'near' : null;
+  const lastMode = useRef(mode);
+  useEffect(() => {
+    if (lastMode.current !== null && lastMode.current !== mode) setCardAnchor(null);
+    lastMode.current = mode;
+  }, [mode]);
+  if (!ptyId || !mode) return null;
+  const toggleCard = (e: { currentTarget: HTMLElement }) => {
+    if (cardAnchor) { setCardAnchor(null); return; }
+    setCardAnchor(e.currentTarget.getBoundingClientRect());
+  };
+
+  if (back) {
+    const backTitle = t('usageLimit.backTitle');
+    return (
+      <span
+        data-pane-usage-limit="back"
+        className="shrink min-w-0 overflow-hidden flex items-center gap-0.5 text-[11px] text-[var(--text-muted)] select-none"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          ref={cardBtnRef}
+          type="button"
+          className={`${FOCUS_RING} flex items-center gap-1 min-w-0 px-1 h-6 rounded-[var(--chip-radius)] hover:bg-[var(--selection-hover)] hover:[--text-muted:var(--text-subtle)]`}
+          title={backTitle}
+          aria-label={backTitle}
+          aria-haspopup="dialog"
+          aria-expanded={!!cardAnchor}
+          onClick={toggleCard}
+          data-usage-limit-action="bring-back"
+        >
+          <span className="shrink-0 flex" aria-hidden="true"><IconClock size={12} /></span>
+          {!compact && <span className="shrink-0 text-[var(--text-sub)]" aria-hidden="true">{t('usageLimit.hasReset')}</span>}
+          <span className="truncate font-[var(--title-weight,500)] text-[var(--text-main)]" aria-hidden="true">{t('usageLimit.bringBack')}</span>
+        </button>
+        {cardAnchor && (
+          <BringBackCard pair={back} anchor={cardAnchor} triggerRef={cardBtnRef} onClose={() => setCardAnchor(null)} />
+        )}
+        {!compact && (
+          <button
+            type="button"
+            className={`ui-icon-btn ${FOCUS_RING} w-6 h-6 shrink-0`}
+            title={t('usageLimit.backDismiss')}
+            aria-label={t('usageLimit.backDismiss')}
+            onClick={() => useStore.getState().clearSurfaceHandoff(back.source.id)}
+            data-usage-limit-action="bring-back-dismiss"
+          >
+            <IconX size={10} />
+          </button>
+        )}
+      </span>
+    );
+  }
+
+  if (near) {
+    const clock = formatResetClock(near.resetsAt, now, getLocale());
+    const nearTitle = t('usageLimit.nearChipTitle', { pct: near.pct, clock });
+    const pct = <span className="shrink-0 tabular-nums text-[var(--accent-yellow)]" aria-hidden="true">{`${near.pct}%`}</span>;
+    const nearLabel = (
+      <>
+        <span className="shrink-0 flex" aria-hidden="true"><IconClock size={12} /></span>
+        {compact ? pct : (
+          <>
+            <span className="shrink-0 text-[var(--text-sub)]" aria-hidden="true">{t('usageLimit.nearLabel')}</span>
+            {pct}
+            <span className="truncate tabular-nums" aria-hidden="true">{`· ${t('usageLimit.nearResets', { clock })}`}</span>
+          </>
+        )}
+      </>
+    );
+    return (
+      <span
+        data-pane-usage-limit="near"
+        className="shrink min-w-0 overflow-hidden flex items-center gap-0.5 text-[11px] text-[var(--text-muted)] select-none"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {canOpenCard ? (
+          <button
+            ref={cardBtnRef}
+            type="button"
+            className={`${FOCUS_RING} flex items-center gap-1 min-w-0 px-1 h-6 rounded-[var(--chip-radius)] hover:bg-[var(--selection-hover)] hover:[--text-muted:var(--text-subtle)]`}
+            title={nearTitle}
+            aria-label={`${t('usageLimit.openCard')}: ${nearTitle}`}
+            aria-haspopup="dialog"
+            aria-expanded={!!cardAnchor}
+            onClick={toggleCard}
+            data-usage-limit-action="card"
+          >
+            {nearLabel}
+          </button>
+        ) : (
+          <span className="flex items-center gap-1 min-w-0 px-1" title={nearTitle} aria-label={nearTitle} role="img">{nearLabel}</span>
+        )}
+        {cardAnchor && canOpenCard && (
+          <UsageLimitCard
+            ptyId={ptyId}
+            workspaceId={workspaceId}
+            paneId={paneId}
+            {...(cwd ? { cwd } : {})}
+            now={now}
+            near={near}
+            accountItems={continueAccount.enabled ? continueAccount.subItems : []}
+            anchor={cardAnchor}
+            triggerRef={cardBtnRef}
+            onClose={() => setCardAnchor(null)}
+          />
+        )}
+      </span>
+    );
+  }
+  if (!limit) return null;
 
   const view = usageLimitView(limit, now, getLocale());
   const status = usageLimitStatusText(view, t);
@@ -107,10 +242,7 @@ export default function UsageLimitChip({ ptyId, compact, readOnly = false, works
           aria-label={`${t('usageLimit.openCard')}: ${title}`}
           aria-haspopup="dialog"
           aria-expanded={!!cardAnchor}
-          onClick={(e) => {
-            if (cardAnchor) { setCardAnchor(null); return; }
-            setCardAnchor(e.currentTarget.getBoundingClientRect());
-          }}
+          onClick={toggleCard}
           data-usage-limit-action="card"
         >
           {label}
