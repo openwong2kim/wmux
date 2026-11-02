@@ -109,7 +109,7 @@ describe('taskWorkspacesToClose (#2934)', () => {
     expect(decide(closed, { commandRunningByPtyId: { 't1-pty': true } })).toEqual([]);
     // A stashed shell has a roster row but is no agent.
     const stashedShell = workspace('t1');
-    stashedShell.stashedPanes = [{ pane: { id: 'sp', type: 'leaf', surfaces: [surface('ss', 'shell-pty')], activeSurfaceId: 'ss' } }];
+    stashedShell.stashedPanes = [{ pane: { id: 'sp', type: 'leaf', surfaces: [surface('ss', 'shell-pty')], activeSurfaceId: 'ss' }, stashedAt: 1 }];
     expect(decide(closed, { commandRunningByPtyId: { 'shell-pty': true } }, stashedShell)).toEqual([]);
     // The finished agent is the command its shell runs: closing ends it.
     expect(decide(closed, { ...withAgent('complete'), commandRunningByPtyId: { 't1-pty': true } })).toEqual(['t1']);
@@ -123,7 +123,7 @@ describe('taskWorkspacesToClose (#2934)', () => {
     const editor = surface('e', '', { surfaceType: 'editor', editorFilePath: '/repo/a.ts' });
     expect(decide(closed, {}, workspace('t1', [surface('t1-s', 't1-pty'), editor]))).toEqual([]);
     const stashed = workspace('t1');
-    stashed.stashedPanes = [{ pane: { id: 'sp', type: 'leaf', surfaces: [editor], activeSurfaceId: 'e' } }];
+    stashed.stashedPanes = [{ pane: { id: 'sp', type: 'leaf', surfaces: [editor], activeSurfaceId: 'e' }, stashedAt: 1 }];
     expect(decide(closed, {}, stashed)).toEqual([]);
     const browser = surface('b', '', { surfaceType: 'browser', browserUrl: 'http://localhost:3000' });
     expect(decide(closed, {}, workspace('t1', [surface('t1-s', 't1-pty'), browser]))).toEqual(['t1']);
