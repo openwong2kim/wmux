@@ -44,6 +44,14 @@ import {
   type FanoutWorkerPermissionMode,
 } from '../../../shared/workerLaunch';
 import {
+  DEFAULT_FANOUT_HOURLY_TASK_CAP,
+  DEFAULT_FANOUT_LIVE_TASK_CAP,
+  MAX_FANOUT_HOURLY_TASK_CAP,
+  MAX_FANOUT_LIVE_TASK_CAP,
+  MIN_FANOUT_HOURLY_TASK_CAP,
+  MIN_FANOUT_LIVE_TASK_CAP,
+} from '../../../shared/fanoutTaskCaps';
+import {
   ADVERTISED_SHORTCUTS,
   builtinCombosFor,
   comboFromEvent,
@@ -2116,6 +2124,9 @@ function FanoutWorkersSection() {
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
+  // Main-side as well: the caps an agent's fan-out is refused past.
+  const [liveTaskCap, setLiveTaskCapState] = useState(DEFAULT_FANOUT_LIVE_TASK_CAP);
+  const [hourlyTaskCap, setHourlyTaskCapState] = useState(DEFAULT_FANOUT_HOURLY_TASK_CAP);
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   // Main-side, per workspace: the worker fence of this workspace's bots.
@@ -2137,6 +2148,16 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getRequireApproval?.()
       .then((v) => {
         if (!cancelled && typeof v === 'boolean') setRequireApprovalState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getLiveTaskCap?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setLiveTaskCapState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getHourlyTaskCap?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setHourlyTaskCapState(v);
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
@@ -2187,6 +2208,23 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
   };
 
+  // The field shows the value at once; main's reply (clamped) confirms it.
+  const onLiveTaskCapChange = (next: number) => {
+    setLiveTaskCapState(next);
+    window.electronAPI.fanout
+      .setLiveTaskCap(next)
+      .then((stored) => setLiveTaskCapState(stored))
+      .catch(() => undefined);
+  };
+
+  const onHourlyTaskCapChange = (next: number) => {
+    setHourlyTaskCapState(next);
+    window.electronAPI.fanout
+      .setHourlyTaskCap(next)
+      .then((stored) => setHourlyTaskCapState(stored))
+      .catch(() => undefined);
+  };
+
   const onTrustAgyFoldersChange = (next: boolean) => {
     window.electronAPI.fanout
       .setTrustAgyFolders(next)
@@ -2219,6 +2257,32 @@ function FanoutWorkersSection() {
           checked={requireApproval}
           onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutlivecap"
+        label={t('settings.fanoutLiveTaskCap')}
+        description={t('settings.fanoutLiveTaskCapDesc')}
+      >
+        <SettingNumberInput
+          value={liveTaskCap}
+          min={MIN_FANOUT_LIVE_TASK_CAP}
+          max={MAX_FANOUT_LIVE_TASK_CAP}
+          label={t('settings.fanoutLiveTaskCap')}
+          onChange={onLiveTaskCapChange}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanouthourlycap"
+        label={t('settings.fanoutHourlyTaskCap')}
+        description={t('settings.fanoutHourlyTaskCapDesc')}
+      >
+        <SettingNumberInput
+          value={hourlyTaskCap}
+          min={MIN_FANOUT_HOURLY_TASK_CAP}
+          max={MAX_FANOUT_HOURLY_TASK_CAP}
+          label={t('settings.fanoutHourlyTaskCap')}
+          onChange={onHourlyTaskCapChange}
         />
       </SettingRow>
       <SettingRow

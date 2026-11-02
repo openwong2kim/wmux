@@ -23,6 +23,7 @@ import {
   stampFanoutTaskPane,
   type FanOutAuditRecord,
 } from '../fanoutGuards';
+import { setFanoutHourlyTaskCap, setFanoutLiveTaskCap } from '../fanoutWorkerPolicy';
 import { trackedTempDir } from '../../../test-utils/trackedTempDir';
 
 afterEach(() => {
@@ -145,6 +146,23 @@ describe('global caps', () => {
     // Once the oldest stamp ages out of the window, there is room again.
     now = 10 * FANOUT_CAP_WINDOW_MS + FANOUT_CAP_WINDOW_MS + 1;
     expect(restarted.reserve('late', 1)).toEqual({ ok: true });
+  });
+
+  it('refuses at the caps the owner set in the policy file, and names them', async () => {
+    const dir = tmpDir();
+    await setFanoutLiveTaskCap(3, dir);
+    await setFanoutHourlyTaskCap(5, dir);
+    const g = guards(dir, { live: () => 2 });
+    const live = g.reserve('a', 2);
+    expect(!live.ok && live.message).toMatch(/^fan-out refused: at most 3 fan-out tasks may be live at once across wmux \(2 live now, 2 requested\)/);
+    // Raised past the default: what the default refused now fits.
+    await setFanoutLiveTaskCap(12, dir);
+    const roomy = guards(dir, { live: () => 8 });
+    expect(roomy.reserve('b', 2)).toEqual({ ok: true });
+    roomy.commitStart('b');
+    roomy.settleStarted('b');
+    const hour = roomy.reserve('c', 4);
+    expect(!hour.ok && hour.message).toMatch(/at most 5 fan-out tasks may start per rolling hour across wmux \(2 started/);
   });
 
   it('fills the hour with started fan-outs, and frees a reservation that never started', () => {
@@ -523,11 +541,11 @@ describe('ended tasks hold no live slot (F25)', () => {
         'Held by: 2 open ("fix login", "perf A"); 1 ended whose agent is not known to have stopped ("docs"); 5 task workspaces with no task record. ' +
         'A slot frees when a task ends and its agent stops, or when its task workspace is closed.',
     );
-    expect(liveCapMessage(8, 2, { open: ['a', 'b', 'c', 'd', 'e'], ended: [], untracked: 0, starting: 3 })).toBe(
+    expect(liveCapMessage(8, 2, { open: ['a', 'b', 'c', 'd', 'e'], ended: [], untracked: 0, starting: 3 }, 8)).toBe(
       'fan-out refused: at most 8 fan-out tasks may be live at once across wmux (8 live now, 2 requested). ' +
         'Held by: 5 open ("a", "b", "c" and 2 more); 3 starting. A slot frees when a task ends and its agent stops, or when its task workspace is closed.',
     );
-    expect(liveCapMessage(7, 2, null)).toBe(
+    expect(liveCapMessage(7, 2, null, 8)).toBe(
       'fan-out refused: at most 8 fan-out tasks may be live at once across wmux (7 live now, 2 requested). A slot frees when a task ends and its agent stops, or when its task workspace is closed.',
     );
   });

@@ -16,10 +16,16 @@
 //                      own trustedWorkspaces (main/agents/agyTrust). Off by
 //                      default (owner decision): a persistent write into
 //                      another CLI's global settings is opt-in.
+//   liveTaskCap      — the app-wide fan-out caps (worktask/fanoutGuards.ts):
+//   hourlyTaskCap      tasks live at once, and starts per rolling hour. An
+//                      agent must not raise its own brakes, so they live here,
+//                      where only the Settings IPC writes, clamped to
+//                      shared/fanoutTaskCaps.ts's bounds.
 //
 // A missing file is the defaults (auto, no approval — owner decision
 // 2026-09-24). A file that exists but cannot be read resolves to the SAFE side
-// of each setting: approval required, and the default permission mode.
+// of each setting: approval required, and the default permission mode. The
+// caps fall back to their defaults (8 live, 24 per hour) either way.
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,6 +36,12 @@ import {
   isFanoutWorkerPermissionMode,
   type FanoutWorkerPermissionMode,
 } from '../../shared/workerLaunch';
+import {
+  DEFAULT_FANOUT_HOURLY_TASK_CAP,
+  DEFAULT_FANOUT_LIVE_TASK_CAP,
+  clampFanoutHourlyTaskCap,
+  clampFanoutLiveTaskCap,
+} from '../../shared/fanoutTaskCaps';
 
 export const DEFAULT_FANOUT_REQUIRE_APPROVAL = false;
 export const DEFAULT_FANOUT_TRUST_AGY_FOLDERS = false;
@@ -38,6 +50,8 @@ interface FanoutPolicy {
   permissionMode: FanoutWorkerPermissionMode;
   requireApproval: boolean;
   trustAgyFolders: boolean;
+  liveTaskCap: number;
+  hourlyTaskCap: number;
 }
 
 export function getFanoutWorkerPolicyPath(dir: string = getWmuxDir()): string {
@@ -51,6 +65,8 @@ function loadPolicy(dir?: string): FanoutPolicy {
       permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
       requireApproval: DEFAULT_FANOUT_REQUIRE_APPROVAL,
       trustAgyFolders: DEFAULT_FANOUT_TRUST_AGY_FOLDERS,
+      liveTaskCap: DEFAULT_FANOUT_LIVE_TASK_CAP,
+      hourlyTaskCap: DEFAULT_FANOUT_HOURLY_TASK_CAP,
     };
   }
   try {
@@ -64,9 +80,17 @@ function loadPolicy(dir?: string): FanoutPolicy {
         typeof raw.requireApproval === 'boolean' ? raw.requireApproval : DEFAULT_FANOUT_REQUIRE_APPROVAL,
       // Only a literal true opts in.
       trustAgyFolders: raw.trustAgyFolders === true,
+      liveTaskCap: clampFanoutLiveTaskCap(raw.liveTaskCap),
+      hourlyTaskCap: clampFanoutHourlyTaskCap(raw.hourlyTaskCap),
     };
   } catch {
-    return { permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE, requireApproval: true, trustAgyFolders: false };
+    return {
+      permissionMode: DEFAULT_FANOUT_WORKER_PERMISSION_MODE,
+      requireApproval: true,
+      trustAgyFolders: false,
+      liveTaskCap: DEFAULT_FANOUT_LIVE_TASK_CAP,
+      hourlyTaskCap: DEFAULT_FANOUT_HOURLY_TASK_CAP,
+    };
   }
 }
 
@@ -108,4 +132,32 @@ export async function setFanoutRequireApproval(value: unknown, dir?: string): Pr
   if (typeof value !== 'boolean') return loadFanoutRequireApproval(dir);
   await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), requireApproval: value });
   return value;
+}
+
+/** How many fan-out tasks may be live at once across wmux. */
+export function loadFanoutLiveTaskCap(dir?: string): number {
+  return loadPolicy(dir).liveTaskCap;
+}
+
+/** How many fan-out tasks may start per rolling hour across wmux. */
+export function loadFanoutHourlyTaskCap(dir?: string): number {
+  return loadPolicy(dir).hourlyTaskCap;
+}
+
+/** Persist the live cap, clamped to its bounds. Only a finite number writes;
+ *  returns the cap now in force. */
+export async function setFanoutLiveTaskCap(value: unknown, dir?: string): Promise<number> {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return loadFanoutLiveTaskCap(dir);
+  const cap = clampFanoutLiveTaskCap(value);
+  await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), liveTaskCap: cap });
+  return cap;
+}
+
+/** Persist the hourly cap, clamped to its bounds. Only a finite number writes;
+ *  returns the cap now in force. */
+export async function setFanoutHourlyTaskCap(value: unknown, dir?: string): Promise<number> {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return loadFanoutHourlyTaskCap(dir);
+  const cap = clampFanoutHourlyTaskCap(value);
+  await atomicWriteJSON(getFanoutWorkerPolicyPath(dir), { ...loadPolicy(dir), hourlyTaskCap: cap });
+  return cap;
 }

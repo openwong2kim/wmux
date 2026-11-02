@@ -7,9 +7,13 @@ import * as path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   getFanoutWorkerPolicyPath,
+  loadFanoutHourlyTaskCap,
+  loadFanoutLiveTaskCap,
   loadFanoutRequireApproval,
   loadFanoutTrustAgyFolders,
   loadFanoutWorkerPermissionMode,
+  setFanoutHourlyTaskCap,
+  setFanoutLiveTaskCap,
   setFanoutRequireApproval,
   setFanoutTrustAgyFolders,
   setFanoutWorkerPermissionMode,
@@ -54,5 +58,28 @@ describe('fan-out policy store', () => {
     expect(loadFanoutTrustAgyFolders(dir)).toBe(false);
     fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
     expect(loadFanoutTrustAgyFolders(dir)).toBe(false);
+  });
+
+  it('fan-out caps: defaults when missing, torn or not numbers; clamped to bounds; kept across other writes', async () => {
+    const dir = tmp();
+    expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([8, 24]);
+    expect(await setFanoutLiveTaskCap(0, dir)).toBe(1);
+    expect(await setFanoutLiveTaskCap(999, dir)).toBe(32);
+    expect(await setFanoutHourlyTaskCap(999, dir)).toBe(200);
+    expect(await setFanoutHourlyTaskCap(40.4, dir)).toBe(40);
+    // Not a number: nothing is written, the stored cap stands.
+    expect(await setFanoutLiveTaskCap('16', dir)).toBe(32);
+    expect(await setFanoutHourlyTaskCap(Number.NaN, dir)).toBe(40);
+    await setFanoutRequireApproval(true, dir);
+    expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([32, 40]);
+    expect(await setFanoutLiveTaskCap(4, dir)).toBe(4);
+    expect(loadFanoutRequireApproval(dir)).toBe(true);
+    // A hand-edited file is clamped on read; garbage and a torn file are the defaults.
+    fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ liveTaskCap: -3, hourlyTaskCap: 1e9 }), 'utf8');
+    expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([1, 200]);
+    fs.writeFileSync(getFanoutWorkerPolicyPath(dir), JSON.stringify({ liveTaskCap: '50', hourlyTaskCap: null }), 'utf8');
+    expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([8, 24]);
+    fs.writeFileSync(getFanoutWorkerPolicyPath(dir), '{ torn', 'utf8');
+    expect([loadFanoutLiveTaskCap(dir), loadFanoutHourlyTaskCap(dir)]).toEqual([8, 24]);
   });
 });
