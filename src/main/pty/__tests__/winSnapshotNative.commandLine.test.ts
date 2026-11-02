@@ -37,6 +37,7 @@ function fakeBindings(text: string, needed: number, opts: { openFails?: boolean;
       expect(infoClass).toBe(60);
       expect(length).toBe(info.length);
       sizes.push(length);
+      if (sizes.length > 50) throw new Error('runaway growth');
       if (opts.status !== undefined) return opts.status;
       if (length < needed) {
         returned.writeUInt32LE(needed, 0);
@@ -75,7 +76,10 @@ describe('decodeCommandLine', () => {
 
   it('refuses a string that does not lie inside the buffer', () => {
     // Pointer into the header, before the buffer, or running past its end.
-    expect(decodeCommandLine(commandLineBuffer('node', 512, 8), BASE)).toBeNull();
+    const intoHeader = Buffer.alloc(512);
+    intoHeader.writeUInt16LE(8, 0);
+    intoHeader.writeBigUInt64LE(BASE + 8n, 8);
+    expect(decodeCommandLine(intoHeader, BASE)).toBeNull();
     expect(decodeCommandLine(commandLineBuffer('node', 512, 16, BASE + 32n), BASE + 64n)).toBeNull();
     const pastEnd = commandLineBuffer('node', 64, 16);
     pastEnd.writeUInt16LE(200, 0);
@@ -135,6 +139,6 @@ describe('readProcessCommandLine', () => {
     const { b, sizes } = fakeBindings('node', 0xffffffff);
     setNativeBindingsForTests(b);
     expect(readProcessCommandLine(1234)).toBeNull();
-    expect(sizes.at(-1)).toBe(1 << 20);
+    expect(sizes).toEqual([512, 1 << 20]);
   });
 });
