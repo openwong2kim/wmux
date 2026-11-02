@@ -57,9 +57,16 @@ describe('walkNativeAncestry', () => {
     expect([...walkNativeAncestry(300, procs, times([[300, 30], [200, 20], [100, 25]]))]).toEqual([[300, 200]]);
   });
 
-  it('stops where a creation time cannot be read', () => {
-    expect([...walkNativeAncestry(300, procs, times([[300, 30], [100, 10]]))]).toEqual([]);
-    expect([...walkNativeAncestry(300, procs, times([[200, 20], [100, 10]]))]).toEqual([]);
+  it('walks past an unreadable creation time, which proves nothing', () => {
+    // Another account's process: its time cannot be read, so its edges cannot be judged.
+    expect([...walkNativeAncestry(300, procs, times([[300, 30], [100, 10]]))]).toEqual([
+      [300, 200],
+      [200, 100],
+    ]);
+    expect([...walkNativeAncestry(300, procs, () => null)]).toEqual([
+      [300, 200],
+      [200, 100],
+    ]);
   });
 
   it('is empty for a caller missing from the table, and bounded on a cycle', () => {

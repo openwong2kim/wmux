@@ -21,9 +21,8 @@ const MAX_HOPS = 16;
 
 /**
  * The script's walk over a native pid → ppid table: up from `pid`, stopping at
- * a parent that is not listed or was created after its child, or whose
- * creation time (or its child's) cannot be read, since then nothing shows the
- * parent is the real one.
+ * a parent that is not listed or was created after its child. An unreadable
+ * creation time proves nothing and does not stop it, as in walkToOwningAnchor.
  */
 export function walkNativeAncestry(
   pid: number,
@@ -39,7 +38,7 @@ export function walkNativeAncestry(
     if (parent === undefined || parent <= 0 || parent === p || !ppidOf.has(parent)) break;
     const childCreated = createdAt(p);
     const parentCreated = createdAt(parent);
-    if (childCreated === null || parentCreated === null || parentCreated > childCreated) break;
+    if (childCreated !== null && parentCreated !== null && parentCreated > childCreated) break;
     ppidByPid.set(p, parent);
     p = parent;
   }
