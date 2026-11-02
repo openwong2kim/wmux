@@ -102,6 +102,8 @@ export async function stageDaemonRuntime(opts: {
   maxWaitMs?: number;
   /** Test seam: the fs for the tree (treeFsFor). original-fs under Electron. */
   treeFs?: TreeFs;
+  /** Test seam: RENAME_RETRY_DELAY_MS by default. */
+  renameRetryDelayMs?: number;
 }): Promise<StagedDaemon | null> {
   const treeFs = opts.treeFs ?? lazyTreeFs();
   const warn = opts.warn ?? (() => { /* silent */ });
@@ -137,13 +139,39 @@ export async function stageDaemonRuntime(opts: {
   }
 }
 
+/** The codes Windows gives while another process (an antivirus scan) holds a file just written. */
+const HELD_RENAME_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const RENAME_TRIES = 5;
+/** Doubled after each try: 125 + 250 + 500 + 1000 ms, about 2 s in all. */
+const RENAME_RETRY_DELAY_MS = 125;
+
+/**
+ * Second layer for a transient Windows hold: an antivirus scanner briefly
+ * opens the files the copy just wrote, and the rename of the finished copy
+ * fails with EPERM/EBUSY/EACCES until it lets go. Only those codes are tried
+ * again, a bounded number of times; past that the error goes to copyStage,
+ * which removes the partial copy, and the daemon runs from the install.
+ */
+async function renameHeldCopy(treeFs: TreeFs, from: string, to: string, delayMs: number): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await treeFs.promises.rename(from, to);
+      return;
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (attempt >= RENAME_TRIES || !code || !HELD_RENAME_CODES.has(code)) throw err;
+      await new Promise((resolve) => setTimeout(resolve, delayMs * 2 ** (attempt - 1)));
+    }
+  }
+}
+
 /**
  * Copied under a temporary name and renamed only once the copy holds the
  * files the daemon runs from, so a half copy is never run. A failed copy is
  * removed.
  */
 async function copyStage(
-  opts: { appDir: string; log?: (msg: string) => void; copy?: (from: string, to: string) => Promise<void> },
+  opts: { appDir: string; log?: (msg: string) => void; copy?: (from: string, to: string) => Promise<void>; renameRetryDelayMs?: number },
   treeFs: TreeFs,
   staged: StagedDaemon,
 ): Promise<void> {
@@ -156,7 +184,7 @@ async function copyStage(
       await treeFs.promises.access(path.join(partial, path.relative(staged.dir, file)));
     }
     await treeFs.promises.rm(staged.dir, { recursive: true, force: true });
-    await treeFs.promises.rename(partial, staged.dir);
+    await renameHeldCopy(treeFs, partial, staged.dir, opts.renameRetryDelayMs ?? RENAME_RETRY_DELAY_MS);
   } catch (err) {
     await treeFs.promises.rm(partial, { recursive: true, force: true }).catch(() => { /* left for the next spawn */ });
     throw err;

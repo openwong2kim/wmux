@@ -219,6 +219,56 @@ describe('daemon runtime staging', () => {
         for (const spy of viaFs) spy.mockRestore();
       }
     });
+
+    // Windows antivirus briefly holds files just written, so the rename of a
+    // finished copy can fail with EPERM/EBUSY/EACCES for a moment.
+    const failingRename = (code: string, failures: number) => {
+      const real = fs.promises;
+      let left = failures;
+      const rename = vi.fn(async (from: string, to: string) => {
+        if (left-- > 0) throw Object.assign(new Error(`${code}: rename held`), { code });
+        return real.rename(from, to);
+      });
+      const treeFs = {
+        promises: {
+          cp: real.cp.bind(real),
+          rm: real.rm.bind(real),
+          rename,
+          readdir: real.readdir.bind(real),
+          access: real.access.bind(real),
+        },
+      } as unknown as TreeFs;
+      return { rename, treeFs };
+    };
+
+    it('a rename a scanner holds for a moment is retried, and the copy is used and kept', async () => {
+      const { rename, treeFs } = failingRename('EBUSY', 2);
+      const staged = await stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0', treeFs, renameRetryDelayMs: 1 });
+      expect(staged).not.toBeNull();
+      expect(rename).toHaveBeenCalledTimes(3);
+      expect(fs.readFileSync(staged!.script, 'utf8')).toBe('daemon');
+      expect(fs.readdirSync(stageRoot)).toEqual([path.basename(staged!.dir)]);
+      const recopy = vi.fn(async () => { throw new Error('copied again'); });
+      expect(await stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0', copy: recopy })).toEqual(staged);
+      expect(recopy).not.toHaveBeenCalled();
+    });
+
+    it('a rename that stays held gives up after a bounded number of tries and removes the partial copy', async () => {
+      const { rename, treeFs } = failingRename('EPERM', Infinity);
+      const warn = vi.fn();
+      const staged = await stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0', treeFs, warn, renameRetryDelayMs: 1 });
+      expect(staged).toBeNull();
+      expect(rename).toHaveBeenCalledTimes(5);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('EPERM'));
+      expect(fs.readdirSync(stageRoot)).toEqual([]);
+    });
+
+    it('a rename failing for another reason is not retried', async () => {
+      const { rename, treeFs } = failingRename('ENOSPC', Infinity);
+      expect(await stageDaemonRuntime({ appDir, exeName: 'wmux.exe', stageRoot, version: '4.13.0', treeFs, renameRetryDelayMs: 1 })).toBeNull();
+      expect(rename).toHaveBeenCalledTimes(1);
+      expect(fs.readdirSync(stageRoot)).toEqual([]);
+    });
   });
 
   describe('a partial copy left by an earlier process', () => {
