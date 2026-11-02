@@ -375,7 +375,7 @@ export default function HandOutPopover({ item, anchor, bounds, rows, workspaces,
         </div>
       )}
       {error && <p role="alert" className="m-0 text-[12px] text-[var(--accent-red)] [overflow-wrap:anywhere]" data-hand-out-error>{error}</p>}
-      <div className="flex items-center gap-2 pt-2 border-t border-[var(--line)]">
+      <div className="flex items-center gap-2 pt-2">
         <p className="m-0 flex-1 min-w-0 text-[11px] leading-[15px] text-[var(--text-muted)]">{t('fleet.handOut.pick.footer')}</p>
         <Button variant="ghost" size="sm" onClick={onClose} data-hand-out-cancel>{t('fleet.handOut.form.cancel')}</Button>
         <Button variant="primary" size="sm" disabled={busy || !selected} onClick={() => void submit()} data-hand-out-send>
