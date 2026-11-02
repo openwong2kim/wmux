@@ -9,6 +9,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { useStore } from '../../../stores';
+import { createLeafPane } from '../../../../shared/types';
 import type { ProjectConfigState, WmuxProjectCompany } from '../../../../shared/wmuxProjectConfig';
 import CompanyFileReviewDialog from '../CompanyFileReviewDialog';
 
@@ -75,7 +76,7 @@ const cells = (i: number) =>
 
 beforeEach(() => {
   const s = useStore.getState();
-  saved = { workspaces: s.workspaces, projectConfigs: s.projectConfigs, activeWorkspaceId: s.activeWorkspaceId };
+  saved = { workspaces: s.workspaces, projectConfigs: s.projectConfigs, activeWorkspaceId: s.activeWorkspaceId, projectLayoutAutoApplied: s.projectLayoutAutoApplied };
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -209,6 +210,22 @@ describe('CompanyFileReviewDialog', () => {
     expect(container.querySelector('[data-company-review-note]')?.textContent).toBe('wmux.json changed. Review it again.');
     expect(container.textContent).toContain('This file changed since it was approved.');
     expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('approving does not lay the file\'s layout over the workspace it was picked from', async () => {
+    const pane = createLeafPane();
+    const layout = { type: 'branch' as const, direction: 'horizontal' as const, children: [{ type: 'leaf' as const }, { type: 'leaf' as const }] };
+    const withLayout = { ...UNTRUSTED, config: { ...UNTRUSTED.config!, layout } };
+    get.mockResolvedValue({ ...APPROVED, config: withLayout.config });
+    act(() => useStore.setState({
+      workspaces: [{ id: 'ws-1', name: 'shop', metadata: { cwd: '/dev/shop' }, rootPane: pane }],
+      projectLayoutAutoApplied: {},
+    } as never));
+    await render(withLayout);
+    await act(async () => button('Approve and make company').click());
+    await flush();
+    expect(seatLaunches).toHaveBeenCalledTimes(1);
+    expect(useStore.getState().workspaces.find((w) => w.id === 'ws-1')?.rootPane).toBe(pane);
   });
 
   it('Deny denies the file and closes', async () => {

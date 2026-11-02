@@ -88,6 +88,9 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
     }
     setBusy(true);
     setNote(null);
+    // Approving trusts the file's layout too, but this workspace asked for a
+    // company, not for its pane to be replaced: the layout stays a manual apply.
+    useStore.getState().markProjectLayoutAutoApplied(workspaceId);
     const decided = await decideProjectTrust(workspaceId, 'trusted', unattendedCarry, true);
     if (!open.current) return;
     if (!decided) {

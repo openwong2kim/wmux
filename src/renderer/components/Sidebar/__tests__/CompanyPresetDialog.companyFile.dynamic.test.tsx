@@ -136,6 +136,16 @@ describe('CompanyPresetDialog from the folder\'s wmux.json', () => {
     expect(button('Make company').disabled).toBe(false);
   });
 
+  it('says why Save is off when the text is what the file can\'t keep', () => {
+    act(() => root.render(createElement(CompanyPresetDialog, {
+      fromFile: { company: { ...COMPANY, standingOrders: 'Review\tevery PR' }, folder: '/dev/shop' },
+      onClose,
+    })));
+    expect(saveLink().disabled).toBe(true);
+    expect(container.querySelector('[data-company-file-unsavable]')?.textContent)
+      .toBe('This company can\'t be saved to wmux.json: a field holds a tab or a hidden character, or is too long.');
+  });
+
   it('puts the keyboard on the confirm\'s Save once it opens', async () => {
     renderFromFile();
     await openConfirm({ dir: '/dev/shop', exists: true, contentHash: 'h1' });

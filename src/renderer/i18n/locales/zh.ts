@@ -352,6 +352,7 @@ export const zh = {
   'companyFile.menuInvalid': "无法读取此文件夹的公司",
   'companyFile.menuInvalidLine': "请修正 {folder} 中 wmux.json 里的公司",
   'companyFile.save': "保存为此文件夹的公司",
+  'companyFile.unsavable': "无法将此公司保存到 wmux.json：某个字段含有制表符或隐藏字符，或过长。",
   'companyFile.confirmTitle': "将此公司保存到 {dir}/wmux.json？",
   'companyFile.confirmHolds': "其中包含名称、使命、常设指令、CEO，以及每个席位负责的内容和它的代理。",
   'companyFile.confirmNever': "其中绝不包含启动参数、环境变量、令牌、文件夹或其他电脑上的席位。",

@@ -59,6 +59,12 @@ export function maybeAutoApplyProjectLayout(workspaceId: string): boolean {
   if (!ws || !project) return false;
   if (project.trust !== 'trusted' || !project.config?.layout) return false;
   if (state.projectLayoutAutoApplied[workspaceId]) return false;
+  // A company's panes are its seats: a one-seat company looks fresh, and a
+  // layout laid over it would take its CEO's pane.
+  if (ws.company) {
+    state.markProjectLayoutAutoApplied(workspaceId);
+    return false;
+  }
   if (!isFreshWorkspace(ws)) {
     // Mark anyway: the user's existing arrangement should not get clobbered
     // by a LATER fresh-looking moment (e.g. closing tabs back down to one).

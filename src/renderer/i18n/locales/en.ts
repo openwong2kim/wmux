@@ -598,6 +598,7 @@ export const en = {
   'companyFile.menuInvalid': "This folder's company can't be read",
   'companyFile.menuInvalidLine': "Fix the company in wmux.json in {folder}",
   'companyFile.save': "Save as this folder's company",
+  'companyFile.unsavable': "This company can't be saved to wmux.json: a field holds a tab or a hidden character, or is too long.",
   'companyFile.confirmTitle': "Save this company to {dir}/wmux.json?",
   'companyFile.confirmHolds': "It holds the name, mission, standing orders, the CEO, and each seat with what it owns and its agent.",
   'companyFile.confirmNever': "It never holds launch flags, environment, tokens, folders, or seats on other PCs.",

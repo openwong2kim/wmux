@@ -1684,8 +1684,11 @@ leaves the page.
     Starts: the launch stem in mono or "plain shell", Works in: "this
     folder" or "own worktree"), the Mission and Standing orders verbatim
     under a `--line` left rule in `--text-sub`, and, while the file is not
-    trusted, **Also in this file** ("approving trusts them too") with its
-    commands, layout panes, setup command and copy list verbatim. An agent
+    trusted or its setup command or copy list waits for a review, **Also in
+    this file** ("approving trusts them too") with its commands, layout
+    panes, setup command and copy list verbatim. Approving does not lay the
+    file's layout over the workspace it was picked from, and a company's
+    workspace never gets a layout laid over it on its own. An agent
     not installed here is named under the table and keeps the primary off.
     Footer: Deny on the left (not when already denied), Not now, and
     **Approve and make company**, the one primary: it approves the bytes

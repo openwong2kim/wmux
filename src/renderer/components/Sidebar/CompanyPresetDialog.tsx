@@ -292,6 +292,10 @@ export default function CompanyPresetDialog({ preset, fromFile, onClose }: Compa
           </div>
         )}
         {saveNote && <p className="ui-note" data-company-file-note>{saveNote}</p>}
+        {/* Valid seats and a folder, and still no save: the text is what the file can't keep. */}
+        {folder && !fileCompany && companySeatsError(trimmed, ceo) === null && (
+          <p className="ui-note" data-company-file-unsavable>{t('companyFile.unsavable')}</p>
+        )}
         {failed && <p className="ui-note">{t('companyPreset.failed', { error: failed })}</p>}
       </DialogBody>
       <DialogFooter>
