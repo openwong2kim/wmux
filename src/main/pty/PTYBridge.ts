@@ -6,7 +6,7 @@ import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
 import { isWslShell } from '../../shared/wslTarget';
-import { ClaudeTitleTurnEdge, sanitizeTitle } from './titleDetect';
+import { ClaudeTitleTurnEdge, sanitizeTitle, TitleForwardGate } from './titleDetect';
 import { IPC } from '../../shared/constants';
 import {
   updateCwd,
@@ -469,6 +469,7 @@ export class PTYBridge {
       settleConfirmedInterrupt(ptyId, this.getHookRouter?.() ?? null, this.getWindow());
     };
     const titleTurnEdge = new ClaudeTitleTurnEdge();
+    const titleForward = new TitleForwardGate();
 
     // Handle OSC events
     oscParser.onOsc((event) => {
@@ -481,7 +482,7 @@ export class PTYBridge {
           // OSC 0 (icon + window title) / OSC 2 (window title) — e.g. Claude
           // Code's `/rename`. OSC 1 (icon name only) is intentionally ignored.
           const title = sanitizeTitle(event.data);
-          if (title) win.webContents.send(IPC.TERMINAL_TITLE_CHANGED, ptyId, title);
+          if (title && titleForward.admit(title)) win.webContents.send(IPC.TERMINAL_TITLE_CHANGED, ptyId, title);
           if (titleTurnEdge.observe(title) && agentDetector.getLastAgent() === 'Claude Code') {
             confirmEscapeInterrupt();
           }
