@@ -1,10 +1,12 @@
-import { parseHandOutAdd } from '../../../shared/handOut';
+import { isAbsoluteFolder, normalizeFolder } from '../../../shared/handOut';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 
 /** The folder when it is an absolute path, normalized as To hand out keeps one;
  *  a relative path or `~` names no folder here. */
-const absoluteFolder = (folder: string | undefined): string | undefined =>
-  (folder ? parseHandOutAdd({ title: 'folder', folder })?.folder : undefined);
+const absoluteFolder = (folder: string | undefined): string | undefined => {
+  const normal = folder ? normalizeFolder(folder) : '';
+  return normal && isAbsoluteFolder(normal) ? normal : undefined;
+};
 
 /**
  * The folder the company works in: the one it was made in, else where its CEO
