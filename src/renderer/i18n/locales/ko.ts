@@ -777,6 +777,7 @@ export const ko = {
   'palette.cmd.splitRight': '오른쪽 분할',
   'palette.cmd.splitDown': '아래 분할',
   'palette.cmd.stashPane': '현재 페인 치우기 (세션은 계속 실행)',
+  'palette.cmd.balanceLayout': '페인 레이아웃 균등화 (열·행 동일 크기)',
   'palette.cmd.movePane.left': '페인 왼쪽으로 이동',
   'palette.cmd.movePane.right': '페인 오른쪽으로 이동',
   'palette.cmd.movePane.up': '페인 위로 이동',
@@ -3325,6 +3326,7 @@ export const ko = {
   'settings.prefix.swapPanePrev': '이전 페인과 교환',
   'settings.prefix.swapPaneNext': '다음 페인과 교환',
   'settings.prefix.stashPane': '페인 치우기',
+  'settings.prefix.balanceLayout': '페인 레이아웃 균등화',
 
   // Custom keybindings
   'settings.customKeybindings': '커스텀 키바인딩',
