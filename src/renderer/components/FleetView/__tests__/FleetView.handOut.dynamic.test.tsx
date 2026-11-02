@@ -95,6 +95,21 @@ describe('FleetView — To hand out in the list', () => {
   });
 });
 
+describe('FleetView — To hand out cards', () => {
+  it('Remove from the ⋮ menu leaves focus on the confirm\'s Cancel', async () => {
+    items = [item('ho-1', 'Port the scrollback fix')];
+    seed(true);
+    act(() => useStore.getState().setFleetLayout('board'));
+    mount();
+    await settle();
+    const row = container.querySelector('[data-fleet-hand-out="ho-1"]')!.closest('.wmux-fleet-row')!;
+    act(() => row.querySelector<HTMLButtonElement>('[data-fleet-row-trigger]')!.click());
+    act(() => document.querySelector<HTMLButtonElement>('[data-pane-menu-action="remove"]')!.click());
+    await settle();
+    expect(document.activeElement?.hasAttribute('data-fleet-hand-out-remove-cancel')).toBe(true);
+  });
+});
+
 describe('FleetView — an empty fleet with To hand out items', () => {
   it('keeps the call to action and lists the open items under it', async () => {
     items = [item('ho-1', 'Port the scrollback fix')];

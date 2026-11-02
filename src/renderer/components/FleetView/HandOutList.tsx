@@ -269,6 +269,14 @@ export function HandOutMenu({ item, onHandOut, onRemove, onMenuOpenChange, t }: 
 
 /** Remove's inline confirm under the card: Cancel first and focused. */
 export function HandOutRemoveConfirm({ item, onDone, t }: { item: HandOutEntry; onDone: () => void; t: T }) {
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  // Opened from the ⋮ menu, the confirm mounts in the same commit the menu
+  // unmounts, and the menu's cleanup hands focus back to ⋮ afterwards. Take it
+  // on the next frame so Cancel (the safe default) holds focus.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => cancelRef.current?.focus());
+    return () => cancelAnimationFrame(raf);
+  }, []);
   const remove = () => {
     const call = window.electronAPI?.handOut?.remove;
     onDone();
@@ -280,7 +288,7 @@ export function HandOutRemoveConfirm({ item, onDone, t }: { item: HandOutEntry; 
   return (
     <div className="wmux-fleet-editor" role="group" aria-label={t('fleet.handOut.remove')} data-fleet-hand-out-remove={item.id}>
       <span className="wmux-fleet-editor-text">{t('fleet.handOut.removeConfirm')}</span>
-      <button type="button" autoFocus onClick={onDone} data-fleet-hand-out-remove-cancel>{t('fleet.handOut.form.cancel')}</button>
+      <button ref={cancelRef} type="button" autoFocus onClick={onDone} data-fleet-hand-out-remove-cancel>{t('fleet.handOut.form.cancel')}</button>
       <button type="button" className="is-destructive" onClick={remove} data-fleet-hand-out-remove-confirm>{t('fleet.handOut.remove')}</button>
     </div>
   );
