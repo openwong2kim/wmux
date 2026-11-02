@@ -1838,7 +1838,8 @@ A pane is a terminal column plus, when it needs one, a work area.
     Waiting on you and before Seats provisionally, until the board's
     direction is chosen, so it is one self-contained section). The open To
     hand out items (see "Fleet page") whose folder is the company's (the one
-    it was made in, else where its CEO works) or inside it, newest first,
+    it was made in when that is an absolute path, else where its CEO works,
+    the CEO pane's active terminal first) or inside it, newest first,
     under `To hand out N`. A row each: the hollow `--text-muted` ring, the
     title, then a muted line with the agent it asks for (`--text-sub`, or
     "any agent") and who added it and when ("Added by #ceo · 3h"; a pane of
