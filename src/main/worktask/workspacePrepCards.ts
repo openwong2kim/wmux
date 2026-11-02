@@ -21,7 +21,8 @@ import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomi
 import { getWmuxHomeDir } from '../../shared/constants';
 import { isDefaultCopyCandidate } from '../../shared/workspacePrepSettings';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
-import { listCopyCandidates, saveBlock } from '../project/workspacePrepSettings';
+import { listCopyCandidates } from '../project/workspacePrepSettings';
+import { saveBlock } from '../project/projectConfigWrite';
 import type { WorkspacePrepProgress, WorkspacePrepResult } from './workspacePrep';
 import { lingers, type WorkspacePrepCard, type WorkspacePrepDecision } from '../../shared/workspacePrepCard';
 
