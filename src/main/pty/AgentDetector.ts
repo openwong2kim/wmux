@@ -1549,8 +1549,10 @@ export class AgentDetector {
     // Keep in step with the approvalReady questions (READY_PROFILES). The key
     // row ends every dialog of Claude Code's screen-reader layout, whose
     // AskUserQuestion asks in its own words; it is matched at both ends, so a
-    // row split across reads, or drawn around a skipped cell, still asks.
-    const hint = /Do[\s│]*you[\s│]*(?:want|trust)|Would\s*you\s*like|Allow\s*tool\s*use|Permission\s*required|Trust\s*project\s*folder|Allow\s*execution\s*of:|Apply\s*this\s*change\?|Trust\s*this\s*folder|Is\s*this\s*a\s*project\s*you\s*created|Select\s*with\s*numbers|Escape\s*to\s*cancel:|Enter\s*y\/n:/g;
+    // row split across reads, or drawn around a skipped cell, still asks. Its
+    // end takes the key hint drawn under it, so a hint finished after a read
+    // asks again.
+    const hint = /Do[\s│]*you[\s│]*(?:want|trust)|Would\s*you\s*like|Allow\s*tool\s*use|Permission\s*required|Trust\s*project\s*folder|Allow\s*execution\s*of:|Apply\s*this\s*change\?|Trust\s*this\s*folder|Is\s*this\s*a\s*project\s*you\s*created|Select\s*with\s*numbers|Escape\s*to\s*cancel:(?:[\s\d,]*(?:Enter\s*to\s*confirm\s*·\s*)?Esc\s*to\s*cancel)?|Enter\s*y\/n:(?:\s*\S?\s*(?:Enter\s*to\s*confirm\s*·\s*)?Esc\s*to\s*cancel)?/g;
     let keyRowDrawn = false;
     for (const match of cleanProbe.matchAll(hint)) {
       // Only newly drawn text refreshes freshness. Retaining an old question

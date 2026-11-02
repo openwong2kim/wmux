@@ -183,6 +183,19 @@ describe('AgentDetector — a screen-reader dialog while Claude runs', () => {
     expect(events).toHaveBeenCalledTimes(1);
   });
 
+  it('reads again when the key hint under the key row arrives after a read', async () => {
+    const { det, events } = running();
+    const rows = screen('claude-sr-bash-100x30');
+    const text = stream(rows);
+    const cut = text.lastIndexOf('Esc to cancel') + 'Esc'.length;
+    det.feed(text.slice(0, cut));
+    // The first read sees the key hint cut short: no dialog yet.
+    expect(await hostRead(det, text.slice(0, cut).split('\r\n'))).toBe(false);
+    det.feed(text.slice(cut));
+    expect(await hostRead(det, rows)).toBe(true);
+    expect(events).toHaveBeenCalledTimes(1);
+  });
+
   it('does not read again for a key typed into the key row', async () => {
     const { det } = running();
     const rows = screen('claude-sr-ask-100x30');
