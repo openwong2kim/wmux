@@ -2626,6 +2626,7 @@ export const ko = {
   // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/assist/auto).
   'deck.limit.window': '사용량',
   'deck.brainTerminal': '브레인 터미널',
+  'deck.expiredDecision': "이전 wmux 버전이 {workspace}에서 요청한 결정은 이 버전에 답할 카드가 없어 닫혔습니다: \"{question}\"",
   'deck.limit.resetsSoon': '곧 초기화됨',
   'deck.limit.resetsIn': '{rel} 후 초기화',
   'deck.limit.onAccount': ' · {account}',
