@@ -456,6 +456,9 @@ export type RpcMethod =
   // The same hosted-plugin projection, for every local workspace.
   | 'agent.state.all'
   | 'fleet.triage'
+  // The To hand out list (shared/handOut.ts): read it, add to it.
+  | 'handOut.list'
+  | 'handOut.add'
   | 'pane.focus'
   | 'pane.split'
   | 'pane.close'
@@ -828,6 +831,8 @@ export const ALL_RPC_METHODS = [
   'agent.state',
   'agent.state.all',
   'fleet.triage',
+  'handOut.list',
+  'handOut.add',
   'pane.focus',
   'pane.split',
   'pane.close',

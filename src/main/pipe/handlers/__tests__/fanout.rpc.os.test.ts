@@ -1388,12 +1388,11 @@ describe('FanOutService is constructed exactly once in main', () => {
 
 // ── the accept's warnings ─────────────────────────────────────────────────
 //
-// Wave 3, finding 12: the owner workspace carried an unanswered decision from a
-// previous app session, which blocks EVERY wake. The fan-out was accepted, the
-// workers ran and finished, and nothing ever reached the brain. The accept is
-// the one moment the caller is reading a reply, so it says so there.
-describe('the accepted reply warns about a pending decision on the owner', () => {
-  it('carries the warning naming the workspace and the decision id', async () => {
+// #2943: no worker event waits on a decision any more (the brains that raised
+// them are gone and every owner is told), so a pending decision on the owner
+// is not a warning on the accept.
+describe('the accepted reply does not warn about a pending decision on the owner', () => {
+  it('omits warnings while the owner has a pending decision', async () => {
     vi.mocked(loadWorkspaceDecision).mockReturnValue({
       id: 'dec-9',
       question: 'resume?',
@@ -1402,36 +1401,10 @@ describe('the accepted reply warns about a pending decision on the owner', () =>
       status: 'pending',
       raisedAt: 0,
     });
-    const h = setup();
-    const res = await h.call(goodParams());
+    const res = await setup().call(goodParams());
     expect(res).toMatchObject({ ok: true, status: 'accepted' });
-    const warnings = res['warnings'] as string[];
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`owner workspace ${CALLER_WS} has a pending decision dec-9`);
-    expect(warnings[0]).toContain('worker events will not wake the brain until it is answered');
-  });
-
-  it('omits the field entirely when there is no pending decision', async () => {
+    expect(res).not.toHaveProperty('warnings');
     vi.mocked(loadWorkspaceDecision).mockReturnValue(null);
-    const h = setup();
-    expect(await h.call(goodParams())).not.toHaveProperty('warnings');
-  });
-
-  it('a resolved decision is not a warning, and a torn store is not an error', async () => {
-    vi.mocked(loadWorkspaceDecision).mockReturnValue({
-      id: 'dec-1',
-      question: 'q',
-      options: [],
-      context: '',
-      status: 'resolved',
-      raisedAt: 0,
-    });
-    expect(await setup().call(goodParams())).not.toHaveProperty('warnings');
-
-    vi.mocked(loadWorkspaceDecision).mockImplementation(() => {
-      throw new Error('torn store');
-    });
-    expect(await setup().call(goodParams())).toMatchObject({ ok: true, status: 'accepted' });
   });
 });
 
