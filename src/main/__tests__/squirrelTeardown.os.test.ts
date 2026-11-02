@@ -1,10 +1,27 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Only terminateStagedDaemons reaches child_process here: the win32 runs below
+// answer PowerShell and taskkill from this table.
+const { exec } = vi.hoisted(() => ({
+  exec: { powershell: (): string => '', taskkill: ((): void => undefined) as (pid: string) => void },
+}));
+vi.mock('child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('child_process')>();
+  const execFileSync = (file: string, args: string[]) => {
+    if (String(file).includes('powershell')) return exec.powershell();
+    if (String(file).includes('taskkill')) return exec.taskkill(args[1] ?? '');
+    throw new Error(`unexpected exec ${file}`);
+  };
+  return { ...actual, default: { ...actual, execFileSync }, execFileSync };
+});
+
 import {
   classifyWmuxProcess,
   selectAppInstancePids,
   selectStagedDaemonPids,
   parseCimProcessJson,
   terminateRunningAppInstances,
+  terminateStagedDaemons,
   type WmuxProcessRow,
 } from '../squirrelTeardown';
 
@@ -139,5 +156,44 @@ describe('selectStagedDaemonPids (uninstall)', () => {
   it('does not take a sibling folder that only shares the prefix', () => {
     const rows = [row(31, `"${STAGE}-old\\x\\wmux.exe" "${STAGE}-old\\x\\resources\\daemon-bundle\\index.js"`)];
     expect(selectStagedDaemonPids(rows, OWN_PID, STAGE)).toEqual([]);
+  });
+});
+
+describe('terminateStagedDaemons (uninstall, win32)', () => {
+  const STAGE = 'C:\\Users\\me\\.wmux\\daemon-runtime';
+  const staged = `${STAGE}\\4.13.0-1730000000000`;
+  const realPlatform = process.platform;
+  const realExecPath = process.execPath;
+
+  beforeEach(() => {
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    // posix path.basename on this host: forward slashes.
+    Object.defineProperty(process, 'execPath', { value: EXE.replace(/\\/g, '/'), configurable: true, writable: true });
+    exec.powershell = () => '';
+    exec.taskkill = () => undefined;
+  });
+  afterEach(() => {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+    Object.defineProperty(process, 'execPath', { value: realExecPath, configurable: true, writable: true });
+  });
+
+  it('returns [] only when the listing worked and found no staged daemon', () => {
+    expect(terminateStagedDaemons(STAGE)).toEqual([]);
+  });
+
+  it('returns null, not [], when the processes cannot be listed', () => {
+    exec.powershell = () => { throw new Error('Get-CimInstance failed'); };
+    expect(terminateStagedDaemons(STAGE)).toBeNull();
+    exec.powershell = () => 'Get-CimInstance : Invalid class';
+    expect(terminateStagedDaemons(STAGE)).toBeNull();
+  });
+
+  it('returns a found daemon even when its kill failed, so the caller waits on it', () => {
+    exec.powershell = () => JSON.stringify([
+      { ProcessId: 11, CommandLine: `"${staged}\\wmux.exe" "${staged}\\resources\\daemon-bundle\\index.js"` },
+      { ProcessId: 12, CommandLine: `"${staged}\\wmux.exe" "${staged}\\resources\\daemon-bundle\\index.js"` },
+    ]);
+    exec.taskkill = (pid) => { if (pid === '11') throw new Error('Access is denied.'); };
+    expect(terminateStagedDaemons(STAGE)).toEqual([11, 12]);
   });
 });

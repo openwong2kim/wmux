@@ -258,7 +258,7 @@ import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
 import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
-import { daemonStageRootIn, removeDaemonRuntimeStages } from './daemon/daemonRuntimeStage';
+import { daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -467,9 +467,16 @@ if (process.platform === 'win32') {
       // then remove the copies.
       try {
         const stageRoot = daemonStageRootIn(getWmuxDir());
-        const stopped = terminateStagedDaemons(stageRoot);
-        if (stopped.length > 0) console.log(`[Squirrel] stopped the staged daemon(s) before uninstall: ${stopped.join(', ')}`);
-        if (!removeDaemonRuntimeStages(stageRoot)) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
+        const found = terminateStagedDaemons(stageRoot);
+        if (found === null) {
+          // Not knowing whether a daemon runs from a copy is not "none": keep them.
+          console.warn(`[Squirrel] could not list the staged daemons; ${stageRoot} is left for the next run`);
+        } else {
+          if (found.length > 0) console.log(`[Squirrel] stopping the staged daemon(s) before uninstall: ${found.join(', ')}`);
+          const { exiting, removed } = removeDaemonRuntimeStagesAfterExit(stageRoot, found, { liveness: checkProcessLiveness });
+          if (exiting.length > 0) console.warn(`[Squirrel] staged daemon(s) ${exiting.join(', ')} still exiting; ${stageRoot} is left for the next run`);
+          else if (!removed) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
+        }
       } catch { /* best-effort */ }
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })

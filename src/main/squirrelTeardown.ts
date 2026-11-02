@@ -125,20 +125,26 @@ export function selectStagedDaemonPids(rows: readonly WmuxProcessRow[], ownPid: 
  * return what succeeded rather than throwing into the installer hook.
  */
 export function terminateRunningAppInstances(): number[] {
-  return terminateSameImage((rows) => selectAppInstancePids(rows, process.pid));
+  return terminateSameImage((rows) => selectAppInstancePids(rows, process.pid))?.killed ?? [];
 }
 
-/** Uninstall only: stop the daemons running from staged copies under `stageRoot`. */
-export function terminateStagedDaemons(stageRoot: string): number[] {
-  return terminateSameImage((rows) => selectStagedDaemonPids(rows, process.pid, stageRoot));
+/**
+ * Uninstall only: stop the daemons running from staged copies under
+ * `stageRoot`. Returns every daemon found, whether or not its kill succeeded,
+ * so the caller waits on each one; null when the processes could not be
+ * listed, which must not be read as "no daemon".
+ */
+export function terminateStagedDaemons(stageRoot: string): number[] | null {
+  return terminateSameImage((rows) => selectStagedDaemonPids(rows, process.pid, stageRoot))?.found ?? null;
 }
 
-function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): number[] {
-  if (process.platform !== 'win32') return [];
+/** null: the processes could not be listed. */
+function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { found: number[]; killed: number[] } | null {
+  if (process.platform !== 'win32') return { found: [], killed: [] };
   const exeName = path.basename(process.execPath);
   // The name lands inside a CIM filter string — refuse anything that could
   // escape the quoting rather than attempting to sanitize it.
-  if (!/^[\w][\w .-]*\.exe$/i.test(exeName) || exeName.includes("'")) return [];
+  if (!/^[\w][\w .-]*\.exe$/i.test(exeName) || exeName.includes("'")) return null;
 
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
   const powershell = path.join(
@@ -150,12 +156,17 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): numbe
       powershell,
       [
         '-NoProfile', '-NonInteractive', '-Command',
-        `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction SilentlyContinue | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`,
+        `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`,
       ],
       { encoding: 'utf-8', timeout: 10_000, windowsHide: true },
     );
   } catch {
-    return [];
+    // -ErrorAction Stop: a failed query exits nonzero and lands here, while a
+    // filter that matches nothing is empty output.
+    return null;
+  }
+  if (stdout.trim()) {
+    try { JSON.parse(stdout); } catch { return null; }
   }
 
   const targets = select(parseCimProcessJson(stdout));
@@ -173,5 +184,5 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): numbe
       /* best-effort — a survivor is no worse than the pre-fix status quo */
     }
   }
-  return killed;
+  return { found: targets, killed };
 }
