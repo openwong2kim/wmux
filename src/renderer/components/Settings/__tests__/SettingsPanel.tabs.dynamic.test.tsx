@@ -188,7 +188,7 @@ const ALL_TABS = SETTINGS_NAV_GROUPS.flatMap((g) => g.tabs);
 describe('Settings tabs', () => {
   it('lists every tab once, in the owner-reviewed order', () => {
     expect(ALL_TABS).toEqual([
-      'general', 'appearance', 'terminal', 'shortcuts', 'notifications',
+      'general', 'appearance', 'terminal', 'shortcuts', 'notifications', 'labs',
       'claude-integration', 'accounts', 'factory', 'roles', 'tokens', 'browser', 'computer-use',
       'remote', 'lanlink',
       'about',

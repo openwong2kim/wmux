@@ -168,6 +168,8 @@ describe('scrollback compaction', () => {
     }
   });
 
+  // Hundreds of random rows checked method by method: under 1 s on a
+  // developer Mac, past the 10 s default on a loaded Windows CI runner.
   it('a packed row answers every BufferLine method exactly as the original does', async () => {
     const r = rng(1234);
     let resizedPacked = 0;
@@ -261,8 +263,11 @@ describe('scrollback compaction', () => {
     }
     // The no-decode resize paths ran, not only the inflate fallback.
     expect(resizedPacked).toBeGreaterThan(500);
-  });
+  }, 60_000);
 
+  // 300 random writes with a full-buffer comparison every 25 writes and at
+  // the end: ~1 s on a developer Mac, past the 10 s default on a loaded
+  // Windows CI runner.
   it('two terminals, one compacting every row after every write, hold the same buffer', async () => {
     const r = rng(42);
     const opts = { cols: 40, rows: 10, scrollback: 400, allowProposedApi: true };
@@ -350,7 +355,7 @@ describe('scrollback compaction', () => {
     expect(isCompactionDisabled()).toBe(false);
     a.dispose();
     b.dispose();
-  });
+  }, 60_000);
 
   it('the sweep leaves the rows near the bottom and around a scrolled-up viewport uncompacted', async () => {
     const term = new Patched.Terminal({ cols: 30, rows: 10, scrollback: 2000, allowProposedApi: true });

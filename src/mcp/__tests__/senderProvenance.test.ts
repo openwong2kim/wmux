@@ -122,7 +122,10 @@ describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
     // The worker fence refuses a new task with execute in a2a.rpc.ts, not by
     // tool name: the alias must reach that one pipe method.
     expect(mcpIndexSrc).toMatch(/server\.tool\(\s*'a2a_task_send',[^;]*?SEND_MESSAGE_SHAPE,\s*sendMessageHandler,\s*\)/);
-    const handler = /const sendMessageHandler = async[\s\S]*?\n\};/.exec(mcpIndexSrc)?.[0] ?? '';
+    // The public handler hands the arguments alone to the shared send path
+    // (hand_out's pick adds its item id through the second parameter).
+    expect(mcpIndexSrc).toMatch(/const sendMessageHandler = \(args: [^)]*\) => sendMessage\(args\);/);
+    const handler = /const sendMessage = async[\s\S]*?\n\};/.exec(mcpIndexSrc)?.[0] ?? '';
     expect(handler).not.toBe('');
     expect([...new Set(handler.match(/callRpc\('([^']+)'/g) ?? [])]).toEqual(["callRpc('a2a.task.send'"]);
   });

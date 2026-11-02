@@ -230,8 +230,9 @@ export interface PhoneMoaDelegation {
 export const PHONE_FLEET_TICKET_STATES = ['queued', 'working', 'needs-you', 'done', 'failed'] as const;
 export type PhoneFleetTicketState = (typeof PHONE_FLEET_TICKET_STATES)[number];
 
-/** Where a ticket's job started: a WorkLink origin, or a Moa hand-off not yet delivered. */
-export const PHONE_FLEET_TICKET_ORIGINS = ['issue', 'pr', 'moa', 'moa-auto', 'manual', 'handoff'] as const;
+/** Where a ticket's job started: a WorkLink origin (`hand-out`: picked from
+ *  the To hand out list), or a Moa hand-off not yet delivered. */
+export const PHONE_FLEET_TICKET_ORIGINS = ['issue', 'pr', 'moa', 'moa-auto', 'manual', 'handoff', 'hand-out'] as const;
 export type PhoneFleetTicketOrigin = (typeof PHONE_FLEET_TICKET_ORIGINS)[number];
 
 /** How long a finished (done / failed) ticket stays listed: the desktop's TICKET_RECENT_MS. */
