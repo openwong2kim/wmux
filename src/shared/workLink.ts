@@ -18,6 +18,7 @@ import type { PrSummary } from './prSurface';
 import { isTaskState, type TaskState } from './types';
 import { isVerifiedItem } from './completionEvidence';
 import { REMOTE_WORKSPACE_PREFIX } from './a2aRemoteDelivery';
+import { isHandOutId } from './handOut';
 
 export const WORK_LINK_STATES = [
   'queued',
@@ -31,8 +32,9 @@ export const WORK_LINK_STATES = [
 export type WorkLinkState = (typeof WORK_LINK_STATES)[number];
 
 /** Where the work started: a Git page issue, a Moa delegation, or a plain send. */
-/** `moa-auto`: a hand-off Moa delivered without a click (danger mode). */
-export const WORK_LINK_ORIGINS = ['issue', 'pr', 'moa', 'moa-auto', 'manual'] as const;
+/** `moa-auto`: a hand-off Moa delivered without a click (danger mode).
+ *  `hand-out`: an item picked from the To hand out list (shared/handOut.ts). */
+export const WORK_LINK_ORIGINS = ['issue', 'pr', 'moa', 'moa-auto', 'manual', 'hand-out'] as const;
 export type WorkLinkOrigin = (typeof WORK_LINK_ORIGINS)[number];
 
 /** Why a link is `needs-you` (a person must act) or `blocked` (the agent must). */
@@ -92,6 +94,8 @@ export interface WorkLink {
   requester?: WorkLinkParty;
   /** Agent slug of the worker, e.g. 'claude' or 'codex'. */
   agent?: string;
+  /** The To hand out item this work was picked from (origin 'hand-out'). */
+  handOutId?: string;
   worktree?: { path: string; branch?: string };
   pr?: PrRef;
   prStatus?: WorkLinkPrStatus;
@@ -287,6 +291,11 @@ export function parseWorkLink(v: unknown): WorkLink | null {
     if (typeof v.agent !== 'string' || !AGENT_RE.test(v.agent)) return null;
     out.agent = v.agent;
   }
+  if (v.handOutId !== undefined) {
+    if (!isHandOutId(v.handOutId)) return null;
+    out.handOutId = v.handOutId;
+  }
+  if (out.origin === 'hand-out' && !out.handOutId) return null;
   if (v.worktree !== undefined) {
     const worktree = parseWorktree(v.worktree);
     if (!worktree) return null;

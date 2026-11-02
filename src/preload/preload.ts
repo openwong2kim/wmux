@@ -1634,6 +1634,21 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.WORK_LINK_CHANGED, listener); };
     },
   },
+  // To hand out (shared/handOut.ts): main keeps the list and derives each
+  // item's state from its work links; onChanged says to re-read it.
+  handOut: {
+    list: () => ipcRenderer.invoke(IPC.HAND_OUT_LIST) as Promise<import('../shared/handOut').HandOutEntry[]>,
+    add: (request: import('../shared/handOut').HandOutAddRequest) =>
+      ipcRenderer.invoke(IPC.HAND_OUT_ADD, request) as Promise<import('../shared/handOut').HandOutAddResult>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.HAND_OUT_REMOVE, id) as Promise<{ ok: boolean }>,
+    pick: (request: import('../shared/handOut').HandOutPickRequest) =>
+      ipcRenderer.invoke(IPC.HAND_OUT_PICK, request) as Promise<import('../shared/handOut').HandOutPickResult>,
+    onChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.HAND_OUT_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.HAND_OUT_CHANGED, listener); };
+    },
+  },
   // Company presets: write each seat's brief file and get its launch line.
   company: {
     seatLaunches: (req: import('../main/company/seatLaunch').SeatLaunchRequest) =>

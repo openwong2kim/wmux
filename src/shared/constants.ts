@@ -475,6 +475,13 @@ export const IPC = {
   WORK_LINK_LIST: 'workLink:list',
   WORK_LINK_GET: 'workLink:get',
   WORK_LINK_CHANGED: 'workLink:changed',
+  // To hand out (src/shared/handOut.ts): the list, an add, a removal, a pick
+  // (main window only), and the push after any change.
+  HAND_OUT_LIST: 'handOut:list',
+  HAND_OUT_ADD: 'handOut:add',
+  HAND_OUT_REMOVE: 'handOut:remove',
+  HAND_OUT_PICK: 'handOut:pick',
+  HAND_OUT_CHANGED: 'handOut:changed',
   // Company presets: the launch line (and brief file) of each seat.
   COMPANY_SEAT_LAUNCHES: 'company:seatLaunches',
   // "Add a seat on this PC…": one seat's worktree, brief file and launch line.
