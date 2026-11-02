@@ -201,7 +201,7 @@ import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { squirrelInstallRootFor, warnOnInstallIntegrityGap } from './updater/installIntegrity';
-import { shouldWriteStartMenuEntry, writeStartMenuEntry } from './notification/startMenuEntry';
+import { keepOneStartMenuEntry, shouldWriteStartMenuEntry } from './notification/startMenuEntry';
 import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -377,7 +377,7 @@ if (process.platform === 'win32') {
       const hookPlan = planInstallHook(existingProfile);
       console.log(
         `[Squirrel] install hook: ${existingProfile ? 'existing profile (update)' : 'first install'} — ` +
-        `autostart ${hookPlan.autostart}, shortcuts ${hookPlan.shortcutLocations}`,
+        `autostart ${hookPlan.autostart}, shortcuts ${hookPlan.shortcutLocations ?? 'none'}`,
       );
 
       // Register Windows startup entry so wmux survives reboot. Autostart
@@ -399,10 +399,9 @@ if (process.platform === 'win32') {
       let installIcon: string | null = null;
       try { installIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
 
-      // #863/#2971: repair leftover shortcuts after Update.exe is done, which
-      // also removes the publisher-folder Start Menu link earlier installs
-      // wrote. The Start Menu entry itself is written by the app it launches
-      // (notification/startMenuEntry.ts), never by Update.exe.
+      // #863: repair leftover pins after Update.exe is done. The Start Menu
+      // entry is written by the app this launches (notification/
+      // startMenuEntry.ts, #2971), never by Update.exe.
       const finishInstall = () => {
         try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
         // Auto-launch app after install
@@ -434,8 +433,7 @@ if (process.platform === 'win32') {
 
       // No --createShortcut: an update must not bring back a Desktop shortcut
       // the user deleted, and the Start Menu entry is the app's own
-      // (notification/startMenuEntry.ts, #2971). The repair pass removes the
-      // publisher-folder Start Menu link an earlier install wrote.
+      // (notification/startMenuEntry.ts, #2971).
       try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
       // #502: relaunch the updated app — the pre-update instance was taken
       // down above (or quit itself in the in-app "Restart to install" flow),
@@ -464,12 +462,13 @@ if (process.platform === 'win32') {
         if (!removeDaemonRuntimeStages(stageRoot)) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
       } catch { /* best-effort */ }
 
-      // #2971: the Start Menu entry and the toast activator classes Electron's
-      // toast setup wrote are not Update.exe's, so --removeShortcut leaves them.
-      try { shortcutHygiene.removeToastEntries(process.execPath); } catch { /* best-effort */ }
-
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
+
+      // #2971: the Start Menu entry and the toast activator classes Electron's
+      // toast setup wrote are not Update.exe's, so --removeShortcut leaves
+      // them. Done while Update.exe works, so it never delays --removeShortcut.
+      try { shortcutHygiene.removeToastEntries(process.execPath); } catch { /* best-effort */ }
       app.quit();
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
@@ -716,7 +715,7 @@ void app.whenReady().then(() => {
     dataSuffix: dataSuffix(),
     squirrelRoot: squirrelInstallRootFor(process.execPath),
   };
-  if (shouldWriteStartMenuEntry(probe)) writeStartMenuEntry();
+  if (shouldWriteStartMenuEntry(probe)) keepOneStartMenuEntry(process.execPath, app.getAppPath());
 });
 
 // ── Promoted browser flows: the idle sweep ─────────────────────────────────

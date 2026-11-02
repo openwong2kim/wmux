@@ -149,17 +149,21 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(updatedBranch).toMatch(/shortcutHygiene\.repairInstalledShortcuts\(process\.execPath\)/);
   });
 
-  it('#2971: the uninstall hook removes the toast entries before Update.exe --removeShortcut', () => {
+  // The hook is cancelled at ~15 s, so the extra cleanup must not delay
+  // Update.exe --removeShortcut: it runs once that is spawned.
+  it('#2971: the uninstall hook removes the toast entries after spawning Update.exe --removeShortcut', () => {
     const uninstallPos = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
     const obsoletePos = indexSrc.indexOf("squirrelCmd === '--squirrel-obsolete'");
     const branch = indexSrc.slice(uninstallPos, obsoletePos);
-    const removePos = branch.indexOf('shortcutHygiene.removeToastEntries(process.execPath)');
-    expect(removePos).toBeGreaterThan(0);
-    expect(branch.indexOf("'--removeShortcut'")).toBeGreaterThan(removePos);
+    const spawnPos = branch.indexOf("'--removeShortcut'");
+    expect(spawnPos).toBeGreaterThan(0);
+    expect(branch.indexOf('shortcutHygiene.removeToastEntries(process.execPath)')).toBeGreaterThan(spawnPos);
   });
 
-  it('#2971: the app writes its Start Menu entry at startup, behind the installed-app gate', () => {
-    expect(indexSrc).toMatch(/if \(shouldWriteStartMenuEntry\(probe\)\) writeStartMenuEntry\(\);/);
+  it('#2971: the app keeps its one Start Menu entry at startup, behind the installed-app gate', () => {
+    expect(indexSrc).toMatch(
+      /if \(shouldWriteStartMenuEntry\(probe\)\) keepOneStartMenuEntry\(process\.execPath, app\.getAppPath\(\)\);/,
+    );
     expect(indexSrc).toMatch(/squirrelRoot: squirrelInstallRootFor\(process\.execPath\)/);
     expect(indexSrc).toMatch(/dataSuffix: dataSuffix\(\)/);
   });
