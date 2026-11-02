@@ -12,7 +12,7 @@
 // on the agent's own lane (a company brief keeps its holds and cap), and main
 // makes the link from it. The app picks with HandOutPickRequest over IPC.
 import type { HandoffPrepNotice, HandoffTarget } from './gitHandoff';
-import { sanitizeHandoffNote, sanitizeHandoffTitle } from './gitHandoff';
+import { issueBranchName, sanitizeHandoffNote, sanitizeHandoffTitle } from './gitHandoff';
 import type { SubmitAssurance } from './ptyMessageDelivery';
 import type { WorkLink } from './workLink';
 
@@ -220,4 +220,15 @@ export function buildHandOutMessage(item: HandOutItem, opts: { company?: boolean
   const note = item.note ? sanitizeHandoffNote(item.note) : '';
   if (note) lines.push('', note);
   return lines.join('\n');
+}
+
+/**
+ * The branch of a worktree pick: `hand-out-<slug>-<suffix>`, the slug by the
+ * issue branch's rules (none for a title with no ASCII letters or digits).
+ * The suffix keeps a second pick of an item, or an item with the same title,
+ * off a branch git already has.
+ */
+export function handOutBranchName(title: string, suffix: string): string {
+  const slug = issueBranchName(0, title).replace(/^issue-0-?/, '');
+  return ['hand-out', slug, suffix].filter(Boolean).join('-');
 }

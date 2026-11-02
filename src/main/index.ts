@@ -90,6 +90,7 @@ import { registerPaneRpc } from './pipe/handlers/pane.rpc';
 import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
 import { gatedSubmitTaskContext } from './pipe/handlers/a2aOpenTasks';
 import { registerGitHandoffHandlers } from './ipc/handlers/gitHandoff.handler';
+import { registerHandOutHandlers } from './ipc/handlers/handOut.handler';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
@@ -1421,6 +1422,13 @@ registerFanOutHandler(fanOutService);
 // operator RPC lane for the A2A send (so the task joins its work link) and
 // the fan-out service for a new worktree.
 registerGitHandoffHandlers({
+  invoke: (method, params) => invokeRendererRpc(method, params),
+  startFanOut: (req) => startGuiFanOut(fanOutService, req),
+});
+// To hand out: the list for the renderer, and a pick to an agent pane, a
+// company's CEO or a new worktree over the same two lanes.
+registerHandOutHandlers({
+  getWindow: () => mainWindow,
   invoke: (method, params) => invokeRendererRpc(method, params),
   startFanOut: (req) => startGuiFanOut(fanOutService, req),
 });
