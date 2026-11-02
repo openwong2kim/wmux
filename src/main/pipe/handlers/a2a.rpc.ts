@@ -10,6 +10,7 @@ import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
 import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
+import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { validateMessage, type Message, type Task } from '../../../shared/types';
 import { COMPANY_BRIEF_KIND, COMPANY_RENDERER_METHOD, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
 import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyCapHint, companyCapMessageRefusal, companyHeldMessageRefusal, companyHoldOf, companyHoldPhase, companyHoldWithholds, companyWaitingLine, type CompanyHoldMarker } from '../../../shared/companyHold';
@@ -1913,6 +1914,9 @@ export function registerA2aRpc(
     if (params.taskId !== undefined || params.workLinkId !== undefined) {
       return refuse('hand_out_invalid', 'handOutId picks an item with a new task of its own; send it without taskId or workLinkId');
     }
+    if (params.silent === true || params.execute === true) {
+      return refuse('hand_out_invalid', 'handOutId hands an item to the agent in a pane; send it without silent or execute');
+    }
     const id = params.handOutId;
     if (!isHandOutId(id)) return refuse('hand_out_invalid', 'handOutId is not an item id; read the To hand out list for one');
     const caller = await resolveCallerPane(getWindow, params.workspaceId, params.senderPtyId);
@@ -2120,6 +2124,14 @@ export function registerA2aRpc(
     if ((held || full) && isRecord(result) && result.ok === true && typeof result.taskId === 'string') {
       return finishHeldSend(result, mirror, workLink, params.silent === true, full);
     }
+    // A pick that reached no agent gives the item back, as the app's pick
+    // does: its task is cancelled, so nobody finds it later while the item
+    // reads open again.
+    if (handOutId && isRecord(result) && result.ok === true && typeof result.taskId === 'string'
+      && !(isRecord(result.delivery) && result.delivery.notified === true)) {
+      await cancelTask({ taskId: result.taskId, workspaceId: HUMAN_WORKSPACE_ID }, { origin: 'local', operator: true });
+      return { ...result, handOut: 'not delivered: its task was cancelled and the item is open again' };
+    }
     // A reply that reopened an ended task moves its link back with it.
     if (params.taskId && isRecord(result) && result.ok === true) {
       void recordTaskState(params.taskId, reopenedState(sendParams));
@@ -2152,7 +2164,9 @@ export function registerA2aRpc(
   }
 
   // task.cancel: cancel worker + 데몬 정본 커밋 + 렌더러 캐시/이벤트(envelope PR4).
-  router.register('a2a.task.cancel', async (params, ctx) => {
+  router.register('a2a.task.cancel', cancelTask);
+
+  async function cancelTask(params: Record<string, unknown>, ctx: RpcContext | undefined): Promise<unknown> {
     const taskId = typeof params.taskId === 'string' ? params.taskId : '';
     // The caller's pane, resolved here as for an update: a company task is
     // canceled only by the pane that created it (shared/company.ts).
@@ -2201,5 +2215,5 @@ export function registerA2aRpc(
       void recordTaskState(taskId, 'canceled');
     }
     return res;
-  });
+  }
 }

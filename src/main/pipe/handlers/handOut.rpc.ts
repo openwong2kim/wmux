@@ -5,7 +5,8 @@
 // only. Identity is server-resolved, never taken from params: the caller's
 // senderPtyId resolves to its workspace and pane. A bot, a commander brain, a
 // plugin and a caller with no resolvable pane are refused. The app (the
-// operator lane) may read the list.
+// operator lane) may read the list. Every refusal has one shape,
+// `{ok: false, code, message}`, with the codes the add and the pick use.
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
@@ -20,6 +21,7 @@ import {
   type HandOutEntry,
 } from '../../../shared/handOut';
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
+import { refuseHandoffMarker } from '../handoffMarkerTripwire';
 import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { sendToRenderer } from './_bridge';
 
@@ -39,10 +41,10 @@ export interface HandOutRpcDeps {
   resolveCaller?: (senderPtyId: string) => Promise<HandOutCaller | null>;
 }
 
-type Denial = { ok: false; error: { code: string; message: string } };
+type Denial = { ok: false; code: 'refused' | 'invalid'; message: string };
 
-function deny(code: string, message: string): Denial {
-  return { ok: false, error: { code, message } };
+function deny(code: Denial['code'], message: string): Denial {
+  return { ok: false, code, message };
 }
 
 const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
@@ -73,45 +75,49 @@ export function registerHandOutRpc(router: RpcRouter, getWindow: GetWindow, deps
 
   /** The agent pane making the call, or why it may not. */
   async function callerOf(method: string, params: Record<string, unknown>, ctx: RpcContext | undefined): Promise<HandOutCaller | Denial> {
-    if (ctx?.origin !== 'local') return deny('NOT_AUTHORIZED', `${method} is local-origin only`);
+    if (ctx?.origin !== 'local') return deny('refused', `${method} is local-origin only`);
     if (ctx.commanderWorkspace || ctx.bot || isHostedCaller(ctx)) {
-      return deny('NOT_AUTHORIZED', `${method} is for an agent in a pane; a bot, Moa or a plugin has none`);
+      return deny('refused', `${method} is for an agent in a pane; a bot, Moa or a plugin has none`);
     }
     const senderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId.trim() : '';
     const caller = senderPtyId ? await resolveCaller(senderPtyId) : null;
-    if (!caller) return deny('NOT_AUTHORIZED', `${method} requires a verifiable caller (no resolvable senderPtyId)`);
-    if (caller.workspaceId === HUMAN_WORKSPACE_ID) return deny('NOT_AUTHORIZED', `'${HUMAN_WORKSPACE_ID}' cannot call ${method} from the pipe`);
+    if (!caller) return deny('refused', `${method} requires a verifiable caller (no resolvable senderPtyId)`);
+    if (caller.workspaceId === HUMAN_WORKSPACE_ID) return deny('refused', `'${HUMAN_WORKSPACE_ID}' cannot call ${method} from the pipe`);
     return caller;
   }
 
-  router.register('handOut.list', async (params, ctx): Promise<{ items: HandOutEntry[] } | Denial> => {
+  router.register('handOut.list', async (params, ctx): Promise<{ items: HandOutEntry[]; total: number } | Denial> => {
     if (ctx?.operator !== true) {
       const caller = await callerOf('handOut.list', params, ctx);
-      if ('error' in caller) return caller;
+      if ('ok' in caller) return caller;
     }
     const store = storeOf();
     const { id, folder } = params;
     if (id !== undefined) {
-      if (!isHandOutId(id)) return deny('INVALID_ARGUMENT', 'handOut.list: id is not an item id');
+      if (!isHandOutId(id)) return deny('invalid', 'handOut.list: id is not an item id');
       const item = store.get(id);
-      return { items: item ? [item] : [] };
+      return { items: item ? [item] : [], total: item ? 1 : 0 };
     }
     let within: string | undefined;
     if (folder !== undefined) {
       if (typeof folder !== 'string' || !folder.trim() || folder.length > HAND_OUT_LIMITS.MAX_FOLDER || folder.includes('\0')) {
-        return deny('INVALID_ARGUMENT', 'handOut.list: folder must be a path');
+        return deny('invalid', 'handOut.list: folder must be a path');
       }
       within = folder;
     }
-    const items = store.list()
-      .filter((item) => item.state === 'open' && (within === undefined || folderWithin(item.folder, within)))
-      .slice(0, HAND_OUT_LIMITS.MAX_LISTED);
-    return { items };
+    const open = store.list()
+      .filter((item) => item.state === 'open' && (within === undefined || folderWithin(item.folder, within)));
+    // `total` says how many matched, so a caller knows the list was cut.
+    return { items: open.slice(0, HAND_OUT_LIMITS.MAX_LISTED), total: open.length };
   });
 
   router.register('handOut.add', async (params, ctx): Promise<HandOutAddResult | Denial> => {
     const caller = await callerOf('handOut.add', params, ctx);
-    if ('error' in caller) return caller;
+    if ('ok' in caller) return caller;
+    // The app's pick sends an item on the operator lane, so an agent's item
+    // may not carry the line only an operator's hand-off writes.
+    const marked = refuseHandoffMarker('handOut.add', [params.title, params.note], ctx);
+    if (marked) return deny('refused', marked.error);
     const req = parseHandOutAdd(params);
     if (!req) {
       return { ok: false, code: 'invalid', message: 'handOut.add needs a one-line title and an absolute folder; agent is an agent slug such as claude' };

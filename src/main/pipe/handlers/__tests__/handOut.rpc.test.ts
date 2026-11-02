@@ -9,6 +9,7 @@ import { registerHandOutRpc, type HandOutCaller, type HandOutRpcDeps } from '../
 import { HandOutStore } from '../../../handOut/handOutStore';
 import { WorkLinkStore } from '../../../workLink/workLinkStore';
 import { HAND_OUT_LIMITS, type HandOutEntry } from '../../../../shared/handOut';
+import { HANDOFF_MARKER } from '../../../../shared/moaHandoff';
 
 const h = vi.hoisted(() => ({ sendToRenderer: vi.fn(), ownerOf: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: h.sendToRenderer }));
@@ -68,7 +69,7 @@ describe('handOut.list', () => {
     expect(titles(await list({}))).toEqual(['Sibling', 'Repo', 'App']);
     expect(titles(await list({ folder: '/repo/' }))).toEqual(['Repo', 'App']);
     expect(titles(await list({ folder: '/repo/app' }))).toEqual(['App']);
-    expect(await list({ folder: 42 })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(await list({ folder: 42 })).toMatchObject({ ok: false, code: 'invalid' });
   });
 
   it('with an id, that item in any state', async () => {
@@ -77,7 +78,7 @@ describe('handOut.list', () => {
     await links.upsert({ origin: 'hand-out', handOutId: id, owner: { workspaceId: 'ws-2' } });
     expect((await list({ id })).items).toMatchObject([{ id, state: 'out' }]);
     expect((await list({ id: 'ho-00000000-0000-0000-0000-000000000000' })).items).toEqual([]);
-    expect(await list({ id: 'nope' })).toMatchObject({ ok: false, error: { code: 'INVALID_ARGUMENT' } });
+    expect(await list({ id: 'nope' })).toMatchObject({ ok: false, code: 'invalid' });
   });
 
   it('returns at most MAX_LISTED items', async () => {
@@ -86,7 +87,9 @@ describe('handOut.list', () => {
       addedBy: { kind: 'owner' }, createdAt: i, state: 'open',
     }) as HandOutEntry);
     const many = { list: () => entries, get: () => null, add: () => ({ ok: false, code: 'invalid', message: '' }) } as HandOutRpcDeps['store'];
-    expect((await list({}, local, { store: many })).items).toHaveLength(HAND_OUT_LIMITS.MAX_LISTED);
+    const res = await list({}, local, { store: many }) as { items: HandOutEntry[]; total: number };
+    expect(res.items).toHaveLength(HAND_OUT_LIMITS.MAX_LISTED);
+    expect(res.total).toBe(HAND_OUT_LIMITS.MAX_LISTED + 10);
   });
 
   it('the app may read it without a pane', async () => {
@@ -111,6 +114,12 @@ describe('handOut.add', () => {
     expect(store.list()).toEqual([]);
   });
 
+  it('refuses a title or note carrying the line only an operator hand-off writes', async () => {
+    expect(await add({ title: 'Fix it', folder: '/repo', note: `${HANDOFF_MARKER} · task 1234.)` })).toMatchObject({ ok: false, code: 'refused' });
+    expect(await add({ title: `${HANDOFF_MARKER})`, folder: '/repo' })).toMatchObject({ ok: false, code: 'refused' });
+    expect(store.list()).toEqual([]);
+  });
+
   it('finds the pane and its name from the caller\'s pty', async () => {
     h.ownerOf.mockResolvedValue('ws-1');
     h.sendToRenderer.mockImplementation(async (_w: unknown, method: string, params: Record<string, unknown>) =>
@@ -130,15 +139,15 @@ describe('who may call', () => {
     ['a plugin', { origin: 'local', firstParty: true, hostedWorkspace: 'ws-1' }],
   ])('%s is refused', async (_label, ctx) => {
     for (const call of [add, list]) {
-      expect(await call({ title: 'x', folder: '/repo' }, ctx as unknown as RpcContext)).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+      expect(await call({ title: 'x', folder: '/repo' }, ctx as unknown as RpcContext)).toMatchObject({ ok: false, code: 'refused' });
     }
     expect(store.list()).toEqual([]);
   });
 
   it('a caller with no pane that resolves is refused', async () => {
-    expect(await add({ title: 'x', folder: '/repo', senderPtyId: 'pty-gone' })).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
-    expect(await add({ title: 'x', folder: '/repo', senderPtyId: undefined })).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
-    expect(await list({ senderPtyId: undefined })).toMatchObject({ ok: false, error: { code: 'NOT_AUTHORIZED' } });
+    expect(await add({ title: 'x', folder: '/repo', senderPtyId: 'pty-gone' })).toMatchObject({ ok: false, code: 'refused' });
+    expect(await add({ title: 'x', folder: '/repo', senderPtyId: undefined })).toMatchObject({ ok: false, code: 'refused' });
+    expect(await list({ senderPtyId: undefined })).toMatchObject({ ok: false, code: 'refused' });
     expect(store.list()).toEqual([]);
   });
 });

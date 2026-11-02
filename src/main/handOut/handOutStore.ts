@@ -194,10 +194,16 @@ export class HandOutStore {
   }
 
   /** A link changed, or was evicted (it can no longer be read): an item's
-   *  state may have moved. A store nobody has read yet settles on load. */
+   *  state may have moved. A pick's link changing loads a list nobody has
+   *  read yet, so its item is dropped while the done link can still be read
+   *  (the link store evicts ended links first). */
   private onLinksChanged(ids: string[]): void {
     try {
-      if (!this.items || this.items.size === 0) return;
+      if (!this.items) {
+        if (ids.some((id) => !!this.links.get(id)?.handOutId)) this.cache();
+        return;
+      }
+      if (this.items.size === 0) return;
       const touches = ids.some((id) => {
         const link = this.links.get(id);
         return !link || (!!link.handOutId && this.items?.has(link.handOutId) === true);

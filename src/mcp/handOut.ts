@@ -11,7 +11,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { sendRpc } from './wmux-client';
 import { isErrorShapedResult } from '../shared/rpc';
-import { buildHandOutMessage, handOutAddedByLine, type HandOutEntry } from '../shared/handOut';
+import { buildHandOutMessage, handOutAddedByLine, type HandOutEntry, type HandOutItem } from '../shared/handOut';
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
 
@@ -50,6 +50,18 @@ const json = (value: unknown, isError = false): ToolResult => ({
 
 const refusal = (text: string): ToolResult => ({ content: [{ type: 'text', text: `hand_out: ${text}` }], isError: true });
 
+/** An item as an agent reads it, from list and add alike. */
+function brief(item: HandOutItem): Record<string, unknown> {
+  return {
+    id: item.id,
+    title: item.title,
+    folder: item.folder,
+    ...(item.agent ? { agent: item.agent } : {}),
+    ...(item.note ? { note: item.note } : {}),
+    addedBy: handOutAddedByLine(item.addedBy),
+  };
+}
+
 function itemsOf(result: unknown): HandOutEntry[] {
   const items = (result as { items?: unknown } | null)?.items;
   return Array.isArray(items) ? (items as HandOutEntry[]) : [];
@@ -77,21 +89,17 @@ export function registerHandOutTools(server: McpServer, deps: HandOutToolDeps): 
           if (agent) params['agent'] = agent;
           if (note) params['note'] = note;
           const result = await sendRpc('handOut.add', params);
-          return json(result, isErrorShapedResult(result));
+          if (isErrorShapedResult(result)) return json(result, true);
+          const item = (result as { item?: HandOutItem } | null)?.item;
+          return json(item ? { ok: true, item: brief(item) } : result);
         }
         if (action === 'list') {
           const result = await sendRpc('handOut.list', folder ? { ...caller, folder } : caller);
           if (isErrorShapedResult(result)) return json(result, true);
-          return json({
-            items: itemsOf(result).map((item) => ({
-              id: item.id,
-              title: item.title,
-              folder: item.folder,
-              ...(item.agent ? { agent: item.agent } : {}),
-              ...(item.note ? { note: item.note } : {}),
-              addedBy: handOutAddedByLine(item.addedBy),
-            })),
-          });
+          const items = itemsOf(result).map(brief);
+          const total = (result as { total?: unknown } | null)?.total;
+          const more = typeof total === 'number' ? total - items.length : 0;
+          return json({ items, ...(more > 0 ? { more } : {}) });
         }
         if (!item_id || !to) return refusal('pick needs item_id and to');
         const read = await sendRpc('handOut.list', { ...caller, id: item_id });

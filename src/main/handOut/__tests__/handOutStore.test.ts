@@ -35,6 +35,23 @@ afterEach(() => {
 });
 
 describe('HandOutStore', () => {
+  it('drops a done item when its link finishes before anyone read the list', async () => {
+    const a = make();
+    const added = a.add({ title: 'Done unseen', folder: '/repo' }, owner);
+    if (!added.ok) throw new Error('add failed');
+    const link = await pickLink(added.item.id);
+    await links.upsert({ id: link.id, a2aTaskId: 'task-9' });
+    await a.flush();
+    await links.flush();
+
+    // A restart: fresh stores over the same files, the list not read yet.
+    links = new WorkLinkStore({ dir, pendingDecisionIds: () => new Set() });
+    make();
+    await links.upsert({ id: link.id, a2aState: 'completed' });
+    expect(links.get(link.id)?.state).toBe('done');
+    await vi.waitFor(() => expect(onDisk().items).toEqual([]));
+  });
+
   it('puts an item back when the app stopped between recording a pick and sending it', async () => {
     const a = make();
     const stranded = a.add({ title: 'Stranded', folder: '/repo' }, owner);

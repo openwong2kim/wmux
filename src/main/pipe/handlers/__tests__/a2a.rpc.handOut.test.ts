@@ -45,6 +45,7 @@ let created: Array<Record<string, unknown>>;
 
 const dc = {
   rpc: async (method: string, params: Record<string, unknown>) => {
+    if (method === 'a2a.task.cancel') return { ok: true, task: { id: params.taskId, status: { state: 'canceled', timestamp: 'z' } } };
     if (method !== 'a2a.task.create') return { ok: true };
     created.push(params);
     const hold = params.holdForSlot === true ? { blockedBy: [], waitingOn: [], releasedAt: 'y' } : null;
@@ -102,7 +103,8 @@ beforeEach(() => {
         ok: true,
         taskId: id,
         toWorkspaceId: WS,
-        delivery: params.silent === true ? { stored: true, notified: false, reason: 'silent' } : { stored: true, notified: true },
+        // #dev-3 runs no agent: the task is stored and nothing is written.
+        delivery: params.paneId === 'dev-3' ? { stored: true, notified: false, reason: 'no_agent_pane' } : { stored: true, notified: true },
         task: {
           id,
           status: { state: 'submitted', timestamp: 'x' },
@@ -138,6 +140,16 @@ describe('a2a.task.send with handOutId', () => {
     expect(handOuts.get(itemId)).toMatchObject({ state: 'out' });
     // Main-only: the renderer never sees it.
     expect(rendererSends()[0]).not.toHaveProperty('handOutId');
+  });
+
+  it('a pick that reached no agent is cancelled, and the item is open again', async () => {
+    const res = await send(pick({ paneId: 'dev-3' }));
+    expect(res).toMatchObject({ ok: true, taskId: 'task-1', handOut: expect.stringContaining('item is open again') });
+    const cancels = h.sendToRenderer.mock.calls.filter((c) => c[1] === 'a2a.task.cancel').map((c) => c[2] as Record<string, unknown>);
+    expect(cancels).toEqual([expect.objectContaining({ taskId: 'task-1', daemonCommitted: true })]);
+    await vi.waitFor(() => expect(links.getByTaskId('task-1')?.state).toBe('abandoned'));
+    expect(handOuts.get(itemId)?.state).toBe('open');
+    expect(handOuts.reserve(itemId)).toBe(true);
   });
 
   it('a send the renderer refuses links nothing, and the item can be picked again', async () => {
@@ -185,9 +197,11 @@ describe('what a pick by send refuses, before anything is stored', () => {
     nothingCreated();
   });
 
-  it('a pick that joins a named link, or replies on a task, is invalid', async () => {
+  it('a pick that joins a named link, replies on a task, or is silent or executed, is invalid', async () => {
     expect(await send(pick({ workLinkId: 'link-1' }))).toMatchObject({ code: 'hand_out_invalid' });
     expect(await send(pick({ taskId: 'task-0' }))).toMatchObject({ code: 'hand_out_invalid' });
+    expect(await send(pick({ silent: true }))).toMatchObject({ code: 'hand_out_invalid' });
+    expect(await send(pick({ execute: true }))).toMatchObject({ code: 'hand_out_invalid' });
     nothingCreated();
     expect(handOuts.get(itemId)?.state).toBe('open');
   });

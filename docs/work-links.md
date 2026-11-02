@@ -164,27 +164,40 @@ The owner adds from the app and an agent pane adds with `handOut.add`.
 
 An item's state is never stored. Every pick makes a link with origin
 `hand-out` and `handOutId` set to the item, and `handOutStateOf` reads those
-links: the newest one that is not `abandoned` decides. With none the item is
-`open`, while it is live the item is `out`, and once it is `done` the item
-leaves the list. A send that was not delivered cancels its task, its link
-goes `abandoned`, and the item is open again. A pick holds the item for its
-whole call, so a second pick of it is refused.
+links: the newest one that is not `abandoned`, or `blocked` by its failed
+task, decides. With none the item is `open`, while it is live the item is
+`out`, and once it is `done` the item leaves the list. A send that was not
+delivered cancels its task, its link goes `abandoned`, and the item is open
+again; a task that failed gives it back too. A pick holds the item for its
+whole call, so a second pick of it is refused. A pick to a pane records its
+link before it sends, so a link still waiting for its task when the list
+first loads belongs to a pick the app stopped in between: it is closed and
+the item is open again.
 
 - **App pick** (`HAND_OUT_PICK`, `src/main/handOut/handOutPick.ts`). To an
   agent pane, or to a company's CEO pane: the link is recorded first (owner
   the target pane), then the item goes over the Git page's gated operator
   delivery with that `workLinkId`. A company's CEO gets the owner's task with
   the item as its job, and briefs a seat as a follow-on. To a new worktree:
-  the Git page's fan-out start in the item's folder, the link recording the
-  worktree and the agent, and the fan-out mission moving it
-  (`watchHandoffWorktreeLinks`).
+  the link is recorded first, then the Git page's fan-out start in the item's
+  folder; the link gains the worktree and the agent, and the fan-out mission
+  moves it (`watchHandoffWorktreeLinks`). A start that fails closes the link.
 - **Agent pick** (`a2a.task.send` with `handOutId`). Taken only from an agent
-  pane on this PC, on a new task, never with `workLinkId`. The send's link,
-  local or to another PC, held for blockers or for a company slot or not,
-  gets origin `hand-out` and the `handOutId`. A refusal carries a `code`:
+  pane on this PC, on a new task, never with `workLinkId`, `silent` or
+  `execute`. The send's link, local or to another PC, held for blockers or
+  for a company slot or not, gets origin `hand-out` and the `handOutId`. A
+  local send that reached no agent is cancelled, so the item is open again,
+  and the reply says so in `handOut`. A refusal carries a `code`:
   `hand_out_refused`, `hand_out_invalid`, `hand_out_unknown` or
   `hand_out_taken`, and nothing is stored. The field never reaches the
   renderer.
+- **Pipe reads and adds** (`handOut.list`, `handOut.add`). For an agent pane
+  on this PC; the app may read. `list` answers the open items (newest first,
+  at most 50, optionally only those in a folder) and `total`, how many
+  matched. A refusal is `{ok: false, code, message}` with `refused` or
+  `invalid`, the codes the add (`invalid`, `full`) and the app's pick use. An
+  agent's title or note may not carry the line only an operator's hand-off
+  writes.
 
 ## Consumers
 

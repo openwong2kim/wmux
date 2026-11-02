@@ -51,7 +51,7 @@ beforeEach(() => {
 
 describe('hand_out list and add', () => {
   it('list forwards the folder and the caller, and answers each item compactly', async () => {
-    mockSendRpc.mockResolvedValue({ items: [ITEM, { ...ITEM, id: 'ho-2', agent: undefined, note: undefined, addedBy: { kind: 'owner' } }] });
+    mockSendRpc.mockResolvedValue({ items: [ITEM, { ...ITEM, id: 'ho-2', agent: undefined, note: undefined, addedBy: { kind: 'owner' } }], total: 5 });
     const res = await tool({ action: 'list', folder: '/repo' });
     expect(mockSendRpc).toHaveBeenCalledWith('handOut.list', { senderPtyId: 'pty-mine', folder: '/repo' });
     expect(res.isError).toBeUndefined();
@@ -60,6 +60,7 @@ describe('hand_out list and add', () => {
         { id: ITEM.id, title: ITEM.title, folder: '/repo/web', agent: 'claude', note: 'It fails on CI only.', addedBy: '#w1-2' },
         { id: 'ho-2', title: ITEM.title, folder: '/repo/web', addedBy: 'the owner' },
       ],
+      more: 3,
     });
     await tool({ action: 'list' });
     expect(mockSendRpc).toHaveBeenLastCalledWith('handOut.list', { senderPtyId: 'pty-mine' });
@@ -70,6 +71,11 @@ describe('hand_out list and add', () => {
     const res = await tool({ action: 'add', title: 'Write the docs' });
     expect(mockSendRpc).toHaveBeenCalledWith('handOut.add', { senderPtyId: 'pty-mine', title: 'Write the docs', folder: process.cwd() });
     expect(res.isError).toBeUndefined();
+    // The added item reads as list shows it.
+    expect(JSON.parse(res.content[0].text)).toEqual({
+      ok: true,
+      item: { id: ITEM.id, title: ITEM.title, folder: '/repo/web', agent: 'claude', note: 'It fails on CI only.', addedBy: '#w1-2' },
+    });
     await tool({ action: 'add', title: 'Write the docs', folder: '/repo/api', agent: 'codex', note: 'the new routes' });
     expect(mockSendRpc).toHaveBeenLastCalledWith('handOut.add', {
       senderPtyId: 'pty-mine', title: 'Write the docs', folder: '/repo/api', agent: 'codex', note: 'the new routes',
