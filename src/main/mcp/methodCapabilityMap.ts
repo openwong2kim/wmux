@@ -212,6 +212,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // `agent.state.read` approval stays bound to the host's workspace.
   'agent.state.all': { capability: 'agent.state.read.all', riskClass: 'agent-state-all' },
   'fleet.triage': { capability: 'terminal.read', riskClass: 'terminal-content' },
+  // The To hand out list: a read, and an add that a pick later sends on.
+  'handOut.list': { capability: 'a2a.read', riskClass: 'a2a' },
+  'handOut.add':  { capability: 'a2a.send', riskClass: 'a2a' },
   'pane.focus':  { capability: 'pane.read', riskClass: 'pane-lifecycle' },
   'pane.split':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },
   'pane.close':  { capability: 'pane.create', riskClass: 'pane-lifecycle' },

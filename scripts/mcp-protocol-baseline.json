@@ -3,7 +3,7 @@
   "profiles": {
     "full": {
       "maxListBytes": 80000,
-      "wireResultSha256": "c5784cfedeae758e94b2597ee00bd42a06bd95d488f34c8205ef4abcc6fae0b5",
+      "wireResultSha256": "508c6c1071faf15776f9ad45d7b6ce10fb144df0000de8b0d94ee91f054e62e1",
       "instructionSha256": "6e09a08a7038bb08f49484e3a98020ef6a35efebbebc39d33f9a514b71e7c7c1",
       "toolNames": [
         "browser_open",
@@ -72,6 +72,7 @@
         "channel_mission_list",
         "fanout_start",
         "remote_spawn",
+        "hand_out",
         "ledger_update",
         "task_push",
         "task_fetch",
@@ -91,7 +92,7 @@
     },
     "core": {
       "maxListBytes": 49000,
-      "wireResultSha256": "a5f41367b16d0a1a8c7c23fea6daca476030f74a3594e79053125d16af9c065e",
+      "wireResultSha256": "c9fab0aa7cf2db0f73aa30033516be91fd037aeaeda3cbe0781b421d515758b8",
       "instructionSha256": "4a87aa8208502b84c23fd41c6c2594b91c7e368ad187f14d4905164448548f4a",
       "toolNames": [
         "terminal_read",
@@ -128,6 +129,7 @@
         "channel_mission_list",
         "fanout_start",
         "remote_spawn",
+        "hand_out",
         "ledger_update",
         "task_push",
         "task_fetch",
