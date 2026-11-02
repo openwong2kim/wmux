@@ -138,6 +138,9 @@ export interface SeatBriefInput {
   /** Every seat as made (labels after suffixing), CEO included, with the
    *  worktree and branch of a seat that has its own. */
   seats: readonly { label: string; owns: string; worktree?: { path: string; branch: string } }[];
+  /** The absolute folder the company works in, when it was chosen: the
+   *  folder the board's To hand out section reads. */
+  folder?: string;
   ceo: number;
   /** The seat this brief is for. */
   seat: number;
@@ -183,9 +186,12 @@ export function seatBrief(input: SeatBriefInput): string {
         `{"kind":"${COMPANY_BRIEF_KIND}","v":1,${BRIEF_FIELDS.map((f) => `"${f}":"…"`).join(',')}}. ` +
         'A task to a seat without a full brief is refused. Follow the work with a2a_task_query.',
       );
+      const listFolder = input.folder?.trim()
+        ? `${input.folder.trim()}, this company's folder,`
+        : 'the absolute path of the folder you work in';
       lines.push(
         'Work waiting for this company may be on To hand out, the list of work nobody has been given yet: the wmux hand_out tool '
-        + 'with action list and folder set to the absolute path of the folder you work in shows it. To give an item to a seat, use '
+        + `with action list and folder set to ${listFolder} shows it. To give an item to a seat, use `
         + 'action pick with item_id from list, to the seat\'s #name, and the brief in data, so the seat gets a full brief and the item '
         + 'is linked; action add puts new work on the list.',
       );

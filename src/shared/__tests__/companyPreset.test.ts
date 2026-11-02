@@ -97,6 +97,14 @@ describe('company presets', () => {
     expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 })).not.toContain('hand_out');
   });
 
+  it('names the company\'s folder to list To hand out from, when the company has one', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, folder: '/code/shop', ceo: 0, seat: 0 });
+    // The board reads this folder, so a CEO in a subfolder still lists what the board shows.
+    expect(ceo).toContain('the wmux hand_out tool with action list and folder set to /code/shop, this company\'s folder, shows it.');
+    expect(ceo).not.toContain('the folder you work in');
+  });
+
   it('tells both sides that a reply on a reported task hands it back, and the CEO that it takes a slot', () => {
     const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
     const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
