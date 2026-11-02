@@ -191,6 +191,9 @@ internal static unsafe class Focus
         throw new HelperError("window_not_focused", "another window covers that point; nothing was clicked");
     }
 
+    /// <summary>The target window is the foreground window (its root; an owned popup in front does not count).</summary>
+    public static bool InFront(ControlTarget target) => Win.Root(PInvoke.GetForegroundWindow()) == target.Window;
+
     /// <summary>
     /// Before every UIA pattern call (Invoke, Toggle, SetValue, SetFocus…).
     /// A pattern call is not input, but it brings a covered target window to
@@ -203,7 +206,7 @@ internal static unsafe class Focus
     /// call; otherwise needs_foreground, and main re-sends the action under
     /// its lease.
     /// </summary>
-    public static void RequireSemantic(ControlTarget target, IUIAutomationElement* el, bool refuseForeground = false)
+    public static void RequireSemantic(ControlTarget target, IUIAutomationElement* el, bool refuseForeground)
     {
         Input.ThrowIfStopping();
         InputDesktop.Require();
@@ -227,7 +230,7 @@ internal static unsafe class Focus
         {
             throw new HelperError("element_stale", "the element is no longer in the target window");
         }
-        if (!Background.PatternCallAllowed(refuseForeground, Win.Root(PInvoke.GetForegroundWindow()) == target.Window))
+        if (!Background.PatternCallAllowed(refuseForeground, InFront(target)))
         {
             Wire.Log("accessibility call: needs foreground (it would bring the target window to the front)");
             throw new HelperError("needs_foreground", "an accessibility call would bring the target window to the front; nothing was sent");
@@ -250,14 +253,13 @@ internal static unsafe class Actions
         ? Result("synthetic", false, outcome.Delivery, "the target window came to the front or the pointer moved onto the target while the input was posted; check the app state")
         : Result("synthetic", outcome.Verified, outcome.Delivery);
 
-    private static bool InFront(ControlTarget target) => Win.Root(PInvoke.GetForegroundWindow()) == target.Window;
 
     /// <summary>
     /// A UIA call is not input, so it is background unless the target window
     /// came to the front during it (macOS does the same with the frontmost app).
     /// </summary>
     private static string SemanticDelivery(ControlTarget target, bool frontBefore) =>
-        !frontBefore && InFront(target) ? "foreground" : "background";
+        !frontBefore && Focus.InFront(target) ? "foreground" : "background";
 
     private static (Snapshot Snap, ControlTarget Target) Begin(Params p)
     {
@@ -508,7 +510,7 @@ internal static unsafe class Actions
 
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
-            bool frontBefore = InFront(target);
+            bool frontBefore = Focus.InFront(target);
             // Under `refuse` a pattern call on a covered target answers
             // needs_foreground (Focus.RequireSemantic) before it is made.
             var note = ClickSemantically(target, (IUIAutomationElement*)element, refuse);
@@ -562,7 +564,7 @@ internal static unsafe class Actions
             }
             if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
             // Read before the checks, as the click path does.
-            bool frontBefore = InFront(target);
+            bool frontBefore = Focus.InFront(target);
             Focus.RequireSemantic(target, el, refuse);
             var bstr = Marshal.StringToBSTR(value);
             try
@@ -645,7 +647,7 @@ internal static unsafe class Actions
             if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
             try
             {
-                Focus.RequireSemantic(target, el);
+                Focus.RequireSemantic(target, el, refuse);
                 el->SetFocus();
             }
             catch (Exception e) when (e is not HelperError)

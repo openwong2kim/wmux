@@ -388,9 +388,10 @@ section); that result says `delivery: "foreground"`. A posted one says
     (no element, a UIA timeout) are both `app_blocked`.
 - Semantic actions (UIA Invoke, Toggle, SelectionItem, ExpandCollapse,
   Value) check the input desktop, elevation and that the element's process
-  and top-level window are the target's before every call. Like AXPress on
-  macOS they work on a covered background window, because they are not
-  input. Once a pattern call was made, an ambiguous error (a timeout behind a
+  and top-level window are the target's before every call. They are not
+  input, but each of them brought a covered target window to the front, so
+  under `refuse` they are made only for a target in front (see
+  `foreground: 'refuse'` above). Once a pattern call was made, an ambiguous error (a timeout behind a
   modal dialog, say) ends the action saying it may have taken effect; the
   helper falls back to another pattern or a synthetic click only when the
   pattern is absent or certainly did not run.

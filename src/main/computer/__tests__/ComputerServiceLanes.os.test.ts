@@ -576,9 +576,9 @@ describe('ComputerService input lanes on a macOS helper', () => {
 
 // #2978: a UIA call (the click ladder, setValue) brings a covered window to
 // the front on Windows, so it is foreground input. Main still sends these
-// with `refuse` (the helper knows whether the target is in front, and posts
-// the click when it can); the helper answers needs_foreground for a covered
-// target, and only then does main take the lease.
+// with `refuse` (only the helper knows whether the target is in front); the
+// helper answers needs_foreground before such a call on a covered target,
+// and only then does main take the lease.
 describe('ComputerService input lanes: accessibility actions on a Windows helper', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
