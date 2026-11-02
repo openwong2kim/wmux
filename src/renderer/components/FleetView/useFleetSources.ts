@@ -1,7 +1,8 @@
-// Fleet's ticket sources: every workspace's pending decision and the
-// delegated work (WorkLinks). Both are main's; Fleet re-reads on main's change
-// signals instead of polling.
-import { useCallback, useEffect, useRef, useState } from 'react';
+// Fleet's ticket sources: every workspace's pending decision, the delegated
+// work (WorkLinks) and the To hand out list. All are main's; Fleet re-reads on
+// main's change signals instead of polling.
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { HandOutEntry } from '../../../shared/handOut';
 import type { MoaPendingDecision } from '../../../shared/moa';
 import type { WorkLink, WorkLinkFilter } from '../../../shared/workLink';
 
@@ -15,8 +16,14 @@ export interface WorkLinksApi {
   onChanged?: (cb: (ids: string[]) => void) => () => void;
 }
 
+export interface HandOutApi {
+  list: () => Promise<HandOutEntry[]>;
+  onChanged?: (cb: () => void) => () => void;
+}
+
 const EMPTY_DECISIONS: MoaPendingDecision[] = [];
 const EMPTY_LINKS: WorkLink[] = [];
+const EMPTY_HAND_OUT: HandOutEntry[] = [];
 
 /** Re-read on a change signal, coalescing a burst into one read. */
 export function useReread<T>(
@@ -91,4 +98,22 @@ export function useWorkLinks(enabled: boolean, api: WorkLinksApi | undefined = d
     EMPTY_LINKS,
   );
   return value;
+}
+
+const defaultHandOutApi = (): HandOutApi | undefined => window.electronAPI?.handOut;
+
+/** The To hand out items nobody has yet (state open), newest first. Off → empty. */
+export function useHandOutItems(enabled: boolean, api: HandOutApi | undefined = defaultHandOutApi()): HandOutEntry[] {
+  const listFn = api?.list;
+  const onChanged = api?.onChanged;
+  const read = useCallback(() => listFn!().then((r) => (Array.isArray(r) ? r : [])), [listFn]);
+  const { value } = useReread<HandOutEntry[]>(
+    enabled && listFn ? read : null,
+    enabled && onChanged ? onChanged : null,
+    EMPTY_HAND_OUT,
+  );
+  return useMemo(
+    () => value.filter((item) => item.state === 'open').sort((a, b) => b.createdAt - a.createdAt),
+    [value],
+  );
 }

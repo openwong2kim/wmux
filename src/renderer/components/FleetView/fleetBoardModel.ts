@@ -5,6 +5,7 @@
 import type { FleetRow } from '../../stores/selectors/fleet';
 import type { InboxItem } from '../../stores/selectors/approvalInbox';
 import type { ReviewQueueEntry } from '../../stores/selectors/reviewQueue';
+import type { HandOutEntry } from '../../../shared/handOut';
 import type { FleetTicket } from './fleetTickets';
 
 /**
@@ -31,6 +32,12 @@ export function visibleChips(chips: readonly BoardChip[]): BoardChip[] {
   return chips.filter((chip) => (chip.count !== undefined ? chip.count > 0 : Boolean(chip.text)));
 }
 
+/** The filter chips drawn: each with its count, hidden at zero unless it is
+ *  the one pressed (pressing it again shows everything). */
+export function visibleFilterChips<C extends { id: string; count: number }>(chips: readonly C[], pressed: string): C[] {
+  return chips.filter((chip) => chip.count > 0 || chip.id === pressed);
+}
+
 export type ListMove = 'up' | 'down' | 'home' | 'end';
 
 /** Where a key press moves the selection in the list (clamped at the ends). */
@@ -45,16 +52,18 @@ export function moveInList(keys: readonly string[], current: string | null, move
 }
 
 // ─── Board layout ───────────────────────────────────────────────────────────
-// The same rows as the list, in four columns. A column is a list section:
-// nothing is classified here, so a row sits in the column whose chip counts it.
+// The same rows as the list, in four columns, after the To hand out column
+// (work nobody has been given yet). A column is a list section: nothing is
+// classified here, so a row sits in the column whose chip counts it.
 
-export type BoardColumn = 'needsYou' | 'running' | 'finished' | 'idle';
-export const BOARD_COLUMNS: readonly BoardColumn[] = ['running', 'needsYou', 'finished', 'idle'];
+export type BoardColumn = 'handOut' | 'needsYou' | 'running' | 'finished' | 'idle';
+export const BOARD_COLUMNS: readonly BoardColumn[] = ['handOut', 'running', 'needsYou', 'finished', 'idle'];
 
 export type BoardItem =
   | { kind: 'pane'; key: string; row: FleetRow }
   | { kind: 'review'; key: string; entry: ReviewQueueEntry }
-  | { kind: 'ticket'; key: string; ticket: FleetTicket };
+  | { kind: 'ticket'; key: string; ticket: FleetTicket }
+  | { kind: 'handOut'; key: string; item: HandOutEntry };
 
 /** The board column of a Fleet row: its section. */
 export function boardColumnOf(row: FleetRow): BoardColumn {
@@ -62,20 +71,22 @@ export function boardColumnOf(row: FleetRow): BoardColumn {
 }
 
 /**
- * Fill the four columns, each in the list's order. Needs you holds its rows
- * and the tickets waiting on a decision; Finished holds the unread final
- * reports, the Ready to review tasks and the finished turns, and shows a
- * finished task once — as its review entry — rather than again as its pane.
+ * Fill the columns, each in the list's order. To hand out holds the open
+ * items as given (newest first); Needs you holds its rows and the tickets
+ * waiting on a decision; Finished holds the unread final reports, the Ready to
+ * review tasks and the finished turns, and shows a finished task once — as
+ * its review entry — rather than again as its pane.
  */
 export function buildBoardColumns(
   groups: { needsYou: readonly FleetRow[]; finished: readonly FleetRow[]; running: readonly FleetRow[]; idle: readonly FleetRow[] },
-  extra: { decisions: readonly FleetTicket[]; reports: readonly FleetTicket[]; review: readonly ReviewQueueEntry[] },
-  keys: { review: (workspaceId: string) => string; ticket: (ticketId: string) => string },
+  extra: { decisions: readonly FleetTicket[]; reports: readonly FleetTicket[]; review: readonly ReviewQueueEntry[]; handOut: readonly HandOutEntry[] },
+  keys: { review: (workspaceId: string) => string; ticket: (ticketId: string) => string; handOut: (itemId: string) => string },
 ): Record<BoardColumn, BoardItem[]> {
   const pane = (row: FleetRow): BoardItem => ({ kind: 'pane', key: row.pane.paneId, row });
   const ticket = (item: FleetTicket): BoardItem => ({ kind: 'ticket', key: keys.ticket(item.id), ticket: item });
   const reviewWorkspaces = new Set(extra.review.map((entry) => entry.workspaceId));
-  const out: Record<BoardColumn, BoardItem[]> = { needsYou: [], running: [], finished: [], idle: [] };
+  const out: Record<BoardColumn, BoardItem[]> = { handOut: [], needsYou: [], running: [], finished: [], idle: [] };
+  out.handOut.push(...extra.handOut.map((item): BoardItem => ({ kind: 'handOut', key: keys.handOut(item.id), item })));
   for (const row of [...groups.needsYou, ...groups.running, ...groups.idle]) out[boardColumnOf(row)].push(pane(row));
   out.needsYou.push(...extra.decisions.map(ticket));
   out.finished.push(
@@ -91,6 +102,7 @@ export type BoardGrid = Record<BoardColumn, string[]>;
 
 export function boardGrid(columns: Record<BoardColumn, readonly BoardItem[]>): BoardGrid {
   return {
+    handOut: columns.handOut.map((item) => item.key),
     needsYou: columns.needsYou.map((item) => item.key),
     running: columns.running.map((item) => item.key),
     finished: columns.finished.map((item) => item.key),

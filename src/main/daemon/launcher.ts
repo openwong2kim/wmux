@@ -200,7 +200,7 @@ const electronDeps: DaemonLauncherDeps = {
   // LaunchServices treats as ending its subordinate processes) keeps it alive.
   launchViaLaunchdOnDarwin: true,
   markBoot,
-  stageDaemonRuntime: () => {
+  stageDaemonRuntime: async () => {
     const stageRoot = daemonStageRoot();
     const appDir = path.dirname(process.execPath);
     // The copy is only needed where Squirrel's Setup.exe would kill a daemon under the install root.
@@ -211,6 +211,7 @@ const electronDeps: DaemonLauncherDeps = {
       stageRoot,
       version: app.getVersion(),
       warn: (msg) => console.warn(msg),
+      log: (msg) => console.log(msg),
     });
   },
 };

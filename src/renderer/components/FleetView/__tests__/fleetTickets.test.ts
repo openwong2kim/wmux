@@ -3,7 +3,7 @@ import type { WorkLink } from '../../../../shared/workLink';
 import type { MoaPendingDecision } from '../../../../shared/moa';
 import type { Task, TaskState, Workspace } from '../../../../shared/types';
 import { PHONE_FLEET_TICKET_RECENT_MS } from '../../../../shared/phoneFleetTickets';
-import { buildFleetTickets, openTicketFor, paneLiveIn, ticketAttention, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
+import { buildFleetTickets, handOutTicketLine, openTicketFor, paneLiveIn, ticketAttention, ticketStateOf, TICKET_RECENT_MS } from '../fleetTickets';
 
 const NOW = 1_000_000_000_000;
 
@@ -199,5 +199,33 @@ describe('ticketAttention — Moa interrupts only for a decision and the final r
 describe('the phone window', () => {
   it("is the desktop's own: a finished ticket leaves the phone list when it leaves Fleet", () => {
     expect(PHONE_FLEET_TICKET_RECENT_MS).toBe(TICKET_RECENT_MS);
+  });
+});
+
+describe('a ticket picked from To hand out', () => {
+  const HAND_OUT_ID = 'ho-00000000-0000-4000-8000-000000000000';
+  const echo = (key: string, vars?: Record<string, string | number>) => (vars ? `${key}(${Object.values(vars).join(',')})` : key);
+
+  it('is a ticket like a plain send, and carries its PR and the checks', () => {
+    const picked = link({
+      origin: 'hand-out', handOutId: HAND_OUT_ID, a2aState: 'working',
+      pr: { host: 'github.com', owner: 'o', repo: 'r', number: 2991 },
+      prStatus: { state: 'open', checks: 'pending', reviewDecision: '', mergeable: 'MERGEABLE', observedAt: NOW } as NonNullable<WorkLink['prStatus']>,
+    });
+    const [ticket] = buildFleetTickets({ links: [picked], decisions: [], a2aTasks: { 'task-1': task('working') }, now: NOW });
+    expect(ticket.origin).toBe('hand-out');
+    expect(ticket.state).toBe('working');
+    expect(ticket.pr).toEqual({ number: 2991, checks: 'pending' });
+    expect(handOutTicketLine(ticket, echo)).toBe('fleet.handOut.fromLine · fleet.handOut.pr(2991) · workspace.prChecks.pending');
+  });
+
+  it('says only where it came from before it has a PR', () => {
+    expect(handOutTicketLine({ origin: 'hand-out' }, echo)).toBe('fleet.handOut.fromLine');
+    expect(handOutTicketLine({ origin: 'hand-out', pr: { number: 7, checks: null } }, echo)).toBe('fleet.handOut.fromLine · fleet.handOut.pr(7)');
+  });
+
+  it('carries no such line on any other ticket', () => {
+    expect(handOutTicketLine({ origin: 'manual', pr: { number: 7, checks: 'passing' } }, echo)).toBeUndefined();
+    expect(handOutTicketLine({ origin: 'moa' }, echo)).toBeUndefined();
   });
 });
