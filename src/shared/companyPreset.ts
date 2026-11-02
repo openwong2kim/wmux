@@ -185,8 +185,9 @@ export function seatBrief(input: SeatBriefInput): string {
       );
       lines.push(
         'Work waiting for this company may be on To hand out, the list of work nobody has been given yet: the wmux hand_out tool '
-        + 'with action list and folder set to the folder you work in shows it. To give an item to a seat, use action pick, to the '
-        + 'seat\'s #name, with the brief in data, so the seat gets a full brief and the item is linked; action add puts new work on the list.',
+        + 'with action list and folder set to the absolute path of the folder you work in shows it. To give an item to a seat, use '
+        + 'action pick with item_id from list, to the seat\'s #name, and the brief in data, so the seat gets a full brief and the item '
+        + 'is linked; action add puts new work on the list.',
       );
       lines.push(
         'Only a few seats on this PC work at once (the owner\'s setting, 3 by default). A brief to an idle seat past that is held, not refused: '

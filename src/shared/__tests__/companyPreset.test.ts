@@ -88,8 +88,9 @@ describe('company presets', () => {
     const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
     const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
     expect(ceo).toContain('Work waiting for this company may be on To hand out');
-    expect(ceo).toContain('the wmux hand_out tool with action list and folder set to the folder you work in shows it.');
-    expect(ceo).toContain('use action pick, to the seat\'s #name, with the brief in data, so the seat gets a full brief and the item is linked');
+    // A relative folder matches nothing, and a pick without item_id is refused.
+    expect(ceo).toContain('the wmux hand_out tool with action list and folder set to the absolute path of the folder you work in shows it.');
+    expect(ceo).toContain('use action pick with item_id from list, to the seat\'s #name, and the brief in data, so the seat gets a full brief and the item is linked');
     expect(ceo).toContain('action add puts new work on the list.');
     // The brief's shape is still the one the brief-shape check reads.
     expect(missingBriefFields(JSON.parse(/data: (\{.*?\})\./.exec(ceo)![1].replace(/…/g, 'x')))).toEqual([]);
