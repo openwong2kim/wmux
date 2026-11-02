@@ -142,6 +142,7 @@ function useCandidates(rows: readonly FleetRow[], workspaces: readonly Workspace
   const paneLabel = useStore((s) => s.paneLabel);
   const surfaceAgent = useStore((s) => s.surfaceAgent);
   const agentAlive = useStore((s) => s.agentAliveByPtyId);
+  const commandRunning = useStore((s) => s.commandRunningByPtyId);
   return useMemo(() => {
     const state = useStore.getState();
     const local = workspaces.filter((ws) => !isRemoteWorkspaceId(ws.id));
@@ -164,7 +165,7 @@ function useCandidates(rows: readonly FleetRow[], workspaces: readonly Workspace
       }];
     });
     return { panes, spaces: handOutWorkspaceCandidates(state, local) };
-  }, [rows, workspaces, paneLabel, surfaceAgent, agentAlive]);
+  }, [rows, workspaces, paneLabel, surfaceAgent, agentAlive, commandRunning]);
 }
 
 interface HandOutPopoverProps {
@@ -194,7 +195,10 @@ export default function HandOutPopover({ item, anchor, bounds, rows, workspaces,
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [height, setHeight] = useState(360);
   const mounted = useRef(true);
-  useEffect(() => () => { mounted.current = false; }, []);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
 
   const attachLayer = useModalLayer({ onEscape: onClose });
   const setPanel = useCallback((el: HTMLDivElement | null) => {
