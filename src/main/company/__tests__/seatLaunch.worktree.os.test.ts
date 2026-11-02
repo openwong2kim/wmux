@@ -94,6 +94,9 @@ describe('seatLaunches worktrees', () => {
     fs.mkdirSync(plain);
     const res = await seatLaunches(req({ folder: plain, seats: [{ label: 'ceo', owns: '', agent: 'claude' }, { label: 'dev-1', owns: '', agent: 'claude' }] }), deps);
     expect(res).toMatchObject({ ok: true, cwds: [null, null] });
+    // The CEO lists To hand out from the company's folder, the one the board reads.
+    expect(fs.readFileSync(path.join(root, 'data', 'company-briefs', WS, 'seat-1.md'), 'utf8'))
+      .toContain(`folder set to ${plain}, this company's folder, shows it.`);
   });
 
   it('takes back the worktrees it made when a later seat cannot have one, and keeps branches it did not make', async () => {

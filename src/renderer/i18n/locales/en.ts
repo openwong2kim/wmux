@@ -526,6 +526,7 @@ export const en = {
   'company.board.askWaiting': "Waiting for {pc} to approve · asked {age}",
   'company.board.askOffline': "{pc} is offline; the ask waits until {time}",
   'company.board.askEnded': "Not started: {reason}",
+  'company.board.handOutFolder': "Items for {folder}, this company's folder. The CEO picks from here too.",
   'company.addSeat.menu': "Add a seat on another PC…",
   'company.addSeat.title': "Add a seat on another PC",
   'company.addSeat.description': "Asks that PC to start an agent for {company}. Its replies come to {ceo}, the CEO.",

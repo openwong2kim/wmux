@@ -519,6 +519,7 @@ export const ko = {
   'company.board.askWaiting': "{pc}의 승인을 기다리는 중 · {age}",
   'company.board.askOffline': "{pc}이(가) 꺼져 있어요. 요청은 {time}까지 기다려요",
   'company.board.askEnded': "시작되지 않음: {reason}",
+  'company.board.handOutFolder': "이 회사의 폴더 {folder}에 있는 항목입니다. CEO도 여기서 골라 맡깁니다.",
   'company.addSeat.menu': "다른 PC에 자리 추가…",
   'company.addSeat.title': "다른 PC에 자리 추가",
   'company.addSeat.description': "그 PC에 {company}의 에이전트를 시작해 달라고 요청해요. 답장은 CEO인 {ceo}에게 와요.",

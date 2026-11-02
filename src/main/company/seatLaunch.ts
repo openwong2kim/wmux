@@ -233,6 +233,7 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
       const file = path.join(folder, `seat-${i + 1}.md`);
       fs.writeFileSync(file, seatBrief({
         company: r.company!.trim(), mission: r.mission, standingOrders: r.standingOrders, seats: made, ceo: r.ceo!, seat: i,
+        ...(r.folder ? { folder: r.folder } : {}),
       }), 'utf8');
       return buildInitialCommand(launcher, file, deps.platform);
     });

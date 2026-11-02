@@ -501,6 +501,7 @@ export const pl = {
   'company.board.askWaiting': "Czeka na zatwierdzenie na {pc} · wysłano {age}",
   'company.board.askOffline': "{pc} jest offline; prośba czeka do {time}",
   'company.board.askEnded': "Nie uruchomiono: {reason}",
+  'company.board.handOutFolder': "Pozycje dla {folder}, folderu tej firmy. CEO też wybiera stąd.",
   'company.addSeat.menu': "Dodaj stanowisko na innym komputerze…",
   'company.addSeat.title': "Dodaj stanowisko na innym komputerze",
   'company.addSeat.description': "Prosi tamten komputer o uruchomienie agenta dla {company}. Jego odpowiedzi trafią do {ceo}, czyli CEO.",

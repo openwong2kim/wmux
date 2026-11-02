@@ -115,7 +115,7 @@ export function normalizeFolder(folder: string): string {
 }
 
 /** An absolute POSIX path, or a Windows drive or UNC path. */
-function isAbsoluteFolder(folder: string): boolean {
+export function isAbsoluteFolder(folder: string): boolean {
   return folder.startsWith('/') || /^[A-Za-z]:[\\/]/.test(folder) || /^[A-Za-z]:\\?$/.test(folder) || folder.startsWith('\\\\');
 }
 
