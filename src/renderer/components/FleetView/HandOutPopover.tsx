@@ -252,20 +252,23 @@ export default function HandOutPopover({ item, anchor, bounds, rows, workspaces,
     } catch {
       res = null;
     }
-    if (!mounted.current) return;
-    setBusy(false);
-    if (!res) {
-      setError(t('fleet.handOut.pick.failed'));
-      return;
-    }
-    if (!res.ok) {
-      setError(res.code === 'unknown' ? t('fleet.handOut.pick.unknown')
-        : res.code === 'taken' ? t('fleet.handOut.pick.taken')
-        : res.message || t('fleet.handOut.pick.failed'));
-      return;
-    }
-    onClose();
+    // Main records the pick's link before it sends, so the item leaves the
+    // open list mid-pick and the caller may already have closed this. What
+    // the pick has to say is still said, as a toast.
+    const shown = mounted.current;
     const pushToast = useStore.getState().pushToast;
+    const failure = !res ? t('fleet.handOut.pick.failed')
+      : !res.ok ? (res.code === 'unknown' ? t('fleet.handOut.pick.unknown')
+        : res.code === 'taken' ? t('fleet.handOut.pick.taken')
+        : res.message || t('fleet.handOut.pick.failed'))
+      : null;
+    if (shown) setBusy(false);
+    if (!res?.ok) {
+      if (shown) setError(failure);
+      else pushToast({ level: 'error', message: `“${item.title}”: ${failure}` });
+      return;
+    }
+    if (shown) onClose();
     for (const message of handOutPickNotices(res, selected, item.title, t)) pushToast({ level: 'warn', message });
   };
 

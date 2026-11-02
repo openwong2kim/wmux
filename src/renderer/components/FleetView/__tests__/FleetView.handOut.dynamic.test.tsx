@@ -9,7 +9,7 @@ import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import * as terminalTail from '../../../utils/terminalTail';
 import FleetView from '../FleetView';
-import { handOutPickNotices, handOutWorkspaceCandidates, placeHandOutPopover } from '../HandOutPopover';
+import HandOutPopover, { handOutPickNotices, handOutWorkspaceCandidates, placeHandOutPopover } from '../HandOutPopover';
 import type { HandOutOption } from '../handOutTargets';
 import { useStore } from '../../../stores';
 import type { HandOutEntry } from '../../../../shared/handOut';
@@ -202,6 +202,49 @@ describe('handOutPickNotices', () => {
     expect(handOutPickNotices({ ok: true, linkId: 'l', branch: 'b', prep: { missing: 0, refused: 0 } }, worktree, 'T', t)).toEqual([]);
     expect(handOutPickNotices({ ok: true, linkId: 'l', branch: 'b', prep: { skipped: 'untrusted', missing: 0, refused: 0 } }, worktree, 'T', t))
       .toEqual(['git.prepSkipped']);
+  });
+});
+
+describe('HandOutPopover — a pick that outlives it', () => {
+  // Main records the pick's link before it sends, so the item leaves the open
+  // list and its caller closes the popover while the pick is still running.
+  async function pickThenClose(result: unknown): Promise<[string, string][]> {
+    seed(false);
+    let finish: (value: unknown) => void = () => undefined;
+    const api = (window as unknown as { electronAPI: { handOut: Record<string, unknown> } }).electronAPI;
+    api.handOut.pick = () => new Promise((resolve) => { finish = resolve; });
+    const ws = { ...workspace('ws-1', 'w1', leaf('p1', [surface('s1', 'pty-1')]), 'p1'), profile: { startupCwd: '/repo' } } as Workspace;
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    act(() => {
+      root.render(React.createElement(HandOutPopover, {
+        item: item('ho-1', 'Fix login'),
+        anchor: { top: 100, left: 100, right: 300, bottom: 140 },
+        bounds: { top: 0, left: 0, right: 1200, bottom: 800 },
+        rows: [],
+        workspaces: [ws],
+        onClose: () => undefined,
+        t: ((key: string) => key) as React.ComponentProps<typeof HandOutPopover>['t'],
+      }));
+    });
+    await settle();
+    const send = document.querySelector<HTMLButtonElement>('[data-hand-out-send]');
+    expect(send?.disabled).toBe(false);
+    act(() => { send?.click(); });
+    act(() => { root.unmount(); });
+    await act(async () => { finish(result); });
+    return useStore.getState().toasts.map((toast) => [toast.level, toast.message]);
+  }
+
+  it('says why it failed', async () => {
+    expect(await pickThenClose({ ok: false, code: 'error', message: 'the worktree could not be made' }))
+      .toEqual([['error', '“Fix login”: the worktree could not be made']]);
+  });
+
+  it('still gives the notices a pick that went through has', async () => {
+    expect(await pickThenClose({ ok: true, linkId: 'l', branch: 'b', prep: { skipped: 'untrusted', missing: 0, refused: 0 } }))
+      .toEqual([['warn', 'git.prepSkipped']]);
   });
 });
 
