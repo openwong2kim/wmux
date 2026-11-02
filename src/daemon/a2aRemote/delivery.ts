@@ -360,11 +360,12 @@ export class A2aRemoteDelivery {
   /** Periodic upkeep: drop old acked records, reject holds past their TTL, re-queue what is owed. */
   async maintain(): Promise<void> {
     await this.syncAll().catch((err: unknown) => this.deps.log('warn', `[a2a-remote] outbound sync failed: ${errMsg(err)}`));
-    // A no-agent hold whose reply to the sender could not go when it was held
-    // (main marks it once): told here, once it can be.
+    // A no-agent or delivery-unconfirmed hold whose reply to the sender could
+    // not go when it was held (main marks it once): told here, once it can be.
     for (const task of this.deps.taskService.listRemoteHeld()) {
       const marker = task.metadata.remote as { direction?: string; held?: string } | undefined;
       if (marker?.direction === 'inbound' && marker.held === 'no-agent') await this.tellSender(task.id, NO_AGENT_SUMMARY);
+      if (marker?.direction === 'inbound' && marker.held === 'delivery-unconfirmed') await this.tellSender(task.id, DELIVERY_UNCONFIRMED_SUMMARY);
     }
     // Before the prune: an ack whose mark never landed (crash, failed append) is
     // recovered while its record is still here. This runs at start and every

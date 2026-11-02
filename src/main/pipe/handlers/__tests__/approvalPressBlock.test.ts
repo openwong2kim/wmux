@@ -64,8 +64,11 @@ const live: {
   readDelayMs?: number;
   /** Main's clock as the gated submit sees it; each injected sleep moves it. */
   clock: number;
+  /** The daemon's key counter for the pane: one per write (null: unreadable). */
+  keys: number | null;
 } = {
   clock: 0,
+  keys: 0,
   policy: { allowed: false, reason: 'autonomy-off' },
   screen: '',
   daemonVerdict: 'clear',
@@ -104,9 +107,14 @@ function wire(options: {
     },
     writeToSession: (ptyId: string, data: string) => {
       writes.push({ ptyId, data });
+      if (live.keys !== null) live.keys += 1;
       return true;
     },
     isSessionPipeWritable: () => live.pipeWritable ?? true,
+    getAgentState: async () => {
+      if (live.keys === null) throw new Error('daemon read timed out');
+      return { agentName: 'Claude Code', incarnationId: 'inc-1', agentVerified: false, keyInputRevision: live.keys };
+    },
   };
   const router = new RpcRouter();
   // No local pty, so writes fall through to the daemon client above.
@@ -168,6 +176,7 @@ beforeEach(() => {
   live.afterScreenRead = undefined;
   live.readDelayMs = undefined;
   live.clock = 0;
+  live.keys = 0;
   w = wire();
 });
 afterEach(() => {
@@ -904,6 +913,25 @@ describe('a folder-trust verdict for a pane with no screen', () => {
     const probeReads = vi.mocked(sendToRenderer).mock.calls.filter(([, method]) => method === 'input.readScreen');
     expect(probeReads.length).toBeGreaterThan(0);
     for (const [, , params] of probeReads) expect(params).toMatchObject({ noHydrate: true });
+  });
+
+  // A retried Enter submits whatever the composer holds by then: never a draft
+  // someone typed after our first Enter, and never when that cannot be told.
+  it.each([
+    ['someone types during the receipt wait', () => { if (live.keys !== null) live.keys += 1; }],
+    ["the pane's key count cannot be read", () => { live.keys = null; }],
+  ])('no retried Enter when %s', async (_name, duringWait) => {
+    live.policy = { allowed: true };
+    live.screen = { parked: '❯ ' };
+    live.daemonVerdict = 'clear';
+    vi.mocked(sendToRenderer).mockImplementation(async (_win, method) => {
+      if (method !== 'input.readScreen') return null;
+      // Only once the first Enter is in.
+      if (w.writes.some((x) => x.data === '\r\r')) duringWait();
+      return { text: '⏺ Done.\n\n──────────\n❯ [Pasted text #1 +1 lines]' };
+    });
+    expect(await w.gatedSubmit('pty-w', 'line one\nline two', 'Claude Code')).toEqual({ ok: true });
+    expect(w.writes.map((x) => x.data).slice(1)).toEqual(['\r\r']);
   });
 
   it("a delivery, and an agent's own text and keys, ask the daemon on a delivery's budget: no person waits on them", async () => {

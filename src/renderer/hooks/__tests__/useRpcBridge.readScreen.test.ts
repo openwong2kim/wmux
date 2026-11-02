@@ -6,6 +6,7 @@ import { terminalRegistry } from '../useTerminal';
 import * as terminalModule from '../useTerminal';
 import { handleRpcMethod } from '../useRpcBridge';
 import { useStore } from '../../stores';
+import { markTerminalClean, markTerminalDirty } from '../../terminal/terminalOutputScheduler';
 import { needleInComposer, submitNeedle } from '../../../main/pipe/handlers/input.rpc';
 
 // The read path uses headless buffers; browser canvas rendering is unused.
@@ -215,7 +216,12 @@ it('a noHydrate read reads the buffer as it is, without resyncing the pane', asy
     expect(hydrate).not.toHaveBeenCalled();
     await handleRpcMethod('input.readScreen', { ptyId, tail_lines: 5 });
     expect(hydrate).toHaveBeenCalledTimes(1);
+    // A buffer that lags the pane (output held back, or due a resync) is no
+    // screen for it: a stale composer must not authorize a retried Enter.
+    markTerminalDirty(terminal);
+    expect(await handleRpcMethod('input.readScreen', { ptyId, tail_lines: 5, endAtCursor: true, noHydrate: true })).toEqual({ ptyId, text: '' });
   } finally {
+    markTerminalClean(terminal);
     hydrate.mockRestore();
     terminalRegistry.delete(ptyId);
     terminal.dispose();

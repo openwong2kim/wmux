@@ -65,6 +65,7 @@ import {
   type SearchableBuffer,
 } from '../utils/searchEngine';
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import { isTerminalDirty, isTerminalRetained } from '../terminal/terminalOutputScheduler';
 import type { GatedSubmitRefusal, GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 import type { FreshContextReply } from '../../shared/freshContext';
 import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
@@ -3118,7 +3119,14 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // Internal `noHydrate` (a delivery's submit receipt, polled several times a
     // second): read the buffer as it is; resyncing a hidden pane with a large
     // ring on every poll wedged the renderer (#2993).
-    if (raw.noHydrate !== true) await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
+    // Such a read of a pane whose output is held back (hidden) or must be
+    // resynced answers no screen: a stale composer is no evidence for a retried
+    // Enter.
+    if (raw.noHydrate === true) {
+      if (isTerminalRetained(terminal) || isTerminalDirty(terminal)) return { ptyId, text: '' };
+    } else {
+      await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
+    }
 
     // Read cost is bounded by DEFAULT unless the caller opts into the full
     // scrollback. RCA (2026-07-14 orchestrator lag): the old path always walked

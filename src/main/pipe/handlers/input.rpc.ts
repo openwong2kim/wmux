@@ -1164,8 +1164,16 @@ export async function gatedPasteSubmit(
    */
   freshContext?: () => Promise<FreshContextReply>,
   guard?: DeliveryGuard,
-  probe?: SubmitProbe,
-  clock?: { now?: () => number },
+  /**
+   * The submit receipt after the Enter. `armRetry` runs right before the first
+   * Enter and returns the check a retried Enter must pass: why it must not be
+   * sent (someone typed, the agent changed, the pane cannot be read), or null.
+   */
+  receipt?: {
+    probe: SubmitProbe;
+    now?: () => number;
+    armRetry: () => Promise<() => Promise<string | null>>;
+  },
 ): Promise<GatedSubmitResult> {
   const before = await deliveryGateCheck(gate, ptyId);
   if (before) return before;
@@ -1222,24 +1230,30 @@ export async function gatedPasteSubmit(
   const guardAtEnter = guard ? await guard.beforeEnter() : null;
   if (guardAtEnter) return takeBack(guardAtEnter);
   // The pane while the text sits uncommitted: what the receipt diffs against.
+  const probe = receipt?.probe;
   const atEnterReading = probe ? await probe.readAgentStatus() : null;
   const atEnterPane = {
     screen: probe ? await probe.readScreen() : '',
     agentStatus: atEnterReading?.status ?? null,
     turnStartedAt: atEnterReading?.turnStartedAt,
   };
+  const retryRefusal = receipt ? await receipt.armRetry() : null;
   try {
     write(ptyId, isMultilinePtyPayload(text) ? '\r\r' : '\r');
   } catch (err) {
     return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err), pasted: true };
   }
-  if (probe) {
-    const now = clock?.now ?? Date.now;
+  if (probe && retryRefusal) {
+    const now = receipt?.now ?? Date.now;
     await awaitSubmitReceipt(
       probe,
       composerMarker(atEnterPane.screen, submitNeedle(text)),
       atEnterPane,
       async () => {
+        // A retried Enter submits whatever the composer holds now: only ours,
+        // or none. When that cannot be told, no retry.
+        const why = await retryRefusal();
+        if (why) throw new EnterRetryRefused(`delivery: ${why}; the retried Enter was not sent.`);
         const again = await deliveryGateCheck(gate, ptyId, ' The text and its first Enter were sent; this retried Enter was not.');
         if (again) throw new EnterRetryRefused(again.detail);
         write(ptyId, '\r');
@@ -2187,6 +2201,28 @@ export function registerInputRpc(
     };
   };
 
+  /**
+   * Read the pane's agent and key count right before a delivery's first Enter,
+   * and return the check its retried Enter must pass: the same agent, and no
+   * key since but that Enter (one write, one key on the daemon's counter).
+   * A pane whose state cannot be read (no daemon, a failed read) gets no retry.
+   */
+  const armEnterRetry = async (ptyId: string): Promise<() => Promise<string | null>> => {
+    const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    const read = (): Promise<Awaited<ReturnType<DaemonClient['getAgentState']>> | null> =>
+      dc?.isConnected ? Promise.resolve().then(() => dc.getAgentState(ptyId, { timeoutMs: 1_000 })).catch(() => null) : Promise.resolve(null);
+    const atEnter = await read();
+    return async () => {
+      const now = await read();
+      if (!atEnter?.agentName || !now) return "the pane's agent and input could not be read";
+      const baseline = { agentName: atEnter.agentName, incarnationId: atEnter.incarnationId, agentVerified: atEnter.agentVerified === true };
+      if (!agentIdentityHolds(baseline, now)) return 'the agent in the pane changed after the first Enter';
+      const ownEnter = typeof atEnter.keyInputRevision === 'number' ? atEnter.keyInputRevision + 1 : undefined;
+      if (typedPastOwnInput(now, ownEnter)) return 'someone typed in the pane after the first Enter';
+      return null;
+    };
+  };
+
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: async (ptyId, text, agent, opts) => {
@@ -2207,9 +2243,12 @@ export function registerInputRpc(
       // hidden pane: on a large ring each would be a full replay (#2993).
       const owner = getWorkspaceMirror().peek();
       const probeWs = (owner && findWorkspaceIdForPty(ptyId, owner.entries)) ?? undefined;
-      const probe = makeSubmitProbe(getWindow, ptyId, probeWs, deps.readTurnStartedAt, SUBMIT_RECEIPT_READ_LINES, true);
-      const clock = { ...(deps.now ? { now: deps.now } : {}) };
-      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, probe, clock);
+      const receipt = {
+        probe: makeSubmitProbe(getWindow, ptyId, probeWs, deps.readTurnStartedAt, SUBMIT_RECEIPT_READ_LINES, true),
+        ...(deps.now ? { now: deps.now } : {}),
+        armRetry: () => armEnterRetry(ptyId),
+      };
+      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
       // #1680 — a new task: the fresh-context step runs inside the gated
       // delivery, and the pane is held through the text's Enter. The pane's
       // conversation is kept when the renderer knows of other open tasks on it,
@@ -2235,7 +2274,7 @@ export function registerInputRpc(
               },
               keepContext,
             );
-          }, guard, probe, clock),
+          }, guard, receipt),
         deps.freshContextLockWaitMs,
       ).catch((err: unknown): GatedSubmitResult => {
         if (!(err instanceof FreshContextBusy)) throw err;
