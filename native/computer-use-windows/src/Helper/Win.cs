@@ -59,6 +59,13 @@ internal static unsafe class Win
         return !ShellClasses.Contains(ClassName(hwnd));
     }
 
+    /// <summary>
+    /// The window is on screen here: WS_VISIBLE and not cloaked. The one
+    /// definition both input paths use (a hidden or cloaked target is
+    /// refused by background input and by real input alike).
+    /// </summary>
+    public static bool IsShown(HWND hwnd) => PInvoke.IsWindowVisible(hwnd) && !IsCloaked(hwnd);
+
     /// <summary>Cloaked windows (other virtual desktops, suspended UWP frames) are not on screen.</summary>
     public static bool IsCloaked(HWND hwnd)
     {
@@ -78,6 +85,21 @@ internal static unsafe class Win
         Span<char> buffer = stackalloc char[256];
         int n = PInvoke.GetClassName(hwnd, buffer);
         return n > 0 ? new string(buffer[..n]) : "";
+    }
+
+    /// <summary>
+    /// The window's base class (RealGetWindowClass): "Edit" for a superclassed
+    /// edit control such as WinForms' WindowsForms10.EDIT.*.
+    /// </summary>
+    public static string RealClassName(HWND hwnd)
+    {
+        Span<char> buffer = stackalloc char[256];
+        uint n;
+        fixed (char* p = buffer)
+        {
+            n = PInvoke.RealGetWindowClass(hwnd, p, (uint)buffer.Length);
+        }
+        return n > 0 ? new string(buffer[..(int)n]) : "";
     }
 
     public static uint OwnerPid(HWND hwnd)
