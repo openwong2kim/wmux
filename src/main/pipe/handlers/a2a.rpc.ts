@@ -10,7 +10,6 @@ import type { DaemonClient } from '../../DaemonClient';
 import * as fs from 'fs';
 import * as os from 'os';
 import { getPidMapDir } from '../../../shared/constants';
-import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { validateMessage, type Message, type Task } from '../../../shared/types';
 import { COMPANY_BRIEF_KIND, COMPANY_RENDERER_METHOD, companyBriefOf, isCompanyTask, missingBriefFields, parseCompanySeat, renderRemoteBrief, type CompanySeat } from '../../../shared/company';
 import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyCapHint, companyCapMessageRefusal, companyHeldMessageRefusal, companyHoldOf, companyHoldPhase, companyHoldWithholds, companyWaitingLine, type CompanyHoldMarker } from '../../../shared/companyHold';
@@ -2125,11 +2124,11 @@ export function registerA2aRpc(
       return finishHeldSend(result, mirror, workLink, params.silent === true, full);
     }
     // A pick that reached no agent gives the item back, as the app's pick
-    // does: its task is cancelled, so nobody finds it later while the item
-    // reads open again.
+    // does: the picker withdraws its own task, so nobody finds it later while
+    // the item reads open again.
     if (handOutId && isRecord(result) && result.ok === true && typeof result.taskId === 'string'
       && !(isRecord(result.delivery) && result.delivery.notified === true)) {
-      await cancelTask({ taskId: result.taskId, workspaceId: HUMAN_WORKSPACE_ID }, { origin: 'local', operator: true });
+      await cancelTask({ taskId: result.taskId, workspaceId: params.workspaceId, senderPtyId: params.senderPtyId }, ctx);
       return { ...result, handOut: 'not delivered: its task was cancelled and the item is open again' };
     }
     // A reply that reopened an ended task moves its link back with it.

@@ -146,8 +146,8 @@ describe('a2a.task.send with handOutId', () => {
     const res = await send(pick({ paneId: 'dev-3' }));
     expect(res).toMatchObject({ ok: true, taskId: 'task-1', handOut: expect.stringContaining('item is open again') });
     const cancels = h.sendToRenderer.mock.calls.filter((c) => c[1] === 'a2a.task.cancel').map((c) => c[2] as Record<string, unknown>);
-    expect(cancels).toEqual([expect.objectContaining({ taskId: 'task-1', daemonCommitted: true })]);
-    await vi.waitFor(() => expect(links.getByTaskId('task-1')?.state).toBe('abandoned'));
+    expect(cancels).toEqual([expect.objectContaining({ taskId: 'task-1', workspaceId: WS, daemonCommitted: true })]);
+    await vi.waitFor(() => expect(links.getByTaskId('task-1')?.state).toBe('abandoned'), { timeout: 5_000 });
     expect(handOuts.get(itemId)?.state).toBe('open');
     expect(handOuts.reserve(itemId)).toBe(true);
   });

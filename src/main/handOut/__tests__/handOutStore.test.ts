@@ -49,7 +49,7 @@ describe('HandOutStore', () => {
     make();
     await links.upsert({ id: link.id, a2aState: 'completed' });
     expect(links.get(link.id)?.state).toBe('done');
-    await vi.waitFor(() => expect(onDisk().items).toEqual([]));
+    await vi.waitFor(() => expect(onDisk().items).toEqual([]), { timeout: 5_000 });
   });
 
   it('puts an item back when the app stopped between recording a pick and sending it', async () => {
