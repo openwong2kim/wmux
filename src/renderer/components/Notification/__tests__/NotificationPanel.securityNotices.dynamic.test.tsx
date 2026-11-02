@@ -121,6 +121,70 @@ describe('NotificationPanel pinned security notices', () => {
   });
 });
 
+const frames = async (): Promise<void> => {
+  await act(async () => {
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+  });
+};
+
+describe('NotificationPanel pinned security notices: focus, empty state, names', () => {
+  const reopen = async (): Promise<void> => {
+    act(() => useStore.setState({ notificationPanelVisible: false }));
+    act(() => useStore.setState({ notificationPanelVisible: true }));
+    await frames();
+  };
+
+  it('opening with only pinned notices focuses the first notice\'s first button', async () => {
+    act(() => useStore.setState({ notifications: [] }));
+    await reopen();
+    expect(document.activeElement).toBe(button(pinned('s1'), 'Go to pane'));
+  });
+
+  it('opening with ordinary notifications still focuses the first unread row', async () => {
+    await reopen();
+    expect(document.activeElement?.hasAttribute('data-notification-row')).toBe(true);
+  });
+
+  it('after Got it focus moves to the next pinned notice, then to Mark all read', async () => {
+    act(() => useStore.setState({ notifications: [] }));
+    await reopen();
+    const gotIt = button(pinned('s1'), 'Got it');
+    act(() => { gotIt?.focus(); gotIt?.click(); });
+    expect(document.activeElement).toBe(button(pinned('s2'), 'Got it'));
+    act(() => { (document.activeElement as HTMLButtonElement).click(); });
+    expect(document.activeElement).toBe(button(host, 'Mark all read'));
+  });
+
+  it('after Go to pane focus does not fall to <body>', async () => {
+    act(() => useStore.setState({ notifications: [] }));
+    await reopen();
+    const go = button(pinned('s1'), 'Go to pane');
+    act(() => { go?.focus(); go?.click(); });
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(button(pinned('s2'), 'Got it'));
+  });
+
+  it('does not say "No notifications" while a notice is pinned', () => {
+    act(() => useStore.setState({ notifications: [] }));
+    expect(host.textContent).not.toContain('No notifications');
+    act(() => useStore.setState({ securityNotices: [] }));
+    expect(host.textContent).toContain('No notifications');
+  });
+
+  it('each notice\'s buttons are described by that notice\'s title', () => {
+    for (const id of ['s1', 's2']) {
+      const title = [...(pinned(id)?.querySelectorAll('[id]') ?? [])].find((el) => el.textContent === `Title ${id}`);
+      expect(title).toBeDefined();
+      const buttons = [...(pinned(id)?.querySelectorAll('button') ?? [])];
+      expect(buttons.length).toBeGreaterThan(0);
+      for (const b of buttons) expect(b.getAttribute('aria-describedby')).toBe(title?.id);
+    }
+    expect(button(pinned('s1'), 'Got it')?.getAttribute('aria-describedby'))
+      .not.toBe(button(pinned('s2'), 'Got it')?.getAttribute('aria-describedby'));
+  });
+});
+
 describe('pinSecurityNotices', () => {
   it('a pane in an unnamed workspace and untitled tab is still known', () => {
     const ws = mkWorkspace('', 'pty-9');
