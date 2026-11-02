@@ -205,6 +205,7 @@ export const en = {
   'settings.labsRingCompression': "Compress session output",
   'settings.labsRingCompressionDesc': "The terminal service keeps each session's recent output compressed, at about a ninth of the memory. Applies after the terminal service restarts.",
   'settings.labsError': "Could not read or save this setting.",
+  'settings.labsRingCompressionNodeOnly': "Applies only to the Node terminal engine.",
   'settings.labsRingCompressionInConfig': "session.ringCompression is on in config.json, so session output is always compressed. Remove it there to control it here.",
   'settings.labsRestartDaemon': "Applies after the terminal service restarts. When your sessions are done, quit wmux, run the command below in a separate terminal (PowerShell on Windows), then reopen wmux.",
   'chat.closeManaged': 'Close chat',

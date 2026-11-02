@@ -14,10 +14,14 @@ export interface LabsSettings {
 
 export interface LabsStatus {
   saved: LabsSettings;
-  /** What the running terminal host read at startup; null when it did not answer. */
+  /** What the running terminal host started with (labs.json or config.json's
+   *  flag); null when it did not answer. */
   running: LabsSettings | null;
   /** config.json's session.ringCompression is on, so compression is on whatever labs.json says. */
   ringCompressionInConfig: boolean;
+  /** Ring compression works only on the Node terminal engine: false when the
+   *  running host uses Rust, null when it did not report its engine. */
+  ringCompressionApplies: boolean | null;
   restartRequired: boolean;
   stopCommand: string;
 }

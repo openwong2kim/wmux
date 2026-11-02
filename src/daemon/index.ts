@@ -6734,7 +6734,7 @@ function registerRpcHandlers(
     return {
       status: 'ok',
       ...(params?.includeTerminalCore === true ? { terminalCore: terminalCoreRuntime() } : {}),
-      ...(params?.includeLabs === true ? { labs: labsSettingsAtStartup() } : {}),
+      ...(params?.includeLabs === true ? { labs: { ringCompression: sessionManager.ringCompressionEnabled() } } : {}),
       pid: process.pid,
       uptime,
       sessions: sessions.length,

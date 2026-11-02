@@ -5068,7 +5068,7 @@ function TabFirstRunSetup() {
   );
 }
 
-function TabLabs() {
+export function TabLabs() {
   const t = useT();
   const compactScrollback = useStore((s) => s.terminalCompactScrollback);
   const setCompactScrollback = useStore((s) => s.setTerminalCompactScrollback);
@@ -5102,13 +5102,14 @@ function TabLabs() {
       <SettingRow id="labs-ring-compression" label={t('settings.labsRingCompression')} description={t('settings.labsRingCompressionDesc')}>
         <Toggle
           checked={ringOn}
-          disabled={!labs || busy || labs.ringCompressionInConfig}
+          disabled={!labs || busy || labs.ringCompressionInConfig || labs.ringCompressionApplies === false}
           onChange={(on) => run(() => window.electronAPI.settings.setLabs({ ringCompression: on }))}
           label={t('settings.labsRingCompression')}
         />
       </SettingRow>
+      {labs?.ringCompressionApplies === false && <SettingNote>{t('settings.labsRingCompressionNodeOnly')}</SettingNote>}
       {labs?.ringCompressionInConfig && <SettingNote>{t('settings.labsRingCompressionInConfig')}</SettingNote>}
-      {labs && !labs.ringCompressionInConfig && labs.restartRequired && <SettingNote>
+      {labs?.restartRequired && <SettingNote>
         {t('settings.labsRestartDaemon')}<br /><code className="ui-code">{labs.stopCommand}</code>
       </SettingNote>}
       {failed && <SettingNote tone="danger" role="alert">{t('settings.labsError')}{' '}

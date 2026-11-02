@@ -339,6 +339,12 @@ export class DaemonSessionManager extends EventEmitter {
     this.config = config;
   }
 
+  /** Whether new rings are asked to compress: config.json's flag or the saved
+   *  Labs opt-in, both as read at startup. A Rust ring ignores the request. */
+  ringCompressionEnabled(): boolean {
+    return this.config?.session.ringCompression === true || labsSettingsAtStartup().ringCompression;
+  }
+
   private pendingRecovery = new Map<string, DaemonSession>();
   private pendingCreates = new Map<string, symbol>();
   /**
@@ -997,7 +1003,7 @@ export class DaemonSessionManager extends EventEmitter {
       ? this.config.session.bufferSizeMb * 1024 * 1024
       : DEFAULT_BUFFER_SIZE;
     const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
-      compress: this.config?.session.ringCompression === true || labsSettingsAtStartup().ringCompression,
+      compress: this.ringCompressionEnabled(),
     });
     // Replays parse each stretch of the ring at the size it was written at.
     // Recovered scrollback below is assumed to be at the spawn size.

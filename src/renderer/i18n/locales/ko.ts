@@ -205,6 +205,7 @@ export const ko = {
   'settings.labsRingCompression': "세션 출력 압축",
   'settings.labsRingCompressionDesc': "터미널 서비스가 세션마다 들고 있는 최근 출력을 압축해 메모리를 약 9분의 1로 줄입니다. 터미널 서비스를 재시작하면 적용됩니다.",
   'settings.labsError': "이 설정을 읽거나 저장하지 못했습니다.",
+  'settings.labsRingCompressionNodeOnly': "Node 터미널 엔진에서만 적용됩니다.",
   'settings.labsRingCompressionInConfig': "config.json의 session.ringCompression이 켜져 있어 세션 출력은 항상 압축됩니다. 여기서 조절하려면 config.json에서 그 항목을 지우세요.",
   'settings.labsRestartDaemon': "터미널 서비스를 재시작해야 적용됩니다. 세션 작업을 마친 뒤 wmux를 종료하고 별도 터미널(Windows는 PowerShell)에서 아래 명령을 실행한 다음 wmux를 다시 여세요.",
   'chat.closeManaged': '별도 챗 닫기',

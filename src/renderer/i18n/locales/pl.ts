@@ -205,6 +205,7 @@ export const pl = {
   'settings.labsRingCompression': "Kompresja wyjścia sesji",
   'settings.labsRingCompressionDesc': "Usługa terminala przechowuje ostatnie wyjście każdej sesji skompresowane, w około jednej dziewiątej pamięci. Działa po ponownym uruchomieniu usługi terminala.",
   'settings.labsError': "Nie udało się odczytać ani zapisać tego ustawienia.",
+  'settings.labsRingCompressionNodeOnly': "Działa tylko z silnikiem terminala Node.",
   'settings.labsRingCompressionInConfig': "W config.json włączono session.ringCompression, więc wyjście sesji jest zawsze kompresowane. Usuń ten wpis, aby sterować nim tutaj.",
   'settings.labsRestartDaemon': "Zadziała po ponownym uruchomieniu usługi terminala. Po zakończeniu sesji zamknij wmux, uruchom poniższe polecenie w osobnym terminalu (w Windows w PowerShell), a następnie otwórz wmux ponownie.",
   'chat.commandsAndSkills': "Polecenia i umiejętności",
