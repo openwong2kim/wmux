@@ -17,14 +17,20 @@
  * as classification allows:
  *
  *   killed:  GUI app instances — our exe image with a plain command line
- *            (no --type=, no daemon script, no --squirrel-* flag)
- *   spared:  ourselves (the hook process), Chromium helper children
- *            (--type=..., they die with their parent's tree-kill), the wmux
- *            daemon (it holds the user's live PTY sessions — the persistence
- *            promise; the B′ stale-daemon replacement upgrades it on the
- *            next app boot), and any concurrent Squirrel hook process
+ *            (no --type=, no daemon script, no --squirrel-* flag) — and
+ *            every process descended from one (Chromium helpers, local
+ *            shells, other children), each by pid
+ *   spared:  ourselves (the hook process), the wmux daemon and everything
+ *            under it (it holds the user's live PTY sessions — the
+ *            persistence promise; the B′ stale-daemon replacement upgrades it
+ *            on the next app boot), and any concurrent Squirrel hook process
  *            (e.g. the old exe running --squirrel-obsolete, or the fresh
  *            post-install --squirrel-firstrun launch).
+ *
+ * No `taskkill /T` on an app (#3007): the app spawns the daemon, so the
+ * daemon's parent pid is the app and a tree kill of the app takes the daemon
+ * and its shells with it. taskkill has no way to exclude a pid from /T, so
+ * the tree is walked here, pruned at the daemon, and killed pid by pid.
  *
  * Session-state risk is accepted: the renderer persists layout synchronously
  * on every change and PTYs live in the daemon, so a force-kill loses at most
@@ -43,6 +49,10 @@ export type WmuxProcessKind = 'self' | 'helper' | 'daemon' | 'squirrel-hook' | '
 export interface WmuxProcessRow {
   pid: number;
   commandLine: string;
+  /** Set when the query selected ParentProcessId; 0 when unreadable. */
+  parentPid?: number;
+  /** Set when the query selected Name (the image file name). */
+  name?: string;
 }
 
 // Matches every daemon-script layout spawnDaemon() probes (launcher.ts):
@@ -100,9 +110,66 @@ export function parseCimProcessJson(stdout: string): WmuxProcessRow[] {
     const o = item as Record<string, unknown>;
     const pid = typeof o.ProcessId === 'number' ? o.ProcessId : NaN;
     if (!Number.isInteger(pid) || pid <= 0) continue;
-    rows.push({ pid, commandLine: typeof o.CommandLine === 'string' ? o.CommandLine : '' });
+    const row: WmuxProcessRow = { pid, commandLine: typeof o.CommandLine === 'string' ? o.CommandLine : '' };
+    // A missing or malformed parent reads as 0, which belongs to no tree.
+    if ('ParentProcessId' in o) {
+      const parent = o.ParentProcessId;
+      row.parentPid = typeof parent === 'number' && Number.isInteger(parent) && parent > 0 ? parent : 0;
+    }
+    if ('Name' in o) row.name = typeof o.Name === 'string' ? o.Name : '';
+    rows.push(row);
   }
   return rows;
+}
+
+/**
+ * What the install hook kills, from a full process table (#3007): the GUI app
+ * instances of `exeName`, then every process descended from one. The walk is
+ * pruned at the daemon (its parent pid is the app), at ourselves and at any
+ * concurrent Squirrel hook, so none of those, nor anything under them, is
+ * killed. The prune applies whatever the image name: sparing a daemon-shaped
+ * process is the safe direction.
+ */
+export function selectAppTreeKillPids(
+  rows: readonly WmuxProcessRow[],
+  ownPid: number,
+  exeName: string,
+): { appPids: number[]; descendantPids: number[] } {
+  const image = exeName.toLowerCase();
+  const appPids = selectAppInstancePids(
+    rows.filter((row) => (row.name ?? '').toLowerCase() === image),
+    ownPid,
+  );
+  const childrenOf = new Map<number, WmuxProcessRow[]>();
+  for (const row of rows) {
+    const parent = row.parentPid ?? 0;
+    if (parent <= 0) continue;
+    const siblings = childrenOf.get(parent);
+    if (siblings) siblings.push(row);
+    else childrenOf.set(parent, [row]);
+  }
+  // `seen` doubles as the cycle guard: Windows recycles pids, so a stale
+  // parent reference can close a loop.
+  const seen = new Set<number>(appPids);
+  const descendantPids: number[] = [];
+  const queue = [...appPids];
+  while (queue.length > 0) {
+    const pid = queue.shift() as number;
+    for (const child of childrenOf.get(pid) ?? []) {
+      if (seen.has(child.pid)) continue;
+      seen.add(child.pid);
+      const kind = classifyWmuxProcess(child, ownPid);
+      if (kind === 'daemon' || kind === 'self' || kind === 'squirrel-hook') continue;
+      descendantPids.push(child.pid);
+      queue.push(child.pid);
+    }
+  }
+  return { appPids, descendantPids };
+}
+
+/** taskkill arguments for one pid. Never /T: see the header (#3007). */
+export function forceKillArgs(pid: number): string[] {
+  return ['/PID', String(pid), '/F'];
 }
 
 /**
@@ -119,13 +186,24 @@ export function selectStagedDaemonPids(rows: readonly WmuxProcessRow[], ownPid: 
 }
 
 /**
- * Kill every running GUI app instance of this exe (tree-kill, so its
- * renderer/GPU helpers go with it). Returns the PIDs actually killed.
+ * Kill every running GUI app instance of this exe, then its descendants other
+ * than the daemon's subtree (selectAppTreeKillPids). The app goes first so it
+ * cannot respawn a helper. Returns the app PIDs actually killed.
  * win32-only; every step is best-effort — enumeration or kill failures
  * return what succeeded rather than throwing into the installer hook.
  */
 export function terminateRunningAppInstances(): number[] {
-  return terminateSameImage((rows) => selectAppInstancePids(rows, process.pid))?.killed ?? [];
+  if (process.platform !== 'win32') return [];
+  const exeName = path.basename(process.execPath);
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  // The whole table, not just our image: a tree kill also reached the app's
+  // non-wmux children (local shells, browsers, workers), and so must this.
+  const rows = listProcesses(systemRoot, '', 'ProcessId,ParentProcessId,Name,CommandLine');
+  if (!rows) return [];
+  const { appPids, descendantPids } = selectAppTreeKillPids(rows, process.pid, exeName);
+  const killed = appPids.filter((pid) => forceKill(systemRoot, pid));
+  for (const pid of descendantPids) forceKill(systemRoot, pid);
+  return killed;
 }
 
 /**
@@ -147,29 +225,10 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
   if (!/^[\w][\w .-]*\.exe$/i.test(exeName) || exeName.includes("'")) return null;
 
   const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-  const powershell = path.join(
-    systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
-  );
-  let stdout: string;
-  try {
-    stdout = execFileSync(
-      powershell,
-      [
-        '-NoProfile', '-NonInteractive', '-Command',
-        `Get-CimInstance Win32_Process -Filter "Name='${exeName}'" -ErrorAction Stop | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress`,
-      ],
-      { encoding: 'utf-8', timeout: 10_000, windowsHide: true },
-    );
-  } catch {
-    // -ErrorAction Stop: a failed query exits nonzero and lands here, while a
-    // filter that matches nothing is empty output.
-    return null;
-  }
-  if (stdout.trim()) {
-    try { JSON.parse(stdout); } catch { return null; }
-  }
+  const rows = listProcesses(systemRoot, ` -Filter "Name='${exeName}'"`, 'ProcessId,CommandLine');
+  if (!rows) return null;
 
-  const targets = select(parseCimProcessJson(stdout));
+  const targets = select(rows);
   const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe');
   const killed: number[] = [];
   for (const pid of targets) {
@@ -185,4 +244,46 @@ function terminateSameImage(select: (rows: WmuxProcessRow[]) => number[]): { fou
     }
   }
   return { found: targets, killed };
+}
+
+/** null: the processes could not be listed. */
+function listProcesses(systemRoot: string, filter: string, fields: string): WmuxProcessRow[] | null {
+  const powershell = path.join(
+    systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+  );
+  let stdout: string;
+  try {
+    stdout = execFileSync(
+      powershell,
+      [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `Get-CimInstance Win32_Process${filter} -ErrorAction Stop | Select-Object ${fields} | ConvertTo-Json -Compress`,
+      ],
+      // The full table with command lines can pass the 1 MB default.
+      { encoding: 'utf-8', timeout: 10_000, windowsHide: true, maxBuffer: 64 * 1024 * 1024 },
+    );
+  } catch {
+    // -ErrorAction Stop: a failed query exits nonzero and lands here, while a
+    // filter that matches nothing is empty output.
+    return null;
+  }
+  if (stdout.trim()) {
+    try { JSON.parse(stdout); } catch { return null; }
+  }
+  return parseCimProcessJson(stdout);
+}
+
+/** Best-effort single-pid kill; true when taskkill reported success. */
+function forceKill(systemRoot: string, pid: number): boolean {
+  try {
+    execFileSync(path.join(systemRoot, 'System32', 'taskkill.exe'), forceKillArgs(pid), {
+      timeout: 10_000,
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    /* best-effort — already gone, or a survivor no worse than before */
+    return false;
+  }
 }

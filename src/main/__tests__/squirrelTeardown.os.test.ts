@@ -19,6 +19,8 @@ import {
   classifyWmuxProcess,
   selectAppInstancePids,
   selectStagedDaemonPids,
+  selectAppTreeKillPids,
+  forceKillArgs,
   parseCimProcessJson,
   terminateRunningAppInstances,
   terminateStagedDaemons,
@@ -45,7 +47,7 @@ describe('classifyWmuxProcess', () => {
     expect(classifyWmuxProcess(row(1234, `"${EXE}"`), OWN_PID)).toBe('app');
   });
 
-  it('classifies Chromium helper children as helper (they die with the parent tree-kill)', () => {
+  it('classifies Chromium helper children as helper (killed as descendants of their app)', () => {
     expect(
       classifyWmuxProcess(row(1300, `"${EXE}" --type=renderer --user-data-dir="C:\\Users\\me\\AppData\\Roaming\\wmux"`), OWN_PID),
     ).toBe('helper');
@@ -118,8 +120,80 @@ describe('parseCimProcessJson', () => {
     expect(parseCimProcessJson('INFO: not json')).toEqual([]);
   });
 
+  it('carries ParentProcessId and Name when the query selected them', () => {
+    const out = '[{"ProcessId":5,"ParentProcessId":4,"Name":"wmux.exe","CommandLine":"a"},{"ProcessId":6,"ParentProcessId":null,"Name":null,"CommandLine":"b"}]';
+    expect(parseCimProcessJson(out)).toEqual([
+      { pid: 5, parentPid: 4, name: 'wmux.exe', commandLine: 'a' },
+      { pid: 6, parentPid: 0, name: '', commandLine: 'b' },
+    ]);
+  });
+
   it('drops rows without a valid positive integer ProcessId', () => {
     expect(parseCimProcessJson('[{"ProcessId":0,"CommandLine":"x"},{"CommandLine":"y"},{"ProcessId":"12","CommandLine":"z"}]')).toEqual([]);
+  });
+});
+
+describe('selectAppTreeKillPids (#3007: the app kill must not reach the daemon)', () => {
+  const STAGED = 'C:\\Users\\me\\.wmux\\daemon-runtime\\4.13.0-1730000000000';
+  const ROOT_DAEMON = 'C:\\Users\\me\\AppData\\Local\\wmux\\app-3.27.0\\resources\\daemon-bundle\\index.js';
+  const proc = (pid: number, parentPid: number, name: string, commandLine: string): WmuxProcessRow => ({
+    pid, parentPid, name, commandLine,
+  });
+  // The table the issue observed on Windows 11: the daemon's parent pid is the app.
+  const table: WmuxProcessRow[] = [
+    proc(100, 4, 'explorer.exe', 'C:\\Windows\\explorer.exe'),
+    proc(1234, 100, 'wmux.exe', `"${EXE}"`), // the running app
+    proc(1300, 1234, 'wmux.exe', `"${EXE}" --type=renderer`),
+    proc(1301, 1234, 'wmux.exe', `"${EXE}" --type=gpu-process`),
+    proc(1302, 1234, 'wmux.exe', `"${EXE}" --type=utility --utility-sub-type=network.mojom.NetworkService`),
+    proc(1303, 1300, 'wmux.exe', `"${EXE}" --type=renderer`), // a grandchild
+    proc(1400, 1234, 'powershell.exe', 'powershell.exe -NoLogo'), // a shell the app spawned itself
+    proc(2000, 1234, 'wmux.exe', `"${STAGED}\\wmux.exe" "${STAGED}\\resources\\daemon-bundle\\index.js"`),
+    proc(2100, 2000, 'powershell.exe', 'powershell.exe -NoLogo'), // a daemon session's shell
+    proc(2200, 2100, 'claude.exe', 'claude'), // an agent in that session
+    proc(2001, 1234, 'wmux.exe', `"${EXE}" "${ROOT_DAEMON}"`), // a daemon from the install root
+    proc(9000, 7777, 'notepad.exe', 'notepad.exe'), // a stranger whose parent is gone
+    proc(OWN_PID, 3333, 'wmux.exe', `"${EXE}" --squirrel-updated 3.28.0`),
+  ];
+
+  it('kills the app and its non-daemon descendants', () => {
+    const { appPids, descendantPids } = selectAppTreeKillPids(table, OWN_PID, 'wmux.exe');
+    expect(appPids).toEqual([1234]);
+    expect([...descendantPids].sort((a, b) => a - b)).toEqual([1300, 1301, 1302, 1303, 1400]);
+  });
+
+  it('spares every daemon and everything under it', () => {
+    const { appPids, descendantPids } = selectAppTreeKillPids(table, OWN_PID, 'wmux.exe');
+    const all = [...appPids, ...descendantPids];
+    for (const spared of [2000, 2001, 2100, 2200, 9000, OWN_PID, 100]) expect(all).not.toContain(spared);
+  });
+
+  it('matches the image name regardless of case and never roots at another image', () => {
+    const rows = [proc(1, 0, 'WMUX.EXE', `"${EXE}"`), proc(2, 0, 'other.exe', 'other.exe')];
+    expect(selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe').appPids).toEqual([1]);
+  });
+
+  it('spares the hook process and a concurrent hook even when they sit under the app', () => {
+    const rows = [
+      proc(1234, 100, 'wmux.exe', `"${EXE}"`),
+      proc(OWN_PID, 1234, 'wmux.exe', `"${EXE}" --squirrel-install 3.28.0`),
+      proc(4100, OWN_PID, 'cmd.exe', 'cmd.exe'),
+      proc(3000, 1234, 'wmux.exe', `"${EXE}" --squirrel-obsolete 3.27.0`),
+    ];
+    expect(selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe').descendantPids).toEqual([]);
+  });
+
+  it('terminates on a parent-pid cycle left by pid reuse', () => {
+    const rows = [
+      proc(1234, 1500, 'wmux.exe', `"${EXE}"`),
+      proc(1500, 1234, 'cmd.exe', 'cmd.exe'),
+    ];
+    expect(selectAppTreeKillPids(rows, OWN_PID, 'wmux.exe')).toEqual({ appPids: [1234], descendantPids: [1500] });
+  });
+
+  it('kills each pid without /T, so taskkill cannot follow the tree to the daemon', () => {
+    expect(forceKillArgs(1234)).toEqual(['/PID', '1234', '/F']);
+    expect(forceKillArgs(1234)).not.toContain('/T');
   });
 });
 
