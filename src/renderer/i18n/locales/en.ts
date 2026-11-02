@@ -6399,6 +6399,10 @@ export const en = {
   'remoteSpawn.code.declined': "declined on {pc}",
   'remoteSpawn.code.app-not-ready': "wmux on {pc} was not ready",
   'remoteSpawn.code.failed': "the agent could not start on {pc}",
+  // Spoken by the screen-reader announcer (components/Accessibility/AgentStateAnnouncer.tsx).
+  'a11y.agent.needsYou': '{tag} {agent} needs you',
+  'a11y.agent.finished': '{tag} {agent} finished',
+  'a11y.agent.error': '{tag} {agent} stopped with an error',
 } as const;
 
 export type TranslationKey = keyof typeof en;

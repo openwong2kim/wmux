@@ -6355,4 +6355,7 @@ export const pl = {
   'externalSessions.openPaneHere': "Otwórz tu panel wmux",
   'externalSessions.close': "Zamknij",
   'externalSessions.showDetails': "Pokaż szczegóły",
+  'a11y.agent.needsYou': '{tag} {agent} czeka na ciebie',
+  'a11y.agent.finished': '{tag} {agent}: gotowe',
+  'a11y.agent.error': '{tag} {agent}: zatrzymano z błędem',
 } as const;

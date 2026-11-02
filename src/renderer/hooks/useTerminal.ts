@@ -51,6 +51,8 @@ import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
+import { followScreenReader, syncScreenReaderMode } from '../terminal/screenReaderMode';
+import { screenReaderOn, subscribeScreenReader } from '../utils/screenReader';
 import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { attachCompositionCommitGate } from '../terminal/compositionCommitGate';
 import { webglContextPool } from '../terminal/webglContextPool';
@@ -1365,6 +1367,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       theme: xtermTheme,
       minimumContrastRatio,
       allowProposedApi: true,
+      // xterm's accessibility tree (a live region and a row mirror), only
+      // while a screen reader is on (utils/screenReader.ts).
+      screenReaderMode: screenReaderOn(),
       // Kitty keyboard protocol: xterm answers `CSI ? u` and encodes keys for
       // a pane that pushed flags. Desktop only, not on Windows (see
       // kittyKeyboardForHost).
@@ -1424,6 +1429,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // new React mount. Share the mute with the terminal instance so an
     // in-flight replay cannot become live-authorized during that handoff.
     replayMuteRef.current = getTerminalReplayMute(terminal);
+
+    // An adopted terminal was built under the state of its first mount; take
+    // the current one before the IME residue guard below reads the option.
+    syncScreenReaderMode(terminal, screenReaderOn());
 
     // #1792: a TUI agent killed mid-run leaves mouse / focus reporting armed,
     // and the shell that takes the prompt back gets every report as typed
@@ -1669,8 +1678,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // IME like AutoGLM) "replace" that residue with destructive results — the
     // forwarded DELs wipe the user's already-typed line. Upstream:
     // xtermjs/xterm.js#6012. Gated off under screenReaderMode, where xterm
-    // intentionally retains the text until blur for announcement (wmux never
-    // enables that option today).
+    // intentionally retains the text until blur for announcement (on only
+    // while a screen reader is on).
     // Off by default since v3.1.1: the wipe is a programmatic mutation of the
     // IME-owned textarea, and it is the prime suspect for the field-reported
     // "input dead until remount" 229-claim storms on Korean Windows (the
@@ -1678,9 +1687,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // AutoGLM-style voice-injector protection it provides is opt-in via
     // Settings → Terminal. Read once at terminal creation, like the other
     // constructor-time options.
-    const imeResidueGuard = (terminal.options.screenReaderMode || !useStore.getState().imeResidueGuardEnabled)
+    let imeResidueGuard = (terminal.options.screenReaderMode || !useStore.getState().imeResidueGuardEnabled)
       ? null
       : attachImeResidueGuard(terminal);
+    // A screen reader turning on or off while mounted flips the mode, and the
+    // guard with it (screenReaderMode.ts). Unsubscribed in the cleanup, which
+    // runs on a park too.
+    const unfollowScreenReader = followScreenReader(terminal, {
+      on: screenReaderOn,
+      subscribe: subscribeScreenReader,
+      guardSettingOn: () => useStore.getState().imeResidueGuardEnabled,
+      guard: {
+        attached: () => imeResidueGuard !== null,
+        attach: () => { imeResidueGuard = attachImeResidueGuard(terminal); },
+        detach: () => { imeResidueGuard?.dispose(); imeResidueGuard = null; },
+      },
+    });
 
     // Dead-input self-healing (always on): if the IME claim-storm signature
     // shows up — consecutive keyCode-229 keydowns across distinct keys with
@@ -3681,6 +3703,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
       unregisterAtlasGuard();
+      unfollowScreenReader();
       imeResidueGuard?.dispose();
       imeStormGuard.dispose();
       compositionCommitGate.dispose();

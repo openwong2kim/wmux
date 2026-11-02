@@ -167,6 +167,7 @@ import type {
 import type { PcRailFeedEvent } from '../main/remote/pcRailWire';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary, SshAddProgress, SshAddResult, SshConfirmResult, SshServiceResult, SshTunnelState } from '../shared/remoteHosts';
 import { REMOTE_SSH_IPC } from '../shared/remoteHosts';
+import { SCREEN_READER_IPC } from '../shared/screenReader';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -589,6 +590,14 @@ const electronAPI = {
     /** Windows: the system asks for reduced motion (Animation effects off).
      *  False elsewhere, where the media query already says it. */
     getReducedMotion: () => ipcRenderer.invoke(IPC.SYSTEM_REDUCED_MOTION) as Promise<boolean>,
+    /** A screen reader is on (main/screenReader.ts). */
+    getScreenReader: () => ipcRenderer.invoke(SCREEN_READER_IPC.get) as Promise<boolean>,
+    /** A screen reader turned on or off. Returns the unsubscribe. */
+    onScreenReaderChanged: (callback: (on: boolean) => void) => {
+      const listener = (_event: unknown, on: boolean) => callback(on === true);
+      ipcRenderer.on(SCREEN_READER_IPC.changed, listener);
+      return () => { ipcRenderer.removeListener(SCREEN_READER_IPC.changed, listener); };
+    },
   },
   // Keep the computer awake (main/power/sleepPrevention.ts).
   power: {

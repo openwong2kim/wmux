@@ -295,6 +295,7 @@ import { broadcastSettledIdle } from './notification/turnSettle';
 import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, isBrokenPipeError, logLine, stdioErrorsConsumed } from './util/logSink';
 import { isFencedBotWorkerSession } from './agents/botWorkerMergeGuard';
+import { startScreenReaderMonitor } from './screenReaderService';
 
 markBoot('imports-done');
 
@@ -707,6 +708,8 @@ void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /
 // Moa's claude lookup: read the login shell's PATH in the background (a Finder
 // launch misses nvm/fnm/volta). Never awaited; resolution works without it.
 void app.whenReady().then(() => { void warmLoginShellPath(); });
+// Screen-reader users only: watch for a screen reader (screenReader.ts).
+void app.whenReady().then(() => { startScreenReaderMonitor(); });
 
 // ── Promoted browser flows: the idle sweep ─────────────────────────────────
 //

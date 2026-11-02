@@ -46,6 +46,7 @@ import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
 import FirstRunWizard from '../FirstRunWizard';
 import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
+import AgentStateAnnouncer from '../Accessibility/AgentStateAnnouncer';
 import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
@@ -2258,6 +2259,12 @@ export default function AppLayout() {
           (titleBarStyle:'hidden'), so this bar owns window dragging. */}
       <ErrorBoundary name="Titlebar">
         <Titlebar />
+      </ErrorBoundary>
+      {/* Screen readers only: says when an agent needs you, finished or
+          failed. Outside the workspaces page, which goes inert under another
+          rail page. Renders nothing without a screen reader. */}
+      <ErrorBoundary name="AgentStateAnnouncer">
+        <AgentStateAnnouncer />
       </ErrorBoundary>
       {/* The icon rail sits on the window frame beside the floating sheet and
           stays when the sidebar collapses (MiniSidebar `rail`); the sheet holds
