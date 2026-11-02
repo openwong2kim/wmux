@@ -710,6 +710,10 @@ internal static unsafe class Actions
             // TextPattern, or, for a Win32 edit control without it (a .NET
             // Framework WinForms TextBox exposes none), EM_GETSEL/EM_SETSEL.
             Focus.RequireShown(target);
+            // The element checks (input desktop, elevation, still in the
+            // target) come before any message to the field: an elevated
+            // target must answer target_elevated, not an unread selection.
+            Focus.RequireSemantic(target, el);
             var selection = Selection(el);
             var edit = selection == null ? EditWindow(el, target, index) : HWND.Null;
             (uint Start, uint End)? editBefore = null;

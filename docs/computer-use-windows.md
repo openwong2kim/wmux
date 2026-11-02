@@ -415,12 +415,15 @@ section); that result says `delivery: "foreground"`. A posted one says
   with `EM_SETSEL` (no pointers, so they work across processes). The text
   then goes where the field's own caret was. Nothing is typed
   (`action_not_supported`) when the selection cannot be put back, when an
-  edit control's selection cannot be read before the focus (no answer
-  within 1 s, or text longer than 65,535 characters, which EM_GETSEL's
-  packed answer cannot hold; Core `EditSelection.Unpack`), when the edit
-  control is no longer in the target window, or when a `TextPattern`
+  edit control's selection cannot be read before the focus (a message
+  unanswered within 1 s, or text longer than 65,534 characters, whose
+  selection EM_GETSEL's packed answer cannot hold unambiguously; Core
+  `EditSelection.Unpack`), or when a `TextPattern`
   selection could not be read before and is not a caret after the focus.
-  Any other field is focused as before.
+  An edit control no longer in the target window answers `element_stale`.
+  Any other field is focused as before. Not covered: a field that selects
+  its text from a posted message after the focus (the read-back is a sent
+  message, handled first); WinForms selects all synchronously.
   `verified` means the focused value after equals the value before with
   exactly the typed text inserted at one position; text that was already
   there never verifies a failed insert.

@@ -1,7 +1,9 @@
 // A Win32 edit control's selection as EM_GETSEL reports it with no pointers:
 // the start in the low word and the end in the high word of one 32-bit
-// value. Positions past 65,535 do not fit that answer, so it is trusted only
-// for text no longer than that (WM_GETTEXTLENGTH). Used to keep a field's
+// value. Positions past 65,535 do not fit that answer (the control cuts them
+// or answers -1), and a selection at 65,535 packs to the same 0xFFFFFFFF as
+// -1, so the answer is trusted only for text of at most 65,534 characters
+// (WM_GETTEXTLENGTH). Used to keep a field's
 // selection across a UIA SetFocus when it has no UIA TextPattern (a .NET
 // Framework WinForms TextBox).
 
@@ -9,8 +11,8 @@ namespace WmuxComputerUse.Core;
 
 public static class EditSelection
 {
-    /// <summary>The longest text whose selection EM_GETSEL's packed answer can hold.</summary>
-    public const uint MaxPackedLength = 0xFFFF;
+    /// <summary>The longest text whose selection EM_GETSEL's packed answer holds unambiguously.</summary>
+    public const uint MaxPackedLength = 0xFFFE;
 
     /// <summary>
     /// The selection (start, end) from EM_GETSEL's answer `packed`, for text

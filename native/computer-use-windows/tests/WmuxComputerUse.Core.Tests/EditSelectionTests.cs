@@ -15,9 +15,12 @@ public class EditSelectionTests
     [Fact]
     public void TrustsNoAnswerForTextLongerThanTheWordsCanHold()
     {
-        // A caret at 70,000 would come back cut to 16 bits as a wrong position.
+        // Past 65,535 the control cuts positions to 16 bits or answers -1;
+        // either way the answer is not trusted for such text.
         Assert.Null(EditSelection.Unpack((4464u << 16) | 4464u, 80_000));
         Assert.NotNull(EditSelection.Unpack((10u << 16) | 10u, EditSelection.MaxPackedLength));
+        // A caret at 65,535 would pack to 0xFFFFFFFF, the same as -1.
+        Assert.Null(EditSelection.Unpack((10u << 16) | 10u, 65_535));
     }
 
     [Fact]
