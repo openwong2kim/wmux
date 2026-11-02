@@ -3237,6 +3237,7 @@ export const ko = {
   'settings.sc.zoomReset': '글꼴 크기 초기화',
   'settings.sc.mentionAgent': '에이전트 멘션',
   'settings.sc.stashPane': '페인 보관 (세션 유지)',
+  'settings.sc.balanceLayout': '페인 레이아웃 균등화 (열·행 동일 크기)',
   'settings.sc.movePaneLeft': '페인을 왼쪽으로 이동',
   'settings.sc.movePaneRight': '페인을 오른쪽으로 이동',
   'settings.sc.movePaneUp': '페인을 위로 이동',

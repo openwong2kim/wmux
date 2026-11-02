@@ -68,6 +68,32 @@ export function getLeafPanes(root: Pane): PaneLeaf[] {
 }
 
 /**
+ * How many equal slots `node` needs along `axis`. A leaf is one slot. A branch
+ * splitting along `axis` needs the sum of its children; a branch splitting the
+ * other way stacks its children over the same width, so it needs the widest.
+ */
+function slotsAlong(node: Pane, axis: PaneBranch['direction']): number {
+  if (node.type === 'leaf') return 1;
+  const spans = node.children.map((c) => slotsAlong(c, axis));
+  return node.direction === axis ? spans.reduce((a, b) => a + b, 0) : Math.max(...spans);
+}
+
+/**
+ * Rebalance every split under `root` in place so each column (and each row
+ * within a column) gets the same share. A child's share is proportional to the
+ * slots it spans along its parent's axis, not just 1/children, so a nested
+ * branch cannot make the outer columns uneven: 7 side-by-side columns come out
+ * 1/7 wide whether or not some of them are stacks.
+ */
+export function balancePaneSizes(root: Pane): void {
+  if (root.type === 'leaf') return;
+  const spans = root.children.map((c) => slotsAlong(c, root.direction));
+  const total = spans.reduce((a, b) => a + b, 0);
+  root.sizes = spans.map((s) => (s / total) * 100);
+  root.children.forEach(balancePaneSizes);
+}
+
+/**
  * The minimum shape `getWorkspaceLeafPanes` / `getWorkspacePtyIds` need. Kept
  * structural (rather than importing `Workspace`) so `shared/` stays free of the
  * store's full workspace type and so callers can pass session-file shapes that
