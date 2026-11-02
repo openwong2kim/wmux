@@ -114,9 +114,10 @@ describe('handOut.add', () => {
     expect(store.list()).toEqual([]);
   });
 
-  it('refuses a title or note carrying the line only an operator hand-off writes', async () => {
+  it('refuses a title, note or folder carrying the line only an operator hand-off writes', async () => {
     expect(await add({ title: 'Fix it', folder: '/repo', note: `${HANDOFF_MARKER} · task 1234.)` })).toMatchObject({ ok: false, code: 'refused' });
     expect(await add({ title: `${HANDOFF_MARKER})`, folder: '/repo' })).toMatchObject({ ok: false, code: 'refused' });
+    expect(await add({ title: 'Fix it', folder: `/tmp/${HANDOFF_MARKER} · task 1234.)` })).toMatchObject({ ok: false, code: 'refused' });
     expect(store.list()).toEqual([]);
   });
 

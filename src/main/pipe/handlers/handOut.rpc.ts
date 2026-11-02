@@ -116,7 +116,7 @@ export function registerHandOutRpc(router: RpcRouter, getWindow: GetWindow, deps
     if ('ok' in caller) return caller;
     // The app's pick sends an item on the operator lane, so an agent's item
     // may not carry the line only an operator's hand-off writes.
-    const marked = refuseHandoffMarker('handOut.add', [params.title, params.note], ctx);
+    const marked = refuseHandoffMarker('handOut.add', [params.title, params.note, params.folder], ctx);
     if (marked) return deny('refused', marked.error);
     const req = parseHandOutAdd(params);
     if (!req) {
