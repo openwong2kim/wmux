@@ -99,6 +99,7 @@ MonitorFromWindow
 GetDpiForMonitor
 IsHungAppWindow
 SendMessageTimeout
+RealGetWindowClass
 CreateCompatibleDC
 CreateDIBSection
 SelectObject

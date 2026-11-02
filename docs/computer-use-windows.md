@@ -406,13 +406,19 @@ section); that result says `delivery: "foreground"`. A posted one says
   With an index, the field is focused with UIA `SetFocus`. That is a
   keyboard (Tab-like) focus, on which a field may select its whole text (a
   WinForms `TextBox` does on its first focus), and the keys would replace
-  it. So the field's selection (UIA `TextPattern`, one range; a caret is an
-  empty one) is read before the focus and, if focusing changed it, selected
-  again and read back, and the field must still have keyboard focus. The
-  text then goes where the field's own caret was. If the selection cannot
-  be put back, or could not be read before and is not a caret after the
-  focus, nothing is typed (`action_not_supported`). A field without
-  `TextPattern` is focused as before.
+  it. So the field's selection is read before the focus and, if focusing
+  changed it, selected again and read back, and the field must still have
+  keyboard focus. It is read through UIA `TextPattern` (one range; a caret
+  is an empty one), or, for a Win32 edit control without it
+  (`RealGetWindowClass` "Edit", such as a .NET Framework WinForms
+  `TextBox`, which exposes no `TextPattern`), with `EM_GETSEL` and put back
+  with `EM_SETSEL` (no pointers, so they work across processes). The text
+  then goes where the field's own caret was. Nothing is typed
+  (`action_not_supported`) when the selection cannot be put back, when an
+  edit control's selection cannot be read before the focus (no answer
+  within 1 s, or a position past 65,535), or when a `TextPattern`
+  selection could not be read before and is not a caret after the focus.
+  Any other field is focused as before.
   `verified` means the focused value after equals the value before with
   exactly the typed text inserted at one position; text that was already
   there never verifies a failed insert.

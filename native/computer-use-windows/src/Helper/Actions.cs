@@ -706,9 +706,23 @@ internal static unsafe class Actions
             // select its whole text on such a focus (a WinForms TextBox does
             // on its first one), so the keys would replace the text. Focusing
             // must not change what the field had selected: its selection is
-            // read before and, if focusing changed it, put back.
+            // read before and, if focusing changed it, put back. Through UIA
+            // TextPattern, or, for a Win32 edit control without it (a .NET
+            // Framework WinForms TextBox exposes none), EM_GETSEL/EM_SETSEL.
             Focus.RequireShown(target);
             var selection = Selection(el);
+            var edit = selection == null ? EditWindow(el, target) : HWND.Null;
+            (uint Start, uint End)? editBefore = null;
+            if (edit != HWND.Null)
+            {
+                editBefore = EditSelection(edit);
+                if (editBefore == null)
+                {
+                    if (selection != null) selection->Release();
+                    throw new HelperError("action_not_supported", $"wmux could not read element {index}'s selection (the field holds more than 65,535 characters or did not answer), so nothing was typed: focusing it may select its whole text. Click where the text should go, then type without an index");
+                }
+            }
+            bool kept = selection != null || edit != HWND.Null;
             try
             {
                 try
@@ -725,14 +739,17 @@ internal static unsafe class Actions
                 {
                     throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
                 }
-                if (selection != null ? !KeepSelection(el, selection) : SelectsText(el))
+                bool lost = selection != null ? !KeepSelection(el, selection)
+                    : edit != HWND.Null ? !KeepEditSelection(edit, editBefore!.Value)
+                    : SelectsText(el);
+                if (lost)
                 {
-                    throw new HelperError("action_not_supported", selection != null
+                    throw new HelperError("action_not_supported", kept
                         ? $"element {index} changed its selection when it took focus, and wmux could not put it back, so nothing was typed (the keys would have replaced the selected text). Click where the text should go, then type without an index"
                         : $"element {index} has text selected after it took focus, and wmux could not read what was selected before, so nothing was typed (the keys would have replaced it). Click where the text should go, then type without an index");
                 }
                 // Selecting the old range again must not have moved focus.
-                if (selection != null && !Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+                if (kept && !Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
                 {
                     throw new HelperError("action_not_supported", $"element {index} lost keyboard focus while its selection was put back; nothing was typed. Click it first");
                 }
@@ -828,6 +845,62 @@ internal static unsafe class Actions
         {
             now->Release();
         }
+    }
+
+    private const uint EmGetSel = 0x00B0;
+    private const uint EmSetSel = 0x00B1;
+    private const uint EditMessageTimeoutMs = 1000;
+
+    /// <summary>
+    /// The element's own window when it is a Win32 edit control
+    /// (RealGetWindowClass "Edit", so a WinForms TextBox's
+    /// WindowsForms10.EDIT.* counts) inside the target window and process;
+    /// otherwise null.
+    /// </summary>
+    private static HWND EditWindow(IUIAutomationElement* el, ControlTarget target)
+    {
+        HWND hwnd;
+        try
+        {
+            hwnd = el->CurrentNativeWindowHandle;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return HWND.Null;
+        }
+        if (hwnd == HWND.Null || !PInvoke.IsWindow(hwnd) || Win.OwnerPid(hwnd) != target.Pid || Win.Root(hwnd) != target.Window) return HWND.Null;
+        Span<char> buffer = stackalloc char[64];
+        uint n;
+        fixed (char* p = buffer)
+        {
+            n = PInvoke.RealGetWindowClass(hwnd, p, (uint)buffer.Length);
+        }
+        return n > 0 && buffer[..(int)n].SequenceEqual("Edit") ? hwnd : HWND.Null;
+    }
+
+    /// <summary>
+    /// An edit control's selection (EM_GETSEL with no pointers, so it works
+    /// across processes). Null when it did not answer in time or reports -1
+    /// (a position past 65,535 does not fit the packed answer).
+    /// </summary>
+    private static (uint Start, uint End)? EditSelection(HWND edit)
+    {
+        nuint result;
+        if (PInvoke.SendMessageTimeout(edit, EmGetSel, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &result) == 0) return null;
+        uint packed = (uint)result;
+        if (packed == uint.MaxValue) return null;
+        return (packed & 0xFFFF, packed >> 16);
+    }
+
+    /// <summary>The edit control's selection is `before` again: put back with EM_SETSEL if focusing changed it, then read back.</summary>
+    private static bool KeepEditSelection(HWND edit, (uint Start, uint End) before)
+    {
+        var now = EditSelection(edit);
+        if (now == null) return false;
+        if (now.Value == before) return true;
+        nuint ignored;
+        if (PInvoke.SendMessageTimeout(edit, EmSetSel, before.Start, (nint)before.End, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &ignored) == 0) return false;
+        return EditSelection(edit) == before;
     }
 
     private static bool SameRange(IUIAutomationTextRange* a, IUIAutomationTextRange* b)
