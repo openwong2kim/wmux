@@ -584,9 +584,11 @@ export function askScreenShape(rawRows: readonly string[], count: number): strin
 /**
  * The grid shows Claude's own report that the question was declined (Esc at
  * the picker: `⏺ User declined to answer questions`, measured on 2.1.296).
+ * Claude draws that reply marker as `⏺` on macOS only and as `●` on Windows
+ * and Linux (#3001).
  */
 export function askDeclinedOnScreen(rawRows: readonly string[]): boolean {
-  return rawRows.some((row) => normalize(row.replace(/^⏺\s*/, '')) === DECLINED_HEADER);
+  return rawRows.some((row) => normalize(row.replace(/^[⏺●]\s*/, '')) === DECLINED_HEADER);
 }
 
 /** How many "User answered Claude's questions:" blocks the grid shows. */
