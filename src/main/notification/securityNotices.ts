@@ -15,7 +15,14 @@ export function recordSecurityNotice(notice: { title: string; body: string; ptyI
   pending.push(recorded);
   if (pending.length > MAX_PENDING) pending.splice(0, pending.length - MAX_PENDING);
   for (const win of BrowserWindow.getAllWindows()) {
-    if (!win.isDestroyed() && !win.webContents.isDestroyed()) win.webContents.send(SECURITY_NOTICE_IPC.added, recorded);
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    // A frame being torn down can throw; the other windows and the caller's
+    // OS toast must still go ahead, and the notice stays listed.
+    try {
+      win.webContents.send(SECURITY_NOTICE_IPC.added, recorded);
+    } catch (err) {
+      console.warn('[securityNotices] send failed:', err);
+    }
   }
 }
 
