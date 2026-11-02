@@ -57,6 +57,17 @@ describe('removeDaemonRuntimeStagesAfterExit', () => {
     expect(files.every((file) => fs.existsSync(file))).toBe(true);
   });
 
+  it('starts no probe past the deadline, so a slow probe cannot stretch the wait', () => {
+    const clock = fakeClock();
+    let probes = 0;
+    // A Windows probe can take its whole 3 s tasklist timeout.
+    const liveness = (): ProcessLiveness => { probes++; clock.sleep(3000); return 'unknown'; };
+    const result = removeDaemonRuntimeStagesAfterExit(stageRoot, [1, 2, 3], { liveness, waitMs: 5000, now: clock.now, sleep: clock.sleep });
+    expect(result).toEqual({ exiting: [1, 2, 3], removed: false });
+    expect(probes).toBe(2);
+    expect(files.every((file) => fs.existsSync(file))).toBe(true);
+  });
+
   it('removes at once when no daemon was stopped', () => {
     const clock = fakeClock();
     const liveness = (): ProcessLiveness => { throw new Error('nothing to probe'); };

@@ -265,10 +265,14 @@ export function removeDaemonRuntimeStagesAfterExit(
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? ((ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
   const deadline = now() + (opts.waitMs ?? STOPPED_DAEMON_EXIT_WAIT_MS);
-  let exiting = stopped.filter((pid) => opts.liveness(pid) !== 'dead');
+  // A probe can take seconds (tasklist), so none starts past the deadline; a
+  // pid not probed in time counts as still running.
+  const stillRunning = (pids: readonly number[]): number[] =>
+    pids.filter((pid) => now() >= deadline || opts.liveness(pid) !== 'dead');
+  let exiting = stillRunning(stopped);
   while (exiting.length > 0 && now() < deadline) {
     sleep(EXIT_POLL_MS);
-    exiting = exiting.filter((pid) => opts.liveness(pid) !== 'dead');
+    exiting = stillRunning(exiting);
   }
   if (exiting.length > 0) return { exiting, removed: false };
   return { exiting, removed: removeDaemonRuntimeStages(stageRoot) };
