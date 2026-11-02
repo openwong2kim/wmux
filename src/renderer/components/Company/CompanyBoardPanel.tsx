@@ -194,6 +194,8 @@ function HandOutSection({ workspaceId, folder, isActive, now, boundsRef }: {
         <button
           type="button"
           aria-describedby={titleId}
+          aria-haspopup="dialog"
+          aria-expanded={pick?.id === item.id}
           className={`flex-none rounded-sm text-[12px] text-[var(--text-muted)] hover:text-[var(--text-main)] ${FOCUS_RING}`}
           // The board's own pane takes a click that bubbles up and would win the focus back.
           onClick={(event) => { event.stopPropagation(); openPick(item, event.currentTarget); }}
