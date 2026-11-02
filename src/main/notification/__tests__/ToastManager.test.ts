@@ -61,6 +61,12 @@ vi.mock('electron', () => ({
   app: electronMocks.app,
 }));
 
+// The #2964 gate (an isolated packaged copy on Windows raises no OS toasts).
+// Its own rule is tested in dataIsolation.test.ts and osToastGate.test.ts;
+// here only its place in front of Notification is checked.
+const toastGate = vi.hoisted(() => ({ allowed: vi.fn(() => true) }));
+vi.mock('../osToastGate', () => ({ osToastsAllowed: toastGate.allowed }));
+
 // ----- platform mock -----------------------------------------------------
 //
 // Default state is Windows. Per-OS suites below call vi.resetModules() and
@@ -83,10 +89,38 @@ describe('ToastManager (OS-aware notifications)', () => {
     electronMocks.win.isMinimized.mockReturnValue(false);
     electronMocks.win.isDestroyed.mockReturnValue(false);
     electronMocks.win.webContents.isDestroyed.mockReturnValue(false);
+    toastGate.allowed.mockReturnValue(true);
   });
 
   afterEach(() => {
     vi.resetModules();
+  });
+
+  // #2964: Notification.isSupported() alone runs Electron's Windows toast
+  // setup, which writes the Start Menu link, so the gate must come first.
+  it('an isolated packaged copy never reaches Notification, isSupported() included', async () => {
+    toastGate.allowed.mockReturnValue(false);
+    const { ToastManager } = await import('../ToastManager');
+    const mgr = new ToastManager();
+    expect(mgr.showDirect('t', 'b')).toBe(false);
+    expect(mgr.showDirect('t', 'b', undefined, { ignoreToastSetting: true })).toBe(false);
+    mgr.show('t', 'b');
+    expect(electronMocks.NotificationMock.isSupported).not.toHaveBeenCalled();
+    expect(electronMocks.notificationInstances).toHaveLength(0);
+  });
+
+  it('with the gate closed it behaves like a system without toasts: no flash either', async () => {
+    toastGate.allowed.mockReturnValue(false);
+    const { ToastManager } = await import('../ToastManager');
+    expect(new ToastManager().showDirect('t', 'b')).toBe(false);
+    expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
+  });
+
+  it('where toasts are allowed (the installed app) the toast still shows', async () => {
+    const { ToastManager } = await import('../ToastManager');
+    expect(new ToastManager().showDirect('t', 'b')).toBe(true);
+    expect(electronMocks.NotificationMock.isSupported).toHaveBeenCalled();
+    expect(electronMocks.notificationInstances).toHaveLength(1);
   });
 
   it('skips entirely when disabled', async () => {
