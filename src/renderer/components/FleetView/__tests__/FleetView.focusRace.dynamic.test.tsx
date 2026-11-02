@@ -168,10 +168,11 @@ describe('FleetView — task triage', () => {
     mount();
     await flushRaf();
     // One list: Needs you (the question), the finished turn folded into one
-    // row, then Running. A finished turn is a look, not a decision.
+    // row, then Running, and the To hand out row (drawn at zero as the way in).
+    // A finished turn is a look, not a decision.
     expect(rows().map((row) => row.dataset.status)).toEqual(['awaiting_input', 'running']);
     expect([...container.querySelectorAll<HTMLElement>('[data-fleet-section]')].map((el) => el.dataset.fleetSection))
-      .toEqual(['needsYou', 'finished', 'running']);
+      .toEqual(['needsYou', 'finished', 'running', 'handOut']);
     expect(container.querySelector('[data-fleet-finished-toggle]')?.textContent).toBe('Finished 1');
     expect(rows()[0].textContent).toContain('Which deployment target?');
     expect(rows()[1].textContent).toContain('wmux');
@@ -217,8 +218,9 @@ describe('FleetView — task triage', () => {
     expect(document.activeElement?.hasAttribute('data-fleet-finished-toggle')).toBe(true);
     key(document.activeElement!, 'End');
     await flushRaf();
-    // The last option is the collapsed Idle row (pty-3 went idle).
-    expect(document.activeElement?.hasAttribute('data-fleet-idle-toggle')).toBe(true);
+    // The last option is To hand out's "Add a task…", after the collapsed
+    // Idle row (pty-3 went idle).
+    expect(document.activeElement?.hasAttribute('data-fleet-hand-out-add-row')).toBe(true);
     key(document.activeElement!, 'Home');
     await flushRaf();
     expect(document.activeElement?.getAttribute('data-pty-id')).toBe('pty-1');

@@ -2372,6 +2372,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-01 | Owner-approved (external sessions, placement B of the mockup): a coding agent started outside wmux (tmux, screen, zellij, ssh into this computer, another terminal app) that reports through the hook bridge is kept as an external session. One whose folder is a workspace's folder, or sits under it (the deepest folder wins; a workspace inside the session's folder never matches), is a row in that workspace's roster: the roster recipe with a muted `outside` in the agent-kind slot, its activity or where it runs, the time since its last signal. Waiting on you, it draws its question line in `--attention-text`, lights the workspace row as a pane's agent does (ring, hairline, Needs you, the question) and counts in the rail's Fleet badge. The rest sit in an **Outside wmux** group at the list's foot after Snoozed and Settled (their header recipe, open by default, the folder on a second line; folded, a muted count and `N need you` in the attention colour). A click opens a detail popover — state and question, Folder, Where, Last activity, a `tmux attach -t …` / `screen -r …` command with Copy attach command as the one primary only when tmux or screen is known (else Open a wmux pane here is the primary), and Hide. No new colour | wmux never shows or types into that terminal, so the row cannot jump to a pane: the popover says where the session lives and how to reach it. Joining the workspace keeps one list and one attention grammar (2026-09-27); the foot group catches folders no workspace holds |
 | 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
 | 2026-11-01 | Owner-approved (handoff mockup, boards A and C): at 90% of the 5-hour window (the pane's own statusline reading) the usage chip shows the share and the reset and opens the usage-limit card with the handoffs; nothing switches by itself. After a handoff at or near the limit, the tab it left offers to bring the work back once the limit resets, with a note from the other agent's transcript typed in, never sent | A handoff chosen before work stops loses nothing; bringing the work back closes the loop the owner otherwise did by hand, reading the other tab to tell the first agent what changed |
+| 2026-11-02 | To hand out (owner decision 2026-11-02, insight 163): a main-process list of work nobody has been given yet, the first column of Fleet's board and a quiet folded section after Idle in its list, with an add form, item cards and a Hand out… popover that sends an item to an agent pane on this PC, a new worktree or a company's CEO; the item leaves the list once the agent has it, and an undelivered send puts it back | The next things to hand out lived outside wmux; keeping them beside the agents that take them, and picking through the existing send paths, closes that loop without a second queue or a new attention signal |
 
 ### Desktop conversation view
 
@@ -2574,10 +2575,11 @@ differently in the two places, and in the order `fleet_triage` returns.
   marked block of their own) · Ready to review (finished fan-out tasks, one
   row per task) · Finished (turns that ended and have not been looked at),
   folded to one `Finished N · newest age` row that expands · Running · Idle,
-  folded to one `Idle N · oldest age` row that expands. A finished turn wants
+  folded to one `Idle N · oldest age` row that expands · To hand out (see
+  below), folded the same way. A finished turn wants
   a look, not a decision, so it never sits in Needs you. A section head is
   sentence-case 12px text with a status dot and its count; an empty section
-  is not drawn. Plain shells sit only in Idle and never keep the empty state
+  is not drawn (To hand out is the one exception, below). Plain shells sit only in Idle and never keep the empty state
   from showing.
 - **One count:** the Needs you chip and the Needs you head read the same
   two arrays (pane rows and decision tickets); the rail badge, the one
@@ -2621,7 +2623,7 @@ differently in the two places, and in the order `fleet_triage` returns.
   list the reported checks, including failed commands. This does not change
   the task completion gate or claim that wmux independently ran those checks.
 - **Filters and summary:** the line under the title leads with the filter
-  chips — Needs you, Running, Finished, Idle, Tickets — each with its count,
+  chips — Needs you, Running, Finished, Idle, To hand out, Tickets — each with its count,
   hidden at zero; pressing the pressed chip shows everything again. Then
   approvals, LAN messages, account usage, the next schedule and phones
   watching, each only when it is not zero, and Settled. While Fleet is the
@@ -2646,11 +2648,12 @@ differently in the two places, and in the order `fleet_triage` returns.
   click or Enter) opens this detail in place instead of jumping.
 - **Board layout (opt-in):** a List | Board switch in the header (and the
   same choice in Settings › Appearance, saved with the session) draws the
-  same rows as cards in four columns — Running, Needs you (with decision
-  tickets), Finished (unread final reports, Ready to review tasks, finished
-  turns; a task shows once, as its review row) and Idle — each headed by its
-  chip's word, a dot and its count; an empty column is not drawn. Nothing
-  folds. A card is the row's content restacked (status and verb, then name,
+  same rows as cards in five columns — To hand out (the open items), Running,
+  Needs you (with decision tickets), Finished (unread final reports, Ready to
+  review tasks, finished turns; a task shows once, as its review row) and
+  Idle — each headed by its chip's word, a dot and its count; an empty column
+  is not drawn, except To hand out, whose head is the way to add to it (a
+  status filter hides it). Nothing folds. A card is the row's content restacked (status and verb, then name,
   workspace · agent, the now-doing line) on a `--selection-subtle` fill, no
   border or stripe. ↑↓ / Home / End move in a column, ←→ to the nearest
   non-empty column at the nearest row; Enter, Space, the row verbs, filters,
@@ -2677,13 +2680,75 @@ differently in the two places, and in the order `fleet_triage` returns.
   no longer kept, and that counts as the report shown), and Jump to agent.
   An unapproved hand-off never retitles a pane, and a ticket that names no
   pane titles one only when its workspace runs a single agent.
+- **To hand out** (owner decision 2026-11-02): work nobody has been given yet,
+  one list per PC kept by main; the owner and agent panes add to it, and a
+  pick hands an item to an agent through the existing send paths.
+  - **Column.** The board's first column, before Running: a hollow
+    `--text-muted` ring (nobody has it, so no status colour), "To hand out",
+    its count and a `+` icon button that opens the add form at the top of
+    the column. It lists the open items only, newest first. Empty, it still
+    draws its head with the `+` (an exception to "no dead gauges": it is
+    the way in); a status filter hides it.
+  - **List section.** In the list (the default) a quiet section after Idle
+    holding the open items only, folded to one `To hand out N` row like Idle,
+    open while searching or filtered to it; open, it ends in an "Add a task…"
+    row. At zero it is still drawn, as one row reading "To hand out" with a
+    quiet "Add a task…" action (the column's `+` in the list): an exception to
+    "an empty section is not drawn", so the default layout has a way in. The
+    To hand out filter chip carries the count and is hidden at zero.
+  - **Add form.** A title (required, one line), the folder (the open
+    workspaces' folders, the active workspace's first, or a typed full
+    path), the agent (Any agent, then the installed agents) and an optional
+    two-line note; Cancel, then Add (the primary). Enter adds, Escape
+    cancels; main's invalid or full refusal shows inline under the fields.
+  - **Card.** The title (13px, two lines at most), the folder in mono 11px
+    as its last two segments (`…/a/b`, the full path as its tooltip and
+    accessible name; the popover's header and worktree row read it the same
+    way) with the agent it asks for (or a muted "any agent"), then "Added by you
+    · 2d" or "Added by #ceo · wmux co. · 3h", on a `--selection-subtle`
+    fill with no border, like the other cards (in the list, a row with no
+    fill at rest). On hover, focus or selection the right lane shows **Hand
+    out…**; ⋮ (and Shift+F10) holds Hand out… and Remove (an inline confirm,
+    Cancel first and focused). Enter opens Hand out…; Backspace/Delete starts
+    Remove.
+  - **Hand out… popover.** The floating popover, anchored beside the card
+    (under it where there is no room). Header "Hand out", then the title ·
+    folder (mono) · "asks for <agent>". Send to an agent: the agent panes on
+    this PC as `#name · agent` over `workspace · idle 8m` (or "running, gets
+    it after its turn"), those that run the asked-for agent first, idle before
+    running, with a muted right tag "this folder" when the pane works in the
+    item's folder; a pane running another agent is dimmed with "not <agent>"
+    and still selectable; a pane that needs you and a company's CEO pane are
+    not listed. Start in a new worktree: when an open workspace's folder holds
+    the item's, with an agent select. Give to a company: each company whose
+    folder holds the item's ("its CEO briefs a seat; the seat cap applies");
+    the pick sends the owner's task to the CEO pane, and that task is the
+    item's job (its work link), so the item is out while the CEO has it.
+    The footer: one muted line ("It leaves To hand out once the agent has it.
+    A send that is not delivered puts it back."), Cancel and Hand out (the one
+    primary). Radio semantics: the arrows move, Enter hands out, Escape
+    closes. A send that was not delivered is a toast with the reason in the
+    Git page's hand-off words; a delivered send not known to have started a
+    turn gets the Git page's "check it started" warning; a worktree start
+    toasts only its preparation notice; a refusal stays inline in the popover.
+    The item leaves the open list while the pick is still sending, which can
+    close the popover first; a refusal then comes as a toast naming the item.
+  - **Tickets.** A pick's work link (origin `hand-out`) is a ticket like a
+    manual send; wherever Fleet shows it (the ticket row, the pane card
+    holding it, its detail) a muted line reads "From To hand out", plus
+    `PR #N · checks …` once the work has a PR.
+  - **Quiet.** Like a queued ticket: its own filter, section and column only;
+    no rail badge, no sidebar count, no toast, never in Needs you.
 - **Role:** a row's ⋮ menu holds Jump, Message (M), Stash (S), Label (L),
   Role… (R), then Close pane (⌫). Role… opens an inline picker under the row:
   None, then the roles (built-in, plus the pane's custom role), the current
   one selected; a pick writes the pane's role through the same path as the
   dock roster and None clears it. A set role is plain text on the row.
 - **Empty fleet:** no agents is one call to action, the Tickets way in when
-  there are any, and the three newest finished tasks.
+  there are any, and the three newest finished tasks; open To hand out items
+  are drawn under it (the list's To hand out section, open, or the board's
+  column), since a pick can still start a worktree or go to a company. With
+  no items it is unchanged.
 - **Keys:** ↑↓ (and ←→) move through the list and open the detail, Home/End
   go to its ends, Enter jumps (Check rows open their detail), Space toggles
   the detail, Esc closes it, / searches, Shift+F10 or the Menu key opens

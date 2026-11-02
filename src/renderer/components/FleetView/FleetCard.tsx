@@ -27,6 +27,8 @@ interface FleetCardProps {
   onJump: (card: FleetPane) => void;
   /** The title of the open ticket this pane is working on; it names the row. */
   ticketTitle?: string;
+  /** That ticket's "From To hand out" line, when it was picked from there. */
+  ticketLine?: string;
   /** Section, detail and elapsed time from `groupFleetPanes`. Absent (tests,
    *  stand-alone renders) → derived from the card alone. */
   row?: FleetRow;
@@ -167,7 +169,7 @@ export function FleetCardEvidenceBadge({ task, id }: { task: Task | undefined; i
 }
 
 /** One agent's row. Terminal output belongs in the detail area, never here. */
-function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus, ticketTitle, errorLine, onInspect }: FleetCardProps) {
+function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onFocus, ticketTitle, ticketLine, errorLine, onInspect }: FleetCardProps) {
   const t = useT();
   const evidenceId = useId();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
@@ -304,6 +306,7 @@ function FleetCard({ card, focused, onJump, resource, row: rowProp, changed, onF
           )}
         </span>
         {requester && <span className="wmux-fleet-requester" data-fleet-requester title={requester.text}>{requester.text}</span>}
+        {ticketLine && <span className="wmux-fleet-requester" data-fleet-hand-out-line title={ticketLine}>{ticketLine}</span>}
       </span>
       <span className="wmux-fleet-progress">
         <span className={`wmux-fleet-detail${showActivity && !usageLimit ? ' is-activity' : ''}${line.kind === 'question' && !usageLimit ? ' is-question' : ''}`}

@@ -139,8 +139,9 @@ describe('FleetView — Ready to review', () => {
     mount();
     await settle();
     const sections = Array.from(container.querySelectorAll<HTMLElement>('[data-fleet-section]')).map((el) => el.dataset.fleetSection);
-    // After Needs you (empty here) and before the folded finished pane and Running.
-    expect(sections).toEqual(['review', 'finished', 'running', 'idle']);
+    // After Needs you (empty here) and before the folded finished pane and
+    // Running; To hand out's row ends the list even at zero.
+    expect(sections).toEqual(['review', 'finished', 'running', 'idle', 'handOut']);
     const row = reviewRow('ws-t1')!;
     expect(row).not.toBeNull();
     expect(reviewRow('ws-t2')).toBeNull();

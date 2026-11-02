@@ -13,6 +13,7 @@ import { paneLabelRejectionKey, paneTag } from '../../utils/paneNaming';
 import { showWorkspaces } from '../../utils/showWorkspaces';
 import { localPaneName } from '../Remote/a2aLinkModel';
 import { useAgentChoices } from '../Sidebar/CompanyPresetDialog';
+import { companyFolder } from './companyFolder';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import UiButton from '../ui/Button';
 import Field from '../ui/Field';
@@ -34,11 +35,6 @@ const OWNS_MAX = 200;
 function paneAddress(ws: Workspace, leaf: PaneLeaf, paneLabel: Record<string, string>): string {
   const label = (paneLabel[leaf.id] ?? leaf.metadata?.label)?.trim();
   return label && !/\s/.test(label) ? label : paneTag(ws, leaf).slice(1);
-}
-
-/** The folder the company works in: the one it was made in, else where its CEO works. */
-function companyFolder(ws: Workspace, ceo: PaneLeaf | undefined): string | undefined {
-  return ws.profile?.startupCwd || ceo?.surfaces.find((sf) => (sf.surfaceType ?? 'terminal') === 'terminal' && sf.cwd)?.cwd || undefined;
 }
 
 export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: string; onClose: () => void }) {
