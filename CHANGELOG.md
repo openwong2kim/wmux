@@ -9,8 +9,7 @@
   staff. The coordinator takes a request from anyone. A new task to a staff
   pane must come from inside the company, name that pane and carry a brief
   (goal, scope, acceptance, how to verify, what to report); a company task is
-  canceled only by the pane that created it. There is no way to make a company
-  in the app yet. (#2876)
+  canceled only by the pane that created it. (#2876)
 
 - **Claude can send files to your phone.** A new setting under Settings →
   Claude Code, off by default, lets Claude send files to the wmux phone app
@@ -484,9 +483,10 @@
 - **An agent's accessibility click or field fill on Windows no longer pulls
   a covered window in front of yours while it works in the background.**
   Clicking an element or setting a field's value on a window that is not in
-  front now waits for the turn to use the foreground, like other real input,
+  front now waits for its turn to use the foreground, like other real input,
   instead of bringing that window to the front while another agent was
-  driving the desktop. (#2982)
+  driving the desktop. Once it has that turn, the window can come to the
+  front as it does for any real input. (#2982)
 
 ## [4.13.0] — 2026-10-30
 
