@@ -4,6 +4,7 @@
 // project trust, so the trust mutation stays behind the first-party IPC
 // boundary the same way session.save does.
 
+import * as path from 'node:path';
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
@@ -12,25 +13,29 @@ import {
   parseWorkspacePrepSettings,
   readWorkspacePrepSettings,
   saveWorkspacePrepSettings,
-  type WorkspacePrepSettingsDeps,
 } from '../../project/workspacePrepSettings';
 import type { WorkspacePrepSaveResult, WorkspacePrepSettingsView } from '../../../shared/workspacePrepSettings';
+import type { ProjectConfigWriteDeps } from '../../project/projectConfigWrite';
+import { readProjectCompany, saveProjectCompany } from '../../project/projectCompany';
+import type { CompanyFileSaveResult, CompanyFileView } from '../../../shared/companyFile';
 import { getWorkspacePrepCards } from '../../worktask/workspacePrepCards';
 import { isWorkspacePrepDecision } from '../../../shared/workspacePrepCard';
 
-function prepDeps(): WorkspacePrepSettingsDeps {
+function writeDeps(): ProjectConfigWriteDeps {
   const store = getProjectConfigStore();
   return {
     getState: (cwd) => store.getState(cwd),
-    setTrusted: (root, contentHash, unattended) => store.setDecision(root, 'trusted', contentHash, unattended),
-    unattendedFor: async (root, contentHash) => {
-      const rec = await store.getRecord(root);
-      return rec?.status === 'trusted' && rec.contentHash === contentHash && rec.unattended === true;
-    },
+    setTrusted: (root, contentHash, grant) => store.setDecision(root, 'trusted', contentHash, grant.unattended, grant.companyReviewed),
+    grantFor: (root, contentHash) => store.grantFor(root, contentHash),
   };
 }
 
 const MAX_PATH_LEN = 4096;
+
+/** A company is saved for the absolute folder it was made in. */
+function isAbsoluteFolder(folder: unknown): folder is string {
+  return typeof folder === 'string' && folder.length > 0 && folder.length <= MAX_PATH_LEN && path.isAbsolute(folder);
+}
 
 export function registerProjectConfigHandlers(): () => void {
   ipcMain.removeHandler(IPC.PROJECT_CONFIG_GET);
@@ -51,6 +56,7 @@ export function registerProjectConfigHandlers(): () => void {
     decision: unknown,
     contentHash: unknown,
     unattended: unknown,
+    companyReviewed: unknown,
   ): Promise<{ ok: boolean }> => {
     if (typeof root !== 'string' || root.length === 0 || root.length > MAX_PATH_LEN) {
       throw new Error('Invalid project root');
@@ -64,9 +70,9 @@ export function registerProjectConfigHandlers(): () => void {
       throw new Error('Invalid trust decision');
     }
     if (typeof contentHash !== 'string') throw new Error('Invalid content hash');
-    // Unattended reboot-survival consent is a strict opt-in boolean; anything
-    // that isn't literally true (absent, non-boolean) is treated as no consent.
-    await store.setDecision(root, decision, contentHash, unattended === true);
+    // Unattended reboot-survival consent and the company review are strict
+    // opt-in booleans; anything that isn't literally true is treated as no.
+    await store.setDecision(root, decision, contentHash, unattended === true, companyReviewed === true);
     return { ok: true };
   }));
 
@@ -80,7 +86,7 @@ export function registerProjectConfigHandlers(): () => void {
     if (typeof cwd !== 'string' || cwd.length === 0 || cwd.length > MAX_PATH_LEN) {
       return { exists: false, settings: { copy: [], setup: '', portRange: '', copyIntoAutomated: false }, copyUnset: true, candidates: [], saveBlocked: 'no-project' };
     }
-    return readWorkspacePrepSettings(cwd, prepDeps());
+    return readWorkspacePrepSettings(cwd, writeDeps());
   }));
 
   ipcMain.removeHandler(IPC.PROJECT_PREP_SAVE);
@@ -95,7 +101,31 @@ export function registerProjectConfigHandlers(): () => void {
     if (!settings) return { ok: false, error: 'invalid-input' };
     const hash = typeof expectedHash === 'string' && /^[0-9a-f]{64}$/.test(expectedHash) ? expectedHash : undefined;
     if (expectedHash !== null && expectedHash !== undefined && hash === undefined) return { ok: false, error: 'invalid-input' };
-    return saveWorkspacePrepSettings(cwd, settings, hash, prepDeps());
+    return saveWorkspacePrepSettings(cwd, settings, hash, writeDeps());
+  }));
+
+  // The folder's company (renderer-only, like the trust decision: saving
+  // approves the written bytes).
+  ipcMain.removeHandler(IPC.PROJECT_COMPANY_GET);
+  ipcMain.handle(IPC.PROJECT_COMPANY_GET, wrapHandler(IPC.PROJECT_COMPANY_GET, async (
+    _event: Electron.IpcMainInvokeEvent,
+    folder: unknown,
+  ): Promise<CompanyFileView> => {
+    if (!isAbsoluteFolder(folder)) return { exists: false, saveBlocked: 'no-project' };
+    return readProjectCompany(folder, writeDeps());
+  }));
+
+  ipcMain.removeHandler(IPC.PROJECT_COMPANY_SAVE);
+  ipcMain.handle(IPC.PROJECT_COMPANY_SAVE, wrapHandler(IPC.PROJECT_COMPANY_SAVE, async (
+    _event: Electron.IpcMainInvokeEvent,
+    folder: unknown,
+    company: unknown,
+    expectedHash: unknown,
+  ): Promise<CompanyFileSaveResult> => {
+    if (!isAbsoluteFolder(folder)) return { ok: false, error: 'no-project' };
+    const hash = typeof expectedHash === 'string' && /^[0-9a-f]{64}$/.test(expectedHash) ? expectedHash : undefined;
+    if (expectedHash !== null && expectedHash !== undefined && hash === undefined) return { ok: false, error: 'invalid-input' };
+    return saveProjectCompany(folder, company, hash, writeDeps());
   }));
 
   ipcMain.removeHandler(IPC.WORKSPACE_PREP_LIST);
@@ -119,5 +149,7 @@ export function registerProjectConfigHandlers(): () => void {
     ipcMain.removeHandler(IPC.PROJECT_CONFIG_SET_TRUST);
     ipcMain.removeHandler(IPC.PROJECT_PREP_GET);
     ipcMain.removeHandler(IPC.PROJECT_PREP_SAVE);
+    ipcMain.removeHandler(IPC.PROJECT_COMPANY_GET);
+    ipcMain.removeHandler(IPC.PROJECT_COMPANY_SAVE);
   };
 }

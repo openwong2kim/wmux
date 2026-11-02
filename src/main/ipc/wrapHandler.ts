@@ -117,6 +117,9 @@ const NO_ARGS_SUMMARY_CHANNELS = new Set([
   // a project copies stay out of the log.
   'project-config:prep-get',
   'project-config:prep-save',
+  // A company's mission and standing orders stay out of the log too.
+  'project-config:company-get',
+  'project-config:company-save',
   'clipboard:write',
   'clipboard:read',
   'clipboard:read-image',

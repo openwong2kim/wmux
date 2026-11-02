@@ -312,6 +312,8 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     const resumes = new Set<string|number>();
     // Requests whose responses hand this pane a thread.
     const tracked = new Map<string|number,string>();
+    // thread/sample requests sent on this connection and not yet answered: the ids thread/sample/cancel may name.
+    const samples = new Set<string|number>();
     // The relay forwards a client response only for a server request it
     // delivered to this client and that is still awaiting an answer
     // (request id -> thread id, when the request names one).
@@ -412,6 +414,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       const verdict = await reviewClientFrame(frame.message,{
         paneId:policy.paneId, identity, serverProven:policy.serverProven(), owner:policy.owner,
         query:(method,params)=>queryUpstream(upstreamPath,method,params),
+        sampleInFlight:(id)=>samples.has(id),
       });
       if (retired || !alive) return;
       if (verdict.kind === 'refuse') { refuse(frame.message,verdict.reason);return; }
@@ -421,6 +424,12 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
           (classify(message) === 'identity' || m.method === 'review/start')) {
         if (tracked.size >= MAX_TRACKED_REQUESTS) { retire();return; }
         tracked.set(m.id,m.method);
+      }
+      if (m.method === 'thread/sample' && isRequestId(m.id)) {
+        // The first answer would end both, leaving the other uncancellable.
+        if (samples.has(m.id)) { refuse(frame.message,'a sample with this request id is still running');return; }
+        if (samples.size >= MAX_TRACKED_REQUESTS) { retire();return; }
+        samples.add(m.id);
       }
       if (!verdict.message) { handleClient(frame);return; }
       const bytes = Buffer.from(JSON.stringify(verdict.message));
@@ -540,6 +549,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         }
       }
       if (message && message.method === undefined && isRequestId(message.id) && resumes.delete(message.id)) noteResumedTurns(message.result);
+      if (message && message.method === undefined && isRequestId(message.id)) samples.delete(message.id);
       if (message && message.method === undefined && (typeof message.id === 'string' || typeof message.id === 'number')) {
         const method = tracked.get(message.id);
         if (method !== undefined) {
@@ -561,7 +571,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       for (const id of unsent) {
         if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({id,error:{code:-32603,message:'wmux: the Codex server connection was lost; the request was not sent'}}));
       }
-      unsent.clear();resumes.clear();
+      unsent.clear();resumes.clear();samples.clear();
       queued.length=0;queuedBytes=0;tracked.clear();pendingServerRequests.clear();
       // A selection request left unanswered must not collide with the next connection's ids.
       tracker.connectionEnded();

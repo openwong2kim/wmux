@@ -4,11 +4,8 @@
  * can pick, suggest a setup command from the lockfile, and save.
  *
  * Saving is the user's trust approval: the bytes written are trusted at once
- * (ProjectConfigStore.setDecision with their hash). That is only sound when
- * the user can see everything the file would run. A file holding commands or
- * a layout the user has not approved is therefore never saved over from here
- * ('review-first'): it is reviewed in the trust dialog first, so this section
- * can never approve somebody else's commands unseen.
+ * (projectConfigWrite.ts, which also refuses to save over a file the user
+ * has not reviewed).
  *
  * Only `fanout.copy`, `fanout.setup`, `fanout.portRange` and
  * `fanout.copyIntoAutomated` are changed; every other key of the file is kept
@@ -17,18 +14,16 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
-import { git as runGit, type GitResult } from '../git/git';
+import { git as runGit } from '../git/git';
 import {
   WMUX_PROJECT_CONFIG_FILENAME,
-  PROJECT_CONFIG_MAX_FILE_BYTES,
   PROJECT_FANOUT_MAX_COPY,
   normFanoutCopyPath,
   normalizeWmuxProjectConfig,
   parseFanoutPortRange,
-  type ProjectConfigState,
   type WmuxProjectConfig,
 } from '../../shared/wmuxProjectConfig';
+import { locateProjectConfig, saveBlock, writeProjectConfig, type ProjectConfigWriteDeps } from './projectConfigWrite';
 import { WORKSPACE_PROFILE_COMMAND_MAX } from '../../shared/types';
 import {
   WORKSPACE_PREP_MAX_CANDIDATES,
@@ -42,13 +37,7 @@ import {
  *  file is a build output or a database, not a setting. */
 const MAX_CANDIDATE_BYTES = 1024 * 1024;
 
-export interface WorkspacePrepSettingsDeps {
-  getState: (cwd: string) => Promise<ProjectConfigState>;
-  setTrusted: (root: string, contentHash: string, unattended: boolean) => Promise<void>;
-  /** The trust record's unattended consent for these bytes (kept across a save). */
-  unattendedFor: (root: string, contentHash: string) => Promise<boolean>;
-  git?: (args: string[], cwd: string) => Promise<GitResult>;
-}
+export type WorkspacePrepSettingsDeps = ProjectConfigWriteDeps;
 
 /** Lockfile → install command, first match wins (checked in this order). */
 const LOCKFILE_SETUP: ReadonlyArray<[string, string]> = [
@@ -111,56 +100,6 @@ export async function listCopyCandidates(
     .slice(0, WORKSPACE_PREP_MAX_CANDIDATES);
 }
 
-function sha256Hex(buf: Buffer): string {
-  return createHash('sha256').update(buf).digest('hex');
-}
-
-/** Where the project's wmux.json is (or would be): the discovered file, else
- *  the checkout's top. */
-async function locate(cwd: string, deps: WorkspacePrepSettingsDeps): Promise<{ state: ProjectConfigState; dir: string } | null> {
-  const state = await deps.getState(cwd).catch((): ProjectConfigState => ({ found: false }));
-  if (state.found && state.configPath) return { state, dir: path.dirname(state.configPath) };
-  const top = await (deps.git ?? runGit)(['rev-parse', '--show-toplevel'], cwd);
-  if (top.code !== 0) return null;
-  return { state, dir: path.resolve(top.stdout.trim()) };
-}
-
-/**
- * True when an unapproved file can run something: commands, a layout, or a
- * setup command somebody else wrote. A one-line field is no place to review
- * a shell command (a long tail or a newline hides in it), so such a file is
- * reviewed in the trust dialog, which shows it verbatim, before this section
- * may save over it.
- */
-function hasRunnables(config: WmuxProjectConfig | undefined): boolean {
-  if (!config) return false;
-  return config.layout !== undefined || (config.commands?.length ?? 0) > 0 || config.fanout?.setup !== undefined;
-}
-
-/** The live bytes are the approved ones (not just a cached verdict). */
-function trustedNow(state: ProjectConfigState, liveHash: string | undefined): boolean {
-  return state.trust === 'trusted' && liveHash !== undefined && state.contentHash === liveHash;
-}
-
-/** Trusted by a decision that never listed the setup command or the copy
- *  list (no review mark): that one re-approval happens in the trust dialog,
- *  which shows them verbatim, not here. */
-function awaitsPrepReview(state: ProjectConfigState): boolean {
-  const f = state.config?.fanout;
-  return state.trust === 'trusted' && state.prepReviewed !== true && (f?.setup !== undefined || (f?.copy?.length ?? 0) > 0);
-}
-
-/** Why this dialog cannot save over the file (undefined when it can). */
-export function saveBlock(state: ProjectConfigState): WorkspacePrepSettingsView['saveBlocked'] {
-  if (!state.found) return undefined;
-  if (state.invalid) return 'invalid';
-  // 'denied' is sticky: the trust dialog is where it is lifted.
-  if (state.trust === 'denied') return 'review-first';
-  if (state.trust !== 'trusted' && hasRunnables(state.config)) return 'review-first';
-  if (awaitsPrepReview(state)) return 'review-first';
-  return undefined;
-}
-
 /** Whether the file names `fanout.copy` at all (an empty list is a choice:
  *  copy nothing, so the `.env` defaults are not ticked again). */
 function copyKeyPresent(configPath: string | undefined): boolean {
@@ -185,13 +124,13 @@ function settingsOf(config: WmuxProjectConfig | undefined): WorkspacePrepSetting
 
 export async function readWorkspacePrepSettings(cwd: string, deps: WorkspacePrepSettingsDeps): Promise<WorkspacePrepSettingsView> {
   const empty: WorkspacePrepSettings = { copy: [], setup: '', portRange: '', copyIntoAutomated: false };
-  const found = await locate(cwd, deps);
+  const found = await locateProjectConfig(cwd, deps);
   if (!found) return { exists: false, settings: empty, copyUnset: true, candidates: [], saveBlocked: 'no-project' };
   const { state, dir } = found;
   const settings = settingsOf(state.config);
   const candidates = await listCopyCandidates(dir, deps.git ?? runGit, settings.copy);
   const suggestedSetup = suggestSetupCommand(dir);
-  const blocked = saveBlock(state);
+  const blocked = saveBlock(state, { copy: true });
   return {
     root: dir,
     ...(state.found && state.contentHash ? { contentHash: state.contentHash } : {}),
@@ -233,83 +172,26 @@ export async function saveWorkspacePrepSettings(
   expectedHash: string | undefined,
   deps: WorkspacePrepSettingsDeps,
 ): Promise<WorkspacePrepSaveResult> {
-  const found = await locate(cwd, deps);
-  if (!found) return { ok: false, error: 'no-project' };
-  const configPath = path.join(found.dir, WMUX_PROJECT_CONFIG_FILENAME);
+  const edit = (doc: Record<string, unknown>): boolean => {
+    const prevFanout = doc.fanout && typeof doc.fanout === 'object' && !Array.isArray(doc.fanout) ? { ...(doc.fanout as Record<string, unknown>) } : {};
+    const fanout: Record<string, unknown> = { ...prevFanout };
+    for (const key of ['copy', 'setup', 'portRange', 'copyIntoAutomated']) delete fanout[key];
+    if (input.portRange) fanout.portRange = input.portRange;
+    if (input.setup) fanout.setup = input.setup;
+    // An empty list is kept: "copy nothing" is remembered as a choice.
+    fanout.copy = input.copy;
+    if (input.copyIntoAutomated) fanout.copyIntoAutomated = true;
+    if (Object.keys(fanout).length > 0) doc.fanout = fanout;
+    else delete doc.fanout;
 
-  let before: Buffer | null = null;
-  try {
-    const st = fs.lstatSync(configPath);
-    if (!st.isFile() || st.size > PROJECT_CONFIG_MAX_FILE_BYTES) return { ok: false, error: 'invalid' };
-    before = fs.readFileSync(configPath);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return { ok: false, error: 'write-failed' };
-  }
-  const liveHash = before ? sha256Hex(before) : undefined;
-  if (liveHash !== expectedHash) return { ok: false, error: 'changed' };
-
-  let doc: Record<string, unknown> = { version: 1 };
-  if (before) {
-    try {
-      const parsed: unknown = JSON.parse(before.toString('utf8'));
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, error: 'invalid' };
-      doc = parsed as Record<string, unknown>;
-    } catch {
-      return { ok: false, error: 'invalid' };
-    }
-    // Re-checked against the bytes about to be replaced, not the view the
-    // renderer had: never approve commands the user has not reviewed.
-    const state: ProjectConfigState = found.state.found ? found.state : { found: true };
-    const config = normalizeWmuxProjectConfig(doc);
-    if (state.invalid) return { ok: false, error: 'invalid' };
-    if (state.trust === 'denied') return { ok: false, error: 'review-first' };
-    if (!trustedNow(state, liveHash) && hasRunnables(config)) return { ok: false, error: 'review-first' };
-    if (awaitsPrepReview(state)) return { ok: false, error: 'review-first' };
-  }
-
-  const prevFanout = doc.fanout && typeof doc.fanout === 'object' && !Array.isArray(doc.fanout) ? { ...(doc.fanout as Record<string, unknown>) } : {};
-  const fanout: Record<string, unknown> = { ...prevFanout };
-  for (const key of ['copy', 'setup', 'portRange', 'copyIntoAutomated']) delete fanout[key];
-  if (input.portRange) fanout.portRange = input.portRange;
-  if (input.setup) fanout.setup = input.setup;
-  // An empty list is kept: "copy nothing" is remembered as a choice.
-  fanout.copy = input.copy;
-  if (input.copyIntoAutomated) fanout.copyIntoAutomated = true;
-  if (Object.keys(fanout).length > 0) doc.fanout = fanout;
-  else delete doc.fanout;
-
-  // The result must read back as exactly what was asked for.
-  const check = normalizeWmuxProjectConfig(doc);
-  if (!check || (check.fanout?.invalidFields?.length ?? 0) > 0) return { ok: false, error: 'invalid-input' };
-
-  const bytes = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`, 'utf8');
-  const tmp = path.join(found.dir, `.${WMUX_PROJECT_CONFIG_FILENAME}.${randomBytes(6).toString('hex')}.tmp`);
-  try {
-    fs.writeFileSync(tmp, bytes, { flag: 'wx' });
-    fs.renameSync(tmp, configPath);
-  } catch (err) {
-    try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }
-    return { ok: false, error: 'write-failed', detail: (err as NodeJS.ErrnoException).code ?? 'unknown' };
-  }
-  const contentHash = sha256Hex(bytes);
-  // The trust key is the root the store finds from this cwd (it keeps a
-  // symlinked spelling git's top resolves away), read back from the file
-  // just written.
-  const after = await deps.getState(cwd).catch((): ProjectConfigState => ({ found: false }));
-  // Something rewrote the file in between: approve nothing rather than guess.
-  if (!after.found || after.contentHash !== contentHash || !after.root) return { ok: false, error: 'changed' };
-  const root = after.root;
-  // The unattended reboot consent was given for the layout, which this save
-  // does not touch: it carries over only from bytes that were trusted. This
-  // is the one deliberate exception to setDecision's "pass the checkbox
-  // every time" rule: the changed bytes are fanout keys, never the layout.
-  const unattended = trustedNow(found.state, liveHash) && liveHash !== undefined ? await deps.unattendedFor(root, liveHash) : false;
-  try {
-    await deps.setTrusted(root, contentHash, unattended);
-  } catch {
-    // The file is written but not approved: it reads as untrusted, so
-    // nothing in it runs; the dialog says the approval did not take.
-    return { ok: false, error: 'write-failed', detail: 'trust' };
-  }
-  return { ok: true, contentHash };
+    // The result must read back as exactly what was asked for.
+    const check = normalizeWmuxProjectConfig(doc);
+    return !!check && (check.fanout?.invalidFields?.length ?? 0) === 0;
+  };
+  // The unattended reboot consent was given for the layout and the company
+  // review for the company; this save touches neither, so both carry over
+  // from bytes that were trusted. This is the one deliberate exception to
+  // setDecision's "pass the consent every time" rule: the changed bytes are
+  // fanout keys only.
+  return writeProjectConfig(cwd, expectedHash, edit, (prior) => prior, { copy: true }, deps);
 }

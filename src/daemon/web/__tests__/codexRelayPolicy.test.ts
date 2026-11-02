@@ -118,7 +118,36 @@ describe('reviewClientFrame', () => {
     paneId: 'pty-a', identity: { WMUX_PTY_ID: 'pty-a' }, serverProven: false,
     owner: () => undefined,
     query: async (m) => (m === 'config/read' ? { config: { mcp_servers: { wmux: { command: 'node' } } } } : { data: [], nextCursor: null }),
+    sampleInFlight: () => false,
     ...over,
+  });
+  it('passes the reads Codex 0.166 added', async () => {
+    for (const method of ['account/gcp/setup', 'accountSession/list', 'feedback/save', 'thread/attachmentOwner/list',
+      'thread/items/read', 'thread/memory/read', 'thread/readState/update']) {
+      expect(await reviewClientFrame({ id: 1, method, params: { threadId: 't-other' } }, ctx()), method).toEqual({ kind: 'forward' });
+    }
+  });
+  it('runs a sample or a prediction only on a thread this pane opened', async () => {
+    for (const method of ['thread/sample', 'thread/prediction/request']) {
+      const frame = { id: 1, method, params: { threadId: 't1', sourceTurnId: 'u1', expectedTurnId: 'u1', prompt: 'x' } };
+      expect(await reviewClientFrame(frame, ctx({ owner: () => ({ paneId: 'pty-a', live: true }) })), method).toEqual({ kind: 'forward' });
+      expect((await reviewClientFrame(frame, ctx({ owner: () => ({ paneId: 'pty-b', live: true }) }))).kind, method).toBe('refuse');
+      expect((await reviewClientFrame(frame, ctx())).kind, method).toBe('refuse');
+    }
+  });
+  it('never switches the shared server\'s login from a pane', async () => {
+    expect(await reviewClientFrame({ id: 1, method: 'accountSession/switch', params: { sessionId: 's1' } }, ctx({ serverProven: true })))
+      .toEqual({ kind: 'refuse', reason: 'accountSession/switch is not available from a wmux pane' });
+  });
+  it('cancels only a thread/sample this connection is still awaiting', async () => {
+    const asked: unknown[] = [];
+    const awaiting = ctx({ sampleInFlight: (id) => { asked.push(id); return id === 7; } });
+    const cancel = (requestId: unknown) => reviewClientFrame({ id: 9, method: 'thread/sample/cancel', params: { requestId } }, awaiting);
+    expect(await cancel(7)).toEqual({ kind: 'forward' });
+    expect((await cancel(8)).kind).toBe('refuse');
+    expect((await cancel('7')).kind).toBe('refuse');
+    for (const malformed of [undefined, null, 1.5, { id: 7 }]) expect((await cancel(malformed)).kind).toBe('refuse');
+    expect(asked).toEqual([7, 8, '7']);
   });
   it('fork carries this pane\'s identity; refused when the source belongs to another live pane', async () => {
     const ok = await reviewClientFrame({ id: 1, method: 'thread/fork', params: { threadId: 't1' } }, ctx());

@@ -1,11 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildCompanyBoard, BOARD_LOG_MAX, remoteSeatsOf, seatAsksOf } from '../companyBoard';
+import { buildCompanyBoard, BOARD_LOG_MAX, companyHandOutItems, remoteSeatsOf, seatAsksOf } from '../companyBoard';
 import { buildFleetTickets, type FleetTicket } from '../../FleetView/fleetTickets';
 import type { WorkspaceAgentRosterRow } from '../../../stores/selectors/workspaceAgentRoster';
 import type { WorkLink } from '../../../../shared/workLink';
 import type { A2aLinkRecordV1 } from '../../../../shared/a2aRemote';
 import type { A2aSpawnOutgoingSummary } from '../../../../shared/a2aSpawn';
 import type { A2aRemoteHostStatus } from '../../../../shared/rpc';
+import type { HandOutEntry } from '../../../../shared/handOut';
 
 const row = (paneId: string, status: WorkspaceAgentRosterRow['status'] = 'idle'): WorkspaceAgentRosterRow => ({
   workspaceId: 'co', paneId, surfaceId: `s-${paneId}`, ptyId: `pty-${paneId}`, agentName: 'Claude Code',
@@ -211,5 +212,31 @@ describe('seats on other PCs', () => {
       ]);
       expect(seatAsksOf({ workspaceId: 'co', coordinatorPaneId: 'ceo', requests: [declined], hosts: connected, now: NOW + 2 * 3_600_000 })).toEqual([]);
     });
+  });
+});
+
+describe('To hand out on the board', () => {
+  const item = (id: string, folder: string, createdAt: number, state: HandOutEntry['state'] = 'open'): HandOutEntry =>
+    ({ id, title: id, folder, addedBy: { kind: 'owner' }, createdAt, state });
+
+  it('shows the open items in the company\'s folder or inside it, newest first', () => {
+    const items = [
+      item('root', '/code/wmux', 1),
+      item('inside', '/code/wmux/packages/app', 3),
+      // A sibling folder that shares the name's start is not inside it.
+      item('sibling', '/code/wmux-ios', 4),
+      // Another company's folder.
+      item('other', '/code/site', 5),
+      item('trailing', '/code/wmux/', 2),
+    ];
+    expect(companyHandOutItems(items, '/code/wmux').map((i) => i.id)).toEqual(['inside', 'trailing', 'root']);
+    expect(companyHandOutItems(items, '/code/site').map((i) => i.id)).toEqual(['other']);
+  });
+
+  it('leaves out an item someone has or that is done, and shows none for a company with no folder', () => {
+    const items = [item('open', '/code/wmux', 1), item('out', '/code/wmux', 2, 'out'), item('done', '/code/wmux', 3, 'done')];
+    expect(companyHandOutItems(items, '/code/wmux').map((i) => i.id)).toEqual(['open']);
+    expect(companyHandOutItems(items, undefined)).toEqual([]);
+    expect(companyHandOutItems(items, '')).toEqual([]);
   });
 });

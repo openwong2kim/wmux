@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { PLUGIN_PROTOCOL_SCHEME } from '../../../shared/pluginHost';
 import { PREVIEW_PROTOCOL_SCHEME } from '../../../shared/filePreview';
@@ -39,6 +41,12 @@ describe('main-window production CSP', () => {
       const allowed = directive === 'img-src' || directive === 'connect-src';
       expect(sources.includes(previewSource), `${directive} and the preview scheme`).toBe(allowed);
     }
+  });
+
+  it('serves a page whose markup carries no inline handler, which script-src would block', () => {
+    // An inline on* attribute never runs under this policy, and Chromium logs a violation for each one.
+    const html = fs.readFileSync(path.resolve(__dirname, '../../../../index.html'), 'utf8');
+    expect(html.match(/\son[a-z]+\s*=/gi) ?? []).toEqual([]);
   });
 });
 

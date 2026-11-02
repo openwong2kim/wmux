@@ -21,7 +21,8 @@ import { atomicReadJSONSync, atomicWriteJSONSync } from '../../daemon/util/atomi
 import { getWmuxHomeDir } from '../../shared/constants';
 import { isDefaultCopyCandidate } from '../../shared/workspacePrepSettings';
 import type { ProjectConfigState } from '../../shared/wmuxProjectConfig';
-import { listCopyCandidates, saveBlock } from '../project/workspacePrepSettings';
+import { listCopyCandidates } from '../project/workspacePrepSettings';
+import { saveBlock } from '../project/projectConfigWrite';
 import type { WorkspacePrepProgress, WorkspacePrepResult } from './workspacePrep';
 import { lingers, type WorkspacePrepCard, type WorkspacePrepDecision } from '../../shared/workspacePrepCard';
 
@@ -326,7 +327,7 @@ export async function copySuggestionFor(
 ): Promise<{ cwd: string; count: number; root: string } | undefined> {
   if (state.config?.fanout?.copy !== undefined || state.config?.fanout?.invalidFields?.includes('copy')) return undefined;
   // Not where New workspace setup could save it (the file waits for review).
-  if (saveBlock(state)) return undefined;
+  if (saveBlock(state, { copy: true })) return undefined;
   const root = state.found && state.configPath ? path.dirname(state.configPath) : sourceCwd;
   const key = path.resolve(root);
   if (store.has(key)) return undefined;

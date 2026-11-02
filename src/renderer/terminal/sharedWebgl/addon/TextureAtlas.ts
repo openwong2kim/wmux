@@ -106,9 +106,14 @@ export class TextureAtlas implements ITextureAtlas {
 
   public dispose(): void {
     this._warmUpQueue?.clear();
+    // remove() only detaches; none of these canvases is ever in the DOM, so it
+    // frees nothing. Zeroing the dimensions drops the backing store at once,
+    // whatever still references the element (#3000).
     this._tmpCanvas.remove();
+    this._tmpCanvas.width = this._tmpCanvas.height = 0;
     for (const page of this.pages) {
       page.canvas.remove();
+      page.canvas.width = page.canvas.height = 0;
     }
     this._onAddTextureAtlasCanvas.dispose();
     this._onRemoveTextureAtlasCanvas.dispose();
@@ -301,6 +306,7 @@ export class TextureAtlas implements ITextureAtlas {
     for (const page of this._pages) {
       this._onRemoveTextureAtlasCanvas.fire(page.canvas);
       page.canvas.remove();
+      page.canvas.width = page.canvas.height = 0;
     }
     this._pages.length = 0;
     this._activePages.length = 0;

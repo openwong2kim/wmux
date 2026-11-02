@@ -18,16 +18,19 @@ import { WMUX_SERVER_KEY } from '../../shared/mcpTargets';
  *   exec        command/exec: WMUX_* removed from `env`, identity set.
  *   ownThread   requests that run work inside an existing thread: allowed
  *               only on a thread this pane started, resumed or forked.
+ *   ownSample   thread/sample/cancel: allowed only for a thread/sample this
+ *               connection sent and is still awaiting.
  *   proven      allowed only while the shared server is proven clean.
  *   deny        never from a pane relay (remote execution environments,
- *               remote control of the shared server, test-only methods).
+ *               remote control of the shared server, switching the shared
+ *               server's login, test-only methods).
  *   pass        everything else the protocol defines.
  *
  * A method the table does not know, a batch frame, or any request whose
  * identity cannot be guaranteed is refused and never forwarded.
  */
 
-export type MethodClass = 'identity' | 'exec' | 'ownThread' | 'proven' | 'deny' | 'pass';
+export type MethodClass = 'identity' | 'exec' | 'ownThread' | 'ownSample' | 'proven' | 'deny' | 'pass';
 
 /** Every client request of the Codex app-server protocol this relay knows,
  * experimental methods included (the TUI uses some of them). */
@@ -55,19 +58,26 @@ export const CLIENT_REQUEST_CLASSES: Readonly<Record<string, MethodClass>> = {
   'thread/inject_items': 'ownThread',
   'thread/approveGuardianDeniedAction': 'ownThread',
   'mcpServer/tool/call': 'ownThread',
+  'thread/sample': 'ownThread',
+  'thread/prediction/request': 'ownThread',
+  // Names the JSON-RPC id of a thread/sample request, not a thread.
+  'thread/sample/cancel': 'ownSample',
+  // The shared server has one login for every pane on the account.
+  'accountSession/switch': 'deny',
   // Restarts MCP servers outside any thread request, so without per-thread
   // overrides: only safe when the server itself carries no stale identity.
   'config/mcpServer/reload': 'proven',
   ...Object.fromEntries([
-    'account/gatewayOAuth/cancel', 'account/gatewayOAuth/login', 'account/gatewayOAuth/read', 'account/login/cancel',
+    'account/gatewayOAuth/cancel', 'account/gatewayOAuth/login', 'account/gatewayOAuth/read', 'account/gcp/setup', 'account/login/cancel',
     'account/login/start', 'account/logout', 'account/rateLimitResetCredit/consume', 'account/rateLimits/read',
     'account/read', 'account/sendAddCreditsNudgeEmail', 'account/usage/read', 'account/workspaceMessages/read',
+    'accountSession/list',
     'app/installed', 'app/list', 'app/read',
     'command/exec/resize', 'command/exec/terminate', 'command/exec/write',
     'config/batchWrite', 'config/read', 'config/value/write', 'configRequirements/read',
     'experimentalFeature/enablement/set', 'experimentalFeature/list',
     'externalAgentConfig/detect', 'externalAgentConfig/import', 'externalAgentConfig/import/readHistories',
-    'externalAgentConfig/import/recordHistory', 'feedback/upload',
+    'externalAgentConfig/import/recordHistory', 'feedback/save', 'feedback/upload',
     'fs/copy', 'fs/createDirectory', 'fs/getMetadata', 'fs/readDirectory', 'fs/readFile', 'fs/remove', 'fs/unwatch',
     'fs/watch', 'fs/writeFile', 'fuzzyFileSearch', 'getAuthStatus', 'getConversationSummary', 'gitDiffToRemote',
     'hooks/list', 'initialize', 'marketplace/add', 'marketplace/remove', 'marketplace/upgrade',
@@ -76,9 +86,11 @@ export const CLIENT_REQUEST_CLASSES: Readonly<Record<string, MethodClass>> = {
     'plugin/install', 'plugin/installed', 'plugin/list', 'plugin/read', 'plugin/reconcile', 'plugin/share/checkout',
     'plugin/share/delete', 'plugin/share/list', 'plugin/share/save', 'plugin/share/updateTargets', 'plugin/skill/read',
     'plugin/uninstall', 'skills/config/write', 'skills/extraRoots/set', 'skills/list',
-    'thread/archive', 'thread/attachment/add', 'thread/attachment/list', 'thread/attachment/remove', 'thread/delete',
-    'thread/goal/clear', 'thread/goal/get', 'thread/goal/set', 'thread/items/list', 'thread/list', 'thread/loaded/list',
-    'thread/metadata/update', 'thread/name/set', 'thread/read', 'thread/revert', 'thread/section/move',
+    'thread/archive', 'thread/attachment/add', 'thread/attachment/list', 'thread/attachment/remove',
+    'thread/attachmentOwner/list', 'thread/delete',
+    'thread/goal/clear', 'thread/goal/get', 'thread/goal/set', 'thread/items/list', 'thread/items/read', 'thread/list',
+    'thread/loaded/list', 'thread/memory/read', 'thread/metadata/update', 'thread/name/set', 'thread/read',
+    'thread/readState/update', 'thread/revert', 'thread/section/move',
     'thread/turns/list', 'thread/unarchive', 'thread/unsubscribe',
     'threadSection/create', 'threadSection/delete', 'threadSection/list', 'threadSection/update',
     'turn/interrupt', 'windowsSandbox/readiness', 'windowsSandbox/setupStart',
@@ -282,6 +294,8 @@ export interface PolicyContext {
   owner(threadId: string): { paneId: string; live: boolean } | undefined;
   /** A read-only query on a separate upstream connection; rejects on failure. */
   query(method: 'config/read' | 'thread/loaded/list', params: Record<string, unknown>): Promise<unknown>;
+  /** A thread/sample with this request id was sent on this connection and is still awaiting its answer. */
+  sampleInFlight(requestId: string | number): boolean;
 }
 
 const refuse = (reason: string): Verdict => ({ kind: 'refuse', reason });
@@ -331,6 +345,11 @@ export async function reviewClientFrame(message: unknown, ctx: PolicyContext): P
     const threadId = typeof params.threadId === 'string' ? params.threadId : '';
     const owner = threadId ? ctx.owner(threadId) : undefined;
     return owner?.paneId === ctx.paneId ? { kind: 'forward' } : refuse('this thread was not opened from this pane');
+  }
+  if (cls === 'ownSample') {
+    const target = params.requestId;
+    const own = (typeof target === 'string' || Number.isSafeInteger(target)) && ctx.sampleInFlight(target as string | number);
+    return own ? { kind: 'forward' } : refuse('this sample was not started from this pane');
   }
 
   const identity = ctx.identity;

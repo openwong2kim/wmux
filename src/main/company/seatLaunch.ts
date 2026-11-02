@@ -13,7 +13,7 @@ import { getWmuxDir } from '../../daemon/config';
 import { getWmuxHomeDir } from '../../shared/constants';
 import { agentLauncherStem, agentRow, isAgentSlug } from '../../shared/agentIdentity';
 import { firstRunEnvForAgent } from '../../shared/agentFirstRun';
-import { companySeatsError, freeSeatLabels, ownWorktreeSeats, seatBrief } from '../../shared/companyPreset';
+import { COMPANY_TEXT_MAX as TEXT_MAX, companySeatsError, freeSeatLabels, ownWorktreeSeats, seatBrief } from '../../shared/companyPreset';
 import { normalizePaneLabel, paneLabelShapeError } from '../../shared/paneLabelRules';
 import { PANE_METADATA_LABEL_MAX } from '../../shared/types';
 import { ensureSecretHook } from '../git/secretHookHost';
@@ -24,7 +24,6 @@ import { buildTaskSlug, TaskWorktreeManager } from '../worktask/TaskWorktreeMana
 // Not dots alone: `.` or `..` would name the briefs root or the data folder.
 const WORKSPACE_ID_RE = /^(?!\.+$)[A-Za-z0-9._-]{1,80}$/;
 const FOLDER_MAX = 4096;
-const TEXT_MAX = { company: 200, owns: 200, mission: 2000, standingOrders: 8000 } as const;
 /** A workspace holds at most 20 panes (the renderer's MAX_PANES_PER_WORKSPACE). */
 const HIRE_STAFF_MAX = 20;
 /** Brief folders older than this are removed when the next company is made. */
@@ -233,6 +232,7 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
       const file = path.join(folder, `seat-${i + 1}.md`);
       fs.writeFileSync(file, seatBrief({
         company: r.company!.trim(), mission: r.mission, standingOrders: r.standingOrders, seats: made, ceo: r.ceo!, seat: i,
+        ...(r.folder ? { folder: r.folder } : {}),
       }), 'utf8');
       return buildInitialCommand(launcher, file, deps.platform);
     });
