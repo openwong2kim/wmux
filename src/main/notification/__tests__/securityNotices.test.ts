@@ -59,6 +59,20 @@ describe('securityNotices', () => {
     expect(closedContents.webContents.send).not.toHaveBeenCalled();
   });
 
+  it('keeps the notice and reaches the other windows when one send throws', async () => {
+    const broken = fakeWindow();
+    broken.webContents.send.mockImplementation(() => { throw new Error('frame disposed'); });
+    const live = fakeWindow();
+    windows.push(broken, live);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => { /* expected */ });
+    const { record, list } = await load();
+    expect(() => record({ title: 'Phone launch', body: 'x', ptyId: null })).not.toThrow();
+    const notices = await list();
+    expect(notices.map((n) => n.title)).toEqual(['Phone launch']);
+    expect(live.webContents.send).toHaveBeenCalledWith('security-notice:added', notices[0]);
+    warn.mockRestore();
+  });
+
   it('forgets an acknowledged notice and ignores an unknown or non-string id', async () => {
     const { record, list, acknowledge } = await load();
     record({ title: 'a', body: 'a', ptyId: null });
