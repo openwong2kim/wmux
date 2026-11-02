@@ -581,6 +581,8 @@ function assistantText(
  * Fence handling is deliberately simple — matching CommonMark exactly is not
  * the job. An UNCLOSED fence is treated as running to the end of the text,
  * which is what Claude Code's own renderer does with a truncated response.
+ * As in CommonMark, an indented fence (a block inside a list item) takes up to
+ * its own indentation off each body line: the body is the code as shown.
  */
 export function extractCodeBlocks(
   raw: string,
@@ -603,19 +605,20 @@ export function extractCodeBlocks(
   const out: string[] = [];
   let n = 0;
   for (let i = 0; i < lines.length; i++) {
-    const open = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*(.*)$/.exec(lines[i]);
+    const open = /^([ \t]{0,3})(`{3,}|~{3,})[ \t]*(.*)$/.exec(lines[i]);
     if (!open) {
       out.push(lines[i]);
       continue;
     }
-    const marker = open[1];
-    const info = open[2].trim();
+    const indent = open[1].length;
+    const marker = open[2];
+    const info = open[3].trim();
     const body: string[] = [];
     let j = i + 1;
     for (; j < lines.length; j++) {
       const close = new RegExp(`^[ \\t]{0,3}${marker[0] === '`' ? '`' : '~'}{${marker.length},}[ \\t]*$`);
       if (close.test(lines[j])) break;
-      body.push(lines[j]);
+      body.push(lines[j].replace(new RegExp(`^ {0,${indent}}`), ''));
     }
     n += 1;
     const { lang, path } = parseFenceInfo(info);

@@ -25,7 +25,7 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 
 /** How long a request may wait for that PC, in hours. */
 export const SPAWN_ASK_HOURS = [1, 4, 24, 72] as const;
-const DEFAULT_HOURS = 24;
+export const DEFAULT_HOURS = 24;
 
 /** Why this PC cannot ask that PC for anything (null: it can). */
 export type SpawnAskBlock = 'unsupported' | 'no-targets' | 'nothing';
@@ -42,7 +42,7 @@ export function spawnUntil(at: string | number): string {
   return new Date(at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' });
 }
 
-function utf8Bytes(s: string): number {
+export function utf8Bytes(s: string): number {
   return new TextEncoder().encode(s).length;
 }
 

@@ -14,6 +14,7 @@ import type { TerminalCoreSettings, TerminalEngine } from '../shared/terminalCor
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
+import { EXTERNAL_SESSIONS_IPC, type ExternalSession, type ExternalSessionsApi } from '../shared/externalSessions';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import { START_POLARITY_STORAGE_KEY, resolveStartPolarity, startPaintCss } from '../shared/windowStartPaint';
 import { startLocaleFromArgv } from '../shared/startLocale';
@@ -87,7 +88,7 @@ import type { NotificationCategory, StallPrefillResult } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
 import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
-import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
+import type { PaneUsageLimit, PaneUsageLimitPatch, PaneUsageWindow } from '../shared/usageLimit';
 import type { AuthLostEntry } from '../shared/agentAuthLost';
 import type { DictationAssetsResult, DictationMicAccess, DictationModelState } from '../shared/dictation';
 import type { PreviewChangedEvent, PreviewLinkEvent, PreviewOpenResult } from '../shared/filePreview';
@@ -332,7 +333,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
+    create: (options?: { shell?: string; cwd?: string; wslDistro?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -1618,6 +1619,9 @@ const electronAPI = {
   company: {
     seatLaunches: (req: import('../main/company/seatLaunch').SeatLaunchRequest) =>
       ipcRenderer.invoke(IPC.COMPANY_SEAT_LAUNCHES, req) as Promise<import('../main/company/seatLaunch').SeatLaunchResult>,
+    // One seat added to a company that already runs.
+    hireSeat: (req: import('../main/company/seatLaunch').HireSeatRequest) =>
+      ipcRenderer.invoke(IPC.COMPANY_HIRE_SEAT, req) as Promise<import('../main/company/seatLaunch').HireSeatResult>,
   },
   // Fleet's Plan card: Claude's plan dialogs and the answer to one (main window only).
   planApprovals: {
@@ -1700,7 +1704,8 @@ const electronAPI = {
         { ok: true; repoPaths: string[] } | { ok: false }
       >,
     // mode='workspace'는 cwd repo/worktree 자신의 미커밋 변경만(본 repo 매핑 없음).
-    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace') =>
+    // mode='since': the same folder's changes since targetHeadOid, committed or not.
+    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace' | 'since') =>
       ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '', mode ?? 'task') as Promise<
         import('../shared/diffParse').DiffReadResult | import('../shared/diffParse').DiffReadError
       >,
@@ -1726,11 +1731,14 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.TASK_CREATE_PR, { taskId, verifiedWorkspaceId }) as Promise<
         import('../shared/workTask').CreatePrResultWire
       >,
+    /** `keep`: every folder a live, stashed or archived pane is in; without
+     *  it no company seat folder is listed. */
     scan: (
       verifiedWorkspaceId: string,
       knownOpen?: Array<{ taskId: string; title: string; worktreePath?: string }>,
+      keep?: string[],
     ) =>
-      ipcRenderer.invoke(IPC.WORKTASK_SCAN, { verifiedWorkspaceId, knownOpen }) as Promise<
+      ipcRenderer.invoke(IPC.WORKTASK_SCAN, { verifiedWorkspaceId, knownOpen, ...(keep ? { keep } : {}) }) as Promise<
         import('../shared/workTask').WorktaskScanResultWire
       >,
     // F2 — 재발사: prompt.md 실존 검사 후 원래 initialCommand를 정상 경로와 동일
@@ -1747,6 +1755,19 @@ const electronAPI = {
       >,
     deletePhoneBranch: (repo: string, branch: string) =>
       ipcRenderer.invoke(IPC.WORKTASK_DELETE_PHONE_BRANCH, { repo, branch }) as Promise<{ ok: boolean; error?: string }>,
+    removeCompanySeat: (worktreePath: string, force: boolean) =>
+      ipcRenderer.invoke(IPC.WORKTASK_REMOVE_COMPANY_SEAT, { worktreePath, force }) as Promise<
+        import('../shared/workTask').RemovePhoneWorktreeResultWire
+      >,
+    /** Only `company/<slug>` of that seat folder. */
+    deleteCompanySeatBranch: (worktreePath: string, repo: string, branch: string, oid: string) =>
+      ipcRenderer.invoke(IPC.WORKTASK_DELETE_COMPANY_SEAT_BRANCH, { worktreePath, repo, branch, oid }) as Promise<{ ok: boolean; error?: string }>,
+    /** Remove the company seat worktrees nothing uses any more; `keep`: every
+     *  folder a live, stashed or archived pane is in. */
+    sweepCompanySeats: (keep: string[]) =>
+      ipcRenderer.invoke(IPC.WORKTASK_SWEEP_COMPANY_SEATS, { keep }) as Promise<
+        import('../shared/workTask').CompanySeatSweepResultWire
+      >,
   },
   dialog: {
     pickFolder: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FOLDER) as Promise<string[]>,
@@ -2101,7 +2122,25 @@ const electronAPI = {
     },
     update: (ptyId: string, patch: PaneUsageLimitPatch) =>
       ipcRenderer.invoke(IPC.USAGE_LIMIT_UPDATE, { ptyId, patch }) as Promise<{ ok: boolean }>,
+    // Each pane's 5-hour window from its statusline: the boot read, then the whole map on each change.
+    windows: () => ipcRenderer.invoke(IPC.USAGE_LIMIT_WINDOWS_LIST) as Promise<Record<string, PaneUsageWindow>>,
+    onWindows: (callback: (windows: Record<string, PaneUsageWindow>) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, windows: Record<string, PaneUsageWindow>) => callback(windows);
+      ipcRenderer.on(IPC.USAGE_LIMIT_WINDOWS, listener);
+      return () => { ipcRenderer.removeListener(IPC.USAGE_LIMIT_WINDOWS, listener); };
+    },
   },
+  // External sessions (shared/externalSessions.ts): agents running outside
+  // wmux, status only. `onChanged` always carries the full list.
+  externalSessions: {
+    list: () => ipcRenderer.invoke(EXTERNAL_SESSIONS_IPC.list) as Promise<ExternalSession[]>,
+    hide: (id: string) => ipcRenderer.invoke(EXTERNAL_SESSIONS_IPC.hide, id) as Promise<void>,
+    onChanged: (callback: (sessions: ExternalSession[]) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, sessions: ExternalSession[]) => callback(sessions);
+      ipcRenderer.on(EXTERNAL_SESSIONS_IPC.changed, listener);
+      return () => { ipcRenderer.removeListener(EXTERNAL_SESSIONS_IPC.changed, listener); };
+    },
+  } satisfies ExternalSessionsApi,
   // Voice dictation (shared/dictation): the model's state and its one-time
   // download (called only from the owner's consent), the engine's assets,
   // and the microphone's OS access.

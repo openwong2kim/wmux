@@ -313,6 +313,11 @@ export default function CommandPalette() {
         shortcut: 'stashPane',
         action: () => { stashActivePane(); setVisible(false); },
       },
+      {
+        label: t('palette.cmd.balanceLayout'),
+        shortcut: 'balanceLayout',
+        action: () => { useStore.getState().balanceLayout(); showWorkspaces(useStore.getState()); setVisible(false); },
+      },
       // #645 — move the active pane. Four entries rather than one "move pane"
       // with a follow-up prompt: the palette is a single-stage list, and
       // typing "move pane l" should just do it.

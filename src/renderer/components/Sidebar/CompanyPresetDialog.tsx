@@ -19,7 +19,7 @@ interface AgentChoice { agent: AgentSlug; label: string; installed: boolean }
 
 /** The agents a seat may start: what the factory finds installed here, else
  *  Claude Code and Codex as they are. */
-function useAgentChoices(): AgentChoice[] {
+export function useAgentChoices(): AgentChoice[] {
   const [choices, setChoices] = useState<AgentChoice[]>([
     { agent: 'claude', label: 'Claude Code', installed: true },
     { agent: 'codex', label: 'Codex', installed: true },

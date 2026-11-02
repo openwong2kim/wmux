@@ -1,0 +1,31 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 100,
+ "rows": [
+  "❯ steps?                                                                                            ",
+  "",
+  "⏺ Steps:",
+  "",
+  "  1. Install:",
+  "  python -c \"",
+  "  print(1)",
+  "  \"",
+  "  2. Then in Python:",
+  "",
+  "  def f():",
+  "      a = 1",
+  "      if a:",
+  "          return a",
+  "",
+  "  And npm test runs it.",
+  "",
+  "",
+  "",
+  "                                                                                ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "markdown": "Steps:\n\n1. Install:\n   ```bash\n   python -c \"\n   print(1)\n   \"\n   ```\n2. Then in Python:\n\n   ```python\n   def f():\n       a = 1\n       if a:\n           return a\n   ```\n\nAnd **`npm test`** runs it."
+}

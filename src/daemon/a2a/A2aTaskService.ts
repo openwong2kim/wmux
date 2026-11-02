@@ -45,10 +45,26 @@ import {
   normalizeCompletionEvidenceWire,
   validateCompletionEvidence,
 } from '../../shared/completionEvidence';
-import { isVerifiedTaskSender } from '../../shared/a2aReopen';
+import { isTaskEnded, isVerifiedTaskSender } from '../../shared/a2aReopen';
 import { companyCancelRefusal, companyDoneRefusal, isCompanyTask, type CompanySeat } from '../../shared/company';
 import { isReceiverPaneGone } from '../../shared/a2aOrphanedTask';
+import {
+  COMPANY_BLOCKED_BY_REFUSAL,
+  COMPANY_BLOCKERS_MAX,
+  COMPANY_HOLD_KEY,
+  companyBlockersOf,
+  companyBriefOfHistory,
+  companyHoldAtCreate,
+  companyHoldOf,
+  companyHoldPhase,
+  companyHoldWithholds,
+  companyNotGivenRefusal,
+  isCompanyHoldReason,
+  type CompanyHoldMarker,
+  type CompanyHoldReason,
+} from '../../shared/companyHold';
 import type {
+  A2aCompanyMarkPayload,
   A2aRemoteMarkPayload,
   A2aTaskCancelPayload,
   A2aTaskCreatePayload,
@@ -56,7 +72,7 @@ import type {
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
 import type { A2aRemoteReceipt, A2aRemoteTaskMarkerV1 } from '../../shared/a2aRemote';
-import { localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
+import { isRemoteWorkspaceId, localSideOf, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteInboxItem, type A2aRemoteTaskState } from '../../shared/a2aRemoteDelivery';
 
 /** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
@@ -133,6 +149,19 @@ export interface CreateTaskInput {
   artifacts?: Artifact[];
   /** Cross-host A2A: stored as `metadata.remote` (and replayed with the task). */
   remote?: A2aRemoteTaskMarkerV1;
+  /**
+   * Company mode, set by main only: the sender held this task back for its
+   * blockers, so it always gets a hold marker, released at create when every
+   * blocker has completed meanwhile (companyHoldAtCreate).
+   */
+  holdForBlockers?: true;
+  /**
+   * Company mode, set by main only: the sender's brief would make one more
+   * staff seat on this PC work while every working slot is taken. A company
+   * task with no hold from blockers then gets a released marker with none,
+   * owed from the start, and main writes it to its seat once a slot frees.
+   */
+  holdForSlot?: true;
 }
 
 export interface CreateTaskOptions {
@@ -220,6 +249,16 @@ export interface QueryFilters {
   updatedSince?: string;
 }
 
+/**
+ * Who asks a query, as main resolved it: the caller's pane, or the human's
+ * lane (`trusted`). A held company task not given to its seat yet is left
+ * out for its receiving side (companyHoldWithholds).
+ */
+export interface QueryCaller {
+  paneId?: string;
+  trusted?: boolean;
+}
+
 /** Peer state message ids remembered per task (dedupe window). */
 export const REMOTE_STATE_IDS_MAX = 64;
 
@@ -256,6 +295,9 @@ export class A2aTaskService {
       this.restoreIdempotency(rec); // E: 크로스-재시작 멱등 재시드
       this.restoreRemoteState(rec.payload);
     }
+    // Before the GC below: a blocker that ended long ago is still in the
+    // projection here, so a hold can be checked against it.
+    this.reconcileCompanyHolds();
     // A: 부트 직후 GC — 30분 경과 종단 태스크를 즉시 정리한다. 로그는 영구이므로
     // 이게 없으면 restore가 역대 전 종단 태스크를 매 부트 부활시켜(projection 무한
     // 성장) query에 노출한다. GC는 projection만 바운드(로그 절단은 §9 컴팩션 몫).
@@ -292,11 +334,12 @@ export class A2aTaskService {
 
   /** Re-seed the remote-state dedupe from a replayed transition/cancel. */
   private restoreRemoteState(payload: unknown): void {
-    const p = payload as { kind?: unknown; taskId?: unknown; to?: unknown; remoteMessageId?: unknown } | null;
+    const p = payload as { kind?: unknown; taskId?: unknown; to?: unknown; remoteMessageId?: unknown; remoteAsked?: unknown } | null;
     if (!p || typeof p.taskId !== 'string' || typeof p.remoteMessageId !== 'string') return;
     if (!this.tasks.has(p.taskId)) return;
     if (p.kind === 'task.transition' && typeof p.to === 'string') {
-      this.recordRemoteState(p.taskId, p.remoteMessageId, p.to as TaskState);
+      // A report keys on the state the peer asked for, so its redelivery stays a duplicate.
+      this.recordRemoteState(p.taskId, p.remoteMessageId, p.remoteAsked === 'completed' ? 'completed' : p.to as TaskState);
     } else if (p.kind === 'task.cancel') {
       this.recordRemoteState(p.taskId, p.remoteMessageId, 'canceled');
     }
@@ -328,10 +371,24 @@ export class A2aTaskService {
       };
       task.metadata.updatedAt = t.timestamp;
       if (t.remoteMessageId) {
-        addInboxItem(task, t.remoteMessageId, 'state', t.to);
+        // The peer's `completed` held here as a report: its item says completed.
+        const report = t.remoteAsked === 'completed' && t.to === 'input-required';
+        addInboxItem(task, t.remoteMessageId, 'state', report ? 'completed' : t.to, report);
         // The peer told us this state: nothing to tell it back.
         const m = remoteMarkerOf(task);
-        if (m) m.stateSync = t.to;
+        if (m) {
+          m.stateSync = t.to;
+          // The peer's latest state replaces a report it made earlier.
+          if (report) m.reported = t.remoteMessageId;
+          else delete m.reported;
+        }
+        // Every report stays in the history: a later one replaces the status.
+        const reportMessage = report ? t.message : undefined;
+        if (reportMessage && !task.history.some((h) => h.messageId === reportMessage.messageId)) task.history.push(reportMessage);
+      } else {
+        // A state set on this PC (the done on a report, a forced end) ends the report.
+        const m = remoteMarkerOf(task);
+        if (m) delete m.reported;
       }
       return;
     }
@@ -402,6 +459,12 @@ export class A2aTaskService {
       }
       return;
     }
+    if (p.kind === 'company.mark') {
+      const c = payload as A2aCompanyMarkPayload;
+      const marker = companyHoldOf(this.tasks.get(c.taskId));
+      if (marker) applyCompanyMark(marker, c);
+      return;
+    }
     // executor-lifecycle / 미지 kind: 예약 슬롯 — projection 무시.
   }
 
@@ -426,6 +489,24 @@ export class A2aTaskService {
       }
 
       const nowIso = this.isoNow();
+      // A company task on this PC whose brief names blockers not completed
+      // yet is held until they are (shared/companyHold.ts). The marker rides
+      // in the create payload, so a replay takes it as decided here.
+      const brief = companyBriefOfHistory(input.history ?? []);
+      const blockers = companyBlockersOf(brief);
+      if (blockers.length > COMPANY_BLOCKERS_MAX) {
+        return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.tooMany(blockers.length)}` };
+      }
+      if (blockers.includes(id)) return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.self(id)}` };
+      const local = !input.remote && !isRemoteWorkspaceId(input.from.workspaceId) && !isRemoteWorkspaceId(input.to.workspaceId);
+      // Main checked these blockers a moment ago: one gone since ended long
+      // ago and was evicted, and a hold on it would never release.
+      const gone = local && input.holdForBlockers ? blockers.find((b) => !this.tasks.has(b)) : undefined;
+      if (gone !== undefined) return { ok: false, error: `a2a.task.create: ${COMPANY_BLOCKED_BY_REFUSAL.gone(gone)}` };
+      const blockerHold = local
+        ? companyHoldAtCreate(brief, (blockerId) => this.tasks.get(blockerId)?.status, input.holdForBlockers ? nowIso : undefined)
+        : null;
+      const hold = blockerHold ?? (local && input.holdForSlot && brief ? { blockedBy: [], waitingOn: [], releasedAt: nowIso } : null);
       const metadata: WmuxTaskMetadata = {
         title: input.title,
         from: input.from,
@@ -433,6 +514,7 @@ export class A2aTaskService {
         createdAt: nowIso,
         updatedAt: nowIso,
         ...(input.remote ? { remote: { ...input.remote } } : {}),
+        ...(hold ? { [COMPANY_HOLD_KEY]: hold } : {}),
       };
       const task: Task = {
         kind: 'task',
@@ -451,6 +533,9 @@ export class A2aTaskService {
         return { ok: false, error: 'a2a.task.create: daemon log append failed (uncommitted)' };
       }
       this.applyPayload(payload);
+      // A blocker that ended while this create was written found no task to
+      // settle yet: settle against the blockers' states now.
+      if (hold) await this.settleHold(task);
       return { ok: true, taskId: id, task };
     });
   }
@@ -459,14 +544,33 @@ export class A2aTaskService {
    * 상태 전이 — 데몬 정본 게이트. 권한 + VALID_TRANSITIONS + 완료증거 게이트(PR-B) 강제.
    * append(true) 후에만 projection 적용. 멱등키가 있으면 재시도 흡수(로그 1건).
    */
-  transition(input: TransitionInput): Promise<TransitionOk | OpErr> {
-    return this.withTaskLock(input.taskId, async () => {
+  async transition(input: TransitionInput): Promise<TransitionOk | OpErr> {
+    const res = await this.withTaskLock<TransitionOk | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.update: task not found: ${input.taskId}` };
 
+      // A company task this PC sent to another PC is marked done here, on the
+      // report that PC made: by the sending workspace's coordinator (a resolved
+      // pane in that seat now, as for a local seat's report) or by the trusted
+      // lane for that workspace. The state it must be in is checked after the
+      // idempotency hit, so a retried done returns its first result.
+      const remoteDone = isRemoteWorkspaceId(task.metadata.to.workspaceId)
+        && input.callerWorkspaceId === task.metadata.from.workspaceId
+        && (input.trustedLane === true || (input.callerCompanySeat === 'coordinator' && !!input.callerAddr?.paneId))
+        && isCompanyTask(task.history);
       // 권한: 수신자 workspace만 상태 갱신 가능(a2aSlice 현행 계약).
-      if (task.metadata.to.workspaceId !== input.callerWorkspaceId) {
+      if (!remoteDone && task.metadata.to.workspaceId !== input.callerWorkspaceId) {
         return { ok: false, error: `a2a.task.update: caller ${input.callerWorkspaceId} is not the receiver` };
+      }
+      // A held company task not given to its seat yet is not its receiver's;
+      // its sender and the human may still move it.
+      const hold = companyHoldOf(task);
+      if (hold && companyHoldWithholds(task, {
+        workspaceId: input.callerWorkspaceId,
+        ...(input.callerAddr?.paneId ? { paneId: input.callerAddr.paneId } : {}),
+        trusted: input.trustedLane === true,
+      })) {
+        return { ok: false, error: `a2a.task.update: ${companyNotGivenRefusal(hold)}` };
       }
       // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
       // 수신 페인에 핀됐으면(to.paneId) 그 페인이어야 한다. callerAddr 부재(헤드리스
@@ -518,6 +622,12 @@ export class A2aTaskService {
       // transition으로 변질되지 않게). 정당한 재시도는 동일 입력이라 authz를 항상 재통과.
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'transition');
       if (cached) return cached as TransitionOk;
+      if (remoteDone && !(input.to === 'completed' && task.status.state === 'input-required' && remoteMarkerOf(task)?.reported !== undefined)) {
+        return {
+          ok: false,
+          error: 'a2a.task.update: a task sent to another PC is marked done here only on its report (input-required after that PC completed it)',
+        };
+      }
       // VALID_TRANSITIONS 데몬측 강제(성공 종단='completed').
       if (!validateTransition(task.status.state, input.to)) {
         const from = task.status.state;
@@ -594,13 +704,15 @@ export class A2aTaskService {
       this.idempotencyRecord(input.taskId, input.idempotencyKey, 'transition', result);
       return result;
     });
+    if (res.ok) await this.settleDependentsOf(input.taskId);
+    return res;
   }
 
   /**
    * 취소 — sender/receiver 모두 가능. VALID_TRANSITIONS(→canceled) 강제.
    */
-  cancelTask(input: CancelTaskInput): Promise<CancelOk | OpErr> {
-    return this.withTaskLock(input.taskId, async () => {
+  async cancelTask(input: CancelTaskInput): Promise<CancelOk | OpErr> {
+    const res = await this.withTaskLock<CancelOk | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.cancel: task not found: ${input.taskId}` };
 
@@ -648,6 +760,8 @@ export class A2aTaskService {
       this.idempotencyRecord(input.taskId, input.idempotencyKey, 'cancel', result);
       return result;
     });
+    if (res.ok) await this.settleDependentsOf(input.taskId);
+    return res;
   }
 
   /**
@@ -662,8 +776,14 @@ export class A2aTaskService {
    * the regular transition API still refuses terminal -> submitted. The commit
    * is a plain `task.transition` payload (plus a `reopened` marker), so a log
    * replayed by an older daemon still lands on `submitted`.
+   *
+   * `handBack` (main only): the sender's message on a company task its seat
+   * reported (`input-required`) hands the work back, and the task goes to
+   * `working` again, so it counts toward its seat's working slot. That edge
+   * is in VALID_TRANSITIONS; it is committed here because the actor is the
+   * sender, not the seat. Any other state is left as it is.
    */
-  reopenTask(input: { taskId: string; callerWorkspaceId: string; callerPaneId?: string }): Promise<ReopenOk | OpErr> {
+  reopenTask(input: { taskId: string; callerWorkspaceId: string; callerPaneId?: string; handBack?: boolean }): Promise<ReopenOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.reopen: task not found: ${input.taskId}` };
@@ -672,13 +792,14 @@ export class A2aTaskService {
       if (!isVerifiedTaskSender(task.metadata, input.callerWorkspaceId, input.callerPaneId)) {
         return { ok: false, error: 'a2a.task.reopen: caller is not the verified sender of this task' };
       }
-      if (!(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
+      const handBack = input.handBack === true && task.status.state === 'input-required' && isCompanyTask(task.history);
+      if (!handBack && !(TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
         return { ok: true, reopened: false, task };
       }
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
-        to: 'submitted',
+        to: handBack ? 'working' : 'submitted',
         timestamp: this.isoNow(),
         reopened: 'sender_message',
       };
@@ -752,6 +873,8 @@ export class A2aTaskService {
         if (task) {
           try { onFailed?.(task); } catch { /* a reader's failure never undoes the commit */ }
         }
+        // eslint-disable-next-line no-await-in-loop -- after this task's lock, before the next one
+        await this.settleDependentsOf(target.id);
       }
     }
     return failed;
@@ -914,17 +1037,19 @@ export class A2aTaskService {
    * rejected (or that expired), or its link ended. Like
    * failTasksForWorkspaceRemoved this bypasses VALID_TRANSITIONS and the
    * evidence gate (submitted -> failed is not a graph edge), and the receiver
-   * authz: either side ends its own copy. An ended task is left as it is.
+   * authz: either side ends its own copy. An ended task is left as it is, and
+   * so is a report the peer made (it finished the task there).
    */
-  forceFailRemote(input: {
+  async forceFailRemote(input: {
     taskId: string;
     reason: string;
     forced: 'remote_held_rejected' | 'remote_link_ended' | 'remote_refused';
   }): Promise<{ ok: true; task: Task; failed: boolean } | OpErr> {
-    return this.withTaskLock(input.taskId, async () => {
+    const res = await this.withTaskLock<{ ok: true; task: Task; failed: boolean } | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task || !remoteMarkerOf(task)) return { ok: false, error: `a2a.remote.fail: remote task not found: ${input.taskId}` };
       if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) return { ok: true, task, failed: false };
+      if (remoteMarkerOf(task)?.reported !== undefined) return { ok: true, task, failed: false };
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
@@ -940,6 +1065,8 @@ export class A2aTaskService {
       this.applyPayload(payload);
       return { ok: true, task, failed: true };
     });
+    if (res.ok && res.failed) await this.settleDependentsOf(input.taskId);
+    return res;
   }
 
   /**
@@ -997,8 +1124,13 @@ export class A2aTaskService {
    *
    * Keyed by the peer's `messageId`: the same id asking for the same state is a
    * duplicate, a different state a conflict.
+   *
+   * On a company task this host sent, the peer's `completed` is committed as
+   * `input-required` (`remoteAsked: 'completed'`), with its message and
+   * evidence: a report this host marks done (transition). The dedupe, the
+   * graph check and the evidence verdict read the asked state.
    */
-  applyRemoteState(input: {
+  async applyRemoteState(input: {
     taskId: string;
     linkId: string;
     messageId: string;
@@ -1009,7 +1141,7 @@ export class A2aTaskService {
     /** The peer's completion evidence (wire-normalized, sanitized), re-checked here like local evidence. */
     evidence?: CompletionEvidence;
   }): Promise<RemoteOpOk | ConflictErr | OpErr> {
-    return this.withTaskLock(input.taskId, async () => {
+    const res = await this.withTaskLock<RemoteOpOk | ConflictErr | OpErr>(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task || remoteMarkerOf(task)?.linkId !== input.linkId) {
         return { ok: false, error: `a2a.remote.state: no task ${input.taskId} on link ${input.linkId}` };
@@ -1043,15 +1175,27 @@ export class A2aTaskService {
       if (task.metadata.to.workspaceId !== remoteWs) {
         return { ok: false, error: 'a2a.remote.state: only the receiver may move this task' };
       }
+      const current = task.status.state;
+      // A company task's `completed` is held here as a report (input-required)
+      // until this host marks it done. Every check below reads the state the
+      // peer asked for, not the one committed.
+      const report = input.to === 'completed' && isCompanyTask(task.history);
       // A receiver's `failed` is taken from any open state: the peer ends the
       // task on its side (e.g. a person rejected it while it was still
       // `submitted`, which has no graph edge to `failed`), and our copy must
-      // not stay open behind it.
-      if (input.to !== 'failed' && !validateTransition(task.status.state, input.to)) {
-        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      // not stay open behind it. `completed` and `input-required` are taken
+      // from `submitted` too: only the latest state is synced, so a fast peer
+      // can skip `working`. After a report, the peer asking a question
+      // replaces it.
+      const allowed = input.to === 'failed'
+        || validateTransition(current, input.to)
+        || (current === 'submitted' && (input.to === 'completed' || input.to === 'input-required'))
+        || (current === 'input-required' && input.to === 'input-required' && remoteMarkerOf(task)?.reported !== undefined);
+      if (!allowed) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
-      if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
-        return { ok: false, error: `a2a.remote.state: invalid transition ${task.status.state} -> ${input.to}` };
+      if ((TERMINAL_STATES as readonly string[]).includes(current)) {
+        return { ok: false, error: `a2a.remote.state: invalid transition ${current} -> ${input.to}` };
       }
       const terminal = input.to === 'completed' || input.to === 'failed';
       const summary = input.summary?.trim() || `${input.to} on the remote host (evidence stays there)`;
@@ -1068,12 +1212,13 @@ export class A2aTaskService {
       const payload: A2aTaskTransitionPayload = {
         kind: 'task.transition',
         taskId: input.taskId,
-        to: input.to,
+        to: report ? 'input-required' : input.to,
         timestamp,
         ...(message ? { message } : {}),
         ...(evidence ? { forced: 'remote_state' as const, evidence } : {}),
         ...(verdict?.ok ? { verifiedItemCount: verdict.verifiedItemCount } : {}),
         remoteMessageId: input.messageId,
+        ...(report ? { remoteAsked: 'completed' as const } : {}),
       };
       const committed = await this.log.append(this.envelope(payload, remoteWs, this.derivePrincipalId(task, 'to', remoteWs)));
       if (!committed) return { ok: false, error: 'a2a.remote.state: daemon log append failed (uncommitted)' };
@@ -1081,6 +1226,192 @@ export class A2aTaskService {
       this.recordRemoteState(input.taskId, input.messageId, input.to);
       return { ok: true, task, duplicate: false };
     });
+    if (res.ok && !res.duplicate) await this.settleDependentsOf(input.taskId);
+    return res;
+  }
+
+  // ── company: tasks held on their blockers ──────────────────────────
+
+  /**
+   * Record main's delivery of a released company task
+   * (`A2A_COMPANY_RPC.mark`): `attempted` (only while the task is still owed),
+   * `delivered` (final; also taken on a held task, which a person had sent)
+   * or a `held` reason (ignored once delivered). Refused on a task without a
+   * hold marker, an ended task and a task still waiting on a blocker. A mark
+   * that changes nothing appends nothing. `updatedAt` is left alone: this is
+   * delivery bookkeeping, as in markRemote.
+   */
+  markCompany(input: {
+    taskId: string;
+    attempted?: boolean;
+    delivered?: true;
+    ptyId?: string;
+    held?: CompanyHoldReason;
+  }): Promise<{ ok: true; task: Task } | OpErr> {
+    return this.withTaskLock<{ ok: true; task: Task } | OpErr>(input.taskId, async () => {
+      const task = this.tasks.get(input.taskId);
+      const marker = companyHoldOf(task);
+      if (!task || !marker) return { ok: false, error: `a2a.company.mark: no held company task ${input.taskId}` };
+      if (isTaskEnded(task)) return { ok: false, error: `a2a.company.mark: task ${input.taskId} has ended` };
+      if (companyHoldPhase(marker) === 'waiting') {
+        return { ok: false, error: `a2a.company.mark: task ${input.taskId} is still waiting on ${marker.waitingOn.join(', ')}` };
+      }
+      let change: Pick<A2aCompanyMarkPayload, 'attempted' | 'delivered' | 'ptyId' | 'held'>;
+      if (input.delivered === true) {
+        if (marker.delivered) return { ok: true, task };
+        change = { delivered: true, ...(input.ptyId ? { ptyId: input.ptyId } : {}) };
+      } else if (input.held !== undefined) {
+        if (marker.delivered || marker.held === input.held) return { ok: true, task };
+        change = { held: input.held };
+      } else if (input.attempted !== undefined) {
+        // An attempt only matters while the task is still owed.
+        if (marker.delivered || marker.held || (marker.attempted === true) === input.attempted) return { ok: true, task };
+        change = { attempted: input.attempted };
+      } else {
+        return { ok: false, error: 'a2a.company.mark: nothing to mark' };
+      }
+      if (!(await this.appendCompanyMark(task, change))) {
+        return { ok: false, error: 'a2a.company.mark: daemon log append failed (uncommitted)' };
+      }
+      return { ok: true, task };
+    });
+  }
+
+  /**
+   * Released company tasks owed a delivery: not delivered, not held, not
+   * ended. One marked `attempted` is listed too: main holds it as
+   * `delivery-unconfirmed` and never writes it again on its own. Each hold is
+   * first brought in line with its blockers (reconcileHoldsWithBlockers).
+   */
+  listCompanyPending(): Task[] {
+    this.reconcileHoldsWithBlockers();
+    return [...this.tasks.values()].filter((t) => {
+      const marker = companyHoldOf(t);
+      return !!marker && !isTaskEnded(t) && companyHoldPhase(marker) === 'owed';
+    });
+  }
+
+  /**
+   * Company tasks not ended that still wait on a blocker, or are held for a
+   * person. Each hold is first brought in line with its blockers.
+   */
+  listCompanyHeld(): Task[] {
+    this.reconcileHoldsWithBlockers();
+    return [...this.tasks.values()].filter((t) => {
+      const marker = companyHoldOf(t);
+      if (!marker || isTaskEnded(t)) return false;
+      const phase = companyHoldPhase(marker);
+      return phase === 'waiting' || phase === 'held';
+    });
+  }
+
+  /**
+   * After replay, before eviction: bring each hold in line with its
+   * blockers (reconcileHoldsWithBlockers), then hold a released task left
+   * `attempted` (main was writing it and never confirmed) as
+   * `delivery-unconfirmed`: a person decides, and it is never written again
+   * on its own. In memory only: the log keeps every blocker's end, so each
+   * restore derives the same result.
+   */
+  private reconcileCompanyHolds(): void {
+    this.reconcileHoldsWithBlockers();
+    for (const task of this.tasks.values()) {
+      const marker = companyHoldOf(task);
+      if (!marker || isTaskEnded(task)) continue;
+      if (marker.attempted && companyHoldPhase(marker) === 'owed') {
+        applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, held: 'delivery-unconfirmed', timestamp: task.metadata.updatedAt });
+      }
+    }
+  }
+
+  /**
+   * In memory, nothing appended: bring each open held task in line with the
+   * blockers the projection shows ended, oldest end first. A completed one is
+   * dropped (its drop mark was lost: a crash, or a log that refused it), the
+   * last one releasing the task at its completion time; one that failed or
+   * was canceled is noted. Run on restore and before each company list, so
+   * a lost mark costs one pull of main's bridge, not a daemon restart.
+   */
+  private reconcileHoldsWithBlockers(): void {
+    for (const task of this.tasks.values()) {
+      const marker = companyHoldOf(task);
+      if (!marker || isTaskEnded(task)) continue;
+      const blockers = marker.waitingOn
+        .map((id) => this.tasks.get(id))
+        .filter((b): b is Task => !!b && isTaskEnded(b))
+        .sort((a, b) => a.status.timestamp.localeCompare(b.status.timestamp));
+      for (const blocker of blockers) {
+        const change = this.holdChangeFor(marker, blocker.id);
+        if (change) applyCompanyMark(marker, { kind: 'company.mark', taskId: task.id, ...change, timestamp: blocker.status.timestamp });
+      }
+    }
+  }
+
+  /**
+   * The change a hold owes for one blocker it waits on, from the blocker's
+   * status in the projection: a drop when it completed, a note when it ended
+   * failed or canceled and that end is not noted yet (an end after a reopen
+   * is a new one), else none.
+   */
+  private holdChangeFor(marker: CompanyHoldMarker, blockerId: string): Pick<A2aCompanyMarkPayload, 'drop' | 'blockerEnded'> | undefined {
+    if (!marker.waitingOn.includes(blockerId)) return undefined;
+    const status = this.tasks.get(blockerId)?.status;
+    const state = status?.state;
+    if (state === 'completed') return { drop: blockerId };
+    if (!status || (state !== 'failed' && state !== 'canceled')) return undefined;
+    const noted = marker.blockerEnded?.some((e) => e.id === blockerId && e.state === state && e.at === status.timestamp);
+    return noted ? undefined : { blockerEnded: { id: blockerId, state, at: status.timestamp } };
+  }
+
+  /**
+   * After `blockerId` committed a state: settle every open task held on it,
+   * each under its own lock. Called once the blocker's lock is released, so
+   * this never holds two task locks at once. A failure here leaves the mark
+   * for the next restore's reconcile; the blocker's own commit stands.
+   */
+  private async settleDependentsOf(blockerId: string): Promise<void> {
+    const blocker = this.tasks.get(blockerId);
+    if (!blocker || !isTaskEnded(blocker)) return;
+    const dependents = [...this.tasks.values()].filter((t) => !isTaskEnded(t) && companyHoldOf(t)?.waitingOn.includes(blockerId));
+    for (const dependent of dependents) {
+      try {
+        // eslint-disable-next-line no-await-in-loop -- one dependent's lock at a time
+        await this.withTaskLock(dependent.id, async () => {
+          const task = this.tasks.get(dependent.id);
+          if (task) await this.settleHold(task, blockerId);
+        });
+      } catch {
+        // Left for the next restore's reconcile.
+      }
+    }
+  }
+
+  /**
+   * Bring an open held task's marker in line with its blockers' states now
+   * (only `only` when given): a completed blocker is dropped, and the last one
+   * dropped releases the task; one that ended failed or canceled is noted.
+   * Each change is one `company.mark`. Run with the task's lock held.
+   */
+  private async settleHold(task: Task, only?: string): Promise<void> {
+    for (const blockerId of [...(companyHoldOf(task)?.waitingOn ?? [])]) {
+      if (only !== undefined && blockerId !== only) continue;
+      const marker = companyHoldOf(task);
+      if (!marker || isTaskEnded(task)) continue;
+      const change = this.holdChangeFor(marker, blockerId);
+      if (!change) continue;
+      // eslint-disable-next-line no-await-in-loop -- one mark per blocker, in order
+      if (!(await this.appendCompanyMark(task, change))) return;
+    }
+  }
+
+  /** Append one `company.mark` for `task` and apply it. False when the log did not take it. */
+  private async appendCompanyMark(task: Task, change: Omit<A2aCompanyMarkPayload, 'kind' | 'taskId' | 'timestamp'>): Promise<boolean> {
+    const payload: A2aCompanyMarkPayload = { kind: 'company.mark', taskId: task.id, ...change, timestamp: this.isoNow() };
+    // Delivery bookkeeping for the seat the task is for: stamped as its side.
+    const ws = task.metadata.to.workspaceId;
+    if (!(await this.log.append(this.envelope(payload, ws, this.derivePrincipalId(task, 'to', ws))))) return false;
+    this.applyPayload(payload);
+    return true;
   }
 
   private recordRemoteState(taskId: string, messageId: string, to: TaskState): void {
@@ -1100,12 +1431,17 @@ export class A2aTaskService {
     return this.tasks.get(taskId);
   }
 
-  queryTasks(workspaceId: string, filters?: QueryFilters): Task[] {
+  /**
+   * `caller` given: a held company task not given to its seat yet is left
+   * out when the caller is on its receiving side (see QueryCaller).
+   */
+  queryTasks(workspaceId: string, filters?: QueryFilters, caller?: QueryCaller): Task[] {
     const out: Task[] = [];
     for (const task of this.tasks.values()) {
       const isSender = task.metadata.from.workspaceId === workspaceId;
       const isReceiver = task.metadata.to.workspaceId === workspaceId;
       if (!isSender && !isReceiver) continue;
+      if (caller && companyHoldWithholds(task, { workspaceId, ...caller })) continue;
       if (filters?.role === 'user' && !isSender) continue;
       if (filters?.role === 'agent' && !isReceiver) continue;
       if (filters?.status && task.status.state !== filters.status) continue;
@@ -1114,6 +1450,14 @@ export class A2aTaskService {
       out.push(task);
     }
     return out;
+  }
+
+  /**
+   * Ids of the tasks a query from `caller` in `workspaceId` leaves out (any
+   * filter aside): main drops its own cached copies of them.
+   */
+  withheldTaskIds(workspaceId: string, caller: QueryCaller): string[] {
+    return [...this.tasks.values()].filter((t) => companyHoldWithholds(t, { workspaceId, ...caller })).map((t) => t.id);
   }
 
   /** 관측용(테스트/디버그): 현재 projection 태스크 수. */
@@ -1288,11 +1632,13 @@ function remoteMarkerOf(task: Task | undefined): A2aRemoteTaskState | undefined 
 }
 
 /** Owe the local pane one delivery for a reply/state the peer sent (idempotent). */
-function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState): void {
+function addInboxItem(task: Task, messageId: string, kind: A2aRemoteInboxItem['kind'], state?: TaskState, reported = false): void {
   const marker = remoteMarkerOf(task);
   if (!marker) return;
   const inbox = marker.inbox ?? (marker.inbox = []);
-  if (!inbox.some((i) => i.messageId === messageId)) inbox.push({ messageId, kind, ...(state ? { state } : {}), delivered: false });
+  if (!inbox.some((i) => i.messageId === messageId)) {
+    inbox.push({ messageId, kind, ...(state ? { state } : {}), ...(reported ? { reported: true as const } : {}), delivered: false });
+  }
 }
 
 /** The text parts of a history's first message, joined — the "body" a remote id dedupes on. */
@@ -1317,4 +1663,46 @@ function firstMessageText(history: Message[]): string {
 /** delivered < read: a receipt only ever moves forward. */
 function receiptRank(r: A2aRemoteReceipt | undefined): number {
   return r === 'read' ? 2 : r === 'delivered' ? 1 : 0;
+}
+
+/**
+ * Apply one `company.mark` to a hold marker, live and on replay alike. A drop
+ * of a blocker no longer waited on changes nothing, and `releasedAt` is set
+ * once, by the drop that empties `waitingOn`.
+ */
+function applyCompanyMark(marker: CompanyHoldMarker, c: A2aCompanyMarkPayload): void {
+  if (typeof c.drop === 'string') {
+    const dropped = c.drop;
+    if (!marker.waitingOn.includes(dropped)) return;
+    marker.waitingOn = marker.waitingOn.filter((id) => id !== dropped);
+    // A blocker that failed, was reopened and then completed no longer explains the hold.
+    const ended = (marker.blockerEnded ?? []).filter((e) => e.id !== dropped);
+    if (ended.length > 0) marker.blockerEnded = ended;
+    else delete marker.blockerEnded;
+    if (marker.waitingOn.length === 0 && !marker.releasedAt) marker.releasedAt = c.timestamp;
+    return;
+  }
+  if (c.blockerEnded) {
+    // A note written before `at` was kept reads without it.
+    const { id, state, at } = c.blockerEnded;
+    if (!marker.waitingOn.includes(id) || (state !== 'failed' && state !== 'canceled')) return;
+    marker.blockerEnded = [...(marker.blockerEnded ?? []).filter((e) => e.id !== id), { id, state, ...(typeof at === 'string' ? { at } : {}) }];
+    return;
+  }
+  if (c.attempted !== undefined) {
+    if (c.attempted) marker.attempted = true;
+    else delete marker.attempted;
+    return;
+  }
+  if (c.delivered === true) {
+    marker.delivered = true;
+    delete marker.attempted;
+    delete marker.held;
+    if (c.ptyId) marker.ptyId = c.ptyId;
+    return;
+  }
+  if (isCompanyHoldReason(c.held)) {
+    marker.held = c.held;
+    delete marker.attempted;
+  }
 }

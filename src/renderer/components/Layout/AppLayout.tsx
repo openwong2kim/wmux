@@ -50,6 +50,7 @@ import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import { useRoomSync } from '../../hooks/useRoomSync';
+import { useExternalSessionsSync } from '../../hooks/useExternalSessionsSync';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { FocusManager } from './LayoutLogicMounts';
@@ -74,6 +75,7 @@ import { useUsageLimitBridge } from '../../hooks/useUsageLimitBridge';
 import { useAgentAuthBridge } from '../../hooks/useAgentAuthBridge';
 import { useWorkspaceSettleBridge } from '../../hooks/useWorkspaceSettleBridge';
 import { useStarPromptSessionBridge } from '../../utils/starPrompt';
+import { useCompanySeatSweep } from '../../hooks/useCompanySeatSweep';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useRemoteAttachmentsLifecycle } from '../../hooks/useRemoteAttachmentsLifecycle';
 import PcRailFeeds from '../PcRail/PcRailFeeds';
@@ -127,6 +129,7 @@ import {
 } from '../../../shared/ptyRecovery';
 import { isChatV2Covering } from '../ChatV2/coverage';
 import { overlayColors } from '../../utils/titlebarOverlay';
+import { multiviewGroupsForSave } from '../../utils/multiviewGroups';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -478,6 +481,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
       ? { surfaceDismissedQuestion: state.surfaceDismissedQuestion }
       : {}),
     multiviewArrangement: state.multiviewArrangement,
+    multiviewGroups: multiviewGroupsForSave(state),
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,
@@ -799,6 +803,7 @@ export default function AppLayout() {
   useUiScaleSync(uiScale);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   useRoomSync();
+  useExternalSessionsSync();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
@@ -1077,6 +1082,9 @@ export default function AppLayout() {
   // New agent sessions counted by main, toward the sidebar's star row. Taken
   // only once the saved session is restored, so loadSession cannot drop them.
   useStarPromptSessionBridge(sessionLoaded);
+  // Company seat worktrees nothing uses any more: swept once the saved
+  // session is in the store (its folders are kept), and after a workspace goes.
+  useCompanySeatSweep(sessionLoaded);
   // Fix 0: monotonic startup generation counter. Each mount-effect run
   // bumps it; the startup catch only applies its fallback if its own
   // gen still matches the current ref. Prevents a stale startup from

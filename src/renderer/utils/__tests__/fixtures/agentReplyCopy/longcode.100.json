@@ -1,0 +1,25 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 100,
+ "rows": [
+  "❯ show longcode                                                                                     ",
+  "",
+  "⏺ curl -fsSL https://example.com/install.sh | bash -s -- --prefix /opt/tools --with-feature-alpha",
+  "  --with-feature-beta --verbose",
+  "",
+  "                                                                                ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "code",
+    "body": "curl -fsSL https://example.com/install.sh | bash -s -- --prefix /opt/tools --with-feature-alpha --with-feature-beta --verbose",
+    "lang": "bash"
+   }
+  ]
+ ]
+}

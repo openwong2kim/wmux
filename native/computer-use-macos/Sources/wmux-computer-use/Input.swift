@@ -42,11 +42,14 @@ final class Input: @unchecked Sendable {
     private var heldKeys = Set<CGKeyCode>()
     private var heldButtons: [Int32: CGPoint] = [:]
     private var stopping = false
-    /// Every event posted, plus every press, value and launch that may have
-    /// reached the app (`noteSent`): Server tells from it whether a failed
-    /// input action sent anything. Bringing a window forward or focusing it
-    /// is not input and is not counted.
+    /// Every event posted, plus every press, value, launch and background
+    /// event record that may have reached the app (`noteSent`): Server tells
+    /// from it whether a failed input action sent anything. Bringing a window
+    /// forward is not input and is not counted.
     private var sentCount = 0
+    /// When each of those was sent, so a HID idle reset it caused is not
+    /// taken for the user's input (Background.userState).
+    private var posts = OwnPosts()
 
     var sent: Int {
         lock.lock()
@@ -54,8 +57,15 @@ final class Input: @unchecked Sendable {
         return sentCount
     }
 
+    var ownPosts: OwnPosts {
+        lock.lock()
+        defer { lock.unlock() }
+        return posts
+    }
+
     func noteSent() {
         lock.lock()
+        posts.note(ProcessInfo.processInfo.systemUptime)
         sentCount += 1
         lock.unlock()
     }
@@ -78,7 +88,23 @@ final class Input: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if stopping && !releasing { return false }
+        posts.note(ProcessInfo.processInfo.systemUptime)
         event.post(tap: .cghidEventTap)
+        sentCount += 1
+        return true
+    }
+
+    /// Posts one event to a process (Background.swift), under the same stop
+    /// gate as every other post. Nothing is recorded as held; a release still
+    /// goes out once stopping, so the app is not left with a button or key down.
+    @discardableResult
+    func postToProcess(_ event: CGEvent, pid: pid_t, auth: Bool) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if stopping, event.type != .leftMouseUp, event.type != .keyUp { return false }
+        let at = ProcessInfo.processInfo.systemUptime
+        guard SkyLight.post(event, pid: pid, auth: auth) else { return false }
+        posts.note(at)
         sentCount += 1
         return true
     }

@@ -25,7 +25,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { BOT_JOB_MAX, BOT_NAME_MAX, TEMPLATE_LEGACY_ROLE, isCoordinatorBot, normalizeBotJob, normalizeBotName, type BotProfile, type BotRole, type BotTemplate } from '../../../shared/bot';
 import { TEAM_TEMPLATES, teamTemplatesPresent, type FactoryBotAvatarPickResult, type FactoryBotRepoSuggestion } from '../../../shared/botCreate';
-import { FACTORY_LANE_DAILY_CAP_MAX } from '../../../shared/factorySettings';
+import { COMPANY_MAX_WORKING_MAX, COMPANY_MAX_WORKING_MIN, DEFAULT_COMPANY_MAX_WORKING, FACTORY_LANE_DAILY_CAP_MAX } from '../../../shared/factorySettings';
 import type { FactoryTaskFolderUsage } from '../../../shared/botTask';
 import { getLocale } from '../../i18n';
 import { refreshRoomStatus } from '../../hooks/useRoomSync';
@@ -72,6 +72,7 @@ const WEEKDAYS = [1, 2, 3, 4, 5, 6, 0];
 const CONCURRENCY = [1, 2, 3, 4, 5];
 /** shared/factorySettings.ts FACTORY_MAX_AGENTS_MIN..MAX. */
 const MAX_AGENTS = Array.from({ length: 15 }, (_, i) => i + 2);
+const COMPANY_MAX_WORKING = Array.from({ length: COMPANY_MAX_WORKING_MAX - COMPANY_MAX_WORKING_MIN + 1 }, (_, i) => i + COMPANY_MAX_WORKING_MIN);
 
 /** A comma / space separated list of logins → the list. */
 export function parseAuthors(text: string): string[] {
@@ -1053,6 +1054,16 @@ export function FactoryTab({ settingsPort, botPort, pickFolder, claudeAuthPort }
             onChange={(e) => void patch({ maxConcurrentAgents: Number(e.target.value) })}
           >
             {MAX_AGENTS.map((n) => <option key={n} value={n}>{n}</option>)}
+          </Select>
+        </SettingRow>
+        <SettingRow id="companymaxworking" label={t('settings.factory.companyMaxWorking')} description={t('settings.factory.companyMaxWorkingDesc')}>
+          <Select
+            disabled={off}
+            data-testid="company-max-working"
+            value={String(settings?.companyMaxWorking ?? DEFAULT_COMPANY_MAX_WORKING)}
+            onChange={(e) => void patch({ companyMaxWorking: Number(e.target.value) })}
+          >
+            {COMPANY_MAX_WORKING.map((n) => <option key={n} value={n}>{n}</option>)}
           </Select>
         </SettingRow>
         <SettingRow id="factorylaneautomerge" label={t('settings.factory.laneAutoMerge')} description={t('settings.factory.laneAutoMergeDesc')}>

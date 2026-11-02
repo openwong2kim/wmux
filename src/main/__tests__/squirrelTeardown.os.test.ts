@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyWmuxProcess,
   selectAppInstancePids,
+  selectStagedDaemonPids,
   parseCimProcessJson,
   terminateRunningAppInstances,
   type WmuxProcessRow,
@@ -113,5 +114,30 @@ describe('terminateRunningAppInstances', () => {
     if (process.platform !== 'win32') {
       expect(terminateRunningAppInstances()).toEqual([]);
     }
+  });
+});
+
+describe('selectStagedDaemonPids (uninstall)', () => {
+  const STAGE = 'C:\\Users\\me\\.wmux\\daemon-runtime';
+  const staged = `${STAGE}\\4.13.0-1730000000000`;
+
+  it('selects only daemons running from a staged copy', () => {
+    const rows = [
+      row(11, `"${staged}\\wmux.exe" "${staged}\\resources\\daemon-bundle\\index.js"`),
+      row(12, `"${EXE}" "C:\\Users\\me\\AppData\\Local\\wmux\\app-3.27.0\\resources\\daemon-bundle\\index.js"`),
+      row(13, `"${staged}\\wmux.exe" --type=gpu-process`),
+      row(14, `"${EXE}"`),
+    ];
+    expect(selectStagedDaemonPids(rows, OWN_PID, STAGE)).toEqual([11]);
+  });
+
+  it('matches regardless of case, slash direction and a trailing separator', () => {
+    const rows = [row(21, `${staged.toLowerCase().replace(/\\/g, '/')}/wmux.exe ${staged.replace(/\\/g, '/')}/resources/daemon-bundle/index.js`)];
+    expect(selectStagedDaemonPids(rows, OWN_PID, `${STAGE}\\`)).toEqual([21]);
+  });
+
+  it('does not take a sibling folder that only shares the prefix', () => {
+    const rows = [row(31, `"${STAGE}-old\\x\\wmux.exe" "${STAGE}-old\\x\\resources\\daemon-bundle\\index.js"`)];
+    expect(selectStagedDaemonPids(rows, OWN_PID, STAGE)).toEqual([]);
   });
 });

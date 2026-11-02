@@ -8,6 +8,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { A2A_FEATURE_SPAWN, type A2aRemoteEnvelope } from '../../../shared/a2aRemote';
 import {
+  A2A_SPAWN_RPC,
   SPAWN_ASKS_OPEN_PER_HOST_MAX,
   SPAWN_ASKS_PER_PANE_PER_HOUR,
   SPAWN_ASK_GRACE_MS,
@@ -21,7 +22,7 @@ import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { remoteTaskId } from '../ids';
 import { LinkStore } from '../linkStore';
 import { linkAlias, sendRemoteTask, type OutboundDeps } from '../outbound';
-import { A2aSpawnRequester } from '../spawnRequester';
+import { A2aSpawnRequester, registerSpawnAskRpc } from '../spawnRequester';
 import { SpawnOutgoingStore } from '../spawnOutgoingStore';
 
 const B = '22222222-2222-4222-8222-222222222222';
@@ -313,5 +314,45 @@ describe('expiry, refusals, restarts', () => {
     asks.forgetHost(B);
     expect(asks.list().requests).toEqual([]);
     expect(asks.list().places.find((p) => p.hostId === B)?.targets).toBeUndefined();
+  });
+});
+
+describe('the asker\'s name for the agent (label)', () => {
+  it('becomes the link\'s remote label and the first task\'s alias, across a restart, and is never sent', async () => {
+    const id = askOk({ label: 'Parser seat' });
+    expect(JSON.stringify(sent)).not.toContain('Parser seat');
+    // This PC's own list names the pending agent by it.
+    expect(stateOf(id)).toMatchObject({ label: 'Parser seat', state: 'sent' });
+    expect(Object.keys(sent[0].env.spawn ?? {}).sort()).toEqual(['agent', 'expiresAt', 'folder', 'from', 'spawnId', 'text', 'v']);
+    store = new SpawnOutgoingStore({ dir: path.join(dir, 'a2a'), scheduleHarden: quiet, now: () => clock });
+    asks = make();
+    const result = started(id);
+    expect(await asks.onResult(B, result)).toBe(true);
+    const linkId = asSpawnLinkId(result.linkId)!;
+    expect(links.get(linkId)?.remote).toMatchObject({ label: 'Parser seat', workspaceId: 'ws-b', paneId: 'pane-b' });
+    const task = tasks.getTask(remoteTaskId(linkId, spawnFirstMessageId(linkId)))!;
+    expect(task.metadata.to.name).toBe('DESK/ws-b/Parser seat');
+  });
+
+  it('without one, the alias reads the other PC\'s ids as before', async () => {
+    const id = askOk();
+    expect(stateOf(id)).not.toHaveProperty('label');
+    const result = started(id);
+    expect(await asks.onResult(B, result)).toBe(true);
+    const linkId = asSpawnLinkId(result.linkId)!;
+    expect(links.get(linkId)?.remote).not.toHaveProperty('label');
+    expect(tasks.getTask(remoteTaskId(linkId, spawnFirstMessageId(linkId)))!.metadata.to.name).toBe('DESK/ws-b/pane-b');
+  });
+
+  it('the ask RPC passes a text label on and leaves any other value out', async () => {
+    const handlers = new Map<string, (p: Record<string, unknown>) => Promise<unknown>>();
+    registerSpawnAskRpc((method, handler) => handlers.set(method, handler), asks);
+    const ask = handlers.get(A2A_SPAWN_RPC.ask)!;
+    const base = { pc: 'DESK', agent: 'claude', folder: { root: 'web' }, text: 'fix the build', from: { workspaceId: 'ws-a', paneId: 'pane-a' }, callerKey: 'pane-a' };
+    const named = (await ask({ ...base, label: 'Parser seat' })) as { ok: boolean; spawn: { spawnId: string } };
+    expect(store.get(B, named.spawn.spawnId)?.label).toBe('Parser seat');
+    const odd = (await ask({ ...base, label: 7 })) as { ok: boolean; spawn: { spawnId: string } };
+    expect(odd.ok).toBe(true);
+    expect(store.get(B, odd.spawn.spawnId)).not.toHaveProperty('label');
   });
 });

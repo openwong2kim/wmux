@@ -596,6 +596,13 @@ describe('parseTranscriptLine — pasted images and ESC interrupts', () => {
 });
 
 describe('extractCodeBlocks', () => {
+  it('takes a list fence\'s own indentation off its body lines, as the TUI shows them', () => {
+    const listed = extractCodeBlocks('1. Install:\n   ```bash\n   python -c "\n   print(1)\n     indented\n   "\n   ```\n2. Done', 0);
+    expect(listed.bodies.get(1)).toBe('python -c "\nprint(1)\n  indented\n"');
+    const top = extractCodeBlocks('```\n    four\n```', 0);
+    expect(top.bodies.get(1)).toBe('    four');
+  });
+
   it('is a no-op on prose with no fences', () => {
     const out = extractCodeBlocks('just words', 10);
     expect(out).toEqual({ text: 'just words', refs: [], bodies: new Map() });

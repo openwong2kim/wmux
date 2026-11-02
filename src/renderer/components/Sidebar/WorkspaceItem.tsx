@@ -1,5 +1,6 @@
 // Adapted from MonoCode (hardbeat920/monocode@6bd432ca, src/app/shell/Sidebar.tsx), MIT License, Copyright (c) 2026 Nick
 import { prepAwaitsReview } from '../../../shared/wmuxProjectConfig';
+import { keepMenuInWindow, keepSubmenuInWindow } from '../../utils/keepSubmenuInWindow';
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react';
 import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
@@ -8,7 +9,8 @@ import { remoteAgentKey } from '../../../shared/remoteHosts';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { formatStaleMinutes, selectWorkspaceAgentStatus, selectWorkspaceUnverifiableMinutes } from '../../stores/selectors/fleet';
-import { createWorkspaceRosterChipSelector } from '../../stores/selectors/workspaceAgentRoster';
+import { chipStatusRank, createWorkspaceRosterChipSelector } from '../../stores/selectors/workspaceAgentRoster';
+import { parseExternalSummary, selectWorkspaceExternalSummary } from '../../stores/selectors/externalSessions';
 import { useT } from '../../hooks/useT';
 import type { TranslationKey } from '../../i18n/locales/en';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
@@ -19,7 +21,7 @@ import { usePrefersReducedMotion } from '../ui/MediaPreview';
 import { workspaceHasUsageLimitWaiting } from '../../stores/slices/usageLimitSlice';
 import { workspaceHasAuthLost } from '../../stores/slices/agentAuthSlice';
 import { selectWorkspaceAttentionClasses } from '../../stores/selectors/fleet';
-import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin, IconBookmark, IconOrgChart } from '../icons';
+import { IconCopy, IconX, IconGear, IconChevron, IconBell, IconFolder, IconTerminal, IconExternalLink, IconCheck, IconGitBranch, IconWorktree, IconWarning, IconFanOut, IconPin, IconBookmark, IconOrgChart, IconGrid } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { HIT_TARGET_24_CLUSTER, HIT_TARGET_24_IN_CLUSTER } from '../hitArea';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
@@ -27,6 +29,9 @@ import { collectTerminalSurfaces, collectWorkspaceTerminalSurfaces } from '../..
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import CompanyDialog from './CompanyDialog';
+import AddRemoteSeatDialog from '../Company/AddRemoteSeatDialog';
+import HireSeatDialog from '../Company/HireSeatDialog';
+import { REMOTE_SPAWN_UI_ENABLED } from '../Remote/remoteSpawnFlag';
 import Popover from '../ui/Popover';
 import Button from '../ui/Button';
 import { placePopover } from '../AgentToolbar/placePopover';
@@ -53,6 +58,8 @@ interface WorkspaceItemProps {
   workspaceId: string;
   isActive: boolean;
   isMultiview: boolean;
+  /** This workspace's multiview group number (utils/multiviewGroups.ts), when it is in one. */
+  multiviewGroup?: number;
   index: number;
   /** The Ctrl+N digit that reaches this row (see workspaceShortcutNumber), or
    *  undefined when no digit does. */
@@ -468,7 +475,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumber, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, tabStop = false }: WorkspaceItemProps) {
+function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, index, shortcutNumber, onSelect, onCtrlSelect, onRename, onClose, onArchive, onCopyInfo, onDuplicate, onReorder, taskRow = false, shortcutHintHidden = false, nestedTaskIds, renderTask, onCloseTask, tabStop = false }: WorkspaceItemProps) {
   const t = useT();
   // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
   const workspace = useRowStore(selectWorkspaceById(workspaceId));
@@ -478,6 +485,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // An issue / PR from the Git page is held over this row.
   const [handoffOver, setHandoffOver] = useState(false);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const [wdOpen, setWdOpen] = useState(false);
   const [owOpen, setOwOpen] = useState(false);
   const [colorOpen, setColorOpen] = useState(false);
@@ -487,10 +495,22 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   const snoozeTriggerRef = useRef<HTMLButtonElement>(null);
   const snoozeFocusFirst = useRef(false);
   const snoozeSkipFocusOpen = useRef(false);
+  // Stable so React fits the submenu once: re-run on a re-render, the fit would
+  // read the side to open on from its own flipped position and undo the flip.
+  const snoozeSubmenuRef = useCallback((el: HTMLDivElement | null) => {
+    const release = keepSubmenuInWindow(el);
+    if (el && snoozeFocusFirst.current) {
+      snoozeFocusFirst.current = false;
+      el.querySelector<HTMLButtonElement>('[data-snooze-preset]')?.focus();
+    }
+    return release;
+  }, []);
   const [folderApps, setFolderApps] = useState<{ id: string; name: string }[]>([]);
   const [closeConfirmPos, setCloseConfirmPos] = useState<CloseConfirmAnchor | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [companyDialogOpen, setCompanyDialogOpen] = useState(false);
+  const [remoteSeatOpen, setRemoteSeatOpen] = useState(false);
+  const [hireSeatOpen, setHireSeatOpen] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -544,8 +564,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // plain `waiting` with no pending question is idle there, so it must not
   // paint a "Needs you" row that sorts to the bottom.
   const attentionClass = useRowStore((s) => selectWorkspaceAttentionClasses(s)[workspaceId] ?? 'idle');
-  const needsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
-  const markStatus = agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
+  // Sessions started outside wmux in this workspace's folder (placement B,
+  // 2026-11-01): one waiting on you lights this row as a pane's agent does —
+  // the ring, the hairline, "Needs you" and its question. One string, so the
+  // row re-renders only when a mark or that question changes.
+  const externalKey = useRowStore((s) => selectWorkspaceExternalSummary(s, workspaceId));
+  const external = useMemo(() => parseExternalSummary(externalKey), [externalKey]);
+  const paneNeedsYou = attentionClass === 'needsYou' && (agentStatus === 'waiting' || agentStatus === 'awaiting_input');
+  const needsYou = paneNeedsYou || external.needYou > 0;
+  const markStatus = external.needYou > 0 && !paneNeedsYou ? 'awaiting_input'
+    : agentStatus === 'waiting' && attentionClass !== 'needsYou' ? 'idle' : agentStatus;
   // A failed turn is its own tier (fleetAttentionClass): it says "Error" where
   // a needs-you row says "Needs you", and sorts above finished and idle rows
   // however old it is. Fleet still lists it under Needs you.
@@ -562,7 +590,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     }
     return '';
   });
-  const question = needsYou ? sanitizeDisplayText(rawQuestion, ROW_QUESTION_MAX) : undefined;
+  const question = needsYou ? sanitizeDisplayText(rawQuestion || external.question, ROW_QUESTION_MAX) : undefined;
   // The panes here that need you because their agent ended a turn on a
   // question — what the context menu's Dismiss clears. Live permission dialogs
   // are not in it: those wait for an answer. Read only while the menu is open.
@@ -669,14 +697,23 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     [workspaceId],
   );
   const rosterCounts = useRowStore(rosterChipSelector);
-  const hasRoster = rosterCounts.agentCount > 0 || rosterCounts.stashedCount > 0;
+  // The roster lists the outside sessions after the panes' agents, so its
+  // count and its folded chip take them in too.
+  const rosterAgentCount = rosterCounts.agentCount + external.statuses.length;
+  const chipAgents = useMemo(() => (external.statuses.length === 0
+    ? rosterCounts.agents
+    : [...rosterCounts.agents, ...external.statuses.map((status) => ({ agentName: '', status }))]
+      .sort((a, b) => chipStatusRank(a.status) - chipStatusRank(b.status))), [rosterCounts.agents, external.statuses]);
+  const hasRoster = rosterAgentCount > 0 || rosterCounts.stashedCount > 0;
   /** Rows whose roster summary must not wait for the pointer — see its JSX.
    *  #1481 — the summary now names who is here and what they are doing, which
    *  is the reason to scan the list, so it no longer hides at rest. */
   // One idle agent and nothing else: a "› 1" on every quiet row says nothing
   // the status column does not, so its chip waits for hover or focus like the
   // other chrome (and draws no count).
-  const quietSingle = rosterCounts.agentCount === 1 && rosterCounts.stashedCount === 0
+  // An outside session is never that quiet pane: nothing else on the row
+  // says it is there.
+  const quietSingle = rosterCounts.agentCount === 1 && external.statuses.length === 0 && rosterCounts.stashedCount === 0
     && paneTaskIds.length === 0 && (rosterCounts.agents[0]?.status ?? 'idle') === 'idle';
   const rosterAlwaysShown = rosterShown || (hasRoster && !quietSingle) || paneTaskIds.length > 0;
   /** → opens the roster (and the tasks under it), ← folds it. */
@@ -1060,6 +1097,16 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     setMenuPos({ x: e.clientX, y: e.clientY });
   };
 
+  // Keep the context menu inside the window. It opens at the pointer, so on a
+  // row near the bottom (or a narrow window) it would run off the edge and hide
+  // its last items. Measured before paint, so it never flashes at the old spot,
+  // and refitted when rows fill in after opening (the account rows load late).
+  useLayoutEffect(() => {
+    const el = menuRef.current;
+    if (!menuPos || !el) return;
+    return keepMenuInWindow(el, menuPos.x, menuPos.y);
+  }, [menuPos]);
+
   // Close the context menu on any outside click or Escape.
   useEffect(() => {
     if (!menuPos) return;
@@ -1110,14 +1157,15 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
     }, t)
     : undefined;
 
-  // The treeitem's name: the workspace, what it is waiting on, and (for a
-  // question) the question itself, like Fleet's row.
+  // The treeitem's name: the workspace, its multiview group, what it is
+  // waiting on, and (for a question) the question itself, like Fleet's row.
   const statusWord = needsYou ? t('workspace.needsYou')
     : unverifiableMinutes > 0 ? t('workspace.agentUnverifiable', { time: formatStaleMinutes(unverifiableMinutes) })
       : authLost ? t('agentAuth.signedOutShort')
         : markStatus !== 'idle' ? t(AGENT_STATUS_ICON[markStatus].labelKey)
           : usageWaiting ? t('usageLimit.waiting') : undefined;
-  const rowLabel = [displayName, statusWord, question].filter(Boolean).join(', ');
+  const groupWord = multiviewGroup !== undefined ? t('sidebar.multiviewGroup', { n: multiviewGroup }) : undefined;
+  const rowLabel = [displayName, groupWord, statusWord, question].filter(Boolean).join(', ');
 
   // Keys on the row itself (the list moves between rows, Sidebar.tsx): Enter
   // or Space opens it (⌘/Ctrl adds it to the multiview), → opens its agents,
@@ -1182,6 +1230,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
   // hides the same metadata, so a Tab into the row never overflows the line.
   const company = workspace.company;
   const actionsOnGitLine = (company ? !!company.mission : !!metadata?.gitBranch) || !!question;
+  // Replies from a seat on another PC come to the CEO pane, and a seat on this
+  // PC takes its briefs from it: a vacant seat has none.
+  const ceoSeated = !!menuPos && !!company?.coordinatorPaneId && getWorkspaceLeafPanes(workspace).some((l) => l.id === company.coordinatorPaneId);
   // A nested task row has no width to spare on its name line (78px of text
   // at the 220px minimum): without a branch, its actions get a line of their
   // own, the height its sibling rows' git line takes, so the row never
@@ -1249,15 +1300,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
         }
       }}>
       {/* Color tag rail. Sits inside the row's rounded box, so it reads as part
-          of the row rather than as a separate divider. When the workspace is
-          also in multiview it shifts 2px right, clearing the blue multiview
-          border instead of covering it — the two signals mean different things
-          and must both stay visible. pointer-events-none so it never eats a
-          click or a drag hit-test. */}
+          of the row rather than as a separate divider. pointer-events-none so
+          it never eats a click or a drag hit-test. */}
       {tagColor && (
         <div
           className="absolute top-[3px] bottom-[3px] w-[3px] rounded-full z-[1] pointer-events-none"
-          style={{ left: isMultiview ? 2 : 0, background: tagColor }}
+          style={{ left: 0, background: tagColor }}
           aria-hidden="true"
         />
       )}
@@ -1277,7 +1325,6 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
         className={`sidebar-row px-2.5 ${taskRow ? 'sidebar-row-task py-1.5' : 'py-2'} cursor-pointer rounded-md select-none ${needsYou ? 'sidebar-row-needs' : ''} ${pulseClass} ${
           isActive ? 'sidebar-row-active' : ''
         }`}
-        style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onContextMenu={handleContextMenu}
@@ -1390,6 +1437,24 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
                 >
                   {displayName}
                 </span>
+                {/* Which multiview group the row is in. Neutral like the pin;
+                    the group on screen reads in the accent, since being on
+                    screen is a state. */}
+                {multiviewGroup !== undefined && (
+                  <span
+                    className={`flex-none inline-flex items-center gap-0.5 rounded-full px-1 text-[10px] leading-[14px] font-semibold tabular-nums bg-[color-mix(in_srgb,var(--text-main)_8%,transparent)] ${
+                      isMultiview ? 'text-[var(--accent-blue)]' : 'text-[var(--text-muted)]'
+                    }`}
+                    role="img"
+                    aria-label={t('sidebar.multiviewGroup', { n: multiviewGroup })}
+                    title={t('sidebar.multiviewGroup', { n: multiviewGroup })}
+                    data-multiview-group={multiviewGroup}
+                    data-multiview-shown={isMultiview ? '' : undefined}
+                  >
+                    <IconGrid size={8} />
+                    {multiviewGroup}
+                  </span>
+                )}
                 {unseen && (
                   <span
                     className="h-1.5 w-1.5 flex-none rounded-full bg-[var(--text-main)]"
@@ -1505,9 +1570,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
                     <WorkspaceRosterSummaryMemo
                       tabIndex={innerTab}
                       workspaceId={workspaceId}
-                      agentCount={rosterCounts.agentCount}
+                      agentCount={rosterAgentCount}
                       stashedCount={rosterCounts.stashedCount}
-                      agents={rosterShown ? undefined : rosterCounts.agents}
+                      agents={rosterShown ? undefined : chipAgents}
                       extra={rosterCounts.extra}
                       paneTaskCount={paneTaskIds.length}
                       paneTaskNeedYou={paneTaskNeedYou}
@@ -1583,6 +1648,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
       {/* Right-click context menu */}
       {menuPos && (
         <div
+          ref={menuRef}
           className="fixed z-[var(--z-popover-top)] w-max flex flex-col py-1 rounded-xl shadow-xl sidebar-popover-enter"
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
@@ -1638,6 +1704,30 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
               data-workspace-action="company"
             >
               {company ? t('company.settingsMenu') : t('company.makeMenu')}
+            </button>
+          )}
+          {!taskRow && company && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ color: 'var(--text-main)' }}
+              disabled={!ceoSeated}
+              title={ceoSeated ? undefined : t('company.hireSeat.noCeo')}
+              onClick={() => { rowRef.current?.focus(); setMenuPos(null); setHireSeatOpen(true); }}
+              data-workspace-action="hire-seat"
+            >
+              {t('company.hireSeat.menu')}
+            </button>
+          )}
+          {!taskRow && company && REMOTE_SPAWN_UI_ENABLED && (
+            <button
+              className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)] disabled:opacity-40 disabled:hover:bg-transparent"
+              style={{ color: 'var(--text-main)' }}
+              disabled={!ceoSeated}
+              title={ceoSeated ? undefined : t('company.addSeat.noCeo')}
+              onClick={() => { rowRef.current?.focus(); setMenuPos(null); setRemoteSeatOpen(true); }}
+              data-workspace-action="add-remote-seat"
+            >
+              {t('company.addSeat.menu')}
             </button>
           )}
           {!taskRow && company && (
@@ -1759,11 +1849,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
               </button>
               {snoozeOpen && (
                 <div
-                  ref={(el) => {
-                    if (!el || !snoozeFocusFirst.current) return;
-                    snoozeFocusFirst.current = false;
-                    el.querySelector<HTMLButtonElement>('[data-snooze-preset]')?.focus();
-                  }}
+                  ref={snoozeSubmenuRef}
                   role="menu"
                   className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[140px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
                   style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
@@ -1835,6 +1921,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
             </button>
             {colorOpen && (
               <div
+                ref={keepSubmenuInWindow}
                 className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} py-1.5 px-2 rounded-xl shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
@@ -1901,6 +1988,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
             </button>
             {owOpen && folderApps.length > 0 && (
               <div
+                ref={keepSubmenuInWindow}
                 className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[180px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
@@ -1945,6 +2033,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
             </button>
             {wdOpen && (
               <div
+                ref={keepSubmenuInWindow}
                 className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-xl shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
@@ -2026,6 +2115,12 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, shortcutNumb
       )}
       {companyDialogOpen && (
         <CompanyDialog workspace={workspace} onClose={() => setCompanyDialogOpen(false)} />
+      )}
+      {remoteSeatOpen && (
+        <AddRemoteSeatDialog workspaceId={workspaceId} onClose={() => setRemoteSeatOpen(false)} />
+      )}
+      {hireSeatOpen && (
+        <HireSeatDialog workspaceId={workspaceId} onClose={() => setHireSeatOpen(false)} />
       )}
     </div>
   );

@@ -20,8 +20,12 @@
 //
 // Shutdown goes through one gate (Shutdown.Run): posting stops first, under
 // the lock every SendInput takes, and only then is held input released.
+//
+// Background input (PostMessages) takes the same lock and stop flag. Posted
+// messages press nothing system-wide, so they are not recorded as held.
 
 using Windows.Win32;
+using Windows.Win32.Foundation;
 using Windows.Win32.UI.Input.KeyboardAndMouse;
 using Windows.Win32.UI.WindowsAndMessaging;
 using WmuxComputerUse.Core;
@@ -37,6 +41,7 @@ internal static unsafe class Input
     private static readonly HashSet<ushort> HeldKeys = [];
     private static readonly Dictionary<int, (double X, double Y)> HeldButtons = [];
     private static bool stopping;
+    private static long sent;
     /// <summary>Whether what dead helpers recorded has been released (checked before every control request).</summary>
     private static bool orphansReleased;
 
@@ -116,6 +121,34 @@ internal static unsafe class Input
         }
     }
 
+    // MARK: What may have reached an app
+
+    /// <summary>
+    /// How many input events, posted messages and UIA pattern calls may have
+    /// reached an app so far. Server compares it around a control request:
+    /// unchanged means nothing was sent (protocol ActionDisposition
+    /// `not_delivered`). Raising or focusing a window is not counted.
+    /// </summary>
+    public static long Sent
+    {
+        get
+        {
+            lock (Lock) return sent;
+        }
+    }
+
+    /// <summary>Counts a UIA pattern call, right before it is made (a call that throws may still have run).</summary>
+    public static void CountSemantic()
+    {
+        lock (Lock) sent++;
+    }
+
+    /// <summary>Takes back CountSemantic for a call that certainly did not run (not supported, disabled).</summary>
+    public static void UncountSemantic()
+    {
+        lock (Lock) sent--;
+    }
+
     // MARK: Posting (everything goes through Post)
 
     /// <summary>Throws once shutdown has begun: no new input, semantic actions included.</summary>
@@ -145,6 +178,7 @@ internal static unsafe class Input
             if (recorded.Count > 0) Persist();
 
             uint sent = PInvoke.SendInput(inputs, sizeof(INPUT));
+            Input.sent += sent;
             if (sent == inputs.Length)
             {
                 foreach (var e in recorded) Forget(e);
@@ -184,6 +218,52 @@ internal static unsafe class Input
 
     private static void Persist() =>
         HeldStore.Write([.. HeldKeys], HeldButtons.Select(kv => new HeldButton(kv.Key, kv.Value.X, kv.Value.Y)).ToList());
+
+    /// <summary>
+    /// Background input: PostMessage each message to `receiver`, in order,
+    /// under the same lock and stop flag as SendInput. Returns how many were
+    /// posted; 0 means nothing was (the caller may still send it another
+    /// way). A failure after the first throws: some of the input went in, so
+    /// it must not be sent again. Posted messages change no keyboard or
+    /// button state anywhere, so nothing here is recorded as held; if a key
+    /// or button went down without its up, the up (and for a button
+    /// WM_CANCELMODE) is posted to the same window once more.
+    ///
+    /// Before every message the receiver must still be the window resolved
+    /// earlier: a live handle owned by `pid` on thread `tid` (between the
+    /// resolve and the post there are slow cross-process UIA reads, and a
+    /// handle can be reused). A change before the first message posts
+    /// nothing; a change later stops the sequence (Core
+    /// Background.PostSequence).
+    /// </summary>
+    public static int PostMessages(HWND receiver, uint pid, uint tid, IReadOnlyList<PostedMessage> messages)
+    {
+        lock (Lock)
+        {
+            if (stopping) throw new HelperError("internal", "the helper is shutting down; nothing was sent");
+            var run = Core.Background.PostSequence(messages,
+                () => PInvoke.IsWindow(receiver) && SameOwner(receiver, pid, tid),
+                m =>
+                {
+                    if (!PInvoke.PostMessage(receiver, m.Msg, new WPARAM(m.WParam), new LPARAM(m.LParam))) return false;
+                    sent++;
+                    return true;
+                });
+            return run.End switch
+            {
+                PostEnd.Done => run.Posted,
+                PostEnd.NothingPosted => 0,
+                PostEnd.ReceiverChanged => throw new HelperError("internal", $"the target window closed or was replaced after {run.Posted} of {messages.Count} posted messages; the rest was not sent. Check the app state before retrying"),
+                _ => throw new HelperError("internal", $"Windows took only {run.Posted} of {messages.Count} posted messages (the app's message queue may be full, or its window closed); the rest was not sent. Check the app state before retrying"),
+            };
+        }
+    }
+
+    private static bool SameOwner(HWND hwnd, uint pid, uint tid)
+    {
+        uint thread = PInvoke.GetWindowThreadProcessId(hwnd, out var owner);
+        return thread != 0 && thread == tid && owner == pid;
+    }
 
     public static void StopPosting()
     {

@@ -8,6 +8,7 @@ import {
   generateId,
 } from '../../../shared/types';
 import {
+  balancePaneSizes,
   findPane,
   findParent,
   collectLeafIds,
@@ -173,6 +174,8 @@ export interface PaneSlice {
   updatePaneSizes: (branchId: string, sizes: number[], workspaceId?: string) => void;
   resizeActivePane: (direction: 'left' | 'right' | 'up' | 'down', amount: number) => void;
   equalizePaneSizes: () => void;
+  /** Rebalance every split of the active workspace's whole layout (see balancePaneSizes). */
+  balanceLayout: () => void;
   // Sparse map of per-pane visual notification rings. Missing entry = no ring.
   // T11 will consume this for the flash→glow CSS treatment around each pane.
   paneNotificationRing: Record<string, 'flash' | 'glow'>;
@@ -1761,6 +1764,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     if (!parent || parent.type !== 'branch') return;
     const equal = 100 / parent.children.length;
     parent.sizes = parent.children.map(() => equal);
+  }),
+
+  balanceLayout: () => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+    if (ws) balancePaneSizes(ws.rootPane);
   }),
 
   focusPaneDirection: (direction) => {

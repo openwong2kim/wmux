@@ -121,7 +121,7 @@ import { setUsageClientVersion, type UsageSnapshot } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
-import { IPC, getWmuxHomeDir } from '../shared/constants';
+import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
@@ -231,6 +231,7 @@ import { resyncAfterResubscribe, serialResync, type DaemonSessionRow } from './n
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
+import { CompanyReleaseBridge, CompanySlotGate, readCompanyWorkingSeats, type CompanyReleaseMark } from './a2a/CompanyReleaseBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
 import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
@@ -253,7 +254,8 @@ import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
-import { terminateRunningAppInstances } from './squirrelTeardown';
+import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
+import { daemonStageRootIn, removeDaemonRuntimeStages } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -280,6 +282,8 @@ import {
   refreshHookBridgeAtBoot,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
+import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
@@ -453,6 +457,16 @@ if (process.platform === 'win32') {
 
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
       try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
+
+      // The daemon runs from a copy outside the install (daemonRuntimeStage.ts),
+      // which Squirrel's uninstall neither stops nor deletes: stop its daemon,
+      // then remove the copies.
+      try {
+        const stageRoot = daemonStageRootIn(getWmuxDir());
+        const stopped = terminateStagedDaemons(stageRoot);
+        if (stopped.length > 0) console.log(`[Squirrel] stopped the staged daemon(s) before uninstall: ${stopped.join(', ')}`);
+        if (!removeDaemonRuntimeStages(stageRoot)) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
+      } catch { /* best-effort */ }
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
@@ -840,6 +854,21 @@ let daemonNotificationRouter: DaemonNotificationRouter | null = null;
 let remoteInboxBridge: RemoteInboxBridge | null = null;
 // Cross-host A2A: hands remote tasks/replies the daemon holds to the renderer.
 let remoteA2aBridge: RemoteA2aBridge | null = null;
+// Company mode: delivers tasks the daemon released from their blockers; one per connection.
+let companyReleaseBridge: CompanyReleaseBridge | null = null;
+// The CEO lines told, the deliveries running and the marks not taken yet, kept across daemon reconnects.
+const companyCeoLinesTold = new Set<string>();
+const companyDeliveriesInFlight = new Set<string>();
+const companyPendingMarks = new Map<string, CompanyReleaseMark>();
+// The per-PC cap on working company seats: one gate for every send and every
+// release bridge, kept across daemon reconnects.
+const companySlots = new CompanySlotGate({
+  read: () => readCompanyWorkingSeats({
+    sendToRenderer: (method, params) => sendToRenderer(() => mainWindow, method, params),
+    daemonRpc: (method, params, opts) => (daemonClient ? daemonClient.rpc(method, params, opts) : Promise.reject(new Error('daemon not connected'))),
+  }),
+  cap: () => getFactorySettings().companyMaxWorking,
+});
 let remoteSpawnCoordinator: RemoteSpawnCoordinator | null = null;
 let continueStarter: ContinueStarter | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
@@ -1323,6 +1352,8 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
   getDaemonClient: () => daemonClient,
   // Cross-host A2A: a remote pane's alias and rt- tasks go through the daemon's outbox.
   remote: daemonRemoteA2aRpcDeps(() => daemonClient),
+  companyRelease: () => companyReleaseBridge,
+  companySlots,
 });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
@@ -2240,6 +2271,32 @@ app.on('ready', async () => {
     refreshTimer.unref();
   }
 
+  // The global WSL hook (`wmux setup-hooks --wsl`, shared/wslGlobalHook.ts)
+  // runs this runtime and bridge, which an update moves: record them at every
+  // start, and bring an installed hook script up to this build. getWmuxDir()
+  // is suffix-scoped, so an isolated instance writes only into its own data
+  // dir; an unsuffixed dev run writes nothing. Deferred like the refreshes
+  // above: the bridge lookup walks the filesystem, off the ready path.
+  if (process.platform === 'win32') {
+    const wslHookTimer = setTimeout(() => {
+      try {
+        const out = refreshWslHookAtBoot({
+          platform: process.platform,
+          isPackaged: app.isPackaged,
+          suffix: dataSuffix(),
+          hooksDir: path.join(getWmuxDir(), 'hooks'),
+          runtimePath: process.execPath,
+          bridgePath: findWslClaudeBridge(__dirname),
+        });
+        if (out.pointer === 'no-bridge') logLine('warn', 'main', 'wsl hook runtime pointer: no-bridge');
+        else if (out.pointer === 'written' || out.script === 'refreshed') logLine('info', 'main', `wsl hook: pointer ${out.pointer}, script ${out.script}`);
+      } catch (err) {
+        console.warn('[hooks] wsl hook refresh failed (non-fatal):', err);
+      }
+    }, 3000);
+    wslHookTimer.unref();
+  }
+
   // #898 — the OTHER copy of the bridge. `refreshHookBridge` above owns
   // `~/.wmux/hooks/`; a Claude Code plugin install is a snapshot in a version
   // directory that Claude Code owns, and no wmux release touches it. A user who
@@ -2653,6 +2710,19 @@ app.on('ready', async () => {
       });
       remoteA2aBridge.start();
       setA2aRemoteBridge(remoteA2aBridge);
+      // Company tasks released from their blockers, pulled on every (re)connect,
+      // after each task ends (a2a.rpc) and on a backstop.
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = new CompanyReleaseBridge({
+        daemon: client,
+        sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        told: companyCeoLinesTold,
+        inFlight: companyDeliveriesInFlight,
+        pendingMarks: companyPendingMarks,
+        slots: companySlots,
+        log: (level, msg) => logLine(level, 'a2a-company', msg),
+      });
+      companyReleaseBridge.start();
       // Remote spawn (this PC starts an agent another PC asked for): cards and starts.
       remoteSpawnCoordinator?.stop();
       const spawnBridge = remoteA2aBridge;
@@ -2726,6 +2796,8 @@ app.on('ready', async () => {
       remoteInboxBridge = null;
       remoteA2aBridge?.stop();
       remoteA2aBridge = null;
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = null;
       remoteSpawnCoordinator?.stop();
       remoteSpawnCoordinator = null;
       continueStarter?.stop();

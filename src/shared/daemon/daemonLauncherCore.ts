@@ -93,6 +93,12 @@ export interface DaemonLauncherDeps {
    */
   launchViaLaunchdOnDarwin?: boolean;
   /**
+   * Windows packaged app only: a copy of the app outside the install root to
+   * run the daemon from (main/daemon/daemonRuntimeStage.ts), so a reinstall
+   * does not kill it. Null: run it from the install.
+   */
+  stageDaemonRuntime?(): { script: string; nodePath: string; dir: string } | null;
+  /**
    * Diagnostic logging for the spawn/reuse/recovery chain — candidate paths
    * tried, PID found, recovery decisions. Omit to get the historical
    * `console.log`/`console.warn` behavior (what Electron's launcher still
@@ -868,13 +874,14 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
     const candidates = deps.resolveDaemonScriptCandidates();
     (deps.log ?? console.log)(`[launcher] Daemon script candidates:`, candidates);
     (deps.log ?? console.log)(`[launcher] Exists:`, candidates.map(c => fs.existsSync(c)));
-    const daemonScript = candidates.find(c => fs.existsSync(c));
+    const staged = deps.stageDaemonRuntime?.() ?? null;
+    const daemonScript = staged?.script ?? candidates.find(c => fs.existsSync(c));
     if (!daemonScript) {
       reject(new Error(`Daemon script not found in: ${candidates.join(', ')}. Run 'npm run build:daemon' first.`));
       return;
     }
 
-    const nodePath = findNodePath();
+    const nodePath = staged?.nodePath ?? findNodePath();
 
     (deps.log ?? console.log)(`[launcher] Spawning daemon: ${[nodePath, ...daemonProcessArgs(daemonScript)].join(' ')}`);
 
@@ -979,6 +986,8 @@ function spawnDaemon(deps: DaemonLauncherDeps): Promise<number> {
         stdio: 'ignore',
         windowsHide: true,
         env,
+        // An open working directory inside the install root would block its removal.
+        ...(staged ? { cwd: staged.dir } : {}),
       });
 
       // `spawn` reports failures asynchronously via 'error' (e.g. EMFILE,
