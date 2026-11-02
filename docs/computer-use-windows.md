@@ -235,7 +235,10 @@ section); that result says `delivery: "foreground"`. A posted one says
 - **Per action.** Checked first, before any window state is read: what the
   action asks for.
   - `click`: a single left click with no modifiers, after the UIA ladder
-    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern.
+    (Invoke, Toggle, SelectionItem, ExpandCollapse) found no pattern. Under
+    `foreground: 'refuse'` the ladder runs only when the target window is
+    already in front (see below); otherwise the click goes straight to
+    posting.
     Right and middle buttons, double and triple clicks, and modifiers go the
     real way: posted messages carry no keyboard state, and the rest was not
     measured.
@@ -271,9 +274,12 @@ section); that result says `delivery: "foreground"`. A posted one says
     posted: a trailing `\n` (backslash, n) types Enter in the same action.
   - `hotkey` with modifiers and `scroll`: always the real way (a chord
     cannot be posted; `WM_MOUSEWHEEL` was not measured).
-  - `setValue` and the UIA click ladder are not input; their results say
-    `background` unless the target window came to the front during the call
-    (the foreground is read before the call's checks).
+  - `setValue` and the UIA click ladder are not input, but each of their
+    pattern calls (Invoke, Toggle, SelectionItem, ExpandCollapse, Value)
+    brought a covered target window to the front, with WinForms and with
+    Electron (a ScrollIntoView or a property read did not). Their results
+    say `background` unless the target window came to the front during the
+    call (the foreground is read before the call's checks).
 - **Refused before posting** (`not_delivered`, then real input), besides
   the above: the target window is minimized, hidden or cloaked, on another
   virtual desktop (`IVirtualDesktopManager`; if that call fails it is no
@@ -328,8 +334,17 @@ section); that result says `delivery: "foreground"`. A posted one says
   began becomes `needs_foreground`; a stop after posting started (no focus
   after the click, the field moved, the keys refused) keeps its own answer.
   `scroll` and a `hotkey` with modifiers answer `needs_foreground` at once.
-  `setValue` and the UIA click ladder are pattern calls, not input, and
-  nothing in them raises the window, so `refuse` changes nothing for them.
+  The pattern calls of `setValue` and the UIA click ladder raise a covered
+  target, so they are foreground input (Core
+  `Background.PatternCallAllowed`). Under `refuse` they are made only when
+  the target window already is the foreground window, where they cannot
+  take the front from anyone. Otherwise an index click skips the ladder and
+  is posted, or answers `needs_foreground` when it cannot be posted, and
+  `setValue` answers `needs_foreground` before anything is sent. Main then
+  re-sends either one under its foreground lease with `allow`, where the
+  ladder and `setValue` run as before. A posted click can land where the
+  ladder would have raised the window: a Chromium or Electron button is
+  pressed in the background.
   The sent counter's baseline for a request is taken after the release of
   keys a dead helper left down, so those up events never decide an
   action's `not_delivered` or `needs_foreground`. The helper's stderr says

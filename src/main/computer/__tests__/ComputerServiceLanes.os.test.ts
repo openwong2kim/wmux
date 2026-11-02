@@ -574,6 +574,70 @@ describe('ComputerService input lanes on a macOS helper', () => {
   });
 });
 
+// #2978: a UIA call (the click ladder, setValue) brings a covered window to
+// the front on Windows, so it is foreground input. Main still sends these
+// with `refuse` (the helper knows whether the target is in front, and posts
+// the click when it can); the helper answers needs_foreground for a covered
+// target, and only then does main take the lease.
+describe('ComputerService input lanes: accessibility actions on a Windows helper', () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const ACCESSIBILITY: Array<{ name: string; params: (snapshotId: string) => ControlParams }> = [
+    { name: 'an index click', params: (snapshotId) => ({ action: 'click', snapshotId, index: 0 }) },
+    { name: 'setValue', params: (snapshotId) => ({ action: 'setValue', snapshotId, index: 0, value: 'v' }) },
+  ];
+
+  it.each(ACCESSIBILITY)('sends $name with refuse and takes no lease while the helper keeps it in the background', async ({ params }) => {
+    const { service, pending, controlCalls, done } = makeService(true, 'win32');
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const action = service.control(AGENT_A, params(a.snapshotId));
+    await settle();
+    expect(controlCalls.map((c) => c.params.foreground)).toEqual(['refuse']);
+    expect(service.inputHolder()).toBeNull();
+    done(oldest(pending));
+    expect((await withinDeadline(action)).delivery).toBe('background');
+    expect(service.inputHolder()).toBeNull();
+  });
+
+  it.each(ACCESSIBILITY)('re-sends $name under the lease when the helper says the covered target needs the foreground', async ({ params }) => {
+    const { service, pending, controlCalls, done, needsForeground } = makeService(true, 'win32');
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const action = service.control(AGENT_A, params(a.snapshotId));
+    await settle();
+    needsForeground(oldest(pending));
+    await settle();
+    expect(controlCalls.map((c) => c.params.foreground)).toEqual(['refuse', 'allow']);
+    // The re-send holds real input: the target comes to the front under the lease.
+    expect(service.inputHolder()).toBe('agent A');
+    done(oldest(pending), 'foreground');
+    expect((await withinDeadline(action)).delivery).toBe('foreground');
+  });
+
+  it.each(ACCESSIBILITY)('ends $name input_busy, not_delivered, when it needs the foreground another agent holds', async ({ params }) => {
+    const { service, pending, controlCalls, done, needsForeground } = makeService(true, 'win32');
+    const a = await service.getAppState(AGENT_A, { app: 'Notepad' });
+    const b = await service.getAppState(AGENT_B, { app: 'Paint' });
+    const chord = service.control(AGENT_A, { action: 'hotkey', snapshotId: a.snapshotId, keys: ['ctrl', 's'] });
+    await settle();
+    done(oldest(pending), 'foreground');
+    await chord;
+
+    const blocked = service.control(AGENT_B, params(b.snapshotId)).catch((e: unknown) => e);
+    await settle();
+    needsForeground(oldest(pending));
+    const err = (await withinDeadline(blocked)) as ComputerError;
+    expect(err.code).toBe('input_busy');
+    expect(err.disposition).toBe('not_delivered');
+    // B never reached the helper with allow: A's front window stayed A's.
+    expect(controlCalls.slice(1).map((c) => c.params.foreground)).toEqual(['refuse']);
+  });
+});
+
 // Real timers and a real helper process: every helper request made while a
 // pid slot is held settles at its timeout (HelperProcess kills and replaces
 // the helper), so a helper that never answers cannot park an app's lane.

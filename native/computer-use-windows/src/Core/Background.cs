@@ -423,6 +423,19 @@ public static class Background
     }
 
     /// <summary>
+    /// Whether a UIA action-pattern call (the click ladder's Invoke, Toggle,
+    /// SelectionItem or ExpandCollapse, or setValue's Value) may be made now.
+    /// Each of them brought a covered target window to the front, with
+    /// WinForms and with Electron, so it is foreground input. Under
+    /// `foreground: 'refuse'` main holds no foreground lease, so none is made
+    /// unless the target already is the foreground window (then it cannot
+    /// take the front from anyone). Otherwise a click goes on as a posted
+    /// click, and what cannot be posted answers needs_foreground, so main
+    /// re-sends it under the lease.
+    /// </summary>
+    public static bool PatternCallAllowed(bool refuseForeground, bool targetInFront) => !refuseForeground || targetInFront;
+
+    /// <summary>
     /// After the background attempt. `refuseForeground`: main sent
     /// `foreground: 'refuse'`. `sentDuringAction`: the helper's sent counter
     /// moved since the action began. needs_foreground is answered only when

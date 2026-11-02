@@ -501,8 +501,16 @@ internal static unsafe class Actions
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
             bool frontBefore = InFront(target);
-            var note = ClickSemantically(target, (IUIAutomationElement*)element);
-            if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            // The ladder's pattern calls bring a covered target to the front
+            // (Core Background.PatternCallAllowed): under `refuse` they are
+            // made only for a target already in front. Otherwise the click is
+            // posted, or answers needs_foreground and comes back under the
+            // lease, where the ladder runs.
+            if (Background.PatternCallAllowed(refuse, frontBefore))
+            {
+                var note = ClickSemantically(target, (IUIAutomationElement*)element);
+                if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            }
         }
         // Background first; RequirePointer (which may raise the window) only on the real-input path.
         Input.ThrowIfStopping();
@@ -528,10 +536,11 @@ internal static unsafe class Actions
 
     public static JsonObject SetValue(Params p)
     {
-        // A UIA ValuePattern call: no input, no focus request, nothing that
-        // raises the window, so it never needs the foreground and `refuse`
-        // changes nothing (the mode is still validated).
-        RefuseForeground(p);
+        // A UIA ValuePattern call brings a covered target to the front (Core
+        // Background.PatternCallAllowed), so under `refuse` it is made only
+        // for a target already in front; otherwise needs_foreground, before
+        // anything is sent.
+        bool refuse = RefuseForeground(p);
         var (snap, target) = Begin(p);
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
         var value = p.RequireString("value");
@@ -553,6 +562,11 @@ internal static unsafe class Actions
             if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
             // Read before the checks, as the click path does.
             bool frontBefore = InFront(target);
+            if (!Background.PatternCallAllowed(refuse, frontBefore))
+            {
+                Wire.Log("setValue: needs foreground (a UIA call would bring the target window to the front)");
+                throw new HelperError("needs_foreground", "setValue brings a window that is not in front to the front; nothing was sent");
+            }
             Focus.RequireSemantic(target, el);
             var bstr = Marshal.StringToBSTR(value);
             try
