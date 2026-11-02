@@ -386,14 +386,14 @@ describe('DaemonPTYBridge — the query before the tracker names the agent', () 
   });
 
   it('reads again for a new command within that second: `cat`, then `claude` right after', () => {
-    let agent: { slug: string; startedAt: number } | undefined;
-    childAgent(() => agent);
+    const shell: { agent?: { slug: string; startedAt: number } } = {};
+    childAgent(() => shell.agent);
     fake.feed(C); // `cat probe-file`
     fake.feed(QUERY_BEL);
     vi.advanceTimersByTime(200);
     fake.feed(PROMPT);
     fake.feed(C); // `claude`
-    agent = { slug: 'claude', startedAt: Date.now() };
+    shell.agent = { slug: 'claude', startedAt: Date.now() };
     vi.advanceTimersByTime(300);
     fake.feed(QUERY_BEL);
     expect(asked).toHaveLength(2);
