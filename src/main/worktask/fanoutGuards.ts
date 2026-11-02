@@ -9,8 +9,10 @@
 //             carries a stamp cannot fan out again (depth-1), whatever its
 //             ledger row says. A workspace a stamped caller creates inherits
 //             the stamp.
-//   caps    — at most FANOUT_LIVE_TASK_CAP live tasks and
-//             FANOUT_HOURLY_TASK_CAP started tasks per rolling hour, app-wide.
+//   caps    — at most the live cap of live tasks and the hourly cap of
+//             started tasks per rolling hour, app-wide. The owner sets both in
+//             Settings (fanoutWorkerPolicy.ts; defaults FANOUT_LIVE_TASK_CAP
+//             and FANOUT_HOURLY_TASK_CAP), read at every check.
 //             Checked and reserved synchronously at claim time; over a cap the
 //             call is refused (no dialog, so nothing queues up behind it).
 //   audit   — one jsonl line per fan-out that is about to run: who, where,
@@ -39,9 +41,17 @@ import { BOT_ID_RE } from '../../shared/bot';
 import { getWorkerSlots, parseLaunchToken, type WorkerSlots } from '../factory/workerSlots';
 import { holderCounts, liveHolders, type LiveHolders, type ReservedTask } from '../factory/workerHolders';
 import { holderInputsChanged } from '../factory/holderInputs';
+import { loadFanoutHourlyTaskCap, loadFanoutLiveTaskCap } from './fanoutWorkerPolicy';
+import {
+  DEFAULT_FANOUT_HOURLY_TASK_CAP,
+  DEFAULT_FANOUT_LIVE_TASK_CAP,
+  MAX_FANOUT_HOURLY_TASK_CAP,
+} from '../../shared/fanoutTaskCaps';
 
-export const FANOUT_LIVE_TASK_CAP = 8;
-export const FANOUT_HOURLY_TASK_CAP = 24;
+/** The caps' defaults. The caps in force are the owner's (liveTaskCap(),
+ *  hourlyTaskCap()). */
+export const FANOUT_LIVE_TASK_CAP = DEFAULT_FANOUT_LIVE_TASK_CAP;
+export const FANOUT_HOURLY_TASK_CAP = DEFAULT_FANOUT_HOURLY_TASK_CAP;
 export const FANOUT_CAP_WINDOW_MS = 60 * 60 * 1000;
 
 /** Oldest lineage stamps are dropped past this many. Task workspaces are
@@ -207,9 +217,9 @@ function titleList(titles: readonly string[]): string {
 
 /** The live cap's refusal: what holds the slots (when known) and how one
  *  frees. Pure. */
-export function liveCapMessage(live: number, count: number, holders: LiveSlotHolders | null): string {
+export function liveCapMessage(live: number, count: number, holders: LiveSlotHolders | null, cap: number): string {
   const head =
-    `fan-out refused: at most ${FANOUT_LIVE_TASK_CAP} fan-out tasks may be live at once across wmux ` +
+    `fan-out refused: at most ${cap} fan-out tasks may be live at once across wmux ` +
     `(${live} live now, ${count} requested).`;
   // A task that ended and runs no agent holds no slot, so every holder named
   // here frees its slot this way.
@@ -500,7 +510,9 @@ export class FanOutGuards {
         );
       } catch {
         // A torn caps file must not hand a loop a fresh hour: treat the hour
-        // it was last written in as FULL, and keep the file for inspection.
+        // it was last written in as FULL (at the highest cap the owner can
+        // set, so raising it does not empty that hour), and keep the file for
+        // inspection.
         let mtime = this.now();
         try {
           mtime = fs.statSync(p).mtimeMs;
@@ -508,7 +520,7 @@ export class FanOutGuards {
           // keep now
         }
         this.quarantine(p);
-        list = [{ id: 'unreadable-caps-file', at: mtime, count: FANOUT_HOURLY_TASK_CAP }];
+        list = [{ id: 'unreadable-caps-file', at: mtime, count: MAX_FANOUT_HOURLY_TASK_CAP }];
         try {
           atomicWriteJSONSync(p, { version: 1, starts: list });
         } catch {
@@ -518,6 +530,16 @@ export class FanOutGuards {
     }
     this.hourly = list;
     return list;
+  }
+
+  /** The live cap in force: the owner's setting, read at every check. */
+  liveTaskCap(): number {
+    return loadFanoutLiveTaskCap(this.dir);
+  }
+
+  /** The hourly cap in force: the owner's setting, read at every check. */
+  hourlyTaskCap(): number {
+    return loadFanoutHourlyTaskCap(this.dir);
   }
 
   private saveHourly(list: HourlyStamp[]): void {
@@ -549,13 +571,15 @@ export class FanOutGuards {
         message: `fan-out refused: the live-task count is unavailable (${(err as Error).message}); retry shortly`,
       };
     }
-    if (live + count > FANOUT_LIVE_TASK_CAP) {
-      return { ok: false, message: liveCapMessage(live, count, this.liveSlotHolders(pendingCount + spawningCount)) };
+    const liveCap = this.liveTaskCap();
+    if (live + count > liveCap) {
+      return { ok: false, message: liveCapMessage(live, count, this.liveSlotHolders(pendingCount + spawningCount), liveCap) };
     }
 
     const recorded = hourly.reduce((sum, s) => sum + s.count, 0);
     const started = recorded + pendingCount;
-    if (started + count > FANOUT_HOURLY_TASK_CAP) {
+    const hourlyCap = this.hourlyTaskCap();
+    if (started + count > hourlyCap) {
       // Walk the recorded window oldest-first to the stamp whose expiry makes
       // room. Pending reservations do not expire on a clock — if the excess is
       // theirs, room frees when those fan-outs start or are dropped.
@@ -564,7 +588,7 @@ export class FanOutGuards {
       let freesAt: number | null = null;
       for (const s of sorted) {
         freed += s.count;
-        if (started - freed + count <= FANOUT_HOURLY_TASK_CAP) {
+        if (started - freed + count <= hourlyCap) {
           freesAt = s.at + FANOUT_CAP_WINDOW_MS;
           break;
         }
@@ -576,7 +600,7 @@ export class FanOutGuards {
       return {
         ok: false,
         message:
-          `fan-out refused: at most ${FANOUT_HOURLY_TASK_CAP} fan-out tasks may start per rolling hour across wmux ` +
+          `fan-out refused: at most ${hourlyCap} fan-out tasks may start per rolling hour across wmux ` +
           `(${started} started or starting in the last hour, ${count} requested). ${when}`,
       };
     }
@@ -647,10 +671,11 @@ export class FanOutGuards {
     const recorded = this.loadHourly()
       .filter((s) => s.at > now - FANOUT_CAP_WINDOW_MS)
       .reduce((sum, s) => sum + s.count, 0);
-    if (recorded + this.booked('pending') + 1 > FANOUT_HOURLY_TASK_CAP) {
+    const hourlyCap = this.hourlyTaskCap();
+    if (recorded + this.booked('pending') + 1 > hourlyCap) {
       return {
         ok: false,
-        message: `at most ${FANOUT_HOURLY_TASK_CAP} fan-out tasks may start per rolling hour across wmux, and the hour is full`,
+        message: `at most ${hourlyCap} fan-out tasks may start per rolling hour across wmux, and the hour is full`,
       };
     }
     this.appendStamp(key, 1);

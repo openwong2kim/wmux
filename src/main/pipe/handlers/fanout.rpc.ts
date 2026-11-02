@@ -104,7 +104,7 @@ import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
 import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
-import { FANOUT_LIVE_TASK_CAP, getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
 import { callerPaneRunsBypass, inheritWorkerMode, type FanoutWorkerModeSource } from '../../worktask/fanoutInheritedMode';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
@@ -1716,7 +1716,7 @@ export function registerFanOutRpc(
       // wait for a slot: checked here, with the count the reserve below
       // reads in this same tick, so its refusal is held like the others
       // instead of reaching the reserve and being lost.
-      const wmux = open.live !== undefined ? { live: open.live, limit: FANOUT_LIVE_TASK_CAP } : undefined;
+      const wmux = open.live !== undefined ? { live: open.live, limit: guardsOf().liveTaskCap() } : undefined;
       const full = workerSlotsFull(botProfile.budget, open.bot, open.factory, n, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS, wmux);
       const most = Math.min(botProfile.budget.maxConcurrentWorkers, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
       if (botProfile.budget.maxConcurrentWorkers === 0) {

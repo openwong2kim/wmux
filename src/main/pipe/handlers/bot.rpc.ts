@@ -41,7 +41,7 @@ import { recordWorkerEnd } from '../../factory/budget';
 import { workerStopsConfirmed } from '../../factory/workerRunEnds';
 import { botAccountName, botAccountQuota, type ClaudeUsageCache } from '../../factory/botQuota';
 import { openBotWorkers } from '../../factory/openBotWorkers';
-import { FANOUT_LIVE_TASK_CAP } from '../../worktask/fanoutGuards';
+import { getFanOutGuards } from '../../worktask/fanoutGuards';
 import { getAgentSlots, refreshSlotLiveness } from '../../factory/agentSlots';
 import { HeldFanouts, heldFanoutWakesChanged, setHeldFanouts, type HeldFanoutPorts } from '../../factory/heldFanouts';
 import { BotFanoutReceipts, botFanoutReceiptsPath, setBotFanoutReceipts } from '../../factory/botFanoutReceipts';
@@ -643,7 +643,7 @@ export function botRuntimeModule(router: FactoryRouter, deps: FactoryHostDeps, o
         refreshLiveness: refreshSlotLiveness,
         wakes: () => queue,
         liveWakes: () => queue.list({ states: ['queued', 'running'] }),
-        liveLimit: () => FANOUT_LIVE_TASK_CAP,
+        liveLimit: () => getFanOutGuards().liveTaskCap(),
         // Only a bot whose workers spend usage the reserve covers waits for it.
         reserveHeld: ({ botId, workspaceId }) => agentRow(store.get(botId)?.workerAgent?.agent ?? 'claude')?.usageReserve === true
           && usageReserveHoldForWorkspace(workspaceId) !== null,

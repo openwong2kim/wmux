@@ -27,9 +27,13 @@ function asOrchRole(raw: unknown): string {
 import type { FanOutRequest, FanOutResult, FanOutService } from '../../worktask/FanOutService';
 import { getFanOutGuards, launchedAuditTask, promptDigest } from '../../worktask/fanoutGuards';
 import {
+  loadFanoutHourlyTaskCap,
+  loadFanoutLiveTaskCap,
   loadFanoutRequireApproval,
   loadFanoutTrustAgyFolders,
   loadFanoutWorkerPermissionMode,
+  setFanoutHourlyTaskCap,
+  setFanoutLiveTaskCap,
   setFanoutRequireApproval,
   setFanoutTrustAgyFolders,
   setFanoutWorkerPermissionMode,
@@ -98,6 +102,33 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     IPC.FANOUT_REQUIRE_APPROVAL_SET,
     wrapHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
       setFanoutRequireApproval(value),
+    ),
+  );
+
+  // The fan-out caps (fanoutGuards.ts). Written only here, so an agent on the
+  // pipe cannot raise its own brakes.
+  ipcMain.removeHandler(IPC.FANOUT_LIVE_CAP_GET);
+  ipcMain.handle(
+    IPC.FANOUT_LIVE_CAP_GET,
+    wrapHandler(IPC.FANOUT_LIVE_CAP_GET, async () => loadFanoutLiveTaskCap()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_LIVE_CAP_SET);
+  ipcMain.handle(
+    IPC.FANOUT_LIVE_CAP_SET,
+    wrapHandler(IPC.FANOUT_LIVE_CAP_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutLiveTaskCap(value),
+    ),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_HOURLY_CAP_GET);
+  ipcMain.handle(
+    IPC.FANOUT_HOURLY_CAP_GET,
+    wrapHandler(IPC.FANOUT_HOURLY_CAP_GET, async () => loadFanoutHourlyTaskCap()),
+  );
+  ipcMain.removeHandler(IPC.FANOUT_HOURLY_CAP_SET);
+  ipcMain.handle(
+    IPC.FANOUT_HOURLY_CAP_SET,
+    wrapHandler(IPC.FANOUT_HOURLY_CAP_SET, async (_event: Electron.IpcMainInvokeEvent, value: unknown) =>
+      setFanoutHourlyTaskCap(value),
     ),
   );
 
@@ -176,6 +207,10 @@ export function registerFanOutHandler(service: FanOutService): () => void {
     ipcMain.removeHandler(IPC.FANOUT_WORKER_MODE_SET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_GET);
     ipcMain.removeHandler(IPC.FANOUT_REQUIRE_APPROVAL_SET);
+    ipcMain.removeHandler(IPC.FANOUT_LIVE_CAP_GET);
+    ipcMain.removeHandler(IPC.FANOUT_LIVE_CAP_SET);
+    ipcMain.removeHandler(IPC.FANOUT_HOURLY_CAP_GET);
+    ipcMain.removeHandler(IPC.FANOUT_HOURLY_CAP_SET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_GET);
     ipcMain.removeHandler(IPC.FANOUT_TRUST_AGY_FOLDERS_SET);
     ipcMain.removeHandler(IPC.WORKER_FENCE_OFF_GET);
