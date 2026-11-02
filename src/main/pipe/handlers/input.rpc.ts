@@ -65,6 +65,7 @@ import {
   type TaskOwnerLane,
 } from '../../workspace/ptyOwnership';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
+import { findWorkspaceIdForPty } from './hooks.rpc';
 import { getTaskLedger } from '../../deck/taskLedgerHost';
 import { reclaimedWorkerOfPane, reclaimedWorkerWorkspaces } from '../../factory/workerReclaim';
 import { taskSignedIn } from '../../factory/wakeTaint';
@@ -779,6 +780,8 @@ function makeSubmitProbe(
   workspaceId: string | undefined,
   readTurnStartedAt?: (ptyId: string) => number | undefined,
   tailLines: number = SUBMIT_RECEIPT_READ_LINES,
+  /** Read the buffer as it is: a hidden pane is not resynced for the probe. */
+  noHydrate = false,
 ): SubmitProbe {
   return {
     readScreen: async (): Promise<string> => {
@@ -792,6 +795,7 @@ function makeSubmitProbe(
           // Composer rows are counted up from the cursor row; the statusline
           // and hints a TUI draws below it must not push the needle out (#1595).
           endAtCursor: true,
+          ...(noHydrate ? { noHydrate: true } : {}),
           timeoutMs: SUBMIT_RECEIPT_READ_TIMEOUT_MS,
         });
         if (result !== null && typeof result === 'object') {
@@ -1132,6 +1136,17 @@ export function withRegisteredCheck(guard: DeliveryGuard, key: string | undefine
  * Enter follows the paste after an agent-specific delay and a dialog drawn in
  * that gap would take it. A refusal at the second check leaves the text in the
  * composer unsubmitted (`pasted: true`) rather than answering the dialog.
+ *
+ * A gate that could not decide at the Enter (`gate_unavailable`) is asked once
+ * more after the paste's redraw settles: on a hidden pane our own paste moves
+ * the output the folder-trust verdict was read from, so the first answer can be
+ * unknown with no dialog there (#2993). Still undecided (a screen read that
+ * timed out included), the text is left in the composer: unknown never erases
+ * it, and the caller must not count it as delivered.
+ *
+ * With `probe`, the Enter gets the same submit receipt and one retried Enter
+ * that `input.send` uses. A receipt that never comes is still `ok`: the text
+ * may have been submitted, and pasting it again would duplicate it.
  */
 export async function gatedPasteSubmit(
   gate: ApprovalInputGate,
@@ -1149,6 +1164,16 @@ export async function gatedPasteSubmit(
    */
   freshContext?: () => Promise<FreshContextReply>,
   guard?: DeliveryGuard,
+  /**
+   * The submit receipt after the Enter. `armRetry` runs right before the first
+   * Enter and returns the check a retried Enter must pass: why it must not be
+   * sent (someone typed, the agent changed, the pane cannot be read), or null.
+   */
+  receipt?: {
+    probe: SubmitProbe;
+    now?: () => number;
+    armRetry: () => Promise<() => Promise<string | null>>;
+  },
 ): Promise<GatedSubmitResult> {
   const before = await deliveryGateCheck(gate, ptyId);
   if (before) return before;
@@ -1178,13 +1203,11 @@ export async function gatedPasteSubmit(
   } catch (err) {
     return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err) };
   }
-  await sleep(submitProfileForAgent(agent).submitDelayMs);
-  const atEnter = await deliveryGateCheck(gate, ptyId, ' The text was pasted but not submitted.');
-  if (atEnter) return { ...atEnter, pasted: true };
-  const guardAtEnter = guard ? await guard.beforeEnter() : null;
-  if (guardAtEnter) {
-    // Not submitted; take the text back out (Ctrl+U empties an agent's
-    // composer or a shell's line — best effort, reported as such).
+  // Always a bracketed paste: a large one needs time to drain before Enter.
+  await sleep(pasteSubmitDelayMs(agent ?? null, text.length));
+  /** Not submitted; take the text back out (Ctrl+U empties an agent's
+   *  composer or a shell's line — best effort, reported as such). */
+  const takeBack = (refusal: GatedSubmitRefusal): GatedSubmitRefusal => {
     let cleared = false;
     try {
       write(ptyId, '\x15');
@@ -1192,12 +1215,51 @@ export async function gatedPasteSubmit(
     } catch {
       /* the pane went away */
     }
-    return { ...guardAtEnter, pasted: true, cleared };
+    return { ...refusal, pasted: true, cleared };
+  };
+  const notSubmitted = ' The text was pasted but not submitted.';
+  let atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
+  if (atEnter?.reason === 'gate_unavailable') {
+    // Our own paste redrew the pane; ask once more once that has settled.
+    await sleep(submitProfileForAgent(agent).submitDelayMs);
+    atEnter = await deliveryGateCheck(gate, ptyId, notSubmitted);
   }
+  // Still refused: the text stays where it is. An undecided gate is no proof
+  // the composer holds only our paste, so it is never cleared on that.
+  if (atEnter) return { ...atEnter, pasted: true };
+  const guardAtEnter = guard ? await guard.beforeEnter() : null;
+  if (guardAtEnter) return takeBack(guardAtEnter);
+  // The pane while the text sits uncommitted: what the receipt diffs against.
+  const probe = receipt?.probe;
+  const atEnterReading = probe ? await probe.readAgentStatus() : null;
+  const atEnterPane = {
+    screen: probe ? await probe.readScreen() : '',
+    agentStatus: atEnterReading?.status ?? null,
+    turnStartedAt: atEnterReading?.turnStartedAt,
+  };
+  const retryRefusal = receipt ? await receipt.armRetry() : null;
   try {
     write(ptyId, isMultilinePtyPayload(text) ? '\r\r' : '\r');
   } catch (err) {
     return { ok: false, reason: 'write_failed', detail: err instanceof Error ? err.message : String(err), pasted: true };
+  }
+  if (probe && retryRefusal) {
+    const now = receipt?.now ?? Date.now;
+    await awaitSubmitReceipt(
+      probe,
+      composerMarker(atEnterPane.screen, submitNeedle(text)),
+      atEnterPane,
+      async () => {
+        // A retried Enter submits whatever the composer holds now: only ours,
+        // or none. When that cannot be told, no retry.
+        const why = await retryRefusal();
+        if (why) throw new EnterRetryRefused(`delivery: ${why}; the retried Enter was not sent.`);
+        const again = await deliveryGateCheck(gate, ptyId, ' The text and its first Enter were sent; this retried Enter was not.');
+        if (again) throw new EnterRetryRefused(again.detail);
+        write(ptyId, '\r');
+      },
+      { enterAt: now(), sleep, now },
+    );
   }
   return fresh ? { ok: true, ...fresh } : { ok: true };
 }
@@ -2139,6 +2201,28 @@ export function registerInputRpc(
     };
   };
 
+  /**
+   * Read the pane's agent and key count right before a delivery's first Enter,
+   * and return the check its retried Enter must pass: the same agent, and no
+   * key since but that Enter (one write, one key on the daemon's counter).
+   * A pane whose state cannot be read (no daemon, a failed read) gets no retry.
+   */
+  const armEnterRetry = async (ptyId: string): Promise<() => Promise<string | null>> => {
+    const dc = ptyManager.get(ptyId) ? null : getDaemonClient?.();
+    const read = (): Promise<Awaited<ReturnType<DaemonClient['getAgentState']>> | null> =>
+      dc?.isConnected ? Promise.resolve().then(() => dc.getAgentState(ptyId, { timeoutMs: 1_000 })).catch(() => null) : Promise.resolve(null);
+    const atEnter = await read();
+    return async () => {
+      const now = await read();
+      if (!atEnter?.agentName || !now) return "the pane's agent and input could not be read";
+      const baseline = { agentName: atEnter.agentName, incarnationId: atEnter.incarnationId, agentVerified: atEnter.agentVerified === true };
+      if (!agentIdentityHolds(baseline, now)) return 'the agent in the pane changed after the first Enter';
+      const ownEnter = typeof atEnter.keyInputRevision === 'number' ? atEnter.keyInputRevision + 1 : undefined;
+      if (typedPastOwnInput(now, ownEnter)) return 'someone typed in the pane after the first Enter';
+      return null;
+    };
+  };
+
   return {
     deliveryGate: (ptyId) => deliveryGateCheck(approvalGate, ptyId),
     gatedSubmit: async (ptyId, text, agent, opts) => {
@@ -2153,7 +2237,18 @@ export function registerInputRpc(
         guard = withRegisteredCheck(prepared.guard, opts.guardKey);
         noteOwnWrite = prepared.noteOwnWrite;
       }
-      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard);
+      // The submit receipt's workspace, from main's mirror only: a renderer
+      // round-trip here would add a wait before the paste. With none, the
+      // receipt watches the composer alone. Its screen reads never resync a
+      // hidden pane: on a large ring each would be a full replay (#2993).
+      const owner = getWorkspaceMirror().peek();
+      const probeWs = (owner && findWorkspaceIdForPty(ptyId, owner.entries)) ?? undefined;
+      const receipt = {
+        probe: makeSubmitProbe(getWindow, ptyId, probeWs, deps.readTurnStartedAt, SUBMIT_RECEIPT_READ_LINES, true),
+        ...(deps.now ? { now: deps.now } : {}),
+        armRetry: () => armEnterRetry(ptyId),
+      };
+      if (!opts?.newTask) return gatedPasteSubmit(approvalGate, writeToPty, ptyId, text, agent, deps.sleep, undefined, guard, receipt);
       // #1680 — a new task: the fresh-context step runs inside the gated
       // delivery, and the pane is held through the text's Enter. The pane's
       // conversation is kept when the renderer knows of other open tasks on it,
@@ -2179,7 +2274,7 @@ export function registerInputRpc(
               },
               keepContext,
             );
-          }, guard),
+          }, guard, receipt),
         deps.freshContextLockWaitMs,
       ).catch((err: unknown): GatedSubmitResult => {
         if (!(err instanceof FreshContextBusy)) throw err;

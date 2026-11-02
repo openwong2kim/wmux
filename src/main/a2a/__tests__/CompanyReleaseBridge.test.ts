@@ -214,6 +214,14 @@ describe('CompanyReleaseBridge — delivery of a released task', () => {
     expect(ceoLines()).toEqual([expect.objectContaining({ kind: 'held', held: 'pane-missing' })]);
   });
 
+  // #2993: a paste the seat's composer kept unsubmitted is never written again on its own.
+  it('a paste left unsubmitted in the seat pane is held as delivery-unconfirmed', async () => {
+    daemon.tasks.set('task-c', companyTask('task-c', released()));
+    deliverAnswers.push({ ok: true, delivered: false, held: 'delivery-unconfirmed' });
+    await pull(bridge());
+    expect(marksOf('task-c')).toEqual([{ attempted: true }, { held: 'delivery-unconfirmed' }]);
+  });
+
   it('a task that names no seat pane is held without any write', async () => {
     daemon.tasks.set('task-c', companyTask('task-c', released(), { paneId: null }));
     await pull(bridge());

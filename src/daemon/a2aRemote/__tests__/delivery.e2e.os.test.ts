@@ -17,7 +17,7 @@ import { RemoteA2aBridge } from '../../../main/a2a/RemoteA2aBridge';
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { A2aRemoteController } from '../controller';
-import { A2aRemoteDelivery, NO_AGENT_SUMMARY, WAITING_SUMMARY } from '../delivery';
+import { A2aRemoteDelivery, DELIVERY_UNCONFIRMED_SUMMARY, NO_AGENT_SUMMARY, WAITING_SUMMARY } from '../delivery';
 import { ExposedPaneCache } from '../exposedPanes';
 import { ExposureStore } from '../exposureStore';
 import { remoteTaskId } from '../ids';
@@ -700,6 +700,22 @@ describe('cross-host delivery, end to end', () => {
     const texts = (): string[] => a.tasks.getTask(taskId)!.history.map((m) => (m.parts[0] as { text: string }).text);
     await until(() => texts().length === 2);
     expect(texts()).toEqual(['rebuild the index', NO_AGENT_SUMMARY]);
+  });
+
+  // #2993: a paste left unsubmitted in the pane is held so; its sender must hear why.
+  it('a delivery-unconfirmed hold whose reply to the sender never went is told by maintenance, once', async () => {
+    const b = await makePc('PC-B', { render: async () => ({ ok: true, delivered: false, reason: 'no_target_pty' }) });
+    const a = await makePc('PC-A');
+    const linkId = await linked(a, b);
+    const taskId = await sendTask(a, linkId, 'ship the build');
+    await until(() => b.tasks.getTask(taskId) !== undefined);
+    // Held with no reply sent (as when the send failed at the time).
+    expect((await b.tasks.markRemote({ taskId, held: 'delivery-unconfirmed' })).ok).toBe(true);
+    await b.delivery.maintain();
+    await b.delivery.maintain();
+    const texts = (): string[] => a.tasks.getTask(taskId)!.history.map((m) => (m.parts[0] as { text: string }).text);
+    await until(() => texts().length === 2);
+    expect(texts()).toEqual(['ship the build', DELIVERY_UNCONFIRMED_SUMMARY]);
   });
 
   it('main restarting mid-paste: the task is not pasted again and shows as delivery-unconfirmed', async () => {

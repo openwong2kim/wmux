@@ -138,12 +138,16 @@ describe('remote task delivery', () => {
     expect(written).toEqual([PINNED_PTY]);
   });
 
-  it('a paste left in the composer counts as delivered and is not pasted again', async () => {
-    refusal = { ok: false, reason: 'approval_pending', detail: 'x', pasted: true, cleared: false };
-    expect(await send()).toEqual({ ok: true, delivered: true, ptyId: PINNED_PTY, note: 'pasted-not-submitted' });
-    refusal = null;
-    expect(await send()).toEqual({ ok: true, delivered: true, duplicate: true });
+  // #2993: it was never submitted, and pasting it again would duplicate it.
+  it('a paste left in the composer is not delivered: it is held for a person to check', async () => {
+    refusal = { ok: false, reason: 'gate_unavailable', detail: 'x', pasted: true, cleared: false };
+    expect(await send()).toEqual({ ok: true, delivered: false, held: 'delivery-unconfirmed' });
     expect(gate).toHaveBeenCalledTimes(1);
+  });
+
+  it('a paste taken back out of the composer is a plain miss the bridge retries', async () => {
+    refusal = { ok: false, reason: 'gate_unavailable', detail: 'x', pasted: true, cleared: true };
+    expect(await send()).toEqual({ ok: true, delivered: false, reason: 'gate_unavailable' });
   });
 
   it('a person-approved retry snapshots the new occupant and delivers to it', async () => {

@@ -65,6 +65,7 @@ import {
   type SearchableBuffer,
 } from '../utils/searchEngine';
 import { gatedSubmitToPty, submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
+import { isTerminalDirty, isTerminalRetained } from '../terminal/terminalOutputScheduler';
 import type { GatedSubmitRefusal, GatedSubmitResult } from '../../shared/ptyMessageDelivery';
 import type { FreshContextReply } from '../../shared/freshContext';
 import { paneAddressOfPty, paneHasOtherOpenA2aTask } from './a2aFreshContext';
@@ -468,6 +469,12 @@ const DELIVERY_REFUSED_HINTS: Record<GatedSubmitRefusal['reason'], string> = {
     'The task is stored. Send again once the pane is idle.',
 };
 
+/** A refused delivery whose text is still in the target's composer (#2993). */
+const PASTED_NOT_SUBMITTED_HINT =
+  'The message was pasted into the target pane but not submitted, and it is still in its prompt. Do not ' +
+  'send it again (it would be pasted twice): someone at that pane presses Enter, or reads the pane first. ' +
+  'The task is stored; the receiver can find it with a2a_task_query.';
+
 /** The `delivery` receipt for a refused write. */
 function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<string, unknown> {
   return {
@@ -477,7 +484,7 @@ function refusedDelivery(mode: string, refused: GatedSubmitRefusal): Record<stri
     reason: refused.reason,
     hint: DELIVERY_REFUSED_HINTS[refused.reason],
     detail: refused.detail,
-    ...(refused.pasted ? { pastedNotSubmitted: true } : {}),
+    ...(refused.pasted ? (refused.cleared ? { pastedCleared: true } : { pastedNotSubmitted: true, hint: PASTED_NOT_SUBMITTED_HINT }) : {}),
   };
 }
 
@@ -1043,7 +1050,8 @@ function remoteAnchorTarget(
 /**
  * One gated write of a remote delivery to `pty`, with the outcome in the
  * bridge's terms. A paste left in the composer (Enter withheld, not cleared)
- * counts as delivered: pasting it again would duplicate it.
+ * was never submitted, and pasting it again would duplicate it: it is held as
+ * `delivery-unconfirmed` for a person to check (#2993).
  */
 async function writeRemoteDelivery(
   anchor: RemoteAnchor,
@@ -1053,7 +1061,7 @@ async function writeRemoteDelivery(
   if (!a2aTargetHasAgent(target.ws, target.pty)) return { ok: true, delivered: false, reason: 'no_agent_pane' };
   const res = await write();
   if (res.ptyId) return { ok: true, delivered: true, ptyId: res.ptyId };
-  if (res.refused?.pasted && !res.refused.cleared) return { ok: true, delivered: true, ptyId: target.pty, note: 'pasted-not-submitted' };
+  if (res.refused?.pasted && !res.refused.cleared) return { ok: true, delivered: false, held: 'delivery-unconfirmed' };
   // The pane may have changed while the delivery waited.
   const after = remoteAnchorTarget({ ...anchor, ptyId: target.pty }, false);
   if ('held' in after) return { ok: true, delivered: false, held: after.held };
@@ -1292,10 +1300,12 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
   const write = isLiveTuiAgent(liveMeta)
     ? await deliverPtyNudge(seat.ws, (p) => buildA2aNudge(taskId, fromName, 'new', a2aFormatOptionsFor(p).multiline ? t.metadata.title : undefined) + imagesNudgeSuffix(images), seat.pty, false, gated)
     : await deliverPtyNotification(seat.ws, fromName, bodyWithImages(body, images), seat.pty, false, gated);
-  // A paste left in the composer (Enter withheld, not cleared) counts as
-  // delivered: writing it again would duplicate it.
-  const pastedOnly = !write.ptyId && !!write.refused?.pasted && !write.refused.cleared;
-  if (write.ptyId || pastedOnly) {
+  // A paste left in the composer (Enter withheld, not cleared) was never
+  // submitted, and writing it again would duplicate it: held for a person.
+  if (!write.ptyId && write.refused?.pasted && !write.refused.cleared) {
+    return { ok: true, delivered: false, held: 'delivery-unconfirmed' };
+  }
+  if (write.ptyId) {
     deliveredCompanyTasks.add(taskId);
     if (deliveredCompanyTasks.size > DELIVERED_COMPANY_TASKS_MAX) {
       deliveredCompanyTasks.delete(deliveredCompanyTasks.values().next().value as string);
@@ -1310,15 +1320,13 @@ async function handleCompanyDelivery(params: RpcParams): Promise<A2aRemoteDelive
         waitingOn: [],
         ...(marker?.releasedAt ? { releasedAt: marker.releasedAt } : {}),
         delivered: true,
-        ptyId: pastedOnly ? seat.pty : (write.ptyId as string),
+        ptyId: write.ptyId as string,
       };
     });
     // Its send stored it unannounced; it is the seat's from now on.
     const written = useStore.getState().getTask(taskId);
     if (written) emitA2aTaskEvent(written, 'created');
-    return pastedOnly
-      ? { ok: true, delivered: true, ptyId: seat.pty, note: 'pasted-not-submitted' }
-      : { ok: true, delivered: true, ptyId: write.ptyId as string };
+    return { ok: true, delivered: true, ptyId: write.ptyId as string };
   }
   // The pane may have gone while the delivery waited.
   if (!resolveSeat()) return { ok: true, delivered: false, held: 'pane-missing' };
@@ -3108,7 +3116,17 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
 
     // Phase 3 hydrate-before-read — see pane.search above. Agents reading a
     // hidden pane must see its live state, not a retention-stale buffer.
-    await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
+    // Internal `noHydrate` (a delivery's submit receipt, polled several times a
+    // second): read the buffer as it is; resyncing a hidden pane with a large
+    // ring on every poll wedged the renderer (#2993).
+    // Such a read of a pane whose output is held back (hidden) or must be
+    // resynced answers no screen: a stale composer is no evidence for a retried
+    // Enter.
+    if (raw.noHydrate === true) {
+      if (isTerminalRetained(terminal) || isTerminalDirty(terminal)) return { ptyId, text: '' };
+    } else {
+      await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
+    }
 
     // Read cost is bounded by DEFAULT unless the caller opts into the full
     // scrollback. RCA (2026-07-14 orchestrator lag): the old path always walked
