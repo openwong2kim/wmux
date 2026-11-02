@@ -1686,8 +1686,13 @@ leaves the page.
     folder" or "own worktree"), the Mission and Standing orders verbatim
     under a `--line` left rule in `--text-sub`, and, while the file is not
     trusted or its setup command or copy list waits for a review, **Also in
-    this file** ("approving trusts them too") with its commands, layout
-    panes, setup command and copy list verbatim. Approving does not lay the
+    this file** ("approving trusts them too", and with a layout, that new
+    workspaces in this folder can then open with it) with its commands,
+    layout panes, setup command and copy list verbatim. The review shows the
+    file as it was when it opened; when another read of the file differs (an
+    edit, a save, the workspace moving to another folder) it keeps that file
+    on screen, says "This file changed while this was open." and keeps the
+    primary off until it is opened again. Approving does not lay the
     file's layout over the workspace it was picked from, and a company's
     workspace never gets a layout laid over it on its own. An agent
     not installed here is named under the table and keeps the primary off.

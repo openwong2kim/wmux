@@ -135,8 +135,33 @@ describe('CompanyFileReviewDialog', () => {
     expect(also.textContent).toContain('npm ci');
     expect(also.textContent).toContain('.env');
 
-    act(() => useStore.setState({ projectConfigs: { 'ws-1': { ...UNTRUSTED, trust: 'trusted', prepReviewed: true, companyReviewed: false } } } as never));
+    act(() => root.unmount());
+    root = createRoot(container);
+    await render({ ...UNTRUSTED, trust: 'trusted', prepReviewed: true, companyReviewed: false });
     expect(container.querySelector('[data-company-review-also]')).toBeNull();
+  });
+
+  it('says a layout in the file can then open new workspaces of this folder', async () => {
+    const layout = { type: 'branch' as const, direction: 'horizontal' as const, children: [{ type: 'leaf' as const, command: 'npm run dev' }, { type: 'leaf' as const }] };
+    await render({ ...UNTRUSTED, config: { ...UNTRUSTED.config!, layout } });
+    expect(container.querySelector('[data-company-review-also]')?.textContent)
+      .toContain('approving trusts them too, and new workspaces in this folder can then open with its layout');
+  });
+
+  it('keeps showing the file it opened on, and turns Approve off, when another file is read while it is open', async () => {
+    await render(UNTRUSTED);
+    act(() => useStore.setState({
+      projectConfigs: { 'ws-1': { ...UNTRUSTED, configPath: '/dev/other/wmux.json', root: '/dev/other', contentHash: 'h3', config: { version: 1, company: { ...COMPANY, name: 'other team' } } } },
+    } as never));
+    expect(container.querySelector('.ui-dialog-title')?.textContent).toBe('Review shop team before it starts');
+    expect(container.querySelector('[data-company-review-moved]')?.textContent)
+      .toBe('This file changed while this was open. Close it and pick the company again to review it.');
+    const approve = button('Approve and make company');
+    expect(approve.disabled).toBe(true);
+    await act(async () => approve.click());
+    await flush();
+    expect(setTrust).not.toHaveBeenCalled();
+    expect(seatLaunches).not.toHaveBeenCalled();
   });
 
   it('lists the setup of trusted bytes whose grant never showed it, since approving covers it', async () => {
@@ -218,7 +243,8 @@ describe('CompanyFileReviewDialog', () => {
     expect(setTrust).toHaveBeenCalled();
     expect(seatLaunches).not.toHaveBeenCalled();
     expect(container.querySelector('[data-company-review-note]')?.textContent).toBe('wmux.json changed. Review it again.');
-    expect(container.textContent).toContain('This file changed since it was approved.');
+    expect(container.querySelector('[data-company-review-moved]')).not.toBeNull();
+    expect(button('Approve and make company').disabled).toBe(true);
     expect(onClose).not.toHaveBeenCalled();
   });
 

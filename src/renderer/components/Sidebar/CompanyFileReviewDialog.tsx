@@ -39,7 +39,13 @@ function Quote({ text }: { text: string }) {
 
 export default function CompanyFileReviewDialog({ workspaceId, onClose }: { workspaceId: string; onClose: () => void }) {
   const t = useT();
-  const state = useStore((s) => s.projectConfigs[workspaceId]);
+  // What the dialog shows and what Approve grants: the file as it was when the
+  // dialog opened. A later read of another file (an edit, a save, the
+  // workspace moving to another folder) never replaces it on screen; it turns
+  // Approve off until the dialog is opened again.
+  const [state] = useState(() => useStore.getState().projectConfigs[workspaceId]);
+  const live = useStore((s) => s.projectConfigs[workspaceId]);
+  const moved = live?.contentHash !== state?.contentHash || live?.configPath !== state?.configPath;
   const agents = useAgentChoices();
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
@@ -76,13 +82,14 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
     && (commands.length > 0 || rows.length > 0 || setup !== undefined || copy.length > 0);
 
   const approve = async () => {
-    if (busy || missing.length > 0) return;
+    if (busy || missing.length > 0 || moved) return;
     const shownHash = state.contentHash;
     // A re-approval of trusted bytes keeps their unattended consent.
     const unattendedCarry = state.trust === 'trusted' && state.unattended === true;
     // The grant binds to the store's bytes as decideProjectTrust reads them,
     // in this same turn: they must be the ones on screen.
-    if (useStore.getState().projectConfigs[workspaceId]?.contentHash !== shownHash) {
+    const now = useStore.getState().projectConfigs[workspaceId];
+    if (now?.contentHash !== shownHash || now?.configPath !== configPath) {
       setNote(t('companyFile.changed'));
       return;
     }
@@ -101,7 +108,7 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
     const fresh = await probeProjectConfig(workspaceId);
     if (!open.current) return;
     const made = fresh?.config?.company;
-    if (!fresh?.configPath || !made || companyNeedsReview(fresh) || fresh.contentHash !== shownHash) {
+    if (!fresh?.configPath || !made || companyNeedsReview(fresh) || fresh.contentHash !== shownHash || fresh.configPath !== configPath) {
       setBusy(false);
       setNote(t('companyFile.changed'));
       return;
@@ -132,7 +139,7 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
     onClose();
   };
 
-  const blocked = missing.length > 0;
+  const blocked = missing.length > 0 || moved;
 
   return (
     <Dialog onClose={close} closeOnBackdrop width={720} zIndexClassName="z-[var(--z-modal-top)]" data-testid="company-file-review-dialog">
@@ -150,6 +157,7 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
             <span>{t('companyFile.reviewNotice')}</span>
             {state.trust === 'denied' && <span>{t('companyFile.reviewDenied')}</span>}
             {state.trust === 'stale' && <span>{t('companyFile.reviewStale')}</span>}
+            {moved && <span className="font-semibold" data-company-review-moved>{t('companyFile.changedWhileOpen')}</span>}
           </span>
         </div>
 
@@ -206,7 +214,7 @@ export default function CompanyFileReviewDialog({ workspaceId, onClose }: { work
 
         {alsoInFile && (
           <section data-company-review-also>
-            <GroupLabel label={t('companyFile.alsoInFile')} hint={t('companyFile.alsoInFileHint')} />
+            <GroupLabel label={t('companyFile.alsoInFile')} hint={t(rows.length > 0 ? 'companyFile.alsoInFileHintLayout' : 'companyFile.alsoInFileHint')} />
             <div className="ui-group">
               {commands.map((cmd) => (
                 <div key={cmd.id} className="ui-row">
