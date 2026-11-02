@@ -106,6 +106,7 @@ import { COMPUTER_ABORT_ACCELERATOR, createComputerService, disposeComputerUse, 
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
+import { createGlyphRepaintLogSummary } from './perf/glyphRepaintLogSummary';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { registerUsageRpc, registerUsageTrailRpc } from './pipe/handlers/usage.rpc';
 import { setToolRefusalSource } from './agents/toolRefusals';
@@ -2476,6 +2477,7 @@ app.on('ready', async () => {
   // .catch) survives the postmortem cycle. level enum: 0=verbose, 1=info,
   // 2=warning, 3=error. We capture 2 and 3 only — verbose/info from
   // renderer would otherwise drown the signal we care about.
+  const glyphRepaintLog = createGlyphRepaintLogSummary((summary) => logLine('info', 'renderer', summary));
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     // Forward all renderer console messages to the main log file for
     // postmortem analysis. The previous `if (level < 2) return` filter
@@ -2489,6 +2491,8 @@ app.on('ready', async () => {
     // P0-5c: feed the reveal-stats aggregator (`wmux doctor --performance`).
     // Cheap prefix check inside — non-`[wmux:reveal]` lines return immediately.
     revealStatsAggregator.ingest(message);
+    // #3005: a streaming pane's per-repaint lines become one info line a minute.
+    if (glyphRepaintLog.consume(message)) return;
     logLine(lvl, 'renderer', `${where} — ${message}`);
   });
 
