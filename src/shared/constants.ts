@@ -361,6 +361,8 @@ export const IPC = {
   SECRET_GUARD_ENABLED: 'settings:secret-guard-enabled',
   TERMINAL_CORE_SETTINGS_GET: 'settings:terminal-core:get',
   TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
+  LABS_SETTINGS_GET: 'settings:labs:get',
+  LABS_SETTINGS_SET: 'settings:labs:set',
   // #1103 — the renderer's default-WSL-distro choice, pushed to main so
   // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
   // choke point without threading it through every create call.
