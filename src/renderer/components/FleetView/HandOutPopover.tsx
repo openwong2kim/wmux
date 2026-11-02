@@ -35,6 +35,8 @@ type T = (key: string, vars?: Record<string, string | number>) => string;
 type Anchor = { top: number; left: number; right: number; bottom: number };
 
 const POPOVER_W = 420;
+/** Arrow keys walk the targets, as in any radio group. */
+const MOVES: Record<string, number | undefined> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
 
 /** Beside the card when it fits (the board's first column), else under it. */
 function placeBeside(anchor: Anchor, height: number): { left: number; top: number } {
@@ -83,7 +85,7 @@ function useCandidates(rows: readonly FleetRow[], workspaces: readonly Workspace
         workspaceId: ws.id,
         name: ws.name,
         folder: workspaceFolder(ws),
-        company: { folder: companyFolder(ws, ceoLeaf), ...(ceo?.agentName ? { ceo } : {}) },
+        company: { folder: companyFolder(ws, ceoLeaf), ...(ceo && ceo.agentName ? { ceo } : {}) },
       };
     });
     return { panes, spaces };
@@ -199,7 +201,7 @@ export default function HandOutPopover({ item, anchor, rows, workspaces, onClose
     if (event.target instanceof HTMLSelectElement || event.target instanceof HTMLButtonElement) return;
     if (event.ctrlKey || event.metaKey || event.altKey || options.length === 0) return;
     const at = Math.max(0, options.findIndex((option) => option.key === selected?.key));
-    const move = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 }[event.key];
+    const move = MOVES[event.key];
     if (move !== undefined) {
       event.preventDefault();
       choose(options[(at + move + options.length) % options.length], true);
