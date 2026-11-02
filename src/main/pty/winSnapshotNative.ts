@@ -46,6 +46,8 @@
 export interface NativeProcRow {
   pid: number;
   ppid: number;
+  /** Image file name (`claude.exe`), when the walk was asked for names. */
+  name?: string;
 }
 
 export interface NativeConnRow {
@@ -79,6 +81,8 @@ const MAX_TCP_TABLE_BYTES = 64 * 1024 * 1024;
 export const PROCESSENTRY32W_SIZE = 568;
 const PE32_PID_OFFSET = 8; // th32ProcessID
 const PE32_PPID_OFFSET = 32; // th32ParentProcessID
+const PE32_EXE_OFFSET = 44; // szExeFile, WCHAR[260]
+const PE32_EXE_BYTES = 520;
 
 /** MIB_TCPROW_OWNER_PID: 6 DWORDs. Port is the low word, network byte order. */
 export const TCP_ROW4_SIZE = 24;
@@ -134,6 +138,13 @@ export function decodeProcessEntry(buf: Buffer): NativeProcRow {
     pid: buf.readUInt32LE(PE32_PID_OFFSET),
     ppid: buf.readUInt32LE(PE32_PPID_OFFSET),
   };
+}
+
+/** The image file name in a PROCESSENTRY32W buffer, up to its NUL. */
+export function decodeProcessName(buf: Buffer): string {
+  const text = buf.toString('utf16le', PE32_EXE_OFFSET, PE32_EXE_OFFSET + PE32_EXE_BYTES);
+  const end = text.indexOf('\0');
+  return end === -1 ? text : text.slice(0, end);
 }
 
 type Handle = number | bigint;
@@ -287,7 +298,7 @@ function readTcpTable(
   throw new Error(`GetExtendedTcpTable(af=${family}) failed: ${rc}`);
 }
 
-function readProcessTable(b: NativeBindings): NativeProcRow[] {
+function readProcessTable(b: NativeBindings, withNames = false): NativeProcRow[] {
   const raw = b.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
   const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
   // INVALID_HANDLE_VALUE is -1 read as a signed 64-bit value.
@@ -304,7 +315,7 @@ function readProcessTable(b: NativeBindings): NativeProcRow[] {
     // successful snapshot, and every session's ports would resolve to none.
     if (!ok) throw new Error('Process32FirstW failed — no process table');
     while (ok) {
-      procs.push(decodeProcessEntry(entry));
+      procs.push(withNames ? { ...decodeProcessEntry(entry), name: decodeProcessName(entry) } : decodeProcessEntry(entry));
       ok = b.Process32NextW(raw, entry);
     }
     // A false return means "walk over" ONLY when the last error says so.
@@ -461,6 +472,38 @@ export function tryProcessCreatedAt(pid: number): bigint | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * `rootPid` and its direct children, with their image names, read at once:
+ * what a pane's shell runs right now (#2838). A child created before its
+ * parent is an orphan of an earlier process that had the pid (Windows never
+ * re-parents), and one whose creation time cannot be read cannot be told from
+ * such an orphan: both are left out. Null when the table cannot be read or
+ * `rootPid` is not in it. Never throws.
+ */
+export function tryProcessFamily(rootPid: number): Array<NativeProcRow & { name: string }> | null {
+  if (!Number.isInteger(rootPid) || rootPid <= 0 || loadFailed) return null;
+  const b = loadBindings();
+  if (!b) {
+    loadFailed = true;
+    return null;
+  }
+  let procs: NativeProcRow[];
+  try {
+    procs = readProcessTable(b, true);
+  } catch {
+    return null;
+  }
+  const root = procs.find((p) => p.pid === rootPid);
+  if (!root) return null;
+  const rootCreated = tryProcessCreatedAt(rootPid);
+  const children = rootCreated === null ? [] : procs.filter((p) => {
+    if (p.ppid !== rootPid || p.pid === rootPid) return false;
+    const created = tryProcessCreatedAt(p.pid);
+    return created !== null && created >= rootCreated;
+  });
+  return [root, ...children].map((p) => ({ pid: p.pid, ppid: p.ppid, name: p.name ?? '' }));
 }
 
 /** OpenProcess on a pid that no longer exists. */

@@ -363,6 +363,13 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   static transcriptTurnEndProbe: ((sessionId: string) => number | undefined) | null = null;
 
+  /**
+   * The agent a pane's shell runs as its own child right now (shellChildAgent),
+   * or undefined. Installed by the daemon on Windows only, where the process
+   * tracker names an agent after its OSC 7501 query (answerProgramStatusProbe).
+   */
+  static shellChildAgentProbe: ((shellPid: number) => string | undefined) | null = null;
+
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
   /** The `lastEscAt` an idle title already reported as an interrupt (#2264). */
@@ -1503,11 +1510,14 @@ export class DaemonPTYBridge extends EventEmitter {
 
   /**
    * The feature query (`OSC 7501 ; ?`), answered straight to the PTY like the
-   * #1965 DA1 reply, every time it is asked. Only while a live tracked agent
-   * owns the pane, the same gate its reports need (paneAgent): Claude Code
-   * drops its spinner and idle title glyphs once answered, so a pane whose
-   * reports would not be applied (an agent the tracker has not seen yet, one
-   * behind ssh) is left on the title heuristics by not answering.
+   * #1965 DA1 reply, every time it is asked. Only while a live agent owns the
+   * pane: one the process tracker watches (paneAgent), the gate its reports
+   * need, or on Windows, where the tracker names it seconds after this query,
+   * the shell's own agent child read now (shellChildAgentProbe); its reports
+   * are held until the tracker names it. Claude Code drops its spinner and
+   * idle title glyphs once answered, so a pane whose reports would never be
+   * applied (an agent behind ssh) is left on the title heuristics by not
+   * answering.
    *
    * Nothing else answers it: xterm.js ignores unknown OSCs, and every replay
    * strips the query (replayQuerySanitizer), so recovered history, a held
@@ -1517,10 +1527,16 @@ export class DaemonPTYBridge extends EventEmitter {
    * so it reaches the program ahead of a viewer's answer to the DA1 Claude
    * sends right behind the query (the spec's "unsupported" signal).
    * `WMUX_PROGRAM_STATUS_REPLY=0` in the daemon's environment turns it off
-   * (a backend that mangles the reply, pending the Windows ConPTY smoke).
+   * (a backend that mangles the reply).
    */
   private answerProgramStatusProbe(ptyProcess: IPty): void {
-    if (process.env.WMUX_PROGRAM_STATUS_REPLY === '0' || !this.paneAgent()) return;
+    if (process.env.WMUX_PROGRAM_STATUS_REPLY === '0') return;
+    if (!this.paneAgent()) {
+      // Windows: the tracker names a new agent after it asks (#2838). The
+      // shell's own child, read now, is the evidence and the launch edge.
+      if (!DaemonPTYBridge.shellChildAgentProbe?.(ptyProcess.pid)) return;
+      this.agentCommandStarts = this.commandStarts;
+    }
     // A command the shell started since the agent launched (after Ctrl+Z, the
     // agent stays alive behind it) owns the keyboard: the reply would be typed
     // into it. The agent's own tools never own the tty (Claude Code's Bash

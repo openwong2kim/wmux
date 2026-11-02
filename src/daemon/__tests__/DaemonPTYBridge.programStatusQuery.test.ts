@@ -296,3 +296,72 @@ describe('DaemonPTYBridge — Claude Code with its query unanswered', () => {
     vi.useRealTimers();
   });
 });
+
+// #2838 on Windows: the process tracker names a new agent 2.4–3.9 s after
+// Enter, after its query (~2.6 s). The daemon installs a read of the shell's
+// own child there (shellChildAgent); macOS never installs it.
+describe('DaemonPTYBridge — the query before the tracker names the agent', () => {
+  const SHELL_PID = 4242;
+  let bridge: DaemonPTYBridge;
+  let fake: ReturnType<typeof makeFakePty>;
+  let asked: number[];
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    bridge = new DaemonPTYBridge();
+    fake = makeFakePty();
+    Object.assign(fake.pty, { pid: SHELL_PID });
+    bridge.setupDataForwarding(fake.pty, new RingBuffer(65536), 'sess-1', new PromptEventLog());
+    asked = [];
+  });
+
+  afterEach(() => {
+    DaemonPTYBridge.shellChildAgentProbe = null;
+    bridge.cleanup();
+    vi.useRealTimers();
+  });
+
+  it('answers when the pane\'s shell runs the agent as its child, and the reports drive the pane once the tracker names it', () => {
+    DaemonPTYBridge.shellChildAgentProbe = (pid) => { asked.push(pid); return 'claude'; };
+    fake.feed('\x1b]133;C\x07'); // the shell runs `claude`
+    vi.advanceTimersByTime(2_600); // measured: the query comes about 2.6 s after Enter
+    fake.feed(`${CLAUDE_BANNER}${QUERY_BEL}\x1b[c`);
+    expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY]);
+    expect(asked).toEqual([SHELL_PID]);
+    // Claude reports before the tracker sees it: held, then applied.
+    fake.feed('\x1b]7501;state=idle:app=claude-code\x07');
+    expect(bridge.isProgramStatusDriving()).toBe(false);
+    vi.advanceTimersByTime(1_200);
+    bridge.noteAgentProcess({ slug: 'claude', alive: true });
+    expect(bridge.isProgramStatusDriving()).toBe(true);
+  });
+
+  it('stays closed when the shell runs no agent: a `cat` of a file holding the query is not answered', () => {
+    DaemonPTYBridge.shellChildAgentProbe = (pid) => { asked.push(pid); return undefined; };
+    fake.feed('\x1b]133;C\x07'); // the shell runs `cat probe-file`
+    fake.feed(`before${QUERY_BEL}after`);
+    expect(fake.writes).toEqual([]);
+    expect(asked).toEqual([SHELL_PID]);
+  });
+
+  it('takes the agent\'s launch from that read: a command the shell starts after it is not answered', () => {
+    DaemonPTYBridge.shellChildAgentProbe = () => 'claude';
+    fake.feed('\x1b]133;C\x07');
+    fake.feed(QUERY_BEL);
+    bridge.noteAgentProcess({ slug: 'claude', alive: true });
+    // The agent stays alive behind a later command that prints the query.
+    fake.feed('\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07');
+    fake.feed(QUERY_BEL);
+    expect(fake.writes).toEqual([PROGRAM_STATUS_PROBE_REPLY]);
+  });
+
+  it('is not consulted once the tracker names the agent: its own launch edge decides', () => {
+    DaemonPTYBridge.shellChildAgentProbe = (pid) => { asked.push(pid); return 'claude'; };
+    fake.feed('\x1b]133;C\x07');
+    bridge.noteAgentProcess({ slug: 'claude', alive: true });
+    fake.feed('\x1b]133;D;0\x07\x1b]133;A\x07\x1b]133;B\x07\x1b]133;C\x07');
+    fake.feed(QUERY_BEL);
+    expect(fake.writes).toEqual([]);
+    expect(asked).toEqual([]);
+  });
+});

@@ -313,6 +313,7 @@ import type { SessionPromptScheduleResult } from '../shared/sessionPromptSchedul
 import { claudeUsageLimitFromStopFailure, USAGE_LIMIT_CONTINUE_PROMPT, type PaneUsageLimitPatch } from '../shared/usageLimit';
 import { chatAgentStatus, confirmedStopAt, transcriptTurnEnd, transcriptTurnState } from './transcript/chatAgentStatus';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
+import { shellChildAgent } from './shellChildAgent';
 import { createCodexSharedRuntime, runCodexDaemon } from './transcript/codexSharedRuntime';
 import { validChatAttachments } from '../shared/transcript/chatAttachments';
 import { agentStatesFor } from '../shared/agentStateBatch';
@@ -6108,6 +6109,8 @@ function registerRpcHandlers(
     ['Claude Code', 'Codex CLI'].includes(readDaemonAgentState(id).agentName ?? '')
       ? transcriptTurnEnd(projector.snapshot(id)?.events, 0)?.at
       : undefined;
+  // Windows only: the tracker names a new agent after its OSC 7501 query (#2838).
+  if (process.platform === 'win32') DaemonPTYBridge.shellChildAgentProbe = (pid) => shellChildAgent(pid);
   // Versioned method name is a rolling-upgrade safety boundary. An older
   // daemon's v1 handler would ignore the additive incarnationId parameter and
   // write anyway; v2 makes mixed versions fail with Unknown method pre-write.
