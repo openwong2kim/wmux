@@ -332,7 +332,8 @@ section); that result says `delivery: "foreground"`. A posted one says
   `refuse` changes nothing for them. They can still bring a covered target
   to the front: an Invoke or ExpandCollapse call did with WinForms and
   Electron (a ScrollIntoView did not). A result then says `foreground`, and
-  an error says so in its message.
+  an error says so in its message, as does a click that went on another
+  way after such a call certainly did not run.
   The sent counter's baseline for a request is taken after the release of
   keys a dead helper left down, so those up events never decide an
   action's `not_delivered` or `needs_foreground`. The helper's stderr says
@@ -385,25 +386,30 @@ section); that result says `delivery: "foreground"`. A posted one says
 - Foreground: the helper never uses `AttachThreadInput` or Alt-key tricks to
   take the foreground. A covered pointer target gets one UIA focus request;
   if the window still is not in front, the answer is `window_not_focused`.
-  A hidden target window (no `WS_VISIBLE`) gets no real input at all: it
-  could take a click or keys only by being shown or given the foreground,
-  so the answer is `window_not_focused` before anything is done to it.
+  A hidden target window (no `WS_VISIBLE`) or a cloaked one (another
+  virtual desktop) gets no real input at all: it could take a click or keys
+  only by being shown, given the foreground or switched to, so the answer
+  is `window_not_focused` before anything is done to it.
 - The user's cursor: a `scroll` notch moves the cursor to the point (a real
   wheel event goes to the window under the cursor), turns the wheel and
-  moves the cursor back, all in one `SendInput` batch, so the notch lands at
-  the point and the cursor ends where it was. A `click` leaves the cursor at
-  the click, as a user's would.
+  moves the cursor back to where it was right before the batch, all in one
+  `SendInput` call, so the notch lands at the point and the cursor ends
+  where it was. An app that reads the cursor position itself while it
+  handles the wheel, instead of the message's point, would see the user's
+  position. A `click` leaves the cursor at the click, as a user's would.
 - `type`: Unicode key events (`KEYEVENTF_UNICODE`) in chunks of at most 16
   UTF-16 units, never splitting a surrogate pair or a grapheme; newline and
   tab are Enter and Tab presses. **The clipboard is never used**, whatever
   the length (`TYPE_PASTE_THRESHOLD` does not apply to either helper).
-  With an index, a field that already has keyboard focus keeps its caret
-  and selection; any other is clicked at the center of its visible frame,
-  as the background path does, with the cursor moved back in the same
-  batch, and must then report keyboard focus within 300 ms, or nothing is
-  typed. Not UIA `SetFocus`: that is a keyboard (Tab-like) focus, on which
-  a field may select its whole text (a WinForms `TextBox` does on its first
-  focus), and the keys would replace it.
+  With an index, the field is focused with UIA `SetFocus`. That is a
+  keyboard (Tab-like) focus, on which a field may select its whole text (a
+  WinForms `TextBox` does on its first focus), and the keys would replace
+  it. So the field's selection (UIA `TextPattern`, one range; a caret is an
+  empty one) is read before the focus and, if focusing changed it, selected
+  again and read back. The text then goes where the field's own caret was.
+  If the selection cannot be put back, nothing is typed
+  (`action_not_supported`). A field without `TextPattern` is focused as
+  before.
   `verified` means the focused value after equals the value before with
   exactly the typed text inserted at one position; text that was already
   there never verifies a failed insert.

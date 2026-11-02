@@ -47,17 +47,19 @@ internal static unsafe class Focus
 
     /// <summary>
     /// Real input needs the target window on screen. A hidden window
-    /// (SW_HIDE, no WS_VISIBLE) can take neither a click nor keys without
-    /// being shown, and what would bring it forward (UIA SetFocus,
-    /// SetForegroundWindow) gives it the foreground while it stays hidden or
-    /// shows it: both undo the app's or the user's choice to hide it. So it
-    /// is refused before anything is done to it.
+    /// (SW_HIDE, no WS_VISIBLE) or a cloaked one (on another virtual
+    /// desktop) can take neither a click nor keys without being brought up,
+    /// and what would bring it forward (UIA SetFocus, SetForegroundWindow)
+    /// gives it the foreground while it stays hidden, shows it, or switches
+    /// the user's desktop: each undoes the app's or the user's choice. So it
+    /// is refused before anything is done to it (the background path's
+    /// "hidden" check, BackgroundInput.WindowState, is the same).
     /// </summary>
     public static void RequireShown(ControlTarget target)
     {
-        if (!PInvoke.IsWindowVisible(target.Window))
+        if (!PInvoke.IsWindowVisible(target.Window) || Win.IsCloaked(target.Window))
         {
-            throw new HelperError("window_not_focused", "the target window is hidden; real input would have to show it or give it the foreground, so nothing was sent. Ask the user to show the window first");
+            throw new HelperError("window_not_focused", "the target window is hidden or on another virtual desktop; real input would have to show it or give it the foreground, so nothing was sent. Ask the user to bring the window up first");
         }
     }
 
@@ -529,6 +531,10 @@ internal static unsafe class Actions
         var mods = Modifiers(p);
         var (x, y, element) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
 
+        // Whether a pattern call of the ladder brought the target to the front
+        // and then certainly did not run, so the click goes on another way:
+        // that way's own probe starts after the change, so it is said here.
+        bool ladderRaised = false;
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
             bool frontBefore = InFront(target);
@@ -542,14 +548,27 @@ internal static unsafe class Actions
                 throw SayIfCameToFront(e, target, frontBefore);
             }
             if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            ladderRaised = !frontBefore && InFront(target);
         }
-        // Background first; RequirePointer (which may raise the window) only on the real-input path.
-        Input.ThrowIfStopping();
-        var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
-        if (AfterBackground("click", posted, refuse, sentAtStart) is { } result) return result;
-        var preflight = Focus.RequirePointer(target, x, y);
-        Input.Click(x, y, button, count, mods, preflight);
-        return Result("synthetic", false, "foreground");
+        try
+        {
+            // Background first; RequirePointer (which may raise the window) only on the real-input path.
+            Input.ThrowIfStopping();
+            var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
+            if (AfterBackground("click", posted, refuse, sentAtStart) is { } result)
+            {
+                return ladderRaised && result["delivery"]?.GetValue<string>() == "background"
+                    ? Result("synthetic", false, "foreground", "the target window came to the front during an accessibility call before the click was posted; check the app state")
+                    : result;
+            }
+            var preflight = Focus.RequirePointer(target, x, y);
+            Input.Click(x, y, button, count, mods, preflight);
+            return Result("synthetic", false, "foreground");
+        }
+        catch (HelperError e) when (ladderRaised)
+        {
+            throw new HelperError(e.Code, $"{e.Message}. The target window came to the front during an accessibility call before it");
+        }
     }
 
     /// <summary>
@@ -567,9 +586,10 @@ internal static unsafe class Actions
 
     public static JsonObject SetValue(Params p)
     {
-        // A UIA ValuePattern call: no input, no focus request, nothing that
-        // raises the window, so it never needs the foreground and `refuse`
-        // changes nothing (the mode is still validated).
+        // A UIA ValuePattern call: no input and no focus request, so it never
+        // needs the foreground and `refuse` changes nothing (the mode is
+        // still validated). The app may still come to the front during the
+        // call; the result's delivery or the error's message says so.
         RefuseForeground(p);
         var (snap, target) = Begin(p);
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
@@ -679,24 +699,37 @@ internal static unsafe class Actions
             }
             var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
             if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
-            // A field that already has keyboard focus keeps its caret and
-            // selection. Any other is focused the way a user and the
-            // background path do it: a click on the field. Not UIA SetFocus:
-            // that is a keyboard (Tab-like) focus, and a field may select its
-            // whole text on such a focus (a WinForms TextBox does on its first
-            // one), so the keys would replace the text instead of being
-            // inserted.
-            if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+            // UIA SetFocus is a keyboard (Tab-like) focus, and a field may
+            // select its whole text on such a focus (a WinForms TextBox does
+            // on its first one), so the keys would replace the text. Focusing
+            // must not change what the field had selected: its selection is
+            // read before and, if focusing changed it, put back.
+            Focus.RequireShown(target);
+            var selection = Selection(el);
+            try
             {
-                var (fx, fy, _) = ScreenPoint(snap, index, null);
-                Focus.RequireSemantic(target, el);
-                var pointer = Focus.RequirePointer(target, fx, fy);
-                Input.Click(fx, fy, 0, 1, [], pointer, returnCursor: true);
-                // Typing into whatever else has focus would put the text in the wrong field.
-                if (!WaitForFocus(snap.RuntimeIds[index]))
+                try
                 {
-                    throw new HelperError("action_not_supported", $"the click on element {index} was sent, but the field did not take keyboard focus, so nothing was typed. Call getAppState before retrying");
+                    Focus.RequireSemantic(target, el);
+                    el->SetFocus();
                 }
+                catch (Exception e) when (e is not HelperError)
+                {
+                    if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
+                }
+                // Typing into whatever else has focus would put the text in the wrong field.
+                if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+                {
+                    throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
+                }
+                if (selection != null && !KeepSelection(el, selection))
+                {
+                    throw new HelperError("action_not_supported", $"element {index} changed its selection when it took focus, and wmux could not put it back, so nothing was typed (the keys would have replaced the selected text). Click where the text should go, then type without an index");
+                }
+            }
+            finally
+            {
+                if (selection != null) selection->Release();
             }
         }
         else
@@ -734,18 +767,80 @@ internal static unsafe class Actions
         return Result("synthetic", verified, "foreground");
     }
 
-    /// <summary>How long a clicked field may take to report keyboard focus (the app handles the click asynchronously; as BackgroundInput's FocusWaitMs).</summary>
-    private const int FocusAfterClickMs = 300;
+    private const int TextPatternId = 10014;
 
-    /// <summary>Whether the element with this runtime id becomes the focused element within FocusAfterClickMs.</summary>
-    private static bool WaitForFocus(int[] runtimeId)
+    /// <summary>
+    /// The field's one selected range (a caret is an empty one) through UIA
+    /// TextPattern, or null when the field has no TextPattern, reports no
+    /// single range, or cannot be read. The caller releases it.
+    /// </summary>
+    private static IUIAutomationTextRange* Selection(IUIAutomationElement* el)
     {
-        long deadline = Environment.TickCount64 + FocusAfterClickMs;
-        while (true)
+        var text = (IUIAutomationTextPattern*)Pattern(el, TextPatternId, IUIAutomationTextPattern.IID_Guid);
+        if (text == null) return null;
+        IUIAutomationTextRangeArray* ranges = null;
+        try
         {
-            if (Uia.FocusedRuntimeId().AsSpan().SequenceEqual(runtimeId)) return true;
-            if (Environment.TickCount64 >= deadline) return false;
-            Sta.Sleep(15);
+            ranges = text->GetSelection();
+            return ranges != null && ranges->Length == 1 ? ranges->GetElement(0) : null;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+        finally
+        {
+            if (ranges != null) ranges->Release();
+            text->Release();
+        }
+    }
+
+    private static bool SameRange(IUIAutomationTextRange* a, IUIAutomationTextRange* b)
+    {
+        try
+        {
+            return a->Compare(b);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// After focusing: the field's selection is `before` again. If focusing
+    /// changed it (a select-all on focus), `before` is selected again and
+    /// read back. False when that cannot be confirmed.
+    /// </summary>
+    private static bool KeepSelection(IUIAutomationElement* el, IUIAutomationTextRange* before)
+    {
+        var now = Selection(el);
+        if (now == null) return false;
+        try
+        {
+            if (SameRange(before, now)) return true;
+        }
+        finally
+        {
+            now->Release();
+        }
+        try
+        {
+            before->Select();
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return false;
+        }
+        var again = Selection(el);
+        if (again == null) return false;
+        try
+        {
+            return SameRange(before, again);
+        }
+        finally
+        {
+            again->Release();
         }
     }
 

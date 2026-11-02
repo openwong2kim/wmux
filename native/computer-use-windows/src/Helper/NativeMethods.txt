@@ -13,6 +13,9 @@ IUIAutomationInvokePattern
 IUIAutomationTogglePattern
 IUIAutomationExpandCollapsePattern
 IUIAutomationSelectionItemPattern
+IUIAutomationTextPattern
+IUIAutomationTextRange
+IUIAutomationTextRangeArray
 UIA_PROPERTY_ID
 UIA_PATTERN_ID
 UIA_CONTROLTYPE_ID
