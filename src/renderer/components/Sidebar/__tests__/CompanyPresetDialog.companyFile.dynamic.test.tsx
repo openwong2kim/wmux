@@ -136,6 +136,12 @@ describe('CompanyPresetDialog from the folder\'s wmux.json', () => {
     expect(button('Make company').disabled).toBe(false);
   });
 
+  it('puts the keyboard on the confirm\'s Save once it opens', async () => {
+    renderFromFile();
+    await openConfirm({ dir: '/dev/shop', exists: true, contentHash: 'h1' });
+    expect(document.activeElement?.textContent).toBe('Save');
+  });
+
   it('says which company the save replaces', async () => {
     renderFromFile();
     const box = await openConfirm({ dir: '/dev/shop', exists: true, contentHash: 'h1', company: { ...COMPANY, name: 'old team' } });

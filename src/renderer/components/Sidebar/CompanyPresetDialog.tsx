@@ -77,7 +77,15 @@ export default function CompanyPresetDialog({ preset, fromFile, onClose }: Compa
   const [saving, setSaving] = useState(false);
   const [saveNote, setSaveNote] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const confirmRef = useRef<HTMLDivElement>(null);
   const seatsLabelId = useId();
+  // The confirm opens below the seats, often past the body's fold: bring it
+  // into view and onto its first action.
+  useEffect(() => {
+    if (!confirm) return;
+    confirmRef.current?.scrollIntoView?.({ block: 'nearest' });
+    confirmRef.current?.querySelector<HTMLButtonElement>('button:last-of-type')?.focus();
+  }, [confirm]);
   // A company made after the dialog was closed is one the user backed out of.
   const open = useRef(true);
   useEffect(() => {
@@ -262,7 +270,7 @@ export default function CompanyPresetDialog({ preset, fromFile, onClose }: Compa
           <Checkbox checked={tellSeats} onCheckedChange={setTellSeats} />
         </Field>
         {confirm && (
-          <div className="flex flex-col gap-2 rounded-xl border border-[var(--surface-hairline)] px-3.5 py-3 text-[13px]" data-company-file-confirm>
+          <div ref={confirmRef} className="flex flex-col gap-2 rounded-xl border border-[var(--surface-hairline)] px-3.5 py-3 text-[13px]" data-company-file-confirm>
             <p className="m-0 font-semibold text-[var(--text-main)]">
               {t('companyFile.confirmTitle', { dir: displayPath(confirm.view.dir ?? confirm.folder) })}
             </p>
