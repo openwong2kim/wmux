@@ -1077,7 +1077,6 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
       // and its tasks.
       return (
         <div key={r.c.id} data-bots-entry={r.c.id} className={`wmux-bots-entry ${isSelected ? 'is-open' : ''}`}>
-          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- the menu is reached from the row button's own keys (Shift+F10, the Menu key) */}
           <div
             className={`wmux-bots-row-wrap ${tree.length > 0 ? 'has-toggle' : ''}`}
             draggable={fileable}
@@ -1223,7 +1222,6 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               <button type="button" data-bots-selbar-clear className={FOCUS_RING} onClick={clearChecked}>{t('botsPage.folders.clearSelection')}</button>
             </div>
           )}
-          {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape clears the check marks from wherever focus is in the list */}
           <div
             ref={rowsRef}
             className="wmux-bots-rows"
@@ -1245,7 +1243,6 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               const open = !!q || !folder.collapsed;
               const listId = `bots-folder-${folder.id}`;
               return (
-                // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a drop target for a dragged bot; the keyboard path is the row menu
                 <section key={folder.id} data-bots-folder={folder.id} className="wmux-bots-folder" {...dropTarget(folder.id)}>
                   <FolderHeader
                     folder={folder}
@@ -1279,7 +1276,6 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                 </section>
               );
             })}
-            {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- a drop target for a dragged bot; the keyboard path is the row menu */}
             <div data-bots-unfiled className={`wmux-bots-unfiled ${dropOn === UNFILED_DROP ? 'is-drop' : ''}`} {...(foldersOn ? dropTarget(null) : {})}>
               {unfiledLive.map(renderEntry)}
             </div>
