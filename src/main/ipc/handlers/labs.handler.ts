@@ -23,7 +23,9 @@ export function registerLabsHandlers(daemonClient?: DaemonClient): () => void {
     return {
       saved, running,
       ringCompressionInConfig: ringCompressionInConfig(),
-      restartRequired: running === null || saved.ringCompression !== running.ringCompression,
+      // No daemon answer (local mode, a ping failure, an older daemon): only a
+      // saved opt-in can be waiting for a restart; an off switch never is.
+      restartRequired: running === null ? saved.ringCompression : saved.ringCompression !== running.ringCompression,
       stopCommand: terminalCoreStopCommand(),
     };
   };
