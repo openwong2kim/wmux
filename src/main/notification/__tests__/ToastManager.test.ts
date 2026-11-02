@@ -109,11 +109,11 @@ describe('ToastManager (OS-aware notifications)', () => {
     expect(electronMocks.notificationInstances).toHaveLength(0);
   });
 
-  it('an isolated packaged copy still flashes the taskbar: that never reaches the toast setup', async () => {
+  it('with the gate closed it behaves like a system without toasts: no flash either', async () => {
     toastGate.allowed.mockReturnValue(false);
     const { ToastManager } = await import('../ToastManager');
     expect(new ToastManager().showDirect('t', 'b')).toBe(false);
-    expect(electronMocks.win.flashFrame).toHaveBeenCalledWith(true);
+    expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
   });
 
   it('where toasts are allowed (the installed app) the toast still shows', async () => {

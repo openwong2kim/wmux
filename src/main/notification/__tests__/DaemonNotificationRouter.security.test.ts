@@ -34,20 +34,7 @@ function start(): NotificationListener {
 }
 
 describe('DaemonNotificationRouter security notice', () => {
-  beforeEach(() => {
-    vi.mocked(toastManager.showDirect).mockReset().mockReturnValue(true);
-    vi.mocked(dispatchNotification).mockClear();
-  });
-
-  // #2964: an isolated packaged copy on Windows raises no OS toast, and some
-  // systems have none; the notice must still reach the user in the app.
-  it('keeps the notice in the app, uncategorized, when no OS toast was shown', () => {
-    vi.mocked(toastManager.showDirect).mockReturnValue(false);
-    start()({ sessionId: 'pty-a', event: { source: 'security', title: 'Phone launch', body: 'Codex started with approvals and sandbox off', ts: 1 } });
-    expect(dispatchNotification).toHaveBeenCalledWith(null, 'pty-a',
-      { type: 'warning', title: 'Phone launch', body: 'Codex started with approvals and sandbox off' },
-      { ptyId: 'pty-a' });
-  });
+  beforeEach(() => { vi.mocked(toastManager.showDirect).mockClear(); vi.mocked(dispatchNotification).mockClear(); });
 
   it('shows the notice directly, bypassing the renderer policy and the toast toggle', () => {
     start()({ sessionId: 'pty-a', event: { source: 'security', title: 'Phone launch', body: 'Codex started with approvals and sandbox off', ts: 1 } });

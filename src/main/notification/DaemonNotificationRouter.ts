@@ -1207,18 +1207,7 @@ export class DaemonNotificationRouter {
         // renderer policy on purpose: a watched pane, a muted workspace or
         // category, window focus and the toast toggle must not hide it.
         if (ev.source === 'security') {
-          const shown = toastManager.showDirect(title ?? 'wmux', ev.body, { ptyId: payload.sessionId }, { ignoreToastSetting: true });
-          // No OS toast (none on this system, or an isolated packaged copy on
-          // Windows, #2964): keep the notice in the app. Uncategorized, so no
-          // category mute can hide it.
-          if (!shown) {
-            dispatchNotification(
-              this.getWindow(),
-              payload.sessionId,
-              { type: 'warning', title: title ?? 'wmux', body: ev.body },
-              { ptyId: payload.sessionId },
-            );
-          }
+          toastManager.showDirect(title ?? 'wmux', ev.body, { ptyId: payload.sessionId }, { ignoreToastSetting: true });
           return;
         }
         if (ev.source !== 'osc9' && ev.source !== 'osc777' && ev.source !== 'osc99') return;
