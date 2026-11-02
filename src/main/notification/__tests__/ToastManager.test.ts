@@ -177,6 +177,65 @@ describe('ToastManager (OS-aware notifications)', () => {
     }
   });
 
+  // A toast clicked from the Windows notification center minutes after it was
+  // raised did nothing: no one held the Notification, so it and its click
+  // listener could be garbage-collected first.
+  describe('keeps a shown toast alive until it is done', () => {
+    function fire(index: number, event: string, ...args: unknown[]): void {
+      const calls = electronMocks.notificationInstances[index].on.mock.calls
+        .filter((c: unknown[]) => c[0] === event);
+      expect(calls.length).toBeGreaterThan(0);
+      for (const c of calls) (c[1] as (...a: unknown[]) => void)(...args);
+    }
+
+    it('holds the toast after showDirect returns and releases it on click', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      const mgr = new ToastManager();
+      mgr.showDirect('t', 'b');
+      expect(mgr.heldCount).toBe(1);
+      fire(0, 'click', {});
+      expect(mgr.heldCount).toBe(0);
+    });
+
+    it('keeps holding a toast that timed out into the notification center', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      const mgr = new ToastManager();
+      mgr.showDirect('t', 'b');
+      fire(0, 'close', { reason: 'timedOut' });
+      expect(mgr.heldCount).toBe(1);
+      fire(0, 'click', {});
+      expect(mgr.heldCount).toBe(0);
+    });
+
+    it('releases a toast the user dismissed, or one that failed to show', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const { ToastManager } = await import('../ToastManager');
+        const mgr = new ToastManager();
+        mgr.showDirect('t', 'b');
+        mgr.showDirect('t', 'b');
+        fire(0, 'close', { reason: 'userCanceled' });
+        expect(mgr.heldCount).toBe(1);
+        fire(1, 'failed', {}, 'not allowed');
+        expect(mgr.heldCount).toBe(0);
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('drops the oldest toast past the cap', async () => {
+      const { ToastManager, MAX_HELD_TOASTS } = await import('../ToastManager');
+      const mgr = new ToastManager();
+      for (let i = 0; i <= MAX_HELD_TOASTS; i++) mgr.showDirect('t', 'b');
+      expect(mgr.heldCount).toBe(MAX_HELD_TOASTS);
+      // The oldest was already dropped; its late click must not evict another.
+      fire(0, 'click', {});
+      expect(mgr.heldCount).toBe(MAX_HELD_TOASTS);
+      fire(MAX_HELD_TOASTS, 'click', {});
+      expect(mgr.heldCount).toBe(MAX_HELD_TOASTS - 1);
+    });
+  });
+
   describe('click → pane jump (X2)', () => {
     // Pull the 'click' handler the SUT registered on the Notification mock
     // and invoke it, simulating the user clicking the OS toast.
