@@ -360,6 +360,28 @@ describe.skipIf(process.platform === 'win32')('relay request policy',()=>{
     } finally { await f.cleanup(); }
   });
 
+  it('cancels only a thread/sample this connection sent and is still awaiting', async () => {
+    const seen:Req[]=[];const p=policy();p.owners.set(threadId,'pty-a');
+    const f=await fixture({policy:p,respond:(r)=>r.method==='thread/sample'?null:r.method==='thread/sample/cancel'?{result:{}}:undefined,
+      onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      // Held by the server: the sample is in flight.
+      client.send(JSON.stringify({id:1,method:'thread/sample',params:{threadId,expectedTurnId:'u1',prompt:'x'}}));
+      let got=reply(client);client.send(JSON.stringify({id:2,method:'thread/sample/cancel',params:{requestId:1}}));
+      expect(await got).toMatchObject({id:2,result:{}});
+      got=reply(client);client.send(JSON.stringify({id:3,method:'thread/sample/cancel',params:{requestId:99}}));
+      expect(await got).toMatchObject({id:3,error:{}});
+      // Answered: nothing left to cancel.
+      got=reply(client);f.upstream()!.send(JSON.stringify({id:1,result:{text:null}}));
+      expect(await got).toMatchObject({id:1});
+      got=reply(client);client.send(JSON.stringify({id:4,method:'thread/sample/cancel',params:{requestId:1}}));
+      expect(await got).toMatchObject({id:4,error:{}});
+      expect(seen.filter(r=>r.method==='thread/sample/cancel').map(r=>r.id)).toEqual([2]);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
   it('refuses a resume of a thread owned by another live pane, or already loaded elsewhere', async () => {
     const seen:Req[]=[];const p=policy();p.owners.set(otherThreadId,'pty-b');
     const f=await fixture({policy:p,respond:respondWith([systemThreadId]),onUpstreamRequest:r=>seen.push(r)});
