@@ -2731,6 +2731,8 @@ differently in the two places, and in the order `fleet_triage` returns.
     Git page's hand-off words; a delivered send not known to have started a
     turn gets the Git page's "check it started" warning; a worktree start
     toasts only its preparation notice; a refusal stays inline in the popover.
+    The item leaves the open list while the pick is still sending, which can
+    close the popover first; a refusal then comes as a toast naming the item.
   - **Tickets.** A pick's work link (origin `hand-out`) is a ticket like a
     manual send; wherever Fleet shows it (the ticket row, the pane card
     holding it, its detail) a muted line reads "From To hand out", plus
