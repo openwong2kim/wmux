@@ -16,6 +16,7 @@ import {
 } from './launchdDaemonJob';
 import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../processLiveness';
 import { handleLiveness } from '../processHandleLiveness';
+import { readProcessCommandLine } from '../../main/pty/winSnapshotNative';
 import { createFileExclusive, replaceFileAtomic, unlinkIfContent } from './daemonFiles';
 
 export interface DaemonInfo {
@@ -220,12 +221,15 @@ function getProcessImageName(pid: number): string | null {
  * "did this process get spawned with the daemon script as argv[1]"
  * narrows the false-positive surface dramatically.
  *
- * On Windows uses PowerShell + CIM (WMI replacement) — wmic is being
- * deprecated and this path runs at most once per ensureDaemon() call.
+ * On Windows reads it through the process handle (#2992); PowerShell + CIM
+ * is only the fallback when that read fails, since policy or anti-virus can
+ * stop PowerShell outright.
  * Returns null on any failure; callers must treat null as "can't verify".
  */
 function getProcessArgv(pid: number): string[] | null {
   if (process.platform === 'win32') {
+    const native = readProcessCommandLine(pid)?.trim();
+    if (native) return tokenizeCommandLine(native);
     try {
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const powershell = path.join(

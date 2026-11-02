@@ -245,8 +245,13 @@ describe('killVerifiedDaemonPid — execution (#1025/#1028)', () => {
     vi.resetModules();
     // Kill every OS probe the module can use to read an image or a cmdline:
     // `execFileSync` covers win32 (tasklist / PowerShell) and macOS (`ps`),
-    // and the /proc guard covers Linux. Everything else passes through, so
-    // isAlive checks the real process and afterEach reaps the owned sleeper.
+    // the native read covers win32 ahead of PowerShell (#2992), and the /proc
+    // guard covers Linux. Everything else passes through, so isAlive checks
+    // the real process and afterEach reaps the owned sleeper.
+    vi.doMock('../../../main/pty/winSnapshotNative', async () => ({
+      ...(await vi.importActual<typeof import('../../../main/pty/winSnapshotNative')>('../../../main/pty/winSnapshotNative')),
+      readProcessCommandLine: () => null,
+    }));
     vi.doMock('child_process', async () => {
       const actual = await vi.importActual<typeof import('child_process')>('child_process');
       const execFileSync = () => { throw new Error('stubbed probe failure (#1274)'); };
