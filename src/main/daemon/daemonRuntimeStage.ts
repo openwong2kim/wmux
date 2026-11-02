@@ -15,6 +15,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
+import type { ProcessLiveness } from '../../shared/processLiveness';
 
 export interface StagedDaemon {
   /** The copied daemon entry script. */
@@ -113,4 +114,38 @@ export function removeDaemonRuntimeStages(stageRoot: string): boolean {
     fs.rmSync(stageRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   } catch { /* a held copy; nothing else to do at uninstall */ }
   return !fs.existsSync(stageRoot);
+}
+
+/** How long uninstall waits for the daemons it stopped to exit. */
+const STOPPED_DAEMON_EXIT_WAIT_MS = 5_000;
+const EXIT_POLL_MS = 100;
+
+/**
+ * Uninstall: removes every staged copy once the daemons stopped from them have
+ * exited. taskkill /F returns before a process has exited, and a delete that
+ * races its exit leaves a half-deleted copy. A pid not seen gone by the
+ * deadline (still running, or not known) leaves the copies whole, for the next
+ * run.
+ */
+export function removeDaemonRuntimeStagesAfterExit(
+  stageRoot: string,
+  stopped: readonly number[],
+  opts: {
+    liveness: (pid: number) => ProcessLiveness;
+    waitMs?: number;
+    /** Test seams. */
+    sleep?: (ms: number) => void;
+    now?: () => number;
+  },
+): { exiting: number[]; removed: boolean } {
+  const now = opts.now ?? Date.now;
+  const sleep = opts.sleep ?? ((ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms));
+  const deadline = now() + (opts.waitMs ?? STOPPED_DAEMON_EXIT_WAIT_MS);
+  let exiting = stopped.filter((pid) => opts.liveness(pid) !== 'dead');
+  while (exiting.length > 0 && now() < deadline) {
+    sleep(EXIT_POLL_MS);
+    exiting = exiting.filter((pid) => opts.liveness(pid) !== 'dead');
+  }
+  if (exiting.length > 0) return { exiting, removed: false };
+  return { exiting, removed: removeDaemonRuntimeStages(stageRoot) };
 }
