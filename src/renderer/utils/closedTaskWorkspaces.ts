@@ -11,9 +11,12 @@ import type { StoreState } from '../stores';
 import { selectWorkspaceAgentRoster } from '../stores/selectors/workspaceAgentRoster';
 import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
 
-/** An agent in one of these states is still at work: its workspace stays. */
-function agentWorking(status: AgentStatus): boolean {
-  return status === 'running' || status === 'waiting' || status === 'awaiting_input';
+/** An agent still at work or asking something: its workspace stays. `waiting`
+ *  without a question is an agent idle at its prompt (the detector's "Ready
+ *  for input"), which the roster shows as idle: a finished worker. */
+export function agentKeepsWorkspace(row: { status: AgentStatus; pendingQuestion?: string }): boolean {
+  if (row.status === 'waiting') return row.pendingQuestion !== undefined;
+  return row.status === 'running' || row.status === 'awaiting_input';
 }
 
 /**
@@ -39,7 +42,7 @@ export function taskWorkspacesToClose(
     if (task.detachedAt !== undefined) continue;
     const ws = workspaces.find((w) => w.id === wsId);
     if (!ws || state.activeWorkspaceId === wsId) continue;
-    if (selectWorkspaceAgentRoster(state, wsId).rows.some((row) => agentWorking(row.status))) continue;
+    if (selectWorkspaceAgentRoster(state, wsId).rows.some(agentKeepsWorkspace)) continue;
     if (getWorkspaceRemoteSessions(ws).length > 0) continue;
     if (workspaceCloseRefusal({ workspaces }, wsId)) continue;
     out.push(wsId);

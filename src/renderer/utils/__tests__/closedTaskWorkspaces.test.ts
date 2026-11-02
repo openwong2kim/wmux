@@ -1,6 +1,6 @@
 // #2934 — which task workspaces the renderer closes when their task closes.
 import { describe, it, expect } from 'vitest';
-import { taskWorkspacesToClose } from '../closedTaskWorkspaces';
+import { agentKeepsWorkspace, taskWorkspacesToClose } from '../closedTaskWorkspaces';
 import type { StoreState } from '../../stores';
 import type { AgentStatus, Pane, Surface, Workspace } from '../../../shared/types';
 import type { WorkTask } from '../../../shared/workTask';
@@ -78,12 +78,22 @@ describe('taskWorkspacesToClose (#2934)', () => {
     expect(decide(closed, { activeWorkspaceId: 't1' })).toEqual([]);
   });
 
-  it.each(['running', 'waiting', 'awaiting_input'] as AgentStatus[])('keeps a workspace whose agent is %s', (status) => {
+  it.each(['running', 'awaiting_input'] as AgentStatus[])('keeps a workspace whose agent is %s', (status) => {
     expect(decide(closed, withAgent(status))).toEqual([]);
   });
 
-  it.each(['idle', 'complete', 'error'] as AgentStatus[])('closes a workspace whose agent is %s', (status) => {
+  it('keeps a workspace whose agent asked a question', () => {
+    expect(decide(closed, { ...withAgent('waiting'), surfacePendingQuestion: { 't1-pty': 'Proceed?' } })).toEqual([]);
+  });
+
+  // `waiting` with no question is Claude idle at its prompt: a finished worker.
+  it.each(['waiting', 'idle', 'complete', 'error'] as AgentStatus[])('closes a workspace whose agent is %s', (status) => {
     expect(decide(closed, withAgent(status))).toEqual(['t1']);
+  });
+
+  it('a waiting agent keeps the workspace only with a question', () => {
+    expect(agentKeepsWorkspace({ status: 'waiting' })).toBe(false);
+    expect(agentKeepsWorkspace({ status: 'waiting', pendingQuestion: 'Proceed?' })).toBe(true);
   });
 
   it('keeps a workspace that holds a remote-terminal session', () => {

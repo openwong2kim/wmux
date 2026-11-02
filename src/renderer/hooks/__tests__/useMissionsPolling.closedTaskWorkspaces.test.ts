@@ -86,7 +86,7 @@ describe('useMissionsPolling — closed task workspaces (#2934)', () => {
       workspaces: [workspace('owner'), ...ids.map(workspace)],
       activeWorkspaceId: 'owner',
       missionByPaneGroup: index(ids, 'open'),
-      surfaceAgent: { 't-busy-pty': { name: 'Claude Code', status: 'waiting' } },
+      surfaceAgent: { 't-busy-pty': { name: 'Claude Code', status: 'awaiting_input' } },
     });
     (window as unknown as { electronAPI: Record<string, unknown> }).electronAPI = {
       daemon: { whenReady: () => new Promise<void>(() => undefined), onConnected: () => () => undefined },
