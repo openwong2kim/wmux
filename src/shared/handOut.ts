@@ -74,7 +74,9 @@ export type HandOutAddResult =
  *  - pane: that agent pane, over the gated delivery the Git page's hand-off uses;
  *  - worktree: a new worktree of the item's folder through the fan-out path,
  *    run from `workspaceId` (a workspace in that folder);
- *  - company: the company's CEO pane, which briefs one of its seats with it.
+ *  - company: the company's CEO pane. The owner's task to the CEO is the
+ *    item's job (its link); the CEO briefs a seat as a follow-on and finishes
+ *    that task once the seat's work is checked.
  */
 export type HandOutPickTarget =
   | { kind: 'pane'; target: HandoffTarget }
@@ -214,7 +216,7 @@ export function buildHandOutMessage(item: HandOutItem, opts: { company?: boolean
     `Folder: ${oneLine(item.folder, HAND_OUT_LIMITS.MAX_FOLDER)}`,
     `Added by ${handOutAddedByLine(item.addedBy)}${item.agent ? `; asks for ${item.agent}` : ''}.`,
   ];
-  if (opts.company) lines.push('Brief one of your seats with it.');
+  if (opts.company) lines.push('Brief one of your seats with it, and finish this task once that work is checked.');
   const note = item.note ? sanitizeHandoffNote(item.note) : '';
   if (note) lines.push('', note);
   return lines.join('\n');
