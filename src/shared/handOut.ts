@@ -14,7 +14,6 @@
 import type { HandoffPrepNotice, HandoffTarget } from './gitHandoff';
 import { sanitizeHandoffNote, sanitizeHandoffTitle } from './gitHandoff';
 import type { SubmitAssurance } from './ptyMessageDelivery';
-import type { WorkLink } from './workLink';
 
 export const HAND_OUT_LIMITS = {
   /** Items kept; an add past it is refused. */
@@ -185,12 +184,21 @@ export function parseHandOutItem(v: unknown): HandOutItem | null {
   return { id: v.id, ...fields, addedBy, createdAt: v.createdAt };
 }
 
+/** The fields of a work link (shared/workLink.ts) an item's state reads. Kept
+ *  local so the MCP bundle can import this file without the link module. */
+export interface HandOutLinkView {
+  id: string;
+  handOutId?: string;
+  state: string;
+  createdAt: number;
+}
+
 /**
  * An item's state from the work links its picks made: the newest link that
  * is not abandoned decides (done, else out); with none the item is open.
  */
-export function handOutStateOf(itemId: string, links: readonly WorkLink[]): { state: HandOutState; linkId?: string } {
-  let live: WorkLink | undefined;
+export function handOutStateOf(itemId: string, links: readonly HandOutLinkView[]): { state: HandOutState; linkId?: string } {
+  let live: HandOutLinkView | undefined;
   for (const link of links) {
     if (link.handOutId !== itemId || link.state === 'abandoned') continue;
     if (!live || link.createdAt > live.createdAt) live = link;
