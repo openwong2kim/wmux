@@ -77,6 +77,22 @@ export function showsScreenReaderKeyRow(rows: readonly string[]): boolean {
   return rows.some((row) => SR_KEY_START.test(row.trim()));
 }
 
+/** A row of the layout's transcript (`tool error: Write (new.txt)`, `claude: …`): printed once a dialog was answered. */
+const SR_TRANSCRIPT_ROW = /^(?:you|claude|tool|tool error): /;
+
+/**
+ * showsScreenReaderKeyRow, except for a dialog already answered: the layout
+ * can leave one above newer output (a resize redraws it without clearing the
+ * old copy), and its key row then has a transcript row under it. As loose as
+ * showsScreenReaderKeyRow otherwise: any other row under the last key row
+ * leaves it open.
+ */
+export function showsOpenScreenReaderKeyRow(rows: readonly string[]): boolean {
+  let last = -1;
+  rows.forEach((row, i) => { if (SR_KEY_START.test(row.trim())) last = i; });
+  return last >= 0 && !rows.slice(last + 1).some((row) => SR_TRANSCRIPT_ROW.test(row.trim()));
+}
+
 /** The rows, trailing blanks cut, each soft-wrapped row joined onto the row it continues. */
 function joinedRows(rows: readonly PromptRow[]): string[] {
   const lines: string[] = [];
