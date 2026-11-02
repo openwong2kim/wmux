@@ -18,9 +18,14 @@ import { workspaceCloseRefusal } from '../components/Moa/moaHqGuard';
 const leftToCaller = new Set<string>();
 
 /** Mark `taskId` as closed by a caller that decides about its workspace
- *  itself: the close this refresh sees then leaves the workspace alone. */
-export function leaveTaskWorkspaceToCaller(taskId: string): void {
+ *  itself: the close this refresh sees then leaves the workspace alone. The
+ *  returned release drops the mark when the caller's close failed, so a later
+ *  close from anywhere closes the workspace as usual. */
+export function leaveTaskWorkspaceToCaller(taskId: string): () => void {
   leftToCaller.add(taskId);
+  return () => {
+    leftToCaller.delete(taskId);
+  };
 }
 
 /** An agent still at work or asking something: its workspace stays. A

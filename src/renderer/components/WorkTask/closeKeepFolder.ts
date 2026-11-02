@@ -22,8 +22,8 @@ export function keptFolderMessage(res: { keptFolder?: string }, t: Translate): s
 /** Close the task keeping its folder; true when it closed. Toasts the result. */
 export async function closeKeepingFolder(taskId: string, verifiedWorkspaceId: string, t: Translate): Promise<boolean> {
   const push = useStore.getState().pushToast;
+  const release = leaveTaskWorkspaceToCaller(taskId);
   try {
-    leaveTaskWorkspaceToCaller(taskId);
     const res = await window.electronAPI.workTask.close(taskId, verifiedWorkspaceId, { keepFolder: true });
     if (res.ok) {
       push({ level: 'info', message: keptFolderMessage(res, t) ?? t('worktask.cleanup.closed') });
@@ -34,6 +34,8 @@ export async function closeKeepingFolder(taskId: string, verifiedWorkspaceId: st
   } catch (err) {
     push({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: err instanceof Error ? err.message : String(err) }) });
   }
+  // Not closed: the task's next close is no longer this caller's.
+  release();
   return false;
 }
 

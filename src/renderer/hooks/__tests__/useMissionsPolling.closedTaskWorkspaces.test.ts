@@ -130,6 +130,20 @@ describe('useMissionsPolling — closed task workspaces (#2934)', () => {
     expect(liveIds()).toContain('t1');
   });
 
+  it.each([
+    ['refused', async () => ({ ok: false, error: 'dirty' })],
+    ['threw', async () => { throw new Error('ipc down'); }],
+  ])('a Close and keep folder that %s leaves the next close of the task to the auto-close', async (_how, close) => {
+    const api = (window as unknown as { electronAPI: { workTask: { close: ReturnType<typeof vi.fn> } } }).electronAPI;
+    api.workTask.close.mockImplementationOnce(close);
+    const t = ((key: string) => key) as unknown as Parameters<typeof closeKeepingFolder>[2];
+    await expect(closeKeepingFolder('task-t1', 'owner', t)).resolves.toBe(false);
+    // The task is closed later from somewhere else.
+    useStore.setState({ missionByPaneGroup: index(['t1'], 'closed') });
+    expect(mocks.dispose.mock.calls.map((c) => (c[0] as Workspace).id)).toEqual(['t1']);
+    expect(liveIds()).not.toContain('t1');
+  });
+
   it('stops closing once unmounted', () => {
     React.act(() => root.unmount());
     useStore.setState({ missionByPaneGroup: index(['t1'], 'closed') });
