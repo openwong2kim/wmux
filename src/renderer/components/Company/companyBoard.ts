@@ -1,8 +1,10 @@
 // The company board's content: who holds each seat and what each seat is
 // doing, read from the workspace's panes, the sidebar roster, the
 // delegated-work tickets (one per A2A send, kept by main across restarts),
-// and the CEO pane's links and asks to other PCs.
+// the CEO pane's links and asks to other PCs, and the To hand out items for
+// the company's folder.
 // Pure, so the rules are testable without the store or main.
+import { folderWithin, type HandOutEntry } from '../../../shared/handOut';
 import type { WorkLink } from '../../../shared/workLink';
 import type { A2aLinkRecordV1 } from '../../../shared/a2aRemote';
 import { remoteWorkspaceId } from '../../../shared/a2aRemoteDelivery';
@@ -134,6 +136,17 @@ export function seatAsksOf({ workspaceId, coordinatorPaneId, requests, hosts, no
     });
   }
   return out.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+/**
+ * The To hand out items the board shows: open ones whose folder is the
+ * company's or inside it, newest first. A company with no folder has none.
+ */
+export function companyHandOutItems(items: readonly HandOutEntry[], folder: string | undefined): HandOutEntry[] {
+  if (!folder) return [];
+  return items
+    .filter((item) => item.state === 'open' && folderWithin(item.folder, folder))
+    .sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export interface CompanyBoard {
