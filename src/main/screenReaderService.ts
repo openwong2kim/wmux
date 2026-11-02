@@ -134,4 +134,6 @@ export function startScreenReaderMonitor(): void {
     }
   });
   monitor.start();
+  // A monitor that starts on (forced for a test) never reports a change.
+  if (monitor.isOn()) readClaudeVersion();
 }
