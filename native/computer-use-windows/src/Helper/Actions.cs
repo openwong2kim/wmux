@@ -46,6 +46,24 @@ internal static unsafe class Focus
     }
 
     /// <summary>
+    /// Real input needs the target window on screen. A hidden window
+    /// (SW_HIDE, no WS_VISIBLE) or a cloaked one (on another virtual
+    /// desktop) can take neither a click nor keys without being brought up,
+    /// and what would bring it forward (UIA SetFocus, SetForegroundWindow)
+    /// gives it the foreground while it stays hidden, shows it, or switches
+    /// the user's desktop: each undoes the app's or the user's choice. So it
+    /// is refused before anything is done to it (Win.IsShown, the
+    /// background path's "hidden" check too).
+    /// </summary>
+    public static void RequireShown(ControlTarget target)
+    {
+        if (!Win.IsShown(target.Window))
+        {
+            throw new HelperError("window_not_focused", "the target window is hidden or on another virtual desktop; real input would have to show it or give it the foreground, so nothing was sent. Ask the user to bring the window up first");
+        }
+    }
+
+    /// <summary>
     /// The fast keyboard check: the normal input desktop, the target window
     /// in the foreground and owned by the target pid, and keyboard focus
     /// inside it. Anything that cannot be confirmed refuses. Returns the
@@ -91,6 +109,7 @@ internal static unsafe class Focus
     /// </summary>
     public static Action RequireKeyboard(ControlTarget target)
     {
+        RequireShown(target);
         var focusWindow = KeyboardPreflight(target);
         RequireNotElevated(target);
         var secrecy = Uia.FocusSecrecy(out var focusedId);
@@ -161,6 +180,7 @@ internal static unsafe class Focus
     public static Action RequirePointer(ControlTarget target, double x, double y)
     {
         InputDesktop.Require();
+        RequireShown(target);
         RequireNotElevated(target);
         Action preflight = () => PointerPreflight(target, x, y);
         if (PointerHitsTarget(target, x, y)) return preflight;
@@ -250,6 +270,19 @@ internal static unsafe class Actions
     /// </summary>
     private static string SemanticDelivery(ControlTarget target, bool frontBefore) =>
         !frontBefore && InFront(target) ? "foreground" : "background";
+
+    /// <summary>
+    /// The error path of the same check: a pattern call can bring the target
+    /// to the front and still fail. An Invoke or ExpandCollapse call made the
+    /// covered target the foreground window with WinForms and Electron
+    /// (ScrollIntoView did not), and Electron's menu-bar buttons, which offer
+    /// ExpandCollapse but do not implement it, then answer Expand with
+    /// E_FAIL. The error has no `delivery`, so its message says so.
+    /// </summary>
+    private static HelperError SayIfCameToFront(HelperError e, ControlTarget target, bool frontBefore) =>
+        !frontBefore && InFront(target)
+            ? new HelperError(e.Code, $"{e.Message}. The target window came to the front during the call")
+            : e;
 
     private static (Snapshot Snap, ControlTarget Target) Begin(Params p)
     {
@@ -498,19 +531,47 @@ internal static unsafe class Actions
         var mods = Modifiers(p);
         var (x, y, element) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
 
+        // Whether a pattern call of the ladder brought the target to the front
+        // and then certainly did not run, so the click goes on another way:
+        // that way's own probe starts after the change, so it is said here.
+        bool ladderRaised = false;
         if (element != 0 && button == 0 && count == 1 && mods.Count == 0)
         {
             bool frontBefore = InFront(target);
-            var note = ClickSemantically(target, (IUIAutomationElement*)element);
+            string? note;
+            try
+            {
+                note = ClickSemantically(target, (IUIAutomationElement*)element);
+            }
+            catch (HelperError e)
+            {
+                throw SayIfCameToFront(e, target, frontBefore);
+            }
             if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            ladderRaised = !frontBefore && InFront(target);
         }
-        // Background first; RequirePointer (which may raise the window) only on the real-input path.
-        Input.ThrowIfStopping();
-        var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
-        if (AfterBackground("click", posted, refuse, sentAtStart) is { } result) return result;
-        var preflight = Focus.RequirePointer(target, x, y);
-        Input.Click(x, y, button, count, mods, preflight);
-        return Result("synthetic", false, "foreground");
+        try
+        {
+            // Background first; RequirePointer (which may raise the window) only on the real-input path.
+            Input.ThrowIfStopping();
+            var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
+            if (AfterBackground("click", posted, refuse, sentAtStart) is { } result)
+            {
+                if (ladderRaised && result["delivery"]?.GetValue<string>() == "background")
+                {
+                    result["delivery"] = "foreground";
+                    result["note"] = "the target window came to the front during an accessibility call before the click was posted; check the app state";
+                }
+                return result;
+            }
+            var preflight = Focus.RequirePointer(target, x, y);
+            Input.Click(x, y, button, count, mods, preflight);
+            return Result("synthetic", false, "foreground");
+        }
+        catch (HelperError e) when (ladderRaised)
+        {
+            throw new HelperError(e.Code, $"{e.Message}. The target window came to the front during an accessibility call before it");
+        }
     }
 
     /// <summary>
@@ -528,9 +589,10 @@ internal static unsafe class Actions
 
     public static JsonObject SetValue(Params p)
     {
-        // A UIA ValuePattern call: no input, no focus request, nothing that
-        // raises the window, so it never needs the foreground and `refuse`
-        // changes nothing (the mode is still validated).
+        // A UIA ValuePattern call: no input and no focus request, so it never
+        // needs the foreground and `refuse` changes nothing (the mode is
+        // still validated). The app may still come to the front during the
+        // call; the result's delivery or the error's message says so.
         RefuseForeground(p);
         var (snap, target) = Begin(p);
         var index = p.Int("index") ?? throw new HelperError("invalid_argument", "setValue needs an element index");
@@ -562,8 +624,15 @@ internal static unsafe class Actions
             }
             catch (Exception e) when (e is not HelperError)
             {
-                EndIfAmbiguous(e, "SetValue");
-                throw new HelperError("value_not_settable", $"the app refused the value ({Uia.Describe(e)})");
+                try
+                {
+                    EndIfAmbiguous(e, "SetValue");
+                }
+                catch (HelperError ambiguous)
+                {
+                    throw SayIfCameToFront(ambiguous, target, frontBefore);
+                }
+                throw SayIfCameToFront(new HelperError("value_not_settable", $"the app refused the value ({Uia.Describe(e)})"), target, frontBefore);
             }
             finally
             {
@@ -633,19 +702,44 @@ internal static unsafe class Actions
             }
             var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
             if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
+            // UIA SetFocus is a keyboard (Tab-like) focus, and a field may
+            // select its whole text on such a focus (a WinForms TextBox does
+            // on its first one), so the keys would replace the text. Focusing
+            // must not change what the field had selected: its selection is
+            // read before and, if focusing changed it, put back.
+            Focus.RequireShown(target);
+            var selection = Selection(el);
             try
             {
-                Focus.RequireSemantic(target, el);
-                el->SetFocus();
+                try
+                {
+                    Focus.RequireSemantic(target, el);
+                    el->SetFocus();
+                }
+                catch (Exception e) when (e is not HelperError)
+                {
+                    if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
+                }
+                // Typing into whatever else has focus would put the text in the wrong field.
+                if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+                {
+                    throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
+                }
+                if (selection != null ? !KeepSelection(el, selection) : SelectsText(el))
+                {
+                    throw new HelperError("action_not_supported", selection != null
+                        ? $"element {index} changed its selection when it took focus, and wmux could not put it back, so nothing was typed (the keys would have replaced the selected text). Click where the text should go, then type without an index"
+                        : $"element {index} has text selected after it took focus, and wmux could not read what was selected before, so nothing was typed (the keys would have replaced it). Click where the text should go, then type without an index");
+                }
+                // Selecting the old range again must not have moved focus.
+                if (selection != null && !Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+                {
+                    throw new HelperError("action_not_supported", $"element {index} lost keyboard focus while its selection was put back; nothing was typed. Click it first");
+                }
             }
-            catch (Exception e) when (e is not HelperError)
+            finally
             {
-                if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
-            }
-            // Typing into whatever else has focus would put the text in the wrong field.
-            if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
-            {
-                throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
+                if (selection != null) selection->Release();
             }
         }
         else
@@ -681,6 +775,108 @@ internal static unsafe class Actions
         }
         bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
         return Result("synthetic", verified, "foreground");
+    }
+
+    /// <summary>
+    /// The field's one selected range (a caret is an empty one) through UIA
+    /// TextPattern, or null when the field has no TextPattern, reports no
+    /// single range, or cannot be read. The caller releases it.
+    /// </summary>
+    private static IUIAutomationTextRange* Selection(IUIAutomationElement* el)
+    {
+        var text = (IUIAutomationTextPattern*)Pattern(el, Uia.TextPattern, IUIAutomationTextPattern.IID_Guid);
+        if (text == null) return null;
+        IUIAutomationTextRangeArray* ranges = null;
+        try
+        {
+            ranges = text->GetSelection();
+            return ranges != null && ranges->Length == 1 ? ranges->GetElement(0) : null;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+        finally
+        {
+            if (ranges != null) ranges->Release();
+            text->Release();
+        }
+    }
+
+    /// <summary>
+    /// The field (whose selection before the focus could not be read) now
+    /// has a non-empty selection; unreadable counts as yes. False only when
+    /// it has no readable TextPattern at all (then it is focused as before)
+    /// or its selection is a caret.
+    /// </summary>
+    private static bool SelectsText(IUIAutomationElement* el)
+    {
+        var text = (IUIAutomationTextPattern*)Pattern(el, Uia.TextPattern, IUIAutomationTextPattern.IID_Guid);
+        if (text == null) return false;
+        text->Release();
+        var now = Selection(el);
+        if (now == null) return true;
+        try
+        {
+            return now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, now, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End) != 0;
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return true;
+        }
+        finally
+        {
+            now->Release();
+        }
+    }
+
+    private static bool SameRange(IUIAutomationTextRange* a, IUIAutomationTextRange* b)
+    {
+        try
+        {
+            return a->Compare(b);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// After focusing: the field's selection is `before` again. If focusing
+    /// changed it (a select-all on focus), `before` is selected again and
+    /// read back. False when that cannot be confirmed.
+    /// </summary>
+    private static bool KeepSelection(IUIAutomationElement* el, IUIAutomationTextRange* before)
+    {
+        var now = Selection(el);
+        if (now == null) return false;
+        try
+        {
+            if (SameRange(before, now)) return true;
+        }
+        finally
+        {
+            now->Release();
+        }
+        try
+        {
+            before->Select();
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return false;
+        }
+        var again = Selection(el);
+        if (again == null) return false;
+        try
+        {
+            return SameRange(before, again);
+        }
+        finally
+        {
+            again->Release();
+        }
     }
 
     /// <summary>
@@ -761,12 +957,13 @@ internal static unsafe class Actions
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);
+        var back = new CursorReturn();
         for (int n = 0; n < amount; n++)
         {
             if (n > 0) Sta.Sleep(8);
             try
             {
-                Input.Wheel(x, y, dx, dy, preflight);
+                Input.Wheel(x, y, dx, dy, preflight, back);
             }
             catch (HelperError e) when (n > 0)
             {

@@ -32,6 +32,12 @@ using WmuxComputerUse.Core;
 
 namespace WmuxComputerUse;
 
+/// <summary>Where pointer batches put the cursor back (Input.Wheel); null until the first batch reads it.</summary>
+internal sealed class CursorReturn
+{
+    public (double X, double Y)? At { get; set; }
+}
+
 internal static unsafe class Input
 {
     private const int WheelDelta = 120;
@@ -164,15 +170,31 @@ internal static unsafe class Input
     /// Sends one batch. `events` describe the presses in it (moves and wheel
     /// notches are `Other`), `inputs` are the matching INPUTs. `preflight`
     /// runs under the lock right before SendInput and throws to send nothing.
+    /// `back`: the batch ends with a move back to that position, read here
+    /// right after the preflight if it is not known yet; if it cannot be read
+    /// (no access to the input desktop), nothing is sent.
     /// </summary>
-    private static void Post(BatchBuilder batch, Action preflight)
+    private static void Post(BatchBuilder batch, Action preflight, CursorReturn? back = null)
     {
-        var events = batch.Events;
-        var inputs = batch.Inputs.ToArray();
         lock (Lock)
         {
             if (stopping) throw new HelperError("internal", "the helper is shutting down; nothing was sent");
             preflight();
+            if (back != null)
+            {
+                if (back.At == null)
+                {
+                    if (!PInvoke.GetCursorPos(out var cursor))
+                    {
+                        throw new HelperError("window_not_focused", "could not read the cursor position (a secure desktop may be up); nothing was sent");
+                    }
+                    back.At = (cursor.X, cursor.Y);
+                }
+                var (bx, by) = back.At.Value;
+                batch.AddRaw(Mouse(bx, by, 0), bx, by);
+            }
+            var events = batch.Events;
+            var inputs = batch.Inputs.ToArray();
             var recorded = events.Where(e => !e.Up && e.Kind is InputKind.Key or InputKind.Button).ToList();
             foreach (var e in recorded) Record(e);
             if (recorded.Count > 0) Persist();
@@ -196,11 +218,13 @@ internal static unsafe class Input
                 if (released || !held.Any(h => h.Kind == e.Kind && h.Code == e.Code)) Forget(e);
             }
             Persist();
+            // The move back is the batch's last event, so it is among what was cut off.
+            var cursorNote = back != null ? " The cursor may have been left at the point." : "";
             if (released)
             {
-                throw new HelperError("internal", $"Windows accepted only {sent} of {inputs.Length} input events (another app may have blocked input); what went down was released. Check the app state before retrying");
+                throw new HelperError("internal", $"Windows accepted only {sent} of {inputs.Length} input events (another app may have blocked input); what went down was released.{cursorNote} Check the app state before retrying");
             }
-            throw new HelperError("internal", $"Windows accepted only {sent} of {inputs.Length} input events and refused the releases; keys or buttons may still be held");
+            throw new HelperError("internal", $"Windows accepted only {sent} of {inputs.Length} input events and refused the releases; keys or buttons may still be held.{cursorNote}");
         }
     }
 
@@ -300,13 +324,23 @@ internal static unsafe class Input
         Post(b, preflight);
     }
 
-    /// <summary>One wheel notch at a screen pixel (WHEEL_DELTA, about three lines).</summary>
-    public static void Wheel(double x, double y, int dx, int dy, Action preflight)
+    /// <summary>
+    /// One wheel notch at a screen pixel (WHEEL_DELTA, about three lines).
+    /// A real wheel event goes to the window under the cursor, so the batch
+    /// moves the cursor to the point, turns the wheel, and moves it back to
+    /// `back` (read under the lock before the first notch, then kept for
+    /// the rest: SendInput does not wait for the system to handle a batch, so
+    /// a later read could see the previous notch's move to the point). All
+    /// three are one SendInput call, so the system handles them in order
+    /// with no other input in between: the notch lands at the point and the
+    /// user's pointer ends where it started.
+    /// </summary>
+    public static void Wheel(double x, double y, int dx, int dy, Action preflight, CursorReturn back)
     {
         var b = new BatchBuilder().AddRaw(Mouse(x, y, 0), x, y);
         if (dy != 0) b.AddRaw(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_WHEEL, dy * WheelDelta), x, y);
         if (dx != 0) b.AddRaw(Mouse(x, y, MOUSE_EVENT_FLAGS.MOUSEEVENTF_HWHEEL, dx * WheelDelta), x, y);
-        Post(b, preflight);
+        Post(b, preflight, back);
     }
 
     // MARK: Release
