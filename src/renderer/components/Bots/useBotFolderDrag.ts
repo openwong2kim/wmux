@@ -9,10 +9,10 @@ import { botConversationId } from './botsModel';
 /** `dropOn` while the unfiled rows are the drop target. */
 export const UNFILED_DROP = '';
 
-export function useBotFolderDrag({ checked, checkedIds, checkOrder, folderOfBot, moveBots }: {
-  checked: ReadonlySet<string>;
-  checkedIds: () => string[];
-  checkOrder: readonly string[];
+export function useBotFolderDrag({ selection, selectedIds, order, folderOfBot, moveBots }: {
+  selection: ReadonlySet<string>;
+  selectedIds: () => string[];
+  order: readonly string[];
   folderOfBot: (botId: string) => string | null;
   moveBots: (botIds: string[], folderId: string | null) => void;
 }) {
@@ -22,7 +22,7 @@ export function useBotFolderDrag({ checked, checkedIds, checkOrder, folderOfBot,
   const rowsRef = useRef<HTMLDivElement>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   const dragStart = (e: React.DragEvent<HTMLElement>, botId: string) => {
-    const ids = checked.has(botId) ? checkedIds() : [botId];
+    const ids = selection.has(botId) && selection.size > 1 ? selectedIds() : [botId];
     dragIds.current = ids;
     dragStartedAt.current = Date.now();
     e.dataTransfer.effectAllowed = 'move';
@@ -62,7 +62,7 @@ export function useBotFolderDrag({ checked, checkedIds, checkOrder, folderOfBot,
         if (!accepts()) return;
         e.preventDefault();
         e.stopPropagation();
-        const live = new Set(checkOrder);
+        const live = new Set(order);
         const ids = (dragIds.current ?? []).filter((id) => live.has(id) && folderOfBot(id) !== folderId);
         dragEnd();
         moveBots(ids, folderId);

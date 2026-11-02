@@ -1525,7 +1525,6 @@ export const ko = {
   'botsPage.folders.selected': "{count}개 선택됨",
   'botsPage.folders.clearSelection': "선택 해제",
   'botsPage.folders.moveSelected': "폴더로 이동…",
-  'botsPage.folders.checkedMark': "선택됨",
   'botsPage.folders.menu': "폴더 작업",
   'botsPage.folders.rename': "이름 바꾸기",
   'botsPage.folders.delete': "폴더 삭제",

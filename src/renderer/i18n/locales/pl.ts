@@ -1929,7 +1929,6 @@ export const pl = {
   'botsPage.folders.selected': "Zaznaczono: {count}",
   'botsPage.folders.clearSelection': "Wyczyść",
   'botsPage.folders.moveSelected': "Przenieś do folderu…",
-  'botsPage.folders.checkedMark': "Zaznaczony",
   'botsPage.folders.menu': "Akcje folderu",
   'botsPage.folders.rename': "Zmień nazwę",
   'botsPage.folders.delete': "Usuń folder",

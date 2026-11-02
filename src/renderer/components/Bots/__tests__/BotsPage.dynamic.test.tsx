@@ -3024,7 +3024,7 @@ describe('Bots page folders', () => {
   // Multi-select and drag and drop (DESIGN.md › Bots › Folders).
   const click = (el: Element, mods: MouseEventInit = {}) => act(() => { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...mods })); });
   const row = (id: string) => q(`[data-bots-row="bot:${id}"]`)!;
-  const checkedIds = () => [...container.querySelectorAll('[data-bots-checked="true"]')].map((e) => e.getAttribute('data-bots-row'));
+  const checkedIds = () => [...container.querySelectorAll('[data-bots-row].is-selected')].map((e) => e.getAttribute('data-bots-row'));
   const openId = () => q('[data-bots-row][aria-current="true"]')?.getAttribute('data-bots-row');
   // As the Sidebar's drag tests do: jsdom has no DataTransfer.
   const fireDrag = (el: Element, type: string, text = ''): Event => {
@@ -3046,71 +3046,96 @@ describe('Bots page folders', () => {
   };
   const botRows = () => rowIds().filter((r): r is string => !!r && r.startsWith('bot:')).map((r) => r.slice(4));
 
-  it('Ctrl-click checks and unchecks rows without opening the chat; Escape clears', async () => {
+  it('a plain click opens the bot and selects it alone, with no bar', async () => {
     seedRooms(true);
     await render(<BotsPage />);
     await settle();
-    const open = openId();
-    click(row(LEAD), { ctrlKey: true });
-    click(row(MOA), { ctrlKey: true });
-    expect(checkedIds()).toEqual([`bot:${LEAD}`, `bot:${MOA}`].sort((a, b) => rowIds().indexOf(a) - rowIds().indexOf(b)));
-    expect(openId()).toBe(open);
-    expect(q('[data-bots-selbar-count]')!.textContent).toBe('2 selected');
-    // A check mark, not the selection pill.
-    expect(row(MOA).classList.contains('is-selected')).toBe(openId() === `bot:${MOA}`);
-    click(row(LEAD), { ctrlKey: true });
-    expect(checkedIds()).toEqual([`bot:${MOA}`]);
-    key(row(MOA), 'Escape');
-    expect(checkedIds()).toEqual([]);
+    click(row(LEAD));
+    expect(openId()).toBe(`bot:${LEAD}`);
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
     expect(q('[data-bots-selbar]')).toBeNull();
-    expect(openId()).toBe(open);
+    // Ctrl-clicking the open bot adds nothing and cannot empty the selection.
+    click(row(LEAD), { ctrlKey: true });
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
+    expect(q('[data-bots-selbar]')).toBeNull();
   });
 
-  it('Shift-click checks the on-screen range across a folder and the unfiled rows', async () => {
+  it('Ctrl-click adds a second bot without changing the open chat and shows the bar', async () => {
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    click(row(LEAD));
+    click(row(MOA), { ctrlKey: true });
+    expect(openId()).toBe(`bot:${LEAD}`);
+    expect(checkedIds().sort()).toEqual([`bot:${LEAD}`, `bot:${MOA}`].sort());
+    expect(q('[data-bots-selbar-count]')!.textContent).toBe('2 selected');
+    // Dropping it again leaves the open bot alone, and the bar goes.
+    click(row(MOA), { ctrlKey: true });
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
+    expect(q('[data-bots-selbar]')).toBeNull();
+    expect(openId()).toBe(`bot:${LEAD}`);
+  });
+
+  it('Escape collapses the selection to the open bot', async () => {
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    click(row(LEAD));
+    click(row(MOA), { ctrlKey: true });
+    key(row(MOA), 'Escape');
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
+    expect(q('[data-bots-selbar]')).toBeNull();
+    expect(openId()).toBe(`bot:${LEAD}`);
+  });
+
+  it('Shift-click selects the on-screen range across a folder and the unfiled rows', async () => {
     folders = [folder(FLD, 'Backend', [MOA])];
     seedRooms(true);
     await render(<BotsPage />);
     await settle();
     const order = botRows();
     expect(order[0]).toBe(MOA);
-    const open = openId();
-    click(row(order[0]), { ctrlKey: true });
+    click(row(order[0]));
     click(row(order[order.length - 1]), { shiftKey: true });
     expect(checkedIds()).toEqual(order.map((id) => `bot:${id}`));
-    expect(openId()).toBe(open);
+    expect(openId()).toBe(`bot:${order[0]}`);
     // Shift again from the same anchor shrinks the range.
     click(row(order[1]), { shiftKey: true });
     expect(checkedIds()).toEqual([`bot:${order[0]}`, `bot:${order[1]}`]);
   });
 
-  it('a plain click still opens the chat and keeps the check marks', async () => {
+  it('a plain click resets the selection to the clicked bot', async () => {
     seedRooms(true);
     await render(<BotsPage />);
     await settle();
-    click(row(MOA), { ctrlKey: true });
     click(row(LEAD));
-    expect(openId()).toBe(`bot:${LEAD}`);
+    click(row(MOA), { ctrlKey: true });
+    click(row(MOA));
+    expect(openId()).toBe(`bot:${MOA}`);
     expect(checkedIds()).toEqual([`bot:${MOA}`]);
+    expect(q('[data-bots-selbar]')).toBeNull();
   });
 
-  it('prunes a check mark when its folder is collapsed', async () => {
+  it('prunes a selected bot when its folder is collapsed', async () => {
     folders = [folder(FLD, 'Backend', [MOA])];
     seedRooms(true);
     await render(<BotsPage />);
     await settle();
+    click(row(LEAD));
     click(row(MOA), { ctrlKey: true });
-    expect(checkedIds()).toEqual([`bot:${MOA}`]);
+    expect(q('[data-bots-selbar]')).not.toBeNull();
     act(() => q(`[data-bots-folder-head="${FLD}"]`)!.click());
     await settle();
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
     expect(q('[data-bots-selbar]')).toBeNull();
   });
 
-  it('the menu on a checked row moves the whole set with one assignMany', async () => {
+  it('the menu on a selected row moves the whole selection with one assignMany', async () => {
     folders = [folder(FLD, 'Backend', [])];
     seedRooms(true);
     await render(<BotsPage />);
     await settle();
-    click(row(LEAD), { ctrlKey: true });
+    click(row(LEAD));
     click(row(MOA), { ctrlKey: true });
     contextMenu(row(MOA));
     act(() => q(`[data-bots-move-to="${FLD}"]`)!.click());
@@ -3120,7 +3145,7 @@ describe('Bots page folders', () => {
     expect([...(folderCalls[0].args[0] as string[])].sort()).toEqual([LEAD, MOA].sort());
     expect(folderCalls[0].args[1]).toBe(FLD);
     expect(inFolder(FLD).sort()).toEqual([`bot:${LEAD}`, `bot:${MOA}`].sort());
-    expect(checkedIds()).toEqual([]);
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
   });
 
   it('the selection bar\'s Move to folder menu acts on the set, and Clear unchecks', async () => {
@@ -3128,15 +3153,50 @@ describe('Bots page folders', () => {
     seedRooms(true);
     await render(<BotsPage />);
     await settle();
-    click(row(LEAD), { ctrlKey: true });
+    click(row(LEAD));
     click(row(MOA), { ctrlKey: true });
     click(q('[data-bots-selbar-move]')!);
     act(() => q(`[data-bots-move-to="${FLD}"]`)!.click());
     await settle();
     expect(folderCalls[0].op).toBe('assignMany');
-    click(row(LEAD), { ctrlKey: true });
+  });
+
+  it('Clear collapses the selection to the open bot', async () => {
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    click(row(LEAD));
+    click(row(MOA), { ctrlKey: true });
     click(q('[data-bots-selbar-clear]')!);
-    expect(checkedIds()).toEqual([]);
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
+    expect(q('[data-bots-selbar]')).toBeNull();
+    expect(openId()).toBe(`bot:${LEAD}`);
+  });
+
+  it('the menu on a row outside the selection acts on that row alone', async () => {
+    folders = [folder(FLD, 'Backend', [])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    const other = botRows().find((id) => id !== LEAD && id !== MOA)!;
+    click(row(LEAD));
+    click(row(MOA), { ctrlKey: true });
+    contextMenu(row(other));
+    act(() => q(`[data-bots-move-to="${FLD}"]`)!.click());
+    await settle();
+    expect(folderCalls).toEqual([{ op: 'assign', args: [other, FLD] }]);
+  });
+
+  it('the menu on a lone selected bot files only that bot', async () => {
+    folders = [folder(FLD, 'Backend', [])];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    click(row(LEAD));
+    contextMenu(row(LEAD));
+    act(() => q(`[data-bots-move-to="${FLD}"]`)!.click());
+    await settle();
+    expect(folderCalls).toEqual([{ op: 'assign', args: [LEAD, FLD] }]);
   });
 
   it('dragging one bot onto a folder files it with assign', async () => {
@@ -3164,21 +3224,21 @@ describe('Bots page folders', () => {
     expect(q(`[data-bots-folder-head="${FLD}"]`)!.classList.contains('is-drop')).toBe(false);
   });
 
-  it('dragging a checked row drags the whole set; an unchecked row drags only itself', async () => {
+  it('dragging a selected row drags the whole selection; a row outside it drags only itself', async () => {
     folders = [folder(FLD, 'Backend', []), folder('fld-00000002', 'Other', [])];
     seedRooms(true);
     await render(<BotsPage />);
     await settle();
-    click(row(LEAD), { ctrlKey: true });
+    click(row(LEAD));
     click(row(MOA), { ctrlKey: true });
     await dragTo(row(MOA).parentElement!, q(`[data-bots-folder="${FLD}"]`)!);
     expect(folderCalls).toHaveLength(1);
     expect(folderCalls[0].op).toBe('assignMany');
     expect([...(folderCalls[0].args[0] as string[])].sort()).toEqual([LEAD, MOA].sort());
-    expect(checkedIds()).toEqual([]);
+    expect(checkedIds()).toEqual([`bot:${LEAD}`]);
 
     folderCalls = [];
-    click(row(LEAD), { ctrlKey: true });
+    click(row(LEAD));
     await dragTo(row(MOA).parentElement!, q('[data-bots-folder="fld-00000002"]')!);
     expect(folderCalls).toEqual([{ op: 'assign', args: [MOA, 'fld-00000002'] }]);
   });

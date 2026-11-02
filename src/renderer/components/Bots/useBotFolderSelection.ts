@@ -1,66 +1,94 @@
-// The Bots list's multi-select for moving bots (DESIGN.md › Bots › Folders):
-// a set of checked bot ids and the anchor a Shift-click extends from. The open
-// conversation is a separate thing and never changes with these. Only live 1:1
-// bots are checkable; the set is pruned to the rows on screen.
+// The Bots list's multi-select for moving bots (DESIGN.md › Bots › Folders),
+// worked like a file picker's: `selection` always holds the open conversation's
+// bot (when it is a live 1:1 bot on screen); Ctrl/Cmd-click adds or drops others
+// and Shift-click takes the range from the anchor, neither opening a chat. Only
+// live 1:1 bots can be in it, it is pruned to the rows on screen, and it starts
+// over whenever the open conversation changes.
 import { useEffect, useState } from 'react';
 import { rangeBetween, type Conversation, type FolderSection } from './botsModel';
 
 export interface BotFolderSelection {
-  checked: ReadonlySet<string>;
-  anchor: string | null;
-  /** The checkable bots in on-screen order: each open folder's rows, then the
+  /** Every selected bot: the open bot plus the ones picked with Ctrl/Shift. */
+  selection: ReadonlySet<string>;
+  /** The selectable bots in on-screen order: each open folder's rows, then the
    *  unfiled ones. */
-  checkOrder: string[];
-  /** The checked bots, in on-screen order. */
-  checkedIds: () => string[];
-  clearChecked: () => void;
-  toggleCheck: (botId: string) => void;
-  checkRange: (botId: string) => void;
-  /** Escape on the rows clears the check marks, unless `blocked` (a menu is
-   *  open and takes Escape itself). */
+  order: string[];
+  /** The selected bots, in on-screen order. */
+  selectedIds: () => string[];
+  /** Back to just the open bot. */
+  collapse: () => void;
+  /** A plain click on a bot row (which opens it): that bot alone, and the anchor. */
+  selectOnly: (botId: string) => void;
+  /** Ctrl/Cmd-click: add or drop a bot. The open bot stays. */
+  toggle: (botId: string) => void;
+  /** Shift-click: the range from the anchor (the open bot without one). */
+  extendTo: (botId: string) => void;
+  /** Escape on the rows collapses a multi-selection, unless `blocked` (a menu
+   *  is open and takes Escape itself). */
   onEscape: (e: React.KeyboardEvent, blocked: boolean) => void;
 }
 
-export function useBotFolderSelection<R extends { c: Conversation }>({ foldersOn, searching, sections, unfiled }: {
+interface Picked {
+  /** The open bot this was built around; a different open bot voids it. */
+  forOpen: string | null;
+  /** Bots picked besides the open one. */
+  ids: ReadonlySet<string>;
+  anchor: string | null;
+}
+
+export function useBotFolderSelection<R extends { c: Conversation }>({ foldersOn, searching, sections, unfiled, openBotId }: {
   foldersOn: boolean;
   searching: boolean;
   sections: readonly FolderSection<R>[];
   unfiled: readonly R[];
+  /** The open conversation's bot, when it is a live 1:1 bot. */
+  openBotId: string | null;
 }): BotFolderSelection {
-  const [checked, setChecked] = useState<ReadonlySet<string>>(() => new Set());
-  const [anchor, setAnchor] = useState<string | null>(null);
-  const clearChecked = () => { setChecked(new Set()); setAnchor(null); };
-  const checkOrder: string[] = [];
+  const [state, setState] = useState<Picked>({ forOpen: null, ids: new Set(), anchor: null });
+  const order: string[] = [];
   if (foldersOn) {
     for (const { folder, rows: members } of sections) {
       if (!searching && folder.collapsed) continue;
-      for (const r of members) if (r.c.kind === 'bot' && !r.c.removed) checkOrder.push(r.c.row.bot.id);
+      for (const r of members) if (r.c.kind === 'bot' && !r.c.removed) order.push(r.c.row.bot.id);
     }
-    for (const r of unfiled) if (r.c.kind === 'bot' && !r.c.removed) checkOrder.push(r.c.row.bot.id);
+    for (const r of unfiled) if (r.c.kind === 'bot' && !r.c.removed) order.push(r.c.row.bot.id);
   }
-  const checkOrderKey = checkOrder.join('\n');
+  const orderKey = order.join('\n');
+  const live = new Set(order);
+  const fresh: Picked = { forOpen: openBotId, ids: new Set(), anchor: openBotId };
+  const cur = state.forOpen === openBotId ? state : fresh;
+  const selection = new Set<string>();
+  if (openBotId !== null && live.has(openBotId)) selection.add(openBotId);
+  for (const id of cur.ids) if (live.has(id)) selection.add(id);
+  // Drop ids whose rows left the screen so none comes back stale.
   useEffect(() => {
-    const live = new Set(checkOrderKey ? checkOrderKey.split('\n') : []);
-    setChecked((cur) => {
-      if ([...cur].every((id) => live.has(id))) return cur;
-      return new Set([...cur].filter((id) => live.has(id)));
-    });
-    setAnchor((cur) => (cur !== null && live.has(cur) ? cur : null));
-  }, [checkOrderKey]);
-  const toggleCheck = (botId: string) => {
-    setChecked((cur) => {
-      const next = new Set(cur);
-      if (!next.delete(botId)) next.add(botId);
-      return next;
-    });
-    setAnchor(botId);
-  };
-  const checkRange = (botId: string) => setChecked(new Set(rangeBetween(checkOrder, anchor, botId)));
-  const checkedIds = () => checkOrder.filter((id) => checked.has(id));
+    const onScreen = new Set(orderKey ? orderKey.split('\n') : []);
+    setState((s) => (s.ids.size > 0 && [...s.ids].some((id) => !onScreen.has(id))
+      ? { ...s, ids: new Set([...s.ids].filter((id) => onScreen.has(id))) }
+      : s));
+  }, [orderKey]);
+  const base = (s: Picked): Picked => (s.forOpen === openBotId ? s : fresh);
+  const collapse = () => setState(fresh);
+  const selectOnly = (botId: string) => setState({ forOpen: botId, ids: new Set(), anchor: botId });
+  const toggle = (botId: string) => setState((s) => {
+    const b = base(s);
+    if (botId === openBotId) return { ...b, anchor: botId };
+    const ids = new Set(b.ids);
+    if (!ids.delete(botId)) ids.add(botId);
+    return { ...b, ids, anchor: botId };
+  });
+  const extendTo = (botId: string) => setState((s) => {
+    const b = base(s);
+    const from = b.anchor !== null && live.has(b.anchor) ? b.anchor : openBotId;
+    const ids = new Set(rangeBetween(order, from, botId));
+    if (openBotId !== null) ids.delete(openBotId);
+    return { ...b, ids, anchor: from };
+  });
+  const selectedIds = () => order.filter((id) => selection.has(id));
   const onEscape = (e: React.KeyboardEvent, blocked: boolean) => {
-    if (e.key !== 'Escape' || checked.size === 0 || blocked) return;
+    if (e.key !== 'Escape' || selection.size < 2 || blocked) return;
     e.preventDefault();
-    clearChecked();
+    collapse();
   };
-  return { checked, anchor, checkOrder, checkedIds, clearChecked, toggleCheck, checkRange, onEscape };
+  return { selection, order, selectedIds, collapse, selectOnly, toggle, extendTo, onEscape };
 }

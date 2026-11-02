@@ -37,7 +37,7 @@ import { dmThreadId, type RoomCard, type ThreadId } from '../../../shared/room';
 import { timelineKey } from '../../stores/slices/roomSlice';
 import { FOCUS_RING } from '../focusRing';
 import Button from '../ui/Button';
-import { IconCheck, IconMoreHorizontal, IconPlus, IconSearch } from '../icons';
+import { IconMoreHorizontal, IconPlus, IconSearch } from '../icons';
 import Popover from '../ui/Popover';
 import { getFactoryBotPort, getFactorySettingsPort, type FactoryBotPort, type FactoryBotRow, type FactorySettingsPort } from '../Room/factoryPorts';
 import Dialog, { DialogBody, DialogHeader } from '../ui/Dialog';
@@ -136,10 +136,10 @@ function UnreadBadge({ count }: { count: number }) {
   return <span data-bots-unread={count} aria-hidden="true" className="wmux-bots-unread">{count > 99 ? '99+' : count}</span>;
 }
 
-function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread = 0, toggleRoom = false, checked = false }: {
+function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread = 0, toggleRoom = false, picked = false }: {
   c: Conversation; title: string; preview: string; selected: boolean; t: T; onSelect: (e: React.MouseEvent) => void; now?: number;
-  /** Checked for moving to a folder (a check mark; never the selection pill). */
-  checked?: boolean;
+  /** In a multi-selection with the open bot: the same highlight, though not the open row. */
+  picked?: boolean;
   /** The workers' fold toggle sits at the end of the preview line. */
   toggleRoom?: boolean;
   /** Bot messages after the conversation was last read (this session). */
@@ -157,11 +157,11 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       data-bots-row={c.id}
       data-bots-kind={c.kind}
       data-bots-removed={removed ? 'true' : undefined}
-      data-bots-checked={checked ? 'true' : undefined}
+      data-bots-picked={picked ? 'true' : undefined}
       aria-current={selected ? 'true' : undefined}
       aria-label={name}
       onClick={onSelect}
-      className={`wmux-bots-row-button ${selected ? 'is-selected' : ''} ${FOCUS_RING}`}
+      className={`wmux-bots-row-button ${selected || picked ? 'is-selected' : ''} ${FOCUS_RING}`}
     >
       <span className="relative shrink-0">
         {c.kind === 'bot' ? <BotAvatar bot={c.row.bot} size={32} working={botPresence(c.row) === 'running'} /> : <RoomAvatar bots={c.bots} size={32} />}
@@ -172,7 +172,6 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       <span className="min-w-0 flex-1">
         <span className="flex items-baseline gap-1.5">
           <span className={`min-w-0 truncate text-[13px] font-[var(--title-weight,500)] ${removed ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)]'}`}>{title}</span>
-          {checked && <span className="wmux-bots-row-check" role="img" aria-label={t('botsPage.folders.checkedMark')}><IconCheck size={12} /></span>}
           {shownAt !== null && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--text-muted)]">{formatCardTime(shownAt, now)}</span>}
         </span>
         <span className={`flex items-center gap-1.5 ${toggleRoom ? 'pr-[34px]' : ''}`}>
@@ -702,31 +701,6 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   };
   const folderOfBot = (botId: string) => folders.find((f) => f.botIds.includes(botId))?.id ?? null;
 
-  // Several bots checked for moving (DESIGN.md › Bots › Folders).
-  const { checked, anchor, checkOrder, checkedIds, clearChecked, toggleCheck, checkRange, onEscape } = useBotFolderSelection({
-    foldersOn, searching: !!q, sections: folderSections, unfiled: unfiledLive,
-  });
-  const fileableId = (r: { c: Conversation }) => foldersOn && r.c.kind === 'bot' && !r.c.removed;
-
-  /** File bots (a batch is one call), then drop the check marks. */
-  const moveBots = (botIds: string[], folderId: string | null) => {
-    setRowMenu(null);
-    if (botIds.length > 1) clearChecked();
-    if (botIds.length === 0) return;
-    void folderCall(() => (botIds.length === 1 ? foldersPort.assign(botIds[0], folderId) : foldersPort.assignMany(botIds, folderId)));
-  };
-  const createFolder = (name: string, botIds: string[]) => {
-    setNaming(null);
-    if (botIds.length > 1) clearChecked();
-    void folderCall(async () => {
-      const r = await foldersPort.create(name);
-      if (!r.ok || botIds.length === 0) return r;
-      return botIds.length === 1 ? foldersPort.assign(botIds[0], r.folder.id) : foldersPort.assignMany(botIds, r.folder.id);
-    });
-  };
-
-  // Dragging rows onto a folder (or the unfiled rows).
-  const { rowsRef, dropOn, dragStartedAt, dragStart, dragEnd, dropTarget } = useBotFolderDrag({ checked, checkedIds, checkOrder, folderOfBot, moveBots });
 
   const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
   // A bot's settings page, shown in place of its chat (BotSettingsPage).
@@ -830,6 +804,34 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   };
   const starting = pending && pendingStarting && selectedId === pendingId ? pending.bot : null;
   const selected = starting ? null : rows.find((r) => r.c.id === selectedId) ?? rows[0] ?? null;
+
+  // The selected bots, as in a file picker (DESIGN.md › Bots › Folders): the
+  // open bot plus any picked with Ctrl/Shift.
+  const openBotId = selected?.c.kind === 'bot' && !selected.c.removed ? selected.c.row.bot.id : null;
+  const { selection, order, selectedIds, collapse, selectOnly, toggle, extendTo, onEscape } = useBotFolderSelection({
+    foldersOn, searching: !!q, sections: folderSections, unfiled: unfiledLive, openBotId,
+  });
+  const fileableId = (r: { c: Conversation }) => foldersOn && r.c.kind === 'bot' && !r.c.removed;
+
+  /** File bots (a batch is one call), then collapse the selection to the open bot. */
+  const moveBots = (botIds: string[], folderId: string | null) => {
+    setRowMenu(null);
+    if (botIds.length > 1) collapse();
+    if (botIds.length === 0) return;
+    void folderCall(() => (botIds.length === 1 ? foldersPort.assign(botIds[0], folderId) : foldersPort.assignMany(botIds, folderId)));
+  };
+  const createFolder = (name: string, botIds: string[]) => {
+    setNaming(null);
+    if (botIds.length > 1) collapse();
+    void folderCall(async () => {
+      const r = await foldersPort.create(name);
+      if (!r.ok || botIds.length === 0) return r;
+      return botIds.length === 1 ? foldersPort.assign(botIds[0], r.folder.id) : foldersPort.assignMany(botIds, r.folder.id);
+    });
+  };
+
+  // Dragging rows onto a folder (or the unfiled rows).
+  const { rowsRef, dropOn, dragStartedAt, dragStart, dragEnd, dropTarget } = useBotFolderDrag({ selection, selectedIds, order, folderOfBot, moveBots });
 
   // A deleted bot's 1:1 is read whole when opened: its messages may be
   // older than the room's newest page.
@@ -967,17 +969,20 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
       const botId = r.c.kind === 'bot' ? r.c.row.bot.id : '';
       // A live bot's 1:1 can be filed in a folder (a group chat or a removed bot cannot).
       const fileable = fileableId(r);
-      const isChecked = fileable && checked.has(botId);
-      // A click: Ctrl/Cmd toggles the row's check mark and Shift checks the
-      // range from the anchor, neither opening the chat; any other click opens
-      // it (and leaves the check marks alone).
+      const isPicked = fileable && selection.has(botId);
+      // The menu and a drag act on the whole selection from one of its rows,
+      // else on this row alone.
+      const menuIds = isPicked && selection.size > 1 ? selectedIds() : [botId];
+      // A click, as in a file picker: Ctrl/Cmd adds or drops the row and Shift
+      // takes the range from the anchor, neither opening the chat; any other
+      // click opens it and selects it alone.
       const onRowClick = (e: React.MouseEvent) => {
         if (Date.now() - dragStartedAt.current < 200) { e.preventDefault(); return; }
         if (fileable) {
-          const toggle = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
-          if (toggle) { e.preventDefault(); toggleCheck(botId); return; }
-          if (e.shiftKey && anchor !== null) { e.preventDefault(); checkRange(botId); return; }
-          if (e.shiftKey) { e.preventDefault(); toggleCheck(botId); return; }
+          const toggleKey = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+          if (toggleKey) { e.preventDefault(); toggle(botId); return; }
+          if (e.shiftKey) { e.preventDefault(); extendTo(botId); return; }
+          selectOnly(botId);
         }
         openRow(r.c);
       };
@@ -997,13 +1002,13 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             onContextMenu={fileable ? (e) => {
               e.preventDefault();
               setFolderMenu(null);
-              setRowMenu({ x: e.clientX, y: e.clientY, botIds: isChecked && checked.size > 1 ? checkedIds() : [botId] });
+              setRowMenu({ x: e.clientX, y: e.clientY, botIds: menuIds });
             } : undefined}
             onKeyDown={fileable ? (e) => {
               const at = menuKeyPoint(e);
               if (!at) return;
               setFolderMenu(null);
-              setRowMenu({ ...at, botIds: isChecked && checked.size > 1 ? checkedIds() : [botId] });
+              setRowMenu({ ...at, botIds: menuIds });
             } : undefined}
           >
             <ConversationRow
@@ -1015,7 +1020,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               now={now}
               unread={r.unread}
               onSelect={onRowClick}
-              checked={isChecked}
+              picked={isPicked && !isSelected}
               toggleRoom={tree.length > 0}
             />
             {tree.length > 0 && (
@@ -1115,9 +1120,9 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               />
             </div>
           )}
-          {foldersOn && checked.size > 0 && (
+          {foldersOn && selection.size > 1 && (
             <div className="wmux-bots-selbar" data-bots-selbar role="group" aria-label={t('botsPage.folders.move')}>
-              <span className="wmux-bots-selbar-count" data-bots-selbar-count aria-live="polite">{t('botsPage.folders.selected', { count: checked.size })}</span>
+              <span className="wmux-bots-selbar-count" data-bots-selbar-count aria-live="polite">{t('botsPage.folders.selected', { count: selection.size })}</span>
               <button
                 type="button"
                 data-bots-selbar-move
@@ -1125,12 +1130,12 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
                   setFolderMenu(null);
-                  setRowMenu({ x: rect.left, y: rect.bottom, botIds: checkedIds() });
+                  setRowMenu({ x: rect.left, y: rect.bottom, botIds: selectedIds() });
                 }}
               >
                 {t('botsPage.folders.moveSelected')}
               </button>
-              <button type="button" data-bots-selbar-clear className={FOCUS_RING} onClick={clearChecked}>{t('botsPage.folders.clearSelection')}</button>
+              <button type="button" data-bots-selbar-clear className={FOCUS_RING} onClick={collapse}>{t('botsPage.folders.clearSelection')}</button>
             </div>
           )}
           <div

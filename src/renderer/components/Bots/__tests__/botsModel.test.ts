@@ -659,6 +659,8 @@ describe('rangeBetween', () => {
     expect(rangeBetween(order, 'b', 'd')).toEqual(['b', 'c', 'd']);
     expect(rangeBetween(order, 'd', 'b')).toEqual(['b', 'c', 'd']);
     expect(rangeBetween(order, 'c', 'c')).toEqual(['c']);
+    expect(rangeBetween(order, 'a', 'e')).toEqual(order);
+    expect(rangeBetween(order, 'e', 'a')).toEqual(order);
   });
   it('without a usable anchor it is the clicked id; an unknown id gives none', () => {
     expect(rangeBetween(order, null, 'c')).toEqual(['c']);

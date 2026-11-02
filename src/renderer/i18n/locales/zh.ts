@@ -2000,7 +2000,6 @@ export const zh = {
   'botsPage.folders.selected': "已选 {count} 项",
   'botsPage.folders.clearSelection': "清除",
   'botsPage.folders.moveSelected': "移到文件夹…",
-  'botsPage.folders.checkedMark': "已选中",
   'botsPage.folders.menu': "文件夹操作",
   'botsPage.folders.rename': "重命名",
   'botsPage.folders.delete': "删除文件夹",

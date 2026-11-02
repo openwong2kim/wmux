@@ -1984,7 +1984,6 @@ export const en = {
   'botsPage.folders.selected': "{count} selected",
   'botsPage.folders.clearSelection': "Clear",
   'botsPage.folders.moveSelected': "Move to folder…",
-  'botsPage.folders.checkedMark': "Selected",
   'botsPage.folders.menu': "Folder actions",
   'botsPage.folders.rename': "Rename",
   'botsPage.folders.delete': "Delete folder",

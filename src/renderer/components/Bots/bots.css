@@ -172,10 +172,7 @@ button.wmux-bots-folder-head:hover { background: var(--hover-fill); color: var(-
    tint is the same --hover-fill a folder header takes. */
 .wmux-bots-unfiled { min-height: 24px; border-radius: 10px; }
 .wmux-bots-unfiled.is-drop { background: var(--hover-fill); }
-/* A checked row (multi-select for moving) carries a check mark, never the
-   --selection pill: one selection per list is the open conversation. */
-.wmux-bots-row-check { display: inline-flex; flex: none; color: var(--text-sub); }
-/* The bar while anything is checked: text only, no fill and no rule. */
+/* The bar while two or more bots are selected: text only, no fill and no rule. */
 .wmux-bots-selbar {
   display: flex;
   align-items: center;

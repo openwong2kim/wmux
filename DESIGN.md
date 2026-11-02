@@ -449,17 +449,21 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   commits; 60 characters) and **Delete folder** (InlineConfirm; its bots go
   back to the list, none is deleted). "+" also offers New folder. Folders are
   the owner's alone: a bot never sees or changes one.
-  **Several at once (proposed):** Ctrl-click (⌘-click on
-  macOS) checks or unchecks a live bot's row and Shift-click checks the range
-  from the last checked row, over the rows on screen (open folders, then the
-  unfiled ones); neither opens the chat, and a plain click still does and
-  leaves the checks. A checked row carries a check mark after its title and
-  never the `--selection` pill (one selected thing per list: the open
-  conversation). While anything is checked a slim text bar above the rows
-  reads "N selected", **Move to folder…** and **Clear** (no fill, no rule);
-  Escape clears too. The row menu acts on the whole checked set when opened on
-  a checked row. **Dragging** (native, as the Sidebar's workspace rows): a live
-  bot's row drags, a checked row drags the whole checked set; the dragged rows
+  **Several at once (proposed):** selecting works like a file picker. The
+  open conversation's live bot is always selected: a plain click on a bot row
+  opens its chat and makes that bot the only one selected (and the anchor).
+  Ctrl-click (⌘-click on macOS) adds or drops another live bot and Shift-click
+  takes the range from the anchor, over the rows on screen (open folders, then
+  the unfiled ones); neither opens or changes the chat, and the open bot cannot
+  be dropped. Every selected row wears the same `--selection` highlight (no
+  check mark); a group chat or the Archive is never part of it, and opening
+  one starts over. Escape, or **Clear**, collapses back to the open bot, and
+  rows that leave the screen leave the selection. With one bot selected
+  nothing else appears; from two on, a slim text bar above the rows reads
+  "N selected", **Move to folder…** and **Clear** (no fill, no rule). The row
+  menu acts on the whole selection when opened on one of its rows, else on that
+  row alone. **Dragging** (native, as the Sidebar's workspace rows): a live
+  bot's row drags, a selected row drags the whole selection (two or more), any other row only itself; the dragged rows
   dim, a folder (header or body) under the pointer takes `--hover-fill` on its
   header as the drop mark, and dropping files them; dropping on the unfiled
   rows (tinted `--hover-fill` likewise) takes them out of their folder. A drop
