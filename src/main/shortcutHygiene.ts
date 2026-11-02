@@ -344,48 +344,81 @@ function appDataOrThrow(): string {
   return appData;
 }
 
-/**
- * Run one hygiene script synchronously and report whether it actually ran.
- * win32-only, best-effort, never throws — a hygiene failure must never block
- * an install or uninstall. EVERY failure exit goes through `fail`, so an empty
- * action list never hides a pass that did not run (#962).
- *
- * Retries once when the COM object was refused: that failure is transient (a
- * class-factory request lost to load or to an antivirus), and a second
- * powershell start is its own backoff. Anything else is reported as-is; a
- * retry would just double the cost of a real problem. One budget for the whole
- * pass, retry included: the Squirrel hooks are cancelled at ~15 s.
- */
+// Running one hygiene pass. win32-only, best-effort, never throws: a hygiene
+// failure must never block an install, an uninstall or a startup. EVERY
+// failure exit goes through passFailure, so an empty action list never hides a
+// pass that did not run (#962).
+//
+// A pass retries once when its script reports the COM object refused
+// (COM_UNAVAILABLE_MARKER): that failure is transient (a class-factory request
+// lost to load or to an antivirus), and a second powershell start is its own
+// backoff. Anything else is reported as-is; a retry would just double the cost
+// of a real problem. One budget for the whole pass, retry included: the
+// Squirrel hooks are cancelled at ~15 s. A script that never prints the marker
+// is never retried.
+
+const NO_RUN: RepairPassResult = { actions: [], failure: null };
+const UNSAFE_PATH = 'a path could not be embedded in the script safely';
+
+function passFailure(label: string, reason: string): RepairPassResult {
+  console.warn(`[shortcutHygiene] ${label} did not run: ${reason}`);
+  return { actions: [], failure: reason };
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** The budget for the one retry, or null when there is none to run. */
+function retryBudget(label: string, run: RunOutcome, deadline: number): number | null {
+  if (!('failure' in run) || !run.retryable) return null;
+  const left = deadline - Date.now();
+  if (left > 1_000) {
+    console.warn(`[shortcutHygiene] COM refused the ${label} — retrying once`);
+    return left;
+  }
+  console.warn(`[shortcutHygiene] COM refused the ${label} — no budget left to retry`);
+  return null;
+}
+
+function settle(label: string, run: RunOutcome): RepairPassResult {
+  if ('failure' in run) return passFailure(label, run.failure);
+  const read = readActions(run.stdout);
+  if ('failure' in read) return passFailure(label, read.failure);
+  return { actions: read.actions, failure: null };
+}
+
 function runPassSync(label: string, build: () => string | null, budgetMs: number): RepairPassResult {
-  if (process.platform !== 'win32') return { actions: [], failure: null };
-  const fail = (reason: string): RepairPassResult => {
-    console.warn(`[shortcutHygiene] ${label} did not run: ${reason}`);
-    return { actions: [], failure: reason };
-  };
+  if (process.platform !== 'win32') return NO_RUN;
   try {
     const script = build();
-    if (!script) return fail('a path could not be embedded in the script safely');
+    if (!script) return passFailure(label, UNSAFE_PATH);
     const deadline = Date.now() + budgetMs;
     let run = runScriptSync(script, budgetMs);
-    if ('failure' in run && run.retryable) {
-      const left = deadline - Date.now();
-      if (left > 1_000) {
-        console.warn(`[shortcutHygiene] COM refused the ${label} — retrying once`);
-        run = runScriptSync(script, left);
-      } else {
-        console.warn(`[shortcutHygiene] COM refused the ${label} — no budget left to retry`);
-      }
-    }
-    if ('failure' in run) return fail(run.failure);
-    const read = readActions(run.stdout);
-    if ('failure' in read) return fail(read.failure);
-    return { actions: read.actions, failure: null };
+    const left = retryBudget(label, run, deadline);
+    if (left !== null) run = runScriptSync(script, left);
+    return settle(label, run);
   } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err));
+    return passFailure(label, errorText(err));
   }
 }
 
-/** Run the repair pass and report whether it actually ran. See runPassSync. */
+async function runPassAsync(label: string, build: () => string | null, budgetMs: number): Promise<RepairPassResult> {
+  if (process.platform !== 'win32') return NO_RUN;
+  try {
+    const script = build();
+    if (!script) return passFailure(label, UNSAFE_PATH);
+    const deadline = Date.now() + budgetMs;
+    let run = await runScriptAsync(script, budgetMs);
+    const left = retryBudget(label, run, deadline);
+    if (left !== null) run = await runScriptAsync(script, left);
+    return settle(label, run);
+  } catch (err) {
+    return passFailure(label, errorText(err));
+  }
+}
+
+/** Run the repair pass and report whether it actually ran. */
 export function runShortcutRepairPass(
   execPath: string,
   locations?: RepairLocations,
@@ -414,6 +447,14 @@ export const TOAST_ACTIVATOR_CLSID_KEY = 'HKCU:\\Software\\Classes\\CLSID';
 /** The default value Electron gives every toast activator class it registers. */
 const TOAST_ACTIVATOR_NAME = 'Electron Notification Activator';
 
+/**
+ * PowerShell predicate: the path lies under `$root\`. Quotes are trimmed
+ * because a LocalServer32 value is a quoted command line; a .lnk target never
+ * carries them.
+ */
+const UNDER_ROOT_PS =
+  `$under = { param($p) $p -and $p.Trim('"').StartsWith($root + '\\', [System.StringComparison]::OrdinalIgnoreCase) }`;
+
 /** The top-level Start Menu entry Electron's toast setup owns. */
 export function topLevelStartMenuLnk(appData: string): string {
   return path.join(programsDirIn(appData), 'wmux.lnk');
@@ -437,17 +478,18 @@ export function defaultSecondEntryLocations(appData: string, publisher: string):
   const name = publisher.trim();
   if (!name || name === '.' || name === '..' || /[\\/:*?"<>|]/.test(name)) return null;
   if (name.toLowerCase() === 'startup') return null;
-  const programs = programsDirIn(appData);
-  return { topLevelLnk: path.join(programs, 'wmux.lnk'), publisherLnk: path.join(programs, name, 'wmux.lnk') };
+  return { topLevelLnk: topLevelStartMenuLnk(appData), publisherLnk: path.join(programsDirIn(appData), name, 'wmux.lnk') };
 }
 
 /**
  * Build the startup pass's script. Pure — exported for unit tests.
  *
  * Removes Squirrel's publisher-folder link only while the top-level entry
- * exists and points into `<root>\` — the replacement is in place first, so the
- * app is never left without a Start Menu entry — and only when the publisher
- * link itself points into `<root>\`. Its folder goes too once empty.
+ * exists and points at a file that exists under `<root>\` — the working
+ * replacement is in place first, so the app is never left without a working
+ * Start Menu entry (a link left by a removed `app-X.Y.Z\` does not count) — and
+ * only when the publisher link itself points into `<root>\`. Its folder goes
+ * too once empty.
  */
 export function buildSecondEntryRemovalScript(rootDir: string, loc: SecondEntryLocations): string | null {
   const paths = [rootDir, loc.topLevelLnk, loc.publisherLnk];
@@ -457,13 +499,13 @@ export function buildSecondEntryRemovalScript(rootDir: string, loc: SecondEntryL
     `$root = ${psQuote(rootDir)}`,
     `$top = ${psQuote(loc.topLevelLnk)}`,
     `$pub = ${psQuote(loc.publisherLnk)}`,
-    `$under = { param($p) $p -and $p.StartsWith($root + '\\', [System.StringComparison]::OrdinalIgnoreCase) }`,
+    UNDER_ROOT_PS,
     `if (-not (Test-Path -LiteralPath $top) -or -not (Test-Path -LiteralPath $pub)) { Write-Output '[]'; exit 0 }`,
     `$sh = New-Object -ComObject WScript.Shell`,
     `if (-not $sh) { Write-Output '${COM_UNAVAILABLE_MARKER}'; exit ${COM_UNAVAILABLE_EXIT} }`,
     `$t = $sh.CreateShortcut($top)`,
     `$p = $sh.CreateShortcut($pub)`,
-    `$keep = -not $t -or -not (& $under $t.TargetPath) -or -not $p -or -not (& $under $p.TargetPath)`,
+    `$keep = -not $t -or -not (& $under $t.TargetPath) -or -not (Test-Path -LiteralPath $t.TargetPath) -or -not $p -or -not (& $under $p.TargetPath)`,
     `[System.Runtime.InteropServices.Marshal]::ReleaseComObject($sh) | Out-Null`,
     `if ($keep) { Write-Output '[]'; exit 0 }`,
     `$dir = Split-Path -Parent $pub`,
@@ -477,7 +519,7 @@ export function buildSecondEntryRemovalScript(rootDir: string, loc: SecondEntryL
 /**
  * At app startup: remove the Start Menu link installs before #2971 had
  * Squirrel write, once the top-level entry Electron's toast setup writes is
- * there. Runs a powershell only when that link exists. Async, win32-only,
+ * there. Runs a powershell only when both links exist. Async, win32-only,
  * best-effort, never throws.
  */
 export async function removeSecondStartMenuEntry(
@@ -485,24 +527,18 @@ export async function removeSecondStartMenuEntry(
   publisher: string,
   locations?: SecondEntryLocations,
 ): Promise<RepairPassResult> {
-  if (process.platform !== 'win32') return { actions: [], failure: null };
-  const fail = (reason: string): RepairPassResult => {
-    console.warn(`[shortcutHygiene] second Start Menu entry removal did not run: ${reason}`);
-    return { actions: [], failure: reason };
-  };
+  const label = 'second Start Menu entry removal';
+  if (process.platform !== 'win32') return NO_RUN;
+  let loc: SecondEntryLocations | null;
   try {
-    const loc = locations ?? defaultSecondEntryLocations(appDataOrThrow(), publisher);
-    if (!loc || !fs.existsSync(loc.publisherLnk)) return { actions: [], failure: null };
-    const script = buildSecondEntryRemovalScript(rootFromExecPath(execPath), loc);
-    if (!script) return fail('a path could not be embedded in the script safely');
-    const run = await runScriptAsync(script, REPAIR_BUDGET_MS);
-    if ('failure' in run) return fail(run.failure);
-    const read = readActions(run.stdout);
-    if ('failure' in read) return fail(read.failure);
-    return { actions: read.actions, failure: null };
+    loc = locations ?? defaultSecondEntryLocations(appDataOrThrow(), publisher);
   } catch (err) {
-    return fail(err instanceof Error ? err.message : String(err));
+    return passFailure(label, errorText(err));
   }
+  // Nothing to remove, or no entry to keep in its place yet.
+  if (!loc || !fs.existsSync(loc.publisherLnk) || !fs.existsSync(loc.topLevelLnk)) return NO_RUN;
+  const found = loc;
+  return runPassAsync(label, () => buildSecondEntryRemovalScript(rootFromExecPath(execPath), found), REPAIR_BUDGET_MS);
 }
 
 /** What the uninstall pass removes. Overridable so tests use temp locations. */
@@ -527,7 +563,8 @@ export function defaultToastEntryLocations(appData: string): ToastEntryLocations
  * class whose LocalServer32 does, including ones left by earlier entries
  * (each new entry got a fresh CLSID). Anything pointing elsewhere is another
  * app's and is left alone. The registry part needs no COM, so a refused
- * WScript.Shell only skips the link. Emits the same JSON as the repair script.
+ * WScript.Shell only skips the link; the script prints no COM marker, so this
+ * pass is never retried. Emits the same JSON as the repair script.
  */
 export function buildToastEntryRemovalScript(rootDir: string, loc: ToastEntryLocations): string | null {
   const paths = [rootDir, loc.topLevelLnk, loc.clsidKey];
@@ -535,7 +572,7 @@ export function buildToastEntryRemovalScript(rootDir: string, loc: ToastEntryLoc
   return [
     `$ErrorActionPreference = 'SilentlyContinue'`,
     `$root = ${psQuote(rootDir)}`,
-    `$under = { param($p) $p -and $p.Trim('"').StartsWith($root + '\\', [System.StringComparison]::OrdinalIgnoreCase) }`,
+    UNDER_ROOT_PS,
     `$out = @()`,
     `$top = ${psQuote(loc.topLevelLnk)}`,
     `if (Test-Path -LiteralPath $top) {`,
@@ -566,7 +603,7 @@ const TOAST_ENTRY_BUDGET_MS = 8_000;
 /**
  * Remove the Start Menu entry and toast activator classes Electron's toast
  * setup left for this install (#2971). For the uninstall hook. win32-only,
- * best-effort, never throws. See runPassSync.
+ * best-effort, never throws.
  */
 export function removeToastEntries(
   execPath: string,

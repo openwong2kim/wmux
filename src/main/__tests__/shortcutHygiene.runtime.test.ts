@@ -357,6 +357,15 @@ describe.skipIf(!onWindows)('removeSecondStartMenuEntry end-to-end (real .lnk, r
     expect(fs.existsSync(pub)).toBe(true);
   });
 
+  it('keeps it while the top-level entry points at a removed version', async () => {
+    // An install upgraded from 3.3.x: the top-level link still names the
+    // deleted app-3.3.0\wmux.exe until Electron rewrites it.
+    makeLnk(top, path.join(root, 'app-0.9.0', 'wmux.exe'));
+    makeLnk(pub, path.join(root, 'wmux.exe'));
+    expect(await run()).toEqual([]);
+    expect(fs.existsSync(pub)).toBe(true);
+  });
+
   it('keeps it while the top-level entry points at another install', async () => {
     const other = path.join(sandbox, 'other', 'wmux.exe');
     fs.mkdirSync(path.dirname(other), { recursive: true });

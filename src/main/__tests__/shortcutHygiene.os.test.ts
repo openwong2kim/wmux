@@ -141,7 +141,11 @@ describe('second Start Menu entry (#2971)', () => {
     expect(s).toContain(
       "if (-not (Test-Path -LiteralPath $top) -or -not (Test-Path -LiteralPath $pub)) { Write-Output '[]'; exit 0 }",
     );
-    expect(s).toContain('$keep = -not $t -or -not (& $under $t.TargetPath) -or -not $p -or -not (& $under $p.TargetPath)');
+    // The top-level entry must point at a file that exists: a link left by a
+    // removed app-X.Y.Z\ is not a replacement.
+    expect(s).toContain(
+      '$keep = -not $t -or -not (& $under $t.TargetPath) -or -not (Test-Path -LiteralPath $t.TargetPath) -or -not $p -or -not (& $under $p.TargetPath)',
+    );
     // The removal comes after the keep check, never before it.
     expect(s.indexOf('Remove-Item -LiteralPath $pub')).toBeGreaterThan(s.indexOf("if ($keep) { Write-Output '[]'; exit 0 }"));
   });
