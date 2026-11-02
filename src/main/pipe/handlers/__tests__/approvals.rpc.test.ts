@@ -328,6 +328,10 @@ describe('approvalOnScreen', () => {
     expect(approvalOnScreen(narrow)).toBe(true);
   });
 
+  it('sees a permission dialog read before its cursor cell was drawn', () => {
+    expect(approvalOnScreen([' Bash command', '   touch x', ' Do you want to proceed?', '   1. Yes', '   2. No'].join('\n'))).toBe(true);
+  });
+
   it('sees a select under a cursor', () => {
     expect(approvalOnScreen('Which runner?\n❯ 1. vitest\n  2. jest')).toBe(true);
   });

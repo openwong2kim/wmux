@@ -122,3 +122,127 @@ describe('claudeScreenApproval — screen-reader layout', () => {
     expect(events.mock.calls.map(([event]) => event.status)).toEqual(['awaiting_input']);
   });
 });
+
+describe('AgentDetector — a screen-reader dialog while Claude runs', () => {
+  /** The rows as the layout prints them: plain rows, the last one left unfinished. */
+  const stream = (rows: readonly string[]): string => {
+    let end = rows.length;
+    while (end > 0 && !rows[end - 1]?.trim()) end--;
+    return rows.slice(0, end).join('\r\n');
+  };
+  /** A Claude pane past its launch: identity seeded, banner drawn, no question yet. */
+  function running() {
+    const det = new AgentDetector();
+    const events = vi.fn();
+    det.onEvent(events);
+    det.feed('[Screen Reader Mode: on via flag]\r\nClaude Code v2.1.316\r\n');
+    det.seedTrustedIdentity('claude', det.getIdentityEpoch());
+    return { det, events };
+  }
+  /** What the host does after a batch: read the screen when asked. */
+  async function hostRead(det: AgentDetector, rows: readonly string[]): Promise<boolean> {
+    return det.takeApprovalRecheckRequest() && det.revalidateApprovalScreen(async () => ({ rows, isCurrent: () => true }));
+  }
+
+  it.each([
+    'claude-sr-write-100x30',
+    'claude-sr-write-60x30',
+    'claude-sr-edit-100x30',
+    'claude-sr-edit-60x30',
+    'claude-sr-bash-100x30',
+    'claude-sr-bash-60x30',
+    'claude-sr-ask-100x30',
+    'claude-sr-ask-60x30',
+    'claude-sr-askmulti-100x30',
+  ])('reports %s as needs-you once its key row is drawn', async (name) => {
+    const { det, events } = running();
+    const rows = screen(name);
+    det.feed(stream(rows));
+    expect(await hostRead(det, rows)).toBe(true);
+    expect(events.mock.calls.map(([event]) => event)).toEqual([{ agent: 'Claude Code', status: 'awaiting_input', message: 'Approval requested' }]);
+  });
+
+  it('reads a key row the renderer drew around cells it skipped', async () => {
+    const { det, events } = running();
+    const rows = screen('claude-sr-bash-100x30');
+    det.feed(stream(rows).replace('Select with numbers', 'Select\u001b[1Cwith numbers'));
+    expect(await hostRead(det, rows)).toBe(true);
+    expect(events).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads again when the rest of the key row arrives after a read', async () => {
+    const { det, events } = running();
+    const rows = screen('claude-sr-bash-100x30');
+    const text = stream(rows);
+    const cut = text.indexOf('Then En');
+    det.feed(text.slice(0, cut));
+    // The first read sees the key row cut short: no dialog yet.
+    expect(await hostRead(det, text.slice(0, cut).split('\r\n'))).toBe(false);
+    det.feed(text.slice(cut));
+    expect(await hostRead(det, rows)).toBe(true);
+    expect(events).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads again when the key hint under the key row arrives after a read', async () => {
+    const { det, events } = running();
+    const rows = screen('claude-sr-bash-100x30');
+    const text = stream(rows);
+    const cut = text.lastIndexOf('Esc to cancel') + 'Esc'.length;
+    det.feed(text.slice(0, cut));
+    // The first read sees the key hint cut short: no dialog yet.
+    expect(await hostRead(det, text.slice(0, cut).split('\r\n'))).toBe(false);
+    det.feed(text.slice(cut));
+    expect(await hostRead(det, rows)).toBe(true);
+    expect(events).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not read again for a key typed into the key row', async () => {
+    const { det } = running();
+    const rows = screen('claude-sr-ask-100x30');
+    det.feed(stream(rows));
+    expect(await hostRead(det, rows)).toBe(true);
+    det.feed('2');
+    expect(det.takeApprovalRecheckRequest()).toBe(false);
+  });
+
+  it('reads a dialog after output that quoted the trust question was read', async () => {
+    const { det, events } = running();
+    // The trust question's own rows, read once from a screen that holds no dialog.
+    const quoted = ['tool: Bash (cat notes.md)', 'Is this a project you created or one you trust?', 'Enter to confirm · Esc to cancel', 'claude: done'];
+    det.feed(`${stream(quoted)}\r\n`);
+    expect(await hostRead(det, quoted)).toBe(false);
+    const rows = screen('claude-sr-bash-100x30');
+    det.feed(stream(rows));
+    expect(await hostRead(det, rows)).toBe(true);
+    expect(events).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['in the pane', true],
+    // A press the daemon makes, or an answer from the phone: no input here.
+    ['away from the pane', false],
+  ] as const)('reports the next dialog of the same session too, the first answered %s', async (_where, typedHere) => {
+    const { det, events } = running();
+    const first = screen('claude-sr-bash-100x30');
+    det.feed(stream(first));
+    expect(await hostRead(det, first)).toBe(true);
+    // Typed in the pane, the key press clears what the screen showed.
+    if (typedHere) det.invalidateApprovalScreen();
+    det.feed('\r\nclaude: ok\r\n');
+    const second = screen('claude-sr-write-100x30');
+    det.feed(stream(second));
+    expect(await hostRead(det, second)).toBe(true);
+    expect(events.mock.calls.map(([event]) => event.status)).toEqual(['awaiting_input', 'awaiting_input']);
+  });
+
+  it('reports nothing for an answered dialog left above newer output', async () => {
+    const { det, events } = running();
+    const dialog = screen('claude-sr-write-60x30').filter((row) => row.trim()).slice(5);
+    const answered = screen('claude-sr-bash-answered-100x30').filter((row) => row.trim()).slice(8);
+    const rows = [...dialog, ...answered];
+    // A resize redraws the old dialog over the transcript, key row and all.
+    det.feed(stream(rows));
+    expect(await hostRead(det, rows)).toBe(false);
+    expect(events).not.toHaveBeenCalled();
+  });
+});

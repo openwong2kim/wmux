@@ -163,7 +163,7 @@ describe('PTY_RECONNECT keeps only a pipe the create attached (source-level lock
 
   it('death, supervised restart and dispose drop the mark and the first-output hook', () => {
     expect(SRC).toMatch(/function forgetCreateState\(sessionId: string\): void \{\s*createAttachedPipes\.delete\(sessionId\);\s*firstOutputHooks\.delete\(sessionId\);/);
-    expect(SRC).toMatch(/disconnectSessionPipe\(payload\.sessionId\)\.catch\(\(\) => \{\}\);\s*forgetCreateState\(payload\.sessionId\);/);
+    expect(SRC).toMatch(/disconnectSessionPipe\(payload\.sessionId\)\.catch\(\(\) => undefined\);\s*forgetCreateState\(payload\.sessionId\);/);
     expect(SRC).toMatch(/onDaemonSessionRestarted = \(payload\) => \{[\s\S]{0,500}?forgetCreateState\(payload\.sessionId\);/);
     expect(SRC).toMatch(/await daemonClient\.disconnectSessionPipe\(id\);\s*forgetCreateState\(id\);/);
   });

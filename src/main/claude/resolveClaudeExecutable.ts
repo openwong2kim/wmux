@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { agentRow, type AgentSlugWith } from '../../shared/agentIdentity';
+import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 
 // One answer to "where is the user's claude?", shared by Moa (the deck
 // adapters) and the first-run wizard's "Claude Code detected" row so the two
@@ -212,6 +213,20 @@ export function resolveAgentExecutableWith(r: ResolveClaudeEnv, agent: AgentBina
   return firstHit(r, pathDirs(r, login).map((d) => path.posix.join(d, name)));
 }
 
+/**
+ * Every claude install a pane's shell might run: each candidate that exists,
+ * then each `claude` on the login shell's PATH. A shell picks one by its own
+ * PATH and version manager, which main cannot see, so a check that must hold
+ * for whichever one runs asks all of them. Pure; exported for tests.
+ */
+export function claudeInstallsWith(r: ResolveClaudeEnv): string[] {
+  const p = r.platform === 'win32' ? path.win32 : path.posix;
+  const login = r.platform === 'win32' ? null : r.loginShellPath?.() ?? null;
+  const name = agentRow('claude')?.setup?.binary ?? 'claude';
+  const onLoginPath = login ? pathDirs(r, login).map((d) => path.posix.join(d, name)) : [];
+  return [...new Set([...claudeCandidates(r), ...onLoginPath])].filter((c) => p.isAbsolute(c) && isFileSafe(r, c));
+}
+
 export function isExecutableFile(p: string): boolean {
   try {
     if (!fs.statSync(p).isFile()) return false;
@@ -321,6 +336,14 @@ export function liveResolveEnv(env: Record<string, string | undefined> = process
     readText,
     loginShellPath: cachedLoginShellPath,
   };
+}
+
+/** {@link claudeInstallsWith} on this machine, once the login shell's PATH has
+ *  been read. On Windows the PATH is re-read from the registry, as a new pane's
+ *  is (pty.handler), so an install on a PATH written after wmux started counts. */
+export async function claudeInstalls(): Promise<string[]> {
+  await warmLoginShellPath();
+  return claudeInstallsWith(liveResolveEnv(withFreshWindowsPath(process.env)));
 }
 
 /** Where the user's Codex CLI is, by the same rules as {@link resolveClaudeExecutable}. */

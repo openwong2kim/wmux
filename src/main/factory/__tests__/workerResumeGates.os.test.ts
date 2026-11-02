@@ -107,6 +107,12 @@ describe('bot.resumeWorker', () => {
       .toContain("folderTrustRefusal: (sessionId) => folderTrustLaunchRefusal(daemon(), sessionId, 'bot worker resume line', { refuseUnknown: true, budgetMs: FOLDER_TRUST_DELIVERY_BUDGET_MS })");
   });
 
+  it('types a resume line with a screen reader\'s flag, as pty:write-launch does, and records it without', () => {
+    const host = fs.readFileSync(path.resolve(process.cwd(), 'src/main/factory/workerLifecycleHost.ts'), 'utf8');
+    expect(host).toContain("c.writeToSession(sessionId, sanitizePtyText(withScreenReaderFlag(guarded, isScreenReaderOn(), launcherVersionsIn(getPtyShell(sessionId)))) + '\\r')");
+    expect(host).toContain('if (typed) noteGuardedLaunchTyped(sessionId, guarded);');
+  });
+
   it('is judged again, by the wake it was asked in, right before the line is typed: a wake no longer known clean types nothing', async () => {
     const handlers = new Map<string, (p: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>>();
     let refusal: string | null = null;

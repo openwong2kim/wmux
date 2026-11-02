@@ -3,9 +3,14 @@
 // client is at work, and every window told of a change.
 
 import { app, BrowserWindow } from 'electron';
+import * as fs from 'fs';
 import { dataSuffix } from '../shared/constants';
+import { isOlderVersion, parseAgentVersion } from '../shared/agentSetup';
 import { SCREEN_READER_IPC } from '../shared/screenReader';
+import { isWslShell } from '../shared/wsl';
 import { createScreenReaderMonitor, listProcessNames, screenReaderForcedForTest, SCREEN_READER_IDLE_POLL_MS_WIN32 } from './screenReader';
+import { claudeInstalls } from './claude/resolveClaudeExecutable';
+import { probeClaudeExecutable } from './factory/claudeProbe';
 
 /** Sent to a window by an accessibility client asking for its tree. */
 const WM_GETOBJECT = 0x003d;
@@ -58,10 +63,72 @@ export function isScreenReaderOn(): boolean {
   return monitor.isOn();
 }
 
+/** The oldest claude `x.y.z` among every install a pane's shell might run
+ *  (claudeInstalls), read in the background, so a launch never waits on it:
+ *  null until a read answers, when no claude is found, and when any install's
+ *  version cannot be read. The probe caches by path and mtime, so a read
+ *  again is a stat. `exes` are the installs it read, and `stamp` their mtimes
+ *  as it began. */
+let claudeVersion: { version: string; exes: string[]; stamp: string } | null = null;
+let reading: Promise<void> | null = null;
+
+/** The installs' paths and mtimes, compared to tell an unchanged set. */
+function installStamp(exes: readonly string[]): string {
+  return JSON.stringify(exes.map((exe) => {
+    try {
+      return [exe, fs.statSync(exe).mtimeMs];
+    } catch {
+      return [exe, null];
+    }
+  }));
+}
+
+function readClaudeVersion(): void {
+  if (reading) return;
+  reading = (async () => {
+    const exes = await claudeInstalls();
+    const stamp = installStamp(exes);
+    const versions = await Promise.all(exes.map(async (exe) => {
+      const r = await probeClaudeExecutable(exe);
+      return r.ok ? parseAgentVersion(r.version) : null;
+    }));
+    const known = versions.filter((v): v is string => v !== null);
+    claudeVersion = known.length > 0 && known.length === versions.length
+      ? { version: known.reduce((oldest, v) => (isOlderVersion(v, oldest) ? v : oldest)), exes, stamp }
+      : null;
+  })().catch(() => { claudeVersion = null; }).finally(() => { reading = null; });
+}
+
+/** The launchers whose version wmux can read: claude's flag is the one with
+ *  a minimum version (agentLaunchOptions.ts). Each answers its last read at
+ *  once and reads again for the next launch. A read answers only while the
+ *  installs it read are unchanged: one replaced since (an older claude
+ *  reinstalled in its place) is unknown until the new read lands. */
+const VERSION_READS = new Map<string, () => string | null>([
+  ['claude', () => {
+    readClaudeVersion();
+    const last = claudeVersion;
+    return last && installStamp(last.exes) === last.stamp ? last.version : null;
+  }],
+]);
+
+/** The versions a launch line's screen-reader flag is checked against
+ *  (screenReaderLaunch.ts), for a pane running `shell`: the oldest of the
+ *  launcher's installs. A WSL pane runs the distro's own agent, a pane whose
+ *  shell is not known may be one, and a launcher given by path may be another
+ *  install, so theirs are unknown (no flag), as is any launcher wmux cannot
+ *  read. Never waits. */
+export function launcherVersionsIn(shell: string | null | undefined): (launcher: string, typed: string) => string | null {
+  if (!shell || isWslShell(shell)) return () => null;
+  return (launcher, typed) => (/[\\/]/.test(typed) ? null : VERSION_READS.get(launcher)?.() ?? null);
+}
+
 /** Starts watching (once the app is ready); every window hears a change. */
 export function startScreenReaderMonitor(): void {
   monitor.onChange((on) => {
     console.log(`[screen-reader] ${on ? 'on' : 'off'}`);
+    // Ready before the first launch a screen reader's user makes.
+    if (on) readClaudeVersion();
     for (const win of BrowserWindow.getAllWindows()) {
       if (!win.isDestroyed()) win.webContents.send(SCREEN_READER_IPC.changed, on);
     }
