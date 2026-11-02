@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
-// The decisions main expired at startup (#2943) each get one info toast on
-// mount, quoting the question shortened; an empty list shows nothing.
+// The decisions main removed at startup (#2943) each get one info toast once
+// the panes are ready, quoting the question shortened and naming the
+// workspace from the store; an unknown workspace or an empty list shows
+// nothing.
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -15,14 +17,18 @@ function Probe() {
   return null;
 }
 
-function stubList(decisions: Array<{ workspaceId: string; workspaceName?: string; id: string; question: string }>) {
+function stubList(decisions: Array<{ workspaceId: string; id: string; question: string }>) {
   const expiredDecisions = vi.fn(async () => ({ decisions }));
   vi.stubGlobal('electronAPI', { deck: { expiredDecisions } });
   return expiredDecisions;
 }
 
 beforeEach(() => {
-  useStore.setState({ toasts: [] });
+  useStore.setState({
+    toasts: [],
+    paneGate: 'pending',
+    workspaces: [{ id: 'ws-1', name: 'Backend' }] as never,
+  });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -34,15 +40,18 @@ afterEach(() => {
 });
 
 describe('useExpiredDecisionNotice', () => {
-  it('pushes one info toast per expired decision, with the workspace name when known', async () => {
+  it('waits for the panes, then pushes one info toast per decision of a known workspace', async () => {
     const long = `Resume it, or drop it? ${'x'.repeat(200)}`;
-    const read = stubList([
-      { workspaceId: 'ws-1', workspaceName: 'Backend', id: 'd-1', question: long },
-      { workspaceId: 'ws-2', id: 'd-2', question: 'Ship it?' },
+    const take = stubList([
+      { workspaceId: 'ws-1', id: 'd-1', question: long },
+      { workspaceId: 'ws-1', id: 'd-2', question: 'Ship it?' },
+      { workspaceId: 'ws-gone', id: 'd-3', question: 'Orphan?' },
     ]);
     await act(async () => root.render(createElement(Probe)));
+    expect(take).not.toHaveBeenCalled();
 
-    expect(read).toHaveBeenCalledTimes(1);
+    await act(async () => useStore.setState({ paneGate: 'ready' }));
+    expect(take).toHaveBeenCalledTimes(1);
     const toasts = useStore.getState().toasts;
     expect(toasts).toHaveLength(2);
     expect(toasts.every((t) => t.level === 'info')).toBe(true);
@@ -53,8 +62,20 @@ describe('useExpiredDecisionNotice', () => {
     expect(toasts[1].message).toContain('"Ship it?"');
   });
 
+  it('keeps a response that arrives after an unmount (StrictMode remounts once)', async () => {
+    let resolve: (v: { decisions: Array<{ workspaceId: string; id: string; question: string }> }) => void = () => undefined;
+    vi.stubGlobal('electronAPI', { deck: { expiredDecisions: vi.fn(() => new Promise((r) => { resolve = r; })) } });
+    useStore.setState({ paneGate: 'ready' });
+    await act(async () => root.render(createElement(Probe)));
+    act(() => root.unmount());
+    root = createRoot(container);
+    await act(async () => resolve({ decisions: [{ workspaceId: 'ws-1', id: 'd-1', question: 'Go?' }] }));
+    expect(useStore.getState().toasts).toHaveLength(1);
+  });
+
   it('shows nothing when no decision was expired', async () => {
     stubList([]);
+    useStore.setState({ paneGate: 'ready' });
     await act(async () => root.render(createElement(Probe)));
     expect(useStore.getState().toasts).toEqual([]);
   });
