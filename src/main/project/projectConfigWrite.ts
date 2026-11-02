@@ -51,6 +51,17 @@ export function sha256Hex(buf: Buffer): string {
   return createHash('sha256').update(buf).digest('hex');
 }
 
+/** The file still holds the bytes with this hash (absent: there is no file). */
+function sameBytes(configPath: string, hash: string | undefined): boolean {
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(configPath);
+  } catch (err) {
+    return hash === undefined && (err as NodeJS.ErrnoException).code === 'ENOENT';
+  }
+  return hash !== undefined && sha256Hex(bytes) === hash;
+}
+
 /** Where the project's wmux.json is (or would be): the discovered file, else
  *  the checkout's top. */
 export async function locateProjectConfig(
@@ -64,17 +75,23 @@ export async function locateProjectConfig(
   return { state, dir: path.resolve(top.stdout.trim()) };
 }
 
+/** What a save puts in front of the user before it approves: New workspace
+ *  setup shows the copy list (and rewrites it); a company save does not. */
+export interface SaveShows {
+  copy: boolean;
+}
+
 /**
- * True when an unapproved file can start something: commands, a layout, a
- * setup command or a company somebody else wrote. A one-line field is no
- * place to review a shell command (a long tail or a newline hides in it), so
- * such a file is reviewed in the trust dialog, which shows it verbatim, before
- * wmux may save over it.
+ * True when an unapproved file can start something the save did not show:
+ * commands, a layout, a setup command, a company somebody else wrote, or a
+ * copy list. A one-line field is no place to review a shell command (a long
+ * tail or a newline hides in it), so such a file is reviewed in the trust
+ * dialog, which shows it verbatim, before wmux may save over it.
  */
-function hasRunnables(config: WmuxProjectConfig | undefined): boolean {
+function hasRunnables(config: WmuxProjectConfig | undefined, shows: SaveShows): boolean {
   if (!config) return false;
   return config.layout !== undefined || (config.commands?.length ?? 0) > 0 || config.fanout?.setup !== undefined
-    || config.company !== undefined;
+    || config.company !== undefined || (!shows.copy && (config.fanout?.copy?.length ?? 0) > 0);
 }
 
 /** The live bytes are the approved ones (not just a cached verdict). */
@@ -91,12 +108,12 @@ function awaitsPrepReview(state: ProjectConfigState): boolean {
 }
 
 /** Why wmux cannot save over the file (undefined when it can). */
-export function saveBlock(state: ProjectConfigState): ProjectConfigSaveBlock | undefined {
+export function saveBlock(state: ProjectConfigState, shows: SaveShows): ProjectConfigSaveBlock | undefined {
   if (!state.found) return undefined;
   if (state.invalid) return 'invalid';
   // 'denied' is sticky: the trust dialog is where it is lifted.
   if (state.trust === 'denied') return 'review-first';
-  if (state.trust !== 'trusted' && hasRunnables(state.config)) return 'review-first';
+  if (state.trust !== 'trusted' && hasRunnables(state.config, shows)) return 'review-first';
   if (awaitsPrepReview(state)) return 'review-first';
   return undefined;
 }
@@ -108,12 +125,14 @@ export function saveBlock(state: ProjectConfigState): ProjectConfigSaveBlock | u
  * parsed document in place and returns false when the result is not what was
  * asked for ('invalid-input'). `grant` turns the grant on the bytes being
  * replaced (both false unless they are trusted) into the one on the new bytes.
+ * `shows` is what the save put on screen, which it may approve unreviewed.
  */
 export async function writeProjectConfig(
   cwd: string,
   expectedHash: string | undefined,
   edit: (doc: Record<string, unknown>) => boolean,
   grant: (prior: ProjectTrustGrant) => ProjectTrustGrant,
+  shows: SaveShows,
   deps: ProjectConfigWriteDeps,
 ): Promise<ProjectConfigWriteResult> {
   const found = await locateProjectConfig(cwd, deps);
@@ -146,16 +165,23 @@ export async function writeProjectConfig(
     const config = normalizeWmuxProjectConfig(doc);
     if (state.invalid) return { ok: false, error: 'invalid' };
     if (state.trust === 'denied') return { ok: false, error: 'review-first' };
-    if (!trustedNow(state, liveHash) && hasRunnables(config)) return { ok: false, error: 'review-first' };
+    if (!trustedNow(state, liveHash) && hasRunnables(config, shows)) return { ok: false, error: 'review-first' };
     if (awaitsPrepReview(state)) return { ok: false, error: 'review-first' };
   }
 
   if (!edit(doc)) return { ok: false, error: 'invalid-input' };
 
   const bytes = Buffer.from(`${JSON.stringify(doc, null, 2)}\n`, 'utf8');
+  // A file past the size cap is not read at all: it would stop the rest of it working.
+  if (bytes.length > PROJECT_CONFIG_MAX_FILE_BYTES) return { ok: false, error: 'invalid-input' };
   const tmp = path.join(found.dir, `.${WMUX_PROJECT_CONFIG_FILENAME}.${randomBytes(6).toString('hex')}.tmp`);
   try {
     fs.writeFileSync(tmp, bytes, { flag: 'wx' });
+    // Checked again right before the swap, so an edit made since the read is not lost.
+    if (!sameBytes(configPath, liveHash)) {
+      fs.rmSync(tmp, { force: true });
+      return { ok: false, error: 'changed' };
+    }
     fs.renameSync(tmp, configPath);
   } catch (err) {
     try { fs.rmSync(tmp, { force: true }); } catch { /* best-effort */ }

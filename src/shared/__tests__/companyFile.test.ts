@@ -17,6 +17,9 @@ const shop = {
 const RLO = String.fromCharCode(0x202e);
 const LINE_SEPARATOR = String.fromCharCode(0x2028);
 const ESC = String.fromCharCode(0x1b);
+const ZERO_WIDTH_SPACE = String.fromCodePoint(0x200b);
+const TAG_A = String.fromCodePoint(0xe0041);
+const VARIATION_SELECTOR_17 = String.fromCodePoint(0xe0100);
 
 describe('normalizeCompanyFile', () => {
   it('reads a company with its CEO named by seat', () => {
@@ -74,6 +77,9 @@ describe('normalizeCompanyFile', () => {
     ['a line separator in the standing orders', { ...shop, standingOrders: `Review${LINE_SEPARATOR}everything` }],
     ['an escape sequence in owns', { ...shop, seats: [{ name: 'ceo', owns: `${ESC}[2Jnothing` }] }],
     ['a new line in the name', { ...shop, name: 'shop\nteam' }],
+    ['a zero-width space in the mission', { ...shop, mission: `Ship${ZERO_WIDTH_SPACE}refunds` }],
+    ['a tag character in a seat name', { ...shop, ceo: `api${TAG_A}`, seats: [{ name: `api${TAG_A}` }] }],
+    ['a variation selector in the standing orders', { ...shop, standingOrders: `Review${VARIATION_SELECTOR_17}` }],
     ['a mission that is not text', { ...shop, mission: ['a'] }],
   ])('refuses the whole company for %s', (_why, raw) => {
     expect(normalizeCompanyFile(raw)).toBeNull();

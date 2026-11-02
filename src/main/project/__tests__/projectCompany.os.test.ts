@@ -9,8 +9,8 @@ import { execFileSync } from 'node:child_process';
 import { ProjectConfigStore } from '../ProjectConfigStore';
 import { readProjectCompany, saveProjectCompany } from '../projectCompany';
 import { saveWorkspacePrepSettings } from '../workspacePrepSettings';
-import type { ProjectConfigWriteDeps } from '../projectConfigWrite';
-import { companyNeedsReview } from '../../../shared/wmuxProjectConfig';
+import { writeProjectConfig, type ProjectConfigWriteDeps } from '../projectConfigWrite';
+import { companyNeedsReview, PROJECT_CONFIG_MAX_FILE_BYTES } from '../../../shared/wmuxProjectConfig';
 
 let tmp: string;
 let repo: string;
@@ -51,7 +51,7 @@ describe('saveProjectCompany', () => {
     const view = await readProjectCompany(repo, deps);
     expect(view).toEqual({ dir: repo, exists: false });
     const r = await saveProjectCompany(repo, shop, undefined, deps);
-    expect(r.ok).toBe(true);
+    expect(r).toEqual({ ok: true, contentHash: expect.any(String) });
     expect(wmuxJson()).toEqual({ version: 1, company: shop });
     const state = await store.getState(repo);
     expect(state.trust).toBe('trusted');
@@ -91,6 +91,23 @@ describe('saveProjectCompany', () => {
     expect((await store.getState(repo)).trust).toBe('untrusted');
   });
 
+  it('never approves a copy list it did not show', async () => {
+    fs.writeFileSync(path.join(repo, 'wmux.json'), JSON.stringify({ version: 1, fanout: { copy: ['.env'], copyIntoAutomated: true } }));
+    const view = await readProjectCompany(repo, deps);
+    expect(view.saveBlocked).toBe('review-first');
+    expect(await saveProjectCompany(repo, shop, view.contentHash, deps)).toEqual({ ok: false, error: 'review-first' });
+    expect((await store.getState(repo)).trust).toBe('untrusted');
+  });
+
+  it('trusts the folder as the dialog names it, also when it is reached through a link', async () => {
+    if (process.platform === 'win32') return;
+    const link = path.join(tmp, 'linked');
+    fs.symlinkSync(repo, link);
+    expect((await saveProjectCompany(link, shop, undefined, deps)).ok).toBe(true);
+    expect(await store.getState(link)).toMatchObject({ trust: 'trusted', companyReviewed: true });
+    expect((await readProjectCompany(link, deps)).saveBlocked).toBeUndefined();
+  });
+
   it('refuses a file changed since the dialog read it', async () => {
     fs.writeFileSync(path.join(repo, 'wmux.json'), JSON.stringify({ version: 1, fanout: { portRange: '3000-3010' } }));
     expect(await saveProjectCompany(repo, shop, 'f'.repeat(64), deps)).toEqual({ ok: false, error: 'changed' });
@@ -111,5 +128,29 @@ describe('saveProjectCompany', () => {
     fs.mkdirSync(plain);
     expect(await saveProjectCompany(plain, shop, undefined, deps)).toEqual({ ok: false, error: 'no-project' });
     expect(fs.existsSync(path.join(repo, 'wmux.json'))).toBe(false);
+  });
+});
+
+describe('writeProjectConfig', () => {
+  it('loses no edit made to the file after it was read', async () => {
+    fs.writeFileSync(path.join(repo, 'wmux.json'), JSON.stringify({ version: 1, fanout: { portRange: '3000-3010' } }));
+    const { contentHash } = await store.getState(repo);
+    const theirs = JSON.stringify({ version: 1, fanout: { portRange: '4000-4010' } });
+    const r = await writeProjectConfig(repo, contentHash, (doc) => {
+      fs.writeFileSync(path.join(repo, 'wmux.json'), theirs);
+      doc.company = shop;
+      return true;
+    }, (prior) => prior, { copy: false }, deps);
+    expect(r).toEqual({ ok: false, error: 'changed' });
+    expect(fs.readFileSync(path.join(repo, 'wmux.json'), 'utf8')).toBe(theirs);
+    expect((await store.getState(repo)).trust).toBe('untrusted');
+  });
+
+  it('never writes a file too big to be read back', async () => {
+    const raw = JSON.stringify({ version: 1, fanout: { portRange: '3000-3010' }, notes: 'x'.repeat(PROJECT_CONFIG_MAX_FILE_BYTES - 200) });
+    fs.writeFileSync(path.join(repo, 'wmux.json'), raw);
+    const { contentHash } = await store.getState(repo);
+    expect(await saveProjectCompany(repo, shop, contentHash, deps)).toEqual({ ok: false, error: 'invalid-input' });
+    expect(fs.readFileSync(path.join(repo, 'wmux.json'), 'utf8')).toBe(raw);
   });
 });

@@ -130,7 +130,7 @@ export async function readWorkspacePrepSettings(cwd: string, deps: WorkspacePrep
   const settings = settingsOf(state.config);
   const candidates = await listCopyCandidates(dir, deps.git ?? runGit, settings.copy);
   const suggestedSetup = suggestSetupCommand(dir);
-  const blocked = saveBlock(state);
+  const blocked = saveBlock(state, { copy: true });
   return {
     root: dir,
     ...(state.found && state.contentHash ? { contentHash: state.contentHash } : {}),
@@ -193,5 +193,5 @@ export async function saveWorkspacePrepSettings(
   // from bytes that were trusted. This is the one deliberate exception to
   // setDecision's "pass the consent every time" rule: the changed bytes are
   // fanout keys only.
-  return writeProjectConfig(cwd, expectedHash, edit, (prior) => prior, deps);
+  return writeProjectConfig(cwd, expectedHash, edit, (prior) => prior, { copy: true }, deps);
 }

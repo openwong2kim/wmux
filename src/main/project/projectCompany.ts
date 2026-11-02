@@ -39,7 +39,7 @@ export async function readProjectCompany(folder: string, deps: ProjectConfigWrit
   const found = await locateProjectConfig(folder, deps);
   if (!found) return { exists: false, saveBlocked: 'no-project' };
   const { state, dir } = found;
-  const blocked = sameFolder(dir, folder) ? saveBlock(state) : 'other-folder';
+  const blocked = sameFolder(dir, folder) ? saveBlock(state, { copy: false }) : 'other-folder';
   return {
     dir,
     exists: state.found === true,
@@ -73,5 +73,7 @@ export async function saveProjectCompany(
     const check = normalizeWmuxProjectConfig(doc)?.company;
     return check !== undefined && JSON.stringify(companyFileJson(check)) === JSON.stringify(json);
   };
-  return writeProjectConfig(found.dir, expectedHash, edit, (prior) => ({ unattended: prior.unattended, companyReviewed: true }), deps);
+  // Through the folder as given: the trust key is the spelling the store finds
+  // from it, which git's top would resolve away for a linked folder.
+  return writeProjectConfig(folder, expectedHash, edit, (prior) => ({ unattended: prior.unattended, companyReviewed: true }), { copy: false }, deps);
 }
