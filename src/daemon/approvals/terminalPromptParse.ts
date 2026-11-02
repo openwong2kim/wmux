@@ -65,11 +65,17 @@
 // to the card a phone was shown could never match the screen. Only that exact
 // sentence, as the reason's trailing rows, is dropped (see AUTO_DENY_LINE).
 //
+// Claude Code's screen-reader layout (2.1.316) draws the same dialog as plain
+// rows with no cursor, ended by a key row (`screenReaderKeyRow`). A grid that
+// ends in one is read only by `parseScreenReaderPrompt`, never as above, and
+// its record is never answerable: a digit there only fills the key row.
+//
 // Biased to refuse, like every screen check that could lead to a keystroke: a
 // grid without the question row followed by option rows numbered 1..n in
 // order parses to null.
 
 import crypto from 'node:crypto';
+import { screenReaderKeyRow, type ScreenReaderKeyRow } from './screenReaderKeyRow';
 
 /** One grid row: plain text, or a text snapshot row with its soft-wrap flag. */
 export type PromptRow = string | { text: string; wrapped?: boolean };
@@ -134,6 +140,11 @@ export interface ParsedTerminalPrompt {
   commandBoxed?: true;
   /** Set only by `parsePlanPrompt`: the ExitPlanMode dialog's own rows. */
   plan?: PlanDialogRows;
+  /**
+   * Read from Claude Code's screen-reader layout (`screenReaderKeyRow`): a
+   * digit there only fills the key row, and Enter submits it.
+   */
+  screenReader?: true;
 }
 
 /** What `parsePlanPrompt` read off the ExitPlanMode dialog ("Would you like to proceed?"). */
@@ -250,6 +261,10 @@ export function parseTerminalPrompt(
   rows: readonly PromptRow[],
   opts: { cols?: number } = {},
 ): ParsedTerminalPrompt | null {
+  // The screen-reader layout is read as nothing else. Its y/n key row is the
+  // folder-trust question, not a permission dialog.
+  const key = screenReaderKeyRow(rows);
+  if (key) return key.keys === 'numbers' ? parseScreenReaderPrompt(key) : null;
   const grid = logicalGrid(rows);
   const { lines } = grid;
   const minRule = opts.cols && opts.cols > 0 ? opts.cols - 1 : RULE_MIN_CHARS_WITHOUT_COLS;
@@ -383,17 +398,7 @@ export function parseTerminalPrompt(
   // Whitespace runs collapse to ONE space, never to nothing: deleting them
   // would hash `rm -rf /tmp/x` and `rm -rf / tmp/x` alike. The command is one
   // string, not the row list, so a re-wrap at a space does not change it.
-  const fingerprint = crypto
-    .createHash('sha256')
-    .update(JSON.stringify([
-      normalizePromptText(fullTitle ?? ''),
-      normalizePromptText(fullQuestion),
-      normalizePromptText(fullReason ?? ''),
-      normalizePromptText(fullCommand.join(' ')),
-      fullOptions.map((o) => [o.key, normalizePromptText(o.label)]),
-    ]))
-    .digest('hex')
-    .slice(0, PROMPT_FINGERPRINT_HEX);
+  const fingerprint = promptFingerprint(fullTitle, fullQuestion, fullReason, fullCommand, fullOptions);
 
   if (fullCommand.length > PROMPT_MAX_COMMAND_LINES) truncated = true;
   const title = fullTitle !== undefined ? cap(fullTitle) : undefined;
@@ -424,6 +429,23 @@ export function parseTerminalPrompt(
 
 /** An option row as read, before the display caps. */
 type ParsedOption = { key: string; label: string; selected: boolean; cut?: true };
+
+/** The permission dialog's fingerprint (see the header), from its full, uncapped parts. */
+function promptFingerprint(
+  title: string | undefined,
+  question: string,
+  reason: string | undefined,
+  command: readonly string[],
+  options: readonly ParsedOption[],
+): string {
+  return hashParts([
+    normalizePromptText(title ?? ''),
+    normalizePromptText(question),
+    normalizePromptText(reason ?? ''),
+    normalizePromptText(command.join(' ')),
+    options.map((o) => [o.key, normalizePromptText(o.label)]),
+  ]);
+}
 
 /** The two ways a dialog can read as active (see parseTerminalPrompt). */
 interface Activity {
@@ -575,6 +597,126 @@ function parseBoxedPrompt(
     bodyCut,
     active: isActive(activity, fullTitle),
     commandBoxed: true,
+  };
+}
+
+/** A screen-reader dialog's title row. */
+const SR_TITLE_ROW = /^Permission Required: (\S.*)$/;
+/** A screen-reader Bash dialog's description, command and reason rows. */
+const SR_BODY_ROW = /^> /;
+/** A screen-reader option row: no cursor, no indent. */
+const SR_OPTION_ROW = /^(\d{1,2})\.\s+(\S.*)$/;
+const SR_QUESTION_START = /^Do you want to /;
+
+/**
+ * A permission dialog in Claude Code's screen-reader layout, read up from its
+ * `numbers` key row:
+ *
+ *    Permission Required: Bash command
+ *    Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ *    > Remove the build output
+ *    > npm run clean
+ *    > This command requires approval
+ *    Do you want to proceed?
+ *    1. Yes
+ *    2. Yes, and don’t ask again for
+ *    3. Yes, and switch to auto mode — · auto mode handles these prompts for you
+ *    4. No
+ *    Select with numbers [1-4]. Then Enter to submit or Escape to cancel:
+ *    Esc to cancel
+ *
+ * Options `1.` to `<max>.` right above the key row; Ink breaks a long label
+ * onto rows of its own, which continue it. The question is the 1-3 rows above
+ * option 1, the title the nearest `Permission Required:` row above that, and
+ * the rows between them the body: its `> ` rows when it has any (Bash), each
+ * with the rows Ink broke off it, else every row but Claude's tip (Write and
+ * Edit: the file and its numbered rows).
+ * Null when the options are not 1..max in order, or the question is not a
+ * permission question (an AskUserQuestion asks `> Which …?`).
+ */
+function parseScreenReaderPrompt(key: ScreenReaderKeyRow): ParsedTerminalPrompt | null {
+  const { lines } = key;
+  // Up from the key row to option 1. Rows that start no option continue the
+  // label of the option above them.
+  const fullOptions: ParsedOption[] = [];
+  let continued: string[] = [];
+  let first = key.at - 1;
+  for (; first >= 0; first--) {
+    const line = lines[first]!;
+    if (!line.trim()) return null;
+    const match = SR_OPTION_ROW.exec(line);
+    if (!match) {
+      continued.unshift(line);
+      continue;
+    }
+    fullOptions.unshift({
+      key: match[1]!,
+      label: normalizePromptText([match[2]!, ...continued].join(' ')),
+      selected: false,
+      ...([line, ...continued].some((row) => CUT_ROW.test(row)) ? { cut: true as const } : {}),
+    });
+    continued = [];
+    if (fullOptions.length > PROMPT_MAX_OPTIONS) return null;
+    if (match[1] === '1') break;
+  }
+  if (first < 0 || fullOptions.length !== key.max) return null;
+  if (fullOptions.some((o, i) => o.key !== String(i + 1))) return null;
+
+  let questionStart = -1;
+  for (let start = first - 1; start >= 0 && start >= first - QUESTION_MAX_ROWS; start--) {
+    if (!lines[start]!.trim()) break;
+    const text = normalizePromptText(lines.slice(start, first).join(' '));
+    if (SR_QUESTION_START.test(text) && QUESTION_ROW.test(text)) {
+      questionStart = start;
+      break;
+    }
+  }
+  if (questionStart < 0) return null;
+  const fullQuestion = normalizePromptText(lines.slice(questionStart, first).join(' '));
+
+  let titleAt = -1;
+  for (let i = questionStart - 1; i >= 0 && titleAt < 0; i--) {
+    if (SR_TITLE_ROW.test(lines[i]!)) titleAt = i;
+  }
+  const fullTitle = titleAt >= 0 ? normalizePromptText(SR_TITLE_ROW.exec(lines[titleAt]!)![1]!) : undefined;
+  // With no title row on screen, the body runs from the grid top, as in a
+  // cursor-drawn dialog whose top rule scrolled off.
+  const body = lines.slice(titleAt + 1, questionStart).filter((line) => line.trim().length > 0);
+  // A row Ink broke off a `> ` row starts with no `> ` and continues it; rows
+  // above the first `> ` row are the tip.
+  const firstMarked = body.findIndex((line) => SR_BODY_ROW.test(line));
+  const marked: string[] = [];
+  for (const line of firstMarked >= 0 ? body.slice(firstMarked) : []) {
+    if (SR_BODY_ROW.test(line)) marked.push(line.replace(SR_BODY_ROW, ''));
+    else marked[marked.length - 1] += ` ${line}`;
+  }
+  const fullCommand = (firstMarked >= 0 ? marked : body.filter((line) => !TIP_ROW.test(line))).map(normalizePromptText);
+  const bodyCut = body.some((line) => CUT_ROW.test(line));
+
+  let truncated = false;
+  const cap = (text: string): string => {
+    if (text.length <= PROMPT_MAX_LINE_CHARS) return text;
+    truncated = true;
+    return `${text.slice(0, PROMPT_MAX_LINE_CHARS)}…`;
+  };
+  if (fullCommand.length > PROMPT_MAX_COMMAND_LINES) truncated = true;
+  const title = fullTitle !== undefined ? cap(fullTitle) : undefined;
+  return {
+    ...(title ? { title } : {}),
+    commandLines: fullCommand.slice(0, PROMPT_MAX_COMMAND_LINES).map(cap),
+    commandRows: fullCommand,
+    descriptionRows: [],
+    commandText: fullCommand.join(' · '),
+    commandFull: normalizePromptText(fullCommand.join(' ')),
+    question: cap(fullQuestion),
+    options: fullOptions.map((o) => ({ ...o, label: cap(o.label) })),
+    fingerprint: promptFingerprint(fullTitle, fullQuestion, undefined, fullCommand, fullOptions),
+    topRuleFound: titleAt >= 0,
+    truncated,
+    cut: bodyCut || fullOptions.some((o) => o.cut),
+    bodyCut,
+    active: true,
+    screenReader: true,
   };
 }
 
@@ -791,10 +933,15 @@ export function decisionForChoiceLabel(label: string): 'approve' | 'deny' | null
  * fingerprint take the whole command. Whether the dialog's top may be off
  * screen is the binding's call (`dialogMatchesToolCall` with `topCut`), not
  * this one's.
+ *
+ * A dialog read from the screen-reader layout (`screenReader`) is never
+ * answerable: a remote answer presses one digit, which there only fills the
+ * key row.
  */
 export function terminalPromptAnswerability(
   parsed: ParsedTerminalPrompt,
 ): { answerable: boolean; choices: Array<{ key: string; label: string }> } {
+  if (parsed.screenReader) return { answerable: false, choices: [] };
   const yesOnly = toolOfDialog(parsed) === 'WebSearch';
   const choices = parsed.options
     .filter((o) => {
