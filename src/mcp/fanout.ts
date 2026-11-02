@@ -174,7 +174,7 @@ export function registerFanOutTools(server: McpServer, deps: FanOutToolDeps): vo
       'Returns { status: "accepted", ownerWorkspaceId } immediately. ownerWorkspaceId (and its deprecated alias workspaceId) is YOUR workspace, never a task\'s — never close it; each task\'s own workspaceId is in the completed poll\'s result.tasks[]. Spawning outlasts one RPC, so poll with the SAME idempotency_key, or watch each mission channel appear in your channel list. ' +
       'No approval prompt unless the user turned it on (unanswered, a poll says denied/timeout). A task cannot fan out again; over the cap (8 live, 24/h) it is refused. ' +
       'Repository and owning workspace come from your verified identity — fan-out runs in YOUR repository, the tasks are owned by you, and it is refused without that identity. A preset may skip the worktree: each task then writes into its own folder. ' +
-      'An accept or the completed poll may carry `warnings` (also printed as WARNING lines): the fan-out ran, but something will stop its reports reaching you or the tasks did not start from a fresh origin commit — act on it.',
+      'An accept or the completed poll may carry `warnings` (also printed as WARNING lines): the fan-out ran, but an option was ignored, a setup or copy step was skipped, tasks wait on their dependencies, or the tasks did not start from a fresh origin commit — act on it.',
     FANOUT_START_SHAPE,
     async ({ idempotency_key, titles, prompt, task_prompts, roles, preset, agents, files, depends_on, cancel_pending, checkout, secret_names, connectors, thread_id }) => {
       const params: Record<string, unknown> = {
