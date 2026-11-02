@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import {
   collectTreeCpuTimes,
@@ -8,6 +9,7 @@ import {
   decodeTcpTableV6,
   decodeProcessEntry,
   PROCESSENTRY32W_SIZE,
+  readProcessCommandLine,
   readProcessExitState,
   TCP_ROW4_SIZE,
   TCP_ROW6_SIZE,
@@ -160,6 +162,27 @@ describe.skipIf(process.platform !== 'win32')('tryProcessCreatedAt (Windows, liv
     }
     expect(tryProcessCreatedAt(0)).toBeNull();
     expect(tryProcessCreatedAt(-1)).toBeNull();
+  });
+});
+
+// A wrong binding or decode reads null, and the launcher would quietly fall
+// back to PowerShell (#2992), so the real read is pinned here.
+describe.skipIf(process.platform !== 'win32')('readProcessCommandLine (Windows, live)', () => {
+  it('reads a child\'s command line, a path with spaces kept whole', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux cmdline '));
+    const script = path.join(dir, 'idle script.js');
+    fs.writeFileSync(script, 'setTimeout(() => {}, 5000);');
+    const child = spawn(process.execPath, [script], { stdio: 'ignore', windowsHide: true });
+    try {
+      await new Promise<void>((resolve, reject) => { child.once('spawn', () => resolve()); child.once('error', reject); });
+      const line = readProcessCommandLine(child.pid ?? -1);
+      expect(line).toContain(`"${script}"`);
+      expect(line?.toLowerCase()).toContain(path.basename(process.execPath).toLowerCase());
+      expect(readProcessCommandLine(process.pid)).toBeTruthy();
+    } finally {
+      child.kill();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
