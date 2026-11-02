@@ -86,7 +86,9 @@ export function readConfigDoc(configPath: string): Record<string, unknown> | und
   try {
     const st = fs.lstatSync(configPath);
     if (!st.isFile() || st.size > PROJECT_CONFIG_MAX_FILE_BYTES) return undefined;
-    const parsed: unknown = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    const bytes = fs.readFileSync(configPath);
+    if (bytes.length > PROJECT_CONFIG_MAX_FILE_BYTES) return undefined;
+    const parsed: unknown = JSON.parse(bytes.toString('utf8'));
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : undefined;
   } catch {
     return undefined;
