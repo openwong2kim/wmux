@@ -1055,10 +1055,10 @@ const electronAPI = {
       },
     },
     // The pending decisions an earlier version raised that this startup
-    // expired (no card answers them), for a one-time notice.
+    // removed (no card answers them), taken once for a one-time notice.
     expiredDecisions: () =>
       ipcRenderer.invoke(IPC.DECK_EXPIRED_DECISIONS) as Promise<{
-        decisions: import('../main/deck/deckDecisionStore').ExpiredDecisionNotice[];
+        decisions: import('../main/deck/deckDecisionStore').ExpiredDecision[];
       }>,
     // Claude Code hook bridge (in-app `wmux setup-hooks`). STATUS feeds the
     // install prompt (launch + off→assist/auto mode switch); INSTALL is the
