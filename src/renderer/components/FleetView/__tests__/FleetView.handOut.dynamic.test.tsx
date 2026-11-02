@@ -9,7 +9,7 @@ import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import * as terminalTail from '../../../utils/terminalTail';
 import FleetView from '../FleetView';
-import { handOutPickNotices } from '../HandOutPopover';
+import { handOutPickNotices, placeHandOutPopover } from '../HandOutPopover';
 import type { HandOutOption } from '../handOutTargets';
 import { useStore } from '../../../stores';
 import type { HandOutEntry } from '../../../../shared/handOut';
@@ -153,5 +153,31 @@ describe('handOutPickNotices', () => {
     expect(handOutPickNotices({ ok: true, linkId: 'l', branch: 'b', prep: { missing: 0, refused: 0 } }, worktree, 'T', t)).toEqual([]);
     expect(handOutPickNotices({ ok: true, linkId: 'l', branch: 'b', prep: { skipped: 'untrusted', missing: 0, refused: 0 } }, worktree, 'T', t))
       .toEqual(['git.prepSkipped']);
+  });
+});
+
+describe('placeHandOutPopover', () => {
+  // A sheet from x=48 to 725, under a 40px titlebar, as in a narrow window.
+  const sheet = { left: 48, top: 40, right: 725, bottom: 800 };
+
+  it('sits beside the card when the sheet has room for it', () => {
+    const card = { left: 70, top: 200, right: 300, bottom: 300 };
+    expect(placeHandOutPopover(card, 400, { ...sheet, right: 1400 })).toEqual({ left: 308, top: 200, width: 420 });
+  });
+
+  it('otherwise sits under the card, left-aligned with it and inside the sheet, never over the rail', () => {
+    const card = { left: 69, top: 270, right: 380, bottom: 360 };
+    const at = placeHandOutPopover(card, 280, sheet);
+    expect(at).toEqual({ left: 69, top: 364, width: 420 });
+    // A card near the sheet's right edge pulls the popover back inside it.
+    const right = placeHandOutPopover({ left: 500, top: 270, right: 700, bottom: 360 }, 280, sheet);
+    expect(right.left).toBe(725 - 8 - 420);
+    expect(right.left).toBeGreaterThanOrEqual(sheet.left + 8);
+  });
+
+  it('goes above the card when there is no room below, and narrows to a narrow sheet', () => {
+    expect(placeHandOutPopover({ left: 69, top: 600, right: 380, bottom: 700 }, 300, sheet).top).toBe(600 - 4 - 300);
+    const narrow = placeHandOutPopover({ left: 60, top: 100, right: 300, bottom: 200 }, 200, { left: 48, top: 40, right: 348, bottom: 800 });
+    expect(narrow).toEqual({ left: 56, top: 204, width: 284 });
   });
 });

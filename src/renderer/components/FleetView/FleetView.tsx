@@ -73,6 +73,8 @@ function attr(value: string): string {
   return value.replace(/["\\]/g, '\\$&');
 }
 
+type Rect = { top: number; left: number; right: number; bottom: number };
+
 /** How long a sidebar "N to review" request waits for its row to appear. */
 const FOCUS_REVIEW_WAIT_MS = 5_000;
 
@@ -375,7 +377,7 @@ export default function FleetView() {
   const [handOutAdding, setHandOutAdding] = useState(false);
   const [handOutRemove, setHandOutRemove] = useState<string | null>(null);
   // The Hand out… popover, anchored to its item's card.
-  const [handOutPick, setHandOutPick] = useState<{ id: string; anchor: { top: number; left: number; right: number; bottom: number } } | null>(null);
+  const [handOutPick, setHandOutPick] = useState<{ id: string; anchor: Rect; bounds: Rect } | null>(null);
   const handOutPickItem = handOutPick ? handOutItems.find((item) => item.id === handOutPick.id) : undefined;
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const handOutFolders = useMemo(() => handOutFolderChoices(workspaces, activeWorkspaceId), [workspaces, activeWorkspaceId]);
@@ -694,7 +696,15 @@ export default function FleetView() {
     setFocusedPaneId(handOutKey(item.id));
     setHandOutRemove(null);
     const r = card.getBoundingClientRect();
-    setHandOutPick({ id: item.id, anchor: { top: r.top, left: r.left, right: r.right, bottom: r.bottom } });
+    // The popover stays inside the sheet (and the window), never over the rail.
+    const sheet = panelRef.current?.getBoundingClientRect();
+    const bounds = {
+      top: Math.max(0, sheet?.top ?? 0),
+      left: Math.max(0, sheet?.left ?? 0),
+      right: Math.min(window.innerWidth, sheet?.right ?? window.innerWidth),
+      bottom: Math.min(window.innerHeight, sheet?.bottom ?? window.innerHeight),
+    };
+    setHandOutPick({ id: item.id, anchor: { top: r.top, left: r.left, right: r.right, bottom: r.bottom }, bounds });
   }, []);
   const closeHandOutPick = useCallback(() => {
     setHandOutPick(null);
@@ -1772,7 +1782,7 @@ export default function FleetView() {
       )}
       {pickerAnchor && <PresetPicker onClose={() => setPickerAnchor(null)} anchorStyle={pickerAnchor} />}
       {handOutPick && handOutPickItem && (
-        <HandOutPopover item={handOutPickItem} anchor={handOutPick.anchor} rows={allRows} workspaces={workspaces}
+        <HandOutPopover item={handOutPickItem} anchor={handOutPick.anchor} bounds={handOutPick.bounds} rows={allRows} workspaces={workspaces}
           onClose={closeHandOutPick} t={t} />
       )}
     </div>

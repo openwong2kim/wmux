@@ -17,7 +17,6 @@ import { displayPath } from '../../utils/displayPath';
 import { shortDir } from '../../utils/shortDir';
 import { formatIdle, IDLE_SHOW_AFTER_MS } from '../../utils/idleTime';
 import { paneTag } from '../../utils/paneNaming';
-import { placePopover } from '../AgentToolbar/placePopover';
 import { fanoutAgentStem, loadLastAgentCmd } from '../AgentToolbar/fanoutAgentCmd';
 import { companyFolder } from '../Company/companyFolder';
 import { allHandoffTargets, handoffTargetForPty } from '../Git/handoffDrag';
@@ -39,14 +38,26 @@ const POPOVER_W = 420;
 /** Arrow keys walk the targets, as in any radio group. */
 const MOVES: Record<string, number | undefined> = { ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1 };
 
-/** Beside the card when it fits (the board's first column), else under it. */
-function placeBeside(anchor: Anchor, height: number): { left: number; top: number } {
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
-  if (anchor.right + 8 + POPOVER_W <= vw - 8) {
-    return { left: anchor.right + 8, top: Math.max(8, Math.min(anchor.top, vh - height - 8)) };
+const PAD = 8;
+
+/**
+ * Where the popover sits: beside the card when it fits inside `bounds` (the
+ * Fleet sheet), else under the card (above it when there is no room below),
+ * left-aligned with it. Always inside `bounds`, narrower when the sheet is.
+ */
+export function placeHandOutPopover(anchor: Anchor, height: number, bounds: Anchor): { left: number; top: number; width: number } {
+  const width = Math.max(0, Math.min(POPOVER_W, bounds.right - bounds.left - 2 * PAD));
+  const minTop = bounds.top + PAD;
+  const maxBottom = bounds.bottom - PAD;
+  const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(v, hi));
+  if (anchor.right + PAD + width <= bounds.right - PAD) {
+    return { left: anchor.right + PAD, top: clamp(anchor.top, minTop, maxBottom - height), width };
   }
-  return placePopover(anchor, { width: POPOVER_W, height });
+  const left = clamp(anchor.left, bounds.left + PAD, bounds.right - PAD - width);
+  const below = anchor.bottom + 4;
+  const above = anchor.top - 4 - height;
+  const top = below + height <= maxBottom ? below : above >= minTop ? above : clamp(below, minTop, maxBottom - height);
+  return { left, top, width };
 }
 
 /**
@@ -140,6 +151,8 @@ function useCandidates(rows: readonly FleetRow[], workspaces: readonly Workspace
 interface HandOutPopoverProps {
   item: HandOutEntry;
   anchor: Anchor;
+  /** The Fleet sheet: the popover stays inside it. */
+  bounds: Anchor;
   /** Every Fleet row, unfiltered: a pane's section and idle time. */
   rows: readonly FleetRow[];
   workspaces: readonly Workspace[];
@@ -147,7 +160,7 @@ interface HandOutPopoverProps {
   t: T;
 }
 
-export default function HandOutPopover({ item, anchor, rows, workspaces, onClose, t }: HandOutPopoverProps) {
+export default function HandOutPopover({ item, anchor, bounds, rows, workspaces, onClose, t }: HandOutPopoverProps) {
   const { panes, spaces } = useCandidates(rows, workspaces);
   const targets = useMemo(() => handOutTargets(item, panes, spaces), [item, panes, spaces]);
   const options = useMemo(() => handOutOptions(targets), [targets]);
@@ -274,7 +287,7 @@ export default function HandOutPopover({ item, anchor, rows, workspaces, onClose
     );
   };
   const head = (text: string) => <div className="px-2 pt-2 pb-1 text-[11px] text-[var(--text-muted)]" aria-hidden="true">{text}</div>;
-  const pos = placeBeside(anchor, height);
+  const pos = placeHandOutPopover(anchor, height, bounds);
 
   return createPortal(
     <Popover
@@ -284,7 +297,7 @@ export default function HandOutPopover({ item, anchor, rows, workspaces, onClose
       aria-modal="true"
       aria-label={t('fleet.handOut.pick.title')}
       className="fixed flex flex-col gap-2"
-      style={{ left: pos.left, top: pos.top, width: POPOVER_W, maxHeight: 'calc(100vh - 16px)', overflowY: 'auto', zIndex: 'var(--z-dialog)' }}
+      style={{ left: pos.left, top: pos.top, width: pos.width, maxHeight: bounds.bottom - bounds.top - 2 * PAD, overflowY: 'auto', zIndex: 'var(--z-dialog)' }}
       onKeyDown={onKeyDown}
       data-testid="fleet-hand-out"
     >
