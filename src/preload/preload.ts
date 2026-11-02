@@ -1054,6 +1054,12 @@ const electronAPI = {
         return () => { ipcRenderer.removeListener(IPC.DECK_MOA_CHANGED, listener); };
       },
     },
+    // The pending decisions an earlier version raised that this startup
+    // expired (no card answers them), for a one-time notice.
+    expiredDecisions: () =>
+      ipcRenderer.invoke(IPC.DECK_EXPIRED_DECISIONS) as Promise<{
+        decisions: import('../main/ipc/handlers/deck.handler').ExpiredDecisionNotice[];
+      }>,
     // Claude Code hook bridge (in-app `wmux setup-hooks`). STATUS feeds the
     // install prompt (launch + off→assist/auto mode switch); INSTALL is the
     // explicit user-clicked install — never auto-run.

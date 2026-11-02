@@ -11,6 +11,9 @@
 //     review and conflict events (prOwnerNotify.ts);
 //   - the renderer reads every workspace's pending bot question
 //     (DECK_MOA_DECISIONS, re-read on DECK_MOA_CHANGED);
+//   - once per registration, a pending decision a removed brain raised is
+//     expired (no card answers it, #2943), and the renderer reads what was
+//     expired to tell the operator (DECK_EXPIRED_DECISIONS);
 //   - once per process, the Deck state of workspaces that no longer exist is
 //     archived and torn down (deckOrphanReconcile.ts).
 
@@ -23,7 +26,7 @@ import { sweepOrphanAtomicTemps } from '../../../daemon/util/atomicWrite';
 import { eventBus } from '../../events/EventBus';
 import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { setWorkspaceMode } from '../../deck/deckAutonomyStore';
-import { loadDeckDecisions, onDecisionsChanged } from '../../deck/deckDecisionStore';
+import { expireUnanswerableDecisions, loadDeckDecisions, onDecisionsChanged, type ExpiredDecision } from '../../deck/deckDecisionStore';
 import { operatorDecisionContext, setDeckWorkBootId } from '../../deck/deckWorkStore';
 import { createWorkTaskReconciler, getTaskLedger, installLedgerChannelEmitter } from '../../deck/taskLedgerHost';
 import { installFanoutCallerLedgerNotify, notifyFanoutCaller } from '../../deck/fanoutCallerNotify';
@@ -46,6 +49,12 @@ export interface RegisterDeckHandlerOptions {
   getDaemonClient?: () => DeckDaemonClient | null;
   /** Data directory override for tests. */
   dir?: string;
+}
+
+/** A decision expired at this startup, as the renderer shows it. */
+export interface ExpiredDecisionNotice extends ExpiredDecision {
+  /** The workspace's display name when the desktop knows it. */
+  workspaceName?: string;
 }
 
 /** No workspace has a brain of its own any more: every owner is told. */
@@ -173,9 +182,32 @@ export function registerDeckHandler(getWindow: GetWindow, opts: RegisterDeckHand
     orphanReconcileTimer.unref?.();
   }
 
+  // A pending card a removed brain raised has nowhere left to be answered, and
+  // it kept its workspace's decision slot taken. Expired once here; the list
+  // stays in memory for the renderer's one-time notice.
+  const expiredAtStartup = expireUnanswerableDecisions(opts.dir).then((expired) => {
+    for (const d of expired) {
+      console.log(`[deck] expired decision ${d.id} of workspace ${d.workspaceId}: an earlier wmux version raised it and no card answers it: ${JSON.stringify(d.question)}`);
+    }
+    return expired;
+  });
+  ipcMain.removeHandler(IPC.DECK_EXPIRED_DECISIONS);
+  ipcMain.handle(
+    IPC.DECK_EXPIRED_DECISIONS,
+    wrapHandler(IPC.DECK_EXPIRED_DECISIONS, async (): Promise<{ decisions: ExpiredDecisionNotice[] }> => {
+      const expired = await expiredAtStartup;
+      const names = new Map((getWorkspaceMirror().getEntries() ?? []).map((e) => [e.id, e.name]));
+      return {
+        decisions: expired.map((d) => {
+          const workspaceName = names.get(d.workspaceId);
+          return workspaceName ? { ...d, workspaceName } : { ...d };
+        }),
+      };
+    }),
+  );
+
   // Every workspace's pending decision a bot asked (Fleet's tickets, the phone
-  // sidebar). It is answered in the workspace's room. A card the removed
-  // brains raised has nowhere left to be answered: it stays on disk, unlisted.
+  // sidebar). It is answered in the workspace's room.
   // A change rides DECK_MOA_CHANGED, told by the store after every write.
   const offDecisionsChanged = onDecisionsChanged(() => { send(IPC.DECK_MOA_CHANGED, {}); });
   ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
@@ -211,6 +243,7 @@ export function registerDeckHandler(getWindow: GetWindow, opts: RegisterDeckHand
     setPrOwnerSink(null);
     offDecisionsChanged();
     ipcMain.removeHandler(IPC.DECK_MOA_DECISIONS);
+    ipcMain.removeHandler(IPC.DECK_EXPIRED_DECISIONS);
   };
   app.once('before-quit', dispose);
   return () => {
