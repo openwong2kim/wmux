@@ -4,6 +4,7 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
+import { preloadSharedWebgl, sharedWebglAddonClassFor } from '../terminal/sharedWebgl/load';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
@@ -31,6 +32,7 @@ import { createMouseOwnedHint } from '../utils/mouseOwnedHint';
 import { agentSelectsOnDrag, installPlainDragSelect, installWheelClearsSelectionHint, mouseOwnedHintApplies } from '../utils/plainDragSelect';
 import { resizeOrderFor, runOrderedFit, type CancelOrderedFit } from '../utils/resizeOrder';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
+import { resolveCopyText, startCopy } from '../utils/cleanCopyResolve';
 import { createOsc52Handler } from '../utils/osc52Clipboard';
 import {
   createReplayMute, getTerminalReplayMute, disposeTerminalReplayMute,
@@ -50,6 +52,8 @@ import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
+import { followScreenReader, syncScreenReaderMode } from '../terminal/screenReaderMode';
+import { screenReaderOn, subscribeScreenReader } from '../utils/screenReader';
 import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { attachCompositionCommitGate } from '../terminal/compositionCommitGate';
 import { webglContextPool } from '../terminal/webglContextPool';
@@ -665,6 +669,25 @@ export async function attachForWrite(ptyId: string, promote = true): Promise<'un
 // the pool's accounting must treat them as distinct slots.
 let webglTokenSeq = 0;
 
+// EXPERIMENTAL (uiSlice.terminalSharedWebgl, default off): every pane draws
+// through one shared WebGL2 context (terminal/sharedWebgl) instead of one of
+// its own. Read when a pane's addon is built, so a change applies to addons
+// built after it. Such a pane holds no context, so it takes no slot in the
+// context pool and is never evicted to the DOM renderer.
+//
+// The renderer is a separate chunk, loaded once the flag is seen on (at start,
+// on session restore, or when it is switched on). A pane built before the chunk
+// has loaded gets the stock addon, as with the flag off, and keeps it. A load
+// that failed is retried the next time the flag is switched on.
+function sharedWebglAddonClass(replaces?: WebglAddon) {
+  return sharedWebglAddonClassFor(useStore.getState().terminalSharedWebgl === true, replaces);
+}
+webglContextPool.setUnbudgeted(() => sharedWebglAddonClass() !== null);
+if (useStore.getState().terminalSharedWebgl === true) void preloadSharedWebgl();
+useStore.subscribe((state, prev) => {
+  if (state.terminalSharedWebgl === true && prev.terminalSharedWebgl !== true) void preloadSharedWebgl();
+});
+
 // A hidden terminal KEEPS its WebGL context. It gives the context back only
 // when webglContextPool evicts it (LRU, once more terminals want one than the
 // budget allows) or when it unmounts. Rebuilding the renderer on reveal is the
@@ -811,9 +834,15 @@ function showMouseOwnedHintToast(keys: { mac: string; other: string } = MOUSE_OW
 export function copySelectionWithFeedback(
   terminal: { clearSelection(): void } | null,
   selection: string,
-  options?: { keepSelection?: boolean },
+  options?: { keepSelection?: boolean; ptyId?: string },
 ): Promise<void> {
+  // `ptyId` names the pane whose agent reply a selection may be a span of
+  // (clean copy). Absent, e.g. a remote mirror: the selection as it is.
+  const ptyId = options?.ptyId;
   return runCopyWithFeedback(selection, {
+    resolve: ptyId ? (text) => resolveCopyText(ptyId, text) : undefined,
+    // Newest copy wins, explicit or copy-on-select (cleanCopyResolve startCopy).
+    isCurrent: startCopy(),
     write: (text) => window.clipboardAPI.writeText(text),
     // `keepSelection` leaves the highlight in place after a successful copy.
     // The right-click copy path uses this so the selection survives the
@@ -1358,6 +1387,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       theme: xtermTheme,
       minimumContrastRatio,
       allowProposedApi: true,
+      // xterm's accessibility tree (a live region and a row mirror), only
+      // while a screen reader is on (utils/screenReader.ts).
+      screenReaderMode: screenReaderOn(),
       // Kitty keyboard protocol: xterm answers `CSI ? u` and encodes keys for
       // a pane that pushed flags. Desktop only, not on Windows (see
       // kittyKeyboardForHost).
@@ -1417,6 +1449,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // new React mount. Share the mute with the terminal instance so an
     // in-flight replay cannot become live-authorized during that handoff.
     replayMuteRef.current = getTerminalReplayMute(terminal);
+
+    // An adopted terminal was built under the state of its first mount; take
+    // the current one before the IME residue guard below reads the option.
+    syncScreenReaderMode(terminal, screenReaderOn());
 
     // #1792: a TUI agent killed mid-run leaves mouse / focus reporting armed,
     // and the shell that takes the prompt back gets every report as typed
@@ -1662,8 +1698,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // IME like AutoGLM) "replace" that residue with destructive results — the
     // forwarded DELs wipe the user's already-typed line. Upstream:
     // xtermjs/xterm.js#6012. Gated off under screenReaderMode, where xterm
-    // intentionally retains the text until blur for announcement (wmux never
-    // enables that option today).
+    // intentionally retains the text until blur for announcement (on only
+    // while a screen reader is on).
     // Off by default since v3.1.1: the wipe is a programmatic mutation of the
     // IME-owned textarea, and it is the prime suspect for the field-reported
     // "input dead until remount" 229-claim storms on Korean Windows (the
@@ -1671,9 +1707,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // AutoGLM-style voice-injector protection it provides is opt-in via
     // Settings → Terminal. Read once at terminal creation, like the other
     // constructor-time options.
-    const imeResidueGuard = (terminal.options.screenReaderMode || !useStore.getState().imeResidueGuardEnabled)
+    let imeResidueGuard = (terminal.options.screenReaderMode || !useStore.getState().imeResidueGuardEnabled)
       ? null
       : attachImeResidueGuard(terminal);
+    // A screen reader turning on or off while mounted flips the mode, and the
+    // guard with it (screenReaderMode.ts). Unsubscribed in the cleanup, which
+    // runs on a park too.
+    const unfollowScreenReader = followScreenReader(terminal, {
+      on: screenReaderOn,
+      subscribe: subscribeScreenReader,
+      guardSettingOn: () => useStore.getState().imeResidueGuardEnabled,
+      guard: {
+        attached: () => imeResidueGuard !== null,
+        attach: () => { imeResidueGuard = attachImeResidueGuard(terminal); },
+        detach: () => { imeResidueGuard?.dispose(); imeResidueGuard = null; },
+      },
+    });
 
     // Dead-input self-healing (always on): if the IME claim-storm signature
     // shows up — consecutive keyCode-229 keydowns across distinct keys with
@@ -1824,10 +1873,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // recently shown terminals, so persistence can restore an arbitrary session
     // count without any pane going blank. loadWebgl is the pool's "acquire"
     // callback; disposeWebgl is its "evict" callback (reverts to DOM renderer).
-    function loadWebgl() {
+    // `replaces`: the addon a rebuild replaces, whose kind (stock or shared
+    // context) the new one keeps — see sharedWebglAddonClassFor.
+    function loadWebgl(replaces?: WebglAddon) {
       if (webglAddonRef.current) return; // already loaded
       try {
-        const addon = new WebglAddon();
+        const SharedContextWebglAddon = sharedWebglAddonClass(replaces);
+        const addon: WebglAddon = SharedContextWebglAddon
+          ? new SharedContextWebglAddon({ sharedContext: true })
+          : new WebglAddon();
         addon.onContextLoss(() => {
           // A real GPU driver reset (not our pool eviction): the context is
           // gone. Dispose, drop to xterm's DOM renderer, and free our pool slot
@@ -1977,9 +2031,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // recreating — this runs once per terminal on mount, so on a multi-pane
         // restore it is a burst of dispose+create pairs; leaking the old
         // contexts here is a prime zombie-context source.
-        teardownWebglAddon(webglAddonRef.current, terminal);
+        const replaced = webglAddonRef.current;
+        teardownWebglAddon(replaced, terminal);
         webglAddonRef.current = null;
-        loadWebgl();
+        loadWebgl(replaced);
       }
       // runFit carries the selection guard, the #1255 floor gate and — unlike
       // a direct addon fit — the sendResize, which a re-measured cell needs:
@@ -2138,6 +2193,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Silent on the web too: a refused auto-copy is not kept for the next
       // key, which could be the ⌘V meant to paste what the clipboard holds.
       write: (text) => window.clipboardAPI.writeText(text, { keepIfRefused: false }),
+      resolve: (text) => resolveCopyText(ptyId, text),
     });
     const selectionDisposable = terminal.onSelectionChange(() => {
       autoCopy.onSelection(terminal.getSelection());
@@ -2553,7 +2609,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
-          void copySelectionWithFeedback(terminal, sel);
+          void copySelectionWithFeedback(terminal, sel, { ptyId });
           return false;
         }
         return true; // no selection → let the OS handle ⌘C
@@ -2593,7 +2649,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (sel) {
           // main now throws on clipboard failure — await + catch so the
           // user sees an error toast and the selection stays put for retry.
-          void copySelectionWithFeedback(terminal, sel);
+          void copySelectionWithFeedback(terminal, sel, { ptyId });
           return false;
         }
         // no selection → SIGINT via resolveCtrlLetterByte at the end of this handler
@@ -2647,7 +2703,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // Ctrl+Shift+C historically without an explicit "keep" toggle. We
           // intentionally still pass the terminal so a successful copy ends
           // up consistent with Ctrl+C.
-          void copySelectionWithFeedback(terminal, sel);
+          void copySelectionWithFeedback(terminal, sel, { ptyId });
         }
         return false;
       }
@@ -2754,7 +2810,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (sel) {
         lastRightClickCopyAt = Date.now();
         autoCopy.dispose();
-        void copySelectionWithFeedback(terminal, sel, { keepSelection: true });
+        void copySelectionWithFeedback(terminal, sel, { keepSelection: true, ptyId });
         return;
       }
 
@@ -3673,6 +3729,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
       unregisterAtlasGuard();
+      unfollowScreenReader();
       imeResidueGuard?.dispose();
       imeStormGuard.dispose();
       compositionCommitGate.dispose();

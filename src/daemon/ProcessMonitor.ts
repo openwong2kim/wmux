@@ -8,6 +8,7 @@
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import path from 'path';
+import { nativeProcessTable, readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,6 +20,7 @@ function tasklistPath(): string {
 export class ProcessMonitor {
   private watchedPids: Map<string, { pid: number; onDead: () => void; imageName?: string }> = new Map();
   private batchInterval: NodeJS.Timeout | null = null;
+  private batchPeriodMs = 0;
   private batchRunning = false;
 
   /** Default batch cadence. app-weight P1-1: 5 s → 15 s — each Windows tick
@@ -30,10 +32,17 @@ export class ProcessMonitor {
    *  instance via the constructor (config.daemon.livenessIntervalSec). */
   private static readonly CHECK_INTERVAL_MS = 15_000;
 
+  /** Cadence while the native process table serves the batch (Windows): a
+   *  snapshot costs ~10 ms of CPU in-process with no spawn, so the sweep can
+   *  run 5x as often for a fraction of one tasklist run. Overridable via
+   *  config.daemon.nativeLivenessIntervalSec. */
+  private static readonly NATIVE_CHECK_INTERVAL_MS = 3_000;
+
   /** @param intervalMs batch cadence override (config knob); falls back to
    *  the static default at interval-creation time so tests can still stub
-   *  `CHECK_INTERVAL_MS` before the first watch(). */
-  constructor(private readonly intervalMs?: number) {}
+   *  `CHECK_INTERVAL_MS` before the first watch().
+   *  @param nativeIntervalMs the same for the native process-table path. */
+  constructor(private readonly intervalMs?: number, private readonly nativeIntervalMs?: number) {}
 
   /** Check whether a process with the given PID is still alive (individual check). */
   static async isAlive(pid: number): Promise<boolean> {
@@ -117,6 +126,15 @@ export class ProcessMonitor {
    * principle (PR #87) applies to reuse detection exactly as to death.
    */
   static async probeWindowsPid(pid: number): Promise<{ present: boolean; imageName?: string }> {
+    // A fresh native snapshot is the independent second read the callers
+    // need. A failed one is "couldn't check", never "absent"; tasklist takes
+    // over only once the native path has latched off.
+    const rows = await readNativeProcessTable(false);
+    if (rows) {
+      const row = rows.find((r) => r.pid === pid);
+      return row ? { present: true, imageName: row.name } : { present: false };
+    }
+    if (nativeProcessTable()) throw new Error('Native process table read failed');
     const { stdout } = await execFileAsync(
       tasklistPath(),
       ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
@@ -151,6 +169,22 @@ export class ProcessMonitor {
     return { alive, images };
   }
 
+  /** Native snapshot rows → (alive PIDs ∩ pidSet) plus image names, the
+   *  same shape parseTasklistCsv returns. Pure — exported for unit tests. */
+  static fromNativeRows(
+    rows: readonly NativeProcessRow[],
+    pidSet: ReadonlySet<number>,
+  ): { alive: Set<number>; images: Map<number, string> } {
+    const alive = new Set<number>();
+    const images = new Map<number, string>();
+    for (const row of rows) {
+      if (!pidSet.has(row.pid)) continue;
+      alive.add(row.pid);
+      images.set(row.pid, row.name);
+    }
+    return { alive, images };
+  }
+
   /**
    * Batch-check all given PIDs in a single tasklist call (Windows).
    * Returns the set of PIDs that are alive.
@@ -173,6 +207,12 @@ export class ProcessMonitor {
     if (pids.length === 0) return empty;
 
     if (process.platform === 'win32') {
+      const rows = await readNativeProcessTable(false);
+      if (rows) return ProcessMonitor.fromNativeRows(rows, new Set(pids));
+      // A failed native read skips this sweep (the watch loop retries next
+      // tick) rather than spawning tasklist at the native cadence; tasklist
+      // serves the sweep once the native path has latched off.
+      if (nativeProcessTable()) throw new Error('Native process table read failed');
       try {
         // Single call: get full process list in CSV format (no filter)
         const { stdout } = await execFileAsync(
@@ -253,12 +293,23 @@ export class ProcessMonitor {
    *  `CHECK_INTERVAL_MS` before the first watch() keep working. */
   private ensureBatchInterval(): void {
     if (this.batchInterval) return;
+    this.batchPeriodMs = this.batchPeriod();
     this.batchInterval = setInterval(() => {
       this.runBatchCheck();
-    }, this.intervalMs ?? (ProcessMonitor as unknown as { CHECK_INTERVAL_MS: number }).CHECK_INTERVAL_MS);
+    }, this.batchPeriodMs);
     if (this.batchInterval.unref) {
       this.batchInterval.unref();
     }
+  }
+
+  /** The native cadence while the native table is usable, else the spawn
+   *  cadence. Re-read after every batch: repeated native failures latch the
+   *  table off, and tasklist must not inherit the 3 s cadence. */
+  private batchPeriod(): number {
+    const statics = ProcessMonitor as unknown as { CHECK_INTERVAL_MS: number; NATIVE_CHECK_INTERVAL_MS: number };
+    return nativeProcessTable()
+      ? this.nativeIntervalMs ?? statics.NATIVE_CHECK_INTERVAL_MS
+      : this.intervalMs ?? statics.CHECK_INTERVAL_MS;
   }
 
   /** Run one batch check cycle. */
@@ -379,6 +430,11 @@ export class ProcessMonitor {
       })
       .finally(() => {
         this.batchRunning = false;
+        if (this.batchInterval && this.batchPeriodMs !== this.batchPeriod()) {
+          clearInterval(this.batchInterval);
+          this.batchInterval = null;
+          this.ensureBatchInterval();
+        }
       });
   }
 }

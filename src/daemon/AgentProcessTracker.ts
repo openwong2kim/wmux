@@ -54,6 +54,7 @@ import os from 'os';
 import { AGENT_ROWS, AGENT_SLUG_SET, type AgentSlug } from '../shared/agentIdentity';
 import { customProcessNameForm } from '../shared/customAgents';
 import type { WslAgentLocation, WslReportedAgent, WslWatchedAgent } from './wslAgentProcess';
+import { readNativeProcessTable, type NativeProcessRow } from './nativeProcessTable';
 
 const execFileAsync = promisify(execFile);
 
@@ -290,6 +291,18 @@ export function parsePipeDelimited(stdout: string): ProcessTreeEntry[] {
     });
   }
   return entries;
+}
+
+/** A native process-table row in parsePipeDelimited's shape: an unreadable
+ *  or empty command line and an unknown creation time are absent. */
+export function fromNativeRow(row: NativeProcessRow): ProcessTreeEntry {
+  return {
+    pid: row.pid,
+    ppid: row.ppid,
+    name: row.name,
+    ...(row.cmdline ? { cmdline: row.cmdline } : {}),
+    ...(row.created != null ? { created: row.created } : {}),
+  };
 }
 
 /**
@@ -799,13 +812,16 @@ export function isAgentImage(
   return AGENT_PACKAGES.get(slug)?.has(pkg) === true;
 }
 
-/** One full process-table snapshot (pid/ppid/name[/cmdline]). Windows has no
- *  PPID in tasklist, so this shells out to Windows PowerShell 5.1 (always
+/** One full process-table snapshot (pid/ppid/name[/cmdline]). Windows reads
+ *  the native core's table when it is packaged (nativeProcessTable.ts); else,
+ *  as tasklist has no PPID, it shells out to Windows PowerShell 5.1 (always
  *  present, absolute System32 path — no PATH trust) for a single CIM
  *  enumeration. POSIX uses one `ps`. Throws on failure — the caller stays
  *  undecided. */
 async function enumerateProcesses(): Promise<ProcessTreeEntry[]> {
   if (process.platform === 'win32') {
+    const rows = await readNativeProcessTable(true);
+    if (rows) return rows.map(fromNativeRow);
     const psPath = path.join(
       process.env.SystemRoot || 'C:\\Windows',
       'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
@@ -883,6 +899,19 @@ export interface TrackedAgentState {
   replacedLive?: true;
   /** Captured detector epoch on a fresh probe; null means its owner changed. */
   identityEpoch?: number | null;
+}
+
+/**
+ * The `agent.processExit` event a state change broadcasts: the death edge
+ * only. A launch edge, including a successor that replaced the watched
+ * process (`replacedLive`), is no death, so it settles nothing and drops no
+ * agent row.
+ */
+export function agentProcessExitEvent(
+  sessionId: string,
+  state: TrackedAgentState,
+): { type: 'agent.processExit'; sessionId: string; data: { slug: AgentSlug | null } } | null {
+  return state.alive ? null : { type: 'agent.processExit', sessionId, data: { slug: state.slug ?? null } };
 }
 
 export class AgentProcessTracker {

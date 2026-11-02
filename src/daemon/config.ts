@@ -91,6 +91,9 @@ const MEM_BLOCK_FLOOR_MB = 256;
 // disk churn; cap 10 min bounds crash-recovery staleness.
 const LIVENESS_INTERVAL_FLOOR_SEC = 5;
 const LIVENESS_INTERVAL_CAP_SEC = 120;
+// The same sweep served by the native process table (Windows): no spawn, so
+// a lower floor, but 2 s rather than 1 s — nothing measured needs faster.
+const NATIVE_LIVENESS_INTERVAL_FLOOR_SEC = 2;
 const SNAPSHOT_INTERVAL_FLOOR_SEC = 10;
 const SNAPSHOT_INTERVAL_CAP_SEC = 600;
 
@@ -125,6 +128,7 @@ export function createDefaultConfig(): DaemonConfig {
       memReapMb: 750,
       memBlockMb: 1024,
       livenessIntervalSec: 15,
+      nativeLivenessIntervalSec: 3,
       snapshotIntervalSec: 30,
     },
     session: {
@@ -143,6 +147,7 @@ export function createDefaultConfig(): DaemonConfig {
       // (e.g. a running build) never hits this.
       detachedTtlHours: 8,
       hibernateIdleHours: 24,
+      ringCompression: false,
     },
     // Channel retention — the trash empties itself after 30 days (it only
     // finishes deletions a human started), while auto-trashing archived
@@ -483,10 +488,15 @@ export function loadConfig(): DaemonConfig {
       typeof hibernateIdleHours === 'number' && Number.isFinite(hibernateIdleHours) && hibernateIdleHours >= 0
         ? Math.min(hibernateIdleHours, HIBERNATE_IDLE_CAP_HOURS)
         : defaults.session.hibernateIdleHours;
+    config.session.ringCompression = config.session.ringCompression === true;
     // app-weight P1 idle-CPU knobs — same per-field backfill + clamp.
     config.daemon.livenessIntervalSec = clampLifecycle(
       config.daemon.livenessIntervalSec, defaults.daemon.livenessIntervalSec!,
       LIVENESS_INTERVAL_FLOOR_SEC, LIVENESS_INTERVAL_CAP_SEC,
+    );
+    config.daemon.nativeLivenessIntervalSec = clampLifecycle(
+      config.daemon.nativeLivenessIntervalSec, defaults.daemon.nativeLivenessIntervalSec!,
+      NATIVE_LIVENESS_INTERVAL_FLOOR_SEC, LIVENESS_INTERVAL_CAP_SEC,
     );
     config.daemon.snapshotIntervalSec = clampLifecycle(
       config.daemon.snapshotIntervalSec, defaults.daemon.snapshotIntervalSec!,

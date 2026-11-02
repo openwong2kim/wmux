@@ -29,10 +29,10 @@ export type UsageStatus =
 export interface UsageWidgetProps {
   status: UsageStatus;
   snapshot: {
-    sessionPct: number;
-    sessionResetEpochSec: number;
-    weeklyPct: number;
-    weeklyResetEpochSec: number;
+    sessionPct?: number;
+    sessionResetEpochSec?: number;
+    weeklyPct?: number;
+    weeklyResetEpochSec?: number;
     fetchedAtMs: number;
   } | null;
   lastError: string | null;
@@ -41,6 +41,13 @@ export interface UsageWidgetProps {
    *  `useState`/`setInterval` cursor so the widget refreshes its
    *  countdowns without forcing parent rerenders on every clock tick. */
   nowMs: number;
+}
+
+/** "5h 40% · 7d 12%", leaving out a window the account does not report. */
+export function usageWindowsText(s: { sessionPct?: number; weeklyPct?: number }): string {
+  return [s.sessionPct !== undefined ? `5h ${s.sessionPct}%` : null, s.weeklyPct !== undefined ? `7d ${s.weeklyPct}%` : null]
+    .filter((part) => part !== null)
+    .join(' · ');
 }
 
 /** Pure tier mapping. Exported for unit tests. */
@@ -111,8 +118,6 @@ export function UsageWidgetView(props: UsageWidgetProps): ReactElement | null {
   // ─── OK state — main display ───────────────────────────────────────────
   const { sessionPct, sessionResetEpochSec, weeklyPct, weeklyResetEpochSec, fetchedAtMs } =
     snapshot;
-  const sessionColor = tierColorClass(sessionPct);
-  const weeklyColor = tierColorClass(weeklyPct);
   const tooltip = buildOkTooltip({
     sessionPct,
     sessionResetEpochSec,
@@ -124,9 +129,10 @@ export function UsageWidgetView(props: UsageWidgetProps): ReactElement | null {
   });
   return (
     <span title={tooltip} data-testid="usage-widget-ok">
-      <span className={sessionColor}>5h {sessionPct}%</span>
-      <span className="text-[var(--text-muted)]"> {'·'} </span>
-      <span className={weeklyColor}>7d {weeklyPct}%</span>
+      {/* A window the account does not report (an Ultra plan has no 5h one) has no segment. */}
+      {sessionPct !== undefined && <span className={tierColorClass(sessionPct)}>5h {sessionPct}%</span>}
+      {sessionPct !== undefined && weeklyPct !== undefined && <span className="text-[var(--text-muted)]"> {'·'} </span>}
+      {weeklyPct !== undefined && <span className={tierColorClass(weeklyPct)}>7d {weeklyPct}%</span>}
     </span>
   );
 }
@@ -157,21 +163,24 @@ function ErrorChip({
 }
 
 function buildOkTooltip(args: {
-  sessionPct: number;
-  sessionResetEpochSec: number;
-  weeklyPct: number;
-  weeklyResetEpochSec: number;
+  sessionPct?: number;
+  sessionResetEpochSec?: number;
+  weeklyPct?: number;
+  weeklyResetEpochSec?: number;
   fetchedAtMs: number;
   subscriptionType: string | null;
   nowMs: number;
 }): string {
-  const session = formatResetCountdown(args.sessionResetEpochSec, args.nowMs);
-  const weekly = formatResetCountdown(args.weeklyResetEpochSec, args.nowMs);
+  const session = formatResetCountdown(args.sessionResetEpochSec ?? 0, args.nowMs);
+  const weekly = formatResetCountdown(args.weeklyResetEpochSec ?? 0, args.nowMs);
   const fetched = formatFetchedAgo(args.fetchedAtMs, args.nowMs);
-  const lines = [
-    t('usage.tooltipSession', { pct: args.sessionPct }) + (session ? ` ${t('usage.tooltipReset', { countdown: session })}` : ''),
-    t('usage.tooltipWeekly', { pct: args.weeklyPct }) + (weekly ? ` ${t('usage.tooltipReset', { countdown: weekly })}` : ''),
-  ];
+  const lines: string[] = [];
+  if (args.sessionPct !== undefined) {
+    lines.push(t('usage.tooltipSession', { pct: args.sessionPct }) + (session ? ` ${t('usage.tooltipReset', { countdown: session })}` : ''));
+  }
+  if (args.weeklyPct !== undefined) {
+    lines.push(t('usage.tooltipWeekly', { pct: args.weeklyPct }) + (weekly ? ` ${t('usage.tooltipReset', { countdown: weekly })}` : ''));
+  }
   if (args.subscriptionType) lines.push(t('usage.tooltipPlan', { plan: args.subscriptionType }));
   if (fetched) lines.push(t('usage.tooltipFetched', { fetched }));
   return lines.join(' · ');

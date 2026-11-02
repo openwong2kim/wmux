@@ -14,6 +14,7 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
+import { agentProcessExitEvent } from '../AgentProcessTracker';
 
 describe('agent.processExit daemon wiring', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8');
@@ -27,20 +28,23 @@ describe('agent.processExit daemon wiring', () => {
   }
 
   it('broadcasts agent.processExit from the tracker state-change listener', () => {
-    expect(listenerBody()).toMatch(/type: 'agent\.processExit'/);
+    expect(listenerBody()).toMatch(
+      /const exitEvent = agentProcessExitEvent\(sessionId, state\);\s*if \(exitEvent\) pipeServer\.broadcast\(exitEvent\);/,
+    );
   });
 
-  it('sends it on the DEATH edge only — a launch settles nothing', () => {
-    const body = listenerBody();
-    const broadcastIdx = body.indexOf("type: 'agent.processExit'");
-    // The nearest preceding statement must be the not-alive guard.
-    const guardIdx = body.lastIndexOf('if (!state.alive) {', broadcastIdx);
-    expect(guardIdx).toBeGreaterThan(-1);
-    expect(guardIdx).toBeLessThan(broadcastIdx);
+  it('sends it on the DEATH edge only — a launch, a successor included, settles nothing', () => {
+    expect(agentProcessExitEvent('s', { alive: true, slug: 'claude' })).toBeNull();
+    expect(agentProcessExitEvent('s', { alive: true, slug: 'claude', replacedLive: true, observedAt: 1 })).toBeNull();
   });
 
   it('carries the watched agent slug so the consumer can scope the clear', () => {
-    expect(listenerBody()).toMatch(/slug: state\.slug/);
+    expect(agentProcessExitEvent('s', { alive: false, slug: 'claude' })).toEqual({
+      type: 'agent.processExit',
+      sessionId: 's',
+      data: { slug: 'claude' },
+    });
+    expect(agentProcessExitEvent('s', { alive: false })?.data.slug).toBeNull();
   });
 
   it('still expires the pane hook authority on the same edge', () => {

@@ -1,6 +1,7 @@
 import { registerTerminalCoreHandlers } from './handlers/terminalCore.handler';
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
+import { registerExternalSessionsHandlers } from '../externalSessions/externalSessions.handler';
 import { registerAgentAuthHandlers } from '../agentAuth/agentAuthLost';
 import { registerDictationHandlers } from '../dictation/dictation.handler';
 import { registerContinueOnAccountHandler } from '../account/continueOnAccount.handler';
@@ -37,6 +38,7 @@ import { registerWorktreeHandlers } from './handlers/worktree.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
 import { registerPrReviewHandlers } from './handlers/prReview.handler';
 import { registerWorkLinkHandlers } from './handlers/workLink.handler';
+import { registerCompanyHandlers } from './handlers/company.handler';
 import { registerTrackRecordHandlers } from './handlers/trackRecord.handler';
 import { registerWorkflowHandlers } from './handlers/workflow.handler';
 import { registerFactoryHandlers } from './handlers/factory.handler';
@@ -200,6 +202,7 @@ export function registerAllHandlers(
 ): () => void {
   const cleanupPty = registerPTYHandlers(ptyManager, ptyBridge, daemonClient, getWindow, { daemonMayReturn: options.daemonMayReturn });
   const cleanupUsageLimit = registerUsageLimitHandlers(daemonClient, getWindow);
+  const cleanupExternalSessions = registerExternalSessionsHandlers(daemonClient, getWindow);
   const cleanupAgentAuth = registerAgentAuthHandlers(daemonClient, getWindow);
   const cleanupDictation = registerDictationHandlers(getWindow);
   const cleanupContinueOnAccount = registerContinueOnAccountHandler(daemonClient);
@@ -243,6 +246,8 @@ export function registerAllHandlers(
   const cleanupPrReview = registerPrReviewHandlers();
   // Work links — read-only for the renderer (docs/work-links.md).
   const cleanupWorkLinks = registerWorkLinkHandlers(getWindow);
+  // Company presets: each seat's launch line and brief file.
+  const cleanupCompany = registerCompanyHandlers();
   // Moa's track record — the retro card and its schedule (Settings → Moa).
   const cleanupTrackRecord = registerTrackRecordHandlers(getWindow);
   // Agent factory bots: list, status and settings for the renderer.
@@ -611,6 +616,7 @@ export function registerAllHandlers(
   return () => {
     cleanupPty();
     cleanupUsageLimit();
+    cleanupExternalSessions();
     cleanupAgentAuth();
     cleanupDictation();
     cleanupContinueOnAccount();
@@ -629,6 +635,7 @@ export function registerAllHandlers(
     cleanupGithub();
     cleanupPrReview();
     cleanupWorkLinks();
+    cleanupCompany();
     cleanupTrackRecord();
     cleanupWorkflows();
     cleanupFactory();

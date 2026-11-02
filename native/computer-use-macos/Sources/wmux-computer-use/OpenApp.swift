@@ -117,10 +117,14 @@ enum OpenApp {
                 once.run { cont.resume(returning: .failure(HelperError("timeout", "\(name) did not finish launching in time"))) }
             }
         }
+        // Counted once macOS took the launch, or may still be making it: a
+        // launch it refused reached nothing.
+        if case .success = result { Input.shared.noteSent() }
         switch result {
         case .success(let app):
             return app
         case .failure(let error):
+            if error.code == "timeout" { Input.shared.noteSent() }
             if error.code == "timeout", let id = Bundle(url: url)?.bundleIdentifier,
                let app = NSRunningApplication.runningApplications(withBundleIdentifier: id).first {
                 return app

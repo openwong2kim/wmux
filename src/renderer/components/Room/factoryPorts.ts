@@ -176,6 +176,9 @@ export interface FactorySettingsView {
   /** Agents (bots in a turn and live workers) running at once; a bot's new
    *  worker past it waits for a slot. */
   maxConcurrentAgents?: number;
+  /** Company staff seats working at once on this PC; a CEO's brief past it
+   *  waits for a slot. */
+  companyMaxWorking?: number;
   /** The merge lane merges a bot PR by itself (shared/factorySettings.ts). */
   laneAutoMerge: boolean;
   /** Most lane merges per local day. */

@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState, useCallback, useRef } from 'rea
 import { useStore } from '../../stores';
 import { useShallow } from 'zustand/react/shallow';
 import { useT } from '../../hooks/useT';
+import { usageWindowsText } from '../StatusBar/UsageWidget';
 import {
   selectFleetBoard,
   selectHookRunningByPtyId,
@@ -45,7 +46,7 @@ import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTi
 import { IconCheck, IconChevron, IconPlus } from '../icons';
 // Read-only: the readers of delegated work and pending decisions.
 import { useMoaDecisions, useWorkLinks } from './useFleetSources';
-import { buildFleetTickets, loadSeenReports, openTicketFor, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
+import { buildFleetTickets, loadSeenReports, openTicketFor, paneLiveIn, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
 import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 import FleetRequestPanel from './FleetRequestPanel';
 import PlanApprovalList from './PlanApprovalList';
@@ -285,8 +286,8 @@ export default function FleetView() {
   const { decisions: moaDecisions } = useMoaDecisions(true);
   const a2aTasks = useStore((s) => s.a2aTasks);
   const tickets = useMemo(
-    () => buildFleetTickets({ links: workLinks, decisions: moaDecisions, a2aTasks, now }),
-    [workLinks, moaDecisions, a2aTasks, now],
+    () => buildFleetTickets({ links: workLinks, decisions: moaDecisions, a2aTasks, now, paneLive: paneLiveIn(workspaces) }),
+    [workLinks, moaDecisions, a2aTasks, now, workspaces],
   );
   const matchesTicket = useCallback((ticket: FleetTicket) => {
     const term = query.trim().toLocaleLowerCase();
@@ -1081,7 +1082,7 @@ export default function FleetView() {
   const chips = visibleChips([
     { id: 'approvals', count: inbox.length + plans.length },
     { id: 'lan', count: remoteInbox.length },
-    { id: 'usage', text: usage ? t('fleetBoard.usage', { session: Math.round(usage.sessionPct), weekly: Math.round(usage.weeklyPct) }) : '' },
+    { id: 'usage', text: usage ? t('fleetBoard.usage', { windows: usageWindowsText(usage) }) : '' },
     { id: 'next', text: nextRun !== null ? t('fleetBoard.nextSchedule', { time: formatNextShort(nextRun, now) }) : '' },
     { id: 'phones', count: phones },
   ]);
@@ -1104,14 +1105,14 @@ export default function FleetView() {
 
   // Tickets: who holds one, and where a ticket's jump lands.
   const workspaceName = useCallback((id: string) => workspaces.find((w) => w.id === id)?.name ?? '', [workspaces]);
-  const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || t('fleet.ticket.unknownWorkspace'), ticket.agent]
+  const assigneeOf = (ticket: FleetTicket) => [workspaceName(ticket.workspaceId) || ticket.workspaceName || t('fleet.ticket.unknownWorkspace'), ticket.agent]
     .filter(Boolean).join(' · ');
   const agentPanesByWorkspace = useMemo(() => {
     const out = new Map<string, number>();
     for (const p of panes) if (!p.remote && p.agentName) out.set(p.workspaceId, (out.get(p.workspaceId) ?? 0) + 1);
     return out;
   }, [panes]);
-  const paneOfTicket = (ticket: FleetTicket) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
+  const paneOfTicket = (ticket: { workspaceId: string; paneId?: string }) => panes.find((p) => !p.remote && p.workspaceId === ticket.workspaceId
     && (!ticket.paneId || p.paneId === ticket.paneId));
   const selectTicket = useCallback((ticket: FleetTicket) => {
     const key = ticketKey(ticket.id);
@@ -1120,14 +1121,15 @@ export default function FleetView() {
     setExplicitTicket(ticket.id);
   }, [focusedKey]);
   const jumpToTicket = (ticket: FleetTicket) => {
-    const pane = paneOfTicket(ticket);
+    const at = ticket.sentFrom ?? ticket;
+    const pane = paneOfTicket(at);
     if (pane) { jump(pane); return; }
-    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: at.workspaceId });
     finishJump();
   };
   // A ticket's decision card waits in its workspace's decision slot.
   const openTicketDecision = (ticket: FleetTicket) => {
-    focusNotificationTarget(() => useStore.getState(), { workspaceId: ticket.workspaceId });
+    focusNotificationTarget(() => useStore.getState(), { workspaceId: (ticket.sentFrom ?? ticket).workspaceId });
     finishJump();
   };
 

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { commandLineBinding, sessionFromCommandLine, settleStoppedBinding } from '../agentCommandLineBinding';
+import { claudeLaunchedInBypass, commandLineBinding, paneRunsBypassClaude, RESUME_BINDING_TS_SKEW_MS, sessionFromCommandLine, settleStoppedBinding, withCaptureTsNotAhead } from '../agentCommandLineBinding';
 import { MAX_PROJECT_DIRS } from '../TranscriptDiscovery';
 import { toResumeCommand } from '../../../shared/agentResume';
 
@@ -297,5 +297,72 @@ describe('qwen and kimi', () => {
     expect(settleStoppedBinding(pinned, { QWEN_HOME: home })).toBeNull();
     const file = chat('-work');
     expect(settleStoppedBinding(pinned, { QWEN_HOME: home })).toEqual({ ...pinned, transcriptPath: file });
+  });
+});
+
+describe('claudeLaunchedInBypass — the live process argv', () => {
+  it.each([
+    ['the skip flag', 'claude --dangerously-skip-permissions'],
+    ['--permission-mode bypassPermissions', 'claude --permission-mode bypassPermissions'],
+    ['--permission-mode=bypassPermissions', 'claude --permission-mode=bypassPermissions'],
+    ['under node, after value options', `node /usr/local/lib/node_modules/@anthropic-ai/claude-code/cli.js --model opus --dangerously-skip-permissions --resume ${ID}`],
+    ['a later mode wins', 'claude --permission-mode auto --dangerously-skip-permissions'],
+  ])('bypass: %s', (_why, line) => {
+    expect(claudeLaunchedInBypass(line)).toBe(true);
+  });
+
+  it.each([
+    ['no flag (a resume without it)', `claude --resume ${ID}`],
+    ['another mode', 'claude --permission-mode auto'],
+    ['a later mode wins', 'claude --dangerously-skip-permissions --permission-mode plan'],
+    ['the flag after --', 'claude -- --dangerously-skip-permissions'],
+    ['the flag after the prompt', 'claude fix --dangerously-skip-permissions'],
+    ['the flag as a value', 'claude --append-system-prompt --dangerously-skip-permissions'],
+    ['a quoted flag', 'claude "--dangerously-skip-permissions"'],
+    ['another agent', 'codex --dangerously-bypass-approvals-and-sandbox'],
+    ['an unreadable line', undefined],
+  ])('not bypass: %s', (_why, line) => {
+    expect(claudeLaunchedInBypass(line)).toBe(false);
+  });
+});
+
+describe('paneRunsBypassClaude — inheritance reads process truth', () => {
+  const START = 1_000_000;
+  const fact = { pid: 42, startedAt: START, bypass: true };
+  const alive = { alive: true, slug: 'claude' };
+  const binding = (mode: string | undefined, ts = START + 10) =>
+    ({ agent: 'claude', sessionId: ID, cwd: '/w', ts, ...(mode ? { permissionMode: mode } : {}) }) as never;
+
+  it('a bypass launch still reporting bypass inherits', () => {
+    expect(paneRunsBypassClaude(fact, alive, 42, binding('bypassPermissions'))).toBe(true);
+  });
+
+  it.each([
+    ['resumed without the flag', { ...fact, bypass: false }, alive, 42, binding('bypassPermissions')],
+    ['switched out of bypass since launch', fact, alive, 42, binding('auto')],
+    ['a bypass binding from before this launch', fact, alive, 42, binding('bypassPermissions', START - 1)],
+    ['another process than the one read', fact, alive, 43, binding('bypassPermissions')],
+    ['an unknown start time', { pid: 42, bypass: true }, alive, 42, binding('bypassPermissions')],
+    ['no line read (a WSL pane)', undefined, alive, 42, binding('bypassPermissions')],
+    ['a dead process', fact, { alive: false, slug: 'claude' }, 42, binding('bypassPermissions')],
+    ['another agent', fact, { alive: true, slug: 'codex' }, 42, binding('bypassPermissions')],
+  ])('%s does not', (_why, f, tracked, pid, b) => {
+    expect(paneRunsBypassClaude(f, tracked, pid, b)).toBe(false);
+  });
+});
+
+describe('withCaptureTsNotAhead — a capture cannot be dated ahead', () => {
+  const NOW = 2_000_000;
+  const at = (ts: number) => ({ agent: 'claude', sessionId: ID, cwd: '/w', ts });
+
+  it('clamps a far-future ts to now', () => {
+    expect(withCaptureTsNotAhead(at(NOW + 365 * 86_400_000), NOW).ts).toBe(NOW);
+  });
+
+  it('keeps a ts within the skew, and one in the past', () => {
+    const near = at(NOW + RESUME_BINDING_TS_SKEW_MS);
+    expect(withCaptureTsNotAhead(near, NOW)).toBe(near);
+    const past = at(NOW - 1);
+    expect(withCaptureTsNotAhead(past, NOW)).toBe(past);
   });
 });

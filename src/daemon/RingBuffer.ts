@@ -17,6 +17,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'node:zlib';
 import { loadNativeTerminalCore, reportNativeFallback, type NativeRingStorage, type NativeOutputChunk } from '../shared/nativeTerminalCore';
 
 // Pattern that identifies temporary buffer files produced by
@@ -90,6 +91,18 @@ export interface ReplayGeometry {
  *  the start size (a replay of that stretch is no worse than before this log). */
 const MAX_GEOMETRY_MARKS = 256;
 
+/** Raw size of one closed chunk of a compressed ring (see `compress`). Terminal
+ *  output shrinks ~11× at this size; smaller chunks compress worse. */
+const RING_CHUNK_BYTES = 256 * 1024;
+// Quality 1: ~900 MB/s to compress and ~1.2 GB/s to read back, so a write
+// pays well under a millisecond per chunk and an 8 MB readAll() a few.
+const RING_CHUNK_BROTLI = {
+  params: {
+    [zlibConstants.BROTLI_PARAM_QUALITY]: 1,
+    [zlibConstants.BROTLI_PARAM_SIZE_HINT]: RING_CHUNK_BYTES,
+  },
+};
+
 export class RingBuffer {
   // A rust ring holds its bytes here, except while hibernated: then this is
   // undefined and the node fields below describe the ring (see hibernate()).
@@ -127,8 +140,22 @@ export class RingBuffer {
   private wokeAt = 0;
   private mutations = 0; // bumps on every content change, including clear()
   private lastDump: { path: string; mutations: number } | null = null;
+  // `config.session.ringCompression` (node backend only): the stored bytes are
+  // closed `chunkSize` chunks, brotli-compressed, oldest first, then an open
+  // uncompressed tail in `buffer` [0..writePos). `length` still counts raw
+  // bytes; the first `chunkSkip` raw bytes of the first chunk are already
+  // outside the window.
+  private readonly compress: boolean;
+  private readonly chunkSize: number;
+  private chunks: Buffer[] = [];
+  private chunkSkip = 0;
+  private chunkBytes = 0; // compressed bytes held in `chunks`
 
-  constructor(capacityBytes: number, backend: 'node' | 'rust' = terminalCoreSelection() === 'rust' ? 'rust' : 'node') {
+  constructor(
+    capacityBytes: number,
+    backend: 'node' | 'rust' = terminalCoreSelection() === 'rust' ? 'rust' : 'node',
+    options: { compress?: boolean } = {},
+  ) {
     if (capacityBytes <= 0 || !Number.isInteger(capacityBytes)) {
       throw new Error('capacityBytes must be a positive integer');
     }
@@ -141,6 +168,8 @@ export class RingBuffer {
       catch { reportNativeFallback('ring'); }
     }
     this.backend = this.native ? 'rust' : 'node';
+    this.compress = options.compress === true && this.backend === 'node';
+    this.chunkSize = Math.min(RING_CHUNK_BYTES, capacityBytes);
     this.physical = Math.min(INITIAL_PHYSICAL_BYTES, capacityBytes);
     this.buffer = Buffer.alloc(this.native ? 0 : this.physical);
     this.writePos = 0;
@@ -190,6 +219,7 @@ export class RingBuffer {
     if (this.native) { this.native.write(data); return; }
 
     this.totalWritten += dataLen;
+    if (this.compress) { this.writeCompressed(data); return; }
 
     // Grow toward the ceiling so this write lands without prematurely
     // overwriting still-young data. Once at the ceiling the ring wraps.
@@ -218,6 +248,50 @@ export class RingBuffer {
 
     this.writePos = (this.writePos + dataLen) % this.physical;
     this.length = Math.min(this.length + dataLen, this.physical);
+  }
+
+  /**
+   * write() for a compressed ring: append to the open tail, compress it into a
+   * closed chunk each time it fills, then drop the oldest raw bytes past
+   * `capacity` (whole chunks, then a skip into the first one).
+   */
+  private writeCompressed(data: Buffer): void {
+    // Only the newest `capacity` bytes can survive this write.
+    if (data.length > this.capacity) data = data.subarray(data.length - this.capacity);
+    let done = 0;
+    while (done < data.length) {
+      const want = Math.min(this.writePos + data.length - done, this.chunkSize);
+      if (want > this.physical) {
+        // The tail grows like the plain ring, by doubling, up to one chunk.
+        let next = this.physical;
+        while (next < want) next *= 2;
+        const grown = Buffer.alloc(Math.min(next, this.chunkSize));
+        this.buffer.copy(grown, 0, 0, this.writePos);
+        this.buffer = grown;
+        this.physical = grown.length;
+      }
+      const n = Math.min(this.physical - this.writePos, data.length - done);
+      data.copy(this.buffer, this.writePos, done, done + n);
+      this.writePos += n;
+      done += n;
+      if (this.writePos === this.chunkSize) {
+        const chunk = brotliCompressSync(this.buffer, RING_CHUNK_BROTLI);
+        this.chunks.push(chunk);
+        this.chunkBytes += chunk.length;
+        this.writePos = 0;
+      }
+    }
+    // The tail is under one chunk, never more than `capacity`, so the excess
+    // always lies inside the closed chunks.
+    let excess = this.chunks.length * this.chunkSize - this.chunkSkip + this.writePos - this.capacity;
+    while (excess > 0 && excess >= this.chunkSize - this.chunkSkip) {
+      excess -= this.chunkSize - this.chunkSkip;
+      this.chunkBytes -= this.chunks[0].length;
+      this.chunks.shift();
+      this.chunkSkip = 0;
+    }
+    if (excess > 0) this.chunkSkip += excess;
+    this.length = this.chunks.length * this.chunkSize - this.chunkSkip + this.writePos;
   }
 
   /** Retain a transport-owned chunk without sending its bytes back through JS. */
@@ -254,6 +328,7 @@ export class RingBuffer {
     this.disposed = true;
     this.native?.dispose();
     this.buffer = Buffer.alloc(0); this.length = 0; this.physical = 0; this.writePos = 0;
+    this.chunks = []; this.chunkSkip = 0; this.chunkBytes = 0;
     this.geometry = [];
     this.hibernatedPath = null;
     this.pending = []; this.pendingBytes = 0; this.appendedBytes = 0;
@@ -338,6 +413,13 @@ export class RingBuffer {
       return Buffer.alloc(0);
     }
 
+    if (this.compress) {
+      const parts: Buffer[] = this.chunks.map((chunk) => brotliDecompressSync(chunk));
+      if (parts.length > 0) parts[0] = parts[0].subarray(this.chunkSkip);
+      parts.push(this.buffer.subarray(0, this.writePos));
+      return Buffer.concat(parts, this.length);
+    }
+
     if (this.length < this.physical) {
       // Buffer has not wrapped yet; data is at [0..length)
       return Buffer.from(this.buffer.subarray(0, this.length));
@@ -358,6 +440,8 @@ export class RingBuffer {
     this.mutations++;
     if (this.native) { this.native.clear(); return; }
     this.buffer.fill(0);
+    for (const chunk of this.chunks) chunk.fill(0);
+    this.chunks = []; this.chunkSkip = 0; this.chunkBytes = 0;
     this.writePos = 0;
     this.length = 0;
     // totalWritten is intentionally NOT reset — it represents the stream's
@@ -379,7 +463,7 @@ export class RingBuffer {
   /** Bytes currently committed for backing storage (grows on demand toward the ceiling). */
   get allocatedBytes(): number {
     if (this.native) return this.native.allocatedBytes;
-    return this.physical + this.pendingBytes;
+    return this.physical + this.chunkBytes + this.pendingBytes;
   }
 
   /** Whether replay needs resize-aware parsing, without copying the byte buffer. */
@@ -530,13 +614,14 @@ export class RingBuffer {
     if (this.disposed || this.hibernatedPath !== null || this.mutations !== mark || this.size === 0) return 0;
     if (this.lastDump?.path !== filePath || this.lastDump.mutations !== mark) return 0;
     if (!stillIdle()) return 0;
-    const released = this.native ? this.releaseNative(this.native) : this.physical;
+    const released = this.native ? this.releaseNative(this.native) : this.physical + this.chunkBytes;
     this.hibernatedPath = filePath;
     this.hibernatedFileBytes = this.length;
     this.releasedBytes = released;
     this.buffer = Buffer.alloc(0);
     this.physical = 0;
     this.writePos = 0;
+    this.chunks = []; this.chunkSkip = 0; this.chunkBytes = 0;
     return released;
   }
 
@@ -652,6 +737,14 @@ export class RingBuffer {
     this.pendingBytes = 0;
     this.appendedBytes = 0;
     if (this.backend === 'rust') return;
+    if (this.compress) {
+      this.chunks = []; this.chunkSkip = 0; this.chunkBytes = 0;
+      this.buffer = Buffer.alloc(Math.min(INITIAL_PHYSICAL_BYTES, this.capacity));
+      this.physical = this.buffer.length;
+      this.writePos = 0;
+      this.writeCompressed(data);
+      return;
+    }
     let physical = Math.min(INITIAL_PHYSICAL_BYTES, this.capacity);
     while (physical < data.length && physical < this.capacity) physical *= 2;
     physical = Math.min(physical, this.capacity);

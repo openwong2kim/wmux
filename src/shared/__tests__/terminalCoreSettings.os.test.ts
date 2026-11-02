@@ -18,12 +18,15 @@ beforeEach(async () => {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); fs.rmSync(dir, { recursive: true, force: true }); });
 
 describe('default terminal engine', () => {
-  it('is Rust on Windows when the Rust module loads, Node otherwise', async () => {
+  it('is Rust on Windows, macOS and Linux when the Rust module loads, Node otherwise', async () => {
     const settings = await import('../terminalCoreSettings');
     expect(settings.defaultTerminalEngine('win32', () => true)).toBe('rust');
     expect(settings.defaultTerminalEngine('win32', () => false)).toBe('node');
-    expect(settings.defaultTerminalEngine('darwin', () => true)).toBe('node');
-    expect(settings.defaultTerminalEngine('linux', () => true)).toBe('node');
+    expect(settings.defaultTerminalEngine('darwin', () => true)).toBe('rust');
+    expect(settings.defaultTerminalEngine('darwin', () => false)).toBe('node');
+    expect(settings.defaultTerminalEngine('linux', () => true)).toBe('rust');
+    expect(settings.defaultTerminalEngine('linux', () => false)).toBe('node');
+    expect(settings.defaultTerminalEngine('freebsd', () => true)).toBe('node');
   });
   it('applies only when no valid choice is saved; a saved Node stays Node', async () => {
     const settings = await import('../terminalCoreSettings');
@@ -37,13 +40,12 @@ describe('default terminal engine', () => {
 });
 
 describe('persisted terminal engine', () => {
-  it('defaults to Rust on Windows and Node elsewhere when the packaged Rust module is available', async () => {
+  it('defaults to Rust on Windows, macOS and Linux when the packaged Rust module is available', async () => {
     const native = await import('../nativeTerminalCore');
     vi.mocked(native.loadNativeTerminalCore).mockReturnValue({} as never);
     const settings = await import('../terminalCoreSettings');
-    const engine = process.platform === 'win32' ? 'rust' : 'node';
     expect(settings.terminalCoreRuntime()).toEqual({
-      requested: engine, effective: engine, rustAvailable: true, environmentOverride: false,
+      requested: 'rust', effective: 'rust', rustAvailable: true, environmentOverride: false,
     });
   });
   it('keeps the live host unchanged until the next boot, in both directions', async () => {

@@ -56,7 +56,7 @@ export function TerminalEngineSetting() {
         onChange={(event) => void save(event.target.value as TerminalEngine)}>
         <option value="node">Node</option>
         <option value="rust" disabled={!settings?.rustAvailable}>
-          {t(window.electronAPI?.platform === 'win32' ? 'settings.terminalEngineRustDefault' : 'settings.terminalEngineRust')}
+          {t(['win32', 'darwin', 'linux'].includes(window.electronAPI?.platform ?? '') ? 'settings.terminalEngineRustDefault' : 'settings.terminalEngineRust')}
         </option>
       </Select>
     </SettingRow>

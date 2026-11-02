@@ -72,11 +72,12 @@ export interface AccountRotationDeps {
 export function claudeReading(entry: AccountUsageEntry | undefined): AccountQuotaReading | null {
   const s = entry?.snapshot;
   if (!s || entry.status !== 'ok') return null;
-  const win = (pct: number, resetSec: number) => ({
+  const win = (pct: number | undefined, resetSec = 0) => (pct === undefined ? [] : [{
     remaining: 1 - Math.max(0, Math.min(100, pct)) / 100,
     resetAtMs: resetSec > 0 ? resetSec * 1000 : null,
-  });
-  return { windows: [win(s.sessionPct, s.sessionResetEpochSec), win(s.weeklyPct, s.weeklyResetEpochSec)], capturedAtMs: s.fetchedAtMs };
+  }]);
+  // A window the account does not report (an Ultra plan has no 5h one) is left out.
+  return { windows: [...win(s.sessionPct, s.sessionResetEpochSec), ...win(s.weeklyPct, s.weeklyResetEpochSec)], capturedAtMs: s.fetchedAtMs };
 }
 
 export function codexReading(limits: RolloutLimits | null): AccountQuotaReading | null {

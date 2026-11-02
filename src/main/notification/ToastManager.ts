@@ -3,6 +3,7 @@ import { isWindows, isMac } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { focusedPrimaryWindow, primaryWindow } from '../window/auxiliaryWindows';
 import { logNotificationFailure } from './notificationFailure';
+import { osToastsAllowed } from './osToastGate';
 
 /**
  * Originating context for a toast. When present, clicking the toast not only
@@ -79,6 +80,9 @@ export class ToastManager {
   ): boolean {
     if (!this.enabled && !options?.ignoreToastSetting) return false;
 
+    // Before isSupported(): its first call already runs Electron's Windows
+    // toast setup, which an isolated packaged copy must never reach (#2964).
+    if (!osToastsAllowed()) return false;
     if (!Notification.isSupported()) return false;
 
     const notification = new Notification({

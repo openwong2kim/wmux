@@ -1,4 +1,4 @@
-import { useId, useMemo, useRef, useState, type KeyboardEvent, type TextareaHTMLAttributes } from 'react';
+import { useId, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import type { Workspace } from '../../../shared/types';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { useStore, type StoreState } from '../../stores';
@@ -7,7 +7,8 @@ import { paneTag } from '../../utils/paneNaming';
 import { displayPath } from '../../utils/displayPath';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
-import Field, { useFieldWiring } from '../ui/Field';
+import Field from '../ui/Field';
+import TextArea from '../ui/TextArea';
 import Dialog, { DialogBody, DialogFooter, DialogHeader } from '../ui/Dialog';
 import { FOCUS_RING } from '../focusRing';
 
@@ -40,11 +41,6 @@ function ceoCandidates(
       cwd: surface?.cwd,
     };
   });
-}
-
-function TextArea({ id, 'aria-describedby': describedBy, className = '', ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement>) {
-  const wiring = useFieldWiring(id, describedBy);
-  return <textarea {...rest} id={wiring.id} aria-describedby={wiring['aria-describedby']} className={`ui-input resize-y ${className}`} />;
 }
 
 /**

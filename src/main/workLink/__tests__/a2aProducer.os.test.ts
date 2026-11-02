@@ -127,7 +127,8 @@ describe('a2a.rpc → work links', () => {
   it('follows the task through the daemon-committed states to done', async () => {
     h.sendToRenderer.mockResolvedValueOnce(sendReply());
     await handlers(daemonOk('submitted'))['a2a.task.send']({ to: '1', message: 'go' }, local);
-    for (const [state, expected] of [['working', 'running'], ['input-required', 'needs-you'], ['working', 'running'], ['completed', 'done']]) {
+    // A pane (pane-hq) handed the task out, so its input-required waits on that pane.
+    for (const [state, expected] of [['working', 'running'], ['input-required', 'running'], ['working', 'running'], ['completed', 'done']]) {
       h.sendToRenderer.mockResolvedValue({ ok: true, taskId: 'task-1' });
       await handlers(daemonOk(state))['a2a.task.update']({ taskId: 'task-1', workspaceId: 'ws-1', status: state }, local);
       await settle();

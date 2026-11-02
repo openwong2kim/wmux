@@ -51,6 +51,7 @@ import { Terminal } from '@xterm/headless';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { applyUnicodeWidthModel } from '../shared/terminalUnicode';
 import { XTERM_60_VT_EXTENSIONS } from '../shared/terminal/replyParity';
+import { SNAPSHOT_MAX_SCROLLBACK } from '../shared/terminal/attachSnapshot';
 import type { ReplayGeometry } from './RingBuffer';
 import { selectAnsiSnapshot } from './AnsiSnapshotBackend';
 import { selectTextSnapshot } from './TextSnapshotBackend';
@@ -110,8 +111,9 @@ const DEFAULT_SCROLLBACK = 5000;
  *  ceiling for `scrollbackLines` (SettingsPanel.tsx — the slider maxes at
  *  100k), so a compact attach snapshot never drops rows a raw replay would have
  *  kept for a user configured that high. The headless terminal is per-snapshot
- *  and disposed, so the peak cost is bounded. */
-export const MAX_SCROLLBACK = 100_000;
+ *  and disposed, so the peak cost is bounded. Defined in shared so main can
+ *  ask for the same bound without importing this module. */
+export const MAX_SCROLLBACK = SNAPSHOT_MAX_SCROLLBACK;
 /** Feed slice size — keeps each synchronous parse burst bounded so the daemon
  * event loop (input forwarding!) never stalls behind an 8 MB write.
  * Exported for the slice-boundary regression test. */

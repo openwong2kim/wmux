@@ -38,6 +38,7 @@ import type {
   A2aRemoteStatus,
 } from '../shared/rpc';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
+import { A2A_COMPANY_RPC, type A2aCompanyMarkParams, type A2aCompanyMarkResult, type A2aCompanyTasksResult } from '../shared/companyHold';
 import { A2A_SPAWN_RPC, type A2aSpawnAskInput, type A2aSpawnAskResult, type A2aSpawnOutgoingList, type A2aSpawnPolicySetResult, type A2aSpawnPolicyV1, type A2aSpawnRequestSummary } from '../shared/a2aSpawn';
 import { createSessionPipeMarkers } from '../daemon/sessionPipeMarkers';
 import type { FolderTrustState } from '../daemon/folderTrustState';
@@ -601,6 +602,16 @@ export class DaemonClient extends EventEmitter {
   }
 
   /**
+   * True while the session's pipe is connected and its flush (the attach-time
+   * one, or a live re-flush) has not reached the data listeners yet: the
+   * replay is still on its way.
+   */
+  sessionPipeFlushPending(sessionId: string): boolean {
+    if (!this.isSessionPipeWritable(sessionId)) return false;
+    return this.sessionScanners.get(sessionId)?.mode === 'accumulating';
+  }
+
+  /**
    * Write input data to a session via its data pipe. Returns true if the
    * data was handed to a live socket, false if the call silently dropped.
    *
@@ -868,6 +879,23 @@ export class DaemonClient extends EventEmitter {
 
   async a2aRemotePaneGone(params: A2aRemotePaneGoneParams): Promise<{ ok: true; broken: number }> {
     return (await this.rpc('a2a.remote.local.paneGone', params as unknown as Record<string, unknown>)) as { ok: true; broken: number };
+  }
+
+  // === Company tasks held on their blockers (`a2a.company.*`) ===
+
+  /** Released company tasks owed a delivery (one marked `attempted` included). */
+  async a2aCompanyPending(): Promise<A2aCompanyTasksResult> {
+    return (await this.rpc(A2A_COMPANY_RPC.pending, {})) as A2aCompanyTasksResult;
+  }
+
+  /** Company tasks still waiting on a blocker, or held for a person. */
+  async a2aCompanyHeld(): Promise<A2aCompanyTasksResult> {
+    return (await this.rpc(A2A_COMPANY_RPC.held, {})) as A2aCompanyTasksResult;
+  }
+
+  /** One delivery mark: `attempted`, `delivered` (with the pty written to) or a `held` reason. */
+  async a2aCompanyMark(params: A2aCompanyMarkParams): Promise<A2aCompanyMarkResult> {
+    return (await this.rpc(A2A_COMPANY_RPC.mark, { ...params })) as A2aCompanyMarkResult;
   }
 
   /**

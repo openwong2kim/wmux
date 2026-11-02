@@ -30,6 +30,7 @@ export const COMPUTER_ERROR_CODES = [
   'unsupported_platform',
   'invalid_argument',
   'policy_denied',
+  'needs_foreground',
   'internal',
 ] as const;
 
@@ -50,7 +51,6 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
   window_not_found: ['Call listWindows for the app and pass a window id from the result.'],
   window_not_focused: [
     'Keyboard input needs the target window in the foreground. Prefer setValue or click on an element index.',
-    'The input may already have been delivered: call getAppState before retrying.',
   ],
   element_not_found: ['Call getAppState again and pick an index from the new snapshot.'],
   element_stale: [
@@ -98,47 +98,112 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
     "This pane's browser is protected, so computer use is refused from it. Do not retry unchanged.",
     "Use the browser_* tools for this pane's own sites, or ask the user to do this step.",
   ],
-  internal: ['Retry once. If it fails again, tell the user.'],
+  // Internal to main (protocol `foreground: 'refuse'`): main re-sends the
+  // action with real input and never shows this code to an agent.
+  needs_foreground: ['Retry once. If it fails again, tell the user.'],
+  internal: ['Retry once (after getAppState when the disposition says input may have reached the app). If it fails again, tell the user.'],
 };
+
+/**
+ * Whether an input action may be retried. `not_delivered`: refused before any
+ * input was sent, so retrying cannot repeat anything. `delivered_unverified`:
+ * input was sent (or may have been) and its effect was not read back, so a
+ * retry could do it twice. `delivered`: sent and its effect read back. A
+ * posting call that returned without error is no proof of delivery: neither
+ * OS acknowledges an event it dropped. Results and errors of input actions
+ * both carry it; main fills it in where a helper leaves it out
+ * (protocol ActionResult).
+ */
+export type ActionDisposition = 'not_delivered' | 'delivered_unverified' | 'delivered';
+
+export const ACTION_DISPOSITIONS: readonly ActionDisposition[] = ['not_delivered', 'delivered_unverified', 'delivered'];
+
+export function isActionDisposition(value: unknown): value is ActionDisposition {
+  return typeof value === 'string' && (ACTION_DISPOSITIONS as readonly string[]).includes(value);
+}
 
 export interface ComputerErrorPayload {
   code: ComputerErrorCode;
   message: string;
+  /** Set on input actions (protocol ActionDisposition). */
+  disposition?: ActionDisposition;
 }
 
 export class ComputerError extends Error {
   readonly code: ComputerErrorCode;
+  readonly disposition?: ActionDisposition;
 
-  constructor(code: ComputerErrorCode, message: string) {
+  constructor(code: ComputerErrorCode, message: string, disposition?: ActionDisposition) {
     super(message);
     this.name = 'ComputerError';
     this.code = code;
+    if (disposition) this.disposition = disposition;
   }
 
   toPayload(): ComputerErrorPayload {
-    return { code: this.code, message: this.message };
+    return { code: this.code, message: this.message, ...(this.disposition && { disposition: this.disposition }) };
   }
 }
 
-/** Renders an error for an agent: code, message, then what to do next. */
+/**
+ * The error an input action ends with: `err` as a ComputerError carrying a
+ * disposition, `fallback` when it had none. Another error keeps a code it can
+ * be told by (a TimeoutError or AbortError), otherwise it is `internal`.
+ */
+export function withDisposition(err: unknown, fallback: ActionDisposition): ComputerError {
+  if (err instanceof ComputerError) {
+    return err.disposition ? err : new ComputerError(err.code, err.message, fallback);
+  }
+  const name = err instanceof Error ? err.name : '';
+  const code: ComputerErrorCode = name === 'TimeoutError' ? 'timeout' : name === 'AbortError' ? 'aborted' : 'internal';
+  return new ComputerError(code, err instanceof Error ? err.message : String(err), fallback);
+}
+
+/**
+ * The error an input action of one or more helper requests ends with.
+ * `requested`: one of its requests went to the helper. `earlier`: one already
+ * came back done, so input went out before this failure, and a
+ * `not_delivered` from the failing request is no longer true of the action.
+ */
+export function inputActionError(err: unknown, requested: boolean, earlier: boolean): ComputerError {
+  const error = withDisposition(err, requested ? 'delivered_unverified' : 'not_delivered');
+  return earlier && error.disposition === 'not_delivered'
+    ? new ComputerError(error.code, error.message, 'delivered_unverified')
+    : error;
+}
+
+const DISPOSITION_TEXT: Record<ActionDisposition, string> = {
+  not_delivered: 'not_delivered (no input was sent; retrying is safe)',
+  delivered_unverified: 'delivered_unverified (input may have reached the app; call getAppState before retrying)',
+  delivered: 'delivered',
+};
+
+/** Renders an error for an agent: code, message, disposition, then what to do next. */
 export function formatComputerError(payload: ComputerErrorPayload): string {
   const steps = COMPUTER_ERROR_NEXT_STEPS[payload.code] ?? COMPUTER_ERROR_NEXT_STEPS.internal;
-  return [`computer error [${payload.code}]: ${payload.message}`, ...steps.map((s) => `- ${s}`)].join('\n');
+  return [
+    `computer error [${payload.code}]: ${payload.message}`,
+    ...(payload.disposition ? [`disposition: ${DISPOSITION_TEXT[payload.disposition]}`] : []),
+    ...steps.map((s) => `- ${s}`),
+  ].join('\n');
 }
 
 /**
  * Recovers a structured error from whatever crossed the pipe RPC. The RPC
  * layer carries only a message string, so main encodes errors as
- * `[code] message` and this parses it back.
+ * `[code] message`, with ` [disposition:<value>]` at the end for an input
+ * action (a parser that predates it still reads the code), and this parses
+ * it back.
  */
 export function parseComputerErrorMessage(message: string): ComputerErrorPayload {
-  const match = /^\[([a-z_]+)\]\s*([\s\S]*)$/.exec(message);
+  // Only a known disposition is a suffix; anything else stays in the message.
+  const match = /^\[([a-z_]+)\]\s*([\s\S]*?)(?: \[disposition:(not_delivered|delivered_unverified|delivered)\])?$/.exec(message);
   if (match && isComputerErrorCode(match[1])) {
-    return { code: match[1], message: match[2] };
+    return { code: match[1], message: match[2], ...(isActionDisposition(match[3]) && { disposition: match[3] }) };
   }
   return { code: 'internal', message };
 }
 
 export function encodeComputerErrorMessage(payload: ComputerErrorPayload): string {
-  return `[${payload.code}] ${payload.message}`;
+  return `[${payload.code}] ${payload.message}${payload.disposition ? ` [disposition:${payload.disposition}]` : ''}`;
 }

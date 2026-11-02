@@ -10,7 +10,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { getLeafPanes } from '../../../shared/paneUtils';
-import { usageLimitHolds, usageLimitHoldEndsAt, type PaneUsageLimit } from '../../../shared/usageLimit';
+import { usageLimitHolds, usageLimitHoldEndsAt, type PaneUsageLimit, type PaneUsageWindow } from '../../../shared/usageLimit';
 
 /**
  * ptyId → true while the pane is quietly waiting out its limit: the hold still
@@ -63,6 +63,9 @@ export interface UsageLimitSlice {
   usageLimitWaiting: Record<string, true>;
   /** Recompute `usageLimitWaiting` at `now` (the bridge calls it when a hold ends). */
   refreshUsageLimitWaiting: (now?: number) => void;
+  /** Each pane's 5-hour window from its statusline, by ptyId (main's whole map). */
+  usageWindows: Record<string, PaneUsageWindow>;
+  setUsageWindows: (windows: Record<string, PaneUsageWindow>) => void;
 }
 
 export const createUsageLimitSlice: StateCreator<
@@ -73,6 +76,19 @@ export const createUsageLimitSlice: StateCreator<
 > = (set) => ({
   usageLimits: {},
   usageLimitWaiting: {},
+  usageWindows: {},
+
+  setUsageWindows: (windows) => set((draft: StoreState) => {
+    // An unchanged window keeps its object, so a pane's selector sees no change.
+    const prev = draft.usageWindows;
+    const next: Record<string, PaneUsageWindow> = {};
+    for (const [ptyId, w] of Object.entries(windows ?? {})) {
+      if (!w || !Number.isFinite(w.pct) || !Number.isFinite(w.resetsAt)) continue;
+      const was = prev[ptyId];
+      next[ptyId] = was && was.pct === w.pct && was.resetsAt === w.resetsAt ? was : { pct: w.pct, resetsAt: w.resetsAt };
+    }
+    draft.usageWindows = next;
+  }),
 
   setUsageLimit: (ptyId, limit) => set((draft: StoreState) => {
     if (limit) draft.usageLimits[ptyId] = limit;

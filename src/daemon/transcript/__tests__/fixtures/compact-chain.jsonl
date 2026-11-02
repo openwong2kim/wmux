@@ -1,0 +1,17 @@
+{"parentUuid":null,"isSidechain":false,"type":"user","uuid":"u1","timestamp":"2026-10-31T01:00:00.000Z","message":{"role":"user","content":"run two things"}}
+{"parentUuid":"u1","isSidechain":false,"type":"assistant","uuid":"a1","timestamp":"2026-10-31T01:00:01.000Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls"}}],"stop_reason":"tool_use"}}
+{"parentUuid":"a1","isSidechain":false,"type":"assistant","uuid":"a1b","timestamp":"2026-10-31T01:00:01.500Z","message":{"role":"assistant","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"pwd"}}],"stop_reason":"tool_use"}}
+{"parentUuid":"a1","isSidechain":false,"type":"user","uuid":"r1","timestamp":"2026-10-31T01:00:02.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"files"}]}}
+{"parentUuid":"r1","isSidechain":false,"type":"user","uuid":"r2","timestamp":"2026-10-31T01:00:02.500Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"/repo"}]}}
+{"parentUuid":"r2","isSidechain":false,"type":"assistant","uuid":"a2","timestamp":"2026-10-31T01:00:03.000Z","message":{"role":"assistant","content":[{"type":"text","text":"both done"}],"stop_reason":"end_turn"}}
+{"parentUuid":null,"logicalParentUuid":"a2","isSidechain":false,"type":"system","subtype":"compact_boundary","uuid":"b1","timestamp":"2026-10-31T01:10:00.000Z","content":"Conversation compacted"}
+{"parentUuid":"b1","isSidechain":false,"type":"user","uuid":"s1","isCompactSummary":true,"timestamp":"2026-10-31T01:10:01.000Z","message":{"role":"user","content":"This session is being continued from a previous conversation."}}
+{"parentUuid":"s1","isSidechain":false,"type":"user","uuid":"u2","timestamp":"2026-10-31T01:11:00.000Z","message":{"role":"user","content":"after the first compact"}}
+{"parentUuid":"u2","isSidechain":false,"type":"assistant","uuid":"a3","timestamp":"2026-10-31T01:11:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"answer three"}],"stop_reason":"end_turn"}}
+{"parentUuid":null,"logicalParentUuid":"x9","isSidechain":false,"type":"system","subtype":"compact_boundary","uuid":"b2","timestamp":"2026-10-31T01:20:00.000Z","content":"Conversation compacted"}
+{"parentUuid":"b2","isSidechain":false,"type":"attachment","uuid":"x8","timestamp":"2026-10-31T01:20:01.000Z","attachment":{"type":"session_context"}}
+{"parentUuid":"x8","isSidechain":false,"type":"attachment","uuid":"x9","timestamp":"2026-10-31T01:20:02.000Z","attachment":{"type":"total_tokens_reminder"}}
+{"parentUuid":"x9","isSidechain":false,"type":"user","uuid":"u3","timestamp":"2026-10-31T01:21:00.000Z","message":{"role":"user","content":"after the second compact"}}
+{"parentUuid":"u3","isSidechain":false,"type":"assistant","uuid":"a4","timestamp":"2026-10-31T01:21:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"answer four"}],"stop_reason":"end_turn"}}
+{"parentUuid":"a4","isSidechain":false,"type":"user","uuid":"u4","timestamp":"2026-10-31T01:22:00.000Z","message":{"role":"user","content":"one more"}}
+{"parentUuid":"u4","isSidechain":false,"type":"assistant","uuid":"a5","timestamp":"2026-10-31T01:22:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"answer five"}],"stop_reason":"end_turn"}}

@@ -172,6 +172,15 @@ describe('spawnPty — console window owner (Windows sign-in pickers)', () => {
     expect(cleared.setParentWindow.mock.calls.map(([b]) => b)).toEqual([hwnd]);
   });
 
+  it('passes the window in the spawn options, so the Rust core can apply it before the shell starts', async () => {
+    const ready = { pid: 9, onExit: vi.fn(), kill: vi.fn(), setParentWindow: vi.fn(() => true) };
+    const seen: unknown[] = [];
+    const nodeSpawn: SpawnPtyRequest['nodeSpawn'] = (_c, _a, options) => { seen.push((options as { parentWindow?: Buffer }).parentWindow); return asPty(ready); };
+    await spawnPty(request(ready, { parentWindow: () => hwnd, nodeSpawn }));
+    await spawnPty(request(ready, { parentWindow: () => null, nodeSpawn }));
+    expect(seen).toEqual([hwnd, undefined]);
+  });
+
   it('sends nothing when there is no host window yet', async () => {
     const ready = { pid: 9, onExit: vi.fn(), kill: vi.fn(), setParentWindow: vi.fn(() => true) };
     await spawnPty(request(ready, { parentWindow: () => null }));

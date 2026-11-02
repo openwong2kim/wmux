@@ -191,6 +191,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'factoryclaudeauth', tab: 'factory', labelKey: 'settings.factory.claudeAuth.mode', descKey: 'settings.factory.claudeAuth.modeDesc', synonyms: 'api key anthropic claude subscription sign in login billing connection check 연결 키 구독 로그인' },
   { id: 'factoryconcurrency', tab: 'factory', labelKey: 'settings.factory.concurrency', descKey: 'settings.factory.concurrencyDesc', synonyms: 'concurrent bots limit cap parallel turn' },
   { id: 'factorymaxagents', tab: 'factory', labelKey: 'settings.factory.maxAgents', descKey: 'settings.factory.maxAgentsDesc', synonyms: 'agents workers memory budget slots limit cap queue' },
+  { id: 'companymaxworking', tab: 'factory', labelKey: 'settings.factory.companyMaxWorking', descKey: 'settings.factory.companyMaxWorkingDesc', synonyms: 'company seats staff working heavy jobs per pc machine cap limit slots hold queue 회사 좌석 동시 작업' },
   { id: 'factorycommandreviewer', tab: 'factory', labelKey: 'bots.commands.reviewerSetting', synonyms: 'bot command reviewer review unlisted shell sandbox model 명령 검토' },
   { id: 'factorylaneautomerge', tab: 'factory', labelKey: 'settings.factory.laneAutoMerge', descKey: 'settings.factory.laneAutoMergeDesc', synonyms: 'merge lane auto merge automatic pull request verifier ci 자동 머지' },
   { id: 'factorylanedailycap', tab: 'factory', labelKey: 'settings.factory.laneDailyCap', descKey: 'settings.factory.laneDailyCapDesc', synonyms: 'merge lane daily cap limit per day' },

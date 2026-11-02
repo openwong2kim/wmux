@@ -121,4 +121,17 @@ describe('who acts next', () => {
     expect(whoActsNext({ state: 'done' })).toBeNull();
     expect(whoActsNext({ state: 'abandoned' })).toBeNull();
   });
+
+  it('the pane that handed the work out once the agent reported back to it', () => {
+    const requester = { workspaceId: 'ws-home', paneId: 'pane-ceo' };
+    expect(whoActsNext({ state: 'running', a2aState: 'input-required', requester }))
+      .toEqual({ actor: 'requester', workspaceId: 'ws-home', paneId: 'pane-ceo' });
+    // Still working, or handed out by a workspace with no pane: as before.
+    expect(whoActsNext({ state: 'running', a2aState: 'working', requester })).toEqual({ actor: 'owner', working: true });
+    // The requester's pane closed: nobody else will check the report.
+    expect(whoActsNext({ state: 'running', a2aState: 'input-required', requester }, () => false))
+      .toEqual({ actor: 'you', reason: 'input-required' });
+    expect(whoActsNext({ state: 'needs-you', reason: 'input-required', a2aState: 'input-required', requester: { workspaceId: 'ws-home' } }))
+      .toEqual({ actor: 'you', reason: 'input-required' });
+  });
 });

@@ -173,7 +173,7 @@ describe('derived lists match the literals they replaced', () => {
     expect(PROBES.filter((s) => chat(s)?.send)).toEqual(['claude', 'codex']);
     expect(PROBES.filter((s) => chat(s)?.cancel)).toEqual(['claude', 'codex']);
     expect(PROBES.filter((s) => chat(s)?.images)).toEqual(['claude']);
-    expect(PROBES.filter((s) => chat(s)?.queue)).toEqual(['claude']);
+    expect(PROBES.filter((s) => chat(s)?.queue)).toEqual(['claude', 'codex']);
   });
 
   it('ALL_ACTIVE_PROVIDERS and CATALOG_AGENTS (claude, codex, agy)', () => {

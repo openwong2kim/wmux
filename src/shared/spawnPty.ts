@@ -20,7 +20,7 @@
  */
 import * as pty from 'node-pty';
 import type { IPty, IPtyForkOptions, IWindowsPtyForkOptions } from 'node-pty';
-import { spawnTerminalPty } from './terminalPty';
+import { ptyBackend, spawnTerminalPty } from './terminalPty';
 import { spawnWithConptyPolicy, type ConptyBackend } from './conptyWindows';
 import { applyParentWindow } from './conptyParentWindow';
 
@@ -51,20 +51,22 @@ export interface SpawnPtyRequest {
 
 function start(req: SpawnPtyRequest): { p: IPty; parent: Buffer | null } {
   const nodeSpawn = req.nodeSpawn ?? pty.spawn;
+  const parent = req.parentWindow?.() ?? null;
   const p = spawnWithConptyPolicy(
     (useBundled) => spawnTerminalPty(req.command, req.args, {
       ...req.options,
       useConpty: true,
       ...(useBundled ? { useConptyDll: true } : {}),
+      ...(parent ? { parentWindow: parent } : {}),
     }, nodeSpawn),
     req.useBundledConpty,
     req.onNotice,
     req.onBackend,
   );
-  // Before the pid wait: the request then reaches ConPTY before the shell
-  // starts, so even the shell's first window has the owner.
-  const parent = req.parentWindow?.() ?? null;
-  if (parent) applyParentWindow(p, parent);
+  // The Rust core applied the window in its constructor, before the shell
+  // started. node-pty takes it here, before the pid wait: its ConPTY connects
+  // asynchronously, so the request still lands before the shell starts.
+  if (parent && ptyBackend(p) !== 'rust') applyParentWindow(p, parent);
   return { p, parent };
 }
 

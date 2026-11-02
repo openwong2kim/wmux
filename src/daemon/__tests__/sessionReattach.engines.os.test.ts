@@ -232,9 +232,8 @@ describe.skipIf(!posix).each(ENGINES)('a real shell session on the %s engine', (
     await waitFor(() => ringText(mgr, id).trimEnd().endsWith('$'), WAIT_MS, 'prompt after the bulk output');
     expect(managed.ringBuffer.size).toBeGreaterThanOrEqual(ATTACH_SNAPSHOT_MIN_BYTES);
 
-    // The ANSI attach snapshot itself stays on xterm under either engine
-    // (native ANSI delivery has its own opt-in, AnsiSnapshotBackend.ts); on
-    // rust its input is the native ring.
+    // On the rust engine the ANSI attach snapshot is the native one
+    // (AnsiSnapshotBackend.ts); on node it is xterm's.
     const a = await attachTracked(mgr, id, `${engine}-s`);
     const replay = replayOf(a.client.wire())!;
     // A snapshot, not the raw ring...

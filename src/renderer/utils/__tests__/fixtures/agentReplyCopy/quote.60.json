@@ -1,0 +1,29 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ show quote                                                ",
+  "",
+  "⏺ Before.",
+  "",
+  "  ▎ A quoted line that is rather long so that it wraps at ",
+  "  ▎ sixty columns at least once, here.",
+  "  ▎ Second quoted line.",
+  "",
+  "  After.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Before.\n\n> A quoted line that is rather long so that it wraps at sixty columns at least once, here.\n> Second quoted line.\n\nAfter."
+   }
+  ]
+ ]
+}

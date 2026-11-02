@@ -17,6 +17,7 @@ import {
 import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
+import { companyBriefOf } from '../../shared/company';
 import { TERMINAL_STATES } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
@@ -490,6 +491,9 @@ export class A2aRemoteDelivery {
       if (!from || typeof from['workspaceId'] !== 'string' || (from['paneId'] !== undefined && typeof from['paneId'] !== 'string') || typeof p['text'] !== 'string') {
         return { ok: false, error: 'bad-request: linkId, from{workspaceId, paneId?} and text are required' };
       }
+      // A company brief for this PC's copy: only a complete version-1 one, and only its own fields.
+      const brief = p['brief'] === undefined ? undefined : companyBriefOf(p['brief']);
+      if (brief === null) return { ok: false, error: 'bad-request: brief must be a complete version-1 company brief' };
       return sendRemoteTask(this.outboundDeps(), {
         linkId: str(p, 'linkId'),
         from: {
@@ -501,6 +505,7 @@ export class A2aRemoteDelivery {
         title: str(p, 'title'),
         text: p['text'],
         ...(images ? { images } : {}),
+        ...(brief ? { brief } : {}),
       });
     });
 

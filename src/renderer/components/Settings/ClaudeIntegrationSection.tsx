@@ -32,6 +32,7 @@ import { useEffect, useRef, useState } from 'react';
 import { scheduledRetrySync, type ScheduledRetrySync } from './scheduledRetrySetting';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { usageWindowsText } from '../StatusBar/UsageWidget';
 import { IconCheck, IconWarning } from '../icons';
 import Button from '../ui/Button';
 import Switch from '../ui/Switch';
@@ -368,7 +369,7 @@ function UsageStatusLine({
     return (
       <div className="flex flex-col gap-0.5">
         <span className="ui-field-label tabular-nums">
-          5h {usage.snapshot.sessionPct}% {'·'} 7d {usage.snapshot.weeklyPct}%
+          {usageWindowsText(usage.snapshot)}
         </span>
         {usage.subscriptionType && (
           <span className="ui-field-description">

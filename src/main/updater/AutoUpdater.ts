@@ -16,6 +16,7 @@ import { createReadStream, createWriteStream, existsSync } from 'node:fs';
 import { lstat, readdir, stat, unlink } from 'node:fs/promises';
 import { join, dirname, resolve } from 'node:path';
 import { createHash } from 'node:crypto';
+import { release } from 'node:os';
 import { IPC, dataSuffix } from '../../shared/constants';
 import {
   artifactTempName,
@@ -155,8 +156,15 @@ const TEMP_ARTIFACT_MISMATCH_DELETE_AFTER_MS = TEMP_ARTIFACT_MAX_AGE_MS;
 // constant so an unsupported client can NEVER fetch a manifest, download, or
 // launch an installer meant for another platform, even though all OSes share a
 // single GitHub release's assets.
-const isUpdaterSupported =
-  process.platform === 'win32' || (isDarwin && process.arch === 'arm64');
+//
+// Releases built on Electron 44 or later need macOS 13 (Ventura), and an
+// update that macOS cannot open would leave the Mac with no wmux at all. So a
+// Mac below macOS 13 is offered no update and stays on the last build that runs
+// there. os.release() on macOS is the Darwin version: Darwin 22 is macOS 13.
+const MIN_UPDATABLE_DARWIN_MAJOR = 22;
+const isDarwinArm64 = isDarwin && process.arch === 'arm64';
+const darwinBelowUpdateFloor = isDarwinArm64 && !(Number.parseInt(release(), 10) >= MIN_UPDATABLE_DARWIN_MAJOR);
+const isUpdaterSupported = process.platform === 'win32' || (isDarwinArm64 && !darwinBelowUpdateFloor);
 
 /**
  * An instance with a data suffix (WMUX_DATA_SUFFIX: '-dev' for an unpackaged
@@ -393,6 +401,10 @@ export class AutoUpdater {
     }
 
     if (!isUpdaterSupported) {
+      if (darwinBelowUpdateFloor) {
+        console.log(`[AutoUpdater] Darwin ${release()} is below macOS 13, which current releases need; no update is offered.`);
+        return;
+      }
       console.log(`[AutoUpdater] In-app updates are not supported on ${process.platform}; skipping auto-check (update via your package manager).`);
       return;
     }

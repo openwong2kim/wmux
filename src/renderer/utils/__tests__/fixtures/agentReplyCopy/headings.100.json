@@ -1,0 +1,33 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 100,
+ "rows": [
+  "❯ show headings                                                                                     ",
+  "",
+  "⏺ Top heading",
+  "",
+  "  Intro line.",
+  "",
+  "  Second heading",
+  "",
+  "  Body under second.",
+  "",
+  "  Third heading",
+  "",
+  "  Body under third.",
+  "",
+  "                                                                                ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "# Top heading\n\nIntro line.\n\n## Second heading\n\nBody under second.\n\n### Third heading\n\nBody under third."
+   }
+  ]
+ ]
+}

@@ -17,6 +17,7 @@ import { ISSUE_REF_TITLE_MAX, issueUrlParts, type IssueRef } from './issueRef';
 import type { PrSummary } from './prSurface';
 import { isTaskState, type TaskState } from './types';
 import { isVerifiedItem } from './completionEvidence';
+import { REMOTE_WORKSPACE_PREFIX } from './a2aRemoteDelivery';
 
 export const WORK_LINK_STATES = [
   'queued',
@@ -64,8 +65,14 @@ export type WorkLinkPrStatus = Pick<PrSummary, 'state' | 'checks' | 'reviewDecis
 };
 
 export interface WorkLinkParty {
+  /** A local workspace, or `remote:<linkId>` for a pane on another PC. */
   workspaceId: string;
   paneId?: string;
+  /** A remote pane's alias (`<PC>/<workspace>/<pane>`) as it was when the
+   *  work was sent, kept because the link it names may be gone by the time
+   *  the work is read. UNTRUSTED (the peer names its PC and panes), capped:
+   *  show as text only. */
+  name?: string;
 }
 
 export interface WorkLink {
@@ -122,10 +129,12 @@ export const WORK_LINK_LIMITS = {
   MAX_BRANCH: 255,
   MAX_LAST_QUESTION: 2048,
   MAX_RESULT_SUMMARY: 2048,
+  MAX_PARTY_NAME: 200,
 } as const;
 
 const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
+const REMOTE_WORKSPACE_ID_RE = new RegExp(`^${REMOTE_WORKSPACE_PREFIX}[A-Za-z0-9._-]{1,80}$`);
 const AGENT_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$/;
 const NAME_RE = /^[\w.-]{1,100}$/;
 // A git ref name: no whitespace, control characters or the characters git refuses.
@@ -142,7 +151,8 @@ export const isWorkLinkState = (v: unknown): v is WorkLinkState => includes(WORK
 export const isWorkLinkOrigin = (v: unknown): v is WorkLinkOrigin => includes(WORK_LINK_ORIGINS, v);
 export const isWorkLinkReason = (v: unknown): v is WorkLinkReason => includes(WORK_LINK_REASONS, v);
 export const isWorkLinkId = (v: unknown): v is string => typeof v === 'string' && ID_RE.test(v);
-export const isWorkspaceId = (v: unknown): v is string => typeof v === 'string' && WORKSPACE_ID_RE.test(v);
+export const isWorkspaceId = (v: unknown): v is string =>
+  typeof v === 'string' && (WORKSPACE_ID_RE.test(v) || REMOTE_WORKSPACE_ID_RE.test(v));
 
 /** Only needs-you and blocked carry a reason. */
 export const stateTakesReason = (s: WorkLinkState): boolean => s === 'needs-you' || s === 'blocked';
@@ -193,7 +203,12 @@ export const refKey = (r: NumberKeyed): string => `${repoKey(r)}#${r.number}`;
 function parseParty(v: unknown): WorkLinkParty | null {
   if (!isRecord(v) || !isWorkspaceId(v.workspaceId)) return null;
   if (v.paneId !== undefined && !isWorkLinkId(v.paneId)) return null;
-  return { workspaceId: v.workspaceId, ...(v.paneId !== undefined ? { paneId: v.paneId as string } : {}) };
+  if (v.name !== undefined && (typeof v.name !== 'string' || !v.name)) return null;
+  return {
+    workspaceId: v.workspaceId,
+    ...(v.paneId !== undefined ? { paneId: v.paneId as string } : {}),
+    ...(typeof v.name === 'string' ? { name: capText(v.name, WORK_LINK_LIMITS.MAX_PARTY_NAME) } : {}),
+  };
 }
 
 function parseWorktree(v: unknown): WorkLink['worktree'] | null {
@@ -431,6 +446,9 @@ export interface WorkLinkDeriveInput {
   prStatus?: WorkLinkPrStatus;
   /** One of the link's decisions is still pending. */
   pendingDecision: boolean;
+  /** A pane handed the work out (the requester names a pane): what the worker
+   *  reports back waits on that pane, not on you. */
+  requesterPane?: boolean;
 }
 
 export interface DerivedWorkLinkState {
@@ -457,7 +475,8 @@ function prPhase(hasPr: boolean, pr: WorkLinkPrStatus | undefined): DerivedWorkL
  *   2. closed by hand                   → abandoned (only a merge revives it)
  *   3. a canceled task                  → abandoned
  *   4. a pending decision               → needs-you (decision)
- *   5. the task's state: input-required → needs-you, submitted → queued,
+ *   5. the task's state: input-required → needs-you (running when a pane
+ *      handed the work out: the report waits on that pane), submitted → queued,
  *      working → running, failed → blocked (task-failed),
  *      completed → the PR's phase (no PR → done; PR not read yet → review;
  *      failing checks / conflict / changes requested → blocked; closed → abandoned)
@@ -472,7 +491,7 @@ export function deriveWorkLinkState(input: WorkLinkDeriveInput): DerivedWorkLink
   if (pendingDecision) return { state: 'needs-you', reason: 'decision' };
   switch (a2aState) {
     case 'input-required':
-      return { state: 'needs-you', reason: 'input-required' };
+      return input.requesterPane ? { state: 'running' } : { state: 'needs-you', reason: 'input-required' };
     case 'submitted':
       return { state: 'queued' };
     case 'working':
@@ -491,8 +510,12 @@ export function deriveWorkLinkState(input: WorkLinkDeriveInput): DerivedWorkLink
     : { state: input.state };
 }
 
-/** deriveWorkLinkState over a stored link. */
-export function deriveLinkState(link: WorkLink, pendingDecision: boolean): DerivedWorkLinkState {
+/** Whether a pane is still there. A report to a pane that closed waits on you. */
+export type PaneLive = (workspaceId: string, paneId: string) => boolean;
+
+/** deriveWorkLinkState over a stored link. Without `paneLive` the requester's
+ *  pane is taken as still there (main, which cannot see panes). */
+export function deriveLinkState(link: WorkLink, pendingDecision: boolean, paneLive?: PaneLive): DerivedWorkLinkState {
   return deriveWorkLinkState({
     state: link.state,
     reason: link.reason,
@@ -501,5 +524,23 @@ export function deriveLinkState(link: WorkLink, pendingDecision: boolean): Deriv
     hasPr: !!link.pr,
     prStatus: link.prStatus,
     pendingDecision,
+    requesterPane: !!link.requester?.paneId && (paneLive?.(link.requester.workspaceId, link.requester.paneId) ?? true),
   });
+}
+
+/**
+ * The pane a link waits on when the worker reported back (input-required) to
+ * the pane that handed the work out: that pane acts next, not you. Null
+ * otherwise. Read it beside the derived state: a pending decision still makes
+ * the link yours.
+ */
+export function linkWaitsOnRequester(
+  link: Pick<WorkLink, 'a2aState' | 'requester'>,
+  paneLive?: PaneLive,
+): { workspaceId: string; paneId: string } | null {
+  const requester = link.requester;
+  return link.a2aState === 'input-required' && requester?.paneId
+    && (paneLive?.(requester.workspaceId, requester.paneId) ?? true)
+    ? { workspaceId: requester.workspaceId, paneId: requester.paneId }
+    : null;
 }

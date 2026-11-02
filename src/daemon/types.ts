@@ -262,6 +262,9 @@ export interface DaemonConfig {
      * `.buf` dump + sessions.json snapshot (crash-recovery freshness bound).
      */
     livenessIntervalSec?: number;
+    /** The liveness sweep's cadence while the native process table serves it
+     *  (Windows, no spawn): default 3 s, clamped 2–120 s. */
+    nativeLivenessIntervalSec?: number;
     snapshotIntervalSec?: number;
   };
   session: {
@@ -307,6 +310,13 @@ export interface DaemonConfig {
      * it off. Fractions are allowed. Backfilled from the default when absent.
      */
     hibernateIdleHours?: number;
+    /**
+     * Keep the older part of each new session's ring buffer compressed in
+     * memory (closed 256 KB chunks; the newest output stays uncompressed).
+     * Reads return the same bytes. Node terminal core only; the rust core
+     * ignores it. Off by default. Backfilled as `false` when absent.
+     */
+    ringCompression?: boolean;
   };
   /**
    * Channel retention policy. OPTIONAL — old config.json files predate it, so

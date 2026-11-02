@@ -389,8 +389,8 @@ describe('Codex 0.162 scrolled-back transcript', () => {
     expect(codexComposerEmpty(unknown)).toBe(false);
   });
 
-  it('sends into it when idle, and holds while the title spinner says Codex is still working', async () => {
-    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle';
+  it('sends into it when idle, and holds a queued send while the title spinner says Codex is still working', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle'; f.deps.idleOnly = true;
     f.show(empty());
     let title: { title: string; at: number } | null = { title: '⠼ Rust review | wmux', at: Date.now() };
     f.deps.readTitle = () => title;
@@ -402,6 +402,96 @@ describe('Codex 0.162 scrolled-back transcript', () => {
     title = { title: 'Rust review | wmux', at: Date.now() };
     expect(await deliverChatPrompt('conversation-1', 'again', f.deps)).toBe('sent');
     expect(f.write).toHaveBeenNthCalledWith(1, '\x1b[200~next\x1b[201~');
-    expect(f.write).toHaveBeenNthCalledWith(2, '\r');
+    expect(f.write).toHaveBeenNthCalledWith(2, '\t');
+  });
+});
+
+describe('Codex steer and next-turn keys (codex-cli 0.162.1)', () => {
+  // Captured live on codex-cli 0.162.1 (2026-10-31): mid-turn, the composer stays
+  // under the status row, empty, with the footer and hint below it.
+  const screen = (top: string) => Object.assign(
+    [top, '', '› Ask Codex to do anything', '', '  GPT-6-Luna medium · ~/work', '  ? for shortcuts'],
+    { undimmed: [top, '', '›', '', '  GPT-6-Luna medium · ~/work', '  ? for shortcuts'] });
+  const keys = (f: ReturnType<typeof fixture>) => f.write.mock.calls.map((call) => (call as unknown[])[0]);
+
+  it('a steer goes into the running turn with Enter, over the title spinner', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'running'; f.deps.steer = true;
+    f.show(screen('• Working (2s • esc to interrupt)'));
+    f.deps.readTitle = () => ({ title: '⠼ Rust review | wmux', at: Date.now() });
+    expect(await deliverChatPrompt('conversation-1', 'also check the tests', f.deps)).toBe('sent');
+    expect(keys(f)).toEqual(['\x1b[200~also check the tests\x1b[201~', '\r']);
+  });
+
+  it('a send during a turn goes in with Tab, which Codex queues; a queued one waits for the turn to end', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'running';
+    f.show(screen('• Working (2s • esc to interrupt)'));
+    let queued: boolean | undefined;
+    f.deps.onWrite = (stage, running) => { if (stage === 'submit') queued = running; };
+    expect(await deliverChatPrompt('conversation-1', 'then the docs', f.deps)).toBe('sent');
+    expect(keys(f)).toEqual(['\x1b[200~then the docs\x1b[201~', '\t']);
+    expect(queued).toBe(true);
+    const later = fixture(); later.state.slug = 'codex'; later.state.status = 'running'; later.deps.idleOnly = true;
+    later.show(screen('• Working (2s • esc to interrupt)'));
+    expect(await deliverChatPrompt('conversation-1', 'then the docs', later.deps)).toBe('busy');
+    expect(later.write).not.toHaveBeenCalled();
+  });
+
+  it('a steer mid-turn waits out a draft or a screen without the composer', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'running'; f.deps.steer = true;
+    const holds: string[] = [];
+    f.deps.onScreenHold = (why) => { holds.push(why); };
+    const draft = screen('• Working (2s • esc to interrupt)'); draft[2] = '› half-typed'; draft.undimmed[2] = '› half-typed';
+    f.show(draft);
+    expect(await deliverChatPrompt('conversation-1', 'now', f.deps)).toBe('busy');
+    f.show(['• Working (2s • esc to interrupt)', '', '  Select a file']);
+    expect(await deliverChatPrompt('conversation-1', 'now', f.deps)).toBe('blocked');
+    expect(holds).toEqual(['no-composer']);
+    // Once the turn is over, a draft is a draft.
+    f.state.status = 'idle'; f.show(draft);
+    expect(await deliverChatPrompt('conversation-1', 'now', f.deps)).toBe('unconfirmed');
+    expect(f.write).not.toHaveBeenCalled();
+  });
+
+  it('a next-turn delivery submits with Tab, which Codex queues if a turn has started', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle'; f.deps.idleOnly = true;
+    f.show(screen('• Done.'));
+    expect(await deliverChatPrompt('conversation-1', 'next', f.deps)).toBe('sent');
+    expect(keys(f)).toEqual(['\x1b[200~next\x1b[201~', '\t']);
+  });
+
+  it('a steer of a `!` or `/` command waits for the turn to end, then goes in with Enter', async () => {
+    for (const text of ['!git status', '/compact']) {
+      const f = fixture(); f.state.slug = 'codex'; f.state.status = 'running'; f.deps.steer = true;
+      f.show(screen('• Working (2s • esc to interrupt)'));
+      expect(await deliverChatPrompt('conversation-1', text, f.deps)).toBe('busy');
+      expect(f.write).not.toHaveBeenCalled();
+      f.state.status = 'idle'; f.show(screen('• Done.'));
+      expect(await deliverChatPrompt('conversation-1', text, f.deps)).toBe('sent');
+      expect(keys(f)).toEqual([`\x1b[200~${text}\x1b[201~`, '\r']);
+    }
+  });
+
+  it('a Tab while the title says Codex still works is reported as taken mid-turn', async () => {
+    const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle';
+    f.show(screen('• Done.'));
+    f.deps.readTitle = () => ({ title: '⠼ Rust review | wmux', at: Date.now() });
+    const submits: (boolean | undefined)[] = [];
+    f.deps.onWrite = (stage, queued) => { if (stage === 'submit') submits.push(queued); };
+    expect(await deliverChatPrompt('conversation-1', 'then the docs', f.deps)).toBe('sent');
+    expect(keys(f)).toEqual(['\x1b[200~then the docs\x1b[201~', '\t']);
+    expect(submits).toEqual([true]);
+  });
+
+  it('a `!` shell command or a `/` command keeps Enter, which Tab would not submit, and waits for the turn to end', async () => {
+    for (const text of ['  !git status', '/compact']) {
+      const f = fixture(); f.state.slug = 'codex'; f.state.status = 'idle'; f.deps.idleOnly = true;
+      f.show(screen('• Done.'));
+      expect(await deliverChatPrompt('conversation-1', text, f.deps)).toBe('sent');
+      expect(keys(f)).toEqual([`\x1b[200~${text}\x1b[201~`, '\r']);
+      const running = fixture(); running.state.slug = 'codex'; running.state.status = 'running';
+      running.show(screen('• Working (2s • esc to interrupt)'));
+      expect(await deliverChatPrompt('conversation-1', text, running.deps)).toBe('busy');
+      expect(running.write).not.toHaveBeenCalled();
+    }
   });
 });

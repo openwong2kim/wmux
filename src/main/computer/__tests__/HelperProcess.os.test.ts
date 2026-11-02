@@ -48,6 +48,15 @@ function makeHelper(mode: string, extra: Partial<ConstructorParameters<typeof He
   return { helper, requests, releases, configures };
 }
 
+async function dispositionOf(promise: Promise<unknown>): Promise<string | undefined> {
+  try {
+    await promise;
+    return 'resolved';
+  } catch (err) {
+    return err instanceof ComputerError ? err.disposition : `non-computer error: ${String(err)}`;
+  }
+}
+
 async function codeOf(promise: Promise<unknown>): Promise<string> {
   try {
     await promise;
@@ -91,6 +100,17 @@ describe('HelperProcess', () => {
     expect(helper.hello?.helperVersion).toBe('fake');
   });
 
+  it('reads deferForeground from the hello of the helper it starts, without sending a request', async () => {
+    const deferring = makeHelper('deferring');
+    expect(await deferring.helper.defersForeground()).toBe(true);
+    const plain = makeHelper('ok');
+    expect(await plain.helper.defersForeground()).toBe(false);
+    // No capabilities round trip: the hello alone answers it.
+    await deliberateSleep(200, 'negative: no capabilities request reaches either helper');
+    expect(deferring.requests()).toEqual([]);
+    expect(plain.requests()).toEqual([]);
+  });
+
   it('configures a helper that lists configure right after its hello, before the first request', async () => {
     let overlay = true;
     const { helper, requests, configures } = makeHelper('configurable', { configure: () => ({ overlay }) });
@@ -129,6 +149,39 @@ describe('HelperProcess', () => {
   it('carries a helper error code through', async () => {
     const { helper } = makeHelper('ok');
     expect(await codeOf(helper.request('fail' as never, {} as never))).toBe('element_stale');
+  });
+
+  it('says whether a failed input action may be retried: refused before it was sent, or after', async () => {
+    const scroll = (amount: number) => ({ snapshotId: 's', target: TARGET, index: 1, direction: 'down' as const, amount });
+    const { helper } = makeHelper('ok');
+    expect(await dispositionOf(helper.request('scroll', scroll(1)))).toBe('not_delivered');
+    expect(await dispositionOf(helper.request('scroll', scroll(2)))).toBe('delivered_unverified');
+    // Observation errors carry none.
+    expect(await dispositionOf(helper.request('fail' as never, {} as never))).toBeUndefined();
+    // A helper that never started got nothing.
+    const refused = makeHelper('ok', {
+      verify: async () => { throw new ComputerError('helper_unavailable', 'the computer-use helper failed its code-signature check'); },
+    });
+    expect(await dispositionOf(refused.helper.request('scroll', scroll(1)))).toBe('not_delivered');
+    // One that hung on the request may have sent it. It keeps its timeout
+    // code, and it is killed, so it cannot post the input late, after the
+    // agent looked and retried.
+    const spawned: ChildProcessWithoutNullStreams[] = [];
+    const hung = makeHelper('hang', {
+      timeoutFor: () => 300,
+      spawn: (cmd, args) => {
+        const child = spawn(cmd, [...args], { stdio: 'pipe', windowsHide: true });
+        spawned.push(child);
+        return child;
+      },
+    });
+    const click = hung.helper.request('click', {
+      snapshotId: 's', target: TARGET, index: 1, button: 'left', clickCount: 1, modifiers: [],
+    });
+    const failed = await click.catch((err: unknown) => err);
+    expect(failed).toBeInstanceOf(ComputerError);
+    expect((failed as ComputerError).toPayload()).toMatchObject({ code: 'timeout', disposition: 'delivered_unverified' });
+    expect(await waitFor(() => spawned[0].exitCode !== null || spawned[0].signalCode !== null)).toBe(true);
   });
 
   it('refuses a helper that speaks another protocol version (after one retry)', async () => {
@@ -421,6 +474,42 @@ describe('HelperProcess', () => {
     helpers.push(helper);
     expect(await codeOf(helper.request('listApps', {}))).toBe('helper_unavailable');
     expect(logged.some((m) => m.includes('refusing to run elevated'))).toBe(true);
+  });
+
+  it('a request queued while defersForeground() starts the helper waits for its configure', async () => {
+    // defersForeground() starts the helper outside the request queue. The
+    // helper is `running` from its hello on, but its configure is still in
+    // flight: a queued request written then would replace that pending request
+    // and leave the start unsettled for good.
+    const sent: Array<{ id: number; method: string }> = [];
+    let say: (o: unknown) => void = () => undefined;
+    const helper = new HelperProcess({
+      command: 'unused',
+      configure: () => ({ overlay: true }),
+      spawn: () => {
+        const emitter = new EventEmitter() as unknown as ChildProcessWithoutNullStreams;
+        const stdout = new PassThrough();
+        const stdin = new PassThrough();
+        stdin.on('data', (d: Buffer) => { for (const line of String(d).split('\n').filter(Boolean)) sent.push(JSON.parse(line)); });
+        Object.assign(emitter, { stdout, stdin, stderr: new PassThrough(), exitCode: null, signalCode: null, kill: () => true });
+        say = (o) => stdout.write(`${JSON.stringify(o)}\n`);
+        queueMicrotask(() => say({ type: 'hello', protocolVersion: 2, os: 'darwin', helperVersion: 'x', capabilities: { actions: ['configure'], modes: [], permissions: {} } }));
+        return emitter;
+      },
+    });
+    helpers.push(helper);
+    const defers = helper.defersForeground();
+    expect(await waitFor(() => sent.length === 1)).toBe(true);
+    expect(sent[0].method).toBe('configure');
+    const apps = helper.request('listApps', {});
+    await deliberateSleep(20, 'proves a negative: nothing else may be written while configure is unanswered');
+    expect(sent.map((r) => r.method)).toEqual(['configure']);
+    say({ id: sent[0].id, ok: true, result: {} });
+    expect(await defers).toBe(false);
+    expect(await waitFor(() => sent.length === 2)).toBe(true);
+    expect(sent[1].method).toBe('listApps');
+    say({ id: sent[1].id, ok: true, result: { apps: [] } });
+    expect(await apps).toEqual({ apps: [] });
   });
 
   it('a dispose during the start-up configure reports shutting_down', async () => {

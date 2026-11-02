@@ -2413,10 +2413,10 @@ final anyway):
 
 | `deliver` | When it is typed |
 | --- | --- |
-| `next-turn` | After the running turn ends, one item per ended turn, as above. The default |
-| `steer` | Claude only: as soon as the pane allows, **during** the running turn. It goes into Claude's own composer queue, which applies it at the next tool boundary, exactly like a message typed into a running Claude in Terminal |
+| `next-turn` | After the running turn ends, one item per ended turn, as above. The default. On Codex it is submitted with Tab, which Codex queues for the next turn if one started meanwhile; a `!` shell command or a `/` command, which Tab does not submit, keeps Enter |
+| `steer` | Claude and Codex: as soon as the pane allows, **during** the running turn. On Claude it goes into Claude's own composer queue, which applies it at the next tool boundary, exactly like a message typed into a running Claude in Terminal. On Codex it is submitted with Enter, which Codex applies to the running turn (codex-cli 0.162.1); a `!` shell command or a `/` command waits for the turn's end instead |
 
-On a Codex or OpenCode pane, `steer` behaves as `next-turn`, and the item
+On an OpenCode pane, `steer` behaves as `next-turn`, and the item
 reads `deliver:"next-turn"` everywhere (send answer, `/turns`, SSE, the PATCH
 answer), so the app can tell that "send now" was not available there.
 
@@ -2429,14 +2429,14 @@ and in `/turns`. When nothing would hold it, it is sent directly, as without
 the capability. Omitted `deliver` is `next-turn`.
 
 **Order.** The queue stays FIFO per pane, with one exception: while a Claude
-turn runs, the oldest `steer` item goes ahead of `next-turn` items, of any
+or Codex turn runs, the oldest `steer` item goes ahead of `next-turn` items, of any
 owner, that wait for the turn's end. A steer item is not held by them, so a
 pane whose queue is blocked by the any-owner rule can be unblocked by
 switching your item to steer. When the turn is not running, the head is
 delivered first, whatever its mode.
 
 **Same safety as a direct send.** A steer item is typed through the same
-guarded paste: bracketed paste, then Enter; only into Claude's empty composer
+guarded paste: bracketed paste, then Enter; only into the agent's empty composer
 on screen (a draft there holds it); never while an approval, a dialog or a
 screen without the composer is up (it is held, as `queued`, and fails as
 `blocked` or `prompt-active` only when its idle lifetime runs out); never while
@@ -2454,7 +2454,7 @@ other body is 400 `invalid-chat-request`. There is no switch back.
 
 | Status | Body |
 | --- | --- |
-| 200 | `{state:"queued", deliver, clientMessageId}`: `deliver:"steer"`, also on a repeat; `deliver:"next-turn"` on Codex/OpenCode (unchanged). The delivery itself follows on SSE `chat.queue` |
+| 200 | `{state:"queued", deliver, clientMessageId}`: `deliver:"steer"`, also on a repeat; `deliver:"next-turn"` on OpenCode (unchanged). The delivery itself follows on SSE `chat.queue` |
 | 409 | `already-delivered` `{state}` |
 | 409 | `delivery-in-progress` `{state}` |
 | 409 | `queue-item-final` `{state, reason}`: `canceled`, `failed` or `uncertain` |
@@ -6256,7 +6256,7 @@ transcript), then the Claude/Codex transcript file — and adds `chat` to every
   per token) and absent for OpenCode. A `managed` binding has `history:true`
   and every other capability `false` or absent. `cancel` is `false` unless you
   sent the `chat-cancel` capability (see Chat cancel); for OpenCode it also
-  needs a plugin that advertises abort. `queue:true` (live Claude) means a send
+  needs a plugin that advertises abort. `queue:true` (live Claude or Codex) means a send
   during a running turn can be accepted and answered with `queued:true`. A
   `chat-queue` caller sees `queue` for all three agents instead (see Chat queue).
 - **`blocked` is authoritative and computed at read time**: a pending approval

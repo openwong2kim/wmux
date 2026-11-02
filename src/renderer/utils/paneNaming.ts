@@ -128,3 +128,21 @@ export function paneLabelRejectionKey(code: string | undefined): TranslationKey 
     ? LABEL_REJECTION_KEYS[code as PaneLabelRejection]
     : 'pane.renameError.failed';
 }
+
+/**
+ * How an A2A party is named in the message a receiving agent reads:
+ * `<workspace>.<pane>` (e.g. `Simply.release`), so a pane can tell which pane
+ * of a workspace is talking. Falls back to the bare workspace name when the
+ * pane is unknown (an unverified sender, a pty that no open pane holds).
+ * Display only: task metadata keeps the workspace name.
+ */
+export function a2aPartyName(
+  ws: WorkspacePaneOwner & { name: string; wsOrdinal?: number },
+  paneLabel: Record<string, string> | undefined,
+  surfaceAgent: Record<string, { slug?: AgentSlug }> | undefined,
+  ptyId?: string,
+): string {
+  if (!ptyId) return ws.name;
+  const leaf = getWorkspaceLeafPanes(ws).find((l) => l.surfaces.some((s) => s.ptyId === ptyId));
+  return leaf ? `${ws.name}.${leafDisplayName(paneLabel, ws, leaf, activeAgentSlug(surfaceAgent, leaf))}` : ws.name;
+}

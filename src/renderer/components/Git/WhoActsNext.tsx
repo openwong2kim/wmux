@@ -1,21 +1,26 @@
 // "Who acts next" on a PR, in the detail header's reserved slot: from the most
 // recently updated active work link on the PR (main owns links; the renderer
 // reads them and re-reads when they change). You, with why; the agent or
-// workspace doing the work, working or with why it stopped; nothing when no
-// work is linked or it is finished.
+// workspace doing the work, working or with why it stopped; the pane it
+// reported back to (a company's CEO, say); nothing when no work is linked or
+// it is finished.
 import { agentSlugToDisplay, isAgentSlug } from '../../../shared/agentIdentity';
 import { useEffect, useState } from 'react';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
 import { prUrlParts } from '../../../shared/prDragRef';
 import { whoActsNext } from '../../../shared/prReview';
+import { paneLiveIn } from '../FleetView/fleetTickets';
+import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import type { WorkLink, WorkLinkState } from '../../../shared/workLink';
+import { paneTag } from '../../utils/paneNaming';
 
 const ACTIVE: WorkLinkState[] = ['queued', 'running', 'needs-you', 'blocked', 'review'];
 
 export function WhoActsNext({ url }: { url: string }): React.ReactElement | null {
   const t = useT();
   const workspaces = useStore((s) => s.workspaces);
+  const paneLabel = useStore((s) => s.paneLabel);
   const [link, setLink] = useState<WorkLink | null>(null);
 
   useEffect(() => {
@@ -44,11 +49,19 @@ export function WhoActsNext({ url }: { url: string }): React.ReactElement | null
     };
   }, [url]);
 
-  const next = link ? whoActsNext(link) : null;
+  const next = link ? whoActsNext(link, paneLiveIn(workspaces)) : null;
   if (!link || !next) return null;
   let text: string;
   if (next.actor === 'you') {
     text = t('git.next.you', { reason: t(`git.next.reason.${next.reason}`) });
+  } else if (next.actor === 'requester') {
+    // The company's coordinator reads as the CEO; any other pane by its name.
+    const ws = workspaces.find((w) => w.id === next.workspaceId);
+    const leaf = ws ? getWorkspaceLeafPanes(ws).find((l) => l.id === next.paneId) : undefined;
+    const name = ws?.company?.coordinatorPaneId === next.paneId
+      ? t('company.ceo')
+      : paneLabel[next.paneId]?.trim() || (ws && leaf ? paneTag(ws, leaf) : '') || ws?.name || t('git.next.agent');
+    text = t('git.next.requester', { name });
   } else {
     const agent = link.agent ? (isAgentSlug(link.agent) ? agentSlugToDisplay(link.agent) : link.agent) : '';
     const name = agent || workspaces.find((w) => w.id === link.owner.workspaceId)?.name || t('git.next.agent');

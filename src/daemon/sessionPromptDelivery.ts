@@ -29,8 +29,9 @@ export interface ScheduledPromptDeliveryDeps {
   /** Returns false if the session disappeared before this write. */
   write: (data: string) => boolean;
   delay?: (ms: number) => Promise<void>;
-  /** Native composer submission, when different from Claude multiline input. */
-  submitKeys?: '\r';
+  /** Native composer submission, when different from Claude multiline input
+   *  (Codex: Tab queues a prompt instead of steering a running turn). */
+  submitKeys?: '\r' | '\t';
   /** Chat only: the agent's composer queues a prompt typed during a turn. */
   acceptRunning?: boolean;
   /** The usage-limit continue only: a turn that died on the limit leaves the

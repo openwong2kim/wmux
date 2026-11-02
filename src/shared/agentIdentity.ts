@@ -109,8 +109,9 @@ export interface AgentTerminalChatSpec {
   readonly send?: true;
   readonly cancel?: true;
   readonly images?: true;
-  /** The agent's own composer queues a prompt typed mid-turn, so a queued
-   *  phone message can also be steered into the running turn. */
+  /** The agent's own composer takes a prompt typed mid-turn into the running
+   *  turn (Claude queues it for the next tool boundary, Codex steers the turn
+   *  with it), so a queued phone message can also be steered into that turn. */
   readonly queue?: true;
 }
 
@@ -375,7 +376,9 @@ export const AGENT_IDENTITIES = [
     },
     tuiComposer: true,
     sendQueue: true,
-    terminalChat: { send: true, cancel: true },
+    // queue: measured on codex-cli 0.162.1, Enter typed mid-turn goes into the
+    // running turn, and Tab queues the prompt for the next one.
+    terminalChat: { send: true, cancel: true, queue: true },
     accounts: 'account-store',
     tokenUsage: true,
     modelCatalog: true,

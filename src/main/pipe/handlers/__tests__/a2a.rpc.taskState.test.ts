@@ -205,7 +205,8 @@ describe('reopen — committed in the daemon first', () => {
     });
 
     expect(res.ok).toBe(true);
-    expect(calls).toEqual([{ method: 'a2a.task.reopen', params: { taskId: 't9', workspaceId: 'ws-a', callerPaneId: 'pane-from' } }]);
+    // The reply first reads the task for a hold on its blockers.
+    expect(calls.filter((c) => c.method !== 'a2a.task.query')).toEqual([{ method: 'a2a.task.reopen', params: { taskId: 't9', workspaceId: 'ws-a', callerPaneId: 'pane-from' } }]);
     const real = realCalls('a2a.task.send');
     expect(real).toHaveLength(1);
     expect(real[0].daemonReopenedTask).toEqual(reopenedTask);
@@ -246,7 +247,7 @@ describe('reopen — committed in the daemon first', () => {
     expect(real[0].localReopen).toBe(true);
   });
 
-  it('no reopen wanted: the daemon is not touched', async () => {
+  it('no reopen wanted: the daemon is only read, for a hold on blockers', async () => {
     const calls: DaemonCall[] = [];
     rendererForReopen(false);
     const router = setup(async (method, params) => {
@@ -254,7 +255,7 @@ describe('reopen — committed in the daemon first', () => {
       return { ok: true };
     });
     await router.dispatch({ id: 's5', method: 'a2a.task.send', params: { workspaceId: 'ws-a', taskId: 't9', message: 'x' } });
-    expect(calls).toEqual([]);
+    expect(calls.map((c) => c.method)).toEqual(['a2a.task.query']);
     expect(realCalls('a2a.task.send')[0]).not.toHaveProperty('daemonReopenedTask');
   });
 
@@ -439,5 +440,64 @@ describe('a2a.task.cancel — the caller pane decides, the worker waits for the 
     expect(sent.daemonCommitted).toBeUndefined();
     expect(sent.committedTask).toBeUndefined();
     expect(worker.cancel).toHaveBeenCalledWith('t1');
+  });
+});
+
+describe('a2a.task.update — the caller pane company seat comes from the pane tree', () => {
+  beforeEach(() => sendToRendererMock.mockReset());
+
+  const okDaemon = (calls: DaemonCall[]) => async (method: string, params: Record<string, unknown>) => {
+    calls.push({ method, params });
+    // The task read before a done: an ordinary task, so no PR is checked.
+    if (method === 'a2a.task.query') return { ok: true, tasks: [{ id: 't1', history: [] }] };
+    return { ok: true, task: { id: 't1', status: { state: params.status, timestamp: 'x' }, metadata: { updatedAt: 'x' } } };
+  };
+  const panes = [
+    { id: 'pane-ceo', surfacePtyIds: ['pty-ceo'], companySeat: 'coordinator' },
+    { id: 'pane-b', surfacePtyIds: ['pty-b'], companySeat: 'staff' },
+  ];
+  const done = (over: Record<string, unknown>) => ({
+    taskId: 't1', workspaceId: 'ws-home', status: 'completed', evidence: { summary: 'checked', items: [] }, ...over,
+  });
+
+  it('tells the daemon the seat of the resolved caller pane', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes(panes);
+    const router = setup(okDaemon(calls));
+    await router.dispatch({ id: 'k1', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo' }) });
+    await router.dispatch({ id: 'k1b', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-b' }) });
+    // The coordinator's done first reads the task (the PR check); only the updates matter here.
+    const updates = calls.filter((c) => c.method === 'a2a.task.update');
+    expect(updates[0].params.callerPaneId).toBe('pane-ceo');
+    expect(updates[0].params.callerCompanySeat).toBe('coordinator');
+    expect(updates[1].params.callerCompanySeat).toBe('staff');
+    expect(rendererUpdateCalls()[0]).not.toHaveProperty('callerCompanySeat');
+  });
+
+  it('sends no seat for a workspace that is not a company', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes([{ id: 'pane-x', surfacePtyIds: ['pty-x'] }]);
+    const router = setup(okDaemon(calls));
+    await router.dispatch({ id: 'k0', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-x' }) });
+    const update = calls.find((c) => c.method === 'a2a.task.update');
+    expect(update?.params.callerPaneId).toBe('pane-x');
+    expect(update?.params).not.toHaveProperty('callerCompanySeat');
+  });
+
+  it('never takes the seat from the caller', async () => {
+    const calls: DaemonCall[] = [];
+    rendererWithPanes(panes);
+    const router = setup(okDaemon(calls));
+    // A staff pane, a caller with no pane, and an unreadable pane tree all claim the coordinator.
+    await router.dispatch({ id: 'k2', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-b', callerCompanySeat: 'coordinator' }) });
+    await router.dispatch({ id: 'k3', method: 'a2a.task.update', params: done({ callerCompanySeat: 'coordinator' }) });
+    rendererWithPanes({ error: 'pane gate not ready', retryable: true });
+    await router.dispatch({ id: 'k4', method: 'a2a.task.update', params: done({ senderPtyId: 'pty-ceo', callerCompanySeat: 'coordinator' }) });
+    const updates = calls.filter((c) => c.method === 'a2a.task.update');
+    expect(updates).toHaveLength(3);
+    expect(updates[0].params.callerCompanySeat).toBe('staff');
+    expect(updates[1].params).not.toHaveProperty('callerCompanySeat');
+    expect(updates[2].params).not.toHaveProperty('callerCompanySeat');
+    for (const sent of rendererUpdateCalls()) expect(sent).not.toHaveProperty('callerCompanySeat');
   });
 });

@@ -322,7 +322,7 @@ const A2A_TASK_UPDATE_SHAPE = {
   task_id: z.string().describe('Task ID to update'),
   status: z
     .enum(['working', 'completed', 'failed', 'input-required', 'canceled'])
-    .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working; any open state->canceled (drop a superseded task).'),
+    .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working|completed; any open state->canceled (drop a superseded task).'),
   message: z.string().optional().describe('Optional status message'),
   artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
   artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),
@@ -2333,7 +2333,7 @@ server.tool(
 // 5. a2a_task_update — Update task status
 server.tool(
   'a2a_task_update',
-  'Update a task\'s status. Only the receiver workspace can change it; a pane-pinned task only from that pane, or from any pane of the workspace once it is closed (orphaned: true in a2a_task_query). Transitions follow a state machine (see `status`): completed/failed/canceled are final, and a rejected transition names the allowed next states. `evidence` is required for completed, failed, and canceled; a rejection names what to attach. A completion with no verified item (command+passed, or inspection/artifact+verified) is still accepted but graded unverified (verifiedItemCount=0). Optionally attach an artifact on completion.',
+  'Update a task\'s status. Only the receiver workspace can change it; a pane-pinned task only from that pane, or from any pane of the workspace once it is closed (orphaned: true in a2a_task_query). A company task is completed only by its CEO pane or the human; its seat reports input-required. Transitions follow a state machine (see `status`): completed/failed/canceled are final, and a rejected transition names the allowed next states. `evidence` is required for completed, failed, and canceled; a rejection names what to attach. A completion with no verified item (command+passed, or inspection/artifact+verified) is still accepted but graded unverified (verifiedItemCount=0). Optionally attach an artifact on completion.',
   A2A_TASK_UPDATE_SHAPE,
   async ({ task_id, status, message, artifact_name, artifact_data, evidence }) => {
     const wsId = await requireWorkspaceId();

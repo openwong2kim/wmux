@@ -6,7 +6,7 @@ import os from 'node:os';
 import { AppendOnlyLog } from '../../eventlog/AppendOnlyLog';
 import { A2aTaskService, type TransitionInput } from '../A2aTaskService';
 import type { A2aTaskTransitionPayload } from '../../../shared/a2aEventlog';
-import type { CompletionEvidence } from '../../../shared/types';
+import type { CompletionEvidence, Message } from '../../../shared/types';
 import type { EventEnvelope } from '../../../shared/eventlog';
 import { panePrincipalId } from '../../../shared/principals';
 import { COMPANY_BRIEF_KIND } from '../../../shared/company';
@@ -976,5 +976,112 @@ describe('company mode: a company task does not end as canceled through an updat
       taskId: 'task-dept-u', to: 'canceled', callerWorkspaceId: 'ws-home', trustedLane: true, evidence: { summary: 'stopped by the owner', items: [] },
     });
     expect(trusted.ok).toBe(true);
+  });
+});
+
+describe('company mode: a company task is marked done by its coordinator or the human', () => {
+  const evidence: CompletionEvidence = { summary: 'checked the report', items: [{ kind: 'inspection', status: 'unverified', summary: 'PR head read' }] };
+
+  /** A lateral brief, #m2 to #m1: the coordinator (pane-ceo) is neither party. */
+  async function seedCompanyTask(svc: A2aTaskService, history: Message[] = [{
+    kind: 'message',
+    messageId: 'msg-d',
+    role: 'user',
+    parts: [{ kind: 'data', data: { kind: COMPANY_BRIEF_KIND, v: 1, goal: 'g', scope: 's', acceptance: 'a', verify: 'v', report: 'r' } }],
+  }]): Promise<void> {
+    const created = await svc.createTask({
+      id: 'task-done',
+      title: 'T',
+      from: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-m2' },
+      to: { workspaceId: 'ws-home', name: 'Eng', paneId: 'pane-m1' },
+      history,
+    });
+    expect(created.ok).toBe(true);
+    const working = await svc.transition({ taskId: 'task-done', to: 'working', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m1' } });
+    expect(working.ok).toBe(true);
+  }
+
+  it('refuses the receiver pane and tells it to report with input-required', async () => {
+    const svc = newService(newLog());
+    await seedCompanyTask(svc);
+    const res = await svc.transition({
+      taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m1' }, callerCompanySeat: 'staff', evidence,
+    });
+    expect(!res.ok && res.error).toContain('coordinator (CEO) pane or the human');
+    expect(!res.ok && res.error).toContain('input-required');
+    expect(svc.getTask('task-done')?.status.state).toBe('working');
+    // failed stays the receiver's.
+    const failed = await svc.transition({
+      taskId: 'task-done', to: 'failed', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m1' }, evidence: { summary: 'blocked', items: [] },
+    });
+    expect(failed.ok).toBe(true);
+  });
+
+  it('lets the coordinator mark the report done from its own pane, stamped as that pane', async () => {
+    const log = newLog();
+    const svc = newService(log);
+    await seedCompanyTask(svc);
+    const reported = await svc.transition({
+      taskId: 'task-done', to: 'input-required', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m1' },
+    });
+    expect(reported.ok).toBe(true);
+    const done = await svc.transition({
+      taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator', evidence,
+    });
+    expect(done.ok).toBe(true);
+    expect(svc.getTask('task-done')?.status.state).toBe('completed');
+    const envelopes = log.readAllRecords().filter((r) => r.domain === 'a2a'
+      && (r.payload as { kind?: string; to?: string }).kind === 'task.transition'
+      && (r.payload as { to?: string }).to === 'completed');
+    expect(envelopes).toHaveLength(1);
+    expect(envelopes[0].authContext.principalId).toBe(panePrincipalId('ws-home', 'pane-ceo'));
+  });
+
+  it('gives the coordinator nothing but the done', async () => {
+    const svc = newService(newLog());
+    await seedCompanyTask(svc);
+    // Its flag needs a resolved pane, and it moves no other state of a seat's task.
+    const noPane = await svc.transition({ taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', callerCompanySeat: 'coordinator', evidence });
+    expect(!noPane.ok && noPane.error).toContain('coordinator (CEO) pane or the human');
+    const report = await svc.transition({
+      taskId: 'task-done', to: 'input-required', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator',
+    });
+    expect(!report.ok && report.error).toContain('not the addressed receiver pane');
+    // Another workspace's coordinator fails the receiver-workspace check.
+    const elsewhere = await svc.transition({
+      taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-ops', callerAddr: { paneId: 'pane-ops' }, callerCompanySeat: 'coordinator', evidence,
+    });
+    expect(!elsewhere.ok && elsewhere.error).toContain('is not the receiver');
+  });
+
+  it('lets the trusted lane mark it done, which is all a vacant seat leaves', async () => {
+    const svc = newService(newLog());
+    await seedCompanyTask(svc);
+    // A vacant seat: every pane of the company reads as staff.
+    const sibling = await svc.transition({
+      taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m2' }, callerCompanySeat: 'staff', evidence,
+    });
+    expect(sibling.ok).toBe(false);
+    const trusted = await svc.transition({ taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', trustedLane: true, evidence });
+    expect(trusted.ok).toBe(true);
+  });
+
+  it('lets a receiver in no company finish a briefed task itself: it has no CEO to report to', async () => {
+    const svc = newService(newLog());
+    await seedCompanyTask(svc);
+    const res = await svc.transition({ taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m1' }, evidence });
+    expect(res.ok).toBe(true);
+  });
+
+  it('leaves an ordinary task to its receiver, and the receiver may complete from input-required', async () => {
+    const svc = newService(newLog());
+    await seedCompanyTask(svc, [{ kind: 'message', messageId: 'msg-p', role: 'user', parts: [{ kind: 'text', text: 'hi' }] }]);
+    const coordinator = await svc.transition({
+      taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-ceo' }, callerCompanySeat: 'coordinator', evidence,
+    });
+    expect(!coordinator.ok && coordinator.error).toContain('not the addressed receiver pane');
+    await svc.transition({ taskId: 'task-done', to: 'input-required', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m1' } });
+    const receiver = await svc.transition({ taskId: 'task-done', to: 'completed', callerWorkspaceId: 'ws-home', callerAddr: { paneId: 'pane-m1' }, evidence });
+    expect(receiver.ok).toBe(true);
   });
 });

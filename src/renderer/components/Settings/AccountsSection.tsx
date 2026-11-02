@@ -5,6 +5,7 @@ import type { AccountUsageEntry } from '../../../main/account/AccountUsageServic
 import { accountGroupOf, groupAccounts, MAX_ACCOUNT_GROUP_CHARS } from '../../../shared/accountGroup';
 import { t } from '../../i18n';
 import { useT } from '../../hooks/useT';
+import { usageWindowsText } from '../StatusBar/UsageWidget';
 import Badge from '../ui/Badge';
 import Button from '../ui/Button';
 import Checkbox from '../ui/Checkbox';
@@ -60,9 +61,9 @@ function UsageBit({ entry }: { entry: AccountUsageEntry | undefined }): React.Re
     const s = entry.snapshot;
     return (
       <span className="flex items-center gap-1 text-[11px] text-[var(--text-sub)] tabular-nums">
-        <span style={{ color: pctColor(s.sessionPct) }}>5h {s.sessionPct}%</span>
-        <span className="text-[var(--text-subtle)]">·</span>
-        <span style={{ color: pctColor(s.weeklyPct) }}>7d {s.weeklyPct}%</span>
+        {s.sessionPct !== undefined && <span style={{ color: pctColor(s.sessionPct) }}>5h {s.sessionPct}%</span>}
+        {s.sessionPct !== undefined && s.weeklyPct !== undefined && <span className="text-[var(--text-subtle)]">·</span>}
+        {s.weeklyPct !== undefined && <span style={{ color: pctColor(s.weeklyPct) }}>7d {s.weeklyPct}%</span>}
         <span className="text-[var(--text-subtle)]" title={t('accounts.updatedTitle', { age: fmtAge(entry.fetchedAtMs) })}>· {fmtAge(entry.fetchedAtMs)}</span>
       </span>
     );
@@ -75,7 +76,7 @@ function UsageBit({ entry }: { entry: AccountUsageEntry | undefined }): React.Re
   return (
     <span className="flex items-center gap-1 text-[11px] text-[var(--text-sub)] tabular-nums">
       {entry.snapshot && (
-        <span title={t('accounts.lastKnownTitle')}>5h {entry.snapshot.sessionPct}% · 7d {entry.snapshot.weeklyPct}% ({t('accounts.stale')})</span>
+        <span title={t('accounts.lastKnownTitle')}>{usageWindowsText(entry.snapshot)} ({t('accounts.stale')})</span>
       )}
       {reason && <span>{reason}</span>}
     </span>
