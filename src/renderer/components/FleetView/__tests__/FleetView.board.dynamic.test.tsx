@@ -87,14 +87,14 @@ afterEach(() => {
 });
 
 describe('FleetView — Board layout', () => {
-  it('draws four columns in order, each card in the column of its section', async () => {
+  it('draws To hand out (empty, as the way to add) and the four status columns in order, each card in the column of its section', async () => {
     act(() => useStore.getState().setFleetLayout('board'));
     mount();
     await flushRaf();
     expect(container.querySelector('[data-fleet-view]')?.getAttribute('data-layout')).toBe('board');
     const columns = [...container.querySelectorAll<HTMLElement>('[data-board-column]')];
-    expect(columns.map((c) => c.dataset.boardColumn)).toEqual(['running', 'needsYou', 'finished', 'idle']);
-    expect(columns.map((c) => c.getAttribute('aria-label'))).toEqual(['Running', 'Needs you', 'Finished', 'Idle']);
+    expect(columns.map((c) => c.dataset.boardColumn)).toEqual(['handOut', 'running', 'needsYou', 'finished', 'idle']);
+    expect(columns.map((c) => c.getAttribute('aria-label'))).toEqual(['To hand out', 'Running', 'Needs you', 'Finished', 'Idle']);
     const ptysIn = (column: string) => [...container.querySelectorAll<HTMLElement>(`[data-board-column="${column}"] [data-fleet-card]`)]
       .map((el) => el.dataset.ptyId);
     expect(ptysIn('needsYou')).toEqual(['pty-1']);

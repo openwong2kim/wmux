@@ -26,7 +26,7 @@ import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import PresetPicker from '../Sidebar/PresetPicker';
 import {
-  BOARD_COLUMNS, boardGrid, buildBoardColumns, fleetAgentCount, moveInList, moveOnBoard, rowApprovalIndex, visibleChips,
+  BOARD_COLUMNS, boardGrid, buildBoardColumns, fleetAgentCount, moveInList, moveOnBoard, rowApprovalIndex, visibleChips, visibleFilterChips,
   type BoardChip, type BoardColumn, type BoardItem, type BoardMove, type ListMove,
 } from './fleetBoardModel';
 import SegmentedControl from '../ui/SegmentedControl';
@@ -45,7 +45,9 @@ import { fleetTitle, matchesFleetFilter, type FleetFilter } from './fleetPresent
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { IconCheck, IconChevron, IconPlus } from '../icons';
 // Read-only: the readers of delegated work and pending decisions.
-import { useMoaDecisions, useWorkLinks } from './useFleetSources';
+import { useHandOutItems, useMoaDecisions, useWorkLinks } from './useFleetSources';
+import { HandOutCard, HandOutRing, handOutKey } from './HandOutList';
+import type { HandOutEntry } from '../../../shared/handOut';
 import { buildFleetTickets, loadSeenReports, openTicketFor, paneLiveIn, saveSeenReports, ticketAttention, type FleetTicket } from './fleetTickets';
 import { TicketDetail, TicketRow, ticketKey } from './TicketList';
 import FleetRequestPanel from './FleetRequestPanel';
@@ -72,6 +74,7 @@ const FOCUS_REVIEW_WAIT_MS = 5_000;
 
 /** A board column's head reads its filter chip's word, so the two match. */
 const BOARD_HEAD_KEY: Record<BoardColumn, string> = {
+  handOut: 'fleet.handOut.title',
   needsYou: 'fleet.section.needsYou',
   running: 'fleet.section.running',
   finished: 'fleet.filter.finished',
@@ -82,6 +85,8 @@ const BOARD_HEAD_KEY: Record<BoardColumn, string> = {
 const IDLE_TOGGLE_KEY = 'fleet:idle-toggle';
 /** Roving key of the collapsed "Finished N" row. */
 const FINISHED_TOGGLE_KEY = 'fleet:finished-toggle';
+/** Roving key of the collapsed "To hand out N" row. */
+const HAND_OUT_TOGGLE_KEY = 'fleet:hand-out-toggle';
 
 /** Fleet is a rail page beside the tools dock (the dock stays live next to
  * it). RailPage owns its positioning, so opening it never resizes terminal
@@ -297,6 +302,21 @@ export default function FleetView() {
     () => (filter === 'tickets' ? tickets.filter(matchesTicket) : []),
     [tickets, filter, matchesTicket],
   );
+  // To hand out: work nobody has been given yet. Quiet like a queued ticket
+  // (its own filter and section, no badge, count or toast); on the board it is
+  // the first column. The section folds like Idle, open while searching or
+  // filtered to it.
+  const handOutItems = useHandOutItems(true);
+  const visibleHandOut = useMemo(() => {
+    if (filter !== 'all' && filter !== 'handOut') return [];
+    const term = query.trim().toLocaleLowerCase();
+    return !term ? handOutItems : handOutItems.filter((item) => [item.title, item.folder, item.agent, item.note]
+      .some((value) => value?.toLocaleLowerCase().includes(term)));
+  }, [handOutItems, filter, query]);
+  const [handOutExpanded, setHandOutExpanded] = useState(false);
+  const handOutForced = filter === 'handOut' || query.trim() !== '';
+  const handOutShown = handOutExpanded || handOutForced;
+  const handOutToggleShown = visibleHandOut.length > 0 && !handOutForced;
   // A ticket asks for the operator only while a decision of its waits, and
   // once with its final report (until viewed). A decision joins Needs you; a
   // final report gets its own marked block (it is a read, not a decision);
@@ -338,9 +358,9 @@ export default function FleetView() {
   // nothing folded. The Tickets filter stays a list (tickets are not agents).
   const boardColumns = useMemo(() => (fleetLayout !== 'board' || filter === 'tickets' ? null : buildBoardColumns(
     visibleGroups,
-    { decisions: visibleDecisionTickets, reports: visibleReportTickets, review: visibleReview },
-    { review: reviewRowKey, ticket: ticketKey },
-  )), [fleetLayout, filter, visibleGroups, visibleDecisionTickets, visibleReportTickets, visibleReview]);
+    { decisions: visibleDecisionTickets, reports: visibleReportTickets, review: visibleReview, handOut: visibleHandOut },
+    { review: reviewRowKey, ticket: ticketKey, handOut: handOutKey },
+  )), [fleetLayout, filter, visibleGroups, visibleDecisionTickets, visibleReportTickets, visibleReview, visibleHandOut]);
   const grid = useMemo(() => (boardColumns ? boardGrid(boardColumns) : null), [boardColumns]);
   // The agent rows on screen, in either layout.
   const visibleRows = useMemo(() => (!boardColumns ? listRows
@@ -349,9 +369,10 @@ export default function FleetView() {
 
   // Roving order = DOM order: needs-you rows and decision tickets, final
   // reports, ready-to-review rows, the finished toggle and its rows, running
-  // rows, the idle toggle and its rows — or, on the Tickets filter, the
-  // tickets. Keys are pane ids, review keys, ticket keys and two sentinels.
-  // On the board it is column by column.
+  // rows, the idle toggle and its rows, the To hand out toggle and its items
+  // — or, on the Tickets filter, the tickets. Keys are pane ids, review keys,
+  // ticket keys, hand-out keys and three sentinels. On the board it is column
+  // by column.
   const rovingKeys = useMemo(() => (grid ? BOARD_COLUMNS.flatMap((c) => grid[c])
     : filter === 'tickets' ? visibleTickets.map((ticket) => ticketKey(ticket.id)) : [
     ...visibleGroups.needsYou.map((row) => row.pane.paneId),
@@ -362,11 +383,13 @@ export default function FleetView() {
     ...visibleGroups.running.map((row) => row.pane.paneId),
     ...(idleToggleShown ? [IDLE_TOGGLE_KEY] : []),
     ...(idleShown ? visibleGroups.idle.map((row) => row.pane.paneId) : []),
+    ...(handOutToggleShown ? [HAND_OUT_TOGGLE_KEY] : []),
+    ...(handOutShown ? visibleHandOut.map((item) => handOutKey(item.id)) : []),
   ]), [grid, filter, visibleTickets, attentionTickets, visibleGroups, visibleReview, idleToggleShown, idleShown,
-    finishedToggleShown, finishedShown]);
+    finishedToggleShown, finishedShown, handOutToggleShown, handOutShown, visibleHandOut]);
   const matchCount = filter === 'tickets' ? visibleTickets.length
     : visibleGroups.needsYou.length + attentionTickets.length + visibleReview.length + visibleGroups.finished.length
-      + visibleGroups.running.length + visibleGroups.idle.length;
+      + visibleGroups.running.length + visibleGroups.idle.length + visibleHandOut.length;
   const idleOldestMs = visibleGroups.idle.reduce<number | undefined>(
     (max, row) => (row.idleForMs !== undefined && (max === undefined || row.idleForMs > max) ? row.idleForMs : max),
     undefined,
@@ -1076,6 +1099,7 @@ export default function FleetView() {
     { id: 'running', label: t('fleet.section.running'), count: groups.running.length },
     { id: 'finished', label: t('fleet.filter.finished'), count: groups.finished.length },
     { id: 'idle', label: t('workspace.agentIdle'), count: groups.idle.length },
+    { id: 'handOut', label: t('fleet.handOut.title'), count: handOutItems.length },
     { id: 'tickets', label: t('fleet.filter.tickets'), count: tickets.length },
   ];
   const nextRun = scheduleNav.nextRunAt !== null && scheduleNav.nextRunAt > now ? scheduleNav.nextRunAt : null;
@@ -1215,18 +1239,35 @@ export default function FleetView() {
       onEditorDone={finishReviewEditor}
     />
   );
+  const renderHandOut = (item: HandOutEntry, layout: 'list' | 'board') => (
+    <div key={handOutKey(item.id)} role="presentation" className="wmux-fleet-row group">
+      <HandOutCard
+        item={item}
+        layout={layout}
+        focused={handOutKey(item.id) === focusedKey}
+        now={now}
+        workspaceName={workspaceName}
+        onFocus={() => setFocusedPaneId(handOutKey(item.id))}
+        t={t}
+      />
+    </div>
+  );
   const renderBoardItem = (item: BoardItem) => (item.kind === 'pane' ? renderRow(item.row)
-    : item.kind === 'ticket' ? renderTicket(item.ticket) : renderReview(item.entry));
+    : item.kind === 'ticket' ? renderTicket(item.ticket)
+    : item.kind === 'handOut' ? renderHandOut(item.item, 'board') : renderReview(item.entry));
   // One board column: a head (its chip's word, a dot and the count) over its
-  // cards. No dead gauges: an empty column is not drawn.
+  // cards. No dead gauges: an empty column is not drawn — except To hand out,
+  // whose head is the way to add to it (while no status filter hides it).
   const renderColumn = (column: BoardColumn) => {
     const items = boardColumns?.[column] ?? [];
-    if (items.length === 0) return null;
+    const keepEmpty = column === 'handOut' && (filter === 'all' || filter === 'handOut');
+    if (items.length === 0 && !keepEmpty) return null;
     const label = t(BOARD_HEAD_KEY[column]);
     return (
       <section key={column} role="group" aria-label={label} className="wmux-fleet-board-col" data-board-column={column}>
         <div role="presentation" className="wmux-fleet-board-head" data-fleet-section={column}>
-          {column !== 'idle' && <span className={`wmux-board-col-dot is-${column === 'finished' ? 'review' : column}`} aria-hidden="true" />}
+          {column === 'handOut' ? <HandOutRing />
+            : column !== 'idle' && <span className={`wmux-board-col-dot is-${column === 'finished' ? 'review' : column}`} aria-hidden="true" />}
           <span>{label}</span>
           <span className="wmux-board-col-count">{items.length}</span>
         </div>
@@ -1339,10 +1380,10 @@ export default function FleetView() {
       <div className="wmux-board-strip" data-fleet-summary>
         {tab === 'fleet' && !empty && (
           <div className="wmux-fleet-filters" role="group" aria-label={t('fleet.filter.label')}>
-            {filters.filter((item) => item.count > 0 || item.id === filter).map((item) => (
+            {visibleFilterChips(filters, filter).map((item) => (
               <button key={item.id} type="button" aria-pressed={filter === item.id} data-filter={item.id}
                 onClick={() => setFilter(filter === item.id ? 'all' : item.id)}>
-                {item.id !== 'idle' && item.id !== 'tickets' && item.id !== 'finished'
+                {item.id !== 'idle' && item.id !== 'tickets' && item.id !== 'finished' && item.id !== 'handOut'
                   && <span className={`wmux-board-col-dot is-${item.id === 'attention' ? 'needsYou' : item.id}`} aria-hidden="true" />}
                 {item.label}<span>{item.count}</span>
               </button>
@@ -1419,7 +1460,7 @@ export default function FleetView() {
           </div>
         ) : (
           <>
-            {filter !== 'tickets' && visibleGroups.needsYou.length === 0 && attentionTickets.length === 0 && visibleReview.length === 0
+            {filter !== 'tickets' && filter !== 'handOut' && visibleGroups.needsYou.length === 0 && attentionTickets.length === 0 && visibleReview.length === 0
               && visibleGroups.finished.length === 0 && visibleGroups.running.length === 0 && (
               <p className="wmux-fleet-quiet" aria-hidden="true" data-fleet-all-quiet>{t('fleet.allQuiet')}</p>
             )}
@@ -1495,6 +1536,31 @@ export default function FleetView() {
                   <div key="section:idle" role="presentation" className="wmux-fleet-section-header" data-fleet-section="idle">{idleSummary}</div>
                 )]),
                 ...(idleShown ? visibleGroups.idle.map(renderRow) : []),
+                // To hand out: quiet, after Idle, folded the same way.
+                ...(visibleHandOut.length === 0 ? [] : [handOutToggleShown ? (
+                  <button
+                    key="section:handOut"
+                    type="button"
+                    role="option"
+                    aria-selected={focusedKey === HAND_OUT_TOGGLE_KEY}
+                    aria-expanded={handOutShown}
+                    tabIndex={focusedKey === HAND_OUT_TOGGLE_KEY ? 0 : -1}
+                    className="wmux-fleet-idle-toggle"
+                    data-fleet-section="handOut"
+                    data-fleet-hand-out-toggle
+                    data-fleet-key={HAND_OUT_TOGGLE_KEY}
+                    onFocus={() => setFocusedPaneId(HAND_OUT_TOGGLE_KEY)}
+                    onClick={() => setHandOutExpanded(!handOutExpanded)}
+                  >
+                    <span className="wmux-fleet-idle-chevron" aria-hidden="true"><IconChevron size={12} /></span>
+                    <span>{t('fleet.handOut.section', { count: visibleHandOut.length })}</span>
+                  </button>
+                ) : (
+                  <div key="section:handOut" role="presentation" className="wmux-fleet-section-header" data-fleet-section="handOut">
+                    {t('fleet.handOut.section', { count: visibleHandOut.length })}
+                  </div>
+                )]),
+                ...(handOutShown ? visibleHandOut.map((item) => renderHandOut(item, 'list')) : []),
               ]}
             </div>
             )}

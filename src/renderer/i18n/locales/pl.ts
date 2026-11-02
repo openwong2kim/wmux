@@ -1124,6 +1124,13 @@ export const pl = {
   'fleet.section.review': 'Do przejrzenia',
   // Fleet list: filters, the now-doing line, the detail area and tickets
   'fleet.filter.tickets': 'Zgłoszenia',
+  'fleet.handOut.title': 'Do przydzielenia',
+  'fleet.handOut.section': 'Do przydzielenia {count}',
+  'fleet.handOut.anyAgent': 'dowolny agent',
+  'fleet.handOut.now': 'teraz',
+  'fleet.handOut.addedByYou': 'Dodane przez ciebie',
+  'fleet.handOut.addedBy': 'Dodane przez {name}',
+  'fleet.handOut.aPane': 'panel agenta',
   'fleet.now.edited': 'Edytował {target}',
   'fleet.now.ran': 'Uruchomił {target}',
   'fleet.now.read': 'Czytał {target}',

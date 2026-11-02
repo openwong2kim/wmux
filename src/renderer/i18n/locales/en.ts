@@ -1203,6 +1203,13 @@ export const en = {
   'fleet.close': 'Close fleet panel',
   // Fleet list: filters, the now-doing line, the detail area and tickets
   'fleet.filter.tickets': 'Tickets',
+  'fleet.handOut.title': 'To hand out',
+  'fleet.handOut.section': 'To hand out {count}',
+  'fleet.handOut.anyAgent': 'any agent',
+  'fleet.handOut.now': 'now',
+  'fleet.handOut.addedByYou': 'Added by you',
+  'fleet.handOut.addedBy': 'Added by {name}',
+  'fleet.handOut.aPane': 'an agent pane',
   'fleet.now.edited': 'Edited {target}',
   'fleet.now.ran': 'Ran {target}',
   'fleet.now.read': 'Read {target}',

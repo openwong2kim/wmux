@@ -1579,6 +1579,13 @@ export const zh = {
   'fleet.section.needsYou': '需要你处理',
   // Fleet list: filters, the now-doing line, the detail area and tickets
   'fleet.filter.tickets': '工单',
+  'fleet.handOut.title': '待分派',
+  'fleet.handOut.section': '待分派 {count}',
+  'fleet.handOut.anyAgent': '任意代理',
+  'fleet.handOut.now': '刚刚',
+  'fleet.handOut.addedByYou': '由你添加',
+  'fleet.handOut.addedBy': '由 {name} 添加',
+  'fleet.handOut.aPane': '某个代理窗格',
   'fleet.now.edited': '编辑了 {target}',
   'fleet.now.ran': '运行了 {target}',
   'fleet.now.read': '读取了 {target}',

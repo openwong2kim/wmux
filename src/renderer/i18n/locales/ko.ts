@@ -908,6 +908,13 @@ export const ko = {
   'fleet.section.review': '리뷰 대기',
   // Fleet list: filters, the now-doing line, the detail area and tickets
   'fleet.filter.tickets': '티켓',
+  'fleet.handOut.title': '맡길 일',
+  'fleet.handOut.section': '맡길 일 {count}',
+  'fleet.handOut.anyAgent': '에이전트 무관',
+  'fleet.handOut.now': '방금',
+  'fleet.handOut.addedByYou': '내가 추가',
+  'fleet.handOut.addedBy': '{name}이(가) 추가',
+  'fleet.handOut.aPane': '에이전트 판',
   'fleet.now.edited': '{target} 편집',
   'fleet.now.ran': '{target} 실행',
   'fleet.now.read': '{target} 읽음',
