@@ -491,6 +491,16 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.remote.hosts.remove': { capability: 'wmux.internal' },
   'a2a.remote.peers.list':  { capability: 'wmux.internal' },
   'a2a.remote.peers.revoke': { capability: 'wmux.internal' },
+  // Tailnet discovery: wmux.internal keeps MCP and plugins out. Like pair.begin,
+  // any same-user process holding the daemon auth token can still call them.
+  'a2a.remote.discover.open': { capability: 'wmux.internal' },
+  'a2a.remote.discover.close': { capability: 'wmux.internal' },
+  'a2a.remote.discover.status': { capability: 'wmux.internal' },
+  'a2a.remote.discover.decide': { capability: 'wmux.internal' },
+  'a2a.remote.discover.scan': { capability: 'wmux.internal' },
+  'a2a.remote.discover.connect': { capability: 'wmux.internal' },
+  'a2a.remote.discover.outgoing.status': { capability: 'wmux.internal' },
+  'a2a.remote.discover.outgoing.cancel': { capability: 'wmux.internal' },
   // Exposure and pane links: the same posture — only the app's own human
   // exposes panes or accepts a link, never a plugin or an agent.
   'a2a.remote.exposure.publish': { capability: 'wmux.internal' },

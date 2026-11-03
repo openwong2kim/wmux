@@ -1,5 +1,5 @@
 import type { A2aPeerRecordV1, A2aRemoteHostRecordV1, HostId, PeerCredential } from '../../shared/a2aRemote';
-import type { A2aRemoteHostsRemoveResult } from '../../shared/rpc';
+import type { A2aDiscoverCloseResult, A2aRemoteHostsRemoveResult } from '../../shared/rpc';
 import type { A2aRemoteController } from './controller';
 import { coerceA2aRemotePatch } from './controller';
 import { joinRemoteHost, unpairRemoteHost, type JoinDeps } from './joiner';
@@ -12,7 +12,8 @@ import type { A2aServer } from './server';
  * capability map, so no plugin or MCP caller reaches them.
  */
 
-type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
+/** `ctx.clientId`: the control-pipe connection the call arrived on. */
+type RpcHandler = (params: Record<string, unknown>, ctx?: { clientId: string }) => Promise<unknown>;
 
 export interface A2aRemoteRpcDeps {
   controller: A2aRemoteController;
@@ -102,6 +103,25 @@ export function registerA2aRemoteRpc(onRpc: (method: string, handler: RpcHandler
     const ok = deps.remoteHosts.remove(hostId);
     deps.cascade(hostId);
     return { ok, remoteRevoked };
+  });
+
+  // Tailnet discovery, receiving side. `wmux.internal` keeps MCP and plugin
+  // callers out; like `pair.begin`, any same-user process holding the daemon
+  // auth token can call these. The window ends with the connection that
+  // opened it (the app's dialog).
+  onRpc('a2a.remote.discover.open', async (params, ctx) =>
+    server.discovery.open({ turnOn: params['turnOn'] === true }, ctx?.clientId ?? null),
+  );
+  onRpc('a2a.remote.discover.close', async (): Promise<A2aDiscoverCloseResult> => {
+    server.discovery.close('stopped');
+    // Answer once a listener the window turned on has stopped again.
+    await server.whenIdle();
+    return server.discovery.status();
+  });
+  onRpc('a2a.remote.discover.status', async () => server.discovery.status());
+  onRpc('a2a.remote.discover.decide', async (params) => {
+    if (typeof params['allow'] !== 'boolean') throw new Error('a2a.remote.discover.decide: allow must be boolean');
+    return server.discovery.decide(str(params, 'requestId'), params['allow']);
   });
 
   onRpc('a2a.remote.peers.list', async () => ({ peers: deps.peers.list() }));

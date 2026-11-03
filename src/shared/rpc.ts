@@ -610,6 +610,14 @@ export type RpcMethod =
   | 'a2a.remote.hosts.remove'
   | 'a2a.remote.peers.list'
   | 'a2a.remote.peers.revoke'
+  | 'a2a.remote.discover.open'
+  | 'a2a.remote.discover.close'
+  | 'a2a.remote.discover.status'
+  | 'a2a.remote.discover.decide'
+  | 'a2a.remote.discover.scan'
+  | 'a2a.remote.discover.connect'
+  | 'a2a.remote.discover.outgoing.status'
+  | 'a2a.remote.discover.outgoing.cancel'
   | 'a2a.remote.exposure.publish'
   | 'a2a.remote.exposure.get'
   | 'a2a.remote.exposure.list'
@@ -969,6 +977,14 @@ export const ALL_RPC_METHODS = [
   'a2a.remote.hosts.remove',
   'a2a.remote.peers.list',
   'a2a.remote.peers.revoke',
+  'a2a.remote.discover.open',
+  'a2a.remote.discover.close',
+  'a2a.remote.discover.status',
+  'a2a.remote.discover.decide',
+  'a2a.remote.discover.scan',
+  'a2a.remote.discover.connect',
+  'a2a.remote.discover.outgoing.status',
+  'a2a.remote.discover.outgoing.cancel',
   'a2a.remote.exposure.publish',
   'a2a.remote.exposure.get',
   'a2a.remote.exposure.list',
@@ -1666,6 +1682,7 @@ import type {
   A2aRemoteErrorCode,
   A2aRemoteHostRecordV1,
 } from './a2aRemote';
+import type { TailscaleCheckItem } from './web';
 
 /** `a2a.remote.status` (and the echo of `a2a.remote.configure`). */
 export interface A2aRemoteStatus {
@@ -1769,6 +1786,348 @@ export interface A2aRemoteHostsRemoveResult {
 export interface A2aRemotePeersListResult {
   peers: A2aPeerRecordV1[];
 }
+
+// ─── Tailnet discovery (`a2a.remote.discover.*`) ────────────────────────────
+//
+// Receiving side: "make this PC discoverable" opens a 5-minute window in which
+// this PC's own user's tailnet devices can find it and ask to pair; the card
+// shows Tailscale's identity of the asking device and a 6-digit code, and the
+// human allows or denies. Requesting side: "find PCs" scans the tailnet,
+// `connect` asks one, and both screens show the same code. Every method is
+// `wmux.internal`; nothing is pushed, the renderer polls `status` and
+// `outgoing.status` while a window or an outgoing request is live.
+
+/** `a2a.remote.discover.open` params. */
+export interface A2aDiscoverOpenParams {
+  /** Turn A2A on when it is off ("Turn on and make discoverable"). Without it an off A2A refuses `a2a-off`. */
+  turnOn?: boolean;
+}
+
+/** Why `a2a.remote.discover.open` did not open a window. */
+export type A2aDiscoverOpenRefusal =
+  /** Tailscale is not ready on this PC; `check` is the failed checklist item, with its fix. */
+  | 'tailscale-not-ready'
+  /** Tailscale runs but this PC has no tailnet IPv4. */
+  | 'no-tailnet-ipv4'
+  /** Another network interface uses the tailnet's address range (a CGNAT LAN), so a source address cannot prove a tailnet device. */
+  | 'tailnet-range-on-lan'
+  /** `tailscale whois --json` does not answer here: Tailscale needs an update. */
+  | 'tailscale-whois-unsupported'
+  /** A2A is off and `turnOn` was not set. */
+  | 'a2a-off'
+  /** The A2A listener could not start; `listen` says why. */
+  | 'listen-failed'
+  /** Stopped (`close`), or the connection that asked went away, before the window opened; A2A is as it was. */
+  | 'cancelled';
+
+/** `a2a.remote.discover.open` */
+export type A2aDiscoverOpenResult =
+  | { ok: true; status: A2aDiscoverStatus }
+  | {
+      ok: false;
+      reason: A2aDiscoverOpenRefusal;
+      /** For `tailscale-not-ready`. */
+      check?: TailscaleCheckItem;
+      /** For `listen-failed`: the listener's own error, as `a2a.remote.status` reports it. */
+      listen?: { port: number; lastError: string | null; lastErrorCode: string | null; lastErrorPort: number | null };
+    };
+
+/** Why a discovery window ended. */
+export type A2aDiscoverEndReason =
+  /** Its 5 minutes ran out. */
+  | 'timeout'
+  /** Stop (`a2a.remote.discover.close`). */
+  | 'stopped'
+  /** The app connection that opened it went away. */
+  | 'disconnected'
+  /** A request was allowed and the other PC paired. */
+  | 'paired'
+  /** A request was allowed but the other PC did not pair within 60 s. */
+  | 'grant-expired'
+  /** A request was allowed but the pairing could not be completed. */
+  | 'failed'
+  /** More than 10 identified requests reached it. */
+  | 'too-many-requests'
+  /** The A2A listener stopped or moved to another port. */
+  | 'listener-stopped';
+
+/** The asking PC as Tailscale identifies it (whois), never as it names itself. */
+export interface A2aDiscoverDevice {
+  /** Tailscale's device name. */
+  name: string;
+  /** MagicDNS name; '' when none. */
+  dnsName: string;
+  /** Tailscale login of its owner. */
+  login: string;
+  /** As Tailscale reports it (`windows`, `macOS`, `linux`). */
+  os: string;
+  /** Its tailnet IPv4. */
+  ip: string;
+}
+
+/** The request on the card. Present only once the asking PC revealed its nonce. */
+export interface A2aDiscoverIncoming {
+  requestId: string;
+  /** `deciding`: Allow / Deny. `allowed`: waiting for the other PC to finish (at most 60 s). */
+  state: 'deciding' | 'allowed';
+  device: A2aDiscoverDevice;
+  /** The 6 digits both screens show, zero-padded. */
+  code: string;
+  /** Epoch ms the card (`deciding`) or the pairing code (`allowed`) runs out. */
+  expiresAt: number;
+  /** The asking PC already holds a pairing here under this name; Allow replaces it. */
+  replaces?: string;
+}
+
+/** How the last request that ended without a pairing ended, for the line under the window. */
+export interface A2aDiscoverLastOutcome {
+  outcome: 'denied' | 'withdrawn' | 'expired' | 'refused';
+  /** For `refused`. */
+  reason?: 'unidentified' | 'other-user' | 'self';
+  /** For a request that reached the card. */
+  device?: A2aDiscoverDevice;
+  ip: string;
+  /** Epoch ms. */
+  at: number;
+}
+
+/** `a2a.remote.discover.status` (also the `status` of an opened window). */
+export interface A2aDiscoverStatus {
+  open: boolean;
+  /** Epoch ms the window ends on its own; null when closed. */
+  expiresAt: number | null;
+  /** The name tailnet devices see: this PC's machine name. */
+  name: string;
+  /** This window turned A2A on; it turns it off again if it ends without a pairing. */
+  turnedOn: boolean;
+  incoming: A2aDiscoverIncoming | null;
+  /** Cleared when the next window opens. */
+  lastOutcome: A2aDiscoverLastOutcome | null;
+  /** How the last window ended; null while one is open or when none ran since the daemon started. */
+  ended: {
+    reason: A2aDiscoverEndReason;
+    /** Epoch ms. */
+    at: number;
+    /** For `paired`: the PC that joined. */
+    peer?: { hostId: string; name: string };
+  } | null;
+}
+
+/** `a2a.remote.discover.decide` params. */
+export interface A2aDiscoverDecideParams {
+  requestId: string;
+  allow: boolean;
+}
+
+/** `a2a.remote.discover.decide`. `ok` false: that request is no longer on the card. */
+export interface A2aDiscoverDecideResult {
+  ok: boolean;
+  status: A2aDiscoverStatus;
+}
+
+/**
+ * `a2a.remote.discover.close`: the status once the window ended (and A2A was
+ * turned off again, when the window had turned it on). Closing no window is
+ * a no-op answered the same way.
+ */
+export type A2aDiscoverCloseResult = A2aDiscoverStatus;
+
+/** One PC `a2a.remote.discover.scan` found. */
+export interface A2aDiscoverPc {
+  /** Its tailnet IPv4: the only key `connect` takes. */
+  ip: string;
+  /** Tailscale's name for the device. */
+  device: string;
+  /** MagicDNS name; '' when none. */
+  dnsName: string;
+  /** As Tailscale reports it (`windows`, `macOS`, `linux`). */
+  os: string;
+  /** Tailscale login of its owner (only this PC's own user's devices are listed). */
+  login: string;
+  /** The name its wmux answered with. */
+  name: string;
+  /** Its wmux version. */
+  version: string;
+  /**
+   * `ready`: can be asked. `version-mismatch`: speaks another protocol ("needs
+   * the same wmux version"). `stale`: missed the last two scans ("No longer
+   * discoverable"); a third miss drops it.
+   */
+  state: 'ready' | 'version-mismatch' | 'stale';
+  /** Its certificate belongs to a PC this one already joined ("Already connected"); connecting again re-pairs. */
+  alreadyConnected: boolean;
+}
+
+/** `a2a.remote.discover.scan` */
+export type A2aDiscoverScanResult =
+  | {
+      ok: true;
+      pcs: A2aDiscoverPc[];
+      /** Devices asked ("N devices checked"). */
+      checked: number;
+      /** Tailnet devices not asked, by why. */
+      skipped: {
+        offline: number;
+        /** Phones and tablets. */
+        mobile: number;
+        /** Another user's, shared in, or tagged. */
+        otherUser: number;
+        /** No tailnet IPv4, or an OS wmux does not run on. */
+        unsupported: number;
+        /** Past the 64-device cap. */
+        overCap: number;
+      };
+    }
+  | { ok: false; reason: 'tailscale-not-ready'; check: TailscaleCheckItem }
+  | { ok: false; reason: 'no-tailnet-ipv4' };
+
+/** `a2a.remote.discover.connect` params. */
+export interface A2aDiscoverConnectParams {
+  /** A PC's `ip` from the last scan; nothing else is accepted. */
+  ip: string;
+}
+
+/** Why `a2a.remote.discover.connect` did not reach the code. */
+export type A2aDiscoverConnectError =
+  /** Not a PC of the last scan, or it went stale. */
+  | 'not-found'
+  | 'version-mismatch'
+  /** This PC is already asking another one. */
+  | 'outgoing-busy'
+  /** The other PC is deciding another request; `retryAfterMs`. */
+  | 'busy'
+  /** Too many requests to that PC; `retryAfterMs` when it says. */
+  | 'rate-limited'
+  /** The other PC refused; `reason` says why. */
+  | 'refused'
+  /** The other PC is no longer discoverable. */
+  | 'gone'
+  /** It answered with another certificate than the scan saw. */
+  | 'fingerprint-mismatch'
+  | 'timeout'
+  | 'connect-refused'
+  | 'protocol'
+  | 'failed';
+
+/** `a2a.remote.discover.connect` */
+export type A2aDiscoverConnectResult =
+  | {
+      ok: true;
+      sessionId: string;
+      /** The 6 digits to show, zero-padded. */
+      code: string;
+      /** Epoch ms the other PC's card runs out. */
+      expiresAt: number;
+    }
+  | {
+      ok: false;
+      error: A2aDiscoverConnectError;
+      /** For `refused`. */
+      reason?: 'unidentified' | 'other-user' | 'denied' | 'self';
+      retryAfterMs?: number;
+      detail?: string;
+    };
+
+/** Where this PC's one outgoing request stands. */
+export type A2aDiscoverOutgoingState =
+  | 'idle'
+  /** `connect` is running (request and reveal). */
+  | 'asking'
+  /** The code is shown; waiting for the other PC's human. */
+  | 'waiting'
+  /** Allowed: pairing as an invite join would. */
+  | 'joining'
+  | 'joined'
+  | 'denied'
+  /** The other PC's card ran out. */
+  | 'expired'
+  /** The other PC stopped being discoverable. */
+  | 'gone'
+  /** The join failed (`error`), or the other PC could not complete it. */
+  | 'failed'
+  | 'cancelled';
+
+/** `a2a.remote.discover.outgoing.status` */
+export interface A2aDiscoverOutgoingStatus {
+  state: A2aDiscoverOutgoingState;
+  sessionId: string | null;
+  /** The PC asked, as the scan listed it. */
+  pc: A2aDiscoverPc | null;
+  code: string | null;
+  /** Epoch ms the other PC's card runs out. */
+  expiresAt: number | null;
+  /** For `joined`. */
+  host?: A2aRemoteHostRecordV1;
+  /** For `failed`: worded like an invite join's error (`settings.a2aRemoteJoinError.*`). */
+  error?: A2aRemoteJoinError;
+  detail?: string;
+}
+
+/**
+ * `a2a.remote.discover.outgoing.cancel`: the outgoing status after the cancel
+ * (the other PC is told best effort). Nothing to cancel is a no-op answered
+ * the same way.
+ */
+export type A2aDiscoverOutgoingCancelResult = A2aDiscoverOutgoingStatus;
+
+/**
+ * What the Tailscale tab's "This PC" section renders (receiving side). The
+ * renderer derives it from `a2a.remote.status`, the Tailscale check,
+ * `a2a.remote.discover.open`'s refusal and `a2a.remote.discover.status`.
+ */
+export type A2aDiscoverReceiveView =
+  /** Not discoverable. `a2aOff`: the button reads "Turn on and make discoverable". */
+  | { kind: 'idle'; a2aOff: boolean }
+  | { kind: 'tailscale-not-ready'; check: TailscaleCheckItem }
+  | { kind: 'no-tailnet-ipv4' }
+  /** Discovery cannot work here: a CGNAT LAN, or a Tailscale too old for `whois --json` ("Update Tailscale"). */
+  | { kind: 'unavailable'; reason: 'tailnet-range-on-lan' | 'tailscale-whois-unsupported' }
+  | { kind: 'starting' }
+  | { kind: 'listen-failed'; port: number; lastError: string | null; lastErrorCode: string | null }
+  /** "as <name>", the m:ss countdown, Stop, and the note that tailnet devices see the name and version. */
+  | { kind: 'discoverable'; name: string; expiresAt: number }
+  /** The card: whois identity, the code, Deny / Allow. */
+  | { kind: 'approval'; incoming: A2aDiscoverIncoming }
+  /** Allowed; the other PC is finishing. */
+  | { kind: 'allowed'; incoming: A2aDiscoverIncoming }
+  /** Paired: the existing `joined` view. */
+  | { kind: 'paired'; peer: { hostId: string; name: string } }
+  | { kind: 'grant-expired' }
+  /** The window stays open (`expiresAt`) after a Deny. */
+  | { kind: 'denied'; device: A2aDiscoverDevice; expiresAt: number | null }
+  /** A request Tailscale could not identify, or another user's (a muted line, no buttons). */
+  | { kind: 'refused'; reason: 'unidentified' | 'other-user' | 'self'; ip: string; expiresAt: number | null }
+  | { kind: 'ended'; reason: 'timeout' | 'stopped' | 'disconnected' | 'failed' | 'too-many-requests' | 'listener-stopped' };
+
+/**
+ * What the Tailscale tab's "PCs found on your tailnet" section renders
+ * (requesting side). The renderer derives it from `scan`, `connect` and
+ * `outgoing.status`. Greyed rows (stale, version mismatch) are `pc.state`.
+ */
+export type A2aDiscoverRequestView =
+  /** "Find PCs". Nothing is probed before it is pressed. */
+  | { kind: 'idle' }
+  | { kind: 'tailscale-not-ready'; check: TailscaleCheckItem }
+  | { kind: 'no-tailnet-ipv4' }
+  /** Scanning; `pcs` keeps the last results on a re-scan. */
+  | { kind: 'searching'; pcs: A2aDiscoverPc[] }
+  | { kind: 'results'; pcs: A2aDiscoverPc[]; checked: number }
+  /** "N devices checked" plus a hint. */
+  | { kind: 'empty'; checked: number }
+  | { kind: 'asking'; pc: A2aDiscoverPc }
+  /** The code, the countdown, Cancel. */
+  | { kind: 'waiting'; pc: A2aDiscoverPc; code: string; expiresAt: number }
+  | { kind: 'joining'; pc: A2aDiscoverPc }
+  /** `joinedA2a`, then "Link a pane now". */
+  | { kind: 'joined'; host: A2aRemoteHostRecordV1 }
+  | { kind: 'denied'; pc: A2aDiscoverPc }
+  | { kind: 'timed-out'; pc: A2aDiscoverPc }
+  /** "No longer discoverable". */
+  | { kind: 'gone'; pc: A2aDiscoverPc }
+  | { kind: 'busy'; pc: A2aDiscoverPc; retryAfterMs?: number }
+  /** The other PC refused before showing a card (could not identify this PC, another user, or denied earlier). */
+  | { kind: 'refused'; pc: A2aDiscoverPc; reason: 'unidentified' | 'other-user' | 'denied' | 'self' }
+  | { kind: 'join-error'; pc: A2aDiscoverPc; error: A2aRemoteJoinError; detail?: string };
 
 // ─── Cross-host A2A exposure and links (`a2a.remote.exposure.*`, `.links.*`) ─
 

@@ -10630,8 +10630,12 @@ async function main(): Promise<void> {
       onPeerRevoked: a2aCascade,
       routes: a2aRoutes,
       log: a2aLog,
+      // The tailnet discovery probe tells other PCs this build's version.
+      discoverVersion: () => SPAWNED_BY_VERSION,
     });
     a2aServerRef = a2aServer;
+    // A discovery window ends with the app connection that opened it.
+    pipeServer.onClientClose((clientId) => a2aServer.discovery.clientGone(clientId));
     const onA2aRpc = (method: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void =>
       pipeServer.onRpc(method, handler);
     registerA2aRemoteRpc(onA2aRpc, {
