@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({
   shell: { trashItem: vi.fn() },
@@ -84,7 +85,20 @@ describe('filesystem write jobs', () => {
     const job = await finish(result); expect(job.state).toBe('cancelled'); expect(fs.readdirSync(dest)).toEqual([]);
   });
   it('locks overlapping paths while running', async () => {
-    const result = await copy(); expect(await copy()).toMatchObject({ reason: 'busy' }); await finish(result);
+    // Hold the first copy's bytes until the second request is answered, so a
+    // fast runner cannot finish the first job before the lock check runs.
+    let release: () => void = () => { throw new Error('Gate not initialized'); };
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const create = fs.createReadStream;
+    vi.spyOn(fs, 'createReadStream').mockImplementation((...args) => {
+      const held = new PassThrough();
+      void gate.then(() => create(...args).pipe(held));
+      return held as unknown as fs.ReadStream;
+    });
+    const result = await copy();
+    expect(await copy()).toMatchObject({ reason: 'busy' });
+    release();
+    expect((await finish(result)).state).toBe('done');
   });
   it('refuses credential sources and destinations, including absent names', async () => {
     expect(await queue.start('trash', { paths: [path.join(home, '.ssh')] })).toMatchObject({ reason: 'unavailable' });
