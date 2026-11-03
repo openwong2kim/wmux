@@ -167,3 +167,44 @@ struct AXTreeSource: TreeSource {
         AX.actions(el).contains { !incidentalActions.contains($0) }
     }
 }
+
+// MARK: - Caret
+
+/// Where keyboard input lands, for the agent marker's caret (Overlay.swift).
+enum Caret {
+    /// The caret in `element` (the app's focused element when nil): the
+    /// insertion point AX reports, else the element's leading edge. Call it
+    /// off the main thread, like any AX query of another app.
+    static func rect(pid: pid_t, element: AXUIElement? = nil, window: CGRect?) -> CGRect? {
+        guard let el = element ?? AX.element(AX.app(pid), kAXFocusedUIElementAttribute) else { return nil }
+        return caretRect(insertionLine: insertionLine(el), elementFrame: AX.frame(el), window: window)
+    }
+
+    /// The line at the selection's start (kAXSelectedTextRange), its x the
+    /// insertion point: the bounds of the empty range there, or of the
+    /// character after it, or the trailing edge of the one before it.
+    private static func insertionLine(_ el: AXUIElement) -> CGRect? {
+        guard let value = AX.attr(el, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var range = CFRange()
+        guard AXValueGetValue(value as! AXValue, .cfRange, &range), range.location >= 0 else { return nil }
+        if let r = bounds(el, CFRange(location: range.location, length: 0)), r.height > 0 { return r }
+        if let r = bounds(el, CFRange(location: range.location, length: 1)), r.height > 0 {
+            return CGRect(x: r.minX, y: r.minY, width: 0, height: r.height)
+        }
+        if range.location > 0, let r = bounds(el, CFRange(location: range.location - 1, length: 1)), r.height > 0 {
+            return CGRect(x: r.maxX, y: r.minY, width: 0, height: r.height)
+        }
+        return nil
+    }
+
+    private static func bounds(_ el: AXUIElement, _ range: CFRange) -> CGRect? {
+        var range = range
+        guard let parameter = AXValueCreate(.cfRange, &range) else { return nil }
+        var value: CFTypeRef?
+        guard AXUIElementCopyParameterizedAttributeValue(el, kAXBoundsForRangeParameterizedAttribute as CFString, parameter, &value) == .success,
+              let value, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var rect = CGRect.zero
+        guard AXValueGetValue(value as! AXValue, .cgRect, &rect) else { return nil }
+        return rect
+    }
+}
