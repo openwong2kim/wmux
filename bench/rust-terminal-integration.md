@@ -270,9 +270,12 @@ new chunk tests. No user's running daemon, preferences or sessions were changed.
   queue. Idle readers wait on readiness without a periodic timer.
 - Input has an 8 MiB limit including in-flight writes. Native writes reject
   atomically with `PTY_BACKPRESSURE`; the JS adapter holds rejected input in
-  order (up to 8 MiB more, then drops whole writes and logs) and flushes it on
-  the writer's wake, so `write` never throws, as with node-pty. Attached input
-  sockets pause at their high-water mark, which counts held input.
+  order and flushes it on the writer's wake, so `write` never throws, as with
+  node-pty. A write is held whole while less than 8 MiB is held, so the bound
+  is 8 MiB plus the write that crosses it (a large local-mode paste is held
+  whole, as node-pty would). From then on every write is dropped whole, logged
+  once, until the held queue empties. Attached input sockets stop writing at
+  their high-water mark, which counts held input, and keep the chunk for retry.
 - UTF-8 decoding spans output chunks. EOF and child exit are distinct; final
   output precedes exactly one exit. Paused output drains after child exit.
 - Unix uses a fresh PTY session. Wait-without-reap prevents root-PID reuse during

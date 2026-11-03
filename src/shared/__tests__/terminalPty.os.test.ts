@@ -167,6 +167,69 @@ describe('RustPty input keeps the node-pty write contract', () => {
       expect(delivered.subarray(-1).toString()).toBe('z');
     } finally { log.mockRestore(); }
   });
+
+  it('keeps dropping after a dropped write until the held queue empties, so no later write lands without it', async () => {
+    const input = nativeInput();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+      pty.write(Buffer.alloc(8 * MiB, 'a'));
+      pty.write(Buffer.alloc(8 * MiB, 'b'));
+      pty.write('X');
+      // The program reads one piece, and one held piece moves to the native queue.
+      input.state.pending -= 256 * 1024; wake(); await tick();
+      expect(pty.pendingInputBytes).toBe(16 * MiB - 256 * 1024);
+      pty.write('\r');
+      expect(pty.pendingInputBytes).toBe(16 * MiB - 256 * 1024);
+      input.state.pending = 0; wake(); await tick();
+      pty.write('Z');
+      const delivered = input.bytes();
+      expect(delivered.includes('X')).toBe(false); expect(delivered.includes('\r')).toBe(false);
+      expect(delivered.subarray(-1).toString()).toBe('Z');
+      expect(log).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
+  });
+
+  /** 'abc' reaches the native queue (limit 4), 'def' is held. */
+  async function holdInput() {
+    const input = nativeInput(4);
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    pty.write('abc'); pty.write('def');
+    expect(pty.pendingInputBytes).toBe(6);
+    return { input, pty };
+  }
+  /** Nothing is held and nothing more reaches the transport. */
+  async function expectReleased({ input, pty }: Awaited<ReturnType<typeof holdInput>>) {
+    input.state.pending = 0;
+    expect(pty.pendingInputBytes).toBe(0);
+    const calls = transport.write.mock.calls.length;
+    wake(); await tick(); pty.write('late');
+    expect(transport.write).toHaveBeenCalledTimes(calls);
+    expect(input.text()).toBe('abc');
+  }
+
+  it('releases held input on dispose', async () => {
+    const held = await holdInput();
+    held.pty.dispose?.();
+    await expectReleased(held);
+  });
+
+  it('releases held input on exit', async () => {
+    const held = await holdInput();
+    transport.read.mockReturnValueOnce({ ...idle, pendingInputBytes: 3, eof: true, childExited: true, exitCode: 0 });
+    wake(); await tick();
+    await expectReleased(held);
+  });
+
+  it('releases held input when the transport fails', async () => {
+    const held = await holdInput();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      transport.read.mockImplementationOnce(() => { throw new Error('native read failed'); });
+      wake(); await tick();
+      await expectReleased(held);
+    } finally { log.mockRestore(); }
+  });
 });
 
 

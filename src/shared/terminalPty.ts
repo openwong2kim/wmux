@@ -44,9 +44,12 @@ export function spawnTerminalPty(command: string, args: string[], options: Spawn
 const INPUT_CHUNK_BYTES = 256 * 1024;
 /** Small writes held during a stall share one entry, so a burst is a few entries, not millions. */
 const INPUT_COALESCE_BYTES = 4 * 1024;
-/** Input the adapter holds while the native queue is full. Reaching it means the program has
- *  left 16 MiB unread: SessionPipe pauses its client at 6 MiB pending, and the other writers
- *  send small payloads. A write that arrives past it is dropped whole and logged. */
+/** Input the adapter holds while the native queue is full. A write is taken whole while less
+ *  than this is held, so the bound is this plus the one write that crosses it: a 64 MiB paste
+ *  in local mode is held whole, as node-pty never splits a write. Reaching it means the program
+ *  has left 16 MiB unread (SessionPipe stops writing at 6 MiB pending; the other writers send
+ *  small payloads). From then on every write is dropped whole, logged once, until the held
+ *  queue empties, so the program never gets a later write without an earlier one. */
 const INPUT_QUEUE_LIMIT = 8 * 1024 * 1024;
 
 class RustPty implements TerminalPty {
@@ -70,7 +73,8 @@ class RustPty implements TerminalPty {
   private readonly queued: Buffer[] = [];
   private queuedBytes = 0;
   private inputClosed = false;
-  private overflowLogged = false;
+  /** Set by the first dropped write; held until the queue empties. */
+  private dropping = false;
   private readonly wake = () => {
     if (this.scheduled || this.ended) return;
     this.scheduled = true;
@@ -115,11 +119,13 @@ class RustPty implements TerminalPty {
     if (this.handleFlowControl && data === (this.options.flowControlResume ?? '\x11')) { this.resume(); return; }
     const bytes = typeof data === 'string' ? Buffer.from(data) : data;
     if (this.inputClosed || !bytes.length) return;
+    // Take what the writer drained since the last wake before deciding on this write.
+    if (this.queued.length) this.flushInput();
     // Behind held input, never ahead of it.
     if (!this.queued.length && bytes.length <= INPUT_CHUNK_BYTES && this.sendInput(bytes)) return;
-    if (this.queuedBytes >= INPUT_QUEUE_LIMIT) {
-      if (!this.overflowLogged) console.error(`[terminal-core] PTY input: ${INPUT_QUEUE_LIMIT} bytes held unread by the program; dropping input until it reads`);
-      this.overflowLogged = true;
+    if (this.dropping || this.queuedBytes >= INPUT_QUEUE_LIMIT) {
+      if (!this.dropping) console.error(`[terminal-core] PTY input: ${INPUT_QUEUE_LIMIT} bytes held unread by the program; dropping input until it reads them`);
+      this.dropping = true;
       return;
     }
     // Copied: a caller may reuse its buffer once write returns.
@@ -150,7 +156,7 @@ class RustPty implements TerminalPty {
       if (!this.sendInput(head) || this.inputClosed) return;
       this.queued.shift(); this.queuedBytes -= head.length;
     }
-    this.overflowLogged = false;
+    this.dropping = false;
   }
   private releaseInput(): void { this.queued.length = 0; this.queuedBytes = 0; }
   resize(cols: number, rows: number): void {
@@ -172,7 +178,7 @@ class RustPty implements TerminalPty {
     this.transport.kill(number);
   }
   dispose(): void {
-    this.ended = true; this.transport.close();
+    this.ended = true; this.releaseInput(); this.transport.close();
     this.data.clear(); this.nativeData.clear(); this.exit.clear(); this.drain.clear();
   }
   private pump(): void {
