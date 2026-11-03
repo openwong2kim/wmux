@@ -120,9 +120,10 @@ const WSL_SHARE = /^(?:[\\/]{2}\?[\\/]unc[\\/]|[\\/]{2})(?:wsl\.localhost|wsl\$)
  *  firmlink realpath keeps as written: check the plain spelling. */
 function plainSpelling(p: string): string {
   if (process.platform !== 'darwin') return p;
-  const resolved = path.resolve(p);
-  const m = /^\/system\/volumes\/data(?=\/|$)/i.exec(resolved);
-  return m ? resolved.slice(m[0].length) || '/' : p;
+  let plain = path.resolve(p);
+  // The kernel's /.nofollow prefix also reaches the same files; strip both, in any order.
+  for (let m; (m = /^\/(?:\.nofollow|system\/volumes\/data)(?=\/|$)/i.exec(plain));) plain = plain.slice(m[0].length) || '/';
+  return plain === path.resolve(p) ? p : plain;
 }
 
 /** Whether a plugin's `fs.*` call must refuse `p`: the file tree's list or this one. */
@@ -179,33 +180,79 @@ async function refusedRoots(): Promise<string[]> {
 
 /** How long a read of the refused roots' identities is reused: a scan checks every entry. */
 const IDENTITY_TTL_MS = 2_000;
-let identities: { at: number; key: string; ids: Promise<Set<string>> } | null = null;
+let identities: { at: number; key: string; ids: Promise<Set<string>>; reals: Promise<string[]> } | null = null;
+
+/** A path's identity as an entry of its folder: the folder's device and inode
+ *  plus the lowercase name. It holds for a file that is replaced (a new inode)
+ *  and for one that does not exist yet. */
+async function entryKey(p: string): Promise<string | null> {
+  const parent = await fs.promises.stat(path.dirname(p), { bigint: true }).catch(() => null);
+  return parent ? `${parent.dev}:${parent.ino}/${path.basename(p).toLowerCase()}` : null;
+}
 
 function refusedIdentities(): Promise<Set<string>> {
+  return identityCache().ids;
+}
+
+/** The refused roots as given and once symlinks resolve, normalized for a prefix compare. */
+function refusedRootPaths(): Promise<string[]> {
+  return identityCache().reals;
+}
+
+function identityCache(): { ids: Promise<Set<string>>; reals: Promise<string[]> } {
   const now = Date.now();
   const env = process.env;
   const key = JSON.stringify([os.homedir(), env.XDG_CONFIG_HOME, env.APPDATA, env.GH_CONFIG_DIR, env.CLOUDSDK_CONFIG]);
-  if (identities && identities.key === key && now - identities.at < IDENTITY_TTL_MS) return identities.ids;
-  const ids = refusedRoots().then(async (roots) => {
+  if (identities && identities.key === key && now - identities.at < IDENTITY_TTL_MS) return identities;
+  const roots = refusedRoots();
+  const ids = roots.then(async (list) => {
     const set = new Set<string>();
-    await Promise.all(roots.map(async (root) => {
+    await Promise.all(list.map(async (root) => {
       const st = await fs.promises.stat(root, { bigint: true }).catch(() => null);
       if (st) set.add(`${st.dev}:${st.ino}`);
+      const entry = await entryKey(root);
+      if (entry) set.add(entry);
     }));
     return set;
   });
-  identities = { at: now, key, ids };
-  return ids;
+  const reals = roots.then(async (list) => {
+    const out = new Set<string>();
+    await Promise.all(list.map(async (root) => {
+      out.add(normalizedPath(root));
+      const real = await fs.promises.realpath(root).catch(() => null);
+      if (real) out.add(normalizedPath(real));
+    }));
+    return [...out];
+  });
+  identities = { at: now, key, ids, reals };
+  return identities;
 }
 
-/** Whether `canonical` (an existing, resolved path) is a refused folder or file
- *  or lies inside one, by device and inode rather than by spelling. */
-async function insideRefusedByIdentity(canonical: string): Promise<boolean> {
+const normalizedPath = (p: string) => path.resolve(plainSpelling(p)).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+
+/** Whether moving, renaming or trashing `p` would carry a refused folder or file
+ *  with it: one lies at or below `p`, as spelled or once links resolve. A link
+ *  or junction above a refused folder is never traversed by the preflight, so
+ *  this is what keeps it from being renamed out of the way. */
+export async function holdsRefusedRoot(p: string): Promise<boolean> {
+  const spellings = [normalizedPath(p)];
+  const real = await fs.promises.realpath(p).catch(() => null);
+  if (real) spellings.push(normalizedPath(real));
+  const roots = await refusedRootPaths();
+  return spellings.some((s) => roots.some((r) => r === s || r.startsWith(`${s}/`)));
+}
+
+/** Whether `canonical` (a resolved path, or one about to be created) is a
+ *  refused folder or file or lies inside one, by identity rather than by
+ *  spelling. */
+export async function insideRefusedByIdentity(canonical: string): Promise<boolean> {
   const ids = await refusedIdentities();
   if (ids.size === 0) return false;
   for (let p = canonical; ; p = path.dirname(p)) {
     const st = await fs.promises.stat(p, { bigint: true }).catch(() => null);
     if (st && ids.has(`${st.dev}:${st.ino}`)) return true;
+    const entry = await entryKey(p);
+    if (entry && ids.has(entry)) return true;
     if (path.dirname(p) === p) return false;
   }
 }

@@ -10,7 +10,7 @@ vi.mock('electron', () => ({
 }));
 
 import fs from 'node:fs';
-import { PLUGIN_FS_REFUSALS, isPluginRefusedPath, pluginFsRefusal, resolvePluginPath } from '../fsRefusals';
+import { PLUGIN_FS_REFUSALS, holdsRefusedRoot, insideRefusedByIdentity, isPluginRefusedPath, pluginFsRefusal, resolvePluginPath } from '../fsRefusals';
 
 const home = path.resolve('/home-for-test/user');
 const h = (...p: string[]) => path.join(home, ...p);
@@ -188,6 +188,33 @@ describe('plugin fs refusals', () => {
       fs.symlinkSync(path.join(realHome, 'dotfiles', 'gh'), path.join(realHome, '.config', 'gh'));
       expect(await resolvePluginPath(path.join(realHome, 'dotfiles', 'gh', 'hosts.yml'))).toBeNull();
       expect(await resolvePluginPath(path.join(realHome, 'dotfiles'))).not.toBeNull();
+    });
+
+    it.runIf(process.platform === 'darwin')('refuses a home file through /.nofollow, also after it is replaced', async () => {
+      const file = path.join(realHome, '.claude.json');
+      fs.writeFileSync(file, 'x');
+      expect(await resolvePluginPath(path.join('/.nofollow', file))).toBeNull();
+      // Replaced by rename: a new inode, as an atomic writer leaves it.
+      fs.writeFileSync(`${file}.tmp`, 'y');
+      fs.renameSync(`${file}.tmp`, file);
+      expect(await resolvePluginPath(path.join('/.nofollow', file))).toBeNull();
+      expect(await resolvePluginPath(path.join('/.nofollow', '/System/Volumes/Data', file))).toBeNull();
+    });
+
+    it('refuses creating a refused file or folder that does not exist yet', async () => {
+      expect(await insideRefusedByIdentity(path.join(realHome, '.git-credentials'))).toBe(true);
+      expect(await insideRefusedByIdentity(path.join(realHome, '.aws', 'credentials'))).toBe(true);
+      expect(await insideRefusedByIdentity(path.join(realHome, 'notes2.txt'))).toBe(false);
+    });
+
+    it.runIf(process.platform !== 'win32')('refuses moving a folder or link that holds a refused folder', async () => {
+      fs.mkdirSync(path.join(realHome, 'dotfiles', 'config', 'gh'), { recursive: true });
+      fs.symlinkSync(path.join(realHome, 'dotfiles', 'config'), path.join(realHome, '.config'));
+      expect(await holdsRefusedRoot(path.join(realHome, '.config'))).toBe(true);
+      expect(await holdsRefusedRoot(path.join(realHome, 'dotfiles'))).toBe(true);
+      expect(await holdsRefusedRoot(realHome)).toBe(true);
+      fs.mkdirSync(path.join(realHome, 'work'));
+      expect(await holdsRefusedRoot(path.join(realHome, 'work'))).toBe(false);
     });
 
     it('refuses GH_CONFIG_DIR wherever it is', async () => {

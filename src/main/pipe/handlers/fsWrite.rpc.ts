@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { shell } from 'electron';
-import { isPluginRefusedPath, resolvePluginPath } from './fsRefusals';
+import { holdsRefusedRoot, insideRefusedByIdentity, isPluginRefusedPath, resolvePluginPath } from './fsRefusals';
 import { validatePathParam } from './fs.rpc';
 import type { RpcRouter } from '../RpcRouter';
 
@@ -66,7 +66,7 @@ async function accessible(input: unknown, missing = false): Promise<string> {
     if (isPluginRefusedPath(target) || (!canonical && await exists(target))) return fail('unavailable');
     return entry;
   }
-  if (!stat && missing) return entry;
+  if (!stat && missing) return await insideRefusedByIdentity(entry) ? fail('unavailable') : entry;
   return fail('unavailable');
 }
 
@@ -117,6 +117,7 @@ export class FsJobQueue {
   private async scan(p: string, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
     signal?.throwIfAborted();
     await accessible(p);
+    if (await holdsRefusedRoot(p)) fail('unavailable');
     const s = await fs.promises.lstat(p);
     const total = { bytes: s.isFile() ? s.size : 0, items: 1 };
     if (s.isDirectory()) for (const name of await fs.promises.readdir(p)) {
