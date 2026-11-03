@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { recoversInBackground, selectRecoverableSessions, startLeftoverShellReaps } from '../recoverySelector';
+import { heldForCredentials, recoversInBackground, selectRecoverableSessions, startLeftoverShellReaps } from '../recoverySelector';
 import type { DaemonSession, DaemonSessionState } from '../types';
 import { deliberateSleep } from '../../test-utils/waitFor';
 
@@ -203,5 +203,29 @@ describe('recoversInBackground', () => {
 
   it('leaves a plain shell for its pane to start', () => {
     expect(recoversInBackground({})).toBe(false);
+  });
+});
+
+// #3049 — boot holds a plain user shell main listed for main to start with its
+// credentials; an exec unit or a supervised session is never held, whatever
+// the hold list says.
+describe('heldForCredentials', () => {
+  const holds = new Set(['user-shell', 'agent', 'supervised']);
+
+  it('holds a plain shell on the list', () => {
+    expect(heldForCredentials({ id: 'user-shell', cmd: '/bin/zsh' }, holds)).toBe(true);
+  });
+
+  it('never holds a shell the list does not name', () => {
+    expect(heldForCredentials({ id: 'fanout-worker', cmd: '/bin/zsh' }, holds)).toBe(false);
+  });
+
+  it('never holds an exec unit or a supervised session, even when listed', () => {
+    expect(heldForCredentials({ id: 'agent', cmd: '/bin/zsh', exec: { command: 'claude' } }, holds)).toBe(false);
+    expect(heldForCredentials({
+      id: 'supervised',
+      cmd: '/bin/zsh',
+      supervision: { restart: 'on-failure', limit: { maxRestarts: 3, windowMs: 60_000 }, status: 'armed' },
+    }, holds)).toBe(false);
   });
 });

@@ -10,6 +10,8 @@ import {
   stripCredentialValues,
   pickCredentialEnv,
   mergeCredentialEnv,
+  sanitizeCredentialEnv,
+  CREDENTIAL_ENV_LIMITS,
   isNestingMarker,
 } from '../envFilter';
 
@@ -292,6 +294,35 @@ describe('mergeCredentialEnv (spawn env of a restored user shell, #3049)', () =>
   it('round-trips with stripCredentialValues: the persisted form stays credential-free', () => {
     const merged = mergeCredentialEnv(stripCredentialValues({ PATH: '/p', GITHUB_TOKEN: 'x' }), { GITHUB_TOKEN: 'main-placeholder' });
     expect(stripCredentialValues(merged)).toEqual({ PATH: '/p' });
+  });
+});
+
+describe('sanitizeCredentialEnv (a credential env off the daemon pipe, #3049)', () => {
+  it('keeps passable credentials only', () => {
+    expect(sanitizeCredentialEnv({
+      GH_TOKEN: 'main-placeholder',
+      WMUX_PUSH_RELAY_SECRET: 'relay-placeholder',
+      WMUX_AUTH_TOKEN: 'internal-placeholder',
+      PATH: '/evil',
+      NODE_OPTIONS: '--x',
+    })).toEqual({ GH_TOKEN: 'main-placeholder' });
+  });
+
+  it('drops a bad value without costing the others', () => {
+    expect(sanitizeCredentialEnv({
+      GH_TOKEN: 'main-placeholder',
+      NPM_TOKEN: 'x'.repeat(CREDENTIAL_ENV_LIMITS.VALUE_MAX + 1),
+      API_KEY: 'a\0b',
+      OTHER_TOKEN: 42,
+    })).toEqual({ GH_TOKEN: 'main-placeholder' });
+  });
+
+  it('refuses what is not a plain object, or too many names', () => {
+    expect(sanitizeCredentialEnv(null)).toBeNull();
+    expect(sanitizeCredentialEnv('GH_TOKEN=x')).toBeNull();
+    expect(sanitizeCredentialEnv(['GH_TOKEN'])).toBeNull();
+    const many = Object.fromEntries(Array.from({ length: CREDENTIAL_ENV_LIMITS.NAMES + 1 }, (_, i) => [`K${i}_TOKEN`, 'v']));
+    expect(sanitizeCredentialEnv(many)).toBeNull();
   });
 });
 
