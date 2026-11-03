@@ -3168,6 +3168,10 @@ function registerRpcHandlers(
       // bracketed-paste newlines; only the submitted CR/LF re-arms running.
       pipe.onInput((data: Buffer) => {
         const input = data.toString();
+        // Past the high-water mark (other writers can fill it while this client
+        // is not paused) the chunk waits in SessionPipe's retry slot instead of
+        // the PTY adapter, which drops input past its own bound.
+        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= 6 * 1024 * 1024) return false;
         try { managed.ptyProcess.write(data); }
         catch (error) {
           if (error instanceof Error && error.message.startsWith('PTY_BACKPRESSURE')) return false;
