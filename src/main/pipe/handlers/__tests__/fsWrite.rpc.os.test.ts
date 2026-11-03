@@ -32,6 +32,23 @@ async function finish(result: Awaited<ReturnType<FsJobQueue['start']>>) {
   return job;
 }
 const copy = (conflict = 'fail') => queue.start('copy', { sources: [path.join(src, 'a')], destDir: dest, conflict });
+/**
+ * Holds every copy's bytes until the returned release is called, so a job is
+ * still running when a test asks for an overlapping one. A fast runner would
+ * otherwise finish the first copy before the second request's lock check.
+ */
+function holdCopies(): () => void {
+  let release: () => void = () => { throw new Error('Gate not initialized'); };
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const create = fs.createReadStream;
+  vi.spyOn(fs, 'createReadStream').mockImplementation((...args) => {
+    const held = new PassThrough();
+    void gate.then(() => create(...args).pipe(held));
+    return held as unknown as fs.ReadStream;
+  });
+  return () => release();
+}
+
 describe('filesystem write jobs', () => {
   it('creates and renames with validated names and existing-target errors', async () => {
     expect(await queue.mkdir({ path: path.join(src, 'new') })).toEqual({ ok: true, path: path.join(src, 'new') });
@@ -85,16 +102,7 @@ describe('filesystem write jobs', () => {
     const job = await finish(result); expect(job.state).toBe('cancelled'); expect(fs.readdirSync(dest)).toEqual([]);
   });
   it('locks overlapping paths while running', async () => {
-    // Hold the first copy's bytes until the second request is answered, so a
-    // fast runner cannot finish the first job before the lock check runs.
-    let release: () => void = () => { throw new Error('Gate not initialized'); };
-    const gate = new Promise<void>((resolve) => { release = resolve; });
-    const create = fs.createReadStream;
-    vi.spyOn(fs, 'createReadStream').mockImplementation((...args) => {
-      const held = new PassThrough();
-      void gate.then(() => create(...args).pipe(held));
-      return held as unknown as fs.ReadStream;
-    });
+    const release = holdCopies();
     const result = await copy();
     expect(await copy()).toMatchObject({ reason: 'busy' });
     release();
@@ -157,8 +165,11 @@ describe('filesystem write jobs', () => {
     expect(await queue.rename({ path: safe, newName: '.aws' })).toMatchObject({ reason: 'unavailable' });
     if (process.platform === 'win32') return;
     const alias = path.join(root, 'alias'); fs.symlinkSync(dest, alias);
+    const release = holdCopies();
     const result = await queue.start('copy', { sources: [path.join(src, 'a')], destDir: alias, conflict: 'fail' });
-    expect(await copy()).toMatchObject({ reason: 'busy' }); await finish(result);
+    expect(await copy()).toMatchObject({ reason: 'busy' });
+    release();
+    expect((await finish(result)).state).toBe('done');
   });
   it('rejects an alias resolving to the source and overwrites safe links without following them', async () => {
     if (process.platform === 'win32') return;
