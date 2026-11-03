@@ -333,15 +333,34 @@ for (const f of BUNDLED_FONTS) {
 // in native/computer-use-windows/licenses and reproduced verbatim. A missing
 // file throws rather than leaving a hollow entry. When release.yml's `dotnet-version: 10.0.x` or
 // the CsWin32 version in the helper's csproj moves, refetch these files at the
-// new tag. v10.0.14 is the runtime of SDK 10.0.403, which 10.0.x resolved to on
-// 2026-11-03; v71.0.14-preview is the Win32 metadata CsWin32 0.3.335 depends on.
+// new tag. v71.0.14-preview is the Win32 metadata CsWin32 0.3.335 depends on.
+//
+// The release and CI builds pin the .NET SDK to HELPER_DOTNET_SDK
+// (setup-dotnet in release.yml and ci.yml; generateNotices.os.test.mjs fails
+// when they differ), so the runtime compiled into the helper is exactly the
+// v10.0.14 runtime these files come from. Bump the SDK, the tag and the files
+// together.
+//
+// License basis: NativeAOT compiles the helper from the runtime packs
+// Microsoft.NETCore.App.Runtime.win-x64 and runtime.win-x64.Microsoft.DotNet.
+// ILCompiler (with Microsoft.DotNet.ILCompiler), whose NuGet license expression
+// is MIT at 10.0.14. Microsoft's Windows license page (dotnet/core
+// license-information-windows.md) puts coreclr.dll and runtimes inside
+// single-file publishes under the .NET Library License, for the Windows Error
+// Reporting telemetry in src/coreclr/vm/dwreport.cpp. That file belongs to the
+// CoreCLR VM, which NativeAOT does not use; the helper ships no coreclr.dll.
+const HELPER_DOTNET_SDK = '10.0.403';
 const HELPER_LICENSES_DIR = join(ROOT, 'native/computer-use-windows/licenses');
 const HELPER_COMPONENTS = [
   {
     name: '.NET Runtime',
     license: 'MIT License',
     source: 'https://github.com/dotnet/runtime/tree/v10.0.14 (LICENSE.TXT, THIRD-PARTY-NOTICES.TXT)',
-    what: 'The .NET runtime libraries, compiled into the helper by NativeAOT.',
+    what:
+      `The .NET runtime libraries, compiled into the helper by NativeAOT (.NET SDK\n` +
+      `${HELPER_DOTNET_SDK}, runtime 10.0.14) from the MIT-licensed runtime packs\n` +
+      'Microsoft.NETCore.App.Runtime.win-x64 and\n' +
+      'runtime.win-x64.Microsoft.DotNet.ILCompiler.',
     licenseFile: 'LICENSE-DotNetRuntime.txt',
     noticesFile: 'THIRD-PARTY-NOTICES-DotNetRuntime.txt',
   },

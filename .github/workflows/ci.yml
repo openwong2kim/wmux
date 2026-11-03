@@ -229,7 +229,9 @@ jobs:
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          # Pinned: THIRD_PARTY_NOTICES reproduces this SDK's runtime notices
+          # (HELPER_DOTNET_SDK in scripts/generate-notices.mjs). Bump both together.
+          dotnet-version: 10.0.403
 
       - name: Unit tests (tree, keys, unicode chunks, held-state file)
         run: dotnet test native/computer-use-windows/tests/WmuxComputerUse.Core.Tests -c Release

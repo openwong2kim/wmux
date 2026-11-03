@@ -13,7 +13,7 @@
 // goes permanently red rather than silently stopping to guard.
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,18 @@ function runGenerator(args) {
 }
 
 describe('THIRD_PARTY_NOTICES drift guard', () => {
+  it('names the .NET SDK the Windows helper is built with', () => {
+    // The helper's runtime notices are this SDK's runtime; a workflow on another SDK ships a different runtime.
+    const sdk = /const HELPER_DOTNET_SDK = '([^']+)'/.exec(readFileSync(SCRIPT, 'utf8'))?.[1];
+    expect(sdk).toMatch(/^\d+\.\d+\.\d+$/);
+    for (const workflow of ['release.yml', 'ci.yml']) {
+      const text = readFileSync(path.join(REPO_ROOT, '.github', 'workflows', workflow), 'utf8');
+      const versions = [...text.matchAll(/dotnet-version:\s*(\S+)/g)].map((m) => m[1]);
+      expect(versions.length, workflow).toBeGreaterThan(0);
+      expect(new Set(versions), workflow).toEqual(new Set([sdk]));
+    }
+  });
+
   it('normalizes CRLF in the vendored connector license', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'wmux-notices-'));
     try {

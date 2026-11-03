@@ -12878,7 +12878,10 @@ license file below is reproduced verbatim from the upstream tag named.
 License: MIT License
 Source: https://github.com/dotnet/runtime/tree/v10.0.14 (LICENSE.TXT, THIRD-PARTY-NOTICES.TXT)
 
-The .NET runtime libraries, compiled into the helper by NativeAOT.
+The .NET runtime libraries, compiled into the helper by NativeAOT (.NET SDK
+10.0.403, runtime 10.0.14) from the MIT-licensed runtime packs
+Microsoft.NETCore.App.Runtime.win-x64 and
+runtime.win-x64.Microsoft.DotNet.ILCompiler.
 
 The MIT License (MIT)
 
