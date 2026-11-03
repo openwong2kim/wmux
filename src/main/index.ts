@@ -662,7 +662,7 @@ markBoot('construction-start');
 const ptyManager = new PTYManager();
 let mainWindow: BrowserWindow | null = null;
 /** The daemon process the last connection reached (daemon:connected). */
-let connectedDaemonPid: number | null = null;
+let lastConnectedDaemonPid: number | null = null;
 let sleepPrevention: ReturnType<typeof installSleepPrevention> | null = null;
 // Forward-declared: PTYBridge captures this binding by reference and reads it
 // at runtime (after the actual HookSignalRouter is constructed further down
@@ -2815,9 +2815,10 @@ app.on('ready', async () => {
       // Main tells a new daemon (fresh resume offers) from a reconnect: it sees
       // every connection, including the first, which comes before the renderer
       // subscribes.
-      const daemonPid = readDaemonPid(getWmuxDir());
-      const replaced = connectedDaemonPid !== null && daemonPid !== null && daemonPid !== connectedDaemonPid;
-      if (daemonPid !== null) connectedDaemonPid = daemonPid;
+      // The pid that answered the connect ping; the pid file only when it has none.
+      const daemonPid = daemonRespawnController?.connectedDaemonPid ?? readDaemonPid(getWmuxDir());
+      const replaced = lastConnectedDaemonPid !== null && daemonPid !== null && daemonPid !== lastConnectedDaemonPid;
+      if (daemonPid !== null) lastConnectedDaemonPid = daemonPid;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:connected', { replaced });
       }
