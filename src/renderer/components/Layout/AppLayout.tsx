@@ -2055,15 +2055,11 @@ export default function AppLayout() {
         .finally(() => livenessSnapshotSettled(requestedAt));
     };
     hydrate();
-    let daemonPid: number | null = null;
-    const offConnected = window.electronAPI.daemon.onConnected((pid) => {
+    const offConnected = window.electronAPI.daemon.onConnected((info) => {
       // A different daemon process recovered every pane: the old offers' claims are void.
-      if (typeof pid === 'number') {
-        if (daemonPid !== null && pid !== daemonPid) {
-          forgetAutoResumeClaims();
-          useStore.getState().resetResumeOffers();
-        }
-        daemonPid = pid;
+      if (info?.replaced === true) {
+        forgetAutoResumeClaims();
+        useStore.getState().resetResumeOffers();
       }
       hydrate();
     });

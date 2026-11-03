@@ -661,6 +661,8 @@ terminalCoreSelection();
 markBoot('construction-start');
 const ptyManager = new PTYManager();
 let mainWindow: BrowserWindow | null = null;
+/** The daemon process the last connection reached (daemon:connected). */
+let connectedDaemonPid: number | null = null;
 let sleepPrevention: ReturnType<typeof installSleepPrevention> | null = null;
 // Forward-declared: PTYBridge captures this binding by reference and reads it
 // at runtime (after the actual HookSignalRouter is constructed further down
@@ -2809,8 +2811,15 @@ app.on('ready', async () => {
         // The preceding handler-swap lines + any 'daemon hang detected' /
         // 'respawn attempt' lines above distinguish initial from reconnect.
         logLine('info', 'main', 'emitting daemon:connected → renderer will re-reconcile PTYs');
-        // The pid lets the renderer tell a new daemon (fresh resume offers) from a reconnect.
-        mainWindow.webContents.send('daemon:connected', readDaemonPid(getWmuxDir()));
+      }
+      // Main tells a new daemon (fresh resume offers) from a reconnect: it sees
+      // every connection, including the first, which comes before the renderer
+      // subscribes.
+      const daemonPid = readDaemonPid(getWmuxDir());
+      const replaced = connectedDaemonPid !== null && daemonPid !== null && daemonPid !== connectedDaemonPid;
+      if (daemonPid !== null) connectedDaemonPid = daemonPid;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('daemon:connected', { replaced });
       }
       // Phase A — A7. Run the one-time legacy scrollback migration on
       // the first daemon-healthy transition. Idempotent — subsequent
