@@ -1,6 +1,6 @@
 // The Bots list's multi-select for moving bots (DESIGN.md › Bots › Folders),
 // worked like a file picker's: `selection` always holds the open conversation's
-// bot (when it is a live 1:1 bot on screen); Ctrl/Cmd-click adds or drops others
+// bot (when it is a live 1:1 bot, even if its collapsed folder hides the row); Ctrl/Cmd-click adds or drops others
 // and Shift-click takes the range from the anchor, neither opening a chat. Only
 // live 1:1 bots can be in it, it is pruned to the rows on screen, and it starts
 // over whenever the open conversation changes.
@@ -58,7 +58,8 @@ export function useBotFolderSelection<R extends { c: Conversation }>({ foldersOn
   const fresh: Picked = { forOpen: openBotId, ids: new Set(), anchor: openBotId };
   const cur = state.forOpen === openBotId ? state : fresh;
   const selection = new Set<string>();
-  if (openBotId !== null && live.has(openBotId)) selection.add(openBotId);
+  // The open bot stays selected even while its folder is collapsed (row hidden).
+  if (foldersOn && openBotId !== null) selection.add(openBotId);
   for (const id of cur.ids) if (live.has(id)) selection.add(id);
   // Drop ids whose rows left the screen so none comes back stale.
   useEffect(() => {
@@ -84,7 +85,11 @@ export function useBotFolderSelection<R extends { c: Conversation }>({ foldersOn
     if (openBotId !== null) ids.delete(openBotId);
     return { ...b, ids, anchor: from };
   });
-  const selectedIds = () => order.filter((id) => selection.has(id));
+  const selectedIds = () => {
+    const ids = order.filter((id) => selection.has(id));
+    // A hidden open bot is not in `order`; put it first so a batch move includes it.
+    return openBotId !== null && !live.has(openBotId) && selection.has(openBotId) ? [openBotId, ...ids] : ids;
+  };
   const onEscape = (e: React.KeyboardEvent, blocked: boolean) => {
     if (e.key !== 'Escape' || selection.size < 2 || blocked) return;
     e.preventDefault();
