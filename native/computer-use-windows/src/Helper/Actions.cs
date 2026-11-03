@@ -525,7 +525,7 @@ internal static unsafe class Actions
         }
     }
 
-    public static JsonObject Click(Params p)
+    public static JsonObject Click(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -540,6 +540,8 @@ internal static unsafe class Actions
         int count = Math.Clamp(p.Int("clickCount") ?? 1, 1, 3);
         var mods = Modifiers(p);
         var (x, y, element) = ScreenPoint(snap, p.Int("index"), p.Point("point"));
+        // The agent's pointer moves to the point (Overlay.cs: a posted command, no wait).
+        Overlay.Show(marker, MarkerVerb.Clicking, target, (x, y));
 
         // Whether a pattern call of the ladder brought the target to the front
         // and then certainly did not run, so the click goes on another way:
@@ -559,7 +561,11 @@ internal static unsafe class Actions
             {
                 throw SayIfCameToFront(e, target, frontBefore);
             }
-            if (note != null) return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            if (note != null)
+            {
+                Overlay.Press(marker.Id, x, y);
+                return Result("accessibility", false, SemanticDelivery(target, frontBefore), note);
+            }
             ladderRaised = !frontBefore && Focus.InFront(target);
         }
         try
@@ -569,6 +575,7 @@ internal static unsafe class Actions
             var posted = BackgroundInput.Click(target, x, y, button, count, mods.Count);
             if (AfterBackground("click", posted, refuse, sentAtStart) is { } result)
             {
+                Overlay.Press(marker.Id, x, y);
                 if (ladderRaised && result["delivery"]?.GetValue<string>() == "background")
                 {
                     result["delivery"] = "foreground";
@@ -576,8 +583,11 @@ internal static unsafe class Actions
                 }
                 return result;
             }
+            // Real input: a ring where the user's own pointer goes.
             var preflight = Focus.RequirePointer(target, x, y);
+            Overlay.Show(marker, MarkerVerb.Clicking, target, (x, y), realInput: true);
             Input.Click(x, y, button, count, mods, preflight);
+            Overlay.Press(marker.Id, x, y);
             return Result("synthetic", false, "foreground");
         }
         catch (HelperError e) when (ladderRaised)
@@ -599,7 +609,7 @@ internal static unsafe class Actions
         }
     }
 
-    public static JsonObject SetValue(Params p)
+    public static JsonObject SetValue(Params p, AgentMarker marker)
     {
         // A UIA ValuePattern call brings a covered target to the front, so
         // under `refuse` it is made only for a target in front; otherwise
@@ -624,6 +634,8 @@ internal static unsafe class Actions
                 throw new HelperError(Uia.IsGone(e.HResult) ? "element_stale" : "value_not_settable", $"element {index}: {Uia.Describe(e)}");
             }
             if (readOnly) throw new HelperError("value_not_settable", $"element {index} is read-only");
+            // The caret lookup (UIA calls into the app) comes before the checks below.
+            Overlay.Show(marker, MarkerVerb.SettingValue, target, caret: Caret.For(target, el));
             // Read before the checks, as the click path does.
             bool frontBefore = Focus.InFront(target);
             Focus.RequireSemantic(target, el, refuse);
@@ -688,7 +700,7 @@ internal static unsafe class Actions
         }
     }
 
-    public static JsonObject Type(Params p)
+    public static JsonObject Type(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -711,8 +723,17 @@ internal static unsafe class Actions
             {
                 fieldPoint = null;
             }
+            // The caret lookup (UIA calls into the app) comes before every
+            // check the background path makes before its first key.
+            Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target, el));
             var posted = BackgroundInput.Type(target, text, el, snap.RuntimeIds[index], index, fieldPoint);
-            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result)
+            {
+                // The caret moves on to where the text ended: read again only
+                // once the field shows the text (posted keys land later).
+                if (Verified(result)) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target, el));
+                return result;
+            }
             // UIA SetFocus is a keyboard (Tab-like) focus, and a field may
             // select its whole text on such a focus (a WinForms TextBox does
             // on its first one), so the keys would replace the text. Focusing
@@ -776,12 +797,23 @@ internal static unsafe class Actions
         }
         else
         {
+            Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target));
             var posted = BackgroundInput.Type(target, text, null, null, -1, null);
-            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result) return result;
+            if (AfterBackground("type", posted, refuse, sentAtStart) is { } result)
+            {
+                if (Verified(result)) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target));
+                return result;
+            }
         }
 
+        // The marker's caret lookup is UIA work, so it comes before the
+        // keyboard check below, which is the last thing before the first key;
+        // the marker says "using your keyboard" only once that check passed
+        // (showing it is a posted command, not UIA).
+        var realCaret = Caret.For(target);
         // Checked before anything is sent; FocusedValue below is the baseline for verification.
         Action? preflight = Focus.RequireKeyboard(target);
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: realCaret, realInput: true);
         var before = FocusedValue();
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount), typed = 0;
@@ -806,8 +838,11 @@ internal static unsafe class Actions
             typed += chunk.GraphemeCount;
         }
         bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
+        if (verified) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target), realInput: true);
         return Result("synthetic", verified, "foreground");
     }
+
+    private static bool Verified(JsonObject result) => result["verification"]?.GetValue<string>() == "verified";
 
     /// <summary>
     /// The field's one selected range (a caret is an empty one) through UIA
@@ -986,7 +1021,7 @@ internal static unsafe class Actions
         }
     }
 
-    public static JsonObject PressKey(Params p)
+    public static JsonObject PressKey(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -995,6 +1030,9 @@ internal static unsafe class Actions
         var key = Key(keyName);
         int repeat = Math.Clamp(p.Int("repeat") ?? 1, 1, 50);
         Input.ThrowIfStopping();
+        // The caret lookup (UIA) comes before every check before the first key.
+        var caret = Caret.For(target);
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret);
         var posted = BackgroundInput.Key(target, keyName, repeat, 0, "pressKey");
         if (AfterBackground("pressKey", posted, refuse, sentAtStart) is { } result) return result;
         for (int n = 0; n < repeat; n++)
@@ -1002,7 +1040,10 @@ internal static unsafe class Actions
             if (n > 0) Sta.Sleep(4);
             try
             {
-                Input.Tap(key, [], Focus.RequireKeyboard(target));
+                var preflight = Focus.RequireKeyboard(target);
+                // "using your keyboard" once the check passed; a posted command, not UIA.
+                if (n == 0) Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret, realInput: true);
+                Input.Tap(key, [], preflight);
             }
             catch (HelperError e) when (n > 0)
             {
@@ -1012,7 +1053,7 @@ internal static unsafe class Actions
         return Result("synthetic", false, "foreground");
     }
 
-    public static JsonObject Hotkey(Params p)
+    public static JsonObject Hotkey(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -1021,14 +1062,20 @@ internal static unsafe class Actions
         var key = Key(keyName);
         var mods = Modifiers(p);
         Input.ThrowIfStopping();
+        // The caret lookup (UIA) comes before every check before the key.
+        var caret = Caret.For(target);
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret);
         // Posted keys carry no modifier state, so a chord is always real input.
         var posted = BackgroundInput.Key(target, keyName, 1, mods.Count, "hotkey");
         if (AfterBackground("hotkey", posted, refuse, sentAtStart) is { } result) return result;
-        Input.Tap(key, mods, Focus.RequireKeyboard(target));
+        var keyPreflight = Focus.RequireKeyboard(target);
+        // "using your keyboard" once the check passed; a posted command, not UIA.
+        Overlay.Show(marker, MarkerVerb.Typing, target, caret: caret, realInput: true);
+        Input.Tap(key, mods, keyPreflight);
         return Result("synthetic", false, "foreground");
     }
 
-    public static JsonObject Scroll(Params p)
+    public static JsonObject Scroll(Params p, AgentMarker marker)
     {
         long sentAtStart = Input.Sent;
         bool refuse = RefuseForeground(p);
@@ -1048,6 +1095,7 @@ internal static unsafe class Actions
         // The preflight re-runs the hit-test before every notch: a window that
         // moves over the point mid-scroll must not receive the rest.
         var preflight = Focus.RequirePointer(target, x, y);
+        Overlay.Show(marker, MarkerVerb.Scrolling, target, (x, y), realInput: true);
         var back = new CursorReturn();
         for (int n = 0; n < amount; n++)
         {
