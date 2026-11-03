@@ -22,12 +22,21 @@ export interface TailnetCli {
   whois(ip: string, signal?: AbortSignal): Promise<TailnetWhois | null>;
 }
 
-/** The real CLI, or `exec` in its place. */
-export function createTailnetCli(exec?: TailscaleExec): TailnetCli {
-  const opts = exec ? { exec } : {};
+/**
+ * The real CLI, or `exec` in its place. A whois asks the CLI binary that last
+ * answered `status`: with a Homebrew `tailscale` beside the app, only one of
+ * them reaches the running daemon.
+ */
+export function createTailnetCli(exec?: TailscaleExec, candidates?: string[]): TailnetCli {
+  const opts = { ...(exec ? { exec } : {}), ...(candidates ? { candidates } : {}) };
+  let bin: string | undefined;
   return {
-    status: (signal) => tailscaleStatus({ ...opts, ...(signal ? { signal } : {}) }),
-    whois: (ip, signal) => tailscaleWhois(ip, { ...opts, ...(signal ? { signal } : {}) }),
+    status: async (signal) => {
+      const read = await tailscaleStatus({ ...opts, ...(signal ? { signal } : {}) });
+      if (read.ok) bin = read.bin;
+      return read;
+    },
+    whois: (ip, signal) => tailscaleWhois(ip, { ...opts, ...(signal ? { signal } : {}), ...(bin ? { bin } : {}) }),
   };
 }
 
@@ -54,17 +63,22 @@ export function tailnetCliFromEnv(env: NodeJS.ProcessEnv = process.env): Tailnet
 
 /**
  * True when some network interface holds an IPv4 in 100.64.0.0/10 that is not
- * one of this PC's tailnet addresses: the range is also carrier-grade NAT, so
- * a LAN may use it, and then a source address in it says nothing about the
- * tailnet. Loopback interfaces are skipped: nothing outside this PC reaches
- * them.
+ * one of this PC's tailnet addresses, or one of those addresses sits on more
+ * than one interface: the range is also carrier-grade NAT, so a LAN may use
+ * it, and then a source address in it says nothing about the tailnet.
+ * Loopback interfaces are skipped: nothing outside this PC reaches them.
  */
 export function tailnetRangeOnLan(ifaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>, selfIps: readonly string[]): boolean {
   const self = new Set(selfIps);
-  for (const list of Object.values(ifaces)) {
+  const holders = new Map<string, Set<string>>();
+  for (const [name, list] of Object.entries(ifaces)) {
     for (const nic of list ?? []) {
-      if (nic.family !== 'IPv4' || nic.internal) continue;
-      if (isTailnetIpv4(nic.address) && !self.has(nic.address)) return true;
+      if (nic.family !== 'IPv4' || nic.internal || !isTailnetIpv4(nic.address)) continue;
+      if (!self.has(nic.address)) return true;
+      const names = holders.get(nic.address) ?? new Set<string>();
+      names.add(name);
+      if (names.size > 1) return true;
+      holders.set(nic.address, names);
     }
   }
   return false;

@@ -1,6 +1,7 @@
 import type os from 'node:os';
 import { describe, expect, it } from 'vitest';
-import { devTailscaleDir, tailnetRangeOnLan } from '../tailnet';
+import type { TailscaleExec } from '../../../cli/tailscale';
+import { createTailnetCli, devTailscaleDir, tailnetRangeOnLan } from '../tailnet';
 
 function nic(address: string, over: Partial<os.NetworkInterfaceInfo> = {}): os.NetworkInterfaceInfo {
   return { address, netmask: '255.255.255.0', family: 'IPv4', mac: '00:00:00:00:00:00', internal: false, cidr: null, ...over } as os.NetworkInterfaceInfo;
@@ -35,6 +36,10 @@ describe('tailnetRangeOnLan', () => {
     expect(tailnetRangeOnLan({ utun4: [nic('100.101.0.1'), nic('100.101.0.2')] }, self)).toBe(true);
   });
 
+  it('is true when this PC’s tailnet address sits on more than one interface', () => {
+    expect(tailnetRangeOnLan({ en0: [nic('100.101.0.1')], utun4: [nic('100.101.0.1')] }, self)).toBe(true);
+  });
+
   it('ignores loopback interfaces, IPv6 and addresses outside the range', () => {
     expect(
       tailnetRangeOnLan(
@@ -46,5 +51,27 @@ describe('tailnetRangeOnLan', () => {
         self,
       ),
     ).toBe(false);
+  });
+});
+
+describe('createTailnetCli', () => {
+  it('asks whois through the CLI binary that last answered status', async () => {
+    const app = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
+    const SELF = { ID: 'nSELF', UserID: 7, TailscaleIPs: ['100.101.0.1'], Online: true };
+    const whois = {
+      Node: { StableID: 'nDESK', User: 7, Addresses: ['100.101.12.4/32'], AllowedIPs: ['100.101.12.4/32'], Hostinfo: {} },
+      UserProfile: {},
+    };
+    const seen: string[] = [];
+    const exec: TailscaleExec = async (cmd, args) => {
+      seen.push(`${cmd} ${args[0]}`);
+      if (cmd === 'tailscale') throw Object.assign(new Error('Command failed'), { stderr: 'failed to connect to local tailscaled' });
+      return { stdout: JSON.stringify(args[0] === 'status' ? { BackendState: 'Running', Self: SELF } : whois), stderr: '' };
+    };
+    const cli = createTailnetCli(exec, ['tailscale', app]);
+    expect((await cli.status()).ok).toBe(true);
+    seen.length = 0;
+    expect(await cli.whois('100.101.12.4')).toMatchObject({ stableId: 'nDESK' });
+    expect(seen).toEqual([`${app} whois`]);
   });
 });

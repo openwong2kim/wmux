@@ -43,7 +43,7 @@ function whoisJson(over: { node?: Record<string, unknown>; hostinfo?: Record<str
     Node: {
       ID: 42,
       StableID: 'nDESK',
-      Name: 'desk.tail1.ts.net.',
+      Name: 'Desk.tail1.ts.net.',
       User: 7,
       Addresses: ['100.101.12.4/32', 'fd7a:115c:a1e0::4/128'],
       AllowedIPs: ['100.101.12.4/32', 'fd7a:115c:a1e0::4/128'],
@@ -69,6 +69,8 @@ function recordingExec(answer: (args: string[]) => { stdout: string } | Error): 
 function failure(props: { code?: string; stderr?: string }): Error {
   return Object.assign(new Error('Command failed'), props);
 }
+
+const APP_CLI = '/Applications/Tailscale.app/Contents/MacOS/Tailscale';
 
 describe('parseTailnetStatus', () => {
   it('reads this PC, its login and the version', () => {
@@ -107,6 +109,19 @@ describe('parseTailnetStatus', () => {
     expect(parseTailnetStatus('[]')).toBeNull();
     expect(parseTailnetStatus(JSON.stringify({ BackendState: 'Running' }))).toBeNull();
   });
+
+  it('is null when Self names no node ID (nothing could be told apart from it)', () => {
+    expect(parseTailnetStatus(status({}, { Self: { ...SELF, ID: '' } }))).toBeNull();
+    expect(parseTailnetStatus(status({}, { Self: { ...SELF, ID: 42 } }))).toBeNull();
+    const { ID: _omit, ...noId } = SELF;
+    expect(parseTailnetStatus(status({}, { Self: noId }))).toBeNull();
+  });
+
+  it('reads a zero or non-integer user ID as none (Go leaves 0 for unset)', () => {
+    expect(parseTailnetStatus(status({}, { Self: { ...SELF, UserID: 0 } }))?.self.userId).toBeNull();
+    expect(parseTailnetStatus(status({}, { Self: { ...SELF, UserID: -3 } }))?.self.userId).toBeNull();
+    expect(parseTailnetStatus(status({}, { Self: { ...SELF, UserID: '7' } }))?.self.userId).toBeNull();
+  });
 });
 
 describe('tailscaleStatus', () => {
@@ -122,6 +137,17 @@ describe('tailscaleStatus', () => {
     expect(missing).toEqual({ ok: false, check: expect.objectContaining({ id: 'installed', reason: 'not-installed', fix: 'download' }) });
     const stopped = await tailscaleStatus({ exec: recordingExec(() => ({ stdout: status({}, { BackendState: 'Stopped' }) })).exec });
     expect(stopped).toEqual({ ok: false, check: expect.objectContaining({ id: 'self', reason: 'stopped' }) });
+  });
+
+  it('names the CLI that answered, skipping one whose own daemon is not running', async () => {
+    const { exec, calls } = recordingExec(() => ({ stdout: status({}) }));
+    const stub: TailscaleExec = async (cmd, args, opts) => {
+      if (cmd === 'tailscale') throw failure({ stderr: 'failed to connect to local tailscaled; it doesn’t appear to be running' });
+      return exec(cmd, args, opts);
+    };
+    const read = await tailscaleStatus({ exec: stub, candidates: ['tailscale', APP_CLI] });
+    expect(read).toMatchObject({ ok: true, bin: APP_CLI });
+    expect(calls).toEqual([['status', '--json']]);
   });
 
   it('is ready with no other device online (discovery does not need the peer check)', async () => {
@@ -148,6 +174,32 @@ describe('parseWhois / tailscaleWhois', () => {
     });
     // No ComputedName: the host name.
     expect(parseWhois(whoisJson({ node: { ComputedName: '' } }), '100.101.12.4')?.deviceName).toBe('DESKTOP-1');
+  });
+
+  it('is null unless AllowedIPs, like Addresses, lists the address (Tailscale always does)', () => {
+    expect(parseWhois(whoisJson({ node: { AllowedIPs: undefined } }), '100.101.12.4')).toBeNull();
+    expect(parseWhois(whoisJson({ node: { AllowedIPs: 'x' } }), '100.101.12.4')).toBeNull();
+    expect(parseWhois(whoisJson({ node: { AllowedIPs: ['fd7a:115c:a1e0::4/128'] } }), '100.101.12.4')).toBeNull();
+    expect(parseWhois(whoisJson({ node: { Addresses: undefined } }), '100.101.12.4')).toBeNull();
+  });
+
+  it('asks whois through the CLI that answered status', async () => {
+    const seen: string[] = [];
+    const exec: TailscaleExec = async (cmd, args) => {
+      seen.push(cmd);
+      // A Homebrew stub beside the app: its own daemon is not running.
+      if (cmd === 'tailscale') throw failure({ stderr: 'failed to connect to local tailscaled' });
+      return { stdout: args[0] === 'status' ? status({}) : whoisJson(), stderr: '' };
+    };
+    const read = await tailscaleStatus({ exec, candidates: ['tailscale', APP_CLI] });
+    if (!read.ok) throw new Error('status failed');
+    seen.length = 0;
+    expect(await tailscaleWhois('100.101.12.4', { exec, bin: read.bin, candidates: ['tailscale', APP_CLI] })).toMatchObject({ stableId: 'nDESK' });
+    expect(seen).toEqual([APP_CLI]);
+    // Unpinned, it still moves past a CLI whose daemon is not running, as status does.
+    seen.length = 0;
+    expect(await tailscaleWhois('100.101.12.4', { exec, candidates: ['tailscale', APP_CLI] })).toMatchObject({ stableId: 'nDESK' });
+    expect(seen).toEqual(['tailscale', APP_CLI]);
   });
 
   it('refuses an argument that is not a canonical tailnet IPv4 without running anything', async () => {
@@ -204,11 +256,18 @@ describe('judgeWhois', () => {
     expect(judgeWhois(who({ node: { StableID: 'nSELF' } }), self)).toEqual({ ok: false, reason: 'self' });
   });
 
+  it('refuses everything when this PC’s own node ID is unknown', () => {
+    expect(judgeWhois(who(), { stableId: '', userId: 7 })).toEqual({ ok: false, reason: 'unidentified' });
+  });
+
   it('compares numeric user IDs, not login names', () => {
     expect(judgeWhois(who({ node: { User: 8 } }), self)).toEqual({ ok: false, reason: 'other-user' });
     // Same login string, other user ID (another tailnet, another identity provider).
     expect(judgeWhois(who({ node: { User: 8 }, profile: { LoginName: 'me@example.com' } }), self)).toEqual({ ok: false, reason: 'other-user' });
     expect(judgeWhois(who(), { stableId: 'nSELF', userId: null })).toEqual({ ok: false, reason: 'other-user' });
+    // User 0 is Go's unset value, never a match.
+    expect(judgeWhois(who({ node: { User: 0 } }), { stableId: 'nSELF', userId: null })).toEqual({ ok: false, reason: 'other-user' });
+    expect(who({ node: { User: 0 } }).userId).toBeNull();
   });
 
   it('refuses a tagged node', () => {
@@ -224,6 +283,9 @@ describe('judgeWhois', () => {
     expect(judgeWhois(who({ hostinfo: { RoutableIPs: ['10.0.0.0/8'] } }), self)).toEqual({ ok: false, reason: 'subnet-router' });
     expect(judgeWhois(who({ hostinfo: { RoutableIPs: ['0.0.0.0/0', '::/0'] } }), self)).toEqual({ ok: false, reason: 'subnet-router' });
     expect(judgeWhois(who({ node: { PrimaryRoutes: ['192.168.1.0/24'] } }), self)).toEqual({ ok: false, reason: 'subnet-router' });
+    // A wider prefix among Addresses is not the node's own address.
+    const wide = { Addresses: [v4, v6, '100.101.12.0/24'], AllowedIPs: [v4, v6, '100.101.12.0/24'] };
+    expect(judgeWhois(who({ node: wide }), self)).toEqual({ ok: false, reason: 'subnet-router' });
   });
 });
 
@@ -259,6 +321,8 @@ describe('fixtureTailscaleDirExec', () => {
       ['whois', '100.101.12.4'],
       ['whois', '--json', '../status'],
       ['whois', '--json', '100.101.12.4/../../x'],
+      // Canonical, but not a tailnet address.
+      ['whois', '--json', '192.168.1.4'],
     ]) {
       await expect(exec('tailscale', args, opts), args.join(' ')).rejects.toMatchObject({ stderr: 'fixture: refused' });
     }
