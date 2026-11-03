@@ -23,6 +23,9 @@ import * as path from 'node:path';
 import { readSourceText } from '../../../test-utils/sourceText';
 
 const srcRoot = path.join(__dirname, '..', '..', '..');
+// #3049 — pty:promote and pty:reconnect promote through promoteRecoveredSession,
+// which adds a restored user shell's credentials when main grants them.
+const userShellRecord = readSourceText(path.join(srcRoot, 'main', 'pty', 'userShellRecord.ts'));
 
 describe('pty.handler PTY_PROMOTE — renderer→daemon hop', () => {
   const source = readSourceText(path.join(__dirname, '..', 'handlers', 'pty.handler.ts'));
@@ -46,7 +49,8 @@ describe('pty.handler PTY_PROMOTE — renderer→daemon hop', () => {
 
   it('forwards to daemon.promoteSession and normalizes the reply the renderer reads', () => {
     const region = promoteRegion();
-    expect(region).toMatch(/daemonClient\.rpc\('daemon\.promoteSession', \{ id, \.\.\.\(fresh \? \{ fresh: true \} : \{\}\) \}, \{ timeoutMs: WSL_RPC_TIMEOUT_MS \}\)/);
+    expect(region).toMatch(/promoteRecoveredSession\(daemonClient, getUserShellRecord\(app\.getPath\('userData'\)\), id, \{ fresh, timeoutMs: WSL_RPC_TIMEOUT_MS \}\)/);
+    expect(userShellRecord).toMatch(/client\.rpc\('daemon\.promoteSession', \{\s*id: listed\.id,\s*\.\.\.\(opts\.fresh \? \{ fresh: true \} : \{\}\),/);
     expect(region).toMatch(/if \(res\.ok\) return \{ success: true \}/);
     // A failure must carry a message, or reconcile logs `undefined` and the
     // operator cannot tell a cap hit from a spawn crash.
@@ -238,7 +242,7 @@ describe('attach without promote (#2398)', () => {
     expect(region).toMatch(/opts\?: \{ promote\?: boolean; joinOnly\?: boolean \}/);
     const heldAt = region.indexOf('const held = (');
     const deferAt = region.indexOf("if (action === 'hold') return held(");
-    const promoteAt = region.indexOf("daemonClient.rpc('daemon.promoteSession'");
+    const promoteAt = region.indexOf('promoteRecoveredSession(daemonClient');
     expect(heldAt).toBeGreaterThan(0);
     expect(deferAt).toBeGreaterThan(region.indexOf("session.state === 'suspended'"));
     expect(deferAt).toBeGreaterThan(heldAt);
@@ -254,8 +258,11 @@ describe('attach without promote (#2398)', () => {
   it('pty:reconnect asks the daemon join-only for a join-only caller and holds when nothing is in flight', () => {
     const start = handler.indexOf('ipcMain.handle(IPC.PTY_RECONNECT');
     const region = handler.slice(start, start + 9000);
-    const promoteAt = region.indexOf("daemonClient.rpc('daemon.promoteSession'");
-    expect(region.slice(promoteAt, promoteAt + 200)).toMatch(/\{ id, \.\.\.\(action === 'join-only' \? \{ joinOnly: true \} : \{\}\) \}/);
+    const promoteAt = region.indexOf('promoteRecoveredSession(daemonClient');
+    expect(region.slice(promoteAt, promoteAt + 200)).toMatch(/\{ joinOnly: action === 'join-only', timeoutMs: WSL_RPC_TIMEOUT_MS \}/);
+    // Join-only goes to the daemon as such, and never carries credentials.
+    expect(userShellRecord).toMatch(/\.\.\.\(opts\.joinOnly \? \{ joinOnly: true \} : \{\}\),/);
+    expect(userShellRecord).toMatch(/const credentialEnv = opts\.joinOnly \? undefined : credentialEnvFor\(/);
     // The mapping itself: promoteOutcome, behaviour-tested in shared.
     const outcomeAt = region.indexOf('const outcome = promoteOutcome(result);');
     const heldAt = region.indexOf("if (outcome === 'held') return held(");
@@ -320,7 +327,7 @@ describe('attach without promote (#2398)', () => {
   it('pty:reconnect answers promoted when it promoted a suspended session', () => {
     const start = handler.indexOf('ipcMain.handle(IPC.PTY_RECONNECT');
     const region = handler.slice(start, start + 9000);
-    const promoteAt = region.indexOf("daemonClient.rpc('daemon.promoteSession'");
+    const promoteAt = region.indexOf('promoteRecoveredSession(daemonClient');
     // Round 7: from what the daemon did (promoteStartedSession, unit-tested
     // in shared), never from the action label.
     expect(region.slice(promoteAt, promoteAt + 1600)).toMatch(/promoted = promoteStartedSession\(result\);/);

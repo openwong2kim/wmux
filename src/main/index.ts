@@ -69,6 +69,8 @@ import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
+import { getUserShellRecord, startHeldUserShells } from './pty/userShellRecord';
+import { WSL_RPC_TIMEOUT_MS } from '../shared/wslTimeouts';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { clearEphemeralClipboard } from './ipc/handlers/clipboard.handler';
@@ -2708,6 +2710,17 @@ app.on('ready', async () => {
         }, (err: unknown) => {
           logLine('warn', 'main', `pid-map prune failed: ${err instanceof Error ? err.message : String(err)}`);
         });
+      // #3049 — start the restored user shells the daemon holds for main, with
+      // their credentials (pty/userShellRecord.ts); whatever is still held at
+      // the daemon's fallback starts without them.
+      void startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
+        timeoutMs: WSL_RPC_TIMEOUT_MS,
+        log: (line) => logLine('info', 'main', line),
+      }).then((held) => {
+        if (held > 0) logLine('info', 'main', `[env] started ${held} restored user shell(s) held for the app`);
+      }, (err: unknown) => {
+        logLine('warn', 'main', `[env] restored user shells not started: ${err instanceof Error ? err.message : String(err)}`);
+      });
       // Mount the notification router now that we have a live daemon
       // client. PTY data flows through daemon → DaemonClient events,
       // and this router translates them into the same renderer-facing
