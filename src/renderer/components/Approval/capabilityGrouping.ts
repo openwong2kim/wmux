@@ -29,6 +29,7 @@ export interface CapabilityGroup {
  * declaration order in the wire payload.
  */
 const GROUP_RENDER_ORDER: RiskClass[] = [
+  'files-write',
   'terminal-content',
   'terminal-input',
   'computer',
@@ -36,6 +37,7 @@ const GROUP_RENDER_ORDER: RiskClass[] = [
   'a2a',
   'agent-state',
   'agent-state-all',
+  'files',
   'metadata',
   'events',
   'pane-lifecycle',

@@ -165,12 +165,17 @@ a2a.send            a2a.execute         a2a.read
 
 ui.sidebar          ui.statusbar        ui.pane-decoration
 ui.commands
+
+fs.read
+fs.write
 ```
 
 Notes:
 
 - `notifications.read` opts in to `notification.received` events on `events.poll`. A plugin with a declared capability set that lacks it has notification events filtered out of poll results (they carry terminal-program-controlled text). Callers without a declaration are grandfathered.
 - `browser.read` permits the ordinary browser read RPCs, including scoped target metadata from `browser.cdp.info`; it does **not** grant the raw `cdpPort` or app `shellUrl`. Those attach fields are reserved for the renderer operator, locally source-qualified server-pinned callers, and source-qualified first-party wire clients. This keeps a read grant from bypassing the browser tool layer and its automation lease.
+- Filesystem entries include optional `mode` (lstat permission bits masked with `0o777`), permitting owner `rwx` display without guessing access.
+- `fs.read` permits `fs.list`, `fs.stat` and `fs.readText`: list a local folder, stat one path, and read up to 1 MB of a text file. Paths must be absolute. The plugin can read any local text file except what wmux refuses: the app file tree's credential folders and files (`~/.ssh`, `~/.aws`, ...), plus, for plugins only, wmux's own data, `.env` files, private and SSH keys, CLI tokens and shell history (the full list is in `docs/api/inventory.md` and `fsRefusals.ts`). A refused path, and a network or device path, answers `unavailable`, exactly like a missing path. Its risk class `files` is critical and always enforced. It takes no path glob: the glob grammar treats `.` as a separator and cannot scope file paths.
 - `ui.*` capabilities gate the plugin-host UI contribution points (sandboxed sidebar panels, status-bar widgets, pane decorations, palette commands). They are enforced at contribution mount time by the host — the iframe/widget is refused for non-trusted plugins — rather than per-RPC. See `docs/internal/fable-window-schema-freeze.md` §4.
 
 Reserved prefixes (declaring these is always rejected):
@@ -483,3 +488,9 @@ External plugin authors building their own MCP servers can copy the pattern: cap
 When the MCP transport closes (process shutdown, SIGINT, host disconnect), the wmux-bundled MCP server calls `clearClientIdentity()` from `src/mcp/wmux-client.ts`. This drops the cached `clientName`/`clientVersion` from module scope so any trailing RPC traffic (e.g. cleanup work scheduled during the shutdown handler) goes out envelope-less instead of being mis-attributed to a plugin that has already disconnected. Since #1111 the permission gate refuses such a request (identity bootstrap and a token-validated commander aside), so trailing work after a close fails rather than riding the old `legacy` lane; the bundled server's own teardown (Playwright detach, REPL disposal) makes no wmux RPC.
 
 A reconnect MUST re-run the MCP initialize handshake to re-establish identity; there is no replay of cached identity across transport boundaries. External MCP servers SHOULD mirror this contract when implementing their own transport-close cleanup.
+
+### Filesystem writes (experimental)
+
+`fs.write` is unscopable, effect `write`, risk class `files-write` (critical). It permits `fs.mkdir`, `fs.rename`, `fs.copy`, `fs.move`, `fs.trash`, `fs.job.status` and `fs.job.cancel`. All paths are absolute and pass the filesystem access check; credential paths and descendants are refused. New names cannot contain `/`, `\`, NUL, or be `.` or `..`. Trash uses the OS Trash, never permanent deletion.
+
+Copy/move accept at most 32 sources, `destDir`, and `conflict: skip|overwrite|fail`. Symlinks are copied without traversal; folder trees are recursive and preserve mtime. Self/descendant copies are invalid. Overlapping running jobs or more than four jobs answer `busy`. Jobs expose byte/item progress, current path and path/reason errors, with state `running|done|failed|cancelled`. Completed jobs expire after ten minutes. Cancellation removes partial files. Cross-device moves remove a source only after its copy succeeds completely.

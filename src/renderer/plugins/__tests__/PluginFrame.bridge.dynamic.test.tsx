@@ -516,3 +516,23 @@ it.each([
   expect(rpc).toHaveBeenLastCalledWith('demo', 'pane.focus', {}, 'ws-1', railPage);
   port.close();
 });
+
+it('forwards theme tokens after connection and when the root theme changes', async () => {
+  document.documentElement.style.setProperty('--bg-base', '#ffffff');
+  try {
+    await act(async () => { root.render(React.createElement(PluginFrame, { pluginName: 'commander', entry: 'index.html' })); });
+    const frame = container.querySelector('iframe');
+    if (!frame) throw new Error('Missing frame');
+    const post = vi.fn();
+    Object.defineProperty(frame, 'contentWindow', { configurable: true, value: { postMessage: post } });
+    await act(async () => { frame.dispatchEvent(new Event('load')); });
+    const port = pluginPort(post);
+    const themes: { kind: string; variables: Record<string, string>; colorScheme: string }[] = [];
+    port.addEventListener('message', (e: MessageEvent) => { if (e.data?.kind === 'theme') themes.push(e.data); });
+    port.start();
+    await vi.waitFor(() => expect(themes.at(-1)).toMatchObject({ colorScheme: 'light', variables: { '--bg-base': '#ffffff' } }), { timeout: 5_000 });
+    await act(async () => { document.documentElement.style.setProperty('--bg-base', '#000000'); });
+    await vi.waitFor(() => expect(themes.at(-1)).toMatchObject({ colorScheme: 'dark', variables: { '--bg-base': '#000000' } }), { timeout: 5_000 });
+    port.close();
+  } finally { document.documentElement.style.removeProperty('--bg-base'); }
+});

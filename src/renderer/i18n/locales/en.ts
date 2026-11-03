@@ -1,4 +1,8 @@
 export const en = {
+  "plugins.settings.commander": "Files",
+  "plugins.settings.commanderHint": "Browse and manage local files in up to three panels. Copy, move, rename and move files to Trash.",
+  "plugins.page.commanderTagline": "A commander for your workspace files",
+
   "connectors.access.platform": "Terminal launch is available for local macOS and Linux shells. Windows and WSL are not supported yet. Access settings can still be saved.",
   "connectors.access.title": "Terminal access",
   "connectors.access.none": "Off",
