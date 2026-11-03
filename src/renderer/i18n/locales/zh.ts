@@ -4782,7 +4782,7 @@ export const zh = {
   'remotePage.discover.hint': "在另一台电脑上依次点按 远程 › 连接电脑 › Tailscale › 允许发现本机，它就会显示在这里。未允许被发现的设备不会显示。",
   'remotePage.discover.connect': "连接",
   'remotePage.discover.connected': "已连接",
-  'remotePage.discover.alreadyConnected': "已连接过",
+  'remotePage.discover.alreadyConnected': "已经连接",
   'remotePage.discover.versionMismatch': "需要相同的 wmux 版本",
   'remotePage.discover.stale': "已不再可被发现",
   'remotePage.discover.connectTitle': "连接到 {name}",
