@@ -428,21 +428,39 @@ listed in `capabilities.actions`. It needs Accessibility.
 
 ## Agent overlay
 
-While an input action runs, the helper draws:
+Every agent that drives an app gets its own marker, drawn in the colour main
+assigned to it (`src/shared/computer/agentMarker.ts`; main sends `marker
+{id, label, color}` with each input action). The helper draws:
 
-- a halo around the target window: a 2 px rounded border with a soft glow in
-  the attention orange of DESIGN.md (`#FF8A3D`), and a pill on its top edge
-  reading `wmux agent · Stop ⌃⌥⇧Esc` (ink `#0B0C0E`). The pill shows the
-  default stop chord; `configure` carries no chord;
-- for `click` and `scroll`, an agent cursor that moves to the point (150 ms,
-  ease-out) before the input is sent, and a ring that pulses out from it on
-  a click. Keyboard actions show the halo only.
+- a 3 px ring around the agent's target window, and a name pill above the
+  window's top-left corner (`● #api-1 · Claude Code · typing`, ink
+  `#0B0C0E`). A second agent on the same window rings 3 px outside the first,
+  and its pill sits beside the first one's while they fit over the window,
+  then on a new row above;
+- for `click` and `scroll` (AXPress included), the agent's own pointer: an
+  arrow in its colour with a name chip, which moves to the point (150 ms,
+  ease-out) and pulses on a press;
+- for keyboard actions and `setValue`, a caret at the insertion point
+  (`kAXBoundsForRangeParameterizedAttribute`, else the element's leading
+  edge) with the chip;
+- for real (foreground) input, the pill inverted (` · using your mouse` or
+  ` · using your keyboard`), and for pointer actions a ring where the real
+  pointer goes instead of the arrow;
+- while the agent waits for the foreground lease another agent holds
+  (`markerWait {marker, pid, windowId, waitingFor}`), its ring and pill
+  dimmed with ` · waiting for <agent>`.
 
-The overlay fades 1.5 s after the last action, and goes at once on
-`releaseInput` (what main sends on the stop key), on
-`configure { overlay: false }`, and when the helper exits. With Reduce motion
-on (`accessibilityDisplayShouldReduceMotion`) the cursor jumps instead of
-moving, there is no pulse and no fade: the halo is static and disappears.
+While any marker shows, a dark bar at the top of the main display counts them
+(`3 wmux agents are using apps · Stop all ⌃⌥⇧Esc`). Pills, pointers and carets
+draw above every ring.
+
+Each marker fades 1.5 s after its own last action. `markerClear {id}` removes
+one at once; all of them go at once on `releaseInput` (what main sends on the
+stop key), on `configure { overlay: false }`, and when the helper exits. A
+waiting marker fades on its own 15 s after `markerWait` (main's lease idle
+time), unless that agent acts again or is cleared first. With Reduce
+motion on (`accessibilityDisplayShouldReduceMotion`) pointers jump instead of
+moving, there is no pulse and no fade.
 
 The overlay is one borderless, transparent `NSPanel` per display (with
 separate Spaces, a window that spans displays shows on only one), created on
@@ -450,11 +468,13 @@ first use and rebuilt when the display set changes. The panels ignore the
 mouse, can never become key or main, never activate the helper, join every
 Space including full-screen ones, sit just above the pop-up menu level, are
 not accessibility elements and are left out of screen captures
-(`sharingType = .none`). The hit test skips them as the helper's own windows.
+(`sharingType = .none`; `WMUX_OVERLAY_CAPTURABLE=1` in the helper's
+environment lets them in, for dev screenshots). The hit test skips them as the helper's own windows.
 
-`configure { overlay }` is an optional method, listed in
-`capabilities.actions`. The overlay is on until `configure` says otherwise.
-It answers `{ok: true}`, and works while the screen is locked.
+`configure { overlay }`, `markerWait` and `markerClear` are optional methods,
+listed in `capabilities.actions`; main sends them only to a helper that lists
+them. The overlay is on until `configure` says otherwise. Each answers
+`{ok: true}`, and works while the screen is locked.
 
 ## Who may drive the helper
 

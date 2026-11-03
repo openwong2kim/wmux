@@ -2,7 +2,7 @@
 // helper this OS runs and where the build put it.
 
 import { execFile as nodeExecFile, spawn as nodeSpawn } from 'node:child_process';
-import { app, globalShortcut, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, globalShortcut, ipcMain, shell } from 'electron';
 import { platformChoice } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import {
@@ -12,6 +12,11 @@ import {
   type ComputerUseSettingsPayload,
 } from '../../shared/computer/config';
 import { ComputerError } from '../../shared/computer/errors';
+import type { AgentMarkerEntry } from '../../shared/computer/agentMarker';
+import { paneLabelShapeError } from '../../shared/paneLabelRules';
+import { metadataStore } from '../metadata/MetadataStore';
+import { getWorkspaceMirror } from '../workspace/WorkspaceMirror';
+import { AgentMarkers } from './agentMarkers';
 import { helperStatus as rawHelperStatus, writeComputerUseSettings, type ComputerHelperStatus, type ComputerUseSettingsPatch } from './settings';
 import { readAppBundleId } from './appBundleId';
 import { isPermissionOp, requestHelperPermissions, resetHelperPermissions, revealHelper } from './permissions';
@@ -229,6 +234,41 @@ function computerStopKey(): StopKey {
   return stopKey;
 }
 
+/**
+ * The pane's #tag for its agent's marker: `#<label>` when the person named
+ * the pane (the name pane-taking tools accept), else the auto tag the
+ * renderer mirrors (`#w1-2`), else null.
+ */
+function paneTagOf(ptyId: string): string | null {
+  const mirror = getWorkspaceMirror();
+  const paneId = mirror.peekPaneForPty(ptyId)?.paneId;
+  if (!paneId) return null;
+  const label = metadataStore.get(paneId).metadata.label?.trim();
+  if (label && paneLabelShapeError(label) === null) return `#${label}`;
+  return mirror.getPaneTag(paneId);
+}
+
+/** Every renderer window gets the full list (preload computerUse.onAgentMarkers). */
+function broadcastAgentMarkers(entries: AgentMarkerEntry[]): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    try {
+      win.webContents.send(IPC.COMPUTER_AGENT_MARKERS, entries);
+    } catch (err) {
+      // A frame being torn down can throw; the other windows still get it.
+      console.warn('[computer] agent marker push failed:', err);
+    }
+  }
+}
+
+let markers: AgentMarkers | null = null;
+
+/** One for the life of main: an agent keeps its colour across helper restarts and stops. */
+function agentMarkers(): AgentMarkers {
+  markers ??= new AgentMarkers({ paneTag: paneTagOf, onPaneColour: broadcastAgentMarkers });
+  return markers;
+}
+
 export function createComputerService(deps: { requestConsent: ConsentRequester }): ComputerService {
   const helperPath = resolveHelperPath();
 
@@ -263,6 +303,7 @@ export function createComputerService(deps: { requestConsent: ConsentRequester }
       selfPids: new Set(app.getAppMetrics().map((m) => m.pid).concat(process.pid)),
       selfExePath: process.execPath.toLowerCase(),
     }),
+    markers: agentMarkers(),
   });
   // Built during quit (the first computer.* call of this run landed after
   // disposeComputerUse): born disposed, so it refuses every call before it
@@ -376,6 +417,10 @@ export function registerComputerUseIpc(
 
   ipcMain.removeHandler(IPC.COMPUTER_USE_GET);
   ipcMain.handle(IPC.COMPUTER_USE_GET, () => snapshot());
+
+  // Each pane's marker colour; pushed again on this channel whenever a pane gets one.
+  ipcMain.removeHandler(IPC.COMPUTER_AGENT_MARKERS);
+  ipcMain.handle(IPC.COMPUTER_AGENT_MARKERS, () => agentMarkers().entries());
 
   // One write at a time, in the order they came: the pin check below awaits,
   // and an earlier "on" must not land after a later "off".

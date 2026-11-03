@@ -12,6 +12,7 @@
 // incompatible change so main restarts or refuses a mismatched helper.
 
 import { isActionDisposition, isComputerErrorCode, type ActionDisposition, type ComputerErrorPayload } from './errors';
+import type { AgentMarker, AgentMarkerClearParams, AgentMarkerWaitParams } from './agentMarker';
 
 export type { ActionDisposition } from './errors';
 
@@ -54,7 +55,7 @@ export const COMPUTER_CONTROL_ACTIONS = ['openApp', 'click', 'setValue', 'type',
  * `unsupported_action` (openApp) or skips it (configure), so an older or
  * other-OS helper keeps working without a protocol bump.
  */
-export const OPTIONAL_HELPER_METHODS = ['openApp', 'configure'] as const;
+export const OPTIONAL_HELPER_METHODS = ['openApp', 'configure', 'markerWait', 'markerClear'] as const;
 export const COMPUTER_ACTIONS = [...COMPUTER_OBSERVE_ACTIONS, ...COMPUTER_CONTROL_ACTIONS] as const;
 
 export type ComputerObserveAction = (typeof COMPUTER_OBSERVE_ACTIONS)[number];
@@ -395,25 +396,26 @@ export interface HelperMethods {
       clickCount: number;
       modifiers: Modifier[];
       foreground?: ForegroundMode;
+      marker?: AgentMarker;
     };
     result: ActionResult;
   };
   setValue: {
-    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode };
+    params: { snapshotId: string; target: ControlTarget; index: number; value: string; foreground?: ForegroundMode; marker?: AgentMarker };
     result: ActionResult;
   };
   type: {
-    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode };
+    params: { snapshotId: string; target: ControlTarget; index?: number; text: string; foreground?: ForegroundMode; marker?: AgentMarker };
     result: ActionResult;
   };
   /** `key` is canonical (normalizeKey); never a modifier on its own. */
   pressKey: {
-    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode };
+    params: { snapshotId: string; target: ControlTarget; key: Key; repeat: number; foreground?: ForegroundMode; marker?: AgentMarker };
     result: ActionResult;
   };
   /** Modifiers down in MODIFIERS order, `key` down/up, modifiers up in reverse. */
   hotkey: {
-    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode };
+    params: { snapshotId: string; target: ControlTarget; modifiers: Modifier[]; key: Key; foreground?: ForegroundMode; marker?: AgentMarker };
     result: ActionResult;
   };
   scroll: {
@@ -425,6 +427,7 @@ export interface HelperMethods {
       direction: ScrollDirection;
       amount: number;
       foreground?: ForegroundMode;
+      marker?: AgentMarker;
     };
     result: ActionResult;
   };
@@ -437,13 +440,21 @@ export interface HelperMethods {
    * absolute .app path. `window` is null only when the app has no window even
    * after reopening (a menu-bar-only app).
    */
-  openApp: { params: { app: string }; result: { app: AppInfo; window: WindowInfo | null } };
+  openApp: { params: { app: string; marker?: AgentMarker }; result: { app: AppInfo; window: WindowInfo | null } };
   /**
    * Optional (OPTIONAL_HELPER_METHODS). Runtime switches main pushes after the
    * hello and whenever Settings change. `overlay`: draw the agent cursor and
    * the halo around the target window while an input action runs.
    */
   configure: { params: { overlay: boolean }; result: { ok: true } };
+  /**
+   * Optional (OPTIONAL_HELPER_METHODS). Shows an agent's marker as waiting on
+   * a window while its input waits for the foreground lease (agentMarker.ts).
+   * Main calls it only for a helper that lists it, fire-and-forget.
+   */
+  markerWait: { params: AgentMarkerWaitParams; result: { ok: true } };
+  /** Optional (OPTIONAL_HELPER_METHODS). Removes that agent's marker at once. */
+  markerClear: { params: AgentMarkerClearParams; result: { ok: true } };
 }
 
 export type HelperMethod = keyof HelperMethods;

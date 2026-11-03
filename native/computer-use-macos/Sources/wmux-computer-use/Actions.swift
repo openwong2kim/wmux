@@ -299,13 +299,29 @@ private func checkTarget(_ snap: Snapshot, _ target: ControlTarget) throws {
     }
 }
 
-/// Keyboard actions: bring the target forward, show the halo, then require
-/// it in front and no password field focused. Nothing is sent otherwise.
-private func requireKeyboardForward(_ snap: Snapshot, _ target: ControlTarget) async throws {
+/// Keyboard actions: bring the target forward, then require it in front and
+/// no password field focused, then show the marker. Nothing is sent otherwise.
+/// The caret lookup in showKeys is several AX round trips (seconds at worst),
+/// time enough for focus to move to another app or a password field, so the
+/// same checks run again after it: they are the last thing before the first key.
+private func requireKeyboardForward(_ snap: Snapshot, _ target: ControlTarget, _ marker: AgentMarker) async throws {
     await Focus.bringForward(target, window: snap.window)
     try Focus.requireKeyboard(target)
     try Focus.refuseSecureInput(target.pid)
-    await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+    await showKeys(marker, .typing, snap, target, realInput: true)
+    try Focus.requireStillSafe(target)
+}
+
+/// A keyboard action's marker: its caret where the keys land (`element`, or
+/// the app's focused element). The AX lookup runs here, off the main thread.
+private func showKeys(
+    _ marker: AgentMarker, _ verb: MarkerVerb, _ snap: Snapshot, _ target: ControlTarget,
+    element: AXUIElement? = nil, realInput: Bool
+) async {
+    guard await Overlay.shared.enabled else { return }
+    let window = try? snap.windowFrame()
+    let caret = Caret.rect(pid: target.pid, element: element, window: window)
+    await Overlay.shared.show(marker, verb: verb, window: window, windowID: target.windowID, caret: caret, realInput: realInput)
 }
 
 private func focusedValue(_ pid: pid_t) -> String? {
@@ -313,7 +329,7 @@ private func focusedValue(_ pid: pid_t) -> String? {
 }
 
 enum Actions {
-    static func click(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
+    static func click(_ p: JSON, _ snaps: SnapshotStore, _ marker: AgentMarker) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -342,8 +358,8 @@ enum Actions {
             // now could press twice; any other error refused the press.
             if rc == .success || rc == .cannotComplete {
                 Input.shared.noteSent()
-                await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: false)
-                await Overlay.shared.press(at: point)
+                await Overlay.shared.show(marker, verb: .clicking, window: try? snap.windowFrame(), windowID: target.windowID, pointer: point)
+                await Overlay.shared.press(marker.id, at: point)
                 let note = rc == .success
                     ? "pressed through accessibility (AXPress)"
                     : "pressed through accessibility (AXPress), which did not answer in time; the app may have acted on it"
@@ -355,11 +371,13 @@ enum Actions {
             let start = Background.userState()
             let sentBefore = Input.shared.sent
             do {
-                await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+                await Overlay.shared.show(
+                    marker, verb: .clicking, window: try? snap.windowFrame(), windowID: target.windowID, pointer: point, wait: true
+                )
                 // The cursor glide awaited: check again right before posting.
                 if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; nothing was sent") }
                 try Background.check(target, windowID, since: start, point: point)
-                await Overlay.shared.press(at: point)
+                await Overlay.shared.press(marker.id, at: point)
                 let flags = mods.reduce(into: CGEventFlags()) { $0.insert($1.flag) }
                 Background.click(pid: target.pid, windowID: windowID, at: point, count: count, flags: flags)
                 return await backgroundResult(since: start, pid: target.pid, point: point)
@@ -369,17 +387,20 @@ enum Actions {
         }
         try refuseRealInput(why, mode, sentBefore: sentAtStart)
         try await Focus.requirePointer(target, window: snap.window, at: point)
-        await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+        await Overlay.shared.show(
+            marker, verb: .clicking, window: try? snap.windowFrame(), windowID: target.windowID,
+            pointer: point, realInput: true, wait: true
+        )
         // The cursor glide awaited: check again right before posting.
         try Focus.requireStillUnder(target, at: point)
-        await Overlay.shared.press(at: point)
+        await Overlay.shared.press(marker.id, at: point)
         Input.shared.withModifiers(mods) { flags in
             Input.shared.click(at: point, button: button, count: count, flags: flags)
         }
         return result("synthetic", verified: false, delivery: "foreground", note: realInputNote(why))
     }
 
-    static func setValue(_ p: JSON, _ snaps: SnapshotStore) throws -> JSON {
+    static func setValue(_ p: JSON, _ snaps: SnapshotStore, _ marker: AgentMarker) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -394,6 +415,7 @@ enum Actions {
         guard AX.isSettable(el, kAXValueAttribute) else {
             throw HelperError("value_not_settable", "element \(index) does not accept a value through accessibility")
         }
+        await showKeys(marker, .settingValue, snap, target, element: el, realInput: false)
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
         let rc = AXUIElementSetAttributeValue(el, kAXValueAttribute as CFString, value as CFString)
         // As for AXPress: an app that did not answer may have taken the value.
@@ -407,7 +429,7 @@ enum Actions {
         return result("accessibility", verified: false, delivery: accessibilityDelivery(since: front), note: "the value read back differs from what was set")
     }
 
-    static func type(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
+    static func type(_ p: JSON, _ snaps: SnapshotStore, _ marker: AgentMarker) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -463,7 +485,7 @@ enum Actions {
                 // The focus click's own effect on the pointer is checked once,
                 // here; the per-chunk checks leave the pointer to the user.
                 try Background.requireStillSafe(target, windowID, since: start, point: focusPoint, beforeFirstKey: true)
-                await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+                await showKeys(marker, .typing, snap, target, realInput: false)
                 let before = focusedValue(target.pid)
                 var stop: Error?
                 var checks = 0
@@ -483,6 +505,8 @@ enum Actions {
                     throw HelperError(e.code, "\(e.message) (after \(typed) of \(text.count) characters; the rest was not typed)")
                 }
                 let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
+                // The caret moves on to where the text ended.
+                await showKeys(marker, .typing, snap, target, realInput: false)
                 restoreKey()
                 return await backgroundResult(verified, since: start, pid: target.pid, point: focusPoint)
             } catch let stop as Background.Stop {
@@ -518,11 +542,12 @@ enum Actions {
                 throw HelperError("action_not_supported", "element \(index) did not take keyboard focus; nothing was typed. Click it first")
             }
         }
-        try await requireKeyboardForward(snap, target)
+        try await requireKeyboardForward(snap, target, marker)
 
         let before = focusedValue(target.pid)
         try typeChecked(text, target: target)
         let verified = await waitForEffect(of: text, before: before, pid: target.pid, timeout: text.count < 64 ? 0.3 : 1.0)
+        await showKeys(marker, .typing, snap, target, realInput: true)
         return result("synthetic", verified: verified, delivery: "foreground", note: realInputNote(why))
     }
 
@@ -559,7 +584,7 @@ enum Actions {
         return false
     }
 
-    static func pressKey(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
+    static func pressKey(_ p: JSON, _ snaps: SnapshotStore, _ marker: AgentMarker) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -588,7 +613,7 @@ enum Actions {
                 let focus = await Background.focusWindow(target, windowID)
                 previousKey = focus.previous
                 guard focus.ok else { throw Background.Stop(reason: "the target window did not take focus in the background") }
-                await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+                await showKeys(marker, .typing, snap, target, realInput: false)
                 for n in 0..<repeatCount {
                     do {
                         try Background.requireStillSafe(target, windowID, since: start, beforeFirstKey: n == 0)
@@ -610,7 +635,7 @@ enum Actions {
             }
         }
         try refuseRealInput(why, mode, sentBefore: sentAtStart)
-        try await requireKeyboardForward(snap, target)
+        try await requireKeyboardForward(snap, target, marker)
         for n in 0..<repeatCount {
             if n > 0 {
                 do {
@@ -625,7 +650,7 @@ enum Actions {
         return result("synthetic", verified: false, delivery: "foreground", note: realInputNote(why))
     }
 
-    static func hotkey(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
+    static func hotkey(_ p: JSON, _ snaps: SnapshotStore, _ marker: AgentMarker) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -655,7 +680,7 @@ enum Actions {
                 let focus = await Background.focusWindow(target, windowID)
                 previousKey = focus.previous
                 guard focus.ok else { throw Background.Stop(reason: "the target window did not take focus in the background") }
-                await Overlay.shared.show(window: try? snap.windowFrame(), cursor: nil, wait: false)
+                await showKeys(marker, .typing, snap, target, realInput: false)
                 try Background.requireStillSafe(target, windowID, since: start, beforeFirstKey: true)
                 guard Background.tap(pid: target.pid, key: code, flags: flags) else {
                     throw Background.Stop(reason: "the key event could not be posted")
@@ -669,14 +694,14 @@ enum Actions {
             }
         }
         try refuseRealInput(why, mode, sentBefore: sentAtStart)
-        try await requireKeyboardForward(snap, target)
+        try await requireKeyboardForward(snap, target, marker)
         Input.shared.withModifiers(mods) { flags in
             Input.shared.tap(key: code, flags: flags.union(KeyCodes.intrinsicFlags(for: key)))
         }
         return result("synthetic", verified: false, delivery: "foreground", note: realInputNote(why))
     }
 
-    static func scroll(_ p: JSON, _ snaps: SnapshotStore) async throws -> JSON {
+    static func scroll(_ p: JSON, _ snaps: SnapshotStore, _ marker: AgentMarker) async throws -> JSON {
         let snap = try snaps.get(try p.requireString("snapshotId"))
         let target = try ControlTarget(p)
         try checkTarget(snap, target)
@@ -698,7 +723,9 @@ enum Actions {
             let sentBefore = Input.shared.sent
             var sent = 0
             do {
-                await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+                await Overlay.shared.show(
+                    marker, verb: .scrolling, window: try? snap.windowFrame(), windowID: target.windowID, pointer: point, wait: true
+                )
                 if Session.isLocked { throw HelperError("window_not_focused", "the screen locked; nothing was sent") }
                 try Background.check(target, windowID, since: start, point: point)
                 var stop: Background.Stop?
@@ -723,7 +750,10 @@ enum Actions {
         }
         try refuseRealInput(why, mode, sentBefore: sentAtStart)
         try await Focus.requirePointer(target, window: snap.window, at: point)
-        await Overlay.shared.show(window: try? snap.windowFrame(), cursor: point, wait: true)
+        await Overlay.shared.show(
+            marker, verb: .scrolling, window: try? snap.windowFrame(), windowID: target.windowID,
+            pointer: point, realInput: true, wait: true
+        )
         // Re-run the hit-test before every notch (the first one included,
         // after the cursor glide): a window that moves over the point
         // mid-scroll must not receive the rest. The window list alone, no AX
