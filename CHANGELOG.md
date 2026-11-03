@@ -281,6 +281,29 @@
   split across several fan-outs. Agents cannot change these limits; a
   refusal names the limit in force. (#2939)
 
+- **Files: a one-to-three panel file manager.** A new plugin in Settings ›
+  Plugins opens a commander-style page at the active terminal's folder, with
+  name, mode, size, date and time columns and the MDIR keys: Tab between
+  panels, Space to mark, F3 to view, F5 copy, F6 move, F7 new folder, F2
+  rename and F8 to move to the Trash. Copies and moves show progress and can
+  be cancelled. Before, nothing in wmux could copy or move files between
+  folders. (#2933)
+
+- **Plugins can read and change files, with your approval.** Two new
+  permissions, both marked critical: "files" lets a plugin list any local
+  folder and read any text file up to 1 MB; "change files" lets it create,
+  rename, copy, move and trash them; it has no delete call, though an
+  overwrite replaces a file and a move between drives removes the originals
+  after the copy. Both refuse
+  the same paths: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.azure`,
+  gcloud and Docker credentials, `~/.npmrc`, `~/.netrc`, `~/.pgpass`,
+  `~/.git-credentials`, GitHub CLI tokens, `~/.claude.json`,
+  `~/.claude/.credentials.json`, `~/.codex/auth.json`, wmux's own data and
+  tokens, `.env` and `.env.*` files, `*.pem`, `*.key` and SSH key files
+  (`id_*`) anywhere, shell history files, and WSL distro files. (#2933)
+
+- **Bots page folders.** Group bots into named, collapsible folders. File a bot from its right-click menu (Shift+F10), drag it onto a folder, or select several with Ctrl/Cmd-click and Shift-click and move them together. Folders only tidy the list; they are not tied to a repo or workspace. (#2985)
+
 ### Changed
 
 - **Long chats open and scroll faster.** A pane's chat view and a bot chat
