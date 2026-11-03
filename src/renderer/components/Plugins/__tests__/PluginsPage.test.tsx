@@ -45,7 +45,7 @@ it('lists Signature before Catalog, then Connectors, from the catalog data', asy
   const headings = [...host.querySelectorAll('[data-plugins-section]')].map((item) => item.getAttribute('data-plugins-section'));
   expect(headings).toEqual(['signature', 'catalog', 'connectors']);
   const rows = [...host.querySelectorAll('[data-plugin-row]')].map((item) => item.getAttribute('data-plugin-row'));
-  expect(rows).toEqual(['office', 'agent-state-page', 'connectors']);
+  expect(rows).toEqual(['office', 'agent-state-page', 'commander', 'connectors']);
   // The first row opens selected, with its Signature chip and credit.
   expect(row('office').getAttribute('aria-current')).toBe('true');
   expect(host.querySelector('[data-plugin-signature-chip]')).not.toBeNull();
