@@ -174,16 +174,19 @@ final class Server {
     }
 
     /// markerWait `{marker, pid, windowId, waitingFor}`: the marker waits on
-    /// that window (dimmed) until its next action or markerClear. The frame
-    /// comes from the window list, which needs no grant. A window that is not
-    /// on screen, or not `pid`'s, draws nothing.
+    /// that window (dimmed) until its next action, markerClear, or 15 s
+    /// (Overlay.wait). The frame comes from the window list, which needs no
+    /// grant. A window that is not on screen, or not `pid`'s, draws nothing.
     private func markerWait(_ p: JSON, _ marker: AgentMarker) throws {
         guard let windowID = p.string("windowId"), let number = UInt32(windowID) else {
             throw HelperError("invalid_argument", "windowId must be a window id")
         }
-        let pid = p.int("pid")
+        // Required, so the marker goes only on a window of the app main named.
+        guard let pid = p.double("pid").flatMap({ Int32(exactly: $0) }), pid > 0 else {
+            throw HelperError("invalid_argument", "pid must be a positive integer")
+        }
         guard let window = Focus.windowList().windows.first(where: { $0.windowID == number }),
-              pid.map({ Int32($0) == window.pid }) ?? true else { return }
+              window.pid == pid else { return }
         let holder = markerText(p["waitingFor"]) ?? "another agent"
         Overlay.shared.wait(marker, window: window.bounds, windowID: windowID, waitingFor: holder)
     }
