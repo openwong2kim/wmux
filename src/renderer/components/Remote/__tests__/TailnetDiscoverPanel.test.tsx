@@ -2,18 +2,20 @@
 // @wmux-lane unit
 // `win32` here is only a platform string passed to a pure function; nothing reaches the OS.
 //
-// Connect a PC › Tailscale, the receiving side: which state the "This PC"
-// section shows (derived from the Tailscale check, the open refusal and the
-// polled window), and that the pure view draws every one of the 14 states
-// in words, never a raw key.
+// Connect a PC › Tailscale: which state each section shows ("This PC" from
+// the Tailscale check, the open refusal and the polled window; "PCs found"
+// from the scan, connect and the polled request), and that the pure view
+// draws every one of the 14 receiving and 16 requesting states in words,
+// never a raw key.
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRoot, type Root } from 'react-dom/client';
 import { act } from 'react';
-import { TailnetDiscoverPanelView, osLabel, refusedListenReport, type TailnetDiscoverPanelViewProps } from '../TailnetDiscoverPanel';
-import { receiveViewOf, tailscaleBlocker, tailscaleReady, type ReceiveInputs } from '../../../hooks/useTailnetDiscovery';
+import { TailnetDiscoverPanelView, refusedListenReport, type TailnetDiscoverPanelViewProps } from '../TailnetDiscoverPanel';
+import { osLabel, pcMeta } from '../TailnetPcList';
+import { receiveViewOf, requestViewOf, tailscaleBlocker, tailscaleReady, type ReceiveInputs, type RequestInputs } from '../../../hooks/useTailnetDiscovery';
 import { t } from '../../../i18n';
 import type { FirewallController } from '../FirewallNotice';
-import type { A2aDiscoverIncoming, A2aDiscoverReceiveView, A2aDiscoverStatus } from '../../../../shared/rpc';
+import type { A2aDiscoverIncoming, A2aDiscoverPc, A2aDiscoverReceiveView, A2aDiscoverRequestView, A2aDiscoverStatus } from '../../../../shared/rpc';
 import type { TailscaleChecklist } from '../../../../shared/web';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -114,6 +116,7 @@ function firewall(): FirewallController {
 
 function render(receive: A2aDiscoverReceiveView, extra: Partial<TailnetDiscoverPanelViewProps> = {}) {
   const props: TailnetDiscoverPanelViewProps = {
+    request: { kind: 'idle' }, scan: null, rescanning: false, onFind: vi.fn(), onConnect: vi.fn(), onCancel: vi.fn(), onConfirm: vi.fn(), confirming: false,
     receive, a2aOff: false, port: 45660, statusRead: true, selfName: 'DESKTOP-KRO4QJQ', expiresAt: NOW + 232_000, now: NOW,
     busy: false, failed: false, listenProblem: null, firewall: firewall(),
     onMakeDiscoverable: vi.fn(), onStop: vi.fn(), onDecide: vi.fn(), onUsePort: vi.fn(), t, ...extra,
@@ -212,5 +215,167 @@ describe('the receiving view', () => {
 
   it('names the OS as people write it', () => {
     expect(['windows', 'macOS', 'linux', 'freebsd'].map(osLabel)).toEqual(['Windows', 'macOS', 'Linux', 'freebsd']);
+  });
+});
+
+const PC = (extra: Partial<A2aDiscoverPc> = {}): A2aDiscoverPc => ({
+  ip: '100.101.12.4', device: 'DESKTOP-KRO4QJQ', dnsName: 'desktop-kro4qjq.tail1.ts.net', os: 'windows', login: 'open.wong2kim@gmail.com',
+  name: 'DESKTOP-KRO4QJQ', version: '4.14.0', state: 'ready', alreadyConnected: false, ...extra,
+});
+
+describe('which requesting state the section shows', () => {
+  const req = (extra: Partial<RequestInputs> = {}): RequestInputs => ({
+    tailscale: READY, scanning: false, scan: null, scanRefusal: null, asking: null, connectFail: null, outgoing: null, ...extra,
+  });
+  const out = (state: string, extra: Record<string, unknown> = {}) => ({ state, sessionId: 's1', pc: PC(), code: '482913', expiresAt: NOW + 108_000, ...extra }) as RequestInputs['outgoing'];
+
+  it('before Find PCs: idle, or Tailscale not ready; the first scan searches; a re-scan keeps the list', () => {
+    expect(requestViewOf(req())).toEqual({ kind: 'idle' });
+    expect(requestViewOf(req({ tailscale: failing(2, 'stopped', 'open-app') })).kind).toBe('tailscale-not-ready');
+    expect(requestViewOf(req({ scanning: true }))).toEqual({ kind: 'searching', pcs: [] });
+    expect(requestViewOf(req({ scanning: true, scan: { pcs: [PC()], checked: 5 } }))).toEqual({ kind: 'results', pcs: [PC()], checked: 5 });
+    expect(requestViewOf(req({ scan: { pcs: [], checked: 3 } }))).toEqual({ kind: 'empty', checked: 3 });
+    const check = { id: 'self' as const, state: 'fail' as const, reason: 'stopped' as const, fix: 'open-app' as const };
+    expect(requestViewOf(req({ scanRefusal: { ok: false, reason: 'tailscale-not-ready', check } }))).toEqual({ kind: 'tailscale-not-ready', check });
+    expect(requestViewOf(req({ scanRefusal: { ok: false, reason: 'no-tailnet-ipv4' } }))).toEqual({ kind: 'no-tailnet-ipv4' });
+    expect(requestViewOf(req({ scanRefusal: { ok: false, reason: 'tailnet-range-on-lan' } }))).toEqual({ kind: 'unavailable', reason: 'tailnet-range-on-lan' });
+  });
+
+  it('a request: asking, then the code, joining and joined; or how it ended', () => {
+    expect(requestViewOf(req({ asking: PC() }))).toEqual({ kind: 'asking', pc: PC() });
+    expect(requestViewOf(req({ outgoing: out('waiting') }))).toEqual({ kind: 'waiting', pc: PC(), code: '482913', expiresAt: NOW + 108_000 });
+    expect(requestViewOf(req({ outgoing: out('confirm', { expiresAt: NOW + 60_000 }) }))).toEqual({ kind: 'confirm', pc: PC(), code: '482913', expiresAt: NOW + 60_000 });
+    expect(requestViewOf(req({ outgoing: out('joining') }))).toEqual({ kind: 'joining', pc: PC() });
+    const host = { v: 1, hostId: 'h1', name: 'DESKTOP-KRO4QJQ', addresses: [], port: 45660, fingerprint256: 'AA', peerId: 'p', createdAt: '' };
+    expect(requestViewOf(req({ outgoing: out('joined', { host }) }))).toEqual({ kind: 'joined', host });
+    expect(requestViewOf(req({ outgoing: out('denied') })).kind).toBe('denied');
+    expect(requestViewOf(req({ outgoing: out('expired') })).kind).toBe('timed-out');
+    expect(requestViewOf(req({ outgoing: out('gone') })).kind).toBe('gone');
+    expect(requestViewOf(req({ outgoing: out('failed', { error: 'fingerprint-mismatch', detail: 'x' }) }))).toEqual({ kind: 'join-error', pc: PC(), error: 'fingerprint-mismatch', detail: 'x' });
+    // Withdrawn: back to the list.
+    expect(requestViewOf(req({ outgoing: out('cancelled'), scan: { pcs: [PC()], checked: 1 } })).kind).toBe('results');
+  });
+
+  it('a connect that did not reach the code says why, worded like an invite join where it is one', () => {
+    const fail = (result: Record<string, unknown>) => requestViewOf(req({ connectFail: { pc: PC(), result: { ok: false, ...result } as never } }));
+    expect(fail({ error: 'busy', retryAfterMs: 4_000 })).toEqual({ kind: 'busy', pc: PC(), retryAfterMs: 4_000 });
+    expect(fail({ error: 'refused', reason: 'denied' })).toEqual({ kind: 'refused', pc: PC(), reason: 'denied' });
+    expect(fail({ error: 'gone' }).kind).toBe('gone');
+    expect(fail({ error: 'not-found' }).kind).toBe('gone');
+    expect(fail({ error: 'timeout' })).toEqual({ kind: 'join-error', pc: PC(), error: 'timeout' });
+    expect(fail({ error: 'version-mismatch' })).toMatchObject({ kind: 'join-error', error: 'protocol' });
+    expect(fail({ error: 'outgoing-busy' })).toMatchObject({ kind: 'join-error', error: 'failed' });
+  });
+});
+
+describe('the requesting view', () => {
+  const host = { v: 1 as const, hostId: 'h1', name: 'DESKTOP-KRO4QJQ', addresses: [], port: 45660, fingerprint256: 'AA', peerId: 'p', createdAt: '' };
+  type Case = [string, A2aDiscoverRequestView, RegExp];
+  // Keyed by kind, so a kind added to the union fails to compile here until it is drawn.
+  const cases: Record<A2aDiscoverRequestView['kind'], Case[]> = {
+    idle: [['idle', { kind: 'idle' }, /Find PCs/]],
+    'tailscale-not-ready': [['tailscale-not-ready', { kind: 'tailscale-not-ready', check: { id: 'self', state: 'fail', reason: 'stopped', fix: 'open-app' } }, /signed in but disconnected/]],
+    'no-tailnet-ipv4': [['no-tailnet-ipv4', { kind: 'no-tailnet-ipv4' }, /no tailnet IPv4 address/]],
+    unavailable: [['unavailable', { kind: 'unavailable', reason: 'tailnet-range-on-lan' }, /uses Tailscale's address range.*Use an invite instead/]],
+    searching: [['searching', { kind: 'searching', pcs: [] }, /Searching…/]],
+    results: [['results', { kind: 'results', pcs: [PC()], checked: 5 }, /DESKTOP-KRO4QJQ.*Windows · wmux 4\.14\.0/]],
+    empty: [['empty', { kind: 'empty', checked: 3 }, /Checked 3 online devices.*No discoverable PC found/]],
+    asking: [['asking', { kind: 'asking', pc: PC() }, /Asking DESKTOP-KRO4QJQ…/]],
+    waiting: [['waiting', { kind: 'waiting', pc: PC(), code: '482913', expiresAt: NOW + 108_000 }, /482 913.*Waiting for DESKTOP-KRO4QJQ to allow · 1:48/]],
+    confirm: [['confirm', { kind: 'confirm', pc: PC(), code: '482913', expiresAt: NOW + 48_000 }, /482 913.*DESKTOP-KRO4QJQ allowed\. If the codes match, connect · 0:48.*Codes match · Connect/]],
+    joining: [['joining', { kind: 'joining', pc: PC() }, /Pairing with DESKTOP-KRO4QJQ/]],
+    joined: [['joined', { kind: 'joined', host }, /Paired with DESKTOP-KRO4QJQ\./]],
+    denied: [['denied', { kind: 'denied', pc: PC() }, /DESKTOP-KRO4QJQ denied the request/]],
+    'timed-out': [['timed-out', { kind: 'timed-out', pc: PC() }, /did not answer in time/]],
+    gone: [['gone', { kind: 'gone', pc: PC() }, /DESKTOP-KRO4QJQ is no longer discoverable/]],
+    busy: [['busy', { kind: 'busy', pc: PC(), retryAfterMs: 4_000 }, /deciding another request/]],
+    refused: (['unidentified', 'other-user', 'denied', 'self'] as const).map((reason): Case =>
+      [`refused, ${reason}`, { kind: 'refused', pc: PC(), reason }, /DESKTOP-KRO4QJQ (could not|belongs|already denied|is this PC)/]),
+    'join-error': [
+      ['join-error', { kind: 'join-error', pc: PC(), error: 'timeout' }, /did not answer in time/],
+      ['join-error, certificate', { kind: 'join-error', pc: PC(), error: 'fingerprint-mismatch' }, /DESKTOP-KRO4QJQ's certificate doesn't match\. Search again; if it keeps happening, pair with an invite\./],
+    ],
+  };
+  const kinds = Object.values(cases).flat();
+
+  it.each(kinds)('%s: says it in words, never a raw key', (_name, view, text) => {
+    const { el } = render({ kind: 'idle', a2aOff: false }, { request: view, scan: { pcs: [PC()], checked: 5, offline: 0 } });
+    expect(el.textContent).toMatch(text);
+    expect(el.textContent).not.toMatch(/remotePage\.|settings\.|tailscale\.(reason|fix)\./);
+  });
+
+  it('while a request runs the tab shows only it: the code, the countdown and Cancel', () => {
+    const { el, props } = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'waiting', pc: PC(), code: '004213', expiresAt: NOW + 108_000 } });
+    expect(q(el, 'discover-code')?.textContent).toBe('004 213');
+    expect(q(el, 'discover-make')).toBeNull();
+    expect(q(el, 'discover-pcs')).toBeNull();
+    act(() => q(el, 'discover-cancel')!.click());
+    expect(props.onCancel).toHaveBeenCalled();
+    expect(q(el, 'discover-confirm')).toBeNull();
+  });
+
+  it('once the other PC allowed: the same code and countdown, and Codes match · Connect is the one primary beside Cancel', () => {
+    const { el, props } = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'confirm', pc: PC(), code: '482913', expiresAt: NOW + 48_000 } });
+    expect(q(el, 'discover-code')?.textContent).toBe('482 913');
+    expect(q(el, 'discover-waiting')?.textContent).toBe('DESKTOP-KRO4QJQ allowed. If the codes match, connect · 0:48');
+    expect(el.querySelectorAll('.ui-btn-primary')).toHaveLength(1);
+    expect(q(el, 'discover-confirm')?.className).toContain('ui-btn-primary');
+    expect(q(el, 'discover-cancel')?.className).toContain('ui-btn-secondary');
+    expect(props.onConfirm).not.toHaveBeenCalled();
+    act(() => q(el, 'discover-confirm')!.click());
+    expect(props.onConfirm).toHaveBeenCalledTimes(1);
+    const busy = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'confirm', pc: PC(), code: '482913', expiresAt: NOW + 48_000 }, confirming: true });
+    expect(q(busy.el, 'discover-confirm')?.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('once allowed, the join cannot be cancelled: Cancel is off (closing the dialog still works)', () => {
+    const { el } = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'joining', pc: PC() } });
+    expect(q(el, 'discover-cancel')?.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('an outcome keeps the last list under its line, so another PC can be asked at once', () => {
+    const { el, props } = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'denied', pc: PC() }, scan: { pcs: [PC(), PC({ ip: '100.101.12.5', device: 'mini' })], checked: 2, offline: 1 } });
+    expect(el.querySelectorAll('[data-discover-pc]')).toHaveLength(2);
+    expect(q(el, 'discover-offline')?.textContent).toBe('1 offline devices were not checked.');
+    act(() => el.querySelectorAll<HTMLButtonElement>('[data-testid="discover-connect"]')[1].click());
+    expect(props.onConnect).toHaveBeenCalledWith(expect.objectContaining({ ip: '100.101.12.5' }));
+  });
+
+  it('rows: the first connectable PC is the one primary; greyed and connected rows say why and offer no Connect', () => {
+    const pcs = [
+      PC({ ip: '100.64.0.1', device: 'old', state: 'version-mismatch', version: '4.2.0' }),
+      PC({ ip: '100.64.0.2', device: 'mini', os: 'macOS', alreadyConnected: true }),
+      PC({ ip: '100.64.0.3', device: 'desk' }),
+      PC({ ip: '100.64.0.4', device: 'gone', state: 'stale' }),
+      PC({ ip: '100.64.0.5', device: 'laptop', name: 'WORK-LAPTOP', os: 'linux' }),
+    ];
+    const { el } = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'results', pcs, checked: 5 } });
+    const row = (ip: string) => el.querySelector<HTMLElement>(`[data-discover-pc="${ip}"]`)!;
+    expect(row('100.64.0.1').textContent).toMatch(/Needs the same wmux version/);
+    expect(row('100.64.0.1').querySelector('[data-testid="discover-connect"]')).toBeNull();
+    expect(row('100.64.0.2').textContent).toMatch(/macOS · Already connected.*Connected/);
+    expect(row('100.64.0.2').querySelector('[data-testid="discover-connect"]')).toBeNull();
+    expect(row('100.64.0.3').querySelector('[data-testid="discover-connect"]')?.className).toContain('ui-btn-primary');
+    expect(row('100.64.0.4').textContent).toMatch(/No longer discoverable/);
+    expect(row('100.64.0.5').querySelector('[data-testid="discover-connect"]')?.className).not.toContain('ui-btn-primary');
+    expect(el.querySelectorAll('.ui-btn-primary')).toHaveLength(1);
+    // The name its wmux answered with shows only when it is not Tailscale's.
+    expect(pcMeta(pcs[4], t)).toBe('Linux · WORK-LAPTOP · wmux 4.14.0 · open.wong2kim@gmail.com');
+    expect(pcMeta(PC(), t)).toBe('Windows · wmux 4.14.0 · open.wong2kim@gmail.com');
+  });
+
+  it("while the port notice holds the one primary, no row's Connect is primary", () => {
+    const { el } = render({ kind: 'listen-failed', port: 45660, lastError: 'in use', lastErrorCode: 'EADDRINUSE' }, { request: { kind: 'results', pcs: [PC()], checked: 1 } });
+    expect(q(el, 'discover-connect')?.className).not.toContain('ui-btn-primary');
+  });
+
+  it('after the 2 minutes of re-scans, the list offers Search again', () => {
+    const live = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'results', pcs: [PC()], checked: 5 }, rescanning: true });
+    expect(q(live.el, 'discover-searching')?.textContent).toBe('Searching · 5 online devices');
+    expect(q(live.el, 'discover-search-again')).toBeNull();
+    const done = render({ kind: 'idle', a2aOff: false }, { request: { kind: 'results', pcs: [PC()], checked: 5 }, rescanning: false });
+    expect(q(done.el, 'discover-checked')?.textContent).toBe('Checked 5 online devices');
+    act(() => q(done.el, 'discover-search-again')!.click());
+    expect(done.props.onFind).toHaveBeenCalled();
   });
 });
