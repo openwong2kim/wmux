@@ -9,7 +9,7 @@
 // Linux (and the relay secret on macOS): neither may reach any pane.
 //
 // What needs a running daemon (attach answering pending, the first-party
-// refusal, the fallback timer, a failed start going dead) is pinned in
+// refusal, the fallback timer, a failed start staying pending) is pinned in
 // heldUserShellWiring.test.ts; the decisions themselves are unit-tested in
 // heldUserShellStart.test.ts and recoveredUserShellCredentials.test.ts.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';

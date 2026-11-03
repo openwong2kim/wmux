@@ -106,11 +106,14 @@ describe('promoting a held user shell', () => {
     expect(held.indexOf('finishRecoveredPane(sessionManager, sessionId);')).toBeGreaterThan(0);
   });
 
-  it('a start that fails leaves a dead record and tells main the pane died', () => {
-    const failed = promote.slice(promote.indexOf('if (heldStart && !shuttingDown && sessionManager.isStartPending(sessionId)) {'));
-    expect(failed).toMatch(/const record = sessionManager\.dropPendingRecovery\(sessionId\);/);
-    expect(failed).toMatch(/state: 'dead', exitCode: null/);
-    expect(failed).toMatch(/sessionManager\.emit\('session:died', \{ id: sessionId, exitCode: null, reason: 'recovery' \}\);/);
+  it('a start that fails releases the hold and keeps an ordinary pending recovery with its error, never a dead pane', () => {
+    const at = promote.indexOf('if (heldStart && !shuttingDown && sessionManager.isStartPending(sessionId)) {');
+    expect(at).toBeGreaterThan(0);
+    const failed = promote.slice(at, promote.indexOf('return { ok: false, error: { code: isWslCwdMissingError(err)', at));
+    expect(failed).toMatch(/const record = sessionManager\.dropPendingRecovery\(sessionId\);\s*if \(record\) \{\s*sessionManager\.keepPendingRecovery\(record, msg\);\s*stateWriter\.saveImmediate\(buildState\(sessionManager\)\);/);
+    // Its record and scrollback stay: no tombstone, and main is not told it died.
+    expect(failed).not.toMatch(/'dead'/);
+    expect(failed).not.toMatch(/session:died/);
   });
 });
 

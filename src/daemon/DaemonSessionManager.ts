@@ -446,9 +446,10 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   /**
-   * #3049 — drop a pending recovery without a `session:destroyed` (which reads
-   * as the user closing the pane): a held start that failed becomes a dead
-   * record instead. Returns the record dropped.
+   * #3049 — drop a pending recovery and its start hold without a
+   * `session:destroyed` (which reads as the user closing the pane): a held
+   * start that failed is kept again as an ordinary pending recovery
+   * (keepPendingRecovery). Returns the record dropped.
    */
   dropPendingRecovery(id: string): DaemonSession | undefined {
     const pending = this.pendingRecovery.get(id);

@@ -3781,13 +3781,17 @@ function registerRpcHandlers(
         sessionManager.keepPendingRecovery(session, msg);
         stateWriter.saveImmediate(buildState(sessionManager));
       }
-      // #3049 — a held user shell that cannot start is dead, as boot marks a
-      // shell it cannot respawn: kept as a dead record, and its pane hears of
-      // it (session:died) and offers a new shell.
+      // #3049 — a held user shell that cannot start (the session cap filled
+      // while it was held, a spawn error) is released and kept as an ordinary
+      // pending recovery with its error, as a WSL or cap-skipped pane is: its
+      // record and scrollback stay, and the pane's Retry promotes it again
+      // through main, which still grants its credentials.
       if (heldStart && !shuttingDown && sessionManager.isStartPending(sessionId)) {
         const record = sessionManager.dropPendingRecovery(sessionId);
-        if (record) diskOnlySessions = [...diskOnlySessions.filter((s) => s.id !== sessionId), { ...record, state: 'dead', exitCode: null }];
-        sessionManager.emit('session:died', { id: sessionId, exitCode: null, reason: 'recovery' });
+        if (record) {
+          sessionManager.keepPendingRecovery(record, msg);
+          stateWriter.saveImmediate(buildState(sessionManager));
+        }
       }
       // #1305 — CWD_MISSING is not SPAWN_FAILED with a different sentence: it
       // is the one failure Retry cannot clear, and the renderer offers the

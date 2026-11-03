@@ -146,16 +146,22 @@ describe('DaemonSessionManager credentialEnv (#3049)', () => {
     expect(manager.isStartPending('shell-6')).toBe(false);
   });
 
-  it('a failed start drops the placeholder silently; a close drops it as destroyed', () => {
+  it('a failed start releases the hold silently and stays an ordinary pending recovery; a close drops it as destroyed', () => {
     const destroyed: string[] = [];
     manager.on('session:destroyed', (p: { id: string }) => destroyed.push(p.id));
     manager.holdForStart(record('shell-7'));
     manager.holdForStart(record('shell-8'));
 
-    expect(manager.dropPendingRecovery('shell-7')?.id).toBe('shell-7');
+    const dropped = manager.dropPendingRecovery('shell-7');
+    expect(dropped?.id).toBe('shell-7');
     expect(manager.isStartPending('shell-7')).toBe(false);
     expect(manager.getPendingRecovery('shell-7')).toBeUndefined();
     expect(destroyed).toEqual([]);
+    // What daemon.promoteSession does with it next (#3049): kept with its error, as a failed WSL pane is.
+    manager.keepPendingRecovery(dropped as DaemonSession, 'Cannot create new terminal: 200 active sessions already running.');
+    expect(manager.isStartPending('shell-7')).toBe(false);
+    expect(manager.getPendingRecovery('shell-7')?.recoveryError).toMatch(/active sessions/);
+    expect(manager.listSessions().filter((s) => s.id === 'shell-7').map((s) => s.state)).toEqual(['suspended']);
 
     manager.destroySession('shell-8');
     expect(manager.isStartPending('shell-8')).toBe(false);
