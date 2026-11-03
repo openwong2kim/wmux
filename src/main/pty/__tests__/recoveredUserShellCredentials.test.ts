@@ -105,7 +105,7 @@ describe('promoteRecoveredSession', () => {
     const calls: Array<{ method: string; params?: Record<string, unknown> }> = [];
     return {
       calls,
-      rpc: vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      rpc: vi.fn(async (method: string, params?: Record<string, unknown>, _opts?: { timeoutMs?: number }) => {
         calls.push({ method, params });
         return method === 'daemon.listSessions' ? listing : answer;
       }),

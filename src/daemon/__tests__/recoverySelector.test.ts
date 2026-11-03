@@ -225,7 +225,7 @@ describe('heldForCredentials', () => {
     expect(heldForCredentials({
       id: 'supervised',
       cmd: '/bin/zsh',
-      supervision: { restart: 'on-failure', limit: { maxRestarts: 3, windowMs: 60_000 }, status: 'armed' },
+      supervision: { restart: 'on-failure', limit: { burst: 3, healthyUptimeSec: 60 }, status: 'armed' },
     }, holds)).toBe(false);
   });
 });

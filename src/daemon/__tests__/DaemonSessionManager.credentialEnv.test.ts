@@ -124,7 +124,7 @@ describe('DaemonSessionManager credentialEnv (#3049)', () => {
       .rejects.toThrow(/credentialEnv/);
     await expect(manager.createSessionAsync({
       ...replayOf(record('agent-2')),
-      supervision: { restart: 'on-failure', limit: { maxRestarts: 3, windowMs: 60_000 }, status: 'armed' },
+      supervision: { restart: 'on-failure', limit: { burst: 3, healthyUptimeSec: 60 }, status: 'armed' },
       credentialEnv: { GH_TOKEN: VALUE },
     })).rejects.toThrow(/credentialEnv/);
     await expect(manager.createSessionAsync({ ...replayOf(record('shell-5')), credentialEnv: ['x'] as unknown as Record<string, string> }))
