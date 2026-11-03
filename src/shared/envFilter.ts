@@ -280,3 +280,33 @@ export function stripCredentialValues(
   }
   return out;
 }
+
+/**
+ * Put credential-named values back into a recovered session's env.
+ *
+ * sessions.json never holds credential values (stripCredentialValues runs on
+ * every write), so a pane replayed from it comes back without the *_TOKEN /
+ * *_KEY vars it was created with. For a pane whose env policy passed
+ * credentials through, recovery re-reads them from `liveEnv` (the daemon's own
+ * process env) instead. Only credential-named keys are added, only when the
+ * persisted env does not already carry that name (case-insensitively, since
+ * Windows env names are), and wmux-internal keys are never taken. Values are
+ * added to the returned spawn env only; the caller must not persist them.
+ *
+ * Returns a fresh object; `persisted` is not modified.
+ */
+export function restoreCredentialValues(
+  persisted: Record<string, string> | undefined | null,
+  liveEnv: NodeJS.ProcessEnv = globalThis.process.env,
+): Record<string, string> {
+  const out: Record<string, string> = { ...(persisted && typeof persisted === 'object' ? persisted : {}) };
+  const present = new Set(Object.keys(out).map((k) => k.toUpperCase()));
+  for (const [key, value] of Object.entries(liveEnv)) {
+    if (value === undefined) continue;
+    if (isInternalEnvKey(key) || !isCredentialEnvKey(key)) continue;
+    if (present.has(key.toUpperCase())) continue;
+    out[key] = value;
+    present.add(key.toUpperCase());
+  }
+  return out;
+}

@@ -114,7 +114,7 @@ import { readPendingToolUse } from './transcript/pendingToolUse';
 import { STALL_AGENT, StallWatch, lastHumanPrompt, readTranscriptTail, stopAndPrefill } from './transcript/stallWatch';
 import { isClaudeFamilyAgent } from './approvals/terminalPrompt';
 import { StateWriter, scrubPersistedCredentials, detachedTtlHoursFor } from './StateWriter';
-import { stripCredentialValues } from '../shared/envFilter';
+import { restoreCredentialValues, stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
 import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
@@ -2024,6 +2024,18 @@ function releaseLock(): void {
 
 // === Session recovery ===
 
+/**
+ * The env a recovered session respawns with. sessions.json never holds
+ * credential values, so a pane created with the passthrough policy gets its
+ * credential-named vars back from this daemon's own env. The added values go
+ * to the spawn only: meta.env persists through stripCredentialValues as ever.
+ */
+function recoveryEnv(session: { env: Record<string, string>; credentialPassthrough?: boolean }): Record<string, string> {
+  return session.credentialPassthrough === true
+    ? restoreCredentialValues(session.env, globalThis.process.env)
+    : session.env;
+}
+
 async function recoverSessions(
   stateWriter: StateWriter,
   sessionManager: DaemonSessionManager,
@@ -2240,7 +2252,8 @@ async function recoverSessions(
             // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
             // diff route a root the pane's own process chose. See createSession.
             spawnCwd: session.spawnCwd,
-            env: session.env,
+            env: recoveryEnv(session),
+            ...(session.credentialPassthrough === true ? { credentialPassthrough: true } : {}),
             cols: session.cols,
             rows: session.rows,
             agent: session.agent,
@@ -2327,7 +2340,8 @@ async function recoverSessions(
             // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
             // diff route a root the pane's own process chose. See createSession.
             spawnCwd: session.spawnCwd,
-            env: session.env,
+            env: recoveryEnv(session),
+            ...(session.credentialPassthrough === true ? { credentialPassthrough: true } : {}),
             cols: session.cols,
             rows: session.rows,
             agent: session.agent,
@@ -2379,7 +2393,8 @@ async function recoverSessions(
           // (OSC 7-tracked), and letting it re-seed spawnCwd would hand the
           // diff route a root the pane's own process chose. See createSession.
           spawnCwd: session.spawnCwd,
-          env: session.env,
+          env: recoveryEnv(session),
+          ...(session.credentialPassthrough === true ? { credentialPassthrough: true } : {}),
           cols: session.cols,
           rows: session.rows,
           agent: session.agent,
@@ -2712,6 +2727,7 @@ function registerRpcHandlers(
       args: p.args,
       cwd: p.cwd,
       env: p.env,
+      ...(p.credentialPassthrough === true ? { credentialPassthrough: true } : {}),
       wslAccountLoginEnvKey: p.wslAccountLoginEnvKey,
       // Spawn-only (see DaemonCreateSessionParams.secretEnv): never on meta.
       ...(p.secretEnv !== undefined ? { secretEnv: p.secretEnv } : {}),
@@ -3630,7 +3646,8 @@ function registerRpcHandlers(
             // The old spawn directory is the one that is gone; carrying it would
             // aim the NEXT recovery at it again.
             spawnCwd: startFresh ? undefined : session.spawnCwd,
-            env: session.env,
+            env: recoveryEnv(session),
+            ...(session.credentialPassthrough === true ? { credentialPassthrough: true } : {}),
             cols: session.cols,
             rows: session.rows,
             agent: session.agent,

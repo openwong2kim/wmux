@@ -571,6 +571,8 @@ export class DaemonSessionManager extends EventEmitter {
      * the spawn env only.
      */
     secretEnv?: Record<string, string>;
+    /** See SessionMeta.credentialPassthrough. Stored on meta, never an env value. */
+    credentialPassthrough?: boolean;
     cols?: number;
     rows?: number;
     agent?: { role: string; teamId: string; displayName: string };
@@ -971,6 +973,7 @@ export class DaemonSessionManager extends EventEmitter {
     if (params.agent) {
       meta.agent = params.agent;
     }
+    if (params.credentialPassthrough === true) meta.credentialPassthrough = true;
     // #1103 — persist the distro selection so replays (recovery, supervised
     // restart, promote) re-spawn the same distro. Re-validated here even
     // though the RPC boundary already checked: createSession has direct

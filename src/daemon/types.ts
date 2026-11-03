@@ -117,6 +117,12 @@ export interface DaemonSession {
    */
   spawnCwd?: string;
   env: Record<string, string>;
+  /**
+   * The pane was created with the passthrough env policy. Persisted so
+   * recovery can re-read credential values (never persisted) from the live
+   * env. Absent on gated panes and on records written before this existed.
+   */
+  credentialPassthrough?: boolean;
   cols: number;
   rows: number;
   agent?: {

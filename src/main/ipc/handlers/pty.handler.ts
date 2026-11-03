@@ -870,6 +870,9 @@ export function registerPTYHandlers(
           cols: options?.cols || 80,
           rows: options?.rows || 24,
           env: resolvedEnv,
+          // Recovery re-reads credential values for this pane (they are never
+          // persisted); see DaemonCreateSessionParams.credentialPassthrough.
+          ...(envPolicy === 'passthrough' ? { credentialPassthrough: true } : {}),
           wslAccountLoginEnvKey: options?.wslAccountLoginEnvKey,
           ...(secretEnv ? { secretEnv } : {}),
           ...(execCommand !== undefined ? { exec: { command: execCommand } } : {}),

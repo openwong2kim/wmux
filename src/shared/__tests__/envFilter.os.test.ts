@@ -8,6 +8,7 @@ import {
   isInternalEnvKey,
   isCredentialEnvKey,
   stripCredentialValues,
+  restoreCredentialValues,
   isNestingMarker,
 } from '../envFilter';
 
@@ -229,6 +230,46 @@ describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
     expect(isCredentialEnvKey('PGHOST')).toBe(false);
     expect(isCredentialEnvKey('MYSQL_HOST')).toBe(false);
     expect(isCredentialEnvKey('REDIS_HOST')).toBe(false);  // REDIS_URL이 아님
+  });
+});
+
+describe('restoreCredentialValues (recovery of a passthrough pane)', () => {
+  // Placeholder values only; no real secret is ever used in a test.
+  const live = {
+    PATH: '/live/bin',
+    GITHUB_TOKEN: 'live-token-placeholder',
+    API_KEY: 'live-key-placeholder',
+    WMUX_AUTH_TOKEN: 'internal-placeholder',
+  };
+
+  it('adds credential-named vars from the live env to a stripped persisted env', () => {
+    const restored = restoreCredentialValues({ PATH: '/persisted/bin', WMUX_PTY_ID: 'p1' }, live);
+    expect(restored.GITHUB_TOKEN).toBe('live-token-placeholder');
+    expect(restored.API_KEY).toBe('live-key-placeholder');
+  });
+
+  it('never overrides a persisted key and never adds non-credential or internal keys', () => {
+    const restored = restoreCredentialValues({ PATH: '/persisted/bin', github_token: 'kept' }, live);
+    expect(restored.PATH).toBe('/persisted/bin');
+    expect(restored.github_token).toBe('kept');
+    expect(restored.GITHUB_TOKEN).toBeUndefined();
+    expect(restored.WMUX_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it('returns a fresh object and leaves the persisted env untouched', () => {
+    const persisted = { PATH: '/p' };
+    const restored = restoreCredentialValues(persisted, live);
+    expect(restored).not.toBe(persisted);
+    expect(persisted).toEqual({ PATH: '/p' });
+  });
+
+  it('round-trips with stripCredentialValues: persisted form stays credential-free', () => {
+    const restored = restoreCredentialValues(stripCredentialValues({ PATH: '/p', GITHUB_TOKEN: 'x' }), live);
+    expect(stripCredentialValues(restored)).toEqual({ PATH: '/p' });
+  });
+
+  it('tolerates a missing persisted env', () => {
+    expect(restoreCredentialValues(undefined, { GITHUB_TOKEN: 't' })).toEqual({ GITHUB_TOKEN: 't' });
   });
 });
 
