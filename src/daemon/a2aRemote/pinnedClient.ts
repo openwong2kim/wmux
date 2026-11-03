@@ -40,6 +40,12 @@ export interface PinnedClientOptions {
    * before any request either way.
    */
   credential?: string;
+  /**
+   * Extra headers on every request, sent after the pin matched like the rest
+   * (a tailnet discovery request's token). Only `x-wmux-*` names: anything
+   * else is `bad-options`.
+   */
+  headers?: Record<string, string>;
   /** Budget per address for TCP connect + TLS handshake. */
   connectTimeoutMs: number;
   /** Budget from request start to a complete JSON answer (requestJson) or to response headers (openStream); the byte transfers take their own. */
@@ -155,6 +161,9 @@ export class PinnedTlsClient {
   private readonly addresses: string[];
 
   constructor(opts: PinnedClientOptions) {
+    for (const name of Object.keys(opts.headers ?? {})) {
+      if (!/^x-wmux-[a-z0-9-]+$/i.test(name)) throw new PinnedClientError('bad-options', `header ${name} is not an x-wmux-* header`, { sent: false });
+    }
     this.opts = opts;
     this.addresses = [...opts.addresses];
   }
@@ -425,6 +434,7 @@ export class PinnedTlsClient {
 
   private headers(extra: Record<string, string>): Record<string, string> {
     return {
+      ...this.opts.headers,
       ...extra,
       ...(this.opts.credential ? { Authorization: `Bearer ${this.opts.credential}` } : {}),
     };
@@ -537,6 +547,99 @@ export class PinnedTlsClient {
         else if (!earlyErrors.has(socket)) earlyErrors.set(socket, err);
       });
     });
+  }
+}
+
+/** Cap on the answer to an unpinned probe. */
+export const PROBE_MAX_BYTES = 4 * 1024;
+
+/** What an unpinned probe saw. */
+export interface UnpinnedProbe {
+  /** The leaf certificate the server presented (normalized), for every later call to pin. */
+  fingerprint256: string;
+  status: number;
+  /** Null when the body is empty or not JSON. */
+  json: unknown;
+}
+
+/**
+ * One `GET` to a server whose certificate is not known yet: tailnet
+ * discovery's probe, which learns the fingerprint that every later call (the
+ * request, and `/api/a2a/pair`) pins. Nothing in it can carry a credential:
+ * there is no parameter for one and the request has no body. The answer is
+ * capped at `PROBE_MAX_BYTES`. Errors are `PinnedClientError`s:
+ * `connect-failed` (nothing was sent), `timeout`, `network` or `protocol`.
+ */
+export async function probeUnpinned(opts: {
+  address: string;
+  port: number;
+  path: string;
+  connectTimeoutMs: number;
+  requestTimeoutMs: number;
+}): Promise<UnpinnedProbe> {
+  const socket = await new Promise<tls.TLSSocket>((resolve, reject) => {
+    const s = tls.connect({
+      host: opts.address,
+      port: opts.port,
+      // No CA and no pin: what the server presents is what this call reports.
+      rejectUnauthorized: false,
+      ...(net.isIP(opts.address) ? {} : { servername: opts.address }),
+    });
+    const timer = setTimeout(() => fail(new Error(`handshake timed out after ${opts.connectTimeoutMs}ms`)), opts.connectTimeoutMs);
+    const fail = (err: Error): void => {
+      clearTimeout(timer);
+      s.destroy();
+      reject(new PinnedClientError('connect-failed', `${opts.address}: ${errMsg(err)}`, { sent: false }));
+    };
+    s.once('secureConnect', () => {
+      clearTimeout(timer);
+      s.off('error', fail);
+      s.on('error', (err) => {
+        if (!earlyErrors.has(s)) earlyErrors.set(s, err);
+      });
+      resolve(s);
+    });
+    s.once('error', fail);
+  });
+  try {
+    const fingerprint256 = normalizeFingerprint256(socket.getPeerX509Certificate()?.fingerprint256);
+    if (!fingerprint256) throw new PinnedClientError('protocol', `${opts.address} presented no usable certificate`, { sent: false });
+    return await new Promise<UnpinnedProbe>((resolve, reject) => {
+      let settled = false;
+      const req = http.request({
+        method: 'GET',
+        path: opts.path,
+        host: opts.address,
+        port: opts.port,
+        headers: { Accept: 'application/json' },
+        createConnection: () => socket,
+      });
+      const finish = (outcome: PinnedClientError | UnpinnedProbe): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        detach();
+        req.destroy();
+        if (outcome instanceof PinnedClientError) reject(outcome);
+        else resolve(outcome);
+      };
+      const timer = setTimeout(
+        () => finish(new PinnedClientError('timeout', `no answer within ${opts.requestTimeoutMs}ms`, { sent: true })),
+        opts.requestTimeoutMs,
+      );
+      const detach = watchSocket(socket, (err) => finish(new PinnedClientError('network', errMsg(err), { sent: true })));
+      req.on('error', (err) => finish(new PinnedClientError('network', errMsg(err), { sent: true })));
+      req.on('response', (res) => {
+        detach();
+        readCappedBytes(res, undefined, PROBE_MAX_BYTES).then(
+          (body) => finish({ fingerprint256, status: res.statusCode ?? 0, json: parseJsonOrNull(body.toString('utf8')) }),
+          (err: unknown) => finish(asSentError(err)),
+        );
+      });
+      req.end();
+    });
+  } finally {
+    socket.destroy();
   }
 }
 

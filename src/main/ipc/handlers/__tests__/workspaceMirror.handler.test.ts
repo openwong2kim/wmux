@@ -157,6 +157,23 @@ describe('parseWorkspaceMirrorPayload — roleBindings passthrough (3-way review
   });
 });
 
+describe('parseWorkspaceMirrorPayload — paneTags (computer-use marker labels)', () => {
+  const base = { ts: 1, entries: [], fleets: [] };
+
+  it('forwards well-formed pane auto tags and drops the rest', () => {
+    const parsed = parseWorkspaceMirrorPayload({
+      ...base,
+      paneTags: { 'pane-1': '#w1-2', 'pane-2': '#w3-10', 'pane-3': '#api · Claude', 'bad id!': '#w1-1', 'pane-4': 7 },
+    });
+    expect(parsed?.paneTags).toEqual({ 'pane-1': '#w1-2', 'pane-2': '#w3-10' });
+  });
+
+  it('leaves the field absent for an old renderer that sends none', () => {
+    expect(parseWorkspaceMirrorPayload(base)).not.toHaveProperty('paneTags');
+    expect(parseWorkspaceMirrorPayload({ ...base, paneTags: 'junk' })).not.toHaveProperty('paneTags');
+  });
+});
+
 describe('parseWorkspaceMirrorPayload — sessionRestored (startup Deck reconcile gate)', () => {
   const base = { ts: 1, entries: [], fleets: [] };
 

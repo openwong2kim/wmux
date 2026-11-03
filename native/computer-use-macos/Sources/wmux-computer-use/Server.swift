@@ -17,7 +17,7 @@ let agentActions = [
     "capabilities", "listApps", "listWindows", "getAppState",
     "click", "setValue", "type", "pressKey", "hotkey", "scroll",
     // Optional methods (protocol OPTIONAL_HELPER_METHODS).
-    "openApp", "configure",
+    "openApp", "configure", "markerWait", "markerClear",
 ]
 
 /// Actions that drive the pointer or keyboard: they show the overlay, which
@@ -110,10 +110,16 @@ final class Server {
 
     private func dispatch(_ method: String, _ p: JSON) async throws -> Any {
         // Never type into the lock screen, and say why windows "vanished".
-        if !["capabilities", "listApps", "releaseInput", "configure"].contains(method) { try Session.requireUnlocked() }
+        // The overlay-only methods too: they send no input.
+        if !["capabilities", "listApps", "releaseInput", "configure", "markerWait", "markerClear"].contains(method) {
+            try Session.requireUnlocked()
+        }
+        // The agent this request is drawn for (protocol `marker`); without
+        // one, the default marker.
+        let marker = AgentMarker(wire: p["marker"])
         if inputMethods.contains(method) {
-            defer { Overlay.shared.scheduleFade() }
-            return try await dispatchInput(method, p)
+            defer { Overlay.shared.scheduleFade(marker.id) }
+            return try await dispatchInput(method, p, marker)
         }
         switch method {
         case "capabilities":
@@ -131,13 +137,21 @@ final class Server {
             return try await getAppState(p)
         case "setValue":
             try await Permissions.require(.accessibility)
-            return try Actions.setValue(p, snapshots)
+            defer { Overlay.shared.scheduleFade(marker.id) }
+            return try await Actions.setValue(p, snapshots, marker)
         case "openApp":
             try await Permissions.require(.accessibility)
             return try await OpenApp.open(try p.requireString("app"))
         case "configure":
             guard let overlay = p.bool("overlay") else { throw HelperError("invalid_argument", "overlay must be a boolean") }
             Overlay.shared.setEnabled(overlay)
+            return ["ok": true]
+        case "markerWait":
+            try markerWait(p, marker)
+            return ["ok": true]
+        case "markerClear":
+            guard let id = p.string("id"), !id.isEmpty else { throw HelperError("invalid_argument", "id must be a non-empty string") }
+            Overlay.shared.clear(id)
             return ["ok": true]
         case "releaseInput":
             // What main sends on the stop key: the overlay goes at once too.
@@ -148,15 +162,33 @@ final class Server {
         }
     }
 
-    private func dispatchInput(_ method: String, _ p: JSON) async throws -> Any {
+    private func dispatchInput(_ method: String, _ p: JSON, _ marker: AgentMarker) async throws -> Any {
         try await Permissions.require(.accessibility)
         switch method {
-        case "click": return try await Actions.click(p, snapshots)
-        case "type": return try await Actions.type(p, snapshots)
-        case "pressKey": return try await Actions.pressKey(p, snapshots)
-        case "hotkey": return try await Actions.hotkey(p, snapshots)
-        default: return try await Actions.scroll(p, snapshots)
+        case "click": return try await Actions.click(p, snapshots, marker)
+        case "type": return try await Actions.type(p, snapshots, marker)
+        case "pressKey": return try await Actions.pressKey(p, snapshots, marker)
+        case "hotkey": return try await Actions.hotkey(p, snapshots, marker)
+        default: return try await Actions.scroll(p, snapshots, marker)
         }
+    }
+
+    /// markerWait `{marker, pid, windowId, waitingFor}`: the marker waits on
+    /// that window (dimmed) until its next action, markerClear, or 15 s
+    /// (Overlay.wait). The frame comes from the window list, which needs no
+    /// grant. A window that is not on screen, or not `pid`'s, draws nothing.
+    private func markerWait(_ p: JSON, _ marker: AgentMarker) throws {
+        guard let windowID = p.string("windowId"), let number = UInt32(windowID) else {
+            throw HelperError("invalid_argument", "windowId must be a window id")
+        }
+        // Required, so the marker goes only on a window of the app main named.
+        guard let pid = p.double("pid").flatMap({ Int32(exactly: $0) }), pid > 0 else {
+            throw HelperError("invalid_argument", "pid must be a positive integer")
+        }
+        guard let window = Focus.windowList().windows.first(where: { $0.windowID == number }),
+              window.pid == pid else { return }
+        let holder = markerText(p["waitingFor"]) ?? "another agent"
+        Overlay.shared.wait(marker, window: window.bounds, windowID: windowID, waitingFor: holder)
     }
 
     /// releaseInput `{keys?, modifiers?, buttons?}`: what this helper tracked,

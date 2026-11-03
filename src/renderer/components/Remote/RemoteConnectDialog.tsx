@@ -19,10 +19,12 @@ import { maskPairInput, parseRemotePairInput } from '../../../shared/remotePairI
 import { HOST_UNREACHABLE_ERROR } from '../../../shared/remoteHosts';
 import type { A2aRemoteStatus } from '../../../shared/rpc';
 import LanLinkPairPanel from './LanLinkPairPanel';
+import TailnetDiscoverPanel from './TailnetDiscoverPanel';
 import { TailscaleFixButton } from './TailscaleChecklist';
 import { FirewallNoticeView, ListenProblemView, useFirewall, useListenProblem } from './FirewallNotice';
-import { tailnetPrecheck, tailnetTargetOf, withTailnetNote, type TailnetNotice } from './tailnetCheck';
-import type { TailscaleFix } from '../../../shared/web';
+import { readTailscale, tailnetPrecheck, tailnetTargetOf, withTailnetNote, type TailnetNotice } from './tailnetCheck';
+import { tailscaleReady } from '../../hooks/useTailnetDiscovery';
+import type { TailscaleChecklist, TailscaleFix } from '../../../shared/web';
 
 // ─── "Connect a PC…" on the Remote page ──────────────────────────────────────
 //
@@ -45,8 +47,16 @@ import type { TailscaleFix } from '../../../shared/web';
 //
 // "LAN" pairs a message link with a PC on this network by a 6-digit PIN
 // (LanLinkPairPanel). It is never the first tab and starts nothing on open.
+//
+// "Tailscale" finds wmux PCs on this user's tailnet and pairs by matching
+// codes (TailnetDiscoverPanel). It is the first tab, and the one the dialog
+// opens on, when the read-only Tailscale check finds this PC on the tailnet;
+// otherwise it is the last. Showing it probes nothing and opens no window.
 
-export type ConnectTab = 'invite' | 'paste' | 'lan';
+export type ConnectTab = 'tailscale' | 'invite' | 'paste' | 'lan';
+
+/** How long opening the dialog waits for the Tailscale check before it picks the first tab without it. */
+export const TAILSCALE_TAB_WAIT_MS = 1_500;
 
 /** How often the open invite is checked for a PC that redeemed it. */
 export const CONNECT_PAIR_POLL_MS = 2_000;
@@ -157,6 +167,16 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
   // The LAN panel stays mounted once shown, so switching tabs keeps its PIN;
   // closing the dialog unmounts it, which closes a window it left open.
   const [lanShown, setLanShown] = useState(initialTab === 'lan');
+  // The same for the Tailscale panel: switching tabs keeps this PC discoverable.
+  const [tsShown, setTsShown] = useState(initialTab === 'tailscale');
+  // The Tailscale check (read-only, one `tailscale status --json`), and whether
+  // its tab came first. The order is fixed once the dialog has painted, so a
+  // check that lands late never moves a tab under the pointer.
+  const [tsList, setTsList] = useState<TailscaleChecklist | null>(null);
+  const [tsFirst, setTsFirst] = useState(false);
+  const discoverRef = useRef<HTMLButtonElement>(null);
+  // A request is on this PC's card: the Tailscale tab is marked while another tab shows.
+  const [tsAsks, setTsAsks] = useState(false);
   const [paste, setPaste] = useState('');
   const [masked, setMasked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -198,20 +218,43 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
     return () => { mounted.current = false; };
   }, []);
 
-  // Opening the dialog changes nothing: it reads the listener's state, which
-  // picks the first tab (Invite only when the listener is already up) and the
+  // Opening the dialog changes nothing: it reads the listener's state and
+  // Tailscale's, which pick the first tab (Tailscale when this PC is on the
+  // tailnet, else Invite only when the listener is already up) and the
   // Invite tab's button (Create invite, or Turn on and create invite).
   useEffect(() => {
     let live = true;
+    let timer: number | undefined;
+    const check = readTailscale().then((list) => {
+      if (live) setTsList(list);
+      return list;
+    });
+    const capped = Promise.race([
+      check,
+      new Promise<null>((resolve) => { timer = window.setTimeout(() => resolve(null), TAILSCALE_TAB_WAIT_MS); }),
+    ]);
     void (async () => {
-      const status = await api?.status().catch(() => null);
+      const [status, list] = await Promise.all([api?.status().catch(() => null), capped]);
+      window.clearTimeout(timer);
       if (!live) return;
       setA2aState(status ?? null);
       setStatusRead(true);
-      if (!tabChosen.current) setTab(status?.enabled && status.listening ? 'invite' : 'paste');
+      if (tabChosen.current) return;
+      const first = tailscaleReady(list);
+      setTsFirst(first);
+      if (first) setTsShown(true);
+      setTab(first ? 'tailscale' : status?.enabled && status.listening ? 'invite' : 'paste');
     })();
-    return () => { live = false; };
+    return () => { live = false; window.clearTimeout(timer); };
   }, [initialTab, api]);
+
+  /** A discovery window turned the listener on or off: the dialog and the page's line follow. */
+  const rereadA2a = useCallback(async () => {
+    const status = await api?.status().catch(() => null);
+    if (!status || !mounted.current) return;
+    setA2aState(status);
+    onA2aStatus?.(status);
+  }, [api, onA2aStatus]);
 
   /**
    * Read the clipboard ONLY here, on the Paste button: what it holds is the
@@ -534,6 +577,37 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
       <LanLinkPairPanel onPaired={onLanPaired} />
     </div>
   ) : null;
+  // Third child in both views, for the same reason: a PC pairing through
+  // this PC's window turns the dialog into its checklist without unmounting it.
+  const tsPanel = tsShown ? (
+    <div hidden={tab !== 'tailscale' || joined !== null}>
+      <TailnetDiscoverPanel
+        a2a={a2aState}
+        statusRead={statusRead}
+        tailscale={tsList}
+        onA2aChanged={() => void rereadA2a()}
+        onPaired={(peer) => { if (mounted.current) setJoined(peer); }}
+        onReceive={(kind) => { if (mounted.current) setTsAsks(kind === 'approval'); }}
+        firstActionRef={discoverRef}
+      />
+    </div>
+  ) : null;
+  const tabOptions: { value: ConnectTab; label: string }[] = [
+    { value: 'invite', label: t('remotePage.connect.tabInvite') },
+    { value: 'paste', label: t('remotePage.connect.tabPaste') },
+    { value: 'lan', label: t('remotePage.connect.tabLan') },
+  ];
+  // Never switched to by itself: the mark says a card waits there.
+  const tsOption = {
+    value: 'tailscale' as const,
+    label: tsAsks && tab !== 'tailscale' ? (
+      <span className="inline-flex items-center gap-1.5">
+        {t('remotePage.discover.tab')}
+        <span className="inline-block w-1.5 h-1.5 rounded-full bg-[var(--attention)]" aria-hidden="true" data-testid="discover-tab-mark" />
+        <span className="sr-only">{`, ${t('remotePage.needs.title')}`}</span>
+      </span>
+    ) : t('remotePage.discover.tab'),
+  };
 
   if (joined) {
     return (
@@ -546,6 +620,7 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
         <DialogBody>
           {null}
           {lanPanel}
+          {tsPanel}
           <A2aExposureChecklist hostId={joined.hostId} pcName={joined.name} t={t} />
         </DialogBody>
         <DialogFooter>
@@ -559,24 +634,27 @@ export default function RemoteConnectDialog({ initialTab, onClose, onLinkPane, o
     <Dialog
       onClose={onClose}
       width={520}
-      initialFocusRef={tab === 'paste' ? inputRef : tab === 'invite' ? createRef : undefined}
+      initialFocusRef={tab === 'paste' ? inputRef : tab === 'invite' ? createRef : tab === 'tailscale' ? discoverRef : undefined}
       data-testid="remote-connect"
     >
       <DialogHeader title={t('remotePage.connect.title')} closeLabel={t('remotePage.connect.close')} />
       <DialogBody>
         <SegmentedControl<ConnectTab>
           value={tab}
-          onValueChange={(v) => { tabChosen.current = true; setTab(v); setMessage(null); if (v === 'lan') setLanShown(true); }}
+          onValueChange={(v) => {
+            tabChosen.current = true;
+            setTab(v);
+            setMessage(null);
+            if (v === 'lan') setLanShown(true);
+            if (v === 'tailscale') setTsShown(true);
+          }}
           ariaLabel={t('remotePage.connect.title')}
-          options={[
-            { value: 'invite', label: t('remotePage.connect.tabInvite') },
-            { value: 'paste', label: t('remotePage.connect.tabPaste') },
-            { value: 'lan', label: t('remotePage.connect.tabLan') },
-          ]}
+          options={tsFirst ? [tsOption, ...tabOptions] : [...tabOptions, tsOption]}
           data-testid="remote-connect-tabs"
         />
         {lanPanel}
-        {tab === 'lan' ? null : tab === 'invite' ? (
+        {tsPanel}
+        {tab === 'lan' || tab === 'tailscale' ? null : tab === 'invite' ? (
           <div className="wmux-remote-connect" data-testid="remote-connect-invite">
             <p className="wmux-remote-connect-note">{t('remotePage.connect.inviteDesc')}</p>
             {a2aOff && a2aState !== null && !invite.invite && (

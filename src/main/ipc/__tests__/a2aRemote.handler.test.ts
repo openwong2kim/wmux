@@ -193,3 +193,34 @@ describe('a2aRemote spawn policy', () => {
     expect(client.a2aSpawnPolicySet).toHaveBeenCalledWith(valid);
   });
 });
+
+describe('a2aRemote tailnet discovery', () => {
+  it('passes only the fields the daemon takes: turnOn as true, a card id and a boolean, a scanned PC by its ip', async () => {
+    const client = {
+      ...fakeClient(),
+      a2aRemoteDiscoverOpen: vi.fn(async () => ({ ok: true })),
+      a2aRemoteDiscoverDecide: vi.fn(async () => ({ ok: true })),
+      a2aRemoteDiscoverConnect: vi.fn(async () => ({ ok: true })),
+    } as unknown as DaemonClient;
+    cleanups.push(registerA2aRemoteHandlers(client));
+    await invoke(IPC.A2A_REMOTE_DISCOVER_OPEN, { turnOn: 'yes' });
+    await invoke(IPC.A2A_REMOTE_DISCOVER_OPEN, { turnOn: true, port: 1 });
+    expect(client.a2aRemoteDiscoverOpen).toHaveBeenNthCalledWith(1, {});
+    expect(client.a2aRemoteDiscoverOpen).toHaveBeenNthCalledWith(2, { turnOn: true });
+    await invoke(IPC.A2A_REMOTE_DISCOVER_DECIDE, { requestId: 'r1', allow: 'true' });
+    expect(client.a2aRemoteDiscoverDecide).toHaveBeenCalledWith({ requestId: 'r1', allow: false });
+    await invoke(IPC.A2A_REMOTE_DISCOVER_CONNECT, { ip: '100.64.0.7', port: 22, fingerprint256: 'AA' });
+    expect(client.a2aRemoteDiscoverConnect).toHaveBeenCalledWith({ ip: '100.64.0.7' });
+  });
+
+  it('refuses every discovery action at once without a daemon, and never runs it later', async () => {
+    cleanups.push(registerA2aRemoteHandlers(null, { clientWaitMs: 60_000 }));
+    for (const channel of [
+      IPC.A2A_REMOTE_DISCOVER_OPEN, IPC.A2A_REMOTE_DISCOVER_CLOSE, IPC.A2A_REMOTE_DISCOVER_DECIDE,
+      IPC.A2A_REMOTE_DISCOVER_SCAN, IPC.A2A_REMOTE_DISCOVER_CONNECT, IPC.A2A_REMOTE_DISCOVER_OUTGOING_CANCEL,
+      IPC.A2A_REMOTE_DISCOVER_OUTGOING_CONFIRM,
+    ]) {
+      await expect(invoke(channel, {})).rejects.toThrow(/not connected/);
+    }
+  });
+});

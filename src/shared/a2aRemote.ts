@@ -92,6 +92,14 @@ export const A2A_ROUTES = Object.freeze({
    * fetches it from A. Path: /api/a2a/continue/:continueId/:sha256
    */
   continue: '/api/a2a/continue',
+  /**
+   * Tailnet discovery, answered only while this PC is discoverable and only
+   * to a same-user tailnet node; otherwise every route answers exactly as an
+   * unauthenticated request does. `GET` — the probe (A2aDiscoverProbe).
+   * Below it: `POST /requests`, `POST /requests/:id/reveal`,
+   * `GET /requests/:id` and `POST /requests/:id/withdraw`.
+   */
+  discover: '/api/a2a/discover',
 } as const);
 
 /**
@@ -256,7 +264,8 @@ export interface A2aInvite {
 
 export const INVITE_ALT_MAX = 4;
 
-const INVITE_CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
+/** A one-shot pairing code: 8 symbols of the unambiguous A-Z2-9 alphabet (`pairing.ts`). */
+export const INVITE_CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
 const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?)*$/;
 const IPV4_RE = /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 
@@ -341,6 +350,99 @@ export type A2aPairRefusal =
   | 'self'
   /** Too many failed pairings from this address; wait and retry (HTTP 429). */
   | 'rate-limited';
+
+// ─── Tailnet discovery ──────────────────────────────────────────────────────
+//
+// A PC made discoverable answers the routes under `A2A_ROUTES.discover` for
+// 5 minutes, to its own user's tailnet nodes only. A requester commits to its
+// nonce Nr, learns the server's nonce Ns, then reveals Nr; both PCs derive the
+// same 6-digit code from the two nonces and both certificate fingerprints, and
+// the server's human allows. Allow hands the requester a one-shot pairing
+// code, redeemed on `POST /api/a2a/pair` like an invite's.
+
+/** Header carrying a discovery request's token on its `:id` routes. */
+export const A2A_DISCOVER_TOKEN_HEADER = 'x-wmux-discover-token';
+/** Cap on the self-reported name in a discovery request. */
+export const A2A_DISCOVER_NAME_MAX = 64;
+/** Cap on a discovery route's request body. */
+export const A2A_DISCOVER_BODY_MAX = 2048;
+
+/** `GET /api/a2a/discover`: exactly these four keys. */
+export interface A2aDiscoverProbe {
+  discover: 1;
+  protocol: number;
+  /** The server's machine name. */
+  name: string;
+  /** The server's wmux version. */
+  version: string;
+}
+
+/** `POST /api/a2a/discover/requests` body. */
+export interface A2aDiscoverRequestBody {
+  protocol: number;
+  /** The requester's own HostId. */
+  hostId: HostId;
+  /** The requester's display name, at most `A2A_DISCOVER_NAME_MAX` characters. */
+  name: string;
+  /** The requester's own certificate fingerprint (Fr), bound into the code. */
+  fingerprint256: CertFingerprint256;
+  /** base64url SHA-256 of the commit label and the requester's nonce Nr. */
+  commit: string;
+}
+
+/** `201` answer to `POST /api/a2a/discover/requests`. */
+export interface A2aDiscoverRequestCreated {
+  /** UUID. */
+  requestId: string;
+  /** 32 random bytes, base64url: the `A2A_DISCOVER_TOKEN_HEADER` of every later call. */
+  token: string;
+  /** The server's nonce Ns, 32 random bytes, base64url. */
+  nonce: string;
+  /** Epoch ms by which the reveal must arrive. */
+  expiresAt: number;
+}
+
+/** `reason` on a refused discovery request (`403`, or `429` for busy and rate-limited). */
+export type A2aDiscoverRefusal =
+  /** Tailscale could not identify the requester as a node that may pair. */
+  | 'unidentified'
+  /** The requester belongs to another Tailscale user. */
+  | 'other-user'
+  /** This PC's human denied a request from that address in this window. */
+  | 'denied'
+  /** The request came from this PC itself. */
+  | 'self'
+  /** Another request is on the card; retry after `retryAfterMs`. */
+  | 'busy'
+  /** Too many requests from that address; retry after `retryAfterMs` (or not in this window). */
+  | 'rate-limited'
+  /** The revealed nonce does not match the commit; the request is over. */
+  | 'commit-mismatch';
+
+/** `POST /api/a2a/discover/requests/:id/reveal` body. */
+export interface A2aDiscoverRevealBody {
+  /** The requester's nonce Nr, base64url. */
+  nonce: string;
+}
+
+/** `200` answer to the reveal: the card is up until `expiresAt`. */
+export interface A2aDiscoverRevealResponse {
+  expiresAt: number;
+}
+
+/** A request's state as the requester polls it. */
+export type A2aDiscoverRequestState = 'waiting' | 'allowed' | 'denied' | 'expired' | 'closed';
+
+/** `GET /api/a2a/discover/requests/:id` answer. */
+export interface A2aDiscoverPoll {
+  state: A2aDiscoverRequestState;
+  /** Epoch ms the current state runs out (the card, or the pairing code once allowed). */
+  expiresAt: number;
+  /** Only when `allowed`: the one-shot pairing code to redeem on `/api/a2a/pair`. */
+  code?: string;
+  /** For `closed`: the requester withdrew, or the pairing failed on the server. */
+  reason?: 'withdrawn' | 'failed';
+}
 
 // ─── Persisted records ──────────────────────────────────────────────────────
 

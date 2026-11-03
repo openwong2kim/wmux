@@ -55,7 +55,9 @@ defaults; the frame, sheet, type, dialog and icon rules below apply to every
 theme.
 Geist, IBM Plex Sans and Figtree are bundled (`src/renderer/assets/fonts`,
 SIL OFL 1.1, listed in `THIRD_PARTY_NOTICES`) so a look never falls back to
-another face.
+another face. Pretendard is bundled too, Hangul only (a subset renamed
+`wmux Hangul`, as its Reserved Font Name requires), after each look's Latin
+face so Korean text keeps the look's size and weight.
 
 **Colour tokens** (one set per theme, `UI_THEME_TOKENS`):
 
@@ -1991,7 +1993,7 @@ A pane is a terminal column plus, when it needs one, a work area.
 Colour carries **state only**. Surfaces, controls, selection and hover are
 always neutral (the fill ladder).
 
-- **The one exception: bot identity colours** (owner decision 2026-10-14).
+- **Exception: bot identity colours** (owner decision 2026-10-14).
   On the Bots page a bot's Mochi character, its name above its run and its
   `@name` mentions wear the bot's own colour, so bots are told apart at a
   glance as in the reference messenger. The identity palette
@@ -2003,6 +2005,21 @@ always neutral (the fill ladder).
   hue unmixed (2026-10-16). Identity colour never fills a surface, a row or a control, and never
   marks a state. A removed bot keeps its colour, picture and name on the
   messages it wrote, its name followed by "(removed)".
+- **Agent identity colours** (owner approval 2026-11-03, agent marker
+  mockup). The second exception: the one place colour identifies an agent
+  rather than a state. While agents drive other apps, each one's halo, name
+  pill and pointer on screen wear its own colour, and its pane wears the same
+  colour, so a marker on screen ties to a pane. The palette
+  (`AGENT_MARKER_COLORS`, `shared/computer/agentMarker.ts`) is ten fixed
+  fills on every look; slot 0 is the attention orange, so a lone agent looks
+  as the single overlay did. Red is left out (error), and every fill carries
+  dark ink (`AGENT_MARKER_INK`, ≥ 4.5:1). In wmux the colour is only an 8px
+  filled dot, no border, named "Computer use color": before the title of the
+  pane's tab, and before the name on its workspace's sidebar row (one per
+  marked pane, at most three, then a muted "+N"), drawn once the pane has
+  used computer use. Needs you stays a ring, so a slot-0 dot does not read as
+  a question. The palette is used for nothing else: never a state, a surface,
+  a row or a control.
 - **Sidebar and pane marks** — shape first, colour second, one shared helper
   (`AGENT_STATUS_ICON.mark`): running = filled muted dot · needs input =
   `--attention` ring · error = red ✕ (SVG) · complete = muted check ·
@@ -2511,6 +2528,8 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-02 | A folder's company (owner decision 2026-11-02, insight 170): a company is kept in the folder's wmux.json under `company`, holding only its name, mission, standing orders, the CEO seat, and each seat's name, what it owns and its agent's registry slug; never a launch line, flag, environment, token, path or a seat on another PC. A refused company drops alone and is reported. It starts only from a trust grant that showed it (the review, or a save from the New company dialog, which trusts the bytes it writes); a grant that did not show it, from the wmux.json dialog or an older wmux, does not start it, and nothing starts it on its own | A company tuned in the New company dialog was lost once the dialog closed. The repository is where a team already shares its wmux setup, and the existing per-file trust keeps a checked-in company from starting before its seats and their first prompts are reviewed on this PC |
 | 2026-11-02 | This folder's company in the app (owner decision 2026-11-02, insight 170, mockup option A): the + menu lists the active workspace's folder company first under Company; a pick opens its review while it waits for one, else the New company dialog filled from it, and the menu never makes it. The New company dialog saves its company to the folder's wmux.json from a quiet footer text button through an inline confirm, and stays open. The review shows each seat with its agent, what wmux starts and where it works, the mission and standing orders verbatim and, for a file not trusted here, the rest of it; **Approve and make company** is its one primary and makes the company only from the bytes it showed | A folder's company is made where the other companies are made, beside the presets. Reviewing it on its first start, from the copy of the file the approval covers, means every agent's first message is read on this PC before that agent runs. Option B, the company inside the wmux.json dialog, kept it away from the + menu where a company is made |
 | 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
+| 2026-11-03 | Owner-approved (agent marker mockup): agent identity colours, the second exception to "colour carries state only". While agents drive other apps, each one's halo, name pill and pointer on screen wear its own colour from a ten-fill palette (slot 0 the attention orange, red left out, dark ink ≥ 4.5:1 on every fill), and that pane carries the same colour as an 8px filled dot before its tab title and before its workspace's name on the sidebar row (at most three, then "+N"), once it has used computer use. The palette is used for nothing else | With several agents on one desktop, a marker on screen has to say which pane it belongs to at a glance; a name pill alone needs reading. One colour per agent, kept until wmux quits, makes the marker and the pane one thing. Red stays the error colour, and confining the palette to markers and their dots keeps every other colour a state |
+| 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
 
 ### Desktop conversation view
 

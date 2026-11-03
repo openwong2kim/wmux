@@ -51,6 +51,16 @@ describe('WorkspaceMirror', () => {
     expect(m.getViewed()).toBeNull();
   });
 
+  it('answers a pane auto tag from the last push, and null when an old renderer sent none', () => {
+    const m = new WorkspaceMirror();
+    m.setSnapshot(payload({ paneTags: { 'pane-1': '#w1-2' } }));
+    expect(m.getPaneTag('pane-1')).toBe('#w1-2');
+    expect(m.getPaneTag('pane-9')).toBeNull();
+    expect(m.getPaneTag('toString')).toBeNull();
+    m.setSnapshot(payload());
+    expect(m.getPaneTag('pane-1')).toBeNull();
+  });
+
   it('peek reports age against the injected clock, not the renderer ts', () => {
     let clock = 5000;
     const m = new WorkspaceMirror(() => clock);

@@ -114,6 +114,13 @@ export interface WorkspaceMirrorPushPayload {
    */
   paneIds?: string[];
   /**
+   * paneId → the pane's auto tag (`#w1-2`, paneNaming.ts paneTag), stashed
+   * panes included. The ordinals behind it live only in the renderer; main
+   * reads this to tell unnamed panes apart (computer-use agent markers). An
+   * old renderer omits it: `undefined` means unknown.
+   */
+  paneTags?: Record<string, string>;
+  /**
    * True once this renderer has installed a SAVED session's workspaces (the
    * ids came from session.json). False after a failed or empty session load,
    * where the tree is a freshly generated default workspace whose id matches

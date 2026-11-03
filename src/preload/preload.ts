@@ -88,6 +88,7 @@ import { isFileDrag } from '../shared/dragDrop';
 import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory, StallPrefillResult } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
+import type { AgentMarkerEntry } from '../shared/computer/agentMarker';
 import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { PaneUsageLimit, PaneUsageLimitPatch, PaneUsageWindow } from '../shared/usageLimit';
@@ -117,6 +118,18 @@ import type {
 import type { FirewallActionResult, FirewallListener, InboundStatusView, NetworkSettingsUri } from '../shared/netFirewall';
 import type { ListenProblemReport } from '../shared/netListen';
 import type {
+  A2aDiscoverCloseResult,
+  A2aDiscoverConnectParams,
+  A2aDiscoverConnectResult,
+  A2aDiscoverDecideParams,
+  A2aDiscoverDecideResult,
+  A2aDiscoverOpenParams,
+  A2aDiscoverOpenResult,
+  A2aDiscoverOutgoingCancelResult,
+  A2aDiscoverOutgoingConfirmResult,
+  A2aDiscoverOutgoingStatus,
+  A2aDiscoverScanResult,
+  A2aDiscoverStatus,
   A2aRemoteExposureGetResult,
   A2aRemoteExposureSetResult,
   A2aRemoteHeldListResult,
@@ -643,6 +656,13 @@ const electronAPI = {
     // macOS: Request access, Reset access, Show helper in Finder.
     permissions: (op: 'request' | 'reset' | 'reveal') =>
       ipcRenderer.invoke(IPC.COMPUTER_USE_PERMISSIONS, { op }) as Promise<ComputerUseSettingsPayload>,
+    // Each pane's computer-use marker colour (shared/computer/agentMarker.ts).
+    agentMarkers: () => ipcRenderer.invoke(IPC.COMPUTER_AGENT_MARKERS) as Promise<AgentMarkerEntry[]>,
+    onAgentMarkers: (callback: (entries: AgentMarkerEntry[]) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, entries: AgentMarkerEntry[]) => callback(entries);
+      ipcRenderer.on(IPC.COMPUTER_AGENT_MARKERS, listener);
+      return () => { ipcRenderer.removeListener(IPC.COMPUTER_AGENT_MARKERS, listener); };
+    },
   },
   quickLaunch: {
     settingsGet: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_GET) as Promise<QuickLaunchSettingsPayload>,
@@ -2590,6 +2610,21 @@ document.addEventListener('DOMContentLoaded', () => {
     ipcRenderer.invoke(IPC.A2A_REMOTE_HOSTS_REMOVE, hostId) as Promise<A2aRemoteHostsRemoveResult>,
   peersList: () => ipcRenderer.invoke(IPC.A2A_REMOTE_PEERS_LIST) as Promise<A2aRemotePeersListResult>,
   peersRevoke: (peerId: string) => ipcRenderer.invoke(IPC.A2A_REMOTE_PEERS_REVOKE, peerId) as Promise<{ ok: boolean }>,
+  discoverOpen: (params: A2aDiscoverOpenParams = {}) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_OPEN, params) as Promise<A2aDiscoverOpenResult>,
+  discoverClose: () => ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_CLOSE) as Promise<A2aDiscoverCloseResult>,
+  discoverStatus: () => ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_STATUS) as Promise<A2aDiscoverStatus>,
+  discoverDecide: (params: A2aDiscoverDecideParams) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_DECIDE, params) as Promise<A2aDiscoverDecideResult>,
+  discoverScan: () => ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_SCAN) as Promise<A2aDiscoverScanResult>,
+  discoverConnect: (params: A2aDiscoverConnectParams) =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_CONNECT, params) as Promise<A2aDiscoverConnectResult>,
+  discoverOutgoingStatus: () =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_OUTGOING_STATUS) as Promise<A2aDiscoverOutgoingStatus>,
+  discoverOutgoingCancel: () =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_OUTGOING_CANCEL) as Promise<A2aDiscoverOutgoingCancelResult>,
+  discoverOutgoingConfirm: () =>
+    ipcRenderer.invoke(IPC.A2A_REMOTE_DISCOVER_OUTGOING_CONFIRM) as Promise<A2aDiscoverOutgoingConfirmResult>,
   snapshot: (snapshot: A2aRemotePaneSnapshot) =>
     ipcRenderer.invoke(IPC.A2A_REMOTE_SNAPSHOT, snapshot) as Promise<{ ok: boolean }>,
   exposureGet: (hostId: string) =>

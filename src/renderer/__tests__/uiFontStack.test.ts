@@ -13,12 +13,24 @@ import { pathToFileURL } from 'node:url';
 const REPO_ROOT = path.resolve(__dirname, '../../..');
 const css = fs.readFileSync(path.join(__dirname, '..', 'styles', 'globals.css'), 'utf8');
 
-/** Every @font-face block that declares font-family: 'Inter'. */
-function interFaces(): string[] {
+/** Every @font-face block that declares the given font-family. */
+function faces(family: string): string[] {
   return [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)]
     .map((m) => m[1])
-    .filter((body) => /font-family:\s*'Inter'/.test(body));
+    .filter((body) => body.includes(`font-family: '${family}';`));
 }
+const interFaces = (): string[] => faces('Inter');
+
+/** Every --font-ui stack in globals.css, split into families: `:root` first. */
+function uiStacks(): string[][] {
+  return [...css.matchAll(/--font-ui:\s*([^;]+);/g)].map((m) => m[1].split(',').map((f) => f.trim()));
+}
+
+const HANGUL = "'wmux Hangul'";
+/** Hangul Jamo, Compatibility Jamo, Jamo Extended-A, Syllables, Jamo Extended-B. */
+const HANGUL_BLOCKS: Array<[number, number]> = [
+  [0x1100, 0x11ff], [0x3130, 0x318f], [0xa960, 0xa97f], [0xac00, 0xd7a3], [0xd7b0, 0xd7ff],
+];
 
 describe('UI font stack', () => {
   it('bundles Inter as two subsets', () => {
@@ -49,15 +61,49 @@ describe('UI font stack', () => {
   });
 
   it('leads the --font-ui stack with the platform UI face', () => {
-    const decl = /--font-ui:\s*([^;]+);/.exec(css);
-    expect(decl).not.toBeNull();
-    const families = (decl as RegExpExecArray)[1].split(',').map((f) => f.trim());
+    const families = uiStacks()[0];
+    expect(families).toBeDefined();
     // The mono look (2026-10-03) uses the system face: SF on macOS, Segoe UI
-    // on Windows. Hangul runs resolve to the platform face as before; no
-    // Hangul family is spliced in ahead of it.
+    // on Windows. Neither has Hangul, so Hangul falls through to the bundled
+    // face right after it instead of to Malgun Gothic / Apple SD Gothic Neo.
     expect(families[0]).toBe('system-ui');
+    expect(families[1]).toBe(HANGUL);
     expect(families).toContain("'Segoe UI'");
-    expect(families.join(',')).not.toMatch(/Hangul|Gothic|Malgun|Apple SD/i);
+    expect(families.join(',')).not.toMatch(/Gothic|Malgun|Apple SD/i);
+  });
+
+  it("puts the Hangul face right after each look's Latin face", () => {
+    // Owner decision 2026-11-04: keep the look's Latin face and render Hangul
+    // only in the bundled face, so Korean keeps the look's size and weight.
+    const looks = uiStacks().slice(1);
+    expect(looks).toHaveLength(5);
+    for (const families of looks) {
+      expect(families[0]).toMatch(/^'(Geist|IBM Plex Sans|Figtree)'$/);
+      expect(families[1]).toBe(HANGUL);
+    }
+  });
+
+  it('bundles the Hangul face for Hangul codepoints only', () => {
+    const hangul = faces('wmux Hangul');
+    expect(hangul).toHaveLength(1);
+    const [body] = hangul;
+    // Instanced to the weights the UI uses, so 700 is real, not clamped to 600.
+    expect(body).toMatch(/font-weight:\s*400 700;/);
+    expect(body).toMatch(/font-display:\s*swap;/);
+    const file = /url\('\.\.\/assets\/fonts\/([^']+)'\)/.exec(body)?.[1];
+    expect(file).toBe('wmuxHangul.woff2');
+    expect(fs.existsSync(path.join(__dirname, '..', 'assets', 'fonts', file as string))).toBe(true);
+    // Every range must sit inside a Hangul block, so it can never take a Latin
+    // glyph from the face ahead of it.
+    const ranges = /unicode-range:\s*([^;]+);/.exec(body)?.[1].split(',').map((r) => r.trim()) ?? [];
+    expect(ranges.length).toBeGreaterThan(0);
+    for (const range of ranges) {
+      const m = /^U\+([0-9A-F]+)(?:-([0-9A-F]+))?$/i.exec(range);
+      expect(m, range).not.toBeNull();
+      const lo = parseInt((m as RegExpExecArray)[1], 16);
+      const hi = parseInt((m as RegExpExecArray)[2] ?? (m as RegExpExecArray)[1], 16);
+      expect(HANGUL_BLOCKS.some(([a, b]) => lo >= a && hi <= b), range).toBe(true);
+    }
   });
 
   it('routes html/body through the token instead of re-typing the stack', () => {
@@ -75,7 +121,8 @@ describe('UI font stack', () => {
   it('keeps the Hangul mono face out of the UI stack', () => {
     // JetBrainsMonoHangul is a TERMINAL face (a font-family option in Settings);
     // it must never be spliced into the UI/prose stack.
-    const uiDecl = /--font-ui:\s*([^;]+);/.exec(css)?.[1] ?? '';
-    expect(uiDecl).not.toContain('JetBrainsMonoHangul');
+    for (const families of uiStacks()) {
+      expect(families.join(',')).not.toContain('JetBrainsMonoHangul');
+    }
   });
 });

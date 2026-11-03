@@ -40,6 +40,8 @@ export class WorkspaceMirror {
   private panePtys: Record<string, string> | null = null;
   // null ⇒ no paneIds field (old renderer): the pane set is unknown.
   private paneIds: string[] | null = null;
+  // null ⇒ no paneTags field (old renderer).
+  private paneTags: Record<string, string> | null = null;
   private viewed: ViewedPointer | null = null;
   private panelWorkspaceId: string | null = null;
   private setAt = 0;
@@ -62,6 +64,7 @@ export class WorkspaceMirror {
     this.roleBindings = payload.roleBindings ?? null;
     this.panePtys = payload.panePtys ?? null;
     this.paneIds = payload.paneIds ? [...payload.paneIds] : null;
+    this.paneTags = payload.paneTags ?? null;
     this.sessionRestored = payload.sessionRestored === true;
     this.viewed = payload.viewed ? { ...payload.viewed } : null;
     this.panelWorkspaceId = payload.panelWorkspaceId ?? null;
@@ -136,6 +139,12 @@ export class WorkspaceMirror {
     if (this.panePtys === null) return null;
     const paneId = Object.prototype.hasOwnProperty.call(this.panePtys, ptyId) ? this.panePtys[ptyId] : undefined;
     return { paneId, ageMs: this.now() - this.setAt };
+  }
+
+  /** The pane's auto tag (`#w1-2`), or null when unknown (old renderer, unknown pane). */
+  getPaneTag(paneId: string): string | null {
+    if (this.paneTags === null) return null;
+    return Object.prototype.hasOwnProperty.call(this.paneTags, paneId) ? this.paneTags[paneId] : null;
   }
 
   /** Every pane id the last push named (stashed and PTY-less panes

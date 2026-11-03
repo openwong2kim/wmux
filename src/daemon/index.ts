@@ -130,6 +130,7 @@ import { isLoopbackHost } from './net/inboundSeen';
 import { FIREWALL_GROUP, currentRuleUser } from '../shared/netFirewallScripts';
 import { isIpv4, type FirewallListener } from '../shared/netFirewall';
 import { forgetHostCascade, registerA2aRemoteRpc } from './a2aRemote/rpc';
+import type { DiscoverClient } from './a2aRemote/discoverClient';
 import { PeerStore as A2aPeerStore } from './a2aRemote/peerStore';
 import { RemoteHostStore } from './a2aRemote/remoteHostStore';
 import { LinkStore } from './a2aRemote/linkStore';
@@ -3184,6 +3185,10 @@ function registerRpcHandlers(
       // bracketed-paste newlines; only the submitted CR/LF re-arms running.
       pipe.onInput((data: Buffer) => {
         const input = data.toString();
+        // Past the high-water mark (other writers can fill it while this client
+        // is not paused) the chunk waits in SessionPipe's retry slot instead of
+        // the PTY adapter, which drops input past its own bound.
+        if (((managed.ptyProcess as TerminalPty).pendingInputBytes ?? 0) >= 6 * 1024 * 1024) return false;
         try { managed.ptyProcess.write(data); }
         catch (error) {
           if (error instanceof Error && error.message.startsWith('PTY_BACKPRESSURE')) return false;
@@ -8777,6 +8782,7 @@ const startupRecovery = createStartupRecovery({ log: (line) => log('info', line)
 let lanLinkServerRef: LanLinkServer | null = null;
 // Same for the cross-host A2A listener.
 let a2aServerRef: A2aServer | null = null;
+let a2aDiscoverRef: DiscoverClient | null = null;
 let a2aDeliveryRef: A2aRemoteDelivery | null = null;
 
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
@@ -9025,6 +9031,7 @@ async function shutdown(
   try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }
   try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
+  try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
 
   // Stop X1 context watchers (port poll timer + git fs.watch handles)
@@ -10643,11 +10650,15 @@ async function main(): Promise<void> {
       onPeerRevoked: a2aCascade,
       routes: a2aRoutes,
       log: a2aLog,
+      // The tailnet discovery probe tells other PCs this build's version.
+      discoverVersion: () => SPAWNED_BY_VERSION,
     });
     a2aServerRef = a2aServer;
+    // A discovery window ends with the app connection that opened it.
+    pipeServer.onClientClose((clientId) => a2aServer.discovery.clientGone(clientId));
     const onA2aRpc = (method: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void =>
       pipeServer.onRpc(method, handler);
-    registerA2aRemoteRpc(onA2aRpc, {
+    const a2aRemoteRpc = registerA2aRemoteRpc(onA2aRpc, {
       controller: a2aRemoteController,
       server: a2aServer,
       peers: a2aPeers,
@@ -10655,6 +10666,9 @@ async function main(): Promise<void> {
       cascade: a2aCascade,
       log: a2aLog,
     });
+    // An outgoing discovery request ends with the app connection that made it, or with the daemon.
+    a2aDiscoverRef = a2aRemoteRpc.discover;
+    pipeServer.onClientClose((clientId) => a2aRemoteRpc.discover.clientGone(clientId));
     registerSpawnRpc(onA2aRpc, { policy: a2aSpawnPolicy, requests: a2aSpawnRequests, onSaved: (previous) => a2aSpawn.sendTargets(previous) });
     // Starting a conversation this PC received: main makes the worktree and the pane, the daemon places the files.
     registerContinueRpc(onA2aRpc, {

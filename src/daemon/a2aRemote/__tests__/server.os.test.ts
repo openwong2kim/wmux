@@ -1,6 +1,10 @@
+import fs from 'node:fs';
 import type http from 'node:http';
 import https from 'node:https';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import net from 'node:net';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   A2A_REMOTE_BODY_MAX,
   A2A_REMOTE_PROTOCOL,
@@ -19,7 +23,16 @@ import {
   extendBodyDeadline,
   requestBodyMax,
 } from '../server';
-import { disposeAll, makePc, raw, type Pc } from './a2aServerRig';
+import { disposeAll, freePort, makePc, raw, type Pc } from './a2aServerRig';
+import type { TailnetStatus, TailnetWhois } from '../../../cli/tailscale';
+import type { A2aDiscoverRequestCreated } from '../../../shared/a2aRemote';
+import type { DaemonConfig } from '../../types';
+import { A2aRemoteController } from '../controller';
+import { discoverCode, discoverCommit, randomSecret } from '../discoverCode';
+import { DISCOVERY_MARKER_FILE } from '../discovery';
+import { registerA2aRemoteRpc } from '../rpc';
+import { A2aServer } from '../server';
+import type { TailnetCli } from '../tailnet';
 
 const JOINER = '33333333-3333-4333-8333-333333333333';
 
@@ -328,5 +341,435 @@ describe('A2aServer — pairing', () => {
     const begun = pc.server.beginPairing();
     expect(begun.addresses).toEqual(['127.0.0.1', '100.64.0.2', '100.100.0.7']);
     expect(begun.tailnet).toEqual(['100.64.0.2']);
+  });
+});
+
+// ─── Tailnet discovery on the listener ─────────────────────────────────────
+//
+// The rig listens on loopback; `tailnetGate` makes every connection look as if
+// it reached this PC's tailnet address (100.100.1.1) from `gate.remote`, and a
+// fake TailnetCli stands in for `tailscale status` and `whois`.
+
+const SELF_IP = '100.100.1.1';
+const PEER_IP = '100.100.1.2';
+const ASKER_HOST = '22222222-2222-4222-8222-222222222222';
+const FR = Array.from({ length: 32 }, () => 'BB').join(':');
+const gate = { remote: PEER_IP };
+
+function tailnetNode(over: Partial<TailnetStatus['self']>): TailnetStatus['self'] {
+  return { stableId: '', hostName: '', dnsName: '', os: 'linux', userId: 7, ipv4s: [], online: true, tags: [], sharee: false, ...over };
+}
+
+function fakeTailnet(whois: Map<string, TailnetWhois | null>): TailnetCli {
+  const status: TailnetStatus = {
+    backendState: 'Running',
+    version: '1.76.6',
+    self: tailnetNode({ stableId: 'nSELF', ipv4s: [SELF_IP] }),
+    selfLogin: 'me@example.com',
+    peers: [tailnetNode({ stableId: 'nASKER', ipv4s: [PEER_IP] }), tailnetNode({ stableId: 'nOTHER', ipv4s: ['100.100.1.4'] })],
+  };
+  return { status: async () => ({ ok: true, status, bin: 'tailscale' }), whois: async (ip) => whois.get(ip) ?? null };
+}
+
+function whoisOf(ip: string, stableId: string): TailnetWhois {
+  return {
+    nodeName: 'asker.tail1.ts.net',
+    deviceName: 'asker',
+    os: 'macOS',
+    stableId,
+    userId: 7,
+    tags: [],
+    addresses: [`${ip}/32`],
+    allowedIps: [`${ip}/32`],
+    routableIps: [],
+    primaryRoutes: [],
+    loginName: 'me@example.com',
+    displayName: 'Me',
+  };
+}
+
+function defaultWhois(): Map<string, TailnetWhois | null> {
+  return new Map([
+    [SELF_IP, whoisOf(SELF_IP, 'nSELF')],
+    [PEER_IP, whoisOf(PEER_IP, 'nASKER')],
+    ['100.100.1.4', whoisOf('100.100.1.4', 'nOTHER')],
+  ]);
+}
+
+function tailnetDeps(whois = defaultWhois()) {
+  return {
+    tailnet: fakeTailnet(whois),
+    discoverVersion: () => '9.9.9',
+    tailnetGate: {
+      addressesOf: () => ({ local: SELF_IP, remote: gate.remote }),
+      interfaces: () => ({ tailscale0: [{ address: SELF_IP, family: 'IPv4', internal: false } as os.NetworkInterfaceInfo] }),
+      platform: 'linux' as const,
+    },
+  };
+}
+
+/** Status, the headers that matter, and the body as bytes: for byte-for-byte comparisons. */
+function exact(port: number, method: string, pathname: string, headers: Record<string, string> = {}): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const req = https.request({ host: '127.0.0.1', port, method, path: pathname, headers, rejectUnauthorized: false, agent: false }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () =>
+        resolve(
+          JSON.stringify([
+            res.statusCode,
+            res.headers['content-type'],
+            res.headers['content-length'],
+            res.headers['cache-control'],
+            res.headers['retry-after'] ?? null,
+            Buffer.concat(chunks).toString('base64'),
+          ]),
+        ),
+      );
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function askOverHttp(pc: Pc): Promise<{ created: A2aDiscoverRequestCreated; code: string }> {
+  const port = portOf(pc);
+  const nonceR = randomSecret();
+  const body = { protocol: A2A_REMOTE_PROTOCOL, hostId: ASKER_HOST, name: 'Asker', fingerprint256: FR, commit: discoverCommit(nonceR) };
+  const res = await raw(port, 'POST', '/api/a2a/discover/requests', { body: JSON.stringify(body) });
+  expect(res.status).toBe(201);
+  const created = res.json as unknown as A2aDiscoverRequestCreated;
+  const revealed = await raw(port, 'POST', `/api/a2a/discover/requests/${created.requestId}/reveal`, {
+    headers: { 'x-wmux-discover-token': created.token },
+    body: JSON.stringify({ nonce: nonceR }),
+  });
+  expect(revealed.status).toBe(200);
+  const fingerprintS = pc.server.status().fingerprint256 ?? '';
+  return { created, code: discoverCode({ nonceS: created.nonce, nonceR, fingerprintS, fingerprintR: FR, hostIdR: ASKER_HOST }) };
+}
+
+async function grantOf(pc: Pc, created: A2aDiscoverRequestCreated): Promise<string> {
+  const res = await raw(portOf(pc), 'GET', `/api/a2a/discover/requests/${created.requestId}`, { headers: { 'x-wmux-discover-token': created.token } });
+  expect(res.json).toMatchObject({ state: 'allowed' });
+  return res.json!['code'] as string;
+}
+
+describe('A2aServer — tailnet discovery', () => {
+  beforeEach(() => {
+    gate.remote = PEER_IP;
+  });
+
+  const PROBES: Array<[string, string, Record<string, string>]> = [
+    ['GET', '/api/a2a/discover', {}],
+    ['POST', '/api/a2a/discover/requests', {}],
+    ['GET', '/api/a2a/discover/requests/33333333-3333-4333-8333-333333333333', {}],
+    ['GET', '/api/a2a/discover', { Authorization: 'Bearer 0123456789abcdef.c2VjcmV0c2VjcmV0c2VjcmV0' }],
+    ['GET', '/api/a2a/discover?token=abc', {}],
+    ['GET', '/api/a2a/discover?ticket=abc', {}],
+  ];
+
+  /** What the same request gets on a route discovery never answers: today's unauthenticated answer. */
+  async function today(port: number, method: string, p: string, headers: Record<string, string>): Promise<string> {
+    return exact(port, method, p.replace('/api/a2a/discover', '/api/a2a/elsewhere'), headers);
+  }
+
+  it('outside a window, answers every discovery route byte for byte as today (401, or 403 for other credentials)', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    const port = portOf(pc);
+    for (const [method, p, headers] of PROBES) {
+      expect(await exact(port, method, p, headers), `${method} ${p}`).toBe(await today(port, method, p, headers));
+    }
+    expect((await raw(port, 'GET', '/api/a2a/discover')).status).toBe(401);
+  });
+
+  it('inside a window, a source that is not a listed tailnet node gets today’s answer too', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: false });
+    const port = portOf(pc);
+    for (const remote of ['192.168.1.30', SELF_IP, '100.100.9.9']) {
+      gate.remote = remote;
+      for (const [method, p, headers] of PROBES) {
+        expect(await exact(port, method, p, headers), `${remote} ${method} ${p}`).toBe(await today(port, method, p, headers));
+      }
+    }
+  });
+
+  it('answers the probe with exactly four keys inside the window', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    expect(await pc.server.discovery.open({ turnOn: false })).toMatchObject({ ok: true });
+    const res = await raw(portOf(pc), 'GET', '/api/a2a/discover');
+    expect(res.status).toBe(200);
+    expect(res.json).toEqual({ discover: 1, protocol: A2A_REMOTE_PROTOCOL, name: 'PC A', version: '9.9.9' });
+  });
+
+  it('still refuses an Origin header first, inside the window', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: false });
+    const res = await raw(portOf(pc), 'GET', '/api/a2a/discover', { headers: { Origin: 'http://evil.example' } });
+    expect(res.status).toBe(403);
+    expect(res.json).toEqual({ ok: false, error: 'forbidden' });
+  });
+
+  it('refuses a request whose source whois does not identify', async () => {
+    const whois = defaultWhois();
+    whois.set(PEER_IP, null);
+    const pc = await makePc('PC A', { deps: tailnetDeps(whois) });
+    await pc.server.discovery.open({ turnOn: false });
+    const nonceR = randomSecret();
+    const body = { protocol: A2A_REMOTE_PROTOCOL, hostId: ASKER_HOST, name: 'Asker', fingerprint256: FR, commit: discoverCommit(nonceR) };
+    const res = await raw(portOf(pc), 'POST', '/api/a2a/discover/requests', { body: JSON.stringify(body) });
+    expect(res.status).toBe(403);
+    expect(res.json).toMatchObject({ reason: 'unidentified' });
+  });
+
+  it('caps a chunked request body too', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: false });
+    const res = await new Promise<number>((resolve) => {
+      const req = https.request(
+        { host: '127.0.0.1', port: portOf(pc), method: 'POST', path: '/api/a2a/discover/requests', rejectUnauthorized: false, agent: false },
+        (r) => resolve(r.statusCode ?? 0),
+      );
+      req.on('error', () => resolve(-1));
+      req.write('x'.repeat(1500));
+      req.end('x'.repeat(1500));
+    });
+    if (res !== -1) expect(res).toBe(413);
+  });
+
+  it('pairs once on Allow, through /pair, leaving an open invite alone and nothing exposed', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    const invite = pc.server.beginPairing();
+    await pc.server.discovery.open({ turnOn: false });
+    const { created, code } = await askOverHttp(pc);
+    expect(pc.server.discovery.status().incoming).toMatchObject({ code, device: { name: 'asker', ip: PEER_IP } });
+    pc.server.discovery.decide(created.requestId, true);
+    const grant = await grantOf(pc, created);
+
+    const pair = (c: string) => raw(portOf(pc), 'POST', '/api/a2a/pair', { body: pairBody(c, ASKER_HOST) });
+    const first = await pair(grant);
+    expect(first.status).toBe(200);
+    expect(parsePeerCredential(first.json!['credential'])).not.toBeNull();
+    // The open invite is untouched: same deadline, every attempt left.
+    expect(pc.server.pairingStatus()).toMatchObject({ active: true, expiresAt: invite.expiresAt, attemptsLeft: 5 });
+    expect(pc.server.discovery.status()).toMatchObject({ open: false, ended: { reason: 'paired', peer: { hostId: ASKER_HOST, name: 'Joiner' } } });
+    // The code was one-shot: a replay is judged against the invite and refused.
+    const again = await pair(grant);
+    expect(again.status).toBe(403);
+    expect(pc.peers.list().filter((p) => p.hostId === ASKER_HOST)).toHaveLength(1);
+  });
+
+  it('burns the pairing code presented from another source', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: false });
+    const { created } = await askOverHttp(pc);
+    pc.server.discovery.decide(created.requestId, true);
+    const grant = await grantOf(pc, created);
+    gate.remote = '100.100.1.4';
+    const stolen = await raw(portOf(pc), 'POST', '/api/a2a/pair', { body: pairBody(grant, ASKER_HOST) });
+    expect(stolen.status).toBe(403);
+    expect(stolen.json).toMatchObject({ reason: 'invalid-code' });
+    gate.remote = PEER_IP;
+    const late = await raw(portOf(pc), 'POST', '/api/a2a/pair', { body: pairBody(grant, ASKER_HOST) });
+    expect(late.status).toBe(403);
+    expect(pc.peers.list()).toHaveLength(0);
+    expect(pc.server.discovery.status()).toMatchObject({ open: false, ended: { reason: 'failed' } });
+  });
+
+  it('a wrong code on /pair while a code is granted costs the grant nothing', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: false });
+    const { created } = await askOverHttp(pc);
+    pc.server.discovery.decide(created.requestId, true);
+    const grant = await grantOf(pc, created);
+    expect((await raw(portOf(pc), 'POST', '/api/a2a/pair', { body: pairBody('ABCDEFGH', ASKER_HOST) })).status).toBe(403);
+    expect((await raw(portOf(pc), 'POST', '/api/a2a/pair', { body: pairBody(grant, ASKER_HOST) })).status).toBe(200);
+  });
+
+  it('a rebind (port change) closes the window', async () => {
+    const pc = await makePc('PC A', { deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: false });
+    pc.controller.configure({ port: await freePort() });
+    await pc.server.whenIdle();
+    expect(pc.server.discovery.status()).toMatchObject({ open: false, ended: { reason: 'listener-stopped' } });
+    expect((await raw(portOf(pc), 'GET', '/api/a2a/discover')).status).toBe(401);
+  });
+
+  it('a window that turned A2A on turns it off when it ends unpaired', async () => {
+    const pc = await makePc('PC A', { enabled: false, deps: tailnetDeps() });
+    expect(await pc.server.discovery.open({ turnOn: true })).toMatchObject({ ok: true, status: { turnedOn: true } });
+    expect(pc.server.status().listening).toBe(true);
+    pc.server.discovery.close('stopped');
+    await pc.server.whenIdle();
+    expect(pc.controller.current().enabled).toBe(false);
+    expect(pc.server.status().listening).toBe(false);
+  });
+
+  it('a window that cannot bind its port reports the problem and a port that looked free', async () => {
+    const blocker = net.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const port = (blocker.address() as net.AddressInfo).port;
+    try {
+      const pc = await makePc('PC A', { enabled: false, port, deps: tailnetDeps() });
+      const opened = await pc.server.discovery.open({ turnOn: true });
+      expect(opened).toMatchObject({
+        ok: false,
+        reason: 'listen-failed',
+        listen: { lastErrorCode: 'EADDRINUSE', report: { problem: { kind: 'port-in-use', port } } },
+      });
+      const report = opened.ok ? undefined : opened.listen?.report;
+      expect(typeof report?.suggestion).toBe('number');
+      expect(report?.suggestion).not.toBe(port);
+      expect(pc.controller.current().enabled).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  }, 30_000);
+
+  it('a port change during a window that turned A2A on closes it without turning A2A off', async () => {
+    const pc = await makePc('PC A', { enabled: false, deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: true });
+    pc.controller.configure({ port: await freePort() });
+    await pc.server.whenIdle();
+    expect(pc.server.discovery.status()).toMatchObject({ open: false, ended: { reason: 'listener-stopped' } });
+    expect(pc.controller.current().enabled).toBe(true);
+    expect(pc.server.status().listening).toBe(true);
+  });
+
+  it('a settings change from elsewhere during the window means no revert when it ends', async () => {
+    const pc = await makePc('PC A', { enabled: false, deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: true });
+    // A port another listener holds: the move fails and the window's listener keeps serving.
+    const blocker = net.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    try {
+      pc.controller.configure({ port: (blocker.address() as net.AddressInfo).port });
+      await pc.server.whenIdle();
+      expect(pc.server.discovery.status().open).toBe(true);
+      pc.server.discovery.close('stopped');
+      await pc.server.whenIdle();
+      expect(pc.controller.current().enabled).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  });
+
+  it('the discover RPCs: open belongs to the calling connection, close answers the ended status, decide wants a boolean', async () => {
+    const pc = await makePc('PC A', { enabled: false, deps: tailnetDeps() });
+    const handlers = new Map<string, (params: Record<string, unknown>, ctx?: { clientId: string }) => Promise<unknown>>();
+    registerA2aRemoteRpc((method, handler) => handlers.set(method, handler), {
+      controller: pc.controller,
+      server: pc.server,
+      peers: pc.peers,
+      remoteHosts: pc.remoteHosts,
+      cascade: () => undefined,
+      log: () => undefined,
+    });
+    const call = (method: string, params: Record<string, unknown> = {}, ctx?: { clientId: string }) => handlers.get(`a2a.remote.discover.${method}`)!(params, ctx);
+    expect(await call('open', {}, { clientId: 'c1' })).toMatchObject({ ok: false, reason: 'a2a-off' });
+    expect(await call('open', { turnOn: true }, { clientId: 'c1' })).toMatchObject({ ok: true, status: { open: true, turnedOn: true } });
+    await expect(call('decide', { requestId: 'x', allow: 'yes' })).rejects.toThrow(/boolean/);
+    expect(await call('decide', { requestId: 'x', allow: true })).toMatchObject({ ok: false, status: { open: true } });
+    pc.server.discovery.clientGone('c2');
+    expect(await call('status')).toMatchObject({ open: true });
+    pc.server.discovery.clientGone('c1');
+    await pc.server.whenIdle();
+    expect(await call('status')).toMatchObject({ open: false, ended: { reason: 'disconnected' } });
+    expect(pc.controller.current().enabled).toBe(false);
+    await call('open', { turnOn: true }, { clientId: 'c3' });
+    expect(await call('close')).toMatchObject({ open: false, ended: { reason: 'stopped' } });
+    expect(pc.server.status().listening).toBe(false);
+  });
+
+  it('an invite opened during a window that turned A2A on keeps A2A on', async () => {
+    const pc = await makePc('PC A', { enabled: false, deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: true });
+    const invite = pc.server.beginPairing();
+    pc.server.discovery.close('stopped');
+    await pc.server.whenIdle();
+    expect(pc.controller.current().enabled).toBe(true);
+    expect(pc.server.pairingStatus()).toMatchObject({ active: true, expiresAt: invite.expiresAt });
+  });
+
+  it('a request body that trickles in is cut off, and the slot is free again', async () => {
+    const pc = await makePc('PC A', { deps: { ...tailnetDeps(), bodyTimeoutMs: 300 } });
+    await pc.server.discovery.open({ turnOn: false });
+    const cut = await new Promise<string>((resolve) => {
+      const req = https.request(
+        {
+          host: '127.0.0.1',
+          port: portOf(pc),
+          method: 'POST',
+          path: '/api/a2a/discover/requests',
+          headers: { 'Content-Length': '500' },
+          rejectUnauthorized: false,
+          agent: false,
+        },
+        (res) => resolve(`answered ${res.statusCode}`),
+      );
+      req.on('error', () => resolve('cut'));
+      req.write('{"protocol":');
+    });
+    expect(cut).toMatch(/cut|answered 400/);
+    await askOverHttp(pc);
+  });
+
+  it('a daemon restart whose marker cannot turn A2A off does not start the listener', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-marker-'));
+    try {
+      const a2aDir = path.join(dir, 'a2a');
+      fs.mkdirSync(a2aDir, { recursive: true });
+      fs.writeFileSync(path.join(a2aDir, DISCOVERY_MARKER_FILE), '{"v":1}');
+      const config = { a2aRemote: { enabled: true, port: await freePort() } } as unknown as DaemonConfig;
+      const controller = new A2aRemoteController({
+        config,
+        persist: () => {
+          throw new Error('disk full');
+        },
+      });
+      const server = new A2aServer({
+        controller,
+        identityDir: a2aDir,
+        peers: { resolve: async () => ({ ok: false, reason: 'unknown' }), touch: () => undefined, mint: async () => ({ peerId: '', secret: '' }), listByHost: () => [], revoke: () => false },
+        bindHost: '127.0.0.1',
+        log: () => undefined,
+        ...tailnetDeps(),
+      });
+      await server.whenIdle();
+      expect(server.status().listening).toBe(false);
+      // The marker stays for the next boot.
+      expect(fs.existsSync(path.join(a2aDir, DISCOVERY_MARKER_FILE))).toBe(true);
+      server.dispose();
+      await server.whenIdle();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a daemon restart with the marker present starts with A2A off', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-marker-'));
+    try {
+      const a2aDir = path.join(dir, 'a2a');
+      fs.mkdirSync(a2aDir, { recursive: true });
+      fs.writeFileSync(path.join(a2aDir, DISCOVERY_MARKER_FILE), '{"v":1}');
+      const config = { a2aRemote: { enabled: true, port: await freePort() } } as unknown as DaemonConfig;
+      const controller = new A2aRemoteController({ config, persist: () => undefined });
+      const server = new A2aServer({
+        controller,
+        identityDir: a2aDir,
+        peers: { resolve: async () => ({ ok: false, reason: 'unknown' }), touch: () => undefined, mint: async () => ({ peerId: '', secret: '' }), listByHost: () => [], revoke: () => false },
+        bindHost: '127.0.0.1',
+        log: () => undefined,
+        ...tailnetDeps(),
+      });
+      await server.whenIdle();
+      expect(controller.current().enabled).toBe(false);
+      expect(server.status().listening).toBe(false);
+      expect(fs.existsSync(path.join(a2aDir, DISCOVERY_MARKER_FILE))).toBe(false);
+      server.dispose();
+      await server.whenIdle();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -18,6 +18,7 @@ import type {
 } from '../../shared/workspaceMirror';
 import { normalizeRoleBinding } from '../../shared/orchestratorRole';
 import { isShadowWorkspaceId } from '../../shared/pcRail';
+import { paneTag } from '../utils/paneNaming';
 import type { StoreState } from '../stores';
 import { selectFleetPanes, surfaceAttentionStatus, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
 
@@ -355,6 +356,15 @@ export function buildPanePtys(workspaces: Workspace[]): Record<string, string> {
   return out;
 }
 
+/** paneId → auto tag (`#w1-2`) for every pane, stashed panes included (see `paneTags`). */
+export function buildPaneTags(workspaces: Workspace[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const w of workspaces) {
+    for (const leaf of getWorkspaceLeafPanes(w)) out[leaf.id] = paneTag(w, leaf);
+  }
+  return out;
+}
+
 /** Every pane id in the layout, stashed panes included (see `paneIds`). */
 export function buildPaneIds(workspaces: Workspace[]): string[] {
   return workspaces.flatMap((w) => getWorkspaceLeafPanes(w).map((leaf) => leaf.id));
@@ -378,6 +388,7 @@ export function buildWorkspaceMirrorPayload(
     roleBindings: buildRoleBindings(state),
     panePtys: buildPanePtys(state.workspaces),
     paneIds: buildPaneIds(state.workspaces),
+    paneTags: buildPaneTags(state.workspaces),
     sessionRestored: state.sessionRestored === true,
     pinnedIds: [...(state.sidebarPinnedIds ?? [])],
     viewed: buildViewed(state),

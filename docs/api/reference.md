@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **306** methods (`ALL_RPC_METHODS` in
+Total: **315** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -200,6 +200,15 @@ Total: **306** methods (`ALL_RPC_METHODS` in
 | `a2a.remote.hosts.remove` | `wmux.internal` |  |
 | `a2a.remote.peers.list` | `wmux.internal` |  |
 | `a2a.remote.peers.revoke` | `wmux.internal` |  |
+| `a2a.remote.discover.open` | `wmux.internal` |  |
+| `a2a.remote.discover.close` | `wmux.internal` |  |
+| `a2a.remote.discover.status` | `wmux.internal` |  |
+| `a2a.remote.discover.decide` | `wmux.internal` |  |
+| `a2a.remote.discover.scan` | `wmux.internal` |  |
+| `a2a.remote.discover.connect` | `wmux.internal` |  |
+| `a2a.remote.discover.outgoing.status` | `wmux.internal` |  |
+| `a2a.remote.discover.outgoing.cancel` | `wmux.internal` |  |
+| `a2a.remote.discover.outgoing.confirm` | `wmux.internal` |  |
 | `a2a.remote.exposure.publish` | `wmux.internal` |  |
 | `a2a.remote.exposure.get` | `wmux.internal` |  |
 | `a2a.remote.exposure.list` | `wmux.internal` |  |
