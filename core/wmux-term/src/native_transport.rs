@@ -21,6 +21,8 @@ use std::sync::{
     mpsc::{sync_channel, Receiver, TryRecvError},
     Arc, Condvar, Mutex,
 };
+#[cfg(unix)]
+use std::time::{Duration, Instant};
 
 /// The JS wake callback. Every worker shares one single-slot queue, so the
 /// gate allows one queued call at a time; see `wake_gate` for why no wake
@@ -45,6 +47,21 @@ impl Wake {
     }
 }
 const INPUT_LIMIT: usize = 8 * 1024 * 1024;
+/// How long a closed pane's processes have between the hangup (the caller's
+/// SIGHUP, then the master's close) and the SIGKILL of whatever is still in
+/// the pane's session. The same 5 s AGENT_STOP_GRACE_MS (src/daemon/agentStop.ts)
+/// gives an agent to close its MCP servers and exit before it is killed: time
+/// to save a transcript and release locks. The threads that keep it die with
+/// the process, so a daemon that exits sooner leaves the rest to the hangup,
+/// as node-pty always does and as #2398 decided for a clean exit.
+#[cfg(unix)]
+const HANGUP_GRACE: Duration = Duration::from_secs(5);
+/// node-pty's DESTROY_SOCKET_TIMEOUT_MS: once the shell has exited, how long
+/// the output may stay open before the exit is reported without its end. A
+/// background job left holding the terminal keeps it open for good on Linux.
+/// One budget waits for the end; a second bounds a job that never stops writing.
+#[cfg(unix)]
+const EXIT_OUTPUT_GRACE: Duration = Duration::from_millis(200);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
 struct Worker;
 impl Worker {
@@ -81,6 +98,14 @@ struct State {
     closed: AtomicBool,
     #[cfg(unix)]
     cancel: Mutex<Option<UnixStream>>,
+    /// When close() found the child unreaped: the session sweep's deadline.
+    #[cfg(unix)]
+    sweep_at: Mutex<Option<Instant>>,
+    /// The reader stops once no output is pending, without reporting an error.
+    #[cfg(unix)]
+    stop_reading: AtomicBool,
+    #[cfg(unix)]
+    reader_done: AtomicBool,
 }
 impl State {
     fn fail(&self, message: String, wake: &Wake) {
@@ -204,6 +229,12 @@ impl NativeTransport {
             closed: AtomicBool::new(false),
             #[cfg(unix)]
             cancel: Mutex::new(Some(cancel)),
+            #[cfg(unix)]
+            sweep_at: Mutex::new(None),
+            #[cfg(unix)]
+            stop_reading: AtomicBool::new(false),
+            #[cfg(unix)]
+            reader_done: AtomicBool::new(false),
         });
         let (tx, rx) = sync_channel::<Vec<u8>>(16);
         let mut result = Self {
@@ -225,6 +256,8 @@ impl NativeTransport {
             .spawn(move || {
                 let _worker = Worker::enter();
                 let mut bytes = [0; 16 * 1024];
+                #[cfg(unix)]
+                let mut stop_by: Option<Instant> = None;
                 loop {
                     #[cfg(unix)]
                     if reader_state.closed.load(Ordering::Acquire) {
@@ -248,14 +281,33 @@ impl NativeTransport {
                                 break;
                             }
                             reader_wake.notify();
+                            // Output that never pauses would never reach the
+                            // check below: end it at a deadline instead.
+                            #[cfg(unix)]
+                            if reader_state.stop_reading.load(Ordering::Acquire)
+                                && Instant::now()
+                                    >= *stop_by
+                                        .get_or_insert_with(|| Instant::now() + EXIT_OUTPUT_GRACE)
+                            {
+                                break;
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         #[cfg(unix)]
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            // Nothing is pending: an exited shell's output ends here.
+                            if reader_state.stop_reading.load(Ordering::Acquire) {
+                                break;
+                            }
                             if let Err(e) = reader_io.wait(libc::POLLIN, -1) {
-                                if !reader_state.closed.load(Ordering::Acquire) {
-                                    reader_state.fail(e.to_string(), &reader_wake);
+                                if reader_state.closed.load(Ordering::Acquire) {
+                                    break;
                                 }
+                                // Stopped while waiting: read what is pending first.
+                                if reader_state.stop_reading.load(Ordering::Acquire) {
+                                    continue;
+                                }
+                                reader_state.fail(e.to_string(), &reader_wake);
                                 break;
                             }
                         }
@@ -268,6 +320,8 @@ impl NativeTransport {
                     }
                 }
                 drop(tx);
+                #[cfg(unix)]
+                reader_state.reader_done.store(true, Ordering::Release);
                 reader_wake.notify();
             });
         if let Err(e) = reader_start {
@@ -344,16 +398,34 @@ impl NativeTransport {
                 // Keep the exited Unix child unreaped until signal delivery is
                 // excluded. Otherwise its PID can be reused before exited is set.
                 #[cfg(unix)]
-                let observed = observe_exit(child.process_id().unwrap() as i32);
+                let pid = child.process_id().unwrap() as i32;
                 #[cfg(unix)]
-                let mut exit_guard = waiter_state
-                    .exited
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
+                let observed = observe_exit(pid);
+                // The shell's own exit signals nothing, as with node-pty: what it
+                // left gets the terminal's hangup. Only a session whose pane was
+                // closed first is swept, at the deadline, while the unreaped root
+                // still pins its session id.
                 #[cfg(unix)]
-                if observed.is_ok() {
-                    signal_session(child.process_id().unwrap() as i32, libc::SIGKILL);
-                }
+                let mut exit_guard = loop {
+                    let guard = waiter_state
+                        .exited
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let sweep_at = waiter_state
+                        .sweep_at
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .take();
+                    match sweep_at {
+                        Some(at) if observed.is_ok() => {
+                            // Unlocked, so kill() never waits out the grace.
+                            drop(guard);
+                            std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                            signal_session(pid, libc::SIGKILL);
+                        }
+                        _ => break guard,
+                    }
+                };
                 let status = child.wait();
                 #[cfg(windows)]
                 let mut exit_guard = waiter_state
@@ -391,6 +463,27 @@ impl NativeTransport {
                 drop(input);
                 waiter_state.ready.notify_all();
                 wake.notify();
+                // A background job can hold the terminal past the shell's exit;
+                // like node-pty, end the output once nothing is pending, or at
+                // the reader's deadline when the job never stops writing.
+                #[cfg(unix)]
+                {
+                    let until = Instant::now() + EXIT_OUTPUT_GRACE;
+                    while !waiter_state.reader_done.load(Ordering::Acquire)
+                        && Instant::now() < until
+                    {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    if !waiter_state.reader_done.load(Ordering::Acquire) {
+                        waiter_state.stop_reading.store(true, Ordering::Release);
+                        // Wakes a reader waiting on the terminal.
+                        waiter_state
+                            .cancel
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .take();
+                    }
+                }
             });
         if let Err(e) = wait_start {
             result.close();
@@ -565,10 +658,13 @@ impl NativeTransport {
                 .unwrap_or_else(|p| p.into_inner())
                 .take();
         }
+        // Dropping the master hangs the terminal up (SIGHUP to the shell), after
+        // the caller's own kill() as a rule. Both need time to be acted on:
+        // whatever still runs in the session is killed only at the deadline.
         #[cfg(unix)]
-        {
-            let _ = self.kill(Some(libc::SIGKILL as u32));
-        }
+        let sweep_at = self.arm_sweep();
+        #[cfg(unix)]
+        let (state, pid) = (self.state.clone(), self.pid as i32);
         #[cfg(windows)]
         let killer = self.killer.take();
         let master = self.master.take();
@@ -589,10 +685,37 @@ impl NativeTransport {
                 }
             }
             drop(master);
+            // A root that ignored the hangup dies now, and the waiter then sweeps
+            // its session. Unreaped: the waiter reaps only under this lock.
+            #[cfg(unix)]
+            if let Some(at) = sweep_at {
+                std::thread::sleep(at.saturating_duration_since(Instant::now()));
+                let exited = state.exited.lock().unwrap_or_else(|p| p.into_inner());
+                if exited.is_none() {
+                    unsafe {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
+                }
+            }
         });
     }
 }
 impl NativeTransport {
+    /// Sets the session sweep's deadline when the child is still unreaped.
+    #[cfg(unix)]
+    fn arm_sweep(&self) -> Option<Instant> {
+        let exited = self.state.exited.lock().unwrap_or_else(|p| p.into_inner());
+        if exited.is_some() || self.pid == 0 {
+            return None;
+        }
+        let at = Instant::now() + HANGUP_GRACE;
+        *self
+            .state
+            .sweep_at
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = Some(at);
+        Some(at)
+    }
     fn drain(&mut self, paused: Option<bool>) -> RawTransportRead {
         let mut bytes = Vec::new();
         if let Some(rx) = &self.receiver {
@@ -728,6 +851,11 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
 /// portable-pty creates a fresh Unix session. Only processes still in that
 /// owned session are terminated; detached services with a new SID are separate.
 /// The root PID is not reaped until this scan finishes, so its SID cannot be reused.
+/// It runs for an explicit SIGKILL, and HANGUP_GRACE after a pane is closed
+/// while its shell is unreaped. It never runs on the shell's own exit, nor for a
+/// pane closed after the shell has exited and been reaped: once reaped, the
+/// session id may name another session, so what the shell left behind gets
+/// only the terminal's hangup there, as it does with node-pty.
 #[cfg(unix)]
 fn signal_session(session: i32, signal: i32) {
     if session <= 0 {
