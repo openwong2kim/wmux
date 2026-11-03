@@ -55,7 +55,9 @@ defaults; the frame, sheet, type, dialog and icon rules below apply to every
 theme.
 Geist, IBM Plex Sans and Figtree are bundled (`src/renderer/assets/fonts`,
 SIL OFL 1.1, listed in `THIRD_PARTY_NOTICES`) so a look never falls back to
-another face.
+another face. Pretendard is bundled too, Hangul only (a subset renamed
+`wmux Hangul`, as its Reserved Font Name requires), after each look's Latin
+face so Korean text keeps the look's size and weight.
 
 **Colour tokens** (one set per theme, `UI_THEME_TOKENS`):
 
@@ -2527,6 +2529,7 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-02 | This folder's company in the app (owner decision 2026-11-02, insight 170, mockup option A): the + menu lists the active workspace's folder company first under Company; a pick opens its review while it waits for one, else the New company dialog filled from it, and the menu never makes it. The New company dialog saves its company to the folder's wmux.json from a quiet footer text button through an inline confirm, and stays open. The review shows each seat with its agent, what wmux starts and where it works, the mission and standing orders verbatim and, for a file not trusted here, the rest of it; **Approve and make company** is its one primary and makes the company only from the bytes it showed | A folder's company is made where the other companies are made, beside the presets. Reviewing it on its first start, from the copy of the file the approval covers, means every agent's first message is read on this PC before that agent runs. Option B, the company inside the wmux.json dialog, kept it away from the + menu where a company is made |
 | 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
 | 2026-11-03 | Owner-approved (agent marker mockup): agent identity colours, the second exception to "colour carries state only". While agents drive other apps, each one's halo, name pill and pointer on screen wear its own colour from a ten-fill palette (slot 0 the attention orange, red left out, dark ink ≥ 4.5:1 on every fill), and that pane carries the same colour as an 8px filled dot before its tab title and before its workspace's name on the sidebar row (at most three, then "+N"), once it has used computer use. The palette is used for nothing else | With several agents on one desktop, a marker on screen has to say which pane it belongs to at a glance; a name pill alone needs reading. One colour per agent, kept until wmux quits, makes the marker and the pane one thing. Red stays the error colour, and confining the palette to markers and their dots keeps every other colour a state |
+| 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
 
 ### Desktop conversation view
 

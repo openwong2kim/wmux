@@ -499,7 +499,7 @@ export interface ThemeStyle {
   sheetEdge?: string;
 }
 
-const GEIST = "'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif";
+const GEIST = "'Geist', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif";
 
 export const THEME_STYLES: Partial<Record<BuiltinThemeId, ThemeStyle>> = {
   tint: {
@@ -515,14 +515,14 @@ export const THEME_STYLES: Partial<Record<BuiltinThemeId, ThemeStyle>> = {
     frame: '#000000', sheetEdge: '#27272A',
   },
   graphite: {
-    uiFont: "'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 999,
+    uiFont: "'IBM Plex Sans', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 999,
     selection: 'fill', selectionFill: '#1B2433',
     groupLabel: { uppercase: true, tracking: '0.06em' }, tabIndicator: 'underline', glass: true,
     stroke: '#1D1F24', primary: { fill: '#4C8DFF', ink: '#FFFFFF' }, titleWeight: 500,
     frame: '#060708', sheetEdge: '#23262C',
   },
   paper: {
-    uiFont: "'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 7,
+    uiFont: "'Figtree', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif", chipRadius: 7,
     selection: 'fill', selectionFill: '#E4E4EA',
     groupLabel: { uppercase: false, tracking: 'normal' }, tabIndicator: 'fill', glass: true,
     stroke: '#E6E6EA', primary: { fill: '#17171C', ink: '#FFFFFF' }, titleWeight: 500,
