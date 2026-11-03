@@ -330,11 +330,12 @@ for (const f of BUNDLED_FONTS) {
 // with .NET NativeAOT, so the .NET runtime libraries are compiled into the exe,
 // and so is the Win32 interop code CsWin32 generates from the Win32 metadata.
 // None of them is an npm package, so their upstream license files are committed
-// beside the font licenses and reproduced verbatim. A missing file throws rather
-// than leaving a hollow entry. When release.yml's `dotnet-version: 10.0.x` or
+// in native/computer-use-windows/licenses and reproduced verbatim. A missing
+// file throws rather than leaving a hollow entry. When release.yml's `dotnet-version: 10.0.x` or
 // the CsWin32 version in the helper's csproj moves, refetch these files at the
 // new tag. v10.0.14 is the runtime of SDK 10.0.403, which 10.0.x resolved to on
 // 2026-11-03; v71.0.14-preview is the Win32 metadata CsWin32 0.3.335 depends on.
+const HELPER_LICENSES_DIR = join(ROOT, 'native/computer-use-windows/licenses');
 const HELPER_COMPONENTS = [
   {
     name: '.NET Runtime',
@@ -380,12 +381,11 @@ for (const c of HELPER_COMPONENTS) {
   lines.push('');
   lines.push(c.what);
   lines.push('');
-  lines.push(lf(readFileSync(join(FONTS_DIR, c.licenseFile), 'utf8')).trimEnd());
+  lines.push(lf(readFileSync(join(HELPER_LICENSES_DIR, c.licenseFile), 'utf8')).trimEnd());
   if (c.noticesFile) {
     lines.push('');
-    lines.push('--- ATTRIBUTION NOTICES (preserved per Apache 2.0 §4(d) or equivalent) ---');
-    lines.push('--- THIRD-PARTY-NOTICES.TXT ---');
-    lines.push(lf(readFileSync(join(FONTS_DIR, c.noticesFile), 'utf8')).trimEnd());
+    lines.push(`--- ${c.name} THIRD-PARTY-NOTICES.TXT ---`);
+    lines.push(lf(readFileSync(join(HELPER_LICENSES_DIR, c.noticesFile), 'utf8')).trimEnd());
   }
   lines.push('');
   lines.push(SEP);
