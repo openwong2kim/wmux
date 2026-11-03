@@ -88,6 +88,12 @@ export function createSnapshotRunner(
         stateWriter.ensureBufferDir();
         let dumped = 0; let skipped = 0; let forced = 0;
         for (const m of live) {
+          // Re-check before each dump: the dumps run one after another, so a
+          // session listed above may since have died, been unlinked for a
+          // supervised restart (its ring kept for the restart), or been
+          // closed. Writing its ring then would bring back a buffer file the
+          // close path deleted.
+          if (sessionManager.getSession(m.meta.id) !== m || m.meta.state === 'dead') continue;
           const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
           const ring = m.ringBuffer as unknown as object & { totalBytesWritten: number; dumpToFile: (p: string) => Promise<void> };
           // Capture BEFORE dumpToFile — see the TOCTOU note above.

@@ -283,6 +283,28 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     expect(aliveDumpSpy).toHaveBeenCalledTimes(1);
     expect(deadDumpSpy).not.toHaveBeenCalled();
   });
+
+  it('skips a session that died and was unlinked for a restart while earlier dumps ran', async () => {
+    manager.createSession({ id: 'first', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    manager.createSession({ id: 'second', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    const first = manager.getSession('first')!;
+    const second = manager.getSession('second')!;
+    second.ringBuffer.write(Buffer.from('scrollback of a pane about to close'));
+    const dumpFirst = first.ringBuffer.dumpToFile.bind(first.ringBuffer);
+    // While the first dump runs, the second pane dies and its restart unlinks it.
+    vi.spyOn(first.ringBuffer, 'dumpToFile').mockImplementation(async (p: string) => {
+      second.meta.state = 'dead';
+      manager.removeTombstone('second');
+      await dumpFirst(p);
+    });
+    const secondDumpSpy = vi.spyOn(second.ringBuffer, 'dumpToFile');
+
+    await runSnapshotOnce();
+
+    expect(secondDumpSpy).not.toHaveBeenCalled();
+    expect(fs.existsSync(writer.getBufferDumpPath('second'))).toBe(false);
+    expect(fs.existsSync(writer.getBufferDumpPath('first'))).toBe(true);
+  });
 });
 
 // ── app-weight P1-5: dirty-only dumps ──────────────────────────────────────
