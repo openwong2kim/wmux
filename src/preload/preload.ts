@@ -88,6 +88,7 @@ import { isFileDrag } from '../shared/dragDrop';
 import { parseWindowsBuildNumber } from '../shared/platform';
 import type { NotificationCategory, StallPrefillResult } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
+import type { AgentMarkerEntry } from '../shared/computer/agentMarker';
 import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
 import type { PaneUsageLimit, PaneUsageLimitPatch, PaneUsageWindow } from '../shared/usageLimit';
@@ -643,6 +644,13 @@ const electronAPI = {
     // macOS: Request access, Reset access, Show helper in Finder.
     permissions: (op: 'request' | 'reset' | 'reveal') =>
       ipcRenderer.invoke(IPC.COMPUTER_USE_PERMISSIONS, { op }) as Promise<ComputerUseSettingsPayload>,
+    // Each pane's computer-use marker colour (shared/computer/agentMarker.ts).
+    agentMarkers: () => ipcRenderer.invoke(IPC.COMPUTER_AGENT_MARKERS) as Promise<AgentMarkerEntry[]>,
+    onAgentMarkers: (callback: (entries: AgentMarkerEntry[]) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, entries: AgentMarkerEntry[]) => callback(entries);
+      ipcRenderer.on(IPC.COMPUTER_AGENT_MARKERS, listener);
+      return () => { ipcRenderer.removeListener(IPC.COMPUTER_AGENT_MARKERS, listener); };
+    },
   },
   quickLaunch: {
     settingsGet: () => ipcRenderer.invoke(IPC.QUICK_LAUNCH_SETTINGS_GET) as Promise<QuickLaunchSettingsPayload>,
