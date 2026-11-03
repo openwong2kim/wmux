@@ -626,7 +626,7 @@ describe('a connection over the tailnet fails fast', () => {
   });
 });
 
-describe('the Tailscale tab, receiving side', () => {
+describe('the Tailscale tab', () => {
   const DEVICE = { name: 'MacBook-Pro', dnsName: 'macbook-pro.tail1.ts.net', login: 'open.wong2kim@gmail.com', os: 'macOS', ip: '100.88.12.4' };
   const READY = {
     ok: true, peersOnline: 2,
@@ -640,7 +640,7 @@ describe('the Tailscale tab, receiving side', () => {
     open: true, expiresAt: Date.now() + 300_000, name: 'DESKTOP-KRO4QJQ', turnedOn: false, incoming: null, lastOutcome: null, ended: null, ...extra,
   });
   const card = (state: 'deciding' | 'allowed') => ({ requestId: 'r1', state, device: DEVICE, code: '482913', expiresAt: Date.now() + 120_000 });
-  const DISCOVER = ['discoverOpen', 'discoverClose', 'discoverStatus', 'discoverDecide', 'discoverScan', 'discoverConnect', 'discoverOutgoingStatus', 'discoverOutgoingCancel'];
+  const DISCOVER = ['discoverOpen', 'discoverClose', 'discoverStatus', 'discoverDecide', 'discoverScan', 'discoverConnect', 'discoverOutgoingStatus', 'discoverOutgoingCancel', 'discoverOutgoingConfirm'];
   let web: Record<string, ReturnType<typeof vi.fn>>;
 
   function stubTailnet(check: unknown, enabled = true) {
@@ -653,7 +653,8 @@ describe('the Tailscale tab, receiving side', () => {
       discoverScan: vi.fn(),
       discoverConnect: vi.fn(),
       discoverOutgoingStatus: vi.fn(),
-      discoverOutgoingCancel: vi.fn(),
+      discoverOutgoingCancel: vi.fn(async () => ({ state: 'cancelled', sessionId: null, pc: null, code: null, expiresAt: null })),
+      discoverOutgoingConfirm: vi.fn(async () => ({ state: 'joining', sessionId: 's1', pc: null, code: '482913', expiresAt: null })),
     });
     web = { status: vi.fn(async () => ({ running: false })), tailscaleCheck: vi.fn(async () => check), tailscaleOpen: vi.fn(async () => ({ ok: true, opened: 'app' })) };
     vi.stubGlobal('electronAPI', { a2aRemote: a2a, remote, web });
@@ -870,5 +871,217 @@ describe('the Tailscale tab, receiving side', () => {
     expect(document.querySelector('[data-listen-use-port="45670"]')).not.toBeNull();
     // The refusal said it all: the daemon is not asked again.
     expect(listenProblem).not.toHaveBeenCalled();
+  });
+
+  const PC = (extra: Record<string, unknown> = {}) => ({
+    ip: '100.101.12.4', device: 'DESKTOP-KRO4QJQ', dnsName: 'desktop-kro4qjq.tail1.ts.net', os: 'windows', login: 'open.wong2kim@gmail.com',
+    name: 'DESKTOP-KRO4QJQ', version: '4.14.0', state: 'ready', alreadyConnected: false, ...extra,
+  });
+  const SCAN = { ok: true, pcs: [PC()], checked: 5, skipped: { offline: 2, mobile: 1, otherUser: 0, unsupported: 0, overCap: 0 } };
+  const waiting = () => ({ state: 'waiting', sessionId: 's1', pc: PC(), code: '482913', expiresAt: Date.now() + 120_000 });
+  async function findPcs() {
+    await act(async () => { q<HTMLButtonElement>('discover-find')!.click(); });
+    await flush();
+  }
+  async function connectFirst() {
+    a2a.discoverConnect.mockResolvedValue({ ok: true, sessionId: 's1', code: '482913', expiresAt: Date.now() + 120_000 });
+    a2a.discoverOutgoingStatus.mockResolvedValue(waiting());
+    await act(async () => { q<HTMLButtonElement>('discover-connect')!.click(); });
+    await flush();
+  }
+
+  it('Find PCs scans (nothing scans on show), lists the PCs, re-scans every 5 s for 2 minutes, then offers Search again', async () => {
+    stubTailnet(READY);
+    a2a.discoverScan.mockResolvedValue(SCAN);
+    await render();
+    await tick(5_000);
+    expect(a2a.discoverScan).not.toHaveBeenCalled();
+    expect(q('discover-find')?.className).toContain('ui-btn-primary');
+    await findPcs();
+    expect(a2a.discoverScan).toHaveBeenCalledTimes(1);
+    expect(document.querySelector('[data-discover-pc="100.101.12.4"]')?.textContent).toMatch(/DESKTOP-KRO4QJQ.*Windows · wmux 4\.14\.0/);
+    expect(q('discover-searching')?.textContent).toBe('Searching · 5 online devices');
+    expect(q('discover-offline')?.textContent).toBe('2 offline devices were not checked.');
+    await tick(5_000);
+    expect(a2a.discoverScan).toHaveBeenCalledTimes(2);
+    // 115 s after Find PCs: still re-scanning.
+    for (let i = 0; i < 22; i++) await tick(5_000);
+    expect(q('discover-search-again')).toBeNull();
+    // The 2-minute mark itself, not the next 5 s tick.
+    await tick(5_000);
+    const scans = a2a.discoverScan.mock.calls.length;
+    expect(scans).toBeGreaterThanOrEqual(20);
+    expect(scans).toBeLessThanOrEqual(25);
+    expect(q('discover-search-again')).not.toBeNull();
+    await tick(30_000);
+    expect(a2a.discoverScan.mock.calls.length).toBe(scans);
+    expect(discoverCalls()).toEqual(['discoverScan']);
+  });
+
+  it('Connect sends only the scanned address; the dialog shows only that PC and the code until it is withdrawn with Cancel', async () => {
+    stubTailnet(READY);
+    a2a.discoverScan.mockResolvedValue(SCAN);
+    await render();
+    await findPcs();
+    await connectFirst();
+    expect(a2a.discoverConnect).toHaveBeenCalledWith({ ip: '100.101.12.4' });
+    expect(document.querySelector('.ui-dialog-title')?.textContent).toBe('Connect to DESKTOP-KRO4QJQ');
+    expect(document.querySelector('.ui-dialog-description')?.textContent).toBe('Windows · your tailnet');
+    expect(q('remote-connect-tabs')).toBeNull();
+    expect(q('discover-code')?.textContent).toBe('482 913');
+    expect(q('discover-waiting')?.textContent).toMatch(/Waiting for DESKTOP-KRO4QJQ to allow · [12]:\d\d/);
+    // No re-scan while the request is out; its state is read once a second.
+    const scans = a2a.discoverScan.mock.calls.length;
+    await tick(5_000);
+    expect(a2a.discoverScan.mock.calls.length).toBe(scans);
+    expect(a2a.discoverOutgoingStatus.mock.calls.length).toBeGreaterThanOrEqual(4);
+
+    a2a.discoverOutgoingStatus.mockResolvedValue({ state: 'cancelled', sessionId: 's1', pc: PC(), code: null, expiresAt: null });
+    await act(async () => { q<HTMLButtonElement>('discover-cancel')!.click(); });
+    await flush();
+    expect(a2a.discoverOutgoingCancel).toHaveBeenCalledTimes(1);
+    expect(q('remote-connect-tabs')).not.toBeNull();
+    expect(document.querySelector('.ui-dialog-title')?.textContent).toBe('Connect a PC');
+    expect(document.querySelector('[data-discover-pc="100.101.12.4"]')).not.toBeNull();
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(a2a.discoverOutgoingCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('closing the dialog while a request waits withdraws it', async () => {
+    stubTailnet(READY);
+    a2a.discoverScan.mockResolvedValue(SCAN);
+    await render();
+    await findPcs();
+    await connectFirst();
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(a2a.discoverOutgoingCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('allowed and joined: says so and offers Link a pane now; a denial keeps the list to ask again', async () => {
+    stubTailnet(READY);
+    a2a.discoverScan.mockResolvedValue(SCAN);
+    await render();
+    await findPcs();
+    await connectFirst();
+    a2a.discoverOutgoingStatus.mockResolvedValue({ ...waiting(), state: 'denied' });
+    await tick();
+    expect(q('discover-request-line')?.textContent).toBe('DESKTOP-KRO4QJQ denied the request.');
+    expect(q('remote-connect-tabs')).not.toBeNull();
+    expect(q('discover-connect')).not.toBeNull();
+
+    await connectFirst();
+    const host = { v: 1, hostId: HOST, name: 'DESKTOP-KRO4QJQ', addresses: ['100.101.12.4'], port: 45660, fingerprint256: 'AA', peerId: 'p', createdAt: '' };
+    a2a.discoverOutgoingStatus.mockResolvedValue({ ...waiting(), state: 'joined', host });
+    await tick();
+    expect(q('discover-request-line')?.textContent).toBe('Paired with DESKTOP-KRO4QJQ.');
+    act(() => q<HTMLButtonElement>('remote-connect-link-pane')!.click());
+    expect(onLinkPane).toHaveBeenCalledWith(HOST);
+    // Joined is over: closing withdraws nothing.
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(a2a.discoverOutgoingCancel).not.toHaveBeenCalled();
+  });
+
+  it('after the other PC allows, nothing pairs until this PC confirms the codes match', async () => {
+    stubTailnet(READY);
+    a2a.discoverScan.mockResolvedValue(SCAN);
+    await render();
+    await findPcs();
+    await connectFirst();
+    a2a.discoverOutgoingStatus.mockResolvedValue({ ...waiting(), state: 'confirm', expiresAt: Date.now() + 60_000 });
+    await tick();
+    expect(q('discover-code')?.textContent).toBe('482 913');
+    expect(q('discover-waiting')?.textContent).toMatch(/^DESKTOP-KRO4QJQ allowed\. If the codes match, connect · (1:00|0:5\d)$/);
+    await tick(5_000);
+    expect(a2a.discoverOutgoingConfirm).not.toHaveBeenCalled();
+    await act(async () => { q<HTMLButtonElement>('discover-confirm')!.click(); });
+    await flush();
+    expect(a2a.discoverOutgoingConfirm).toHaveBeenCalledTimes(1);
+    expect(a2a.discoverOutgoingConfirm).toHaveBeenCalledWith();
+    expect(q('discover-cancel')?.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('an allowance left unconfirmed reads as timed out, whether it ends expired or gone', async () => {
+    for (const end of ['expired', 'gone']) {
+      stubTailnet(READY);
+      a2a.discoverScan.mockResolvedValue(SCAN);
+      await render();
+      await findPcs();
+      await connectFirst();
+      a2a.discoverOutgoingStatus.mockResolvedValue({ ...waiting(), state: 'confirm' });
+      await tick();
+      a2a.discoverOutgoingStatus.mockResolvedValue({ ...waiting(), state: end });
+      await tick();
+      expect(q('discover-request-line')?.textContent).toBe('DESKTOP-KRO4QJQ did not answer in time.');
+      act(() => root.unmount());
+      root = createRoot(container);
+    }
+  });
+
+  it('the request poll stops on every state that ends it', async () => {
+    const host = { v: 1, hostId: HOST, name: 'DESKTOP-KRO4QJQ', addresses: [], port: 45660, fingerprint256: 'AA', peerId: 'p', createdAt: '' };
+    for (const end of [{ state: 'denied' }, { state: 'expired' }, { state: 'gone' }, { state: 'failed', error: 'timeout' }, { state: 'joined', host }, { state: 'cancelled' }]) {
+      stubTailnet(READY);
+      a2a.discoverScan.mockResolvedValue(SCAN);
+      await render();
+      await findPcs();
+      await connectFirst();
+      a2a.discoverOutgoingStatus.mockResolvedValue({ ...waiting(), ...end });
+      await tick();
+      const reads = a2a.discoverOutgoingStatus.mock.calls.length;
+      await tick(5_000);
+      expect(a2a.discoverOutgoingStatus.mock.calls.length, end.state).toBe(reads);
+      act(() => root.unmount());
+      root = createRoot(container);
+    }
+  });
+
+  it('a connect that answers after Cancel, or after the dialog closed, is withdrawn', async () => {
+    for (const how of ['cancel', 'close'] as const) {
+      stubTailnet(READY);
+      a2a.discoverScan.mockResolvedValue(SCAN);
+      let answer!: (v: unknown) => void;
+      a2a.discoverConnect.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+      await render();
+      await findPcs();
+      await act(async () => { q<HTMLButtonElement>('discover-connect')!.click(); });
+      if (how === 'cancel') {
+        await act(async () => { q<HTMLButtonElement>('discover-cancel')!.click(); });
+        await flush();
+      } else {
+        act(() => root.unmount());
+        root = createRoot(container);
+      }
+      const before = a2a.discoverOutgoingCancel.mock.calls.length;
+      await act(async () => { answer({ ok: true, sessionId: 's1', code: '482913', expiresAt: Date.now() + 120_000 }); });
+      await flush();
+      expect(a2a.discoverOutgoingCancel.mock.calls.length, how).toBe(before + 1);
+      if (how === 'cancel') {
+        expect(q('discover-code')).toBeNull();
+        act(() => root.unmount());
+        root = createRoot(container);
+      }
+    }
+  });
+
+  it('a timed re-scan that fails keeps the list and stops quietly; only Find PCs says it failed', async () => {
+    stubTailnet(READY);
+    a2a.discoverScan.mockResolvedValueOnce(SCAN);
+    await render();
+    await findPcs();
+    a2a.discoverScan.mockRejectedValueOnce(new Error('timeout'));
+    await tick(5_000);
+    expect(q('discover-failed')).toBeNull();
+    expect(document.querySelector('[data-discover-pc="100.101.12.4"]')).not.toBeNull();
+    expect(q('discover-search-again')).not.toBeNull();
+    const scans = a2a.discoverScan.mock.calls.length;
+    await tick(15_000);
+    expect(a2a.discoverScan.mock.calls.length).toBe(scans);
+    a2a.discoverScan.mockRejectedValueOnce(new Error('timeout'));
+    await act(async () => { q<HTMLButtonElement>('discover-search-again')!.click(); });
+    await flush();
+    expect(q('discover-failed')).not.toBeNull();
   });
 });
