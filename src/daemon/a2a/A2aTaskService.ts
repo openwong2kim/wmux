@@ -143,8 +143,8 @@ export interface PaneAddr {
 export interface CreateTaskInput {
   id?: string;
   title: string;
-  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
-  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
+  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string; displayName?: string };
+  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string; displayName?: string };
   history?: Message[];
   artifacts?: Artifact[];
   /** Cross-host A2A: stored as `metadata.remote` (and replayed with the task). */

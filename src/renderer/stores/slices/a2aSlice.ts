@@ -114,8 +114,8 @@ export interface A2aSlice {
     // pins the receiver pane (Part A); `from` pins the sender pane (S-C2) so a
     // reply can return to the exact originating pane and history role is computed
     // per-pane. Both optional — a ws-only side keeps the prior behavior.
-    from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
-    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
+    from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; displayName?: string };
+    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string; displayName?: string };
     history: Message[];
     artifacts: Artifact[];
     /** Cross-host A2A: stored as `metadata.remote` (main's bridge only). */

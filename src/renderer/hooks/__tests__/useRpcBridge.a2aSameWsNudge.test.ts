@@ -17,7 +17,7 @@ const PTY_A = 'pty-1573-a';
 const PTY_B = 'pty-1573-b';
 
 function leaf(id: string, ptyId: string): PaneLeaf {
-  const surface = { id: `surf-${id}`, ptyId, title: id, shell: '', cwd: '', surfaceType: 'terminal' } as Surface;
+  const surface = { id: `surf-${id}`, ptyId, title: 'Claude Code', shell: '', cwd: '', surfaceType: 'terminal' } as Surface;
   return { id, type: 'leaf', surfaces: [surface], activeSurfaceId: surface.id };
 }
 
@@ -86,6 +86,15 @@ describe('same-workspace pane-to-pane A2A nudges (#1573)', () => {
     expect(writesTo(PTY_B)).toContain(`[wmux] new A2A task ${sent.taskId!.slice(5, 13)} from Shared.w0-0(claude) — title: "review the login fix" — a2a_task_query task_id:${sent.taskId}`);
     expect(writesTo(PTY_B)).not.toContain('please review');
     expect(writesTo(PTY_A)).toBe('');
+  });
+
+  it('stores the names the message showed on the task, and whoami answers the same name', async () => {
+    const sent = await sendAtoB('review the login fix');
+    const meta = useStore.getState().a2aTasks[sent.taskId!].metadata;
+    expect(meta.from).toMatchObject({ name: 'Shared', displayName: 'Shared.w0-0(claude)' });
+    expect(meta.to).toMatchObject({ name: 'Shared', displayName: 'Shared.w0-0(claude)' });
+    const me = await handleRpcMethod('a2a.whoami', { workspaceId: WS.id, senderPtyId: PTY_A });
+    expect(me).toMatchObject({ name: 'Shared', a2aName: 'Shared.w0-0(claude)' });
   });
 
   it('an untitled task nudges with the id and sender only — the body is never a stand-in title', async () => {

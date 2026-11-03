@@ -5,7 +5,8 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
-import { a2aPartyName, computePaneAutoName, paneDisplayName, paneNameFields } from '../utils/paneNaming';
+import { computePaneAutoName, paneDisplayName, paneNameFields } from '../utils/paneNaming';
+import { a2aPartyName } from '../utils/a2aPartyName';
 import { resolvePaneName } from '../utils/paneNameResolver';
 import { paneForegroundProgram, surfaceForegroundProgram } from '../utils/surfaceProgram';
 import { originFromCaller } from '../utils/fanoutProvenance';
@@ -3354,6 +3355,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       ...base,
       ...self,
       ...(selfLeaf ? paneNameFields(store.paneLabel, store.surfaceAgent, ws, selfLeaf) : {}),
+      // The name other agents see on this terminal's A2A messages.
+      a2aName: a2aPartyName(ws, store.paneLabel, store.surfaceAgent, rawSenderPtyId),
     };
   }
 
@@ -3947,11 +3950,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       from: {
         workspaceId,
         name: fromName,
-        ...(senderAddr && { paneId: senderAddr.paneId, surfaceId: senderAddr.surfaceId }),
+        ...(senderAddr && { paneId: senderAddr.paneId, surfaceId: senderAddr.surfaceId, displayName: fromParty }),
       },
       to: {
         workspaceId: target.id,
         name: target.name,
+        ...(toAnchor?.ptyId && { displayName: a2aPartyName(target, store.paneLabel, store.surfaceAgent, toAnchor.ptyId) }),
         // The agent pane resolved from an unaddressed send is pinned exactly
         // like an explicitly addressed one: every later message on this task
         // (reply, status update) follows the anchor, instead of falling back to

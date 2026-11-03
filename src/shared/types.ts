@@ -1324,11 +1324,15 @@ export interface WmuxTaskMetadata {
   // `from.ptyId` (optional): cross-host A2A only — the sender pane's pty when a
   // remote task was sent, so a reply from the other host is held instead of
   // landing on a different agent that took the pane since.
-  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
+  // `displayName` (optional, both sides): display only — the A2A party name
+  // (`<workspace>.<terminal>`, a2aPartyName) at send time, so a reader of the
+  // task sees the same name the delivered message showed. Never an address;
+  // `name` stays the workspace name.
+  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string; displayName?: string };
   // `to.ptyId` (optional) is a delivery-time pty SNAPSHOT — channel-mention
   // autoresponse stores it so a deferred flush can fail closed if the pane
   // restarted (successor agent now holds the paneId) before delivery.
-  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
+  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string; displayName?: string };
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   [key: string]: unknown;
