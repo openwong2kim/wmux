@@ -27,9 +27,13 @@ import { LOCAL_PC_ID } from '../../../shared/pcRail';
 import { listedWorkspaces } from '../Moa/moaHqGuard';
 import { selectBotTaskOwners, withoutBotTasks } from './botTasks';
 import { workspaceShortcutNumber } from '../../../shared/keymap';
+import { isFilterActive, narrowWorkspaces, selectWorkspaceFactKeys } from './workspaceFilter';
 
 /** PresetPicker width (w-52), used to keep the flyout on-screen. */
 const PICKER_MENU_WIDTH = 208;
+
+/** No facts are read while no facet is on (Sidebar's NO_FACTS). */
+const NO_FACTS: Record<string, string> = {};
 
 /**
  * `rail` (desktop): the icon rail on the window frame, beside the sheet —
@@ -47,6 +51,8 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const newWorkspaceKey = useShortcutLabel('newWorkspace');
   const sidebarKey = useShortcutLabel('toggleSidebar');
   const sidebarPosition = useStore((s) => s.sidebarPosition);
+  // The rail beside an open sidebar shows no workspace list (the sidebar has it).
+  const showWorkspaces = !rail || collapsed;
   // A1: 레일은 id/name + 에이전트 상태만 그린다 — 요약 투영만 구독해 cwd/git/
   // port 변경에는 리렌더되지 않게 한다.
   const allWorkspaces = useStore(useShallow(selectWorkspaceRailSummary));
@@ -56,6 +62,18 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const workspaces = useMemo(
     () => withoutBotTasks(listedWorkspaces(allWorkspaces), botOwners),
     [allWorkspaces, botOwners],
+  );
+  // The sidebar's filter (facets and search text, both kept in the store)
+  // narrows the rail too, so collapsing never shows hidden workspaces and the
+  // Ctrl+N digits reach the same ones (selectShortcutWorkspaces). Read only
+  // while the rail lists workspaces, and facts only while a facet is on.
+  const wsFilter = useStore((s) => s.sidebarFilter);
+  const filterOn = showWorkspaces && isFilterActive(wsFilter);
+  const wsSearch = useStore((s) => (showWorkspaces ? s.sidebarSearch : ''));
+  const factKeys = useStore(useShallow((s) => (filterOn ? selectWorkspaceFactKeys(s) : NO_FACTS)));
+  const shownWorkspaces = useMemo(
+    () => (showWorkspaces ? narrowWorkspaces(workspaces, wsSearch, wsFilter, factKeys) : workspaces),
+    [showWorkspaces, workspaces, wsSearch, wsFilter, factKeys],
   );
   // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation
   // as WorkspaceItem — not the active-pane-only `ws.agentStatus` projection.
@@ -79,7 +97,7 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const pinnedIds = useStore((s) => s.sidebarPinnedIds);
   // Same glance-board order and settle rule as the full sidebar.
   const { ordered: boardWorkspaces, onPointerEnter: onRailPointerEnter, onPointerLeave: onRailPointerLeave, onFocusCapture: onRailFocus, onBlurCapture: onRailBlur } =
-    useGlanceBoardOrder(workspaces);
+    useGlanceBoardOrder(shownWorkspaces);
   // Snoozed and settled workspaces have no groups on the rail: they just move
   // to the end of it, in the same order. Same placement rule as the sidebar:
   // pinned wins, and a fan-out task goes where its live owner goes.
@@ -119,8 +137,6 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
   const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
   // Browser mirror (wmux web /app): no creation, reorder or desktop-only destinations.
   const readOnly = useStore((s) => s.readOnly);
-  // The rail beside an open sidebar shows no workspace list (the sidebar has it).
-  const showWorkspaces = !rail || collapsed;
   // PC switcher: with a paired computer selected the collapsed rail lists its
   // workspaces, as the expanded sidebar does. Unknown ids read as this computer.
   const railHostId = useStore((s) => {
@@ -230,10 +246,11 @@ export default function MiniSidebar({ rail = false, collapsed = true }: { rail?:
         {orderedWorkspaces.map((ws, i) => {
           // `i` is the DISPLAY position and drives only the drop indicator.
           // Everything the user reads or reorders against — the Ctrl+N label,
-          // the tooltip, the reorder payload — uses the unfiltered position, so
-          // a pinned row keeps its real number and drops land where it lives.
-          const railIndex = workspaces.indexOf(ws);
-          const shortcutNumber = workspaceShortcutNumber(railIndex, workspaces.length);
+          // the tooltip, the reorder payload — uses the stored-order position
+          // among the rows the filter keeps, so a pinned row keeps its real
+          // number, the digits match the sidebar's, and drops land where it lives.
+          const railIndex = shownWorkspaces.indexOf(ws);
+          const shortcutNumber = workspaceShortcutNumber(railIndex, shownWorkspaces.length);
           const isActive = ws.id === activeWorkspaceId;
           const isMultiview = gridShown && multiviewIds.includes(ws.id);
           const multiviewGroup = multiviewGroupById.get(ws.id);

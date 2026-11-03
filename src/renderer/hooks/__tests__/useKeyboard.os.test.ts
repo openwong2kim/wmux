@@ -31,6 +31,7 @@ import {
 import { defaultBindings, resolveShortcut } from '../../../shared/keymap';
 import { DEFAULT_PREFIX_CONFIG } from '../../../shared/types';
 import type { Pane } from '../../../shared/types';
+import { EMPTY_FILTER } from '../../components/Sidebar/workspaceFilter';
 
 // ─── ctrlByteForKeyCode ─────────────────────────────────────────────────────
 
@@ -85,6 +86,9 @@ interface MockState {
   focusPaneDirection: ReturnType<typeof vi.fn>;
   setCheatSheetForceShown: ReturnType<typeof vi.fn>;
   stashPane: ReturnType<typeof vi.fn>;
+  // The Ctrl+N / next-prev workspace list reads the sidebar's filter and search.
+  sidebarFilter: typeof EMPTY_FILTER;
+  sidebarSearch: string;
   moa?: { hq: { workspaceId: string | null } };
   pushToast?: ReturnType<typeof vi.fn>;
 }
@@ -136,6 +140,8 @@ function makeMockStore(overrides: Partial<MockState> = {}): {
     focusPaneDirection: vi.fn(),
     setCheatSheetForceShown: vi.fn(),
     stashPane: vi.fn(),
+    sidebarFilter: EMPTY_FILTER,
+    sidebarSearch: '',
     ...overrides,
   };
   const store = {

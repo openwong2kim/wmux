@@ -126,10 +126,10 @@ describe('Ctrl+N under a narrowed sidebar', () => {
     expect(selectShortcutWorkspaces(useStore.getState()).map((w) => w.id)).toEqual(['gamma']);
   });
 
-  it('the collapsed rail lists every workspace, so the digits reach all of them', () => {
+  it('the collapsed rail keeps the filter, so the digits reach the same rows', () => {
     seed(['a', 'b', 'c'], 'a', ['c']);
     act(() => useStore.setState({ sidebarFilter: { ...EMPTY_FILTER, bookmarked: true }, sidebarVisible: false } as never));
-    expect(selectShortcutWorkspaces(useStore.getState()).map((w) => w.id)).toEqual(['a', 'b', 'c']);
+    expect(selectShortcutWorkspaces(useStore.getState()).map((w) => w.id)).toEqual(['c']);
     act(() => useStore.setState({ sidebarVisible: true } as never));
     expect(selectShortcutWorkspaces(useStore.getState()).map((w) => w.id)).toEqual(['c']);
   });

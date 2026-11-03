@@ -173,13 +173,12 @@ export function narrowWorkspaces<T extends { id: string; name: string }>(
     && (!filterOn || (factKeys[ws.id] !== undefined && matchesFilter(filter, factsFromKey(factKeys[ws.id])))));
 }
 
-/** The workspaces the Ctrl+N digits reach, in stored order: what the open
- *  sidebar lists, so a filtered list numbers its rows 1, 2, … The collapsed
- *  rail lists every workspace, so there the digits reach all of them. */
+/** The workspaces the Ctrl+N digits reach, in stored order: what the sidebar
+ *  lists, so a filtered list numbers its rows 1, 2, … The collapsed rail
+ *  keeps the same filter, so the digits reach the same rows in both states. */
 export function selectShortcutWorkspaces(state: StoreState): StoreState['workspaces'] {
   // A bot worker is never listed, so never numbered (botTasks.ts).
   const listed = withoutBotTasks(listedWorkspaces(state.workspaces), selectBotTaskOwners(state));
-  if (!state.sidebarVisible) return listed;
   const filterOn = isFilterActive(state.sidebarFilter);
   if (!filterOn && state.sidebarSearch.trim() === '') return listed;
   return narrowWorkspaces(listed, state.sidebarSearch, state.sidebarFilter, filterOn ? selectWorkspaceFactKeys(state) : {});
