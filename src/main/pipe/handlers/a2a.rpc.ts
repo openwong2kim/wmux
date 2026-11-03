@@ -26,7 +26,7 @@ import {
 } from '../../../shared/companyDonePrCheck';
 import { ghPrReviewService, type GhPrReviewService } from '../../github/GhPrReviewService';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../shared/executeApprovalBounds';
-import { GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
+import { A2A_PASTE_MAIN_TIMEOUT_MS, GATED_DELIVERY_DEADLINE_MARGIN_MS, GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../shared/freshContext';
 import { flagOrphanedTask, isPagedTaskQuery, pagedTaskId, shapeTaskQueryResult, summarizeTask, applyTaskQueryView } from '../../../shared/a2aTaskQueryView';
 import { defaultSnapshot, withDeadline, SNAPSHOT_DEADLINE_MS } from '../../pty/portWatch';
 import { claimTokenForPane, claimTokenForRun } from '../../workspace/workspaceClaimTrust';
@@ -1311,7 +1311,7 @@ export function registerA2aRpc(
   });
   router.register('a2a.broadcast', async (params, ctx) =>
     refuseHandoffMarker('a2a.broadcast', params.message, ctx)
-    ?? sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx)));
+    ?? sendToRenderer(getWindow, 'a2a.broadcast', withOperatorOrigin(params, ctx), { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS }));
   router.register('meta.setSkills', (params) => sendToRenderer(getWindow, 'meta.setSkills', params));
 
   // task.query — 데몬 정본 + 렌더러 캐시 병합(envelope PR4).
@@ -1816,13 +1816,13 @@ export function registerA2aRpc(
           ...params,
           daemonCommitted: true,
           committedTask: gate.result.task,
-        });
+        }, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
         if (typeof params.taskId === 'string') await queueRemoteState(params.taskId, params.status, params.evidence);
         return applied;
       }
       // unavailable → the renderer's own checked writer (fallback). Only an
       // explicit ok from it counts as a committed cancel.
-      const res = await sendToRenderer(getWindow, 'a2a.task.update', params);
+      const res = await sendToRenderer(getWindow, 'a2a.task.update', params, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
       if (cancelWorker && isRecord(res) && res.ok === true) claudeWorker.cancel(cancelWorker);
       if (isRecord(res) && res.ok === true) {
         // No committed task on this path: its report is the update itself.
@@ -1839,13 +1839,13 @@ export function registerA2aRpc(
     if (typeof params.message === 'string') {
       const prepared = await prepareReopen('a2a.task.update', params, ctx, taken);
       if ('response' in prepared) return prepared.response;
-      const res = await sendToRenderer(getWindow, 'a2a.task.update', prepared.params);
+      const res = await sendToRenderer(getWindow, 'a2a.task.update', prepared.params, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
       if (isRecord(res) && res.ok === true) {
         void recordTaskState(params.taskId, reopenedState(prepared.params));
       }
       return res;
     }
-    return sendToRenderer(getWindow, 'a2a.task.update', params);
+    return sendToRenderer(getWindow, 'a2a.task.update', params, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
   }
 
   /**
@@ -2067,7 +2067,7 @@ export function registerA2aRpc(
     }
     // A NEW task's delivery may run the target pane's fresh-context step
     // (#1680): its command, up to FRESH_CONTEXT_TIMEOUT_MS of waiting, then
-    // the paste. Replies never do, and keep the default.
+    // the paste. Replies never do; they wait for the paste's receipt.
     // A gated new task (the Git page's hand-off) also waits for the person to
     // stop typing: a longer wait, and a deadline main stamps (never taken from
     // the wire) after which nothing is written, so a late delivery cannot land
@@ -2082,7 +2082,7 @@ export function registerA2aRpc(
         ? await sendToRenderer(getWindow, 'a2a.task.send', sendParams, {
             timeoutMs: gatedNewTask ? GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS : NEW_TASK_SEND_MAIN_TIMEOUT_MS,
           })
-        : await sendToRenderer(getWindow, 'a2a.task.send', sendParams);
+        : await sendToRenderer(getWindow, 'a2a.task.send', sendParams, { timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
 
     // 데몬 정본 미러-생성(신규 태스크 브랜치에서만 — 렌더러가 task 스냅샷 동반).
     // 실패는 soft-degrade: 이후 전이가 'task not found'로 렌더러 폴백을 탄다.

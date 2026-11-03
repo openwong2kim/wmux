@@ -120,6 +120,18 @@ export const NEW_TASK_SEND_MAIN_TIMEOUT_MS = 25_000;
 export const GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS = 45_000;
 export const GATED_DELIVERY_DEADLINE_MARGIN_MS = 3_000;
 
+/**
+ * Main's wait for a reply, a message on a task and a broadcast. Each paste now
+ * waits for its submit receipt (#2994), which can outlast the 5 s bridge
+ * default, and a broadcast pastes into one workspace after another. A caller
+ * that timed out would retry into a second copy of what was delivered.
+ */
+export const A2A_PASTE_MAIN_TIMEOUT_MS = 25_000;
+/** The MCP client's wait for the same calls. It outwaits main's whole
+ *  sequence, not only the renderer step: a reopening reply can first spend the
+ *  5 s preflight and the 10 s daemon reopen before this 25 s delivery. */
+export const A2A_PASTE_CLIENT_TIMEOUT_MS = 45_000;
+
 /** The MCP client's budget for a new-task `send_message`: outwaits main. */
 export const NEW_TASK_SEND_CLIENT_TIMEOUT_MS = 30_000;
 

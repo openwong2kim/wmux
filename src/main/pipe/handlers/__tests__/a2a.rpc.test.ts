@@ -5,7 +5,7 @@ import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { RpcContext } from '../../../../shared/rpc';
 import { EXECUTE_SEND_MAIN_TIMEOUT_MS } from '../../../../shared/executeApprovalBounds';
-import { FRESH_CONTEXT_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../../shared/freshContext';
+import { A2A_PASTE_MAIN_TIMEOUT_MS, FRESH_CONTEXT_TIMEOUT_MS, NEW_TASK_SEND_MAIN_TIMEOUT_MS } from '../../../../shared/freshContext';
 
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -217,8 +217,8 @@ describe('a2a.rpc — execute confirmation gate', () => {
     expect(worker.execute).not.toHaveBeenCalled();
     const methods = sendToRendererMock.mock.calls.map((c) => c[1]);
     expect(methods).toEqual(['a2a.task.send']);
-    // A reply is never a task boundary: the bridge default applies (#1680).
-    expect(sendToRendererMock.mock.calls[0][3]).toBeUndefined();
+    // A reply is never a task boundary (#1680), but it waits for its paste's receipt (#2994).
+    expect(sendToRendererMock.mock.calls[0][3]).toEqual({ timeoutMs: A2A_PASTE_MAIN_TIMEOUT_MS });
   });
 
   it('ignores truthy non-boolean execute values', async () => {
