@@ -31,6 +31,8 @@ export interface ProgramStatusReport {
 export interface ProgramStatusRecord extends Omit<ProgramStatusReport, 'state'> {
   state: ProgramState;
   updatedAt: number;
+  /** When the record entered its state: a repeat of the same state keeps it. */
+  stateSince: number;
 }
 
 const STATES = new Set(['idle', 'working', 'done', 'blocked', 'error', 'clear']);
@@ -158,12 +160,14 @@ export class ProgramStatusStore {
       return;
     }
     const key = report.id ?? '';
+    const prior = this.records.get(key);
     this.records.delete(key);
     if (this.records.size >= MAX_PROGRAM_STATUS_RECORDS) {
       const oldest = this.records.keys().next().value;
       if (oldest !== undefined) this.records.delete(oldest);
     }
-    this.records.set(key, { ...report, state: report.state, updatedAt: now });
+    const stateSince = prior?.state === report.state ? prior.stateSince : now;
+    this.records.set(key, { ...report, state: report.state, updatedAt: now, stateSince });
   }
 
   /** The process exited or a shell prompt began: working and blocked records end. */

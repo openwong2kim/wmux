@@ -76,7 +76,10 @@ describe('ProgramStatusStore', () => {
     store.apply({ state: 'blocked', id: 'eu/west' }, 3);
     store.apply({ state: 'working', id: 'europe' }, 4);
     store.apply({ state: 'idle' }, 5);
-    expect(store.root()).toEqual({ state: 'idle', updatedAt: 5 });
+    expect(store.root()).toEqual({ state: 'idle', updatedAt: 5, stateSince: 5 });
+    // A repeat of the same state moves `updatedAt` only.
+    store.apply({ state: 'idle' }, 5.5);
+    expect(store.root()).toEqual({ state: 'idle', updatedAt: 5.5, stateSince: 5 });
     store.apply({ state: 'clear', id: 'eu' }, 6);
     expect(store.size).toBe(2); // root and `europe`, which is not beneath `eu`
     store.apply({ state: 'clear' }, 7);

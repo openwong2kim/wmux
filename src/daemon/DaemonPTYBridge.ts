@@ -20,7 +20,7 @@ import { isEscapeChunk } from '../shared/hooks/interruptKeystroke';
 import { stripPassiveInput } from '../shared/terminal/passiveInput';
 import { ShellMarkIngress } from '../shared/terminal/shellMarkIngress';
 import { kittyChunkAsLegacy } from '../shared/kittyKeyEvents';
-import { titleShowsFinishedTurn, titleShowsRunningTurn } from './transcript/chatScreenGate';
+import { titleShowsFinishedTurn, titleShowsRunningTurn, type TitleEvidence } from './transcript/chatScreenGate';
 import { AWAITING_TITLE, CLAUDE_IDLE_TITLE, CLAUDE_RUNNING_TITLE, CLAUDE_RUNNING_TITLE_OSC, RUNNING_TITLE } from '../shared/agentTitleRules';
 import { agentDisplayToSlug, agentRow, isAgentSlug } from '../shared/agentIdentity';
 import type { AgentSignal } from '../shared/hooks/signal-types';
@@ -74,6 +74,18 @@ export function scanStartupDa1(text: string): 'answer' | 'more' | 'closed' {
   }
   return 'more';
 }
+
+/**
+ * The answer to the OSC 7501 feature query (`OSC 7501 ; ? ST`): a bare `?`,
+ * which the spec reads as the default state and kind lists. Claude Code and
+ * Grok Build report nothing until a terminal answers.
+ */
+export const PROGRAM_STATUS_PROBE_REPLY = '\x1b]7501;?\x1b\\';
+
+/** How long one read of a pane shell's children answers repeated queries (readShellChildAgent). */
+const SHELL_CHILD_READ_REUSE_MS = 1_000;
+/** How far an agent's start may precede the command start the shell reported for it. */
+const COMMAND_START_SKEW_MS = 1_000;
 
 /** The `agent` event message for an OSC 7501 `blocked` report, by its `kind`. */
 const PROGRAM_BLOCKED_MESSAGE: Record<'permission' | 'question' | 'auth' | 'none', string> = {
@@ -355,6 +367,18 @@ export class DaemonPTYBridge extends EventEmitter {
    * would have closed it.
    */
   static transcriptTurnEndProbe: ((sessionId: string) => number | undefined) | null = null;
+
+  /**
+   * Installed by the daemon on Windows only, where the process tracker names
+   * an agent after its OSC 7501 query (answerProgramStatusProbe). `read`: the
+   * live agent a pane's shell runs as its own child right now, started no
+   * earlier than `since` (shellChildAgent), with its start time (epoch ms), or
+   * undefined. `accepted`: the pane took that agent as its own.
+   */
+  static shellChildAgentProbe: {
+    read: (shellPid: number, since: number) => { slug: string; pid: number; startedAt: number } | undefined;
+    accepted: (sessionId: string, shellPid: number) => void;
+  } | null = null;
 
   /** Last write to stdin that was a lone Esc, from any source (0 = never). */
   private lastEscAt = 0;
@@ -759,7 +783,7 @@ export class DaemonPTYBridge extends EventEmitter {
       // the command line, or the first prompt still working). Otherwise the
       // next submit starts the turn, so a key sent before it (a lone Esc
       // dismissing a notice) is never read as an interrupt of that turn.
-      if (this.turnOpen && this.bootEpisode && !this.titleShowsRunningTurn()) this.closeTurn();
+      if (this.turnOpen && this.bootEpisode && !this.titleShowsRunningTurn() && !this.programWorking()) this.closeTurn();
       if (this.turnOpen && this.sessionId) {
         const endedAt = DaemonPTYBridge.transcriptTurnEndProbe?.(this.sessionId);
         if (endedAt !== undefined) this.noteTranscriptTurnEnd(endedAt);
@@ -1450,6 +1474,17 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   /** OSC 133 command starts this pane's shell reported (monotonic; read through getCommandStarts). */
   private commandStarts = 0;
+  /** `commandStarts` when the tracked agent launched (see answerProgramStatusProbe). */
+  private agentCommandStarts = 0;
+  /** When the latest OSC 133 command start arrived (0 = never). */
+  private lastCommandStartAt = 0;
+  /** The last shell-child read, reused for SHELL_CHILD_READ_REUSE_MS. */
+  private shellChildRead: { at: number; agent: { slug: string; pid: number; startedAt: number } | undefined } | null = null;
+  /**
+   * The launch edge that read gave, kept when the tracker names the same
+   * process later. The next agent's query replaces it before the tracker names that one.
+   */
+  private probeLaunch: { pid: number; slug: string; commandStarts: number } | null = null;
   private parsesOsc133 = false;
 
   /**
@@ -1472,9 +1507,8 @@ export class DaemonPTYBridge extends EventEmitter {
    * An OSC 7501 report (see programStatus.ts). Every valid report is stored;
    * only the root record drives the pane, and only while the process tracker
    * watches an agent alive in it (paneAgent): a plain shell command reporting
-   * `working` is not an agent turn. The feature query
-   * (`?`) is not answered yet, so only programs that report without asking
-   * (Codex) reach this.
+   * `working` is not an agent turn. Codex reports without asking; Claude Code
+   * once its query is answered (answerProgramStatusProbe).
    */
   private noteProgramStatus(data: string): void {
     const report = parseProgramStatus(data);
@@ -1493,6 +1527,74 @@ export class DaemonPTYBridge extends EventEmitter {
     this.programStatusSeen = true;
     this.programAgentSlug = pane.slug;
     this.applyProgramState(root, prior, pane.name, this.sessionId);
+  }
+
+  /**
+   * The feature query (`OSC 7501 ; ?`), answered straight to the PTY like the
+   * #1965 DA1 reply, every time it is asked. Only while a live agent owns the
+   * pane: one the process tracker watches (paneAgent), the gate its reports
+   * need, or on Windows, where the tracker names it seconds after this query,
+   * the shell's own agent child read now (shellChildAgentProbe); its reports
+   * are held until the tracker names it. Claude Code drops its spinner and
+   * idle title glyphs once answered, so a pane whose reports would never be
+   * applied (an agent behind ssh) is left on the title heuristics by not
+   * answering.
+   *
+   * Nothing else answers it: xterm.js ignores unknown OSCs, and every replay
+   * strips the query (replayQuerySanitizer), so recovered history, a held
+   * muted chunk or a later viewer never gets a late reply into the program's
+   * input. Recovered history is not read for OSCs at all (seedModes). The
+   * reply goes out inside the data callback, before the chunk is forwarded,
+   * so it reaches the program ahead of a viewer's answer to the DA1 Claude
+   * sends right behind the query (the spec's "unsupported" signal).
+   * `WMUX_PROGRAM_STATUS_REPLY=0` in the daemon's environment turns it off
+   * (a backend that mangles the reply).
+   */
+  private answerProgramStatusProbe(ptyProcess: IPty): void {
+    if (process.env.WMUX_PROGRAM_STATUS_REPLY === '0') return;
+    if (!this.paneAgent()) {
+      // Windows: the tracker names a new agent after it asks (#2838). The
+      // shell's own child, read now, is the evidence and the launch edge, if
+      // the shell's latest command started it: one started before that
+      // command runs behind it. The command start is read a moment after the
+      // process starts, hence the skew. A read reused from before that start
+      // is checked against it again.
+      const since = this.lastCommandStartAt - COMMAND_START_SKEW_MS;
+      const agent = this.readShellChildAgent(ptyProcess.pid, since);
+      if (!agent || agent.startedAt < since) return;
+      const known = this.probeLaunch?.pid === agent.pid;
+      this.agentCommandStarts = this.commandStarts;
+      this.probeLaunch = { pid: agent.pid, slug: agent.slug, commandStarts: this.commandStarts };
+      // The tracker probes now, once per agent it is told about.
+      if (!known && this.sessionId) DaemonPTYBridge.shellChildAgentProbe?.accepted(this.sessionId, ptyProcess.pid);
+    }
+    // A command the shell started since the agent launched (after Ctrl+Z, the
+    // agent stays alive behind it) owns the keyboard: the reply would be typed
+    // into it. The agent's own tools never own the tty (Claude Code's Bash
+    // tool runs on pipes), so this only skips the shell's own commands.
+    if (this.commandStarts !== this.agentCommandStarts) return;
+    try {
+      ptyProcess.write(PROGRAM_STATUS_PROBE_REPLY);
+    } catch {
+      // The PTY is already gone: nothing is waiting for the answer.
+    }
+  }
+
+  /**
+   * shellChildAgentProbe, read at most once per SHELL_CHILD_READ_REUSE_MS: a
+   * program can print the query thousands of times a second, command starts
+   * included (OSC 133 is output too), and each read walks the whole process
+   * table. A clock stepped back ends the reuse rather than stretching it.
+   */
+  private readShellChildAgent(shellPid: number, since: number): { slug: string; pid: number; startedAt: number } | undefined {
+    const probe = DaemonPTYBridge.shellChildAgentProbe;
+    if (!probe || !this.sessionId) return undefined;
+    const now = Date.now();
+    const last = this.shellChildRead;
+    if (last && now >= last.at && now - last.at < SHELL_CHILD_READ_REUSE_MS) return last.agent;
+    const agent = probe.read(shellPid, since);
+    this.shellChildRead = { at: now, agent };
+    return agent;
   }
 
   /**
@@ -1544,6 +1646,12 @@ export class DaemonPTYBridge extends EventEmitter {
     this.emit('agent', { sessionId, event: { agent, status, message: PROGRAM_SETTLED_MESSAGE[record.state] } });
     // At the prompt before any turn (the agent booting), as the detector's idle prompt reports it.
     if (status === 'waiting' && !wasSettled && this.isPreTurn()) this.emit('idle', { sessionId, preTurn: true });
+    // #2264 — Claude Code (the agent whose title tells its turns) reports
+    // `done` for a turn that finished and `idle` for one cut short. Answered,
+    // it drops the idle title that confirmed an Esc interrupt, so its own
+    // `idle` right after a lone Esc confirms it.
+    if (record.state === 'idle' && agentRow(this.programAgentSlug)?.titleTurns === true
+      && (prior?.state === 'working' || prior?.state === 'blocked')) this.confirmEscInterrupt(sessionId, true);
   }
 
   /** Applies the root record stored before the tracker saw the agent alive. */
@@ -1683,7 +1791,7 @@ export class DaemonPTYBridge extends EventEmitter {
    * die. Only the watched pid's death is reported, so a relaunch the tracker
    * already picked is never ended by its predecessor's late death edge.
    */
-  noteAgentProcess(state: { slug?: string; alive: boolean; observedAt?: number; replacedLive?: true; identityEpoch?: number | null }): void {
+  noteAgentProcess(state: { slug?: string; pid?: number; alive: boolean; observedAt?: number; replacedLive?: true; identityEpoch?: number | null }): void {
     const detector = this.agentDetector;
     const now = Date.now();
     const boundaryAt = Math.max(this.identityLifetimeAt, detector?.getIdentityBoundaryAt() ?? 0);
@@ -1705,6 +1813,14 @@ export class DaemonPTYBridge extends EventEmitter {
     const stored = this.programStatus.root();
     const pendingReport = state.alive && !this.programStatusSeen && stored && stored.updatedAt > this.programEpisodeEndAt ? stored : undefined;
     if (!state.alive || ((state.observedAt !== undefined || state.replacedLive) && state.slug && previous && previous !== state.slug)) this.noteAgentEnded();
+    // The agent's launch edge: shell commands counted after it run behind it.
+    if (state.alive && (this.trackedAgent?.alive !== true || this.trackedAgent.slug !== state.slug || state.replacedLive)) {
+      // An edge the shell-child read already took for this process stands: a
+      // command started since then runs behind the agent.
+      const launch = this.probeLaunch;
+      this.agentCommandStarts = launch && launch.pid === state.pid && launch.slug === state.slug ? launch.commandStarts : this.commandStarts;
+      this.probeLaunch = null;
+    }
     this.trackedAgent = { ...(state.slug ? { slug: state.slug } : {}), alive: state.alive };
     this.reportMidTurn();
     if (pendingReport && this.programStatus.root() === pendingReport) this.applyStoredProgramStatus(pendingReport);
@@ -1858,13 +1974,22 @@ export class DaemonPTYBridge extends EventEmitter {
    * replay.
    */
   private noteTitleTurnEnd(sessionId: string): void {
+    if (this.agentDetector?.getLastAgent() !== 'Claude Code') return;
+    this.confirmEscInterrupt(sessionId);
+  }
+
+  /**
+   * Claude Code's turn ended right after a lone Esc (its idle title, or its
+   * own OSC 7501 `idle` after `working`): the Esc interrupted it. A report is
+   * a state change, not a repaint, so the resize-redraw guard is the title's only.
+   */
+  private confirmEscInterrupt(sessionId: string, reported = false): void {
     const now = Date.now();
-    if (this.muted || now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS) return;
+    if (this.muted || (!reported && now - this.lastResizeAtMs < RESIZE_REDRAW_GUARD_MS)) return;
     if (now - this.lastEscAt >= ESC_INTERRUPT_CONFIRM_MS) return;
     // One Esc confirms one turn: a later idle title inside the same window
     // belongs to a turn that Esc never touched.
     if (this.lastEscAt === this.titleEdgeEscAt) return;
-    if (this.agentDetector?.getLastAgent() !== 'Claude Code') return;
     this.titleEdgeEscAt = this.lastEscAt;
     this.closeInterruptedTurn();
     this.emit('turnInterrupted', { sessionId, agent: 'Claude Code' });
@@ -1897,9 +2022,18 @@ export class DaemonPTYBridge extends EventEmitter {
     this.lastEscAt = Date.now();
   }
 
-  /** The latest window title the program set, and when (`at` 0 = never). */
-  getTitle(): { title: string; at: number } {
-    return { title: this.lastTitle, at: this.lastTitleAt };
+  /**
+   * The latest window title the program set, and when (`at` 0 = never), with
+   * the root OSC 7501 state while the agent's reports drive the pane.
+   */
+  getTitle(): TitleEvidence {
+    const slug = this.programStatusSeen ? this.programAgentSlug : null;
+    const root = slug ? this.programStatus.root() : undefined;
+    return {
+      title: this.lastTitle,
+      at: this.lastTitleAt,
+      ...(slug && root ? { program: { slug, state: root.state, at: root.stateSince } } : {}),
+    };
   }
 
   /**
@@ -2312,7 +2446,8 @@ export class DaemonPTYBridge extends EventEmitter {
         return;
       }
       if (event.code === PROGRAM_STATUS_OSC) {
-        this.noteProgramStatus(event.data);
+        if (event.data === '?') this.answerProgramStatusProbe(ptyProcess);
+        else this.noteProgramStatus(event.data);
         return;
       }
       if (event.code === 9 || event.code === 99 || event.code === 777) {
@@ -2336,6 +2471,7 @@ export class DaemonPTYBridge extends EventEmitter {
           }
           if (parsed.type === 'command_start') {
             this.commandStarts += 1;
+            this.lastCommandStartAt = Date.now();
             this.shellCommandKeyRevision = this.shellSubmittedKeyRevision ?? this.keyInputRevision;
             this.shellSubmittedKeyRevision = undefined;
             this.shellCommandRunning = true; this.completedShellCommand = false; this.emptyShellPrompt = false;

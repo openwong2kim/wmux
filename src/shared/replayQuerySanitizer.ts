@@ -50,6 +50,11 @@ const TERMINAL_QUERY_SOURCE = [
   // OSC color queries — OSC 4/5/10..19 whose last param is "?" (BEL or ST
   // terminated). Titles (OSC 0/2) never match, even ones ending in "?".
   '\\x1b\\](?:4|5|1[0-9])(?:;[0-9]*)*;\\?(?:\\x07|\\x1b\\\\)',
+  // Program status feature query — OSC 7501 ; ? (Claude Code, Grok Build).
+  // Only the daemon answers it, live (DaemonPTYBridge.answerProgramStatusProbe);
+  // a replayed one must reach no responder. The query is exactly `?`, so
+  // reports (`state=`) and an unterminated query never match.
+  '\\x1b\\]7501;\\?(?:\\x07|\\x1b\\\\)',
   // DCS queries — DECRQSS (DCS $ q .. ST) and XTGETTCAP (DCS + q .. ST)
   '\\x1bP[$+]q[^\\x1b]*\\x1b\\\\',
   // XTWINOPS size reports — CSI 14/16/18 t (text area / cell / grid size).
