@@ -440,7 +440,7 @@ export interface HelperMethods {
    * absolute .app path. `window` is null only when the app has no window even
    * after reopening (a menu-bar-only app).
    */
-  openApp: { params: { app: string }; result: { app: AppInfo; window: WindowInfo | null } };
+  openApp: { params: { app: string; marker?: AgentMarker }; result: { app: AppInfo; window: WindowInfo | null } };
   /**
    * Optional (OPTIONAL_HELPER_METHODS). Runtime switches main pushes after the
    * hello and whenever Settings change. `overlay`: draw the agent cursor and

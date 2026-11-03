@@ -236,13 +236,16 @@ function computerStopKey(): StopKey {
 
 /**
  * The pane's #tag for its agent's marker: `#<label>` when the person named
- * the pane (the name pane-taking tools accept), else null. The auto tag
- * (#w1-2) lives only in the renderer.
+ * the pane (the name pane-taking tools accept), else the auto tag the
+ * renderer mirrors (`#w1-2`), else null.
  */
 function paneTagOf(ptyId: string): string | null {
-  const paneId = getWorkspaceMirror().peekPaneForPty(ptyId)?.paneId;
-  const label = paneId ? metadataStore.get(paneId).metadata.label?.trim() : undefined;
-  return label && paneLabelShapeError(label) === null ? `#${label}` : null;
+  const mirror = getWorkspaceMirror();
+  const paneId = mirror.peekPaneForPty(ptyId)?.paneId;
+  if (!paneId) return null;
+  const label = metadataStore.get(paneId).metadata.label?.trim();
+  if (label && paneLabelShapeError(label) === null) return `#${label}`;
+  return mirror.getPaneTag(paneId);
 }
 
 /** Every renderer window gets the full list (preload computerUse.onAgentMarkers). */

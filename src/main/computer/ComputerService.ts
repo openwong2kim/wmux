@@ -725,8 +725,6 @@ export class ComputerService {
     const opened = await this.underLease(agent, now, { requested: true }, () => {
       this.checkRate(agent.key, now);
       onLaunch();
-      // protocol.ts openApp params do not list `marker` yet; a helper that
-      // does not read it ignores the extra key, as it does on every action.
       return helper.request('openApp', { app: params.app, ...(marker && { marker }) });
     });
     this.assertCurrent(generation);
