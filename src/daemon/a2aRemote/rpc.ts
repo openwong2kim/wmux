@@ -1,7 +1,13 @@
-import type { A2aPeerRecordV1, A2aRemoteHostRecordV1, HostId, PeerCredential } from '../../shared/a2aRemote';
-import type { A2aDiscoverCloseResult, A2aRemoteHostsRemoveResult } from '../../shared/rpc';
+import { A2A_REMOTE_DEFAULT_PORT, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId, type PeerCredential } from '../../shared/a2aRemote';
+import type {
+  A2aDiscoverCloseResult,
+  A2aDiscoverOutgoingCancelResult,
+  A2aDiscoverOutgoingConfirmResult,
+  A2aRemoteHostsRemoveResult,
+} from '../../shared/rpc';
 import type { A2aRemoteController } from './controller';
 import { coerceA2aRemotePatch } from './controller';
+import { DiscoverClient, type DiscoverClientDeps } from './discoverClient';
 import { joinRemoteHost, unpairRemoteHost, type JoinDeps } from './joiner';
 import type { NewRemoteHost } from './remoteHostStore';
 import type { A2aServer } from './server';
@@ -33,6 +39,8 @@ export interface A2aRemoteRpcDeps {
   joinOverrides?: Partial<JoinDeps>;
   /** Test seam; default `unpairRemoteHost`. */
   unpair?: (host: A2aRemoteHostRecordV1, credential: PeerCredential) => Promise<boolean>;
+  /** Test seams for the requesting side of tailnet discovery. */
+  discoverOverrides?: Partial<DiscoverClientDeps>;
 }
 
 /**
@@ -63,7 +71,8 @@ export function forgetHostCascade(
   };
 }
 
-export function registerA2aRemoteRpc(onRpc: (method: string, handler: RpcHandler) => void, deps: A2aRemoteRpcDeps): void {
+/** Registers the RPCs; answers the requesting side of tailnet discovery, whose requests end with the connection that made them. */
+export function registerA2aRemoteRpc(onRpc: (method: string, handler: RpcHandler) => void, deps: A2aRemoteRpcDeps): { discover: DiscoverClient } {
   const { controller, server } = deps;
   const str = (params: Record<string, unknown>, key: string): string =>
     typeof params[key] === 'string' ? (params[key] as string) : '';
@@ -124,6 +133,27 @@ export function registerA2aRemoteRpc(onRpc: (method: string, handler: RpcHandler
     return server.discovery.decide(str(params, 'requestId'), params['allow']);
   });
 
+  // Tailnet discovery, requesting side. `connect` takes only an IP from the
+  // last scan; the port and the certificate to pin are what the scan saw.
+  const discover = new DiscoverClient({
+    tailnet: server.tailnet,
+    self: () => server.ensureIdentity(),
+    selfName: () => server.name(),
+    ports: () => {
+      const own = controller.effectivePort();
+      return own === A2A_REMOTE_DEFAULT_PORT ? [own] : [A2A_REMOTE_DEFAULT_PORT, own];
+    },
+    remoteHosts: deps.remoteHosts,
+    log: deps.log,
+    ...deps.discoverOverrides,
+  });
+  onRpc('a2a.remote.discover.scan', async () => discover.scan());
+  onRpc('a2a.remote.discover.connect', async (params, ctx) => discover.connect(str(params, 'ip'), ctx?.clientId ?? null));
+  onRpc('a2a.remote.discover.outgoing.status', async () => discover.outgoingStatus());
+  onRpc('a2a.remote.discover.outgoing.cancel', async (): Promise<A2aDiscoverOutgoingCancelResult> => discover.cancel());
+  // This PC's human confirmed the code matches: only then does it pair.
+  onRpc('a2a.remote.discover.outgoing.confirm', async (): Promise<A2aDiscoverOutgoingConfirmResult> => discover.confirm());
+
   onRpc('a2a.remote.peers.list', async () => ({ peers: deps.peers.list() }));
   onRpc('a2a.remote.peers.revoke', async (params) => {
     const peerId = str(params, 'peerId');
@@ -134,6 +164,8 @@ export function registerA2aRemoteRpc(onRpc: (method: string, handler: RpcHandler
     deps.cascade(rec.hostId);
     return { ok: revoked };
   });
+
+  return { discover };
 }
 
 function errMsg(err: unknown): string {

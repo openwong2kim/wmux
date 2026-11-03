@@ -261,6 +261,8 @@ export class A2aServer {
   private disposed = false;
   /** Tailnet discovery's window (in memory only, like the invite slot). */
   readonly discovery: DiscoveryWindow;
+  /** The Tailscale reads the window uses; the requesting side shares them. */
+  readonly tailnet: TailnetCli;
   private readonly addressesOf: TailnetGate['addressesOf'];
 
   constructor(deps: A2aServerDeps) {
@@ -279,8 +281,9 @@ export class A2aServer {
     // Before the first reconcile: a window that turned A2A on and never finished turns it off again.
     // When that cannot be written, the listener does not start on this boot either.
     const mayStart = revertDiscoveryTurnOn(deps.controller, deps.identityDir, this.log);
+    this.tailnet = deps.tailnet ?? tailnetCliFromEnv();
     this.discovery = new DiscoveryWindow({
-      tailnet: deps.tailnet ?? tailnetCliFromEnv(),
+      tailnet: this.tailnet,
       controller: deps.controller,
       dataDir: deps.identityDir,
       listener: {

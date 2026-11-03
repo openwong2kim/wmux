@@ -605,6 +605,27 @@ describe('A2aServer — tailnet discovery', () => {
     expect(pc.server.status().listening).toBe(false);
   });
 
+  it('a window that cannot bind its port reports the problem and a port that looked free', async () => {
+    const blocker = net.createServer();
+    await new Promise<void>((resolve) => blocker.listen(0, '127.0.0.1', resolve));
+    const port = (blocker.address() as net.AddressInfo).port;
+    try {
+      const pc = await makePc('PC A', { enabled: false, port, deps: tailnetDeps() });
+      const opened = await pc.server.discovery.open({ turnOn: true });
+      expect(opened).toMatchObject({
+        ok: false,
+        reason: 'listen-failed',
+        listen: { lastErrorCode: 'EADDRINUSE', report: { problem: { kind: 'port-in-use', port } } },
+      });
+      const report = opened.ok ? undefined : opened.listen?.report;
+      expect(typeof report?.suggestion).toBe('number');
+      expect(report?.suggestion).not.toBe(port);
+      expect(pc.controller.current().enabled).toBe(false);
+    } finally {
+      await new Promise<void>((resolve) => blocker.close(() => resolve()));
+    }
+  }, 30_000);
+
   it('a port change during a window that turned A2A on closes it without turning A2A off', async () => {
     const pc = await makePc('PC A', { enabled: false, deps: tailnetDeps() });
     await pc.server.discovery.open({ turnOn: true });

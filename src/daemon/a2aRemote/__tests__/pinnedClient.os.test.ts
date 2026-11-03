@@ -6,7 +6,7 @@ import type http from 'node:http';
 import type net from 'node:net';
 import path from 'node:path';
 import tls from 'node:tls';
-import { PinnedClientError, PinnedTlsClient, type PinnedClientOptions, type PinnedSseEvent } from '../pinnedClient';
+import { PROBE_MAX_BYTES, PinnedClientError, PinnedTlsClient, probeUnpinned, type PinnedClientOptions, type PinnedSseEvent } from '../pinnedClient';
 
 // Test-only, not a secret: two throwaway self-signed EC P-256 certificates
 // committed under fixtures/ (see fixtures/README.md) so no test shells out to openssl.
@@ -552,5 +552,69 @@ describe('PinnedTlsClient — streamed download', () => {
     });
     expect(got).toBe('timeout');
     expect(Date.now() - t0).toBeLessThan(3_000);
+  });
+});
+
+describe('probeUnpinned — the tailnet discovery probe', () => {
+  const probe = (port: number, path = '/api/a2a/discover') =>
+    probeUnpinned({ address: '127.0.0.1', port, path, connectTimeoutMs: 2_000, requestTimeoutMs: 2_000 });
+
+  it('reports the leaf certificate the server presented, whatever it is', async () => {
+    const { port } = await httpsServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{"discover":1}');
+    });
+    expect(await probe(port)).toEqual({ fingerprint256: FP_A, status: 200, json: { discover: 1 } });
+  });
+
+  it('sends a bare GET: no credential, no body, nothing but Accept', async () => {
+    const { port, seen } = await httpsServer((_req, res) => {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end('{"ok":false,"error":"unauthorized"}');
+    });
+    expect(await probe(port)).toMatchObject({ status: 401, json: { ok: false, error: 'unauthorized' } });
+    expect(seen).toHaveLength(1);
+    expect(seen[0].method).toBe('GET');
+    expect(seen[0].body).toBe('');
+    expect(Object.keys(seen[0].headers).sort()).toEqual(['accept', 'connection', 'host']);
+    // The signature itself has nowhere to put a credential.
+    expect(probeUnpinned.length).toBe(1);
+  });
+
+  it('caps the answer at 4 KB', async () => {
+    const { port } = await httpsServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ pad: 'x'.repeat(PROBE_MAX_BYTES) }));
+    });
+    await expect(probe(port)).rejects.toMatchObject({ code: 'protocol' });
+  });
+
+  it('reports connect-failed, with nothing sent, when nothing listens', async () => {
+    const { port } = await httpsServer(() => undefined);
+    for (let close = closers.pop(); close; close = closers.pop()) await close();
+    await expect(probe(port)).rejects.toMatchObject({ code: 'connect-failed', sent: false });
+  });
+
+  it('times out an answer that never comes', async () => {
+    const { port } = await httpsServer(() => { /* never answers */ });
+    await expect(probeUnpinned({ address: '127.0.0.1', port, path: '/', connectTimeoutMs: 2_000, requestTimeoutMs: 200 })).rejects.toMatchObject({ code: 'timeout' });
+  });
+});
+
+describe('PinnedTlsClient — fixed headers', () => {
+  it('sends x-wmux-* headers on every request', async () => {
+    const { port, seen } = await httpsServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('{}');
+    });
+    await client({ port, headers: { 'x-wmux-discover-token': 'tok' } }).requestJson('GET', '/a');
+    expect(seen[0].headers['x-wmux-discover-token']).toBe('tok');
+    expect(seen[0].headers['authorization']).toBeUndefined();
+  });
+
+  it('refuses any other header name up front', () => {
+    for (const name of ['Authorization', 'Cookie', 'Host', 'x-wmux', 'x-wmux-a b']) {
+      expect(() => client({ port: 1, headers: { [name]: 'v' } }), name).toThrow(expect.objectContaining({ code: 'bad-options' }));
+    }
   });
 });
