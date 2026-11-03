@@ -456,7 +456,8 @@ draw above every ring.
 Each marker fades 1.5 s after its own last action. `markerClear {id}` removes
 one at once; all of them go at once on `releaseInput` (what main sends on the
 stop key), on `configure { overlay: false }`, and when the helper exits. A
-waiting marker stays until that agent acts again or is cleared. With Reduce
+waiting marker fades on its own 15 s after `markerWait` (main's lease idle
+time), unless that agent acts again or is cleared first. With Reduce
 motion on (`accessibilityDisplayShouldReduceMotion`) pointers jump instead of
 moving, there is no pulse and no fade.
 

@@ -12,6 +12,8 @@ import { useT } from '../../hooks/useT';
 import { useRowStore } from '../../stores/rowStore';
 import { getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import type { Workspace } from '../../../shared/types';
+import { AGENT_MARKER_COLORS } from '../../../shared/computer/agentMarker';
+import type { TranslationKey } from '../../i18n/locales/en';
 
 /** Dots a sidebar row draws before it folds the rest into "+N". */
 export const ROW_MARKER_DOTS_MAX = 3;
@@ -34,10 +36,25 @@ export function workspaceMarkerColors(
   return out ?? NONE;
 }
 
+/** Spoken names of AGENT_MARKER_COLORS, in palette order, so dots of different agents read differently. */
+const COLOR_NAME_KEYS = [
+  'computerUse.colorName.orange',
+  'computerUse.colorName.blue',
+  'computerUse.colorName.violet',
+  'computerUse.colorName.pink',
+  'computerUse.colorName.teal',
+  'computerUse.colorName.yellow',
+  'computerUse.colorName.lime',
+  'computerUse.colorName.sky',
+  'computerUse.colorName.magenta',
+  'computerUse.colorName.silver',
+] as const satisfies readonly TranslationKey[];
+
 /** One pane's computer-use colour. */
 export function ComputerUseDot({ color }: { color: string }) {
   const t = useT();
-  const label = t('computerUse.markerColor');
+  const nameKey = COLOR_NAME_KEYS[(AGENT_MARKER_COLORS as readonly string[]).indexOf(color)];
+  const label = nameKey ? t('computerUse.markerColorNamed', { name: t(nameKey) }) : t('computerUse.markerColor');
   return (
     <span
       className="inline-block h-2 w-2 flex-none rounded-full"

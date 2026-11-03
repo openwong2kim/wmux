@@ -83,7 +83,7 @@ describe('SurfaceTabs — computer-use colour dot', () => {
     await mount([{ ptyId: 'pty-cu-a', color: '#5AA2FF' }]);
     expect(tabDots()).toEqual({ 'surf-a': '#5AA2FF', 'surf-b': null });
     const dot = container.querySelector<HTMLElement>('[data-computer-use-color]');
-    expect(dot?.getAttribute('aria-label')).toBe('Computer use color');
+    expect(dot?.getAttribute('aria-label')).toBe('Computer use color: blue');
     expect(dot?.style.backgroundColor).toBe('rgb(90, 162, 255)');
   });
 

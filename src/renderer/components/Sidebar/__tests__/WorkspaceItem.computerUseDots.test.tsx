@@ -90,8 +90,11 @@ describe('WorkspaceItem — computer-use colour dots', () => {
     expect(dotColors()).toEqual(['#FF8A3D', '#5AA2FF', '#A98BFF']);
     expect(more()?.textContent).toBe('+2');
     expect(more()?.getAttribute('aria-label')).toBe('More panes with a computer use color: 2');
-    for (const dot of container.querySelectorAll('[data-computer-use-color]')) {
-      expect(dot.getAttribute('title')).toBe('Computer use color');
-    }
+    // Each dot says which colour it is, so two agents' dots read differently.
+    expect([...container.querySelectorAll('[data-computer-use-color]')].map((dot) => dot.getAttribute('aria-label'))).toEqual([
+      'Computer use color: orange',
+      'Computer use color: blue',
+      'Computer use color: violet',
+    ]);
   });
 });
