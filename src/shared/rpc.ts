@@ -1685,6 +1685,7 @@ import type {
   A2aRemoteHostRecordV1,
 } from './a2aRemote';
 import type { TailscaleCheckItem } from './web';
+import type { ListenProblemReport } from './netListen';
 
 /** `a2a.remote.status` (and the echo of `a2a.remote.configure`). */
 export interface A2aRemoteStatus {
@@ -1831,7 +1832,18 @@ export type A2aDiscoverOpenResult =
       /** For `tailscale-not-ready`. */
       check?: TailscaleCheckItem;
       /** For `listen-failed`: the listener's own error, as `a2a.remote.status` reports it. */
-      listen?: { port: number; lastError: string | null; lastErrorCode: string | null; lastErrorPort: number | null };
+      listen?: {
+        port: number;
+        lastError: string | null;
+        lastErrorCode: string | null;
+        lastErrorPort: number | null;
+        /**
+         * For a failed bind: what `net.listenProblem` would say (the holder,
+         * a port that looked free), taken before A2A was turned off again,
+         * after which `net.listenProblem` has nothing to report.
+         */
+        report?: ListenProblemReport;
+      };
     };
 
 /** Why a discovery window ended. */
