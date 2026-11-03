@@ -494,7 +494,11 @@ draws:
 - a 3 px ring around the agent's target window, and a name pill above the
   window's top-left corner (`● #api-1 · Claude Code · typing`). A second agent
   on the same window rings 3 px outside the first, and its pill sits beside
-  the first one's while they fit over the window, then on a new row above;
+  the first one's while they fit over the window, then on a new row above.
+  When the rows do not all fit above the window (below the top of the
+  monitor's work area), they all go inside the window's top-left corner
+  instead, 8 px in, stacked downward and wrapped to the window's width less
+  16 px;
 - for `click` and `scroll` (UIA Invoke included), the agent's own pointer: an
   arrow in its colour with a name chip, which moves to the point and pulses on
   a press;
