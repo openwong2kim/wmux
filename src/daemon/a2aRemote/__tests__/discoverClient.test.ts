@@ -192,6 +192,42 @@ describe('DiscoverClient — what a receiver answers cannot steer the pairing', 
     expect(made.calls.some((c) => `${c.method} ${c.path}` === REVEAL)).toBe(false);
   });
 
+  it('keeps its own deadlines when the other PC’s clock runs 5 minutes behind, and joins on confirm', async () => {
+    const behind = (): number => Date.now() - 300_000;
+    const { discover } = makeClient({
+      [REQUESTS]: created,
+      [REVEAL]: () => ({ status: 200, json: { expiresAt: behind() + 120_000 } }),
+      [POLL]: () => ({ status: 200, json: { state: 'allowed', expiresAt: behind() + 60_000, code: 'ABCDEFGH' } }),
+      'POST /api/a2a/pair': () => ({
+        status: 200,
+        json: { credential: formatPeerCredential({ peerId: PEER_ID, secret: randomSecret() }), hostId: A_HOST, name: 'PC A', protocol: A2A_REMOTE_PROTOCOL },
+      }),
+      'GET /api/a2a/hello': () => ({ status: 200, json: { hostId: A_HOST, name: 'PC A', protocol: A2A_REMOTE_PROTOCOL } }),
+    });
+    await discover.scan();
+    const connected = await discover.connect(A_IP);
+    if (!connected.ok) throw new Error('connect failed');
+    expect(connected.expiresAt).toBeGreaterThan(Date.now() + 110_000);
+    await waitState(discover, 'confirm');
+    expect(discover.outgoingStatus().expiresAt).toBeGreaterThan(Date.now() + 55_000);
+    await deliberateSleep(100, 'a negative check: several poll rounds pass and the confirm window is still open');
+    expect(discover.outgoingStatus().state).toBe('confirm');
+    discover.confirm();
+    await waitState(discover, 'joined');
+  });
+
+  it('a far-future deadline from the other PC does not extend the confirm window', async () => {
+    const { discover } = makeClient({
+      [REQUESTS]: created,
+      [REVEAL]: revealed,
+      [POLL]: () => ({ status: 200, json: { state: 'allowed', expiresAt: Date.now() + 365 * 86_400_000, code: 'ABCDEFGH' } }),
+    });
+    await discover.scan();
+    await discover.connect(A_IP);
+    await waitState(discover, 'confirm');
+    expect(discover.outgoingStatus().expiresAt).toBeLessThanOrEqual(Date.now() + 60_000);
+  });
+
   it('clamps the card’s deadline and ends a wait past it, withdrawn', async () => {
     let skew = 0;
     const { discover, calls } = makeClient(

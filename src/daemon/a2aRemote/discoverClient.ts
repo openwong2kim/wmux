@@ -320,10 +320,8 @@ export class DiscoverClient {
 
     const revealed = await this.call(session, 'POST', `${A2A_ROUTES.discover}/requests/${requestId}/reveal`, { nonce: nonceR });
     if (revealed.status !== 200) throw refusalOf(revealed.status, revealed.json);
-    const r = isRecord(revealed.json) ? revealed.json : {};
-    // The card lasts at most DISCOVER_DECIDE_MS, whatever the other PC says.
-    const latest = this.now() + DISCOVER_DECIDE_MS;
-    const expiresAt = typeof r['expiresAt'] === 'number' ? Math.min(r['expiresAt'], latest) : latest;
+    // Deadlines here are on this PC's clock only: the other PC's may differ, and it enforces its own.
+    const expiresAt = this.now() + DISCOVER_DECIDE_MS;
     const code = discoverCode({
       nonceS: nonceS as string,
       nonceR,
@@ -366,11 +364,9 @@ export class DiscoverClient {
         if (typeof code !== 'string' || !INVITE_CODE_RE.test(code)) {
           return this.end(session, 'failed', { error: 'protocol', detail: 'the other PC allowed without a valid pairing code' }, { withdraw: true });
         }
-        // Held until this PC's human confirms the code too, for at most the code's own lifetime.
+        // Held until this PC's human confirms the code too, for at most the code's lifetime on this PC's clock.
         session.grant = code;
-        const latest = this.now() + DISCOVER_GRANT_MS;
-        const expiresAt = typeof p['expiresAt'] === 'number' ? Math.min(p['expiresAt'], latest) : latest;
-        session.status = { ...session.status, state: 'confirm', expiresAt };
+        session.status = { ...session.status, state: 'confirm', expiresAt: this.now() + DISCOVER_GRANT_MS };
         return this.schedulePoll(session);
       }
       case 'denied':
