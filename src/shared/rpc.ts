@@ -1375,13 +1375,6 @@ export interface DaemonCreateSessionParams {
    */
   env?: Record<string, string>;
   /**
-   * True when `env` was built with the passthrough policy (credential-named
-   * vars inherited). sessions.json never stores credential values, so the
-   * daemon persists only this flag and recovery re-reads those values from its
-   * own process env (shared/envFilter restoreCredentialValues). Absent = gated.
-   */
-  credentialPassthrough?: boolean;
-  /**
    * A bot worker's named secrets (shared/botSecret.ts sanitizeSecretEnv),
    * resolved by main from a single-use grant just before this create. The
    * daemon adds them to the spawned process's environment only: they are

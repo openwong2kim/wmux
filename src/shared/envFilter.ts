@@ -282,28 +282,44 @@ export function stripCredentialValues(
 }
 
 /**
- * Put credential-named values back into a recovered session's env.
- *
- * sessions.json never holds credential values (stripCredentialValues runs on
- * every write), so a pane replayed from it comes back without the *_TOKEN /
- * *_KEY vars it was created with. For a pane whose env policy passed
- * credentials through, recovery re-reads them from `liveEnv` (the daemon's own
- * process env) instead. Only credential-named keys are added, only when the
- * persisted env does not already carry that name (case-insensitively, since
- * Windows env names are), and wmux-internal keys are never taken. Values are
- * added to the returned spawn env only; the caller must not persist them.
- *
- * Returns a fresh object; `persisted` is not modified.
+ * Whether a user shell may be handed `key` as a credential (#3049): a
+ * credential name that is neither wmux-internal nor in the WMUX_* namespace.
+ * WMUX_PUSH_RELAY_SECRET is named like a secret but is wmux's own, so the
+ * namespace is excluded whole. Case-insensitive.
  */
-export function restoreCredentialValues(
-  persisted: Record<string, string> | undefined | null,
-  liveEnv: NodeJS.ProcessEnv = globalThis.process.env,
+export function isPassableCredentialKey(key: string): boolean {
+  return isCredentialEnvKey(key) && !isInternalEnvKey(key) && !key.toUpperCase().startsWith('WMUX_');
+}
+
+/**
+ * The credential-named variables of `baseEnv` a user shell inherits: the set a
+ * new tab gets, which main hands the daemon when it starts a restored user
+ * shell (sessions.json never holds these values). No default env: the caller
+ * names whose environment this is, so the daemon never reads its own.
+ */
+export function pickCredentialEnv(baseEnv: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (value === undefined || !isPassableCredentialKey(key)) continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * `env` plus the passable credential values of `credentialEnv`, as a fresh
+ * object. A key `env` already carries is never overridden (compared
+ * case-insensitively, as Windows env names are). The result is a spawn env:
+ * the caller must not persist it. `env` is not modified.
+ */
+export function mergeCredentialEnv(
+  env: Record<string, string>,
+  credentialEnv: Record<string, string>,
 ): Record<string, string> {
-  const out: Record<string, string> = { ...(persisted && typeof persisted === 'object' ? persisted : {}) };
+  const out: Record<string, string> = { ...env };
   const present = new Set(Object.keys(out).map((k) => k.toUpperCase()));
-  for (const [key, value] of Object.entries(liveEnv)) {
-    if (value === undefined) continue;
-    if (isInternalEnvKey(key) || !isCredentialEnvKey(key)) continue;
+  for (const [key, value] of Object.entries(credentialEnv)) {
+    if (typeof value !== 'string' || !isPassableCredentialKey(key)) continue;
     if (present.has(key.toUpperCase())) continue;
     out[key] = value;
     present.add(key.toUpperCase());

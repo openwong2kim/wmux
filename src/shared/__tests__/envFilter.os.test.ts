@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildSafeChildEnv,
   isSensitiveEnvKey,
@@ -8,7 +8,8 @@ import {
   isInternalEnvKey,
   isCredentialEnvKey,
   stripCredentialValues,
-  restoreCredentialValues,
+  pickCredentialEnv,
+  mergeCredentialEnv,
   isNestingMarker,
 } from '../envFilter';
 
@@ -233,43 +234,64 @@ describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
   });
 });
 
-describe('restoreCredentialValues (recovery of a passthrough pane)', () => {
+describe('pickCredentialEnv (what main hands a restored user shell, #3049)', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
   // Placeholder values only; no real secret is ever used in a test.
-  const live = {
-    PATH: '/live/bin',
-    GITHUB_TOKEN: 'live-token-placeholder',
-    API_KEY: 'live-key-placeholder',
+  const mainEnv = {
+    PATH: '/main/bin',
+    GH_TOKEN: 'main-placeholder',
+    API_KEY: 'key-placeholder',
+    WMUX_PUSH_RELAY_SECRET: 'relay-placeholder',
     WMUX_AUTH_TOKEN: 'internal-placeholder',
+    wmux_custom_token: 'lower-placeholder',
+    ELECTRON_RUN_AS_NODE: '1',
   };
 
-  it('adds credential-named vars from the live env to a stripped persisted env', () => {
-    const restored = restoreCredentialValues({ PATH: '/persisted/bin', WMUX_PTY_ID: 'p1' }, live);
-    expect(restored.GITHUB_TOKEN).toBe('live-token-placeholder');
-    expect(restored.API_KEY).toBe('live-key-placeholder');
+  it('takes credential-named vars and nothing else', () => {
+    expect(pickCredentialEnv(mainEnv)).toEqual({ GH_TOKEN: 'main-placeholder', API_KEY: 'key-placeholder' });
   });
 
-  it('never overrides a persisted key and never adds non-credential or internal keys', () => {
-    const restored = restoreCredentialValues({ PATH: '/persisted/bin', github_token: 'kept' }, live);
-    expect(restored.PATH).toBe('/persisted/bin');
-    expect(restored.github_token).toBe('kept');
-    expect(restored.GITHUB_TOKEN).toBeUndefined();
-    expect(restored.WMUX_AUTH_TOKEN).toBeUndefined();
+  it('never takes the push relay secret or any other WMUX_* name, whatever its case', () => {
+    const picked = pickCredentialEnv(mainEnv);
+    expect(picked.WMUX_PUSH_RELAY_SECRET).toBeUndefined();
+    expect(picked.WMUX_AUTH_TOKEN).toBeUndefined();
+    expect(picked.wmux_custom_token).toBeUndefined();
   });
 
-  it('returns a fresh object and leaves the persisted env untouched', () => {
-    const persisted = { PATH: '/p' };
-    const restored = restoreCredentialValues(persisted, live);
-    expect(restored).not.toBe(persisted);
-    expect(persisted).toEqual({ PATH: '/p' });
+  it('reads only the env it is given, never process.env', () => {
+    vi.stubEnv('GH_TOKEN', 'process-env-placeholder');
+    expect(pickCredentialEnv({ PATH: '/p' })).toEqual({});
+  });
+});
+
+describe('mergeCredentialEnv (spawn env of a restored user shell, #3049)', () => {
+  it('adds the credential values to a stripped persisted env', () => {
+    const merged = mergeCredentialEnv({ PATH: '/persisted/bin', WMUX_PTY_ID: 'p1' }, { GH_TOKEN: 'main-placeholder' });
+    expect(merged).toEqual({ PATH: '/persisted/bin', WMUX_PTY_ID: 'p1', GH_TOKEN: 'main-placeholder' });
   });
 
-  it('round-trips with stripCredentialValues: persisted form stays credential-free', () => {
-    const restored = restoreCredentialValues(stripCredentialValues({ PATH: '/p', GITHUB_TOKEN: 'x' }), live);
-    expect(stripCredentialValues(restored)).toEqual({ PATH: '/p' });
+  it('never overrides a key the env already carries, compared case-insensitively', () => {
+    const merged = mergeCredentialEnv({ PATH: '/p', gh_token: 'kept' }, { GH_TOKEN: 'main-placeholder' });
+    expect(merged.gh_token).toBe('kept');
+    expect(merged.GH_TOKEN).toBeUndefined();
   });
 
-  it('tolerates a missing persisted env', () => {
-    expect(restoreCredentialValues(undefined, { GITHUB_TOKEN: 't' })).toEqual({ GITHUB_TOKEN: 't' });
+  it('drops anything that is not a passable credential', () => {
+    const merged = mergeCredentialEnv({ PATH: '/p' }, { PATH: '/evil', WMUX_PUSH_RELAY_SECRET: 'relay-placeholder', NODE_OPTIONS: '--x' });
+    expect(merged).toEqual({ PATH: '/p' });
+  });
+
+  it('returns a fresh object and leaves the env untouched', () => {
+    const env = { PATH: '/p' };
+    const merged = mergeCredentialEnv(env, { GH_TOKEN: 'main-placeholder' });
+    expect(merged).not.toBe(env);
+    expect(env).toEqual({ PATH: '/p' });
+  });
+
+  it('round-trips with stripCredentialValues: the persisted form stays credential-free', () => {
+    const merged = mergeCredentialEnv(stripCredentialValues({ PATH: '/p', GITHUB_TOKEN: 'x' }), { GITHUB_TOKEN: 'main-placeholder' });
+    expect(stripCredentialValues(merged)).toEqual({ PATH: '/p' });
   });
 });
 
