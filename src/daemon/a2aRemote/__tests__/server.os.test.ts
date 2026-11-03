@@ -660,6 +660,71 @@ describe('A2aServer — tailnet discovery', () => {
     expect(pc.server.status().listening).toBe(false);
   });
 
+  it('an invite opened during a window that turned A2A on keeps A2A on', async () => {
+    const pc = await makePc('PC A', { enabled: false, deps: tailnetDeps() });
+    await pc.server.discovery.open({ turnOn: true });
+    const invite = pc.server.beginPairing();
+    pc.server.discovery.close('stopped');
+    await pc.server.whenIdle();
+    expect(pc.controller.current().enabled).toBe(true);
+    expect(pc.server.pairingStatus()).toMatchObject({ active: true, expiresAt: invite.expiresAt });
+  });
+
+  it('a request body that trickles in is cut off, and the slot is free again', async () => {
+    const pc = await makePc('PC A', { deps: { ...tailnetDeps(), bodyTimeoutMs: 300 } });
+    await pc.server.discovery.open({ turnOn: false });
+    const cut = await new Promise<string>((resolve) => {
+      const req = https.request(
+        {
+          host: '127.0.0.1',
+          port: portOf(pc),
+          method: 'POST',
+          path: '/api/a2a/discover/requests',
+          headers: { 'Content-Length': '500' },
+          rejectUnauthorized: false,
+          agent: false,
+        },
+        (res) => resolve(`answered ${res.statusCode}`),
+      );
+      req.on('error', () => resolve('cut'));
+      req.write('{"protocol":');
+    });
+    expect(cut).toMatch(/cut|answered 400/);
+    await askOverHttp(pc);
+  });
+
+  it('a daemon restart whose marker cannot turn A2A off does not start the listener', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-marker-'));
+    try {
+      const a2aDir = path.join(dir, 'a2a');
+      fs.mkdirSync(a2aDir, { recursive: true });
+      fs.writeFileSync(path.join(a2aDir, DISCOVERY_MARKER_FILE), '{"v":1}');
+      const config = { a2aRemote: { enabled: true, port: await freePort() } } as unknown as DaemonConfig;
+      const controller = new A2aRemoteController({
+        config,
+        persist: () => {
+          throw new Error('disk full');
+        },
+      });
+      const server = new A2aServer({
+        controller,
+        identityDir: a2aDir,
+        peers: { resolve: async () => ({ ok: false, reason: 'unknown' }), touch: () => undefined, mint: async () => ({ peerId: '', secret: '' }), listByHost: () => [], revoke: () => false },
+        bindHost: '127.0.0.1',
+        log: () => undefined,
+        ...tailnetDeps(),
+      });
+      await server.whenIdle();
+      expect(server.status().listening).toBe(false);
+      // The marker stays for the next boot.
+      expect(fs.existsSync(path.join(a2aDir, DISCOVERY_MARKER_FILE))).toBe(true);
+      server.dispose();
+      await server.whenIdle();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('a daemon restart with the marker present starts with A2A off', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'a2a-marker-'));
     try {

@@ -26,7 +26,7 @@ import { CONTINUE_BYTES_MAX } from '../../shared/a2aContinue';
 import type { A2aRemotePairBeginResult, A2aRemotePairStatus, A2aRemoteStatus } from '../../shared/rpc';
 import type { WebA2aPeer, WebA2aRoutes } from '../web/WebTerminalServer';
 import { A2A_REMOTE_CONFIG_CHANGED, type A2aRemoteConfig, type A2aRemoteController } from './controller';
-import { DiscoveryWindow, isDiscoverRoute, plainIpv4, revertDiscoveryTurnOn, type DiscoveryDeps } from './discovery';
+import { DISCOVER_BODY_TIMEOUT_MS, DiscoveryWindow, isDiscoverRoute, plainIpv4, revertDiscoveryTurnOn, type DiscoveryDeps } from './discovery';
 import { loadOrCreateHostIdentity, type HostIdentity, type HostIdentityOptions } from './hostIdentity';
 import { PairingSlot, inviteHost } from './pairing';
 import type { PeerAuthResult } from './peerStore';
@@ -277,7 +277,8 @@ export class A2aServer {
     const gate = deps.tailnetGate ?? {};
     this.addressesOf = gate.addressesOf ?? ((req) => ({ local: req.socket.localAddress ?? '', remote: req.socket.remoteAddress ?? '' }));
     // Before the first reconcile: a window that turned A2A on and never finished turns it off again.
-    revertDiscoveryTurnOn(deps.controller, deps.identityDir, this.log);
+    // When that cannot be written, the listener does not start on this boot either.
+    const mayStart = revertDiscoveryTurnOn(deps.controller, deps.identityDir, this.log);
     this.discovery = new DiscoveryWindow({
       tailnet: deps.tailnet ?? tailnetCliFromEnv(),
       controller: deps.controller,
@@ -298,7 +299,7 @@ export class A2aServer {
     });
     deps.controller.on(A2A_REMOTE_CONFIG_CHANGED, this.onChanged);
     // `changed` does not fire at boot: an enabled listener starts here.
-    if (deps.controller.current().enabled) this.scheduleReconcile();
+    if (mayStart && deps.controller.current().enabled) this.scheduleReconcile();
   }
 
   /** Resolves once every queued start/stop/rebind has run. */
@@ -360,6 +361,8 @@ export class A2aServer {
     const tailnet = new Set(this.tailnetIpv4s());
     const alt = inviteAlt(ips, host, tailnet);
     const opened = this.pairing.begin({ host, port: this.port, fingerprint256: this.identity.fingerprint256, alt });
+    // An invite needs the listener past any discovery window that turned it on.
+    this.discovery.keepA2aOn();
     const addresses = [host, ...alt];
     return { ...opened, addresses, tailnet: addresses.filter((a) => tailnet.has(a)) };
   }
@@ -559,7 +562,7 @@ export class A2aServer {
           path: p,
           source: plainIpv4(remote),
           token: typeof token === 'string' ? token : undefined,
-          readBody: () => readJsonBody(req, A2A_DISCOVER_BODY_MAX),
+          readBody: () => readDiscoverBody(req, Math.min(DISCOVER_BODY_TIMEOUT_MS, this.deps.bodyTimeoutMs ?? DISCOVER_BODY_TIMEOUT_MS)),
         });
         if (answer === 'too-large') return refuseTooLarge(req, res);
         if (answer) {
@@ -735,7 +738,7 @@ export class A2aServer {
     }
     this.log('info', `[a2a-remote] paired with host ${hostId}`);
     if (redeemed === 'ok') this.discovery.notePaired({ hostId, name });
-    else this.discovery.noteInvitePaired();
+    else this.discovery.keepA2aOn();
     const response: A2aPairResponse = {
       credential: formatPeerCredential(minted),
       hostId: identity.hostId,
@@ -880,6 +883,21 @@ export function readJsonBody(req: http.IncomingMessage, max: number): Promise<un
       if (size <= max) reject(err);
     });
   });
+}
+
+/**
+ * A discovery request's body: at most `A2A_DISCOVER_BODY_MAX` bytes within
+ * `ms`, past which the connection is cut. A cut or failed read is undefined
+ * (no body), so the request's slot is never held by a slow sender.
+ */
+function readDiscoverBody(req: http.IncomingMessage, ms: number): Promise<unknown> {
+  extendBodyDeadline(req, ms);
+  const cut = new Promise<undefined>((resolve) => {
+    req.once('close', () => {
+      if (!req.complete) resolve(undefined);
+    });
+  });
+  return Promise.race([readJsonBody(req, A2A_DISCOVER_BODY_MAX).catch(() => undefined), cut]);
 }
 
 /** 413, then cut the connection once the answer is written — never drain an oversized body. */

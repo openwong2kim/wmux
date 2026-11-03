@@ -7,6 +7,7 @@ import {
   A2A_DISCOVER_NAME_MAX,
   A2A_REMOTE_PROTOCOL,
   A2A_ROUTES,
+  isCanonicalIpv4,
   isHostId,
   isTailnetIpv4,
   normalizeFingerprint256,
@@ -66,6 +67,10 @@ export const DISCOVER_COMMIT_MS = 10_000;
 export const DISCOVER_DECIDE_MS = 120_000;
 /** How long the requester has to redeem the pairing code once allowed. */
 export const DISCOVER_GRANT_MS = 60_000;
+/** How long a redeemed code's pairing may take to be minted before it counts as failed. */
+export const DISCOVER_MINT_MS = 30_000;
+/** How long a discovery request's (2 KB) body may take to arrive. */
+export const DISCOVER_BODY_TIMEOUT_MS = 3_000;
 export const DISCOVER_SNAPSHOT_REFRESH_MS = 30_000;
 /** At most one status re-read per this long when a source is not in the snapshot. */
 export const DISCOVER_MISS_REFRESH_MS = 5_000;
@@ -99,6 +104,8 @@ export interface DiscoverySnapshot {
   selfIps: ReadonlySet<string>;
   /** IPv4s of this user's untagged, not shared-in nodes; this PC's own removed. */
   peerIps: ReadonlySet<string>;
+  /** IPv4s of listed nodes that may not ask: another user's, tagged or shared in. */
+  excludedIps: ReadonlySet<string>;
   selfStableId: string;
   selfUserId: number | null;
 }
@@ -106,11 +113,13 @@ export interface DiscoverySnapshot {
 export function snapshotFromStatus(status: TailnetStatus): DiscoverySnapshot {
   const selfIps = new Set(status.self.ipv4s);
   const peerIps = new Set<string>();
+  const excludedIps = new Set<string>();
   for (const peer of status.peers) {
-    if (status.self.userId === null || peer.userId !== status.self.userId || peer.tags.length > 0 || peer.sharee) continue;
-    for (const ip of peer.ipv4s) if (!selfIps.has(ip)) peerIps.add(ip);
+    const allowed = status.self.userId !== null && peer.userId === status.self.userId && peer.tags.length === 0 && !peer.sharee;
+    for (const ip of peer.ipv4s) if (!selfIps.has(ip)) (allowed ? peerIps : excludedIps).add(ip);
   }
-  return { selfIps, peerIps, selfStableId: status.self.stableId, selfUserId: status.self.userId };
+  for (const ip of peerIps) excludedIps.delete(ip);
+  return { selfIps, peerIps, excludedIps, selfStableId: status.self.stableId, selfUserId: status.self.userId };
 }
 
 /** An IPv4-mapped IPv6 address as its IPv4. */
@@ -123,20 +132,22 @@ export function plainIpv4(address: string): string {
  * PC's tailnet address from a listed node. `unknown`: the same, but the
  * source is a tailnet address the snapshot does not list (a node that just
  * joined; worth one re-read). `refuse`: anything else, including a LAN
- * address, a connection to a LAN address, and this PC itself.
+ * address, a connection to a LAN address, this PC itself, and a listed node
+ * that may not ask (another user's, tagged or shared in).
  */
 export function judgeTailnetSource(snap: DiscoverySnapshot, localAddress: string, remoteAddress: string): 'accept' | 'unknown' | 'refuse' {
   const local = plainIpv4(localAddress);
   const remote = plainIpv4(remoteAddress);
   if (!snap.selfIps.has(local)) return 'refuse';
-  if (!isTailnetIpv4(remote) || snap.selfIps.has(remote)) return 'refuse';
+  if (!isTailnetIpv4(remote) || snap.selfIps.has(remote) || snap.excludedIps.has(remote)) return 'refuse';
   return snap.peerIps.has(remote) ? 'accept' : 'unknown';
 }
 
 // --- macOS: which interface a source routes through ----------------------------
 
-/** The interface `route -n get <ip>` names, or null. macOS only. */
+/** The interface `route -n get <ip>` names, or null. macOS only; `ip` must be a canonical tailnet IPv4. */
 export function routeInterface(ip: string, signal: AbortSignal): Promise<string | null> {
+  if (!isCanonicalIpv4(ip) || !isTailnetIpv4(ip)) return Promise.resolve(null);
   return new Promise((resolve) => {
     execFile(
       '/sbin/route',
@@ -166,19 +177,21 @@ export function interfaceHolding(ifaces: NodeJS.Dict<os.NetworkInterfaceInfo[]>,
  * At boot: a marker left by a window that turned A2A on and never turned it
  * off again (the daemon stopped first) turns A2A off before the listener
  * starts, then goes. When the setting cannot be written, the marker stays for
- * the next boot.
+ * the next boot and this answers false: the listener must not start on this
+ * boot either.
  */
-export function revertDiscoveryTurnOn(controller: A2aRemoteController, dataDir: string, log: (level: 'info' | 'warn' | 'error', msg: string) => void): void {
+export function revertDiscoveryTurnOn(controller: A2aRemoteController, dataDir: string, log: (level: 'info' | 'warn' | 'error', msg: string) => void): boolean {
   const marker = path.join(dataDir, DISCOVERY_MARKER_FILE);
-  if (!fs.existsSync(marker)) return;
+  if (!fs.existsSync(marker)) return true;
   try {
     controller.configure({ enabled: false });
   } catch (err) {
-    log('error', `[a2a-remote] could not turn A2A off after an unfinished discovery window: ${errMsg(err)}`);
-    return;
+    log('error', `[a2a-remote] could not turn A2A off after an unfinished discovery window; it stays off for now: ${errMsg(err)}`);
+    return false;
   }
   removeFile(marker, log);
   log('info', '[a2a-remote] turned A2A off again: a discovery window had turned it on and never finished');
+  return true;
 }
 
 function removeFile(file: string, log: (level: 'info' | 'warn' | 'error', msg: string) => void): void {
@@ -283,6 +296,10 @@ export class DiscoveryWindow {
   private readonly markerPath: string;
   private win: OpenWindow | null = null;
   private opening: Promise<A2aDiscoverOpenResult> | null = null;
+  /** The connection an `open` in flight belongs to. */
+  private openingClientId: string | null = null;
+  /** Bumped by a Stop, dispose, or the opener going away, so an `open` in flight gives up. */
+  private openGen = 0;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   /** This window turned A2A on (cleared by any other settings change or an invite pairing). */
@@ -312,21 +329,30 @@ export class DiscoveryWindow {
   /** Open the window (or answer the one already open). */
   open(opts: { turnOn: boolean }, clientId: string | null = null): Promise<A2aDiscoverOpenResult> {
     if (this.isOpen()) return Promise.resolve({ ok: true, status: this.status() });
-    this.opening ??= this.doOpen(opts, clientId).finally(() => {
-      this.opening = null;
-    });
+    if (!this.opening) {
+      this.openingClientId = clientId;
+      this.opening = this.doOpen(opts, clientId, this.openGen).finally(() => {
+        this.opening = null;
+        this.openingClientId = null;
+      });
+    }
     return this.opening;
   }
 
-  private async doOpen(opts: { turnOn: boolean }, clientId: string | null): Promise<A2aDiscoverOpenResult> {
+  private async doOpen(opts: { turnOn: boolean }, clientId: string | null, gen: number): Promise<A2aDiscoverOpenResult> {
+    // Every await below may see a Stop (or the opener going away) land: then nothing opens.
+    const cancelled = (): boolean => gen !== this.openGen;
     const read = await this.deps.tailnet.status(AbortSignal.timeout(STATUS_TIMEOUT_MS));
+    if (cancelled()) return { ok: false, reason: 'cancelled' };
     if (!read.ok) return { ok: false, reason: 'tailscale-not-ready', check: read.check };
     const snapshot = snapshotFromStatus(read.status);
     const [selfIp] = [...snapshot.selfIps];
     if (!selfIp) return { ok: false, reason: 'no-tailnet-ipv4' };
     if (tailnetRangeOnLan(this.interfaces(), [...snapshot.selfIps])) return { ok: false, reason: 'tailnet-range-on-lan' };
     // `whois --json` must work here, or no request could ever be identified.
-    if (!(await this.deps.tailnet.whois(selfIp))) return { ok: false, reason: 'tailscale-whois-unsupported' };
+    const selfWhois = await this.deps.tailnet.whois(selfIp);
+    if (cancelled()) return { ok: false, reason: 'cancelled' };
+    if (!selfWhois) return { ok: false, reason: 'tailscale-whois-unsupported' };
 
     if (!this.deps.controller.current().enabled) {
       if (!opts.turnOn) return { ok: false, reason: 'a2a-off' };
@@ -342,6 +368,11 @@ export class DiscoveryWindow {
       this.turnedOn = true;
     }
     await this.deps.listener.whenIdle();
+    if (cancelled()) {
+      this.revertTurnOn();
+      await this.deps.listener.whenIdle();
+      return { ok: false, reason: 'cancelled' };
+    }
     const listening = this.deps.listener.status().listening && this.deps.listener.identity() !== null;
     if (!listening) {
       const listen = this.listenFacts();
@@ -419,8 +450,23 @@ export class DiscoveryWindow {
     return { ok: true, status: this.status() };
   }
 
-  /** Stop (or any other end). Ending a window that turned A2A on without a pairing turns A2A off again. */
-  close(reason: A2aDiscoverEndReason = 'stopped', peer?: { hostId: string; name: string }): void {
+  /** Stop. Ending a window that turned A2A on without a pairing turns A2A off again; an `open` in flight gives up. */
+  close(reason: A2aDiscoverEndReason = 'stopped'): void {
+    if (this.opening) this.openGen += 1;
+    this.endWindow(reason);
+  }
+
+  /**
+   * End the window, unless a redeemed code's pairing is being minted: then
+   * `notePaired` or `noteMintFailed` ends it, so a pairing in flight is never
+   * cut off and never followed by A2A turning off.
+   */
+  private endWindow(reason: A2aDiscoverEndReason): void {
+    if (this.win?.active?.state === 'redeemed') return;
+    this.finish(reason);
+  }
+
+  private finish(reason: A2aDiscoverEndReason, peer?: { hostId: string; name: string }): void {
     const win = this.win;
     if (!win) return;
     this.win = null;
@@ -432,18 +478,20 @@ export class DiscoveryWindow {
     this.deps.log('info', `[a2a-remote] discovery window ended: ${reason}`);
   }
 
-  /** The app connection that opened the window went away. */
+  /** The app connection that opened (or is opening) the window went away. */
   clientGone(clientId: string): void {
-    if (this.win && this.win.ownerClientId === clientId) this.close('disconnected');
+    if (this.opening && this.openingClientId === clientId) this.openGen += 1;
+    if (this.win && this.win.ownerClientId === clientId) this.endWindow('disconnected');
   }
 
   /** The listener stopped or rebound. */
   listenerStopped(): void {
-    this.close('listener-stopped');
+    this.endWindow('listener-stopped');
   }
 
   dispose(): void {
-    this.close('listener-stopped');
+    if (this.opening) this.openGen += 1;
+    this.endWindow('listener-stopped');
     this.deps.controller.off(A2A_REMOTE_CONFIG_CHANGED, this.onConfigChanged);
   }
 
@@ -500,26 +548,31 @@ export class DiscoveryWindow {
       this.deps.log('warn', `[a2a-remote] a discovery pairing code was presented from ${source}, not the allowed ${req.source}; it is void`);
       req.grant = null;
       req.state = 'failed';
-      this.close('failed');
+      this.endWindow('failed');
       return 'mismatch';
     }
     req.grant = null;
     req.state = 'redeemed';
+    // The mint has this long to report; past it the pairing counts as failed.
+    req.expiresAt = this.now() + DISCOVER_MINT_MS;
+    this.schedule();
     return 'ok';
   }
 
+  /** The redeemed code's pairing was minted. A2A stays on, whatever ends the window. */
   notePaired(peer: { hostId: string; name: string }): void {
-    this.close('paired', peer);
+    this.clearTurnedOn();
+    this.finish('paired', peer);
   }
 
   noteMintFailed(): void {
     const req = this.win?.active;
     if (req && req.state === 'redeemed') req.state = 'failed';
-    this.close('failed');
+    this.finish('failed');
   }
 
-  /** A PC paired through an invite: whatever turned A2A on, it is in use now. */
-  noteInvitePaired(): void {
+  /** An invite was opened or redeemed: A2A is in use beyond this window, which must not turn it off. */
+  keepA2aOn(): void {
     this.clearTurnedOn();
   }
 
@@ -561,7 +614,9 @@ export class DiscoveryWindow {
 
   private async identifyAndCommit(win: OpenWindow, source: string, input: DiscoverRouteInput): Promise<DiscoverAnswer | 'too-large' | null> {
     const body = await input.readBody();
+    // An oversized body is cut off whatever happened meanwhile; anything else after the window closed answers as outside it.
     if (body === 'too-large') return 'too-large';
+    if (this.win !== win) return null;
     if (!isRecord(body)) return badRequest();
     const { protocol, hostId, name, fingerprint256, commit } = body;
     if (typeof protocol !== 'number') return badRequest();
@@ -572,20 +627,21 @@ export class DiscoveryWindow {
     }
     const identity = this.deps.listener.identity();
     if (!identity) return null;
-    if (hostId === identity.hostId) return this.refuse(source, 'self');
+    if (hostId === identity.hostId) return this.refuse(win, source, 'self');
 
     // whois, and on macOS the route, one request at a time (the slot is held).
     const whois = await this.deps.tailnet.whois(source);
     if (this.win !== win) return null;
-    if (!whois) return this.refuse(source, 'unidentified');
-    if (!(await this.routesThroughTailnet(win, source))) return this.win === win ? this.refuse(source, 'unidentified') : null;
+    if (!whois) return this.refuse(win, source, 'unidentified');
+    const routed = await this.routesThroughTailnet(win, source);
     if (this.win !== win) return null;
+    if (!routed) return this.refuse(win, source, 'unidentified');
     const verdict = judgeWhois(whois, { stableId: win.snapshot.selfStableId, userId: win.snapshot.selfUserId });
-    if (!verdict.ok) return this.refuse(source, verdict.reason === 'self' ? 'self' : verdict.reason === 'other-user' ? 'other-user' : 'unidentified');
+    if (!verdict.ok) return this.refuse(win, source, verdict.reason === 'self' ? 'self' : verdict.reason === 'other-user' ? 'other-user' : 'unidentified');
 
     win.identified += 1;
     if (win.identified > DISCOVER_REQUESTS_PER_WINDOW) {
-      this.close('too-many-requests');
+      this.endWindow('too-many-requests');
       return null;
     }
     const req: DiscoverRequest = {
@@ -645,13 +701,15 @@ export class DiscoveryWindow {
   private withdraw(id: string, input: DiscoverRouteInput): DiscoverAnswer {
     const req = this.find(id, input);
     if (!req) return notFound();
+    // The code was redeemed and its pairing is being minted: too late to withdraw.
+    if (req.state === 'redeemed') return conflict();
     if (this.win?.active === req) {
-      const wasAllowed = req.state === 'allowed' || req.state === 'redeemed';
+      const wasAllowed = req.state === 'allowed';
       const reachedCard = req.state !== 'committed';
       this.endRequest(req, 'withdrawn');
       if (reachedCard) this.lastOutcome = { outcome: 'withdrawn', device: { ...req.device }, ip: req.source, at: this.now() };
       // A pairing code that went out is void now, and the window takes nothing new after an Allow.
-      if (wasAllowed) this.close('failed');
+      if (wasAllowed) this.endWindow('failed');
       else this.schedule();
     }
     return { status: 200, body: { ok: true } };
@@ -669,8 +727,8 @@ export class DiscoveryWindow {
     return token && crypto.timingSafeEqual(token, req.token) ? req : null;
   }
 
-  private refuse(source: string, reason: 'unidentified' | 'other-user' | 'self'): DiscoverAnswer {
-    this.lastOutcome = { outcome: 'refused', reason, ip: source, at: this.now() };
+  private refuse(win: OpenWindow, source: string, reason: 'unidentified' | 'other-user' | 'self'): DiscoverAnswer {
+    if (this.win === win) this.lastOutcome = { outcome: 'refused', reason, ip: source, at: this.now() };
     this.deps.log('info', `[a2a-remote] discovery request from ${source} refused: ${reason}`);
     return refusal(403, reason);
   }
@@ -704,8 +762,13 @@ export class DiscoveryWindow {
     const now = this.now();
     const req = win.active;
     if (req && now >= req.expiresAt) {
+      if (req.state === 'redeemed') {
+        // The mint never reported back.
+        this.finish('failed');
+        return;
+      }
       if (req.state === 'allowed') {
-        this.close('grant-expired');
+        this.endWindow('grant-expired');
         return;
       }
       if (req.state === 'committed' || req.state === 'deciding') {
@@ -714,7 +777,7 @@ export class DiscoveryWindow {
         if (reachedCard) this.lastOutcome = { outcome: 'expired', device: { ...req.device }, ip: req.source, at: now };
       }
     }
-    if (now >= win.expiresAt) this.close('timeout');
+    if (now >= win.expiresAt) this.endWindow('timeout');
   }
 
   /** One timer, for the nearest deadline, so a window ends on time with nobody asking. */
@@ -723,7 +786,8 @@ export class DiscoveryWindow {
     this.timer = null;
     const win = this.win;
     if (!win) return;
-    const next = Math.min(win.expiresAt, win.active?.expiresAt ?? Infinity);
+    // While a mint runs only its own deadline counts: the window cannot end before it reports.
+    const next = win.active?.state === 'redeemed' ? win.active.expiresAt : Math.min(win.expiresAt, win.active?.expiresAt ?? Infinity);
     this.timer = setTimeout(() => {
       this.timer = null;
       this.sweep();

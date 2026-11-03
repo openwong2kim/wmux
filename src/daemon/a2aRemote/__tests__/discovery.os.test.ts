@@ -11,6 +11,7 @@ import {
   DISCOVER_COMMIT_MS,
   DISCOVER_DECIDE_MS,
   DISCOVER_GRANT_MS,
+  DISCOVER_MINT_MS,
   DISCOVER_MISS_REFRESH_MS,
   DISCOVER_PROBES_PER_MINUTE,
   DISCOVER_WINDOW_MS,
@@ -19,6 +20,7 @@ import {
   judgeTailnetSource,
   parseRouteInterface,
   revertDiscoveryTurnOn,
+  routeInterface,
   snapshotFromStatus,
   type DiscoverAnswer,
   type DiscoveryDeps,
@@ -79,6 +81,16 @@ interface Rig {
   whois: Map<string, TailnetWhois | null>;
   statusCalls: { n: number };
   listening: { value: boolean };
+  /** Set one to hold that call until it resolves. */
+  holds: { status?: Promise<void>; whois?: Promise<void>; idle?: Promise<void> };
+}
+
+function deferred(): { promise: Promise<void>; release: () => void } {
+  let release = (): void => undefined;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
 }
 
 const dirs: string[] = [];
@@ -94,13 +106,18 @@ function makeRig(opts: { enabled?: boolean; deps?: Partial<DiscoveryDeps>; statu
     [OTHER_USER_IP, whoisFor(OTHER_USER_IP, { userId: 8 })],
   ]);
   const statusCalls = { n: 0 };
+  const holds: Rig['holds'] = {};
   const tailnet: TailnetCli = {
     status: async () => {
       statusCalls.n += 1;
+      await holds.status;
       const s = (opts.status ?? tailnetStatus)();
       return s ? { ok: true, status: s, bin: 'tailscale' } : { ok: false, check: { id: 'installed', state: 'fail', reason: 'not-installed', fix: 'download' } };
     },
-    whois: async (ip) => whois.get(ip) ?? null,
+    whois: async (ip) => {
+      await holds.whois;
+      return whois.get(ip) ?? null;
+    },
   };
   const listening = { value: true };
   const win = new DiscoveryWindow({
@@ -108,7 +125,9 @@ function makeRig(opts: { enabled?: boolean; deps?: Partial<DiscoveryDeps>; statu
     controller,
     dataDir: dir,
     listener: {
-      whenIdle: async () => undefined,
+      whenIdle: async () => {
+        await holds.idle;
+      },
       status: () => ({
         enabled: controller.current().enabled,
         port: 45660,
@@ -131,7 +150,7 @@ function makeRig(opts: { enabled?: boolean; deps?: Partial<DiscoveryDeps>; statu
     platform: 'linux',
     ...opts.deps,
   });
-  return { win, controller, dir, whois, statusCalls, listening };
+  return { win, controller, dir, whois, statusCalls, listening, holds };
 }
 
 const route = (win: DiscoveryWindow, method: string, p: string, source = PEER_IP, token?: string, body?: unknown) =>
@@ -185,8 +204,11 @@ describe('judgeTailnetSource — the synchronous source gate', () => {
 
   it('calls a tailnet address the snapshot does not list unknown (worth one re-read)', () => {
     expect(judgeTailnetSource(snap, SELF_IP, '100.100.9.9')).toBe('unknown');
-    // Another user's node is not in the snapshot either.
-    expect(judgeTailnetSource(snap, SELF_IP, OTHER_USER_IP)).toBe('unknown');
+  });
+
+  it('refuses a listed node that may not ask (another user’s) outright, with no re-read', () => {
+    expect(judgeTailnetSource(snap, SELF_IP, OTHER_USER_IP)).toBe('refuse');
+    expect([...snap.excludedIps]).toEqual([OTHER_USER_IP]);
   });
 
   it('lists only this user’s untagged, not shared-in nodes, never this PC', () => {
@@ -273,7 +295,7 @@ describe('DiscoveryWindow — lifetime and reverting', () => {
   it('does not turn A2A off after a PC paired through an invite', async () => {
     const rig = makeRig({ enabled: false });
     await rig.win.open({ turnOn: true });
-    rig.win.noteInvitePaired();
+    rig.win.keepA2aOn();
     rig.win.close('stopped');
     expect(rig.controller.current().enabled).toBe(true);
   });
@@ -570,5 +592,138 @@ describe('DiscoveryWindow — Allow and the one-shot pairing code', () => {
     expect(await route(rig.win, 'POST', `/api/a2a/discover/requests/${created.requestId}/withdraw`, PEER_IP, created.token)).toMatchObject({ status: 200 });
     expect(rig.win.redeem(grant, PEER_IP, PEER_HOST)).toBe('none');
     expect(rig.win.status().open).toBe(false);
+  });
+});
+
+describe('DiscoveryWindow — a Stop while it opens', () => {
+  for (const at of ['status', 'whois', 'idle'] as const) {
+    it(`a Stop during the ${at} wait opens nothing and leaves A2A off`, async () => {
+      const rig = makeRig({ enabled: false });
+      const hold = deferred();
+      rig.holds[at] = hold.promise;
+      const opening = rig.win.open({ turnOn: true }, 'c1');
+      await vi.advanceTimersByTimeAsync(0);
+      rig.win.close('stopped');
+      rig.holds[at] = undefined;
+      hold.release();
+      expect(await opening).toEqual({ ok: false, reason: 'cancelled' });
+      expect(rig.win.status().open).toBe(false);
+      expect(rig.controller.current().enabled).toBe(false);
+      expect(fs.existsSync(path.join(rig.dir, DISCOVERY_MARKER_FILE))).toBe(false);
+    });
+  }
+
+  it('the opener going away during the open cancels it; another connection going away does not', async () => {
+    const rig = makeRig({ enabled: false });
+    let hold = deferred();
+    rig.holds.status = hold.promise;
+    let opening = rig.win.open({ turnOn: true }, 'c1');
+    rig.win.clientGone('c1');
+    hold.release();
+    expect(await opening).toEqual({ ok: false, reason: 'cancelled' });
+
+    hold = deferred();
+    rig.holds.status = hold.promise;
+    opening = rig.win.open({ turnOn: true }, 'c1');
+    rig.win.clientGone('c2');
+    hold.release();
+    expect(await opening).toMatchObject({ ok: true });
+  });
+});
+
+describe('DiscoveryWindow — nothing ends a window while a pairing is minted', () => {
+  async function redeemed(rig: Rig, ownerClientId = 'c1'): Promise<A2aDiscoverRequestCreated> {
+    await rig.win.open({ turnOn: true }, ownerClientId);
+    const { created } = await ask(rig.win);
+    rig.win.decide(created.requestId, true);
+    const p = await poll(rig.win, created);
+    expect(rig.win.redeem(p.code ?? '', PEER_IP, PEER_HOST)).toBe('ok');
+    return created;
+  }
+
+  it('a withdraw is refused once the code was redeemed', async () => {
+    const rig = makeRig({ enabled: false });
+    const created = await redeemed(rig);
+    expect(await route(rig.win, 'POST', `/api/a2a/discover/requests/${created.requestId}/withdraw`, PEER_IP, created.token)).toMatchObject({ status: 409 });
+    rig.win.notePaired({ hostId: PEER_HOST, name: 'Asker' });
+    expect(rig.win.status()).toMatchObject({ open: false, ended: { reason: 'paired' } });
+    expect(rig.controller.current().enabled).toBe(true);
+  });
+
+  it('the window’s own timeout waits for the mint', async () => {
+    const rig = makeRig({ enabled: false });
+    await rig.win.open({ turnOn: true }, 'c1');
+    vi.advanceTimersByTime(DISCOVER_WINDOW_MS - 20_000);
+    const { created } = await ask(rig.win);
+    rig.win.decide(created.requestId, true);
+    const p = await poll(rig.win, created);
+    expect(rig.win.redeem(p.code ?? '', PEER_IP, PEER_HOST)).toBe('ok');
+    vi.advanceTimersByTime(25_000);
+    expect(rig.win.status().open).toBe(true);
+    rig.win.notePaired({ hostId: PEER_HOST, name: 'Asker' });
+    expect(rig.win.status()).toMatchObject({ open: false, ended: { reason: 'paired' } });
+    expect(rig.controller.current().enabled).toBe(true);
+  });
+
+  it('the opener going away, a Stop or a listener stop wait for the mint too', async () => {
+    const rig = makeRig({ enabled: false });
+    await redeemed(rig, 'c1');
+    rig.win.clientGone('c1');
+    rig.win.close('stopped');
+    rig.win.listenerStopped();
+    expect(rig.win.status().open).toBe(true);
+    expect(rig.controller.current().enabled).toBe(true);
+    rig.win.notePaired({ hostId: PEER_HOST, name: 'Asker' });
+    expect(rig.win.status()).toMatchObject({ open: false, ended: { reason: 'paired' } });
+    expect(rig.controller.current().enabled).toBe(true);
+  });
+
+  it('a mint that never reports ends the window as failed', async () => {
+    const rig = makeRig({ enabled: false });
+    await redeemed(rig);
+    vi.advanceTimersByTime(DISCOVER_MINT_MS);
+    expect(rig.win.status()).toMatchObject({ open: false, ended: { reason: 'failed' } });
+    expect(rig.controller.current().enabled).toBe(false);
+  });
+});
+
+describe('DiscoveryWindow — a window that closes while a request is read', () => {
+  it('a request whose body arrives after the window closed answers as outside it', async () => {
+    const { win } = makeRig();
+    await win.open({ turnOn: true });
+    const answer = await win.route({
+      method: 'POST',
+      path: '/api/a2a/discover/requests',
+      source: PEER_IP,
+      token: undefined,
+      readBody: async () => {
+        win.close('stopped');
+        return requestBody(randomSecret(), { hostId: SELF_HOST });
+      },
+    });
+    expect(answer).toBeNull();
+    expect(win.status().lastOutcome).toBeNull();
+  });
+
+  it('a refusal after the window closed leaves no line behind', async () => {
+    const rig = makeRig();
+    await rig.win.open({ turnOn: true });
+    rig.whois.set(PEER_IP, null);
+    const hold = deferred();
+    rig.holds.whois = hold.promise;
+    const answer = route(rig.win, 'POST', '/api/a2a/discover/requests', PEER_IP, undefined, requestBody(randomSecret()));
+    await vi.advanceTimersByTimeAsync(0);
+    rig.win.close('stopped');
+    hold.release();
+    expect(await answer).toBeNull();
+    expect(rig.win.status().lastOutcome).toBeNull();
+  });
+});
+
+describe('routeInterface', () => {
+  it('refuses an argument that is not a canonical tailnet IPv4', async () => {
+    for (const bad of ['192.168.1.4', '-n', '100.100.1.2 ', '100.100.01.2']) {
+      expect(await routeInterface(bad, AbortSignal.timeout(1_000))).toBeNull();
+    }
   });
 });
