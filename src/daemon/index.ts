@@ -2588,8 +2588,11 @@ async function restartSupervisedSession(
     recovered = await sessionManager.createSessionAsync(replay);
   } catch (err) {
     if (!shuttingDown && !(err instanceof Error && err.message === 'Session creation cancelled')) sessionManager.reinsertSession(managed);
+    else sessionManager.releaseTombstone(managed);
     throw err;
   }
+  // The replacement holds the id now; the dead record is gone for good.
+  sessionManager.releaseTombstone(managed);
 
   // Carry the resume markers onto the recreated session meta. createSession builds
   // FRESH metadata, so without this the saveImmediate below drops the exact binding
