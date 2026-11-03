@@ -301,11 +301,15 @@ private func checkTarget(_ snap: Snapshot, _ target: ControlTarget) throws {
 
 /// Keyboard actions: bring the target forward, then require it in front and
 /// no password field focused, then show the marker. Nothing is sent otherwise.
+/// The caret lookup in showKeys is several AX round trips (seconds at worst),
+/// time enough for focus to move to another app or a password field, so the
+/// same checks run again after it: they are the last thing before the first key.
 private func requireKeyboardForward(_ snap: Snapshot, _ target: ControlTarget, _ marker: AgentMarker) async throws {
     await Focus.bringForward(target, window: snap.window)
     try Focus.requireKeyboard(target)
     try Focus.refuseSecureInput(target.pid)
     await showKeys(marker, .typing, snap, target, realInput: true)
+    try Focus.requireStillSafe(target)
 }
 
 /// A keyboard action's marker: its caret where the keys land (`element`, or

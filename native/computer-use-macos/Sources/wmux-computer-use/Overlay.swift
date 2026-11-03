@@ -13,10 +13,10 @@
 //     actions a ring where the real pointer goes instead of the arrow;
 //   - waiting for another agent's real input (markerWait): ring and pill
 //     dimmed, " · waiting for <agent>".
-// Each marker fades 1.5 s after its own last action; markerClear removes it
-// at once. While any marker shows, a dark bar at the top of the main display
-// counts them and carries the stop chord. Pills, pointers and carets draw
-// above every ring.
+// Each marker fades 1.5 s after its own last action, a waiting one 15 s
+// after markerWait; markerClear removes it at once. While any marker shows,
+// a dark bar at the top of the main display counts them and carries the stop
+// chord. Pills, pointers and carets draw above every ring.
 //
 // One borderless, transparent, click-through panel per display (with
 // separate Spaces a window spanning displays shows on one only). The panels
@@ -31,6 +31,11 @@ import ComputerUseCore
 import QuartzCore
 
 private let fadeDelay: TimeInterval = 1.5
+/// How long a waiting marker stays without a newer action or markerClear:
+/// main's INPUT_LOCK_IDLE_MS (15 000 ms, src/main/computer/inputLanes.ts).
+/// The real-input lease it waits on is free by then, and main may never send
+/// markerClear for an agent it refused.
+private let waitFadeDelay: TimeInterval = 15
 private let fadeDuration: TimeInterval = 0.3
 private let moveDuration: TimeInterval = 0.15
 private let pillHeight: CGFloat = 24
@@ -311,8 +316,10 @@ final class Overlay {
         var spot: Spot = .none
         /// Where its pointer last was, so the next one moves on from there.
         var lastPointer: CGPoint?
-        /// Bumped by every action of this marker, so a fade that finishes
-        /// after a newer action does not remove it.
+        /// The overlay-wide `sequence` at this marker's latest action, so a
+        /// fade that finishes after a newer action does not remove it. Never
+        /// reused, so a fade still pending when hide or clear dropped the
+        /// marker cannot match it once the same id is drawn again.
         var generation = 0
         var fadeTimer: Timer?
         var fading = false
@@ -395,7 +402,8 @@ final class Overlay {
     }
 
     /// markerWait: `marker` waits on the window for another agent's real
-    /// input to end. It stays until its next action or markerClear.
+    /// input to end. It stays until its next action or markerClear, or fades
+    /// after waitFadeDelay.
     func wait(_ marker: AgentMarker, window: CGRect, windowID: String, waitingFor: String) {
         guard enabled else { return }
         var state = begin(marker, window: window, windowID: windowID)
@@ -404,6 +412,7 @@ final class Overlay {
         state.spot = .none
         states[marker.id] = state
         render()
+        scheduleFade(marker.id, after: waitFadeDelay)
     }
 
     /// A ring in the marker's colour that pulses out from the press point
@@ -431,11 +440,11 @@ final class Overlay {
     }
 
     /// After an input action: that marker fades unless it acts again first.
-    func scheduleFade(_ id: String) {
+    func scheduleFade(_ id: String, after delay: TimeInterval = fadeDelay) {
         guard var state = states[id] else { return }
         state.fadeTimer?.invalidate()
         let generation = state.generation
-        state.fadeTimer = Timer.scheduledTimer(withTimeInterval: fadeDelay, repeats: false) { _ in
+        state.fadeTimer = Timer.scheduledTimer(withTimeInterval: delay, repeats: false) { _ in
             Task { @MainActor in Overlay.shared.fade(id, generation: generation) }
         }
         states[id] = state
@@ -489,7 +498,7 @@ final class Overlay {
         state.fadeTimer?.invalidate()
         state.fadeTimer = nil
         state.fading = false
-        state.generation += 1
+        state.generation = sequence
         if let window {
             if state.window != windowID {
                 state.window = windowID
