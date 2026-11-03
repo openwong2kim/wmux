@@ -167,7 +167,9 @@ describe('filesystem write jobs', () => {
     const alias = path.join(root, 'alias'); fs.symlinkSync(dest, alias);
     const release = holdCopies();
     const result = await queue.start('copy', { sources: [path.join(src, 'a')], destDir: alias, conflict: 'fail' });
-    expect(await copy()).toMatchObject({ reason: 'busy' });
+    // A different source into the real destination: only the aliased destination lock can refuse it.
+    const other = path.join(root, 'other-source'); fs.writeFileSync(other, 'x');
+    expect(await queue.start('copy', { sources: [other], destDir: dest, conflict: 'fail' })).toMatchObject({ reason: 'busy' });
     release();
     expect((await finish(result)).state).toBe('done');
   });
