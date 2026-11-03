@@ -9,7 +9,8 @@ vi.mock('electron', () => ({
   BrowserWindow: { getFocusedWindow: vi.fn(), getAllWindows: vi.fn(() => []) },
 }));
 
-import { PLUGIN_FS_REFUSALS, isPluginRefusedPath, pluginFsRefusal } from '../fsRefusals';
+import fs from 'node:fs';
+import { PLUGIN_FS_REFUSALS, isPluginRefusedPath, pluginFsRefusal, resolvePluginPath } from '../fsRefusals';
 
 const home = path.resolve('/home-for-test/user');
 const h = (...p: string[]) => path.join(home, ...p);
@@ -126,8 +127,20 @@ describe('plugin fs refusals', () => {
   });
 
   it('refuses a WSL distro share, whose home the rules do not know', () => {
-    for (const p of ['\\\\wsl.localhost\\Ubuntu\\home\\me\\.aws\\credentials', '//wsl$/Ubuntu/home/me/notes.txt', '\\\\WSL.LOCALHOST\\Ubuntu']) {
+    for (const p of ['\\\\wsl.localhost\\Ubuntu\\home\\me\\.aws\\credentials', '//wsl$/Ubuntu/home/me/notes.txt', '\\\\WSL.LOCALHOST\\Ubuntu',
+      '\\\\?\\UNC\\wsl.localhost\\Ubuntu\\home\\me\\.netrc']) {
       expect(isPluginRefusedPath(p), p).toBe(true);
+    }
+  });
+
+  it('refuses gh tokens and wmux data under an $XDG_CONFIG_HOME outside home, with a trailing slash too', () => {
+    vi.stubEnv('XDG_CONFIG_HOME', `${elsewhere('cfg')}/`);
+    try {
+      expect(isPluginRefusedPath(elsewhere('cfg', 'gh', 'hosts.yml'))).toBe(true);
+      expect(isPluginRefusedPath(elsewhere('cfg', 'wmux-dev', 'Local Storage'))).toBe(true);
+      expect(isPluginRefusedPath(elsewhere('cfg', 'ghostty', 'config'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 
@@ -137,6 +150,23 @@ describe('plugin fs refusals', () => {
     expect(isPluginRefusedPath(viaData('.git-credentials'))).toBe(true);
     expect(isPluginRefusedPath(viaData('.wmux', 'config.json'))).toBe(true);
     expect(isPluginRefusedPath(viaData('git', 'README.md'))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'darwin')('resolvePluginPath refuses a real home file read through the /System/Volumes/Data firmlink', async () => {
+    const realHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fsref-home-')));
+    try {
+      fs.writeFileSync(path.join(realHome, '.git-credentials'), 'x');
+      fs.writeFileSync(path.join(realHome, 'notes.txt'), 'x');
+      vi.spyOn(os, 'homedir').mockReturnValue(realHome);
+      expect(await resolvePluginPath(path.join('/System/Volumes/Data', realHome, '.git-credentials'))).toBeNull();
+      expect(await resolvePluginPath(path.join('/System/Volumes/Data', realHome, 'notes.txt'))).not.toBeNull();
+    } finally {
+      fs.rmSync(realHome, { recursive: true, force: true });
+    }
+  });
+
+  it('resolvePluginPath refuses a WSL share before it touches the disk', async () => {
+    expect(await resolvePluginPath('\\\\wsl.localhost\\Ubuntu\\home\\me\\.aws\\credentials')).toBeNull();
   });
 
   it('leaves ordinary paths alone', () => {

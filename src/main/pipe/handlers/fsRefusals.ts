@@ -10,6 +10,7 @@
 //
 // Keep the list here, and keep one test per rule in fsRefusals.test.ts.
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { homeRoots, isSensitivePath, resolveAccessiblePath } from '../../ipc/handlers/fs.handler';
 
@@ -32,14 +33,28 @@ const SHELL_HISTORY = new Set([
 /** The user config folder for XDG tools (gh), relative to home: ~/.config and $XDG_CONFIG_HOME. */
 function configRoots(): string[] {
   const roots = ['.config'];
-  const xdg = process.env.XDG_CONFIG_HOME;
+  const xdg = xdgConfigHome();
   if (xdg) {
     for (const home of homeRoots()) {
-      const rel = relBelow(xdg.replace(/\\/g, '/').toLowerCase(), home);
+      const rel = relBelow(xdg, home);
       if (rel) roots.push(rel);
     }
   }
   return roots;
+}
+
+/** $XDG_CONFIG_HOME, absolute, lowercase and `/`-separated; null when unset. */
+function xdgConfigHome(): string | null {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  return xdg ? path.resolve(xdg).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '') : null;
+}
+
+/** gh tokens and wmux's userData under an $XDG_CONFIG_HOME outside home. */
+function underXdgConfig(normalized: string): boolean {
+  const xdg = xdgConfigHome();
+  if (!xdg || !normalized.startsWith(`${xdg}/`)) return false;
+  const first = normalized.slice(xdg.length + 1).split('/')[0];
+  return first === 'gh' || first.startsWith('wmux');
 }
 
 /** The folder Electron keeps each wmux profile's userData in, relative to home. */
@@ -98,21 +113,23 @@ export function pluginFsRefusal(p: string): Rule | null {
 
 /** A WSL distro's files (\\wsl.localhost\<distro>, \\wsl$\<distro>): their home is not one
  *  the rules know, so a plugin never reaches them. */
-const WSL_SHARE = /^[\\/]{2}(?:wsl\.localhost|wsl\$)(?:[\\/]|$)/i;
+const WSL_SHARE = /^(?:[\\/]{2}\?[\\/]unc[\\/]|[\\/]{2})(?:wsl\.localhost|wsl\$)(?:[\\/]|$)/i;
 
 /** macOS also reaches the data volume as /System/Volumes/Data/<path>, a
  *  firmlink realpath keeps as written: check the plain spelling. */
 function plainSpelling(p: string): string {
   if (process.platform !== 'darwin') return p;
-  const m = /^\/system\/volumes\/data(?=\/|$)/i.exec(p);
-  return m ? p.slice(m[0].length) || '/' : p;
+  const resolved = path.resolve(p);
+  const m = /^\/system\/volumes\/data(?=\/|$)/i.exec(resolved);
+  return m ? resolved.slice(m[0].length) || '/' : p;
 }
 
 /** Whether a plugin's `fs.*` call must refuse `p`: the file tree's list or this one. */
 export function isPluginRefusedPath(p: string): boolean {
   if (WSL_SHARE.test(p)) return true;
   const plain = plainSpelling(p);
-  return isSensitivePath(plain) || pluginFsRefusal(plain) !== null;
+  const normalized = path.resolve(plain).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+  return isSensitivePath(plain) || pluginFsRefusal(plain) !== null || underXdgConfig(normalized);
 }
 
 /**
@@ -120,8 +137,15 @@ export function isPluginRefusedPath(p: string): boolean {
  * once symlinks resolve. Null when refused, missing or not local.
  */
 export async function resolvePluginPath(input: string): Promise<string | null> {
-  if (pluginFsRefusal(input)) return null;
+  if (isPluginRefusedPath(input) || await onWslDrive(input)) return null;
   const canonical = await resolveAccessiblePath(input);
-  if (!canonical || pluginFsRefusal(canonical)) return null;
+  if (!canonical || isPluginRefusedPath(canonical)) return null;
   return canonical;
+}
+
+/** A drive letter mapped to a WSL distro share (net use, subst) is that share. */
+async function onWslDrive(input: string): Promise<boolean> {
+  if (process.platform !== 'win32' || !/^[a-z]:/i.test(input)) return false;
+  const root = await fs.promises.realpath(`${input.slice(0, 2)}\\`).catch(() => null);
+  return root !== null && WSL_SHARE.test(root);
 }
