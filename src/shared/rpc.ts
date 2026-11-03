@@ -1816,7 +1816,9 @@ export type A2aDiscoverOpenRefusal =
   /** A2A is off and `turnOn` was not set. */
   | 'a2a-off'
   /** The A2A listener could not start; `listen` says why. */
-  | 'listen-failed';
+  | 'listen-failed'
+  /** Stopped (`close`), or the connection that asked went away, before the window opened; A2A is as it was. */
+  | 'cancelled';
 
 /** `a2a.remote.discover.open` */
 export type A2aDiscoverOpenResult =
