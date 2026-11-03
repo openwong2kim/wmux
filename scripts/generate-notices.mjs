@@ -335,11 +335,11 @@ for (const f of BUNDLED_FONTS) {
 // the CsWin32 version in the helper's csproj moves, refetch these files at the
 // new tag. v71.0.14-preview is the Win32 metadata CsWin32 0.3.335 depends on.
 //
-// The release and CI builds pin the .NET SDK to HELPER_DOTNET_SDK
-// (setup-dotnet in release.yml and ci.yml; generateNotices.os.test.mjs fails
-// when they differ), so the runtime compiled into the helper is exactly the
-// v10.0.14 runtime these files come from. Bump the SDK, the tag and the files
-// together.
+// The repo-root global.json pins the .NET SDK to HELPER_DOTNET_SDK with
+// rollForward disabled, and release.yml and ci.yml install it from that file,
+// so the runtime compiled into the helper is exactly the v10.0.14 runtime
+// these files come from (generateNotices.os.test.mjs fails when they differ).
+// Bump global.json, this version, the tag and the files together.
 //
 // License basis: NativeAOT compiles the helper from the runtime packs
 // Microsoft.NETCore.App.Runtime.win-x64 and runtime.win-x64.Microsoft.DotNet.
