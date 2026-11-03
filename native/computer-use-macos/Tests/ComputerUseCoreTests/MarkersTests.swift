@@ -71,9 +71,16 @@ final class MarkersTests: XCTestCase {
         XCTAssertEqual(byWindow, ["7": ["a", "b", "d"], "9": ["c"]])
     }
 
-    func testPillsSitSideBySide() {
-        XCTAssertEqual(pillOffsets(widths: [100, 80, 120], gap: 6), [0, 106, 192])
-        XCTAssertEqual(pillOffsets(widths: [], gap: 6), [])
+    func testPillsSitSideBySideThenWrapWithinTheWindow() {
+        let place = { (widths: [CGFloat], rowWidth: CGFloat) in
+            pillGrid(widths: widths, gap: 6, rowWidth: rowWidth).map { "\($0.row):\(Int($0.x))" }
+        }
+        XCTAssertEqual(place([100, 80, 120], 400), ["0:0", "0:106", "0:192"])
+        // Too wide for one row over a 300 px window: the third pill starts a new row.
+        XCTAssertEqual(place([100, 80, 120], 300), ["0:0", "0:106", "1:0"])
+        // A pill wider than the window still gets its own row; nothing is dropped.
+        XCTAssertEqual(place([420, 90], 300), ["0:0", "1:0"])
+        XCTAssertEqual(place([], 300), [])
     }
 
     func testPillRowAboveTheWindowOrInsideBelowTheMenuBar() {
@@ -86,6 +93,11 @@ final class MarkersTests: XCTestCase {
         // Partly under the menu bar: still below it.
         let under = CGRect(x: 0, y: 10, width: 800, height: 600)
         XCTAssertEqual(pillRowOrigin(window: under, outset: 3, pillHeight: 24, lift: 4, topLimit: 25), CGPoint(x: 8, y: 33))
+        // Two rows fit above a window with room for them; not above one with room for only one.
+        XCTAssertEqual(pillRowOrigin(window: window, outset: 9, pillHeight: 24, lift: 4, topLimit: 25, rows: 2, rowGap: 6), CGPoint(x: 191, y: 263))
+        let tight = CGRect(x: 0, y: 70, width: 800, height: 600)
+        XCTAssertEqual(pillRowOrigin(window: tight, outset: 3, pillHeight: 24, lift: 4, topLimit: 25), CGPoint(x: -3, y: 39))
+        XCTAssertEqual(pillRowOrigin(window: tight, outset: 3, pillHeight: 24, lift: 4, topLimit: 25, rows: 2, rowGap: 6), CGPoint(x: 8, y: 78))
     }
 
     func testAgentsBarText() {

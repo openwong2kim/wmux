@@ -544,14 +544,20 @@ final class Overlay {
         var pillOrigins: [String: CGPoint] = [:]
         for (window, ids) in byWindow {
             guard let frame = windowFrames[window] else { continue }
+            let widths = ids.map { pills[$0]?.width ?? 0 }
+            let outset = haloOutset(ring: ids.count - 1)
+            // Above the window the rows span its outermost ring; inside it, its inset width.
+            let aboveGrid = pillGrid(widths: widths, gap: pillGap, rowWidth: frame.width + 2 * outset)
             let row = pillRowOrigin(
-                window: frame, outset: haloOutset(ring: ids.count - 1),
-                pillHeight: pillHeight, lift: pillLift, topLimit: topLimit(for: frame)
+                window: frame, outset: outset, pillHeight: pillHeight, lift: pillLift,
+                topLimit: topLimit(for: frame), rows: (aboveGrid.map(\.row).max() ?? 0) + 1, rowGap: pillGap
             )
-            let offsets = pillOffsets(widths: ids.map { pills[$0]?.width ?? 0 }, gap: pillGap)
+            let above = row.y < frame.minY
+            let grid = above ? aboveGrid : pillGrid(widths: widths, gap: pillGap, rowWidth: frame.width - 16)
+            let step = (above ? -1 : 1) * (pillHeight + pillGap)
             for (ring, id) in ids.enumerated() {
                 rings[id] = ring
-                pillOrigins[id] = CGPoint(x: row.x + offsets[ring], y: row.y)
+                pillOrigins[id] = CGPoint(x: row.x + grid[ring].x, y: row.y + CGFloat(grid[ring].row) * step)
             }
         }
         let live = states.values.sorted { $0.created < $1.created }

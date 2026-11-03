@@ -146,21 +146,32 @@ public func markersByWindow(_ placements: [MarkerPlacement]) -> [String: [String
     }
 }
 
-/// The x offset of each pill in a row of pills side by side.
-public func pillOffsets(widths: [CGFloat], gap: CGFloat) -> [CGFloat] {
+/// Each pill's row (0 = nearest the window) and x offset within it: side by
+/// side while they fit in `rowWidth`, then on a new row, so a window's pills
+/// stay over that window and never run into a neighbouring window's pills.
+/// A pill wider than the row still gets a row of its own.
+public func pillGrid(widths: [CGFloat], gap: CGFloat, rowWidth: CGFloat) -> [(row: Int, x: CGFloat)] {
     var x: CGFloat = 0
+    var row = 0
     return widths.map { width in
+        if x > 0, x + width > rowWidth {
+            row += 1
+            x = 0
+        }
         defer { x += width + gap }
-        return x
+        return (row, x)
     }
 }
 
-/// Where a window's row of pills starts: above its top-left corner, outside
-/// its outermost ring, or inside the window's top-left corner when there is
-/// no room above it below `topLimit` (the menu bar).
-public func pillRowOrigin(window: CGRect, outset: CGFloat, pillHeight: CGFloat, lift: CGFloat, topLimit: CGFloat) -> CGPoint {
+/// Where a window's first row of pills starts: above its top-left corner,
+/// outside its outermost ring, with `rows - 1` more rows stacked upward; or
+/// inside the window's top-left corner, rows stacked downward, when they do
+/// not all fit above it below `topLimit` (the menu bar).
+public func pillRowOrigin(window: CGRect, outset: CGFloat, pillHeight: CGFloat, lift: CGFloat, topLimit: CGFloat,
+                          rows: Int = 1, rowGap: CGFloat = 0) -> CGPoint {
     let above = window.minY - outset - lift - pillHeight
-    if above >= topLimit { return CGPoint(x: window.minX - outset, y: above) }
+    let topRow = above - CGFloat(max(0, rows - 1)) * (pillHeight + rowGap)
+    if topRow >= topLimit { return CGPoint(x: window.minX - outset, y: above) }
     return CGPoint(x: window.minX + 8, y: max(window.minY, topLimit) + 8)
 }
 
