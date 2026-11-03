@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import path from 'node:path';
+import { isCanonicalIpv4, isTailnetIpv4 } from '../shared/a2aRemote';
 import { getExecEnv } from '../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
@@ -719,6 +720,245 @@ export async function checkTailscale(opts: {
   return classifyTailscaleChecklist({ stdout }, opts.peer);
 }
 
+// === tailnet nodes and whois ================================================
+//
+// What A2A discovery ("find wmux PCs on your tailnet") reads: this PC and the
+// other nodes (`status --json`), and which node and login hold a tailnet
+// address (`whois --json <ip>`). Read-only like the checklist: nothing here
+// runs `up`, `login`, `serve` or `set`.
+
+/** One node of `tailscale status --json`: `Self` or a `Peer` entry. */
+export interface TailnetNode {
+  /** Tailscale's stable node ID (`ID`); '' when absent. */
+  stableId: string;
+  hostName: string;
+  /** MagicDNS name, lowercased, no trailing dot; '' when none. */
+  dnsName: string;
+  /** As Tailscale reports it (`windows`, `macOS`, `linux`, `iOS`, `android`…); '' when absent. */
+  os: string;
+  /** The owning user's numeric ID; null when absent. */
+  userId: number | null;
+  /** The node's tailnet IPv4s (100.64.0.0/10), in the order listed. */
+  ipv4s: string[];
+  /** Only an explicit `Online: true`; older clients omit the field. */
+  online: boolean;
+  tags: string[];
+  /** In the netmap only because it may connect to a node this user shared out (`ShareeNode`). */
+  sharee: boolean;
+}
+
+export interface TailnetStatus {
+  backendState: string;
+  /** The Tailscale client's version (`Version`); '' when absent. */
+  version: string;
+  self: TailnetNode;
+  /** The login of `self.userId` from the `User` map; '' when absent. */
+  selfLogin: string;
+  peers: TailnetNode[];
+}
+
+export type TailnetStatusRead =
+  | { ok: true; status: TailnetStatus }
+  /** The first failed checklist item, so the caller can offer the checklist's own fix. */
+  | { ok: false; check: TailscaleCheckItem };
+
+/** What `whois --json <ip>` says about the node holding `ip`. */
+export interface TailnetWhois {
+  /** `Node.Name`, no trailing dot. */
+  nodeName: string;
+  /** `Node.ComputedName`, else `Hostinfo.Hostname`. */
+  deviceName: string;
+  /** `Hostinfo.OS`. */
+  os: string;
+  /** `Node.StableID`. */
+  stableId: string;
+  /** `Node.User`; null when absent. */
+  userId: number | null;
+  tags: string[];
+  /** The node's own addresses (`Node.Addresses`, `ip/32` and `ip/128` prefixes). */
+  addresses: string[];
+  allowedIps: string[];
+  /** `Hostinfo.RoutableIPs`: the routes it advertises. */
+  routableIps: string[];
+  primaryRoutes: string[];
+  /** `UserProfile.LoginName` and `DisplayName`. */
+  loginName: string;
+  displayName: string;
+}
+
+/** Why a whois answer does not identify a node A2A discovery may pair with. */
+export type TailnetWhoisRefusal = 'self' | 'tagged' | 'other-user' | 'subnet-router';
+
+const WHOIS_TIMEOUT_MS = 3_000;
+
+function str(v: unknown): string {
+  return typeof v === 'string' ? v : '';
+}
+
+function strList(v: unknown): string[] {
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+function userIdOf(v: unknown): number | null {
+  return typeof v === 'number' && Number.isSafeInteger(v) ? v : null;
+}
+
+function parseTailnetNode(raw: unknown): TailnetNode {
+  const n = asRecord(raw);
+  return {
+    stableId: str(n['ID']),
+    hostName: str(n['HostName']),
+    dnsName: normalizeTailnetName(str(n['DNSName'])),
+    os: str(n['OS']),
+    userId: userIdOf(n['UserID']),
+    ipv4s: strList(n['TailscaleIPs']).filter(isTailnetIpv4),
+    online: n['Online'] === true,
+    tags: strList(n['Tags']),
+    sharee: n['ShareeNode'] === true,
+  };
+}
+
+/**
+ * This PC and the other nodes from `tailscale status --json`; null when the
+ * output is not a status object with a `Self` block. Whether the backend is
+ * usable is the caller's call (`tailscaleStatus` asks the checklist).
+ */
+export function parseTailnetStatus(stdout: string): TailnetStatus | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const status = asRecord(parsed);
+  const selfRaw = status['Self'];
+  if (!selfRaw || typeof selfRaw !== 'object' || Array.isArray(selfRaw)) return null;
+  const self = parseTailnetNode(selfRaw);
+  const users = asRecord(status['User']);
+  const selfUser = self.userId === null ? {} : asRecord(users[String(self.userId)]);
+  return {
+    backendState: str(status['BackendState']),
+    version: str(status['Version']),
+    self,
+    selfLogin: str(selfUser['LoginName']),
+    peers: Object.values(asRecord(status['Peer'])).map(parseTailnetNode),
+  };
+}
+
+/**
+ * The node holding `ip`, from `tailscale whois --json <ip>`. Null when the
+ * output is not JSON (an older CLI without `--json` prints text), names no
+ * stable node ID, or lists own addresses without `ip/32`: an answer about
+ * another address is no answer about this one.
+ */
+export function parseWhois(stdout: string, ip: string): TailnetWhois | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const root = asRecord(parsed);
+  const node = asRecord(root['Node']);
+  const hostinfo = asRecord(node['Hostinfo']);
+  const profile = asRecord(root['UserProfile']);
+  const addresses = strList(node['Addresses']);
+  const stableId = str(node['StableID']);
+  if (!stableId || !addresses.includes(`${ip}/32`)) return null;
+  return {
+    nodeName: str(node['Name']).replace(/\.$/, ''),
+    deviceName: str(node['ComputedName']) || str(hostinfo['Hostname']),
+    os: str(hostinfo['OS']),
+    stableId,
+    userId: userIdOf(node['User']),
+    tags: strList(node['Tags']),
+    addresses,
+    allowedIps: strList(node['AllowedIPs']),
+    routableIps: strList(hostinfo['RoutableIPs']),
+    primaryRoutes: strList(node['PrimaryRoutes']),
+    loginName: str(profile['LoginName']),
+    displayName: str(profile['DisplayName']),
+  };
+}
+
+/**
+ * Whether the node a whois identified may pair with this PC: another node
+ * (not this one), owned by this PC's own user (numeric IDs, not login
+ * strings), with no tags, and routing nothing but its own addresses. A
+ * subnet router or exit node is refused: a device behind it would whois as
+ * the router. `AllowedIPs` and `RoutableIPs` are read, not `PrimaryRoutes`,
+ * which misses a standby router.
+ */
+export function judgeWhois(
+  whois: TailnetWhois,
+  self: { stableId: string; userId: number | null },
+): { ok: true } | { ok: false; reason: TailnetWhoisRefusal } {
+  if (whois.stableId === self.stableId) return { ok: false, reason: 'self' };
+  if (whois.tags.length > 0) return { ok: false, reason: 'tagged' };
+  if (self.userId === null || whois.userId !== self.userId) return { ok: false, reason: 'other-user' };
+  const own = new Set(whois.addresses.map((a) => a.toLowerCase()));
+  const routesOther = (prefixes: string[]): boolean => prefixes.some((p) => !own.has(p.toLowerCase()));
+  if (routesOther(whois.allowedIps) || routesOther(whois.routableIps) || routesOther(whois.primaryRoutes)) {
+    return { ok: false, reason: 'subnet-router' };
+  }
+  return { ok: true };
+}
+
+/**
+ * Read `tailscale status --json`. Not ok when the checklist fails before its
+ * peer check (not installed, not running, signed out, stopped, offline) or
+ * the status has no `Self` block; the failed item carries the checklist's fix.
+ */
+export async function tailscaleStatus(opts: { exec?: TailscaleExec; signal?: AbortSignal } = {}): Promise<TailnetStatusRead> {
+  const exec = opts.exec ?? (execFileAsync as unknown as TailscaleExec);
+  let stdout: string;
+  try {
+    stdout = (await runTailscale(exec, ['status', '--json'], opts.signal, (err) => classifyStatusError(err) === 'not-running')).stdout;
+  } catch (err) {
+    return { ok: false, check: firstFailedCheck(classifyTailscaleChecklist({ error: err })) };
+  }
+  const failed = classifyTailscaleChecklist({ stdout }).items.find((i) => i.state === 'fail' && i.id !== 'peer');
+  if (failed) return { ok: false, check: failed };
+  const status = parseTailnetStatus(stdout);
+  if (!status) return { ok: false, check: UNREADABLE_CHECK };
+  return { ok: true, status };
+}
+
+const UNREADABLE_CHECK: TailscaleCheckItem = { id: 'signed-in', state: 'fail', reason: 'unreadable', fix: 'open-app' };
+
+function firstFailedCheck(list: TailscaleChecklist): TailscaleCheckItem {
+  return list.items.find((i) => i.state === 'fail') ?? UNREADABLE_CHECK;
+}
+
+/**
+ * Ask `tailscale whois --json <ip>` which node holds `ip`. `ip` must be a
+ * canonical IPv4 in 100.64.0.0/10, checked before anything runs. Null on any
+ * failure: a refused argument, a non-zero exit (an older CLI that does not
+ * know `--json`), output that is not JSON, an answer about another address,
+ * or no answer within 3 s.
+ */
+export async function tailscaleWhois(
+  ip: string,
+  opts: { exec?: TailscaleExec; signal?: AbortSignal; timeoutMs?: number } = {},
+): Promise<TailnetWhois | null> {
+  if (!isCanonicalIpv4(ip) || !isTailnetIpv4(ip)) return null;
+  const exec = opts.exec ?? (execFileAsync as unknown as TailscaleExec);
+  const abort = new AbortController();
+  const timer = setTimeout(() => abort.abort(), opts.timeoutMs ?? WHOIS_TIMEOUT_MS);
+  const onAbort = (): void => abort.abort();
+  opts.signal?.addEventListener('abort', onAbort, { once: true });
+  if (opts.signal?.aborted) abort.abort();
+  try {
+    const { stdout } = await runTailscale(exec, ['whois', '--json', ip], abort.signal);
+    return parseWhois(stdout, ip);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', onAbort);
+  }
+}
+
 /**
  * Development seam (unpackaged builds only — the caller gates it): an exec
  * that answers `tailscale status --json` from a fixture file instead of the
@@ -741,6 +981,33 @@ export function fixtureTailscaleExec(file: string, readFile: (p: string) => Prom
     }
     if (text.startsWith('stderr:')) throw Object.assign(new Error('Command failed'), { stderr: text.slice(7).trim() });
     return { stdout: text, stderr: '' };
+  };
+}
+
+/**
+ * Development seam like `fixtureTailscaleExec`, for A2A discovery: answers
+ * `status --json` from `<dir>/status.json` (same rules) and
+ * `whois --json <ip>` from `<dir>/whois/<ip>.json`, where a missing file is a
+ * failed whois and `stderr:` works as above. The IP must be a canonical IPv4
+ * before any path is built. Every other command is refused.
+ */
+export function fixtureTailscaleDirExec(dir: string, readFile: (p: string) => Promise<string>): TailscaleExec {
+  const status = fixtureTailscaleExec(path.join(dir, 'status.json'), readFile);
+  return async (cmd, args, opts) => {
+    if (args.length === 2 && args[0] === 'status' && args[1] === '--json') return status(cmd, args, opts);
+    if (args.length === 3 && args[0] === 'whois' && args[1] === '--json' && isCanonicalIpv4(args[2])) {
+      let text: string;
+      try {
+        text = await readFile(path.join(dir, 'whois', `${args[2]}.json`));
+      } catch {
+        throw Object.assign(new Error('Command failed'), { stderr: `fixture: no whois for ${args[2]}` });
+      }
+      if (text.startsWith('stderr:')) throw Object.assign(new Error('Command failed'), { stderr: text.slice(7).trim() });
+      return { stdout: text, stderr: '' };
+    }
+    throw Object.assign(new Error('tailscale fixture: read-only, only `status --json` and `whois --json <ip>` are answered'), {
+      stderr: 'fixture: refused',
+    });
   };
 }
 
