@@ -67,10 +67,23 @@ export function FolderNameInput({ initial, label, testId, onCommit, onCancel }: 
   );
 }
 
+/** The orange count of what needs the owner (a row's, or a folder's). */
+export function NeedsBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return <span data-bots-needs={count} aria-hidden="true" className="wmux-bots-badge">{count > 99 ? '99+' : count}</span>;
+}
+
+/** Unread messages: a neutral count, shown only when nothing there needs the
+ *  owner (the orange count wins). */
+export function UnreadBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  return <span data-bots-unread={count} aria-hidden="true" className="wmux-bots-unread">{count > 99 ? '99+' : count}</span>;
+}
+
 /** A folder's section header: a disclosure button (chevron right, turned down
  *  while open), the name and the count of its bots (none drawn at zero).
  *  Right-click or Shift+F10 opens the folder's menu. */
-export function FolderHeader({ folder, count, open, listId, renaming, renameLabel, dropActive = false, onToggle, onMenu, onRename, onCancelRename }: {
+export function FolderHeader({ folder, count, open, listId, renaming, renameLabel, dropActive = false, needsYou = 0, unread = 0, markText = '', onToggle, onMenu, onRename, onCancelRename }: {
   folder: BotFolder;
   count: number;
   open: boolean;
@@ -79,6 +92,12 @@ export function FolderHeader({ folder, count, open, listId, renaming, renameLabe
   renameLabel: string;
   /** A dragged bot is over this folder. */
   dropActive?: boolean;
+  /** The strongest mark of the folder's rows, open or collapsed: the orange
+   *  count if any needs the owner, else the neutral unread count. */
+  needsYou?: number;
+  unread?: number;
+  /** That mark worded for the accessible name (empty: none). */
+  markText?: string;
   onToggle: () => void;
   onMenu: (x: number, y: number) => void;
   onRename: (name: string) => void;
@@ -107,6 +126,9 @@ export function FolderHeader({ folder, count, open, listId, renaming, renameLabe
         data-bots-folder-head={folder.id}
         aria-expanded={open}
         aria-controls={listId}
+        // The badges are aria-hidden, so the mark is worded here; a name from
+        // content alone would drop it.
+        aria-label={markText ? [folder.name, count > 0 ? String(count) : '', markText].filter(Boolean).join(', ') : undefined}
         onClick={onToggle}
         onKeyDown={(e) => {
           const at = menuKeyPoint(e);
@@ -117,6 +139,8 @@ export function FolderHeader({ folder, count, open, listId, renaming, renameLabe
         {chevron}
         <span className="min-w-0 flex-1 truncate text-left">{folder.name}</span>
         {count > 0 && <span className="tabular-nums wmux-bots-folder-count">{count}</span>}
+        <NeedsBadge count={needsYou} />
+        {needsYou <= 0 && <UnreadBadge count={unread} />}
       </button>
     </div>
   );

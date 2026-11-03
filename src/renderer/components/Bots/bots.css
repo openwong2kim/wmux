@@ -186,6 +186,10 @@ button.wmux-bots-folder-head:hover { background: var(--hover-fill); color: var(-
 .wmux-bots-selbar button { padding: 2px 8px; border-radius: 6px; color: var(--text-main); }
 .wmux-bots-selbar button:hover { background: var(--hover-fill); }
 .wmux-bots-folder-count { font-weight: 400; color: var(--text-muted); }
+/* The strongest mark of the folder's rows (the row badges, unchanged) sits
+   at the far end of the header, open or collapsed. */
+.wmux-bots-folder-head .wmux-bots-badge,
+.wmux-bots-folder-head .wmux-bots-unread { margin-left: auto; }
 .wmux-bots-folder-input {
   flex: 1;
   min-width: 0;

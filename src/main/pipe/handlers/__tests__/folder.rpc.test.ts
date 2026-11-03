@@ -109,6 +109,8 @@ describe('folder IPC functions', () => {
     fs.writeFileSync(botFoldersFilePath(dir), '{ nope');
     const { deps } = rig();
     expect(createFolder({ name: 'a' }, deps)).toMatchObject({ ok: false, code: 'store_unreadable' });
+    // Delete answers the same, not not_found: the folder may well exist on disk.
+    expect(removeFolder({ id: 'fld-00000001' }, deps)).toMatchObject({ ok: false, code: 'store_unreadable' });
   });
 });
 

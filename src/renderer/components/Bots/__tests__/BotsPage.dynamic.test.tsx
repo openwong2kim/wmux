@@ -2899,7 +2899,8 @@ describe('Bots page folders', () => {
     await render(<BotsPage />);
     await settle();
     const head = q(`[data-bots-folder-head="${FLD}"]`)!;
-    expect(head.textContent).toBe('Backend1');
+    // Name, the bot count, then Lead's needs-you mark.
+    expect(head.textContent).toBe('Backend11');
     expect(head.getAttribute('aria-expanded')).toBe('true');
     expect(inFolder(FLD)).toEqual([`bot:${LEAD}`]);
     expect(rowIds()[0]).toBe(`bot:${LEAD}`);
@@ -2978,7 +2979,7 @@ describe('Bots page folders', () => {
     key(input, 'Escape');
     await settle();
     expect(folderCalls).toEqual([]);
-    expect(q(`[data-bots-folder-head="${FLD}"]`)!.textContent).toBe('Backend1');
+    expect(q(`[data-bots-folder-head="${FLD}"]`)!.textContent).toBe('Backend11');
 
     contextMenu(q(`[data-bots-folder-head="${FLD}"]`)!);
     act(() => q('[data-bots-folder-rename]')!.click());
@@ -2987,7 +2988,7 @@ describe('Bots page folders', () => {
     key(input, 'Enter');
     await settle();
     expect(folderCalls).toEqual([{ op: 'rename', args: [FLD, 'API'] }]);
-    expect(q(`[data-bots-folder-head="${FLD}"]`)!.textContent).toBe('API1');
+    expect(q(`[data-bots-folder-head="${FLD}"]`)!.textContent).toBe('API11');
   });
 
   it('deleting a folder asks first and returns its bots to the list', async () => {
@@ -3019,6 +3020,56 @@ describe('Bots page folders', () => {
     });
     expect(inFolder(FLD)).toEqual([`bot:${LEAD}`]);
     expect(q('[data-bots-folder="fld-00000002"]')).toBeNull();
+  });
+
+  it('a folder header carries the strongest mark of its bots, open or collapsed', async () => {
+    cards.push(card({ workspaceId: 'w1', actor: by('w1', VERIFIER), title: 'Fresh news', at: Date.now() + 1000 }));
+    // Lead needs the owner, Verifier has one unread message.
+    folders = [folder(FLD, 'Backend', [LEAD, VERIFIER], true), folder('fld-00000002', 'Quiet', [VERIFIER])];
+    seedRooms();
+    await render(<BotsPage />);
+    await settle();
+    const head = q(`[data-bots-folder-head="${FLD}"]`)!;
+    expect(head.getAttribute('aria-expanded')).toBe('false');
+    expect(head.querySelector('[data-bots-needs]')).not.toBeNull();
+    expect(head.querySelector('[data-bots-unread]')).toBeNull();
+    expect(head.getAttribute('aria-label')).toMatch(/^Backend, /);
+    // Open, the same mark stays.
+    act(() => head.click());
+    await settle();
+    expect(q(`[data-bots-folder-head="${FLD}"] [data-bots-needs]`)).not.toBeNull();
+  });
+
+  it('a folder header falls back to the unread count, and shows nothing when idle', async () => {
+    cards.push(card({ workspaceId: 'w1', actor: by('w1', VERIFIER), title: 'Fresh news', at: Date.now() + 1000 }));
+    folders = [folder(FLD, 'Backend', [VERIFIER], true), folder('fld-00000002', 'Idle', [MOA], true)];
+    seedRooms();
+    await render(<BotsPage />);
+    await settle();
+    const head = q(`[data-bots-folder-head="${FLD}"]`)!;
+    expect(head.querySelector('[data-bots-needs]')).toBeNull();
+    expect(head.querySelector('[data-bots-unread]')?.textContent).toBe('1');
+    expect(head.getAttribute('aria-label')).toMatch(/^Backend, 1, /);
+    const idle = q('[data-bots-folder-head="fld-00000002"]')!;
+    expect(idle.querySelector('[data-bots-needs], [data-bots-unread]')).toBeNull();
+    expect(idle.hasAttribute('aria-label')).toBe(false);
+  });
+
+  it('a header click while searching changes nothing and saves nothing', async () => {
+    folders = [folder(FLD, 'Backend', [LEAD], true)];
+    seedRooms(true);
+    await render(<BotsPage />);
+    await settle();
+    act(() => q('[data-bots-search-toggle]')!.click());
+    const search = q<HTMLInputElement>('[data-bots-search]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(search, 'Lead');
+      search.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    act(() => q(`[data-bots-folder-head="${FLD}"]`)!.click());
+    await settle();
+    expect(folderCalls).toEqual([]);
+    expect(inFolder(FLD)).toEqual([`bot:${LEAD}`]);
   });
 
   // Multi-select and drag and drop (DESIGN.md › Bots › Folders).

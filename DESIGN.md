@@ -402,7 +402,7 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   bots, when main offers it) and `+` (a menu: Add bot — the Settings add
   form in a dialog; the bot it adds is selected — Add team — the same
   dialog with only the workspace and the repository (Add team, below) — and
-  New group chat — and New folder) as 28px icon buttons, in every state
+  New group chat) as 28px icon buttons, in every state
   of the page; Search opens a filter field under the header (Escape closes
   and clears it). One row per conversation (8px 10px padding, inset 8px): a 32px avatar, the 13px/500 name
   with the newest message's time, and one 12px muted preview line (the
@@ -417,8 +417,8 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   (`group:<id>`) with the work started from it; neither shows the other. A
   workspace whose General is no group's shows what its bots say there in
   their 1:1s. Groups and bots follow by latest activity; nothing is pinned
-  but the owner's folders (Folders, below; the workspace an earlier version
-  made the HQ is a workspace like any other). The selected row is the `--selection` pill
+  (the workspace an earlier version made the HQ is a workspace like any
+  other). The selected row is the `--selection` pill
   (10px radius), hover `--hover-fill`. A row with unread bot messages
   (this session) carries a neutral count — a 16px `--selection-emphasis`
   pill — and its preview in `--text-sub`; when the row needs the owner the
@@ -438,7 +438,12 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   folder's header is the Sidebar's settled-group header: a 12px/500 button in
   70% `--text-main`, a disclosure chevron (right, turned 90° down while open),
   the name and the count of its bots — no fill or rule, no uppercase or
-  tracking, no count drawn at zero, hover `--hover-fill`. Open or collapsed is
+  tracking, no count drawn at zero, hover `--hover-fill`. Folders are the one
+  exception to the list's "nothing is pinned": they sit above the unfiled
+  rows. The header also carries the strongest mark of its bots, open or
+  collapsed: the orange needs-you count when any of them needs the owner, else
+  the neutral unread count, else nothing (the rows' own badges, summed; the
+  mark is in the header's accessible name). Open or collapsed is
   the owner's and is kept; a search opens the folders holding a match and hides
   the others. Inside a folder the rows are the list's rows, newest first;
   folders follow their newest member and an empty folder comes last, by name.

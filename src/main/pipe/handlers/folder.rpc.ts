@@ -97,8 +97,7 @@ export function removeFolder(raw: unknown, deps: FolderIpcDeps): BotFolderOkResu
   const p = params(raw);
   if (typeof p.id !== 'string' || !BOT_FOLDER_ID_RE.test(p.id)) return NO_FOLDER;
   const removed = store.remove(p.id);
-  if (!removed) return { ok: false, code: 'not_found', field: 'folder', message: store.writeRefusal() ?? 'That folder no longer exists.' };
-  return { ok: true };
+  return removed.ok ? { ok: true } : removed;
 }
 
 /** listFolders, after waiting (bounded) for a store that is not loaded yet. */

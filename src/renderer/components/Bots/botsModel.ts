@@ -743,6 +743,19 @@ export interface FolderSection<R> {
   rows: R[];
 }
 
+/** The strongest mark a folder's rows carry, for its header: the sum of the
+ *  rows' needs-you counts and of their unread counts (the header shows the
+ *  first when it is above zero, else the second). Pure. */
+export function folderMark(rows: ReadonlyArray<{ c: Conversation; unread: number }>): { needsYou: number; unread: number } {
+  let needsYou = 0;
+  let unread = 0;
+  for (const r of rows) {
+    needsYou += r.c.needsYou;
+    unread += r.unread;
+  }
+  return { needsYou, unread };
+}
+
 /** Split the live rows (rows come newest first) into the owner's folders and
  *  the unfiled rest. Only a live bot's 1:1 is filed; a group chat is always
  *  unfiled. Inside a folder the rows keep their newest-first order; folders

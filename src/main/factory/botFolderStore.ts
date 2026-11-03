@@ -3,7 +3,7 @@
 // `{version:1, folders: BotFolder[]}` (shared/botFolder.ts), written whole.
 // Only the owner's main-window IPC changes it (pipe/handlers/folder.rpc.ts);
 // bots read nothing here. Every record is checked again on read: a malformed
-// or duplicate one is dropped, and a bot named by two folders stays in the
+// or duplicate one is dropped (a bad bot id drops only itself), and a bot named by two folders stays in the
 // first. A file that exists but cannot be read, or carries another version,
 // loads as no folders and is not written over until the owner fixes or
 // removes it. Reads leave out bots that no longer exist.
@@ -41,11 +41,14 @@ export function parseStoredFolder(raw: unknown): BotFolder | null {
   const name = normalizeFolderName(r.name);
   if (name === null) return null;
   if (typeof r.createdAt !== 'number' || typeof r.updatedAt !== 'number') return null;
-  if (!Array.isArray(r.botIds) || !r.botIds.every((m) => typeof m === 'string' && BOT_ID_RE.test(m))) return null;
+  if (!Array.isArray(r.botIds)) return null;
+  // Only the bad ids are dropped: losing the whole folder over one of them
+  // would become permanent with the next write.
+  const botIds = r.botIds.filter((m): m is string => typeof m === 'string' && BOT_ID_RE.test(m));
   return {
     id: r.id,
     name,
-    botIds: [...new Set(r.botIds as string[])],
+    botIds: [...new Set(botIds)],
     collapsed: r.collapsed === true,
     createdAt: r.createdAt,
     updatedAt: r.updatedAt,
@@ -173,14 +176,17 @@ export class BotFolderStore {
     return { ok: true };
   }
 
-  /** Delete a folder; its bots become unfiled. The removed folder, or null. */
-  remove(id: string): BotFolder | null {
-    if (this.writeRefusal()) return null;
+  /** Delete a folder; its bots become unfiled. The removed folder, or a
+   *  refusal: `store_unreadable` (like every other write) apart from
+   *  `not_found` for a folder that is gone. */
+  remove(id: string): BotFolderStoreResult {
+    const why = this.writeRefusal();
+    if (why) return { ok: false, code: 'store_unreadable', message: why };
     const f = this.folders.find((x) => x.id === id);
-    if (!f) return null;
+    if (!f) return notFound;
     this.folders = this.folders.filter((x) => x.id !== id);
     this.changed();
-    return this.view(f);
+    return { ok: true, folder: this.view(f) };
   }
 
   /** Resolves once the current state is on disk. */

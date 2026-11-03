@@ -59,9 +59,9 @@ import { blocksStart, bridgeEnginePort, useEngineReadiness, type EnginePort } fr
 import { CLAUDE_CODE_INSTALL_URL } from '../../../shared/factoryEngine';
 import { BOT_NAME_MAX, isCoordinatorBot, normalizeBotName, type BotProfile } from '../../../shared/bot';
 import { listedWorkspaces } from '../../../shared/pcRail';
-import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, splitFolders, type Conversation } from './botsModel';
+import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, folderMark, roomCardsByWorkspace, splitFolders, type Conversation } from './botsModel';
 import { getBotFolderPort, type BotFolderPort } from '../Room/botFolders';
-import { BotFolderMenu, FolderActionsMenu, FolderHeader, FolderNameInput, menuKeyPoint } from './BotFolderUi';
+import { BotFolderMenu, FolderActionsMenu, FolderHeader, FolderNameInput, NeedsBadge, UnreadBadge, menuKeyPoint } from './BotFolderUi';
 import { useBotFolderSelection } from './useBotFolderSelection';
 import { UNFILED_DROP, useBotFolderDrag } from './useBotFolderDrag';
 import BotsGroupDialog, { type GroupDialogStart } from './BotsGroupDialog';
@@ -123,18 +123,6 @@ export function isStillStarting(c: Conversation | undefined): boolean {
 
 /** After this long a new bot's chat opens even without its greeting. */
 const STARTING_MAX_MS = 120_000;
-
-function NeedsBadge({ count }: { count: number }) {
-  if (count <= 0) return null;
-  return <span data-bots-needs={count} aria-hidden="true" className="wmux-bots-badge">{count > 99 ? '99+' : count}</span>;
-}
-
-/** A conversation's unread messages: a neutral count, shown only when
- *  nothing there needs the owner (the orange count wins). */
-function UnreadBadge({ count }: { count: number }) {
-  if (count <= 0) return null;
-  return <span data-bots-unread={count} aria-hidden="true" className="wmux-bots-unread">{count > 99 ? '99+' : count}</span>;
-}
 
 function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread = 0, toggleRoom = false, picked = false }: {
   c: Conversation; title: string; preview: string; selected: boolean; t: T; onSelect: (e: React.MouseEvent) => void; now?: number;
@@ -1154,6 +1142,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
             {folderSections.map(({ folder, rows: members }) => {
               const open = !!q || !folder.collapsed;
               const listId = `bots-folder-${folder.id}`;
+              const mark = folderMark(members);
+              const markText = mark.needsYou > 0 ? t('sidebar.fleetNeedsYou', { count: mark.needsYou }) : mark.unread > 0 ? t('botsPage.chat.unread', { count: mark.unread }) : '';
               return (
                 <section key={folder.id} data-bots-folder={folder.id} className="wmux-bots-folder" {...dropTarget(folder.id)}>
                   <FolderHeader
@@ -1164,7 +1154,13 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                     renaming={renamingId === folder.id}
                     renameLabel={t('botsPage.folders.nameLabel')}
                     dropActive={dropOn === folder.id}
-                    onToggle={() => void folderCall(() => foldersPort.setCollapsed(folder.id, open))}
+                    needsYou={mark.needsYou}
+                    unread={mark.unread}
+                    markText={markText}
+                    // While searching `open` comes from the search, not from the
+                    // owner's saved state: a toggle would save collapsed with no
+                    // visible change, so it is ignored.
+                    onToggle={() => { if (!q) void folderCall(() => foldersPort.setCollapsed(folder.id, open)); }}
                     onMenu={(x, y) => { setRowMenu(null); setFolderMenu({ x, y, folderId: folder.id }); }}
                     onRename={(name) => { setRenamingId(null); void folderCall(() => foldersPort.rename(folder.id, name)); }}
                     onCancelRename={() => setRenamingId(null)}

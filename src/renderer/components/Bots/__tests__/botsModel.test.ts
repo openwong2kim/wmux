@@ -10,7 +10,7 @@ import { timelineKey, ALL_THREADS } from '../../../stores/slices/roomSlice';
 import type { BotGroup } from '../../../../shared/botGroup';
 import type { BotFolder } from '../../../../shared/botFolder';
 import {
-  splitFolders, rangeBetween, awaitsApproval, botConversationCards, botWorkScope, botWorkerTree, botWorkers, buildBots, botsNeedsYou, botsRooms, conversationCards, groupViewCards, isBotSystemCard,
+  splitFolders, folderMark, rangeBetween, awaitsApproval, botConversationCards, botWorkScope, botWorkerTree, botWorkers, buildBots, botsNeedsYou, botsRooms, conversationCards, groupViewCards, isBotSystemCard,
   livePlanIds, openApprovalsBy, openQuestionsBy, roomCardsByWorkspace, roomViewCards, taskBubbles,
   type BotsInput, type Conversation,
 } from '../botsModel';
@@ -650,6 +650,14 @@ describe('splitFolders', () => {
   it('while searching, a folder without a matching row is left out', () => {
     const { sections } = splitFolders([bot('b1')], [fld('f1', 'A', ['b1']), fld('f2', 'B', ['b9']), fld('f3', 'C', [])], true);
     expect(sections.map((s) => s.folder.id)).toEqual(['f1']);
+  });
+});
+
+describe('folderMark', () => {
+  const row = (needsYou: number, unread: number) => ({ c: { needsYou } as unknown as Conversation, unread });
+  it('sums the rows\' needs-you and unread counts, and is zero for no rows', () => {
+    expect(folderMark([row(1, 2), row(2, 0), row(0, 3)])).toEqual({ needsYou: 3, unread: 5 });
+    expect(folderMark([])).toEqual({ needsYou: 0, unread: 0 });
   });
 });
 

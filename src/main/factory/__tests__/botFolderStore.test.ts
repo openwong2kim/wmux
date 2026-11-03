@@ -124,9 +124,9 @@ describe('BotFolderStore', () => {
     const { store } = rig();
     const f1 = mustFolder(store.create('One')).id;
     store.assign(A, f1);
-    expect(store.remove(f1)).toMatchObject({ id: f1, botIds: [A] });
+    expect(store.remove(f1)).toMatchObject({ ok: true, folder: { id: f1, botIds: [A] } });
     expect(store.list()).toEqual([]);
-    expect(store.remove(f1)).toBeNull();
+    expect(store.remove(f1)).toMatchObject({ ok: false, code: 'not_found' });
     const f2 = mustFolder(store.create('Again')).id;
     expect(store.get(f2)?.botIds).toEqual([]);
   });
@@ -165,13 +165,25 @@ describe('BotFolderStore', () => {
         { ...good, id: 'fld-00000001', name: 'Dup' },
         { ...good, id: 'bad', name: 'Bad id' },
         { ...good, id: 'fld-00000003', name: '' },
-        { ...good, id: 'fld-00000004', botIds: ['nope'] },
+        { ...good, id: 'fld-00000004', botIds: 'nope' },
         'junk',
       ],
     }));
     const loaded = r.make();
     loaded.load();
     expect(loaded.list().map((x) => [x.name, x.botIds])).toEqual([['First', [A, B]], ['Second', [C]]]);
+  });
+
+  it('one malformed bot id drops only that id, not the folder', () => {
+    const r = rig();
+    fs.mkdirSync(path.dirname(r.file), { recursive: true });
+    fs.writeFileSync(r.file, JSON.stringify({
+      version: 1,
+      folders: [{ id: 'fld-00000001', name: 'Keep', botIds: [A, 'nope', 7, B, A], collapsed: true, createdAt: 1, updatedAt: 1 }],
+    }));
+    const loaded = r.make();
+    loaded.load();
+    expect(loaded.list()).toEqual([expect.objectContaining({ name: 'Keep', botIds: [A, B], collapsed: true })]);
   });
 
   it('an unreadable or other-version file loads as no folders and is never written over', async () => {
@@ -187,7 +199,7 @@ describe('BotFolderStore', () => {
       expect(s.rename('fld-00000001', 'X')).toMatchObject({ ok: false, code: 'store_unreadable' });
       expect(s.setCollapsed('fld-00000001', true)).toMatchObject({ ok: false, code: 'store_unreadable' });
       expect(s.assign(A, null)).toMatchObject({ ok: false, code: 'store_unreadable' });
-      expect(s.remove('fld-00000001')).toBeNull();
+      expect(s.remove('fld-00000001')).toMatchObject({ ok: false, code: 'store_unreadable' });
       await s.flush().catch(() => undefined);
       expect(fs.readFileSync(r.file, 'utf8')).toBe(content);
     }
