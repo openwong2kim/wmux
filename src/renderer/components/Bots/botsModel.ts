@@ -51,6 +51,7 @@
 import { dmThreadBot, dmThreadId, groupThreadGroup, type RoomCard, type ThreadId, type ThreadSummary } from '../../../shared/room';
 import { DEFAULT_BOT_BUDGETS, type BotProfile } from '../../../shared/bot';
 import type { BotGroup } from '../../../shared/botGroup';
+import type { BotFolder } from '../../../shared/botFolder';
 import type { FleetAttentionClass } from '../../stores/selectors/fleet';
 import type { RoomTimeline } from '../../stores/slices/roomSlice';
 import type { FactoryBotRow } from '../Room/factoryPorts';
@@ -735,3 +736,78 @@ export function taskBubbles(tasks: readonly BotTaskView[] | undefined, now: numb
 
 /** One entry of a conversation's timeline. */
 export type RoomEntry = { kind: 'card'; card: RoomCard };
+
+/** One folder of the list: the folder and the rows filed in it. */
+export interface FolderSection<R> {
+  folder: BotFolder;
+  rows: R[];
+}
+
+/** The strongest mark a folder's rows carry, for its header: the sum of the
+ *  rows' needs-you counts and of their unread counts (the header shows the
+ *  first when it is above zero, else the second). Pure. */
+export function folderMark(rows: ReadonlyArray<{ c: Conversation; unread: number }>): { needsYou: number; unread: number } {
+  let needsYou = 0;
+  let unread = 0;
+  for (const r of rows) {
+    needsYou += r.c.needsYou;
+    unread += r.unread;
+  }
+  return { needsYou, unread };
+}
+
+/** Split the live rows (rows come newest first) into the owner's folders and
+ *  the unfiled rest. Only a live bot's 1:1 is filed; a group chat is always
+ *  unfiled. Inside a folder the rows keep their newest-first order; folders
+ *  follow their newest member, and an empty folder comes last, by name. While
+ *  searching, a folder with no matching row is left out. Pure. */
+export function splitFolders<R extends { c: Conversation }>(
+  rows: readonly R[],
+  folders: readonly BotFolder[],
+  searching = false,
+): { unfiled: R[]; sections: FolderSection<R>[] } {
+  const folderOf = new Map<string, BotFolder>();
+  for (const f of folders) for (const id of f.botIds) if (!folderOf.has(id)) folderOf.set(id, f);
+  const members = new Map<string, R[]>();
+  const unfiled: R[] = [];
+  const firstAt = new Map<string, number>();
+  rows.forEach((r, i) => {
+    const f = r.c.kind === 'bot' && !r.c.removed ? folderOf.get(r.c.row.bot.id) : undefined;
+    if (!f) {
+      unfiled.push(r);
+      return;
+    }
+    const list = members.get(f.id);
+    if (list) list.push(r);
+    else {
+      members.set(f.id, [r]);
+      firstAt.set(f.id, i);
+    }
+  });
+  const sections: FolderSection<R>[] = [];
+  for (const f of folders) {
+    const list = members.get(f.id);
+    if (list) sections.push({ folder: f, rows: list });
+    else if (!searching) sections.push({ folder: f, rows: [] });
+  }
+  sections.sort((a, b) => {
+    const ia = firstAt.get(a.folder.id);
+    const ib = firstAt.get(b.folder.id);
+    if (ia !== undefined && ib !== undefined) return ia - ib;
+    if (ia !== undefined) return -1;
+    if (ib !== undefined) return 1;
+    return a.folder.name.localeCompare(b.folder.name);
+  });
+  return { unfiled, sections };
+}
+
+/** The ids from `anchor` to `id`, both included, in the on-screen `order`
+ *  (either way round). Without an anchor in `order` it is just `id`; an `id`
+ *  not in `order` gives none. Pure. */
+export function rangeBetween(order: readonly string[], anchor: string | null, id: string): string[] {
+  const to = order.indexOf(id);
+  if (to < 0) return [];
+  const from = anchor === null ? -1 : order.indexOf(anchor);
+  if (from < 0) return [id];
+  return order.slice(Math.min(from, to), Math.max(from, to) + 1);
+}

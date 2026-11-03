@@ -59,7 +59,11 @@ import { blocksStart, bridgeEnginePort, useEngineReadiness, type EnginePort } fr
 import { CLAUDE_CODE_INSTALL_URL } from '../../../shared/factoryEngine';
 import { BOT_NAME_MAX, isCoordinatorBot, normalizeBotName, type BotProfile } from '../../../shared/bot';
 import { listedWorkspaces } from '../../../shared/pcRail';
-import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, roomCardsByWorkspace, type Conversation } from './botsModel';
+import { allRoomCards, botConversationId, conversationCards, groupConversationId, groupViewCards, folderMark, roomCardsByWorkspace, splitFolders, type Conversation } from './botsModel';
+import { getBotFolderPort, type BotFolderPort } from '../Room/botFolders';
+import { BotFolderMenu, FolderActionsMenu, FolderHeader, FolderNameInput, NeedsBadge, UnreadBadge, menuKeyPoint } from './BotFolderUi';
+import { useBotFolderSelection } from './useBotFolderSelection';
+import { UNFILED_DROP, useBotFolderDrag } from './useBotFolderDrag';
 import BotsGroupDialog, { type GroupDialogStart } from './BotsGroupDialog';
 import { getBotGroupPort, type BotGroupPort } from '../Room/botGroups';
 import type { BotGroup } from '../../../shared/botGroup';
@@ -120,20 +124,10 @@ export function isStillStarting(c: Conversation | undefined): boolean {
 /** After this long a new bot's chat opens even without its greeting. */
 const STARTING_MAX_MS = 120_000;
 
-function NeedsBadge({ count }: { count: number }) {
-  if (count <= 0) return null;
-  return <span data-bots-needs={count} aria-hidden="true" className="wmux-bots-badge">{count > 99 ? '99+' : count}</span>;
-}
-
-/** A conversation's unread messages: a neutral count, shown only when
- *  nothing there needs the owner (the orange count wins). */
-function UnreadBadge({ count }: { count: number }) {
-  if (count <= 0) return null;
-  return <span data-bots-unread={count} aria-hidden="true" className="wmux-bots-unread">{count > 99 ? '99+' : count}</span>;
-}
-
-function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread = 0, toggleRoom = false }: {
-  c: Conversation; title: string; preview: string; selected: boolean; t: T; onSelect: () => void; now?: number;
+function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread = 0, toggleRoom = false, picked = false }: {
+  c: Conversation; title: string; preview: string; selected: boolean; t: T; onSelect: (e: React.MouseEvent) => void; now?: number;
+  /** In a multi-selection with the open bot: the same highlight, though not the open row. */
+  picked?: boolean;
   /** The workers' fold toggle sits at the end of the preview line. */
   toggleRoom?: boolean;
   /** Bot messages after the conversation was last read (this session). */
@@ -151,10 +145,11 @@ function ConversationRow({ c, title, preview, selected, t, onSelect, now, unread
       data-bots-row={c.id}
       data-bots-kind={c.kind}
       data-bots-removed={removed ? 'true' : undefined}
+      data-bots-picked={picked ? 'true' : undefined}
       aria-current={selected ? 'true' : undefined}
       aria-label={name}
       onClick={onSelect}
-      className={`wmux-bots-row-button ${selected ? 'is-selected' : ''} ${FOCUS_RING}`}
+      className={`wmux-bots-row-button ${selected || picked ? 'is-selected' : ''} ${FOCUS_RING}`}
     >
       <span className="relative shrink-0">
         {c.kind === 'bot' ? <BotAvatar bot={c.row.bot} size={32} working={botPresence(c.row) === 'running'} /> : <RoomAvatar bots={c.bots} size={32} />}
@@ -483,8 +478,8 @@ function HeaderMenu({ t, onStopAll, onGuests }: { t: T; onStopAll: (() => void) 
   );
 }
 
-/** "+": Add bot, Add team or New group chat. */
-function AddMenu({ t, onAddBot, onAddTeam, onNewGroup }: { t: T; onAddBot: () => void; onAddTeam: (() => void) | null; onNewGroup: (() => void) | null }) {
+/** "+": Add bot, Add team, New group chat or New folder. */
+function AddMenu({ t, onAddBot, onAddTeam, onNewGroup, onNewFolder }: { t: T; onAddBot: () => void; onAddTeam: (() => void) | null; onNewGroup: (() => void) | null; onNewFolder: (() => void) | null }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLSpanElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -529,6 +524,11 @@ function AddMenu({ t, onAddBot, onAddTeam, onNewGroup }: { t: T; onAddBot: () =>
           {onNewGroup && (
             <button type="button" role="menuitem" data-bots-new-group className={item} onClick={() => { setOpen(false); onNewGroup(); }}>
               {t('botsPage.group.new')}
+            </button>
+          )}
+          {onNewFolder && (
+            <button type="button" role="menuitem" data-bots-new-folder className={item} onClick={() => { setOpen(false); onNewFolder(); }}>
+              {t('botsPage.folders.new')}
             </button>
           )}
         </Popover>
@@ -583,7 +583,7 @@ function TeamNotice({ t, workspace, onMake, onDismiss }: { t: T; workspace: stri
   );
 }
 
-export default function BotsPage({ onAddBot, port, api, now, settings, stop, engine, groupPort, guestPort }: {
+export default function BotsPage({ onAddBot, port, api, now, settings, stop, engine, groupPort, folderPort, guestPort }: {
   /** What "+" does instead of the in-page add form (tests). */
   onAddBot?: () => void;
   /** Tests: the bot port and the rooms bridge. */
@@ -597,6 +597,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   engine?: EnginePort;
   /** Tests: the group chats port (default: the preload's). */
   groupPort?: BotGroupPort;
+  /** Tests: the bot folders port (default: the preload's). */
+  folderPort?: BotFolderPort;
   /** Tests: the guest bots port (default: the preload's). */
   guestPort?: GuestBotPort;
 } = {}): React.ReactElement {
@@ -604,12 +606,13 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   const guestsPort = guestPort ?? getGuestBotPort();
   const [guestsOpen, setGuestsOpen] = useState(false);
   const groupsPort = groupPort ?? getBotGroupPort();
-  const botsState = useBots(port, groupsPort);
+  const foldersPort = folderPort ?? getBotFolderPort();
+  const botsState = useBots(port, groupsPort, foldersPort);
   useBotsSync(botsState, { focus: false, paused: true });
   // The factory may have been switched on since the status was read (in
   // Settings): opening the page asks again.
   useEffect(() => { void refreshRoomStatus(); }, []);
-  const { model, status, bots, on, listed } = botsState;
+  const { model, status, bots, on, listed, folders, reloadFolders } = botsState;
   // The page is there only while the bots are on: turned off (here or in
   // Settings), it leaves for Workspaces, as its rail item goes.
   const known = !!status;
@@ -658,6 +661,34 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   // Archive's fold: folded until toggled, and open while searching or while
   // one of its chats is open (DESIGN.md › Bots › Archive), toggled or not.
   const [archiveOpen, setArchiveOpen] = useState(false);
+
+  // Folders (DESIGN.md › Bots › Folders): the live bots' rows are split into
+  // the owner's folders and the unfiled rest; a folder is open unless the
+  // owner collapsed it (main keeps that), and open while searching.
+  const { unfiled: unfiledLive, sections: folderSections } = splitFolders(shownLive, folders, !!q);
+  const foldersOn = foldersPort.available;
+  const [rowMenu, setRowMenu] = useState<{ x: number; y: number; botIds: string[] } | null>(null);
+  const [folderMenu, setFolderMenu] = useState<{ x: number; y: number; folderId: string } | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  // A folder being named: from "+", or from a bot's menu (the bot then moves in).
+  const [naming, setNaming] = useState<{ botIds: string[] } | null>(null);
+  const [folderError, setFolderError] = useState<string | null>(null);
+  const [folderBusy, setFolderBusy] = useState(false);
+  const folderCall = async (run: () => Promise<{ ok: boolean; message?: string }>) => {
+    setFolderBusy(true);
+    try {
+      const r = await run();
+      setFolderError(r.ok ? null : (r.message ?? ''));
+    } catch (err) {
+      setFolderError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setFolderBusy(false);
+      reloadFolders();
+    }
+  };
+  const folderOfBot = (botId: string) => folders.find((f) => f.botIds.includes(botId))?.id ?? null;
+
 
   const [threadAsk, setThreadAsk] = useState<{ conversationId: string; workspaceId: string; threadId: ThreadId; nonce: number } | null>(null);
   // A bot's settings page, shown in place of its chat (BotSettingsPage).
@@ -761,6 +792,34 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
   };
   const starting = pending && pendingStarting && selectedId === pendingId ? pending.bot : null;
   const selected = starting ? null : rows.find((r) => r.c.id === selectedId) ?? rows[0] ?? null;
+
+  // The selected bots, as in a file picker (DESIGN.md › Bots › Folders): the
+  // open bot plus any picked with Ctrl/Shift.
+  const openBotId = selected?.c.kind === 'bot' && !selected.c.removed ? selected.c.row.bot.id : null;
+  const { selection, order, selectedIds, collapse, selectOnly, toggle, extendTo, onEscape } = useBotFolderSelection({
+    foldersOn, searching: !!q, sections: folderSections, unfiled: unfiledLive, openBotId,
+  });
+  const fileableId = (r: { c: Conversation }) => foldersOn && r.c.kind === 'bot' && !r.c.removed;
+
+  /** File bots (a batch is one call), then collapse the selection to the open bot. */
+  const moveBots = (botIds: string[], folderId: string | null) => {
+    setRowMenu(null);
+    if (botIds.length > 1) collapse();
+    if (botIds.length === 0) return;
+    void folderCall(() => (botIds.length === 1 ? foldersPort.assign(botIds[0], folderId) : foldersPort.assignMany(botIds, folderId)));
+  };
+  const createFolder = (name: string, botIds: string[]) => {
+    setNaming(null);
+    if (botIds.length > 1) collapse();
+    void folderCall(async () => {
+      const r = await foldersPort.create(name);
+      if (!r.ok || botIds.length === 0) return r;
+      return botIds.length === 1 ? foldersPort.assign(botIds[0], r.folder.id) : foldersPort.assignMany(botIds, r.folder.id);
+    });
+  };
+
+  // Dragging rows onto a folder (or the unfiled rows).
+  const { rowsRef, dropOn, dragStartedAt, dragStart, dragEnd, dropTarget } = useBotFolderDrag({ selection, selectedIds, order, folderOfBot, moveBots });
 
   // A deleted bot's 1:1 is read whole when opened: its messages may be
   // older than the room's newest page.
@@ -896,6 +955,25 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
     const renderEntry = (r: (typeof rows)[number]) => {
       const tree = r.c.kind === 'bot' ? r.c.tree : [];
       const botId = r.c.kind === 'bot' ? r.c.row.bot.id : '';
+      // A live bot's 1:1 can be filed in a folder (a group chat or a removed bot cannot).
+      const fileable = fileableId(r);
+      const isPicked = fileable && selection.has(botId);
+      // The menu and a drag act on the whole selection from one of its rows,
+      // else on this row alone.
+      const menuIds = isPicked && selection.size > 1 ? selectedIds() : [botId];
+      // A click, as in a file picker: Ctrl/Cmd adds or drops the row and Shift
+      // takes the range from the anchor, neither opening the chat; any other
+      // click opens it and selects it alone.
+      const onRowClick = (e: React.MouseEvent) => {
+        if (Date.now() - dragStartedAt.current < 200) { e.preventDefault(); return; }
+        if (fileable) {
+          const toggleKey = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+          if (toggleKey) { e.preventDefault(); toggle(botId); return; }
+          if (e.shiftKey) { e.preventDefault(); extendTo(botId); return; }
+          selectOnly(botId);
+        }
+        openRow(r.c);
+      };
       const isSelected = selected?.c.id === r.c.id || (!!starting && r.c.id === pendingId);
       const open = tree.length > 0 && (unfolded[r.c.id] ?? isSelected);
       const treeId = `bots-tree-${r.c.id}`;
@@ -904,7 +982,23 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
       // and its tasks.
       return (
         <div key={r.c.id} data-bots-entry={r.c.id} className={`wmux-bots-entry ${isSelected ? 'is-open' : ''}`}>
-          <div className={`wmux-bots-row-wrap ${tree.length > 0 ? 'has-toggle' : ''}`}>
+          <div
+            className={`wmux-bots-row-wrap ${tree.length > 0 ? 'has-toggle' : ''}`}
+            draggable={fileable}
+            onDragStart={fileable ? (e) => dragStart(e, botId) : undefined}
+            onDragEnd={fileable ? dragEnd : undefined}
+            onContextMenu={fileable ? (e) => {
+              e.preventDefault();
+              setFolderMenu(null);
+              setRowMenu({ x: e.clientX, y: e.clientY, botIds: menuIds });
+            } : undefined}
+            onKeyDown={fileable ? (e) => {
+              const at = menuKeyPoint(e);
+              if (!at) return;
+              setFolderMenu(null);
+              setRowMenu({ ...at, botIds: menuIds });
+            } : undefined}
+          >
             <ConversationRow
               c={r.c}
               title={r.title}
@@ -913,7 +1007,8 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               t={t}
               now={now}
               unread={r.unread}
-              onSelect={() => openRow(r.c)}
+              onSelect={onRowClick}
+              picked={isPicked && !isSelected}
               toggleRoom={tree.length > 0}
             />
             {tree.length > 0 && (
@@ -969,7 +1064,7 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
                 onGuests={guestsPort.available ? () => setGuestsOpen(true) : null}
               />
             )}
-            <AddMenu t={t} onAddBot={startAdd} onAddTeam={startTeam} onNewGroup={newGroup} />
+            <AddMenu t={t} onAddBot={startAdd} onAddTeam={startTeam} onNewGroup={newGroup} onNewFolder={foldersOn ? () => setNaming({ botIds: [] }) : null} />
           </div>
           {teamMade && newGroup && (
             <TeamNotice
@@ -1013,10 +1108,108 @@ export default function BotsPage({ onAddBot, port, api, now, settings, stop, eng
               />
             </div>
           )}
-          <div className="wmux-bots-rows">
+          {foldersOn && selection.size > 1 && (
+            <div className="wmux-bots-selbar" data-bots-selbar role="group" aria-label={t('botsPage.folders.move')}>
+              <span className="wmux-bots-selbar-count" data-bots-selbar-count aria-live="polite">{t('botsPage.folders.selected', { count: selection.size })}</span>
+              <button
+                type="button"
+                data-bots-selbar-move
+                className={FOCUS_RING}
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  setFolderMenu(null);
+                  setRowMenu({ x: rect.left, y: rect.bottom, botIds: selectedIds() });
+                }}
+              >
+                {t('botsPage.folders.moveSelected')}
+              </button>
+              <button type="button" data-bots-selbar-clear className={FOCUS_RING} onClick={collapse}>{t('botsPage.folders.clearSelection')}</button>
+            </div>
+          )}
+          <div
+            ref={rowsRef}
+            className="wmux-bots-rows"
+            onKeyDown={(e) => onEscape(e, !!rowMenu || !!folderMenu)}
+          >
             {shown.length === 0 && rows.length > 0 && <p className="px-4 py-3 text-[12px] text-[var(--text-muted)]">{t('botsPage.noMatch')}</p>}
             {rows.length === 0 && !starting && <p data-bots-empty className="px-4 py-3 text-[12px] text-[var(--text-muted)]">{t('botsPage.noConversations')}</p>}
-            {shownLive.map(renderEntry)}
+            {folderError !== null && <p data-bots-folder-error role="alert" className="px-4 py-2 text-[12px] text-[var(--accent-red)]">{t('botsPage.folders.failed', { reason: folderError })}</p>}
+            {naming && (
+              <div className="wmux-bots-folder-head" data-bots-folder-draft>
+                <FolderNameInput initial="" label={t('botsPage.folders.nameLabel')} testId="bots-folder-new" onCommit={(name) => createFolder(name, naming.botIds)} onCancel={() => setNaming(null)} />
+              </div>
+            )}
+            {folderSections.map(({ folder, rows: members }) => {
+              const open = !!q || !folder.collapsed;
+              const listId = `bots-folder-${folder.id}`;
+              const mark = folderMark(members);
+              const markText = mark.needsYou > 0 ? t('sidebar.fleetNeedsYou', { count: mark.needsYou }) : mark.unread > 0 ? t('botsPage.chat.unread', { count: mark.unread }) : '';
+              return (
+                <section key={folder.id} data-bots-folder={folder.id} className="wmux-bots-folder" {...dropTarget(folder.id)}>
+                  <FolderHeader
+                    folder={folder}
+                    count={members.length}
+                    open={open}
+                    listId={listId}
+                    renaming={renamingId === folder.id}
+                    renameLabel={t('botsPage.folders.nameLabel')}
+                    dropActive={dropOn === folder.id}
+                    needsYou={mark.needsYou}
+                    unread={mark.unread}
+                    markText={markText}
+                    // While searching `open` comes from the search, not from the
+                    // owner's saved state: a toggle would save collapsed with no
+                    // visible change, so it is ignored.
+                    onToggle={() => { if (!q) void folderCall(() => foldersPort.setCollapsed(folder.id, open)); }}
+                    onMenu={(x, y) => { setRowMenu(null); setFolderMenu({ x, y, folderId: folder.id }); }}
+                    onRename={(name) => { setRenamingId(null); void folderCall(() => foldersPort.rename(folder.id, name)); }}
+                    onCancelRename={() => setRenamingId(null)}
+                  />
+                  {deletingId === folder.id && (
+                    <div className="px-3 pb-2">
+                      <InlineConfirm
+                        text={t('botsPage.folders.deleteConfirm', { name: folder.name })}
+                        confirmLabel={t('botsPage.folders.delete')}
+                        cancelLabel={t('room.hq.cancel')}
+                        busy={folderBusy}
+                        onConfirm={() => { setDeletingId(null); void folderCall(() => foldersPort.remove(folder.id)); }}
+                        onCancel={() => setDeletingId(null)}
+                        testId="bots-folder-delete"
+                      />
+                    </div>
+                  )}
+                  <div id={listId} role="group" aria-label={folder.name} hidden={!open}>
+                    {open && members.map(renderEntry)}
+                  </div>
+                </section>
+              );
+            })}
+            <div data-bots-unfiled className={`wmux-bots-unfiled ${dropOn === UNFILED_DROP ? 'is-drop' : ''}`} {...(foldersOn ? dropTarget(null) : {})}>
+              {unfiledLive.map(renderEntry)}
+            </div>
+            {rowMenu && (
+              <BotFolderMenu
+                t={t}
+                x={rowMenu.x}
+                y={rowMenu.y}
+                folders={folders}
+                currentId={rowMenu.botIds.every((id) => folderOfBot(id) === folderOfBot(rowMenu.botIds[0])) ? folderOfBot(rowMenu.botIds[0]) : null}
+                canRemove={rowMenu.botIds.some((id) => folderOfBot(id) !== null)}
+                onMove={(folderId) => moveBots(rowMenu.botIds, folderId)}
+                onNew={() => { setNaming({ botIds: rowMenu.botIds }); setRowMenu(null); }}
+                onClose={() => setRowMenu(null)}
+              />
+            )}
+            {folderMenu && (
+              <FolderActionsMenu
+                t={t}
+                x={folderMenu.x}
+                y={folderMenu.y}
+                onRename={() => { setRenamingId(folderMenu.folderId); setDeletingId(null); setFolderMenu(null); }}
+                onDelete={() => { setDeletingId(folderMenu.folderId); setRenamingId(null); setFolderMenu(null); }}
+                onClose={() => setFolderMenu(null)}
+              />
+            )}
             {shownArchived.length > 0 && (
               <>
                 <ArchiveToggle t={t} count={shownArchived.length} expanded={archiveShown} onToggle={() => setArchiveOpen((v) => !v)} />

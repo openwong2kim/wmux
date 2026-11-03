@@ -433,6 +433,47 @@ status bar badges, `fleet_triage` or the phone's sidebar.
   asks in place (InlineConfirm: the chat leaves the list for good, its
   messages stay saved and what it wrote in group chats keeps its name).
   The tombstone stays, marked, so its cards keep its name and face.
+- **Folders (proposed):** the owner files live bots in named
+  folders, which sit above the unfiled conversations (and above Archive). A
+  folder's header is the Sidebar's settled-group header: a 12px/500 button in
+  70% `--text-main`, a disclosure chevron (right, turned 90° down while open),
+  the name and the count of its bots — no fill or rule, no uppercase or
+  tracking, no count drawn at zero, hover `--hover-fill`. Folders are the one
+  exception to the list's "nothing is pinned": they sit above the unfiled
+  rows. The header also carries the strongest mark of its bots, open or
+  collapsed: the orange needs-you count when any of them needs the owner, else
+  the neutral unread count, else nothing (the rows' own badges, summed; the
+  mark is in the header's accessible name). Open or collapsed is
+  the owner's and is kept; a search opens the folders holding a match and hides
+  the others. Inside a folder the rows are the list's rows, newest first;
+  folders follow their newest member and an empty folder comes last, by name.
+  A bot is in one folder; a group chat and an Archive row are never filed.
+  Right-click or Shift+F10 / the Menu key on a bot row opens **Move to
+  folder** (each folder, New folder…, Remove from folder); on a header,
+  **Rename** (in place: Enter commits, Escape cancels, leaving the field
+  commits; 60 characters) and **Delete folder** (InlineConfirm; its bots go
+  back to the list, none is deleted). "+" also offers New folder. Folders are
+  the owner's alone: a bot never sees or changes one.
+  **Several at once (proposed):** selecting works like a file picker. The
+  open conversation's live bot is always selected: a plain click on a bot row
+  opens its chat and makes that bot the only one selected (and the anchor).
+  Ctrl-click (⌘-click on macOS) adds or drops another live bot and Shift-click
+  takes the range from the anchor, over the rows on screen (open folders, then
+  the unfiled ones); neither opens or changes the chat, and the open bot cannot
+  be dropped. Every selected row wears the same `--selection` highlight (no
+  check mark); a group chat or the Archive is never part of it, and opening
+  one starts over. Escape, or **Clear**, collapses back to the open bot, and
+  rows that leave the screen leave the selection. With one bot selected
+  nothing else appears; from two on, a slim text bar above the rows reads
+  "N selected", **Move to folder…** and **Clear** (no fill, no rule). The row
+  menu acts on the whole selection when opened on one of its rows, else on that
+  row alone. **Dragging** (native, as the Sidebar's workspace rows): a live
+  bot's row drags, a selected row drags the whole selection (two or more), any other row only itself; the dragged rows
+  dim, a folder (header or body) under the pointer takes `--hover-fill` on its
+  header as the drop mark, and dropping files them; dropping on the unfiled
+  rows (tinted `--hover-fill` likewise) takes them out of their folder. A drop
+  that would change nothing is not offered, and a drag from outside the list is
+  never accepted. The menu stays the keyboard path.
 - **Workers in the list (owner decision 2026-10-14):** a bot's workers nest
   under its row the way the Sidebar nests a workspace's fan-out tasks: an
   indented row each on a `--stroke` guide under the avatar — the Sidebar's

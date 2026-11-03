@@ -139,6 +139,74 @@
   color: var(--text-muted);
 }
 .wmux-bots-archive-toggle:hover { background: var(--hover-fill); color: var(--text-main); }
+/* A folder's section header (DESIGN.md › Bots › Folders): the Sidebar's
+   settled-group header — a disclosure chevron (right, turned down while
+   open), the name and the count; no fill or rule of its own, the colour
+   neutral. */
+.wmux-bots-folder { margin-top: 4px; }
+.wmux-bots-folder-head-wrap { min-width: 0; }
+.wmux-bots-folder-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 24px;
+  padding: 2px 4px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--text-main) 70%, transparent);
+}
+button.wmux-bots-folder-head:hover { background: var(--hover-fill); color: var(--text-main); }
+.wmux-bots-folder-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 12px;
+  height: 12px;
+  transition: transform 120ms;
+}
+.wmux-bots-folder-head.is-drop { background: var(--hover-fill); color: var(--text-main); }
+/* The unfiled rows: a drop here takes a dragged bot out of its folder. The
+   tint is the same --hover-fill a folder header takes. */
+.wmux-bots-unfiled { min-height: 24px; border-radius: 10px; }
+.wmux-bots-unfiled.is-drop { background: var(--hover-fill); }
+/* The bar while two or more bots are selected: text only, no fill and no rule. */
+.wmux-bots-selbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 28px;
+  padding: 0 12px 4px;
+  font-size: 12px;
+  color: var(--text-sub);
+}
+.wmux-bots-selbar-count { flex: 1; min-width: 0; }
+.wmux-bots-selbar button { padding: 2px 8px; border-radius: 6px; color: var(--text-main); }
+.wmux-bots-selbar button:hover { background: var(--hover-fill); }
+.wmux-bots-folder-count { font-weight: 400; color: var(--text-muted); }
+/* The strongest mark of the folder's rows (the row badges, unchanged) sits
+   at the far end of the header, open or collapsed. */
+.wmux-bots-folder-head .wmux-bots-badge,
+.wmux-bots-folder-head .wmux-bots-unread { margin-left: auto; }
+.wmux-bots-folder-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: transparent;
+  font-size: 12px;
+  color: var(--text-main);
+}
+.wmux-bots-folder-input:focus { border-color: var(--line-strong); }
+.wmux-bots-menu-label {
+  padding: 4px 10px 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
 .wmux-bots-tree {
   display: flex;
   flex-direction: column;

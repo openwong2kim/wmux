@@ -61,6 +61,7 @@ import {
   type BotTemplate,
   type BotTrigger,
   type RemovedBot,
+  BOTS_MAX,
   BOT_IDENTITY_SLOTS,
   HERMES_BOT_ENGINE,
   MY_HERMES_DEFAULT_PROFILE,
@@ -90,7 +91,6 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 }
 
 export const BOTS_FILE_VERSION = 1 as const;
-export const BOTS_MAX = 64;
 /** Removed bots remembered (bots.json `removed`), newest kept. */
 export const REMOVED_BOTS_MAX = 64;
 const NAME_MAX = BOT_NAME_MAX;

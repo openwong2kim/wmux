@@ -8,10 +8,11 @@ import { DEFAULT_BOT_BUDGETS } from '../../../../shared/bot';
 import type { FactoryBotRow } from '../../Room/factoryPorts';
 import { timelineKey, ALL_THREADS } from '../../../stores/slices/roomSlice';
 import type { BotGroup } from '../../../../shared/botGroup';
+import type { BotFolder } from '../../../../shared/botFolder';
 import {
-  awaitsApproval, botConversationCards, botWorkScope, botWorkerTree, botWorkers, buildBots, botsNeedsYou, botsRooms, conversationCards, groupViewCards, isBotSystemCard,
+  splitFolders, folderMark, rangeBetween, awaitsApproval, botConversationCards, botWorkScope, botWorkerTree, botWorkers, buildBots, botsNeedsYou, botsRooms, conversationCards, groupViewCards, isBotSystemCard,
   livePlanIds, openApprovalsBy, openQuestionsBy, roomCardsByWorkspace, roomViewCards, taskBubbles,
-  type BotsInput,
+  type BotsInput, type Conversation,
 } from '../botsModel';
 
 const LEAD = 'bot-0000000a';
@@ -617,5 +618,61 @@ describe('taskBubbles', () => {
     const now = 100_000_000;
     const tasks = [view('kept', { worker: 'stopped', folder: 'kept_dirty', updatedAt: now - 1 }), view('plain', { worker: 'stopped', updatedAt: now })];
     expect(taskBubbles(tasks, now).map((t) => t.taskId)).toEqual(['kept']);
+  });
+});
+
+describe('splitFolders', () => {
+  type Row = { c: Conversation; id: string };
+  const bot = (id: string, removed = false): Row => ({ id, c: { kind: 'bot', row: botRow(id, 'lead', 'w1', 1), ...(removed ? { removed: true } : {}) } as unknown as Conversation });
+  const group = (id: string): Row => ({ id, c: { kind: 'room', group: { id } } as unknown as Conversation });
+  const fld = (id: string, name: string, botIds: string[]): BotFolder => ({ id, name, botIds, collapsed: false, createdAt: 1, updatedAt: 1 });
+  const ids = (rows: Row[]) => rows.map((r) => r.id);
+
+  it('files live bots, keeps newest-first inside a folder and leaves the rest unfiled', () => {
+    const rows = [bot('b1'), group('g1'), bot('b2'), bot('b3'), bot('b4', true)];
+    const { unfiled, sections } = splitFolders(rows, [fld('f1', 'A', ['b3', 'b1', 'b4'])]);
+    expect(sections.map((s) => [s.folder.id, ids(s.rows)])).toEqual([['f1', ['b1', 'b3']]]);
+    expect(ids(unfiled)).toEqual(['g1', 'b2', 'b4']);
+  });
+
+  it('orders folders by their newest member, empty folders last by name', () => {
+    const rows = [bot('b1'), bot('b2'), bot('b3')];
+    const folders = [fld('fz', 'Zed', []), fld('f1', 'One', ['b3']), fld('fa', 'Alpha', []), fld('f2', 'Two', ['b2'])];
+    const { sections } = splitFolders(rows, folders);
+    expect(sections.map((s) => s.folder.id)).toEqual(['f2', 'f1', 'fa', 'fz']);
+  });
+
+  it('a bot in two folders is shown in the first only', () => {
+    const { sections } = splitFolders([bot('b1')], [fld('f1', 'A', ['b1']), fld('f2', 'B', ['b1'])]);
+    expect(sections.map((s) => [s.folder.id, ids(s.rows)])).toEqual([['f1', ['b1']], ['f2', []]]);
+  });
+
+  it('while searching, a folder without a matching row is left out', () => {
+    const { sections } = splitFolders([bot('b1')], [fld('f1', 'A', ['b1']), fld('f2', 'B', ['b9']), fld('f3', 'C', [])], true);
+    expect(sections.map((s) => s.folder.id)).toEqual(['f1']);
+  });
+});
+
+describe('folderMark', () => {
+  const row = (needsYou: number, unread: number) => ({ c: { needsYou } as unknown as Conversation, unread });
+  it('sums the rows\' needs-you and unread counts, and is zero for no rows', () => {
+    expect(folderMark([row(1, 2), row(2, 0), row(0, 3)])).toEqual({ needsYou: 3, unread: 5 });
+    expect(folderMark([])).toEqual({ needsYou: 0, unread: 0 });
+  });
+});
+
+describe('rangeBetween', () => {
+  const order = ['a', 'b', 'c', 'd', 'e'];
+  it('is inclusive and works in either direction', () => {
+    expect(rangeBetween(order, 'b', 'd')).toEqual(['b', 'c', 'd']);
+    expect(rangeBetween(order, 'd', 'b')).toEqual(['b', 'c', 'd']);
+    expect(rangeBetween(order, 'c', 'c')).toEqual(['c']);
+    expect(rangeBetween(order, 'a', 'e')).toEqual(order);
+    expect(rangeBetween(order, 'e', 'a')).toEqual(order);
+  });
+  it('without a usable anchor it is the clicked id; an unknown id gives none', () => {
+    expect(rangeBetween(order, null, 'c')).toEqual(['c']);
+    expect(rangeBetween(order, 'zz', 'c')).toEqual(['c']);
+    expect(rangeBetween(order, 'a', 'zz')).toEqual([]);
   });
 });

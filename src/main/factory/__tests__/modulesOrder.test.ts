@@ -8,6 +8,8 @@ describe('factory module order', () => {
   it('registers the secret store first (its redaction covers every later write), the connection library, then facts and the bot runtime, the triggers and the wiring, then the taint marks, rooms, the group chats (after the rooms they read), handoffs, roles, the merge lane, approvals, the skills (their cards are approvals), the routines, the worker resume, the worker message, the workflows, the memory and the bot commands', async () => {
     const { registeredFactoryModules } = await import('../factoryHost');
     await import('../modules');
-    expect(registeredFactoryModules()).toEqual(['secrets', 'connectors', 'facts', 'bot-runtime', 'triggerEngine', 'wiring', 'wakeTaint', 'rooms', 'groups', 'handoffs', 'roles', 'mergeLane', 'acts', 'approvals', 'skills', 'routines', 'worker-resume', 'worker-message', 'workflows', 'memory', 'bot-commands']);
-  });
+    expect(registeredFactoryModules()).toEqual(['secrets', 'connectors', 'facts', 'bot-runtime', 'triggerEngine', 'wiring', 'wakeTaint', 'rooms', 'groups', 'bot-folders', 'handoffs', 'roles', 'mergeLane', 'acts', 'approvals', 'skills', 'routines', 'worker-resume', 'worker-message', 'workflows', 'memory', 'bot-commands']);
+  // The dynamic import loads every factory module; that takes about 5 s on a
+  // cold transform, the same as the default timeout, so give it room.
+  }, 30_000);
 });
