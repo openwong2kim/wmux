@@ -29,9 +29,10 @@ import { createPcRailSlice, type PcRailSlice } from './slices/pcRailSlice';
 import { createRoomSlice, type RoomSlice } from './slices/roomSlice';
 import { createPtyLifecycleSlice, type PtyLifecycleSlice } from './slices/ptyLifecycleSlice';
 import { createExternalSessionsSlice, type ExternalSessionsSlice } from './slices/externalSessionsSlice';
+import { createAgentMarkerSlice, type AgentMarkerSlice } from './slices/agentMarkerSlice';
 import { registerCloseTabConfirmInvariant } from './closeTabConfirm';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & RemoteWorkspacesSlice & OrphanSessionsSlice & SchedulesSlice & UsageLimitSlice & AgentAuthSlice & WorkspaceSettleSlice & A2aRemoteSlice & PcRailSlice & RoomSlice & PtyLifecycleSlice & ExternalSessionsSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & BrowserHelpSlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice & ChromePresetSlice & RemoteInboxSlice & ChannelsSlice & WorkTaskSlice & RemoteWorkspacesSlice & OrphanSessionsSlice & SchedulesSlice & UsageLimitSlice & AgentAuthSlice & WorkspaceSettleSlice & A2aRemoteSlice & PcRailSlice & RoomSlice & PtyLifecycleSlice & ExternalSessionsSlice & AgentMarkerSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -64,6 +65,7 @@ export const useStore = create<StoreState>()(
     ...createRoomSlice(...args),
     ...createPtyLifecycleSlice(...args),
     ...createExternalSessionsSlice(...args),
+    ...createAgentMarkerSlice(...args),
   }))
 );
 

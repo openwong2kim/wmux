@@ -43,6 +43,7 @@ import type { CustomAgent } from '../../../shared/customAgents';
 import { paneHeaderTailGap } from './paneChrome';
 import { RENAME_ACTIVE_TAB_EVENT } from '../../utils/commandActions';
 import { isTerminalSurfaceType } from './surfaceKinds';
+import { ComputerUseDot } from '../shared/ComputerUseDots';
 
 export { isTerminalSurfaceType };
 
@@ -337,6 +338,14 @@ function SurfaceTabStatusDot({ ptyId, active }: { ptyId?: string; active: boolea
       aria-hidden="true"
     />
   );
+}
+
+/** The tab's computer-use colour, once its agent has used computer use. Its
+ *  own component for the same reason as the status dot: each tab subscribes
+ *  to its own entry. Shown on the active tab too: identity, not attention. */
+function SurfaceTabMarkerDot({ ptyId }: { ptyId?: string }) {
+  const color = useStore((s) => (ptyId ? s.agentMarkers[ptyId] : undefined));
+  return color ? <ComputerUseDot color={color} /> : null;
 }
 
 interface SurfaceTabsProps {
@@ -1175,6 +1184,7 @@ export default function SurfaceTabs({
               <IconLock size={12} />
             </span>
           )}
+          <SurfaceTabMarkerDot ptyId={s.ptyId} />
           {editingId === s.id ? (
             <input
               ref={inputRef}

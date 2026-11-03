@@ -2021,6 +2021,8 @@ export const pl = {
   'settings.computerUseResetConfirm': 'Reset dostępu usuwa program pomocniczy z list Dostępność i Nagrywanie ekranu, także wpis, który wygląda na włączony, ale już nie działa. Potem zezwól ponownie przyciskiem Poproś o dostęp.',
   'settings.computerUsePermissionHelp': 'macOS pokazuje program pomocniczy jako „wmux Computer Use” ({path}). Jeśli jest już tam włączony, usuń go przyciskiem „−” i dodaj ponownie albo użyj Zresetuj dostęp.',
   'settings.computerUsePermissionFailed': 'Nie udało się: {error}',
+  'computerUse.markerColor': 'Kolor używania komputera',
+  'computerUse.markerColorMore': 'Kolejne panele z kolorem używania komputera: {n}',
   'settings.tabAccounts': 'Konta',
   'settings.tabNetwork': 'Sieć',
   'settings.tabAbout': 'O programie',
