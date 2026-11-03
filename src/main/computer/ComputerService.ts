@@ -55,9 +55,11 @@ import {
   type WindowInfo,
 } from '../../shared/computer/protocol';
 import { screenshotPointToWindow } from '../../shared/computer/scale';
+import type { AgentMarkerWaitParams } from '../../shared/computer/agentMarker';
+import type { AgentMarkers } from './agentMarkers';
 import { appBundleSelector } from './appBundleId';
 import { thinTreeReason } from './axFirst';
-import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain } from './inputLanes';
+import { ForegroundLease, INPUT_LOCK_IDLE_MS, PidLanes, foregroundCertain, type LeaseTicket } from './inputLanes';
 
 export { INPUT_LOCK_IDLE_MS };
 
@@ -115,6 +117,15 @@ export type ConsentAnswer = 'approved' | 'denied' | 'expired' | 'withdrawn' | 'u
 export interface ComputerAgent {
   key: string;
   label: string;
+  /**
+   * What the agent's on-screen marker is named by (agentMarkers.ts), set by
+   * computer.rpc.ts: the caller's pane when the agent is keyed on one (its
+   * colour then marks that pane in wmux too), the MCP client name, and the
+   * workspace's name as the person gave it.
+   */
+  ptyId?: string;
+  client?: string;
+  workspaceName?: string;
 }
 
 export type ConsentRequester = (request: {
@@ -152,6 +163,8 @@ export interface ComputerServiceDeps {
   readBundleId?: (appPath: string) => Promise<string | null>;
   /** Fires on every accepted control action (drives the agent-cursor overlay). */
   onControl?: (event: { agent: ComputerAgent; action: ComputerControlAction; window: WindowInfo }) => void;
+  /** Each agent's colour and name on screen; without it input carries no marker. */
+  markers?: AgentMarkers;
 }
 
 interface SnapshotRecord {
@@ -167,6 +180,7 @@ const STOP_KEY_UNAVAILABLE =
   'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps';
 export const CONTROL_RATE_PER_MINUTE = 120;
 const SNAPSHOT_RECORD_LIMIT = 64;
+const MAIN_ONLY_METHODS: ReadonlySet<string> = new Set<HelperMethod>(['markerWait', 'markerClear']);
 
 export interface ControlParams {
   action: ComputerControlAction;
@@ -468,8 +482,12 @@ export class ComputerService {
     // The helper re-checks this window right before each input batch.
     const target = { pid: snap.window.pid, windowId: snap.window.id };
     const call = this.buildControlCall(params, snapshotId, target, point, keys);
+    // Given once the action is valid and before the lease, so an agent left
+    // waiting for the lease is shown in its own colour too.
+    const marker = this.deps.markers?.markerFor(agent);
+    const waiting = marker && { marker, ...target };
     const send = (foreground?: 'allow' | 'refuse'): Promise<ActionResult> =>
-      helper.request(call.method, (foreground ? { ...call.params, foreground } : call.params) as never) as Promise<ActionResult>;
+      helper.request(call.method, { ...call.params, ...(marker && { marker }), ...(foreground && { foreground }) } as never) as Promise<ActionResult>;
 
     if (!defer) {
       // A helper that cannot defer real input: the single lease of before,
@@ -478,7 +496,7 @@ export class ComputerService {
         this.checkRate(agent.key, now);
         this.deps.onControl?.({ agent, action: params.action, window: snap.window });
         return send();
-      });
+      }, waiting);
     }
 
     const foreground = foregroundCertain({
@@ -503,7 +521,7 @@ export class ComputerService {
           this.checkRate(agent.key, at);
           this.deps.onControl?.({ agent, action: params.action, window: snap.window });
           return send('allow');
-        });
+        }, waiting);
       }
       // Charged once the action will really be sent: one that ended while
       // queued (a stop) costs no rate budget.
@@ -524,7 +542,7 @@ export class ComputerService {
       sent.requested = false;
       now = this.now();
       this.recheckInLane(agent, snapshotId, target.pid, generation, now);
-      return await this.underLease(agent, now, sent, () => send('allow'));
+      return await this.underLease(agent, now, sent, () => send('allow'), waiting);
     } finally {
       release();
     }
@@ -536,15 +554,23 @@ export class ComputerService {
    * (result, error or timeout) starts the lease's idle time. Until then the
    * lease stays busy, however long the request waits in the helper's queue,
    * so it cannot lapse while its own real input is still on the way. A
-   * needs_foreground answer never reaches the agent.
+   * needs_foreground answer never reaches the agent. `waiting`: the marker
+   * and window to show as waiting when another agent holds the lease.
    */
   private async underLease<T>(
     agent: ComputerAgent,
     now: number,
     sent: { requested: boolean },
     send: () => Promise<T>,
+    waiting?: Omit<AgentMarkerWaitParams, 'waitingFor'>,
   ): Promise<T> {
-    const ticket = this.lease.take(agent, now);
+    let ticket: LeaseTicket;
+    try {
+      ticket = this.lease.take(agent, now);
+    } catch (err) {
+      if (waiting) this.showWaiting(waiting, now);
+      throw err;
+    }
     try {
       return await send();
     } catch (err) {
@@ -552,6 +578,22 @@ export class ComputerService {
     } finally {
       this.lease.touch(ticket, this.now());
     }
+  }
+
+  /**
+   * Another agent holds the lease: a helper that lists `markerWait` shows this
+   * agent's marker as waiting on its window. Fire-and-forget, and sent on the
+   * helper itself, not through the action's request wrapper, so it never
+   * counts as the action's input. Never starts a helper.
+   */
+  private showWaiting(waiting: Omit<AgentMarkerWaitParams, 'waitingFor'>, now: number): void {
+    const helper = this.helper;
+    const holder = this.lease.holderKey(now);
+    if (!helper || helper.supports?.('markerWait') !== true || holder === null) return;
+    const waitingFor = this.deps.markers?.labelOf(holder) ?? this.lease.label(now) ?? '';
+    void Promise.resolve()
+      .then(() => helper.request('markerWait', { ...waiting, waitingFor }))
+      .catch(() => undefined);
   }
 
   /** The helper method and params of a control action (arguments validated here, before any lock). */
@@ -676,12 +718,16 @@ export class ComputerService {
       }
     }
     const now = this.now();
+    const marker = this.deps.markers?.markerFor(agent);
     // Launching and raising an app is always real (foreground) input; the
-    // lease stays busy until the launch request settles.
+    // lease stays busy until the launch request settles. No window is known
+    // yet, so a refused openApp shows no waiting marker.
     const opened = await this.underLease(agent, now, { requested: true }, () => {
       this.checkRate(agent.key, now);
       onLaunch();
-      return helper.request('openApp', { app: params.app });
+      // protocol.ts openApp params do not list `marker` yet; a helper that
+      // does not read it ignores the extra key, as it does on every action.
+      return helper.request('openApp', { app: params.app, ...(marker && { marker }) });
     });
     this.assertCurrent(generation);
     const reason = blockReasonFor(opened.app, this.deps.blockContext());
@@ -712,6 +758,9 @@ export class ComputerService {
   abort(): void {
     this.generation += 1;
     this.withdrawConsentPrompts();
+    // Ends the helper process, and every marker its overlay drew with it, so
+    // no markerClear is needed (or could reach it: a request now would start
+    // a fresh helper).
     this.helper?.abort('stopped by the user');
     this.lease.clear();
     // Every action still waiting for its app's slot ends `aborted` without
@@ -917,9 +966,11 @@ export class ComputerService {
  * Drops what cannot work without a missing OS permission, so an agent learns
  * up front instead of from a permission_missing error: no Accessibility, no
  * input (openApp included) and no tree; no Screen Recording, no screenshot.
- * getAppState goes when no observation mode is left.
+ * getAppState goes when no observation mode is left. The marker methods are
+ * main's to call, never an agent's, so they are never listed.
  */
-export function capabilitiesForAgent(caps: HelperCapabilities): AgentCapabilities {
+export function capabilitiesForAgent(helperCaps: HelperCapabilities): AgentCapabilities {
+  const caps = { ...helperCaps, actions: helperCaps.actions.filter((a) => !MAIN_ONLY_METHODS.has(a)) };
   const missing: Array<'accessibility' | 'screenRecording'> = [];
   if (!caps.permissions.accessibility) missing.push('accessibility');
   if (!caps.permissions.screenRecording) missing.push('screenRecording');

@@ -79,6 +79,11 @@ export class ForegroundLease {
     return this.holder && this.held(now) ? this.holder.label : null;
   }
 
+  /** The key of the agent holding it now, or null. Internal: keys carry pane ids. */
+  holderKey(now: number): string | null {
+    return this.holder && this.held(now) ? this.holder.agentKey : null;
+  }
+
   clear(): void {
     this.holder = null;
     this.epoch += 1;
