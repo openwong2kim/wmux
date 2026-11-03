@@ -43,8 +43,11 @@ describe('MiniSidebar — ordering wiring', () => {
     expect(miniSrc).not.toMatch(/\{workspaces\.map\(/);
   });
 
-  it('labels and tooltips the rail with the unfiltered position', () => {
-    expect(miniSrc).toContain('const railIndex = workspaces.indexOf(ws);');
+  it('labels and tooltips the rail with the stored-order position among the rows the filter keeps', () => {
+    // The sidebar numbers its filtered rows (Sidebar.tsx `numbered`), so the
+    // rail indexes the same narrowed list, never the display order.
+    expect(miniSrc).toContain('const railIndex = shownWorkspaces.indexOf(ws);');
+    expect(miniSrc).toContain('workspaceShortcutNumber(railIndex, shownWorkspaces.length)');
     expect(miniSrc).toContain('${railIndex + 1}');
     expect(miniSrc).not.toContain('${i + 1}');
   });
