@@ -1923,6 +1923,13 @@ export interface A2aDiscoverDecideResult {
   status: A2aDiscoverStatus;
 }
 
+/**
+ * `a2a.remote.discover.close`: the status once the window ended (and A2A was
+ * turned off again, when the window had turned it on). Closing no window is
+ * a no-op answered the same way.
+ */
+export type A2aDiscoverCloseResult = A2aDiscoverStatus;
+
 /** One PC `a2a.remote.discover.scan` found. */
 export interface A2aDiscoverPc {
   /** Its tailnet IPv4: the only key `connect` takes. */
@@ -2053,6 +2060,13 @@ export interface A2aDiscoverOutgoingStatus {
   error?: A2aRemoteJoinError;
   detail?: string;
 }
+
+/**
+ * `a2a.remote.discover.outgoing.cancel`: the outgoing status after the cancel
+ * (the other PC is told best effort). Nothing to cancel is a no-op answered
+ * the same way.
+ */
+export type A2aDiscoverOutgoingCancelResult = A2aDiscoverOutgoingStatus;
 
 /**
  * What the Tailscale tab's "This PC" section renders (receiving side). The
