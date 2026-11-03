@@ -32,6 +32,8 @@ import { A2A_REMOTE_CONFIG_CHANGED, type A2aRemoteController } from './controlle
 import { commitMatches, decodeSecret, discoverCode, randomSecret } from './discoverCode';
 import { mintPairCode } from './pairing';
 import { tailnetRangeOnLan, type TailnetCli } from './tailnet';
+import type { ListenProblemReport } from '../../shared/netListen';
+import { diagnoseListenProblem, type ListenFailure } from '../net/portProblem';
 
 /**
  * The receiving side of tailnet discovery: a window, in memory only, during
@@ -228,6 +230,7 @@ export interface DiscoveryDeps {
   interfaces?: () => NodeJS.Dict<os.NetworkInterfaceInfo[]>;
   platform?: NodeJS.Platform;
   routeInterface?: (ip: string, signal: AbortSignal) => Promise<string | null>;
+  diagnoseListen?: (failure: ListenFailure) => Promise<ListenProblemReport>;
 }
 
 type RequestState = 'committed' | 'deciding' | 'allowed' | 'redeemed' | 'denied' | 'expired' | 'withdrawn' | 'failed' | 'closed';
@@ -376,6 +379,12 @@ export class DiscoveryWindow {
     const listening = this.deps.listener.status().listening && this.deps.listener.identity() !== null;
     if (!listening) {
       const listen = this.listenFacts();
+      // While A2A is still on: once it is off again, net.listenProblem has nothing to report.
+      if (listen.lastErrorCode) {
+        const failure = { code: listen.lastErrorCode, port: listen.lastErrorPort ?? listen.port, address: null };
+        const report = await (this.deps.diagnoseListen ?? diagnoseListenProblem)(failure).catch(() => null);
+        if (report) listen.report = report;
+      }
       this.revertTurnOn();
       return { ok: false, reason: 'listen-failed', listen };
     }

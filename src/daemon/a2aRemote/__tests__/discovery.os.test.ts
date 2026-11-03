@@ -257,10 +257,22 @@ describe('DiscoveryWindow — opening', () => {
     expect(fs.existsSync(path.join(rig.dir, DISCOVERY_MARKER_FILE))).toBe(true);
   });
 
-  it('turns A2A off again when the listener cannot start', async () => {
-    const rig = makeRig({ enabled: false });
+  it('turns A2A off again when the listener cannot start, reporting the problem found before that', async () => {
+    const seen: Array<{ failure: unknown; enabled: boolean }> = [];
+    const report = { problem: { kind: 'port-in-use' as const, port: 45660 }, holder: { kind: 'wmux' as const, pid: 42 }, suggestion: 45661 };
+    const rig = makeRig({
+      enabled: false,
+      deps: {
+        diagnoseListen: async (failure) => {
+          seen.push({ failure, enabled: rig.controller.current().enabled });
+          return report;
+        },
+      },
+    });
     rig.listening.value = false;
-    expect(await rig.win.open({ turnOn: true })).toMatchObject({ ok: false, reason: 'listen-failed', listen: { lastErrorCode: 'EADDRINUSE' } });
+    expect(await rig.win.open({ turnOn: true })).toMatchObject({ ok: false, reason: 'listen-failed', listen: { lastErrorCode: 'EADDRINUSE', report } });
+    // Diagnosed while A2A was still on, for the port that failed.
+    expect(seen).toEqual([{ failure: { code: 'EADDRINUSE', port: 45660, address: null }, enabled: true }]);
     expect(rig.controller.current().enabled).toBe(false);
     expect(fs.existsSync(path.join(rig.dir, DISCOVERY_MARKER_FILE))).toBe(false);
   });
