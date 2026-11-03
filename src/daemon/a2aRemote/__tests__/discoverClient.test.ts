@@ -8,7 +8,7 @@ import type { TailnetStatus } from '../../../cli/tailscale';
 import { DiscoverClient, type DiscoverClientDeps } from '../discoverClient';
 import { randomSecret } from '../discoverCode';
 import type { JsonClient } from '../joiner';
-import type { PinnedClientOptions } from '../pinnedClient';
+import { PinnedClientError, type PinnedClientOptions } from '../pinnedClient';
 import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const A_IP = '100.100.1.1';
@@ -150,6 +150,28 @@ describe('DiscoverClient — what a receiver answers cannot steer the pairing', 
     discover.confirm();
     await waitState(discover, 'failed');
     await vi.waitFor(() => expect(calls.map((c) => `${c.method} ${c.path}`)).toContain(WITHDRAW), { timeout: 5_000 });
+  });
+
+  it('a reveal that times out withdraws the request, so no card is left up', async () => {
+    const { discover, calls } = makeClient({
+      [REQUESTS]: created,
+      [REVEAL]: () => {
+        throw new PinnedClientError('timeout', 'no answer', { sent: true });
+      },
+      [WITHDRAW]: ok,
+    });
+    await discover.scan();
+    expect(await discover.connect(A_IP)).toMatchObject({ ok: false, error: 'timeout' });
+    await vi.waitFor(() => expect(calls.map((c) => `${c.method} ${c.path}`)).toContain(WITHDRAW), { timeout: 5_000 });
+  });
+
+  it('refuses before asking anything when a pairing at that address has another certificate', async () => {
+    const { discover, calls, hosts } = makeClient({ [REQUESTS]: created });
+    hosts.set(A_HOST, { v: 1, hostId: A_HOST, name: 'PC A', addresses: [A_IP], port: 45660, fingerprint256: FP_OTHER, peerId: PEER_ID, createdAt: '' });
+    await discover.scan();
+    expect(await discover.connect(A_IP)).toMatchObject({ ok: false, error: 'fingerprint-mismatch' });
+    expect(calls).toEqual([]);
+    expect(discover.outgoingStatus().state).toBe('idle');
   });
 
   it('a cancel while the request is being made withdraws it and reveals nothing', async () => {

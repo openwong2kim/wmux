@@ -252,6 +252,10 @@ export class DiscoverClient {
     const found = isCanonicalIpv4(ip) ? this.found.get(ip) : undefined;
     if (!found || found.missed >= STALE_AFTER) return { ok: false, error: 'not-found' };
     if (found.pc.state === 'version-mismatch') return { ok: false, error: 'version-mismatch' };
+    // This PC already reaches that address as a pairing pinned to another certificate: ask nothing.
+    if (this.deps.remoteHosts.list().some((h) => h.addresses.includes(ip) && h.fingerprint256 !== found.fingerprint256)) {
+      return { ok: false, error: 'fingerprint-mismatch', detail: 'a PC paired at this address presented another certificate' };
+    }
 
     const sessionId = crypto.randomUUID();
     const session: Session = {
@@ -278,6 +282,8 @@ export class DiscoverClient {
       return { ok: true, sessionId, code, expiresAt };
     } catch (err) {
       const f = err instanceof ConnectFailure ? err : new ConnectFailure('failed', errMsg(err));
+      // A request the other PC holds (its reveal may even have landed) is withdrawn, so no card is left up.
+      if (session.requestId && session.token) void this.withdraw(session);
       if (this.session === session && session.status.state === 'asking') {
         session.status = { ...session.status, state: f.error === 'gone' ? 'gone' : 'failed', detail: f.message };
       }
@@ -308,8 +314,7 @@ export class DiscoverClient {
     session.requestId = requestId;
     session.token = token as string;
     if (this.session !== session || session.status.state !== 'asking') {
-      // Cancelled while the request was being made: withdraw it, reveal nothing.
-      void this.withdraw(session);
+      // Cancelled while the request was being made: reveal nothing (connect withdraws it).
       throw new ConnectFailure('failed', 'cancelled');
     }
 
@@ -423,7 +428,7 @@ export class DiscoverClient {
       self: this.deps.self,
       selfName: this.deps.selfName(),
       // Re-pairing keeps the addresses the pairing already had, after the tailnet one. A pairing
-      // pinned to another certificate is not replaced here: certificate renewal has its own path.
+      // pinned to another certificate is not replaced here.
       remoteHosts: {
         add: (input, credential) => {
           const prev = remoteHosts.get(input.hostId);
