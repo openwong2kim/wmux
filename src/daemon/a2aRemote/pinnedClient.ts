@@ -42,7 +42,8 @@ export interface PinnedClientOptions {
   credential?: string;
   /**
    * Extra headers on every request, sent after the pin matched like the rest
-   * (a tailnet discovery request's token). Never an `Authorization`.
+   * (a tailnet discovery request's token). Only `x-wmux-*` names: anything
+   * else is `bad-options`.
    */
   headers?: Record<string, string>;
   /** Budget per address for TCP connect + TLS handshake. */
@@ -160,6 +161,9 @@ export class PinnedTlsClient {
   private readonly addresses: string[];
 
   constructor(opts: PinnedClientOptions) {
+    for (const name of Object.keys(opts.headers ?? {})) {
+      if (!/^x-wmux-[a-z0-9-]+$/i.test(name)) throw new PinnedClientError('bad-options', `header ${name} is not an x-wmux-* header`, { sent: false });
+    }
     this.opts = opts;
     this.addresses = [...opts.addresses];
   }
@@ -429,9 +433,8 @@ export class PinnedTlsClient {
   }
 
   private headers(extra: Record<string, string>): Record<string, string> {
-    const fixed = Object.fromEntries(Object.entries(this.opts.headers ?? {}).filter(([k]) => k.toLowerCase() !== 'authorization'));
     return {
-      ...fixed,
+      ...this.opts.headers,
       ...extra,
       ...(this.opts.credential ? { Authorization: `Bearer ${this.opts.credential}` } : {}),
     };

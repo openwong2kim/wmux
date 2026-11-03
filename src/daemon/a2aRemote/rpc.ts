@@ -1,5 +1,10 @@
 import { A2A_REMOTE_DEFAULT_PORT, type A2aPeerRecordV1, type A2aRemoteHostRecordV1, type HostId, type PeerCredential } from '../../shared/a2aRemote';
-import type { A2aDiscoverCloseResult, A2aDiscoverOutgoingCancelResult, A2aRemoteHostsRemoveResult } from '../../shared/rpc';
+import type {
+  A2aDiscoverCloseResult,
+  A2aDiscoverOutgoingCancelResult,
+  A2aDiscoverOutgoingConfirmResult,
+  A2aRemoteHostsRemoveResult,
+} from '../../shared/rpc';
 import type { A2aRemoteController } from './controller';
 import { coerceA2aRemotePatch } from './controller';
 import { DiscoverClient, type DiscoverClientDeps } from './discoverClient';
@@ -146,6 +151,8 @@ export function registerA2aRemoteRpc(onRpc: (method: string, handler: RpcHandler
   onRpc('a2a.remote.discover.connect', async (params, ctx) => discover.connect(str(params, 'ip'), ctx?.clientId ?? null));
   onRpc('a2a.remote.discover.outgoing.status', async () => discover.outgoingStatus());
   onRpc('a2a.remote.discover.outgoing.cancel', async (): Promise<A2aDiscoverOutgoingCancelResult> => discover.cancel());
+  // This PC's human confirmed the code matches: only then does it pair.
+  onRpc('a2a.remote.discover.outgoing.confirm', async (): Promise<A2aDiscoverOutgoingConfirmResult> => discover.confirm());
 
   onRpc('a2a.remote.peers.list', async () => ({ peers: deps.peers.list() }));
   onRpc('a2a.remote.peers.revoke', async (params) => {

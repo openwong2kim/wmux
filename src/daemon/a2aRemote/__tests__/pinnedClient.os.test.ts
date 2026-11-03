@@ -602,13 +602,19 @@ describe('probeUnpinned — the tailnet discovery probe', () => {
 });
 
 describe('PinnedTlsClient — fixed headers', () => {
-  it('sends them on every request, but never lets them set Authorization', async () => {
+  it('sends x-wmux-* headers on every request', async () => {
     const { port, seen } = await httpsServer((_req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end('{}');
     });
-    await client({ port, headers: { 'x-wmux-discover-token': 'tok', Authorization: 'Bearer stolen' } }).requestJson('GET', '/a');
+    await client({ port, headers: { 'x-wmux-discover-token': 'tok' } }).requestJson('GET', '/a');
     expect(seen[0].headers['x-wmux-discover-token']).toBe('tok');
     expect(seen[0].headers['authorization']).toBeUndefined();
+  });
+
+  it('refuses any other header name up front', () => {
+    for (const name of ['Authorization', 'Cookie', 'Host', 'x-wmux', 'x-wmux-a b']) {
+      expect(() => client({ port: 1, headers: { [name]: 'v' } }), name).toThrow(expect.objectContaining({ code: 'bad-options' }));
+    }
   });
 });

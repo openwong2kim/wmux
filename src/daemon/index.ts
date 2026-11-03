@@ -130,6 +130,7 @@ import { isLoopbackHost } from './net/inboundSeen';
 import { FIREWALL_GROUP, currentRuleUser } from '../shared/netFirewallScripts';
 import { isIpv4, type FirewallListener } from '../shared/netFirewall';
 import { forgetHostCascade, registerA2aRemoteRpc } from './a2aRemote/rpc';
+import type { DiscoverClient } from './a2aRemote/discoverClient';
 import { PeerStore as A2aPeerStore } from './a2aRemote/peerStore';
 import { RemoteHostStore } from './a2aRemote/remoteHostStore';
 import { LinkStore } from './a2aRemote/linkStore';
@@ -8764,6 +8765,7 @@ const startupRecovery = createStartupRecovery({ log: (line) => log('info', line)
 let lanLinkServerRef: LanLinkServer | null = null;
 // Same for the cross-host A2A listener.
 let a2aServerRef: A2aServer | null = null;
+let a2aDiscoverRef: DiscoverClient | null = null;
 let a2aDeliveryRef: A2aRemoteDelivery | null = null;
 
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
@@ -9012,6 +9014,7 @@ async function shutdown(
   try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }
   try { void a2aDeliveryRef?.stop(); } catch { /* best effort */ }
   try { a2aServerRef?.dispose(); } catch { /* best effort */ }
+  try { a2aDiscoverRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
 
   // Stop X1 context watchers (port poll timer + git fs.watch handles)
@@ -10646,7 +10649,8 @@ async function main(): Promise<void> {
       cascade: a2aCascade,
       log: a2aLog,
     });
-    // An outgoing discovery request ends with the app connection that made it.
+    // An outgoing discovery request ends with the app connection that made it, or with the daemon.
+    a2aDiscoverRef = a2aRemoteRpc.discover;
     pipeServer.onClientClose((clientId) => a2aRemoteRpc.discover.clientGone(clientId));
     registerSpawnRpc(onA2aRpc, { policy: a2aSpawnPolicy, requests: a2aSpawnRequests, onSaved: (previous) => a2aSpawn.sendTargets(previous) });
     // Starting a conversation this PC received: main makes the worktree and the pane, the daemon places the files.

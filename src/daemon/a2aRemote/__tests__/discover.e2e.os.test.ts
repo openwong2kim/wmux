@@ -18,6 +18,7 @@ import { joinRemoteHost } from '../joiner';
 import { registerA2aRemoteRpc } from '../rpc';
 import type { TailnetCli } from '../tailnet';
 import { disposeAll, makePc, type Pc } from './a2aServerRig';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 const A_IP = '100.100.1.1';
 const B_IP = '100.100.1.2';
@@ -79,7 +80,7 @@ async function receiver(name: string, opts: { now?: () => number; port?: number 
 }
 
 /** The requesting PC and its `a2a.remote.discover.*` RPCs, probing `ports()` on loopback. */
-async function requester(ports: () => number[]) {
+async function requester(ports: () => number[], opts: { now?: () => number } = {}) {
   const status: TailnetStatus = {
     backendState: 'Running',
     version: '1.76.6',
@@ -101,7 +102,15 @@ async function requester(ports: () => number[]) {
     remoteHosts: pc.remoteHosts,
     cascade: () => undefined,
     log: () => undefined,
-    discoverOverrides: { ports, dial: () => '127.0.0.1', pollMs: 50, joinTimeouts: FAST },
+    discoverOverrides: {
+      ports,
+      dial: () => '127.0.0.1',
+      // This machine's own interfaces (perhaps a real tailnet address) are not the fake tailnet's.
+      interfaces: () => ({}),
+      pollMs: 50,
+      joinTimeouts: FAST,
+      ...(opts.now ? { now: opts.now } : {}),
+    },
   });
   const call = (m: string, params: Record<string, unknown> = {}) => handlers.get(`a2a.remote.discover.${m}`)!(params, { clientId: 'b1' });
   return {
@@ -111,6 +120,7 @@ async function requester(ports: () => number[]) {
     connect: (ip: string) => call('connect', { ip }) as Promise<A2aDiscoverConnectResult>,
     outgoing: () => call('outgoing.status') as Promise<A2aDiscoverOutgoingStatus>,
     cancel: () => call('outgoing.cancel') as Promise<A2aDiscoverOutgoingStatus>,
+    confirm: () => call('outgoing.confirm') as Promise<A2aDiscoverOutgoingStatus>,
   };
 }
 
@@ -122,7 +132,7 @@ async function waitOutgoing(b: Awaited<ReturnType<typeof requester>>, state: A2a
 }
 
 describe('tailnet discovery, end to end', () => {
-  it('Allow: both screens show the same code, both PCs record the pairing, nothing is exposed', async () => {
+  it('Allow, then this PC’s confirm: both screens show the same code, both PCs record the pairing, nothing is exposed', async () => {
     const a = await receiver('PC A');
     await a.server.discovery.open({ turnOn: false });
     const b = await requester(() => [portOf(a)]);
@@ -143,6 +153,12 @@ describe('tailnet discovery, end to end', () => {
     expect(await b.outgoing()).toMatchObject({ state: 'waiting', code: connected.code });
 
     a.server.discovery.decide(incoming!.requestId, true);
+    // Allowed there; nothing pairs until this PC's human confirms the code too.
+    expect(await waitOutgoing(b, 'confirm')).toMatchObject({ code: connected.code });
+    await deliberateSleep(300, 'a negative check: several poll rounds pass and still nothing pairs');
+    expect(a.peers.list()).toEqual([]);
+    expect((await b.outgoing()).state).toBe('confirm');
+    expect(await b.confirm()).toMatchObject({ state: 'joining' });
     const done = await waitOutgoing(b, 'joined');
     const aId = a.server.status().hostId!;
     const bId = b.pc.server.status().hostId!;
@@ -175,6 +191,36 @@ describe('tailnet discovery, end to end', () => {
     skew = DISCOVER_DECIDE_MS;
     await waitOutgoing(b, 'expired');
     expect(a.server.discovery.status()).toMatchObject({ open: true, incoming: null, lastOutcome: { outcome: 'expired' } });
+  });
+
+  it('an allowance this PC never confirms expires, and the other PC is told', async () => {
+    let skew = 0;
+    const a = await receiver('PC A');
+    await a.server.discovery.open({ turnOn: false });
+    const b = await requester(() => [portOf(a)], { now: () => Date.now() + skew });
+    await b.scan();
+    expect((await b.connect(A_IP)).ok).toBe(true);
+    a.server.discovery.decide(a.server.discovery.status().incoming!.requestId, true);
+    await waitOutgoing(b, 'confirm');
+    skew = 61_000;
+    await waitOutgoing(b, 'expired');
+    // The withdraw voids the code there: the window ends without a pairing.
+    await vi.waitFor(() => expect(a.server.discovery.status()).toMatchObject({ open: false, ended: { reason: 'failed' } }), { timeout: 10_000 });
+    expect(a.peers.list()).toEqual([]);
+    expect(await b.confirm()).toMatchObject({ state: 'expired' });
+  });
+
+  it('Cancel during confirm withdraws, and nothing pairs', async () => {
+    const a = await receiver('PC A');
+    await a.server.discovery.open({ turnOn: false });
+    const b = await requester(() => [portOf(a)]);
+    await b.scan();
+    expect((await b.connect(A_IP)).ok).toBe(true);
+    a.server.discovery.decide(a.server.discovery.status().incoming!.requestId, true);
+    await waitOutgoing(b, 'confirm');
+    expect(await b.cancel()).toMatchObject({ state: 'cancelled' });
+    expect(a.server.discovery.status()).toMatchObject({ open: false, ended: { reason: 'failed' } });
+    expect(a.peers.list()).toEqual([]);
   });
 
   it('Cancel withdraws the request from the other PC’s card', async () => {
@@ -268,6 +314,8 @@ describe('tailnet discovery, end to end', () => {
     expect(await b.scan()).toMatchObject({ ok: true, pcs: [{ ip: A_IP, alreadyConnected: true }] });
     expect((await b.connect(A_IP)).ok).toBe(true);
     a.server.discovery.decide(a.server.discovery.status().incoming!.requestId, true);
+    await waitOutgoing(b, 'confirm');
+    await b.confirm();
     const done = await waitOutgoing(b, 'joined');
     expect(done.host?.addresses).toEqual([A_IP, '127.0.0.1']);
     expect(b.pc.remoteHosts.get(a.server.status().hostId!)?.addresses).toEqual([A_IP, '127.0.0.1']);

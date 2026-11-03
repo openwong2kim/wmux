@@ -1,12 +1,15 @@
 import crypto from 'node:crypto';
+import os from 'node:os';
 import {
   A2A_DISCOVER_NAME_MAX,
   A2A_DISCOVER_TOKEN_HEADER,
   A2A_REMOTE_PROTOCOL,
   A2A_ROUTES,
+  INVITE_CODE_RE,
   formatInvite,
   isCanonicalIpv4,
   normalizeFingerprint256,
+  parseInvite,
   type A2aDiscoverRequestBody,
   type A2aRemoteHostRecordV1,
   type HostId,
@@ -20,10 +23,11 @@ import type {
   A2aDiscoverScanResult,
 } from '../../shared/rpc';
 import { decodeSecret, discoverCode, discoverCommit, randomSecret } from './discoverCode';
+import { DISCOVER_DECIDE_MS, DISCOVER_GRANT_MS } from './discovery';
 import { joinRemoteHost, type JoinDeps, type JsonClient } from './joiner';
 import { PinnedClientError, PinnedTlsClient, probeUnpinned, type PinnedClientOptions, type UnpinnedProbe } from './pinnedClient';
 import type { NewRemoteHost } from './remoteHostStore';
-import type { TailnetCli } from './tailnet';
+import { tailnetRangeOnLan, type TailnetCli } from './tailnet';
 
 /**
  * The requesting side of tailnet discovery: find the wmux PCs on this user's
@@ -38,9 +42,11 @@ import type { TailnetCli } from './tailnet';
  * caller. The 6-digit code binds the pinned fingerprint, so a man in the
  * middle shows a different code on each screen.
  *
- * One outgoing request at a time. Allowed, it pairs exactly as an invite
- * join does, merging the tailnet address into an existing pairing's
- * addresses rather than replacing them.
+ * One outgoing request at a time. Once the other PC allows, this PC's own
+ * human confirms the code too (`confirm`); only then does it pair, exactly as
+ * an invite join does, merging the tailnet address into an existing
+ * pairing's addresses rather than replacing them. Every end this side
+ * decides (cancel, a deadline, a malformed answer) withdraws the request.
  */
 
 export const DISCOVER_SCAN_MAX = 64;
@@ -74,6 +80,7 @@ export interface DiscoverClientDeps {
   now?: () => number;
   log: (level: 'info' | 'warn' | 'error', msg: string) => void;
   /** Test seams. */
+  interfaces?: () => NodeJS.Dict<os.NetworkInterfaceInfo[]>;
   dial?: (ip: string) => string;
   probe?: typeof probeUnpinned;
   client?: (opts: PinnedClientOptions) => JsonClient;
@@ -96,10 +103,14 @@ interface Session {
   fingerprint256: string;
   requestId: string | null;
   token: string | null;
+  /** The other PC's one-shot pairing code, held until this PC's human confirms. */
+  grant: string | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
-const ACTIVE = new Set<A2aDiscoverOutgoingStatus['state']>(['asking', 'waiting', 'joining']);
+const ACTIVE = new Set<A2aDiscoverOutgoingStatus['state']>(['asking', 'waiting', 'confirm', 'joining']);
+/** States a cancel (or dispose) still ends. */
+const CANCELLABLE = new Set<A2aDiscoverOutgoingStatus['state']>(['asking', 'waiting', 'confirm']);
 
 class ConnectFailure extends Error {
   constructor(
@@ -138,6 +149,7 @@ export class DiscoverClient {
     if (!read.ok) return { ok: false, reason: 'tailscale-not-ready', check: read.check };
     const { self, peers, selfLogin } = read.status;
     if (self.ipv4s.length === 0) return { ok: false, reason: 'no-tailnet-ipv4' };
+    if (tailnetRangeOnLan((this.deps.interfaces ?? os.networkInterfaces)(), self.ipv4s)) return { ok: false, reason: 'tailnet-range-on-lan' };
     const selfIps = new Set(self.ipv4s);
     const skipped = { offline: 0, mobile: 0, otherUser: 0, unsupported: 0, overCap: 0 };
     const targets: Array<{ ip: string; device: string; dnsName: string; os: string }> = [];
@@ -250,6 +262,7 @@ export class DiscoverClient {
       fingerprint256: found.fingerprint256,
       requestId: null,
       token: null,
+      grant: null,
       timer: null,
     };
     this.session = session;
@@ -294,11 +307,18 @@ export class DiscoverClient {
     }
     session.requestId = requestId;
     session.token = token as string;
+    if (this.session !== session || session.status.state !== 'asking') {
+      // Cancelled while the request was being made: withdraw it, reveal nothing.
+      void this.withdraw(session);
+      throw new ConnectFailure('failed', 'cancelled');
+    }
 
     const revealed = await this.call(session, 'POST', `${A2A_ROUTES.discover}/requests/${requestId}/reveal`, { nonce: nonceR });
     if (revealed.status !== 200) throw refusalOf(revealed.status, revealed.json);
     const r = isRecord(revealed.json) ? revealed.json : {};
-    const expiresAt = typeof r['expiresAt'] === 'number' ? r['expiresAt'] : this.now();
+    // The card lasts at most DISCOVER_DECIDE_MS, whatever the other PC says.
+    const latest = this.now() + DISCOVER_DECIDE_MS;
+    const expiresAt = typeof r['expiresAt'] === 'number' ? Math.min(r['expiresAt'], latest) : latest;
     const code = discoverCode({
       nonceS: nonceS as string,
       nonceR,
@@ -318,29 +338,36 @@ export class DiscoverClient {
   }
 
   private async poll(session: Session): Promise<void> {
-    if (this.session !== session || session.status.state !== 'waiting' || !session.requestId) return;
+    const live = (): boolean => this.session === session && (session.status.state === 'waiting' || session.status.state === 'confirm');
+    if (!live() || !session.requestId) return;
+    // Past the card's deadline (with grace for a slow answer), or the allowance's unconfirmed: this side ends it.
+    if (this.pastDeadline(session)) return this.end(session, 'expired', {}, { withdraw: true });
     let answer: { status: number; json: unknown } | null = null;
     try {
       answer = await this.call(session, 'GET', `${A2A_ROUTES.discover}/requests/${session.requestId}`);
     } catch {
       answer = null;
     }
-    if (this.session !== session || session.status.state !== 'waiting') return;
-    if (answer === null) {
-      // No answer this time. Past the card's deadline, the wait is over.
-      if (this.now() > (session.status.expiresAt ?? 0) + POLL_GRACE_MS) this.end(session, 'expired');
-      else this.schedulePoll(session);
-      return;
-    }
+    if (!live()) return;
+    if (answer === null) return this.schedulePoll(session);
     if (answer.status !== 200) return this.end(session, 'gone');
     const p = isRecord(answer.json) ? answer.json : {};
     switch (p['state']) {
       case 'waiting':
-        this.schedulePoll(session);
-        return;
-      case 'allowed':
-        if (typeof p['code'] === 'string') return void this.join(session, p['code']);
-        return this.end(session, 'failed', { error: 'protocol', detail: 'allowed without a pairing code' });
+        return this.schedulePoll(session);
+      case 'allowed': {
+        if (session.status.state === 'confirm') return this.schedulePoll(session);
+        const code = p['code'];
+        if (typeof code !== 'string' || !INVITE_CODE_RE.test(code)) {
+          return this.end(session, 'failed', { error: 'protocol', detail: 'the other PC allowed without a valid pairing code' }, { withdraw: true });
+        }
+        // Held until this PC's human confirms the code too, for at most the code's own lifetime.
+        session.grant = code;
+        const latest = this.now() + DISCOVER_GRANT_MS;
+        const expiresAt = typeof p['expiresAt'] === 'number' ? Math.min(p['expiresAt'], latest) : latest;
+        session.status = { ...session.status, state: 'confirm', expiresAt };
+        return this.schedulePoll(session);
+      }
       case 'denied':
         return this.end(session, 'denied');
       case 'expired':
@@ -348,32 +375,75 @@ export class DiscoverClient {
       case 'closed':
         return p['reason'] === 'failed' ? this.end(session, 'failed', { error: 'failed', detail: 'the other PC could not complete the pairing' }) : this.end(session, 'gone');
       default:
-        return this.end(session, 'failed', { error: 'protocol', detail: 'unexpected poll answer' });
+        return this.end(session, 'failed', { error: 'protocol', detail: 'unexpected poll answer' }, { withdraw: true });
     }
   }
 
-  /** Allowed: pair exactly as an invite join would, with the code the other PC granted and the pinned fingerprint. */
+  private pastDeadline(session: Session): boolean {
+    const at = session.status.expiresAt ?? 0;
+    return session.status.state === 'confirm' ? this.now() >= at : this.now() > at + POLL_GRACE_MS;
+  }
+
+  /** This PC's human confirmed the code: pair. Outside `confirm` nothing changes. */
+  confirm(): A2aDiscoverOutgoingStatus {
+    const session = this.session;
+    if (session && session.status.state === 'confirm' && session.grant) {
+      if (this.pastDeadline(session)) {
+        this.end(session, 'expired', {}, { withdraw: true });
+      } else {
+        const grant = session.grant;
+        session.grant = null;
+        if (session.timer) clearTimeout(session.timer);
+        session.timer = null;
+        void this.join(session, grant);
+      }
+    }
+    return this.outgoingStatus();
+  }
+
+  /** Confirmed: pair exactly as an invite join would, with the code the other PC granted and the pinned fingerprint. */
   private async join(session: Session, grant: string): Promise<void> {
     session.status = { ...session.status, state: 'joining' };
+    // The invite is built from this side's own facts; the granted code must not change any of them.
+    const invite = formatInvite({ host: session.ip, port: session.port, code: grant, fingerprint256: session.fingerprint256 });
+    const parsed = parseInvite(invite);
+    if (
+      !parsed.ok ||
+      parsed.invite.code !== grant ||
+      parsed.invite.host !== session.ip ||
+      parsed.invite.port !== session.port ||
+      parsed.invite.fingerprint256 !== session.fingerprint256 ||
+      parsed.invite.alt !== undefined
+    ) {
+      return this.end(session, 'failed', { error: 'protocol', detail: 'the pairing code does not fit an invite' }, { withdraw: true });
+    }
     const remoteHosts = this.deps.remoteHosts;
+    let otherCertificate = false;
     const deps: JoinDeps = {
       self: this.deps.self,
       selfName: this.deps.selfName(),
-      // Re-pairing keeps the addresses the pairing already had, after the tailnet one.
+      // Re-pairing keeps the addresses the pairing already had, after the tailnet one. A pairing
+      // pinned to another certificate is not replaced here: certificate renewal has its own path.
       remoteHosts: {
         add: (input, credential) => {
           const prev = remoteHosts.get(input.hostId);
+          if (prev && prev.fingerprint256 !== session.fingerprint256) {
+            otherCertificate = true;
+            throw new Error('this PC is already paired with it under another certificate');
+          }
           return remoteHosts.add({ ...input, addresses: [...input.addresses, ...(prev?.addresses ?? [])] }, credential);
         },
       },
       client: (opts) => this.client({ ...opts, addresses: opts.addresses.map((a) => this.dial(a)) }),
       ...(this.deps.joinTimeouts ? { timeouts: this.deps.joinTimeouts } : {}),
     };
-    const result = await joinRemoteHost(formatInvite({ host: session.ip, port: session.port, code: grant, fingerprint256: session.fingerprint256 }), deps);
+    const result = await joinRemoteHost(invite, deps);
     if (this.session !== session) return;
     if (result.ok) {
       session.status = { ...session.status, state: 'joined', host: result.host };
       this.deps.log('info', `[a2a-remote] paired with ${result.host.name} (${session.ip}) through tailnet discovery`);
+    } else if (otherCertificate) {
+      this.end(session, 'failed', { error: 'fingerprint-mismatch', detail: 'already paired with this PC under another certificate' });
     } else {
       this.end(session, 'failed', { error: result.error, ...(result.detail ? { detail: result.detail } : {}) });
     }
@@ -388,7 +458,7 @@ export class DiscoverClient {
   /** Stop asking; the other PC is told (best effort). A pairing already joining finishes. */
   async cancel(): Promise<A2aDiscoverOutgoingStatus> {
     const session = this.session;
-    if (session && (session.status.state === 'asking' || session.status.state === 'waiting')) {
+    if (session && CANCELLABLE.has(session.status.state)) {
       this.end(session, 'cancelled');
       await this.withdraw(session);
     }
@@ -400,12 +470,25 @@ export class DiscoverClient {
     if (this.session && this.session.ownerClientId === clientId) void this.cancel();
   }
 
+  /** The daemon stops: a live request is withdrawn (best effort). */
+  dispose(): void {
+    void this.cancel();
+  }
+
   // --- helpers --------------------------------------------------------------------
 
-  private end(session: Session, state: A2aDiscoverOutgoingStatus['state'], extra: Pick<A2aDiscoverOutgoingStatus, 'error' | 'detail'> = {}): void {
+  /** End the session. `withdraw`: this side decided it, so the other PC is told (best effort). */
+  private end(
+    session: Session,
+    state: A2aDiscoverOutgoingStatus['state'],
+    extra: Pick<A2aDiscoverOutgoingStatus, 'error' | 'detail'> = {},
+    opts: { withdraw?: boolean } = {},
+  ): void {
     if (session.timer) clearTimeout(session.timer);
     session.timer = null;
+    session.grant = null;
     session.status = { ...session.status, state, ...extra };
+    if (opts.withdraw) void this.withdraw(session);
   }
 
   private async withdraw(session: Session): Promise<void> {
