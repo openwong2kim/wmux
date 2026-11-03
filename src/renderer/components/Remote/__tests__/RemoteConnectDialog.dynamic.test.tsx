@@ -5,7 +5,7 @@
 // invite; the dialog turns into the new PC's checklist when it joins. Paste reads the clipboard only on its button and
 // routes a wmux-a2a:// invite to the A2A join and every remote-host shape to
 // the remote-host pairing, never connecting before Connect is pressed.
-import { act } from 'react';
+import { act, StrictMode } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { useStore } from '../../../stores';
@@ -623,5 +623,252 @@ describe('a connection over the tailnet fails fast', () => {
     web = await connectWith('not-running', link, { ok: false, reason: 'unreachable' });
     expect(web.tailscaleCheck).toHaveBeenCalledWith('100.92.4.7');
     expect(q('remote-connect-message')?.textContent).toMatch(/Tailscale is off/);
+  });
+});
+
+describe('the Tailscale tab, receiving side', () => {
+  const DEVICE = { name: 'MacBook-Pro', dnsName: 'macbook-pro.tail1.ts.net', login: 'open.wong2kim@gmail.com', os: 'macOS', ip: '100.88.12.4' };
+  const READY = {
+    ok: true, peersOnline: 2,
+    items: [{ id: 'installed', state: 'pass' }, { id: 'signed-in', state: 'pass' }, { id: 'self', state: 'pass' }, { id: 'peer', state: 'pass' }],
+  };
+  const SIGNED_OUT = {
+    ok: false,
+    items: [{ id: 'installed', state: 'pass' }, { id: 'signed-in', state: 'fail', reason: 'signed-out', fix: 'sign-in' }, { id: 'self', state: 'unchecked' }, { id: 'peer', state: 'unchecked' }],
+  };
+  const windowStatus = (extra: Record<string, unknown> = {}) => ({
+    open: true, expiresAt: Date.now() + 300_000, name: 'DESKTOP-KRO4QJQ', turnedOn: false, incoming: null, lastOutcome: null, ended: null, ...extra,
+  });
+  const card = (state: 'deciding' | 'allowed') => ({ requestId: 'r1', state, device: DEVICE, code: '482913', expiresAt: Date.now() + 120_000 });
+  const DISCOVER = ['discoverOpen', 'discoverClose', 'discoverStatus', 'discoverDecide', 'discoverScan', 'discoverConnect', 'discoverOutgoingStatus', 'discoverOutgoingCancel'];
+  let web: Record<string, ReturnType<typeof vi.fn>>;
+
+  function stubTailnet(check: unknown, enabled = true) {
+    stub('', enabled);
+    Object.assign(a2a, {
+      discoverOpen: vi.fn(async () => ({ ok: true, status: windowStatus() })),
+      discoverClose: vi.fn(async () => windowStatus({ open: false, expiresAt: null, ended: { reason: 'stopped', at: Date.now() } })),
+      discoverStatus: vi.fn(async () => windowStatus()),
+      discoverDecide: vi.fn(async () => ({ ok: true, status: windowStatus({ incoming: card('allowed') }) })),
+      discoverScan: vi.fn(),
+      discoverConnect: vi.fn(),
+      discoverOutgoingStatus: vi.fn(),
+      discoverOutgoingCancel: vi.fn(),
+    });
+    web = { status: vi.fn(async () => ({ running: false })), tailscaleCheck: vi.fn(async () => check), tailscaleOpen: vi.fn(async () => ({ ok: true, opened: 'app' })) };
+    vi.stubGlobal('electronAPI', { a2aRemote: a2a, remote, web });
+  }
+  const tabLabels = () => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="remote-connect-tabs"] button')].map((b) => b.textContent);
+  const tab = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[data-testid="remote-connect-tabs"] button')].find((b) => b.textContent === label)!;
+  const discoverCalls = () => DISCOVER.filter((m) => a2a[m].mock.calls.length > 0);
+  const flush = async () => { for (let i = 0; i < 6; i++) await act(async () => { await Promise.resolve(); }); };
+  const tick = async (ms = 1_000) => { await act(async () => { vi.advanceTimersByTime(ms); }); await flush(); };
+  async function makeDiscoverable() {
+    await act(async () => { q<HTMLButtonElement>('discover-make')!.click(); });
+    await flush();
+  }
+
+  it('with this PC on the tailnet, opens on Tailscale, first, and showing it or any tab calls no discover RPC', async () => {
+    stubTailnet(READY);
+    await render();
+    expect(tabLabels()).toEqual(['Tailscale', 'Invite this PC', 'Paste an invite', 'LAN']);
+    expect(tab('Tailscale').getAttribute('aria-checked')).toBe('true');
+    expect(q('remote-connect-tailscale')).not.toBeNull();
+    // Only the read-only check, once, for no particular device.
+    expect(web.tailscaleCheck).toHaveBeenCalledTimes(1);
+    expect(web.tailscaleCheck).toHaveBeenCalledWith(undefined);
+    await act(async () => { tab('Invite this PC').click(); });
+    await act(async () => { tab('Tailscale').click(); });
+    await tick(5_000);
+    expect(discoverCalls()).toEqual([]);
+    expect(a2a.configure).not.toHaveBeenCalled();
+  });
+
+  it('with Tailscale not ready, the tab is last, the dialog opens as before, and the tab says why with its one fix', async () => {
+    stubTailnet(SIGNED_OUT, false);
+    await render();
+    expect(tabLabels()).toEqual(['Invite this PC', 'Paste an invite', 'LAN', 'Tailscale']);
+    expect(q('remote-connect-paste')).not.toBeNull();
+    await act(async () => { tab('Tailscale').click(); });
+    expect(q('remote-connect-tailscale')?.textContent).toMatch(/signed out of Tailscale/);
+    expect(document.querySelector('[data-testid="remote-connect-tailscale"] [data-tailscale-fix="sign-in"]')).not.toBeNull();
+    expect(discoverCalls()).toEqual([]);
+  });
+
+  it('a check that lands after the dialog painted leaves the tab order alone', async () => {
+    stubTailnet(READY);
+    let answer!: (v: unknown) => void;
+    web.tailscaleCheck.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    await render();
+    await tick(2_000);
+    expect(tabLabels()).toEqual(['Invite this PC', 'Paste an invite', 'LAN', 'Tailscale']);
+    await act(async () => { answer(READY); });
+    await flush();
+    expect(tabLabels()).toEqual(['Invite this PC', 'Paste an invite', 'LAN', 'Tailscale']);
+    expect(q('remote-connect-invite')).not.toBeNull();
+  });
+
+  it('with A2A off, Make discoverable turns it on; the card shows who asks and the code; Allow decides; pairing opens the checklist', async () => {
+    stubTailnet(READY, false);
+    await render();
+    expect(q('discover-make')?.textContent).toBe('Turn on and make discoverable');
+    expect(q('discover-turn-on-note')?.textContent).toMatch(/port 45660/);
+    await makeDiscoverable();
+    expect(a2a.discoverOpen).toHaveBeenCalledWith({ turnOn: true });
+    // The page's line follows the listener the window turned on.
+    expect(a2a.status).toHaveBeenCalledTimes(2);
+    expect(q('discover-countdown')?.textContent).toMatch(/This PC can be found · [45]:\d\d left/);
+
+    a2a.discoverStatus.mockResolvedValue(windowStatus({ incoming: card('deciding') }));
+    await tick();
+    expect(q('discover-card-identity')?.textContent).toBe('macOS · Tailscale account open.wong2kim@gmail.com · tailnet address 100.88.12.4');
+    expect(q('discover-card-code')?.textContent).toBe('482 913');
+    expect(q('discover-card')?.textContent).toMatch(/MacBook-Pro wants to connect/);
+
+    await act(async () => { q<HTMLButtonElement>('discover-allow')!.click(); });
+    await flush();
+    expect(a2a.discoverDecide).toHaveBeenCalledWith({ requestId: 'r1', allow: true });
+    expect(q('remote-connect-tailscale')?.textContent).toMatch(/Waiting for MacBook-Pro to finish pairing/);
+
+    a2a.discoverStatus.mockResolvedValue(windowStatus({ open: false, expiresAt: null, ended: { reason: 'paired', at: Date.now(), peer: { hostId: HOST, name: 'MacBook-Pro' } } }));
+    await tick();
+    expect(q('remote-connect-joined')).not.toBeNull();
+    expect(document.querySelector('[data-testid="a2a-exposure-checklist"]')).not.toBeNull();
+    // The window ended by pairing: nothing is left to close.
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(a2a.discoverClose).not.toHaveBeenCalled();
+  });
+
+  it('Deny decides with allow false, and the window stays open with its countdown', async () => {
+    stubTailnet(READY);
+    await render();
+    await makeDiscoverable();
+    expect(a2a.discoverOpen).toHaveBeenCalledWith({});
+    a2a.discoverStatus.mockResolvedValue(windowStatus({ incoming: card('deciding') }));
+    await tick();
+    a2a.discoverDecide.mockResolvedValue({ ok: true, status: windowStatus({ lastOutcome: { outcome: 'denied', device: DEVICE, ip: DEVICE.ip, at: Date.now() } }) });
+    await act(async () => { q<HTMLButtonElement>('discover-deny')!.click(); });
+    await flush();
+    expect(a2a.discoverDecide).toHaveBeenCalledWith({ requestId: 'r1', allow: false });
+    expect(q('remote-connect-tailscale')?.textContent).toMatch(/You denied MacBook-Pro/);
+    expect(q('discover-stop')).not.toBeNull();
+  });
+
+  it('closing the dialog closes a window it opened, and only then; switching tabs keeps it open', async () => {
+    stubTailnet(READY);
+    await render();
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(a2a.discoverClose).not.toHaveBeenCalled();
+
+    stubTailnet(READY);
+    await render();
+    await makeDiscoverable();
+    await act(async () => { tab('LAN').click(); });
+    await tick();
+    expect(a2a.discoverClose).not.toHaveBeenCalled();
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(a2a.discoverClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('Stop closes the window and puts the button back; polling stops with it', async () => {
+    stubTailnet(READY);
+    await render();
+    await makeDiscoverable();
+    a2a.discoverStatus.mockResolvedValue(windowStatus({ open: false, expiresAt: null, ended: { reason: 'stopped', at: Date.now() } }));
+    await act(async () => { q<HTMLButtonElement>('discover-stop')!.click(); });
+    await flush();
+    expect(a2a.discoverClose).toHaveBeenCalledTimes(1);
+    expect(q('discover-make')).not.toBeNull();
+    expect(q('discover-receive-line')).toBeNull();
+    const reads = a2a.discoverStatus.mock.calls.length;
+    await tick(5_000);
+    expect(a2a.discoverStatus.mock.calls.length).toBe(reads);
+  });
+
+  it('a card waiting while another tab shows marks the Tailscale tab, and never switches to it', async () => {
+    stubTailnet(READY);
+    await render();
+    await makeDiscoverable();
+    await act(async () => { tab('Invite this PC').click(); });
+    expect(q('discover-tab-mark')).toBeNull();
+    a2a.discoverStatus.mockResolvedValue(windowStatus({ incoming: card('deciding') }));
+    await tick();
+    expect(q('discover-tab-mark')).not.toBeNull();
+    expect(q('remote-connect-invite')).not.toBeNull();
+    expect(tabLabels()[0]).toBe('Tailscale, Needs you');
+    // Shown, the card is the mark; decided, it goes.
+    await act(async () => { tab('Tailscale, Needs you').click(); });
+    expect(q('discover-tab-mark')).toBeNull();
+    await act(async () => { tab('Invite this PC').click(); });
+    a2a.discoverStatus.mockResolvedValue(windowStatus());
+    await tick();
+    expect(q('discover-tab-mark')).toBeNull();
+  });
+
+  it('a window that opens after the dialog closed is closed at once', async () => {
+    stubTailnet(READY);
+    let answer!: (v: unknown) => void;
+    a2a.discoverOpen.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve; }));
+    await render();
+    await act(async () => { q<HTMLButtonElement>('discover-make')!.click(); });
+    act(() => root.unmount());
+    root = createRoot(container);
+    expect(a2a.discoverClose).not.toHaveBeenCalled();
+    await act(async () => { answer({ ok: true, status: windowStatus() }); });
+    await flush();
+    expect(a2a.discoverClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('mounting under StrictMode (effects run twice) closes nothing', async () => {
+    stubTailnet(READY);
+    await act(async () => root.render(<StrictMode><RemoteConnectDialog onClose={onClose} onLinkPane={onLinkPane} /></StrictMode>));
+    await flush();
+    expect(q('remote-connect-tailscale')).not.toBeNull();
+    expect(discoverCalls()).toEqual([]);
+  });
+
+  it('a port in use says so with Use port N, which moves the listener with PC messages still off and opens again', async () => {
+    stubTailnet(READY, false);
+    const off = (port: number) => ({ enabled: false, port, listening: false, hostId: 'me', name: 'MAC', fingerprint256: null, lastError: null });
+    a2a.discoverOpen.mockResolvedValueOnce({
+      ok: false, reason: 'listen-failed',
+      listen: { port: 45660, lastError: 'listen EADDRINUSE: address already in use 0.0.0.0:45660', lastErrorCode: 'EADDRINUSE', lastErrorPort: 45660 },
+    });
+    a2a.configure.mockResolvedValue(off(45661));
+    await render();
+    await makeDiscoverable();
+    expect(a2a.discoverOpen).toHaveBeenNthCalledWith(1, { turnOn: true });
+    const notice = document.querySelector<HTMLElement>('[data-listen-problem="a2a"]');
+    expect(notice?.textContent).toMatch(/Port 45660 is in use by another program\./);
+    expect(notice?.textContent).not.toMatch(/EADDRINUSE/);
+    const use = document.querySelector<HTMLButtonElement>('[data-listen-use-port="45661"]')!;
+    expect(use.textContent).toBe('Use port 45661');
+    await act(async () => { use.click(); });
+    await flush();
+    expect(a2a.configure).toHaveBeenCalledWith({ port: 45661 });
+    expect(a2a.discoverOpen).toHaveBeenNthCalledWith(2, { turnOn: true });
+    expect(q('discover-countdown')).not.toBeNull();
+  });
+
+  it("a refusal that carries the daemon's report names the holder and the port it found free", async () => {
+    stubTailnet(READY, false);
+    a2a.discoverOpen.mockResolvedValueOnce({
+      ok: false, reason: 'listen-failed',
+      listen: {
+        port: 45660, lastError: 'listen EADDRINUSE', lastErrorCode: 'EADDRINUSE', lastErrorPort: 45660,
+        report: { problem: { kind: 'port-in-use', port: 45660 }, holder: { kind: 'wmux', pid: 4242 }, suggestion: 45670 },
+      },
+    });
+    const listenProblem = vi.fn(async () => null);
+    vi.stubGlobal('electronAPI', { a2aRemote: a2a, remote, web, netFirewall: { listenProblem, status: vi.fn() } });
+    await render();
+    await makeDiscoverable();
+    expect(document.querySelector('[data-listen-problem="a2a"]')?.textContent).toMatch(/Port 45660 is in use by another copy of wmux\./);
+    expect(document.querySelector('[data-listen-use-port="45670"]')).not.toBeNull();
+    // The refusal said it all: the daemon is not asked again.
+    expect(listenProblem).not.toHaveBeenCalled();
   });
 });

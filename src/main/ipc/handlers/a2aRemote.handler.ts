@@ -90,6 +90,31 @@ export function registerA2aRemoteHandlers(daemonClient: DaemonClient | null, opt
     [IPC.A2A_REMOTE_HOSTS_REMOVE, async (hostId) => (await clientNow()).a2aRemoteHostsRemove(str(hostId))],
     [IPC.A2A_REMOTE_PEERS_LIST, async () => (await client()).a2aRemotePeersList()],
     [IPC.A2A_REMOTE_PEERS_REVOKE, async (peerId) => (await clientNow()).a2aRemotePeersRevoke(str(peerId))],
+    // Tailnet discovery. Only the fields the daemon takes go through: `turnOn`
+    // as a boolean, a card's id and a boolean decision, and of a scanned PC
+    // only its `ip` (the daemon dials the port and pins the certificate it
+    // stored from its own scan, never anything the renderer sends).
+    [
+      IPC.A2A_REMOTE_DISCOVER_OPEN,
+      async (params) => (await clientNow()).a2aRemoteDiscoverOpen((params as { turnOn?: unknown } | null)?.turnOn === true ? { turnOn: true } : {}),
+    ],
+    [IPC.A2A_REMOTE_DISCOVER_CLOSE, async () => (await clientNow()).a2aRemoteDiscoverClose()],
+    [IPC.A2A_REMOTE_DISCOVER_STATUS, async () => (await client()).a2aRemoteDiscoverStatus()],
+    [
+      IPC.A2A_REMOTE_DISCOVER_DECIDE,
+      async (params) => {
+        const p = (params ?? {}) as { requestId?: unknown; allow?: unknown };
+        return (await clientNow()).a2aRemoteDiscoverDecide({ requestId: str(p.requestId), allow: p.allow === true });
+      },
+    ],
+    [IPC.A2A_REMOTE_DISCOVER_SCAN, async () => (await clientNow()).a2aRemoteDiscoverScan()],
+    [
+      IPC.A2A_REMOTE_DISCOVER_CONNECT,
+      async (params) => (await clientNow()).a2aRemoteDiscoverConnect({ ip: str((params as { ip?: unknown } | null)?.ip) }),
+    ],
+    [IPC.A2A_REMOTE_DISCOVER_OUTGOING_STATUS, async () => (await client()).a2aRemoteDiscoverOutgoingStatus()],
+    [IPC.A2A_REMOTE_DISCOVER_OUTGOING_CANCEL, async () => (await clientNow()).a2aRemoteDiscoverOutgoingCancel()],
+    [IPC.A2A_REMOTE_DISCOVER_OUTGOING_CONFIRM, async () => (await clientNow()).a2aRemoteDiscoverOutgoingConfirm()],
     [
       IPC.A2A_REMOTE_SNAPSHOT,
       async (snapshot) => {

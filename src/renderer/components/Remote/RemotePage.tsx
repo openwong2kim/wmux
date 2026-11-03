@@ -1032,7 +1032,8 @@ export default function RemotePage() {
         <RemoteConnectDialog
           initialTab={connect.tab}
           onA2aStatus={setA2aStatus}
-          onClose={() => { setConnect(null); void refresh(); }}
+          // A tick later, so the read follows the Tailscale tab's close (it may turn PC messages off again).
+          onClose={() => { setConnect(null); window.setTimeout(() => { void refresh(); }, 0); }}
           onLinkPane={(hostId) => { setConnect(null); setLinkDialog({ hostId }); }}
           onAddOverSsh={() => { setConnect(null); setAddSsh(true); }}
           onLanPaired={() => { void refresh(); }}

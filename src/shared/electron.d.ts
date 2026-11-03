@@ -39,6 +39,18 @@ import type { ListenProblemReport } from './netListen';
 import type { A2aSpawnAskResult, A2aSpawnOutgoingList, A2aSpawnPolicySetResult, A2aSpawnPolicyV1, A2aSpawnRequestSummary, A2aSpawnUiAsk } from './a2aSpawn';
 import type { RemoteSendResult, RemoteSendSource, RemoteWriteResult } from './remoteUpload';
 import type {
+  A2aDiscoverCloseResult,
+  A2aDiscoverConnectParams,
+  A2aDiscoverConnectResult,
+  A2aDiscoverDecideParams,
+  A2aDiscoverDecideResult,
+  A2aDiscoverOpenParams,
+  A2aDiscoverOpenResult,
+  A2aDiscoverOutgoingCancelResult,
+  A2aDiscoverOutgoingConfirmResult,
+  A2aDiscoverOutgoingStatus,
+  A2aDiscoverScanResult,
+  A2aDiscoverStatus,
   A2aRemoteExposureGetResult,
   A2aRemoteExposureSetResult,
   A2aRemoteHeldListResult,
@@ -267,6 +279,28 @@ declare global {
         /** PCs that joined this PC. */
         peersList: () => Promise<A2aRemotePeersListResult>;
         peersRevoke: (peerId: string) => Promise<{ ok: boolean }>;
+        /**
+         * Make this PC discoverable to its own user's tailnet for 5 minutes.
+         * `turnOn`: A2A is off and pressing the button turns it on; without
+         * it an off A2A is refused (`a2a-off`).
+         */
+        discoverOpen: (params?: A2aDiscoverOpenParams) => Promise<A2aDiscoverOpenResult>;
+        /** Stop being discoverable. */
+        discoverClose: () => Promise<A2aDiscoverCloseResult>;
+        /** The window and the request on its card; nothing is pushed, so poll it while a window is open. */
+        discoverStatus: () => Promise<A2aDiscoverStatus>;
+        /** Allow or Deny the request on the card. */
+        discoverDecide: (params: A2aDiscoverDecideParams) => Promise<A2aDiscoverDecideResult>;
+        /** Find the discoverable PCs on the tailnet (probes each online device of this user). */
+        discoverScan: () => Promise<A2aDiscoverScanResult>;
+        /** Ask a PC of the last scan, by its `ip` only; resolves with the code both screens show. */
+        discoverConnect: (params: A2aDiscoverConnectParams) => Promise<A2aDiscoverConnectResult>;
+        /** This PC's one outgoing request; poll it while one is live. */
+        discoverOutgoingStatus: () => Promise<A2aDiscoverOutgoingStatus>;
+        /** Withdraw the outgoing request. */
+        discoverOutgoingCancel: () => Promise<A2aDiscoverOutgoingCancelResult>;
+        /** The other PC allowed and this PC's person checked the codes match: pair now. */
+        discoverOutgoingConfirm: () => Promise<A2aDiscoverOutgoingConfirmResult>;
         /** This window's whole pane tree; main diffs it and publishes the exposed part. */
         snapshot: (snapshot: A2aRemotePaneSnapshot) => Promise<{ ok: boolean }>;
         exposureGet: (hostId: string) => Promise<A2aRemoteExposureGetResult>;
