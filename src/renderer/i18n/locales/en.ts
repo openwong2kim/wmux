@@ -2076,6 +2076,8 @@ export const en = {
   'settings.computerUseResetConfirm': 'Reset access removes the helper from Accessibility and Screen Recording, including an entry that shows as on but no longer works. Allow it again afterwards with Request access.',
   'settings.computerUsePermissionHelp': 'macOS lists the helper as “wmux Computer Use” ({path}). If it is already switched on there, remove it with “−” and add it again, or use Reset access.',
   'settings.computerUsePermissionFailed': 'That did not work: {error}',
+  'computerUse.markerColor': 'Computer use color',
+  'computerUse.markerColorMore': 'More panes with a computer use color: {n}',
   'settings.tabAccounts': 'Accounts',
   'settings.tabNetwork': 'Network',
   'settings.tabAbout': 'About',

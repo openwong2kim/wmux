@@ -1620,6 +1620,8 @@ export const ko = {
   'settings.computerUseResetConfirm': '접근 초기화는 손쉬운 사용과 화면 기록 목록에서 헬퍼를 지웁니다. 켜져 있는 것처럼 보이지만 더는 작동하지 않는 항목도 포함됩니다. 그 뒤 접근 요청으로 다시 허용하세요.',
   'settings.computerUsePermissionHelp': 'macOS 목록에는 헬퍼가 “wmux Computer Use”({path})로 나옵니다. 이미 켜져 있다면 “−”로 지운 뒤 다시 추가하거나 접근 초기화를 누르세요.',
   'settings.computerUsePermissionFailed': '실패했습니다: {error}',
+  'computerUse.markerColor': '컴퓨터 사용 색',
+  'computerUse.markerColorMore': '컴퓨터 사용 색이 있는 페인 {n}개 더',
   'settings.tabAccounts': '계정',
   'settings.tabNetwork': '네트워크',
   'settings.tabAbout': '정보',

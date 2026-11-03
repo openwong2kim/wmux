@@ -2086,6 +2086,8 @@ export const zh = {
   'settings.computerUseResetConfirm': '重置访问会把辅助程序从“辅助功能”和“屏幕录制”中移除，包括显示为开启但已失效的条目。之后用“请求访问”重新允许。',
   'settings.computerUsePermissionHelp': 'macOS 列表中的辅助程序名为“wmux Computer Use”（{path}）。如果已经开启，请用“−”移除后重新添加，或使用“重置访问”。',
   'settings.computerUsePermissionFailed': '操作失败：{error}',
+  'computerUse.markerColor': '电脑操作颜色',
+  'computerUse.markerColorMore': '另有 {n} 个窗格带电脑操作颜色',
   'settings.tabKeyboard': '键盘',
   'settings.tabClaudeCode': 'Claude Code',
   'settings.tabOrchestrator': '编排器',

@@ -38,6 +38,7 @@ import { placePopover } from '../AgentToolbar/placePopover';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import WorkspaceChromeProfileMenu from './WorkspaceChromeProfileMenu';
 import WorkspaceAgentRoster, { WorkspaceRosterSummaryMemo, STASH_PULSE_MS } from './WorkspaceAgentRoster';
+import { WorkspaceComputerUseDots } from '../shared/ComputerUseDots';
 import { displayPath } from '../../utils/displayPath';
 import { formatIdle, IDLE_SHOW_AFTER_MS, IDLE_TICK_MS } from '../../utils/idleTime';
 import { timeAgo } from '../../utils/timeAgo';
@@ -1431,6 +1432,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, multiviewGroup, ind
                     data-shortcut-number={shortcutNumber}
                   />
                 )}
+                {/* Each pane that used computer use, in the colour its
+                    agent wears on screen (DESIGN.md › Agent identity colours). */}
+                <WorkspaceComputerUseDots workspaceId={workspaceId} />
                 <span
                   className="wmux-row-title font-sans text-[13px] leading-snug truncate font-semibold text-[var(--text-main)]"
                   title={idleLabel ? `${displayName} · ${t('workspace.idleTooltip', { time: idleLabel })}` : displayName}
