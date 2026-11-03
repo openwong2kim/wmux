@@ -69,7 +69,7 @@ import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
-import { getUserShellRecord, startHeldUserShells } from './pty/userShellRecord';
+import { getUserShellRecord, HELD_START_CONNECTED_WAIT_MS, startHeldUserShells } from './pty/userShellRecord';
 import { WSL_RPC_TIMEOUT_MS } from '../shared/wslTimeouts';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
@@ -2712,8 +2712,9 @@ app.on('ready', async () => {
         });
       // #3049 — start the restored user shells the daemon holds for main, with
       // their credentials (pty/userShellRecord.ts); whatever is still held at
-      // the daemon's fallback starts without them.
-      void startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
+      // the daemon's fallback starts without them. Never rejects: the
+      // daemon:connected below waits on it.
+      const heldStart = startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
         timeoutMs: WSL_RPC_TIMEOUT_MS,
         log: (line) => logLine('info', 'main', line),
       }).then((held) => {
@@ -2836,6 +2837,11 @@ app.on('ready', async () => {
       const daemonPid = daemonRespawnController?.connectedDaemonPid ?? readDaemonPid(getWmuxDir());
       const replaced = lastConnectedDaemonPid !== null && daemonPid !== null && daemonPid !== lastConnectedDaemonPid;
       if (daemonPid !== null) lastConnectedDaemonPid = daemonPid;
+      // #3049 — the renderer reads resume offers on daemon:connected, and a
+      // held shell gets its offer only once started: wait for that start, but
+      // never long. A disconnect meanwhile ends this install (onUninstall ran).
+      await Promise.race([heldStart, new Promise<void>((resolve) => { setTimeout(resolve, HELD_START_CONNECTED_WAIT_MS).unref?.(); })]);
+      if (daemonClient !== client) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:connected', { replaced });
       }

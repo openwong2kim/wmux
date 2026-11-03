@@ -27,6 +27,9 @@ import { getWmuxDir } from '../../daemon/config';
 /** The record's file name, in userData. */
 export const USER_SHELL_RECORD_FILE = 'user-shell-record.json';
 
+/** Longest main holds daemon:connected for the held shells' start: the renderer reads resume offers only then. */
+export const HELD_START_CONNECTED_WAIT_MS = 5_000;
+
 export interface UserShellEntry {
   cmd: string;
   incarnationId: string;
