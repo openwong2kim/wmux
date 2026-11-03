@@ -703,6 +703,10 @@ export const IPC = {
   COMPUTER_USE_SET: 'computer-use:set',
   // macOS permission buttons: { op: 'request' | 'reset' | 'reveal' }, returns GET's shape.
   COMPUTER_USE_PERMISSIONS: 'computer-use:permissions',
+  // Each pane's computer-use marker colour (shared/computer/agentMarker.ts):
+  // invoke returns AgentMarkerEntry[]; main also sends the full list on this
+  // channel whenever a pane gets a colour.
+  COMPUTER_AGENT_MARKERS: 'computer-use:agent-markers',
   // Global quick launch (Settings › Shortcuts, and the floating composer).
   // SETTINGS_GET/SET return QuickLaunchSettingsPayload; the rest are the
   // composer window's own calls, refused from any other sender. The strings
