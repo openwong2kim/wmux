@@ -94,6 +94,19 @@ export class UserShellRecord {
     if (changed) this.save();
   }
 
+  /**
+   * Rewrite the hold list from the record. The daemon reads it at boot, and it
+   * can be deleted or emptied without the record changing; left so, every
+   * later restart would start the shells without their credentials.
+   */
+  syncHolds(): void {
+    try {
+      writeJsonAtomic(this.holdsFile, userShellHoldsContent(this.load().keys()));
+    } catch (err) {
+      this.warn(`[env] user shell hold list not saved: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   noteGranted(id: string): void {
     this.granted.add(id);
   }
@@ -124,13 +137,13 @@ export class UserShellRecord {
   }
 
   private save(): void {
-    const entries = this.load();
     try {
-      writeJsonAtomic(this.recordFile, { version: 1, panes: Object.fromEntries(entries) });
-      writeJsonAtomic(this.holdsFile, userShellHoldsContent(entries.keys()));
+      writeJsonAtomic(this.recordFile, { version: 1, panes: Object.fromEntries(this.load()) });
     } catch (err) {
       this.warn(`[env] user shell record not saved: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
+    this.syncHolds();
   }
 }
 
@@ -217,6 +230,8 @@ export async function startHeldUserShells(
   if (!Array.isArray(rows)) return 0;
   const listed = rows.filter((r): r is ListedSession => !!r && typeof (r as ListedSession).id === 'string');
   record.prune(new Set(listed.filter((s) => s.state !== 'dead').map((s) => s.id)));
+  // Whatever happened to the hold list since, the next boot holds what the record names.
+  record.syncHolds();
   const held = listed.filter((s) => s.startPending === true);
   await runLimited(held, HELD_START_CONCURRENCY, async (s) => {
     const result = await promoteRecoveredSession(client, record, s, opts);

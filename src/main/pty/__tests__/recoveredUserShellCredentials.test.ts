@@ -188,6 +188,20 @@ describe('startHeldUserShells (main connects to the daemon)', () => {
     ]);
   });
 
+  it('rewrites a deleted or emptied hold list from the record on every connect', async () => {
+    const holdsFile = path.join(dir, 'holds.json');
+    record.set('daemon-held', ENTRY);
+    const c = { rpc: vi.fn(async () => [{ id: 'daemon-held', cmd: '/bin/zsh', incarnationId: 'inc-1', state: 'detached' }]) };
+
+    fs.writeFileSync(holdsFile, JSON.stringify({ version: 1, ids: [] }));
+    await startHeldUserShells(c, record, { liveEnv: MAIN_ENV });
+    expect(JSON.parse(fs.readFileSync(holdsFile, 'utf8'))).toEqual({ version: 1, ids: ['daemon-held'] });
+
+    fs.unlinkSync(holdsFile);
+    await startHeldUserShells(c, record, { liveEnv: MAIN_ENV });
+    expect(JSON.parse(fs.readFileSync(holdsFile, 'utf8'))).toEqual({ version: 1, ids: ['daemon-held'] });
+  });
+
   it(`starts at most ${HELD_START_CONCURRENCY} at once`, async () => {
     const listing: ListedSession[] = Array.from({ length: 14 }, (_, i) => ({ id: `daemon-${i}`, cmd: '/bin/zsh', state: 'suspended', startPending: true }));
     let running = 0;
