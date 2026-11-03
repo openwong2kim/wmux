@@ -5,7 +5,7 @@
 // nothing, so the kernel's hangup is all a leftover process gets, and a pane
 // close sends the shell SIGHUP. The rust engine matches that, and adds one
 // thing node-pty never does: after HANGUP_GRACE (native_transport.rs), it
-// SIGKILLs whatever a closed pane left in its session.
+// SIGKILLs whatever is left in the session of a pane closed while its shell ran.
 //
 // Like sessionReattach.engines.os.test.ts, the rust cases skip with a warning
 // when the native module is not built, unless WMUX_REQUIRE_RUST_CORE=1.
@@ -17,6 +17,7 @@ import path from 'node:path';
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import { rustTerminalCoreAvailable, type TerminalEngine } from '../../shared/terminalCoreSettings';
 import { ptyBackend } from '../../shared/terminalPty';
+import { loadNativeTerminalCore } from '../../shared/nativeTerminalCore';
 import { waitFor, deliberateSleep } from '../../test-utils/waitFor';
 
 const SHELL = '/bin/sh';
@@ -124,6 +125,16 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
     expect(alive(job)).toBe(true);
   }, TEST_MS);
 
+  // macOS revokes the terminal when the shell exits, and the writer's next
+  // write fails; on Linux it keeps writing into the terminal it holds open.
+  it.skipIf(skip || process.platform !== 'linux')('a background job that writes without pause does not hold back the shell\'s exit', async () => {
+    const id = `hup-${engine}-yes`;
+    const mgr = await shell(id);
+    await start(mgr, id, 'job', (s, p) => `sh ${s} ${p} &`, 'echo $$ > "$1"; exec yes\n');
+    type(mgr, id, 'exit');
+    await waitFor(() => mgr.getSession(id)?.meta.state === 'dead', WAIT_MS, 'the shell\'s exit to be reported');
+  }, TEST_MS);
+
   it.skipIf(skip)('closing the pane hangs up the program in it, which gets time to act before any SIGKILL', async () => {
     const id = `hup-${engine}-trap`;
     const mgr = await shell(id);
@@ -155,5 +166,48 @@ describe.skipIf(!posix).each(ENGINES)('a pane\'s processes on the %s engine', (e
     expect(alive(program)).toBe(true);
     await waitFor(() => !alive(program), HANGUP_GRACE_MS + WAIT_MS, 'the SIGKILL after the grace');
     expect(Date.now() - closedAt).toBeGreaterThanOrEqual(HANGUP_GRACE_MS - 250);
+  }, TEST_MS);
+
+  it.skipIf(skip || engine === 'node')('closing the pane SIGKILLs a shell that ignores SIGHUP, after the grace, and then sweeps its session', async () => {
+    const id = `hup-${engine}-root`;
+    const mgr = await shell(id);
+    const root = mgr.getSession(id)!.ptyProcess.pid;
+    started.push(root);
+    type(mgr, id, `trap '' HUP`);
+    // A foreground program keeps the shell from reading the hung-up terminal,
+    // whose end would make it exit. It inherits the ignored SIGHUP.
+    const program = await start(mgr, id, 'program', (s, p) => `sh ${s} ${p}`, 'echo $$ > "$1"; exec sleep 60\n');
+    const closedAt = Date.now();
+    mgr.destroySession(id);
+    await deliberateSleep(1_500, 'a negative check: within the grace the shell still runs, nothing was SIGKILLed at the close');
+    expect(alive(root)).toBe(true);
+    expect(alive(program)).toBe(true);
+    await waitFor(() => !alive(root) && !alive(program), closedAt + HANGUP_GRACE_MS + 1_500 - Date.now(), 'the shell\'s SIGKILL after the grace, then the sweep');
+    expect(Date.now() - closedAt).toBeGreaterThanOrEqual(HANGUP_GRACE_MS - 250);
+  }, TEST_MS);
+
+  // Through the transport itself: once a pane is disposed, its TerminalPty
+  // ignores kill(), so nothing above can send one during the grace.
+  it.skipIf(skip || engine === 'node')('an explicit SIGKILL during the grace sweeps the session at once', async () => {
+    const { NativeTransport } = loadNativeTerminalCore('pty-v1');
+    const transport = new NativeTransport(SHELL, [], cwd,
+      { PATH: process.env.PATH ?? '/usr/bin:/bin', HOME: cwd, PS1: '$ ', TERM: 'xterm-256color', LC_ALL: 'C' }, 80, 24, () => undefined);
+    started.push(transport.pid);
+    const script = path.join(cwd, 'sigkill.sh');
+    const pidFile = path.join(cwd, 'sigkill.pid');
+    fs.writeFileSync(script, 'trap \'\' HUP; echo $$ > "$1"; exec sleep 60\n');
+    transport.write(Buffer.from(`sh ${script} ${pidFile}\n`));
+    await waitFor(() => pidIn(pidFile) > 0, WAIT_MS, 'the program to start');
+    const program = pidIn(pidFile);
+    started.push(program);
+    // A pane's close: SIGHUP, then close() arms the grace.
+    transport.kill();
+    transport.close();
+    await deliberateSleep(500, 'a negative check: the grace is under way and the program still runs');
+    expect(alive(program)).toBe(true);
+    const killedAt = Date.now();
+    transport.kill(os.constants.signals.SIGKILL);
+    await waitFor(() => !alive(program), HANGUP_GRACE_MS - 1_500, 'the SIGKILL sweep');
+    expect(Date.now() - killedAt).toBeLessThan(HANGUP_GRACE_MS - 1_500);
   }, TEST_MS);
 });

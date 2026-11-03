@@ -59,6 +59,7 @@ const HANGUP_GRACE: Duration = Duration::from_secs(5);
 /// node-pty's DESTROY_SOCKET_TIMEOUT_MS: once the shell has exited, how long
 /// the output may stay open before the exit is reported without its end. A
 /// background job left holding the terminal keeps it open for good on Linux.
+/// One budget waits for the end; a second bounds a job that never stops writing.
 #[cfg(unix)]
 const EXIT_OUTPUT_GRACE: Duration = Duration::from_millis(200);
 static ACTIVE_WORKERS: AtomicU32 = AtomicU32::new(0);
@@ -255,6 +256,8 @@ impl NativeTransport {
             .spawn(move || {
                 let _worker = Worker::enter();
                 let mut bytes = [0; 16 * 1024];
+                #[cfg(unix)]
+                let mut stop_by: Option<Instant> = None;
                 loop {
                     #[cfg(unix)]
                     if reader_state.closed.load(Ordering::Acquire) {
@@ -278,6 +281,16 @@ impl NativeTransport {
                                 break;
                             }
                             reader_wake.notify();
+                            // Output that never pauses would never reach the
+                            // check below: end it at a deadline instead.
+                            #[cfg(unix)]
+                            if reader_state.stop_reading.load(Ordering::Acquire)
+                                && Instant::now()
+                                    >= *stop_by
+                                        .get_or_insert_with(|| Instant::now() + EXIT_OUTPUT_GRACE)
+                            {
+                                break;
+                            }
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                         #[cfg(unix)]
@@ -451,7 +464,8 @@ impl NativeTransport {
                 waiter_state.ready.notify_all();
                 wake.notify();
                 // A background job can hold the terminal past the shell's exit;
-                // like node-pty, end the output once nothing is pending instead.
+                // like node-pty, end the output once nothing is pending, or at
+                // the reader's deadline when the job never stops writing.
                 #[cfg(unix)]
                 {
                     let until = Instant::now() + EXIT_OUTPUT_GRACE;
@@ -837,8 +851,11 @@ fn observe_exit(pid: i32) -> std::io::Result<()> {
 /// portable-pty creates a fresh Unix session. Only processes still in that
 /// owned session are terminated; detached services with a new SID are separate.
 /// The root PID is not reaped until this scan finishes, so its SID cannot be reused.
-/// It runs for an explicit SIGKILL and HANGUP_GRACE after a pane's close, never
-/// on the shell's own exit: that is what stops a closed pane leaking processes.
+/// It runs for an explicit SIGKILL, and HANGUP_GRACE after a pane is closed
+/// while its shell is unreaped. It never runs on the shell's own exit, nor for a
+/// pane closed after the shell has exited and been reaped: once reaped, the
+/// session id may name another session, so what the shell left behind gets
+/// only the terminal's hangup there, as it does with node-pty.
 #[cfg(unix)]
 fn signal_session(session: i32, signal: i32) {
     if session <= 0 {
