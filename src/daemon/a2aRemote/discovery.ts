@@ -469,6 +469,9 @@ export class DiscoveryWindow {
 
   /** Answer a route `accepts` let in. Null: the window closed meanwhile; answer as outside it. */
   async route(input: DiscoverRouteInput): Promise<DiscoverAnswer | 'too-large' | null> {
+    // A poll after a deadline must see it passed, even before the timer fires.
+    this.sweep();
+    if (!this.win) return null;
     const { method, path: p } = input;
     if (p === A2A_ROUTES.discover) return method === 'GET' ? this.probe(input.source) : badMethod();
     if (p === REQUESTS_PATH) return method === 'POST' ? this.create(input) : badMethod();

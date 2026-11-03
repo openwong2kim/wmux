@@ -402,6 +402,15 @@ describe('DiscoveryWindow — requests', () => {
     await ask(win);
   });
 
+  it('a poll sees a passed deadline even before the timer fires', async () => {
+    let skew = 0;
+    const { win } = makeRig({ deps: { now: () => Date.now() + skew } });
+    await win.open({ turnOn: true });
+    const { created } = await ask(win);
+    skew = DISCOVER_DECIDE_MS;
+    expect(await poll(win, created)).toMatchObject({ state: 'expired' });
+  });
+
   it('expires the card after 120 s', async () => {
     const { win } = makeRig();
     await win.open({ turnOn: true });
