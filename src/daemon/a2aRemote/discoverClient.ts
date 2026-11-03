@@ -443,9 +443,10 @@ export class DiscoverClient {
       session.status = { ...session.status, state: 'joined', host: result.host };
       this.deps.log('info', `[a2a-remote] paired with ${result.host.name} (${session.ip}) through tailnet discovery`);
     } else if (otherCertificate) {
-      this.end(session, 'failed', { error: 'fingerprint-mismatch', detail: 'already paired with this PC under another certificate' });
+      this.end(session, 'failed', { error: 'fingerprint-mismatch', detail: 'already paired with this PC under another certificate' }, { withdraw: true });
     } else {
-      this.end(session, 'failed', { error: result.error, ...(result.detail ? { detail: result.detail } : {}) });
+      // A join that never reached the other PC leaves its pairing code live: withdraw it.
+      this.end(session, 'failed', { error: result.error, ...(result.detail ? { detail: result.detail } : {}) }, { withdraw: true });
     }
   }
 

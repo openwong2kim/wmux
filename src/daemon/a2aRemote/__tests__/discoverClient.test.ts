@@ -136,6 +136,22 @@ describe('DiscoverClient — what a receiver answers cannot steer the pairing', 
     expect(hosts.get(A_HOST)?.fingerprint256).toBe(FP_OTHER);
   });
 
+  it('a join that fails withdraws the request, so the pairing code dies with it', async () => {
+    const { discover, calls } = makeClient({
+      [REQUESTS]: created,
+      [REVEAL]: revealed,
+      [POLL]: () => ({ status: 200, json: { state: 'allowed', expiresAt: Date.now() + 60_000, code: 'ABCDEFGH' } }),
+      'POST /api/a2a/pair': () => ({ status: 500, json: { ok: false, error: 'unavailable' } }),
+      [WITHDRAW]: ok,
+    });
+    await discover.scan();
+    await discover.connect(A_IP);
+    await waitState(discover, 'confirm');
+    discover.confirm();
+    await waitState(discover, 'failed');
+    await vi.waitFor(() => expect(calls.map((c) => `${c.method} ${c.path}`)).toContain(WITHDRAW), { timeout: 5_000 });
+  });
+
   it('a cancel while the request is being made withdraws it and reveals nothing', async () => {
     const ref: { discover?: DiscoverClient } = {};
     const made = makeClient({
