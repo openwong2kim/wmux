@@ -124,10 +124,40 @@ public class MarkersTests
     }
 
     [Fact]
-    public void PillsSitSideBySide()
+    public void PillsSitSideBySideThenWrapWithinTheWindow()
     {
-        Assert.Equal([0, 106, 192], Markers.PillOffsets([100, 80, 120], 6));
-        Assert.Empty(Markers.PillOffsets([], 6));
+        static string[] Place(double[] widths, double rowWidth) =>
+            Markers.PillGrid(widths, 6, rowWidth).Select(p => $"{p.Row}:{p.X}").ToArray();
+        Assert.Equal(["0:0", "0:106", "0:192"], Place([100, 80, 120], 400));
+        // Too wide for one row over a 300 px window: the third pill starts a new row.
+        Assert.Equal(["0:0", "0:106", "1:0"], Place([100, 80, 120], 300));
+        // A pill wider than the window still gets its own row; nothing is dropped.
+        Assert.Equal(["0:0", "1:0"], Place([420, 90], 300));
+        Assert.Empty(Place([], 300));
+    }
+
+    [Fact]
+    public void TwoLongPillsOverANarrowWindowStackUpwardAboveIt()
+    {
+        // A waiting pill is long: side by side they would run past the
+        // window's right edge into the next window's pills.
+        var window = new Rect(1000, 300, 300, 400);
+        var at = Markers.PillLayout(window, [200, 250], outset: 9, pillHeight: 24, lift: 4, gap: 6, topLimit: 0);
+        Assert.Equal([(991.0, 263.0), (991.0, 233.0)], at);
+        // Wide enough: side by side, as before.
+        var wide = Markers.PillLayout(new Rect(200, 300, 800, 600), [200, 250], 9, 24, 4, 6, 0);
+        Assert.Equal([(191.0, 263.0), (397.0, 263.0)], wide);
+    }
+
+    [Fact]
+    public void RowsThatDoNotFitAboveGoInsideStackedDownward()
+    {
+        // Room for one row above, not two: every row goes inside, 8 px in,
+        // wrapped to the window's width less 16.
+        var window = new Rect(0, 40, 300, 400);
+        var at = Markers.PillLayout(window, [200, 250], outset: 9, pillHeight: 24, lift: 4, gap: 6, topLimit: 0);
+        Assert.Equal([(8.0, 48.0), (8.0, 78.0)], at);
+        Assert.Empty(Markers.PillLayout(window, [], 9, 24, 4, 6, 0));
     }
 
     [Fact]
@@ -142,6 +172,11 @@ public class MarkersTests
         // Partly above the work area (a taskbar on top): still below it.
         var under = new Rect(0, 30, 800, 600);
         Assert.Equal((8.0, 56.0), Markers.PillRowOrigin(under, 3, 24, 4, 48));
+        // Two rows fit above a window with room for them; not above one with room for only one.
+        Assert.Equal((191.0, 263.0), Markers.PillRowOrigin(window, 9, 24, 4, 0, rows: 2, rowGap: 6));
+        var tight = new Rect(0, 70, 800, 600);
+        Assert.Equal((-3.0, 39.0), Markers.PillRowOrigin(tight, 3, 24, 4, 25));
+        Assert.Equal((8.0, 78.0), Markers.PillRowOrigin(tight, 3, 24, 4, 25, rows: 2, rowGap: 6));
     }
 
     [Fact]

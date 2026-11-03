@@ -185,30 +185,63 @@ public static class Markers
             g => g.OrderBy(p => p.Arrival).ThenBy(p => p.Id, StringComparer.Ordinal).Select(p => p.Id).ToList(),
             StringComparer.Ordinal);
 
-    /// <summary>The x offset of each pill in a row of pills side by side.</summary>
-    public static List<double> PillOffsets(IReadOnlyList<double> widths, double gap)
+    /// <summary>
+    /// Each pill's row (0 = nearest the window) and x offset within it: side
+    /// by side while they fit in `rowWidth`, then on a new row, so a window's
+    /// pills stay over that window and never run into a neighbouring
+    /// window's pills. A pill wider than the row still gets a row of its own.
+    /// </summary>
+    public static List<(int Row, double X)> PillGrid(IReadOnlyList<double> widths, double gap, double rowWidth)
     {
-        var offsets = new List<double>(widths.Count);
+        var grid = new List<(int, double)>(widths.Count);
         double x = 0;
+        int row = 0;
         foreach (var w in widths)
         {
-            offsets.Add(x);
+            if (x > 0 && x + w > rowWidth)
+            {
+                row++;
+                x = 0;
+            }
+            grid.Add((row, x));
             x += w + gap;
         }
-        return offsets;
+        return grid;
     }
 
     /// <summary>
-    /// Where a window's row of pills starts: above its top-left corner,
-    /// outside its outermost ring, or inside the window's top-left corner when
-    /// there is no room above it below `topLimit` (the top of the monitor's
-    /// work area). `inset` is how far inside the corner that row sits.
+    /// Where a window's first row of pills starts: above its top-left corner,
+    /// outside its outermost ring, with `rows - 1` more rows stacked upward;
+    /// or inside the window's top-left corner, rows stacked downward, when
+    /// they do not all fit above it below `topLimit` (the top of the
+    /// monitor's work area). `inset` is how far inside the corner that row sits.
     /// </summary>
-    public static (double X, double Y) PillRowOrigin(Rect window, double outset, double pillHeight, double lift, double topLimit, double inset = 8)
+    public static (double X, double Y) PillRowOrigin(Rect window, double outset, double pillHeight, double lift, double topLimit,
+        double inset = 8, int rows = 1, double rowGap = 0)
     {
         double above = window.Y - outset - lift - pillHeight;
-        if (above >= topLimit) return (window.X - outset, above);
+        double topRow = above - Math.Max(0, rows - 1) * (pillHeight + rowGap);
+        if (topRow >= topLimit) return (window.X - outset, above);
         return (window.X + inset, Math.Max(window.Y, topLimit) + inset);
+    }
+
+    /// <summary>
+    /// Where each of a window's pills goes (`widths` in arrival order). Above
+    /// the window the rows span its outermost ring (window width + 2 ×
+    /// `outset`) and stack upward; when they do not all fit there, every row
+    /// goes inside the window's top-left corner, `inset` in, at most the
+    /// window's width less 2 × `inset` wide, stacked downward.
+    /// </summary>
+    public static List<(double X, double Y)> PillLayout(Rect window, IReadOnlyList<double> widths, double outset, double pillHeight,
+        double lift, double gap, double topLimit, double inset = 8)
+    {
+        var aboveGrid = PillGrid(widths, gap, window.Width + 2 * outset);
+        int rows = aboveGrid.Count == 0 ? 1 : aboveGrid.Max(p => p.Row) + 1;
+        var (x, y) = PillRowOrigin(window, outset, pillHeight, lift, topLimit, inset, rows, gap);
+        bool above = y < window.Y;
+        var grid = above ? aboveGrid : PillGrid(widths, gap, window.Width - 2 * inset);
+        double step = (above ? -1 : 1) * (pillHeight + gap);
+        return grid.Select(p => (x + p.X, y + p.Row * step)).ToList();
     }
 
     /// <summary>The Windows stop chord (src/main/computer/index.ts stopKeyAcceleratorFor).</summary>

@@ -671,12 +671,13 @@ internal static unsafe class Overlay
                     pills[id] = pill;
                     widths.Add(pill.Width);
                 }
-                var (rx, ry) = Markers.PillRowOrigin(frame, Markers.HaloOutset(ids.Count - 1) * k, PillHeight * k, PillLift * k, home.Work.top, 8 * k);
-                var offsets = Markers.PillOffsets(widths, PillGap * k);
+                // Side by side while they fit over the window, then wrapped (Core PillLayout).
+                var places = Markers.PillLayout(frame, widths, Markers.HaloOutset(ids.Count - 1) * k, PillHeight * k, PillLift * k,
+                    PillGap * k, home.Work.top, 8 * k);
                 for (int i = 0; i < ids.Count; i++)
                 {
                     rings[ids[i]] = (frame, i, k);
-                    pillAt[ids[i]] = (rx + offsets[i], ry);
+                    pillAt[ids[i]] = places[i];
                 }
             }
 
