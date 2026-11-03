@@ -13,7 +13,7 @@
 // goes permanently red rather than silently stopping to guard.
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -31,6 +31,20 @@ function runGenerator(args) {
 }
 
 describe('THIRD_PARTY_NOTICES drift guard', () => {
+  it('names the .NET SDK the Windows helper is built with', () => {
+    // The helper's runtime notices are this SDK's runtime. global.json makes the
+    // build use exactly that SDK, and the workflows install it from global.json.
+    const sdk = /const HELPER_DOTNET_SDK = '([^']+)'/.exec(readFileSync(SCRIPT, 'utf8'))?.[1];
+    expect(sdk).toMatch(/^\d+\.\d+\.\d+$/);
+    const pin = JSON.parse(readFileSync(path.join(REPO_ROOT, 'global.json'), 'utf8')).sdk;
+    expect(pin).toEqual({ version: sdk, rollForward: 'disable' });
+    for (const workflow of ['release.yml', 'ci.yml']) {
+      const text = readFileSync(path.join(REPO_ROOT, '.github', 'workflows', workflow), 'utf8');
+      expect(text, workflow).not.toMatch(/dotnet-version:/);
+      expect(text, workflow).toMatch(/global-json-file:\s*global\.json/);
+    }
+  });
+
   it('normalizes CRLF in the vendored connector license', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'wmux-notices-'));
     try {

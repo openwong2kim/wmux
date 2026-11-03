@@ -229,7 +229,10 @@ jobs:
 
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
         with:
-          dotnet-version: 10.0.x
+          # global.json pins the SDK (rollForward: disable), so a newer SDK on
+          # the runner is never used: THIRD_PARTY_NOTICES reproduces exactly this
+          # SDK's runtime notices (HELPER_DOTNET_SDK in scripts/generate-notices.mjs).
+          global-json-file: global.json
 
       - name: Unit tests (tree, keys, unicode chunks, held-state file)
         run: dotnet test native/computer-use-windows/tests/WmuxComputerUse.Core.Tests -c Release
