@@ -10638,7 +10638,7 @@ async function main(): Promise<void> {
     pipeServer.onClientClose((clientId) => a2aServer.discovery.clientGone(clientId));
     const onA2aRpc = (method: string, handler: (params: Record<string, unknown>) => Promise<unknown>): void =>
       pipeServer.onRpc(method, handler);
-    registerA2aRemoteRpc(onA2aRpc, {
+    const a2aRemoteRpc = registerA2aRemoteRpc(onA2aRpc, {
       controller: a2aRemoteController,
       server: a2aServer,
       peers: a2aPeers,
@@ -10646,6 +10646,8 @@ async function main(): Promise<void> {
       cascade: a2aCascade,
       log: a2aLog,
     });
+    // An outgoing discovery request ends with the app connection that made it.
+    pipeServer.onClientClose((clientId) => a2aRemoteRpc.discover.clientGone(clientId));
     registerSpawnRpc(onA2aRpc, { policy: a2aSpawnPolicy, requests: a2aSpawnRequests, onSaved: (previous) => a2aSpawn.sendTargets(previous) });
     // Starting a conversation this PC received: main makes the worktree and the pane, the daemon places the files.
     registerContinueRpc(onA2aRpc, {
