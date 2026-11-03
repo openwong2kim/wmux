@@ -435,7 +435,8 @@ assigned to it (`src/shared/computer/agentMarker.ts`; main sends `marker
 - a 3 px ring around the agent's target window, and a name pill above the
   window's top-left corner (`● #api-1 · Claude Code · typing`, ink
   `#0B0C0E`). A second agent on the same window rings 3 px outside the first,
-  and its pill sits beside the first one's;
+  and its pill sits beside the first one's while they fit over the window,
+  then on a new row above;
 - for `click` and `scroll` (AXPress included), the agent's own pointer: an
   arrow in its colour with a name chip, which moves to the point (150 ms,
   ease-out) and pulses on a press;
