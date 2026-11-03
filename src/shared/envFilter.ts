@@ -326,3 +326,26 @@ export function mergeCredentialEnv(
   }
   return out;
 }
+
+/** Bounds on a credential env passed over the daemon pipe (sanitizeCredentialEnv). */
+export const CREDENTIAL_ENV_LIMITS = { NAMES: 256, NAME_MAX: 256, VALUE_MAX: 32 * 1024 } as const;
+
+/**
+ * Clean a credential env received over the daemon pipe (#3049): only passable
+ * credential names (isPassableCredentialKey), string values within the size
+ * caps and without NUL. Entries that fail are dropped, so one oversized value
+ * does not cost the shell its other credentials. Null when `raw` is not a
+ * plain object or holds more names than the cap.
+ */
+export function sanitizeCredentialEnv(raw: unknown): Record<string, string> | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > CREDENTIAL_ENV_LIMITS.NAMES) return null;
+  const out: Record<string, string> = {};
+  for (const [key, value] of entries) {
+    if (key.length > CREDENTIAL_ENV_LIMITS.NAME_MAX || !isPassableCredentialKey(key)) continue;
+    if (typeof value !== 'string' || value.length > CREDENTIAL_ENV_LIMITS.VALUE_MAX || value.includes('\0')) continue;
+    out[key] = value;
+  }
+  return out;
+}

@@ -112,7 +112,8 @@ describe('daemon.promoteSession — guards', () => {
 
   it('retries ONLY the known transient ConPTY spawn race, and with a bound', () => {
     const region = promoteRegion();
-    expect(region).toMatch(/PROMOTE_RETRIES = \d+/);
+    // #3049 — a held user shell's promote gets boot recovery's budget.
+    expect(region).toMatch(/PROMOTE_RETRIES = (?:heldStart \? RECOVERY_PTY_RETRIES : )?\d+/);
     // A non-transient failure must break immediately rather than burn the budget.
     expect(region).toMatch(/if \(!msg\.includes\('error code: 87'\)\) break;/);
   });
