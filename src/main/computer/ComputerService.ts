@@ -568,7 +568,8 @@ export class ComputerService {
     try {
       ticket = this.lease.take(agent, now);
     } catch (err) {
-      if (waiting) this.showWaiting(waiting, now);
+      // Only a busy lease is something to wait for; any other refusal is final.
+      if (waiting && err instanceof ComputerError && err.code === 'input_busy') this.showWaiting(waiting, now);
       throw err;
     }
     try {
@@ -584,7 +585,10 @@ export class ComputerService {
    * Another agent holds the lease: a helper that lists `markerWait` shows this
    * agent's marker as waiting on its window. Fire-and-forget, and sent on the
    * helper itself, not through the action's request wrapper, so it never
-   * counts as the action's input. Never starts a helper.
+   * counts as the action's input. Sent only while a helper runs; it queues
+   * behind the request in flight, and the helper drops a waiting marker on
+   * its own after the lease's idle time, so one this agent never follows up
+   * does not stay on screen.
    */
   private showWaiting(waiting: Omit<AgentMarkerWaitParams, 'waitingFor'>, now: number): void {
     const helper = this.helper;

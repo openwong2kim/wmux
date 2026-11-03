@@ -31,7 +31,7 @@ describe('AgentMarkers', () => {
     const markers = new AgentMarkers({ paneTag });
     expect(markers.markerFor(pane(1)).label).toBe('#api-1 · Claude Code');
     expect(markers.markerFor(pane(2)).label).toBe('api · Claude Code');
-    expect(markers.markerFor({ key: 'x', label: 'x', client: 'some-client' }).label).toBe('some-client');
+    expect(markers.markerFor({ key: 'x', label: 'x', client: 'some-client' }).label).toBe('outside wmux · some-client');
     // A tag that appears later (the pane was named) shows on the next input.
     paneTag.mockImplementation(() => '#web');
     expect(markers.markerFor(pane(2)).label).toBe('#web · Claude Code');
@@ -44,6 +44,33 @@ describe('AgentMarkers', () => {
     const long = markers.markerFor(pane(1, { workspaceName: 'a workspace name that goes on and on and on', client: 'an-mcp-client-with-a-long-name' }));
     expect(Array.from(long.label).length).toBeLessThanOrEqual(AGENT_MARKER_LABEL_MAX);
     expect(long.label).toMatch(/^a workspace .*… · an-mcp-client-with-…$/);
+  });
+
+  it('gives a new agent a colour that agents gone quiet freed, and keeps the busy ones', () => {
+    let now = 0;
+    const markers = new AgentMarkers({ now: () => now });
+    expect([0, 1, 2].map((i) => markers.markerFor(pane(i)).color)).toEqual(AGENT_MARKER_COLORS.slice(0, 3));
+    now = 31 * 60_000;
+    expect(markers.markerFor(pane(1)).color).toBe(AGENT_MARKER_COLORS[1]);
+    // pty-0 and pty-2 have been quiet for over 30 minutes: their colours are free again.
+    expect(markers.markerFor(pane(3)).color).toBe(AGENT_MARKER_COLORS[0]);
+    expect(markers.markerFor(pane(4)).color).toBe(AGENT_MARKER_COLORS[2]);
+    expect(markers.markerFor(pane(0)).color).toBe(AGENT_MARKER_COLORS[0]);
+  });
+
+  it('keeps a client name from passing for a pane tag, and fits a wide one', () => {
+    const markers = new AgentMarkers();
+    expect(markers.markerFor({ key: 'y', label: 'y', client: '#w1-1 · Claude Code' }).label).toBe('outside wmux · w1-1 Claude Code');
+    const wide = markers.markerFor(pane(1, { client: '😀'.repeat(20), workspaceName: 'a workspace name that goes on' }));
+    expect(Array.from(wide.label).length).toBeLessThanOrEqual(AGENT_MARKER_LABEL_MAX);
+    expect(wide.label).toMatch(/^a workspace .*… · 😀+$/u);
+  });
+
+  it('marks a pane with its first agent when two drive from it', () => {
+    const markers = new AgentMarkers();
+    markers.markerFor(pane(1));
+    markers.markerFor(pane(1, { key: 'codex @ ws-a/pty-1', client: 'codex' }));
+    expect(markers.entries()).toEqual([{ ptyId: 'pty-1', color: AGENT_MARKER_COLORS[0] }]);
   });
 
   it('lists one colour per pane and announces each pane that gets one', () => {

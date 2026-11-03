@@ -31,6 +31,8 @@ const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 // PTY ids are daemon session ids — a superset alphabet, but still bounded and
 // character-restricted so a malformed id can never become a routing key.
 const PTY_ID_RE = /^[A-Za-z0-9._:@/-]{1,120}$/;
+// A pane's auto tag as paneNaming.ts paneTag() renders it.
+const PANE_TAG_RE = /^#w\d{1,6}-\d{1,6}$/;
 
 // The renderer fleet selector's status union — accept only these so a bad status
 // string can't leak into a routing consumer. Kept in sync with AgentStatus.
@@ -171,6 +173,15 @@ export function parseWorkspaceMirrorPayload(raw: unknown): WorkspaceMirrorPushPa
   // Every pane id (pane-binding prune). Absent stays absent: unknown, never "no panes".
   if (Array.isArray(raw.paneIds)) {
     out.paneIds = raw.paneIds.filter((id): id is string => typeof id === 'string' && PTY_ID_RE.test(id));
+  }
+  // paneId → auto tag (computer-use marker labels). Only well-formed `#w<n>-<n>`
+  // tags travel: the tag reaches an on-screen label. Absent stays absent (unknown).
+  if (isRecord(raw.paneTags)) {
+    const paneTags: Record<string, string> = {};
+    for (const [paneId, tag] of Object.entries(raw.paneTags)) {
+      if (PTY_ID_RE.test(paneId) && typeof tag === 'string' && PANE_TAG_RE.test(tag)) paneTags[paneId] = tag;
+    }
+    out.paneTags = paneTags;
   }
   // Only a literal true counts: anything else keeps the startup Deck reconcile off.
   if (raw.sessionRestored === true) out.sessionRestored = true;

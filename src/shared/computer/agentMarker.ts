@@ -3,8 +3,9 @@
 // same colour marks its pane in wmux (DESIGN.md › Agent identity colours).
 //
 // Main assigns the colour per agent key (computer.rpc.ts callerAgent) the first
-// time that agent sends input, in palette order, and keeps it until wmux quits.
-// The 11th agent starts the palette over; its name pill still tells it apart.
+// time that agent sends input and keeps it until wmux quits: the first palette
+// colour no agent active in the last 30 minutes holds. With all ten taken the
+// next agent starts the palette over; its name pill still tells it apart.
 
 /**
  * Fills drawn behind dark ink (#0B0C0E, ≥ 4.5:1 on each). Red is left out: it
