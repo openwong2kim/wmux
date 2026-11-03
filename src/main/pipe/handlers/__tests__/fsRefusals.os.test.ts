@@ -68,10 +68,23 @@ describe('plugin fs refusals', () => {
     expect(isPluginRefusedPath(h('.gitconfig'))).toBe(false);
   });
 
-  it('refuses ~/.config/gh', () => {
-    expect(ruleOf(h('.config', 'gh'))).toMatch(/^~\/\.config\/gh/);
-    expect(ruleOf(h('.config', 'gh', 'hosts.yml'))).toMatch(/^~\/\.config\/gh/);
+  it('refuses the GitHub CLI tokens: ~/.config/gh, $XDG_CONFIG_HOME/gh and %APPDATA%\\GitHub CLI', () => {
+    for (const p of [h('.config', 'gh'), h('.config', 'gh', 'hosts.yml'), h('AppData', 'Roaming', 'GitHub CLI', 'hosts.yml')]) {
+      expect(ruleOf(p), p).toMatch(/^GitHub CLI tokens/);
+    }
     expect(isPluginRefusedPath(h('.config', 'ghostty', 'config'))).toBe(false);
+    vi.stubEnv('XDG_CONFIG_HOME', h('cfg'));
+    try {
+      expect(ruleOf(h('cfg', 'gh', 'hosts.yml'))).toMatch(/^GitHub CLI tokens/);
+      expect(isPluginRefusedPath(h('cfg', 'ghostty'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('refuses gcloud credentials in %APPDATA%', () => {
+    expect(ruleOf(h('AppData', 'Roaming', 'gcloud', 'application_default_credentials.json'))).toMatch(/^gcloud credentials/);
+    expect(isPluginRefusedPath(h('AppData', 'Roaming', 'Code'))).toBe(false);
   });
 
   it('refuses the Claude Code credentials and ~/.claude.json', () => {
@@ -104,12 +117,26 @@ describe('plugin fs refusals', () => {
   });
 
   it('has a test above for every rule', () => {
-    expect(PLUGIN_FS_REFUSALS).toHaveLength(12);
+    expect(PLUGIN_FS_REFUSALS).toHaveLength(13);
   });
 
   it('keeps the file tree list too', () => {
     expect(isPluginRefusedPath(h('.ssh', 'config'))).toBe(true);
     expect(isPluginRefusedPath(h('.aws', 'credentials'))).toBe(true);
+  });
+
+  it('refuses a WSL distro share, whose home the rules do not know', () => {
+    for (const p of ['\\\\wsl.localhost\\Ubuntu\\home\\me\\.aws\\credentials', '//wsl$/Ubuntu/home/me/notes.txt', '\\\\WSL.LOCALHOST\\Ubuntu']) {
+      expect(isPluginRefusedPath(p), p).toBe(true);
+    }
+  });
+
+  it.runIf(process.platform === 'darwin')('refuses home files spelled through the /System/Volumes/Data firmlink', () => {
+    const viaData = (...p: string[]) => path.join('/System/Volumes/Data', home, ...p);
+    expect(isPluginRefusedPath(viaData('.ssh', 'config'))).toBe(true);
+    expect(isPluginRefusedPath(viaData('.git-credentials'))).toBe(true);
+    expect(isPluginRefusedPath(viaData('.wmux', 'config.json'))).toBe(true);
+    expect(isPluginRefusedPath(viaData('git', 'README.md'))).toBe(false);
   });
 
   it('leaves ordinary paths alone', () => {

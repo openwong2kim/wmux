@@ -29,12 +29,10 @@ const SHELL_HISTORY = new Set([
   '.bash_history', '.zsh_history', '.sh_history', '.history', 'fish_history', 'consolehost_history.txt',
 ]);
 
-/** The folder Electron keeps each wmux profile's userData in, relative to home. */
-function userDataRoots(): string[] {
-  if (process.platform === 'darwin') return ['library/application support'];
-  if (process.platform === 'win32') return ['appdata/roaming'];
-  const xdg = process.env.XDG_CONFIG_HOME;
+/** The user config folder for XDG tools (gh), relative to home: ~/.config and $XDG_CONFIG_HOME. */
+function configRoots(): string[] {
   const roots = ['.config'];
+  const xdg = process.env.XDG_CONFIG_HOME;
   if (xdg) {
     for (const home of homeRoots()) {
       const rel = relBelow(xdg.replace(/\\/g, '/').toLowerCase(), home);
@@ -42,6 +40,13 @@ function userDataRoots(): string[] {
     }
   }
   return roots;
+}
+
+/** The folder Electron keeps each wmux profile's userData in, relative to home. */
+function userDataRoots(): string[] {
+  if (process.platform === 'darwin') return ['library/application support'];
+  if (process.platform === 'win32') return ['appdata/roaming'];
+  return configRoots();
 }
 
 export const PLUGIN_FS_REFUSALS: readonly Rule[] = [
@@ -60,7 +65,11 @@ export const PLUGIN_FS_REFUSALS: readonly Rule[] = [
   // so source files such as id_map.ts stay readable.
   { what: 'SSH key files (id_*), at any depth', test: anySegment((n) => /^id_[^.]+(\.pub)?$/.test(n)) },
   { what: '~/.git-credentials', test: underHome('.git-credentials') },
-  { what: '~/.config/gh (GitHub CLI tokens)', test: underHome('.config/gh') },
+  {
+    what: 'GitHub CLI tokens: ~/.config/gh, $XDG_CONFIG_HOME/gh and %APPDATA%\\GitHub CLI',
+    test: (s, rel) => configRoots().some((root) => underHome(`${root}/gh`)(s, rel)) || underHome('appdata/roaming/github cli')(s, rel),
+  },
+  { what: 'gcloud credentials on Windows: %APPDATA%\\gcloud', test: underHome('appdata/roaming/gcloud') },
   { what: '~/.claude/.credentials.json and ~/.claude.json', test: underHome('.claude/.credentials.json', '.claude.json') },
   { what: '~/.codex/auth.json', test: underHome('.codex/auth.json') },
   { what: '~/.pgpass', test: underHome('.pgpass') },
@@ -87,9 +96,23 @@ export function pluginFsRefusal(p: string): Rule | null {
   return null;
 }
 
+/** A WSL distro's files (\\wsl.localhost\<distro>, \\wsl$\<distro>): their home is not one
+ *  the rules know, so a plugin never reaches them. */
+const WSL_SHARE = /^[\\/]{2}(?:wsl\.localhost|wsl\$)(?:[\\/]|$)/i;
+
+/** macOS also reaches the data volume as /System/Volumes/Data/<path>, a
+ *  firmlink realpath keeps as written: check the plain spelling. */
+function plainSpelling(p: string): string {
+  if (process.platform !== 'darwin') return p;
+  const m = /^\/system\/volumes\/data(?=\/|$)/i.exec(p);
+  return m ? p.slice(m[0].length) || '/' : p;
+}
+
 /** Whether a plugin's `fs.*` call must refuse `p`: the file tree's list or this one. */
 export function isPluginRefusedPath(p: string): boolean {
-  return isSensitivePath(p) || pluginFsRefusal(p) !== null;
+  if (WSL_SHARE.test(p)) return true;
+  const plain = plainSpelling(p);
+  return isSensitivePath(plain) || pluginFsRefusal(plain) !== null;
 }
 
 /**

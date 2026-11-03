@@ -1029,13 +1029,13 @@ export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
   'files-write': {
     severity: 'critical',
     summary: 'Can create, rename, copy, move and move files to Trash',
-    detail: 'The plugin can change local files and folders, overwrite destinations and move items to the operating system Trash. It never permanently deletes files. The paths the files permission refuses are refused here too, including any folder that holds one. This permission has no path scope.',
+    detail: 'The plugin can change local files and folders, overwrite destinations and move items to the operating system Trash. It has no delete call, but overwriting a file replaces it for good, and a move between drives removes the originals once the copy finishes. The paths the files permission refuses are refused here too, including any folder that holds one. This permission has no path scope.',
   },
   'files': {
     severity: 'critical',
     summary: 'Can browse folders and read any text file on this computer',
     detail:
-      'The plugin can list any local folder and read any text file up to 1 MB outside the list below, including source code, documents and config files. wmux refuses: ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.azure, gcloud and Docker credentials, ~/.npmrc, ~/.netrc and ~/.pgpass, ~/.git-credentials, ~/.config/gh, ~/.claude.json and ~/.claude/.credentials.json, ~/.codex/auth.json, wmux\'s own data and tokens, .env and .env.* files, *.pem and *.key files and SSH key files (id_*) anywhere, and shell history files. It cannot change or delete anything with this permission.',
+      'The plugin can list any local folder and read any text file up to 1 MB outside the list below, including source code, documents and config files. wmux refuses: ~/.ssh, ~/.aws, ~/.gnupg, ~/.kube, ~/.azure, gcloud and Docker credentials, ~/.npmrc, ~/.netrc and ~/.pgpass, ~/.git-credentials, GitHub CLI tokens, ~/.claude.json and ~/.claude/.credentials.json, ~/.codex/auth.json, wmux\'s own data and tokens, .env and .env.* files, *.pem and *.key files and SSH key files (id_*) anywhere, shell history files, and WSL distro files. It cannot change or delete anything with this permission.',
   },
   'internal': {
     severity: 'critical',

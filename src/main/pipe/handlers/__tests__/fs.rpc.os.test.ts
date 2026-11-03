@@ -18,7 +18,7 @@ let root: string;
 let home: string;
 
 beforeEach(() => {
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fsrpc-')));
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fsrpc-')));
   home = path.join(root, 'home');
   fs.mkdirSync(path.join(home, '.ssh'), { recursive: true });
   fs.writeFileSync(path.join(home, '.ssh', 'id_ed25519'), 'secret');

@@ -15,7 +15,7 @@ let home: string;
 let queue: FsJobQueue;
 const trash = vi.fn(async (p: string) => { void p; });
 beforeEach(() => {
-  root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fswrite-')));
+  root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fswrite-')));
   src = path.join(root, 'src'); dest = path.join(root, 'dest'); home = path.join(root, 'home');
   for (const dir of [src, dest, path.join(home, '.ssh')]) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(src, 'a'), Buffer.alloc(1024 * 1024, 'a'));

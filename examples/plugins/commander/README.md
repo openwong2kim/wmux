@@ -29,8 +29,10 @@ Operations require confirmation in the page. Copy/move offer skip/overwrite
 conflict choices and display progress with Cancel. At most 32 sources are
 accepted per operation. Cancellation stops future chunks, removes partial files
 and retains completed files; it does not roll back earlier work. A skipped
-move source stays in place. All panels refresh after operations. No terminal
-content, shell execution, network, permanent-delete or file editing API is used.
+move source stays in place. All panels refresh after operations. Overwrite
+replaces a file for good, and a move between drives removes the originals once
+the copy finishes. No terminal content, shell execution, network, delete or
+file editing API is used.
 
 Permissions: `ui.rail-page`, `pane.read` (workspace pane cwd and active pane),
 `fs.read` (folder listing and text viewing), `fs.write` (local mutations and job
