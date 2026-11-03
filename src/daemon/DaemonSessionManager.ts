@@ -1338,6 +1338,10 @@ export class DaemonSessionManager extends EventEmitter {
    * supervisor reads destroyed as "user closed the pane → disarm", and the
    * daemon broadcasts it to main as pane teardown. A restart must look like
    * died → (silence) → restarted, never like a destroy.
+   *
+   * Unlinking is undoable, so the ring (the dead pane's last screen) is kept:
+   * the caller hands the record back with reinsertSession when the restart
+   * fails, or frees it with releaseTombstone once it is gone for good.
    */
   removeTombstone(id: string): boolean {
     const managed = this.sessions.get(id);
@@ -1345,9 +1349,21 @@ export class DaemonSessionManager extends EventEmitter {
     if (managed.meta.state !== 'dead') {
       throw new Error(`removeTombstone('${id}'): session is '${managed.meta.state}', not 'dead'`);
     }
-    managed.ringBuffer.dispose();
     this.sessions.delete(id);
     return true;
+  }
+
+  /**
+   * X8: free the ring of a tombstone that removeTombstone unlinked and that
+   * will not come back — its replacement exists, or the restart was cancelled
+   * or cut short by shutdown. Refuses a record still in the map, so a live
+   * session's ring is never disposed under it.
+   */
+  releaseTombstone(managed: ManagedSession): void {
+    if (this.sessions.get(managed.meta.id) === managed) {
+      throw new Error(`releaseTombstone('${managed.meta.id}'): record is still in the session map`);
+    }
+    managed.ringBuffer.dispose();
   }
 
   /**
@@ -1356,7 +1372,7 @@ export class DaemonSessionManager extends EventEmitter {
    * vanish from the map — and therefore from sessions.json, the badge, and
    * the rearm target — on a spawn hiccup. The managed record is the exact
    * object removeTombstone unlinked: PTY already dead, bridge already
-   * cleaned, so holding it costs nothing.
+   * cleaned, ring still intact, so the pane's last screen comes back with it.
    */
   reinsertSession(managed: ManagedSession): void {
     if (managed.meta.state !== 'dead') {
