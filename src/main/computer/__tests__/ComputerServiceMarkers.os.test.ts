@@ -138,15 +138,15 @@ describe('ComputerService agent markers', () => {
 });
 
 describe('capabilitiesForAgent', () => {
-  it('never lists the marker methods, with or without every permission', () => {
+  it('never lists the methods only main sends (configure, markers), with or without every permission', () => {
     const caps: HelperCapabilities = {
       actions: ['getAppState', 'click', 'openApp', 'configure', 'markerWait', 'markerClear'],
       modes: ['ax', 'vision', 'both'],
       permissions: { accessibility: true, screenRecording: true },
     };
-    expect(capabilitiesForAgent(caps).actions).toEqual(['getAppState', 'click', 'openApp', 'configure']);
+    expect(capabilitiesForAgent(caps).actions).toEqual(['getAppState', 'click', 'openApp']);
     expect(capabilitiesForAgent({ ...caps, permissions: { accessibility: true, screenRecording: false } }).actions)
-      .toEqual(['getAppState', 'click', 'openApp', 'configure']);
+      .toEqual(['getAppState', 'click', 'openApp']);
     // The helper's own answer is left as it was.
     expect(caps.actions).toContain('markerWait');
   });

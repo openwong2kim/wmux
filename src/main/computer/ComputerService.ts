@@ -180,7 +180,8 @@ const STOP_KEY_UNAVAILABLE =
   'the computer-use stop key could not be registered (another app probably uses the same shortcut), so wmux does not let agents drive other apps';
 export const CONTROL_RATE_PER_MINUTE = 120;
 const SNAPSHOT_RECORD_LIMIT = 64;
-const MAIN_ONLY_METHODS: ReadonlySet<string> = new Set<HelperMethod>(['markerWait', 'markerClear']);
+/** Helper methods only main sends (overlay setup and markers); agents are not shown them. */
+const MAIN_ONLY_METHODS: ReadonlySet<string> = new Set<HelperMethod>(['configure', 'markerWait', 'markerClear']);
 
 export interface ControlParams {
   action: ComputerControlAction;
