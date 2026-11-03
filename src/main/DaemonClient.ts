@@ -16,6 +16,18 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type {
+  A2aDiscoverCloseResult,
+  A2aDiscoverConnectParams,
+  A2aDiscoverConnectResult,
+  A2aDiscoverDecideParams,
+  A2aDiscoverDecideResult,
+  A2aDiscoverOpenParams,
+  A2aDiscoverOpenResult,
+  A2aDiscoverOutgoingCancelResult,
+  A2aDiscoverOutgoingConfirmResult,
+  A2aDiscoverOutgoingStatus,
+  A2aDiscoverScanResult,
+  A2aDiscoverStatus,
   A2aExposureCandidate,
   A2aRemoteExposureGetResult,
   A2aRemoteExposureSetResult,
@@ -793,6 +805,47 @@ export class DaemonClient extends EventEmitter {
 
   async a2aRemotePeersRevoke(peerId: string): Promise<{ ok: boolean }> {
     return (await this.rpc('a2a.remote.peers.revoke', { peerId })) as { ok: boolean };
+  }
+
+  // Tailnet discovery. `open` reads Tailscale and may start the listener,
+  // `connect` runs the request and reveal round trips and `confirm` starts
+  // the join, so those get 30s like `join`. `scan` probes up to 64 tailnet
+  // devices 8 at a time (about 24s at worst), so it gets 60s.
+
+  async a2aRemoteDiscoverOpen(params: A2aDiscoverOpenParams): Promise<A2aDiscoverOpenResult> {
+    return (await this.rpc('a2a.remote.discover.open', { ...params }, { timeoutMs: 30_000 })) as A2aDiscoverOpenResult;
+  }
+
+  async a2aRemoteDiscoverClose(): Promise<A2aDiscoverCloseResult> {
+    return (await this.rpc('a2a.remote.discover.close', {})) as A2aDiscoverCloseResult;
+  }
+
+  async a2aRemoteDiscoverStatus(): Promise<A2aDiscoverStatus> {
+    return (await this.rpc('a2a.remote.discover.status', {})) as A2aDiscoverStatus;
+  }
+
+  async a2aRemoteDiscoverDecide(params: A2aDiscoverDecideParams): Promise<A2aDiscoverDecideResult> {
+    return (await this.rpc('a2a.remote.discover.decide', { ...params })) as A2aDiscoverDecideResult;
+  }
+
+  async a2aRemoteDiscoverScan(): Promise<A2aDiscoverScanResult> {
+    return (await this.rpc('a2a.remote.discover.scan', {}, { timeoutMs: 60_000 })) as A2aDiscoverScanResult;
+  }
+
+  async a2aRemoteDiscoverConnect(params: A2aDiscoverConnectParams): Promise<A2aDiscoverConnectResult> {
+    return (await this.rpc('a2a.remote.discover.connect', { ...params }, { timeoutMs: 30_000 })) as A2aDiscoverConnectResult;
+  }
+
+  async a2aRemoteDiscoverOutgoingStatus(): Promise<A2aDiscoverOutgoingStatus> {
+    return (await this.rpc('a2a.remote.discover.outgoing.status', {})) as A2aDiscoverOutgoingStatus;
+  }
+
+  async a2aRemoteDiscoverOutgoingCancel(): Promise<A2aDiscoverOutgoingCancelResult> {
+    return (await this.rpc('a2a.remote.discover.outgoing.cancel', {})) as A2aDiscoverOutgoingCancelResult;
+  }
+
+  async a2aRemoteDiscoverOutgoingConfirm(): Promise<A2aDiscoverOutgoingConfirmResult> {
+    return (await this.rpc('a2a.remote.discover.outgoing.confirm', {}, { timeoutMs: 30_000 })) as A2aDiscoverOutgoingConfirmResult;
   }
 
   /** `reconciled`: every share whose pane closed or moved was ended first (see ExposedPaneCache.isReconciled). */
