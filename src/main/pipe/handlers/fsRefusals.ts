@@ -11,6 +11,7 @@
 // Keep the list here, and keep one test per rule in fsRefusals.test.ts.
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { homeRoots, isSensitivePath, resolveAccessiblePath } from '../../ipc/handlers/fs.handler';
 
@@ -139,8 +140,74 @@ export function isPluginRefusedPath(p: string): boolean {
 export async function resolvePluginPath(input: string): Promise<string | null> {
   if (isPluginRefusedPath(input) || await onWslDrive(input)) return null;
   const canonical = await resolveAccessiblePath(input);
-  if (!canonical || isPluginRefusedPath(canonical)) return null;
+  if (!canonical || isPluginRefusedPath(canonical) || await insideRefusedByIdentity(canonical)) return null;
   return canonical;
+}
+
+/** The refused folders and files that sit at known places, as absolute paths.
+ *  The rules above match by spelling; these are also matched by identity
+ *  (insideRefusedByIdentity), so another spelling of the same folder (a
+ *  /.nofollow prefix, a symlinked dotfiles folder, a moved AppData) is refused
+ *  too. */
+async function refusedRoots(): Promise<string[]> {
+  const home = os.homedir();
+  const roots = [
+    '.ssh', '.aws', '.gnupg', '.gpg', '.config/gcloud', '.azure', '.kube', '.docker/config.json',
+    '.npmrc', '.netrc', '.pgpass', '.git-credentials', '.claude.json', '.claude/.credentials.json',
+    '.codex/auth.json', '.zsh_sessions', 'AppData/Roaming/GitHub CLI', 'AppData/Roaming/gcloud',
+    ...configRoots().map((root) => `${root}/gh`),
+  ].map((rel) => path.join(home, rel));
+  const xdg = process.env.XDG_CONFIG_HOME;
+  if (xdg) roots.push(path.join(xdg, 'gh'));
+  const appData = process.env.APPDATA;
+  if (appData) roots.push(path.join(appData, 'GitHub CLI'), path.join(appData, 'gcloud'));
+  for (const env of ['GH_CONFIG_DIR', 'CLOUDSDK_CONFIG']) {
+    const dir = process.env[env];
+    if (dir && path.isAbsolute(dir)) roots.push(dir);
+  }
+  // wmux's own data (~/.wmux*) and each profile's userData (wmux*).
+  const parents: Array<[string, string]> = [[home, '.wmux']];
+  for (const root of userDataRoots()) parents.push([path.join(home, root), 'wmux']);
+  if (appData) parents.push([appData, 'wmux']);
+  if (xdg) parents.push([xdg, 'wmux']);
+  for (const [dir, prefix] of parents) {
+    const names = await fs.promises.readdir(dir).catch(() => [] as string[]);
+    for (const name of names) if (name.toLowerCase().startsWith(prefix)) roots.push(path.join(dir, name));
+  }
+  return roots;
+}
+
+/** How long a read of the refused roots' identities is reused: a scan checks every entry. */
+const IDENTITY_TTL_MS = 2_000;
+let identities: { at: number; key: string; ids: Promise<Set<string>> } | null = null;
+
+function refusedIdentities(): Promise<Set<string>> {
+  const now = Date.now();
+  const env = process.env;
+  const key = JSON.stringify([os.homedir(), env.XDG_CONFIG_HOME, env.APPDATA, env.GH_CONFIG_DIR, env.CLOUDSDK_CONFIG]);
+  if (identities && identities.key === key && now - identities.at < IDENTITY_TTL_MS) return identities.ids;
+  const ids = refusedRoots().then(async (roots) => {
+    const set = new Set<string>();
+    await Promise.all(roots.map(async (root) => {
+      const st = await fs.promises.stat(root, { bigint: true }).catch(() => null);
+      if (st) set.add(`${st.dev}:${st.ino}`);
+    }));
+    return set;
+  });
+  identities = { at: now, key, ids };
+  return ids;
+}
+
+/** Whether `canonical` (an existing, resolved path) is a refused folder or file
+ *  or lies inside one, by device and inode rather than by spelling. */
+async function insideRefusedByIdentity(canonical: string): Promise<boolean> {
+  const ids = await refusedIdentities();
+  if (ids.size === 0) return false;
+  for (let p = canonical; ; p = path.dirname(p)) {
+    const st = await fs.promises.stat(p, { bigint: true }).catch(() => null);
+    if (st && ids.has(`${st.dev}:${st.ino}`)) return true;
+    if (path.dirname(p) === p) return false;
+  }
 }
 
 /** A drive letter mapped to a WSL distro share (net use, subst) is that share. */

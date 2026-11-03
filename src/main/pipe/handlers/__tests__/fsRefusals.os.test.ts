@@ -165,6 +165,40 @@ describe('plugin fs refusals', () => {
     }
   });
 
+  describe('resolvePluginPath matches the refused folders by identity, whatever the spelling', () => {
+    let realHome: string;
+    beforeEach(() => {
+      realHome = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fsid-home-')));
+      vi.spyOn(os, 'homedir').mockReturnValue(realHome);
+      fs.mkdirSync(path.join(realHome, '.ssh'));
+      fs.writeFileSync(path.join(realHome, '.ssh', 'known_hosts'), 'x');
+      fs.writeFileSync(path.join(realHome, 'notes.txt'), 'x');
+    });
+    afterEach(() => { fs.rmSync(realHome, { recursive: true, force: true }); vi.unstubAllEnvs(); });
+
+    it.runIf(process.platform === 'darwin')('refuses ~/.ssh through the /.nofollow prefix', async () => {
+      expect(await resolvePluginPath(path.join('/.nofollow', realHome, '.ssh', 'known_hosts'))).toBeNull();
+      expect(await resolvePluginPath(path.join('/.nofollow', realHome, 'notes.txt'))).not.toBeNull();
+    });
+
+    it.runIf(process.platform !== 'win32')('refuses a symlinked ~/.config/gh at its real place', async () => {
+      fs.mkdirSync(path.join(realHome, 'dotfiles', 'gh'), { recursive: true });
+      fs.writeFileSync(path.join(realHome, 'dotfiles', 'gh', 'hosts.yml'), 'x');
+      fs.mkdirSync(path.join(realHome, '.config'));
+      fs.symlinkSync(path.join(realHome, 'dotfiles', 'gh'), path.join(realHome, '.config', 'gh'));
+      expect(await resolvePluginPath(path.join(realHome, 'dotfiles', 'gh', 'hosts.yml'))).toBeNull();
+      expect(await resolvePluginPath(path.join(realHome, 'dotfiles'))).not.toBeNull();
+    });
+
+    it('refuses GH_CONFIG_DIR wherever it is', async () => {
+      const ghDir = path.join(realHome, 'elsewhere-gh');
+      fs.mkdirSync(ghDir);
+      fs.writeFileSync(path.join(ghDir, 'hosts.yml'), 'x');
+      vi.stubEnv('GH_CONFIG_DIR', ghDir);
+      expect(await resolvePluginPath(path.join(ghDir, 'hosts.yml'))).toBeNull();
+    });
+  });
+
   it('resolvePluginPath refuses a WSL share before it touches the disk', async () => {
     expect(await resolvePluginPath('\\\\wsl.localhost\\Ubuntu\\home\\me\\.aws\\credentials')).toBeNull();
   });
