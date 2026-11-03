@@ -264,7 +264,8 @@ export interface A2aInvite {
 
 export const INVITE_ALT_MAX = 4;
 
-const INVITE_CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
+/** A one-shot pairing code: 8 symbols of the unambiguous A-Z2-9 alphabet (`pairing.ts`). */
+export const INVITE_CODE_RE = /^[A-HJ-NP-Z2-9]{8}$/;
 const HOSTNAME_RE = /^(?=.{1,253}$)[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?)*$/;
 const IPV4_RE = /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 

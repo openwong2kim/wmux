@@ -618,6 +618,7 @@ export type RpcMethod =
   | 'a2a.remote.discover.connect'
   | 'a2a.remote.discover.outgoing.status'
   | 'a2a.remote.discover.outgoing.cancel'
+  | 'a2a.remote.discover.outgoing.confirm'
   | 'a2a.remote.exposure.publish'
   | 'a2a.remote.exposure.get'
   | 'a2a.remote.exposure.list'
@@ -985,6 +986,7 @@ export const ALL_RPC_METHODS = [
   'a2a.remote.discover.connect',
   'a2a.remote.discover.outgoing.status',
   'a2a.remote.discover.outgoing.cancel',
+  'a2a.remote.discover.outgoing.confirm',
   'a2a.remote.exposure.publish',
   'a2a.remote.exposure.get',
   'a2a.remote.exposure.list',
@@ -1979,7 +1981,9 @@ export type A2aDiscoverScanResult =
       };
     }
   | { ok: false; reason: 'tailscale-not-ready'; check: TailscaleCheckItem }
-  | { ok: false; reason: 'no-tailnet-ipv4' };
+  | { ok: false; reason: 'no-tailnet-ipv4' }
+  /** Another network interface uses the tailnet's address range (a CGNAT LAN); discovery is off here. */
+  | { ok: false; reason: 'tailnet-range-on-lan' };
 
 /** `a2a.remote.discover.connect` params. */
 export interface A2aDiscoverConnectParams {
@@ -2035,7 +2039,13 @@ export type A2aDiscoverOutgoingState =
   | 'asking'
   /** The code is shown; waiting for the other PC's human. */
   | 'waiting'
-  /** Allowed: pairing as an invite join would. */
+  /**
+   * The other PC allowed; this PC's human confirms the code matches
+   * (`outgoing.confirm`) before anything pairs. Unconfirmed until
+   * `expiresAt`, it ends `expired`.
+   */
+  | 'confirm'
+  /** Confirmed: pairing as an invite join would. */
   | 'joining'
   | 'joined'
   | 'denied'
@@ -2054,7 +2064,7 @@ export interface A2aDiscoverOutgoingStatus {
   /** The PC asked, as the scan listed it. */
   pc: A2aDiscoverPc | null;
   code: string | null;
-  /** Epoch ms the other PC's card runs out. */
+  /** Epoch ms the other PC's card (`waiting`) or its allowance (`confirm`) runs out. */
   expiresAt: number | null;
   /** For `joined`. */
   host?: A2aRemoteHostRecordV1;
@@ -2069,6 +2079,13 @@ export interface A2aDiscoverOutgoingStatus {
  * the same way.
  */
 export type A2aDiscoverOutgoingCancelResult = A2aDiscoverOutgoingStatus;
+
+/**
+ * `a2a.remote.discover.outgoing.confirm` (no params): this PC's human
+ * confirmed the code matches the other PC's; only then does it pair. Outside
+ * `confirm` it changes nothing. Answers the outgoing status after it.
+ */
+export type A2aDiscoverOutgoingConfirmResult = A2aDiscoverOutgoingStatus;
 
 /**
  * What the Tailscale tab's "This PC" section renders (receiving side). The
@@ -2109,6 +2126,8 @@ export type A2aDiscoverRequestView =
   | { kind: 'idle' }
   | { kind: 'tailscale-not-ready'; check: TailscaleCheckItem }
   | { kind: 'no-tailnet-ipv4' }
+  /** A LAN here uses the tailnet's address range: discovery cannot tell tailnet devices apart. */
+  | { kind: 'unavailable'; reason: 'tailnet-range-on-lan' }
   /** Scanning; `pcs` keeps the last results on a re-scan. */
   | { kind: 'searching'; pcs: A2aDiscoverPc[] }
   | { kind: 'results'; pcs: A2aDiscoverPc[]; checked: number }
@@ -2117,6 +2136,8 @@ export type A2aDiscoverRequestView =
   | { kind: 'asking'; pc: A2aDiscoverPc }
   /** The code, the countdown, Cancel. */
   | { kind: 'waiting'; pc: A2aDiscoverPc; code: string; expiresAt: number }
+  /** The other PC allowed: "Is it the same code?" and Confirm (`outgoing.confirm`) or Cancel, with the countdown. */
+  | { kind: 'confirm'; pc: A2aDiscoverPc; code: string; expiresAt: number }
   | { kind: 'joining'; pc: A2aDiscoverPc }
   /** `joinedA2a`, then "Link a pane now". */
   | { kind: 'joined'; host: A2aRemoteHostRecordV1 }
