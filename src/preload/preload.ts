@@ -1932,8 +1932,8 @@ const electronAPI = {
     },
   },
   daemon: {
-    onConnected: (callback: () => void) => {
-      const listener = () => callback();
+    onConnected: (callback: (info?: { replaced: boolean }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, info?: { replaced: boolean }) => callback(info);
       ipcRenderer.on('daemon:connected', listener);
       return () => { ipcRenderer.removeListener('daemon:connected', listener); };
     },
