@@ -9,6 +9,7 @@
 // default branch, commit into a merge, or land on a branch an agent switched
 // to while the dialog was open.
 import { ensureSecretHook, secretHooks } from '../../git/secretHookHost';
+import { setWithholdCredentialsFromAgents, withholdCredentialsFromAgents } from '../../pty/credentialEnvPrefs';
 import { ipcMain } from 'electron';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
@@ -100,7 +101,7 @@ async function guarded(
 }
 
 export function registerGitShipHandlers(): () => void {
-  const channels = [IPC.GIT_SHIP_STATUS, IPC.GIT_SHIP_COMMIT, IPC.GIT_SHIP_PUSH, IPC.GIT_SHIP_CREATE_PR, IPC.GIT_SECRET_HOOK_GET, IPC.GIT_SECRET_HOOK_SET];
+  const channels = [IPC.GIT_SHIP_STATUS, IPC.GIT_SHIP_COMMIT, IPC.GIT_SHIP_PUSH, IPC.GIT_SHIP_CREATE_PR, IPC.GIT_SECRET_HOOK_GET, IPC.GIT_SECRET_HOOK_SET, IPC.CREDENTIAL_ENV_GET, IPC.CREDENTIAL_ENV_SET];
   for (const c of channels) ipcMain.removeHandler(c);
 
   ipcMain.handle(
@@ -112,6 +113,19 @@ export function registerGitShipHandlers(): () => void {
     wrapHandler(IPC.GIT_SECRET_HOOK_SET, async (_e: Electron.IpcMainInvokeEvent, on: unknown) => {
       if (typeof on !== 'boolean') throw new Error('on must be a boolean');
       return secretHooks.setAutoInstall(on);
+    }),
+  );
+  // Withhold credentials from agent panes (main/pty/credentialEnvPrefs.ts).
+  // Applies to panes spawned after the change; running panes keep their env.
+  ipcMain.handle(
+    IPC.CREDENTIAL_ENV_GET,
+    wrapHandler(IPC.CREDENTIAL_ENV_GET, async () => ({ withholdFromAgents: withholdCredentialsFromAgents() })),
+  );
+  ipcMain.handle(
+    IPC.CREDENTIAL_ENV_SET,
+    wrapHandler(IPC.CREDENTIAL_ENV_SET, async (_e: Electron.IpcMainInvokeEvent, on: unknown) => {
+      if (typeof on !== 'boolean') throw new Error('on must be a boolean');
+      return setWithholdCredentialsFromAgents(on);
     }),
   );
 

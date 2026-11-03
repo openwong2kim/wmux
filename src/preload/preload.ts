@@ -1375,6 +1375,10 @@ const electronAPI = {
     secretHookGet: () => ipcRenderer.invoke(IPC.GIT_SECRET_HOOK_GET) as Promise<{ autoInstall: boolean }>,
     secretHookSet: (on: boolean) =>
       ipcRenderer.invoke(IPC.GIT_SECRET_HOOK_SET, on) as Promise<{ autoInstall: boolean; failed: string[] }>,
+    // Settings: withhold credential-named env vars from agent panes (default on).
+    credentialEnvGet: () => ipcRenderer.invoke(IPC.CREDENTIAL_ENV_GET) as Promise<{ withholdFromAgents: boolean }>,
+    credentialEnvSet: (on: boolean) =>
+      ipcRenderer.invoke(IPC.CREDENTIAL_ENV_SET, on) as Promise<{ withholdFromAgents: boolean }>,
     // Each write names the branch + HEAD it was asked for; main refuses if either moved.
     shipCommit: (repoPath: string, message: string, expect: import('../main/git/shipActions').ShipExpect, opts?: import('../main/git/shipActions').ShipCommitOptions) =>
       ipcRenderer.invoke(IPC.GIT_SHIP_COMMIT, repoPath, message, expect, opts) as Promise<import('../main/git/shipActions').ShipActionResult>,

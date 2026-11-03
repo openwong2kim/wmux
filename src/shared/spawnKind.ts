@@ -28,8 +28,22 @@ export function resolveEnvPolicy(opts: {
   spawnKind?: SpawnKind;
   hasExec?: boolean;
   hasSupervision?: boolean;
+  /**
+   * A bot worker or fan-out task pane: unattended automation. The setting
+   * below never opens it (a 'user-shell' stamp keeps its existing meaning).
+   */
+  isAutomation?: boolean;
+  /**
+   * The user setting "Withhold credentials from agent panes" (Settings >
+   * Git safety). Default (undefined/true) keeps the fail-closed rule above.
+   * `false` lets an interactive agent pane (anything not exec, supervised or
+   * automation) inherit credentials the way a user-opened shell does.
+   */
+  withholdFromAgents?: boolean;
 }): EnvPolicy {
   if (opts.hasExec || opts.hasSupervision) return 'gated';
   if (opts.spawnKind === 'user-shell') return 'passthrough';
+  if (opts.isAutomation) return 'gated';
+  if (opts.withholdFromAgents === false) return 'passthrough';
   return 'gated';
 }
