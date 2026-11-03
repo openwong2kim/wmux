@@ -112,7 +112,8 @@
     const copy = button('▷', () => transfer('copy'), 'Copy to next panel · F5'); copy.disabled = count < 2;
     const move = button('◁', () => transfer('move'), 'Move to next panel · F6'); move.disabled = count < 2;
     bar.append(copy, move);
-    for (let n = 1; n <= 3; n++) { const b = button('▯'.repeat(n), () => layout(n), `${n} panels · Ctrl+${n}`); b.setAttribute('aria-pressed', String(count === n)); if (n === 1) b.className = 'layout-start'; bar.append(b); }
+    // Drawn boxes, not '▯': the UI font has no such glyph and Windows falls back to a broken one.
+    for (let n = 1; n <= 3; n++) { const b = button('', () => layout(n), `${n} panels · Ctrl+${n}`); b.setAttribute('aria-label', b.title); for (let i = 0; i < n; i++) b.append(node('span')); b.setAttribute('aria-pressed', String(count === n)); b.className = n === 1 ? 'layout layout-start' : 'layout'; bar.append(b); }
     const colour = button('MDIR', () => { colours = !colours; render(); }, 'MDIR colours (optional file type colours)'); colour.setAttribute('aria-pressed', String(colours)); bar.append(colour);
     return bar;
   }

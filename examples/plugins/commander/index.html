@@ -19,6 +19,7 @@ button,input,select { font: inherit; color: var(--text-main); background: var(--
 button { cursor: pointer; } button:hover { background: var(--hover-fill); } button:disabled { opacity: .4; cursor: default; } button[aria-pressed="true"] { background: var(--selection); }
 button:focus-visible,input:focus-visible,select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 #toolbar button { min-height: 27px; padding: 3px; } #toolbar .layout-start { margin-top: auto; }
+#toolbar .layout { display: flex; justify-content: center; align-items: center; gap: 2px; } #toolbar .layout span { width: 6px; height: 11px; border: 1px solid currentColor; border-radius: 1px; }
 footer { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px; background: var(--bg-mantle); } footer button { flex: 1; white-space: nowrap; font-size: 11px; }
 #notice { padding: 0 8px; font-size: 11px; color: var(--text-sub); }
 .overlay { position: fixed; inset: 0; background: color-mix(in srgb, var(--bg-base) 80%, transparent); display: grid; place-items: center; padding: 24px; }

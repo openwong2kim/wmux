@@ -67,7 +67,7 @@ export const UI_PLUGIN_CATALOG = [{
   readme: 'https://github.com/openwong2kim/wmux/blob/main/examples/plugins/commander/README.md',
   publisher: 'wmux',
   license: 'MIT',
-  version: '1.0.0',
+  version: '1.0.1',
   files: ['manifest.json', 'index.html', 'commander.js', 'README.md', 'LICENSE'],
 }] as const;
 
