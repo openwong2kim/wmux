@@ -1,6 +1,8 @@
 import * as path from 'path';
 import { app, dialog } from 'electron';
 import { markBoot } from '../util/bootTrace';
+import { daemonStageRootIn, isSquirrelInstall, stageDaemonRuntime, stagedDaemonExePath, stagedDaemonScripts } from './daemonRuntimeStage';
+import { getWmuxDir } from '../../daemon/config';
 import {
   classifyTasklistOutput,
   classifyKillOutcome,
@@ -121,6 +123,24 @@ async function askUserToRecoverFromStalePid(opts: {
 }
 
 /**
+ * Where the Windows packaged app copies its daemon runtime; null elsewhere.
+ * Not beside the install: Squirrel kills every process whose path merely
+ * starts with %LOCALAPPDATA%\wmux, so %LOCALAPPDATA%\wmux-<anything> dies too.
+ */
+function daemonStageRoot(): string | null {
+  if (process.platform !== 'win32' || !app.isPackaged) return null;
+  return daemonStageRootIn(getWmuxDir());
+}
+
+/** The staged wmux.exe this build's daemon runs from; null where there is no copy. */
+export function stagedDaemonExe(): string | null {
+  const stageRoot = daemonStageRoot();
+  const appDir = path.dirname(process.execPath);
+  if (!stageRoot || !isSquirrelInstall(appDir)) return null;
+  return stagedDaemonExePath({ appDir, exeName: path.basename(process.execPath), stageRoot, version: app.getVersion() });
+}
+
+/**
  * Candidate paths for the daemon entry script — production (extraResource),
  * production fallback (old layout), development (esbuild bundle),
  * development fallback (tsc output). Unchanged from the pre-#1001 launcher;
@@ -133,6 +153,7 @@ function resolveDaemonScriptCandidates(): string[] {
   const projectRoot = app.getAppPath();
   const resourcesRoot = process.resourcesPath;
   console.log(`[launcher] projectRoot = ${projectRoot}, resourcesPath = ${resourcesRoot}`);
+  const stageRoot = daemonStageRoot();
   return [
     // Production (extraResource) — esbuild bundle
     path.join(resourcesRoot, 'daemon-bundle', 'index.js'),
@@ -144,6 +165,9 @@ function resolveDaemonScriptCandidates(): string[] {
     // Development fallback (tsc output)
     path.join(projectRoot, 'dist', 'daemon', 'daemon', 'index.js'),
     path.join(projectRoot, 'dist', 'daemon', 'index.js'),
+    // Last, so a failed copy falls back to the install, not an older build:
+    // copies stageDaemonRuntime made, listed so the kill gate knows their daemons.
+    ...(stageRoot ? stagedDaemonScripts(stageRoot) : []),
   ];
 }
 
@@ -184,6 +208,20 @@ const electronDeps: DaemonLauncherDeps = {
   // LaunchServices treats as ending its subordinate processes) keeps it alive.
   launchViaLaunchdOnDarwin: true,
   markBoot,
+  stageDaemonRuntime: async () => {
+    const stageRoot = daemonStageRoot();
+    const appDir = path.dirname(process.execPath);
+    // The copy is only needed where Squirrel's Setup.exe would kill a daemon under the install root.
+    if (!stageRoot || !isSquirrelInstall(appDir)) return null;
+    return stageDaemonRuntime({
+      appDir,
+      exeName: path.basename(process.execPath),
+      stageRoot,
+      version: app.getVersion(),
+      warn: (msg) => console.warn(msg),
+      log: (msg) => console.log(msg),
+    });
+  },
 };
 
 /**

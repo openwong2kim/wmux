@@ -6,7 +6,7 @@
  * cwdDetect.ts. Both feed renderer surface fields off the same PTY data path.
  */
 
-import { CLAUDE_IDLE_TITLE } from '../../shared/agentTitleRules';
+import { CLAUDE_IDLE_TITLE, RUNNING_TITLE } from '../../shared/agentTitleRules';
 
 /** Max tab-title length, matching the pane-label cap (PANE_METADATA_LABEL_MAX). */
 export const TERMINAL_TITLE_MAX = 64;
@@ -71,5 +71,43 @@ export class ClaudeTitleTurnEdge {
     this.stopHookRan = false;
     this.tail = '';
     return ended;
+  }
+}
+
+/** How often a title that only moves its spinner frame goes on to the tab. */
+export const SPINNER_TITLE_FORWARD_MS = 1000;
+
+/** Both titles are one agent's running title, the same but for the spinner glyph. */
+function spinnerFrameOnly(shown: string, title: string): boolean {
+  for (const rule of RUNNING_TITLE.values()) {
+    if (rule.test(shown) && rule.test(title)) return shown.slice(1) === title.slice(1);
+  }
+  return false;
+}
+
+/**
+ * Which of a pane's window titles go on to its tab (#3004). Codex redraws its
+ * title with a new braille frame about every 100 ms while a turn runs, and
+ * each forwarded title is an event to main, an IPC message and a store update.
+ * A repeat of the title last forwarded is dropped, and a change of the spinner
+ * frame alone goes on at most once per SPINNER_TITLE_FORWARD_MS. Any other
+ * change, the spinner appearing or going included, goes on at once. Only the
+ * forwarding is gated: the title readers that track an agent's turn are fed
+ * every title before this.
+ */
+export class TitleForwardGate {
+  private shown = '';
+  private shownAt = 0;
+
+  constructor(private readonly now: () => number = Date.now) {}
+
+  /** True when `title` should go on to the tab; it is then the one shown. */
+  admit(title: string): boolean {
+    if (title === this.shown) return false;
+    const at = this.now();
+    if (spinnerFrameOnly(this.shown, title) && at - this.shownAt < SPINNER_TITLE_FORWARD_MS) return false;
+    this.shown = title;
+    this.shownAt = at;
+    return true;
   }
 }

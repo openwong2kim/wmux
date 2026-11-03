@@ -43,6 +43,9 @@ export interface CompanyWorkspaceInput {
 /** Seats a preset may hold: the CEO and up to five more. */
 export const COMPANY_PRESET_MAX_SEATS = 6;
 
+/** Longest company name, seat `owns`, mission and standing orders, in UTF-16 units. */
+export const COMPANY_TEXT_MAX = { company: 200, owns: 200, mission: 2000, standingOrders: 8000 } as const;
+
 /** The built-in presets. Names and descriptions are i18n keys
  *  (`companyPreset.<id>.name` / `.description`). */
 export const BUILTIN_COMPANY_PRESETS: readonly CompanyPreset[] = [
@@ -138,6 +141,9 @@ export interface SeatBriefInput {
   /** Every seat as made (labels after suffixing), CEO included, with the
    *  worktree and branch of a seat that has its own. */
   seats: readonly { label: string; owns: string; worktree?: { path: string; branch: string } }[];
+  /** The absolute folder the company works in, when it was chosen: the
+   *  folder the board's To hand out section reads. */
+  folder?: string;
   ceo: number;
   /** The seat this brief is for. */
   seat: number;
@@ -150,7 +156,11 @@ export interface SeatBriefInput {
  * sends to a staff seat (shared/company.ts decideCompanySend). A seat reports
  * with input-required and only the CEO or the owner marks the task done
  * (companyDoneRefusal); both briefs say so. The CEO is also told that wmux
- * checks the PRs a task names before its done (companyDonePrCheck).
+ * checks the PRs a task names before its done (companyDonePrCheck), that a
+ * brief past the PC's cap on working seats waits for a slot, and how to take
+ * work from To hand out (the hand_out tool) to a seat. A reply
+ * on a reported task hands it back; both briefs say so, and the CEO's says it
+ * takes a slot.
  */
 export function seatBrief(input: SeatBriefInput): string {
   const me = input.seats[input.seat];
@@ -179,6 +189,23 @@ export function seatBrief(input: SeatBriefInput): string {
         `{"kind":"${COMPANY_BRIEF_KIND}","v":1,${BRIEF_FIELDS.map((f) => `"${f}":"…"`).join(',')}}. ` +
         'A task to a seat without a full brief is refused. Follow the work with a2a_task_query.',
       );
+      const listFolder = input.folder?.trim()
+        ? `${input.folder.trim()}, this company's folder,`
+        : 'the absolute path of the folder you work in';
+      lines.push(
+        'Work waiting for this company may be on To hand out, the list of work nobody has been given yet: the wmux hand_out tool '
+        + `with action list and folder set to ${listFolder} shows it. To give an item to a seat, use `
+        + 'action pick with item_id from list, to the seat\'s #name, and the brief in data, so the seat gets a full brief and the item '
+        + 'is linked; action add puts new work on the list.',
+      );
+      lines.push(
+        'Only a few seats on this PC work at once (the owner\'s setting, 3 by default). A brief to an idle seat past that is held, not refused: '
+        + 'its receipt says reason "cap" and names the seats holding the slots, and it goes to its seat once one of them frees its slot: '
+        + 'no task of that seat is in progress any more (each one reported or ended), or its agent exited. '
+        + 'To start it sooner, cancel it and give the work to a seat on another PC. '
+        + 'A reply to a seat\'s report hands the work back and takes a slot too; at the cap it is refused and names the seats holding the slots: '
+        + 'reply again once one of them frees its slot, or, if the report is good enough, mark the task done.',
+      );
       lines.push(
         'A seat reports finished work with status input-required. Read the report and check it, then mark the task done ' +
         'with a2a_task_update status completed and evidence. Only you or the owner can.',
@@ -196,7 +223,7 @@ export function seatBrief(input: SeatBriefInput): string {
     lines.push(
       `Take briefs from #${ceo.label}. When one arrives, do the work. When it is ready, report it with a2a_task_update ` +
       'status input-required and a message naming the PR URL, its head commit, what you ran, and who ran the live check and what they saw. ' +
-      `#${ceo.label} marks it done; you cannot.`,
+      `#${ceo.label} marks it done; you cannot. A reply from #${ceo.label} on a task you reported hands it back to you: do the work and report it again the same way.`,
     );
     lines.push('Wait for a brief.');
   }

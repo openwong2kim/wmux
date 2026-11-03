@@ -10,6 +10,8 @@ import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
 import { sampleAppCpuPercent } from '../../perf/appCpu';
 import { systemPrefersReducedMotion } from '../../reducedMotion';
+import { isScreenReaderOn } from '../../screenReaderService';
+import { SCREEN_READER_IPC } from '../../../shared/screenReader';
 import { readDaemonPid } from '../../updater/installTeardown';
 import { getWmuxDir } from '../../../daemon/config';
 
@@ -139,6 +141,10 @@ export function registerShellHandlers(): () => void {
   ipcMain.handle(IPC.SYSTEM_REDUCED_MOTION, wrapHandler(IPC.SYSTEM_REDUCED_MOTION, (_event: Electron.IpcMainInvokeEvent) =>
     systemPrefersReducedMotion(process.platform, () => systemPreferences.getAnimationSettings())));
 
+  // The renderer asks once at start; changes arrive on SCREEN_READER_IPC.changed.
+  ipcMain.removeHandler(SCREEN_READER_IPC.get);
+  ipcMain.handle(SCREEN_READER_IPC.get, wrapHandler(SCREEN_READER_IPC.get, () => isScreenReaderOn()));
+
   // Windows "start on login" toggle (issue #460). The per-user Run registry
   // key is the source of truth; GET reads it, SET writes it and echoes back
   // the resulting state so an optimistic renderer can reconcile. Both are
@@ -206,6 +212,7 @@ export function registerShellHandlers(): () => void {
     ipcMain.removeHandler(IPC.APP_MEMORY);
     ipcMain.removeHandler(IPC.APP_CPU);
     ipcMain.removeHandler(IPC.SYSTEM_REDUCED_MOTION);
+    ipcMain.removeHandler(SCREEN_READER_IPC.get);
     ipcMain.removeHandler(IPC.AUTOSTART_GET);
     ipcMain.removeHandler(IPC.AUTOSTART_SET);
     ipcMain.removeHandler(IPC.SHELL_DETECT_APPS);

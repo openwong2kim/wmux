@@ -12,7 +12,7 @@ import os from 'node:os';
 import { ApprovalRegistry, QUESTION_DISMISS_CHECK_MS, TERMINAL_PROMPT_MIN_ANSWER_AGE_MS } from '../ApprovalRegistry';
 import { DECISION_V2_WEB_ANSWER, type ApprovalRequest } from '../types';
 import { claudeQuestionsForm, extractAskUserQuestion } from '../askUserQuestion';
-import { askPickerOnScreen, askPickerUntouched, parseAskPicker } from '../askPicker';
+import { askDeclinedOnScreen, askPickerOnScreen, askPickerUntouched, parseAskPicker } from '../askPicker';
 
 const DIR = path.join(__dirname, 'fixtures', 'terminal-prompts', 'claude-2.1.296');
 const screen = (name: string): string[] =>
@@ -26,6 +26,11 @@ const SCROLLED = screen('claude-ask-short-05-options-scrolled-44x13-2.1.296.json
 const QUESTION_CUT = screen('claude-ask-short-06-question-cut-44x12-2.1.296.json');
 const FULL = screen('claude-ask-single-01-whole-100x30-2.1.296.json');
 const DISMISSED = screen('claude-ask-dismissed-01-esc-80x24-2.1.296.json');
+/**
+ * The same dismissal as Windows and Linux draw it: Claude Code marks its reply
+ * rows with `●` there and `⏺` only on macOS (#3001).
+ */
+const DISMISSED_NON_MAC = DISMISSED.map((r) => r.replace(/^⏺/, '●'));
 /** A session named with `/rename`: its name rides a rule under the picker's hint. */
 const NAMED = screen('claude-ask-named-01-session-label-80x24-2.1.296.json');
 const LABEL_ROW = '───────────────────────────────────────────────── workspace-identity-card-plan ─';
@@ -246,10 +251,14 @@ describe('a phone answer in a short pane', () => {
 });
 
 describe('a question dismissed at the desk', () => {
-  it('is retired once the screen shows it gone (Esc sends no hook)', async () => {
+  it.each([
+    ['macOS', DISMISSED],
+    ['Windows and Linux', DISMISSED_NON_MAC],
+  ])('is retired once the screen shows it gone (Esc sends no hook), as %s draws it', async (_platform, dismissed) => {
+    expect(askDeclinedOnScreen(dismissed)).toBe(true);
     const h = makeRegistry(FULL);
     const record = await create(h);
-    h.pane.rows = DISMISSED;
+    h.pane.rows = dismissed;
     h.registry.noteDialogKey('pty-a');
     expect(h.scheduled.map((s) => s.ms)).toEqual([QUESTION_DISMISS_CHECK_MS]);
     await h.scheduled[0]!.fn();

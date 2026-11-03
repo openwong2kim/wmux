@@ -9,7 +9,9 @@ import type { DaemonClient } from '../DaemonClient';
 import {
   forgetPaneUsage,
   notePaneUsageLimit,
+  paneUsageWindows,
   replacePaneUsageLimits,
+  setPaneUsageWindowsListener,
   setUsageLimitResetFiller,
 } from './paneUsageLimits';
 
@@ -25,6 +27,18 @@ export function registerUsageLimitHandlers(
     }
   };
   const onGone = (payload: { sessionId: string }): void => forgetPaneUsage(payload.sessionId);
+  // The whole map, and only when it changed: a sample that moves nothing sends nothing.
+  let lastWindows = '';
+  const sendWindows = (): void => {
+    const windows = paneUsageWindows();
+    const json = JSON.stringify(windows);
+    if (json === lastWindows) return;
+    const win = getWindow();
+    if (!win || win.isDestroyed()) return;
+    lastWindows = json;
+    win.webContents.send(IPC.USAGE_LIMIT_WINDOWS, windows);
+  };
+  setPaneUsageWindowsListener(sendWindows);
 
   ipcMain.removeHandler(IPC.USAGE_LIMIT_LIST);
   ipcMain.handle(IPC.USAGE_LIMIT_LIST, async () => {
@@ -32,6 +46,8 @@ export function registerUsageLimitHandlers(
     replacePaneUsageLimits(list);
     return list;
   });
+  ipcMain.removeHandler(IPC.USAGE_LIMIT_WINDOWS_LIST);
+  ipcMain.handle(IPC.USAGE_LIMIT_WINDOWS_LIST, () => paneUsageWindows());
   ipcMain.removeHandler(IPC.USAGE_LIMIT_UPDATE);
   ipcMain.handle(IPC.USAGE_LIMIT_UPDATE, async (_event, args: { ptyId?: unknown; patch?: unknown }) => {
     if (!daemonClient || typeof args?.ptyId !== 'string' || !args.patch || typeof args.patch !== 'object') return { ok: false };
@@ -56,8 +72,10 @@ export function registerUsageLimitHandlers(
 
   return () => {
     ipcMain.removeHandler(IPC.USAGE_LIMIT_LIST);
+    ipcMain.removeHandler(IPC.USAGE_LIMIT_WINDOWS_LIST);
     ipcMain.removeHandler(IPC.USAGE_LIMIT_UPDATE);
     setUsageLimitResetFiller(null);
+    setPaneUsageWindowsListener(null);
     if (daemonClient) {
       daemonClient.removeListener('usageLimit:changed', onChanged);
       daemonClient.removeListener('session:died', onGone);

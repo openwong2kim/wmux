@@ -1,5 +1,19 @@
-import { describe, it, expect } from 'vitest';
-import { agentCandidates, claudeCandidates, programOnPath, resolveAgentExecutableWith, resolveClaudeExecutableWith, type ResolveClaudeEnv } from '../resolveClaudeExecutable';
+import { describe, it, expect, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { agentCandidates, claudeCandidates, claudeInstalls, claudeInstallsWith, programOnPath, resolveAgentExecutableWith, resolveClaudeExecutableWith, type ResolveClaudeEnv } from '../resolveClaudeExecutable';
+
+// The PATH a new pane receives (pty.handler): on Windows re-read from the
+// registry. A test sets `freshPath.dir` to stand for a folder only that PATH has.
+const freshPath = vi.hoisted(() => ({ dir: null as string | null }));
+vi.mock('../../../shared/windowsPathEnv', () => ({
+  withFreshWindowsPath: (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => {
+    if (!freshPath.dir) return env;
+    const key = Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH';
+    return { ...env, [key]: `${freshPath.dir}${path.delimiter}${env[key] ?? ''}` };
+  },
+}));
 
 function posix(files: string[], env: Record<string, string> = {}, platform: NodeJS.Platform = 'linux'): ResolveClaudeEnv {
   const set = new Set(files);
@@ -297,6 +311,35 @@ describe('Qwen Code and Kimi Code CLI candidates', () => {
     const r = posix(['/home/u/.local/bin/qwen', '/home/u/.kimi-code/bin/kimi'], { PATH: '/usr/bin' });
     expect(resolveAgentExecutableWith(r, 'qwen')).toBe('/home/u/.local/bin/qwen');
     expect(resolveAgentExecutableWith(r, 'kimi')).toBe('/home/u/.kimi-code/bin/kimi');
+  });
+});
+
+describe('claudeInstallsWith (every claude a shell might run)', () => {
+  it('lists each existing candidate, then each claude on the login shell PATH, once and absolute only', () => {
+    const r: ResolveClaudeEnv = {
+      ...posix(['/usr/local/bin/claude', '/home/u/.local/bin/claude', '/home/u/.nvm/versions/node/v18.0.0/bin/claude', 'claude'], { PATH: '/usr/local/bin:.' }, 'darwin'),
+      loginShellPath: () => '/home/u/.nvm/versions/node/v18.0.0/bin:/usr/local/bin:relative',
+    };
+    expect(claudeInstallsWith(r)).toEqual(['/usr/local/bin/claude', '/home/u/.local/bin/claude', '/home/u/.nvm/versions/node/v18.0.0/bin/claude']);
+    expect(claudeInstallsWith({ ...r, loginShellPath: () => null })).toEqual(['/usr/local/bin/claude', '/home/u/.local/bin/claude']);
+  });
+
+  it('on this machine, lists a claude only the PATH a new pane receives holds', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fresh-path-'));
+    const exe = path.join(dir, process.platform === 'win32' ? 'claude.exe' : 'claude');
+    fs.writeFileSync(exe, '');
+    fs.chmodSync(exe, 0o755);
+    // No login shell is asked: its PATH is not what this checks.
+    vi.stubEnv('SHELL', '');
+    try {
+      expect(await claudeInstalls()).not.toContain(exe);
+      freshPath.dir = dir;
+      expect(await claudeInstalls()).toContain(exe);
+    } finally {
+      freshPath.dir = null;
+      vi.unstubAllEnvs();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

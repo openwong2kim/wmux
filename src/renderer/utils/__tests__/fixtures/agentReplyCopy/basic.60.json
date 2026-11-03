@@ -1,0 +1,42 @@
+{
+ "tui": "Claude Code 2.1.316",
+ "cols": 60,
+ "rows": [
+  "❯ show me things                                            ",
+  "",
+  "⏺ Here is bold text and italic text and inline code in one",
+  "  line.",
+  "",
+  "  A second paragraph that is long enough to wrap at sixty",
+  "  columns for sure, and it keeps going past one hundred",
+  "  columns too so we see the wrap.",
+  "",
+  "  def f(x):",
+  "      return x + 1",
+  "",
+  "  Done.",
+  "",
+  "                                        ◐ medium · /effort",
+  "────────────────────────────────────────────────────────────",
+  "❯  ",
+  "────────────────────────────────────────────────────────────",
+  "  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents"
+ ],
+ "replies": [
+  [
+   {
+    "kind": "prose",
+    "text": "Here is **bold text** and *italic text* and `inline code` in one line.\n\nA second paragraph that is long enough to wrap at sixty columns for sure, and it keeps going past one hundred columns too so we see the wrap."
+   },
+   {
+    "kind": "code",
+    "body": "def f(x):\n    return x + 1",
+    "lang": "python"
+   },
+   {
+    "kind": "prose",
+    "text": "Done."
+   }
+  ]
+ ]
+}

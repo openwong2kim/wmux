@@ -1579,15 +1579,58 @@ leaves the page.
   panes in one grouped container, a pane with no agent listed but disabled;
   optional Standing orders; **Make company** the one primary). A company's
   menu offers **Open board** (the board tab, see "Pane: terminals and work
-  area"), **Company settings…** (the same dialog, filled in) and
-  **Dissolve company**. Line 2 is the mission after a small muted org-chart
-  glyph where the branch icon sits, never the git line: the row has no branch,
-  PR badge or sync badge, since with panes in different worktrees they are
+  area"), **Company settings…** (the same dialog, filled in), **Add a seat
+  on this PC…** and **Add a seat on another PC…** (both below) and
+  **Dissolve company**. Line 2 is the mission
+  after a small muted org-chart glyph where the branch icon sits, never the
+  git line: the row has no branch, PR badge or sync badge, since with panes
+  in different worktrees they are
   whichever pane reported last. No mission leaves line 2 empty; a needs-you
   question still takes it. In the roster the coordinator's row comes first
   with a muted `CEO` after its title, in the agent-kind slot and style; a
   row's title is its pane label (Rename pane) when it has one, and the trailer
   keeps live activity, else the coordinate. The company adds no colour.
+  **Add a seat on another PC…** (owner-approved 2026-11-01, mockup round for
+  other-PC seats), also the link that ends the board's Seats, is the Remote
+  page's Start an agent… for the company, with the replies going to the CEO
+  pane. One dialog: the title, then `Asks that PC to start an agent for
+  <company>. Its replies come to <CEO>, the CEO.` Fields two to a row: PC
+  (the paired PCs this one may ask, each marked online or offline) and Agent;
+  Folder (one that PC lists) and Subfolder (optional); Name (the pane-label
+  rules, a free `<pc>-dev` by default; it names that agent here) and Wait for
+  that PC; then Owns (optional) and the First message, read-only and sent
+  exactly as shown: who the seat is, for which company and on which PC, what
+  it owns, who its CEO is, that briefs come as tasks with Goal, Scope,
+  Acceptance, Verify and Report, how it finishes one, and the standing
+  orders. The Remote page's rules hold: an offline PC gets the note on how
+  long the ask waits, a message the final pass would change is shown changed
+  and goes on the next Send, a refusal keeps the form and says why. The
+  footer's muted hint says that PC asks its owner first unless it always
+  allows this one, and the agent works in its own worktree there; Cancel and
+  `Ask <PC>`, the one primary. With no PC to ask, each paired PC's reason
+  shows, with Open Remote page (secondary) and no primary. While the CEO seat is
+  vacant the menu item is disabled and says why, and the board has no link.
+  **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan), right
+  before the other-PC item and also a link at the end of the board's Seats,
+  adds a staff seat here the way a preset makes one. One dialog: the title,
+  then `Starts an agent for <company> on this PC. It takes briefs from <CEO>,
+  the CEO.` Name (the pane-label rules, the first free `dev`, `dev-2`… by
+  default; a name another pane carries is refused, never suffixed) and Agent
+  (the installed agents a preset offers, Claude Code by default) side by
+  side; Owns (optional); then a read-only **Works in** line, a muted label
+  over `--text-sub`: the seat's own worktree of the company folder on a new
+  branch when that folder is a git repository, else the company folder. A
+  seat that would share a folder that is not a repository with another
+  staff agent gets a note saying so and cannot be added. A refusal keeps the
+  form and says why, as the other-PC dialog does; at the pane cap the
+  split's own message shows. Cancel and **Add seat**, the one primary. The
+  company comes forward and the seat opens as a new pane below its last
+  staff pane (right of the CEO when it has none), named and started like a
+  preset seat with its brief as the agent's first prompt. Once that agent
+  is up, the CEO pane gets one line through the gated delivery, never
+  before: `wmux: #<name> joined the company (owns <what>; branch <branch>).
+  Brief it like your other seats.` While the CEO seat is vacant the menu
+  item is disabled and says why, and the board has no link.
 - **Company presets** (owner-approved 2026-10-31, mockup round 6): the
   titlebar + menu lists them under a muted **Company** heading, below the
   layout presets, as label + description rows like theirs
@@ -1609,6 +1652,72 @@ leaves the page.
   mission and standing orders, who it reports to, its worktree and branch,
   and for the CEO the other seats with their branches and the brief a task
   to them needs. The board is not opened for it; the row menu opens it.
+  - **This folder's company** (owner decision 2026-11-02, insight 170):
+    when the active workspace's folder keeps a company in its wmux.json, the
+    + menu lists it first under Company, before the built-ins: its name, a
+    muted `N seats` on the right, the muted line "This folder's company, from
+    wmux.json in `…/a/b`" and, while it waits for a review on this PC,
+    "Review it before it starts". Opening the menu reads the file again. A
+    pick never makes the company: while it waits for a review it opens the
+    review, else the New company dialog filled from the file (`New company:
+    <name>`), whose Make company reads the file again and makes the company
+    only while its company is still approved here. A company the file holds but cannot be read is a muted row
+    that does nothing and says to fix it in wmux.json. The New company
+    dialog's footer holds, on the left, the quiet underlined text button
+    **Save as this folder's company** (never a second primary), enabled once
+    a folder is chosen and the seats are valid. It reads the folder's
+    wmux.json and confirms in the body, in a hairline box: where it saves,
+    what the file holds (the name, mission, standing orders, the CEO, each
+    seat with what it owns and its agent), what it never holds (launch
+    flags, environment, tokens, folders, seats on other PCs), that a commit
+    shares it and anyone who opens the folder reviews it before it starts,
+    and which company it replaces; Cancel and Save, both secondary. A file
+    in another folder, one holding settings not approved here, a folder
+    outside a git repository or a file that cannot be read says why in
+    place of Save. A save leaves the muted line "Saved to …/wmux.json." and
+    the dialog open; Make company works as before. The review (Dialog
+    anatomy) is titled `Review <name> before it starts` and names the file,
+    then the warning notice (approving covers what is shown and the rest of
+    the file, a changed file is asked about again, each agent reads the
+    mission and standing orders as its first message; "You denied this file
+    on this PC." or "This file changed since it was approved." when so), the
+    seats as a table (Seat in bold with a muted CEO tag, Owns, Agent,
+    Starts: the launch stem in mono or "plain shell", Works in: "this
+    folder" or "own worktree"), the Mission and Standing orders verbatim
+    under a `--line` left rule in `--text-sub`, and, while the file is not
+    trusted or its setup command or copy list waits for a review, **Also in
+    this file** ("approving trusts them too", and with a layout, that new
+    workspaces in this folder can then open with it) with its commands,
+    layout panes, setup command and copy list verbatim. Under them, always,
+    the quiet underlined text button **Show the whole file** ("approving
+    trusts all of it") reads the file again and shows it whole, for what the
+    groups do not list (a key wmux does not know, an entry it dropped), in
+    mono under a `--line` left rule, scrolling past 240px, drawn left to
+    right in byte order. A CRLF line end shows as a line break. Every other
+    character a reader would not see (controls, format characters such as
+    the bidi marks, zero-width and other default-ignorable characters) is
+    shown where it sits as its code point, such as a semibold `⟨U+202E⟩`;
+    every run of bytes that is not UTF-8 shows as `⟨U+FFFD⟩`. Both are
+    counted in a muted line above the text and never removed; past the
+    first 2,000, the marks are plain text.
+    The review shows the file as it was when it opened; when another read of
+    the file differs (an edit, a save, the workspace moving to another
+    folder, or the read for Show the whole file) it keeps that file on
+    screen, says "This file changed while this was open." and keeps the
+    primary off until it is opened again. Approving does not lay the
+    file's layout over the workspace it was picked from, and a company's
+    workspace never gets a layout laid over it on its own. An agent
+    not installed here is named under the table and keeps the primary off.
+    Footer: Deny on the left (not when already denied), Not now, and
+    **Approve and make company**, the one primary: it approves the bytes
+    shown with the company reviewed and makes the company in the file's
+    folder only while the file still holds those bytes; otherwise the dialog
+    shows the file as it is now with "wmux.json changed. Review it again."
+    The wmux.json dialog lists the company in a Company group, with its seat
+    count and "Approved to start from the + menu" or "Reviewed on its first
+    start from the + menu"; its Trust does not approve the company, and
+    neither does its re-approval of the setup and copy settings, since it
+    does not show the company.
 - **Keyboard:** the rows are a tree (`role="tree"`, each row's line a
   `treeitem`) with one Tab stop — the row the keyboard was last on, else the
   selected row, else the first. ↑ ↓ Home End move between rows in screen
@@ -1755,14 +1864,16 @@ A pane is a terminal column plus, when it needs one, a work area.
   the seat is vacant). Top to bottom, 16px sides: the workspace name (16px),
   the mission (`--text-sub`) and the standing orders (muted, three lines at
   most); then muted 11px headings over `--stroke`-divided rows. **Waiting on
-  you** (jobs to or from the company that need the owner), **Seats** (every
+  you** (jobs to or from the company that need the owner), **To hand out**
+  (see below), **Seats** (every
   pane, the CEO first: status mark, the muted CEO word, the title, the
   coordinate; muted `Owns <role>` when the pane has a role, its open jobs, a
-  needs-you one in `--attention-text`, and a muted `Next:` line), **Handed
-  out** (open jobs sent to other workspaces, or to panes on other PCs, named
-  by their alias), **Not on a seat** and **Log**
+  needs-you one in `--attention-text`, and a muted `Next:` line; then the
+  company's seats on other PCs, see below), **Handed out** (open jobs sent to
+  other workspaces, or to panes on other PCs that are not the company's
+  seats, named by their alias), **Not on a seat** and **Log**
   (finished jobs, newest first, the last ten however old). A section with nothing in it is
-  not drawn, Seats aside; a pane with no agent keeps its seat with a muted
+  not drawn, Seats and To hand out aside; a pane with no agent keeps its seat with a muted
   `No agent in this pane` under its title, and the coordinate gives way
   before the title in a narrow pane. A seat row focuses its pane. One muted
   closing line says work sent to fan-out workers is not shown yet. Jobs are the delegated-work tickets Fleet lists; the board adds no
@@ -1771,6 +1882,50 @@ A pane is a terminal column plus, when it needs one, a work area.
   longer a company. A pane with a board can be stashed (the board keeps no
   state of its own), and while the board is the active tab Fleet still reads
   the pane by the terminal beside it.
+  - **Seats on other PCs** (owner-approved 2026-11-01, mockup round for
+    other-PC seats). A seat on another PC is every active link from the CEO
+    pane to a pane on a paired PC that this side may send work over; nothing
+    is stored for it, and a link that ends drops it (its open jobs go back to
+    Handed out). After the panes, one row each: status mark (running while it
+    holds an open job, else idle), the name in the title weight (the link's
+    label), muted `on <PC>` where a pane shows its coordinate, then its open
+    jobs and `Next:` as for a pane. A job it reported back reads as the muted
+    `Reported to CEO`, never needs-you, and Waiting on you and Log name its
+    jobs by the seat. The row is not a button: there is no pane here to
+    focus. An ask the CEO pane made follows with a dashed muted ring, the
+    asked name in `--text-sub`, `on <PC>` and a muted `Waiting for <PC> to
+    approve · asked <age>` (or `<PC> is offline; the ask waits until
+    <time>`); an ask that ended without a seat stays a day as a muted
+    `Not started: <why> · <age>`. While the company has a CEO pane, quiet
+    underlined text links (`--text-sub`, a `--line` underline) end Seats:
+    **Add a seat on this PC…** (owner-approved 2026-11-01, PR 5 plan; see
+    "Company row") and, beside it, **Add a seat on another PC…**.
+  - **To hand out** (owner decision 2026-11-02, insight 163; placed after
+    Waiting on you and before Seats provisionally, until the board's
+    direction is chosen, so it is one self-contained section). The open To
+    hand out items (see "Fleet page") whose folder is the company's (the one
+    it was made in when that is an absolute path, else where its CEO works,
+    the CEO pane's active terminal first) or inside it, newest first,
+    under `To hand out N`. A row each: the hollow `--text-muted` ring, the
+    title, then a muted line with the agent it asks for (`--text-sub`, or
+    "any agent") and who added it and when ("Added by #ceo · 3h"; a pane of
+    this company is named without its workspace), and on the right a quiet
+    muted **Hand out…** (in a narrow board it wraps onto a line of its own,
+    so the title truncates last) that opens Fleet's Hand out… popover anchored to the
+    row, where the company is offered as its CEO. The popover keeps its own
+    width inside the window, past the edge of a narrow board; it follows its
+    row when the list changes, and a scroll of the board or the board going
+    out of sight closes it. Under the rows, the quiet underlined **Add a task…** (Fleet's add
+    form in place, the company's folder first; Escape cancels) and the muted
+    line "Items for `…/a/b`, this company's folder. The CEO picks from here
+    too." (the folder in mono as its last two segments, the full path as its
+    tooltip). With no items the section is one line, the heading with no
+    count and Add a task…: an exception to "a section with nothing in it is
+    not drawn", as Fleet's list makes, so a company can start one. A company
+    with no folder draws no section. The list is read only while the board
+    is shown. A job picked from To hand out reads a muted "From To hand out",
+    plus `PR #N · checks …` once it has a PR, under the job on its seat and
+    in the board's job rows (Waiting on you, Handed out, Not on a seat, Log).
 
 ## The one-boundary rule
 
@@ -1824,6 +1979,16 @@ always neutral (the fill ladder).
     - In that dialog (and on the Remote page) the prompt is sent only as shown. While a typed value would still be masked, a `wmux-a2a-note` line says how many. Send then puts the masked text in the box and asks for a review, and the next Send sends it.
     - When every account is out, one line with the earliest time one reopens.
   - **Colour.** None beyond the armed clock.
+- **Continue in another agent, from the pane menu** (owner approval 2026-11-01).
+  - **The entry.** "Continue in another agent…" in the pane ⋮ menu (and the header's right-click menu), after Continue on another account and before Rewind, on a terminal whose agent wmux knows; never in a shadow workspace.
+  - **The dialog.** A `Dialog` 400px wide: the title, one description line (a new tab of this pane, the note typed in, this tab keeps its session), one secondary button per other agent that is installed and signed in (one muted line when there is none), the "Include the unsent draft" checkbox (off) when the input holds a draft, then the note in the usage-limit card's preview block with its length. No primary: choosing an agent is the action. A click closes the dialog and takes the usage-limit card's path: a new tab, the note typed in, nothing sent.
+  - **The note.** The same note as the usage-limit card's, written by wmux from the pane's transcript: the folder and branch, the first and latest requests, the end of the last reply, the files touched (with their uncommitted line counts), the transcript, and the draft only when ticked.
+  - **Colour.** None.
+- **Close to the limit, and back after the reset** (owner approval 2026-11-01, handoff mockup boards A and C).
+  - **Close to the limit.** When the pane's own statusline says its account has used 90% of the 5-hour window, the usage-limit chip's place shows a muted clock, a muted "5h", the share in `--accent-yellow` and "· resets 3:16 PM" (compact: clock and share). It never opens by itself and has no ×: the pane is still working, and it goes at the reset. Clicking it opens the usage-limit card in its close-to-the-limit form: the title "Close to the 5-hour limit", one line with the share, the reset and that the pane keeps working until then, Continue in another agent (with the note) and Continue on another account (2+ accounts, without the Always switch checkbox), then one muted line that the new tab opens beside this one with the note typed in and nothing is sent until Enter. Nothing is armed, held or switched by itself.
+  - **A handoff waits for the reset.** A handoff from a pane at or close to its limit is recorded on the tab it left, and a held pane's Resume automatically is turned off: the work goes on in the other tab until the owner brings it back. In the usage-limit card of a held pane, one muted line under the agent buttons says so. The two tabs carry a muted mark before their titles (an out-arrow on the tab the work left, a back-arrow on the tab it went to) whose name, like the tooltip, says "Continued in …" / "Continued from …".
+  - **Back after the reset.** From the reset, the chip of either tab reads a muted clock, "Limit has reset" in `--text-sub` and "Bring back" in `--text-main` at the title weight, then × (leave the work there). It opens the bring-back card, the usage-limit card's popover: "<agent> is back", one line with the reset and since when the other agent had the work, "What <other> did" with the note wmux writes from the other agent's own transcript (the latest request there, the commits it made, the files with their line counts since the handoff, the end of its last reply, its transcript) in the preview block with its length, a "Close the <other> tab after" checkbox (off), then Stay in <other> (ghost) and Bring back to <agent> (primary), and one muted line that the note is typed into that tab, which comes to the front, and nothing is sent until Enter.
+  - **Colour.** The share in `--accent-yellow` (caution) while close to the limit; nothing else.
 - **Stuck-turn chip and card** (owner approval 2026-10-25).
   - **The chip.** A pane whose Claude turn the daemon reads as stuck (no transcript progress, no tool in flight, nobody asked) shows one chip in its tab strip's flow beside the usage-limit chip: the word "Seems stuck" in `--accent-yellow`, nothing else coloured. It shows only while the stall lasts. Clicking it opens the card.
   - **The card.** The usage-limit card's popover (`placePopover`; Escape, an outside click or a resize closes it): one line saying how long nothing moved and that wmux never stops a turn on its own, then Stop and prefill (secondary) and Keep waiting (ghost). Stop and prefill interrupts the turn and puts the last prompt back into an empty input, unsent. A stop that fails keeps the card open with one line.
@@ -2296,6 +2461,15 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-10-31 | Owner-approved (mockup round 6, company presets): a company can be made in one pick from the + menu. Two built-ins, CEO + researcher + 3 devs (the owner's own shape: a CEO who orchestrates and writes no code, a researcher, developers not split by stack) and Lead + reviewer; each seat's agent is told its seat on its first turn | Making panes, starting agents and filling the company dialog by hand was the cost of every company. Agents that do not know their seat leave the company a set of empty roles, so the first message carries it. Seats on other PCs and saved presets come later: the other PC has to approve a start, and saving needs each pane's launch line |
 | 2026-10-30 | Owner-approved (mockup round 5, board as a tab): company mode's board is a work tab in the company workspace, opened beside the CEO's terminal, not a rail page or sidebar view. Seats are the workspace's panes, so a pane between agent runs keeps its seat and its jobs | The owner rejected a board that took over the sidebar; a work tab keeps the CEO's terminal beside it and expands with ◫. Seating by pane, not by detected agent, keeps a job sent to a restarting pane on that pane |
 | 2026-10-31 | Owner-approved (company done gate plan, "only the CEO or the owner marks done"): a task that reported back (`input-required`) to the pane that handed it out waits on that pane, not on the owner, so it is never needs-you: no attention orange, no Fleet report, out of the board's Waiting on you. It reads as working, its state word in muted text: Fleet "Reported, waiting on its sender", the board's seat line and job rows "Reported to CEO" (or the seat or workspace it went back to), the Git page "Next: CEO · report to check". A task handed out by a workspace with no pane, or reported to a pane that has closed since, still needs you. Applies to every agent-to-agent task, not only a company's | The owner was paged for a seat's report meant for the CEO, who checks it and marks the task done; the phone keeps its five ticket words |
+| 2026-10-31 | Owner decision: multiview holds several groups, one on screen. A Ctrl+click from a workspace in no group starts a new group and saves the one on screen instead of dropping it; selecting any member of a saved group puts its grid back. A workspace is in one group at a time. Each grouped row carries a small grid-glyph number badge (rail: a corner number), numbered by the group's first row in the stored order; the group on screen reads in the accent, saved groups neutral. The badge is the row's only group marker: it replaces the 2px blue left border, which belongs to the color tag, and no edge bar is added. Groups persist in the session | One grid meant a second grid erased the first. The left border could not say which group and collided with the color tag; one marker per row keeps the sidebar rows free of a new edge (maintainer decision on #2906) |
+| 2026-11-01 | Owner-approved (external sessions, placement B of the mockup): a coding agent started outside wmux (tmux, screen, zellij, ssh into this computer, another terminal app) that reports through the hook bridge is kept as an external session. One whose folder is a workspace's folder, or sits under it (the deepest folder wins; a workspace inside the session's folder never matches), is a row in that workspace's roster: the roster recipe with a muted `outside` in the agent-kind slot, its activity or where it runs, the time since its last signal. Waiting on you, it draws its question line in `--attention-text`, lights the workspace row as a pane's agent does (ring, hairline, Needs you, the question) and counts in the rail's Fleet badge. The rest sit in an **Outside wmux** group at the list's foot after Snoozed and Settled (their header recipe, open by default, the folder on a second line; folded, a muted count and `N need you` in the attention colour). A click opens a detail popover — state and question, Folder, Where, Last activity, a `tmux attach -t …` / `screen -r …` command with Copy attach command as the one primary only when tmux or screen is known (else Open a wmux pane here is the primary), and Hide. No new colour | wmux never shows or types into that terminal, so the row cannot jump to a pane: the popover says where the session lives and how to reach it. Joining the workspace keeps one list and one attention grammar (2026-09-27); the foot group catches folders no workspace holds |
+| 2026-11-01 | Owner-approved (handoff mockup, board B): "Continue in another agent…" in the pane menu opens a small dialog with the other signed-in agents, the include-draft checkbox and the note preview, any time, not only at a usage limit. One note generator for every entry point | The post-limit handoff came too late to be chosen; the same path (new tab, note typed in, never sent) from the menu lets a person switch agents before the limit or when one is stuck |
+| 2026-11-01 | Owner-approved (handoff mockup, boards A and C): at 90% of the 5-hour window (the pane's own statusline reading) the usage chip shows the share and the reset and opens the usage-limit card with the handoffs; nothing switches by itself. After a handoff at or near the limit, the tab it left offers to bring the work back once the limit resets, with a note from the other agent's transcript typed in, never sent | A handoff chosen before work stops loses nothing; bringing the work back closes the loop the owner otherwise did by hand, reading the other tab to tell the first agent what changed |
+| 2026-11-02 | To hand out (owner decision 2026-11-02, insight 163): a main-process list of work nobody has been given yet, the first column of Fleet's board and a quiet folded section after Idle in its list, with an add form, item cards and a Hand out… popover that sends an item to an agent pane on this PC, a new worktree or a company's CEO; the item leaves the list once the agent has it, and an undelivered send puts it back | The next things to hand out lived outside wmux; keeping them beside the agents that take them, and picking through the existing send paths, closes that loop without a second queue or a new attention signal |
+| 2026-11-02 | To hand out on the Company board (owner decision 2026-11-02, insight 163): the board shows the open items for the company's folder between Waiting on you and Seats, each with Fleet's Hand out… (the company offered as its CEO), Add a task… with the company's folder first, and "From To hand out" on a picked job; the section's place is provisional until the board's direction is chosen | A company's next work belongs where its CEO and seats are watched; the same list, popover and add form keep one way of handing out work, and the CEO's brief teaches the hand_out tool so the CEO picks from the same list |
+| 2026-11-02 | A folder's company (owner decision 2026-11-02, insight 170): a company is kept in the folder's wmux.json under `company`, holding only its name, mission, standing orders, the CEO seat, and each seat's name, what it owns and its agent's registry slug; never a launch line, flag, environment, token, path or a seat on another PC. A refused company drops alone and is reported. It starts only from a trust grant that showed it (the review, or a save from the New company dialog, which trusts the bytes it writes); a grant that did not show it, from the wmux.json dialog or an older wmux, does not start it, and nothing starts it on its own | A company tuned in the New company dialog was lost once the dialog closed. The repository is where a team already shares its wmux setup, and the existing per-file trust keeps a checked-in company from starting before its seats and their first prompts are reviewed on this PC |
+| 2026-11-02 | This folder's company in the app (owner decision 2026-11-02, insight 170, mockup option A): the + menu lists the active workspace's folder company first under Company; a pick opens its review while it waits for one, else the New company dialog filled from it, and the menu never makes it. The New company dialog saves its company to the folder's wmux.json from a quiet footer text button through an inline confirm, and stays open. The review shows each seat with its agent, what wmux starts and where it works, the mission and standing orders verbatim and, for a file not trusted here, the rest of it; **Approve and make company** is its one primary and makes the company only from the bytes it showed | A folder's company is made where the other companies are made, beside the presets. Reviewing it on its first start, from the copy of the file the approval covers, means every agent's first message is read on this PC before that agent runs. Option B, the company inside the wmux.json dialog, kept it away from the + menu where a company is made |
+| 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
 
 ### Desktop conversation view
 
@@ -2498,10 +2672,11 @@ differently in the two places, and in the order `fleet_triage` returns.
   marked block of their own) · Ready to review (finished fan-out tasks, one
   row per task) · Finished (turns that ended and have not been looked at),
   folded to one `Finished N · newest age` row that expands · Running · Idle,
-  folded to one `Idle N · oldest age` row that expands. A finished turn wants
+  folded to one `Idle N · oldest age` row that expands · To hand out (see
+  below), folded the same way. A finished turn wants
   a look, not a decision, so it never sits in Needs you. A section head is
   sentence-case 12px text with a status dot and its count; an empty section
-  is not drawn. Plain shells sit only in Idle and never keep the empty state
+  is not drawn (To hand out is the one exception, below). Plain shells sit only in Idle and never keep the empty state
   from showing.
 - **One count:** the Needs you chip and the Needs you head read the same
   two arrays (pane rows and decision tickets); the rail badge, the one
@@ -2545,7 +2720,7 @@ differently in the two places, and in the order `fleet_triage` returns.
   list the reported checks, including failed commands. This does not change
   the task completion gate or claim that wmux independently ran those checks.
 - **Filters and summary:** the line under the title leads with the filter
-  chips — Needs you, Running, Finished, Idle, Tickets — each with its count,
+  chips — Needs you, Running, Finished, Idle, To hand out, Tickets — each with its count,
   hidden at zero; pressing the pressed chip shows everything again. Then
   approvals, LAN messages, account usage, the next schedule and phones
   watching, each only when it is not zero, and Settled. While Fleet is the
@@ -2570,11 +2745,12 @@ differently in the two places, and in the order `fleet_triage` returns.
   click or Enter) opens this detail in place instead of jumping.
 - **Board layout (opt-in):** a List | Board switch in the header (and the
   same choice in Settings › Appearance, saved with the session) draws the
-  same rows as cards in four columns — Running, Needs you (with decision
-  tickets), Finished (unread final reports, Ready to review tasks, finished
-  turns; a task shows once, as its review row) and Idle — each headed by its
-  chip's word, a dot and its count; an empty column is not drawn. Nothing
-  folds. A card is the row's content restacked (status and verb, then name,
+  same rows as cards in five columns — To hand out (the open items), Running,
+  Needs you (with decision tickets), Finished (unread final reports, Ready to
+  review tasks, finished turns; a task shows once, as its review row) and
+  Idle — each headed by its chip's word, a dot and its count; an empty column
+  is not drawn, except To hand out, whose head is the way to add to it (a
+  status filter hides it). Nothing folds. A card is the row's content restacked (status and verb, then name,
   workspace · agent, the now-doing line) on a `--selection-subtle` fill, no
   border or stripe. ↑↓ / Home / End move in a column, ←→ to the nearest
   non-empty column at the nearest row; Enter, Space, the row verbs, filters,
@@ -2601,13 +2777,76 @@ differently in the two places, and in the order `fleet_triage` returns.
   no longer kept, and that counts as the report shown), and Jump to agent.
   An unapproved hand-off never retitles a pane, and a ticket that names no
   pane titles one only when its workspace runs a single agent.
+- **To hand out** (owner decision 2026-11-02): work nobody has been given yet,
+  one list per PC kept by main; the owner and agent panes add to it, and a
+  pick hands an item to an agent through the existing send paths.
+  - **Column.** The board's first column, before Running: a hollow
+    `--text-muted` ring (nobody has it, so no status colour), "To hand out",
+    its count and a `+` icon button that opens the add form at the top of
+    the column. It lists the open items only, newest first. Empty, it still
+    draws its head with the `+` (an exception to "no dead gauges": it is
+    the way in); a status filter hides it.
+  - **List section.** In the list (the default) a quiet section after Idle
+    holding the open items only, folded to one `To hand out N` row like Idle,
+    open while searching or filtered to it; open, it ends in an "Add a task…"
+    row. At zero it is still drawn, as one row reading "To hand out" with a
+    quiet "Add a task…" action (the column's `+` in the list): an exception to
+    "an empty section is not drawn", so the default layout has a way in. The
+    To hand out filter chip carries the count and is hidden at zero.
+  - **Add form.** A title (required, one line), the folder (the open
+    workspaces' folders, the active workspace's first, or a typed full
+    path), the agent (Any agent, then the installed agents) and an optional
+    two-line note; Cancel, then Add (the primary). Enter adds, Escape
+    cancels; main's invalid or full refusal shows inline under the fields.
+  - **Card.** The title (13px, two lines at most), the folder in mono 11px
+    as its last two segments (`…/a/b`, the full path as its tooltip and
+    accessible name; the popover's header and worktree row read it the same
+    way) with the agent it asks for (or a muted "any agent"), then "Added by you
+    · 2d" or "Added by #ceo · wmux co. · 3h", on a `--selection-subtle`
+    fill with no border, like the other cards (in the list, a row with no
+    fill at rest). On hover, focus or selection the right lane shows **Hand
+    out…**; ⋮ (and Shift+F10) holds Hand out… and Remove (an inline confirm,
+    Cancel first and focused). Enter opens Hand out…; Backspace/Delete starts
+    Remove.
+  - **Hand out… popover.** The floating popover, anchored beside the card
+    (under it where there is no room). Header "Hand out", then the title ·
+    folder (mono) · "asks for <agent>". Send to an agent: the agent panes on
+    this PC as `#name · agent` over `workspace · idle 8m` (or "running, gets
+    it after its turn"), those that run the asked-for agent first, idle before
+    running, with a muted right tag "this folder" when the pane works in the
+    item's folder; a pane running another agent is dimmed with "not <agent>"
+    and still selectable; a pane that needs you and a company's CEO pane are
+    not listed. Start in a new worktree: when an open workspace's folder holds
+    the item's, with an agent select. Give to a company: each company whose
+    folder holds the item's ("its CEO briefs a seat; the seat cap applies");
+    the pick sends the owner's task to the CEO pane, and that task is the
+    item's job (its work link), so the item is out while the CEO has it.
+    The footer: one muted line ("It leaves To hand out once the agent has it.
+    A send that is not delivered puts it back."), Cancel and Hand out (the one
+    primary). Radio semantics: the arrows move, Enter hands out, Escape
+    closes. A send that was not delivered is a toast with the reason in the
+    Git page's hand-off words; a delivered send not known to have started a
+    turn gets the Git page's "check it started" warning; a worktree start
+    toasts only its preparation notice; a refusal stays inline in the popover.
+    The item leaves the open list while the pick is still sending, which can
+    close the popover first; a refusal then comes as a toast naming the item.
+  - **Tickets.** A pick's work link (origin `hand-out`) is a ticket like a
+    manual send; wherever Fleet shows it (the ticket row, the pane card
+    holding it, its detail) a muted line reads "From To hand out", plus
+    `PR #N · checks …` once the work has a PR.
+  - **Quiet.** Like a queued ticket: its own filter, section and column only
+    (and a company's share on its board, see "Board tab"); no rail badge, no
+    sidebar count, no toast, never in Needs you.
 - **Role:** a row's ⋮ menu holds Jump, Message (M), Stash (S), Label (L),
   Role… (R), then Close pane (⌫). Role… opens an inline picker under the row:
   None, then the roles (built-in, plus the pane's custom role), the current
   one selected; a pick writes the pane's role through the same path as the
   dock roster and None clears it. A set role is plain text on the row.
 - **Empty fleet:** no agents is one call to action, the Tickets way in when
-  there are any, and the three newest finished tasks.
+  there are any, and the three newest finished tasks; open To hand out items
+  are drawn under it (the list's To hand out section, open, or the board's
+  column), since a pick can still start a worktree or go to a company. With
+  no items it is unchanged.
 - **Keys:** ↑↓ (and ←→) move through the list and open the detail, Home/End
   go to its ends, Enter jumps (Check rows open their detail), Space toggles
   the detail, Esc closes it, / searches, Shift+F10 or the Menu key opens

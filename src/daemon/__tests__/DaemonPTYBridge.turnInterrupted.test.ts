@@ -160,4 +160,114 @@ describe('DaemonPTYBridge — interrupted-turn row', () => {
       expect(interrupted).toEqual([]);
     });
   });
+
+  // Declining an AskUserQuestion (or rejecting a permission prompt) with Esc
+  // ends Claude Code's turn with no Stop hook and no `Interrupted` row; the
+  // transcript's `[Request interrupted by user for tool use]` is the only
+  // record. Live: the pane went back to running on the answer and stayed so.
+  describe('Esc that closes a dialog', () => {
+    let endedAt: number | undefined;
+    let edges: Array<number | null>;
+
+    beforeEach(() => {
+      endedAt = undefined;
+      DaemonPTYBridge.transcriptTurnEndProbe = () => endedAt;
+      edges = [];
+      bridge.on('agentTurn', (p: { runningSince: number | null }) => edges.push(p.runningSince));
+      vi.advanceTimersByTime(RESIZE_REDRAW_GUARD_MS);
+      bridge.noteInput('add a pause switch\r');
+      bridge.noteAgentStatus('running', true); // UserPromptSubmit
+      vi.advanceTimersByTime(10);
+      bridge.noteAgentStatus('awaiting_input', true, Date.now()); // the question
+      vi.advanceTimersByTime(30_000);
+    });
+
+    afterEach(() => {
+      DaemonPTYBridge.transcriptTurnEndProbe = null;
+    });
+
+    it('ends the turn once the transcript records the interrupt', () => {
+      bridge.noteInput('\x1b');
+      expect(bridge.isAgentMidTurn()).toBe(true);
+      vi.advanceTimersByTime(800);
+      endedAt = Date.now();
+      vi.advanceTimersByTime(500);
+      expect(bridge.isAgentMidTurn()).toBe(false);
+      expect(edges.at(-1)).toBeNull();
+      expect(interrupted).toEqual([{ sessionId: 'sess-1', agent: 'Claude Code' }]);
+      bridge.noteTranscriptTurnEnd(endedAt); // the same end pushed late
+      vi.advanceTimersByTime(3_000);
+      expect(interrupted).toHaveLength(1);
+    });
+
+    it('still reports the interrupt when a transcript push closed the turn first', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(800);
+      endedAt = Date.now();
+      bridge.noteTranscriptTurnEnd(endedAt); // a Chat view's append push
+      vi.advanceTimersByTime(3_000);
+      expect(bridge.isAgentMidTurn()).toBe(false);
+      expect(interrupted).toEqual([{ sessionId: 'sess-1', agent: 'Claude Code' }]);
+    });
+
+    it('reports a push that lands after the last read, inside the confirm window', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(2_800);
+      endedAt = Date.now();
+      bridge.noteTranscriptTurnEnd(endedAt);
+      expect(interrupted).toEqual([{ sessionId: 'sess-1', agent: 'Claude Code' }]);
+    });
+
+    it('closes but does not report an end pushed after the confirm window', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(3_200);
+      endedAt = Date.now();
+      bridge.noteTranscriptTurnEnd(endedAt);
+      expect(bridge.isAgentMidTurn()).toBe(false);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('does not report the end of a newer turn as this Esc\'s interrupt', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(100);
+      bridge.noteAgentStatus('complete', true); // a Stop hook closes the dialog's turn
+      vi.advanceTimersByTime(100);
+      bridge.noteInput('next step\r');
+      bridge.noteAgentStatus('running', true); // and a new prompt opens another
+      vi.advanceTimersByTime(100);
+      endedAt = Date.now(); // an end recorded in the new turn
+      vi.advanceTimersByTime(3_000);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('leaves the turn running when the transcript records no end', () => {
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(5_000);
+      expect(bridge.isAgentMidTurn()).toBe(true);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('ignores an end recorded before the Esc', () => {
+      endedAt = Date.now() - 5_000;
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(5_000);
+      expect(bridge.isAgentMidTurn()).toBe(true);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('ignores an end recorded behind the dialog just before the Esc', () => {
+      endedAt = Date.now() - 500;
+      bridge.noteInput('\x1b');
+      vi.advanceTimersByTime(5_000);
+      expect(bridge.isAgentMidTurn()).toBe(true);
+      expect(interrupted).toEqual([]);
+    });
+
+    it('does not read the transcript for a digit answer', () => {
+      bridge.noteInput('1');
+      endedAt = Date.now();
+      vi.advanceTimersByTime(5_000);
+      expect(interrupted).toEqual([]);
+    });
+  });
 });

@@ -77,14 +77,19 @@ import type { WorkflowDispatchBinding } from '../../factory/workflowFanout';
 //
 // Residual: `senderPtyId` arrives in params, not from the connection peer PID,
 // so a same-user process can forge it — the #113 ceiling documented at length
-// in a2a.channel.rpc.ts. Attribution here is advisory in exactly the same way;
-// this handler is no weaker and no stronger than the channel surface it mirrors.
+// in a2a.channel.rpc.ts. Attribution here also carries privilege: a caller
+// naming a pane whose live Claude runs in bypass gets bypass workers (see
+// fanoutInheritedMode.ts). That is inside the same ceiling: a same-user process
+// can already type into such a pane or start its own bypass agent. What keeps
+// the inheritance narrow is that only a Claude MCP caller, never a plugin host
+// or a brain, inherits, and only on the daemon's process truth for that pane.
 
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
-import type { RpcContext } from '../../../shared/rpc';
+import { isHostedCaller, type RpcContext } from '../../../shared/rpc';
+import { agentSlugOf } from '../paneCaller';
 import { defaultBranchRefusal, noteBotRepoDefaultBranch, type DefaultBranchNote } from '../../agents/botWorkerDefaultBranch';
 import { HUMAN_WORKSPACE_ID, CHANNEL_TOPIC_MAX } from '../../../shared/channels';
 import {
@@ -98,10 +103,10 @@ import { resolvePtyOwnerWorkspace } from '../../workspace/ptyOwnership';
 import { git as runGit } from '../../git/git';
 import type { DaemonClient } from '../../DaemonClient';
 import { hostCwdForPane, type DaemonRpc } from '../../pty/wslCallerCwd';
-import { loadWorkspaceDecision } from '../../deck/deckDecisionStore';
 import type { FanOutRequest, FanOutService, FanOutTaskResult } from '../../worktask/FanOutService';
-import { FANOUT_LIVE_TASK_CAP, getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
+import { getFanOutGuards, launchedAuditTask, promptDigest, refreshDormantTaskWorkspaces, type FanOutGuards } from '../../worktask/fanoutGuards';
 import { loadFanoutRequireApproval, loadFanoutWorkerPermissionMode } from '../../worktask/fanoutWorkerPolicy';
+import { callerPaneRunsBypass, inheritWorkerMode, type FanoutWorkerModeSource } from '../../worktask/fanoutInheritedMode';
 import { workerLaunchFlags, type FanoutWorkerPermissionMode } from '../../../shared/workerLaunch';
 import { loadFanoutPresets } from '../../worktask/fanoutPresets';
 import { loadCustomAgents } from '../../worktask/customAgents';
@@ -168,31 +173,6 @@ import { countOpenBotWorkers, openBotWorkers, verdictedTaskIds } from '../../fac
 const CONNECTOR_AGENT_REFUSAL: Readonly<Record<string, (c: Connector) => string | null>> = { codex: codexConnectorRefusal };
 
 type GetWindow = () => BrowserWindow | null;
-
-/**
- * Additive `warnings` on the accepted reply: conditions that do not refuse the
- * fan-out but WILL break the loop it starts.
- *
- * The only one so far is the pending decision gate (dogfood finding 12). A
- * workspace with an unanswered decision — including one raised in a previous
- * app session and never seen — cannot be auto-woken at all, so every worker
- * stop routed back to it is held rather than delivered. Fanning out from such
- * a workspace looks perfectly healthy and then never reports anything, so the
- * accept says so at the one moment the caller is reading a reply.
- * Never throws: a torn decision store yields no warning, not a failed fan-out.
- */
-function acceptWarnings(ownerWorkspaceId: string): string[] {
-  try {
-    const decision = loadWorkspaceDecision(ownerWorkspaceId);
-    if (!decision || decision.status !== 'pending') return [];
-    return [
-      `owner workspace ${ownerWorkspaceId} has a pending decision ${decision.id}; ` +
-        'worker events will not wake the brain until it is answered',
-    ];
-  } catch {
-    return [];
-  }
-}
 
 /**
  * R1 — the agent command wire callers get, always. NEVER read from params:
@@ -1736,7 +1716,7 @@ export function registerFanOutRpc(
       // wait for a slot: checked here, with the count the reserve below
       // reads in this same tick, so its refusal is held like the others
       // instead of reaching the reserve and being lost.
-      const wmux = open.live !== undefined ? { live: open.live, limit: FANOUT_LIVE_TASK_CAP } : undefined;
+      const wmux = open.live !== undefined ? { live: open.live, limit: guardsOf().liveTaskCap() } : undefined;
       const full = workerSlotsFull(botProfile.budget, open.bot, open.factory, n, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS, wmux);
       const most = Math.min(botProfile.budget.maxConcurrentWorkers, WAKE_LIMITS.GLOBAL_CONCURRENT_WORKERS);
       if (botProfile.budget.maxConcurrentWorkers === 0) {
@@ -1824,7 +1804,21 @@ export function registerFanOutRpc(
     // A bot's workers run unattended in the preset's mode, whatever the
     // operator's fan-out setting is.
     const botPresetMode = bot && botPresetName ? botFanoutPreset(botPresetName)?.permissionMode : undefined;
-    const workerMode = botPresetMode ?? (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+    // A pane caller whose own Claude runs in bypass hands bypass to its
+    // workers; any other parent mode keeps the setting. Only the pane that
+    // asked (senderPtyId) — never a brain's anchor pane, which it can focus —
+    // and only as the daemon reports it, never from the request.
+    const settingMode = (deps.workerPermissionMode ?? loadFanoutWorkerPermissionMode)();
+    const inherited = botPresetMode === undefined && !commanderWorkspaceId && senderPtyId
+      && !isHostedCaller(ctx) && agentSlugOf(ctx?.clientName) === 'claude'
+      ? inheritWorkerMode(settingMode, await callerPaneRunsBypass(senderPtyId, daemonRpc))
+      : null;
+    const workerMode = botPresetMode ?? inherited?.mode ?? settingMode;
+    const workerModeSource: FanoutWorkerModeSource =
+      botPresetMode !== undefined ? 'bot-preset' : inherited?.source ?? 'setting';
+    if (workerModeSource === 'inherited-caller-pane') {
+      console.info(`[fanout.rpc] fan-out ${key}: workers launch in bypassPermissions, inherited bypass from the calling pane ${senderPtyId}`);
+    }
     // A bot has no pane: it fans out in the repository its profile names,
     // which must still be a git repository root.
     const botRepoPath = bot ? botProfile?.repo?.repoPath ?? '' : '';
@@ -2013,7 +2007,7 @@ export function registerFanOutRpc(
                   : '\n\nno worktree: each task writes into its own folder under the wmux outputs directory') +
                 // Only when a task can actually run claude: the flags are claude-only.
                 (agentChoices.length === 0 || agentChoices.some((c) => c.agent === 'claude')
-                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, [])}`
+                  ? `\n\nclaude workers launch with: ${workerLaunchFlags(workerMode, [])}${workerModeSource === 'inherited-caller-pane' ? ' (inherited bypass from the calling pane)' : ''}`
                   : ''),
               // The roles again, as data. The preview prints the role NAME, but
               // what a role resolves to — agent, model, extra args — lives in the
@@ -2114,6 +2108,7 @@ export function registerFanOutRpc(
             ),
             approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
             workerPermissionMode: workerMode,
+            ...(workerModeSource === 'inherited-caller-pane' ? { workerPermissionModeSource: workerModeSource } : {}),
             ...(presetName ? { preset: presetName } : {}),
             ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
           });
@@ -2155,6 +2150,7 @@ export function registerFanOutRpc(
               promptSha256: [],
               approvedBy: verdict.outcome === 'auto' ? 'auto' : 'human',
               workerPermissionMode: workerMode,
+              ...(workerModeSource === 'inherited-caller-pane' ? { workerPermissionModeSource: workerModeSource } : {}),
               ...(presetName ? { preset: presetName } : {}),
               ...(agentLabels.length > 0 ? { agents: agentLabels } : {}),
               ...(outputBatchDir ? { outputBatchDir } : {}),
@@ -2287,7 +2283,7 @@ export function registerFanOutRpc(
       }
     })();
 
-    const warnings = [...(selection.kind === 'agents' ? selection.warnings : []), ...acceptWarnings(callerWorkspaceId)];
+    const warnings = selection.kind === 'agents' ? selection.warnings : [];
     return {
       ok: true as const,
       status: 'accepted' as const,

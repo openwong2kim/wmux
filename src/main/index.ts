@@ -71,10 +71,12 @@ import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
+import { clearEphemeralClipboard } from './ipc/handlers/clipboard.handler';
 import { registerConnectorTerminalHandlers } from './ipc/handlers/connectorTerminal.handler';
 import { registerConnectorOAuthHandlers } from './ipc/handlers/connectorOAuth.handler';
 import { setWorkerGatewayOAuth } from './connectors/workerGateway';
 import { registerConnectorCatalogHandlers } from './ipc/handlers/connectorCatalog.handler';
+import { registerSecurityNoticeHandlers } from './notification/securityNotices';
 import { registerConnectorCheckHandlers } from './ipc/handlers/connectorCheck.handler';
 import { RpcRouter } from './pipe/RpcRouter';
 import type { RpcMethod } from '../shared/rpc';
@@ -89,6 +91,7 @@ import { registerPaneRpc } from './pipe/handlers/pane.rpc';
 import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
 import { gatedSubmitTaskContext } from './pipe/handlers/a2aOpenTasks';
 import { registerGitHandoffHandlers } from './ipc/handlers/gitHandoff.handler';
+import { registerHandOutHandlers } from './ipc/handlers/handOut.handler';
 import { registerApprovalsRpc } from './pipe/handlers/approvals.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
@@ -104,6 +107,7 @@ import { COMPUTER_ABORT_ACCELERATOR, createComputerService, disposeComputerUse, 
 import { createComputerConsentRequester } from './computer/computerConsent';
 import type { ComputerService } from './computer/ComputerService';
 import { revealStatsAggregator } from './perf/revealStatsAggregator';
+import { createGlyphRepaintLogSummary } from './perf/glyphRepaintLogSummary';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { registerUsageRpc, registerUsageTrailRpc } from './pipe/handlers/usage.rpc';
 import { registerFsWriteRpc } from './pipe/handlers/fsWrite.rpc';
@@ -123,7 +127,7 @@ import { setUsageClientVersion, type UsageSnapshot } from './claude/UsageApi';
 import { AccountUsageService } from './account/AccountUsageService';
 import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
-import { IPC, getWmuxHomeDir } from '../shared/constants';
+import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
@@ -151,6 +155,7 @@ import { createFanOutService } from './worktask/createFanOutService';
 import { getWorkerTempDirSweeper, liveTempDirsFromSessions } from './worktask/fanoutTempDir';
 import { registerFanOutRpc } from './pipe/handlers/fanout.rpc';
 import { registerRemoteSpawnRpc } from './pipe/handlers/remoteSpawn.rpc';
+import { registerHandOutRpc } from './pipe/handlers/handOut.rpc';
 import { registerLedgerRpc } from './pipe/handlers/ledger.rpc';
 import { registerTaskPushRpc } from './pipe/handlers/taskPush.rpc';
 import { registerVerifyRpc } from './pipe/handlers/verify.rpc';
@@ -202,7 +207,8 @@ import { setConfiguredFirstPartyClients } from './mcp/firstParty';
 import { readConfiguredFirstPartyClients } from './mcp/firstPartyConfig';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
-import { warnOnInstallIntegrityGap } from './updater/installIntegrity';
+import { squirrelInstallRootFor, warnOnInstallIntegrityGap } from './updater/installIntegrity';
+import { keepOneStartMenuEntry, shouldWriteStartMenuEntry } from './notification/startMenuEntry';
 import { readDaemonPid } from './updater/installTeardown';
 import { isAltF4Held, isAltF4KeyDown } from './altF4';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -233,6 +239,7 @@ import { resyncAfterResubscribe, serialResync, type DaemonSessionRow } from './n
 import { markRendererNotificationListenerNotReady } from './notification/rendererNotificationReadiness';
 import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { RemoteA2aBridge } from './a2a/RemoteA2aBridge';
+import { CompanyReleaseBridge, CompanySlotGate, readCompanyWorkingSeats, type CompanyReleaseMark } from './a2a/CompanyReleaseBridge';
 import { RemoteSpawnCoordinator } from './a2aRemote/remoteSpawnCoordinator';
 import { ContinueStarter } from './a2aRemote/continueStarter';
 import { daemonRemoteA2aRpcDeps } from './a2a/remoteA2aRpcDeps';
@@ -255,7 +262,8 @@ import { installApplicationMenu } from './menu/appMenu';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
-import { terminateRunningAppInstances } from './squirrelTeardown';
+import { terminateRunningAppInstances, terminateStagedDaemons } from './squirrelTeardown';
+import { daemonStageRootIn, removeDaemonRuntimeStagesAfterExit } from './daemon/daemonRuntimeStage';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -282,6 +290,8 @@ import {
   refreshHookBridgeAtBoot,
   defaultPaths as defaultHooksPaths,
 } from '../cli/commands/setupHooks';
+import { refreshWslHookAtBoot } from '../shared/wslGlobalHook';
+import { findWslClaudeBridge } from '../shared/wslIntegration';
 import { detectStalePluginGates } from './hooks/stalePluginGate';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
@@ -293,6 +303,7 @@ import { broadcastSettledIdle } from './notification/turnSettle';
 import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, isBrokenPipeError, logLine, stdioErrorsConsumed } from './util/logSink';
 import { isFencedBotWorkerSession } from './agents/botWorkerMergeGuard';
+import { startScreenReaderMonitor } from './screenReaderService';
 
 markBoot('imports-done');
 
@@ -374,7 +385,7 @@ if (process.platform === 'win32') {
       const hookPlan = planInstallHook(existingProfile);
       console.log(
         `[Squirrel] install hook: ${existingProfile ? 'existing profile (update)' : 'first install'} — ` +
-        `autostart ${hookPlan.autostart}, shortcuts ${hookPlan.shortcutLocations}`,
+        `autostart ${hookPlan.autostart}, shortcuts ${hookPlan.shortcutLocations ?? 'none'}`,
       );
 
       // Register Windows startup entry so wmux survives reboot. Autostart
@@ -396,22 +407,23 @@ if (process.platform === 'win32') {
       let installIcon: string | null = null;
       try { installIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
 
-      const installShortcutArgs = ['--createShortcut', target, '--shortcut-locations', hookPlan.shortcutLocations];
-      if (installIcon) installShortcutArgs.push('--icon', installIcon);
-      spawn(updateExe, installShortcutArgs, { detached: true, windowsHide: true })
-        .on('close', () => {
-          // #863: repair leftover shortcuts AFTER Update.exe has written the
-          // canonical ones. Order matters: the legacy top-level Start Menu
-          // link is only deduped when the publisher-folder link exists, and on
-          // an install over a <=3.3.x layout that link does not exist until
-          // --createShortcut has run. Repairing first would retarget the legacy
-          // link instead of removing it and leave two Start Menu entries.
-          try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-          // Auto-launch app after install
-          spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-          process.exit(0);
-        });
-      app.quit();
+      // #863: repair leftover pins after Update.exe is done. The Start Menu
+      // entry is written by the app this launches (notification/
+      // startMenuEntry.ts, #2971), never by Update.exe.
+      const finishInstall = () => {
+        try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+        // Auto-launch app after install
+        spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+        process.exit(0);
+      };
+      if (hookPlan.shortcutLocations) {
+        const installShortcutArgs = ['--createShortcut', target, '--shortcut-locations', hookPlan.shortcutLocations];
+        if (installIcon) installShortcutArgs.push('--icon', installIcon);
+        spawn(updateExe, installShortcutArgs, { detached: true, windowsHide: true }).on('close', finishInstall);
+        app.quit();
+      } else {
+        finishInstall();
+      }
     } else if (squirrelCmd === '--squirrel-updated') {
       // Refresh the startup entry's exe path (it changes on every update) —
       // but ONLY if autostart is still on. Re-adding unconditionally would
@@ -423,28 +435,20 @@ if (process.platform === 'win32') {
       try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
       // #863: same shortcut hygiene as the install hook — an update is when
-      // versioned shortcut targets (old app-X.Y.Z paths) actually die.
-      let updateIcon: string | null = null;
-      try { updateIcon = shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
+      // versioned shortcut targets (old app-X.Y.Z paths) actually die. The
+      // staged icon is what retargeted pins point at.
+      try { shortcutHygiene.stageRootIcon(process.execPath); } catch { /* best-effort */ }
 
-      // Start Menu only, named explicitly: an update must not bring back a
-      // Desktop shortcut the user deleted (same rule as the install branch on
-      // an existing profile).
-      const updateShortcutArgs = ['--createShortcut', target, '--shortcut-locations', 'StartMenu'];
-      if (updateIcon) updateShortcutArgs.push('--icon', updateIcon);
-      spawn(updateExe, updateShortcutArgs, { detached: true, windowsHide: true })
-        .on('close', () => {
-          // Repair after the canonical links are written — see the install
-          // branch for why the ordering is load-bearing.
-          try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
-          // #502: relaunch the updated app — the pre-update instance was
-          // taken down above (or quit itself in the in-app "Restart to
-          // install" flow), and the single-instance lock dedupes if
-          // Squirrel also launches one itself.
-          spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
-          process.exit(0);
-        });
-      app.quit();
+      // No --createShortcut: an update must not bring back a Desktop shortcut
+      // the user deleted, and the Start Menu entry is the app's own
+      // (notification/startMenuEntry.ts, #2971).
+      try { shortcutHygiene.repairInstalledShortcuts(process.execPath); } catch { /* best-effort */ }
+      // #502: relaunch the updated app — the pre-update instance was taken
+      // down above (or quit itself in the in-app "Restart to install" flow),
+      // and the single-instance lock dedupes if Squirrel also launches one
+      // itself.
+      spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      process.exit(0);
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Remove startup registry entry
       try { autostart.disableAutostart(); } catch { /* best-effort */ }
@@ -456,8 +460,30 @@ if (process.platform === 'win32') {
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
       try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
 
+      // The daemon runs from a copy outside the install (daemonRuntimeStage.ts),
+      // which Squirrel's uninstall neither stops nor deletes: stop its daemon,
+      // then remove the copies.
+      try {
+        const stageRoot = daemonStageRootIn(getWmuxDir());
+        const found = terminateStagedDaemons(stageRoot);
+        if (found === null) {
+          // Not knowing whether a daemon runs from a copy is not "none": keep them.
+          console.warn(`[Squirrel] could not list the staged daemons; ${stageRoot} is left for the next run`);
+        } else {
+          if (found.length > 0) console.log(`[Squirrel] stopping the staged daemon(s) before uninstall: ${found.join(', ')}`);
+          const { exiting, removed } = removeDaemonRuntimeStagesAfterExit(stageRoot, found, { liveness: checkProcessLiveness });
+          if (exiting.length > 0) console.warn(`[Squirrel] staged daemon(s) ${exiting.join(', ')} still exiting; ${stageRoot} is left for the next run`);
+          else if (!removed) console.warn(`[Squirrel] could not remove ${stageRoot} completely`);
+        }
+      } catch { /* best-effort */ }
+
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
+
+      // #2971: the Start Menu entry and the toast activator classes Electron's
+      // toast setup wrote are not Update.exe's, so --removeShortcut leaves
+      // them. Done while Update.exe works, so it never delays --removeShortcut.
+      try { shortcutHygiene.removeToastEntries(process.execPath); } catch { /* best-effort */ }
       app.quit();
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
@@ -695,6 +721,19 @@ void app.whenReady().then(() => { try { warnOnInstallIntegrityGap(); } catch { /
 // Moa's claude lookup: read the login shell's PATH in the background (a Finder
 // launch misses nvm/fnm/volta). Never awaited; resolution works without it.
 void app.whenReady().then(() => { void warmLoginShellPath(); });
+// Screen-reader users only: watch for a screen reader (screenReader.ts).
+void app.whenReady().then(() => { startScreenReaderMonitor(); });
+// #2971: the installed app writes its one Start Menu entry through Electron's
+// toast setup, so it exists from the first launch rather than the first toast.
+void app.whenReady().then(() => {
+  const probe = {
+    platform: process.platform,
+    isPackaged: app.isPackaged,
+    dataSuffix: dataSuffix(),
+    squirrelRoot: squirrelInstallRootFor(process.execPath),
+  };
+  if (shouldWriteStartMenuEntry(probe)) keepOneStartMenuEntry(process.execPath, app.getAppPath());
+});
 
 // ── Promoted browser flows: the idle sweep ─────────────────────────────────
 //
@@ -842,6 +881,21 @@ let daemonNotificationRouter: DaemonNotificationRouter | null = null;
 let remoteInboxBridge: RemoteInboxBridge | null = null;
 // Cross-host A2A: hands remote tasks/replies the daemon holds to the renderer.
 let remoteA2aBridge: RemoteA2aBridge | null = null;
+// Company mode: delivers tasks the daemon released from their blockers; one per connection.
+let companyReleaseBridge: CompanyReleaseBridge | null = null;
+// The CEO lines told, the deliveries running and the marks not taken yet, kept across daemon reconnects.
+const companyCeoLinesTold = new Set<string>();
+const companyDeliveriesInFlight = new Set<string>();
+const companyPendingMarks = new Map<string, CompanyReleaseMark>();
+// The per-PC cap on working company seats: one gate for every send and every
+// release bridge, kept across daemon reconnects.
+const companySlots = new CompanySlotGate({
+  read: () => readCompanyWorkingSeats({
+    sendToRenderer: (method, params) => sendToRenderer(() => mainWindow, method, params),
+    daemonRpc: (method, params, opts) => (daemonClient ? daemonClient.rpc(method, params, opts) : Promise.reject(new Error('daemon not connected'))),
+  }),
+  cap: () => getFactorySettings().companyMaxWorking,
+});
 let remoteSpawnCoordinator: RemoteSpawnCoordinator | null = null;
 let continueStarter: ContinueStarter | null = null;
 // Scheduled runs: daemon automation events → renderer + OS toasts.
@@ -953,6 +1007,10 @@ setWorkerGatewayOAuth(connectorOAuth.service);
 const cleanupConnectorTerminal = registerConnectorTerminalHandlers(() => mainWindow, connectorOAuth.service, () => daemonClient);
 const cleanupConnectorChecks = registerConnectorCheckHandlers(() => mainWindow, connectorOAuth.service);
 const cleanupConnectorCatalog = registerConnectorCatalogHandlers(() => mainWindow);
+
+// Daemon security notices stay pending until acknowledged, across daemon
+// reconnects, so their handlers live outside the registerAllHandlers swap.
+registerSecurityNoticeHandlers();
 
 // Presence reporting for push suppression. Registered once on `app` (not on a
 // BrowserWindow) so it survives window recreation; the getter closes over the
@@ -1325,6 +1383,8 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, {
   getDaemonClient: () => daemonClient,
   // Cross-host A2A: a remote pane's alias and rt- tasks go through the daemon's outbox.
   remote: daemonRemoteA2aRpcDeps(() => daemonClient),
+  companyRelease: () => companyReleaseBridge,
+  companySlots,
 });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
@@ -1387,8 +1447,17 @@ registerGitHandoffHandlers({
   invoke: (method, params) => invokeRendererRpc(method, params),
   startFanOut: (req) => startGuiFanOut(fanOutService, req),
 });
+// To hand out: the list for the renderer, and a pick to an agent pane, a
+// company's CEO or a new worktree over the same two lanes.
+registerHandOutHandlers({
+  getWindow: () => mainWindow,
+  invoke: (method, params) => invokeRendererRpc(method, params),
+  startFanOut: (req) => startGuiFanOut(fanOutService, req),
+});
 registerFanOutRpc(rpcRouter, fanOutService, () => mainWindow, { getDaemonClient: () => daemonClient });
 registerRemoteSpawnRpc(rpcRouter, () => mainWindow, { getDaemonClient: () => daemonClient });
+// To hand out for agent panes (MCP hand_out): read the list, add to it.
+registerHandOutRpc(rpcRouter, () => mainWindow);
 registerLedgerRpc(rpcRouter, () => mainWindow, {
   // A completion on a no-changes skip asks the no-changes check again.
   noChangesCheck: liveNoChangesCheck({
@@ -2244,6 +2313,32 @@ app.on('ready', async () => {
     refreshTimer.unref();
   }
 
+  // The global WSL hook (`wmux setup-hooks --wsl`, shared/wslGlobalHook.ts)
+  // runs this runtime and bridge, which an update moves: record them at every
+  // start, and bring an installed hook script up to this build. getWmuxDir()
+  // is suffix-scoped, so an isolated instance writes only into its own data
+  // dir; an unsuffixed dev run writes nothing. Deferred like the refreshes
+  // above: the bridge lookup walks the filesystem, off the ready path.
+  if (process.platform === 'win32') {
+    const wslHookTimer = setTimeout(() => {
+      try {
+        const out = refreshWslHookAtBoot({
+          platform: process.platform,
+          isPackaged: app.isPackaged,
+          suffix: dataSuffix(),
+          hooksDir: path.join(getWmuxDir(), 'hooks'),
+          runtimePath: process.execPath,
+          bridgePath: findWslClaudeBridge(__dirname),
+        });
+        if (out.pointer === 'no-bridge') logLine('warn', 'main', 'wsl hook runtime pointer: no-bridge');
+        else if (out.pointer === 'written' || out.script === 'refreshed') logLine('info', 'main', `wsl hook: pointer ${out.pointer}, script ${out.script}`);
+      } catch (err) {
+        console.warn('[hooks] wsl hook refresh failed (non-fatal):', err);
+      }
+    }, 3000);
+    wslHookTimer.unref();
+  }
+
   // #898 — the OTHER copy of the bridge. `refreshHookBridge` above owns
   // `~/.wmux/hooks/`; a Claude Code plugin install is a snapshot in a version
   // directory that Claude Code owns, and no wmux release touches it. A user who
@@ -2404,6 +2499,7 @@ app.on('ready', async () => {
   // .catch) survives the postmortem cycle. level enum: 0=verbose, 1=info,
   // 2=warning, 3=error. We capture 2 and 3 only — verbose/info from
   // renderer would otherwise drown the signal we care about.
+  const glyphRepaintLog = createGlyphRepaintLogSummary((summary) => logLine('info', 'renderer', summary));
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     // Forward all renderer console messages to the main log file for
     // postmortem analysis. The previous `if (level < 2) return` filter
@@ -2417,6 +2513,8 @@ app.on('ready', async () => {
     // P0-5c: feed the reveal-stats aggregator (`wmux doctor --performance`).
     // Cheap prefix check inside — non-`[wmux:reveal]` lines return immediately.
     revealStatsAggregator.ingest(message);
+    // #3005: a streaming pane's per-repaint lines become one info line a minute.
+    if (glyphRepaintLog.consume(message)) return;
     logLine(lvl, 'renderer', `${where} — ${message}`);
   });
 
@@ -2657,6 +2755,19 @@ app.on('ready', async () => {
       });
       remoteA2aBridge.start();
       setA2aRemoteBridge(remoteA2aBridge);
+      // Company tasks released from their blockers, pulled on every (re)connect,
+      // after each task ends (a2a.rpc) and on a backstop.
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = new CompanyReleaseBridge({
+        daemon: client,
+        sendToRenderer: (method, params, opts) => sendToRenderer(() => mainWindow, method, params, opts),
+        told: companyCeoLinesTold,
+        inFlight: companyDeliveriesInFlight,
+        pendingMarks: companyPendingMarks,
+        slots: companySlots,
+        log: (level, msg) => logLine(level, 'a2a-company', msg),
+      });
+      companyReleaseBridge.start();
       // Remote spawn (this PC starts an agent another PC asked for): cards and starts.
       remoteSpawnCoordinator?.stop();
       const spawnBridge = remoteA2aBridge;
@@ -2730,6 +2841,8 @@ app.on('ready', async () => {
       remoteInboxBridge = null;
       remoteA2aBridge?.stop();
       remoteA2aBridge = null;
+      companyReleaseBridge?.stop();
+      companyReleaseBridge = null;
       remoteSpawnCoordinator?.stop();
       remoteSpawnCoordinator = null;
       continueStarter?.stop();
@@ -3328,6 +3441,8 @@ async function prepareInstallQuit(): Promise<void> {
   } catch (err) {
     console.error('[Main] install-quit chromeRegistry.disposeAll failed:', err);
   }
+  // The full before-quit is skipped here too: the pairing link comes off now.
+  await clearEphemeralClipboard();
   try {
     chromeSurfaceStore.flushSync();
     getActionCacheStore().flushSync();
@@ -3457,6 +3572,9 @@ app.on('before-quit', async (e) => {
   const chromeStopped = chromeRegistry.disposeAll().catch((err) => {
     console.error('[Main] before-quit step "chromeRegistry.disposeAll" threw — continuing:', err);
   });
+  // A pairing link still on the clipboard comes off before the app exits
+  // (clipboard reads are asynchronous); awaited with the Chrome above.
+  const clipboardCleared = clearEphemeralClipboard();
 
   // Pending usage-history samples, before anything below can stall.
   usageTrail.flushSync();
@@ -3677,6 +3795,7 @@ app.on('before-quit', async (e) => {
   safeStep('webviewCdpManager.disposeAll', () => webviewCdpManager.disposeAll());
   // Started at the top of this handler; long settled on a slow teardown.
   await chromeStopped;
+  await clipboardCleared;
   safeStep('chromeSurfaceStore.flushSync', () => chromeSurfaceStore.flushSync());
   // Recorded browser flows are written on a debounce, so a quit inside that
   // window would drop the save the agent just made — the one it is most likely

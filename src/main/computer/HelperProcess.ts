@@ -175,6 +175,16 @@ export class HelperProcess {
     return this.running?.hello ?? null;
   }
 
+  /**
+   * Whether the helper's hello has `input.deferForeground: true`. Starts the
+   * helper when none runs (or waits for the one starting) and reads its
+   * hello; no request is sent.
+   */
+  async defersForeground(): Promise<boolean> {
+    const running = await this.ensureRunning();
+    return running.hello.capabilities.input?.deferForeground === true;
+  }
+
   /** Whether the running helper's hello listed `method`; undefined while none runs. */
   supports(method: HelperMethod): boolean | undefined {
     return this.running ? this.running.hello.capabilities.actions.includes(method) : undefined;
@@ -187,6 +197,9 @@ export class HelperProcess {
    */
   reconfigure(): Promise<void> {
     const run = async (): Promise<void> => {
+      // A start in progress sends configure itself; wait for it rather than
+      // writing alongside its configure.
+      if (this.starting) await this.starting.catch(() => undefined);
       const running = this.running;
       if (this.disposed || !running) return;
       await this.sendConfigure(running);
@@ -360,6 +373,11 @@ export class HelperProcess {
 
   private ensureRunning(): Promise<Running> {
     if (this.disposed) return Promise.reject(new ComputerError('shutting_down', 'computer use is shutting down'));
+    // `running` is set at hello, while start() may still wait on its configure.
+    // defersForeground() starts the helper outside the queue, so a queued
+    // request must wait for that start too: writing now would replace the
+    // configure's pending request and leave start() unsettled.
+    if (this.starting) return this.starting;
     if (this.running) return Promise.resolve(this.running);
     if (!this.starting) {
       this.starting = this.start()

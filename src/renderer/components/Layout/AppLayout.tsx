@@ -46,10 +46,12 @@ import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
 import FirstRunWizard from '../FirstRunWizard';
 import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
+import AgentStateAnnouncer from '../Accessibility/AgentStateAnnouncer';
 import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import { useRoomSync } from '../../hooks/useRoomSync';
+import { useExternalSessionsSync } from '../../hooks/useExternalSessionsSync';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { FocusManager } from './LayoutLogicMounts';
@@ -61,7 +63,9 @@ import { useCustomAgentsHydration } from '../../hooks/useCustomAgentsHydration';
 import { useA2aLinkRequestToast, useA2aRemoteSnapshot } from '../../hooks/useA2aRemoteSnapshot';
 import { useA2aRemoteBridge } from '../../hooks/useA2aRemoteBridge';
 import { useConnectionDropNotice } from '../../hooks/useConnectionDropNotice';
+import { useSecurityNotices } from '../../hooks/useSecurityNotices';
 import { useChromeProfileFallbackToast } from '../../hooks/useChromeProfileFallbackToast';
+import { useExpiredDecisionNotice } from '../../hooks/useExpiredDecisionNotice';
 import { useCloseTabOnShellExit } from '../../hooks/useCloseTabOnShellExit';
 import AgentMentionPicker from '../Palette/AgentMentionPicker';
 import HandoffPopover from '../Git/HandoffPopover';
@@ -128,6 +132,7 @@ import {
 } from '../../../shared/ptyRecovery';
 import { isChatV2Covering } from '../ChatV2/coverage';
 import { overlayColors } from '../../utils/titlebarOverlay';
+import { multiviewGroupsForSave } from '../../utils/multiviewGroups';
 
 interface ReconcilePtySession extends DeadPaneSessionSnapshot {
   id: string;
@@ -431,6 +436,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     titlebarClockVisible: state.titlebarClockVisible,
     titlebarVitalsAlwaysVisible: state.titlebarVitalsAlwaysVisible,
     paneNewTerminalButton: state.paneNewTerminalButton,
+    terminalCompactScrollback: state.terminalCompactScrollback,
+    terminalSharedWebgl: state.terminalSharedWebgl,
     splitInheritsCwd: state.splitInheritsCwd,
     closeTabOnShellExit: state.closeTabOnShellExit,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
@@ -477,6 +484,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
       ? { surfaceDismissedQuestion: state.surfaceDismissedQuestion }
       : {}),
     multiviewArrangement: state.multiviewArrangement,
+    multiviewGroups: multiviewGroupsForSave(state),
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
     notificationRingEnabled: state.notificationRingEnabled,
@@ -798,6 +806,7 @@ export default function AppLayout() {
   useUiScaleSync(uiScale);
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   useRoomSync();
+  useExternalSessionsSync();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const sidebarWidth = useStore((s) => s.sidebarWidth);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
@@ -911,7 +920,10 @@ export default function AppLayout() {
   useA2aRemoteBridge();
   // A PC connection in use that really dropped (not a blip) gets one toast.
   useConnectionDropNotice();
+  // Daemon security notices: pinned in the notification panel until acknowledged.
+  useSecurityNotices();
   useChromeProfileFallbackToast();
+  useExpiredDecisionNotice();
   // `exit` in a shell closes its tab (clean exit only).
   useCloseTabOnShellExit();
   // Keep the main-process WorkspaceMirror warm: push the workspace tree +
@@ -2252,6 +2264,12 @@ export default function AppLayout() {
           (titleBarStyle:'hidden'), so this bar owns window dragging. */}
       <ErrorBoundary name="Titlebar">
         <Titlebar />
+      </ErrorBoundary>
+      {/* Screen readers only: says when an agent needs you, finished or
+          failed. Outside the workspaces page, which goes inert under another
+          rail page. Renders nothing without a screen reader. */}
+      <ErrorBoundary name="AgentStateAnnouncer">
+        <AgentStateAnnouncer />
       </ErrorBoundary>
       {/* The icon rail sits on the window frame beside the floating sheet and
           stays when the sidebar collapses (MiniSidebar `rail`); the sheet holds

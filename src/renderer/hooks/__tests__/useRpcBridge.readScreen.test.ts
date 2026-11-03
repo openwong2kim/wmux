@@ -6,6 +6,7 @@ import { terminalRegistry } from '../useTerminal';
 import * as terminalModule from '../useTerminal';
 import { handleRpcMethod } from '../useRpcBridge';
 import { useStore } from '../../stores';
+import { markTerminalClean, markTerminalDirty } from '../../terminal/terminalOutputScheduler';
 import { needleInComposer, submitNeedle } from '../../../main/pipe/handlers/input.rpc';
 
 // The read path uses headless buffers; browser canvas rendering is unused.
@@ -193,6 +194,34 @@ it('approval probes read only a settled current viewport, never scrollback or pa
     expect(await handleRpcMethod('input.readScreen', { ptyId, approvalScreen: true })).toBeNull();
     expect(await handleRpcMethod('input.readScreen', { ptyId, approvalScreen: true })).toBeNull();
   } finally {
+    hydrate.mockRestore();
+    terminalRegistry.delete(ptyId);
+    terminal.dispose();
+    useStore.setState({ paneGate: previousGate });
+  }
+});
+
+// #2993 — a delivery's submit receipt polls a hidden pane several times a
+// second; resyncing a large ring on each poll wedged the renderer.
+it('a noHydrate read reads the buffer as it is, without resyncing the pane', async () => {
+  const ptyId = 'receipt-no-hydrate';
+  const terminal = new Terminal({ cols: 80, rows: 3, scrollback: 100, allowProposedApi: true });
+  const previousGate = useStore.getState().paneGate;
+  const hydrate = vi.spyOn(terminalModule, 'hydrateTerminalForRead').mockResolvedValue(true);
+  useStore.setState({ paneGate: 'ready' });
+  try {
+    await new Promise<void>((resolve) => terminal.write('❯ hello', resolve));
+    (terminalRegistry as Map<string, unknown>).set(ptyId, terminal);
+    expect(await handleRpcMethod('input.readScreen', { ptyId, tail_lines: 5, endAtCursor: true, noHydrate: true })).toMatchObject({ ptyId, text: '❯ hello' });
+    expect(hydrate).not.toHaveBeenCalled();
+    await handleRpcMethod('input.readScreen', { ptyId, tail_lines: 5 });
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    // A buffer that lags the pane (output held back, or due a resync) is no
+    // screen for it: a stale composer must not authorize a retried Enter.
+    markTerminalDirty(terminal);
+    expect(await handleRpcMethod('input.readScreen', { ptyId, tail_lines: 5, endAtCursor: true, noHydrate: true })).toEqual({ ptyId, text: '' });
+  } finally {
+    markTerminalClean(terminal);
     hydrate.mockRestore();
     terminalRegistry.delete(ptyId);
     terminal.dispose();

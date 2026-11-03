@@ -2,6 +2,7 @@ import { TerminalEngineSetting } from './TerminalEngineSetting';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
+import type { LabsStatus } from '../../../shared/labsSettings';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
 import { isWslShellPath } from '../../../shared/wslDistro';
 import type { ImagePasteMode } from '../../../shared/imagePaste';
@@ -42,6 +43,14 @@ import {
   isFanoutWorkerPermissionMode,
   type FanoutWorkerPermissionMode,
 } from '../../../shared/workerLaunch';
+import {
+  DEFAULT_FANOUT_HOURLY_TASK_CAP,
+  DEFAULT_FANOUT_LIVE_TASK_CAP,
+  MAX_FANOUT_HOURLY_TASK_CAP,
+  MAX_FANOUT_LIVE_TASK_CAP,
+  MIN_FANOUT_HOURLY_TASK_CAP,
+  MIN_FANOUT_LIVE_TASK_CAP,
+} from '../../../shared/fanoutTaskCaps';
 import {
   ADVERTISED_SHORTCUTS,
   builtinCombosFor,
@@ -282,6 +291,14 @@ function IconNotifications() {
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <path d="M3.5 9.5c.7-.7.9-1.7.9-2.9a2.6 2.6 0 0 1 5.2 0c0 1.2.2 2.2.9 2.9z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       <path d="M5.9 11.2a1.2 1.2 0 0 0 2.2 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconLabs() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <path d="M5.4 2h3.2M6 2v3.6L2.8 11a.7.7 0 0 0 .6 1h7.2a.7.7 0 0 0 .6-1L8 5.6V2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -2107,6 +2124,9 @@ function FanoutWorkersSection() {
   // Main-side too: main makes the approval decision, so the switch it reads
   // is the one this row writes.
   const [requireApproval, setRequireApprovalState] = useState(false);
+  // Main-side as well: the caps an agent's fan-out is refused past.
+  const [liveTaskCap, setLiveTaskCapState] = useState(DEFAULT_FANOUT_LIVE_TASK_CAP);
+  const [hourlyTaskCap, setHourlyTaskCapState] = useState(DEFAULT_FANOUT_HOURLY_TASK_CAP);
   // Main-side as well: main refuses the agy trust write while this is off.
   const [trustAgyFolders, setTrustAgyFoldersState] = useState(false);
   // Main-side, per workspace: the worker fence of this workspace's bots.
@@ -2128,6 +2148,16 @@ function FanoutWorkersSection() {
     window.electronAPI?.fanout?.getRequireApproval?.()
       .then((v) => {
         if (!cancelled && typeof v === 'boolean') setRequireApprovalState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getLiveTaskCap?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setLiveTaskCapState(v);
+      })
+      .catch(() => undefined);
+    window.electronAPI?.fanout?.getHourlyTaskCap?.()
+      .then((v) => {
+        if (!cancelled && typeof v === 'number') setHourlyTaskCapState(v);
       })
       .catch(() => undefined);
     window.electronAPI?.fanout?.getTrustAgyFolders?.()
@@ -2178,6 +2208,23 @@ function FanoutWorkersSection() {
       .catch(() => undefined);
   };
 
+  // The field shows the value at once; main's reply (clamped) confirms it.
+  const onLiveTaskCapChange = (next: number) => {
+    setLiveTaskCapState(next);
+    window.electronAPI.fanout
+      .setLiveTaskCap(next)
+      .then((stored) => setLiveTaskCapState(stored))
+      .catch(() => undefined);
+  };
+
+  const onHourlyTaskCapChange = (next: number) => {
+    setHourlyTaskCapState(next);
+    window.electronAPI.fanout
+      .setHourlyTaskCap(next)
+      .then((stored) => setHourlyTaskCapState(stored))
+      .catch(() => undefined);
+  };
+
   const onTrustAgyFoldersChange = (next: boolean) => {
     window.electronAPI.fanout
       .setTrustAgyFolders(next)
@@ -2210,6 +2257,32 @@ function FanoutWorkersSection() {
           checked={requireApproval}
           onChange={onRequireApprovalChange}
           label={t('settings.fanoutRequireApproval')}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanoutlivecap"
+        label={t('settings.fanoutLiveTaskCap')}
+        description={t('settings.fanoutLiveTaskCapDesc')}
+      >
+        <SettingNumberInput
+          value={liveTaskCap}
+          min={MIN_FANOUT_LIVE_TASK_CAP}
+          max={MAX_FANOUT_LIVE_TASK_CAP}
+          label={t('settings.fanoutLiveTaskCap')}
+          onChange={onLiveTaskCapChange}
+        />
+      </SettingRow>
+      <SettingRow
+        id="fanouthourlycap"
+        label={t('settings.fanoutHourlyTaskCap')}
+        description={t('settings.fanoutHourlyTaskCapDesc')}
+      >
+        <SettingNumberInput
+          value={hourlyTaskCap}
+          min={MIN_FANOUT_HOURLY_TASK_CAP}
+          max={MAX_FANOUT_HOURLY_TASK_CAP}
+          label={t('settings.fanoutHourlyTaskCap')}
+          onChange={onHourlyTaskCapChange}
         />
       </SettingRow>
       <SettingRow
@@ -4448,7 +4521,7 @@ const PREFIX_ACTION_IDS = [
   'focusUp', 'focusDown', 'focusLeft', 'focusRight',
   'movePaneUp', 'movePaneDown', 'movePaneLeft', 'movePaneRight',
   'swapPanePrev', 'swapPaneNext',
-  'stashPane',
+  'stashPane', 'balanceLayout',
 ] as const;
 
 function prefixActionLabel(actionId: string, t: (key: string) => string): string {
@@ -5059,6 +5132,57 @@ function TabFirstRunSetup() {
   );
 }
 
+export function TabLabs() {
+  const t = useT();
+  const compactScrollback = useStore((s) => s.terminalCompactScrollback);
+  const setCompactScrollback = useStore((s) => s.setTerminalCompactScrollback);
+  const sharedWebgl = useStore((s) => s.terminalSharedWebgl);
+  const setSharedWebgl = useStore((s) => s.setTerminalSharedWebgl);
+  const [labs, setLabs] = useState<LabsStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const live = useRef(true);
+  const run = useCallback((request: () => Promise<LabsStatus>) => {
+    setBusy(true);
+    request().then(
+      (r) => { if (live.current) { setLabs(r); setFailed(false); } },
+      () => { if (live.current) setFailed(true); },
+    ).finally(() => { if (live.current) setBusy(false); });
+  }, []);
+  useEffect(() => {
+    live.current = true;
+    run(() => window.electronAPI.settings.getLabs());
+    return () => { live.current = false; };
+  }, [run]);
+  const ringOn = !!labs && (labs.saved.ringCompression || labs.ringCompressionInConfig);
+  return (
+    <SettingsSection description={t('settings.labsIntro')}>
+      <SettingRow id="labs-compact-scrollback" label={t('settings.labsCompactScrollback')} description={t('settings.labsCompactScrollbackDesc')}>
+        <Toggle checked={compactScrollback} onChange={setCompactScrollback} label={t('settings.labsCompactScrollback')} />
+      </SettingRow>
+      <SettingRow id="labs-shared-webgl" label={t('settings.labsSharedWebgl')} description={t('settings.labsSharedWebglDesc')}>
+        <Toggle checked={sharedWebgl} onChange={setSharedWebgl} label={t('settings.labsSharedWebgl')} />
+      </SettingRow>
+      <SettingRow id="labs-ring-compression" label={t('settings.labsRingCompression')} description={t('settings.labsRingCompressionDesc')}>
+        <Toggle
+          checked={ringOn}
+          disabled={!labs || busy || labs.ringCompressionInConfig || labs.ringCompressionApplies === false}
+          onChange={(on) => run(() => window.electronAPI.settings.setLabs({ ringCompression: on }))}
+          label={t('settings.labsRingCompression')}
+        />
+      </SettingRow>
+      {labs?.ringCompressionApplies === false && <SettingNote>{t('settings.labsRingCompressionNodeOnly')}</SettingNote>}
+      {labs?.ringCompressionInConfig && <SettingNote>{t('settings.labsRingCompressionInConfig')}</SettingNote>}
+      {labs?.restartRequired && <SettingNote>
+        {t('settings.labsRestartDaemon')}<br /><code className="ui-code">{labs.stopCommand}</code>
+      </SettingNote>}
+      {failed && <SettingNote tone="danger" role="alert">{t('settings.labsError')}{' '}
+        <Button variant="secondary" disabled={busy} onClick={() => run(() => window.electronAPI.settings.getLabs())}>{t('settings.terminalEngineRetry')}</Button>
+      </SettingNote>}
+    </SettingsSection>
+  );
+}
+
 function TabAbout() {
   const t = useT();
 
@@ -5342,6 +5466,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
     terminal:             { label: t('settings.tabTerminal'),      icon: <IconTerminal /> },
     shortcuts:            { label: t('settings.tabKeyboard'),      icon: <IconShortcuts /> },
     notifications:        { label: t('settings.tabNotifications'), icon: <IconNotifications /> },
+    labs:                 { label: t('settings.tabLabs'),          icon: <IconLabs /> },
     'claude-integration': { label: t('settings.tabClaudeCode'),    icon: <IconClaude /> },
     accounts:             { label: t('settings.tabAccounts'),      icon: <IconUsers /> },
     factory:              { label: t('settings.tabFactory'),       icon: <IconRobot /> },
@@ -5529,6 +5654,7 @@ export default function SettingsPanel({ initialTab }: { initialTab?: string }) {
                     {activeTab === 'terminal'           && <TabTerminal />}
                     {activeTab === 'shortcuts'          && <TabShortcuts />}
                     {activeTab === 'notifications'      && <TabNotifications />}
+                    {activeTab === 'labs'               && <TabLabs />}
                     {activeTab === 'claude-integration' && <TabClaudeCode />}
                     {activeTab === 'accounts'           && <><AccountsSection /><AgyAccountsSection /></>}
                     {activeTab === 'factory'            && <FactoryTab />}

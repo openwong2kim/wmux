@@ -22,7 +22,7 @@ import { installBotTools, pinToolName } from './toolModules';
 import './botModules';
 import { isErrorShapedResult, type RpcMethod } from '../shared/rpc';
 import { EXECUTE_SEND_CLIENT_TIMEOUT_MS } from '../shared/executeApprovalBounds';
-import { NEW_TASK_SEND_CLIENT_TIMEOUT_MS } from '../shared/freshContext';
+import { A2A_PASTE_CLIENT_TIMEOUT_MS, NEW_TASK_SEND_CLIENT_TIMEOUT_MS } from '../shared/freshContext';
 import { MCP_WRITE_DEADLINE_MS } from '../shared/terminalWriteBudget';
 import {
   claimPinnedRoute,
@@ -55,6 +55,7 @@ import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
 import { registerFanOutTools } from './fanout';
 import { registerRemoteSpawnTools } from './remoteSpawn';
+import { registerHandOutTools } from './handOut';
 import { registerLedgerUpdateTool, registerLedgerListTool, registerLedgerBrainUpdateTool } from './ledger';
 import { registerTaskFetchTool, registerTaskPushTool } from './taskPush';
 import { registerWorktaskTools } from './worktask';
@@ -2194,10 +2195,11 @@ server.tool(
 );
 
 // 3. send_message — Primary tool for inter-workspace communication
-const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, message, execute, silent, data, data_mime_type, images }: {
+// `opts.handOutId` is hand_out's pick (src/mcp/handOut.ts), never a tool param.
+const sendMessage = async ({ to, pane_id, surface_id, title, task_id, message, execute, silent, data, data_mime_type, images }: {
   to?: string; pane_id?: string; surface_id?: string; title?: string; task_id?: string; message: string; execute?: boolean; silent?: boolean;
   data?: Record<string, unknown>; data_mime_type?: string; images?: string[];
-}) => {
+}, opts: { handOutId?: string } = {}) => {
   const wsId = await requireWorkspaceId();
   // Pane names: `to: "#w1-2"` names the pane AND its workspace; a name in
   // pane_id / surface_id addresses that pane and, when `to` is omitted, its
@@ -2261,6 +2263,7 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
   if (pane_id) params.paneId = pane_id;
   if (surface_id) params.surfaceId = surface_id;
   if (title) params.title = title;
+  if (opts.handOutId) params.handOutId = opts.handOutId;
   if (execute) params.execute = true;
   // Forward `silent` whenever it is explicitly provided (true OR false), not
   // only when truthy: the renderer's silent-default treats an EXPLICIT
@@ -2287,13 +2290,17 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
   // A new execute send waits on a person (#1462): outwait main, so the agent
   // reads the verdict instead of timing out and retrying into a second prompt.
   // A new task's delivery may first wait out the target pane's fresh-context
-  // step (#1680): outwait main's budget for it. A reply keeps the default.
+  // step (#1680): outwait main's budget for it. A reply waits for its
+  // paste's receipt: outwait main's budget for that.
   return execute && !task_id
     ? callRpc('a2a.task.send', params, EXECUTE_SEND_CLIENT_TIMEOUT_MS)
     : !task_id
       ? callRpc('a2a.task.send', params, NEW_TASK_SEND_CLIENT_TIMEOUT_MS)
-      : callRpc('a2a.task.send', params);
+      : callRpc('a2a.task.send', params, A2A_PASTE_CLIENT_TIMEOUT_MS);
 };
+// The public tools pass the arguments alone: the SDK's second callback
+// argument must never reach `opts`.
+const sendMessageHandler = (args: Parameters<typeof sendMessage>[0]) => sendMessage(args);
 
 server.tool(
   'send_message',
@@ -2356,7 +2363,7 @@ server.tool(
         parts: artifact_data ? [{ kind: 'data', data: artifact_data, metadata: { mimeType: 'application/json' } }] : [],
       };
     }
-    return callRpc('a2a.task.update', params);
+    return callRpc('a2a.task.update', params, A2A_PASTE_CLIENT_TIMEOUT_MS);
   },
 );
 
@@ -2383,7 +2390,7 @@ server.tool(
   A2A_BROADCAST_SHAPE,
   async ({ message, priority }) => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.broadcast', { message, priority: priority || 'normal', workspaceId: wsId });
+    return callRpc('a2a.broadcast', { message, priority: priority || 'normal', workspaceId: wsId }, A2A_PASTE_CLIENT_TIMEOUT_MS);
   },
 );
 
@@ -2460,6 +2467,15 @@ registerFanOutTools(server, {
 registerRemoteSpawnTools(server, {
   getSenderPtyId: () => verifiedPtyId(),
   resolveWorkspaceId: requireWorkspaceId,
+});
+
+// === To hand out (full + core) — list, add, pick ===
+// Same walk-hit-only provenance as remote_spawn: main resolves the calling
+// pane from the ptyId. A pick sends through send_message's own path.
+registerHandOutTools(server, {
+  getSenderPtyId: () => verifiedPtyId(),
+  resolveWorkspaceId: requireWorkspaceId,
+  sendMessage: (args, opts) => sendMessage(args, opts),
 });
 
 // === Task ledger — worker side (full + core) ===

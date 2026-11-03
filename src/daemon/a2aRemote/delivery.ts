@@ -17,6 +17,7 @@ import {
 import { A2A_REMOTE_RPC, isLegacyHeldReason, isWaitingCause, readHeldReason, type A2aRemoteHeldReason, type A2aRemoteWaitingCause } from '../../shared/a2aRemoteDelivery';
 import type { A2aRemoteHostStatus, A2aRemoteHostsStatusResult } from '../../shared/rpc';
 import { prepareA2aImage, type A2aImageInfo, type A2aImageRefusal } from '../../shared/a2aImages';
+import { companyBriefOf } from '../../shared/company';
 import { TERMINAL_STATES } from '../../shared/types';
 import type { A2aTaskService } from '../a2a/A2aTaskService';
 import { failTasksForLink, expireHeld, rejectHeld, type HeldDeps } from './held';
@@ -111,6 +112,8 @@ const HELD_REASONS: ReadonlySet<string> = new Set<A2aRemoteHeldReason>([
 ]);
 /** What the sender's ledger shows while our pane has no agent to take its task. */
 export const NO_AGENT_SUMMARY = 'The linked pane on the receiving PC has no agent running; the task is held until someone there acts.';
+/** What the sender's ledger shows when its task may sit unsubmitted in our pane (#2993). */
+export const DELIVERY_UNCONFIRMED_SUMMARY = 'The task reached the linked pane on the receiving PC but was not confirmed submitted; it is held until someone there checks the pane.';
 /** What the sender's ledger shows while our pane's agent is there but cannot take its task yet (not a hold). */
 export const WAITING_SUMMARY: Readonly<Record<A2aRemoteWaitingCause, string>> = {
   'agent-prompt': 'The agent on the receiving PC is waiting on a prompt there; the task is delivered once the prompt is answered.',
@@ -357,11 +360,12 @@ export class A2aRemoteDelivery {
   /** Periodic upkeep: drop old acked records, reject holds past their TTL, re-queue what is owed. */
   async maintain(): Promise<void> {
     await this.syncAll().catch((err: unknown) => this.deps.log('warn', `[a2a-remote] outbound sync failed: ${errMsg(err)}`));
-    // A no-agent hold whose reply to the sender could not go when it was held
-    // (main marks it once): told here, once it can be.
+    // A no-agent or delivery-unconfirmed hold whose reply to the sender could
+    // not go when it was held (main marks it once): told here, once it can be.
     for (const task of this.deps.taskService.listRemoteHeld()) {
       const marker = task.metadata.remote as { direction?: string; held?: string } | undefined;
       if (marker?.direction === 'inbound' && marker.held === 'no-agent') await this.tellSender(task.id, NO_AGENT_SUMMARY);
+      if (marker?.direction === 'inbound' && marker.held === 'delivery-unconfirmed') await this.tellSender(task.id, DELIVERY_UNCONFIRMED_SUMMARY);
     }
     // Before the prune: an ack whose mark never landed (crash, failed append) is
     // recovered while its record is still here. This runs at start and every
@@ -451,11 +455,11 @@ export class A2aRemoteDelivery {
         ...(p['delivered'] === true ? { delivered: true } : {}),
         ...(typeof held === 'string' ? { held: readHeldReason(held) } : {}),
         ...(typeof p['attempted'] === 'boolean' && p['delivered'] !== true && held === undefined ? { attempted: p['attempted'] } : {}),
-        ...(p['note'] === 'pasted-not-submitted' ? { note: 'pasted-not-submitted' as const } : {}),
         ...(typeof p['ptyId'] === 'string' && isSafeId(p['ptyId']) ? { ptyId: p['ptyId'] } : {}),
       });
       // A reply that could not go now is tried again by `maintain`.
       if (res.ok && held === 'no-agent' && messageId === undefined) await this.tellSender(taskId, NO_AGENT_SUMMARY);
+      if (res.ok && held === 'delivery-unconfirmed' && messageId === undefined) await this.tellSender(taskId, DELIVERY_UNCONFIRMED_SUMMARY);
       // Not a hold: main keeps delivering and says `waiting` on every later miss,
       // so a reply that could not go is tried again then. A cause this build does not know is ignored.
       const waiting = p['waiting'];
@@ -490,6 +494,9 @@ export class A2aRemoteDelivery {
       if (!from || typeof from['workspaceId'] !== 'string' || (from['paneId'] !== undefined && typeof from['paneId'] !== 'string') || typeof p['text'] !== 'string') {
         return { ok: false, error: 'bad-request: linkId, from{workspaceId, paneId?} and text are required' };
       }
+      // A company brief for this PC's copy: only a complete version-1 one, and only its own fields.
+      const brief = p['brief'] === undefined ? undefined : companyBriefOf(p['brief']);
+      if (brief === null) return { ok: false, error: 'bad-request: brief must be a complete version-1 company brief' };
       return sendRemoteTask(this.outboundDeps(), {
         linkId: str(p, 'linkId'),
         from: {
@@ -501,6 +508,7 @@ export class A2aRemoteDelivery {
         title: str(p, 'title'),
         text: p['text'],
         ...(images ? { images } : {}),
+        ...(brief ? { brief } : {}),
       });
     });
 

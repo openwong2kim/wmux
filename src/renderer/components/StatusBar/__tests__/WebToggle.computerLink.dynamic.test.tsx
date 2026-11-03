@@ -58,7 +58,7 @@ beforeEach(() => {
   readText.mockClear();
   writeEphemeral.mockClear();
   keepEphemeral.mockClear();
-  ephemeral = new EphemeralClipboard({ readText: () => clipboard, writeText: (t) => { clipboard = t; } });
+  ephemeral = new EphemeralClipboard({ readText: async () => clipboard, writeText: async (t) => { clipboard = t; } });
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     web: {
       status: vi.fn(async () => status),
@@ -149,11 +149,12 @@ describe('WebToggle — Connect another computer', () => {
     root = createRoot(container);
     expect(clipboard).toBe(LINK);
     await act(async () => { vi.advanceTimersByTime(6_000); });
+    await flush();
     expect(clipboard).toBe('');
   });
 
   it('a fresh mount does not wipe a still-valid copied link before its first status read', async () => {
-    ephemeral.write(LINK, 600_000);
+    await ephemeral.write(LINK, 600_000);
     status = computerPending;
     await mountAndOpen();
     expect(keepEphemeral).not.toHaveBeenCalledWith('');

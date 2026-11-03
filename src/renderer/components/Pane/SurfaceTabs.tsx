@@ -20,7 +20,7 @@ import { findPane } from '../../../shared/paneUtils';
 import PaneDragGrip from './PaneDragGrip';
 import { FOCUS_RING } from '../focusRing';
 import { HIT_TARGET_24 } from '../hitArea';
-import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock, IconBellOff, IconBell } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser, IconExternalLink, IconEyeOff, IconPencil, IconGrid, IconComputer, IconLock, IconBellOff, IconBell, IconCornerUpLeft } from '../icons';
 import { isPrivateBrowserSurface } from '../../../shared/privateBrowser';
 import { BrowserAgentTabMark } from '../Browser/BrowserAgentControls';
 import { LOCAL_PC_ID, isShadowWorkspaceId } from '../../../shared/pcRail';
@@ -34,6 +34,7 @@ import { PANE_BROWSER_PROFILE_KEY, usePaneChromeProfileMenu } from './usePaneChr
 import { usePaneBrowserPolicyMenu } from './usePaneBrowserPolicyMenu';
 import { PANE_CONTINUE_ACCOUNT_KEY, usePaneContinueOnAccount } from './usePaneContinueOnAccount';
 import { usePaneClaudeRewind } from './usePaneClaudeRewind';
+import ContinueInAgentDialog, { PANE_CONTINUE_IN_AGENT_KEY, usePaneContinueInAgent } from './ContinueInAgentDialog';
 import BrowserPolicyDialog from './BrowserPolicyDialog';
 import {
   bindingEnforcesModel, bindingEnforcesSkipPermissions, bindingSkipPermissionsFlag, type RoleBinding,
@@ -97,7 +98,7 @@ export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
  *  host, so no split, no new pane and (by the `snap-` prefix) no layout snap. */
 // 'mute-notifications': a shadow pane's notifications come from the remote
 // host's own path, which never reads this pane's mute flag.
-const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote', 'mute-notifications', 'share-remote-pane']);
+const HIDDEN_ON_SHADOW: ReadonlySet<string> = new Set(['split-right', 'split-down', 'new-remote', 'split-right-remote', 'split-down-remote', 'mute-notifications', 'share-remote-pane', PANE_CONTINUE_IN_AGENT_KEY]);
 
 /** Rendered width (px) of the COLLAPSED cluster: the ⋮ trigger alone, which
  *  opens the same actions as a vertical menu. Same outer box as the full
@@ -422,13 +423,15 @@ export default function SurfaceTabs({
   const t = useT();
   const tabLabel = (s: Surface): string => s.title || (s.surfaceType === 'board' ? t('company.board') : t('surface.terminal'));
   // "Continue in another agent": a held tab and the tab its work went on in
-  // each name the other on a tooltip line of its own.
-  const continuedNote = (s: Surface): string => ([['surface.continuedIn', s.continuedIn], ['surface.continuedFrom', s.continuedFrom]] as const)
-    .map(([key, id]) => {
+  // each name the other on a tooltip line of its own, and carry a muted mark
+  // before the title (out on the tab the work left, back-arrow on the tab it
+  // came to) that says the same to assistive tech.
+  const continuedLines = (s: Surface): string[] => ([['surface.continuedIn', s.continuedIn], ['surface.continuedFrom', s.continuedFrom]] as const)
+    .flatMap(([key, id]) => {
       const peer = id ? surfaces.find((p) => p.id === id) : undefined;
-      return peer ? `\n${t(key, { name: peer.title || t('surface.terminal') })}` : '';
-    })
-    .join('');
+      return peer ? [t(key, { name: peer.title || t('surface.terminal') })] : [];
+    });
+  const continuedNote = (s: Surface): string => continuedLines(s).map((line) => `\n${line}`).join('');
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
   // gets eaten by a click-after-dragend race.
   const dragStartTimeRef = useRef<number>(0);
@@ -766,6 +769,13 @@ export default function SurfaceTabs({
   const reloadContinueAccount = continueAccount.reload;
   // Open Claude's own Rewind picker (the hook gates itself to a terminal Claude).
   const claudeRewindItems = usePaneClaudeRewind({ ptyId: activeSurfacePtyId, allowed: !readOnly });
+  // Hand the pane's work to another agent in a new tab (the hook gates itself to a known agent).
+  const [continueInAgentFor, setContinueInAgentFor] = useState<{ ptyId: string; cwd?: string } | null>(null);
+  const activeSurfaceCwd = activeSurface?.cwd;
+  const openContinueInAgent = useCallback(() => {
+    if (activeSurfacePtyId) setContinueInAgentFor({ ptyId: activeSurfacePtyId, ...(activeSurfaceCwd ? { cwd: activeSurfaceCwd } : {}) });
+  }, [activeSurfacePtyId, activeSurfaceCwd]);
+  const continueInAgentItems = usePaneContinueInAgent({ ptyId: activeSurfacePtyId, allowed: !readOnly, onOpen: openContinueInAgent });
   useEffect(() => {
     if (menu !== 'main') return;
     reloadChromeProfiles();
@@ -837,6 +847,7 @@ export default function SurfaceTabs({
       onSelect: startPaneRename,
     },
     ...continueAccount.mainItems,
+    ...continueInAgentItems,
     ...claudeRewindItems,
     ...(canShareRemote ? [{
       key: 'share-remote-pane',
@@ -893,7 +904,7 @@ export default function SurfaceTabs({
   ].filter((item) => !shadow || !(HIDDEN_ON_SHADOW.has(item.key) || item.key.startsWith('snap-'))), [
     t, onSplitHorizontal, onSplitVertical, onAddBrowser, newBrowserLabel, onAddPrivateBrowser, chromeProfile.mainItems, browserPolicy.mainItems, onAddRemote,
     onSplitHorizontalRemote, onSplitVerticalRemote, startPaneRename,
-    menuTabSurface, startRename, canLinkRemote, canShareRemote, sharePeers, paneMuted, togglePaneMuted, continueAccount.mainItems, claudeRewindItems,
+    menuTabSurface, startRename, canLinkRemote, canShareRemote, sharePeers, paneMuted, togglePaneMuted, continueAccount.mainItems, continueInAgentItems, claudeRewindItems,
     stashChord, stashDisabled, stashTooltip, stashThisPane, isZoomed, toggleZoom,
     layoutTemplates, shadow, splitRightKey, splitDownKey,
   ]);
@@ -1148,6 +1159,16 @@ export default function SurfaceTabs({
             <RemoteSurfaceGlyph label={t('surface.remoteTerminal')} />
           )}
           {s.surfaceType === 'browser' && <BrowserAgentTabMark surfaceId={s.id} />}
+          {continuedLines(s).length > 0 && (
+            <span
+              className="shrink-0 flex text-[var(--text-muted)]"
+              role="img"
+              aria-label={continuedLines(s).join(', ')}
+              data-continued-link={s.continuedIn && surfaces.some((p) => p.id === s.continuedIn) ? 'in' : 'from'}
+            >
+              {s.continuedIn && surfaces.some((p) => p.id === s.continuedIn) ? <IconExternalLink size={12} /> : <IconCornerUpLeft size={12} />}
+            </span>
+          )}
           {/* Private browser tab: the same padlock a private channel carries. */}
           {isPrivateBrowserSurface(s) && (
             <span className="shrink-0" role="img" aria-label={t('browser.privateTab')} data-private-browser-tab>
@@ -1480,6 +1501,15 @@ export default function SurfaceTabs({
       )}
       {shareDialogOpen && (
         <A2aShareDialog workspaceId={workspace.id} paneId={paneId} onClose={() => setShareDialogOpen(false)} />
+      )}
+      {continueInAgentFor && (
+        <ContinueInAgentDialog
+          ptyId={continueInAgentFor.ptyId}
+          workspaceId={workspace.id}
+          paneId={paneId}
+          {...(continueInAgentFor.cwd ? { cwd: continueInAgentFor.cwd } : {})}
+          onClose={() => setContinueInAgentFor(null)}
+        />
       )}
     </div>
   );

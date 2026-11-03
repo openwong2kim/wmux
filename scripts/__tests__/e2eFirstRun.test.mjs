@@ -367,7 +367,7 @@ describe('macOS daemon sockets fit sun_path', () => {
     expect(suffixRefusal(`${suffix}c`)).not.toBeNull();
     // The session id shape the app gives each pane (pty.handler.ts).
     const handler = fs.readFileSync(path.join(REPO, 'src', 'main', 'ipc', 'handlers', 'pty.handler.ts'), 'utf8');
-    const idShape = /`daemon-\$\{crypto\.randomUUID\(\)\.slice\(0, (\d+)\)\}`/.exec(handler);
+    const idShape = /`daemon-\$\{randomUUID\(\)\.slice\(0, (\d+)\)\}`/.exec(handler);
     expect(idShape, 'pty.handler.ts no longer builds `daemon-<uuid prefix>` session ids; update this check').not.toBeNull();
     const sessionId = `daemon-${'f'.repeat(Number(idShape[1]))}`;
     // mkdtemp appends six characters. /tmp is a symlink to /private/tmp on

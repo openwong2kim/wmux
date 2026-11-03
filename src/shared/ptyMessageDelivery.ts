@@ -198,7 +198,9 @@ export function resolveAgentSlug(agent?: string | null): AgentSlug | undefined {
  * the renderer over IPC.GATED_SUBMIT). `approval_pending`: an approval is in
  * front of the pane, send again once it is answered. `gate_unavailable`: the
  * gate could not decide (screen unreadable, IPC failure), retry shortly.
- * `pasted`: the text reached the composer but the Enter was withheld.
+ * `pasted`: the text reached the composer but the Enter was withheld. Unless
+ * `cleared` too, it is still there: the delivery must not be counted as made,
+ * nor pasted again on its own (#2993).
  * `fresh_context_busy` (#1680): another new-task delivery held the pane too
  * long; nothing was written.
  * `fresh_context_timeout` (#1680): a new-task delivery typed the pane's

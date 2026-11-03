@@ -93,6 +93,18 @@ describe('OutputModeTracker', () => {
     expect(t.preamble(6)).toBe('');
   });
 
+  it('★ a sequence split after a large chunk still dates from its first byte', () => {
+    // The carry is copied out of the chunk (see feed); it must stay a verbatim
+    // suffix, emoji included, for the byte offset to come out exact.
+    const t = new OutputModeTracker();
+    const head = 'x'.repeat(5000) + '😀';
+    feed(t, head + '\x1b[?10');
+    feed(t, '49h');
+    const entry = Buffer.byteLength(head, 'utf8');
+    expect(t.preamble(entry)).toBe('');
+    expect(t.preamble(entry + 1)).toBe('\x1b[?1049h\x1b[2J\x1b[H');
+  });
+
   it('emits the alt-screen mode that was actually used, not a normalised 1049', () => {
     for (const mode of [47, 1047, 1049]) {
       const t = new OutputModeTracker();

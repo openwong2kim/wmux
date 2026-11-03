@@ -21,6 +21,7 @@ import { buildSpawnInjection, classifyShell, BASH_INIT } from './shell-integrati
 import { isWslDistroSpawnArgs } from '../shared/wslDistro';
 import { expandTilde } from '../shared/expandTilde';
 import { restoreSeam } from '../shared/restoreSeam';
+import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
@@ -336,6 +337,12 @@ export class DaemonSessionManager extends EventEmitter {
   /** Optionally set config so that session.bufferSizeMb is respected. */
   setConfig(config: DaemonConfig): void {
     this.config = config;
+  }
+
+  /** Whether new rings are asked to compress: config.json's flag or the saved
+   *  Labs opt-in, both as read at startup. A Rust ring ignores the request. */
+  ringCompressionEnabled(): boolean {
+    return this.config?.session.ringCompression === true || labsSettingsAtStartup().ringCompression;
   }
 
   private pendingRecovery = new Map<string, DaemonSession>();
@@ -995,7 +1002,9 @@ export class DaemonSessionManager extends EventEmitter {
     const bufferSize = this.config
       ? this.config.session.bufferSizeMb * 1024 * 1024
       : DEFAULT_BUFFER_SIZE;
-    const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess));
+    const ringBuffer = new RingBuffer(bufferSize, ptyBackend(ptyProcess), {
+      compress: this.ringCompressionEnabled(),
+    });
     // Replays parse each stretch of the ring at the size it was written at.
     // Recovered scrollback below is assumed to be at the spawn size.
     ringBuffer.noteGeometry(cols, rows);
@@ -1010,6 +1019,9 @@ export class DaemonSessionManager extends EventEmitter {
     // buffer — the exact garbling util/outputModeTracker.ts exists to prevent.
     if (params.scrollbackData && params.scrollbackData.length > 0) {
       ringBuffer.write(params.scrollbackData);
+      // The ring holds its own copy. The listeners below capture `params`, so
+      // without this the whole dump would stay alive as long as the session.
+      params.scrollbackData = undefined;
       // #952: the dump repainted the DEAD process's screen, but the fresh
       // process spawned above starts from an empty ConPTY whose absolute
       // coordinates begin at row 1 — any restored rows left in the viewport

@@ -3,6 +3,7 @@ import { isWindows, isMac } from '../../shared/platform';
 import { IPC } from '../../shared/constants';
 import { focusedPrimaryWindow, primaryWindow } from '../window/auxiliaryWindows';
 import { logNotificationFailure } from './notificationFailure';
+import { osToastsAllowed } from './osToastGate';
 
 /**
  * Originating context for a toast. When present, clicking the toast not only
@@ -38,10 +39,28 @@ export interface ToastFocusContext {
   windowsFlashEnabled?: boolean;
 }
 
+/**
+ * Most toasts held alive at once. Past this the oldest is dropped, so a long
+ * run of toasts nobody clicks cannot grow the set without bound.
+ */
+export const MAX_HELD_TOASTS = 50;
+
 export class ToastManager {
   enabled = true;
   private flashingWindow: BrowserWindow | null = null;
   private focusHandler: (() => void) | null = null;
+  /**
+   * Shown toasts still waiting for a click. Nothing else references an
+   * Electron Notification once showDirect returns, so without this the object
+   * and its click listener can be garbage-collected while the toast still
+   * sits in the Windows notification center, and a late click does nothing.
+   */
+  private readonly held = new Set<Notification>();
+
+  /** Number of toasts currently held. For tests. */
+  get heldCount(): number {
+    return this.held.size;
+  }
 
   /**
    * Legacy entry: suppress whenever ANY app window has OS focus, then show.
@@ -79,6 +98,9 @@ export class ToastManager {
   ): boolean {
     if (!this.enabled && !options?.ignoreToastSetting) return false;
 
+    // Before isSupported(): its first call already runs Electron's Windows
+    // toast setup, which an isolated packaged copy must never reach (#2964).
+    if (!osToastsAllowed()) return false;
     if (!Notification.isSupported()) return false;
 
     const notification = new Notification({
@@ -110,6 +132,7 @@ export class ToastManager {
       }
     });
 
+    this.hold(notification);
     notification.show();
 
     // OS-aware "attract attention" behavior:
@@ -140,6 +163,24 @@ export class ToastManager {
       // Linux: intentionally no-op beyond the Notification.show() above.
     }
     return true;
+  }
+
+  private hold(notification: Notification): void {
+    if (this.held.size >= MAX_HELD_TOASTS) {
+      const oldest = this.held.values().next().value;
+      if (oldest) this.held.delete(oldest);
+    }
+    this.held.add(notification);
+    const release = () => { this.held.delete(notification); };
+    notification.on('click', release);
+    notification.on('failed', release);
+    notification.on('close', (details) => {
+      // On Windows a toast that times out fires `close` with reason
+      // 'timedOut' as it moves into the notification center, where it can
+      // still be clicked. Keep holding it until a click or the cap drops it.
+      if (details?.reason === 'timedOut') return;
+      release();
+    });
   }
 }
 

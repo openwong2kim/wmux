@@ -30,6 +30,7 @@ export const COMPUTER_ERROR_CODES = [
   'unsupported_platform',
   'invalid_argument',
   'policy_denied',
+  'needs_foreground',
   'internal',
 ] as const;
 
@@ -97,6 +98,9 @@ export const COMPUTER_ERROR_NEXT_STEPS: Record<ComputerErrorCode, readonly strin
     "This pane's browser is protected, so computer use is refused from it. Do not retry unchanged.",
     "Use the browser_* tools for this pane's own sites, or ask the user to do this step.",
   ],
+  // Internal to main (protocol `foreground: 'refuse'`): main re-sends the
+  // action with real input and never shows this code to an agent.
+  needs_foreground: ['Retry once. If it fails again, tell the user.'],
   internal: ['Retry once (after getAppState when the disposition says input may have reached the app). If it fails again, tell the user.'],
 };
 

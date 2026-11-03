@@ -7,7 +7,8 @@
 // on agents (bots and workers) running together, and the merge lane's
 // auto-merge switch (off by default) with its daily cap, whether bots sign
 // in to Claude with the subscription (default) or an API key, and whether
-// the command reviewer judges bots' unlisted commands (on by default).
+// the command reviewer judges bots' unlisted commands (on by default), and
+// how many company staff seats on this PC work at once.
 // Fields are sanitised one by one on read and on update: a malformed field
 // falls back to its default instead of failing the whole file. A file of
 // another version is refused (the factory does not start on it).
@@ -15,6 +16,8 @@
 import path from 'node:path';
 import { BOT_ID_RE, DEFAULT_BOT_ENGINE } from '../../shared/bot';
 import {
+  COMPANY_MAX_WORKING_MAX,
+  COMPANY_MAX_WORKING_MIN,
   DEFAULT_FACTORY_SETTINGS,
   FACTORY_CONCURRENT_BOTS_MAX,
   FACTORY_CONCURRENT_BOTS_MIN,
@@ -97,6 +100,13 @@ export function mergeFactorySettings(base: FactorySettings, raw: unknown): Facto
     && (r.maxConcurrentAgents as number) <= FACTORY_MAX_AGENTS_MAX
   ) {
     out.maxConcurrentAgents = r.maxConcurrentAgents as number;
+  }
+  if (
+    Number.isInteger(r.companyMaxWorking)
+    && (r.companyMaxWorking as number) >= COMPANY_MAX_WORKING_MIN
+    && (r.companyMaxWorking as number) <= COMPANY_MAX_WORKING_MAX
+  ) {
+    out.companyMaxWorking = r.companyMaxWorking as number;
   }
   if (typeof r.laneAutoMerge === 'boolean') out.laneAutoMerge = r.laneAutoMerge;
   if (Number.isInteger(r.laneDailyCap) && (r.laneDailyCap as number) >= 0 && (r.laneDailyCap as number) <= FACTORY_LANE_DAILY_CAP_MAX) {

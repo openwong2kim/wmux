@@ -159,6 +159,10 @@ export const IPC = {
   FANOUT_WORKER_MODE_SET: 'fanout:workerMode:set',
   FANOUT_REQUIRE_APPROVAL_GET: 'fanout:requireApproval:get',
   FANOUT_REQUIRE_APPROVAL_SET: 'fanout:requireApproval:set',
+  FANOUT_LIVE_CAP_GET: 'fanout:liveTaskCap:get',
+  FANOUT_LIVE_CAP_SET: 'fanout:liveTaskCap:set',
+  FANOUT_HOURLY_CAP_GET: 'fanout:hourlyTaskCap:get',
+  FANOUT_HOURLY_CAP_SET: 'fanout:hourlyTaskCap:set',
   FANOUT_TRUST_AGY_FOLDERS_GET: 'fanout:trustAgyFolders:get',
   FANOUT_TRUST_AGY_FOLDERS_SET: 'fanout:trustAgyFolders:set',
   WORKER_FENCE_OFF_GET: 'workerFence:off:get',
@@ -225,6 +229,10 @@ export const IPC = {
   //   DECK_MOA_CHANGED (send, main → renderer, no payload) says it moved.
   DECK_MOA_CHANGED: 'deck:moa:changed',
   DECK_MOA_DECISIONS: 'deck:moa:decisions',
+  //   DECK_EXPIRED_DECISIONS — the pending decisions an earlier version raised
+  //   that this startup removed, taken once for a one-time notice (a second
+  //   call gets none) ({ decisions: ExpiredDecision[] }, main/deck/deckDecisionStore.ts).
+  DECK_EXPIRED_DECISIONS: 'deck:expired-decisions',
   //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
   //   STATUS reports whether the wmux hook entries are installed in
   //   ~/.claude/settings.json; INSTALL performs the same idempotent install as
@@ -361,6 +369,8 @@ export const IPC = {
   SECRET_GUARD_ENABLED: 'settings:secret-guard-enabled',
   TERMINAL_CORE_SETTINGS_GET: 'settings:terminal-core:get',
   TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
+  LABS_SETTINGS_GET: 'settings:labs:get',
+  LABS_SETTINGS_SET: 'settings:labs:set',
   // #1103 — the renderer's default-WSL-distro choice, pushed to main so
   // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
   // choke point without threading it through every create call.
@@ -475,8 +485,17 @@ export const IPC = {
   WORK_LINK_LIST: 'workLink:list',
   WORK_LINK_GET: 'workLink:get',
   WORK_LINK_CHANGED: 'workLink:changed',
+  // To hand out (src/shared/handOut.ts): the list, an add, a removal, a pick
+  // (main window only), and the push after any change.
+  HAND_OUT_LIST: 'handOut:list',
+  HAND_OUT_ADD: 'handOut:add',
+  HAND_OUT_REMOVE: 'handOut:remove',
+  HAND_OUT_PICK: 'handOut:pick',
+  HAND_OUT_CHANGED: 'handOut:changed',
   // Company presets: the launch line (and brief file) of each seat.
   COMPANY_SEAT_LAUNCHES: 'company:seatLaunches',
+  // "Add a seat on this PC…": one seat's worktree, brief file and launch line.
+  COMPANY_HIRE_SEAT: 'company:hireSeat',
   // Moa's track record (src/shared/trackRecord.ts): the weekly retro card and
   // its schedule. The counts themselves are main's and Moa's, not the renderer's.
   TRACK_RECORD_RETRO_GET: 'trackRecord:retro:get',
@@ -635,6 +654,10 @@ export const IPC = {
   // dismiss, resume now) relayed to the daemon, which owns the state.
   USAGE_LIMIT_CHANGED: 'usageLimit:changed',
   USAGE_LIMIT_LIST: 'usageLimit:list',
+  // Each pane's 5-hour window from its statusline (Record<ptyId, PaneUsageWindow>):
+  // main → renderer push of the whole map, and the renderer's boot read.
+  USAGE_LIMIT_WINDOWS: 'usageLimit:windows',
+  USAGE_LIMIT_WINDOWS_LIST: 'usageLimit:windowsList',
   // N4 — an agent's lost sign-in (shared/agentAuthLost): main's entries, and the status check behind [Sign in again].
   AGENT_AUTH_LOST_CHANGED: 'agentAuth:lostChanged',
   AGENT_AUTH_LOST_LIST: 'agentAuth:lostList',
@@ -907,9 +930,15 @@ export const IPC = {
   // user decision bound to the content hash the approval UI displayed.
   PROJECT_CONFIG_GET: 'project-config:get',
   PROJECT_CONFIG_SET_TRUST: 'project-config:set-trust',
+  // The whole file and its hash, for the company review's view of it.
+  PROJECT_CONFIG_TEXT: 'project-config:text',
   WORKSPACE_PREP_NOTICE: 'workspace-prep:notice',
   PROJECT_PREP_GET: 'project-config:prep-get',
   PROJECT_PREP_SAVE: 'project-config:prep-save',
+  // The folder's company in its wmux.json (insight 170): what the New
+  // company dialog reads, and its save (which trusts the written bytes).
+  PROJECT_COMPANY_GET: 'project-config:company-get',
+  PROJECT_COMPANY_SAVE: 'project-config:company-save',
   WORKSPACE_PREP_EVENT: 'workspace-prep:event',
   WORKSPACE_PREP_LIST: 'workspace-prep:list',
   WORKSPACE_PREP_DECIDE: 'workspace-prep:decide',
@@ -1003,9 +1032,11 @@ export function getPipeName(): string {
   if (process.platform === 'win32') {
     // Use os.userInfo() instead of process.env.USERNAME — env vars may not
     // be inherited by MCP subprocesses spawned by Claude Code
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux${dataSuffix()}-${username}`;
   }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux${dataSuffix()}.sock`;
 }
@@ -1018,9 +1049,11 @@ export function getPipeName(): string {
 // dev-suffixed app's shims can never join the production broker.
 export function getMcpBrokerPipeName(): string {
   if (process.platform === 'win32') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-mcpb${dataSuffix()}-${username}`;
   }
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux-mcpb${dataSuffix()}.sock`;
 }
@@ -1193,6 +1226,7 @@ export function getWmuxHomeDir(): string {
 /** 데몬 제어 소켓/파이프 기본 경로. */
 export function getDaemonSocketPath(): string {
   if (process.platform === 'win32') {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
     const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
   }
@@ -1202,6 +1236,7 @@ export function getDaemonSocketPath(): string {
 /** P7 이전(구버전)의 데몬 제어 소켓 경로 — 폴백/마이그레이션 판정용.
  * 구버전 코드와 동일하게 os.homedir() 기반으로 계산해야 문자열이 일치한다. */
 export function getLegacyDaemonSocketPath(): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '';
   return `${home}/.wmux-daemon${dataSuffix()}.sock`;
 }
@@ -1216,6 +1251,7 @@ export function getSessionSocketPath(sessionId: string): string {
 
 /** P7 이전(구버전)의 세션 소켓 경로 — 구데몬 연결 폴백용(os.homedir() 기반). */
 export function getLegacySessionSocketPath(sessionId: string): string {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires -- this module is shared with the renderer; load os only where it runs
   const home = require('os').homedir() || '';
   return `${home}/.wmux-session-${sessionId}.sock`;
 }

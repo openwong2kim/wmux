@@ -27,6 +27,10 @@ describe('HookIngest agentPidFor daemon wiring', () => {
     expect(body).toMatch(/agentPidFor: \(id\) => identifiedAgentPid\(agentProcessTracker\.identityFor\(id\), agentProcessTracker\.pidFor\(id\)\)/);
   });
 
+  it('passes the pane shell\'s prompt state from its OSC 133 log', () => {
+    expect(constructionBody()).toMatch(/shellAtPromptFor: \(id\) => \{\s*const pane = sessionManager\.getSession\(id\);\s*return !!pane && shellAtPrompt\(pane\.promptLog, pane\.ringBuffer\.totalBytesWritten\);/);
+  });
+
   it('gives HookIngest a fresh liveness probe and a re-arm for a stale pid', () => {
     const body = constructionBody();
     expect(body).toMatch(/isPidRunning: \(pid\) => \{\s*try \{\s*process\.kill\(pid, 0\)/);

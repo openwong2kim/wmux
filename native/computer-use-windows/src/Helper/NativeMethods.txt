@@ -13,6 +13,9 @@ IUIAutomationInvokePattern
 IUIAutomationTogglePattern
 IUIAutomationExpandCollapsePattern
 IUIAutomationSelectionItemPattern
+IUIAutomationTextPattern
+IUIAutomationTextRange
+IUIAutomationTextRangeArray
 UIA_PROPERTY_ID
 UIA_PATTERN_ID
 UIA_CONTROLTYPE_ID
@@ -72,6 +75,14 @@ VerQueryValue
 SendInput
 MapVirtualKey
 GetAsyncKeyState
+// Background (posted) input
+PostMessage
+IsWindowEnabled
+ScreenToClient
+GetClientRect
+GetLastInputInfo
+MonitorFromPoint
+IVirtualDesktopManager
 OpenInputDesktop
 CloseDesktop
 GetUserObjectInformation
@@ -88,6 +99,7 @@ MonitorFromWindow
 GetDpiForMonitor
 IsHungAppWindow
 SendMessageTimeout
+RealGetWindowClass
 CreateCompatibleDC
 CreateDIBSection
 SelectObject

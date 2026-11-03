@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import { classifyLaunchScreen } from '../agentFirstRun';
+
+/** A live capture of Claude Code 2.1.316's screen-reader layout (daemon/approvals/__tests__/fixtures/screen-reader/). */
+const screenReader = (name: string): string =>
+  (JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'daemon', 'approvals', '__tests__', 'fixtures', 'screen-reader', `${name}.json`), 'utf8')) as {
+    screen: string[];
+  }).screen.join('\n');
 
 const UPSELL = [
   'Try the new fullscreen renderer?',
@@ -82,5 +90,16 @@ describe('classifyLaunchScreen', () => {
 
   it('returns null for a plain idle composer', () => {
     expect(classifyLaunchScreen('╭──────╮\n│ > Try "fix lint errors" │\n╰──────╯\n  ? for shortcuts')).toBeNull();
+  });
+
+  it.each(['claude-sr-bash-100x30', 'claude-sr-edit-100x30', 'claude-sr-ask-100x30', 'claude-sr-askmulti-100x30'])(
+    'blocks on a dialog in Claude Code\'s screen-reader layout (%s), which draws no cursor',
+    (name) => {
+      expect(classifyLaunchScreen(screenReader(name))).toEqual({ kind: 'blocking', headline: 'unrecognised menu' });
+    },
+  );
+
+  it('reads a screen-reader screen whose dialog was answered as no menu', () => {
+    expect(classifyLaunchScreen(screenReader('claude-sr-ask-answered-100x30'))).toBeNull();
   });
 });

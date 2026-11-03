@@ -69,7 +69,7 @@ export interface RemoteA2aBridgeDeps {
 }
 
 type Mark =
-  | { delivered: true; ptyId?: string; note?: 'pasted-not-submitted' }
+  | { delivered: true; ptyId?: string }
   | { held: A2aRemoteHeldReason }
   | { attempted: false; waiting?: A2aRemoteWaitingCause };
 
@@ -271,7 +271,8 @@ export class RemoteA2aBridge {
     let res: unknown;
     try {
       res = item
-        ? await this.deps.sendToRenderer(A2A_REMOTE_NOTIFY_METHOD, { task, messageId: item.messageId, ...(resnapshot ? { resnapshot: true } : {}) })
+        // A gated paste with its submit receipt can outlast the bridge's 5 s default.
+        ? await this.deps.sendToRenderer(A2A_REMOTE_NOTIFY_METHOD, { task, messageId: item.messageId, ...(resnapshot ? { resnapshot: true } : {}) }, { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS })
         : await this.deps.sendToRenderer('a2a.task.send', this.taskParams(task, marker, resnapshot), { timeoutMs: GATED_NEW_TASK_SEND_MAIN_TIMEOUT_MS });
     } catch (err) {
       this.backoff(unit.key);
@@ -288,7 +289,7 @@ export class RemoteA2aBridge {
       this.misses.delete(unit.key);
       await this.mark(unit.key, {
         ...ref,
-        mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}), ...(result.note ? { note: result.note } : {}) },
+        mark: { delivered: true, ...(result.ptyId ? { ptyId: result.ptyId } : {}) },
       });
       return 'delivered';
     }

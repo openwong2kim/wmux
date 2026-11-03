@@ -141,8 +141,11 @@ describe('daemonLauncherCore — concurrent start', () => {
     await vi.waitFor(() => expect(fs.existsSync(path.join(wmuxDir, 'daemon-pipe'))).toBe(true), { timeout: 5_000 });
     fs.unlinkSync(path.join(wmuxDir, 'daemon.pid'));
 
-    const info = await ensureDaemon(deps());
+    // Reusing the live daemon never waits on the copy of the runtime (Windows).
+    const stageDaemonRuntime = vi.fn(async () => null);
+    const info = await ensureDaemon({ ...deps(), stageDaemonRuntime });
     if (info.pid && info.pid !== owner.pid) launched.push(info.pid);
+    expect(stageDaemonRuntime).not.toHaveBeenCalled();
     expect(info).toMatchObject({ pid: owner.pid, spawned: false });
     expect(fs.readFileSync(path.join(wmuxDir, 'daemon.lock'), 'utf8')).toBe(String(owner.pid));
     expect(fs.existsSync(path.join(wmuxDir, 'daemon-pipe'))).toBe(true);

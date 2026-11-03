@@ -73,4 +73,44 @@ describe('company presets', () => {
     expect(ceo).toContain('wmux checks every PR it names (its current head, required checks and open review threads) and refuses until they pass.');
     expect(dev).not.toContain('wmux checks every PR');
   });
+
+  it('tells the CEO a brief past the PC\'s cap waits for a slot, and the ways out', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
+    expect(ceo).toContain('Only a few seats on this PC work at once');
+    expect(ceo).toContain('its receipt says reason "cap" and names the seats holding the slots');
+    expect(ceo).toContain('once one of them frees its slot: no task of that seat is in progress any more');
+    expect(ceo).toContain('give the work to a seat on another PC');
+    expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 })).not.toContain('reason "cap"');
+  });
+
+  it('teaches the CEO, and only the CEO, to find and give out work from To hand out', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
+    expect(ceo).toContain('Work waiting for this company may be on To hand out');
+    // A relative folder matches nothing, and a pick without item_id is refused.
+    expect(ceo).toContain('the wmux hand_out tool with action list and folder set to the absolute path of the folder you work in shows it.');
+    expect(ceo).toContain('use action pick with item_id from list, to the seat\'s #name, and the brief in data, so the seat gets a full brief and the item is linked');
+    expect(ceo).toContain('action add puts new work on the list.');
+    // The brief's shape is still the one the brief-shape check reads.
+    expect(missingBriefFields(JSON.parse(/data: (\{.*?\})\./.exec(ceo)![1].replace(/…/g, 'x')))).toEqual([]);
+    expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 })).not.toContain('hand_out');
+  });
+
+  it('names the company\'s folder to list To hand out from, when the company has one', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, folder: '/code/shop', ceo: 0, seat: 0 });
+    // The board reads this folder, so a CEO in a subfolder still lists what the board shows.
+    expect(ceo).toContain('the wmux hand_out tool with action list and folder set to /code/shop, this company\'s folder, shows it.');
+    expect(ceo).not.toContain('the folder you work in');
+  });
+
+  it('tells both sides that a reply on a reported task hands it back, and the CEO that it takes a slot', () => {
+    const seats = [{ label: 'ceo', owns: '' }, { label: 'dev-1', owns: '' }];
+    const ceo = seatBrief({ company: 'checkout', seats, ceo: 0, seat: 0 });
+    expect(ceo).toContain('A reply to a seat\'s report hands the work back and takes a slot too; at the cap it is refused');
+    expect(ceo).toContain('reply again once one of them frees its slot, or, if the report is good enough, mark the task done.');
+    expect(seatBrief({ company: 'checkout', seats, ceo: 0, seat: 1 }))
+      .toContain('A reply from #ceo on a task you reported hands it back to you: do the work and report it again the same way.');
+  });
 });

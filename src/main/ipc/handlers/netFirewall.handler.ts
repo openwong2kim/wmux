@@ -19,6 +19,7 @@ import { wrapHandler } from '../wrapHandler';
 import { isMainWindowSender } from '../mainWindowSender';
 import type { DaemonClient } from '../../DaemonClient';
 import { FirewallFixer } from '../../net/firewallFix';
+import { stagedDaemonExe } from '../../daemon/launcher';
 import { shellExecuteAndWait, tokenElevationType } from '../../net/elevate';
 import { isSelfElevated } from '../../computer/selfElevation';
 
@@ -75,6 +76,10 @@ const fixer = new FirewallFixer({
   scope: () => ({ dataSuffix: dataSuffix(), user: currentRuleUser(), group: FIREWALL_GROUP }),
   // The same long form the daemon reports for the same program.
   selfExe: canonicalExePath(process.execPath),
+  stagedExe: () => {
+    const exe = stagedDaemonExe();
+    return exe ? canonicalExePath(exe) : null;
+  },
   tokenType: tokenElevationType,
   selfElevated: isSelfElevated,
   log: (msg) => console.warn(msg),

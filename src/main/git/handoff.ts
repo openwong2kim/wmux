@@ -37,7 +37,7 @@ import {
 import type { WorkLink, WorkLinkFilter, WorkLinkReason, WorkLinkState } from '../../shared/workLink';
 import type { LedgerStatus } from '../../shared/ledger';
 import type { WorkLinkUpsert } from '../workLink/workLinkStore';
-import type { FanOutRequest, FanOutResult } from '../worktask/FanOutService';
+import type { FanOutRequest, FanOutResult, FanOutTaskResult } from '../worktask/FanOutService';
 
 const ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
 /** States that mean work on the item is under way. */
@@ -280,6 +280,40 @@ export function prepNoticeOf(result: FanOutResult, task: { configFiles?: { missi
   return skipped || missing + refused > 0 ? { ...(skipped ? { skipped } : {}), missing, refused } : undefined;
 }
 
+/** One task started in a new worktree, with the fan-out's answer; or why it did not start. */
+export type WorktreeTaskStart =
+  | { ok: false; message: string }
+  | { ok: true; task: FanOutTaskResult & { workspaceId: string }; result: FanOutResult };
+
+/**
+ * One task in a new worktree of `repoPath` on `branch`, through the fan-out
+ * path from `workspaceId`, with `prompt` as its prompt. Shared by the Git
+ * page's hand-off and To hand out (main/handOut/handOutPick.ts).
+ */
+export async function startWorktreeTask(
+  startFanOut: HandoffDeps['startFanOut'],
+  args: { key: string; prompt: string; branch: string; repoPath: string; agentCmd: string; workspaceId: string },
+): Promise<WorktreeTaskStart> {
+  const result = await startFanOut({
+    idempotencyKey: args.key,
+    prompt: args.prompt,
+    titles: [args.branch],
+    branches: [args.branch],
+    repoPath: args.repoPath,
+    agentCmd: args.agentCmd,
+    worktree: true,
+    verifiedWorkspaceId: args.workspaceId,
+    // A person started this work: its worktree is prepared like one they
+    // opened by hand (config files copied by default).
+    prepOrigin: 'human',
+  }).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err), tasks: [] }) as FanOutResult);
+  const task = result.tasks?.find((t) => t.ok);
+  if (!result.ok || !task || !task.workspaceId) {
+    return { ok: false, message: result.error ?? result.tasks?.find((t) => t.error)?.error ?? 'the worktree could not be started' };
+  }
+  return { ok: true, task: { ...task, workspaceId: task.workspaceId }, result };
+}
+
 export async function startHandoffWorktree(deps: HandoffDeps, raw: unknown): Promise<HandoffStartResult> {
   const req = (raw ?? {}) as Partial<Record<keyof HandoffStartRequest, unknown>>;
   const item = parseHandoffRef(req.item);
@@ -294,23 +328,16 @@ export async function startHandoffWorktree(deps: HandoffDeps, raw: unknown): Pro
       if (busy) return { ok: false, code: 'in-progress', inProgress: busy };
     }
     const branch = handoffBranch(item);
-    const result = await deps.startFanOut({
-      idempotencyKey: `git-handoff-${randomUUID()}`,
+    const started = await startWorktreeTask(deps.startFanOut, {
+      key: `git-handoff-${randomUUID()}`,
       prompt: buildHandoffMessage(item, typeof req.note === 'string' ? req.note : undefined),
-      titles: [branch],
-      branches: [branch],
+      branch,
       repoPath,
       agentCmd: agent.cmd,
-      worktree: true,
-      verifiedWorkspaceId: workspaceId,
-      // A person started this issue: its worktree is prepared like one they
-      // opened by hand (config files copied by default).
-      prepOrigin: 'human',
-    }).catch((err: unknown) => ({ ok: false, error: err instanceof Error ? err.message : String(err), tasks: [] }) as FanOutResult);
-    const task = result.tasks?.find((t) => t.ok);
-    if (!result.ok || !task || !task.workspaceId) {
-      return { ok: false, code: 'error', message: result.error ?? result.tasks?.find((t) => t.error)?.error ?? 'the worktree could not be started' };
-    }
+      workspaceId,
+    });
+    if (!started.ok) return { ok: false, code: 'error', message: started.message };
+    const { task, result } = started;
     const reuse = findReusableLink(deps.links, item);
     const link = await deps.links.upsert({
       ...(reuse ? { id: reuse.id } : {}),
@@ -346,7 +373,8 @@ export function linkStateForLedger(status: LedgerStatus): { state: WorkLinkState
  * Keep a worktree hand-off's link in step with its fan-out mission: the
  * mission's ledger transitions (working, review requested, done, failed,
  * closed) move the link that names the mission's workspace as its owner. Such
- * a link has no A2A task, so the state set here is the state it shows.
+ * a link has no A2A task, so the state set here is the state it shows. A To
+ * hand out item started in a worktree follows the same way.
  * Returns the unsubscribe.
  */
 export function watchHandoffWorktreeLinks(
@@ -356,7 +384,8 @@ export function watchHandoffWorktreeLinks(
   return ledger.onTransition(({ entry, to }) => {
     const owned = links
       .list({})
-      .filter((l) => l.owner.workspaceId === entry.taskWorkspaceId && !!l.worktree && !l.a2aTaskId && (l.origin === 'issue' || l.origin === 'pr'));
+      .filter((l) => l.owner.workspaceId === entry.taskWorkspaceId && !!l.worktree && !l.a2aTaskId
+        && (l.origin === 'issue' || l.origin === 'pr' || l.origin === 'hand-out'));
     if (owned.length === 0) return;
     const next = linkStateForLedger(to);
     for (const l of owned) void links.setState(l.id, next.state, next.reason).catch(() => null);

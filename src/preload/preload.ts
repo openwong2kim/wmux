@@ -11,9 +11,11 @@ import {
 } from '../shared/browserBackend';
 import { WORKFLOW_OWNER_IPC } from '../shared/botWorkflow';
 import type { TerminalCoreSettings, TerminalEngine } from '../shared/terminalCoreSettings';
+import type { LabsSettings, LabsStatus } from '../shared/labsSettings';
 import { CHAT_IPC } from '../shared/transcript/chatIpc';
 import type { ChatBridgeApi } from '../shared/transcript/turnEvents';
 import { CHATV2_IPC, type ChatV2BridgeApi, type ChatV2EventsPush, type ChatV2ResyncPush } from '../shared/chatv2/ipc';
+import { EXTERNAL_SESSIONS_IPC, type ExternalSession, type ExternalSessionsApi } from '../shared/externalSessions';
 import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron';
 import { START_POLARITY_STORAGE_KEY, resolveStartPolarity, startPaintCss } from '../shared/windowStartPaint';
 import { startLocaleFromArgv } from '../shared/startLocale';
@@ -87,7 +89,7 @@ import type { NotificationCategory, StallPrefillResult } from '../shared/types';
 import type { ComputerUseSettingsPayload } from '../shared/computer/config';
 import type { QuickLaunchSettingsPayload } from '../shared/quickLaunch';
 import type { ResumeBinding } from '../shared/agentResume';
-import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
+import type { PaneUsageLimit, PaneUsageLimitPatch, PaneUsageWindow } from '../shared/usageLimit';
 import type { AuthLostEntry } from '../shared/agentAuthLost';
 import type { DictationAssetsResult, DictationMicAccess, DictationModelState } from '../shared/dictation';
 import type { PreviewChangedEvent, PreviewLinkEvent, PreviewOpenResult } from '../shared/filePreview';
@@ -166,6 +168,8 @@ import type {
 import type { PcRailFeedEvent } from '../main/remote/pcRailWire';
 import type { PairFailureReason, RemoteAttachmentDescriptor, RemoteErrorReason, RemoteHostPublic, RemoteHostStatus, RemoteWorkspaceSummary, SshAddProgress, SshAddResult, SshConfirmResult, SshServiceResult, SshTunnelState } from '../shared/remoteHosts';
 import { REMOTE_SSH_IPC } from '../shared/remoteHosts';
+import { SCREEN_READER_IPC } from '../shared/screenReader';
+import { SECURITY_NOTICE_IPC, type SecurityNotice } from '../shared/securityNotice';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -332,7 +336,7 @@ const electronAPI = {
     // wmux.json leaf — `exec` runs the command as the pane's ROOT process and
     // `supervision` arms the daemon's PaneSupervisor (daemon mode only; the
     // local branch ignores them with a one-time warning toast).
-    create: (options?: { shell?: string; cwd?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
+    create: (options?: { shell?: string; cwd?: string; wslDistro?: string; recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'sourceSessionId'>; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; wslAccountLoginEnvKey?: 'CLAUDE_CONFIG_DIR' | 'CODEX_HOME'; ignoreAccountBinding?: boolean; initialCommand?: string; exec?: string; supervision?: { restart: 'on-failure' | 'always'; limit?: { burst?: number; healthyUptimeSec?: number }; restorePermissionMode?: boolean }; fanoutTaskOf?: string; fanoutOrigin?: import('../shared/fanoutOrigin').FanoutOrigin; secretGrant?: string; fanoutLaunch?: { taskId: string; gen: number }; remoteSpawnOf?: string }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
     write: (id: string, data: string) => {
       ipcRenderer.send(IPC.PTY_WRITE, id, data);
@@ -588,6 +592,14 @@ const electronAPI = {
     /** Windows: the system asks for reduced motion (Animation effects off).
      *  False elsewhere, where the media query already says it. */
     getReducedMotion: () => ipcRenderer.invoke(IPC.SYSTEM_REDUCED_MOTION) as Promise<boolean>,
+    /** A screen reader is on (main/screenReader.ts). */
+    getScreenReader: () => ipcRenderer.invoke(SCREEN_READER_IPC.get) as Promise<boolean>,
+    /** A screen reader turned on or off. Returns the unsubscribe. */
+    onScreenReaderChanged: (callback: (on: boolean) => void) => {
+      const listener = (_event: unknown, on: boolean) => callback(on === true);
+      ipcRenderer.on(SCREEN_READER_IPC.changed, listener);
+      return () => { ipcRenderer.removeListener(SCREEN_READER_IPC.changed, listener); };
+    },
   },
   // Keep the computer awake (main/power/sleepPrevention.ts).
   power: {
@@ -603,6 +615,8 @@ const electronAPI = {
   settings: {
     getTerminalCore: () => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_GET) as Promise<TerminalCoreSettings>,
     setTerminalCore: (engine: TerminalEngine) => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_SET, engine) as Promise<TerminalCoreSettings>,
+    getLabs: () => ipcRenderer.invoke(IPC.LABS_SETTINGS_GET) as Promise<LabsStatus>,
+    setLabs: (settings: LabsSettings) => ipcRenderer.invoke(IPC.LABS_SETTINGS_SET, settings) as Promise<LabsStatus>,
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
     setMutedNotificationCategories: (categories: NotificationCategory[]) =>
       ipcRenderer.send(IPC.MUTED_NOTIFICATION_CATEGORIES, categories),
@@ -663,6 +677,15 @@ const electronAPI = {
       ipcRenderer.send(IPC.NOTIFICATION_OS_TOAST, payload),
     // E5 — push unread count to main for the dock/tray badge.
     setBadgeCount: (count: number) => ipcRenderer.send(IPC.NOTIFICATION_BADGE_COUNT, count),
+    // Daemon security notices (shared/securityNotice.ts): main keeps each one
+    // until it is acknowledged, outside the notification policy.
+    securityNotices: () => ipcRenderer.invoke(SECURITY_NOTICE_IPC.list) as Promise<SecurityNotice[]>,
+    onSecurityNotice: (callback: (notice: SecurityNotice) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, notice: SecurityNotice) => callback(notice);
+      ipcRenderer.on(SECURITY_NOTICE_IPC.added, listener);
+      return () => { ipcRenderer.removeListener(SECURITY_NOTICE_IPC.added, listener); };
+    },
+    acknowledgeSecurityNotice: (id: string) => ipcRenderer.invoke(SECURITY_NOTICE_IPC.acknowledge, id) as Promise<void>,
     // Fired once when useNotificationListener's effect mounts and subscribes
     // — confirms to main that IPC.NOTIFICATION sends will actually reach a
     // live listener, not just a live (but reloading/unmounted) window.
@@ -800,6 +823,10 @@ const electronAPI = {
     getRequireApproval: () => ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_GET) as Promise<boolean>,
     setRequireApproval: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_REQUIRE_APPROVAL_SET, value) as Promise<boolean>,
+    getLiveTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_GET) as Promise<number>,
+    setLiveTaskCap: (value: number) => ipcRenderer.invoke(IPC.FANOUT_LIVE_CAP_SET, value) as Promise<number>,
+    getHourlyTaskCap: () => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_GET) as Promise<number>,
+    setHourlyTaskCap: (value: number) => ipcRenderer.invoke(IPC.FANOUT_HOURLY_CAP_SET, value) as Promise<number>,
     getTrustAgyFolders: () => ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_GET) as Promise<boolean>,
     setTrustAgyFolders: (value: boolean) =>
       ipcRenderer.invoke(IPC.FANOUT_TRUST_AGY_FOLDERS_SET, value) as Promise<boolean>,
@@ -1034,6 +1061,12 @@ const electronAPI = {
         return () => { ipcRenderer.removeListener(IPC.DECK_MOA_CHANGED, listener); };
       },
     },
+    // The pending decisions an earlier version raised that this startup
+    // removed (no card answers them), taken once for a one-time notice.
+    expiredDecisions: () =>
+      ipcRenderer.invoke(IPC.DECK_EXPIRED_DECISIONS) as Promise<{
+        decisions: import('../main/deck/deckDecisionStore').ExpiredDecision[];
+      }>,
     // Claude Code hook bridge (in-app `wmux setup-hooks`). STATUS feeds the
     // install prompt (launch + off→assist/auto mode switch); INSTALL is the
     // explicit user-clicked install — never auto-run.
@@ -1614,10 +1647,28 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.WORK_LINK_CHANGED, listener); };
     },
   },
+  // To hand out (shared/handOut.ts): main keeps the list and derives each
+  // item's state from its work links; onChanged says to re-read it.
+  handOut: {
+    list: () => ipcRenderer.invoke(IPC.HAND_OUT_LIST) as Promise<import('../shared/handOut').HandOutEntry[]>,
+    add: (request: import('../shared/handOut').HandOutAddRequest) =>
+      ipcRenderer.invoke(IPC.HAND_OUT_ADD, request) as Promise<import('../shared/handOut').HandOutAddResult>,
+    remove: (id: string) => ipcRenderer.invoke(IPC.HAND_OUT_REMOVE, id) as Promise<{ ok: boolean }>,
+    pick: (request: import('../shared/handOut').HandOutPickRequest) =>
+      ipcRenderer.invoke(IPC.HAND_OUT_PICK, request) as Promise<import('../shared/handOut').HandOutPickResult>,
+    onChanged: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on(IPC.HAND_OUT_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.HAND_OUT_CHANGED, listener); };
+    },
+  },
   // Company presets: write each seat's brief file and get its launch line.
   company: {
     seatLaunches: (req: import('../main/company/seatLaunch').SeatLaunchRequest) =>
       ipcRenderer.invoke(IPC.COMPANY_SEAT_LAUNCHES, req) as Promise<import('../main/company/seatLaunch').SeatLaunchResult>,
+    // One seat added to a company that already runs.
+    hireSeat: (req: import('../main/company/seatLaunch').HireSeatRequest) =>
+      ipcRenderer.invoke(IPC.COMPANY_HIRE_SEAT, req) as Promise<import('../main/company/seatLaunch').HireSeatResult>,
   },
   // Fleet's Plan card: Claude's plan dialogs and the answer to one (main window only).
   planApprovals: {
@@ -1700,7 +1751,8 @@ const electronAPI = {
         { ok: true; repoPaths: string[] } | { ok: false }
       >,
     // mode='workspace'는 cwd repo/worktree 자신의 미커밋 변경만(본 repo 매핑 없음).
-    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace') =>
+    // mode='since': the same folder's changes since targetHeadOid, committed or not.
+    read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace' | 'since') =>
       ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '', mode ?? 'task') as Promise<
         import('../shared/diffParse').DiffReadResult | import('../shared/diffParse').DiffReadError
       >,
@@ -1773,14 +1825,23 @@ const electronAPI = {
   projectConfig: {
     get: (cwd: string) =>
       ipcRenderer.invoke(IPC.PROJECT_CONFIG_GET, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigState>,
-    setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string, unattended?: boolean) =>
-      ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash, unattended === true) as Promise<{ ok: boolean }>,
+    text: (cwd: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_TEXT, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigText | null>,
+    // `companyReviewed`: the approving dialog showed the file's company.
+    setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string, unattended?: boolean, companyReviewed?: boolean) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash, unattended === true, companyReviewed === true) as Promise<{ ok: boolean }>,
     // New workspace setup: read the section, and save it (the save is the
     // trust approval of the written bytes).
     prepGet: (cwd: string) =>
       ipcRenderer.invoke(IPC.PROJECT_PREP_GET, cwd) as Promise<import('../shared/workspacePrepSettings').WorkspacePrepSettingsView>,
     prepSave: (cwd: string, settings: import('../shared/workspacePrepSettings').WorkspacePrepSettings, expectedHash?: string) =>
       ipcRenderer.invoke(IPC.PROJECT_PREP_SAVE, cwd, settings, expectedHash ?? null) as Promise<import('../shared/workspacePrepSettings').WorkspacePrepSaveResult>,
+    // The folder's company: read before saving, and save (the save is the
+    // trust approval of the written bytes, the company marked reviewed).
+    companyGet: (folder: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_COMPANY_GET, folder) as Promise<import('../shared/companyFile').CompanyFileView>,
+    companySave: (folder: string, company: Record<string, unknown>, expectedHash?: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_COMPANY_SAVE, folder, company, expectedHash ?? null) as Promise<import('../shared/companyFile').CompanyFileSaveResult>,
   },
   // A new worktree's preparation notice from main (a Quick Launch worktree,
   // whose composer closes on start): shown as a toast in this window.
@@ -2117,7 +2178,25 @@ const electronAPI = {
     },
     update: (ptyId: string, patch: PaneUsageLimitPatch) =>
       ipcRenderer.invoke(IPC.USAGE_LIMIT_UPDATE, { ptyId, patch }) as Promise<{ ok: boolean }>,
+    // Each pane's 5-hour window from its statusline: the boot read, then the whole map on each change.
+    windows: () => ipcRenderer.invoke(IPC.USAGE_LIMIT_WINDOWS_LIST) as Promise<Record<string, PaneUsageWindow>>,
+    onWindows: (callback: (windows: Record<string, PaneUsageWindow>) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, windows: Record<string, PaneUsageWindow>) => callback(windows);
+      ipcRenderer.on(IPC.USAGE_LIMIT_WINDOWS, listener);
+      return () => { ipcRenderer.removeListener(IPC.USAGE_LIMIT_WINDOWS, listener); };
+    },
   },
+  // External sessions (shared/externalSessions.ts): agents running outside
+  // wmux, status only. `onChanged` always carries the full list.
+  externalSessions: {
+    list: () => ipcRenderer.invoke(EXTERNAL_SESSIONS_IPC.list) as Promise<ExternalSession[]>,
+    hide: (id: string) => ipcRenderer.invoke(EXTERNAL_SESSIONS_IPC.hide, id) as Promise<void>,
+    onChanged: (callback: (sessions: ExternalSession[]) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, sessions: ExternalSession[]) => callback(sessions);
+      ipcRenderer.on(EXTERNAL_SESSIONS_IPC.changed, listener);
+      return () => { ipcRenderer.removeListener(EXTERNAL_SESSIONS_IPC.changed, listener); };
+    },
+  } satisfies ExternalSessionsApi,
   // Voice dictation (shared/dictation): the model's state and its one-time
   // download (called only from the owner's consent), the engine's assets,
   // and the microphone's OS access.

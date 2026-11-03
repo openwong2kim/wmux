@@ -43,7 +43,9 @@ export default defineConfig({
       // (resolvable in dev; packaged builds must ship it unpacked from the asar —
       // see the Command Deck P2 deferred note in the impl plan).
       // ws probes optional native accelerators at runtime; keep those optional requires intact.
-      external: ['node-pty', 'koffi', 'ws', '@anthropic-ai/claude-agent-sdk'],
+      // `original-fs` is Electron's built-in unpatched fs (no package to bundle);
+      // daemonRuntimeStage.ts copies a tree holding app.asar with it.
+      external: ['node-pty', 'koffi', 'ws', '@anthropic-ai/claude-agent-sdk', 'original-fs'],
     },
   },
 });

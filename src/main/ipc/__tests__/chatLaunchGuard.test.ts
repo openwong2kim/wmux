@@ -29,7 +29,7 @@ describe('pty:write-launch', () => {
     const handler = body.slice(body.indexOf('ipcMain.handle(IPC.PTY_WRITE_LAUNCH'));
     const guard = handler.indexOf('launchAllowedByChat(dc, id, text)');
     expect(guard).toBeGreaterThan(0);
-    expect(guard).toBeLessThan(handler.indexOf('daemonClient.writeToSession(id, line)'));
+    expect(guard).toBeLessThan(handler.indexOf('daemonClient.writeToSession(id, typed)'));
   });
 
   it('asks about a folder-trust prompt before the launch is recorded or typed, an unreadable screen stopping all but a line a person clicked for', () => {
@@ -43,6 +43,6 @@ describe('pty:write-launch', () => {
     expect(handler.slice(ask)).toMatch(/^[^\n]*\n\s*if \(trustRefusal\) throw new Error\(`PTY_WRITE_LAUNCH: \$\{trustRefusal\}`\);/);
     expect(ask).toBeLessThan(handler.indexOf('launchAllowedByChat(dc, id, text)'));
     expect(ask).toBeLessThan(handler.indexOf('beginPaneRelaunch(id)'));
-    expect(ask).toBeLessThan(handler.indexOf('daemonClient.writeToSession(id, line)'));
+    expect(ask).toBeLessThan(handler.indexOf('daemonClient.writeToSession(id, typed)'));
   });
 });

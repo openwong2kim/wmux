@@ -228,6 +228,20 @@ describe('a2a.task.update — a company task is done only once wmux has checked 
     expect((updates()[0].params.evidence as { items: unknown[] }).items).toHaveLength(2);
   });
 
+  it('checks a PR named only in the report\'s evidence, as a report from another PC carries it', async () => {
+    const report = {
+      state: 'input-required',
+      timestamp: 'x',
+      message: message('m2', 'agent', [{ kind: 'text', text: 'Reported done on PC-B.' }]),
+      evidence: { summary: 'Done on PC-B', items: [{ kind: 'command', status: 'passed', summary: `opened ${PR_URL}`, command: 'gh pr create' }] },
+    };
+    const { router, updates, donePrFacts } = setup({ daemonTask: task({ status: report }) });
+    await router.dispatch({ id: 'd6c', method: 'a2a.task.update', params: done() });
+    expect(donePrFacts).toHaveBeenCalledTimes(1);
+    expect(donePrFacts).toHaveBeenCalledWith(expect.any(String), 'github.com/acme/app', 12);
+    expect((updates()[0].params.evidence as { items: unknown[] }).items).toHaveLength(2);
+  });
+
   it('reads the task from the renderer when the daemon does not have it', async () => {
     const { router, updates, donePrFacts } = setup({ daemonTask: null, rendererTask: task() });
     await router.dispatch({ id: 'd7', method: 'a2a.task.update', params: done() });

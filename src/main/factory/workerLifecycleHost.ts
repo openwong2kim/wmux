@@ -17,6 +17,9 @@ import { dmThreadId, parseThreadId, type CardNotice, type ThreadId } from '../..
 import type { LedgerEntry } from '../../shared/ledger';
 import { BOT_EVENT } from '../../shared/bot';
 import { sanitizePtyText } from '../../shared/types';
+import { withScreenReaderFlag } from '../../shared/screenReaderLaunch';
+import { isScreenReaderOn, launcherVersionsIn } from '../screenReaderService';
+import { getPtyShell } from '../pty/ptyShellRegistry';
 import { eventBus } from '../events/EventBus';
 import { getLastBroadcastAgentStatus, hasOutstandingRunningClaim } from '../ipc/handlers/metadata.handler';
 import { lastHookTurnStart, lastTurnEnd } from '../notification/turnEvidence';
@@ -625,7 +628,9 @@ export function startWorkerLifecycle(deps: WorkerLifecycleDeps): () => void {
         if (!c) return false;
         const fenceSupport = prepared as WorkerFenceSupport | undefined;
         const guarded = guardSessionLaunch(sessionId, line, fenceSupport ? { fenceSupport } : {});
-        const typed = c.writeToSession(sessionId, sanitizePtyText(guarded) + '\r');
+        // A screen reader's agent starts in its own screen-reader mode, as from
+        // pty:write-launch; the guard's record keeps `guarded`.
+        const typed = c.writeToSession(sessionId, sanitizePtyText(withScreenReaderFlag(guarded, isScreenReaderOn(), launcherVersionsIn(getPtyShell(sessionId)))) + '\r');
         if (typed) noteGuardedLaunchTyped(sessionId, guarded);
         return typed;
       },

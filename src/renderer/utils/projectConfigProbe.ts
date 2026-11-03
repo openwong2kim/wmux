@@ -59,6 +59,12 @@ export function maybeAutoApplyProjectLayout(workspaceId: string): boolean {
   if (!ws || !project) return false;
   if (project.trust !== 'trusted' || !project.config?.layout) return false;
   if (state.projectLayoutAutoApplied[workspaceId]) return false;
+  // A company's panes are its seats: a one-seat company looks fresh, and a
+  // layout laid over it would take its CEO's pane.
+  if (ws.company) {
+    state.markProjectLayoutAutoApplied(workspaceId);
+    return false;
+  }
   if (!isFreshWorkspace(ws)) {
     // Mark anyway: the user's existing arrangement should not get clobbered
     // by a LATER fresh-looking moment (e.g. closing tabs back down to one).
@@ -100,14 +106,17 @@ export async function applyProjectLayoutFresh(workspaceId: string): Promise<bool
 /** Persist a trust decision, re-probe, and (on trust) try the auto-apply.
  * `unattended` is the explicit unattended reboot-survival consent — only
  * meaningful for a 'trusted' decision (main forces it false otherwise). The
- * caller passes the checkbox's current value every time (no carry-forward). */
+ * caller passes the checkbox's current value every time (no carry-forward).
+ * `companyReviewed`: the approving dialog showed the file's company.
+ * Resolves false when the decision was not saved (a toast says why). */
 export async function decideProjectTrust(
   workspaceId: string,
   decision: 'trusted' | 'denied' | 'clear',
   unattended = false,
-): Promise<void> {
+  companyReviewed = false,
+): Promise<boolean> {
   const project = useStore.getState().projectConfigs[workspaceId];
-  if (!project?.root) return;
+  if (!project?.root) return false;
   try {
     await window.electronAPI.projectConfig.setTrust(
       project.root,
@@ -116,14 +125,16 @@ export async function decideProjectTrust(
       // while the dialog was open, main evaluates the live file as 'stale'.
       decision === 'clear' ? undefined : project.contentHash,
       decision === 'trusted' && unattended,
+      decision === 'trusted' && companyReviewed,
     );
   } catch (err) {
     useStore.getState().pushToast({
       level: 'error',
       message: `Failed to save trust decision: ${err instanceof Error ? err.message : String(err)}`,
     });
-    return;
+    return false;
   }
   await probeProjectConfig(workspaceId);
   if (decision === 'trusted') maybeAutoApplyProjectLayout(workspaceId);
+  return true;
 }

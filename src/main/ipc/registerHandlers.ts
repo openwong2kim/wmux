@@ -1,6 +1,8 @@
 import { registerTerminalCoreHandlers } from './handlers/terminalCore.handler';
+import { registerLabsHandlers } from './handlers/labs.handler';
 import { registerQuickCommandHandlers } from './handlers/quickCommand.handler';
 import { registerUsageLimitHandlers } from '../usageLimit/usageLimit.handler';
+import { registerExternalSessionsHandlers } from '../externalSessions/externalSessions.handler';
 import { registerAgentAuthHandlers } from '../agentAuth/agentAuthLost';
 import { registerDictationHandlers } from '../dictation/dictation.handler';
 import { registerContinueOnAccountHandler } from '../account/continueOnAccount.handler';
@@ -201,6 +203,7 @@ export function registerAllHandlers(
 ): () => void {
   const cleanupPty = registerPTYHandlers(ptyManager, ptyBridge, daemonClient, getWindow, { daemonMayReturn: options.daemonMayReturn });
   const cleanupUsageLimit = registerUsageLimitHandlers(daemonClient, getWindow);
+  const cleanupExternalSessions = registerExternalSessionsHandlers(daemonClient, getWindow);
   const cleanupAgentAuth = registerAgentAuthHandlers(daemonClient, getWindow);
   const cleanupDictation = registerDictationHandlers(getWindow);
   const cleanupContinueOnAccount = registerContinueOnAccountHandler(daemonClient);
@@ -210,6 +213,7 @@ export function registerAllHandlers(
   // import-block note above for the race rationale.
   const cleanupShell = registerShellHandlers();
   const cleanupTerminalCore = registerTerminalCoreHandlers(daemonClient);
+  const cleanupLabs = registerLabsHandlers(daemonClient);
   const cleanupFonts = registerFontHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow, {
     // X1: daemon-backed sessions never appear in ptyManager — disable the
@@ -614,6 +618,7 @@ export function registerAllHandlers(
   return () => {
     cleanupPty();
     cleanupUsageLimit();
+    cleanupExternalSessions();
     cleanupAgentAuth();
     cleanupDictation();
     cleanupContinueOnAccount();
@@ -622,6 +627,7 @@ export function registerAllHandlers(
     // live outside this swap cycle (see import-block note above).
     cleanupShell();
     cleanupTerminalCore();
+    cleanupLabs();
     cleanupFonts();
     cleanupMetadata();
     if (cleanupLocalContext) cleanupLocalContext();

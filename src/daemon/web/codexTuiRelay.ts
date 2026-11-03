@@ -18,6 +18,10 @@ export class CodexRelayUnavailableError extends Error {
 // Keep transport bounds separate from the much smaller Chat display budget.
 const MAX_FRAME = 16 * 1024 * 1024;
 const MAX_BUFFER = 32 * 1024 * 1024;
+// A frame from the server: plugin/list alone reached 22.5 MiB (#2612). Sends
+// to the TUI may hold two such frames before the connection is dropped.
+const MAX_SERVER_FRAME = 64 * 1024 * 1024;
+const MAX_SERVER_BUFFER = 2 * MAX_SERVER_FRAME;
 /** How long a request that needs the pane's identity waits for the pane to be
  * committed to this relay. A relay still unowned after that is torn down. */
 const IDENTITY_WAIT_MS = 3000;
@@ -272,14 +276,15 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     const retire = () => { void close().catch(()=> { /* noop */ }); };
     const send = (target:WebSocket,bytes:Buffer) => {
       if (!alive) return;
-      if (retired || target.readyState !== WebSocket.OPEN || target.bufferedAmount + bytes.length > MAX_BUFFER) { retire();return; }
+      const bound = target === client ? MAX_SERVER_BUFFER : MAX_BUFFER;
+      if (retired || target.readyState !== WebSocket.OPEN || target.bufferedAmount + bytes.length > bound) { retire();return; }
       target.send(bytes,{binary:false},error=>{if(error && alive)retire();});
     };
-    const decode = (raw:RawData,binary:boolean):{bytes:Buffer;message:unknown}|undefined => {
+    const decode = (raw:RawData,binary:boolean,limit = MAX_FRAME):{bytes:Buffer;message:unknown}|undefined => {
       if (!alive) return;
       if (retired || binary) {retire();return;}
       const bytes = Buffer.isBuffer(raw) ? raw : raw instanceof ArrayBuffer ? Buffer.from(raw) : Buffer.concat(raw);
-      if (bytes.length > MAX_FRAME) {retire();return;}
+      if (bytes.length > limit) {retire();return;}
       try {return {bytes,message:JSON.parse(bytes.toString('utf8'))};}
       catch {retire();return;}
     };
@@ -312,6 +317,8 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
     const resumes = new Set<string|number>();
     // Requests whose responses hand this pane a thread.
     const tracked = new Map<string|number,string>();
+    // thread/sample requests sent on this connection and not yet answered: the ids thread/sample/cancel may name.
+    const samples = new Set<string|number>();
     // The relay forwards a client response only for a server request it
     // delivered to this client and that is still awaiting an answer
     // (request id -> thread id, when the request names one).
@@ -412,6 +419,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       const verdict = await reviewClientFrame(frame.message,{
         paneId:policy.paneId, identity, serverProven:policy.serverProven(), owner:policy.owner,
         query:(method,params)=>queryUpstream(upstreamPath,method,params),
+        sampleInFlight:(id)=>samples.has(id),
       });
       if (retired || !alive) return;
       if (verdict.kind === 'refuse') { refuse(frame.message,verdict.reason);return; }
@@ -421,6 +429,12 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
           (classify(message) === 'identity' || m.method === 'review/start')) {
         if (tracked.size >= MAX_TRACKED_REQUESTS) { retire();return; }
         tracked.set(m.id,m.method);
+      }
+      if (m.method === 'thread/sample' && isRequestId(m.id)) {
+        // The first answer would end both, leaving the other uncancellable.
+        if (samples.has(m.id)) { refuse(frame.message,'a sample with this request id is still running');return; }
+        if (samples.size >= MAX_TRACKED_REQUESTS) { retire();return; }
+        samples.add(m.id);
       }
       if (!verdict.message) { handleClient(frame);return; }
       const bytes = Buffer.from(JSON.stringify(verdict.message));
@@ -471,7 +485,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       }
     };
     const fromUpstream = (raw:RawData,binary:boolean) => {
-      const frame = decode(raw,binary);if(!frame)return;
+      const frame = decode(raw,binary,MAX_SERVER_FRAME);if(!frame)return;
       const before = JSON.stringify(tracker.current());
       tracker.fromServer(frame.message);
       const message = frame.message as {method?:unknown;params?:{threadId?:unknown;requestId?:unknown;turn?:unknown};id?:unknown;result?:unknown} | null;
@@ -540,6 +554,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         }
       }
       if (message && message.method === undefined && isRequestId(message.id) && resumes.delete(message.id)) noteResumedTurns(message.result);
+      if (message && message.method === undefined && isRequestId(message.id)) samples.delete(message.id);
       if (message && message.method === undefined && (typeof message.id === 'string' || typeof message.id === 'number')) {
         const method = tracked.get(message.id);
         if (method !== undefined) {
@@ -561,7 +576,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
       for (const id of unsent) {
         if (client.readyState === WebSocket.OPEN) client.send(JSON.stringify({id,error:{code:-32603,message:'wmux: the Codex server connection was lost; the request was not sent'}}));
       }
-      unsent.clear();resumes.clear();
+      unsent.clear();resumes.clear();samples.clear();
       queued.length=0;queuedBytes=0;tracked.clear();pendingServerRequests.clear();
       // A selection request left unanswered must not collide with the next connection's ids.
       tracker.connectionEnded();
@@ -649,7 +664,7 @@ export async function createCodexTuiRelay(options:{codeHome?:string; onRequestMe
         if (!alive || retired) return;
       }
       let attempt:WebSocket;
-      try {attempt = openCodexAccountSocket(upstreamPath,{handshakeTimeout:5000,maxPayload:MAX_FRAME,perMessageDeflate:false,followRedirects:false});}
+      try {attempt = openCodexAccountSocket(upstreamPath,{handshakeTimeout:5000,maxPayload:MAX_SERVER_FRAME,perMessageDeflate:false,followRedirects:false});}
       catch {if (rejoining) retryLater();else {endConnection();retire();}return;}
       upstream = attempt;sockets.add(attempt);
       let over = false;

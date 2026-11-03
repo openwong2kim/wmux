@@ -11,6 +11,8 @@ export interface PtyCreateOptions {
   wmuxTools?: { tools: WmuxTools; role?: string };
   shell?: string;
   cwd?: string;
+  /** A WSL pane's distribution (main validates it; see pty.handler). */
+  wslDistro?: string;
   /** Known-dead session cwd candidates. Main validates them in order and
    * falls back to home; ordinary blank-surface creates leave this absent. */
   recoveryCwds?: Pick<DeadPaneRecovery, 'spawnCwd' | 'cwd' | 'wslTarget' | 'args' | 'sourceSessionId'>;

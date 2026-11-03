@@ -4,9 +4,11 @@
  * wmux.exe is Electron run as Node, a GUI-subsystem program, and that breaks
  * its console output two ways:
  *   - With nothing redirected, Electron attaches to the parent console and
- *     points both streams at a write-only CONOUT$. Node cannot read that
- *     handle's console mode, takes it for a file and writes UTF-8 bytes, which
- *     the console decodes in its code page (949 garbles Korean).
+ *     points both streams at CONOUT$. Before Electron 45 that CONOUT$ was
+ *     write-only: Node cannot read such a handle's console mode, takes it for a
+ *     file and writes UTF-8 bytes, which the console decodes in its code page
+ *     (949 garbles Korean). Electron 45 (Chromium 156) opens it for reading
+ *     too, so Node sees a TTY and nothing here moves.
  *   - With a stream redirected (`> file`, `| more`, `2> file`), Electron does
  *     not attach, and the stream left on the console arrives as a NULL std
  *     handle: everything written to it is lost.

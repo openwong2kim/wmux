@@ -131,11 +131,41 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect(installBranch).not.toMatch(/'Desktop,StartMenu'/);
   });
 
-  it('the --squirrel-updated branch names Start Menu only, never the Desktop', () => {
+  // #2971: Electron's toast setup owns the top-level Start Menu entry, so a
+  // Start Menu link from Update.exe (in Programs\<publisher>\) is a second one.
+  it('#2971: no installer hook asks Update.exe for a Start Menu link', () => {
+    const gatePos = indexSrc.indexOf('if (isSquirrelInstallerEvent(squirrelCmd))');
+    const obsoletePos = indexSrc.indexOf("squirrelCmd === '--squirrel-obsolete'");
+    expect(gatePos).toBeGreaterThan(0);
+    expect(obsoletePos).toBeGreaterThan(gatePos);
+    expect(indexSrc.slice(gatePos, obsoletePos)).not.toMatch(/StartMenu/);
+  });
+
+  it('#2971: the --squirrel-updated branch runs no --createShortcut, only the repair pass', () => {
     const updatedPos = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
     const uninstallPos = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
     const updatedBranch = indexSrc.slice(updatedPos, uninstallPos);
-    expect(updatedBranch).toMatch(/\['--createShortcut', target, '--shortcut-locations', 'StartMenu'\]/);
+    expect(updatedBranch).not.toMatch(/'--createShortcut'/);
+    expect(updatedBranch).toMatch(/shortcutHygiene\.repairInstalledShortcuts\(process\.execPath\)/);
+  });
+
+  // The hook is cancelled at ~15 s, so the extra cleanup must not delay
+  // Update.exe --removeShortcut: it runs once that is spawned.
+  it('#2971: the uninstall hook removes the toast entries after spawning Update.exe --removeShortcut', () => {
+    const uninstallPos = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    const obsoletePos = indexSrc.indexOf("squirrelCmd === '--squirrel-obsolete'");
+    const branch = indexSrc.slice(uninstallPos, obsoletePos);
+    const spawnPos = branch.indexOf("'--removeShortcut'");
+    expect(spawnPos).toBeGreaterThan(0);
+    expect(branch.indexOf('shortcutHygiene.removeToastEntries(process.execPath)')).toBeGreaterThan(spawnPos);
+  });
+
+  it('#2971: the app keeps its one Start Menu entry at startup, behind the installed-app gate', () => {
+    expect(indexSrc).toMatch(
+      /if \(shouldWriteStartMenuEntry\(probe\)\) keepOneStartMenuEntry\(process\.execPath, app\.getAppPath\(\)\);/,
+    );
+    expect(indexSrc).toMatch(/squirrelRoot: squirrelInstallRootFor\(process\.execPath\)/);
+    expect(indexSrc).toMatch(/dataSuffix: dataSuffix\(\)/);
   });
 
   it('the uninstall hook marks the profile, and a normal boot marks it active after reading it', () => {

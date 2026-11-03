@@ -1501,7 +1501,8 @@ export class AgentDetector {
 
   /**
    * Whether the output fed since the last call finished a grid-only question
-   * on a pane whose owner's one recheck is still unused (approvalReady).
+   * on a pane whose owner's one recheck is still unused (approvalReady), or
+   * drew a screen-reader key row (requestScreenReaderRead).
    * The host calls this once the same output is on the screen it reads, and
    * answers true with revalidateApprovalScreen. Reading clears the request.
    */
@@ -1545,8 +1546,14 @@ export class AgentDetector {
     const previousLength = stripAnsi(this.approvalHintTail.replace(UNFINISHED_ESCAPE, '')).length;
     const probe = this.approvalHintTail + data;
     const cleanProbe = stripAnsi(probe);
-    // Keep in step with the approvalReady questions (READY_PROFILES).
-    const hint = /Do[\s│]*you[\s│]*(?:want|trust)|Would\s*you\s*like|Allow\s*tool\s*use|Permission\s*required|Trust\s*project\s*folder|Allow\s*execution\s*of:|Apply\s*this\s*change\?|Trust\s*this\s*folder|Is\s*this\s*a\s*project\s*you\s*created/g;
+    // Keep in step with the approvalReady questions (READY_PROFILES). The key
+    // row ends every dialog of Claude Code's screen-reader layout, whose
+    // AskUserQuestion asks in its own words; it is matched at both ends, so a
+    // row split across reads, or drawn around a skipped cell, still asks. Its
+    // end takes the key hint drawn under it, so a hint finished after a read
+    // asks again.
+    const hint = /Do[\s│]*you[\s│]*(?:want|trust)|Would\s*you\s*like|Allow\s*tool\s*use|Permission\s*required|Trust\s*project\s*folder|Allow\s*execution\s*of:|Apply\s*this\s*change\?|Trust\s*this\s*folder|Is\s*this\s*a\s*project\s*you\s*created|Select\s*with\s*numbers|Escape\s*to\s*cancel:(?:[\s\d,]*(?:Enter\s*to\s*confirm\s*·\s*)?Esc\s*to\s*cancel)?|Enter\s*y\/n:(?:\s*\S?\s*(?:Enter\s*to\s*confirm\s*·\s*)?Esc\s*to\s*cancel)?/g;
+    let keyRowDrawn = false;
     for (const match of cleanProbe.matchAll(hint)) {
       // Only newly drawn text refreshes freshness. Retaining an old question
       // in the tail across a title update must not make it recent again.
@@ -1555,6 +1562,7 @@ export class AgentDetector {
         // A question drawn after an identity change belongs to whoever owns
         // the pane next: the next seed keeps it, as before the change.
         this.approvalEvidenceRetired = false;
+        if (/^(?:Select|Escape|Enter)/.test(match[0])) keyRowDrawn = true;
       }
     }
     // Readiness reads only the newly drawn text, with room for a match that
@@ -1627,6 +1635,9 @@ export class AgentDetector {
 
     // Asked only when no line pattern reported the dialog in this read.
     if (readyForOwner && !this.approvalEmittedInFeed) this.approvalRecheckRequested = true;
+    if (keyRowDrawn && !this.shellPromptSinceOwner && this.lastAgent === 'Claude Code' && this.activeAgents.has('Claude Code')) {
+      this.requestScreenReaderRead();
+    }
     this.scanDialog(data);
   }
 
@@ -1690,6 +1701,20 @@ export class AgentDetector {
         clean.slice(match.index + match[0].length),
       );
     }
+  }
+
+  /**
+   * Claude Code's screen-reader layout (`--ax-screen-reader`) draws a dialog
+   * with no `❯ 1. Yes` row, so scanDialog never reads one; its key row ends
+   * every dialog. A newly drawn key row asks for one more read of the screen,
+   * whatever this identity's rechecks already read, and claudeScreenApproval
+   * decides there: only a key row that owns the bottom of the grid is a live
+   * dialog, so one left in the scrollback above newer output is none.
+   */
+  private requestScreenReaderRead(): void {
+    this.approvalRecheckEpoch = null;
+    this.approvalReadyRecheckEpoch = null;
+    this.approvalRecheckRequested = true;
   }
 
   /** A question row was read; `rest` is what the row holds after it. */

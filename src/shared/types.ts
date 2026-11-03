@@ -26,6 +26,18 @@ import type { WorkspaceCompany } from './company';
 export type BrainVendor = 'claude' | 'hermes' | 'claude-pty';
 
 // === Surface: a single terminal instance within a Pane ===
+/** A handoff from a tab at or close to its usage limit (Surface.handoff). */
+export interface SurfaceHandoff {
+  /** Epoch ms of the handoff. */
+  at: number;
+  /** Epoch ms the limit resets: from then the work can come back. */
+  resetsAt: number;
+  /** The commit checked out at the handoff: the other agent's changes are counted from it. */
+  head?: string;
+  /** The handoff note's first line: the request there that carries the note is not the owner's. */
+  noteHead?: string;
+}
+
 export interface Surface {
   /** Presentation only: both views share the same live PTY. */
   viewMode?: 'terminal' | 'chat';
@@ -112,6 +124,9 @@ export interface Surface {
    *  that tab, the held one it came from. Each tab's tooltip names the other. */
   continuedIn?: string;
   continuedFrom?: string;
+  /** On the tab a handoff left from at (or close to) its usage limit: once
+   *  that limit resets, the tab offers to bring the work back. */
+  handoff?: SurfaceHandoff;
   /**
    * #2398 — this surface replaces a session the daemon confirmed dead, and has
    * not created its replacement yet. Carried with the surface (and so saved
@@ -788,6 +803,8 @@ export const DEFAULT_PREFIX_CONFIG: PrefixConfig = {
     // #977 — stash the active pane. `!` is tmux's break-pane, which is the
     // closest gesture in muscle memory: take this pane out of the layout.
     '!': 'stashPane',
+    // Rebalance the whole layout: every column and row back to an equal share.
+    '=': 'balanceLayout',
     'K': 'movePaneUp',
     'J': 'movePaneDown',
     'H': 'movePaneLeft',
@@ -925,6 +942,10 @@ export interface SessionData {
   titlebarVitalsAlwaysVisible?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.paneNewTerminalButton. */
   paneNewTerminalButton?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalCompactScrollback. */
+  terminalCompactScrollback?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalSharedWebgl. */
+  terminalSharedWebgl?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting
@@ -1053,6 +1074,8 @@ export interface SessionData {
   surfaceDismissedQuestion?: Record<string, string>;
   /** How the multiview grid arranges its tiles (#746). Whitelisted on load. */
   multiviewArrangement?: 'auto' | 'columns' | 'rows';
+  /** Multiview groups, the one on screen first (renderer/utils/multiviewGroups.ts). Shape-checked on load. */
+  multiviewGroups?: string[][];
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
   notificationRingEnabled?: boolean;

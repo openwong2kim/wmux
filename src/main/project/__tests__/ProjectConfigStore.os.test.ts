@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import { ProjectConfigStore, normalizeProjectRoot } from '../ProjectConfigStore';
+import { PROJECT_CONFIG_MAX_FILE_BYTES } from '../../../shared/wmuxProjectConfig';
 
 let tmpRoot: string;
 let trustPath: string;
@@ -220,6 +221,51 @@ describe('getState — config + trust evaluation', () => {
   });
 });
 
+describe('readText — the whole file, for a view of it', () => {
+  it('reads the file getState reads, hashed over the bytes it returns', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    const text = '{\r\n  "version": 1,\r\n  "portRange": [1, 2],\r\n  "note": "a\u202eb"\r\n}';
+    writeConfig(proj, text);
+    const nested = path.join(proj, 'src');
+    fs.mkdirSync(nested);
+    const store = makeStore();
+    const read = store.readText(nested);
+    expect(read).toEqual({
+      configPath: path.join(proj, 'wmux.json'),
+      contentHash: createHash('sha256').update(Buffer.from(text, 'utf8')).digest('hex'),
+      text,
+    });
+    expect(read?.contentHash).toBe((await store.getState(nested)).contentHash);
+  });
+
+  it('shows bytes that are not UTF-8 as U+FFFD, hashed over the bytes themselves', () => {
+    const proj = path.join(tmpRoot, 'proj');
+    fs.mkdirSync(proj);
+    const bytes = Buffer.from([0x7b, 0xff, 0x7d]);
+    fs.writeFileSync(path.join(proj, 'wmux.json'), bytes);
+    expect(makeStore().readText(proj)).toEqual({
+      configPath: path.join(proj, 'wmux.json'),
+      contentHash: createHash('sha256').update(bytes).digest('hex'),
+      text: '{\ufffd}',
+    });
+  });
+
+  it('reads the folder it is given, a name ending in a space included', () => {
+    const proj = path.join(tmpRoot, 'proj ');
+    writeConfig(proj, VALID);
+    writeConfig(path.join(tmpRoot, 'proj'), { version: 1 });
+    expect(makeStore().readText(proj)?.configPath).toBe(path.join(proj, 'wmux.json'));
+  });
+
+  it('reads nothing without a file, or past the size cap', () => {
+    const proj = path.join(tmpRoot, 'proj');
+    fs.mkdirSync(proj);
+    expect(makeStore().readText(proj)).toBeNull();
+    writeConfig(proj, ' '.repeat(PROJECT_CONFIG_MAX_FILE_BYTES + 1));
+    expect(makeStore().readText(proj)).toBeNull();
+  });
+});
+
 describe('normalizeProjectRoot', () => {
   it('strips trailing separators and lowercases on win32', () => {
     const a = normalizeProjectRoot(`${tmpRoot}${path.sep}`);
@@ -294,5 +340,58 @@ describe('setDecision — unattended reboot-survival consent (U-PERM)', () => {
     const s1 = await store.getState(proj);
     await store.setDecision(s1.root!, 'trusted', s1.contentHash!, true);
     expect((await makeStore().getState(proj)).unattended).toBe(true);
+  });
+});
+
+describe('setDecision — the company review', () => {
+  const WITH_COMPANY = { version: 1, company: { name: 'shop', seats: [{ name: 'lead', agent: 'claude' }] } };
+
+  it('surfaces the company review only for a grant that showed it', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, WITH_COMPANY);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    expect(s1.companyReviewed).toBeUndefined();
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
+    expect((await store.getState(proj)).companyReviewed).toBe(false);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false, true);
+    expect((await store.getState(proj)).companyReviewed).toBe(true);
+    expect(await store.grantFor(s1.root!, s1.contentHash!)).toEqual({ unattended: false, companyReviewed: true });
+    expect((await makeStore().getState(proj)).companyReviewed).toBe(true);
+  });
+
+  it('is never carried to a re-trust that did not show the company, nor to changed bytes', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, WITH_COMPANY);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false, true);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
+    expect((await store.getState(proj)).companyReviewed).toBe(false);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false, true);
+    writeConfig(proj, { ...WITH_COMPANY, company: { ...WITH_COMPANY.company, name: 'other' } });
+    const s2 = await store.getState(proj);
+    expect(s2.trust).toBe('stale');
+    expect(s2.companyReviewed).toBeUndefined();
+    expect(await store.grantFor(s1.root!, s2.contentHash!)).toEqual({ unattended: false, companyReviewed: false });
+  });
+
+  it('a denied decision, or a record from an older wmux, never holds it', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, WITH_COMPANY);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'denied', s1.contentHash!, false, true);
+    expect((await store.getRecord(s1.root!))?.companyReviewed).toBeUndefined();
+    fs.writeFileSync(trustPath, JSON.stringify({
+      schemaVersion: 1,
+      projects: { [s1.root!]: { status: 'denied', contentHash: s1.contentHash, decidedAt: 1, companyReviewed: true } },
+    }));
+    expect((await makeStore().getRecord(s1.root!))?.companyReviewed).toBeUndefined();
+    fs.writeFileSync(trustPath, JSON.stringify({
+      schemaVersion: 1,
+      projects: { [s1.root!]: { status: 'trusted', contentHash: s1.contentHash, decidedAt: 1, prepReviewed: true } },
+    }));
+    expect((await makeStore().getState(proj)).companyReviewed).toBe(false);
   });
 });

@@ -17,6 +17,8 @@
 
 import { useEffect, useRef } from 'react';
 import { useStore } from '../stores';
+import { disposeWorkspacePtys } from '../utils/paneTeardown';
+import { taskWorkspacesToClose } from '../utils/closedTaskWorkspaces';
 
 /**
  * 미션 상태 드리프트(open→closed)를 잡기 위한 성긴 배경 폴링 주기. 채널 unread의
@@ -84,6 +86,18 @@ async function refreshProvenanceThenParents(): Promise<void> {
 /** #2349 — how long a burst of workspace-set changes is let settle before
  *  the one pass it causes. */
 export const MISSION_REFRESH_DEBOUNCE_MS = 500;
+
+/** #2934 — close the task workspaces whose task a refresh saw close, with the
+ *  same teardown as the UI close (sessions first, then the workspace). */
+function closeClosedTaskWorkspaces(ids: readonly string[]): void {
+  for (const id of ids) {
+    const now = useStore.getState();
+    const ws = now.workspaces.find((w) => w.id === id);
+    if (!ws) continue;
+    disposeWorkspacePtys(ws);
+    now.removeWorkspace(id);
+  }
+}
 
 export interface MissionRefresher {
   /** Run a pass now, or once after the one in flight. */
@@ -193,10 +207,18 @@ export function useMissionsPolling(): void {
       if (!disposed) r.now(true);
     });
 
+    // #2934 — a task that closed since the last refresh takes its workspace
+    // with it (taskWorkspacesToClose says which are kept).
+    const offMissions = useStore.subscribe((state, prev) => {
+      if (state.missionByPaneGroup === prev.missionByPaneGroup) return;
+      closeClosedTaskWorkspaces(taskWorkspacesToClose(prev.missionByPaneGroup, state.missionByPaneGroup, state));
+    });
+
     return () => {
       disposed = true;
       clearInterval(timer);
       offConnected();
+      offMissions();
       r.dispose();
       if (refresher.current === r) refresher.current = null;
     };

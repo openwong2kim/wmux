@@ -260,9 +260,8 @@ describe('OscParser', () => {
     });
 
     it('handles many tiny chunks of an OSC payload reassembled across calls', () => {
-      // Send the OSC start (ESC ]) together (parser requires the 2-byte
-      // introducer in the same chunk — same as upstream contract), then
-      // drip-feed the payload one char at a time, then terminate.
+      // Send the OSC start (ESC ]) together, then drip-feed the payload one
+      // char at a time, then terminate.
       parser.process('\x1b]');
       const payload = '7727;feature/very/deep/branch/name';
       for (const ch of payload) parser.process(ch);
@@ -307,6 +306,49 @@ describe('OscParser', () => {
       parser.process('\x1b]7727;main\x07');
       expect(events).toHaveLength(1);
       expect(events[0]).toEqual({ code: 7727, data: 'main' });
+    });
+  });
+
+  // ───────────────────────────────────────────────
+  // A read that ends on ESC (#2944)
+  // ───────────────────────────────────────────────
+
+  describe('a read that ends on ESC', () => {
+    it.each([
+      ['BEL', '\x1b]133;D;0\x07', { code: 133, data: 'D;0' }],
+      ['ESC \\', '\x1b]133;A\x1b\\', { code: 133, data: 'A' }],
+    ])('fires one callback at every split point of an OSC ended by %s', (_name, osc, event) => {
+      const stream = `out${osc}put`;
+      for (let at = 0; at <= stream.length; at++) {
+        const p = new OscParser();
+        const seen: OscEvent[] = [];
+        p.onOsc((e) => seen.push(e));
+        const out = p.process(stream.slice(0, at)) + p.process(stream.slice(at));
+        expect(seen, `split at ${at}`).toEqual([event]);
+        expect(out, `split at ${at}`).toBe('output');
+      }
+    });
+
+    it('reads the repro from #2944: ESC alone, then the rest of the OSC', () => {
+      parser.process('\x1b');
+      parser.process(']133;D;0\x07\x1b]133;A\x07');
+      expect(events).toEqual([{ code: 133, data: 'D;0' }, { code: 133, data: 'A' }]);
+    });
+
+    it('passes a trailing ESC not followed by ] through with the next read, byte for byte', () => {
+      expect(parser.process('abc\x1b')).toBe('abc');
+      expect(parser.process('[31mred')).toBe('\x1b[31mred');
+      expect(parser.process('\x1b')).toBe('');
+      expect(parser.process('\x1b')).toBe('\x1b');
+      expect(parser.process('X')).toBe('\x1bX');
+      expect(events).toHaveLength(0);
+    });
+
+    it('keeps an ESC inside an OSC as payload when the next read does not start with \\', () => {
+      parser.process('\x1b]2;ti\x1b');
+      expect(events).toHaveLength(0);
+      parser.process('tle\x07');
+      expect(events).toEqual([{ code: 2, data: 'ti\x1btle' }]);
     });
   });
 });

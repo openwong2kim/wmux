@@ -11,11 +11,16 @@ import { vi } from 'vitest';
  * The stub returns the quoted CIM string, so production's quote-aware tokenizer
  * still runs. Every other `execFileSync` call (tasklist, `ps`) and the real
  * `process.kill` pass through; on macOS/Linux the argv probe is untouched.
+ * The native read that runs before CIM (#2992) returns the same string.
  *
  * Pair every call with `undoModuleStubs()` in a `finally`.
  */
 export async function importWithStubbedWin32Cmdline(argv: string[]) {
   vi.resetModules();
+  vi.doMock('../../../main/pty/winSnapshotNative', async () => ({
+    ...(await vi.importActual<typeof import('../../../main/pty/winSnapshotNative')>('../../../main/pty/winSnapshotNative')),
+    readProcessCommandLine: () => argv.map((part) => `"${part}"`).join(' '),
+  }));
   vi.doMock('child_process', async () => {
     const actual = await vi.importActual<typeof import('child_process')>('child_process');
     const execFileSync = ((file: unknown, args?: unknown, opts?: unknown) => {
@@ -32,6 +37,7 @@ export async function importWithStubbedWin32Cmdline(argv: string[]) {
 }
 
 export function undoModuleStubs(): void {
+  vi.doUnmock('../../../main/pty/winSnapshotNative');
   vi.doUnmock('child_process');
   vi.doUnmock('fs');
   vi.resetModules();

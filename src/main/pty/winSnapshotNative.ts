@@ -138,7 +138,8 @@ export function decodeProcessEntry(buf: Buffer): NativeProcRow {
 
 type Handle = number | bigint;
 
-interface NativeBindings {
+/** The kernel32/iphlpapi calls this module makes (exported for tests). */
+export interface NativeBindings {
   GetExtendedTcpTable: (
     table: Buffer | null,
     size: Buffer,
@@ -159,6 +160,9 @@ interface NativeBindings {
   WaitForSingleObject: (handle: Handle, ms: number) => number;
   GetSystemTimeAsFileTime: (out: Buffer) => void;
   GetExitCodeProcess: (handle: Handle, code: Buffer) => number;
+  NtQueryInformationProcess: (handle: Handle, infoClass: number, info: Buffer, length: number, returned: Buffer) => number;
+  /** Address of a buffer's memory (koffi.address), which is what a call receives for it. */
+  addressOf: (buf: Buffer) => bigint;
 }
 
 /** undefined = load not attempted yet; null = attempted and unavailable. */
@@ -193,9 +197,11 @@ function loadBindings(): NativeBindings | null {
       load(name: string): {
         func(name: string, result: string, args: string[]): unknown;
       };
+      address(value: Buffer): bigint;
     };
     const iphlpapi = koffi.load('iphlpapi.dll');
     const kernel32 = koffi.load('kernel32.dll');
+    const ntdll = koffi.load('ntdll.dll');
     bindings = {
       GetExtendedTcpTable: iphlpapi.func('GetExtendedTcpTable', 'uint32', [
         'void *', 'void *', 'int', 'uint32', 'uint32', 'uint32',
@@ -232,12 +238,24 @@ function loadBindings(): NativeBindings | null {
       GetExitCodeProcess: kernel32.func('GetExitCodeProcess', 'int', [
         'int64', 'void *',
       ]) as NativeBindings['GetExitCodeProcess'],
+      NtQueryInformationProcess: ntdll.func('NtQueryInformationProcess', 'int32', [
+        'int64', 'int', 'void *', 'uint32', 'void *',
+      ]) as NativeBindings['NtQueryInformationProcess'],
+      addressOf: (buf) => koffi.address(buf),
     };
   } catch (err) {
     warn(`koffi load failed — native snapshot disabled: ${err instanceof Error ? err.message : String(err)}`);
     bindings = null;
   }
   return bindings;
+}
+
+/** Replace the native bindings (undefined = load them again on next use). Tests only. */
+export function setNativeBindingsForTests(next: NativeBindings | null | undefined): void {
+  bindings = next;
+  loadFailed = false;
+  consecutiveCallFailures = 0;
+  warnedV6 = false;
 }
 
 /**
@@ -447,6 +465,28 @@ export function tryProcessCreatedAt(pid: number): bigint | null {
 
 /** OpenProcess on a pid that no longer exists. */
 const ERROR_INVALID_PARAMETER = 87;
+
+/**
+ * Whether a failed OpenProcess means the pid is gone. Error 87 alone is not
+ * enough: the code comes from a separate GetLastError call, so the pid must
+ * also be missing from a process table read after it. A pid that is listed,
+ * or a table that could not be read (`listed` null), is not gone.
+ */
+export function isGoneAfterOpenFailure(error: number, listed: boolean | null): boolean {
+  return error === ERROR_INVALID_PARAMETER && listed === false;
+}
+
+/** {@link isGoneAfterOpenFailure} for this pid; the table is read only for error 87. */
+function confirmGone(b: NativeBindings, pid: number, error: number): boolean {
+  if (error !== ERROR_INVALID_PARAMETER) return false;
+  let listed: boolean | null;
+  try {
+    listed = readProcessTable(b).some((p) => p.pid === pid);
+  } catch {
+    listed = null;
+  }
+  return isGoneAfterOpenFailure(error, listed);
+}
 /** QueryFullProcessImageNameW takes and returns a length in WCHARs; 32767 is the longest Win32 path. */
 const MAX_IMAGE_PATH_CHARS = 32767;
 
@@ -484,7 +524,7 @@ export function tryProcessIdentity(pid: number): ProcessIdentityRow | ProcessIde
     const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
     if (handle === 0n) {
       const code = b.GetLastError();
-      return { failure: `OpenProcess failed (error ${code})`, gone: code === ERROR_INVALID_PARAMETER };
+      return { failure: `OpenProcess failed (error ${code})`, gone: confirmGone(b, pid, code) };
     }
     try {
       const creation = Buffer.alloc(8);
@@ -506,6 +546,73 @@ export function tryProcessIdentity(pid: number): ProcessIdentityRow | ProcessIde
   }
 }
 
+/** NtQueryInformationProcess class for the command line (Windows 8.1+); query-limited access is enough. */
+const PROCESS_COMMAND_LINE_INFORMATION = 60;
+/** The "buffer too small" NTSTATUS values, as the signed int32 the call returns. */
+const STATUS_INFO_LENGTH_MISMATCH = 0xc0000004 | 0;
+const STATUS_BUFFER_OVERFLOW = 0x80000005 | 0;
+const STATUS_BUFFER_TOO_SMALL = 0xc0000023 | 0;
+/** sizeof(UNICODE_STRING) on 64-bit: Length, MaximumLength, padding, Buffer at 8. */
+const UNICODE_STRING_SIZE = 16;
+/** Largest buffer asked for: 32 Ki UTF-16 chars plus the header, rounded up (as the native core's). */
+const COMMAND_LINE_CAP = 1 << 20;
+
+/**
+ * Decode ProcessCommandLineInformation output: a UNICODE_STRING header whose
+ * Buffer points at its characters further into the same buffer. `base` is the
+ * buffer's address; the string is taken only if it lies inside the buffer.
+ * Null for an empty or malformed result.
+ */
+export function decodeCommandLine(buf: Buffer, base: bigint): string | null {
+  if (buf.length < UNICODE_STRING_SIZE) return null;
+  const length = buf.readUInt16LE(0);
+  const start = buf.readBigUInt64LE(8);
+  if (length === 0 || length % 2 !== 0 || start < base + BigInt(UNICODE_STRING_SIZE)) return null;
+  const offset = start - base;
+  if (offset + BigInt(length) > BigInt(buf.length)) return null;
+  return buf.toString('utf16le', Number(offset), Number(offset) + length) || null;
+}
+
+/**
+ * One process's command line, read through its handle (#2992), the read the
+ * native core's process table makes (#2908). The launcher's identity check
+ * asked PowerShell's CIM for it, which fails where policy or anti-virus stops
+ * PowerShell. Null when it cannot be read: not Windows, native reads
+ * unavailable, the process is gone or protected, or the line is empty. Never
+ * throws.
+ */
+export function readProcessCommandLine(pid: number): string | null {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  const b = loadFailed ? null : loadBindings();
+  if (!b) {
+    loadFailed = true;
+    return null;
+  }
+  try {
+    const raw = b.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
+    if (handle === 0n) return null;
+    try {
+      // The reported length is only a lower bound, so a too-small answer
+      // that leaves it at 0 still doubles the buffer.
+      for (let bytes = 512; ;) {
+        const info = Buffer.alloc(bytes);
+        const needed = Buffer.alloc(4);
+        const status = b.NtQueryInformationProcess(raw, PROCESS_COMMAND_LINE_INFORMATION, info, bytes, needed);
+        if (status >= 0) return decodeCommandLine(info, b.addressOf(info));
+        const tooSmall = status === STATUS_INFO_LENGTH_MISMATCH || status === STATUS_BUFFER_OVERFLOW
+          || status === STATUS_BUFFER_TOO_SMALL;
+        if (!tooSmall || bytes >= COMMAND_LINE_CAP) return null;
+        bytes = Math.min(COMMAND_LINE_CAP, Math.max(bytes * 2, Math.ceil(needed.readUInt32LE(0) / 8) * 8));
+      }
+    } finally {
+      b.CloseHandle(raw);
+    }
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether a process has exited (#2774): `exited` when no process has the pid
  * or its handle is signaled, `running`, or `unknown` when it cannot be read
@@ -524,7 +631,7 @@ export function readProcessExitState(pid: number): 'exited' | 'running' | 'unkno
   try {
     const raw = b.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
     const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
-    if (handle === 0n) return b.GetLastError() === ERROR_INVALID_PARAMETER ? 'exited' : 'unknown';
+    if (handle === 0n) return confirmGone(b, pid, b.GetLastError()) ? 'exited' : 'unknown';
     try {
       const r = b.WaitForSingleObject(raw, 0);
       return r === WAIT_OBJECT_0 ? 'exited' : r === WAIT_TIMEOUT ? 'running' : 'unknown';
@@ -641,7 +748,7 @@ export function tryProcessHandleApi(): ProcessHandleApi | null {
         let h = b.OpenProcess(PROCESS_TERMINATE | SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
         if (isNull(h)) {
           const code = b.GetLastError();
-          if (code === ERROR_INVALID_PARAMETER) return { gone: true };
+          if (confirmGone(b, pid, code)) return { gone: true };
           if (code !== ERROR_ACCESS_DENIED) return { failure: `OpenProcess failed (error ${code})` };
           // Not ours to terminate (another user's, or elevated), but it can
           // still be waited on and identified.
@@ -649,7 +756,7 @@ export function tryProcessHandleApi(): ProcessHandleApi | null {
           h = b.OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
           if (isNull(h)) {
             const again = b.GetLastError();
-            return again === ERROR_INVALID_PARAMETER ? { gone: true } : { failure: `OpenProcess failed (error ${again})` };
+            return confirmGone(b, pid, again) ? { gone: true } : { failure: `OpenProcess failed (error ${again})` };
           }
         }
         const createdAt = createdAtOf(h);

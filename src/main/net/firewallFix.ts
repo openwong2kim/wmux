@@ -65,8 +65,11 @@ export interface FirewallFixDeps {
   facts: PathFacts;
   /** Read per action, not once: the data suffix is set after this module loads. */
   scope: () => RuleScope;
-  /** Main's own program (process.execPath): the only one a rule may name. */
+  /** Main's own program (process.execPath): one of the two a rule may name. */
   selfExe: string;
+  /** The other: the copy of main's program this build's daemon runs from
+   *  (daemonRuntimeStage.ts), or null where the daemon runs the install's. */
+  stagedExe?: () => string | null;
   platform?: NodeJS.Platform;
   /** TOKEN_ELEVATION_TYPE and whether wmux itself runs elevated, for the hint's wording. */
   tokenType: () => number | null;
@@ -129,10 +132,14 @@ export class FirewallFixer {
     }
   }
 
-  /** Main's program and the daemon's are the same file (case-insensitive on Windows). */
+  /** The daemon's program is main's, or the copy of it this build stages
+   *  (case-insensitive on Windows). */
   private isSelf(exe: string): boolean {
     const win = (this.deps.platform ?? process.platform) === 'win32';
-    return win ? exe.toLowerCase() === this.deps.selfExe.toLowerCase() : exe === this.deps.selfExe;
+    const same = (a: string, b: string) => (win ? a.toLowerCase() === b.toLowerCase() : a === b);
+    if (same(exe, this.deps.selfExe)) return true;
+    const staged = this.deps.stagedExe?.() ?? null;
+    return staged !== null && same(exe, staged);
   }
 
   private async run(listener: FirewallListener, action: 'fix' | 'remove'): Promise<FirewallActionResult> {

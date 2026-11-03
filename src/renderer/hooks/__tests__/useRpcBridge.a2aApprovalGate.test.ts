@@ -140,6 +140,22 @@ describe('A2A delivery approval gate', () => {
     expect(result.delivery).toMatchObject({ notified: false, reason: 'approval_pending', pastedNotSubmitted: true });
   });
 
+  // #2993: the text sits in the target's prompt, so "retry" would paste it twice.
+  it('a paste left unsubmitted by an undecided gate says not to send it again', async () => {
+    gateRefusal = { ok: false, reason: 'gate_unavailable', detail: 'x', pasted: true };
+    const result = await send({ silent: false });
+    expect(result.delivery).toMatchObject({ notified: false, reason: 'gate_unavailable', pastedNotSubmitted: true });
+    expect(String(result.delivery?.hint)).toContain('Do not send it again');
+    expect(String(result.delivery?.hint)).not.toMatch(/Retry/);
+  });
+
+  it('a paste taken back out is reported as cleared, not as sitting in the prompt', async () => {
+    gateRefusal = { ok: false, reason: 'user_typing', detail: 'x', pasted: true, cleared: true };
+    const result = await send({ silent: false });
+    expect(result.delivery).toMatchObject({ notified: false, reason: 'user_typing', pastedCleared: true });
+    expect(result.delivery).not.toHaveProperty('pastedNotSubmitted');
+  });
+
   it('a delivery main stamped as operator-originated is not gated', async () => {
     const result = await send({ silent: false, operatorOrigin: true });
     expect(gate).not.toHaveBeenCalled();

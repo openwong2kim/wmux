@@ -5,6 +5,8 @@
  *   - `commands`: custom commands surfaced in the palette / sidebar
  *   - `layout`:   a default pane arrangement, each leaf optionally running a
  *                 startup command or hosting a browser pane (X3)
+ *   - `company`:  the folder's company, its seats and what it is told
+ *                 (companyFile.ts)
  *
  * SECURITY MODEL — this file is CHECKED INTO THE REPO, so its contents are
  * attacker-reachable via a malicious PR. Nothing here may execute until the
@@ -22,6 +24,9 @@
 
 import { WORKSPACE_PROFILE_COMMAND_MAX, WORKSPACE_PROFILE_STARTUP_CWD_MAX } from './types';
 import { ORCH_ROLES, sanitizeOrchRole } from './orchestratorRole';
+import { normalizeCompanyFile, type WmuxProjectCompany } from './companyFile';
+
+export type { WmuxProjectCompany };
 
 /** File name probed for at/above a workspace's cwd (stops at the repo root). */
 export const WMUX_PROJECT_CONFIG_FILENAME = 'wmux.json';
@@ -180,6 +185,11 @@ export interface WmuxProjectConfig {
   commands?: WmuxProjectCommand[];
   layout?: WmuxProjectLayoutNode;
   fanout?: WmuxProjectFanout;
+  /** The folder's company. Its agents start only from a grant that showed it
+   *  (ProjectConfigState.companyReviewed). */
+  company?: WmuxProjectCompany;
+  /** The file declares a company that was refused and dropped. */
+  companyInvalid?: true;
 }
 
 /**
@@ -218,6 +228,20 @@ export interface ProjectConfigState {
    * reason `needs-review` until the file is approved once more.
    */
   prepReviewed?: boolean;
+  /**
+   * Set while `trust === 'trusted'`: true when the grant was made with the
+   * file's company on screen (or the company was saved here). A grant that
+   * did not show it does not start it: companyNeedsReview.
+   */
+  companyReviewed?: boolean;
+}
+
+/** The whole wmux.json a state reads, for a view of it (IPC PROJECT_CONFIG_TEXT):
+ *  its bytes as text and their hash. */
+export interface ProjectConfigText {
+  configPath: string;
+  contentHash: string;
+  text: string;
 }
 
 /** A trusted project whose setup command or copy list waits for that one
@@ -227,6 +251,12 @@ export function prepAwaitsReview(state: ProjectConfigState): boolean {
   // A rejected copy setting is reported as malformed first; approving would not help.
   if (f?.invalidFields?.some((k) => k === 'copy' || k === 'copyIntoAutomated')) return false;
   return state.trust === 'trusted' && state.prepReviewed !== true && ((f?.copy?.length ?? 0) > 0 || f?.setup !== undefined);
+}
+
+/** The file's company starts only after it is reviewed: no grant covers these
+ *  bytes, or the grant that does never showed the company. */
+export function companyNeedsReview(state: ProjectConfigState): boolean {
+  return state.config?.company !== undefined && !(state.trust === 'trusted' && state.companyReviewed === true);
 }
 
 // ── Field validators ─────────────────────────────────────────────────────────
@@ -687,7 +717,7 @@ function normalizeFanout(input: unknown): WmuxProjectFanout | undefined {
  */
 export function normalizeWmuxProjectConfig(input: unknown): WmuxProjectConfig | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { version?: unknown; commands?: unknown; layout?: unknown; fanout?: unknown };
+  const src = input as { version?: unknown; commands?: unknown; layout?: unknown; fanout?: unknown; company?: unknown };
 
   if (src.version !== undefined && src.version !== 1) return undefined;
 
@@ -701,11 +731,17 @@ export function normalizeWmuxProjectConfig(input: unknown): WmuxProjectConfig | 
 
   const fanout = normalizeFanout(src.fanout);
 
-  if (commands.length === 0 && layout === undefined && fanout === undefined) return undefined;
+  // The company normalizes on its own: a refused one drops only itself and is
+  // reported, so the rest of the file keeps working.
+  const company = src.company === undefined ? undefined : normalizeCompanyFile(src.company);
+
+  if (commands.length === 0 && layout === undefined && fanout === undefined && !company) return undefined;
   const config: WmuxProjectConfig = { version: 1 };
   if (commands.length > 0) config.commands = commands;
   if (layout !== undefined) config.layout = layout;
   if (fanout !== undefined) config.fanout = fanout;
+  if (company) config.company = company;
+  else if (company === null) config.companyInvalid = true;
   return config;
 }
 

@@ -68,11 +68,18 @@ export function psQuote(value: string): string {
 /**
  * The folder that identifies an install: the parent of `app-X.Y.Z` for the
  * Squirrel layout (`…\wmux\app-4.8.0\wmux.exe` → `…\wmux`, the same across
- * updates), otherwise the exe's own folder.
+ * updates), the `daemon-runtime` folder for the daemon's staged copy
+ * (`…\.wmux\daemon-runtime\4.14.0-<mtime>\wmux.exe`, daemonRuntimeStage.ts),
+ * otherwise the exe's own folder.
  */
 export function installRootOf(exe: string): string {
   const dir = path.win32.dirname(exe);
-  return /^app-\d+\.\d+\.\d+/i.test(path.win32.basename(dir)) ? path.win32.dirname(dir) : dir;
+  const name = path.win32.basename(dir);
+  if (/^app-\d+\.\d+\.\d+/i.test(name)) return path.win32.dirname(dir);
+  const parent = path.win32.dirname(dir);
+  // `<version>-<mtime>`; a copy still in progress is `<key>.partial-<pid>`.
+  if (/^\d+\.\d+\.\d+\S*-\d+$/.test(name) && !name.includes('.partial-') && path.win32.basename(parent).toLowerCase() === 'daemon-runtime') return parent;
+  return dir;
 }
 
 /** First 8 hex of sha256(lower(installRoot) | dataSuffix | DOMAIN\user): one per install, instance and user. */

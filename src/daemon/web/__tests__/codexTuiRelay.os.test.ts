@@ -124,6 +124,18 @@ describe.skipIf(process.platform === 'win32')('pane-owned Codex Unix relay',()=>
       client.terminate();
     } finally { await f.cleanup(); }
   });
+  it('forwards a server frame larger than the client-frame bound (a 22.5 MiB plugin/list, #2612)', async () => {
+    const f = await fixture();
+    try {
+      const client = await f.connect(); await select(client, 1);
+      const received = new Promise<number>(resolve => client.once('message', bytes => resolve(Buffer.byteLength(bytes as Buffer))));
+      const payload = JSON.stringify({ id: 99, result: { plugins: 'x'.repeat(23 * 1024 * 1024) } });
+      f.upstream()?.send(payload);
+      expect(await received).toBe(Buffer.byteLength(payload));
+      expect(f.relay.retired()).toBe(false);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
   it('uses private permissions, rejects another client, and closes without stopping upstream',async()=>{
     const f=await fixture();
     try {
@@ -356,6 +368,55 @@ describe.skipIf(process.platform === 'win32')('relay request policy',()=>{
       expect(await got).toMatchObject({id:3,error:{}});
       expect(seen.filter(r=>r.method!=='initialize')).toEqual([]);
       expect(p.refusals).toHaveLength(3);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('cancels only a thread/sample this connection sent and is still awaiting', async () => {
+    const seen:Req[]=[];const p=policy();p.owners.set(threadId,'pty-a');
+    const f=await fixture({policy:p,respond:(r)=>r.method==='thread/sample'?null:r.method==='thread/sample/cancel'?{result:{}}:undefined,
+      onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      // Held by the server: the sample is in flight.
+      client.send(JSON.stringify({id:1,method:'thread/sample',params:{threadId,expectedTurnId:'u1',prompt:'x'}}));
+      let got=reply(client);client.send(JSON.stringify({id:2,method:'thread/sample/cancel',params:{requestId:1}}));
+      expect(await got).toMatchObject({id:2,result:{}});
+      got=reply(client);client.send(JSON.stringify({id:3,method:'thread/sample/cancel',params:{requestId:99}}));
+      expect(await got).toMatchObject({id:3,error:{}});
+      // A sample refused on another pane's thread was never sent: nothing to cancel.
+      got=reply(client);client.send(JSON.stringify({id:5,method:'thread/sample',params:{threadId:otherThreadId,expectedTurnId:'u1',prompt:'x'}}));
+      expect(await got).toMatchObject({id:5,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:6,method:'thread/sample/cancel',params:{requestId:5}}));
+      expect(await got).toMatchObject({id:6,error:{}});
+      // A server request reusing the id is not the sample's answer.
+      got=reply(client);f.upstream()!.send(JSON.stringify({id:1,method:'item/tool/requestUserInput',params:{threadId}}));
+      expect(await got).toMatchObject({id:1,method:'item/tool/requestUserInput'});
+      got=reply(client);client.send(JSON.stringify({id:7,method:'thread/sample/cancel',params:{requestId:1}}));
+      expect(await got).toMatchObject({id:7,result:{}});
+      // Answered: nothing left to cancel.
+      got=reply(client);f.upstream()!.send(JSON.stringify({id:1,result:{text:null}}));
+      expect(await got).toMatchObject({id:1});
+      got=reply(client);client.send(JSON.stringify({id:4,method:'thread/sample/cancel',params:{requestId:1}}));
+      expect(await got).toMatchObject({id:4,error:{}});
+      expect(seen.filter(r=>r.method==='thread/sample/cancel').map(r=>r.id)).toEqual([2,7]);
+      client.terminate();
+    } finally { await f.cleanup(); }
+  });
+
+  it('refuses a thread/sample that reuses the id of one still running, so a cancel still reaches the running one', async () => {
+    const seen:Req[]=[];const p=policy();p.owners.set(threadId,'pty-a');
+    const f=await fixture({policy:p,respond:(r)=>r.method==='thread/sample'?null:r.method==='thread/sample/cancel'?{result:{}}:undefined,
+      onUpstreamRequest:r=>seen.push(r)});
+    try {
+      const client=await f.connect();
+      const sample={method:'thread/sample',params:{threadId,expectedTurnId:'u1',prompt:'x'}};
+      client.send(JSON.stringify({id:1,...sample}));
+      let got=reply(client);client.send(JSON.stringify({id:1,...sample}));
+      expect(await got).toMatchObject({id:1,error:{}});
+      got=reply(client);client.send(JSON.stringify({id:2,method:'thread/sample/cancel',params:{requestId:1}}));
+      expect(await got).toMatchObject({id:2,result:{}});
+      expect(seen.filter(r=>r.method==='thread/sample').map(r=>r.id)).toEqual([1]);
       client.terminate();
     } finally { await f.cleanup(); }
   });

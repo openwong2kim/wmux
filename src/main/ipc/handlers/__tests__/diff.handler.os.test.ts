@@ -1012,6 +1012,27 @@ describe('diff:read — 워크스페이스 모드(일반 repo, oid 미지정)', 
     expect(paths).not.toContain('committed.txt');
   });
 
+  it('since mode: the commits after the given head and the uncommitted changes; from HEAD once that head left the history', async () => {
+    const before = g(repo, ['rev-parse', 'HEAD']).trim();
+    writeFileSync(join(repo, 'committed.txt'), 'c1\nc2\n');
+    g(repo, ['add', '-A']);
+    g(repo, ['commit', '-q', '-m', 'after the handoff']);
+    writeFileSync(join(repo, 'a.txt'), 'a1\nUNCOMMITTED\na3\n');
+    const read = captured.get(IPC.DIFF_READ)!;
+    const since = (await read({}, repo, before, 'since')) as { ok: boolean; numstat: Array<{ path: string; additions: number | null }> };
+    expect(since.ok).toBe(true);
+    expect(since.numstat.map((f) => f.path).sort()).toEqual(['a.txt', 'committed.txt']);
+    expect(since.numstat.find((f) => f.path === 'committed.txt')?.additions).toBe(2);
+    // A head that is not in HEAD's history (rewritten away): measured from HEAD.
+    g(repo, ['commit', '-q', '--amend', '-m', 'rewritten']);
+    const gone = g(repo, ['rev-parse', 'HEAD~0']).trim();
+    g(repo, ['reset', '-q', '--hard', before]);
+    writeFileSync(join(repo, 'a.txt'), 'a1\nAGAIN\na3\n');
+    const fallback = (await read({}, repo, gone, 'since')) as { ok: boolean; numstat: Array<{ path: string }> };
+    expect(fallback.ok).toBe(true);
+    expect(fallback.numstat.map((f) => f.path)).toEqual(['a.txt']);
+  });
+
   it('첫 커밋 전 repo(workspace 모드) — empty-tree 대비로 staged 파일을 added로', async () => {
     const fresh = join(base, 'fresh');
     mkdirSync(fresh);

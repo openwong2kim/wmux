@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ClaudeTitleTurnEdge, sanitizeTitle, TERMINAL_TITLE_MAX } from '../titleDetect';
+import { ClaudeTitleTurnEdge, sanitizeTitle, SPINNER_TITLE_FORWARD_MS, TERMINAL_TITLE_MAX, TitleForwardGate } from '../titleDetect';
 
 describe('sanitizeTitle', () => {
   it('keeps a normal title unchanged', () => {
@@ -71,5 +71,59 @@ describe('ClaudeTitleTurnEdge: what counts as the Stop-hook row', () => {
     const edge = new ClaudeTitleTurnEdge();
     edge.noteOutput('● The Stop hook in settings.json runs after every turn.');
     expect(edge.observe('✳ Claude Code')).toBe(true);
+  });
+});
+
+describe('TitleForwardGate', () => {
+  /** A gate on a manual clock, and the titles it lets through. */
+  function gate() {
+    let now = 0;
+    const g = new TitleForwardGate(() => now);
+    const passed: string[] = [];
+    const write = (title: string, afterMs = 0) => {
+      now += afterMs;
+      if (g.admit(title)) passed.push(title);
+    };
+    return { write, passed };
+  }
+  const BRAILLE = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+  it('drops a repeat of the title last forwarded', () => {
+    const { write, passed } = gate();
+    write('zsh');
+    write('zsh', 100);
+    write('zsh', 5000);
+    expect(passed).toEqual(['zsh']);
+  });
+
+  it("forwards Codex's braille spinner at most once a second, and its start and end at once", () => {
+    const { write, passed } = gate();
+    write('codex | ~/proj');
+    for (let i = 0; i < 25; i++) write(`${BRAILLE[i % BRAILLE.length]} codex | ~/proj`, 100);
+    write('codex | ~/proj', 100);
+    expect(passed).toEqual([
+      'codex | ~/proj',
+      '⠋ codex | ~/proj', // 100 ms: the spinner appearing is a real change
+      '⠙ codex | ~/proj', // 1200 ms (the 1100 ms frame was the one shown)
+      '⠹ codex | ~/proj', // 2300 ms
+      'codex | ~/proj', // 2600 ms, 300 ms after the last frame went on: the turn ended
+    ]);
+  });
+
+  it("follows Claude Code's once-a-second spinner, and its idle title at once", () => {
+    const { write, passed } = gate();
+    write('◐ fix tests');
+    write('◑ fix tests', SPINNER_TITLE_FORWARD_MS);
+    write('◐ fix tests', SPINNER_TITLE_FORWARD_MS - 1);
+    write('✳ fix tests', 1);
+    expect(passed).toEqual(['◐ fix tests', '◑ fix tests', '✳ fix tests']);
+  });
+
+  it('forwards a spinner title whose text changed at once', () => {
+    const { write, passed } = gate();
+    write('⠋ codex | ~/a');
+    write('⠙ codex | ~/b', 100);
+    write('⠹ other', 100);
+    expect(passed).toEqual(['⠋ codex | ~/a', '⠙ codex | ~/b', '⠹ other']);
   });
 });

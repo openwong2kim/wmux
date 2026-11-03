@@ -90,20 +90,24 @@ export function isExistingProfile(userDataDir: string): boolean {
 export interface InstallHookPlan {
   /** 'enable' turns autostart on; 'refresh' only repoints it if it is already on. */
   autostart: 'enable' | 'refresh';
-  /** Value for Update.exe's `--shortcut-locations`. */
-  shortcutLocations: 'Desktop,StartMenu' | 'StartMenu';
+  /** Value for Update.exe's `--shortcut-locations`; null runs no --createShortcut. */
+  shortcutLocations: 'Desktop' | null;
 }
 
 /**
- * First install: autostart on, Desktop and Start Menu shortcuts (as before).
+ * First install: autostart on, and a Desktop shortcut.
  * Existing profile (an update): leave autostart as the user set it, only
  * repointing it at the new exe; no Desktop shortcut, so one the user deleted
- * stays deleted. The Start Menu entry is written either way: it is how the app
- * is found after an install, and rewriting it points it at the re-staged
- * root icon.
+ * stays deleted.
+ *
+ * Update.exe never writes the Start Menu entry. Electron's toast setup owns
+ * `Programs\wmux.lnk` (it rewrites that one path to match the running app),
+ * while Squirrel's would go to `Programs\<publisher>\wmux.lnk`, so asking for
+ * both leaves two "wmux" entries (#2971). The app writes its entry at startup
+ * instead (notification/startMenuEntry.ts).
  */
 export function planInstallHook(existingProfile: boolean): InstallHookPlan {
   return existingProfile
-    ? { autostart: 'refresh', shortcutLocations: 'StartMenu' }
-    : { autostart: 'enable', shortcutLocations: 'Desktop,StartMenu' };
+    ? { autostart: 'refresh', shortcutLocations: null }
+    : { autostart: 'enable', shortcutLocations: 'Desktop' };
 }

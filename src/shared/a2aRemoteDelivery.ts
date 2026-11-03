@@ -9,6 +9,7 @@
 // Pure module: no node:* imports (the renderer imports it).
 
 import { A2A_BRAIN_ALIAS, isRemoteTaskId, type A2aEndpointKind, type A2aRemoteReceipt, type A2aRemoteTaskMarkerV1, type HostId } from './a2aRemote';
+import type { CompanyBriefV1 } from './company';
 import type { GatedSubmitRefusal } from './ptyMessageDelivery';
 import { isTaskState, type Part, type Task, type TaskState } from './types';
 
@@ -123,11 +124,16 @@ export function aliasPart(raw: string): string {
  */
 export function sanitizeRemoteText(raw: string): string {
   return raw
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\|$)/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b[PX^_][\s\S]*?(?:\x1b\\|$)/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]?/g, '')
     .replace(/\x9b[0-?]*[ -/]*[@-~]?/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x9d[\s\S]*?(?:\x07|\x9c|$)/g, '')
+    // eslint-disable-next-line no-control-regex -- stripping controls is the point
     .replace(/\x1b[\s\S]?/g, '')
     .replace(/\r\n?/g, '\n')
     // eslint-disable-next-line no-control-regex -- stripping controls is the point
@@ -187,6 +193,12 @@ export interface A2aRemoteSendTaskInput {
   text: string;
   /** Absolute paths of images to attach (`images.1`); read from the sender pane's folders only. */
   images?: string[];
+  /**
+   * A company task from the CEO pane: its brief, kept on this PC's copy only
+   * (the first message's data part). The other PC gets `text`, which main
+   * already wrote the brief into.
+   */
+  brief?: CompanyBriefV1;
 }
 
 export interface A2aRemoteReplyInput {
@@ -285,11 +297,12 @@ export interface A2aRemoteInboxItem {
   kind: 'reply' | 'state';
   /** For a 'state' item: the state the peer moved the task to. */
   state?: TaskState;
+  /** For a 'state' item: the peer's `completed`, held here as a report (the task is input-required). */
+  reported?: true;
   delivered?: boolean;
   held?: A2aRemoteHeldReason;
   /** When it was first held (the 24 h hold TTL counts from here). */
   heldAt?: string;
-  note?: 'pasted-not-submitted';
   /** main started a paste and has not confirmed it yet. */
   attempted?: boolean;
 }
@@ -319,8 +332,6 @@ export type A2aRemoteTaskState = A2aRemoteTaskMarkerV1 & {
    * arrival, not of the other side applying it.
    */
   replyDeliveredAt?: string;
-  /** Inbound task: its paste stayed in the composer; counted as delivered. */
-  note?: 'pasted-not-submitted';
   /** Inbound task: when it was first held. */
   heldAt?: string;
   inbox?: A2aRemoteInboxItem[];
@@ -346,7 +357,7 @@ export function localSideOf(task: Pick<Task, 'metadata'>): 'from' | 'to' {
  *     which (`missKindOf`).
  */
 export type A2aRemoteDeliveryResult =
-  | { ok: true; delivered: true; duplicate?: boolean; ptyId?: string; note?: 'pasted-not-submitted' }
+  | { ok: true; delivered: true; duplicate?: boolean; ptyId?: string }
   | { ok: true; delivered: false; held?: A2aRemoteHeldReason; reason?: string }
   | { ok?: false; error: string };
 

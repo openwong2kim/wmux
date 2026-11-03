@@ -122,6 +122,46 @@ describe('company workspace row', () => {
     expect(document.activeElement).toBe(row);
   });
 
+  it('offers Add a seat on this PC, then on another PC, between Company settings and Dissolve, both disabled while the CEO seat is vacant', async () => {
+    const openMenu = () => act(() => {
+      container.querySelector('[role="treeitem"]')!
+        .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    });
+    await render();
+    openMenu();
+    const actions = [...container.querySelectorAll<HTMLElement>('[data-workspace-action]')].map((b) => b.dataset.workspaceAction);
+    expect(actions.indexOf('hire-seat')).toBe(actions.indexOf('company') + 1);
+    expect(actions.indexOf('add-remote-seat')).toBe(actions.indexOf('hire-seat') + 1);
+    expect(actions.indexOf('dissolve-company')).toBe(actions.indexOf('add-remote-seat') + 1);
+    for (const action of ['hire-seat', 'add-remote-seat']) {
+      const item = container.querySelector<HTMLButtonElement>(`[data-workspace-action="${action}"]`)!;
+      expect(item.disabled, action).toBe(false);
+      expect(item.title, action).toBe('');
+    }
+    expect(container.querySelector('[data-workspace-action="hire-seat"]')?.textContent).toBe('Add a seat on this PC…');
+
+    act(() => useStore.setState({ workspaces: [{ ...ws, company: { v: 1, id: 'co-1', coordinatorPaneId: 'p-gone' } }] }));
+    act(() => root.unmount());
+    act(() => { root = createRoot(container); });
+    await render();
+    openMenu();
+    for (const action of ['hire-seat', 'add-remote-seat']) {
+      const vacant = container.querySelector<HTMLButtonElement>(`[data-workspace-action="${action}"]`)!;
+      expect(vacant.disabled, action).toBe(true);
+      expect(vacant.title, action).not.toBe('');
+    }
+  });
+
+  it('opens Add a seat on this PC from the row menu', async () => {
+    await render();
+    act(() => {
+      container.querySelector('[role="treeitem"]')!
+        .dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+    });
+    act(() => { container.querySelector<HTMLButtonElement>('[data-workspace-action="hire-seat"]')!.click(); });
+    expect(document.querySelector('[data-testid="hire-seat"]')).not.toBeNull();
+  });
+
   it('dissolving from the row menu brings the git line back', async () => {
     await render();
     act(() => {
