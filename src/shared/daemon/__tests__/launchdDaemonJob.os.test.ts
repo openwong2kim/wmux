@@ -16,6 +16,8 @@ import {
   sweepLeftoverDaemonPlists,
   withDaemonStartLock,
   LaunchdUnavailableError,
+  LaunchdJobQueuedError,
+  QUEUED_JOB_ADOPT_MS,
   type LaunchdRuntime,
 } from '../launchdDaemonJob';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -371,7 +373,7 @@ describe('startDaemonViaLaunchd / pruneStaleDaemonJobs', () => {
     expect(err).not.toBeInstanceOf(LaunchdUnavailableError);
   });
 
-  it('does not fall back when the pid never appears for a loaded job', async () => {
+  it('reports a loaded job launchd has not started as queued, not as a failure to fall back from', async () => {
     const { rt } = fakeLaunchd({ onBootstrap: () => ({ pid: null, runs: 0, lastExit: null, status: 0 }) });
     let t = Date.now();
     const realNow = Date.now;
@@ -379,11 +381,40 @@ describe('startDaemonViaLaunchd / pruneStaleDaemonJobs', () => {
     rt.sleep = async () => { t += 1_000; };
     try {
       const err = await startDaemonViaLaunchd(startOpts(), rt).catch((e: unknown) => e);
-      expect(err).toBeInstanceOf(Error);
+      expect(err).toBeInstanceOf(LaunchdJobQueuedError);
       expect(err).not.toBeInstanceOf(LaunchdUnavailableError);
     } finally {
       Date.now = realNow;
     }
+  });
+
+  it('waits on a job launchd has not started yet instead of bootstrapping a second one', async () => {
+    const queued = newDaemonJobLabel(base, Date.now() - 40_000);
+    const { rt, jobs, calls } = fakeLaunchd();
+    jobs.set(queued, { pid: null, runs: 0, lastExit: null, status: 0 });
+    // launchd starts it while we wait.
+    rt.sleep = async () => { jobs.set(queued, { pid: 1269, runs: 1, lastExit: null, status: 0 }); };
+    const job = await startDaemonViaLaunchd(startOpts(), rt);
+    job.dispose();
+    expect(job.label).toBe(queued);
+    expect(job.pid).toBe(1269);
+    expect(calls.filter((c) => c[0] === 'bootstrap' || c[0] === 'bootout')).toEqual([]);
+  });
+
+  it('prunes a queued job only once it is older than QUEUED_JOB_ADOPT_MS, and returns the newest one kept', async () => {
+    const now = Date.now();
+    const kept = newDaemonJobLabel(base, now - 60_000);
+    const older = newDaemonJobLabel(base, now - 70_000);
+    const expired = newDaemonJobLabel(base, now - QUEUED_JOB_ADOPT_MS - 1_000);
+    const exited = newDaemonJobLabel(base, now - 60_000);
+    const { rt, jobs, calls } = fakeLaunchd();
+    jobs.set(kept, { pid: null, runs: 0, lastExit: null, status: 0 });
+    jobs.set(older, { pid: null, runs: 0, lastExit: null, status: 0 });
+    jobs.set(expired, { pid: null, runs: 0, lastExit: null, status: 0 });
+    jobs.set(exited, { pid: null, runs: 1, lastExit: 0, status: 0 });
+    expect(await pruneStaleDaemonJobs(base, dir, rt)).toBe(kept);
+    expect(calls.filter((c) => c[0] === 'bootout').map((c) => c[1]).sort())
+      .toEqual([`gui/501/${expired}`, `gui/501/${exited}`].sort());
   });
 
   it('reports an early exit before the pid was observed, including status 0', async () => {

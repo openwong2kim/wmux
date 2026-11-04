@@ -36,7 +36,9 @@ import { isCredentialEnvKey } from '../envFilter';
  * alive (pid file lost, split-brain yield path) would SIGTERM that live daemon.
  * Jobs that are no longer running are pruned before each start; a running
  * one is never touched, and neither is one younger than PRUNE_GRACE_MS (its
- * RunAtLoad process may not have appeared yet). Prune and bootstrap run under
+ * RunAtLoad process may not have appeared yet). A job launchd has loaded but
+ * not started yet is a daemon still on its way: the next start waits on it
+ * instead of queueing a second daemon behind it. Prune and bootstrap run under
  * a lock file in the plist dir so two launchers starting at once cannot
  * remove each other's plist or job mid-start.
  */
@@ -151,6 +153,19 @@ export class LaunchdUnavailableError extends Error {
   }
 }
 
+/**
+ * The job is loaded but launchd has not started its process yet. launchd
+ * queues RunAtLoad starts while the system is busy: after a reboot one started
+ * ~45 s after its bootstrap. The daemon is still coming, so this is not a
+ * failed start, and the next start adopts the job.
+ */
+export class LaunchdJobQueuedError extends Error {
+  constructor(readonly label: string) {
+    super(`launchd job ${label} is loaded but launchd has not started its daemon yet`);
+    this.name = 'LaunchdJobQueuedError';
+  }
+}
+
 export interface LaunchdDaemonHandle {
   label: string;
   /** null when the job already exited before its pid could be observed. */
@@ -191,6 +206,12 @@ export const defaultLaunchdRuntime = (log: (...args: unknown[]) => void): Launch
 const PID_WAIT_MS = 5_000;
 /** Jobs younger than this are never pruned: well past PID_WAIT_MS. */
 export const PRUNE_GRACE_MS = 30_000;
+/**
+ * How long a job launchd has not started yet is waited on (adopted) instead
+ * of replaced: the 90 s a directly spawned daemon gets to come up
+ * (DAEMON_READY_HARD_CEILING_MS). Older, it is pruned like any other.
+ */
+export const QUEUED_JOB_ADOPT_MS = 90_000;
 const START_LOCK_NAME = 'start.lock';
 const START_LOCK_WAIT_MS = 45_000;
 const START_LOCK_POLL_MS = 50;
@@ -341,13 +362,15 @@ const EXIT_POLL_MS = 250;
 
 /**
  * Boot out (and delete the plist of) every job of this instance that is not
- * running. Never touches a job with a live pid or one younger than
- * PRUNE_GRACE_MS. Best-effort, never throws. Call it under the start lock.
+ * running. Never touches a job with a live pid, one younger than
+ * PRUNE_GRACE_MS, or one launchd has not started yet that is younger than
+ * QUEUED_JOB_ADOPT_MS. Returns the newest such queued job, for the caller to
+ * wait on, or null. Best-effort, never throws. Call it under the start lock.
  */
-export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, rt: LaunchdRuntime): Promise<void> {
+export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, rt: LaunchdRuntime): Promise<string | null> {
   const prefix = `${baseLabel}.`;
   let jobs: Map<string, LaunchctlListEntry>;
-  try { jobs = parseLaunchctlList(await rt.runLaunchctl(['list'])); } catch { return; }
+  try { jobs = parseLaunchctlList(await rt.runLaunchctl(['list'])); } catch { return null; }
   const labels = new Set<string>();
   for (const label of jobs.keys()) if (label.startsWith(prefix)) labels.add(label);
   try {
@@ -355,16 +378,26 @@ export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, 
       if (f.startsWith(prefix) && f.endsWith('.plist')) labels.add(f.slice(0, -'.plist'.length));
     }
   } catch { /* no dir yet */ }
+  let queued: { label: string; createdAt: number } | null = null;
   for (const label of labels) {
     const job = jobs.get(label);
     if (job && job.pid !== null) continue;
     const createdAt = daemonJobCreatedAt(label);
+    if (job && createdAt !== null && Date.now() - createdAt < QUEUED_JOB_ADOPT_MS) {
+      // `list` cannot tell never-run from ran-and-exited-0; `print` can.
+      const state = await queryDaemonJob(label, rt);
+      if (state.kind === 'loaded' && state.pid === null && state.runs === 0) {
+        if (queued === null || createdAt > queued.createdAt) queued = { label, createdAt };
+        continue;
+      }
+    }
     if (createdAt !== null && Date.now() - createdAt < PRUNE_GRACE_MS) continue;
     if (job) {
       try { await rt.runLaunchctl(['bootout', `gui/${rt.uid}/${label}`]); } catch { /* already gone */ }
     }
     try { fs.unlinkSync(path.join(plistDir, `${label}.plist`)); } catch { /* not ours / gone */ }
   }
+  return queued?.label ?? null;
 }
 
 /**
@@ -382,11 +415,19 @@ export async function startDaemonViaLaunchd(
 ): Promise<LaunchdDaemonHandle> {
   if (rt.uid < 0) throw new LaunchdUnavailableError('no uid on this platform');
   let label = '';
+  let adopted = false;
   let bootstrapError: unknown;
   await withDaemonStartLock(opts.plistDir, rt, async () => {
     // Under the lock every plist on disk is a leftover: nobody is mid-start.
     removeDaemonPlists(opts.baseLabel, opts.plistDir);
-    await pruneStaleDaemonJobs(opts.baseLabel, opts.plistDir, rt);
+    const queued = await pruneStaleDaemonJobs(opts.baseLabel, opts.plistDir, rt);
+    if (queued !== null) {
+      // A daemon launchd has not started yet is on its way; another job
+      // would only queue a second daemon behind it.
+      label = queued;
+      adopted = true;
+      return;
+    }
     // Stamp the label only now, so the prune grace window counts from
     // bootstrap, not from before a long lock wait or prune.
     label = newDaemonJobLabel(opts.baseLabel);
@@ -408,7 +449,9 @@ export async function startDaemonViaLaunchd(
     }
   });
 
-  if (bootstrapError !== undefined) {
+  if (adopted) {
+    rt.log(`[launcher] launchd job ${label} is loaded but not started yet — waiting for it instead of starting another`);
+  } else if (bootstrapError !== undefined) {
     const msg = bootstrapError instanceof Error ? bootstrapError.message : String(bootstrapError);
     // A failed or timed-out bootstrap may still have loaded the job. Fall back
     // to a plain spawn only when launchd confirms it did not.
@@ -437,7 +480,8 @@ export async function startDaemonViaLaunchd(
       throw new LaunchdUnavailableError(`launchd job ${label} disappeared before its daemon started`);
     }
     if (Date.now() >= deadline) {
-      throw new Error(`launchd job ${label} is loaded (or its state is unknown) but its daemon pid never appeared`);
+      if (state.kind === 'loaded') throw new LaunchdJobQueuedError(label);
+      throw new Error(`launchd job ${label}: load state unknown and its daemon pid never appeared`);
     }
     await rt.sleep(PID_POLL_MS);
   }
