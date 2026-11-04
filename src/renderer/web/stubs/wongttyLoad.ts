@@ -14,3 +14,7 @@ export function loadedWongtty(): null {
 export function isWongttyTerminal(): boolean {
   return false;
 }
+
+export function wongttyLoadFailure(): null {
+  return null;
+}

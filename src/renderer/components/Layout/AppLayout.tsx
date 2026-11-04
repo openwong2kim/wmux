@@ -22,6 +22,7 @@ import { hooksLaunchCheck, nextFirstBootSurface } from './firstBootSequence';
 import { markPrWakeNoticeSeen, prWakeNoticePending, showPrWakeNoticeOnce } from '../../hooks/prWakeNotice';
 import { openModalLayerCount, subscribeModalLayers } from '../ui/modalLayer';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
+import { ensureEngineController, settleStartupEngine } from '../../terminal/wongtty/engineController';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import { getLeafPanes, getWorkspaceLeafPanes } from '../../../shared/paneUtils';
 import { sessionLayoutWithoutPrivate, stashedPanesWithoutPrivate } from '../../../shared/privateBrowser';
@@ -1544,6 +1545,10 @@ export default function AppLayout() {
   // 앱 시작 시 세션 복원 (Fix 0 — see state machine diagram at top of file)
   useEffect(() => {
     const gen = ++startupGenRef.current;
+    // Labs wongtty switch: the engine controller watches the saved request
+    // from here, so loadSession turning it on starts loading wongtty while the
+    // daemon wait and the reconcile run.
+    ensureEngineController();
     let abortCtl: AbortController | null = null;
     // Whether this startup attached to a daemon, whose sessions outlive a
     // failed reconcile (and a disconnect), unlike local ptys.
@@ -1692,6 +1697,10 @@ export default function AppLayout() {
           }) === 'kept';
         }
       } finally {
+        // Labs wongtty switch: let a saved on request finish loading first, so
+        // each pane is built once with its engine (returns at once when off;
+        // a slow load lets the panes start as xterm.js and swap later).
+        await settleStartupEngine({ timeoutMs: 5000 });
         // Always flip the gate, even on error — never leave the user
         // staring at a permanent "Restoring panes…" placeholder.
         setPaneGate('ready');
