@@ -134,7 +134,7 @@ import { getAccountStore } from './account/accountStore';
 import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
-import { activeDevicePreset, registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
+import { activeDevicePreset, registerBrowserRpc, resetDevicePreset, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerA2aChannelRpc } from './pipe/handlers/a2a.channel.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
@@ -2644,6 +2644,11 @@ app.on('ready', async () => {
                 if (reply?.applied !== true) throw new Error('Browser viewport unavailable');
               },
               preset: wc => activeDevicePreset(wc),
+              // As the `desktop` viewport action resets, without its page and agent-control checks.
+              reset: async wc => {
+                await resetDevicePreset(wc);
+                await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
+              },
             },
           }) : null;
           const phoneBrowserDeps: Parameters<typeof handlePhoneBrowser>[2] = {

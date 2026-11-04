@@ -63,6 +63,10 @@ const MAX_TABS = 4;
 export const STREAM_DOC_URLS = 64;
 const FIRST_FRAME_MS = 1_000;
 const ZOOM_POLL_MS = 2_000;
+/** A mobile change that failed is tried again after this. */
+const MOBILE_RETRY_MS = 2_000;
+/** How long a new stream on a tab waits for the stream before it to let go (its mobile revert). */
+const RELEASE_WAIT_MS = 3_000;
 const QUIET_MS = 5_000;
 const PING_MS = 15_000;
 const URL_INTERVAL_MS = 100;
@@ -125,6 +129,8 @@ export interface PhoneStreamBuiltinDeps {
   viewport(surfaceId: string, workspaceId: string, mode: 'mobile' | 'desktop'): Promise<void>;
   /** The device preset browser.emulate last set on the guest, while it holds (browser.rpc.ts activeDevicePreset). */
   preset(contents: WebContents): { readonly mobile: boolean } | undefined;
+  /** Takes the guest's device preset off, as the `desktop` viewport action does, on any page and while the user holds the pane (browser.rpc.ts resetDevicePreset). */
+  reset(contents: WebContents): Promise<void>;
 }
 
 export interface PhoneBrowserStreamDeps {
@@ -313,8 +319,8 @@ abstract class TabStream implements PhoneStreamTabView {
   /** The source's own checks, every tick. */
   protected abstract poll(now: number): void;
   /** Lets go of the browser: the screencast and whatever the source listens to. */
-  /** Lets go of the browser; `unwatched` settles once the focus watcher's teardown, which uses the session, is done. */
-  protected abstract release(unwatched: Promise<void>): void;
+  /** Lets go of the browser; `unwatched` settles once the focus watcher's teardown, which uses the session, is done. Settles once the tab is let go. */
+  protected abstract release(unwatched: Promise<void>): Promise<void>;
   /** Whether the tab is on screen as far as the source knows; painted while not, a frame is not sent. */
   protected visible(): boolean { return true; }
   /** Emulates a phone on the tab (`viewport=mobile`). */
@@ -328,6 +334,9 @@ abstract class TabStream implements PhoneStreamTabView {
   protected mobile = false;
   /** Mobile changes run one at a time, in order. */
   private mobileQueue: Promise<void> = Promise.resolve();
+  private mobileRetryAt = 0;
+  /** Settles once a stopped stream let go of the tab, its mobile revert included; never rejects. */
+  released: Promise<void> = Promise.resolve();
 
   /** The daemon's `mobile` (browser.streamUpdate). */
   setMobile(want: boolean): Promise<void> {
@@ -350,8 +359,8 @@ abstract class TabStream implements PhoneStreamTabView {
         await this.applyMobile();
         this.mobile = true;
       } else if (!this.mobileWanted && this.mobile) {
-        this.mobile = false;
         await this.clearMobile();
+        this.mobile = false;
       }
     });
   }
@@ -592,6 +601,11 @@ abstract class TabStream implements PhoneStreamTabView {
         if ((reply as { known?: unknown } | null)?.known === false) this.stop();
       }, () => undefined);
     }
+    // The daemon sends `mobile` only when it changes: a change that failed is tried again here.
+    if (this.mobileWanted !== this.mobile && now - this.mobileRetryAt >= MOBILE_RETRY_MS) {
+      this.mobileRetryAt = now;
+      void this.syncMobile();
+    }
     this.poll(now);
   }
 
@@ -679,7 +693,7 @@ abstract class TabStream implements PhoneStreamTabView {
     if (this.firstFrame) clearTimeout(this.firstFrame);
     for (const item of this.outbox.splice(0)) { this.ackHeld(item); this.ack(item.ack); }
     this.budget.leave(this);
-    this.release(this.dropFocusWatch());
+    this.released = this.release(this.dropFocusWatch());
     this.onStopped(this);
   }
 }
@@ -858,21 +872,24 @@ class ChromeTabStream extends TabStream {
     retry.unref?.();
   }
 
-  protected release(unwatched: Promise<void>): void {
+  protected release(unwatched: Promise<void>): Promise<void> {
     const session = this.session;
     this.session = null;
-    if (session && !session.closed) {
-      // The focus watcher's teardown runs on this session: it goes first.
-      void unwatched.then(() => session.send('Page.stopScreencast')).catch(() => undefined).finally(() => { void session.detach(); });
-    }
+    if (!session || session.closed) return Promise.resolve();
+    // The focus watcher's teardown runs on this session: it goes first.
+    // Detaching takes the session's emulation with it.
+    return unwatched.then(() => session.send('Page.stopScreencast')).catch(() => undefined)
+      .then(() => session.detach()).catch(() => undefined);
   }
 }
 
 /**
  * A builtin browser pane: its <webview>'s guest, on the debugger
- * WebviewCdpManager attached. It takes no automation lease (a lease shows the
- * "agent is driving" marker), so lightweight mode may throttle the pane while
- * it is off screen, and discard it, which ends the stream.
+ * WebviewCdpManager attached. Streaming takes no automation lease (a lease
+ * shows the "agent is driving" marker), so lightweight mode may throttle the
+ * pane while it is off screen, and discard it, which ends the stream. Only
+ * `viewport=mobile` does: its apply is the phone's viewport action, which
+ * holds a lease while it runs.
  */
 /** net::ERR_ABORTED: a navigation that ended without committing anything. */
 const NET_ERR_ABORTED = -3;
@@ -1005,15 +1022,15 @@ class BuiltinTabStream extends TabStream {
 
   /**
    * The phone's own viewport action, which fits the phone to the pane (it
-   * reloads the page). A preset already on the pane (the phone's viewport
-   * action, an agent's emulation) is not the stream's: a phone one is kept as
-   * it is, and the stream reverts none of them.
+   * reloads the page). A phone preset already on the pane (the phone's
+   * viewport action, an agent's emulation) is kept as it is and not the
+   * stream's. Any other preset (an agent's desktop one) is replaced, and the
+   * stream's own then reverts to no preset at all.
    */
   protected async applyMobile(): Promise<void> {
-    const before = this.builtin.preset(this.wc);
-    if (!before?.mobile) {
+    if (!this.builtin.preset(this.wc)?.mobile) {
       await this.builtin.viewport(this.surfaceId, this.workspaceId, 'mobile');
-      if (before === undefined) this.ownPreset = this.builtin.preset(this.wc) ?? null;
+      this.ownPreset = this.builtin.preset(this.wc) ?? null;
     }
     await this.readBounds();
   }
@@ -1023,12 +1040,18 @@ class BuiltinTabStream extends TabStream {
     await this.readBounds();
   }
 
-  /** Back to the desktop viewport, only while the pane's preset is the one the stream set: a viewport action or an agent's emulation since is theirs. */
+  /**
+   * Back to the desktop viewport, only while the pane's preset is the one the
+   * stream set: a viewport action or an agent's emulation since is theirs.
+   * The preset stays the stream's until the reset succeeds, so a failed one
+   * is tried again.
+   */
   private async revertMobile(): Promise<void> {
     const own = this.ownPreset;
+    if (!own) return;
+    if (this.wc.isDestroyed() || this.builtin.preset(this.wc) !== own) { this.ownPreset = null; return; }
+    await this.builtin.reset(this.wc);
     this.ownPreset = null;
-    if (!own || this.wc.isDestroyed() || this.builtin.preset(this.wc) !== own) return;
-    await this.builtin.viewport(this.surfaceId, this.workspaceId, 'desktop');
   }
 
   private onNavigated(raw: unknown): void {
@@ -1072,23 +1095,28 @@ class BuiltinTabStream extends TabStream {
     } catch { /* kept as it was */ }
   }
 
-  protected release(): void {
+  protected release(): Promise<void> {
     // The pane's debugger stays attached: the focus watcher's teardown needs no wait.
     for (const off of this.unlisten.splice(0)) off();
     if (!this.wc.isDestroyed()) void this.cdp('Page.stopScreencast').catch(() => undefined);
     // After a change still running: its preset is the one to revert.
-    void this.mobileStep(() => this.revertMobile());
+    return this.mobileStep(() => this.revertMobile());
   }
 }
 
 /** Main's stream manager for one daemon connection. */
 export function createPhoneBrowserStreams(deps: PhoneBrowserStreamDeps): PhoneBrowserStreams {
   const streams = new Map<string, TabStream>();
+  /** A stopped stream's let-go per tab, until it settles: a new stream on the tab waits for it, so the old revert cannot land after the new apply. */
+  const releasing = new Map<string, Promise<void>>();
   const budget = new Budget();
   const key = (workspaceId: string, surfaceId: string) => `${workspaceId}\n${surfaceId}`;
   const forget = (stream: TabStream) => {
     const k = key(stream.workspaceId, stream.surfaceId);
     if (streams.get(k) === stream) streams.delete(k);
+    const released = stream.released;
+    releasing.set(k, released);
+    void released.then(() => { if (releasing.get(k) === released) releasing.delete(k); });
   };
 
   const start = async (payload: Record<string, unknown>): Promise<unknown> => {
@@ -1124,6 +1152,12 @@ export function createPhoneBrowserStreams(deps: PhoneBrowserStreamDeps): PhoneBr
     stream.mobileWanted = payload.mobile === true;
     streams.set(key(workspaceId, surfaceId), stream);
     try {
+      const before = releasing.get(key(workspaceId, surfaceId));
+      if (before) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([before, new Promise<void>((resolve) => { timer = setTimeout(resolve, RELEASE_WAIT_MS); })]);
+        clearTimeout(timer);
+      }
       await stream.start();
     } catch (err) {
       stream.stop();

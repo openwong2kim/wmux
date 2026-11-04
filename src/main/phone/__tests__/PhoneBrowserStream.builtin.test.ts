@@ -100,6 +100,12 @@ describe('phone browser stream (main): a builtin pane', () => {
   let viewports: Array<{ surfaceId: string; workspaceId: string; mode: string; screencasts: number }>;
   /** Each guest's device preset, as browser.emulate leaves it: a new object per preset. */
   let presets: Map<unknown, { mobile: boolean }>;
+  /** The viewport action refuses (the user holds the pane, or its page is not http). */
+  let viewportRefused: boolean;
+  /** Resets that fail before they reset anything, counted down. */
+  let resetFailures: number;
+  /** Held resets wait for this. */
+  let resetGate: Promise<void> | null;
 
   beforeEach(() => {
     vi.useFakeTimers({ now: 1_800_000_000_000 });
@@ -116,6 +122,9 @@ describe('phone browser stream (main): a builtin pane', () => {
     reply = async () => ({ ok: true, known: true });
     viewports = [];
     presets = new Map();
+    viewportRefused = false;
+    resetFailures = 0;
+    resetGate = null;
     const deps: PhoneBrowserStreamDeps = {
       push: (params) => { pushes.push(params); return reply(params); },
       backend: () => 'chrome',
@@ -126,6 +135,7 @@ describe('phone browser stream (main): a builtin pane', () => {
         onVisibility: (listener) => { observers.add(listener); return () => { observers.delete(listener); }; },
         nativeBounds: async () => { if (boundsGate) await boundsGate; return native; },
         viewport: async (surfaceId, workspaceId, mode) => {
+          if (viewportRefused) throw new Error('Browser viewport unavailable');
           const guest = guests.find((x) => targets.some((t) => t.surfaceId === surfaceId && t.webContentsId === x.id));
           if (!guest) throw new Error('Browser unavailable');
           viewports.push({ surfaceId, workspaceId, mode, screencasts: guest.debugger.count('Page.startScreencast') });
@@ -135,6 +145,16 @@ describe('phone browser stream (main): a builtin pane', () => {
           guest.debugger.layout = { ...guest.debugger.layout, clientWidth: mode === 'mobile' ? Math.min(390, native.width) : native.width, clientHeight: native.height };
         },
         preset: (contents) => presets.get(contents),
+        // Recorded as a `desktop` step: what the viewport action's desktop mode leaves.
+        reset: async (contents) => {
+          if (resetGate) await resetGate;
+          if (resetFailures > 0) { resetFailures -= 1; throw new Error('Browser unavailable'); }
+          const guest = contents as unknown as FakeGuest;
+          const target = targets.find((t) => t.webContentsId === guest.id);
+          viewports.push({ surfaceId: target?.surfaceId ?? '', workspaceId: target?.workspaceId ?? '', mode: 'desktop', screencasts: guest.debugger.count('Page.startScreencast') });
+          presets.delete(guest);
+          guest.debugger.layout = { ...guest.debugger.layout, clientWidth: native.width, clientHeight: native.height };
+        },
       },
       captureMs: 5_000,
     };
@@ -388,20 +408,69 @@ describe('phone browser stream (main): a builtin pane', () => {
       expect(modes()).toEqual(['mobile', 'desktop', 'mobile', 'desktop']);
     });
 
-    it('a preset already on the pane is not the stream\'s: a phone one is kept as it is, and none is reverted', async () => {
+    it('a phone preset already on the pane is not the stream\'s: it is kept as it is, and not reverted', async () => {
       presets.set(g(), { mobile: true });
       await start({ mobile: true });
       await update(false);
       streams.stopAll();
       await flush();
       expect(modes()).toEqual([]);
-      // An agent's desktop preset: the phone gets its viewport, and the stream does not undo it.
+      expect(presets.get(g())).toEqual({ mobile: true });
+    });
+
+    it('an agent\'s desktop preset is replaced by the phone\'s, and the stream reverts its own when the daemon turns it off', async () => {
       presets.set(g(), { mobile: false });
       await start({ mobile: true });
+      expect(presets.get(g())).toEqual({ mobile: true });
       await update(false);
-      streams.stopAll();
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      expect(presets.has(g())).toBe(false);
+    });
+
+    it('reverts on a pane whose viewport action refuses (the user holds it, or its page is not http)', async () => {
+      await start({ mobile: true });
+      viewportRefused = true;
+      await update(false);
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      expect(presets.has(g())).toBe(false);
+    });
+
+    it('a revert that failed is tried again, and the stream stays mobile until it succeeds', async () => {
+      await start({ mobile: true });
+      resetFailures = 1;
+      await update(false);
       await flush();
       expect(modes()).toEqual(['mobile']);
+      expect(presets.get(g())).toEqual({ mobile: true });
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(modes()).toEqual(['mobile', 'desktop']);
+      expect(presets.has(g())).toBe(false);
+    });
+
+    it('an apply that failed is tried again, though the daemon does not ask twice', async () => {
+      viewportRefused = true;
+      await start({ mobile: true });
+      expect(presets.has(g())).toBe(false);
+      viewportRefused = false;
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(modes()).toEqual(['mobile']);
+      expect(presets.get(g())).toEqual({ mobile: true });
+    });
+
+    it('a new stream on the tab waits for the old one\'s revert before its own apply', async () => {
+      await start({ mobile: true });
+      let open!: () => void;
+      resetGate = new Promise<void>((resolve) => { open = resolve; });
+      await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'surf-a', streamId: 'st-surf-a' });
+      const restarted = start({ mobile: true });
+      await flush();
+      open();
+      await restarted;
+      await flush();
+      expect(modes()).toEqual(['mobile', 'desktop', 'mobile']);
+      expect(presets.get(g())).toEqual({ mobile: true });
     });
 
     it('a viewport action or an agent\'s emulation after the stream\'s own is theirs: it is not reverted', async () => {
