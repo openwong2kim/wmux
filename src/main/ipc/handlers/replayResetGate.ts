@@ -40,17 +40,9 @@ export const REPLAY_CLEAR = '\x1b[r\x1b[0m\x1b(B\x0f\x1b[4l\x1b[?6l\x1b[?7h\x1b[
  */
 export const LEAVE_ALT_SCREEN = '\x1b[?1049l';
 
-/** Empties the kitty keyboard flag stack of the screen the terminal is on. */
-export const KITTY_POP_ALL = '\x1b[<99u';
-/** The same for the alternate screen, from the main one. */
-export const KITTY_POP_ALL_ALT = `\x1b[?1049h${KITTY_POP_ALL}\x1b[?1049l`;
-
 // RIS, or a DECSET/DECRST whose parameters may switch the screen.
 // eslint-disable-next-line no-control-regex
 const SCREEN_SWITCH = /\x1bc|\x1b\[\?([\d;]*)([hl])/g;
-// A kitty keyboard flag push (CSI > flags u).
-// eslint-disable-next-line no-control-regex
-const KITTY_PUSH = /\x1b\[>\d*u/;
 // A complete escape at the start of a chunk tail: one main's next chunk cannot extend.
 // eslint-disable-next-line no-control-regex
 const COMPLETE_ESCAPE = /^\x1b(?:[^[]|\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e])/;
@@ -109,21 +101,14 @@ export function createReplayResetGate(
     screen.alt = screenAfter(scanned, screen.alt);
     const at = scanned.lastIndexOf('\x1b');
     const tail = at < 0 ? '' : scanned.slice(at);
-    screen.carry = tail && tail.length <= MAX_CARRY && !COMPLETE_ESCAPE.test(tail) ? tail : '';
+    // A flat copy: a slice of `scanned` would keep the whole chunk alive.
+    screen.carry = tail && tail.length <= MAX_CARRY && !COMPLETE_ESCAPE.test(tail) ? [...tail].join('') : '';
   };
 
-  const lead = (sessionId: string, text: string): string => {
+  const lead = (sessionId: string): string => {
     const onAlt = screens.get(sessionId)?.alt === true;
-    // A raw ring replays the app's own kitty pushes: they rebuild the stacks,
-    // which must then start empty, or the app's later pops leave flags on.
-    const pushes = KITTY_PUSH.test(text);
-    // Left while the pane was away: the app that pushed there is gone.
-    const altGone = onAlt && !screenAfter(text, false);
-    log(`[lifecycle] pty.replay id=${sessionId} reset=1${onAlt ? ' alt=1' : ''}${pushes ? ' kitty=1' : ''}`);
-    return (onAlt ? LEAVE_ALT_SCREEN : '')
-      + (pushes ? KITTY_POP_ALL : '')
-      + (pushes || altGone ? KITTY_POP_ALL_ALT : '')
-      + REPLAY_CLEAR;
+    log(`[lifecycle] pty.replay id=${sessionId} reset=1${onAlt ? ' alt=1' : ''}`);
+    return (onAlt ? LEAVE_ALT_SCREEN : '') + REPLAY_CLEAR;
   };
 
   return {
@@ -134,7 +119,7 @@ export function createReplayResetGate(
       let out = text;
       // A live re-flush opens with its own RIS (SessionPipe.reflushInSlot).
       if (replay && flushedToRenderer.delete(sessionId) && !text.startsWith('\x1bc')) {
-        out = lead(sessionId, text) + text;
+        out = lead(sessionId) + text;
       }
       fold(sessionId, out);
       return out;

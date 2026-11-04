@@ -44,7 +44,6 @@ async function secondFlush(ring: string, second: string): Promise<Terminal> {
   await write(t, gate.outgoing('p', second, true));
   return t;
 }
-const kitty = (t: Terminal) => (t as unknown as { _core: { coreService: { kittyKeyboard: { flags: number; mainFlags: number; altFlags: number; mainStack: number[]; altStack: number[] } } } })._core.coreService.kittyKeyboard;
 /** What a pane that only ever got `replay` shows. */
 async function shownBy(replay: string): Promise<Terminal> {
   const t = terminal();
@@ -113,9 +112,6 @@ describe('a second replay through the reset gate', { timeout: 60_000 }, () => {
     expect(t.buffer.active.type).toBe('normal');
     expect(lines(t, 'normal')).toEqual(lines(truth, 'normal'));
     expect(xtermKittyFlags(t)).toBe(0);
-    // The next full-screen app starts with no flags of vim's.
-    await write(t, '\x1b[?1049h');
-    expect(xtermKittyFlags(t)).toBe(0);
   });
 
   it("keeps an inline app's flags when the pane missed the session entering the alternate screen", async () => {
@@ -127,15 +123,17 @@ describe('a second replay through the reset gate', { timeout: 60_000 }, () => {
     expect(xtermKittyFlags(t)).toBe(1);
   });
 
-  it("does not double an app's kitty pushes that a raw replay carries again", async () => {
-    const inline = await secondFlush(INLINE, INLINE);
-    expect(kitty(inline).mainStack).toEqual([0]);
-    await write(inline, '\x1b[<u');
-    expect(xtermKittyFlags(inline)).toBe(0);
+  it("keeps an inline app's flags when the replay carries only an editor's push", async () => {
+    // Claude opened an editor while its snapshot was parsed: the push is in the live delta.
+    const editor = '\x1b[?1049h\x1b[>1u\x1b[Hedit';
+    const delta = await secondFlush(INLINE, (await snapshotOf(INLINE)) + editor);
+    await write(delta, '\x1b[<u\x1b[?1049l');
+    expect(xtermKittyFlags(delta)).toBe(1);
 
-    const full = await secondFlush(FULLSCREEN, FULLSCREEN);
-    expect(kitty(full).altStack).toEqual([0]);
-    await write(full, '\x1b[<u\x1b[?1049l\x1b[?1049h');
-    expect(xtermKittyFlags(full)).toBe(0);
+    // The ring wrapped past Claude's push; an editor's push and pop are still in it.
+    const wrapped = Array.from({ length: 30 }, (_, i) => `row-${i}\r\n`).join('')
+      + '\x1b[?1049h\x1b[>1u\x1b[Hedit\x1b[<u\x1b[?1049l> prompt';
+    const raw = await secondFlush(INLINE, wrapped);
+    expect(xtermKittyFlags(raw)).toBe(1);
   });
 });

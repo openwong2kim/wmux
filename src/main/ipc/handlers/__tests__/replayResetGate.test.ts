@@ -11,7 +11,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  createReplayResetGate, KITTY_POP_ALL, KITTY_POP_ALL_ALT, LEAVE_ALT_SCREEN, REPLAY_CLEAR, screenAfter,
+  createReplayResetGate, LEAVE_ALT_SCREEN, REPLAY_CLEAR, screenAfter,
 } from '../replayResetGate';
 
 // What pty.handler forwards: live and replay chunks through the gate, in order.
@@ -57,12 +57,12 @@ describe('replay reset gate', () => {
     expect(replay(gate, snapshot)).toBe(`${REPLAY_CLEAR}${snapshot}`);
   });
 
-  it('empties the alternate stack when the full-screen app quit while the pane was away', () => {
+  it('leaves the alternate screen when the full-screen app quit while the pane was away', () => {
     const gate = createReplayResetGate(() => undefined);
     replay(gate, '\x1b[?1049h\x1b[>1uvim');
     gate.flushed('s');
     const snapshot = 'shell$ after\r\nshell$ ';
-    expect(replay(gate, snapshot)).toBe(`${LEAVE_ALT_SCREEN}${KITTY_POP_ALL_ALT}${REPLAY_CLEAR}${snapshot}`);
+    expect(replay(gate, snapshot)).toBe(`${LEAVE_ALT_SCREEN}${REPLAY_CLEAR}${snapshot}`);
   });
 
   it('counts its own lead: a replay it took back to the main screen leaves the pane there', () => {
@@ -85,14 +85,35 @@ describe('replay reset gate', () => {
     expect(replay(gate, 'x').startsWith(LEAVE_ALT_SCREEN)).toBe(true);
   });
 
-  it('empties the kitty stacks when the replay pushes again', () => {
+  it('follows a split screen switch whose second part holds no escape', () => {
+    const gate = createReplayResetGate(() => undefined);
+    replay(gate, 'PS> ');
+    gate.flushed('s');
+    live(gate, 'vim\r\n\x1b[?104');
+    live(gate, '9h');
+    live(gate, 'text\x1b[H');
+    expect(replay(gate, 'x').startsWith(LEAVE_ALT_SCREEN)).toBe(true);
+  });
+
+  it('follows a screen switch split one byte before its end', () => {
+    const gate = createReplayResetGate(() => undefined);
+    replay(gate, 'PS> ');
+    gate.flushed('s');
+    live(gate, 'vim\r\n\x1b[?1049');
+    live(gate, 'h\x1b[H');
+    expect(replay(gate, 'x').startsWith(LEAVE_ALT_SCREEN)).toBe(true);
+  });
+
+  it('leaves the kitty stacks as they are, a replay that pushes included', () => {
+    // A push in a replay need not be the app's own: a snapshot's live delta
+    // or a wrapped ring can carry an editor's while the app's is gone.
     const log = vi.fn();
     const gate = createReplayResetGate(log);
     const ring = 'shell$ claude\r\n\x1b[>1u> prompt';
     replay(gate, ring);
     gate.flushed('s');
-    expect(replay(gate, ring)).toBe(`${KITTY_POP_ALL}${KITTY_POP_ALL_ALT}${REPLAY_CLEAR}${ring}`);
-    expect(log).toHaveBeenCalledWith('[lifecycle] pty.replay id=s reset=1 kitty=1');
+    expect(replay(gate, ring)).toBe(`${REPLAY_CLEAR}${ring}`);
+    expect(log).toHaveBeenCalledWith('[lifecycle] pty.replay id=s reset=1');
   });
 
   it('leaves a live re-flush, which opens with its own RIS, as it is, and follows its reset', () => {
