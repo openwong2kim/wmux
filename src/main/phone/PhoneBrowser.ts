@@ -187,12 +187,24 @@ export async function handlePhoneBrowser(command: string, payload: Record<string
   }
 }
 
+/**
+ * What a phone's `open` without `backend` makes in this workspace: the
+ * desktop's own backend, or null when the phone can open no page here (an
+ * external browser, or a workspace bound to the user's own Chrome).
+ */
+function openBackend(workspaceId: string, deps: BrowserDeps): PhoneBrowserBackend | null {
+  const backend = deps.backend();
+  if (backend === 'builtin') return 'builtin';
+  return backend === 'chrome' && deps.chrome?.canOpen(workspaceId) ? 'chrome' : null;
+}
+
 async function phoneBrowser(command: string, payload: Record<string, unknown>, deps: BrowserDeps): Promise<unknown> {
   const workspaceId = payload.workspaceId;
   if (typeof workspaceId !== 'string' || !workspaceId) throw new Error('Missing workspace');
   const targets = deps.targets().filter(target => target.workspaceId === workspaceId);
   if (command === 'browser.open') {
-    const backend = payload.backend ?? 'builtin';
+    // No `backend`: the desktop's own (an older phone, or one that read `openBackend`).
+    const backend = payload.backend ?? (deps.backend() === 'chrome' ? 'chrome' : 'builtin');
     if (backend !== 'builtin' && backend !== 'chrome') throw new Error('Invalid browser backend');
     if (backend === 'builtin' && deps.backend() !== 'builtin') throw new Error('Embedded browser backend required');
     const url = phoneURL(payload.url);
@@ -223,7 +235,8 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
         if (url && url.length <= PAGE_URL_LIMIT) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome' });
       }
     }
-    return { pages };
+    const opens = withChrome ? openBackend(workspaceId, deps) : null;
+    return { pages, ...(opens ? { openBackend: opens } : {}) };
   }
   // `stream:true` comes only from a daemon whose desktop announced
   // BROWSER_STREAM_CAPABILITY. It brings `history`, the stream's keys, the

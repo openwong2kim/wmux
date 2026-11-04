@@ -3636,7 +3636,11 @@ exactly as above.
   Without `?chrome=1`, or from a desktop without the flag, the list is the
   same as before, with no `backend` field. Live Chrome (the user's own
   browser) is never listed and never driven, and no phone action opens a
-  connection to it.
+  connection to it. The reply also carries `openBackend: "builtin" |
+  "chrome"`: what an `open` without `backend` makes in this workspace. It is
+  OMITTED when the phone can open no page there (an external browser
+  setting, or a workspace bound to Live Chrome or to one pane); hide the
+  new-page action then.
 - **Which tabs**: tabs of the workspace's own wmux Chrome profile that the
   desktop recorded under exactly this workspace; a tab with no workspace on
   record is nobody's. A profile bound to one pane only (a protected pane's,
@@ -3655,11 +3659,12 @@ exactly as above.
   that does not finish within about 5 s is `409 browser-tab-hidden`. Offer
   `focus`. Typing uses focus emulation rather than raising the tab. At browser
   zoom other than 100 % a capture is readable but carries no `geometry`.
-- **`open`** takes an optional `backend: "builtin" | "chrome"` (default
-  `builtin`, the rule above). `chrome` needs the desktop's browser setting to
-  be Chrome and the workspace's profile to be a wmux profile, not Live
-  Chrome (`503 browser-backend-unavailable` otherwise); it may start that
-  profile's Chrome. Any other value is `400`.
+- **`open`** takes an optional `backend: "builtin" | "chrome"`. Without it,
+  the desktop's own setting decides: `chrome` when the browser setting is
+  Chrome, else `builtin` (the rule above). `chrome` needs the desktop's
+  browser setting to be Chrome and the workspace's profile to be a wmux
+  profile, not Live Chrome (`503 browser-backend-unavailable` otherwise); it
+  may start that profile's Chrome. Any other value is `400`.
 - **`{action:"focus",surfaceId}`** (input permission): brings a builtin pane
   or a Chrome tab of this workspace forward on the desktop (a Chrome tab's
   window too). Send it only on the user's tap.

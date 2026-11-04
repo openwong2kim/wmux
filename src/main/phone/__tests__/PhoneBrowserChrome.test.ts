@@ -60,7 +60,16 @@ describe('phone preview on dedicated-profile Chrome', () => {
     expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, fixture(deps))).toEqual({ pages: [
       { id: 'pane', title: 'Pane', url: 'https://pane.example.com/', backend: 'builtin' },
       { id: 'chrome-own', title: 'Cart', url: 'https://shop.example.com/cart', backend: 'chrome' },
-    ] });
+    ], openBackend: 'chrome' });
+  });
+
+  it('openBackend: what an open without backend makes here, for a phone that asked; omitted where none can open', async () => {
+    const list = async (deps: ReturnType<typeof fixture>) => handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, deps) as Promise<{ openBackend?: string }>;
+    expect((await list(fixture(fakeChrome().deps))).openBackend).toBe('chrome');
+    expect((await list({ ...fixture(fakeChrome().deps), backend: () => 'builtin' })).openBackend).toBe('builtin');
+    expect(await list(fixture(fakeChrome({ canOpen: () => false }).deps))).not.toHaveProperty('openBackend');
+    expect(await list({ ...fixture(fakeChrome().deps), backend: () => 'external' })).not.toHaveProperty('openBackend');
+    expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1' }, fixture(fakeChrome().deps))).not.toHaveProperty('openBackend');
   });
 
   it('leaves out a row whose URL is over 4096 characters; the other rows stay', async () => {
@@ -78,7 +87,7 @@ describe('phone preview on dedicated-profile Chrome', () => {
     };
     expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes)).toEqual({ pages: [
       { id: 'pane', title: 'Pane', url: 'https://pane.example.com/', backend: 'builtin' },
-    ] });
+    ], openBackend: 'chrome' });
     // At the limit a row is still listed.
     deps.setURL(at(4096));
     expect((await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes) as { pages: Array<{ id: string }> }).pages.map((p) => p.id))
@@ -341,6 +350,15 @@ describe('phone preview on dedicated-profile Chrome', () => {
     const builtinSetting = { ...fixture(fakeChrome().deps), backend: () => 'builtin' };
     expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/', backend: 'chrome' }, builtinSetting)).toEqual({ error: 'browser-backend-unavailable' });
     await expect(handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/', backend: 'live' }, dedicated)).rejects.toThrow('Invalid browser backend');
+  });
+
+  it('an open without backend opens on the desktop\'s Chrome, in a dedicated profile only', async () => {
+    const dedicated = fixture(fakeChrome().deps);
+    expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/' }, dedicated)).toEqual({ surfaceId: 'chrome-new' });
+    expect(dedicated.invoke).toHaveBeenCalledWith('browser.tabs', { workspaceId: 'ws-1', action: 'new', url: 'https://a.example.com/' });
+    const live = fixture(fakeChrome({ canOpen: () => false }).deps);
+    expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/' }, live)).toEqual({ error: 'browser-backend-unavailable' });
+    expect(live.invoke).not.toHaveBeenCalled();
   });
 });
 
