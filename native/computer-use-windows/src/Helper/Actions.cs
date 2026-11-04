@@ -701,10 +701,7 @@ internal static unsafe class Actions
                 return Result("accessibility", true, SemanticDelivery(target, frontBefore),
                     caret ? null : "the value was set, but wmux could not put the caret at its end, so a type that follows may not land after it");
             }
-            var delivery = SemanticDelivery(target, frontBefore);
-            return readBack.Verified
-                ? Result("accessibility", true, delivery)
-                : WithObserved(Result("accessibility", false, delivery, "the value read back differs from what was set"),
+            return WithObserved(Result("accessibility", false, SemanticDelivery(target, frontBefore), "the value read back differs from what was set"),
                     Verify.Observed(value, readBack.Last, Uia.IsSecretElement(el)));
         }
         finally
