@@ -89,4 +89,26 @@ describe('labs settings IPC', () => {
       delete electronProcess.resourcesPath;
     }
   });
+  it('serves broken wasm for WMUX_E2E_WONGTTY_WASM=broken in a development build only', async () => {
+    registerLabsHandlers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    process.env.WMUX_E2E_WONGTTY_WASM = 'broken';
+    const electronProcess = process as { resourcesPath?: string };
+    try {
+      const dev = await invoke(IPC.LABS_WONGTTY_WASM) as { engine: Buffer };
+      expect(dev.engine.toString()).toBe('not wasm');
+      expect(h.readFile).not.toHaveBeenCalled();
+      h.app.isPackaged = true;
+      electronProcess.resourcesPath = '/app/resources';
+      const packaged = await invoke(IPC.LABS_WONGTTY_WASM) as { engine: Buffer };
+      expect(packaged.engine.toString()).toBe(path.join('/app/resources', 'wongtty.wasm'));
+      // Every call is logged, so an e2e can tell that nothing asked for it.
+      expect(log.mock.calls.filter(([m]) => String(m).startsWith('[wmux:wongtty] wasm served'))).toHaveLength(2);
+    } finally {
+      delete process.env.WMUX_E2E_WONGTTY_WASM;
+      h.app.isPackaged = false;
+      delete electronProcess.resourcesPath;
+      log.mockRestore();
+    }
+  });
 });

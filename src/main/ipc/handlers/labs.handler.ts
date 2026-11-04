@@ -51,11 +51,18 @@ export function registerLabsHandlers(daemonClient?: DaemonClient): () => void {
   // extra resources of a packaged app (forge.config.ts), node_modules in
   // development and e2e builds. Only asked for once the switch is on.
   ipcMain.handle(IPC.LABS_WONGTTY_WASM, wrapHandler(IPC.LABS_WONGTTY_WASM, async () => {
+    // The e2e of the switch's failure path (development builds only): bytes
+    // that are not WebAssembly, so the renderer's load fails.
+    if (!app.isPackaged && process.env.WMUX_E2E_WONGTTY_WASM === 'broken') {
+      console.log('[wmux:wongtty] wasm served (broken, WMUX_E2E_WONGTTY_WASM)');
+      return { engine: Buffer.from('not wasm'), frontEnd: Buffer.from('not wasm') };
+    }
     const dist = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'node_modules', 'wongtty', 'dist');
     const [engine, frontEnd] = await Promise.all([
       readFile(path.join(dist, 'wongtty.wasm')),
       readFile(path.join(dist, 'xterm_web_bg.wasm')),
     ]);
+    console.log(`[wmux:wongtty] wasm served engine=${engine.length} frontEnd=${frontEnd.length}`);
     return { engine, frontEnd };
   }));
   ipcMain.handle(IPC.LABS_SETTINGS_GET, wrapHandler(IPC.LABS_SETTINGS_GET, status));

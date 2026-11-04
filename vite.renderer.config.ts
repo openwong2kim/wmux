@@ -111,6 +111,12 @@ export default defineConfig({
           ],
           'vendor-react': ['react', 'react-dom'],
         },
+        // The lazy chunk of the Labs wongtty switch is named after its entry,
+        // wongtty/dist/xterm.js, which reads as xterm.js in a listing of what
+        // loaded. Name it after the package.
+        chunkFileNames: (chunk) => (chunk.moduleIds.some((id) => /[\\/]node_modules[\\/]wongtty[\\/]/.test(id))
+          ? 'assets/wongtty-[hash].js'
+          : 'assets/[name]-[hash].js'),
       },
     },
   },

@@ -5140,6 +5140,7 @@ export function TabLabs() {
   const setSharedWebgl = useStore((s) => s.setTerminalSharedWebgl);
   const wongtty = useStore((s) => s.terminalWongtty);
   const setWongtty = useStore((s) => s.setTerminalWongtty);
+  const wongttyFailure = useStore((s) => s.terminalEngineFailure);
   const [labs, setLabs] = useState<LabsStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -5168,6 +5169,7 @@ export function TabLabs() {
       <SettingRow id="labs-wongtty" label={t('settings.labsWongtty')} description={t('settings.labsWongttyDesc')}>
         <Toggle checked={wongtty} onChange={setWongtty} label={t('settings.labsWongtty')} />
       </SettingRow>
+      {wongtty && wongttyFailure && <SettingNote tone="danger" role="alert">{t('settings.labsWongttyFailed', { message: wongttyFailure.message })}</SettingNote>}
       <SettingRow id="labs-ring-compression" label={t('settings.labsRingCompression')} description={t('settings.labsRingCompressionDesc')}>
         <Toggle
           checked={ringOn}

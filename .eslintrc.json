@@ -109,6 +109,44 @@
     },
     {
       "files": [
+        "src/renderer/**/*.ts",
+        "src/renderer/**/*.tsx"
+      ],
+      "excludedFiles": [
+        "src/renderer/**/__tests__/**"
+      ],
+      "rules": {
+        "@typescript-eslint/no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "wongtty",
+                "allowTypeImports": true,
+                "message": "The Labs wongtty engine loads only when its switch is on: import its types only, and its module through terminal/wongtty/load.ts (a dynamic import the engine controller starts)."
+              },
+              {
+                "name": "wongtty/xterm",
+                "allowTypeImports": true,
+                "message": "The Labs wongtty engine loads only when its switch is on: import its types only, and its module through terminal/wongtty/load.ts (a dynamic import the engine controller starts)."
+              },
+              {
+                "name": "wongtty/wongtty.wasm",
+                "allowTypeImports": true,
+                "message": "The Labs wongtty engine loads only when its switch is on: import its types only, and its module through terminal/wongtty/load.ts (a dynamic import the engine controller starts)."
+              },
+              {
+                "name": "wongtty/xterm_web_bg.wasm",
+                "allowTypeImports": true,
+                "message": "The Labs wongtty engine loads only when its switch is on: import its types only, and its module through terminal/wongtty/load.ts (a dynamic import the engine controller starts)."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "files": [
         "scripts/probe-commander-surface.mjs"
       ],
       "rules": {
