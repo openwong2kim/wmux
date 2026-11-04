@@ -188,6 +188,9 @@ function describeMode(mode: Mode): void {
     it('under browser zoom a frame carries its URL but no geometry', async (ctx) => {
       if (skipUnless(ctx)) return;
       const surfaceId = await open('/still', 'localhost');
+      // The profile's per-host zoom preference is what puts this tab at 120 %.
+      const metrics = await (await launcher!.pageSession(surfaceId)).send('Page.getLayoutMetrics') as { cssVisualViewport?: { zoom?: number } };
+      expect(metrics.cssVisualViewport?.zoom).toBeCloseTo(1.2, 2);
       await start(surfaceId);
       const frame = await until(() => lastFrame(surfaceId), 5_000);
       expect(frame.pageURL).toBe(`http://localhost:${port}/still`);
@@ -201,8 +204,12 @@ function describeMode(mode: Mode): void {
       await until(() => lastFrame(surfaceId), 5_000);
       const other = await open('/still');
       await launcher!.selectSurface(other);
-      const hiddenByChrome = await eventually(async () => (await evaluate(surfaceId, 'document.visibilityState')) === 'hidden', 3_000)
+      // Hidden by Chrome means both: the page reads hidden, and it stopped painting.
+      const readsHidden = await eventually(async () => (await evaluate(surfaceId, 'document.visibilityState')) === 'hidden', 3_000)
         .then(() => true, () => false);
+      const painted = of(surfaceId, 'frame').length;
+      await deliberateSleep(2_000, 'whether a background tab Chrome reads as hidden still paints');
+      const hiddenByChrome = readsHidden && of(surfaceId, 'frame').length === painted;
       if (hiddenByChrome) {
         await until(() => of(surfaceId, 'state').find((p) => p.state === 'hidden'), 12_000);
         const frames = of(surfaceId, 'frame').length;
