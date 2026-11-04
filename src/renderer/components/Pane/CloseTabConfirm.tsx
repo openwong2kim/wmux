@@ -35,6 +35,10 @@ function refocusActiveTerminal(): void {
   });
 }
 
+/** Read-only file viewers (editor, preview): closing one loses nothing, so it
+ *  closes at once instead of asking. Diff, board, git and review still ask. */
+const NO_CONFIRM_TYPES: ReadonlySet<string> = new Set(['editor', 'preview']);
+
 /** The one close-tab confirm, raised by the tab × and the close-tab shortcut.
  *  Cancel holds the initial focus, so Enter keeps the tab; Escape cancels too. */
 export default function CloseTabConfirm() {
@@ -43,8 +47,9 @@ export default function CloseTabConfirm() {
   // What closing ends: a shell (a local PTY, or a remote session this desktop
   // minted), only a view of a remote session someone else owns, a local
   // placeholder slot (nothing runs in it), or none of these.
-  const closeKind = useStore((s): 'shell' | 'remoteView' | 'placeholder' | 'other' => {
+  const closeKind = useStore((s): 'shell' | 'remoteView' | 'placeholder' | 'static' | 'other' => {
     const surface = target ? resolveCloseTabTarget(s, target)?.surface : undefined;
+    if (surface && !surface.ptyId && NO_CONFIRM_TYPES.has(surface.surfaceType ?? '')) return 'static';
     if (surface?.surfaceType === 'placeholder') return 'placeholder';
     if (surface?.surfaceType === 'remote-terminal') {
       // A duplicated workspace's clone has no session id, so it views nothing.
@@ -63,7 +68,13 @@ export default function CloseTabConfirm() {
     if (!target && shown.current) refocusActiveTerminal();
     shown.current = !!target;
   }, [target]);
-  if (!target) return null;
+  const closeWithoutAsking = !!target && closeKind === 'static';
+  useEffect(() => {
+    if (!target || !closeWithoutAsking) return;
+    dismiss();
+    closeTabNow(target);
+  }, [target, closeWithoutAsking, dismiss]);
+  if (!target || closeWithoutAsking) return null;
   const cancel = () => {
     dismiss();
   };

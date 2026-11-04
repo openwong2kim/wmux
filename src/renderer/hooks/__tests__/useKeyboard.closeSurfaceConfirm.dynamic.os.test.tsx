@@ -166,6 +166,23 @@ describe('close-tab shortcut confirmation', () => {
     expect(text).not.toContain('This ends its shell');
   });
 
+  it('closes an editor or preview tab at once, without the dialog', () => {
+    addSurface({ id: 's-8', ptyId: '', title: 'notes.md', shell: '', cwd: '', surfaceType: 'editor', editorFilePath: '/tmp/notes.md' });
+    expect(confirmOpen()).toBe(false);
+    expect(surfaceIds()).not.toContain('s-8');
+    addSurface({ id: 's-9', ptyId: '', title: 'a.png', shell: '', cwd: '', surfaceType: 'preview', previewFilePath: '/tmp/a.png' });
+    expect(confirmOpen()).toBe(false);
+    expect(surfaceIds()).toEqual(['s-1', 's-2']);
+    expect(useStore.getState().closeTabConfirm).toBeNull();
+    expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it.each(['diff', 'board', 'review'] as const)('still asks before closing a %s tab', (surfaceType) => {
+    addSurface({ id: 's-7', ptyId: '', title: surfaceType, shell: '', cwd: '', surfaceType });
+    expect(confirmOpen()).toBe(true);
+    expect(surfaceIds()).toContain('s-7');
+  });
+
   it('treats a remote terminal this desktop minted as a shell it ends', () => {
     addSurface({ id: 's-4', ptyId: '', title: 'remote', shell: '', cwd: '', surfaceType: 'remote-terminal', remoteHostId: 'h-1', remoteSessionId: 'r-1', remoteOwned: true });
     const text = dialog()?.textContent ?? '';

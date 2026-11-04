@@ -1,0 +1,6 @@
+### Changed
+
+- **Editor and preview tabs close without a confirm.** Closing one used to ask
+  "Close this tab? Anything running in it will be stopped." even though a file
+  viewer runs nothing. It now closes at once. Terminal, browser, diff, board,
+  git, review, remote and placeholder tabs still ask as before.
