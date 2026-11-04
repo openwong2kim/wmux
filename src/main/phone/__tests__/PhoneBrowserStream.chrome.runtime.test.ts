@@ -35,6 +35,9 @@ const PAGES: Record<string, string> = {
   // No viewport meta: under mobile emulation it lays out 980 px wide at ~0.4.
   '/wide': '<body style="margin:0"><div style="height:600px"></div>'
     + '<button id="t" style="margin-left:600px;width:120px;height:80px" onmousedown="document.title=\'hit\'">target</button></body>',
+  // A phone page (viewport meta), with a target against the right edge of the client area.
+  '/phone': '<meta name="viewport" content="width=device-width,initial-scale=1"><style>body{height:3000px;margin:0}</style>'
+    + '<div id="t" style="position:fixed;right:0;top:100px;width:24px;height:40px;background:#c00" onmousedown="document.title=\'right-edge\'"></div>',
   // A text field, then a password field next in Tab order, then a button.
   '/form': '<input id="t" style="width:200px;height:40px"><input id="p" type="password" style="width:200px;height:40px"><button id="b">go</button>',
 };
@@ -154,6 +157,11 @@ function describeMode(mode: Mode): void {
   const start = (surfaceId: string, extra: Record<string, unknown> = {}) => streams.handle('browser.streamStart', {
     workspaceId: 'ws-1', surfaceId, streamId: surfaceId, maxWidth: 1280, maxHeight: 1280, quality: 50, maxFps: 15, ...extra,
   });
+  /** The daemon's `mobile` for the tab's stream; it applies after this answers. */
+  const mobile = (surfaceId: string, value: boolean) =>
+    streams.handle('browser.streamUpdate', { workspaceId: 'ws-1', surfaceId, streamId: surfaceId, mobile: value });
+  /** The page's own view of its viewport. */
+  const viewport = (surfaceId: string) => evaluate(surfaceId, '({ w: innerWidth, h: innerHeight, dpr: devicePixelRatio, touch: navigator.maxTouchPoints })') as Promise<{ w: number; h: number; dpr: number; touch: number }>;
   const of = (surfaceId: string, kind: string) => pushes.filter((p) => p.streamId === surfaceId && p.kind === kind);
   const lastFrame = (surfaceId: string) => of(surfaceId, 'frame').at(-1);
   const input = (command: string, surfaceId: string, body: Record<string, unknown>) =>
@@ -303,6 +311,95 @@ function describeMode(mode: Mode): void {
       } finally {
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => undefined);
       }
+    });
+
+    it('viewport=mobile: a phone\'s viewport at 2x with touch, frames at its size, a right-edge tap lands; off and detach restore the tab', async (ctx) => {
+      if (skipUnless(ctx)) return;
+      const surfaceId = await open('/phone');
+      const desktop = await viewport(surfaceId);
+      expect(desktop.w).toBeGreaterThan(390);
+      await start(surfaceId, { mobile: true });
+      const frame = await until(() => lastFrame(surfaceId)?.geometry ? lastFrame(surfaceId) : undefined);
+      const geometry = frame.geometry as { width: number; height: number; scale?: number };
+      expect(geometry.width).toBe(390);
+      expect(geometry.scale).toBeUndefined();
+      expect(await viewport(surfaceId)).toMatchObject({ w: 390, dpr: 2 });
+      expect((await viewport(surfaceId)).touch).toBeGreaterThan(0);
+      expect(frame.imageHeight).toBeLessThanOrEqual(1280);
+      const rect = await evaluate(surfaceId, '(() => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()') as { x: number; y: number };
+      expect(rect.x).toBeGreaterThan(370);
+      expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x: rect.x / geometry.width, y: rect.y / geometry.height })).toEqual({ applied: true, focus: { editable: false } });
+      await eventually(async () => (await evaluate(surfaceId, 'document.title')) === 'right-edge');
+      await mobile(surfaceId, false);
+      await eventually(async () => (await viewport(surfaceId)).w === desktop.w);
+      await mobile(surfaceId, true);
+      await eventually(async () => (await viewport(surfaceId)).w === 390);
+      // The stream's session detaching takes its emulation with it.
+      streams.stopAll();
+      await eventually(async () => (await viewport(surfaceId)).w === desktop.w);
+      expect(await viewport(surfaceId)).toMatchObject({ w: desktop.w, dpr: desktop.dpr });
+    });
+
+    it('viewport=mobile on a page without a viewport meta: it lays out at ~0.4, the frame carries the scale and a tap lands on its target', async (ctx) => {
+      if (skipUnless(ctx)) return;
+      const surfaceId = await open('/wide');
+      await start(surfaceId, { mobile: true });
+      const frame = await until(() => {
+        const f = lastFrame(surfaceId);
+        const g = f?.geometry as { scale?: number } | undefined;
+        return g?.scale !== undefined && g.scale < 0.6 ? f : undefined;
+      });
+      const geometry = frame.geometry as { width: number; height: number; scale: number };
+      expect(geometry.width).toBe(390);
+      expect(geometry.scale).toBeGreaterThan(0.3);
+      const rect = await evaluate(surfaceId, '(() => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2 - visualViewport.offsetLeft, y: r.top + r.height / 2 - visualViewport.offsetTop }; })()') as { x: number; y: number };
+      const x = (rect.x * geometry.scale) / geometry.width;
+      const y = (rect.y * geometry.scale) / geometry.height;
+      expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x, y })).toEqual({ applied: true, focus: { editable: false } });
+      await eventually(async () => (await evaluate(surfaceId, 'document.title')) === 'hit');
+    });
+
+    // Chrome keeps one device-metrics override per page: whoever set it last
+    // wins, and the stream turning mobile off, or its session detaching,
+    // returns the page to its real size, an agent's override included. A
+    // stream that never applied mobile leaves an agent's override alone.
+    it('viewport=mobile next to an agent\'s own device metrics on another session: the last one set wins, and the stream\'s clear removes both', async (ctx) => {
+      if (skipUnless(ctx)) return;
+      const surfaceId = await open('/phone');
+      const agent = await launcher!.pageSession(surfaceId);
+      const real = (await viewport(surfaceId)).w;
+      /** The page settles at `w` CSS px wide. */
+      const widthIs = (w: number) => eventually(async () => (await viewport(surfaceId)).w === w);
+      const override = (width: number) => agent.send('Emulation.setDeviceMetricsOverride', { width, height: 600, deviceScaleFactor: 1, mobile: false });
+      await override(800);
+      await widthIs(800);
+      // The stream applied last: the phone's viewport.
+      await start(surfaceId, { mobile: true });
+      await until(() => lastFrame(surfaceId), 5_000);
+      await widthIs(390);
+      // The stream turning mobile off: the real size, not the agent's 800.
+      await mobile(surfaceId, false);
+      await widthIs(real);
+      await override(800);
+      await widthIs(800);
+      await mobile(surfaceId, true);
+      await widthIs(390);
+      // The agent applied last: its own.
+      await override(700);
+      await widthIs(700);
+      // The stream's session detaching: the real size again, the agent's 700 gone too.
+      streams.stopAll();
+      await widthIs(real);
+      // A stream that never applied mobile leaves the agent's override alone.
+      await override(800);
+      await widthIs(800);
+      await start(surfaceId);
+      await until(() => lastFrame(surfaceId), 5_000);
+      streams.stopAll();
+      await deliberateSleep(500, 'a stream that never applied mobile detaching must leave the agent\'s override as it is');
+      expect((await viewport(surfaceId)).w).toBe(800);
+      await agent.send('Emulation.clearDeviceMetricsOverride');
+      await widthIs(real);
     });
 
     it('focus events: a tap on a field, Tab to a password, a script focusing a button, then a new page', async (ctx) => {
