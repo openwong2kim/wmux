@@ -1,4 +1,4 @@
-import { PHONE_BROWSER_GEOMETRY, PhoneBrowserViewportChanged, phoneBrowserGeometry, phoneBrowserPoint, phoneBrowserScrollPoint, type PhoneBrowserGeometry } from './PhoneBrowserGeometry';
+import { PHONE_BROWSER_GEOMETRY, PhoneBrowserViewportChanged, phoneBrowserGeometry, phoneBrowserPoint, phoneBrowserScrollPoint, phoneBrowserStreamPoint, type PhoneBrowserGeometry, type PhoneLiveViewport } from './PhoneBrowserGeometry';
 import type { PhoneBrowserInputOptions } from './PhoneBrowserInput';
 import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import type { RpcResponse } from '../../shared/rpc';
@@ -6,6 +6,7 @@ import { browserHelpOrigin } from '../../shared/phoneBrowserHelp';
 import { BROWSER_STREAM_KEYS, PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
 import type { PhoneChromeDeps } from './PhoneBrowserChrome';
 import { chromeDriver } from './PhoneBrowserChrome';
+import type { PhoneStreamTabView } from './PhoneBrowserStream';
 
 // The phone's workspace browser preview: the checks every tab gets, over a
 // per-tab driver that talks to the browser.
@@ -37,6 +38,8 @@ interface BrowserDeps {
   validateNavigation?: (url: string) => Promise<void>;
   /** Dedicated-profile Chrome tabs. Absent: builtin panes only, as before. */
   chrome?: PhoneChromeDeps;
+  /** The live browser streams: a streamed tab's URLs and latest geometry. Absent: no stream rules. */
+  streams?: { tab(surfaceId: string, workspaceId: string): PhoneStreamTabView | null };
 }
 
 /** One tab, whichever browser it is in. Every method re-reads the browser. */
@@ -47,6 +50,8 @@ export interface PhoneBrowserDriver {
   page(): Promise<{ title: string; url: string } | null>;
   /** The viewport, refused when it cannot take input where the phone sees it. */
   geometry(): Promise<PhoneBrowserGeometry>;
+  /** Chrome: the visual viewport as it is, pinch scale and browser zoom included. */
+  layout?(): Promise<PhoneLiveViewport>;
   shoot(quality: number, scale: number): Promise<{ data: string; mimeType: 'image/jpeg' }>;
   /** A whole capture, inside the driver's own time budget. */
   capture<T>(run: () => Promise<T>): Promise<T>;
@@ -275,20 +280,49 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     await driver.navigate(phoneURL(payload.url));
     return { applied: true };
   }
-  if (typeof payload.expectedURL !== 'string' || payload.expectedURL !== pageURL(current.url)) throw new Error('Browser page changed; refresh before input');
+  // A streamed tab (stream input only): its stream's committed URL is the
+  // live one, and an earlier URL of the same document still takes typing,
+  // keys and scroll. A tap or history step must name the live URL; an
+  // earlier one of this document is a 409 the phone resends on its next frame.
+  const streamed = () => stream ? deps.streams?.tab(surfaceId, workspaceId) ?? null : null;
+  const exactURL = command === 'browser.tap' || command === 'browser.history';
+  const sameDocument = (page: { url: string }, expected: string) => {
+    const view = streamed();
+    const live = view?.url ?? pageURL(page.url);
+    if (expected === live) return;
+    if (view?.url && view.docUrls.has(expected)) {
+      if (exactURL) throw new PhoneBrowserError('browser-page-changed');
+      return;
+    }
+    throw new Error('Browser page changed; refresh before input');
+  };
+  if (typeof payload.expectedURL !== 'string') throw new Error('Browser page changed; refresh before input');
   const expectedURL = payload.expectedURL;
+  sameDocument(current, expectedURL);
   // Help-card typing: the origin the daemon's help row showed, never the body's.
   const helpOrigin = command === 'browser.type' && payload.helpOrigin !== undefined ? payload.helpOrigin : undefined;
   if (helpOrigin !== undefined && typeof helpOrigin !== 'string') throw new PhoneBrowserError('browser-help-origin-changed');
   const unchanged = async () => {
     const page = await driver.page();
-    if (!page || pageURL(page.url) !== expectedURL) throw new Error('Browser page changed; refresh before input');
+    if (!page) throw new Error('Browser page changed; refresh before input');
+    sameDocument(page, expectedURL);
     return page;
   };
-  /** The phone's point on the live viewport. A mismatch on stream input is a 409 the phone resends on its next frame. */
-  const pointOn = (current: PhoneBrowserGeometry) => {
+  /**
+   * The phone's point on the live viewport, and the CSS pixels one normalized
+   * unit spans (scroll deltas). A streamed Chrome tab maps it with the latest
+   * frame's geometry while the live viewport agrees (phoneBrowserStreamPoint).
+   * A mismatch on stream input is a 409 the phone resends on its next frame.
+   */
+  const pointOn = async (): Promise<{ x: number; y: number; spanX: number; spanY: number }> => {
     try {
-      return (stream && command === 'browser.scroll' ? phoneBrowserScrollPoint : phoneBrowserPoint)(payload.x,payload.y,payload.geometry,current);
+      const view = streamed();
+      if (view && driver.layout) {
+        return phoneBrowserStreamPoint(payload.x, payload.y, payload.geometry, view.geometry, await driver.layout(), command === 'browser.scroll' ? 'scroll' : 'tap');
+      }
+      const point = (stream && command === 'browser.scroll' ? phoneBrowserScrollPoint : phoneBrowserPoint)(payload.x,payload.y,payload.geometry,await driver.geometry());
+      const size = payload.geometry as {width:number;height:number};
+      return { ...point, spanX: size.width, spanY: size.height };
     } catch (err) {
       if (stream && err instanceof PhoneBrowserViewportChanged) throw new PhoneBrowserError('browser-viewport-changed');
       throw err;
@@ -298,7 +332,7 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
   // anything focuses or raises the tab, so a 409 leaves the desktop as it
   // was. Focus may move the viewport, so the same checks run again after it,
   // right before the input.
-  const recheck = async () => { await unchanged(); pointOn(await driver.geometry()); };
+  const recheck = async () => { await unchanged(); await pointOn(); };
   const streamPointer = (operation: () => Promise<void>) => driver.input(async () => { await recheck(); await unchanged(); await operation(); }, false, {
     codeBusy: true,
     beforeFocus: recheck,
@@ -308,20 +342,19 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     const page = await unchanged();
     if (helpOrigin !== undefined && browserHelpOrigin(page.url) !== helpOrigin) throw new PhoneBrowserError('browser-help-origin-changed');
     if (command === 'browser.tap' || command === 'browser.scroll') {
-      pointOn(await driver.geometry());
+      await pointOn();
       await unchanged();
     }
     await operation();
   }, command === 'browser.type' || command === 'browser.key', stream ? { codeBusy: true } : undefined);
   if (command === 'browser.tap' || command === 'browser.scroll') {
-    const point = pointOn(await driver.geometry());
+    const { x, y, spanX, spanY } = await pointOn();
     if (command === 'browser.scroll') {
       if (typeof payload.deltaX !== 'number' || !Number.isFinite(payload.deltaX) || Math.abs(payload.deltaX) > 1 ||
           typeof payload.deltaY !== 'number' || !Number.isFinite(payload.deltaY) || Math.abs(payload.deltaY) > 1) throw new Error('Invalid browser scroll');
-      const size = payload.geometry as {width:number;height:number};
-      const event = {...point,deltaX:payload.deltaX * size.width,deltaY:payload.deltaY * size.height};
+      const event = {x,y,deltaX:payload.deltaX * spanX,deltaY:payload.deltaY * spanY};
       await input(() => driver.scroll(event));
-    } else await input(() => driver.tap(point));
+    } else await input(() => driver.tap({x,y}));
   } else if (command === 'browser.type') {
     // eslint-disable-next-line no-control-regex
     if (typeof payload.text !== 'string' || !payload.text || payload.text.length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(payload.text)) throw new Error('Invalid browser text');

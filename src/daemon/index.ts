@@ -4881,6 +4881,13 @@ function registerRpcHandlers(
     if (!firstPartyOnly(ctx.clientId,'daemon.phone.complete')) return {ok:false};
     return {ok:desktopPhoneBridge!.complete(ctx.clientId,params)};
   });
+  // One push of a phone browser stream: only the registered desktop's, and
+  // checked by the web server before it reaches a phone. `known:false` tells
+  // main to stop that screencast.
+  pipeServer.onRpc('daemon.phone.browserStream', async (params,ctx) => {
+    if (!firstPartyOnly(ctx.clientId,'daemon.phone.browserStream') || !desktopPhoneBridge?.isOwner(ctx.clientId)) return {ok:false,known:false};
+    return webTerminalServer?.browserStreamPush(ctx.clientId,params) ?? {ok:false,known:false};
+  });
   pipeServer.onClientClose(id => desktopPhoneBridge?.disconnect(id));
   if (!chatSessions) {
     try {

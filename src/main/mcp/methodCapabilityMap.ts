@@ -434,6 +434,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'daemon.phone.register': { capability: 'wmux.internal' },
   'daemon.phone.complete': { capability: 'wmux.internal' },
   'daemon.phone.keepAwake': { capability: 'wmux.internal' },
+  'daemon.phone.browserStream': { capability: 'wmux.internal' },
   'daemon.ping':             { capability: 'wmux.internal' },
   'daemon.shutdown':         { capability: 'wmux.internal' },
   'daemon.compact':          { capability: 'wmux.internal' },

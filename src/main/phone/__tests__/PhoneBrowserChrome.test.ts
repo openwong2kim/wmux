@@ -450,6 +450,78 @@ describe('stream input (stream:true) on dedicated-profile Chrome', () => {
   });
 });
 
+describe('stream input on a streamed Chrome tab', () => {
+  const A = 'https://shop.example.com/search?q=a';
+  const B = 'https://shop.example.com/search?q=ab';
+  /** A stream on chrome-own whose document has had A, then B (live); the tab list still says A. */
+  function streamed(geometryOf: Record<string, unknown> | null = { width: 1017, height: 700, scrollX: 0, scrollY: 40 }, metrics: Record<string, unknown> = { ...METRICS.cssVisualViewport, zoom: 1 }) {
+    const chrome = fakeChrome();
+    chrome.deps.setURL(A);
+    chrome.answer.mockImplementation(async (method: string) => method === 'Page.getLayoutMetrics' ? { cssVisualViewport: metrics } : {});
+    const view = { url: B as string | null, docUrls: new Set([A, B]), geometry: geometryOf };
+    const deps = { ...fixture(chrome.deps), streams: { tab: (surfaceId: string, workspaceId: string) => (surfaceId === 'chrome-own' && workspaceId === 'ws-1' ? view : null) } } as Parameters<typeof handlePhoneBrowser>[2];
+    const sentInput = () => chrome.sent.filter((c) => c.method.startsWith('Input.'));
+    return { ...chrome, deps, view, sentInput };
+  }
+  const input = (command: string, expectedURL: string, extra: Record<string, unknown> = {}) =>
+    [command, { ...scope, expectedURL, stream: true, ...extra }] as const;
+
+  it('typing, keys and scroll take an earlier URL of the same document; tap and history need the live one', async () => {
+    const r = streamed();
+    expect(await handlePhoneBrowser(...input('browser.type', A, { text: 'b' }), r.deps)).toEqual({ applied: true });
+    expect(await handlePhoneBrowser(...input('browser.key', A, { key: 'Backspace' }), r.deps)).toEqual({ applied: true });
+    expect(await handlePhoneBrowser(...input('browser.scroll', A, { geometry: r.view.geometry, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5 }), r.deps)).toEqual({ applied: true });
+    const before = r.sentInput().length;
+    expect(await handlePhoneBrowser(...input('browser.tap', A, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), r.deps)).toEqual({ error: 'browser-page-changed' });
+    expect(await handlePhoneBrowser(...input('browser.history', A, { direction: 'back' }), r.deps)).toEqual({ error: 'browser-page-changed' });
+    expect(r.sentInput()).toHaveLength(before);
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), r.deps)).toEqual({ applied: true });
+    // Another document's URL is the old failure.
+    await expect(handlePhoneBrowser(...input('browser.type', 'https://shop.example.com/cart', { text: 'b' }), r.deps)).rejects.toThrow('page changed');
+  });
+
+  it('without stream:true, or on a tab with no stream, the URL check stays exact', async () => {
+    const r = streamed();
+    await expect(handlePhoneBrowser('browser.type', { ...scope, expectedURL: B, text: 'b' }, r.deps)).rejects.toThrow('page changed');
+    expect(await handlePhoneBrowser('browser.type', { ...scope, expectedURL: A, text: 'b' }, r.deps)).toEqual({ applied: true });
+    const plain = fakeChrome();
+    plain.deps.setURL(B);
+    await expect(handlePhoneBrowser(...input('browser.type', A, { text: 'b' }), fixture(plain.deps))).rejects.toThrow('page changed');
+  });
+
+  it('a frame up to 24 px wider than the client area (classic scrollbars) maps with the geometry it sent', async () => {
+    const r = streamed();
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), r.deps)).toEqual({ applied: true });
+    expect(r.sentInput().find((c) => c.params?.type === 'mousePressed')?.params).toMatchObject({ x: 508.5, y: 350 });
+    // The same geometry with no stream behind it is a moved viewport.
+    const plain = fakeChrome();
+    plain.deps.setURL(B);
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), fixture(plain.deps))).toEqual({ error: 'browser-viewport-changed' });
+    // Wider than the tolerance: compared with the live viewport, which it does not match.
+    const wide = streamed({ width: 1030, height: 700, scrollX: 0, scrollY: 40 });
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: wide.view.geometry, x: 0.5, y: 0.5 }), wide.deps)).toEqual({ error: 'browser-viewport-changed' });
+    // A geometry other than the latest frame's (the page scrolled since) is checked live, and moved.
+    const r2 = streamed();
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: { width: 1017, height: 700, scrollX: 0, scrollY: 0 }, x: 0.5, y: 0.5 }), r2.deps)).toEqual({ error: 'browser-viewport-changed' });
+    expect(r2.sentInput()).toEqual([]);
+  });
+
+  it('under pinch zoom maps by the scale, and a tap must name it; browser zoom is refused', async () => {
+    const pinch = { width: 390, height: 844, scrollX: 0, scrollY: 40, scale: 0.4 };
+    const metrics = { clientWidth: 975, clientHeight: 2110, pageX: 0, pageY: 40, scale: 0.4, zoom: 1 };
+    const r = streamed(pinch, metrics);
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: pinch, x: 0.5, y: 0.25 }), r.deps)).toEqual({ applied: true });
+    expect(r.sentInput().find((c) => c.params?.type === 'mousePressed')?.params).toMatchObject({ x: 487.5, y: 527.5 });
+    expect(await handlePhoneBrowser(...input('browser.scroll', B, { geometry: pinch, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.1 }), r.deps)).toEqual({ applied: true });
+    expect(r.sentInput().filter((c) => c.params?.type === 'mouseWheel').at(-1)?.params).toMatchObject({ x: 487.5, y: 1055, deltaY: 211 });
+    const { scale: _scale, ...unscaled } = pinch;
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: unscaled, x: 0.5, y: 0.5 }), r.deps)).toEqual({ error: 'browser-viewport-changed' });
+    const zoomed = streamed({ width: 1000, height: 700, scrollX: 0, scrollY: 40 }, { ...METRICS.cssVisualViewport, zoom: 1.25 });
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: { width: 1000, height: 700, scrollX: 0, scrollY: 40 }, x: 0.5, y: 0.5 }), zoomed.deps)).toEqual({ error: 'browser-viewport-changed' });
+    expect(zoomed.sentInput()).toEqual([]);
+  });
+});
+
 describe('which Chrome tabs a workspace has (phoneChromeTabs)', () => {
   function client(tabs: ChromeTargetInfo[], extra: Partial<ChromeBackendClient> = {}): ChromeBackendClient {
     return {

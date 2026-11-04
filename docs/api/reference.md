@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **315** methods (`ALL_RPC_METHODS` in
+Total: **316** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -321,6 +321,7 @@ Total: **315** methods (`ALL_RPC_METHODS` in
 | `daemon.phone.register` | `wmux.internal` |  |
 | `daemon.phone.complete` | `wmux.internal` |  |
 | `daemon.phone.keepAwake` | `wmux.internal` |  |
+| `daemon.phone.browserStream` | `wmux.internal` |  |
 | `daemon.workspaceFacts.set` | `wmux.internal` |  |
 | `daemon.botApprovals.set` | `wmux.internal` |  |
 | `daemon.botPrompts.set` | `wmux.internal` |  |

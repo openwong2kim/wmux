@@ -3684,15 +3684,96 @@ exactly as above.
 | `404 {error:"browser-help-not-found"}` / `409 {error:"browser-help-closed"}` | Help-card typing: no request with that id for this workspace and tab (open or closed), or this tab's request already ended. |
 | `503 {error:"browser-preview-unavailable"}` | Any other failure, as before. Never retry input automatically. |
 
+#### Live browser stream (`browserStream`)
+
+`/api/config` carries `browserStream: true` when the server runs with
+`--allow-transcript` and the attached desktop announced `browser.stream`.
+OMITTED otherwise; the preview is then the 3 s capture poll above, and the
+stream route answers `404`. The desktop announces it only while it runs with
+`WMUX_PHONE_BROWSER_STREAM=1` (off by default for now). The stream covers
+dedicated-profile Chrome tabs (`chrome` rows); a builtin pane answers
+`501 browser-action-unsupported`.
+
+**Routes** (GET, `text/event-stream`, `Cache-Control: no-store`, Bearer only):
+
+- `/api/sessions/:id/browser/stream?surfaceId=…`
+- `/api/desktop-workspaces/:workspaceId/browser/stream?surfaceId=…`
+
+Each has the checks of the capture GET on the same route: transcript
+consent; input consent too on the desktop-workspaces route; the tab in the
+route's workspace; http(s) pages only.
+
+**Query** (all optional, clamped; the effective values come back in `hello`):
+
+| Parameter | Range | Default |
+| --- | --- | --- |
+| `maxWidth`, `maxHeight` | 320..1920 image pixels | 1280 |
+| `quality` | 30..85 (JPEG) | 60 |
+| `maxFps` | 1..15 | 10 |
+| `viewport=mobile` | needs input consent (else `403 read-only:…`) | unset |
+
+`viewport=mobile` is accepted but not applied yet: the tab streams at its
+desktop size.
+
+**Before the stream** (plain JSON): `400` for a value that is not a whole
+number, a missing `surfaceId` or another `viewport`; `404 browser-tab-gone`;
+`503 browser-backend-unavailable` or `browser-preview-unavailable`;
+`429 too-many-streams` with `Retry-After: 1` past the server's shared stream
+budget, four subscribers per tab, two per paired device per tab, or four
+streamed tabs per desktop.
+
+**Events** (each `data:` is JSON):
+
+- `hello`, first: `{v:1, surfaceId, backend, maxWidth, maxHeight, quality, maxFps}`.
+  A later subscriber of the same tab gets the shared screencast's size and
+  quality, and its own `maxFps`.
+- `frame`: `{seq, data, mimeType:"image/jpeg", capturedAt, imageWidth, imageHeight, pageURL?, geometry?}`.
+  `seq` starts at 1 for each stream and increases; a gap means frames were
+  dropped. `data` is at most 700 KiB of base64. `geometry` is
+  `{width, height, scrollX, scrollY, scale?}` from the frame's own metadata:
+  the widget's width and height (classic scrollbars included) and the scroll
+  offsets in CSS pixels, with `scale` when the page is pinch-zoomed. It is
+  left out at browser zoom other than 100 % and when the page is offset from
+  the top. `pageURL` is the credential-free URL of the page's last commit,
+  same-document moves included; it is left out past 4096 characters, together
+  with `geometry`. Both are left out between a navigation's start and its
+  commit.
+- `url`: `{pageURL?}` on every committed URL change, same-document or not,
+  whether or not a frame follows. `pageURL` is left out past 4096 characters,
+  and for a page that is not http(s), such as an error page: no frames come
+  for that page and input on the tab is refused until an http(s) page
+  commits. Keep the last frame's geometry. At most ten a second; the last one
+  always arrives, in order with frames.
+- `state`: `{state:"hidden", reason:"browser-tab-hidden"}` when the tab stops
+  painting (Chrome reports it not visible, or it reads as hidden, for about
+  5 s); the stream stays open. `{state:"live"}` when it paints again,
+  followed by a frame.
+- `end`: `{error}` (`browser-tab-gone`, `browser-backend-unavailable`,
+  `browser-preview-unavailable`, `browser-stream-expired`), then the stream
+  closes. `browser-backend-unavailable` also comes when the desktop has sent
+  nothing for the tab for 45 s. `browser-stream-expired` comes after 30
+  minutes; reconnect.
+- `: keepalive` comment every 15 s.
+
+**Pacing**: the first frame comes right after `hello`, even on a still page.
+A later subscriber gets the tab's latest frame, then its latest `url` when
+the URL changed after that frame.
+After that, frames come when the page repaints, at most `maxFps`. Latest
+frame first: while the connection has not taken the last frame, newer ones
+replace the one waiting. One screencast per tab is shared by its
+subscribers and stops when the last one leaves.
+
+**Closing from the server**, without `end`: at once when the device is
+revoked or its input grant is withdrawn; within 15 s when the consent the
+route needs is gone otherwise, or the pane is no longer attachable. A client
+that stops reading is closed when its keepalive is still unsent at the next
+one.
+
 #### Stream input (`browserStream`)
 
-`/api/config` will carry `browserStream: true` when the server runs with
-`--allow-transcript` and the attached desktop announced `browser.stream`. The
-flag, and the desktop's announcement, arrive together with the live preview
-stream route. Until then no desktop announces `browser.stream`, the server
-never applies the rules below, and every rule above holds unchanged. Under
-the flag, input on either route and either backend (builtin pane or `chrome`
-row) changes as follows:
+Under the flag, input on either route and either backend (builtin pane or
+`chrome` row) changes as follows; without it every rule above holds
+unchanged:
 
 - **Keys**: `key` also accepts `ArrowUp`, `ArrowDown`, `ArrowLeft`,
   `ArrowRight`, `Home`, `End` and `Delete`.
@@ -3712,11 +3793,27 @@ row) changes as follows:
 - **Busy**: an input that overlaps another input on the same tab is
   `409 browser-input-busy`, decided before anything is sent. Typing may be
   sent in pieces of at most 4096 UTF-16 units each, strictly in series.
+- **A streamed tab's URL**: while the tab is streamed, the URL of its
+  stream's last commit is the live one, and the stream keeps the URLs the
+  current document has had (reset on each new document). `type`, `key` and
+  `scroll` take an `expectedURL` that is the live URL or one of those.
+  `tap` and `history` must name the live URL; one of those earlier URLs is
+  `409 browser-page-changed`. Any other URL stays `503`. A tab with no stream
+  is checked exactly.
+- **A streamed Chrome tab's geometry**: `tap` and `scroll` may send a
+  frame's `geometry` as it came. While it is the latest frame's, the server
+  maps the point with it: CSS point = normalized point × `width` (or
+  `height`) / `scale`, relative to the visible viewport; scroll deltas scale
+  the same way. A `tap` compares all of `width`, `height`, `scrollX`,
+  `scrollY` and `scale`; a `scroll` compares `width`, `height` and `scale`.
+  A frame's `width` and `height` may exceed the page's client area by up to
+  24 px (classic scrollbars).
 
 | Response | Meaning |
 | --- | --- |
 | `409 {error:"browser-viewport-changed"}` | The viewport moved since the frame the phone used. Nothing was applied: wait for the next frame and resend. |
 | `409 {error:"browser-input-busy"}` | Another input on this tab is still running. Nothing was applied: the client may resend that piece once. |
+| `409 {error:"browser-page-changed"}` | Tap or history on a streamed tab: `expectedURL` is an earlier URL of the page now showing. Nothing was applied: resend with the URL of the latest `url` event or frame. |
 
 ### New agent pane launch options
 

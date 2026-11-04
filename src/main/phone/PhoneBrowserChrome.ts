@@ -17,7 +17,7 @@
 // Typed text is sent once, to Chrome, and is never echoed or put in an error.
 
 import type { PhoneBrowserDriver } from './PhoneBrowser';
-import { ChromePageSessionError, chromeTargetWatcherEnabled, type ChromeBackendClient, type ChromePageSession, type ChromeTargetInfo } from '../browser-session/ChromeLauncher';
+import { ChromePageSessionError, chromeTargetWatcherEnabled, type ChromeBackendClient, type ChromePageSession, type ChromeStreamSession, type ChromeTargetInfo } from '../browser-session/ChromeLauncher';
 import { LIVE_CHROME_PROFILE } from '../browser-session/ChromeProfileStore';
 import { parseKeyPress } from '../pipe/handlers/cdpKeys';
 import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
@@ -37,6 +37,10 @@ export interface PhoneChromeDeps {
   tabs(workspaceId: string): Promise<PhoneChromeTab[]>;
   /** A page session on one of those tabs; throws ChromePageSessionError. */
   session(surfaceId: string, workspaceId: string): Promise<ChromePageSession>;
+  /** A session of its own on one of those tabs, for the stream's screencast; throws ChromePageSessionError. */
+  streamSession?(surfaceId: string, workspaceId: string): Promise<ChromeStreamSession>;
+  /** Whether the tab's record still names exactly this workspace. */
+  owns?(surfaceId: string, workspaceId: string): boolean;
   /** Bring one of those tabs, and its window, to the front. */
   focus(surfaceId: string, workspaceId: string): Promise<boolean>;
   /** Whether `open` would land in a dedicated profile (never Live Chrome). */
@@ -177,6 +181,7 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       const found = await tab();
       return found ? { title: found.title, url: found.url } : null;
     },
+    layout: () => viewport(),
     geometry: async () => {
       const vp = await viewport();
       // Pinch zoom moves the visual viewport off the layout one, and browser
@@ -382,6 +387,15 @@ export function createPhoneChromeDeps(opts: {
       }
       return client.pageSession(surfaceId);
     },
+    // The same checks for the stream's own session.
+    streamSession: async (surfaceId, workspaceId) => {
+      const client = clientFor(workspaceId, opts.registry);
+      if (!client?.streamSession || client.recordFor?.(surfaceId)?.workspaceId !== workspaceId) {
+        throw new ChromePageSessionError('gone', 'not a tab of this workspace');
+      }
+      return client.streamSession(surfaceId);
+    },
+    owns: (surfaceId, workspaceId) => clientFor(workspaceId, opts.registry)?.recordFor?.(surfaceId)?.workspaceId === workspaceId,
     focus: async (surfaceId, workspaceId) => {
       const found = await holder(surfaceId, workspaceId);
       if (!found?.client.selectSurface || !(await found.client.selectSurface(surfaceId))) return false;

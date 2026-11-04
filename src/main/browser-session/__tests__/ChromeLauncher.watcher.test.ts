@@ -52,6 +52,8 @@ type Listener = (ev: { data?: string }) => void;
 const tabs = new Map<string, string>();
 /** sessionId -> tab targetId, as the fake browser hands them out. */
 const sessions = new Map<string, string>();
+/** Attaches per target so far: Chrome gives every attach its own session id. */
+const attaches = new Map<string, number>();
 
 class FakeBrowserWs {
   static OPEN = 1;
@@ -129,7 +131,9 @@ class FakeBrowserWs {
         };
       case 'Target.attachToTarget': {
         const tab = String(frame.params?.targetId ?? '');
-        const sessionId = `sess-${tab}`;
+        const n = (attaches.get(tab) ?? 0) + 1;
+        attaches.set(tab, n);
+        const sessionId = n === 1 ? `sess-${tab}` : `sess-${tab}-${n}`;
         sessions.set(sessionId, tab);
         return { sessionId };
       }
@@ -225,6 +229,7 @@ beforeEach(() => {
   state.portFiles = {};
   tabs.clear();
   sessions.clear();
+  attaches.clear();
   listedPages = [];
   nextCreatedPage = 'page-1';
   opened = 0;
@@ -491,5 +496,81 @@ describe('ChromeLauncher page sessions (the phone preview)', () => {
     expect(launcher.canPageSession()).toBe(false);
     await expect(launcher.pageSession(surfaceId)).rejects.toMatchObject({ reason: 'unavailable' });
     await expect(launcher.pageSession('chrome-unknown')).rejects.toMatchObject({ reason: 'gone' });
+  });
+});
+
+describe('ChromeLauncher stream sessions (the phone browser stream)', () => {
+  async function running(dir: string) {
+    spawnWritesPortFile(makeChild(), 22001);
+    serveChrome();
+    tabs.set('tab-1', 'page-1');
+    listedPages = ['page-1'];
+    const launcher = new ChromeLauncher(dir, { profileName: 'p1', surfaceStore: asStore(makeFakeStore()) });
+    const opened = await launcher.openTab('https://a.test/', 'ws-1');
+    return { launcher, surfaceId: opened.surfaceId, ws: FakeBrowserWs.instances[0] };
+  }
+
+  it('attaches its own session, never the cached page session, and hears only its own events', async () => {
+    const { launcher, surfaceId, ws } = await running('/tmp/stream-1');
+    const page = await launcher.pageSession(surfaceId);
+    const stream = await launcher.streamSession(surfaceId);
+    await page.send('Page.getLayoutMetrics');
+    await stream.send('Page.startScreencast', { format: 'jpeg' });
+    const sessionOf = (method: string) => ws.sent.find((f) => f.method === method)?.sessionId;
+    expect(sessionOf('Page.getLayoutMetrics')).toBe('sess-page-1');
+    expect(sessionOf('Page.startScreencast')).toBe('sess-page-1-2');
+    const heard: unknown[] = [];
+    stream.on('Page.screencastFrame', (params) => heard.push(params.n));
+    ws.event('Page.screencastFrame', { n: 1 }, 'sess-page-1');
+    ws.event('Page.screencastFrame', { n: 2 }, 'sess-page-1-2');
+    expect(heard).toEqual([2]);
+    // A second stream session is another attach.
+    await launcher.streamSession(surfaceId);
+    expect(ws.sent.filter((f) => f.method === 'Target.attachToTarget' && f.params?.targetId === 'page-1')).toHaveLength(3);
+  });
+
+  it('ends once Chrome detaches it: handlers removed, listeners told, sends gone; the page session lives on', async () => {
+    const { launcher, surfaceId, ws } = await running('/tmp/stream-2');
+    const page = await launcher.pageSession(surfaceId);
+    const stream = await launcher.streamSession(surfaceId);
+    const heard: unknown[] = [];
+    let closed = 0;
+    stream.on('Page.screencastFrame', (params) => heard.push(params.n));
+    stream.onClosed(() => { closed++; });
+    ws.event('Target.detachedFromTarget', { sessionId: 'sess-page-1-2' });
+    expect(stream.closed).toBe(true);
+    expect(closed).toBe(1);
+    ws.event('Page.screencastFrame', { n: 3 }, 'sess-page-1-2');
+    expect(heard).toEqual([]);
+    await expect(stream.send('Page.screencastFrameAck', { sessionId: 1 })).rejects.toMatchObject({ reason: 'gone' });
+    await expect(page.send('Page.getLayoutMetrics')).resolves.toBeDefined();
+    // A listener added after the end still hears it, once.
+    stream.onClosed(() => { closed++; });
+    await tick();
+    expect(closed).toBe(2);
+  });
+
+  it('detach() sends Target.detachFromTarget and ends it; a dropped watcher connection ends it too', async () => {
+    const { launcher, surfaceId, ws } = await running('/tmp/stream-3');
+    const a = await launcher.streamSession(surfaceId);
+    let aClosed = false;
+    a.onClosed(() => { aClosed = true; });
+    await a.detach();
+    expect(aClosed).toBe(true);
+    expect(ws.sent.at(-1)).toMatchObject({ method: 'Target.detachFromTarget', params: { sessionId: 'sess-page-1' } });
+    const b = await launcher.streamSession(surfaceId);
+    let bClosed = false;
+    b.onClosed(() => { bClosed = true; });
+    ws.close();
+    expect(bClosed).toBe(true);
+    await expect(b.send('Page.enable')).rejects.toMatchObject({ reason: 'gone' });
+  });
+
+  it('never launches Chrome; an unknown surface is gone', async () => {
+    const idle = new ChromeLauncher('/tmp/stream-4', { profileName: 'p1' });
+    await expect(idle.streamSession('chrome-x')).rejects.toMatchObject({ reason: 'unavailable' });
+    expect(spawnMock).not.toHaveBeenCalled();
+    const { launcher } = await running('/tmp/stream-5');
+    await expect(launcher.streamSession('chrome-unknown')).rejects.toMatchObject({ reason: 'gone' });
   });
 });
