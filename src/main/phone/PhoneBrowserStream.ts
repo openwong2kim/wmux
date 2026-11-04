@@ -9,10 +9,11 @@
 //  - `frame`: the JPEG Chrome painted, with the page URL and the geometry the
 //    phone maps its input with, both left out mid-navigation and the geometry
 //    left out under browser zoom or a top offset;
-//  - `url`: each committed URL change, ten a second at most;
+//  - `url`: each committed URL change, ten a second at most; a page that is
+//    not http(s) is one without its URL, and none of its frames go out;
 //  - `state`: hidden when Chrome reports the tab not visible, or a probe
 //    reads it hidden, after five quiet seconds; live when frames come back;
-//  - `end`: the tab is gone, or its page is not an http(s) one;
+//  - `end`: the tab is gone, or Chrome is;
 //  - `ping`: every 15 s, so a stream the daemon forgot stops here too.
 //
 // One push per tab is in flight at a time, and Chrome's frame is acked only
@@ -52,6 +53,9 @@ const TICK_MS = 500;
 const PUSH_TIMEOUT_MS = 3_000;
 /** How long a page swap is given to bind the tab's new page before re-attaching. */
 const SWAP_SETTLE_MS = 500;
+/** Page swaps re-attached within a minute; one more ends the stream. */
+const REATTACH_LIMIT = 3;
+const REATTACH_WINDOW_MS = 60_000;
 const MIN_SIDE = 320;
 const MIN_QUALITY = 30;
 /** Fixed probe; nothing in it comes from the phone. */
@@ -158,7 +162,8 @@ class TabStream implements PhoneStreamTabView {
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private tick: ReturnType<typeof setInterval> | null = null;
   private firstFrame: ReturnType<typeof setTimeout> | null = null;
-  private reattached = false;
+  private reattachedAt: number[] = [];
+  private shrinking = false;
   readonly size: { maxWidth: number; maxHeight: number; quality: number };
 
   constructor(
@@ -177,13 +182,16 @@ class TabStream implements PhoneStreamTabView {
 
   async start(): Promise<void> {
     await this.attach();
+    // Stopped while it attached (replaced, or the daemon left): nothing to run.
+    if (this.stopped) throw new ChromePageSessionError('gone', 'stream stopped');
     const now = Date.now();
     this.lastPingAt = now;
     this.tick = setInterval(() => this.onTick(), TICK_MS);
     this.tick.unref?.();
   }
 
-  private async attach(): Promise<void> {
+  /** `swap`: Chrome swapped the page behind the tab; the new page is a commit of its own. */
+  private async attach(swap = false): Promise<void> {
     const session = await this.chrome.streamSession(this.surfaceId, this.workspaceId);
     if (this.stopped) { void session.detach(); return; }
     this.session = session;
@@ -207,10 +215,17 @@ class TabStream implements PhoneStreamTabView {
     const frame = tree?.frameTree?.frame;
     if (!frame || typeof frame.id !== 'string') throw new Error('Browser operation failed');
     this.mainFrameId = frame.id;
-    const url = httpURL(`${String(frame.url ?? '')}${typeof frame.urlFragment === 'string' ? frame.urlFragment : ''}`);
-    if (!url) throw new Error('Only HTTP browser previews are supported');
-    this.url = url;
-    this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
+    // The tree is the committed page: a navigation the old page started is over.
+    this.navigating = false;
+    const raw = `${String(frame.url ?? '')}${typeof frame.urlFragment === 'string' ? frame.urlFragment : ''}`;
+    if (swap) {
+      this.commit(raw, true);
+    } else {
+      const url = httpURL(raw);
+      if (!url) throw new Error('Only HTTP browser previews are supported');
+      this.url = url;
+      this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
+    }
     await this.readZoom();
     await this.startScreencast();
     this.armFirstFrame();
@@ -246,9 +261,15 @@ class TabStream implements PhoneStreamTabView {
   private commit(raw: unknown, newDocument: boolean): void {
     if (this.stopped) return;
     const url = httpURL(raw);
-    // Today's preview refuses a page that is not http(s); so does the stream.
-    if (!url) { void this.end('browser-preview-unavailable'); return; }
-    if (newDocument) this.docUrls = new Set();
+    if (newDocument || !url) this.docUrls = new Set();
+    if (!url) {
+      // Not http(s), such as an error page: the phone hears the change without
+      // the URL and gets none of its frames, as the preview shows none. Input
+      // is refused until an http(s) page commits.
+      this.url = null;
+      this.enqueue({ kind: 'url', params: { streamId: this.streamId, kind: 'url' }, bytes: 0 });
+      return;
+    }
     if (url.length <= URL_LIMIT) {
       // The oldest goes first past the cap; the live URL is always the newest.
       this.docUrls.delete(url);
@@ -269,6 +290,8 @@ class TabStream implements PhoneStreamTabView {
     this.geometry = this.geometryOf(frame.metadata);
     if (this.chrome.owns && !this.chrome.owns(this.surfaceId, this.workspaceId)) { this.ack(ack); void this.end('browser-tab-gone'); return; }
     if (typeof frame.data !== 'string' || !frame.data) { this.ack(ack); return; }
+    // A page that is not http(s) (commit()), or a swap not read yet: painted, not sent.
+    if (this.url === null) { this.ack(ack); return; }
     if (this.hidden) this.goLive();
     this.offerFrame(frame.data, this.geometry, ack);
   }
@@ -295,7 +318,8 @@ class TabStream implements PhoneStreamTabView {
     const bytes = data.length > STREAM_DATA_LIMIT ? Infinity : JSON.stringify(params).length + 256;
     if (bytes > STREAM_LINE_LIMIT) {
       this.ack(ack);
-      void this.shrink();
+      // One step down per restart: frames painted before it are as large.
+      if (!this.shrinking) void this.shrink();
       return;
     }
     this.enqueue({ kind: 'frame', params, ack, bytes });
@@ -310,10 +334,13 @@ class TabStream implements PhoneStreamTabView {
     };
     if (next.maxWidth === this.size.maxWidth && next.maxHeight === this.size.maxHeight && next.quality === this.size.quality) return;
     Object.assign(this.size, next);
+    this.shrinking = true;
     try {
       await this.session?.send('Page.stopScreencast');
       if (!this.stopped) await this.startScreencast();
-    } catch { /* the session's own close ends the stream */ }
+    } catch { /* the session's own close ends the stream */ } finally {
+      this.shrinking = false;
+    }
   }
 
   private goLive(): void {
@@ -462,20 +489,27 @@ class TabStream implements PhoneStreamTabView {
     clearTimeout(timer);
     if (this.stopped || this.lastFrameAt > armedAt) return;
     if (!shot) { this.goHidden(); return; }
+    if (this.url === null) return;
     this.geometry = shot.geometry;
     this.offerFrame(shot.data, shot.geometry, undefined);
   }
 
-  /** The session ended: Chrome swapped the page behind the tab (re-attach once), or the tab went. */
+  /** The session ended: Chrome swapped the page behind the tab (re-attach), or the tab went. */
   private onClosed(session: ChromeStreamSession): void {
     if (this.stopped || this.session !== session) return;
     this.session = null;
-    if (this.reattached) { void this.end('browser-tab-gone'); return; }
-    this.reattached = true;
+    // Until the new page is read, input checks the live page itself (PhoneBrowser.ts).
+    this.url = null;
+    const now = Date.now();
+    this.reattachedAt = this.reattachedAt.filter((at) => now - at < REATTACH_WINDOW_MS);
+    if (this.reattachedAt.length >= REATTACH_LIMIT) { void this.end('browser-tab-gone'); return; }
+    this.reattachedAt.push(now);
     const retry = setTimeout(() => {
       if (this.stopped) return;
       if (this.chrome.owns && !this.chrome.owns(this.surfaceId, this.workspaceId)) { void this.end('browser-tab-gone'); return; }
-      this.attach().catch(() => this.end('browser-tab-gone'));
+      this.attach(true).catch((err: unknown) => this.end(
+        !(err instanceof ChromePageSessionError) ? 'browser-preview-unavailable' : err.reason === 'gone' ? 'browser-tab-gone' : 'browser-backend-unavailable',
+      ));
     }, SWAP_SETTLE_MS);
     retry.unref?.();
   }

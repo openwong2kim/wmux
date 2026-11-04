@@ -230,14 +230,27 @@ describe('phone browser stream (main)', () => {
     expect(view.docUrls.has(long)).toBe(false);
   });
 
-  it('a page that is not http(s) ends the stream with browser-preview-unavailable', async () => {
+  it('a page that is not http(s) is a url event without its URL and sends no frames; the stream goes on', async () => {
     await start();
     const s = sessions[0];
-    s.emit('Page.frameNavigated', { frame: { id: 'main', url: 'chrome-error://chromewebdata/' } });
+    s.frame(1);
     await flush();
-    expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-a', kind: 'end', error: 'browser-preview-unavailable' });
-    expect(s.count('Page.stopScreencast')).toBe(1);
-    expect(streams.tab('chrome-a', 'ws-1')).toBeNull();
+    s.emit('Page.frameNavigated', { frame: { id: 'main', url: 'chrome-error://chromewebdata/' } });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(pushes.filter((p) => p.kind === 'url')).toEqual([{ streamId: 'st-chrome-a', kind: 'url' }]);
+    const view = streams.tab('chrome-a', 'ws-1')!;
+    expect(view.url).toBeNull();
+    expect(view.docUrls.size).toBe(0);
+    s.frame(2);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(frames()).toHaveLength(1);
+    expect(s.acks()).toContain(2);
+    expect(s.count('Page.stopScreencast')).toBe(0);
+    s.emit('Page.frameNavigated', { frame: { id: 'main', url: 'https://b.example.com/' } });
+    s.frame(3);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(pushes.filter((p) => p.kind === 'url').at(-1)).toMatchObject({ pageURL: 'https://b.example.com/' });
+    expect(frames().at(-1)).toMatchObject({ pageURL: 'https://b.example.com/' });
   });
 
   it('known:false from the daemon stops the screencast; a refused push is a dropped frame', async () => {
@@ -325,22 +338,34 @@ describe('phone browser stream (main)', () => {
     expect(kinds().at(-1)).toBe('state:hidden');
   });
 
-  it('re-attaches once when Chrome swaps the page; a second loss, or a tab no longer this workspace\'s, ends it', async () => {
+  it('re-attaches when Chrome swaps the page, three times a minute; one more, or a tab no longer this workspace\'s, ends it', async () => {
     await start();
+    // The old page had started a navigation; the swapped-in page is committed.
+    sessions[0].emit('Page.frameStartedLoading', { frameId: 'main' });
     sessions[0].close();
+    expect(streams.tab('chrome-a', 'ws-1')!.url).toBeNull();
     await vi.advanceTimersByTimeAsync(500);
     expect(sessions).toHaveLength(2);
     expect(sessions[1].count('Page.startScreencast')).toBe(1);
-    sessions[1].close();
+    expect(streams.tab('chrome-a', 'ws-1')!.url).toBe('https://a.example.com/start');
+    sessions[1].frame(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(frames().at(-1)).toMatchObject({ pageURL: 'https://a.example.com/start', geometry: { width: 1200 } });
+    for (const n of [1, 2]) {
+      sessions[n].close();
+      await vi.advanceTimersByTimeAsync(500);
+    }
+    expect(sessions).toHaveLength(4);
+    sessions[3].close();
     await flush();
     expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-a', kind: 'end', error: 'browser-tab-gone' });
     pushes = [];
     await start({}, 'chrome-b');
     owned = false;
-    sessions[2].close();
+    sessions[4].close();
     await vi.advanceTimersByTimeAsync(500);
     expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-b', kind: 'end', error: 'browser-tab-gone' });
-    expect(sessions).toHaveLength(3);
+    expect(sessions).toHaveLength(5);
   });
 
   it('a frame from a tab no longer this workspace\'s ends the stream', async () => {
