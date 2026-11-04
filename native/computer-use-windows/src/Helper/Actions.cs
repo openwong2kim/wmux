@@ -695,6 +695,12 @@ internal static unsafe class Actions
                     return null;
                 }
             }, now => Verify.SameValue(value, now), SetValueSettleMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
+            if (readBack.Verified)
+            {
+                bool caret = CaretToEnd(el, target);
+                return Result("accessibility", true, SemanticDelivery(target, frontBefore),
+                    caret ? null : "the value was set, but wmux could not put the caret at its end, so a type that follows may not land after it");
+            }
             var delivery = SemanticDelivery(target, frontBefore);
             return readBack.Verified
                 ? Result("accessibility", true, delivery)
@@ -960,6 +966,62 @@ internal static unsafe class Actions
         {
             now->Release();
         }
+    }
+
+    /// <summary>
+    /// After a verified setValue: the caret goes to the end of the new value,
+    /// so a `type` that follows appends to it. ValuePattern.SetValue leaves
+    /// the selection wherever the app puts it (Notepad: position 0), and a
+    /// later `type` with an index keeps the field's selection across its
+    /// focus, so the text used to land at the start. Through UIA TextPattern
+    /// (an empty range at the document's end, selected), or, for a Win32
+    /// edit control without it, EM_SETSEL at the text's length. True only
+    /// when the selection reads back as that caret.
+    /// </summary>
+    private static bool CaretToEnd(IUIAutomationElement* el, ControlTarget target)
+    {
+        var text = (IUIAutomationTextPattern*)Pattern(el, Uia.TextPattern, IUIAutomationTextPattern.IID_Guid);
+        if (text != null)
+        {
+            IUIAutomationTextRange* end = null;
+            IUIAutomationTextRange* now = null;
+            try
+            {
+                end = text->DocumentRange;
+                if (end == null) return false;
+                end->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End);
+                end->Select();
+                now = Selection(el);
+                return now != null
+                    && now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start) == 0
+                    && now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_End, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End) == 0;
+            }
+            catch (Exception e) when (e is not HelperError)
+            {
+                return false;
+            }
+            finally
+            {
+                if (now != null) now->Release();
+                if (end != null) end->Release();
+                text->Release();
+            }
+        }
+        HWND edit;
+        try
+        {
+            edit = EditWindow(el, target, -1);
+        }
+        catch (HelperError)
+        {
+            return false;
+        }
+        if (edit == HWND.Null) return false;
+        nuint length, ignored;
+        if (PInvoke.SendMessageTimeout(edit, WmGetTextLength, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &length) == 0) return false;
+        if (length > EditSelection.MaxPackedLength) return false;
+        if (PInvoke.SendMessageTimeout(edit, EmSetSel, length, (nint)length, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &ignored) == 0) return false;
+        return ReadEditSelection(edit) == ((uint)length, (uint)length);
     }
 
     private const uint EmGetSel = 0x00B0;
