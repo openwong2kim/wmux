@@ -13,6 +13,8 @@
 //  - `state`: hidden when Chrome reports the tab not visible, or a probe
 //    reads it hidden, after five quiet seconds, and at once when the renderer
 //    reports a builtin pane off screen; live when frames come back;
+//  - `focus`: whether the focused element takes typed text, and its kind, on
+//    each change (PhoneBrowserFocus.watchFocus), ten a second at most;
 //  - `end`: the tab is gone, or its browser is;
 //  - `ping`: every 15 s, so a stream the daemon forgot stops here too.
 //
@@ -32,6 +34,7 @@ import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import { readImageSize } from '../../mcp/playwright/imageSize';
 import { PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
 import { PHONE_CHROME_CAPTURE_MS, viewportOf } from './PhoneBrowserChrome';
+import { electronFocusCdp, watchFocus, type FocusCdp, type FocusWatch } from './PhoneBrowserFocus';
 import { phoneBrowserViewportExceeds } from './PhoneBrowserGeometry';
 
 const STREAM_ENV = 'WMUX_PHONE_BROWSER_STREAM';
@@ -192,7 +195,7 @@ class Budget {
  * browser has its two screencast frames unacked and captures no more, so it
  * captures at the pace frames are sent rather than at the page's.
  */
-type Outgoing = { kind: 'frame' | 'url' | 'state'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number };
+type Outgoing = { kind: 'frame' | 'url' | 'state' | 'focus'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number };
 
 interface ScreencastFrame { data?: unknown; metadata?: Record<string, unknown>; sessionId?: unknown }
 
@@ -215,7 +218,10 @@ abstract class TabStream implements PhoneStreamTabView {
   private lastPingAt = 0;
   private lastFramePushAt = 0;
   private lastUrlPushAt = 0;
+  private lastFocusPushAt = 0;
   private inFlight = false;
+  /** The tab's focus watcher on the source's current session (contract v1.6). */
+  private focusWatch: FocusWatch | null = null;
   private outbox: Outgoing[] = [];
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private freshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -403,6 +409,8 @@ abstract class TabStream implements PhoneStreamTabView {
       if (wait <= 0 && !this.budget.take(item.bytes, now)) wait = this.budget.wait(item.bytes, now);
     } else if (item.kind === 'url') {
       wait = this.lastUrlPushAt + URL_INTERVAL_MS - now;
+    } else if (item.kind === 'focus') {
+      wait = this.lastFocusPushAt + URL_INTERVAL_MS - now;
     }
     if (wait > 0) {
       if (item.kind === 'frame') this.freshen(wait);
@@ -418,6 +426,7 @@ abstract class TabStream implements PhoneStreamTabView {
       if (this.freshTimer) { clearTimeout(this.freshTimer); this.freshTimer = null; }
     }
     if (item.kind === 'url') this.lastUrlPushAt = now;
+    if (item.kind === 'focus') this.lastFocusPushAt = now;
     this.send(item.params, () => {
       // The daemon answered (or refused): only now may the browser paint the next one.
       this.ack(item.ack);
@@ -521,6 +530,31 @@ abstract class TabStream implements PhoneStreamTabView {
     this.offerFrame(shot.data, shot.geometry, undefined);
   }
 
+  /**
+   * Watches the tab's focus on the source's session and pushes each change
+   * (`{kind:'focus', focus:{editable, kind?}}`; the push's own `kind` is
+   * taken). `current`: whether that session is still the source's once the
+   * watcher is installed. A stop or a swap meanwhile keeps none running.
+   * Without a watcher the stream goes on, with no focus events.
+   */
+  protected async watchFocusOn(cdp: FocusCdp, current: () => boolean): Promise<void> {
+    if (this.stopped) return;
+    const watch = await watchFocus(cdp, (focus) => {
+      this.enqueue({ kind: 'focus', params: { streamId: this.streamId, kind: 'focus', focus }, bytes: 0 });
+    }).catch(() => null);
+    if (!watch) return;
+    if (this.stopped || !current()) { void watch.stop(); return; }
+    this.dropFocusWatch();
+    this.focusWatch = watch;
+  }
+
+  /** The focus watcher stops: its binding, its new-document detector and its timer go. */
+  protected dropFocusWatch(): void {
+    const watch = this.focusWatch;
+    this.focusWatch = null;
+    void watch?.stop();
+  }
+
   /** Tells the daemon the stream is over, then stops. */
   async end(error: 'browser-tab-gone' | 'browser-preview-unavailable' | 'browser-backend-unavailable'): Promise<void> {
     if (this.stopped) return;
@@ -537,6 +571,7 @@ abstract class TabStream implements PhoneStreamTabView {
     if (this.freshTimer) clearTimeout(this.freshTimer);
     if (this.firstFrame) clearTimeout(this.firstFrame);
     for (const item of this.outbox.splice(0)) { this.ackHeld(item); this.ack(item.ack); }
+    this.dropFocusWatch();
     this.release();
     this.onStopped(this);
   }
@@ -609,6 +644,7 @@ class ChromeTabStream extends TabStream {
     await this.readZoom();
     await this.startScreencast();
     this.armFirstFrame();
+    void this.watchFocusOn(session, () => this.session === session);
   }
 
   protected cdp(method: string, params?: Record<string, unknown>): Promise<unknown> {
@@ -671,6 +707,8 @@ class ChromeTabStream extends TabStream {
   private onClosed(session: ChromeStreamSession): void {
     if (this.stopped || this.session !== session) return;
     this.session = null;
+    // The watcher went with the session; the re-attach starts another.
+    this.dropFocusWatch();
     // The re-attach arms its own first frame; the old page's capture has no session to run on.
     if (this.firstFrame) { clearTimeout(this.firstFrame); this.firstFrame = null; }
     // Until the new page is read, input checks the live page itself (PhoneBrowser.ts).
@@ -787,6 +825,9 @@ class BuiltinTabStream extends TabStream {
     if (this.stopped) return;
     await this.startScreencast();
     if (this.stopped) { void this.cdp('Page.stopScreencast').catch(() => undefined); return; }
+    // On the debugger WebviewCdpManager attached, shared: the watcher never
+    // disables a domain on it, and takes its binding and detector back on stop.
+    void this.watchFocusOn(electronFocusCdp(wc.debugger), () => !wc.isDestroyed());
     if (!this.visible()) { this.goHidden(); return; }
     // Chromium paints a visible guest's first screencast frame itself; the
     // repaint is a nudge, and the fallback capture is what guarantees one.

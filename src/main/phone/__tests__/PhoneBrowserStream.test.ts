@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ChromeStreamSession } from '../../browser-session/ChromeLauncher';
 import { ChromePageSessionError } from '../../browser-session/ChromeLauncher';
 import { createPhoneBrowserStreams, STREAM_LINE_LIMIT, type PhoneBrowserStreamDeps, type PhoneBrowserStreams } from '../PhoneBrowserStream';
+import { WATCH_FOCUS_EXPRESSION } from '../PhoneBrowserFocus';
 
 /**
  * Main's side of the phone browser stream over a fake Chrome session, with
@@ -29,13 +30,21 @@ class FakeSession implements ChromeStreamSession {
   layout = { clientWidth: 1183, clientHeight: 683, pageX: 0, pageY: 40, scale: 1 };
   /** captureScreenshot never answers while true. */
   captureHangs = false;
+  /** The page's focus as the focus watcher reads it; null: no isolated world (the watcher does not start). */
+  focus: Record<string, unknown> | null = null;
+  /** A command that waits for its gate before it answers. */
+  gates = new Map<string, Promise<void>>();
   async send(method: string, params?: Record<string, unknown>): Promise<unknown> {
     if (this.closed) throw new ChromePageSessionError('gone', 'ended');
     this.sent.push({ method, params });
+    const gate = this.gates.get(method);
+    if (gate) await gate;
     switch (method) {
       case 'Page.getFrameTree': return { frameTree: { frame: { id: 'main', url: this.url } } };
       case 'Page.getLayoutMetrics': return { cssVisualViewport: { ...this.layout, zoom: this.zoom } };
-      case 'Runtime.evaluate': return { result: { value: this.visibility } };
+      case 'Page.createIsolatedWorld': return this.focus ? { executionContextId: 21 } : {};
+      case 'Page.addScriptToEvaluateOnNewDocument': return { identifier: 'focus-script' };
+      case 'Runtime.evaluate': return params?.expression === WATCH_FOCUS_EXPRESSION ? { result: { value: [this.focus, true] } } : { result: { value: this.visibility } };
       case 'Page.captureScreenshot': return this.captureHangs ? new Promise(() => undefined) : { data: jpeg(600, 340) };
       default: return {};
     }
@@ -57,6 +66,9 @@ class FakeSession implements ChromeStreamSession {
   }
   acks(): number[] { return this.sent.filter((s) => s.method === 'Page.screencastFrameAck').map((s) => s.params?.sessionId as number); }
   count(method: string): number { return this.sent.filter((s) => s.method === method).length; }
+  /** The focus watcher's binding name, once it added it. */
+  binding(): string | undefined { return this.sent.find((s) => s.method === 'Runtime.addBinding')?.params?.name as string | undefined; }
+  nudge(): void { this.emit('Runtime.bindingCalled', { name: this.binding(), payload: '' }); }
 }
 
 const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
@@ -68,6 +80,10 @@ describe('phone browser stream (main)', () => {
   let owned: boolean;
   let streams: PhoneBrowserStreams;
   let tabURL: string;
+  /** What each new session's page has focused (null: the watcher cannot start there). */
+  let pageFocus: Record<string, unknown> | null;
+  /** Gates each new session's commands by method. */
+  let gates: Map<string, Promise<void>>;
 
   beforeEach(() => {
     vi.useFakeTimers({ now: 1_800_000_000_000 });
@@ -75,13 +91,15 @@ describe('phone browser stream (main)', () => {
     pushes = [];
     owned = true;
     tabURL = 'https://a.example.com/start';
+    pageFocus = null;
+    gates = new Map();
     reply = async () => ({ ok: true, known: true });
     const deps: PhoneBrowserStreamDeps = {
       push: (params) => { pushes.push(params); return reply(params); },
       backend: () => 'chrome',
       chrome: {
         tabs: async () => [{ surfaceId: 'chrome-a', url: tabURL }, { surfaceId: 'chrome-b', url: tabURL }],
-        streamSession: async () => { const s = new FakeSession(); sessions.push(s); return s; },
+        streamSession: async () => { const s = new FakeSession(); s.focus = pageFocus; s.gates = gates; sessions.push(s); return s; },
         owns: () => owned,
       },
       captureMs: 5_000,
@@ -397,6 +415,109 @@ describe('phone browser stream (main)', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-b', kind: 'end', error: 'browser-tab-gone' });
     expect(sessions).toHaveLength(5);
+  });
+
+  describe('focus (contract v1.6)', () => {
+    const focus = () => pushes.filter((p) => p.kind === 'focus').map((p) => p.focus);
+
+    it('watched after attach on the stream\'s session, never with Runtime.enable; each change pushed, paced like url events', async () => {
+      pageFocus = { editable: false };
+      await start();
+      await flush();
+      const s = sessions[0];
+      expect(pushes.find((p) => p.kind === 'focus')).toEqual({ streamId: 'st-chrome-a', kind: 'focus', focus: { editable: false } });
+      expect(s.sent.map((x) => x.method)).not.toContain('Runtime.enable');
+      // Started once the screencast runs.
+      expect(s.sent.findIndex((x) => x.method === 'Page.addScriptToEvaluateOnNewDocument')).toBeGreaterThan(s.sent.findIndex((x) => x.method === 'Page.startScreencast'));
+      expect(s.sent.find((x) => x.method === 'Runtime.addBinding')?.params).toEqual({ name: s.binding(), executionContextId: 21 });
+      s.focus = { editable: true, kind: 'text' };
+      s.nudge();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(focus().at(-1)).toEqual({ editable: true, kind: 'text' });
+      // Two changes inside 100 ms: one push waits its turn, and the last state always goes.
+      s.focus = { editable: true, kind: 'password' };
+      s.nudge();
+      await flush();
+      s.focus = { editable: true, kind: 'email' };
+      s.nudge();
+      await flush();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(focus().at(-1)).toEqual({ editable: true, kind: 'email' });
+      // A cross-document commit resets it.
+      s.focus = { editable: false };
+      s.emit('Page.frameNavigated', { frame: { id: 'main', url: 'https://a.example.com/next' } });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(focus().at(-1)).toEqual({ editable: false });
+      expect(kinds().filter((k) => k === 'url' || k === 'focus').slice(-2)).toEqual(['url', 'focus']);
+    });
+
+    it('stops with the stream: its binding is taken back, and nothing is pushed after', async () => {
+      pageFocus = { editable: false };
+      await start();
+      await flush();
+      const s = sessions[0];
+      await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a' });
+      expect(s.count('Runtime.removeBinding')).toBe(1);
+      const pushed = pushes.length;
+      s.focus = { editable: true, kind: 'text' };
+      s.nudge();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(pushes.length).toBe(pushed);
+    });
+
+    it('a stop while attaching, or while the watcher installs, keeps no watcher running', async () => {
+      pageFocus = { editable: false };
+      let open!: () => void;
+      gates.set('Page.startScreencast', new Promise<void>((resolve) => { open = resolve; }));
+      const started = start();
+      await flush();
+      streams.stopAll();
+      open();
+      await started.catch(() => undefined);
+      await flush();
+      expect(sessions[0].count('Page.addScriptToEvaluateOnNewDocument')).toBe(0);
+      // Stopped while the watcher installs: what it installed goes, nothing is pushed.
+      gates = new Map();
+      let install!: () => void;
+      gates.set('Page.addScriptToEvaluateOnNewDocument', new Promise<void>((resolve) => { install = resolve; }));
+      await start({}, 'chrome-b');
+      await flush();
+      expect(sessions[1].count('Page.addScriptToEvaluateOnNewDocument')).toBe(1);
+      await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-b', streamId: 'st-chrome-b' });
+      install();
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(pushes.filter((p) => p.kind === 'focus')).toEqual([]);
+    });
+
+    it('a page swap drops the old watcher and the re-attach starts one on the new session', async () => {
+      pageFocus = { editable: false };
+      await start();
+      await flush();
+      const old = sessions[0];
+      old.close();
+      await vi.advanceTimersByTimeAsync(500);
+      await flush();
+      const fresh = sessions[1];
+      expect(fresh.count('Runtime.addBinding')).toBe(1);
+      fresh.focus = { editable: true, kind: 'url' };
+      fresh.nudge();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(focus().at(-1)).toEqual({ editable: true, kind: 'url' });
+      // The old session's watcher is gone: its events reach nothing.
+      const pushed = pushes.length;
+      old.focus = { editable: true, kind: 'tel' };
+      old.emit('Runtime.bindingCalled', { name: old.binding(), payload: '' });
+      await vi.advanceTimersByTimeAsync(200);
+      expect(pushes.slice(pushed).filter((p) => p.kind === 'focus')).toEqual([]);
+    });
+
+    it('a page the watcher cannot read still streams, with no focus events', async () => {
+      await start();
+      sessions[0].frame(1);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(frames()).toHaveLength(1);
+      expect(pushes.filter((p) => p.kind === 'focus')).toEqual([]);
+    });
   });
 
   it('a frame from a tab no longer this workspace\'s ends the stream', async () => {

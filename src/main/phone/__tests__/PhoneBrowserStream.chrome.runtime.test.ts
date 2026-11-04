@@ -35,6 +35,8 @@ const PAGES: Record<string, string> = {
   // No viewport meta: under mobile emulation it lays out 980 px wide at ~0.4.
   '/wide': '<body style="margin:0"><div style="height:600px"></div>'
     + '<button id="t" style="margin-left:600px;width:120px;height:80px" onmousedown="document.title=\'hit\'">target</button></body>',
+  // A text field, then a password field next in Tab order, then a button.
+  '/form': '<input id="t" style="width:200px;height:40px"><input id="p" type="password" style="width:200px;height:40px"><button id="b">go</button>',
 };
 
 function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -301,6 +303,33 @@ function describeMode(mode: Mode): void {
       } finally {
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => undefined);
       }
+    });
+
+    it('focus events: a tap on a field, Tab to a password, a script focusing a button, then a new page', async (ctx) => {
+      if (skipUnless(ctx)) return;
+      const surfaceId = await open('/form');
+      await start(surfaceId);
+      const frame = await until(() => lastFrame(surfaceId)?.geometry ? lastFrame(surfaceId) : undefined);
+      const focus = () => of(surfaceId, 'focus').map((p) => p.focus as { editable: boolean; kind?: string });
+      await until(() => focus().length > 0, 5_000);
+      expect(focus()[0]).toEqual({ editable: false });
+      const geometry = frame.geometry as { width: number; height: number };
+      const rect = await evaluate(surfaceId, "(() => { const r = document.getElementById('t').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()") as { x: number; y: number };
+      expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x: rect.x / geometry.width, y: rect.y / geometry.height }))
+        .toEqual({ applied: true, focus: { editable: true, kind: 'text' } });
+      await until(() => focus().at(-1)?.kind === 'text', 5_000);
+      expect(await input('browser.key', surfaceId, { expectedURL: frame.pageURL, key: 'Tab' })).toEqual({ applied: true });
+      await until(() => focus().at(-1)?.kind === 'password', 5_000);
+      await evaluate(surfaceId, "document.getElementById('b').focus()");
+      await until(() => focus().at(-1)?.editable === false, 5_000);
+      await evaluate(surfaceId, "document.getElementById('t').focus()");
+      await until(() => focus().at(-1)?.kind === 'text', 5_000);
+      await evaluate(surfaceId, "location.href = '/still'");
+      await until(() => focus().at(-1)?.editable === false, 5_000);
+      // Each one a change, and none carries more than the two fields.
+      const all = focus();
+      for (let i = 1; i < all.length; i++) expect(all[i]).not.toEqual(all[i - 1]);
+      for (const p of of(surfaceId, 'focus')) expect(Object.keys(p).sort()).toEqual(['focus', 'kind', 'streamId']);
     });
 
     it('closing the tab ends the stream with browser-tab-gone', async (ctx) => {
