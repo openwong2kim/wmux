@@ -30,9 +30,11 @@ export interface DaemonProcessSample {
  * - `progressing`: its CPU time went up within the budget; do not kill it.
  * - `stalled`: no CPU time for the whole budget, or past the overall cap.
  * - `gone`: the process is not there.
- * - `unknown`: its CPU time cannot be read and nothing was seen before; the
- *   caller decides as before. A read that fails after earlier ones counts
- *   from the last rise seen, like a sample that shows none.
+ * - `unknown`: its CPU time could not be read yet (a read that failed, most
+ *   likely when the system is short of memory). Can't tell is not a kill:
+ *   it holds within the same budget, then is `stalled`. A read that fails
+ *   after earlier ones counts from the last rise seen, like a sample that
+ *   shows none.
  */
 export type DaemonProgress = 'progressing' | 'stalled' | 'gone' | 'unknown';
 
@@ -63,19 +65,25 @@ export class DaemonProgressTracker {
   private lastCpuMs: number | null = null;
   private lastProgressAt = 0;
   private firstAt = 0;
+  /** A CPU time was read since the first look. */
+  private read = false;
 
   constructor(private readonly cfg: DaemonProgressConfig = DAEMON_PROGRESS_DEFAULTS) {}
 
-  /** The daemon behind a connection: a later sample of its pid with another start time is another process. */
+  /**
+   * The daemon behind a connection: a later sample of its pid with another
+   * start time is another process. What was seen so far stays: a bind that
+   * lands after the failures began must not start the budget over.
+   */
   bind(pid: number, startedAt: string | null): void {
     this.identity = { pid, startedAt };
-    this.reset();
   }
 
   /** The daemon answered: forget what was seen (its identity stays). */
   reset(): void {
     this.pid = null;
     this.lastCpuMs = null;
+    this.read = false;
   }
 
   observe(pid: number, sample: DaemonProcessSample, now: number): DaemonProgress {
@@ -83,27 +91,31 @@ export class DaemonProgressTracker {
     if (this.identity?.pid !== pid) this.identity = { pid, startedAt: sample.startedAt };
     else if (this.identity.startedAt === null) this.identity.startedAt = sample.startedAt;
     else if (sample.startedAt !== null && sample.startedAt !== this.identity.startedAt) return 'gone';
-    const seen = this.pid === pid && this.lastCpuMs !== null;
-    if (sample.cpuMs === null && !seen) return 'unknown';
-    if (!seen) {
+    if (this.pid !== pid) {
       // The first look gives the budget from now: it shows nothing yet.
       this.pid = pid;
-      this.lastCpuMs = sample.cpuMs as number;
+      this.lastCpuMs = sample.cpuMs;
       this.lastProgressAt = now;
       this.firstAt = now;
-      return 'progressing';
+      this.read = sample.cpuMs !== null;
+      return this.read ? 'progressing' : 'unknown';
     }
-    if (sample.cpuMs !== null && sample.cpuMs > (this.lastCpuMs ?? 0)) this.lastProgressAt = now;
-    if (sample.cpuMs !== null) this.lastCpuMs = sample.cpuMs;
+    if (sample.cpuMs !== null) {
+      // The first CPU time read after failed ones is a baseline, not a rise.
+      if (this.lastCpuMs !== null && sample.cpuMs > this.lastCpuMs) this.lastProgressAt = now;
+      this.lastCpuMs = sample.cpuMs;
+      this.read = true;
+    }
     if (now - this.firstAt >= this.cfg.maxUnansweredMs) return 'stalled';
     const budget = this.cfg.noProgressMs * (sample.underPressure ? this.cfg.pressureFactor : 1);
-    return now - this.lastProgressAt >= budget ? 'stalled' : 'progressing';
+    if (now - this.lastProgressAt >= budget) return 'stalled';
+    return this.read ? 'progressing' : 'unknown';
   }
 }
 
-const run = (file: string, args: string[], timeoutMs: number): Promise<string | null> =>
+const run = (file: string, args: string[], timeoutMs: number, env?: NodeJS.ProcessEnv): Promise<string | null> =>
   new Promise((resolve) => {
-    execFile(file, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true }, (err, stdout) => resolve(err ? null : stdout));
+    execFile(file, args, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, ...(env ? { env } : {}) }, (err, stdout) => resolve(err ? null : stdout));
   });
 
 /** `ps -o time=`: `[[dd-]hh:]mm:ss[.cc]`. */
@@ -148,7 +160,9 @@ async function readCpuAndStart(pid: number): Promise<{ cpuMs: number | null; sta
   }
   // GetProcessTimes: no process to spawn on a machine short of memory.
   if (process.platform === 'win32') return { cpuMs: tryProcessCpuMs(pid), startedAt: tryProcessCreatedAt(pid)?.toString() ?? null };
-  const out = await run('/bin/ps', ['-o', 'lstart=', '-o', 'time=', '-p', String(pid)], 5_000);
+  // lstart is wall-clock time in the zone and locale ps runs in: fixed, so a
+  // zone or DST change between two samples is not another start time.
+  const out = await run('/bin/ps', ['-o', 'lstart=', '-o', 'time=', '-p', String(pid)], 5_000, { ...process.env, TZ: 'UTC', LC_ALL: 'C' });
   return out === null ? { cpuMs: null, startedAt: null } : parsePsStartAndCpu(out);
 }
 
@@ -180,6 +194,9 @@ function isAlive(pid: number): boolean {
   }
 }
 
+/** What a sample that failed outright says: the process may be there; nothing could be read. */
+export const UNREADABLE_SAMPLE: DaemonProcessSample = { alive: true, cpuMs: null, startedAt: null, underPressure: false };
+
 /** Samples a daemon process for DaemonProgressTracker. */
 export async function sampleDaemonProcess(pid: number): Promise<DaemonProcessSample> {
   if (!isAlive(pid)) return { alive: false, cpuMs: null, startedAt: null, underPressure: false };
@@ -189,9 +206,10 @@ export async function sampleDaemonProcess(pid: number): Promise<DaemonProcessSam
 
 /**
  * The launcher's wait before it kills a verified daemon that did not answer:
- * while its CPU time keeps rising it is pinged again every `intervalMs`, up
- * to `ceilingMs`. Only `answered` keeps it; any other outcome is the kill it
- * was headed for, now after a bounded wait instead of at once.
+ * while its CPU time keeps rising, or cannot be read yet, it is pinged again
+ * every `intervalMs`, up to `ceilingMs`. Only `answered` keeps it; `gone`
+ * leaves its pid alone; `stalled` and `ceiling` are the kill it was headed
+ * for, now after a bounded wait instead of at once.
  */
 export async function waitOutProgressingDaemon(deps: {
   pid: number;
@@ -203,14 +221,14 @@ export async function waitOutProgressingDaemon(deps: {
   ceilingMs: number;
   progress: DaemonProgressConfig;
   onWaiting?: () => void;
-}): Promise<'answered' | 'stalled' | 'gone' | 'unknown' | 'ceiling'> {
+}): Promise<'answered' | 'stalled' | 'gone' | 'ceiling'> {
   const tracker = new DaemonProgressTracker(deps.progress);
   const start = deps.now();
   let told = false;
   for (;;) {
-    const sample = await deps.sample(deps.pid).catch(() => null);
-    const verdict = sample ? tracker.observe(deps.pid, sample, deps.now()) : 'unknown';
-    if (verdict !== 'progressing') return verdict;
+    const sample = await deps.sample(deps.pid).catch(() => UNREADABLE_SAMPLE);
+    const verdict = tracker.observe(deps.pid, sample, deps.now());
+    if (verdict === 'stalled' || verdict === 'gone') return verdict;
     if (deps.now() - start >= deps.ceilingMs) return 'ceiling';
     if (!told) { told = true; deps.onWaiting?.(); }
     await deps.sleep(deps.intervalMs);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DaemonProgressTracker,
+  sampleDaemonProcess,
   waitOutProgressingDaemon,
   parseProcStatCpuMs,
   parsePsCpuTime,
@@ -79,6 +80,51 @@ describe('DaemonProgressTracker', () => {
   });
 });
 
+describe('DaemonProgressTracker: what it cannot read', () => {
+  it('CPU time it cannot read is unknown, held within the budget, then stalled', () => {
+    const t = new DaemonProgressTracker(cfg);
+    expect(t.observe(42, at(null), 0)).toBe('unknown');
+    expect(t.observe(42, at(null), 29_000)).toBe('unknown');
+    expect(t.observe(42, at(null), 30_000)).toBe('stalled');
+    // Under memory pressure, the longer budget.
+    const u = new DaemonProgressTracker(cfg);
+    u.observe(42, at(null, true), 0);
+    expect(u.observe(42, at(null, true), 100_000)).toBe('unknown');
+    expect(u.observe(42, at(null, true), 120_000)).toBe('stalled');
+  });
+
+  it('the first CPU time read after failed ones is a baseline, not a rise', () => {
+    const t = new DaemonProgressTracker(cfg);
+    t.observe(42, at(null), 0);
+    expect(t.observe(42, at(900), 20_000)).toBe('progressing');
+    expect(t.observe(42, at(900), 30_000)).toBe('stalled');
+  });
+
+  it('a bind that lands after the failures began keeps what was seen', () => {
+    const t = new DaemonProgressTracker(cfg);
+    t.observe(42, at(100), 0);
+    t.bind(42, 'T0');
+    expect(t.observe(42, at(100), 30_000)).toBe('stalled');
+  });
+});
+
+describe('sampleDaemonProcess', () => {
+  it('reads the same start time for the same process whatever the time zone', async () => {
+    const before = process.env.TZ;
+    try {
+      process.env.TZ = 'America/Los_Angeles';
+      const west = await sampleDaemonProcess(process.pid);
+      process.env.TZ = 'Asia/Seoul';
+      const east = await sampleDaemonProcess(process.pid);
+      expect(west.alive).toBe(true);
+      expect(west.startedAt).not.toBeNull();
+      expect(east.startedAt).toBe(west.startedAt);
+    } finally {
+      if (before === undefined) delete process.env.TZ; else process.env.TZ = before;
+    }
+  });
+});
+
 describe('CPU time parsers', () => {
   it('reads ps time in each of its shapes', () => {
     expect(parsePsCpuTime('0:01.23')).toBe(1230);
@@ -136,11 +182,19 @@ describe('waitOutProgressingDaemon (the launcher, before a kill)', () => {
     expect(await wait(async () => at((cpu += 30), false, ++n > 2 ? 'T1' : 'T0'), async () => false)).toBe('gone');
   });
 
-  it('a gone process, or CPU time it cannot read from the start, ends the wait at once', async () => {
+  it('a gone process ends the wait at once', async () => {
     let pings = 0;
-    const ping = async () => { pings++; return false; };
-    expect(await wait(async () => ({ alive: false, cpuMs: null, startedAt: null, underPressure: false }), ping)).toBe('gone');
-    expect(await wait(async () => at(null), ping)).toBe('unknown');
+    expect(await wait(async () => ({ alive: false, cpuMs: null, startedAt: null, underPressure: false }), async () => { pings++; return false; })).toBe('gone');
     expect(pings).toBe(0);
+  });
+
+  it('CPU time it cannot read (or a sampler that throws) is waited on through the budget, and kept once it answers', async () => {
+    for (const sample of [async () => at(null), async (): Promise<never> => { throw new Error('spawn ps ENOMEM'); }]) {
+      let pings = 0;
+      expect(await wait(sample, async () => { pings++; return false; })).toBe('stalled');
+      expect(pings).toBe(5);
+      pings = 0;
+      expect(await wait(sample, async () => ++pings === 3)).toBe('answered');
+    }
   });
 });

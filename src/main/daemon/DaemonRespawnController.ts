@@ -4,7 +4,7 @@ import type { ProcessLiveness } from '../../shared/processLiveness';
 import { isDaemonOlder, runDaemonReplacement, type ShutdownRpcResult } from './daemonReplacement';
 import type { DaemonExitWatch } from './daemonExitWatch';
 import {
-  DAEMON_PROGRESS_DEFAULTS, DaemonProgressTracker,
+  DAEMON_PROGRESS_DEFAULTS, DaemonProgressTracker, UNREADABLE_SAMPLE,
   type DaemonProcessSample, type DaemonProgress, type DaemonProgressConfig,
 } from '../../shared/daemon/daemonProgress';
 
@@ -158,6 +158,9 @@ const DEFAULTS: Required<DaemonRespawnConfig> = {
 // RCA A4 — a successful ping reporting event-loop lag at/above this is logged
 // as "busy but responsive" (never escalated; a daemon that answers is alive).
 const BUSY_LAG_WARN_MS = 1_000;
+/** Tries at reading the connected daemon's start time, and the wait between them. */
+const BIND_ATTEMPTS = 3;
+const BIND_RETRY_MS = 1_000;
 
 /**
  * Owns the daemon-respawn lifecycle: detects disconnects, schedules
@@ -688,6 +691,11 @@ export class DaemonRespawnController {
           this.deps.logger.warn('daemon not answering but its CPU time is still rising — slow, not hung; not respawning it');
           return;
         }
+        // A read that failed (likeliest when the system is short of memory) is no verdict: held within the same budget.
+        if (progress === 'unknown') {
+          this.deps.logger.warn('daemon not answering and its CPU time cannot be read right now — not respawning it until the budget runs out');
+          return;
+        }
         this.deps.logger.error(
           `daemon hang detected — forcing respawn${progress === 'stalled' ? ' (no CPU time for the whole budget)' : ''}`,
         );
@@ -704,23 +712,32 @@ export class DaemonRespawnController {
     }
   }
 
-  /** Records the connected daemon's start time, so a later sample of a pid handed on to another process reads as gone. */
+  /**
+   * Records the connected daemon's start time, so a later sample of a pid
+   * handed on to another process reads as gone. A read that fails is tried
+   * twice more: an identity taken from a sample after the daemon stopped
+   * answering could already be another process's.
+   */
   private bindDaemonIdentity(pid: number | null): void {
     const sample = this.deps.sampleDaemon;
     if (pid === null || !sample) return;
-    void sample(pid).then((s) => {
-      if (s.alive && this.connectedDaemon.pid === pid) this.progress.bind(pid, s.startedAt);
-    }, () => undefined);
+    void (async () => {
+      for (let attempt = 0; attempt < BIND_ATTEMPTS; attempt++) {
+        if (attempt > 0) await new Promise<void>((resolve) => { const t = setTimeout(resolve, BIND_RETRY_MS); t.unref?.(); });
+        if (this.disposed || this.connectedDaemon.pid !== pid) return;
+        const s = await sample(pid).catch(() => null);
+        if (this.connectedDaemon.pid !== pid) return;
+        if (s && !s.alive) return;
+        if (s?.startedAt) { this.progress.bind(pid, s.startedAt); return; }
+      }
+    })();
   }
 
-  private async observeProgress(pid: number | null): Promise<DaemonProgress> {
+  /** The tracker's verdict, or null when this host cannot sample a daemon at all (the respawn goes ahead as before). */
+  private async observeProgress(pid: number | null): Promise<DaemonProgress | null> {
     const sample = this.deps.sampleDaemon;
-    if (pid === null || !sample) return 'unknown';
-    try {
-      return this.progress.observe(pid, await sample(pid), Date.now());
-    } catch {
-      return 'unknown';
-    }
+    if (pid === null || !sample) return null;
+    return this.progress.observe(pid, await sample(pid).catch(() => UNREADABLE_SAMPLE), Date.now());
   }
 
   private handleDisconnect(reason: string): void {
