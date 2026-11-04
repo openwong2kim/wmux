@@ -2,7 +2,11 @@
 // experimental wongtty front end (uiSlice.terminalWongtty). Not a test: a
 // measurement run on the e2e build (`npm run -s build:daemon && node e2e/build.mjs`).
 //
-//   node e2e/wongtty-memory.mjs <xterm|wongtty> [runs=3] [out.json] [flags]
+//   node e2e/wongtty-memory.mjs <xterm|wongtty|cycle> [runs=3] [out.json] [flags]
+//
+// `cycle` fills the panes with the switch off, then turns it on and off again
+// and reads each of the three states: whether turning wongtty off gives its
+// memory back.
 //
 // Flags pick the scenario (the default is 17 filled visible panes):
 //   --panes=N       panes in the new workspace (0: no new workspace, and the
@@ -25,19 +29,21 @@
 // Each run is a fresh e2e sandbox (lib.mjs: own HOME, WMUX_DATA_SUFFIX=-e2e,
 // --user-data-dir inside the sandbox), so it never touches a real wmux. The
 // run opens a new workspace, splits it into 17 visible panes, prints the same
-// file in every pane until the 10,000-line scrollback is full, collects
-// garbage, then reads the Electron processes' RSS (ps), the renderer's JS heap
-// (CDP Runtime.getHeapUsage), WebAssembly memory, the macOS phys_footprint of
-// each Electron process and the daemon's RSS. WONGTTY_MEM_SHOT=<path prefix> also
-// saves a screenshot of the filled panes.
+// file in every pane until the 10,000-line scrollback is full, then reads the
+// Electron processes' RSS (ps), the renderer's JS heap (CDP
+// Runtime.getHeapUsage), WebAssembly memory, the macOS phys_footprint of each
+// Electron process and the daemon's RSS: once as it is, and once more after a
+// forced garbage collection (`gc`). WONGTTY_MEM_SHOT=<path prefix> also saves
+// a screenshot of the filled panes. WMUX_E2E_SANDBOX_BASE moves the sandbox
+// HOME (lib.mjs).
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { killRun, launchApp, makeSandbox, rpc, sleep, waitFor } from './lib.mjs';
+import { ROOT, killRun, launchApp, makeSandbox, rpc, sleep, waitFor } from './lib.mjs';
 
 const mode = process.argv[2];
-if (mode !== 'xterm' && mode !== 'wongtty') {
-  console.error('usage: node e2e/wongtty-memory.mjs <xterm|wongtty> [runs] [out.json]');
+if (mode !== 'xterm' && mode !== 'wongtty' && mode !== 'cycle') {
+  console.error('usage: node e2e/wongtty-memory.mjs <xterm|wongtty|cycle> [runs] [out.json]');
   process.exit(2);
 }
 const positional = process.argv.slice(3).filter((a) => !a.startsWith('--'));
@@ -51,8 +57,10 @@ const PANES = flags.panes !== undefined ? Number(flags.panes) : 17;
 const FILL_LINES = 12_000;
 const MARKER = 'FILL-DONE-MARKER';
 
-// A wmux pane's identity variables must not reach the sandboxed app.
-for (const key of Object.keys(process.env)) if (key.startsWith('WMUX_')) delete process.env[key];
+// A wmux pane's identity variables must not reach the sandboxed app; the
+// harness's own WMUX_E2E_* settings stay.
+for (const key of Object.keys(process.env)) if (key.startsWith('WMUX_') && !key.startsWith('WMUX_E2E_')) delete process.env[key];
+const WONGTTY_WASM_SIZES = ['wongtty.wasm', 'xterm_web_bg.wasm'].map((f) => fs.statSync(path.join(ROOT, 'node_modules', 'wongtty', 'dist', f)).size);
 
 function fillFile(home) {
   const lines = [];
@@ -125,16 +133,75 @@ async function dismissWelcome(win) {
   if (await dontAsk.count()) await dontAsk.first().click();
 }
 
-async function turnWongttyOn(win) {
+/** Flip Settings > Labs "Rust terminal front end (wongtty)" to `on` and wait
+ *  until every terminal runs the engine it asks for (useTerminal's settle
+ *  signal on <html>). */
+async function setWongtty(win, on) {
   await win.keyboard.press(process.platform === 'darwin' ? 'Meta+Comma' : 'Control+Comma');
   await win.getByText('Labs', { exact: true }).first().click({ timeout: 15_000 });
   const toggle = win.getByRole('switch', { name: 'Rust terminal front end (wongtty)' });
-  await toggle.click();
-  await waitFor(async () => (await toggle.getAttribute('aria-checked')) === 'true', { what: 'the wongtty switch' });
+  if ((await toggle.getAttribute('aria-checked')) !== String(on)) await toggle.click();
+  await waitFor(async () => (await toggle.getAttribute('aria-checked')) === String(on), { what: 'the wongtty switch' });
   await win.keyboard.press('Escape');
-  // init() loads two WebAssembly modules; give it a moment before panes are built.
-  // eslint-disable-next-line no-restricted-syntax -- the load has no DOM signal
-  await sleep(2_000);
+  const engine = on ? 'wongtty' : 'xterm';
+  await waitFor(() => win.evaluate((want) => {
+    const d = document.documentElement.dataset;
+    const panes = [...document.querySelectorAll('body [data-terminal-engine]')];
+    return d.terminalEngine === want && Number(d.terminalEnginePending ?? 0) === 0 && panes.every((el) => el.dataset.terminalEngine === want);
+  }, engine), { timeout: 60_000, what: `every terminal on ${engine}` });
+}
+
+/** From now on, keep a weak reference to every WebAssembly instance's memory,
+ *  with the size of the module it came from. Weak, so the record itself keeps
+ *  nothing alive: after a collection, what still answers is memory something
+ *  else holds. (CDP Runtime.queryObjects would find the memories without this,
+ *  but it crashes this Electron's renderer whatever the prototype.) */
+async function trackWasm(win) {
+  await win.evaluate(() => {
+    const W = WebAssembly;
+    const sizes = new WeakMap(); // Module -> its byte length
+    const refs = [];
+    window.__wasmRefs = refs;
+    const size = (src) => (src instanceof ArrayBuffer || ArrayBuffer.isView(src) ? src.byteLength : -1);
+    const record = (instance, module) => {
+      const memory = Object.values(instance.exports).find((v) => v instanceof W.Memory);
+      refs.push({ bytes: sizes.get(module) ?? -1, instance: new window.WeakRef(instance), memory: memory ? new window.WeakRef(memory) : null });
+    };
+    const realInstantiate = W.instantiate;
+    W.instantiate = function (src, ...rest) {
+      return realInstantiate.call(this, src, ...rest).then((result) => {
+        if (result instanceof W.Instance) record(result, src);
+        else {
+          sizes.set(result.module, size(src));
+          record(result.instance, result.module);
+        }
+        return result;
+      });
+    };
+    const realCompile = W.compile;
+    W.compile = function (src, ...rest) {
+      return realCompile.call(this, src, ...rest).then((module) => { sizes.set(module, size(src)); return module; });
+    };
+    W.Module = new Proxy(W.Module, { construct(target, args) { const m = Reflect.construct(target, args); sizes.set(m, size(args[0])); return m; } });
+    W.Instance = new Proxy(W.Instance, { construct(target, args) { const i = Reflect.construct(target, args); record(i, args[0]); return i; } });
+  });
+}
+
+/** WebAssembly instances still alive, and their memories. */
+async function wasmLive(win) {
+  const live = await win.evaluate(() => (window.__wasmRefs ?? []).map((r) => {
+    const memory = r.memory?.deref();
+    return { bytes: r.bytes, alive: r.instance.deref() !== undefined, memoryBytes: memory ? memory.buffer.byteLength : 0 };
+  }));
+  const alive = live.filter((r) => r.alive || r.memoryBytes > 0);
+  const wongtty = alive.filter((r) => WONGTTY_WASM_SIZES.includes(r.bytes));
+  return {
+    instancesCreated: live.length,
+    instancesAlive: alive.length,
+    memoryMb: +(alive.reduce((n, r) => n + r.memoryBytes, 0) / 1048576).toFixed(1),
+    wongttyInstancesAlive: wongtty.length,
+    wongttyMemoryMb: +(wongtty.reduce((n, r) => n + r.memoryBytes, 0) / 1048576).toFixed(1),
+  };
 }
 
 /** Splits the new workspace level by level into PANES panes of similar size. */
@@ -180,8 +247,51 @@ async function terminalKinds(win) {
   });
 }
 
+/** The app's memory now: RSS and footprint per Electron process type, the
+ *  renderer's JS heap, live WebAssembly memory, the daemon's RSS. */
+async function readMemory(app, win, sb, cdp) {
+  const heap = await cdp.send('Runtime.getHeapUsage');
+  // WebAssembly linear memory (wongtty's engine and front end) is outside the JS heap.
+  const wasm = await wasmLive(win);
+  const kinds = await terminalKinds(win);
+  const metrics = await app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type })));
+  const byType = {};
+  const footprintByType = {};
+  let total = 0;
+  let footprintTotal = 0;
+  const tabs = [];
+  for (const m of metrics) {
+    const kb = rssKb(m.pid);
+    total += kb;
+    byType[m.type] = (byType[m.type] ?? 0) + kb;
+    const fp = footprintKb(m.pid);
+    footprintTotal += fp;
+    footprintByType[m.type] = (footprintByType[m.type] ?? 0) + fp;
+    if (m.type === 'Tab') tabs.push({ pid: m.pid, kb });
+  }
+  const appPids = new Set(metrics.map((m) => m.pid));
+  return {
+    kinds,
+    rendererRssMb: +(Math.max(...tabs.map((t) => t.kb), 0) / 1024).toFixed(1),
+    tabsRssMb: +((byType.Tab ?? 0) / 1024).toFixed(1),
+    gpuRssMb: +((byType.GPU ?? 0) / 1024).toFixed(1),
+    browserRssMb: +((byType.Browser ?? 0) / 1024).toFixed(1),
+    totalAppRssMb: +(total / 1024).toFixed(1),
+    rendererFootprintMb: +((footprintByType.Tab ?? 0) / 1024).toFixed(1),
+    gpuFootprintMb: +((footprintByType.GPU ?? 0) / 1024).toFixed(1),
+    totalAppFootprintMb: +(footprintTotal / 1024).toFixed(1),
+    jsHeapUsedMb: +(heap.usedSize / 1048576).toFixed(1),
+    jsHeapTotalMb: +(heap.totalSize / 1048576).toFixed(1),
+    wasm,
+    daemonRssMb: +(daemonRssKb(sb, appPids) / 1024).toFixed(1),
+    processes: metrics.length,
+    footprintByTypeMb: Object.fromEntries(Object.entries(footprintByType).map(([k, v]) => [k, +(v / 1024).toFixed(1)])),
+    ...(flags.breakdown ? { breakdown: Object.fromEntries(metrics.map((m) => [`${m.type}:${m.pid}`, footprintCategories(m.pid)])) } : {}),
+  };
+}
+
 async function oneRun(n) {
-  const sb = makeSandbox(`wtmem-${mode}`);
+  const sb = makeSandbox(`wtm-${mode}`);
   fillFile(sb.home);
   let app;
   const notes = [];
@@ -201,8 +311,9 @@ async function oneRun(n) {
       w.setPosition(0, 0);
       w.setSize(1600, 1000);
     });
+    await trackWasm(win);
     await dismissWelcome(win);
-    if (mode === 'wongtty') await turnWongttyOn(win);
+    if (mode === 'wongtty') await setWongtty(win, true);
 
     const first = await rpc(sb, 'workspace.current', {}).catch(() => null);
     if (PANES === 0) {
@@ -271,61 +382,44 @@ async function oneRun(n) {
 
     if (process.env.WONGTTY_MEM_SHOT) await win.screenshot({ path: `${process.env.WONGTTY_MEM_SHOT}-${mode}-${n}.png` });
     const cdp = await win.context().newCDPSession(win);
-    await cdp.send('HeapProfiler.collectGarbage');
-    await sleep(1_000);
-    const heap = await cdp.send('Runtime.getHeapUsage');
-    // WebAssembly linear memory (wongtty's engine and front end) is outside the JS heap.
-    const proto = await cdp.send('Runtime.evaluate', { expression: 'WebAssembly.Memory.prototype' });
-    const memories = await cdp.send('Runtime.queryObjects', { prototypeObjectId: proto.result.objectId });
-    const wasm = await cdp.send('Runtime.callFunctionOn', {
-      objectId: memories.objects.objectId,
-      functionDeclaration: 'function () { return this.reduce((n, m) => n + m.buffer.byteLength, 0); }',
-      returnByValue: true,
-    });
-    const kinds = await terminalKinds(win);
-    const metrics = await app.evaluate(({ app: electronApp }) => electronApp.getAppMetrics().map((m) => ({ pid: m.pid, type: m.type })));
-    const gpuFeatures = flags.breakdown ? await app.evaluate(({ app: electronApp }) => electronApp.getGPUFeatureStatus()) : undefined;
+    const stages = [];
+    /** Read `stage` as it is, then again after a forced garbage collection. */
+    const readStage = async (stage) => {
+      const asIs = await readMemory(app, win, sb, cdp);
+      // A few rounds: memory a collection frees can let a later round free more.
+      for (let i = 0; i < 3; i++) {
+        await cdp.send('HeapProfiler.collectGarbage');
+        // eslint-disable-next-line no-restricted-syntax -- let the freed pages go back to the system
+        await sleep(1_000);
+      }
+      const gc = await readMemory(app, win, sb, cdp);
+      stages.push({ stage, asIs, gc });
+    };
+    if (mode === 'cycle') {
+      await readStage('off');
+      await setWongtty(win, true);
+      // eslint-disable-next-line no-restricted-syntax -- let the swapped panes repaint before reading
+      await sleep(Number(flags.idle ?? 5) * 1000);
+      await readStage('on');
+      await setWongtty(win, false);
+      // eslint-disable-next-line no-restricted-syntax -- let the swapped panes repaint before reading
+      await sleep(Number(flags.idle ?? 5) * 1000);
+      await readStage('off again');
+    } else {
+      await readStage(mode);
+    }
     const layout = await win.evaluate(() => ({
       dpr: window.devicePixelRatio,
       canvases: document.querySelectorAll('canvas').length,
       webviews: document.querySelectorAll('webview, iframe').length,
       focused: document.activeElement?.className ?? '',
     }));
-    const byType = {};
-    const footprintByType = {};
-    let total = 0;
-    let footprintTotal = 0;
-    const tabs = [];
-    for (const m of metrics) {
-      const kb = rssKb(m.pid);
-      total += kb;
-      byType[m.type] = (byType[m.type] ?? 0) + kb;
-      const fp = footprintKb(m.pid);
-      footprintTotal += fp;
-      footprintByType[m.type] = (footprintByType[m.type] ?? 0) + fp;
-      if (m.type === 'Tab') tabs.push({ pid: m.pid, kb });
-    }
-    const appPids = new Set(metrics.map((m) => m.pid));
+    const gpuFeatures = flags.breakdown ? await app.evaluate(({ app: electronApp }) => electronApp.getGPUFeatureStatus()) : undefined;
     const scenario = Object.entries(flags).map(([k, v]) => (v === true ? k : `${k}=${v}`)).join(',') || 'default';
     const result = {
-      mode, scenario, run: n, kinds, layout, notes,
-      rendererRssMb: +(Math.max(...tabs.map((t) => t.kb), 0) / 1024).toFixed(1),
-      tabsRssMb: +((byType.Tab ?? 0) / 1024).toFixed(1),
-      gpuRssMb: +((byType.GPU ?? 0) / 1024).toFixed(1),
-      browserRssMb: +((byType.Browser ?? 0) / 1024).toFixed(1),
-      totalAppRssMb: +(total / 1024).toFixed(1),
-      rendererFootprintMb: +((footprintByType.Tab ?? 0) / 1024).toFixed(1),
-      gpuFootprintMb: +((footprintByType.GPU ?? 0) / 1024).toFixed(1),
-      totalAppFootprintMb: +(footprintTotal / 1024).toFixed(1),
-      jsHeapUsedMb: +(heap.usedSize / 1048576).toFixed(1),
-      jsHeapTotalMb: +(heap.totalSize / 1048576).toFixed(1),
-      wasmMemoryMb: +(wasm.result.value / 1048576).toFixed(1),
-      daemonRssMb: +(daemonRssKb(sb, appPids) / 1024).toFixed(1),
-      processes: metrics.length,
+      mode, scenario, run: n, layout, notes, stages,
       glDrawsWhileWaiting: glDraws,
-      footprintByTypeMb: Object.fromEntries(Object.entries(footprintByType).map(([k, v]) => [k, +(v / 1024).toFixed(1)])),
       ...(gpuFeatures ? { gpuFeatures } : {}),
-      ...(flags.breakdown ? { breakdown: Object.fromEntries(metrics.map((m) => [`${m.type}:${m.pid}`, footprintCategories(m.pid)])) } : {}),
       errors: [...errors].slice(0, 30),
     };
     console.log(JSON.stringify(result));
