@@ -122,6 +122,8 @@ export class DaemonPipeServer {
   // Per-socket and aggregate budgets for STREAM_PUSH_METHODS.
   private readonly streamPushRateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
   private streamPushGlobalRate = { count: 0, resetAt: 0 };
+  // Stream pushes refused per socket since its last log line (noteStreamPushRefused).
+  private readonly streamPushRefusals = new Map<net.Socket, { refused: number; loggedAt: number }>();
   private connectionRate = { count: 0, resetAt: 0 };
 
   private static readonly MAX_CONNECTIONS = 20;
@@ -172,6 +174,7 @@ export class DaemonPipeServer {
   ]);
   private static readonly STREAM_PUSH_PER_SOCKET_RATE_LIMIT = 120;
   private static readonly STREAM_PUSH_GLOBAL_RATE_LIMIT = 240;
+  private static readonly STREAM_PUSH_REFUSAL_LOG_MS = 10_000;
   private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 20;
 
   private activePipeName: string;
@@ -392,6 +395,7 @@ export class DaemonPipeServer {
           this.rateLimits.delete(socket);
           this.interactiveRateLimits.delete(socket);
           this.streamPushRateLimits.delete(socket);
+          this.streamPushRefusals.delete(socket);
           this.clientIds.delete(socket);
           this.socketsByClientId.delete(clientId);
           this.firstPartyClients.delete(clientId);
@@ -509,6 +513,7 @@ export class DaemonPipeServer {
     this.rateLimits.clear();
     this.interactiveRateLimits.clear();
     this.streamPushRateLimits.clear();
+    this.streamPushRefusals.clear();
     // Forced drop-to-zero — keep idle-window accounting consistent.
     this.lastDisconnectAt = Date.now();
     return newToken;
@@ -719,6 +724,7 @@ export class DaemonPipeServer {
       ) {
         const res = JSON.stringify({ id: request.id, ok: false, error: 'rate limited (stream)' });
         socket.write(res + '\n');
+        this.noteStreamPushRefused(socket, now);
         return;
       }
       push.count++;
@@ -779,6 +785,27 @@ export class DaemonPipeServer {
     }
 
     this.dispatchAndReply(socket, request);
+  }
+
+  /**
+   * A refused stream push is only a dropped frame to main, so it is not an
+   * error anywhere; this line is the one trace of it. At most one per socket
+   * every STREAM_PUSH_REFUSAL_LOG_MS, with the refusals counted since the last.
+   */
+  private noteStreamPushRefused(socket: net.Socket, now: number): void {
+    let note = this.streamPushRefusals.get(socket);
+    if (!note) {
+      note = { refused: 0, loggedAt: -Infinity };
+      this.streamPushRefusals.set(socket, note);
+    }
+    note.refused += 1;
+    if (now - note.loggedAt < DaemonPipeServer.STREAM_PUSH_REFUSAL_LOG_MS) return;
+    console.warn(
+      `[DaemonPipeServer] rate limited (stream): ${note.refused} browser stream push(es) refused `
+      + `from ${this.clientIds.get(socket) ?? 'unknown'} since the last report`,
+    );
+    note.refused = 0;
+    note.loggedAt = now;
   }
 
   private dispatchAndReply(socket: net.Socket, request: RpcRequest): void {
