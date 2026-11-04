@@ -3739,20 +3739,25 @@ streamed tabs per desktop.
   with `geometry`. Both are left out between a navigation's start and its
   commit.
 - `url`: `{pageURL?}` on every committed URL change, same-document or not,
-  whether or not a frame follows. `pageURL` is left out past 4096 characters.
-  Keep the last frame's geometry. At most ten a second; the last one always
-  arrives, in order with frames.
+  whether or not a frame follows. `pageURL` is left out past 4096 characters,
+  and for a page that is not http(s), such as an error page: no frames come
+  for that page and input on the tab is refused until an http(s) page
+  commits. Keep the last frame's geometry. At most ten a second; the last one
+  always arrives, in order with frames.
 - `state`: `{state:"hidden", reason:"browser-tab-hidden"}` when the tab stops
   painting (Chrome reports it not visible, or it reads as hidden, for about
   5 s); the stream stays open. `{state:"live"}` when it paints again,
   followed by a frame.
 - `end`: `{error}` (`browser-tab-gone`, `browser-backend-unavailable`,
   `browser-preview-unavailable`, `browser-stream-expired`), then the stream
-  closes. `browser-preview-unavailable` includes a page that is no longer
-  http(s). `browser-stream-expired` comes after 30 minutes; reconnect.
+  closes. `browser-backend-unavailable` also comes when the desktop has sent
+  nothing for the tab for 45 s. `browser-stream-expired` comes after 30
+  minutes; reconnect.
 - `: keepalive` comment every 15 s.
 
 **Pacing**: the first frame comes right after `hello`, even on a still page.
+A later subscriber gets the tab's latest frame, then its latest `url` when
+the URL changed after that frame.
 After that, frames come when the page repaints, at most `maxFps`. Latest
 frame first: while the connection has not taken the last frame, newer ones
 replace the one waiting. One screencast per tab is shared by its

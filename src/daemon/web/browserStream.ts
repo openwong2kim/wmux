@@ -26,6 +26,8 @@ export const BROWSER_STREAM_MAX_PER_PRINCIPAL_PER_TAB = 2;
 export const BROWSER_STREAM_MAX_TABS = 4;
 export const BROWSER_STREAM_KEEPALIVE_MS = 15_000;
 export const BROWSER_STREAM_LIFETIME_MS = 30 * 60_000;
+/** Nothing from main for this long (it pings every 15 s): its screencast is gone. */
+export const BROWSER_STREAM_SILENT_MS = 45_000;
 /** `url` events are written at most this often per subscriber. */
 export const BROWSER_STREAM_URL_INTERVAL_MS = 100;
 /** Base64 image data per frame. */
@@ -102,6 +104,10 @@ interface Tab {
   sentMaxFps: number;
   /** The latest frame's JSON without its `seq`, for a late subscriber. */
   latest: string | null;
+  /** The latest url event's JSON when it came after that frame, for a late subscriber. */
+  urlAfterLatest: string | null;
+  /** When main last pushed for it, ping included. */
+  lastPushAt: number;
   hidden: boolean;
   gone: boolean;
   /** Why main or the owner ended it, for a subscriber still starting. */
@@ -219,7 +225,7 @@ export class BrowserStreamRegistry {
       this.watch(desktop);
       tab = {
         key, workspaceId, surfaceId, streamId: randomUUID(), owner: desktop.ownerId, desktop, subs: new Set(),
-        starting: null, shared: null, sentMaxFps: params.maxFps, latest: null, hidden: false, gone: false, endCode: null,
+        starting: null, shared: null, sentMaxFps: params.maxFps, latest: null, urlAfterLatest: null, lastPushAt: 0, hidden: false, gone: false, endCode: null,
       };
       this.tabs.set(key, tab);
       this.byStream.set(tab.streamId, tab);
@@ -241,6 +247,7 @@ export class BrowserStreamRegistry {
   push(clientId: string, params: Record<string, unknown>): { ok: boolean; known: boolean } {
     const tab = typeof params.streamId === 'string' ? this.byStream.get(params.streamId) : undefined;
     if (!tab || tab.gone || tab.owner === null || tab.owner !== clientId || tab.desktop.ownerId !== clientId) return { ok: false, known: false };
+    tab.lastPushAt = Date.now();
     switch (params.kind) {
       case 'ping':
         return { ok: true, known: true };
@@ -248,6 +255,7 @@ export class BrowserStreamRegistry {
         const body = frameBody(params);
         if (!body) return { ok: false, known: true };
         tab.latest = body;
+        tab.urlAfterLatest = null;
         tab.hidden = false;
         this.fanOut(tab, { kind: 'frame', body });
         return { ok: true, known: true };
@@ -260,7 +268,9 @@ export class BrowserStreamRegistry {
       }
       case 'url': {
         if (params.pageURL !== undefined && !streamPageURL(params.pageURL)) return { ok: false, known: true };
-        this.fanOut(tab, { kind: 'url', body: JSON.stringify(params.pageURL !== undefined ? { pageURL: params.pageURL } : {}) });
+        const body = JSON.stringify(params.pageURL !== undefined ? { pageURL: params.pageURL } : {});
+        tab.urlAfterLatest = body;
+        this.fanOut(tab, { kind: 'url', body });
         return { ok: true, known: true };
       }
       case 'end': {
@@ -334,6 +344,7 @@ export class BrowserStreamRegistry {
           return outcome;
         }
         tab.shared = outcome;
+        tab.lastPushAt = Date.now();
         // Everyone left while it started: stop what was just started.
         if (tab.subs.size === 0 || this.tabs.get(tab.key) !== tab) this.stopTab(tab);
         return outcome;
@@ -367,6 +378,8 @@ export class BrowserStreamRegistry {
     const shared = tab.shared;
     this.write(sub, sse('hello', JSON.stringify({ v: 1, surfaceId: tab.surfaceId, backend: shared.backend, maxWidth: shared.maxWidth, maxHeight: shared.maxHeight, quality: shared.quality, maxFps: sub.maxFps })));
     if (tab.latest) sub.queue.push({ kind: 'frame', body: tab.latest });
+    // A URL change with no repaint since: without it, the frame's URL is stale.
+    if (tab.urlAfterLatest) sub.queue.push({ kind: 'url', body: tab.urlAfterLatest });
     if (tab.hidden) sub.queue.push({ kind: 'state', body: JSON.stringify({ state: 'hidden', reason: 'browser-tab-hidden' }) });
     sub.tick = setInterval(() => this.onTick(sub), BROWSER_STREAM_KEEPALIVE_MS);
     sub.tick.unref?.();
@@ -385,6 +398,11 @@ export class BrowserStreamRegistry {
       this.log('browser stream closed: client stopped reading');
       sink.destroy();
       this.close(sub);
+      return;
+    }
+    // Main's end never came (lost, or main stalled): the screencast is gone.
+    if (sub.tab.shared && Date.now() - sub.tab.lastPushAt >= BROWSER_STREAM_SILENT_MS) {
+      this.endTab(sub.tab, 'browser-backend-unavailable');
       return;
     }
     let allowed = false;

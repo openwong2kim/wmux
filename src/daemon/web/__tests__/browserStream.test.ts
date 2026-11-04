@@ -103,6 +103,13 @@ describe('BrowserStreamRegistry', () => {
   }
   const streamId = () => desktop.requests.find((r) => r.command === 'browser.streamStart')!.payload.streamId as string;
   const frame = (extra: Record<string, unknown> = {}) => ({ streamId: streamId(), kind: 'frame', data: FRAME, capturedAt: 1, imageWidth: 100, imageHeight: 50, ...extra });
+  /** Time passing with main pinging every 15 s, as it does. */
+  async function pinging(ms: number): Promise<void> {
+    for (let left = ms; left > 0; left -= 15_000) {
+      await vi.advanceTimersByTimeAsync(Math.min(15_000, left));
+      registry.push('main', { streamId: streamId(), kind: 'ping' });
+    }
+  }
 
   it('parses the query: clamps numbers, refuses what is not one, takes only viewport=mobile', () => {
     expect(parseBrowserStreamQuery(new URLSearchParams(''))).toEqual({ maxWidth: 1280, maxHeight: 1280, quality: 60, maxFps: 10, mobile: false });
@@ -248,12 +255,12 @@ describe('BrowserStreamRegistry', () => {
 
   it('writes a keepalive every 15 s and closes a client that stopped reading', async () => {
     const { sink } = await subscribe();
-    await vi.advanceTimersByTimeAsync(15_000);
+    await pinging(15_000);
     expect(sink.events().at(-1)).toEqual({ event: ':' });
     sink.stalled = true;
-    await vi.advanceTimersByTimeAsync(15_000);
+    await pinging(15_000);
     expect(sink.destroyed).toBe(false);
-    await vi.advanceTimersByTimeAsync(15_000);
+    await pinging(15_000);
     expect(sink.destroyed).toBe(true);
     expect(desktop.commands()).toContain('browser.streamStop');
   });
@@ -270,7 +277,7 @@ describe('BrowserStreamRegistry', () => {
 
   it('ends a stream after 30 minutes with browser-stream-expired', async () => {
     const { sink } = await subscribe();
-    await vi.advanceTimersByTimeAsync(30 * 60_000 - 1);
+    await pinging(30 * 60_000 - 1);
     expect(sink.named('end')).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(sink.named('end')).toEqual([{ event: 'end', data: { error: 'browser-stream-expired' } }]);
@@ -327,6 +334,31 @@ describe('BrowserStreamRegistry', () => {
     expect(url('file:///etc/passwd')).toEqual({ ok: false, known: true });
     await vi.advanceTimersByTimeAsync(100);
     expect(sink.named('url').at(-1)?.data).toEqual({});
+  });
+
+  it('a late subscriber gets the latest frame, then a url event that came after it', async () => {
+    await subscribe(device('d1'));
+    registry.push('main', frame({ pageURL: 'https://a.example.com/' }));
+    registry.push('main', { streamId: streamId(), kind: 'url', pageURL: 'https://a.example.com/#s2' });
+    const late = await subscribe(device('d2'));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(late.sink.events().slice(1).map((e) => [e.event, e.data?.pageURL])).toEqual([
+      ['frame', 'https://a.example.com/'], ['url', 'https://a.example.com/#s2'],
+    ]);
+    // A frame after the url carries it: a later subscriber needs no url event.
+    registry.push('main', frame({ pageURL: 'https://a.example.com/#s2' }));
+    const later = await subscribe(OPERATOR);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(later.sink.named('url')).toEqual([]);
+  });
+
+  it('ends the tab with browser-backend-unavailable when main has pushed nothing for 45 s', async () => {
+    const { sink } = await subscribe();
+    await pinging(30_000);
+    expect(sink.named('end')).toEqual([]);
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(sink.named('end')).toEqual([{ event: 'end', data: { error: 'browser-backend-unavailable' } }]);
+    expect(registry.push('main', { streamId: streamId(), kind: 'ping' })).toEqual({ ok: false, known: false });
   });
 
   it('state events reach open streams and a late subscriber', async () => {
