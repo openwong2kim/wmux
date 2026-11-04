@@ -5138,6 +5138,8 @@ export function TabLabs() {
   const setCompactScrollback = useStore((s) => s.setTerminalCompactScrollback);
   const sharedWebgl = useStore((s) => s.terminalSharedWebgl);
   const setSharedWebgl = useStore((s) => s.setTerminalSharedWebgl);
+  const wongtty = useStore((s) => s.terminalWongtty);
+  const setWongtty = useStore((s) => s.setTerminalWongtty);
   const [labs, setLabs] = useState<LabsStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -5162,6 +5164,9 @@ export function TabLabs() {
       </SettingRow>
       <SettingRow id="labs-shared-webgl" label={t('settings.labsSharedWebgl')} description={t('settings.labsSharedWebglDesc')}>
         <Toggle checked={sharedWebgl} onChange={setSharedWebgl} label={t('settings.labsSharedWebgl')} />
+      </SettingRow>
+      <SettingRow id="labs-wongtty" label={t('settings.labsWongtty')} description={t('settings.labsWongttyDesc')}>
+        <Toggle checked={wongtty} onChange={setWongtty} label={t('settings.labsWongtty')} />
       </SettingRow>
       <SettingRow id="labs-ring-compression" label={t('settings.labsRingCompression')} description={t('settings.labsRingCompressionDesc')}>
         <Toggle

@@ -440,6 +440,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     paneNewTerminalButton: state.paneNewTerminalButton,
     terminalCompactScrollback: state.terminalCompactScrollback,
     terminalSharedWebgl: state.terminalSharedWebgl,
+    terminalWongtty: state.terminalWongtty,
     splitInheritsCwd: state.splitInheritsCwd,
     closeTabOnShellExit: state.closeTabOnShellExit,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,

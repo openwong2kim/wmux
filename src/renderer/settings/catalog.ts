@@ -168,6 +168,7 @@ export const SETTINGS_CATALOG: SettingsCatalogEntry[] = [
   { id: 'wsprwake', tab: 'notifications', labelKey: 'settings.prWake', descKey: 'settings.prWakeDesc', synonyms: 'pull request ci checks review comment conflict nudge agent' },
   { id: 'labs-compact-scrollback', tab: 'labs', labelKey: 'settings.labsCompactScrollback', descKey: 'settings.labsCompactScrollbackDesc', synonyms: 'labs experimental memory ram scrollback compress 실험 메모리 압축 스크롤백' },
   { id: 'labs-shared-webgl', tab: 'labs', labelKey: 'settings.labsSharedWebgl', descKey: 'settings.labsSharedWebglDesc', synonyms: 'labs experimental gpu webgl renderer atlas memory 실험 그래픽 메모리' },
+  { id: 'labs-wongtty', tab: 'labs', labelKey: 'settings.labsWongtty', descKey: 'settings.labsWongttyDesc', synonyms: 'labs experimental wongtty rust wasm webassembly xterm front end renderer memory 실험 러스트 메모리' },
   { id: 'labs-ring-compression', tab: 'labs', labelKey: 'settings.labsRingCompression', descKey: 'settings.labsRingCompressionDesc', synonyms: 'labs experimental daemon buffer compress memory 실험 데몬 버퍼 압축 메모리' },
 
   { id: 'quicklaunch', tab: 'shortcuts', labelKey: 'settings.quickLaunch', descKey: 'settings.quickLaunchDesc', synonyms: 'quick launch global shortcut hotkey composer spotlight launcher prompt 빠른 실행 전역 단축키' },

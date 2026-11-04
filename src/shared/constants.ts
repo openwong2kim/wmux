@@ -371,6 +371,7 @@ export const IPC = {
   TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
   LABS_SETTINGS_GET: 'settings:labs:get',
   LABS_SETTINGS_SET: 'settings:labs:set',
+  LABS_WONGTTY_WASM: 'settings:labs:wongtty-wasm',
   // #1103 — the renderer's default-WSL-distro choice, pushed to main so
   // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
   // choke point without threading it through every create call.

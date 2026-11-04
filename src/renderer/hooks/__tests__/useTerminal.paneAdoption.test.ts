@@ -33,13 +33,14 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
 
   it('asks for a parked terminal before it constructs one', () => {
     const adoptAt = mainEffect.indexOf('adoptTerminal(ptyId)');
-    const constructAt = mainEffect.indexOf('new Terminal({');
+    const constructAt = mainEffect.indexOf('new TerminalClass({');
     expect(adoptAt).toBeGreaterThan(-1);
     expect(constructAt).toBeGreaterThan(-1);
     // A construct-then-discard order would create a second xterm per split —
     // the cost the adoption is meant to remove.
     expect(adoptAt).toBeLessThan(constructAt);
-    expect(mainEffect).toMatch(/const terminal = adopted \? adopted\.terminal : new Terminal\(\{/);
+    expect(mainEffect).toMatch(/const wongtty = adopted \? null : wongttyForNewTerminal\(\);/);
+    expect(mainEffect).toMatch(/const terminal = adopted \? adopted\.terminal : new TerminalClass\(\{/);
   });
 
   it('adopts by moving the element, never by re-opening the terminal', () => {

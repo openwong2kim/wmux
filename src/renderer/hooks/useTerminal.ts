@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { preloadSharedWebgl, sharedWebglAddonClassFor } from '../terminal/sharedWebgl/load';
+import { isWongttyTerminal, loadedWongtty, preloadWongtty } from '../terminal/wongtty/load';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
@@ -686,6 +687,22 @@ webglContextPool.setUnbudgeted(() => sharedWebglAddonClass() !== null);
 if (useStore.getState().terminalSharedWebgl === true) void preloadSharedWebgl();
 useStore.subscribe((state, prev) => {
   if (state.terminalSharedWebgl === true && prev.terminalSharedWebgl !== true) void preloadSharedWebgl();
+});
+
+// EXPERIMENTAL (uiSlice.terminalWongtty, default off): new terminals are built by
+// the wongtty front end (wongtty/xterm) instead of xterm.js. Loaded like the shared
+// WebGL renderer above: a terminal built before wongtty has loaded is an xterm.js
+// one and stays one. wongtty draws with its own WebGL renderer (one context per
+// page), so its panes skip the WebGL addon and the context pool.
+function wongttyForNewTerminal() {
+  if (useStore.getState().terminalWongtty !== true) return null;
+  const wongtty = loadedWongtty();
+  if (!wongtty) console.warn('[wmux:wongtty] not loaded yet; this terminal uses xterm.js');
+  return wongtty;
+}
+if (useStore.getState().terminalWongtty === true) void preloadWongtty();
+useStore.subscribe((state, prev) => {
+  if (state.terminalWongtty === true && prev.terminalWongtty !== true) void preloadWongtty();
 });
 
 // A hidden terminal KEEPS its WebGL context. It gives the context back only
@@ -1391,7 +1408,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     adoptedAtMountRef.current = adopted !== null;
     console.log(`[wmux:pane-adopt] ptyId=${ptyId} mount=${adopted ? 'adopted' : 'fresh'}`);
 
-    const terminal = adopted ? adopted.terminal : new Terminal({
+    const wongtty = adopted ? null : wongttyForNewTerminal();
+    const TerminalClass = (wongtty?.Terminal ?? Terminal) as typeof Terminal;
+    const terminal = adopted ? adopted.terminal : new TerminalClass({
       // A fixed grid is applied at construction, before the first byte of the
       // pane's screen is parsed — a TUI frame parsed at 80x24 and reflowed
       // later is not repaired by any resize.
@@ -1462,6 +1481,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         })()
         : {}),
     });
+    const wongttyModule = isWongttyTerminal(terminal) ? loadedWongtty() : null;
 
     // #1014: xterm keeps parsing while the pane is parked and adopted into a
     // new React mount. Share the mute with the terminal instance so an
@@ -1492,10 +1512,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       ...(hasProcessTruth ? { isForegroundGone: paneForegroundProbe(ptyId, window.electronAPI.pty) } : {}),
     });
 
-    const fitAddon = fixedGeometryRef.current
+    // wongtty takes only its own fit and search addons. Its FitAddon has no fixed
+    // geometry: such a pane fits its container (trial gap).
+    const fitAddon = wongttyModule
+      ? (new wongttyModule.FitAddon() as unknown as FitAddon)
+      : fixedGeometryRef.current
       ? new FixedGeometryFitAddon(() => fixedGeometryRef.current)
       : new FitAddon();
-    const searchAddon = new SearchAddon();
+    const searchAddon = wongttyModule ? (new wongttyModule.SearchAddon() as unknown as SearchAddon) : new SearchAddon();
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts, and
     // Ctrl/Cmd+Shift+click opens a new browser tab (#2140). The ptyId
@@ -1516,7 +1540,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     };
     // Rebind adopted terminals too, so the callback uses the current pane ref.
     terminal.options.linkHandler = createOsc8LinkHandler(activateTerminalUrl);
-    const webLinksAddon = new WebLinksAddon(activateTerminalUrl);
+    // wongtty takes only its built-in WebLinksAddon (the same addon, ported).
+    const webLinksAddon = wongttyModule ? (new wongttyModule.WebLinksAddon(activateTerminalUrl) as unknown as WebLinksAddon) : new WebLinksAddon(activateTerminalUrl);
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     // Main-side validation in shell.handler.openPath is the security
@@ -1926,7 +1951,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         webglAddonRef.current = null;
       }
     }
-    loadWebglRef.current = loadWebgl;
+    loadWebglRef.current = wongttyModule ? null : loadWebgl;
     // Controlled teardown the pool calls when this terminal is evicted to stay
     // under Chromium's context cap. Disposing the addon reverts xterm to its
     // DOM renderer (always available), so the terminal keeps rendering — it
@@ -1941,7 +1966,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // terminal may already be disposed
       }
     }
-    disposeWebglRef.current = disposeWebgl;
+    disposeWebglRef.current = wongttyModule ? null : disposeWebgl;
 
     // Issue #166 — defensive full-range repaint for the "garbled glyphs until
     // resize" corruption (dirty-region desync). Strategy and trigger rationale

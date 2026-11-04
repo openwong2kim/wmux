@@ -206,6 +206,8 @@ export const ko = {
   'settings.labsCompactScrollbackDesc': "화면에서 멀리 올라간 스크롤백 줄을 압축해 메모리를 약 3분의 1로 줄입니다. 스크롤백 전체 검색은 느려집니다. 바꾼 뒤 새로 여는 터미널부터 적용됩니다.",
   'settings.labsSharedWebgl': "공유 WebGL 렌더러",
   'settings.labsSharedWebglDesc': "모든 패널이 WebGL 컨텍스트 하나와 글자 아틀라스 하나를 함께 씁니다. 패널이 많고 글자 종류가 많을 때 GPU 메모리를 줄입니다. 바꾼 뒤 새로 여는 패널부터 적용됩니다.",
+  'settings.labsWongtty': "Rust 터미널 프런트엔드 (wongtty)",
+  'settings.labsWongttyDesc': "xterm.js 대신 Rust로 작성해 WebAssembly로 컴파일한 터미널 wongtty로 터미널을 그립니다. 시험용입니다. 바꾼 뒤 새로 여는 터미널부터 적용됩니다.",
   'settings.labsRingCompression': "세션 출력 압축",
   'settings.labsRingCompressionDesc': "터미널 서비스가 세션마다 들고 있는 최근 출력을 압축해 메모리를 약 9분의 1로 줄입니다. 터미널 서비스를 재시작하면 적용됩니다.",
   'settings.labsError': "이 설정을 읽거나 저장하지 못했습니다.",

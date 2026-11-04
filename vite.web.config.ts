@@ -64,6 +64,8 @@ export const WEB_STUBS: Record<string, string> = {
   // Dictation needs main's model store; the browser shows no mic, so its
   // speech engine (onnxruntime-web and its .wasm) stays out of the bundle.
   [r('src/renderer/dictation/whisper.worker.ts')]: NULL_STUB,
+  // The experimental wongtty front end gets its WebAssembly from main.
+  [r('src/renderer/terminal/wongtty/load.ts')]: r('src/renderer/web/stubs/wongttyLoad.ts'),
 };
 
 export function webStubs(): Plugin {

@@ -206,6 +206,8 @@ export const pl = {
   'settings.labsCompactScrollbackDesc': "Pakuje wiersze historii daleko nad ekranem, zajmując około jednej trzeciej pamięci. Przeszukiwanie całej historii jest wolniejsze. Dotyczy terminali otwartych po zmianie.",
   'settings.labsSharedWebgl': "Wspólny renderer WebGL",
   'settings.labsSharedWebglDesc': "Wszystkie panele rysują przez jeden kontekst WebGL i jeden atlas glifów. Oszczędza pamięć GPU, gdy wiele paneli pokazuje wiele różnych glifów. Dotyczy paneli otwartych po zmianie.",
+  'settings.labsWongtty': "Front-end terminala w Rust (wongtty)",
+  'settings.labsWongttyDesc': "Rysuje terminale za pomocą wongtty, terminala napisanego w Rust i skompilowanego do WebAssembly, zamiast xterm.js. Tylko do testów. Dotyczy terminali otwartych po zmianie.",
   'settings.labsRingCompression': "Kompresja wyjścia sesji",
   'settings.labsRingCompressionDesc': "Usługa terminala przechowuje ostatnie wyjście każdej sesji skompresowane, w około jednej dziewiątej pamięci. Działa po ponownym uruchomieniu usługi terminala.",
   'settings.labsError': "Nie udało się odczytać ani zapisać tego ustawienia.",

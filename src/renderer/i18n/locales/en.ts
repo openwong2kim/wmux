@@ -206,6 +206,8 @@ export const en = {
   'settings.labsCompactScrollbackDesc': "Keeps scrollback rows well above the screen packed, at about a third of the memory. Searching the whole scrollback gets slower. Applies to terminals opened after the change.",
   'settings.labsSharedWebgl': "Shared WebGL renderer",
   'settings.labsSharedWebglDesc': "Every pane draws through one WebGL context and one glyph atlas. Saves GPU memory when many panes show many different glyphs. Applies to panes opened after the change.",
+  'settings.labsWongtty': "Rust terminal front end (wongtty)",
+  'settings.labsWongttyDesc': "Draws terminals with wongtty, a terminal written in Rust and compiled to WebAssembly, instead of xterm.js. A test build only. Applies to terminals opened after the change.",
   'settings.labsRingCompression': "Compress session output",
   'settings.labsRingCompressionDesc': "The terminal service keeps each session's recent output compressed, at about a ninth of the memory. Applies after the terminal service restarts.",
   'settings.labsError': "Could not read or save this setting.",

@@ -476,6 +476,10 @@ export interface UISlice {
    *  context instead of one context per pane. No Settings row yet. */
   terminalSharedWebgl: boolean;
   setTerminalSharedWebgl: (enabled: boolean) => void;
+  /** EXPERIMENTAL, default OFF: build terminals with the wongtty front end
+   *  (wongtty/xterm, Rust/WebAssembly) instead of xterm.js. */
+  terminalWongtty: boolean;
+  setTerminalWongtty: (enabled: boolean) => void;
 
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
@@ -1648,6 +1652,11 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   terminalSharedWebgl: false,
   setTerminalSharedWebgl: (enabled) => set((state) => {
     state.terminalSharedWebgl = enabled;
+  }),
+
+  terminalWongtty: false,
+  setTerminalWongtty: (enabled) => set((state) => {
+    state.terminalWongtty = enabled;
   }),
 
   splitInheritsCwd: true,

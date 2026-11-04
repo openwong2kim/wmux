@@ -1,4 +1,6 @@
-import { ipcMain } from 'electron';
+import { app, ipcMain } from 'electron';
+import { readFile } from 'fs/promises';
+import * as path from 'path';
 import { IPC } from '../../../shared/constants';
 import {
   readLabsSettings, ringCompressionInConfig, writeLabsSettings, type LabsSettings, type LabsStatus,
@@ -43,6 +45,19 @@ export function registerLabsHandlers(daemonClient?: DaemonClient): () => void {
   };
   ipcMain.removeHandler(IPC.LABS_SETTINGS_GET);
   ipcMain.removeHandler(IPC.LABS_SETTINGS_SET);
+  ipcMain.removeHandler(IPC.LABS_WONGTTY_WASM);
+  // The experimental wongtty front end (uiSlice.terminalWongtty): the renderer
+  // cannot fetch file:// URLs, so it gets both WebAssembly modules as bytes:
+  // extra resources of a packaged app (forge.config.ts), node_modules in
+  // development and e2e builds. Only asked for once the switch is on.
+  ipcMain.handle(IPC.LABS_WONGTTY_WASM, wrapHandler(IPC.LABS_WONGTTY_WASM, async () => {
+    const dist = app.isPackaged ? process.resourcesPath : path.join(app.getAppPath(), 'node_modules', 'wongtty', 'dist');
+    const [engine, frontEnd] = await Promise.all([
+      readFile(path.join(dist, 'wongtty.wasm')),
+      readFile(path.join(dist, 'xterm_web_bg.wasm')),
+    ]);
+    return { engine, frontEnd };
+  }));
   ipcMain.handle(IPC.LABS_SETTINGS_GET, wrapHandler(IPC.LABS_SETTINGS_GET, status));
   ipcMain.handle(IPC.LABS_SETTINGS_SET, wrapHandler(IPC.LABS_SETTINGS_SET, async (_event, settings: LabsSettings) => {
     writeLabsSettings(settings);
@@ -51,5 +66,6 @@ export function registerLabsHandlers(daemonClient?: DaemonClient): () => void {
   return () => {
     ipcMain.removeHandler(IPC.LABS_SETTINGS_GET);
     ipcMain.removeHandler(IPC.LABS_SETTINGS_SET);
+    ipcMain.removeHandler(IPC.LABS_WONGTTY_WASM);
   };
 }
