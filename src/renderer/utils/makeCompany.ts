@@ -51,7 +51,8 @@ export async function makeCompany(input: MakeCompanyInput, isOpen: () => boolean
     ceo: input.ceo,
     seats: input.seats.map((s, i) => {
       const cwd = res.cwds[i];
-      return { label: res.labels[i], owns: s.owns, command: res.commands[i] ?? null, ...(cwd ? { cwd } : {}) };
+      const env = res.envs?.[i];
+      return { label: res.labels[i], owns: s.owns, command: res.commands[i] ?? null, ...(cwd ? { cwd } : {}), ...(env ? { env } : {}) };
     }),
   });
   if (!ok) return { ok: false, error: 'invalid' };

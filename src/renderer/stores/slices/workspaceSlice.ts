@@ -577,6 +577,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
             label: seat.label,
             ...(seat.command ? { command: seat.command } : {}),
             ...(cwd ? { cwd } : {}),
+            ...(seat.command && seat.env ? { env: seat.env } : {}),
             ...(owns ? { role: owns } : {}),
           };
         });

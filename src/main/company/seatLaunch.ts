@@ -57,8 +57,10 @@ export interface SeatLaunchRequest {
 }
 
 export type SeatLaunchResult =
-  /** `cwds[i]`: seat i's own worktree, or null to start in the company folder. */
-  | { ok: true; labels: string[]; commands: (string | null)[]; cwds: (string | null)[] }
+  /** `cwds[i]`: seat i's own worktree, or null to start in the company folder.
+   *  `envs[i]`: what seat i's pane starts with so its agent skips the first-run
+   *  screens, as a hired seat's (null: none, a plain shell, or it is off). */
+  | { ok: true; labels: string[]; commands: (string | null)[]; cwds: (string | null)[]; envs: (Record<string, string> | null)[] }
   | { ok: false; error: string };
 
 /** One seat added to a company that already runs ("Add a seat on this PC…"). */
@@ -236,7 +238,14 @@ export async function seatLaunches(req: unknown, deps: SeatLaunchDeps = {}): Pro
       }), 'utf8');
       return buildInitialCommand(launcher, file, deps.platform);
     });
-    return { ok: true, labels, commands, cwds: made.map((s) => s.worktree?.path ?? null) };
+    // As a hired seat's: the agent was asked for here, so it does not stop on
+    // the first-run screens (the folder-trust one) in a folder wmux just made.
+    const envs = seats.map((seat) => {
+      const row = seat.agent ? agentRow(seat.agent) : undefined;
+      const env = row ? firstRunEnvForAgent(agentLauncherStem(row), deps.env) : {};
+      return Object.keys(env).length > 0 ? env : null;
+    });
+    return { ok: true, labels, commands, cwds: made.map((s) => s.worktree?.path ?? null), envs };
   } catch (err) {
     return await fail(`could not make the seats: ${err instanceof Error ? err.message : String(err)}`);
   }
