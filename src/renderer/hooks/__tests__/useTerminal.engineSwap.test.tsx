@@ -26,18 +26,30 @@ vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class { constructor() { throw new Error('no WebGL in jsdom'); } },
 }));
 
-const fake = vi.hoisted(() => ({ openThrows: false }));
+// snapshot: what FakeWongtty's ansiSnapshot does: refuse everything (the
+// default), serialize, or refuse unless the modes are left out (scroll margins).
+const fake = vi.hoisted(() => ({ openThrows: false, snapshot: 'refuse' as 'refuse' | 'ok' | 'margins' }));
 vi.mock('../../terminal/wongtty/load', async () => {
   const xterm = await vi.importActual<typeof import('@xterm/xterm')>('@xterm/xterm');
   const { FitAddon: Fit } = await vi.importActual<typeof import('@xterm/addon-fit')>('@xterm/addon-fit');
   const { SearchAddon } = await vi.importActual<typeof import('@xterm/addon-search')>('@xterm/addon-search');
   const { WebLinksAddon } = await vi.importActual<typeof import('@xterm/addon-web-links')>('@xterm/addon-web-links');
+  const { SerializeAddon } = await vi.importActual<typeof import('@xterm/addon-serialize')>('@xterm/addon-serialize');
   class FakeWongtty extends xterm.Terminal {
     open(parent: HTMLElement) {
       if (fake.openThrows) throw new Error('no WebGL2 context');
       super.open(parent);
     }
-    ansiSnapshot() { return { ok: false as const, reason: 'test' }; }
+    ansiSnapshot(options: { scrollback: number; excludeModes: boolean }) {
+      if (fake.snapshot === 'refuse' || (fake.snapshot === 'margins' && !options.excludeModes)) {
+        return { ok: false as const, reason: fake.snapshot === 'margins' ? 'margins' : 'test' };
+      }
+      const addon = new SerializeAddon();
+      this.loadAddon(addon);
+      const text = addon.serialize({ scrollback: options.scrollback });
+      addon.dispose();
+      return { ok: true as const, payload: new TextEncoder().encode(text) };
+    }
   }
   class ImageAddon { activate() { /* inert */ } dispose() { /* inert */ } }
   const mod = { Terminal: FakeWongtty, FitAddon: Fit, SearchAddon, WebLinksAddon, ImageAddon };
@@ -107,6 +119,7 @@ beforeEach(() => {
   vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockReturnValue({ cols: 40, rows: 6 });
   useStore.setState({ terminalEngine: 'xterm', terminalEngineFailure: null, terminalWongtty: false, terminalBookmarks: {} });
   fake.openThrows = false;
+  fake.snapshot = 'refuse';
 });
 
 afterEach(() => {
@@ -260,6 +273,113 @@ describe('useTerminal engine swap (Labs wongtty switch)', { timeout: 60_000 }, (
     await settle();
     expect(resync).not.toHaveBeenCalled();
     for (const text of ['L0', 'L9', 'BEFORE', 'DURING', 'AFTER']) expect(count(now, text)).toBe(1);
+  });
+
+  it('a local pane switched back to xterm.js keeps its content when wongtty refuses a full snapshot', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setDaemonModeActive(false);
+    for (const mode of ['margins', 'refuse'] as const) {
+      useStore.setState({ terminalEngine: 'wongtty' });
+      fake.snapshot = mode;
+      const ptyId = `p-local-off-${mode}`;
+      await render(ptyId, true, { remount: true });
+      await act(async () => { emitData!(ptyId, `${history(10)}\r\nBEFORE\r\n`, false); });
+      await settle();
+      await setEngine('xterm');
+      await settle(); // the capture waits on a parse barrier before the swap
+      const now = termRef!.current!;
+      expect(now).not.toBeInstanceOf(await fakeWongttyClass());
+      for (const text of ['L0', 'L9', 'BEFORE']) expect(count(now, text)).toBe(1);
+    }
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('a local pane flipped off and on again while its capture waits loses no byte', async () => {
+    setDaemonModeActive(false);
+    await render('p-local-flip');
+    await act(async () => { emitData!('p-local-flip', `${history(10)}\r\nBEFORE\r\n`, false); });
+    await settle();
+    await act(async () => { useStore.setState({ terminalEngine: 'wongtty' }); });
+    await act(async () => {
+      emitData!('p-local-flip', 'D1\r\n', false);
+      useStore.setState({ terminalEngine: 'xterm' });
+    });
+    await act(async () => {
+      useStore.setState({ terminalEngine: 'wongtty' });
+      emitData!('p-local-flip', 'D2\r\n', false);
+    });
+    await settle();
+    await settle();
+    const now = termRef!.current!;
+    expect(now).toBeInstanceOf(await fakeWongttyClass());
+    await act(async () => { emitData!('p-local-flip', 'AFTER\r\n', false); });
+    await settle();
+    for (const text of ['L0', 'BEFORE', 'D1', 'D2', 'AFTER']) expect(count(now, text)).toBe(1);
+  });
+
+  it('a daemon pane whose swap repaint fails keeps the old terminal\'s content and stays dirty', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setDaemonModeActive(true);
+    await render('p-gone');
+    await act(async () => { emitData!('p-gone', `${history(30)}\r\nLAST\r\n`, false); });
+    await settle();
+    resync.mockResolvedValueOnce({ success: false, code: 'session-gone', transient: false } as never);
+    await setEngine('wongtty');
+    const now = termRef!.current!;
+    for (const text of ['L0', 'L29', 'LAST']) expect(count(now, text)).toBe(1);
+    const { isTerminalDirty } = await import('../../terminal/terminalOutputScheduler');
+    expect(isTerminalDirty(now)).toBe(true);
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('a hidden pane switched on and off again before it is shown keeps its bookmarks and scroll offset', async () => {
+    setDaemonModeActive(true);
+    await render('p-twice');
+    const old = termRef!.current!;
+    await act(async () => { emitData!('p-twice', history(30), false); });
+    await settle();
+    old.scrollToLine(old.buffer.active.baseY - 5);
+    expect(addAt(old, 'p-twice', useStore)).toBe('added');
+    const markedRow = old.buffer.active.getLine(old.buffer.active.viewportY)!.translateToString(true);
+    await render('p-twice', false);
+    await setEngine('wongtty');
+    await setEngine('xterm');
+    expect(resync).not.toHaveBeenCalled();
+    await render('p-twice', true);
+    expect(resync).toHaveBeenCalledTimes(1);
+    const now = termRef!.current!;
+    await act(async () => {
+      emitData!('p-twice', `\x1bc${history(30)}`, true);
+      emitFlush!('p-twice', 200);
+    });
+    await settle();
+    expect(now.buffer.active.baseY - now.buffer.active.viewportY).toBe(5);
+    const ids = useStore.getState().terminalBookmarks['p-twice'] ?? [];
+    expect(ids).toHaveLength(1);
+    const marker = now.markers.find((m) => m.id === ids[0]);
+    expect(marker && now.buffer.active.getLine(marker.line)?.translateToString(true)).toBe(markedRow);
+  });
+
+  it('a raw replay that pushes the program\'s kitty flags leaves them pushed once', async () => {
+    setDaemonModeActive(true);
+    await render('p-raw');
+    const old = termRef!.current!;
+    await act(async () => { emitData!('p-raw', 'x\x1b[>5u', false); });
+    await settle();
+    expect(xtermKittyFlags(old)).toBe(5);
+    resync.mockResolvedValueOnce({ success: true, mode: 'raw' } as never);
+    await setEngine('wongtty');
+    const now = termRef!.current!;
+    await act(async () => {
+      emitData!('p-raw', '\x1bcx\x1b[>5u', true);
+      emitFlush!('p-raw', 20);
+    });
+    await settle();
+    expect(xtermKittyFlags(now)).toBe(5);
+    // The program's one pop on exit leaves no flags behind.
+    await act(async () => { emitData!('p-raw', '\x1b[<u', false); });
+    await settle();
+    expect(xtermKittyFlags(now)).toBe(0);
   });
 
   it('a parked terminal of the other engine is disposed, not adopted (R6)', async () => {

@@ -51,7 +51,7 @@ import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
 import { isWslShell } from '../../shared/imagePaste';
 import { encodeEscape, isBareEscape } from '../terminal/escapeKeys';
 import { resolveCtrlAltLetterBytes, resolveCtrlLetterByte } from '../terminal/ctrlLetterKeys';
-import { UnpairedReleaseFilter, imeKeyLeaksUnderKitty, installKittyPromptReset, kittyCtrlLetter, kittyKeyboardForHost, resetXtermKitty, xtermEncodesKey, xtermKittyFlags, type KittyHost } from '../terminal/kittyKeyboard';
+import { KITTY_FLAGS_RESET, UnpairedReleaseFilter, imeKeyLeaksUnderKitty, installKittyPromptReset, kittyCtrlLetter, kittyKeyboardForHost, resetXtermKitty, xtermEncodesKey, xtermKittyFlags, type KittyHost } from '../terminal/kittyKeyboard';
 import { isComposeChord, composeOwnerHost, TERMINAL_PTY_ATTR, COMPOSE_OWNER_ATTR } from '../terminal/composeChord';
 import { foldRemoteKeyboardState, INITIAL_REMOTE_KEYBOARD_STATE, type RemoteKeyboardState } from '../components/Remote/keyboardProtocol';
 import { attachImeAnchor } from '../terminal/imeAnchor';
@@ -717,6 +717,13 @@ function kittySetFlags(flags: number): string {
   return `\x1b[>${flags}u`;
 }
 
+/** The kitty flags put back after a repaint: the stack popped empty first, so
+ *  a raw replay that already pushed the program's own flags does not end up
+ *  with them twice (the program's one pop on exit would leave them set). */
+function kittyRestoreFlags(flags: number): string {
+  return KITTY_FLAGS_RESET + kittySetFlags(flags);
+}
+
 /** What a pane hands from its old terminal to the one an engine swap builds.
  *  Saved by the old terminal's cleanup, read by the new mount. */
 interface SwapCarry {
@@ -735,6 +742,10 @@ interface SwapCarry {
   /** Local mode only (no daemon to replay from): the old terminal serialized,
    *  and the live output that arrived after it (usePaneEngine's capture). */
   transplant: Transplant | null;
+  /** Daemon mode: the old terminal serialized, painted only if the swap's
+   *  repaint from the daemon fails (a session gone, a dead one the daemon
+   *  cannot serialize), so the pane never ends up empty. */
+  fallback: string | null;
 }
 
 interface Transplant {
@@ -750,6 +761,7 @@ interface SwapFinish {
   fromBottom: number;
   kittyFlags: number;
   restoreBookmarks: ((target: Terminal) => void) | null;
+  fallback: string | null;
 }
 
 // R17 settle signal: the panes whose terminal is not on the active engine yet,
@@ -1203,9 +1215,32 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const term = terminalRef.current;
     if (term) {
       try {
+        // The first repaint of an engine swap's new terminal failed: it gets
+        // the old terminal's own content (serialized at the swap) instead of
+        // staying empty, and the held bytes go after it. Without one, what
+        // the swap owes waits for a later repaint that works.
+        const swapFinish = swapFinishRef.current?.fallback ? takeSwapFinish(term) : null;
+        const fallback = swapFinish?.fallback ?? null;
+        if (swapFinish && fallback) {
+          // In band: a cold frame still queued in the terminal goes with the reset.
+          term.write(REPAINT_BEGIN, () => { shellPromptModeResetFor(term)?.reset(); });
+          writeReplayed(term, fallback, replayMuteRef.current);
+          if (swapFinish.kittyFlags > 0) term.write(kittyRestoreFlags(swapFinish.kittyFlags));
+          term.write(REPAINT_END);
+          console.warn(`[wmux:engine-swap] ptyId=${ptyIdRef.current} repaint failed (${why}); painted the old terminal's content`);
+        }
         for (const chunk of st.buffer) {
           writePtyDataImmediately(term, chunk, replayMuteRef.current);
           noteTerminalDirectWrite(term, chunk.data);
+        }
+        if (swapFinish && fallback) {
+          const { restoreBookmarks, fromBottom } = swapFinish;
+          term.write('', () => {
+            try {
+              restoreBookmarks?.(term);
+              if (fromBottom > 0) term.scrollToLine(Math.max(0, term.buffer.active.baseY - fromBottom));
+            } catch { /* disposed mid-restore — teardown owns cleanup */ }
+          });
         }
       } catch { /* disposed mid-abort — teardown owns cleanup */ }
     }
@@ -1459,6 +1494,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // Set while a local-mode swap is under way: the mounted terminal's live pty
   // data goes here (the transplant's tail) instead of into the terminal.
   const divertLiveRef = useRef<PtyDataPayload[] | null>(null);
+  // Settles when the mounted terminal's `.txt` scrollback restore has been
+  // written (or failed), with the output held behind it routed: a local-mode
+  // swap serializes the terminal only after that.
+  const restoreSettledRef = useRef<Promise<void>>(Promise.resolve());
   // The engine the mounted terminal was built by, and whether its swap
   // repaint is still in flight: together, whether this pane is settled (R17).
   const instanceEngineRef = useRef<TerminalEngine | null>(null);
@@ -1523,6 +1562,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       apply: () => {
         const term = terminalRef.current;
         const id = ptyIdRef.current;
+        // A local capture is already under way (the switch flipped back and
+        // forth while it waited): it moves this pane to the other engine
+        // itself, and a second one would take the live output it is holding.
+        if (divertLiveRef.current) return;
         // A daemon session is replayed into the new terminal (pty.resync);
         // only a local one has to be carried over from the old terminal.
         if (!term || !id || isDaemonModeActive() || transplantRef.current) {
@@ -1534,11 +1577,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // has parsed; what arrives meanwhile is kept for the new terminal (the
         // tail), so every byte lands there exactly once. Once started the swap completes, even
         // if the switch flips back meanwhile (that is another swap).
+        // A `.txt` restore still loading lands in the old terminal first; the
+        // output held behind it goes to the tail.
         const tail: PtyDataPayload[] = [];
         divertLiveRef.current = tail;
-        try { flushTerminalOutput(term); } catch { /* disposed: serialize below fails soft */ }
-        void awaitParseBarrier(term).then(() => {
-          if (!mountedRef.current) return;
+        void restoreSettledRef.current.then(() => {
+          if (terminalRef.current !== term) return false;
+          try { flushTerminalOutput(term); } catch { /* disposed: serialize below fails soft */ }
+          return awaitParseBarrier(term);
+        }).then(() => {
+          // A remount took this pane meanwhile: its new terminal owns the pipe.
+          if (!mountedRef.current || terminalRef.current !== term) return;
           const snapshot = serializeForTransplant(term, useStore.getState().scrollbackLines) ?? '';
           transplantRef.current = { ptyId: id, snapshot, tail };
           setPaneEngine(target);
@@ -1607,13 +1656,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     // wongtty failed to build or open this pane: every pane goes back to
     // xterm.js (the controller), and the xterm.js mount that follows takes
-    // this one's carry, or a bare one so it still repaints the session.
+    // this one's carry. Without one (a first mount), a daemon pane takes a
+    // bare carry so it still repaints the session (its reattach ran against
+    // no terminal); a local one mounts fresh, `.txt` restore included.
     const failWongttyMount = (err: unknown) => {
       console.warn(`[wmux:engine-swap] ptyId=${ptyId} wongtty could not build this pane; every pane uses xterm.js`, err);
-      swapCarryRef.current = carry ?? {
+      swapCarryRef.current = carry ?? (isDaemonModeActive() ? {
         ptyId, from: 'wongtty', to: 'xterm', at: performance.now(), cols: 0, rows: 0, fromBottom: 0, focused: false,
-        keyboard: INITIAL_REMOTE_KEYBOARD_STATE, kittyFlags: 0, bufferType: 'normal', restoreBookmarks: null, transplant: null,
-      };
+        keyboard: INITIAL_REMOTE_KEYBOARD_STATE, kittyFlags: 0, bufferType: 'normal', restoreBookmarks: null, transplant: null, fallback: null,
+      } : null);
       failEngine(err);
     };
     const wongtty = adopted || paneEngine !== 'wongtty' ? null : loadedWongtty();
@@ -3259,6 +3310,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // mount skips the restore entirely — a pane with no history that the
     // autosave then writes back over the file it lost.
     let restoreSettled = !(scrollbackFile && !adopted && !carry);
+    let settleRestore: () => void = () => undefined;
+    restoreSettledRef.current = restoreSettled ? Promise.resolve() : new Promise<void>((resolve) => { settleRestore = resolve; });
     let didRestoreTxt = false;
     let removeDaemonConnectedForRestore: (() => void) | null = null;
     // Flush-marker reset gating (see docs/internal/scrollback-restore-design.md).
@@ -3373,10 +3426,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (kittyFlags > 0) held.complete.forEach((chunk, i) => { if (chunk.replay) kittyAfter = i; });
       held.complete.forEach((chunk, i) => {
         writePtyDataImmediately(terminal, chunk, replayMuteRef.current);
-        if (i === kittyAfter) terminal.write(kittySetFlags(kittyFlags));
+        if (i === kittyAfter) terminal.write(kittyRestoreFlags(kittyFlags));
       });
       terminal.write(REPAINT_END);
-      if (kittyFlags > 0 && kittyAfter < 0) terminal.write(kittySetFlags(kittyFlags));
+      if (kittyFlags > 0 && kittyAfter < 0) terminal.write(kittyRestoreFlags(kittyFlags));
       if (held.pending) writePtyDataImmediately(terminal, held.pending, replayMuteRef.current);
       // The scheduler's query splitter was discarded above; give it the
       // unfinished tail xterm now holds, so the live bytes that finish it are
@@ -3784,6 +3837,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // the 5s autosave tick dump an empty/partial buffer over the
         // previous scrollback file on disk.
         registerTerminal(ptyId, terminal);
+        settleRestore();
       }).catch((err) => {
         // Instrumentation: surface the real failure reason. Previously this
         // catch silently swallowed errors, including "No handler registered
@@ -3811,6 +3865,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
         registerTerminal(ptyId, terminal);
+        settleRestore();
       });
     } else {
       // Local-mode engine swap (R12): the old terminal's serialized screen,
@@ -3922,11 +3977,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // In effect at once for the keys typed during the repaint; the
         // repaint's RIS clears them and swapFinish writes them again.
         if (swap.kittyFlags > 0) terminal.write(kittySetFlags(swap.kittyFlags));
-        swapFinishRef.current = { terminal, fromBottom: swap.fromBottom, kittyFlags: swap.kittyFlags, restoreBookmarks: swap.restoreBookmarks };
+        swapFinishRef.current = { terminal, fromBottom: swap.fromBottom, kittyFlags: swap.kittyFlags, restoreBookmarks: swap.restoreBookmarks, fallback: swap.fallback };
+        // A recent degrade must not leave the new terminal without a repaint.
+        resyncRef.current.degradedUntil = 0;
         if (isVisibleRef.current) {
           swapRepaintPendingRef.current = true;
-          // A recent degrade must not leave the new terminal without a repaint.
-          resyncRef.current.degradedUntil = 0;
+          // Dirty until the repaint lands: one that fails leaves the pane for
+          // the next reveal or agent read to repaint, as a reveal's does.
+          markTerminalDirty(terminal);
           void startResync('engine-swap').then(() => {
             if (terminalRef.current !== terminal) return;
             swapRepaintPendingRef.current = false;
@@ -4084,6 +4142,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // inferring it from what the screen did.
       console.log(`[wmux:pane-adopt] ptyId=${ptyId} teardown=${canPark ? 'parked' : `disposed reason=${parkRefusal}`}`);
       if (swap) {
+        // This terminal came from a swap whose repaint has not landed yet (a
+        // hidden pane not shown since, or a resync still in flight): it holds
+        // none of the content, so what that swap carried is carried on.
+        const unrepainted = takeSwapFinish(terminal);
         let fromBottom = 0;
         let bufferType = 'normal';
         try {
@@ -4092,19 +4154,35 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           bufferType = buffer.type;
         } catch { /* half torn down: the defaults */ }
         let restoreBookmarks: ((target: Terminal) => void) | null = null;
-        try { restoreBookmarks = keepBookmarksAcrossRepaint(terminal, ptyId, useStore); } catch { /* a bookmark carry never stops the swap */ }
+        if (unrepainted) {
+          fromBottom = unrepainted.fromBottom;
+          restoreBookmarks = unrepainted.restoreBookmarks;
+        } else {
+          try { restoreBookmarks = keepBookmarksAcrossRepaint(terminal, ptyId, useStore); } catch { /* a bookmark carry never stops the swap */ }
+        }
         const active = document.activeElement;
         const transplant = transplantRef.current?.ptyId === ptyId ? transplantRef.current : null;
         transplantRef.current = null;
+        // Daemon mode: the content as this terminal shows it, in case the new
+        // terminal's repaint from the daemon fails (SwapCarry.fallback).
+        const fallback = unrepainted ? unrepainted.fallback
+          : !transplant && isDaemonModeActive() ? serializeForTransplant(terminal, useStore.getState().scrollbackLines)
+          : null;
         swapCarryRef.current = {
           ptyId, from: swap.from, to: swap.to, at: swap.at,
           cols: terminal.cols, rows: terminal.rows, fromBottom,
           focused: !!active && !!parkElement?.contains(active),
           keyboard: keyboardRef.current,
-          kittyFlags: xtermKittyFlags(terminal) ?? 0,
-          bufferType, restoreBookmarks, transplant,
+          kittyFlags: unrepainted ? unrepainted.kittyFlags : xtermKittyFlags(terminal) ?? 0,
+          bufferType, restoreBookmarks, transplant, fallback,
         };
       }
+      // An unmount or a remount on another session drops what a swap still
+      // owed this terminal (its fallback is held only for it).
+      if (swapFinishRef.current?.terminal === terminal) swapFinishRef.current = null;
+      // A local swap waiting on this terminal's `.txt` restore sees the
+      // terminal gone and stops.
+      settleRestore();
       instanceEngineRef.current = null;
       delete container.dataset.terminalEngine;
 
