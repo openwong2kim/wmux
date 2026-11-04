@@ -100,7 +100,7 @@ export default function EditorPanel({ filePath, isActive, surfaceId, line, lineS
     if (!body || !row) return;
     const delta = row.getBoundingClientRect().top - body.getBoundingClientRect().top;
     body.scrollTop = Math.max(0, body.scrollTop + delta - (body.clientHeight - row.offsetHeight) / 2);
-  }, [markedLine, isActive, loading, error, editing, markdownView, content]);
+  }, [markedLine, lineSeq, isActive, loading, error, editing, markdownView, content]);
 
   // Rows for the raw view, built only while a line is marked. Each row keeps
   // its trailing newline so the pre's text content is the file unchanged.

@@ -90,6 +90,9 @@ describe('resolveTerminalFileLink', () => {
     });
     it('joins onto a WSL cwd and translates', () => {
       expect(resolveTerminalFileLink({ ...winWsl, raw: './x.md', cwd: '/home/me' })).toEqual({ hostPath: '\\\\wsl$\\Ubuntu\\home\\me\\x.md' });
+      // A backslash is a literal filename character in a POSIX cwd, never a separator.
+      expect(resolveTerminalFileLink({ ...winWsl, raw: '../..\\other', cwd: '/home/me/repo' })).toBeNull();
+      expect(resolveTerminalFileLink({ ...winWsl, raw: './a\\b', cwd: '/home/me' })).toBeNull();
     });
     it('ignores a Windows cwd for a WSL pane', () => {
       expect(resolveTerminalFileLink({ ...winWsl, raw: './x.md', cwd: 'C:\\proj' })).toBeNull();

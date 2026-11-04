@@ -61,10 +61,13 @@ export function normalizeHostPath(p: string): string {
   return out;
 }
 
-/** Split `a/b/../c` style paths on `/` or `\`, resolving `.` and `..`. Null if `..` climbs above the root. */
-function joinSegments(base: string[], rel: string): string[] | null {
+const POSIX_SEP = /\//;
+const WIN_SEP = /[\\/]/;
+
+/** Split `a/b/../c` style paths on `sep` (`/` for POSIX cwds, where `\` is a literal filename character; `/` or `\` for Windows ones), resolving `.` and `..`. Null if `..` climbs above the root. */
+function joinSegments(base: string[], rel: string, sep: RegExp): string[] | null {
   const out = base.slice();
-  for (const seg of rel.split(/[\\/]/)) {
+  for (const seg of rel.split(sep)) {
     if (seg === '' || seg === '.') continue;
     if (seg === '..') {
       if (out.length === 0) return null;
@@ -153,24 +156,24 @@ export function resolveTerminalFileLink(input: TerminalFileLinkInput): TerminalF
   if (shellKind === 'wsl' && win) {
     // A WSL pane's cwd must be a Linux path; a Windows host cwd says nothing about it.
     if (!cwd.startsWith('/') || cwd.startsWith('//')) return null;
-    const segs = joinSegments(cwd.split('/').filter(Boolean), text);
+    const segs = joinSegments(cwd.split('/').filter(Boolean), text, POSIX_SEP);
     if (!segs) return null;
     const r = wslPathToHost(`/${segs.join('/')}`, distro);
     return 'path' in r ? done(r.path) : null;
   }
   if (DRIVE_PATH.test(cwd)) {
     if (!win) return null;
-    const segs = joinSegments(cwd.slice(3).split(/[\\/]/).filter(Boolean), text);
+    const segs = joinSegments(cwd.slice(3).split(/[\\/]/).filter(Boolean), text, WIN_SEP);
     return segs ? done(`${cwd.slice(0, 3)}${segs.join('\\')}`) : null;
   }
   if (/^\\\\[^\\]+\\[^\\]+/.test(cwd)) {
     if (!win) return null;
     const m = /^(\\\\[^\\]+\\[^\\]+)(.*)$/s.exec(cwd)!;
-    const segs = joinSegments(m[2].split(/[\\/]/).filter(Boolean), text);
+    const segs = joinSegments(m[2].split(/[\\/]/).filter(Boolean), text, WIN_SEP);
     return segs ? done(`${m[1]}\\${segs.join('\\')}`) : null;
   }
   if (cwd.startsWith('/') && !win) {
-    const segs = joinSegments(cwd.split('/').filter(Boolean), text);
+    const segs = joinSegments(cwd.split('/').filter(Boolean), text, POSIX_SEP);
     return segs ? done(`/${segs.join('/')}`) : null;
   }
   return null;
