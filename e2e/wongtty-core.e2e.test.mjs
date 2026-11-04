@@ -55,7 +55,9 @@ async function launch(env = {}, extraArgs = []) {
     await launched.win.locator('text=Workspaces').first().waitFor({ timeout: 90_000 });
     // The pipe RPCs go to can come up after the window does.
     await waitFor(() => pipeReady(sb), { timeout: 90_000, what: "the app's pipe" });
-    await launched.win.getByText('Skip for now', { exact: true }).first().click({ timeout: 5_000 }).catch(() => undefined);
+    // The first-run wizard ("Skip for now", or "Later" where the sandbox has
+    // no agent it can run, as on Windows) opens a moment after the window.
+    await launched.win.getByTestId('first-run-wizard-skip').click({ timeout: 15_000 }).catch(() => undefined);
     const dontAsk = launched.win.getByText("Don't ask again", { exact: true });
     if (await dontAsk.count()) await dontAsk.first().click();
     // Count failure toasts as they appear, whatever their lifetime.
@@ -99,6 +101,8 @@ async function quit() {
 
 async function setSwitch(clicks, { gapMs = 300 } = {}) {
   const { win } = run;
+  const skip = win.getByTestId('first-run-wizard-skip');
+  if (await skip.isVisible()) await skip.click();
   await win.keyboard.press(process.platform === 'darwin' ? 'Meta+Comma' : 'Control+Comma');
   await win.getByText('Labs', { exact: true }).first().click({ timeout: 15_000 });
   const toggle = win.getByRole('switch', { name: SWITCH });
