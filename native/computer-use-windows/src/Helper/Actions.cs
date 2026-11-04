@@ -211,6 +211,16 @@ internal static unsafe class Focus
         throw new HelperError("window_not_focused", "another window covers that point; nothing was clicked");
     }
 
+    /// <summary>
+    /// After UIA SetFocus on an element: whether keyboard focus reaches it.
+    /// SetFocus on an element of a window that is not in front activates the
+    /// window and returns before the app has moved its focus (Notepad's
+    /// editor got it about 20 ms later), so the focused element is read until
+    /// it is this one or Poll.FocusSettleMs passes.
+    /// </summary>
+    public static bool Lands(int[] runtimeId) =>
+        Poll.Until(() => Uia.FocusedRuntimeId().AsSpan().SequenceEqual(runtimeId), Poll.FocusSettleMs, () => Environment.TickCount64, Sta.Sleep);
+
     /// <summary>The target window is the foreground window (its root; an owned popup in front does not count).</summary>
     public static bool InFront(ControlTarget target) => Win.Root(PInvoke.GetForegroundWindow()) == target.Window;
 
@@ -784,8 +794,10 @@ internal static unsafe class Actions
                 {
                     if (Uia.IsGone(e.HResult)) throw new HelperError("element_stale", $"element {index} went away");
                 }
-                // Typing into whatever else has focus would put the text in the wrong field.
-                if (!Uia.FocusedRuntimeId().AsSpan().SequenceEqual(snap.RuntimeIds[index]))
+                // Typing into whatever else has focus would put the text in the
+                // wrong field. A window behind others is activated by SetFocus
+                // asynchronously, so the focus is waited for, not read once.
+                if (!Focus.Lands(snap.RuntimeIds[index]))
                 {
                     throw new HelperError("action_not_supported", $"element {index} did not take keyboard focus; nothing was typed. Click it first");
                 }
