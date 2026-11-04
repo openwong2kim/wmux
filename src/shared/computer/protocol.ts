@@ -266,9 +266,11 @@ export interface ActionResult {
    * On an `unverified` type or setValue: what the field holds now, as an
    * excerpt of at most 120 characters (whitespace collapsed) that starts a
    * little before the first place it differs from the value before (or the
-   * value set), or `[redacted]` for a password field. Left out when the
-   * value could not be read, when focus left the field the keys went into,
-   * and by helpers that do not report it.
+   * value set), or `[redacted]` for a password field. It is read from the
+   * field the input went to (the indexed field, or the window the posted
+   * keys went to); after real keys it is left out once focus has left that
+   * field. Left out too when the value could not be read, and by helpers
+   * that do not report it.
    */
   observedValue?: string;
 }
