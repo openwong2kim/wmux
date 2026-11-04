@@ -24,6 +24,8 @@ let failure: string | null = null;
 // wongtty terminals built from `loaded` and not disposed yet.
 let live = 0;
 let releaseWanted = false;
+// Callers that will build a wongtty terminal soon (holdWongtty).
+let holds = 0;
 let releaseTimer: ReturnType<typeof setTimeout> | null = null;
 // Removes what the loaded module listens to on the page itself (pageListeners).
 let unlistenPage: Array<() => void> = [];
@@ -92,12 +94,12 @@ function counted(mod: Wongtty): Wongtty {
 }
 
 function scheduleRelease(): void {
-  if (!releaseWanted || live > 0 || loaded === null || releaseTimer !== null) return;
+  if (!releaseWanted || live > 0 || holds > 0 || loaded === null || releaseTimer !== null) return;
   // A task later: the teardown that disposed the last terminal may still ask
   // isWongttyTerminal about it.
   releaseTimer = setTimeout(() => {
     releaseTimer = null;
-    if (!releaseWanted || live > 0 || loaded === null) return;
+    if (!releaseWanted || live > 0 || holds > 0 || loaded === null) return;
     for (const unlisten of unlistenPage) unlisten();
     unlistenPage = [];
     loaded = null;
@@ -136,6 +138,19 @@ export function preloadWongtty(): Promise<Wongtty | null> {
 export function releaseWongttyWhenIdle(): void {
   releaseWanted = true;
   scheduleRelease();
+}
+
+/** Keep the module loaded until the returned function is called: for a swap
+ *  that will build a wongtty terminal once it has captured the old one. */
+export function holdWongtty(): () => void {
+  holds++;
+  let held = true;
+  return () => {
+    if (!held) return;
+    held = false;
+    holds--;
+    scheduleRelease();
+  };
 }
 
 /** The module once init() has finished; null before (the caller uses xterm.js). */

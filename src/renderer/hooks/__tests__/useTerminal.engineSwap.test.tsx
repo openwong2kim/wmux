@@ -28,7 +28,10 @@ vi.mock('@xterm/addon-webgl', () => ({
 
 // snapshot: what FakeWongtty's ansiSnapshot does: refuse everything (the
 // default), serialize, or refuse unless the modes are left out (scroll margins).
-const fake = vi.hoisted(() => ({ openThrows: false, snapshot: 'refuse' as 'refuse' | 'ok' | 'margins' }));
+// released: the loader has let go of the module (loadedWongtty() is null).
+// built: the size each FakeWongtty was constructed at.
+// onLoaded: runs when a mount asks for the module, before it is handed out.
+const fake = vi.hoisted(() => ({ openThrows: false, released: false, onLoaded: null as null | (() => void), snapshot: 'refuse' as 'refuse' | 'ok' | 'margins', built: [] as Array<[number | undefined, number | undefined]> }));
 vi.mock('../../terminal/wongtty/load', async () => {
   const xterm = await vi.importActual<typeof import('@xterm/xterm')>('@xterm/xterm');
   const { FitAddon: Fit } = await vi.importActual<typeof import('@xterm/addon-fit')>('@xterm/addon-fit');
@@ -36,6 +39,10 @@ vi.mock('../../terminal/wongtty/load', async () => {
   const { WebLinksAddon } = await vi.importActual<typeof import('@xterm/addon-web-links')>('@xterm/addon-web-links');
   const { SerializeAddon } = await vi.importActual<typeof import('@xterm/addon-serialize')>('@xterm/addon-serialize');
   class FakeWongtty extends xterm.Terminal {
+    constructor(options?: { cols?: number; rows?: number }) {
+      super(options);
+      fake.built.push([options?.cols, options?.rows]);
+    }
     open(parent: HTMLElement) {
       if (fake.openThrows) throw new Error('no WebGL2 context');
       super.open(parent);
@@ -55,10 +62,11 @@ vi.mock('../../terminal/wongtty/load', async () => {
   const mod = { Terminal: FakeWongtty, FitAddon: Fit, SearchAddon, WebLinksAddon, ImageAddon };
   return {
     preloadWongtty: async () => mod,
-    loadedWongtty: () => mod,
+    loadedWongtty: () => { fake.onLoaded?.(); return fake.released ? null : mod; },
     wongttyLoadFailure: () => null,
     releaseWongttyWhenIdle: () => undefined,
-    isWongttyTerminal: (t: unknown) => t instanceof FakeWongtty,
+    holdWongtty: () => () => undefined,
+    isWongttyTerminal: (t: unknown) => !fake.released && t instanceof FakeWongtty,
     FakeWongtty,
   };
 });
@@ -120,7 +128,10 @@ beforeEach(() => {
   vi.spyOn(FitAddon.prototype, 'proposeDimensions').mockReturnValue({ cols: 40, rows: 6 });
   useStore.setState({ terminalEngine: 'xterm', terminalEngineFailure: null, terminalWongtty: false, terminalBookmarks: {} });
   fake.openThrows = false;
+  fake.released = false;
+  fake.onLoaded = null;
   fake.snapshot = 'refuse';
+  fake.built = [];
 });
 
 afterEach(() => {
@@ -199,7 +210,9 @@ describe('useTerminal engine swap (Labs wongtty switch)', { timeout: 60_000 }, (
     expect(reconnect.mock.calls.length).toBe(reconnects);
     expect(resync).toHaveBeenCalledTimes(1);
     expect(resync.mock.calls[0]).toEqual(['p-swap', expect.anything()] as never);
-    // Same container and font: the same grid on both engines, so no resize (R10).
+    // Built at the old terminal's grid, so the first fit changes nothing and
+    // the pty sees no resize (R10).
+    expect(fake.built).toEqual([[old.cols, old.rows]]);
     expect([now.cols, now.rows]).toEqual([old.cols, old.rows]);
   });
 
@@ -284,13 +297,18 @@ describe('useTerminal engine swap (Labs wongtty switch)', { timeout: 60_000 }, (
       fake.snapshot = mode;
       const ptyId = `p-local-off-${mode}`;
       await render(ptyId, true, { remount: true });
-      await act(async () => { emitData!(ptyId, `${history(10)}\r\nBEFORE\r\n`, false); });
+      await act(async () => { emitData!(ptyId, `${history(10)}\r\n\x1b[31mRED\x1b[0m\r\nBEFORE\x1b[?2004h\r\n`, false); });
       await settle();
       await setEngine('xterm');
       await settle(); // the capture waits on a parse barrier before the swap
       const now = termRef!.current!;
       expect(now).not.toBeInstanceOf(await fakeWongttyClass());
-      for (const text of ['L0', 'L9', 'BEFORE']) expect(count(now, text)).toBe(1);
+      for (const text of ['L0', 'L9', 'RED', 'BEFORE']) expect(count(now, text)).toBe(1);
+      // Colours come with the screen only when wongtty paints it (margins);
+      // the modes come back either way.
+      const red = lines(now).indexOf('RED');
+      expect(now.buffer.active.getLine(red)!.getCell(0)!.isFgDefault()).toBe(mode !== 'margins');
+      expect(now.modes.bracketedPasteMode).toBe(true);
     }
     vi.mocked(console.warn).mockRestore();
   });
@@ -381,6 +399,122 @@ describe('useTerminal engine swap (Labs wongtty switch)', { timeout: 60_000 }, (
     await act(async () => { emitData!('p-raw', '\x1b[<u', false); });
     await settle();
     expect(xtermKittyFlags(now)).toBe(0);
+  });
+
+  it('a local capture that the switch flipped back past keeps the pane on its engine, even with wongtty let go', async () => {
+    const pushToast = vi.spyOn(useStore.getState(), 'pushToast');
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setDaemonModeActive(false);
+    await render('p-rel');
+    const old = termRef!.current!;
+    await act(async () => { emitData!('p-rel', `${history(10)}\r\nBEFORE\r\n`, false); });
+    await settle();
+    // The capture's parse barrier is held while the switch goes off; no
+    // wongtty terminal exists yet, so the loader lets the module go.
+    const write = old.write.bind(old);
+    let barrier: (() => void) | null = null;
+    vi.spyOn(old, 'write').mockImplementation((data, cb) => {
+      if (data === '' && cb) barrier = () => write(data, cb);
+      else write(data, cb);
+    });
+    await act(async () => { useStore.setState({ terminalEngine: 'wongtty' }); });
+    await settle();
+    expect(barrier).not.toBeNull();
+    await act(async () => {
+      emitData!('p-rel', 'D1\r\n', false);
+      useStore.setState({ terminalEngine: 'xterm' });
+      fake.released = true;
+    });
+    await act(async () => { barrier!(); });
+    await settle();
+    expect(useStore.getState().terminalEngineFailure).toBeNull();
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(termRef!.current).toBe(old);
+    expect(containerEl!.dataset.terminalEngine).toBe('xterm');
+    await act(async () => { emitData!('p-rel', 'AFTER\r\n', false); });
+    await settle();
+    for (const text of ['L0', 'BEFORE', 'D1', 'AFTER']) expect(count(old, text)).toBe(1);
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('a swap whose module was let go on its way mounts xterm.js, with no failure', async () => {
+    const pushToast = vi.spyOn(useStore.getState(), 'pushToast');
+    setDaemonModeActive(true);
+    await render('p-gone-mod');
+    // The switch goes off, and the loader lets the module go, between the
+    // swap toward wongtty and its mount.
+    fake.onLoaded = () => {
+      fake.onLoaded = null;
+      fake.released = true;
+      useStore.setState({ terminalEngine: 'xterm' });
+    };
+    await setEngine('wongtty');
+    await settle();
+    await settle();
+    expect(useStore.getState().terminalEngineFailure).toBeNull();
+    expect(pushToast).not.toHaveBeenCalled();
+    expect(termRef!.current).not.toBeNull();
+    expect(containerEl!.dataset.terminalEngine).toBe('xterm');
+  });
+
+  it('a local swap cut inside an escape sequence finishes it in the new terminal, both ways', async () => {
+    setDaemonModeActive(false);
+    for (const on of [true, false]) {
+      // The Labs switch drives the engine (engine controller), as in the app.
+      useStore.setState({ terminalWongtty: !on, terminalEngine: on ? 'xterm' : 'wongtty' });
+      const ptyId = `p-esc-${on ? 'on' : 'off'}`;
+      await render(ptyId, true, { remount: true });
+      const old = termRef!.current!;
+      expect(old instanceof (await fakeWongttyClass())).toBe(!on);
+      if (!on) {
+        await act(async () => { emitData!(ptyId, '\x1b[>1u', false); });
+        await settle();
+      }
+      // The capture's parse barrier is held, so the rest of the sequence
+      // arrives while the capture holds the output.
+      const write = old.write.bind(old);
+      let barrier: (() => void) | null = null;
+      vi.spyOn(old, 'write').mockImplementation((data, cb) => {
+        if (data === '' && cb) barrier = () => write(data, cb);
+        else write(data, cb);
+      });
+      await act(async () => {
+        useStore.setState({ terminalWongtty: on });
+        emitData!(ptyId, 'x\r\nabc\x1b[3', false);
+      });
+      await settle();
+      expect(barrier).not.toBeNull();
+      await act(async () => { emitData!(ptyId, '1mred\x1b[0m\r\n', false); });
+      await act(async () => { barrier!(); });
+      await settle();
+      await settle();
+      const now = termRef!.current!;
+      expect(now instanceof (await fakeWongttyClass())).toBe(on);
+      expect(lines(now)).toContain('abcred');
+      const row = lines(now).indexOf('abcred');
+      expect(now.buffer.active.getLine(row)!.getCell(3)!.getFgColor()).toBe(1);
+      if (!on) expect(xtermKittyFlags(now)).toBe(1);
+    }
+  });
+
+  it('a swap that waited for a composition runs after the composed text is sent, not inside compositionend', async () => {
+    setDaemonModeActive(true);
+    await render('p-ime');
+    const old = termRef!.current!;
+    containerEl!.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+    await setEngine('wongtty');
+    expect(termRef!.current).toBe(old);
+    // xterm.js sends the committed text from a timer its own compositionend
+    // listener arms; the swap must not dispose it before that timer.
+    let sent = false;
+    old.onData(() => { sent = true; });
+    containerEl!.addEventListener('compositionend', () => { setTimeout(() => old.input('한', true), 0); }, { once: true, capture: true });
+    containerEl!.dispatchEvent(new Event('compositionend', { bubbles: true }));
+    await Promise.resolve();
+    expect(disposeSpy.mock.contexts.filter((c) => c === old)).toHaveLength(0);
+    await settle();
+    expect(sent).toBe(true);
+    expect(termRef!.current).toBeInstanceOf(await fakeWongttyClass());
   });
 
   it('a parked terminal of the other engine is disposed, not adopted (R6)', async () => {

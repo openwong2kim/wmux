@@ -18,3 +18,7 @@ export function isWongttyTerminal(): boolean {
 export function wongttyLoadFailure(): null {
   return null;
 }
+
+export function holdWongtty(): () => void {
+  return () => undefined;
+}

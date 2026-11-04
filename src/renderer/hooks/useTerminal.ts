@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { preloadSharedWebgl, sharedWebglAddonClassFor } from '../terminal/sharedWebgl/load';
-import { isWongttyTerminal, loadedWongtty } from '../terminal/wongtty/load';
+import { holdWongtty, isWongttyTerminal, loadedWongtty } from '../terminal/wongtty/load';
 import { ensureEngineController, failEngine, type TerminalEngine } from '../terminal/wongtty/engineController';
 import { createEngineDeferral } from '../terminal/wongtty/engineDeferral';
 import { serializeForTransplant } from '../terminal/wongtty/transplant';
@@ -81,6 +81,7 @@ import { ATTACH_SNAPSHOT_MIN_BYTES } from '../../shared/terminal/attachSnapshot'
 import { paneForegroundProbe } from '../terminal/paneForegroundProbe';
 import { attachAltScreenWheel, PAGE_SCROLL_AGENTS } from '../terminal/altScreenWheel';
 import { RestingCursorGuard } from '../terminal/restingCursor';
+import { IncompleteEscapeSplitter, splitIncompleteEscape } from '../../shared/incompleteEscape';
 import { restoreSeam } from '../../shared/restoreSeam';
 import { InterruptKeystrokeDetector } from '../../shared/hooks/interruptKeystroke';
 import {
@@ -768,6 +769,9 @@ interface SwapFinish {
 // or whose swap repaint has not settled, counted on the document element for
 // the e2e (and a curious devtools user).
 const enginePendingPanes = new Set<string>();
+/** Longest unfinished escape sequence (an OSC image, say) a local swap
+ *  carries to the new terminal; past it the sequence's start is lost. */
+const SWAP_SCAN_MAX_HELD = 64 * 1024;
 function setEnginePending(token: string, pending: boolean): void {
   const had = enginePendingPanes.has(token);
   if (pending === had) return;
@@ -1494,6 +1498,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // Set while a local-mode swap is under way: the mounted terminal's live pty
   // data goes here (the transplant's tail) instead of into the terminal.
   const divertLiveRef = useRef<PtyDataPayload[] | null>(null);
+  // Set by the mounted terminal: its live pty data path, which a local capture
+  // the switch made pointless hands the diverted output back to; and what
+  // takes the unfinished escape sequence the stream stopped inside when the
+  // divert began (parsed: the terminal holds it in its parser; held: not
+  // written yet), so it leads the new terminal's tail instead of being cut.
+  const routeLiveRef = useRef<((payload: PtyDataPayload) => void) | null>(null);
+  const takeUnfinishedRef = useRef<(() => { parsed: string; held: string }) | null>(null);
   // Settles when the mounted terminal's `.txt` scrollback restore has been
   // written (or failed), with the output held behind it routed: a local-mode
   // swap serializes the terminal only after that.
@@ -1559,10 +1570,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       subscribeUnblock: (retry) => {
         // Bubble phase: the drag guard's capture listener has cleared its flag by then.
         const onUp = () => retry();
-        container?.addEventListener('compositionend', onUp);
+        // A task later: xterm.js sends the committed text from a timer it
+        // arms in its own compositionend listener, and a swap now would
+        // dispose the terminal (and its onData) before that timer runs.
+        let composed: ReturnType<typeof setTimeout> | null = null;
+        const onComposed = () => {
+          if (composed === null) composed = setTimeout(() => { composed = null; retry(); }, 0);
+        };
+        container?.addEventListener('compositionend', onComposed);
         document.addEventListener('mouseup', onUp);
         return () => {
-          container?.removeEventListener('compositionend', onUp);
+          if (composed !== null) clearTimeout(composed);
+          container?.removeEventListener('compositionend', onComposed);
           document.removeEventListener('mouseup', onUp);
         };
       },
@@ -1588,6 +1607,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // output held behind it goes to the tail.
         const tail: PtyDataPayload[] = [];
         divertLiveRef.current = tail;
+        const unfinished = takeUnfinishedRef.current?.() ?? { parsed: '', held: '' };
+        // The module this capture heads for stays loaded until it is done.
+        const unhold = target === 'wongtty' ? holdWongtty() : () => undefined;
         void restoreSettledRef.current.then(() => {
           if (terminalRef.current !== term) return false;
           try { flushTerminalOutput(term); } catch { /* disposed: serialize below fails soft */ }
@@ -1595,10 +1617,27 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }).then(() => {
           // A remount took this pane meanwhile: its new terminal owns the pipe.
           if (!mountedRef.current || terminalRef.current !== term) return;
-          const snapshot = serializeForTransplant(term, useStore.getState().scrollbackLines) ?? '';
-          transplantRef.current = { ptyId: id, snapshot, tail };
-          swapTo();
-        });
+          // The switch flipped back while the capture waited: the pane stays
+          // on its engine, and the output held for the new terminal is its.
+          const engine = useStore.getState().terminalEngine;
+          if (engine === engineOf(term)) {
+            if (divertLiveRef.current !== tail) return;
+            divertLiveRef.current = null;
+            console.log(`[wmux:engine-swap] ptyId=${id} capture dropped: the switch flipped back to ${engine}`);
+            const route = routeLiveRef.current;
+            if (unfinished.held) route?.({ data: unfinished.held, replay: false });
+            for (const payload of tail) route?.(payload);
+            return;
+          }
+          // The snapshot ends where the stream stopped; an escape sequence it
+          // stopped inside goes to the head of the tail, after anything the
+          // new terminal writes between them (kitty flags).
+          const { complete, pending } = splitIncompleteEscape(serializeForTransplant(term, useStore.getState().scrollbackLines) ?? '');
+          const head = (pending || unfinished.parsed) + unfinished.held;
+          transplantRef.current = { ptyId: id, snapshot: complete, tail: head ? [{ data: head, replay: false }, ...tail] : tail };
+          setTerminalInstance(null);
+          setPaneEngine(engine);
+        }).finally(unhold);
       },
     });
     deferral.request();
@@ -1676,6 +1715,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     };
     const wongtty = adopted || paneEngine !== 'wongtty' ? null : loadedWongtty();
     if (!adopted && paneEngine === 'wongtty' && !wongtty) {
+      // The switch went off while this swap was on its way (and the module
+      // was let go): no failure, the swap back to xterm.js, already
+      // requested, builds the pane and takes the carry.
+      if (useStore.getState().terminalEngine !== 'wongtty') {
+        swapCarryRef.current = carry;
+        return;
+      }
       failWongttyMount(new Error('wongtty is not loaded'));
       return;
     }
@@ -3508,13 +3554,31 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       revealFirstDataLogged = true;
       revealTiming(ptyId, 'first-data', `replay=${payload.replay} chars=${payload.data.length}`);
     };
+    // Labs wongtty switch, local mode: which escape sequence the stream
+    // written to this terminal ends inside, for a swap that cuts it there
+    // (takeUnfinishedRef). Scanned only while a swap can happen.
+    let swapScan: IncompleteEscapeSplitter | null = null;
     const routePtyData = (payload: PtyDataPayload) => {
       logRevealFirstData(payload);
       // A local-mode engine swap is serializing this terminal: what arrives
       // now is the new terminal's (the transplant's tail).
       const divert = divertLiveRef.current;
       if (divert) { divert.push(payload); return; }
-      deliverPtyData({ ...payload, data: restingCursor.process(payload.data) });
+      const data = restingCursor.process(payload.data);
+      if (!isDaemonModeActive() && (instanceEngineRef.current === 'wongtty' || useStore.getState().terminalWongtty)) {
+        (swapScan ??= new IncompleteEscapeSplitter(SWAP_SCAN_MAX_HELD)).push(data);
+      } else {
+        swapScan = null;
+      }
+      deliverPtyData({ ...payload, data });
+    };
+    routeLiveRef.current = routePtyData;
+    takeUnfinishedRef.current = () => {
+      // Pushed back so the scan stays where the terminal's parser is, for a
+      // capture the switch flips back past (the pane keeps this terminal).
+      const parsed = swapScan?.take() ?? '';
+      if (parsed) swapScan?.push(parsed);
+      return { parsed, held: restingCursor.takeHeld() };
     };
     const deliverPtyData = (payload: PtyDataPayload) => {
       // Fold before the resync buffer so a mid-resync negotiation still arms
@@ -4236,6 +4300,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // #929: cancel any pending resting-cursor show before dispose — a late
       // inject into a disposed xterm is the #582 class of bug.
       restingCursor.dispose();
+      if (routeLiveRef.current === routePtyData) routeLiveRef.current = null;
+      takeUnfinishedRef.current = null;
       removeDataListener?.();
       removeExitListener?.();
       removeDaemonConnectedForRestore?.();

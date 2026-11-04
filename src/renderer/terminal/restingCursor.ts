@@ -83,6 +83,14 @@ export class RestingCursorGuard {
     return complete + CURSOR_HIDE;
   }
 
+  /** The unfinished sequence held back for the next chunk, handed over and
+   *  forgotten (the Labs wongtty engine swap carries it to the new terminal). */
+  takeHeld(): string {
+    const held = this.tail;
+    this.tail = '';
+    return held;
+  }
+
   private arm(): void {
     if (this.timer !== null) clearTimeout(this.timer);
     this.timer = setTimeout(() => {
