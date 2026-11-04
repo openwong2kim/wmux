@@ -32,7 +32,7 @@ export function serializeForTransplant(terminal: Terminal, scrollback: number): 
     const addon = new SerializeAddon();
     terminal.loadAddon(addon);
     try {
-      return addon.serialize({ scrollback });
+      return addon.serialize({ scrollback }) + xtermMouseEncoding(terminal);
     } finally {
       addon.dispose();
     }
@@ -40,6 +40,17 @@ export function serializeForTransplant(terminal: Terminal, scrollback: number): 
     console.warn('[wmux:engine-swap] could not serialize the terminal; the new terminal starts empty', err);
     return null;
   }
+}
+
+// SerializeAddon writes the mouse tracking mode but not the encoding of the
+// reports (SGR, SGR pixels), which a TUI that asked for SGR cannot read
+// without.
+const MOUSE_ENCODING_MODES: Record<string, string> = { SGR: '\x1b[?1006h', SGR_PIXELS: '\x1b[?1016h' };
+
+/** The mode that selects xterm.js's mouse report encoding, or '' for the default. */
+function xtermMouseEncoding(terminal: Terminal): string {
+  const encoding = (terminal as unknown as { _core?: { mouseStateService?: { activeEncoding?: string } } })._core?.mouseStateService?.activeEncoding;
+  return (encoding && MOUSE_ENCODING_MODES[encoding]) ?? '';
 }
 
 /** The newest `scrollback` history lines and the screen as plain text, soft
