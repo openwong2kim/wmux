@@ -91,6 +91,20 @@ describe('browser preview routes: stream input', () => {
     expect(await r.post({ action: 'tap', ...page, geometry, x: 0.5, y: 0.5 })).toEqual({ status: 409, body: { error: code } });
   });
 
+  it('a tap reply passes main\'s focus through in the contract\'s shape only', async () => {
+    let focus: unknown = { editable: true, kind: 'password', value: 'hunter2', name: 'pw' };
+    const r = await start({ reply: (command) => command === 'browser.tap' ? { applied: true, focus } : { applied: true } });
+    const tap = { action: 'tap', ...page, geometry, x: 0.5, y: 0.5 };
+    expect(await r.post(tap)).toEqual({ status: 200, body: { applied: true, focus: { editable: true, kind: 'password' } } });
+    focus = { editable: true, kind: 'select' };
+    expect(await r.post(tap)).toEqual({ status: 200, body: { applied: true } });
+    focus = { editable: false };
+    expect(await r.post(tap)).toEqual({ status: 200, body: { applied: true, focus: { editable: false } } });
+    // An older main answers without it.
+    focus = undefined;
+    expect(await r.post(tap)).toEqual({ status: 200, body: { applied: true } });
+  });
+
   it('without the announcement, input is forwarded exactly as before', async () => {
     const r = await start({ stream: false });
     await r.post({ action: 'type', ...page, text: 'piece', stream: true });

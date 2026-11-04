@@ -181,7 +181,7 @@ function describeMode(mode: Mode): void {
       expect(spare).toBeGreaterThanOrEqual(0);
       expect(spare).toBeLessThanOrEqual(24);
       const rect = await evaluate(surfaceId, '(() => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()') as { x: number; y: number };
-      expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x: rect.x / geometry.width, y: rect.y / geometry.height })).toEqual({ applied: true });
+      expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x: rect.x / geometry.width, y: rect.y / geometry.height })).toEqual({ applied: true, focus: { editable: false } });
       await eventually(async () => (await evaluate(surfaceId, 'document.title')) === 'right-edge');
     });
 
@@ -257,7 +257,7 @@ function describeMode(mode: Mode): void {
       expect(await evaluate(surfaceId, 'document.title')).not.toBe('hit');
       const rect = await evaluate(surfaceId, '(() => { const r = b.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()') as { x: number; y: number };
       const g = geometry as { width: number; height: number };
-      expect(await input('browser.tap', surfaceId, { expectedURL: next, geometry, x: rect.x / g.width, y: rect.y / g.height })).toEqual({ applied: true });
+      expect(await input('browser.tap', surfaceId, { expectedURL: next, geometry, x: rect.x / g.width, y: rect.y / g.height })).toEqual({ applied: true, focus: { editable: false } });
       await eventually(async () => (await evaluate(surfaceId, 'document.title')) === 'hit');
     });
 
@@ -296,7 +296,7 @@ function describeMode(mode: Mode): void {
         const rect = await evaluate(surfaceId, '(() => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2 - visualViewport.offsetLeft, y: r.top + r.height / 2 - visualViewport.offsetTop }; })()') as { x: number; y: number };
         const x = (rect.x * geometry.scale) / geometry.width;
         const y = (rect.y * geometry.scale) / geometry.height;
-        expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x, y })).toEqual({ applied: true });
+        expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x, y })).toEqual({ applied: true, focus: { editable: false } });
         await eventually(async () => (await evaluate(surfaceId, 'document.title')) === 'hit');
       } finally {
         await page.send('Emulation.clearDeviceMetricsOverride').catch(() => undefined);

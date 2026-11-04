@@ -113,6 +113,29 @@ describe('workspace browser preview boundary', () => {
     await expect(handlePhoneBrowser('browser.tap',{...scope,expectedURL:capture.pageURL,geometry:{...capture.geometry as object,scrollY:1},x:0.5,y:0.25},deps)).rejects.toThrow('viewport changed');
   });
 
+  it('a tap reply carries what the tap focused, read right after it with the input held; none when unread', async () => {
+    const order: string[] = [];
+    const deps = {...fixture(),
+      readFocus: vi.fn(async (id: number) => { order.push(`read:${id}`); return {editable:true,kind:'password'} as const; }),
+      input: async (_id: number, operation: () => Promise<RpcResponse>) => { order.push('lock'); try { return await operation(); } finally { order.push('unlock'); } },
+    };
+    deps.invoke.mockImplementation(async (method: string) => { order.push(method); return {id:'rpc',ok:true,result:method === 'browser.evaluate' ? {value:{width:1000,height:728,scrollX:0,scrollY:0,scale:1}} : {ok:true}}; });
+    const tap = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/',geometry:{width:1000,height:728,scrollX:0,scrollY:0},x:0.5,y:0.25};
+    expect(await handlePhoneBrowser('browser.tap',tap,deps)).toEqual({applied:true,focus:{editable:true,kind:'password'}});
+    expect(order.slice(-3)).toEqual(['browser.click.cdp','read:1','unlock']);
+    // The stream path reads it too.
+    expect(await handlePhoneBrowser('browser.tap',{...tap,stream:true},deps)).toEqual({applied:true,focus:{editable:true,kind:'password'}});
+    deps.readFocus.mockResolvedValue(undefined as never);
+    expect(await handlePhoneBrowser('browser.tap',tap,deps)).toEqual({applied:true});
+    // Without the dependency there is nothing to read.
+    expect(await handlePhoneBrowser('browser.tap',tap,{...deps,readFocus:undefined})).toEqual({applied:true});
+    // Other input never reads it.
+    deps.readFocus.mockClear();
+    await handlePhoneBrowser('browser.scroll',{...tap,deltaX:0,deltaY:0.5},deps);
+    await handlePhoneBrowser('browser.key',{...tap,key:'Tab'},deps);
+    expect(deps.readFocus).not.toHaveBeenCalled();
+  });
+
   it('creates only a new embedded tab in the named workspace', async () => {
     const deps = fixture();
     deps.targets = () => [];

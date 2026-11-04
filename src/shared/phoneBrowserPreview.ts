@@ -62,3 +62,37 @@ export class PhoneBrowserError extends Error {
     super(code);
   }
 }
+
+/** The kinds of field a focused element can be (contract v1.6). */
+export const PHONE_BROWSER_FOCUS_KINDS = ['text', 'password', 'email', 'number', 'tel', 'url', 'search', 'textarea', 'contenteditable'] as const;
+
+export type PhoneBrowserFocusKind = (typeof PHONE_BROWSER_FOCUS_KINDS)[number];
+
+/**
+ * Whether the page's focused element takes typed text, and which kind of
+ * field it is: the tap reply's `focus` and the stream's `focus` event. Never
+ * a value, name, label, placeholder or id.
+ */
+export interface PhoneBrowserFocus { editable: boolean; kind?: PhoneBrowserFocusKind }
+
+/**
+ * `value` as a focus state, or null when it is not one: `editable` a boolean,
+ * `kind` one of the kinds and only on an editable field. Only those two
+ * fields come out, whatever else `value` carried.
+ */
+export function phoneBrowserFocus(value: unknown): PhoneBrowserFocus | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { editable, kind } = value as { editable?: unknown; kind?: unknown };
+  if (typeof editable !== 'boolean') return null;
+  if (kind === undefined) return { editable };
+  if (!editable || typeof kind !== 'string' || !(PHONE_BROWSER_FOCUS_KINDS as readonly string[]).includes(kind)) return null;
+  return { editable, kind: kind as PhoneBrowserFocusKind };
+}
+
+/** Main's tap reply as the phone gets it: a `focus` that is not one is left out. */
+export function phoneBrowserTapReply(result: unknown): unknown {
+  if (!result || typeof result !== 'object' || Array.isArray(result) || !('focus' in result)) return result;
+  const { focus, ...rest } = result as Record<string, unknown>;
+  const checked = phoneBrowserFocus(focus);
+  return checked ? { ...rest, focus: checked } : rest;
+}

@@ -203,7 +203,7 @@ import { BOTS_ROUTE, botsResponse, botsSupported } from './bots';
 import { GuestRateLimiter, guestRouteResponse, readGuestBody, type GuestBotResolver } from './guestBotRoutes';
 import { isGuestRoute, looksLikeGuestCredential, type GuestBotGates } from '../../shared/guestBots';
 import { BOT_APPROVALS_ROUTE, botApprovalDecisionRefusal, botApprovalsResponse, botApprovalsSupported, type BotApprovalsCaller } from './botApprovals';
-import { BROWSER_CHROME_PREVIEW_CAPABILITY, BROWSER_STREAM_CAPABILITY, BROWSER_STREAM_KEYS, PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode } from '../../shared/phoneBrowserPreview';
+import { BROWSER_CHROME_PREVIEW_CAPABILITY, BROWSER_STREAM_CAPABILITY, BROWSER_STREAM_KEYS, PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode, phoneBrowserTapReply } from '../../shared/phoneBrowserPreview';
 import { BROWSER_HELP_DECISION_ROUTE, BROWSER_HELP_LIST_ROUTE, browserHelpDecisionRefusal, browserHelpDecisionResponse, browserHelpListResponse, browserHelpSupported, type BrowserHelpTableView } from './browserHelp';
 import { browserHelpFrameJson, isBrowserHelpId, type PhoneBrowserHelpFrame } from '../../shared/phoneBrowserHelp';
 import { WORKER_RESUME_ROUTE, workerResumeRefusal, workerResumeResponse, workerResumeSupported } from './workerResume';
@@ -4356,7 +4356,8 @@ export class WebTerminalServer {
           return isPhoneBrowserErrorCode(code) ? this.json(res,PHONE_BROWSER_ERROR_STATUS[code],{error:code},{'Cache-Control':'no-store'})
             : this.json(res,503,{error:'browser-preview-unavailable'});
         }
-        return this.json(res,200,result,{'Cache-Control':'no-store'});
+        // A tap's `focus` reaches the phone only in the contract's shape (v1.6).
+        return this.json(res,200,command === 'browser.tap' ? phoneBrowserTapReply(result) : result,{'Cache-Control':'no-store'});
       }).catch(() => this.json(res,503,{error:'browser-preview-unavailable'}));
     };
     if (req.method === 'GET') {

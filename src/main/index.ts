@@ -9,6 +9,7 @@ import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
 import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserHistoryEntry, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
 import { focusBuiltinTab, handlePhoneBrowser } from './phone/PhoneBrowser';
+import { readFocus } from './phone/PhoneBrowserFocus';
 import { createPhoneChromeDeps, phoneChromeHelpTabs } from './phone/PhoneBrowserChrome';
 import { validateResolvedNavigationUrl } from './security/navigationPolicy';
 import { navigationPolicyOptions } from '../shared/types';
@@ -2683,6 +2684,10 @@ app.on('ready', async () => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) return Promise.reject(new Error('Browser unavailable'));
               return withPhoneBrowserInputFocus(wc,operation,options);
+            },
+            readFocus: async id => {
+              const wc = phoneWebContents.fromId(id);
+              return wc && !wc.isDestroyed() ? readFocus((method, params) => wc.debugger.sendCommand(method, params)) : undefined;
             },
             page: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? {title:wc.getTitle(),url:wc.getURL()} : null; },
             invoke: (method,params) => rpcRouter.dispatch({id: `phone-browser-${phoneBrowserRequestId()}`,method:method as RpcMethod,params},{operator:true}),
