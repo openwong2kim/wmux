@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import type { RpcMethod } from '../../../../shared/rpc';
-import { registerBrowserRpc } from '../browser.rpc';
+import { activeDevicePreset, registerBrowserRpc } from '../browser.rpc';
 import { dispatchAsClaimedCaller } from './claimedCaller';
 
 // #1357: `device: null` on the packaged lane used to clear the metrics override
@@ -149,6 +149,56 @@ describe('browser.emulate device reset (packaged CDP lane)', () => {
       'device=reset (viewport from surface bounds (no pre-preset viewport recorded), reloaded)',
     );
     expect(sent.some((s) => s.method === 'Emulation.setDeviceMetricsOverride')).toBe(false);
+  });
+
+  const wc = mockWebContents as unknown as Electron.WebContents;
+  const SCALE = 641 / 390;
+  const drawnLarger = async (router: RpcRouter, hasTouch: boolean) => {
+    probeValues = [{ w: 641, h: 700, dpr: 1, touch: 0 }];
+    await call(router, { deviceMetrics: { width: 390, height: 426, deviceScaleFactor: 1, mobile: true, hasTouch, scale: SCALE } });
+  };
+
+  it('a phone drawn larger (scale): sent and recorded; the reset takes it off', async () => {
+    const router = register();
+    await drawnLarger(router, true);
+    expect(sent.find((x) => x.method === 'Emulation.setDeviceMetricsOverride')?.params).toMatchObject({ width: 390, height: 426, scale: SCALE });
+    expect(activeDevicePreset(wc)).toMatchObject({ mobile: true, scale: SCALE });
+    sent.length = 0;
+    await call(router, { deviceReset: true });
+    expect(commands()).toContain('Emulation.clearDeviceMetricsOverride');
+    expect(sent.filter((x) => x.method === 'Emulation.setDeviceMetricsOverride').every((x) => !('scale' in x.params))).toBe(true);
+    expect(activeDevicePreset(wc)).toBeUndefined();
+  });
+
+  it('a resize is the caller\'s own size: not drawn larger, and the preset is no longer the one that drew it', async () => {
+    const router = register();
+    await drawnLarger(router, true);
+    const before = activeDevicePreset(wc);
+    sent.length = 0;
+    const resized = await router.dispatch({ id: 'c-resize', method: 'browser.resize' as RpcMethod, params: { width: 1280, height: 800, workspaceId: 'ws-a' } });
+    expect(resized.ok).toBe(true);
+    const override = sent.find((x) => x.method === 'Emulation.setDeviceMetricsOverride')?.params;
+    expect(override).toMatchObject({ width: 1280, height: 800, mobile: true });
+    expect(override).not.toHaveProperty('scale');
+    expect(activeDevicePreset(wc)).not.toBe(before);
+    expect(activeDevicePreset(wc)).not.toHaveProperty('scale');
+    await call(router, { deviceReset: true });
+  });
+
+  it('under a phone drawn larger, an agent\'s click lands where its CSS point is drawn, by mouse and by touch', async () => {
+    for (const hasTouch of [false, true]) {
+      const router = register();
+      await drawnLarger(router, hasTouch);
+      sent.length = 0;
+      const clicked = await router.dispatch({ id: 'c-click', method: 'browser.click.cdp' as RpcMethod, params: { x: 100, y: 50, workspaceId: 'ws-a' } });
+      expect(clicked.ok).toBe(true);
+      if (hasTouch) expect(sent.some((x) => x.method === 'Input.dispatchTouchEvent')).toBe(true);
+      const pressed = sent.find((x) => x.method === 'Input.dispatchMouseEvent' && x.params.type === 'mousePressed')?.params
+        ?? (sent.find((x) => x.method === 'Input.dispatchTouchEvent')?.params.touchPoints as Array<Record<string, unknown>>)[0];
+      expect(pressed.x).toBeCloseTo(100 * SCALE, 6);
+      expect(pressed.y).toBeCloseTo(50 * SCALE, 6);
+      await call(router, { deviceReset: true });
+    }
   });
 
   it('probes the page after a preset is applied too', async () => {

@@ -41,7 +41,7 @@ import { readImageSize } from '../../mcp/playwright/imageSize';
 import { PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
 import { PHONE_CHROME_CAPTURE_MS, viewportOf } from './PhoneBrowserChrome';
 import { electronFocusCdp, watchFocus, type FocusCdp, type FocusWatch } from './PhoneBrowserFocus';
-import { phoneBrowserViewportExceeds } from './PhoneBrowserGeometry';
+import { PHONE_WIDTH, phoneBrowserViewportExceeds, phoneFillScale, presetViewScale } from './PhoneBrowserGeometry';
 
 const STREAM_ENV = 'WMUX_PHONE_BROWSER_STREAM';
 
@@ -125,10 +125,14 @@ export interface PhoneStreamBuiltinDeps {
   onVisibility(listener: (surfaceId: string, visible: boolean) => void): () => void;
   /** The guest's real widget, in its own CSS pixels (phoneBrowserNativeBounds). */
   nativeBounds(contents: WebContents): Promise<{ width: number; height: number }>;
-  /** The phone's viewport action on a pane (PhoneBrowser.ts `browser.viewport`); `mobile` fits a phone's viewport to the pane. */
-  viewport(surfaceId: string, workspaceId: string, mode: 'mobile' | 'desktop'): Promise<void>;
-  /** The device preset browser.emulate last set on the guest, while it holds (browser.rpc.ts activeDevicePreset). */
-  preset(contents: WebContents): { readonly mobile: boolean } | undefined;
+  /**
+   * The phone's viewport action on a pane (PhoneBrowser.ts `browser.viewport`)
+   * with `fill`: `mobile` draws a phone's viewport larger to fill the pane;
+   * `refit` fits the phone already there to the pane's new size, without a reload.
+   */
+  viewport(surfaceId: string, workspaceId: string, mode: 'mobile' | 'desktop', refit?: boolean): Promise<void>;
+  /** The device preset browser.emulate last set on the guest, while it holds (browser.rpc.ts activeDevicePreset); `scale`: drawn that much larger. */
+  preset(contents: WebContents): { readonly mobile: boolean; readonly scale?: number } | undefined;
   /** Takes the guest's device preset off, as the `desktop` viewport action does, on any page and while the user holds the pane (browser.rpc.ts resetDevicePreset). */
   reset(contents: WebContents): Promise<void>;
 }
@@ -435,7 +439,15 @@ abstract class TabStream implements PhoneStreamTabView {
     if (!finite(deviceWidth) || !finite(deviceHeight) || deviceWidth <= 0 || deviceHeight <= 0 || !finite(scrollOffsetX) || !finite(scrollOffsetY)) return null;
     if (offsetTop !== undefined && offsetTop !== 0) return null;
     const scale = finite(pageScaleFactor) && pageScaleFactor > 0 ? pageScaleFactor : 1;
-    return { width: deviceWidth, height: deviceHeight, scrollX: scrollOffsetX, scrollY: scrollOffsetY, ...(scale !== 1 ? { scale } : {}) };
+    // A view drawn larger than its layout: the frame's DIP size back in CSS pixels.
+    const view = this.viewScale();
+    const css = (dip: number) => view === 1 ? dip : Math.round((dip / view) * 1000) / 1000;
+    return { width: css(deviceWidth), height: css(deviceHeight), scrollX: scrollOffsetX, scrollY: scrollOffsetY, ...(scale !== 1 ? { scale } : {}) };
+  }
+
+  /** How much larger than its layout the tab is drawn (an emulated scale); 1 unless a source says so. */
+  protected viewScale(): number {
+    return 1;
   }
 
   /** Builds the frame push and queues it, or drops it (acked) when it would not fit. */
@@ -902,6 +914,7 @@ class BuiltinTabStream extends TabStream {
   private readonly unlisten: Array<() => void> = [];
   /** The device preset the stream put on the pane; it is reverted only while it is still the pane's. */
   private ownPreset: object | null = null;
+  private lastRefitAt = 0;
 
   constructor(
     streamId: string,
@@ -1004,6 +1017,11 @@ class BuiltinTabStream extends TabStream {
     return this.builtin.targets().some((t) => t.surfaceId === this.surfaceId && t.webContentsId === id && t.workspaceId === this.workspaceId);
   }
 
+  /** The stream's phone fills the pane: drawn this much larger than its 390 CSS px. */
+  protected viewScale(): number {
+    return presetViewScale(this.builtin.preset(this.wc));
+  }
+
   /** The metadata is in device-independent pixels: CSS pixels only at zoom 1 (the capture's geometry is CSS). */
   protected geometryUsable(): boolean {
     return !this.exceeds && !this.wc.isDestroyed() && this.wc.getZoomFactor() === 1;
@@ -1021,8 +1039,8 @@ class BuiltinTabStream extends TabStream {
   }
 
   /**
-   * The phone's own viewport action, which fits the phone to the pane (it
-   * reloads the page). A phone preset already on the pane (the phone's
+   * The phone's own viewport action, which draws the phone larger to fill
+   * the pane (it reloads the page). A phone preset already on the pane (the phone's
    * viewport action, an agent's emulation) is kept as it is and not the
    * stream's. Any other preset (an agent's desktop one) is replaced, and the
    * stream's own then reverts to no preset at all.
@@ -1091,8 +1109,31 @@ class BuiltinTabStream extends TabStream {
     this.lastBoundsAt = Date.now();
     try {
       const viewport = viewportOf(await this.cdp('Page.getLayoutMetrics'));
-      this.exceeds = phoneBrowserViewportExceeds(viewport, await this.builtin.nativeBounds(this.wc));
+      const native = await this.builtin.nativeBounds(this.wc);
+      const view = this.viewScale();
+      // As drawn: the visual viewport times its pinch scale (a page without a viewport meta lays out wider at a scale below 1), times the view's.
+      const drawn = { width: viewport.width * viewport.scale * view, height: viewport.height * viewport.scale * view };
+      this.exceeds = phoneBrowserViewportExceeds({ ...viewport, scale: viewport.scale * view }, native);
+      // The pane resized under the stream's phone: fit it again, so it fills the pane and input reaches all of it.
+      const own = this.ownPreset;
+      const fill = phoneFillScale(native);
+      if (own && this.mobile && !this.stopped && this.builtin.preset(this.wc) === own && Date.now() - this.lastRefitAt >= MOBILE_RETRY_MS &&
+          (Math.abs(fill - view) * PHONE_WIDTH > 1 ||
+           Math.abs(drawn.width - Math.min(PHONE_WIDTH, native.width) * fill) > view + 1 ||
+           Math.abs(drawn.height - native.height) > view + 1)) {
+        this.lastRefitAt = Date.now();
+        void this.mobileStep(() => this.refit());
+      }
     } catch { /* kept as it was */ }
+  }
+
+  /** The stream's own phone, fitted again to the pane's size; a phone the user or an agent set since is theirs. */
+  private async refit(): Promise<void> {
+    const own = this.ownPreset;
+    if (this.stopped || !own || this.wc.isDestroyed() || this.builtin.preset(this.wc) !== own) return;
+    await this.builtin.viewport(this.surfaceId, this.workspaceId, 'mobile', true);
+    this.ownPreset = this.builtin.preset(this.wc) ?? null;
+    await this.readBounds();
   }
 
   protected release(): Promise<void> {

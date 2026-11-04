@@ -10,6 +10,7 @@ import { webContents as phoneWebContents } from 'electron';
 import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserHistoryEntry, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
 import { focusBuiltinTab, handlePhoneBrowser } from './phone/PhoneBrowser';
 import { readFocus } from './phone/PhoneBrowserFocus';
+import { presetViewScale } from './phone/PhoneBrowserGeometry';
 import { createPhoneChromeDeps, phoneChromeHelpTabs } from './phone/PhoneBrowserChrome';
 import { validateResolvedNavigationUrl } from './security/navigationPolicy';
 import { navigationPolicyOptions } from '../shared/types';
@@ -2643,8 +2644,8 @@ app.on('ready', async () => {
               onVisibility: listener => webviewCdpManager.onVisibility(listener),
               nativeBounds: wc => phoneBrowserNativeBounds(wc),
               // viewport=mobile on a pane: the phone's own viewport action.
-              viewport: async (surfaceId, workspaceId, mode) => {
-                const reply = await handlePhoneBrowser('browser.viewport', { workspaceId, surfaceId, mode }, phoneBrowserDeps) as { applied?: unknown } | null;
+              viewport: async (surfaceId, workspaceId, mode, refit) => {
+                const reply = await handlePhoneBrowser('browser.viewport', { workspaceId, surfaceId, mode, fill: true, refit: refit === true }, phoneBrowserDeps) as { applied?: unknown } | null;
                 if (reply?.applied !== true) throw new Error('Browser viewport unavailable');
               },
               preset: wc => activeDevicePreset(wc),
@@ -2676,6 +2677,10 @@ app.on('ready', async () => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
               await dispatchPhoneBrowserScroll(wc,event);
+            },
+            viewScale: id => {
+              const wc = phoneWebContents.fromId(id);
+              return presetViewScale(wc && !wc.isDestroyed() ? activeDevicePreset(wc) : undefined);
             },
             targets: () => webviewCdpManager.listTargets(),
             focusBuiltin: (surfaceId, workspaceId) =>

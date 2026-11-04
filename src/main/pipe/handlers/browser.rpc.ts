@@ -84,6 +84,8 @@ const activePreset = new WeakMap<
     hasTouch: boolean;
     screenWidth?: number;
     screenHeight?: number;
+    /** The view drawn this many times larger than the layout (CDP `scale`): a phone layout filling a wider pane. */
+    scale?: number;
   }
 >();
 
@@ -879,13 +881,34 @@ export async function resetDevicePreset(wc: WebContents): Promise<string[]> {
  * object for each preset, and none once one is reset. The phone browser
  * stream reverts its own mobile preset only while this is still the one it set.
  */
-export function activeDevicePreset(wc: WebContents): { readonly mobile: boolean } | undefined {
+export function activeDevicePreset(wc: WebContents): { readonly mobile: boolean; readonly scale?: number } | undefined {
   return activePreset.get(wc);
 }
 
 /** The debugger, in the shape the shared touch dispatch asks for. */
+/**
+ * CDP Input points are in the drawn view's pixels. Under a preset that draws
+ * the page larger than its layout (`scale`: a phone filling the pane), a CSS
+ * point is that many times further out; every handler here measures in CSS.
+ */
+function viewInput(wc: WebContents, method: string, params?: Record<string, unknown>): Record<string, unknown> | undefined {
+  const scale = activePreset.get(wc)?.scale;
+  if (!scale || !params) return params;
+  const at = (p: Record<string, unknown>) => (typeof p.x === 'number' && typeof p.y === 'number' ? { ...p, x: p.x * scale, y: p.y * scale } : p);
+  if (method === 'Input.dispatchMouseEvent') return at(params);
+  if (method === 'Input.dispatchTouchEvent' && Array.isArray(params.touchPoints)) {
+    return { ...params, touchPoints: (params.touchPoints as Array<Record<string, unknown>>).map(at) };
+  }
+  return params;
+}
+
+/** Sends one CDP Input event, its points in CSS pixels (viewInput). */
+function sendInput(wc: WebContents, method: string, params: Record<string, unknown>): Promise<unknown> {
+  return wc.debugger.sendCommand(method, viewInput(wc, method, params));
+}
+
 function touchSenderFor(wc: WebContents): TouchSender {
-  return { send: (method: string, params?: unknown) => wc.debugger.sendCommand(method, params as Record<string, unknown>) };
+  return { send: (method: string, params?: unknown) => wc.debugger.sendCommand(method, viewInput(wc, method, params as Record<string, unknown>)) };
 }
 
 /**
@@ -928,7 +951,7 @@ async function movePointerTo(
 ): Promise<void> {
   const from = pointerPositions.get(webContentsId) ?? defaultStartPoint();
   for (const point of pointerPath(from, { x, y })) {
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved', x: point.x, y: point.y,
     });
   }
@@ -4211,12 +4234,12 @@ export function registerBrowserRpc(
       }
     }
 
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       // `buttons` is the bitmask of what is held DURING the event; a press with
       // buttons:0 says the left button is down and simultaneously not down.
       type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
     });
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
     });
 
@@ -4300,17 +4323,17 @@ export function registerBrowserRpc(
       }
     }
 
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1,
     });
     // Held-button moves: the drag itself, not a hover, so the button is named
     // on every intermediate event.
     for (const point of pointerPath(from, to)) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+      await sendInput(wc, 'Input.dispatchMouseEvent', {
         type: 'mouseMoved', x: point.x, y: point.y, button: 'left', buttons: 1,
       });
     }
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased', x: to.x, y: to.y, button: 'left', buttons: 0, clickCount: 1,
     });
     setPointerPosition(wc, target.webContentsId, to);
@@ -4482,6 +4505,13 @@ export function registerBrowserRpc(
         screenHeight: preset.screenHeight,
       }),
     });
+    // A size of the caller's own replaces a phone drawn larger to fill the
+    // pane: the preset loses its scale, and is no longer the one that drew it.
+    if (preset?.scale !== undefined) {
+      const rest = { ...preset };
+      delete rest.scale;
+      activePreset.set(wc, rest);
+    }
     return { ok: true, width, height };
   });
 
@@ -4587,8 +4617,9 @@ export function registerBrowserRpc(
     if (params['deviceMetrics'] && typeof params['deviceMetrics'] === 'object') {
       const dm = params['deviceMetrics'] as {
         width: number; height: number; deviceScaleFactor?: number; mobile?: boolean;
-        hasTouch?: boolean; screenWidth?: number; screenHeight?: number;
+        hasTouch?: boolean; screenWidth?: number; screenHeight?: number; scale?: number;
       };
+      const scale = typeof dm.scale === 'number' && Number.isFinite(dm.scale) && dm.scale > 0 && dm.scale !== 1 ? dm.scale : undefined;
       // Remember what the preset is about to replace so `deviceReset` can put
       // it back (#1357). Only the first preset in a chain records: two presets
       // in a row must still reset to the pre-emulation desktop size.
@@ -4602,6 +4633,7 @@ export function registerBrowserRpc(
         ...(dm.screenWidth !== undefined && dm.screenHeight !== undefined
           ? { screenWidth: dm.screenWidth, screenHeight: dm.screenHeight }
           : {}),
+        ...(scale !== undefined ? { scale } : {}),
       });
       if (dm.hasTouch !== undefined) {
         // navigator.maxTouchPoints stayed 0 under a phone preset, contradicting
@@ -4645,6 +4677,7 @@ export function registerBrowserRpc(
           screenWidth: dm.screenWidth,
           screenHeight: dm.screenHeight,
         }),
+        ...(scale !== undefined && { scale }),
       });
       const label = typeof params['deviceLabel'] === 'string' ? params['deviceLabel'] : `${dm.width}x${dm.height}`;
       applied.push(`device=${label}`);

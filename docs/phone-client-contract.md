@@ -3741,11 +3741,19 @@ phone layout as well.
   does not revert its own once the `viewport` action or an agent has
   changed the preset since. Going back also works on a page that is not
   http and while the user has paused the agent or taken over the pane; a
-  switch that fails is tried again about every 2 s. Frames stay the size of
-  the pane: the page fills the left part of each frame, as wide as the
-  phone's viewport, and the rest of the frame is empty. `geometry` keeps
-  the pane's width at scale 1, so taps and scrolls on the page map as on
-  any frame.
+  switch that fails is tried again about every 2 s. The page lays out at
+  the phone's 390 CSS px and is drawn larger to fill the pane, so frames
+  stay the size of the pane with the page across their whole width, and
+  the Mac's pane shows the page enlarged the same way while a phone
+  watches. `geometry` is in the page's CSS pixels (`width` 390, `height`
+  the pane's height over the same factor), not the frame's pixels, so taps
+  and scrolls map as on any frame; `scale` stays the pinch zoom only. A
+  pane resized meanwhile is fitted again, without a reload, within about
+  2 s; frames in between may leave `geometry` out. A pane too short to show
+  the phone at least 320 CSS px tall once drawn larger shows it at 1x, in
+  the left part of the frame. A phone preset already on the pane is not
+  drawn larger, and an agent's `browser_resize` replaces the drawn-larger
+  phone with its own size.
 - **Going back**: about 4 s after the last subscriber that asked for it
   leaves. A subscriber asking for it within that time keeps the tab as it
   is (no reload); a stream whose last subscriber left keeps running for

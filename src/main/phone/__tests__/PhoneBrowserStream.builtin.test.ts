@@ -4,6 +4,7 @@ import type { WebContents } from 'electron';
 import type { CdpTargetInfo } from '../../browser-session/WebviewCdpManager';
 import { createPhoneBrowserStreams, type PhoneBrowserStreamDeps, type PhoneBrowserStreams } from '../PhoneBrowserStream';
 import { WATCH_FOCUS_EXPRESSION } from '../PhoneBrowserFocus';
+import { phoneFillScale } from '../PhoneBrowserGeometry';
 
 /**
  * Main's side of the phone browser stream on a builtin pane, over a fake
@@ -99,7 +100,7 @@ describe('phone browser stream (main): a builtin pane', () => {
   /** The phone's viewport actions the stream took, with how many screencasts the pane had started by then. */
   let viewports: Array<{ surfaceId: string; workspaceId: string; mode: string; screencasts: number }>;
   /** Each guest's device preset, as browser.emulate leaves it: a new object per preset. */
-  let presets: Map<unknown, { mobile: boolean }>;
+  let presets: Map<unknown, { mobile: boolean; scale?: number }>;
   /** The viewport action refuses (the user holds the pane, or its page is not http). */
   let viewportRefused: boolean;
   /** Resets that fail before they reset anything, counted down. */
@@ -134,15 +135,19 @@ describe('phone browser stream (main): a builtin pane', () => {
         visible: (surfaceId) => visible.get(surfaceId) ?? true,
         onVisibility: (listener) => { observers.add(listener); return () => { observers.delete(listener); }; },
         nativeBounds: async () => { if (boundsGate) await boundsGate; return native; },
-        viewport: async (surfaceId, workspaceId, mode) => {
+        viewport: async (surfaceId, workspaceId, mode, refit) => {
           if (viewportRefused) throw new Error('Browser viewport unavailable');
           const guest = guests.find((x) => targets.some((t) => t.surfaceId === surfaceId && t.webContentsId === x.id));
           if (!guest) throw new Error('Browser unavailable');
-          viewports.push({ surfaceId, workspaceId, mode, screencasts: guest.debugger.count('Page.startScreencast') });
-          // As PhoneBrowser.ts's viewport action does: a phone fitted to the pane, or no preset.
-          if (mode === 'mobile') presets.set(guest, { mobile: true });
+          viewports.push({ surfaceId, workspaceId, mode: refit ? 'refit' : mode, screencasts: guest.debugger.count('Page.startScreencast') });
+          // As PhoneBrowser.ts's viewport action does with fill: a phone drawn
+          // larger to fill a wider pane, as tall as the pane, or no preset.
+          const scale = phoneFillScale(native);
+          if (mode === 'mobile') presets.set(guest, { mobile: true, ...(scale !== 1 ? { scale } : {}) });
           else presets.delete(guest);
-          guest.debugger.layout = { ...guest.debugger.layout, clientWidth: mode === 'mobile' ? Math.min(390, native.width) : native.width, clientHeight: native.height };
+          guest.debugger.layout = mode === 'mobile'
+            ? { ...guest.debugger.layout, clientWidth: Math.min(390, native.width), clientHeight: Math.floor(native.height / scale) }
+            : { ...guest.debugger.layout, clientWidth: native.width, clientHeight: native.height };
         },
         preset: (contents) => presets.get(contents),
         // Recorded as a `desktop` step: what the viewport action's desktop mode leaves.
@@ -421,7 +426,7 @@ describe('phone browser stream (main): a builtin pane', () => {
     it('an agent\'s desktop preset is replaced by the phone\'s, and the stream reverts its own when the daemon turns it off', async () => {
       presets.set(g(), { mobile: false });
       await start({ mobile: true });
-      expect(presets.get(g())).toEqual({ mobile: true });
+      expect(presets.get(g())).toMatchObject({ mobile: true });
       await update(false);
       await flush();
       expect(modes()).toEqual(['mobile', 'desktop']);
@@ -443,7 +448,7 @@ describe('phone browser stream (main): a builtin pane', () => {
       await update(false);
       await flush();
       expect(modes()).toEqual(['mobile']);
-      expect(presets.get(g())).toEqual({ mobile: true });
+      expect(presets.get(g())).toMatchObject({ mobile: true });
       await vi.advanceTimersByTimeAsync(2_600);
       expect(modes()).toEqual(['mobile', 'desktop']);
       expect(presets.has(g())).toBe(false);
@@ -456,7 +461,7 @@ describe('phone browser stream (main): a builtin pane', () => {
       viewportRefused = false;
       await vi.advanceTimersByTimeAsync(2_600);
       expect(modes()).toEqual(['mobile']);
-      expect(presets.get(g())).toEqual({ mobile: true });
+      expect(presets.get(g())).toMatchObject({ mobile: true });
     });
 
     it('a new stream on the tab waits for the old one\'s revert before its own apply', async () => {
@@ -470,7 +475,7 @@ describe('phone browser stream (main): a builtin pane', () => {
       await restarted;
       await flush();
       expect(modes()).toEqual(['mobile', 'desktop', 'mobile']);
-      expect(presets.get(g())).toEqual({ mobile: true });
+      expect(presets.get(g())).toMatchObject({ mobile: true });
     });
 
     it('a viewport action or an agent\'s emulation after the stream\'s own is theirs: it is not reverted', async () => {
@@ -484,18 +489,95 @@ describe('phone browser stream (main): a builtin pane', () => {
     });
 
     it('while mobile the bounds are read every 2 s on a still page too, and geometry is left out once the page exceeds the pane', async () => {
+      native = { width: 900, height: 900 };
       await start({ mobile: true, maxFps: 15 });
-      g().debugger.frame(1, { deviceWidth: 390 });
+      g().debugger.frame(1, { deviceWidth: 900, deviceHeight: 900 });
       await vi.advanceTimersByTimeAsync(100);
       expect(frames().at(-1)).toMatchObject({ geometry: { width: 390 } });
-      // The pane shrinks under the emulated viewport; the page paints nothing for a while.
-      native = { width: 300, height: 668 };
+      // The pane shrinks under the drawn phone, which cannot be fitted again; the page paints nothing for a while.
+      viewportRefused = true;
+      native = { width: 600, height: 900 };
       const reads = g().debugger.count('Page.getLayoutMetrics');
       await vi.advanceTimersByTimeAsync(2_600);
       expect(g().debugger.count('Page.getLayoutMetrics')).toBeGreaterThan(reads);
-      g().debugger.frame(2, { deviceWidth: 390 });
+      g().debugger.frame(2, { deviceWidth: 600 });
       await vi.advanceTimersByTimeAsync(100);
       expect(frames().at(-1)).not.toHaveProperty('geometry');
+    });
+
+    it('the phone fills the pane: frames are the pane\'s size, and their geometry is the phone\'s CSS pixels', async () => {
+      native = { width: 900, height: 900 };
+      await start({ mobile: true, maxFps: 15 });
+      const scale = 900 / 390;
+      expect(presets.get(g())).toEqual({ mobile: true, scale });
+      // The metadata is the widget's DIP size; the page lays out at 390.
+      g().debugger.frame(1, { deviceWidth: 900, deviceHeight: 668 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(frames().at(-1)).toMatchObject({ geometry: { width: 390, height: 289.467, scrollX: 0, scrollY: 123.5 } });
+      expect(frames().at(-1)?.geometry).not.toHaveProperty('scale');
+      // Back to desktop: the scale goes with the preset.
+      await update(false);
+      await flush();
+      expect(presets.has(g())).toBe(false);
+      g().debugger.frame(2, { deviceWidth: 900, deviceHeight: 668 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(frames().at(-1)).toMatchObject({ geometry: { width: 900, height: 668 } });
+    });
+
+    it('a pane resized while mobile fits the phone again, without a reset, and only the stream\'s own phone', async () => {
+      native = { width: 900, height: 900 };
+      await start({ mobile: true, maxFps: 15 });
+      native = { width: 600, height: 500 };
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(modes()).toEqual(['mobile', 'refit']);
+      expect(presets.get(g())).toEqual({ mobile: true, scale: 600 / 390 });
+      g().debugger.frame(1, { deviceWidth: 600, deviceHeight: 500 });
+      await vi.advanceTimersByTimeAsync(100);
+      expect(frames().at(-1)).toMatchObject({ geometry: { width: 390, height: 325 } });
+      // Fitted: no refit while the pane keeps its size.
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(modes()).toEqual(['mobile', 'refit']);
+      // The refit preset is still the stream's: it is the one reverted.
+      await update(false);
+      await flush();
+      expect(modes()).toEqual(['mobile', 'refit', 'desktop']);
+      // A phone preset someone else set is not refitted.
+      presets.set(g(), { mobile: true, scale: 2 });
+      native = { width: 800, height: 500 };
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(modes()).toEqual(['mobile', 'refit', 'desktop']);
+    });
+
+    it('a fitted phone is left alone however its page lays out: no viewport meta (wider, scaled down) or pinch-zoomed', async () => {
+      native = { width: 900, height: 900 };
+      await start({ mobile: true, maxFps: 15 });
+      // A page without a viewport meta lays out at 980, shown at 390/980.
+      g().debugger.layout = { ...g().debugger.layout, clientWidth: 980, clientHeight: 980, scale: 390 / 980 };
+      await vi.advanceTimersByTimeAsync(6_000);
+      // Pinch-zoomed 2x: half the CSS pixels, at twice the scale.
+      g().debugger.layout = { ...g().debugger.layout, clientWidth: 195, clientHeight: 195, scale: 2 };
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(modes()).toEqual(['mobile']);
+    });
+
+    it('on a pane no wider than a phone: unscaled, as tall as the pane, and fitted again when it narrows', async () => {
+      native = { width: 380, height: 1000 };
+      await start({ mobile: true, maxFps: 15 });
+      expect(presets.get(g())).toEqual({ mobile: true });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(modes()).toEqual(['mobile']);
+      native = { width: 300, height: 1000 };
+      await vi.advanceTimersByTimeAsync(2_600);
+      expect(modes()).toEqual(['mobile', 'refit']);
+    });
+
+    it('a pane too short for a phone drawn larger shows it at 1x, and is not refitted for it', async () => {
+      // 900 wide would draw it 2.3x: 290 CSS px tall, under the minimum.
+      native = { width: 900, height: 668 };
+      await start({ mobile: true, maxFps: 15 });
+      expect(presets.get(g())).toEqual({ mobile: true });
+      await vi.advanceTimersByTimeAsync(6_000);
+      expect(modes()).toEqual(['mobile']);
     });
   });
 
