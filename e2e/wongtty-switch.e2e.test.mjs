@@ -486,6 +486,13 @@ describe('Labs wongtty switch', { timeout: 30 * 60_000 }, () => {
 });
 
 describe('Labs wongtty switch without a daemon (local mode)', { timeout: 15 * 60_000 }, () => {
+  const content = async (label, of = panes) => {
+    for (const p of of) {
+      await waitFor(async () => (await screen(p.ptyId)).includes(`BOTTOM-${p.n}`) && await matches(`TOP-${p.n}`, ws.zero) === 1 && await matches(`row-${p.n}-750`, ws.zero) === 1,
+        { timeout: 30_000, interval: 500, what: `${label}: local pane ${p.n} content, once` });
+    }
+  };
+
   it('10. switching on and off keeps every local pane\'s content', async () => {
     // Done with the daemon sandbox: none of its processes may serve this one.
     await quit();
@@ -508,12 +515,6 @@ describe('Labs wongtty switch without a daemon (local mode)', { timeout: 15 * 60
       await rpc(sb, 'input.send', { ptyId: p.ptyId, text: `printf 'TO''P-%s\\n' ${p.n}; seq 1 1500 | sed 's/^/row-${p.n}-/'; printf 'BOTT''OM-%s\\n' ${p.n}`, submit: true });
       await waitFor(async () => (await screen(p.ptyId)).includes(`BOTTOM-${p.n}`), { timeout: 60_000, what: `local pane ${p.n} filled` });
     }
-    const content = async (label) => {
-      for (const p of panes) {
-        await waitFor(async () => (await screen(p.ptyId)).includes(`BOTTOM-${p.n}`) && await matches(`TOP-${p.n}`, ws.zero) === 1 && await matches(`row-${p.n}-750`, ws.zero) === 1,
-          { timeout: 30_000, interval: 500, what: `${label}: local pane ${p.n} content, once` });
-      }
-    };
     await waitEngine('xterm');
     for (const [label, clicks, engine] of [['on', 1, 'wongtty'], ['off', 1, 'xterm'], ['on/off/on', 3, 'wongtty']]) {
       const before = swapLines().length;
@@ -525,5 +526,57 @@ describe('Labs wongtty switch without a daemon (local mode)', { timeout: 15 * 60
       assert.deepEqual(mechanisms, ['transplant'], `local ${label}: every swap carried the old terminal over (no daemon)`);
     }
     summary.push(`local mode: ${panes.length} panes on, off, on/off/on, each by transplant, content kept once`);
+  });
+
+  it('11. switched off while a local capture waits, every pane stays on xterm.js with its content', async () => {
+    const labs = await setSwitch(1);
+    assert.equal(labs.on, false);
+    // Colour-heavy floods in hidden workspaces: their backlogs, handed to
+    // xterm.js at the capture, keep the captures waiting on their parse
+    // barriers.
+    const floods = [];
+    for (const name of ['L1', 'L2']) {
+      const id = (await rpc(sb, 'workspace.new', { name })).id;
+      floods.push({ ws: id, ptyId: (await splitInto(id, 1))[0] });
+    }
+    extraPanes = floods.length;
+    await rpc(sb, 'workspace.focus', { id: ws.zero });
+    await waitEngine('xterm');
+    const toasts = await run.win.evaluate(() => window.__wongttyToasts);
+    const before = swapLines().length;
+    const FLOOD_LINES = 600_000;
+    for (const [i, f] of floods.entries()) {
+      await rpc(sb, 'input.send', { ptyId: f.ptyId, text: `touch ~/flood-${i}.start; seq -f '%.0f' 1 ${FLOOD_LINES} | sed $'s/^/\\e[31mF\\e[32mL\\e[33mO\\e[34mO\\e[35mD\\e[0m-/'; printf 'FLOOD''DONE\\n'`, submit: true });
+    }
+    await waitFor(() => floods.every((_, i) => fs.existsSync(path.join(sb.home, `flood-${i}.start`))), { timeout: 30_000, interval: 50, what: 'the floods to start' });
+    // A slowed renderer CPU stretches the parse each capture waits for, while
+    // the controller's quiet window runs on the wall clock.
+    const cdp = await run.win.context().newCDPSession(run.win);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: 20 });
+    try {
+      const toggle = run.win.getByRole('switch', { name: SWITCH });
+      await toggle.click();
+      await waitFor(async () => (await engineState()).engine === 'wongtty', { timeout: 60_000, interval: 10, what: 'the switch to reach the panes' });
+      await toggle.click();
+      await waitEngine('xterm');
+    } finally {
+      await cdp.send('Emulation.setCPUThrottlingRate', { rate: 1 });
+      await cdp.detach();
+    }
+    await labs.close();
+    for (const f of floods) {
+      await waitFor(async () => (await matches('FLOODDONE', f.ws)) === 1, { timeout: 180_000, interval: 500, what: 'FLOODDONE once' });
+      for (const row of [FLOOD_LINES - 2000, FLOOD_LINES - 1, FLOOD_LINES]) {
+        assert.equal(await matches(`FLOOD-${row}`, f.ws), 1, `flood row ${row} once`);
+      }
+    }
+    await content('switched off while capturing');
+    const lines = swapLines().slice(before);
+    assert.equal(lines.filter((l) => /could not build/.test(l)).length, 0, 'no pane failed to build');
+    assert.equal(await run.win.evaluate(() => window.__wongttyToasts), toasts, 'no failure toast');
+    assert.equal(await run.win.getByRole('alert').filter({ hasText: FAILED_TEXT }).count(), 0, 'no Labs error line');
+    const dropped = lines.filter((l) => /capture dropped/.test(l)).length;
+    assert.ok(dropped > 0, 'the off landed while a capture waited (the step tests nothing otherwise)');
+    summary.push(`local mode, switched off while capturing: all xterm, no failure, content kept; ${dropped} capture(s) dropped by the flip back`);
   });
 });

@@ -121,6 +121,55 @@ describe('engine controller', () => {
     expect(w.writes).toEqual([]);
   });
 
+  it('a load that finishes after an off, before the off is acted on, writes nothing', async () => {
+    const w = world();
+    const c = createEngineController(w.deps);
+    await c.settleStartup(5000);
+    w.toggle(true);
+    vi.advanceTimersByTime(150);
+    w.toggle(false);
+    vi.advanceTimersByTime(50); // the off is still in its quiet window
+    w.loads[0]({});
+    await flush();
+    expect(w.writes).toEqual([]);
+  });
+
+  it('a load slower than its timeout counts as failed, and stays xterm when it lands later', async () => {
+    const w = world();
+    const c = createEngineController({ ...w.deps, loadTimeoutMs: 50 });
+    await c.settleStartup(5000);
+    w.toggle(true);
+    vi.advanceTimersByTime(150);
+    vi.advanceTimersByTime(50);
+    await flush();
+    expect(w.engine()).toBe('xterm');
+    expect(w.failures.at(-1)).toEqual({ message: 'wongtty did not load within 50 ms' });
+    expect(w.report).toHaveBeenCalledTimes(1);
+    w.loads[0]({});
+    await flush();
+    expect(w.writes).toEqual([]);
+  });
+
+  it('a pane failure cleared by off and on within the quiet window ends on wongtty with no failure left', async () => {
+    const w = world();
+    const c = createEngineController(w.deps);
+    await c.settleStartup(5000);
+    w.toggle(true);
+    vi.advanceTimersByTime(150);
+    w.loads[0]({});
+    await flush();
+    c.fail(new Error('no WebGL2 context'));
+    expect(w.failures.at(-1)).toEqual({ message: 'no WebGL2 context' });
+    w.toggle(false);
+    vi.advanceTimersByTime(50);
+    w.toggle(true);
+    vi.advanceTimersByTime(150);
+    w.loads[1]({});
+    await flush();
+    expect(w.engine()).toBe('wongtty');
+    expect(w.failures.at(-1)).toBeNull();
+  });
+
   it('a failed load stays xterm, is reported once, and the next on retries', async () => {
     const w = world();
     const c = createEngineController(w.deps);
