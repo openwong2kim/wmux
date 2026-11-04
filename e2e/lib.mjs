@@ -43,7 +43,9 @@ export function git(args, cwd) {
 export function makeSandbox(name) {
   // macOS: the per-user temp dir is long enough that HOME/.wmux-e2e/session-<uuid>.sock
   // passes the 104-byte Unix socket limit, and the daemon cannot listen.
-  const base = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+  // WMUX_E2E_SANDBOX_BASE puts the sandboxes elsewhere (a short enough path).
+  const base = process.env.WMUX_E2E_SANDBOX_BASE || (process.platform === 'darwin' ? '/tmp' : os.tmpdir());
+  fs.mkdirSync(base, { recursive: true });
   const home = fs.realpathSync(fs.mkdtempSync(path.join(base, `wmux-e2e-${name}-`)));
   const bin = path.join(home, '.local', 'bin');
   fs.mkdirSync(bin, { recursive: true });
