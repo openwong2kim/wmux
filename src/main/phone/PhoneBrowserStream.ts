@@ -39,9 +39,9 @@ import { phoneBrowserViewportExceeds } from './PhoneBrowserGeometry';
 
 const STREAM_ENV = 'WMUX_PHONE_BROWSER_STREAM';
 
-/** Whether this desktop offers the phone browser stream (off unless `WMUX_PHONE_BROWSER_STREAM=1`). */
+/** Whether this desktop offers the phone browser stream: on unless `WMUX_PHONE_BROWSER_STREAM=0` (the kill switch). */
 export function phoneBrowserStreamEnabled(): boolean {
-  return process.env[STREAM_ENV] === '1';
+  return process.env[STREAM_ENV] !== '0';
 }
 
 /** Frames main pushes per second, all tabs together. */

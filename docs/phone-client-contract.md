@@ -3696,8 +3696,8 @@ exactly as above.
 `/api/config` carries `browserStream: true` when the server runs with
 `--allow-transcript` and the attached desktop announced `browser.stream`.
 OMITTED otherwise; the preview is then the 3 s capture poll above, and the
-stream route answers `404`. The desktop announces it only while it runs with
-`WMUX_PHONE_BROWSER_STREAM=1` (off by default for now). The stream covers
+stream route answers `404`. The desktop announces it by default;
+`WMUX_PHONE_BROWSER_STREAM=0` on the desktop turns it off. The stream covers
 builtin panes and dedicated-profile Chrome tabs (`chrome` rows); `hello`
 says which in `backend`. A builtin pane streams whatever the desktop's
 browser setting is, as its capture does.

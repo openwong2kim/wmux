@@ -1,8 +1,21 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ChromeStreamSession } from '../../browser-session/ChromeLauncher';
 import { ChromePageSessionError } from '../../browser-session/ChromeLauncher';
-import { createPhoneBrowserStreams, STREAM_LINE_LIMIT, type PhoneBrowserStreamDeps, type PhoneBrowserStreams } from '../PhoneBrowserStream';
+import { createPhoneBrowserStreams, phoneBrowserStreamEnabled, STREAM_LINE_LIMIT, type PhoneBrowserStreamDeps, type PhoneBrowserStreams } from '../PhoneBrowserStream';
 import { WATCH_FOCUS_EXPRESSION } from '../PhoneBrowserFocus';
+
+describe('phoneBrowserStreamEnabled', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('is on unless WMUX_PHONE_BROWSER_STREAM is 0', () => {
+    vi.stubEnv('WMUX_PHONE_BROWSER_STREAM', undefined);
+    expect(phoneBrowserStreamEnabled()).toBe(true);
+    vi.stubEnv('WMUX_PHONE_BROWSER_STREAM', '1');
+    expect(phoneBrowserStreamEnabled()).toBe(true);
+    vi.stubEnv('WMUX_PHONE_BROWSER_STREAM', '0');
+    expect(phoneBrowserStreamEnabled()).toBe(false);
+  });
+});
 
 /**
  * Main's side of the phone browser stream over a fake Chrome session, with

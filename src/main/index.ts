@@ -2627,7 +2627,7 @@ app.on('ready', async () => {
           reportHostWindow(() => client, mainWindow);
           disposePhoneBridge?.();
           // The phone's live browser stream (phone/PhoneBrowserStream.ts), per
-          // daemon connection; off unless WMUX_PHONE_BROWSER_STREAM=1.
+          // daemon connection; on unless WMUX_PHONE_BROWSER_STREAM=0.
           const phoneStreams = phoneBrowserStreamEnabled() ? createPhoneBrowserStreams({
             push: (params) => client.rpc('daemon.phone.browserStream', params, { timeoutMs: 3_000 }),
             backend: () => browserBackendStore.get(),
