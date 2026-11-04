@@ -269,7 +269,14 @@ internal static unsafe class Actions
     /// <summary>A posted action's result. Our own side effect (cursor or foreground moved) is said in the note.</summary>
     private static JsonObject Posted(BackgroundOutcome outcome) => outcome.SideEffect
         ? Result("synthetic", false, outcome.Delivery, "the target window came to the front or the pointer moved onto the target while the input was posted; check the app state")
-        : Result("synthetic", outcome.Verified, outcome.Delivery);
+        : WithObserved(Result("synthetic", outcome.Verified, outcome.Delivery), outcome.Verified ? null : outcome.Observed);
+
+    /// <summary>protocol ActionResult.observedValue: on an unverified result, what the field holds now (Verify.Observed).</summary>
+    private static JsonObject WithObserved(JsonObject result, string? observed)
+    {
+        if (observed != null) result["observedValue"] = observed;
+        return result;
+    }
 
 
     /// <summary>
@@ -607,6 +614,9 @@ internal static unsafe class Actions
         }
     }
 
+    /// <summary>How long setValue's read-back waits for the value (longer only while it is still changing).</summary>
+    private const int SetValueSettleMs = 400;
+
     public static JsonObject SetValue(Params p, AgentMarker marker)
     {
         // A UIA ValuePattern call brings a covered target to the front, so
@@ -659,19 +669,23 @@ internal static unsafe class Actions
             {
                 Marshal.FreeBSTR(bstr);
             }
-            string? readBack;
-            try
+            // Read until it settles: an app may apply the value a moment later.
+            var readBack = Verify.Settle(() =>
             {
-                readBack = Uia.Take(pattern->CurrentValue);
-            }
-            catch (Exception e) when (e is not HelperError)
-            {
-                readBack = null;
-            }
+                try
+                {
+                    return Uia.Take(pattern->CurrentValue);
+                }
+                catch (Exception e) when (e is not HelperError)
+                {
+                    return null;
+                }
+            }, now => Verify.SameValue(value, now), SetValueSettleMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
             var delivery = SemanticDelivery(target, frontBefore);
-            return readBack == value
+            return readBack.Verified
                 ? Result("accessibility", true, delivery)
-                : Result("accessibility", false, delivery, "the value read back differs from what was set");
+                : WithObserved(Result("accessibility", false, delivery, "the value read back differs from what was set"),
+                    Verify.Observed(value, readBack.Last, Uia.IsSecretElement(el)));
         }
         finally
         {
@@ -813,6 +827,8 @@ internal static unsafe class Actions
         Action? preflight = Focus.RequireKeyboard(target);
         Overlay.Show(marker, MarkerVerb.Typing, target, caret: realCaret, realInput: true);
         var before = FocusedValue();
+        // The element the keys go into, for showing its value if they do not verify.
+        var typedInto = Uia.FocusedRuntimeId();
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount), typed = 0;
         foreach (var chunk in chunks)
@@ -835,9 +851,43 @@ internal static unsafe class Actions
             }
             typed += chunk.GraphemeCount;
         }
-        bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
-        if (verified) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target), realInput: true);
-        return Result("synthetic", verified, "foreground");
+        var effect = Verify.SettleInserted(FocusedValue, before, text, total < 64 ? 300 : 1000, () => Environment.TickCount64, Sta.Sleep);
+        if (effect.Verified)
+        {
+            Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target), realInput: true);
+            return Result("synthetic", true, "foreground");
+        }
+        return WithObserved(Result("synthetic", false, "foreground"), ObservedFocused(before, typedInto));
+    }
+
+    /// <summary>
+    /// What the field the keys went into holds now, for an unverified `type`
+    /// (Verify.Observed). The focused element is read once and used for
+    /// everything: it must still be the element the keys went into
+    /// (`typedInto`, read before the keys), its password check decides
+    /// `[redacted]`, and its own value is read. Focus that moved to another
+    /// field shows nothing, never that field's value; an element that cannot
+    /// be read shows nothing either.
+    /// </summary>
+    private static string? ObservedFocused(string? before, int[] typedInto)
+    {
+        if (typedInto.Length == 0) return null;
+        var el = Uia.Focused();
+        if (el == null) return null;
+        try
+        {
+            if (!Uia.CurrentRuntimeId(el).AsSpan().SequenceEqual(typedInto)) return null;
+            if (Uia.IsSecretElement(el)) return "[redacted]";
+            return Verify.Observed(before, Uia.CurrentString(el, Uia.ValueValueProperty), secret: false);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+        finally
+        {
+            el->Release();
+        }
     }
 
     private static bool Verified(JsonObject result) => result["verification"]?.GetValue<string>() == "verified";
@@ -1000,22 +1050,6 @@ internal static unsafe class Actions
         finally
         {
             again->Release();
-        }
-    }
-
-    /// <summary>
-    /// Verified only when the focused element's value is the value before
-    /// with exactly the typed text inserted at one position (Core Verify).
-    /// </summary>
-    private static bool WaitForEffect(string text, string? before, int timeoutMs)
-    {
-        if (before == null) return false;
-        long deadline = Environment.TickCount64 + timeoutMs;
-        while (true)
-        {
-            if (Verify.Inserted(before, FocusedValue(), text)) return true;
-            if (Environment.TickCount64 >= deadline) return false;
-            Sta.Sleep(15);
         }
     }
 
