@@ -17,8 +17,9 @@
 //    frame again. The nudge carries nothing: only main's own read decides
 //    the state, so even a forged one could only cause a re-read. Chromium
 //    sends a page that is not focused (a dedicated Chrome window behind
-//    wmux) no focus events, not even for a script's .focus(); while the page
-//    reads as not focused, main also reads again every UNFOCUSED_POLL_MS.
+//    wmux) no focus events, not even for a script's .focus(), and a page can
+//    stop being focused with no event the detector sees: main also reads
+//    again every FOCUS_POLL_MS, whatever it heard.
 //
 // Both run over any CDP session: a dedicated Chrome tab's page or stream
 // session, or a builtin pane's webContents.debugger (electronFocusCdp).
@@ -32,8 +33,18 @@ import { phoneBrowserFocus, type PhoneBrowserFocus } from '../../shared/phoneBro
 export const READ_FOCUS_MS = 300;
 /** How long one of the watcher's reads may take before it is dropped. */
 const WATCH_READ_MS = 2_000;
-/** How often the watcher reads again while the page is not focused (and so gets no focus events). */
-export const UNFOCUSED_POLL_MS = 1_000;
+/**
+ * How often the watcher reads again whatever it heard: a page that is not
+ * focused gets no focus events, and a page can stop being focused with no
+ * event its detector sees.
+ */
+export const FOCUS_POLL_MS = 1_000;
+/** The least time between two reads a burst of nudges asks for. */
+const READ_GAP_MS = 100;
+/** How long stopping waits for the detectors to be taken down. */
+const TEARDOWN_MS = 1_000;
+/** Takes a frame's detector down (focusDetectorSource), if it has one. */
+const TEARDOWN_EXPRESSION = `typeof globalThis.__wmuxFocusTeardown === 'function' && globalThis.__wmuxFocusTeardown()`;
 /** The isolated world the tap reply reads in (one per session and document). */
 const READ_WORLD = 'wmux-phone-focus';
 
@@ -119,9 +130,19 @@ export function focusDetectorSource(binding: string): string {
     nudge();
   };
   const later = () => { if (!queued) { queued = true; setTimeout(check, 0); } };
-  for (const type of ${JSON.stringify(DETECTOR_EVENTS)}) addEventListener(type, later, { capture: true, passive: true });
+  const types = ${JSON.stringify(DETECTOR_EVENTS)};
+  for (const type of types) addEventListener(type, later, { capture: true, passive: true });
   addEventListener('load', later);
   addEventListener('pageshow', later);
+  // The watcher stops: this world's detector goes, so a later one starts clean.
+  globalThis.__wmuxFocusTeardown = () => {
+    for (const type of types) removeEventListener(type, later, { capture: true });
+    removeEventListener('load', later);
+    removeEventListener('pageshow', later);
+    if (isTop) delete globalThis.__wmuxFocusNudge;
+    delete globalThis.__wmuxFocusTeardown;
+    globalThis.__wmuxFocusDetector = false;
+  };
   later();
 })()`;
 }
@@ -238,21 +259,21 @@ export async function watchFocus(cdp: FocusCdp, onChange: (focus: PhoneBrowserFo
     if (stopped) return;
     if (reading) { again = true; return; }
     reading = true;
-    let unfocused = false;
     try {
       do {
         again = false;
         const at = generation;
         const got = await within(read(), WATCH_READ_MS);
         if (got && at === generation) set(got.focus);
-        unfocused = got?.focused === false;
+        // A page churning its focus reads at most every READ_GAP_MS.
+        if (again && !stopped) await new Promise((resolve) => setTimeout(resolve, READ_GAP_MS));
       } while (again && !stopped);
     } finally {
       reading = false;
     }
-    // No focus events reach a page that is not focused: read again in a while.
-    if (unfocused && !stopped && !poll) {
-      poll = setTimeout(() => { poll = null; void refresh(); }, UNFOCUSED_POLL_MS);
+    // Whatever this read found, or if it failed: read again in a while.
+    if (!stopped && !poll) {
+      poll = setTimeout(() => { poll = null; void refresh(); }, FOCUS_POLL_MS);
       (poll as { unref?: () => void }).unref?.();
     }
   };
@@ -272,6 +293,15 @@ export async function watchFocus(cdp: FocusCdp, onChange: (focus: PhoneBrowserFo
     stopped = true;
     if (poll) { clearTimeout(poll); poll = null; }
     for (const off of offs.splice(0)) off();
+    // Each frame's detector of this watcher goes too, or it would stay, with
+    // its listeners, for as long as the document does.
+    await within((async () => {
+      const tree = await send('Page.getFrameTree') as { frameTree?: FrameNode } | null;
+      for (const frameId of frameIds(tree?.frameTree)) {
+        await worldIn(send, frameId, worldName).then((contextId) => runIn(send, contextId, TEARDOWN_EXPRESSION)).catch(() => undefined);
+      }
+      return true;
+    })(), TEARDOWN_MS);
     await send('Runtime.removeBinding', { name: binding }).catch(() => undefined);
     if (scriptId !== null) await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: scriptId }).catch(() => undefined);
   };

@@ -451,8 +451,10 @@ describe('phone browser stream (main): a builtin pane', () => {
     await flush();
     expect(g().debugger.listenerCount('message')).toBe(3);
     await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'surf-a', streamId: 'st-surf-a' });
-    await flush();
+    await vi.advanceTimersByTimeAsync(50);
     expect(g().debugger.listenerCount('message')).toBe(0);
+    // Each frame's detector is taken down in its world before the binding goes.
+    expect(g().debugger.sent.some((x) => x.method === 'Runtime.evaluate' && String(x.params?.expression).includes('__wmuxFocusTeardown'))).toBe(true);
     expect(g().debugger.sent.filter((x) => x.method === 'Runtime.removeBinding' || x.method === 'Page.removeScriptToEvaluateOnNewDocument').map((x) => x.params))
       .toEqual([{ name: g().debugger.binding() }, { identifier: 'focus-script' }]);
     expect(g().debugger.sent.map((x) => x.method).filter((m) => /\.disable$/.test(m))).toEqual([]);

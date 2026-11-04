@@ -485,7 +485,12 @@ describe('phone browser stream (main)', () => {
       await flush();
       const s = sessions[0];
       await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a' });
+      await vi.advanceTimersByTimeAsync(50);
       expect(s.count('Runtime.removeBinding')).toBe(1);
+      // The detectors' teardown runs on the stream's session, before the screencast stops and the session goes.
+      const order = s.sent.map((x) => x.method);
+      expect(order.lastIndexOf('Runtime.removeBinding')).toBeLessThan(order.lastIndexOf('Page.stopScreencast'));
+      expect(s.detached).toBe(true);
       const pushed = pushes.length;
       s.focus = { editable: true, kind: 'text' };
       s.nudge();

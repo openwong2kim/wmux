@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createRequire } from 'node:module';
-import { READ_FOCUS_EXPRESSION, UNFOCUSED_POLL_MS, WATCH_FOCUS_EXPRESSION, focusDetectorSource, readFocus, watchFocus, type FocusCdp } from '../PhoneBrowserFocus';
+import { READ_FOCUS_EXPRESSION, FOCUS_POLL_MS, WATCH_FOCUS_EXPRESSION, focusDetectorSource, readFocus, watchFocus, type FocusCdp } from '../PhoneBrowserFocus';
 import { phoneBrowserFocus, phoneBrowserTapReply } from '../../../shared/phoneBrowserPreview';
 
 /**
@@ -287,7 +287,7 @@ describe('watchFocus (the stream event)', () => {
     expect(trees()).toBe(before + 1);
   });
 
-  it('while the page is not focused (no focus events reach it), reads again every second', async () => {
+  it('reads again every second, focused or not: no focus events reach a page that is not, and a page can stop being focused unseen', async () => {
     vi.useFakeTimers();
     const { cdp, state } = session();
     state.focused = false;
@@ -297,19 +297,20 @@ describe('watchFocus (the stream event)', () => {
     expect(seen).toEqual([{ editable: false }]);
     // A script's .focus() in a page that is not focused: no event, no nudge.
     state.focus = { editable: true, kind: 'text' };
-    await vi.advanceTimersByTimeAsync(UNFOCUSED_POLL_MS);
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
     expect(seen.at(-1)).toEqual({ editable: true, kind: 'text' });
-    // Focused again: events carry it from here, and the reads stop.
+    // Focused: a change no event reported is still read within a second.
     state.focused = true;
-    await vi.advanceTimersByTimeAsync(UNFOCUSED_POLL_MS);
     state.focus = { editable: false };
-    await vi.advanceTimersByTimeAsync(UNFOCUSED_POLL_MS * 3);
-    expect(seen.at(-1)).toEqual({ editable: true, kind: 'text' });
-    // And stop ends them too.
-    state.focused = false;
-    await watch.stop();
-    await vi.advanceTimersByTimeAsync(UNFOCUSED_POLL_MS * 3);
-    expect(seen.at(-1)).toEqual({ editable: true, kind: 'text' });
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
+    expect(seen.at(-1)).toEqual({ editable: false });
+    // Stop ends the reads.
+    state.focus = { editable: true, kind: 'text' };
+    const stopping = watch.stop();
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
+    await stopping;
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS * 3);
+    expect(seen.at(-1)).toEqual({ editable: false });
   });
 
   it('stop removes the binding and the detector, and nothing is reported after', async () => {

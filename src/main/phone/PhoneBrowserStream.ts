@@ -258,7 +258,8 @@ abstract class TabStream implements PhoneStreamTabView {
   /** The source's own checks, every tick. */
   protected abstract poll(now: number): void;
   /** Lets go of the browser: the screencast and whatever the source listens to. */
-  protected abstract release(): void;
+  /** Lets go of the browser; `unwatched` settles once the focus watcher's teardown, which uses the session, is done. */
+  protected abstract release(unwatched: Promise<void>): void;
   /** Whether the tab is on screen as far as the source knows; painted while not, a frame is not sent. */
   protected visible(): boolean { return true; }
 
@@ -557,15 +558,15 @@ abstract class TabStream implements PhoneStreamTabView {
     }).catch(() => null);
     if (!watch) return;
     if (this.stopped || !current()) { void watch.stop(); return; }
-    this.dropFocusWatch();
+    void this.dropFocusWatch();
     this.focusWatch = watch;
   }
 
-  /** The focus watcher stops: its binding, its new-document detector and its timer go. */
-  protected dropFocusWatch(): void {
+  /** The focus watcher stops: its detectors, its binding and its timer go. Settles when they have. */
+  protected dropFocusWatch(): Promise<void> {
     const watch = this.focusWatch;
     this.focusWatch = null;
-    void watch?.stop();
+    return watch ? watch.stop().catch(() => undefined) : Promise.resolve();
   }
 
   /** Tells the daemon the stream is over, then stops. */
@@ -584,8 +585,7 @@ abstract class TabStream implements PhoneStreamTabView {
     if (this.freshTimer) clearTimeout(this.freshTimer);
     if (this.firstFrame) clearTimeout(this.firstFrame);
     for (const item of this.outbox.splice(0)) { this.ackHeld(item); this.ack(item.ack); }
-    this.dropFocusWatch();
-    this.release();
+    this.release(this.dropFocusWatch());
     this.onStopped(this);
   }
 }
@@ -721,7 +721,7 @@ class ChromeTabStream extends TabStream {
     if (this.stopped || this.session !== session) return;
     this.session = null;
     // The watcher went with the session; the re-attach starts another.
-    this.dropFocusWatch();
+    void this.dropFocusWatch();
     // The re-attach arms its own first frame; the old page's capture has no session to run on.
     if (this.firstFrame) { clearTimeout(this.firstFrame); this.firstFrame = null; }
     // Until the new page is read, input checks the live page itself (PhoneBrowser.ts).
@@ -740,11 +740,12 @@ class ChromeTabStream extends TabStream {
     retry.unref?.();
   }
 
-  protected release(): void {
+  protected release(unwatched: Promise<void>): void {
     const session = this.session;
     this.session = null;
     if (session && !session.closed) {
-      void session.send('Page.stopScreencast').catch(() => undefined).finally(() => { void session.detach(); });
+      // The focus watcher's teardown runs on this session: it goes first.
+      void unwatched.then(() => session.send('Page.stopScreencast')).catch(() => undefined).finally(() => { void session.detach(); });
     }
   }
 }
@@ -920,6 +921,7 @@ class BuiltinTabStream extends TabStream {
   }
 
   protected release(): void {
+    // The pane's debugger stays attached: the focus watcher's teardown needs no wait.
     for (const off of this.unlisten.splice(0)) off();
     if (!this.wc.isDestroyed()) void this.cdp('Page.stopScreencast').catch(() => undefined);
   }
