@@ -3741,7 +3741,11 @@ phone layout as well.
   does not revert its own once the `viewport` action or an agent has
   changed the preset since. Going back also works on a page that is not
   http and while the user has paused the agent or taken over the pane; a
-  switch that fails is tried again about every 2 s.
+  switch that fails is tried again about every 2 s. Frames stay the size of
+  the pane: the page fills the left part of each frame, as wide as the
+  phone's viewport, and the rest of the frame is empty. `geometry` keeps
+  the pane's width at scale 1, so taps and scrolls on the page map as on
+  any frame.
 - **Going back**: about 4 s after the last subscriber that asked for it
   leaves. A subscriber asking for it within that time keeps the tab as it
   is (no reload); a stream whose last subscriber left keeps running for
