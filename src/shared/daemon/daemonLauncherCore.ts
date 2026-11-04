@@ -679,6 +679,18 @@ export function nextPollDelayMs(elapsedMs: number): number {
  */
 export const DAEMON_READY_HARD_CEILING_MS = 90_000;
 
+/**
+ * The launcher would not start a daemon over a pid it could not verify, and
+ * the user declined the recovery dialog (or there was no dialog to show).
+ * Starting again would only ask the same question again.
+ */
+export class DaemonStartRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DaemonStartRefusedError';
+  }
+}
+
 export interface DaemonReadinessPollOptions {
   budgetMs: number;
   readPipeName: () => string | null;
@@ -1505,7 +1517,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
           return { pid: existingPid, authToken: token, pipeName, spawned: false };
         }
         if (outcome === 'refuse') {
-          throw new Error(
+          throw new DaemonStartRefusedError(
             `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
           );
         }
@@ -1561,7 +1573,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
             return { pid: existingPid, authToken: token, pipeName, spawned: false };
           }
           if (outcome === 'refuse') {
-            throw new Error(
+            throw new DaemonStartRefusedError(
               `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
             );
           }
@@ -1608,7 +1620,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
               return { pid: existingPid, authToken: token, pipeName, spawned: false };
             }
             if (outcome === 'refuse') {
-              throw new Error(
+              throw new DaemonStartRefusedError(
                 `[launcher] daemon.pid=${existingPid} alive but its command line does not identify the wmux daemon script; refusing to spawn over a possibly-live daemon. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
               );
             }

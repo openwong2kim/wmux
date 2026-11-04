@@ -7,7 +7,8 @@ import {
   DAEMON_PROGRESS_DEFAULTS, DaemonProgressTracker, UNREADABLE_SAMPLE,
   type DaemonProcessSample, type DaemonProgress, type DaemonProgressConfig,
 } from '../../shared/daemon/daemonProgress';
-import { LaunchdJobQueuedError, QUEUED_JOB_ADOPT_MS } from '../../shared/daemon/launchdDaemonJob';
+import { LaunchdJobQueuedError } from '../../shared/daemon/launchdDaemonJob';
+import { DAEMON_READY_HARD_CEILING_MS, DaemonStartRefusedError } from '../../shared/daemon/daemonLauncherCore';
 
 export interface DaemonRespawnState {
   attempt: number;
@@ -140,6 +141,12 @@ export interface DaemonRespawnConfig {
   hangFailureThreshold?: number;
   /** How long a daemon that does not answer may go without CPU time before it is respawned (daemonProgress.ts). */
   progress?: DaemonProgressConfig;
+  /**
+   * How long an outage may wait on a daemon launchd has not started yet
+   * without using up the budget. Default DAEMON_READY_HARD_CEILING_MS (90 s),
+   * the time a spawned daemon gets to come up.
+   */
+  queuedWaitMs?: number;
 }
 
 const DEFAULTS: Required<DaemonRespawnConfig> = {
@@ -154,6 +161,7 @@ const DEFAULTS: Required<DaemonRespawnConfig> = {
   healthTimeoutMs: 5_000,
   hangFailureThreshold: 5,
   progress: DAEMON_PROGRESS_DEFAULTS,
+  queuedWaitMs: DAEMON_READY_HARD_CEILING_MS,
 };
 
 // RCA A4 — a successful ping reporting event-loop lag at/above this is logged
@@ -300,6 +308,12 @@ export class DaemonRespawnController {
       return client;
     } catch (err) {
       this.lastError = this.stringifyError(err);
+      if (err instanceof DaemonStartRefusedError) {
+        // The user declined the recovery dialog: another start would only ask
+        // again. Local mode stays final, as it always was here.
+        this.deps.logger.warn(`bootstrap failed: ${this.lastError} — staying local`);
+        return null;
+      }
       this.deps.logger.warn(`bootstrap failed: ${this.lastError} — entering respawn budget loop`);
       if (err instanceof LaunchdJobQueuedError) this.queuedSince = Date.now();
       this.handleDisconnect('bootstrap failed');
@@ -838,16 +852,15 @@ export class DaemonRespawnController {
 
   /**
    * Whether a failed start only found the daemon still queued in launchd.
-   * True until this outage has waited QUEUED_JOB_ADOPT_MS on a queued job,
-   * the window a queued job is adopted for, so a launchd slowed down by a
-   * reboot cannot use up the budget while its daemon is on the way. After
-   * that the budget counts as for any failed start.
+   * True until this outage has waited `queuedWaitMs` on a queued job, so a
+   * launchd slowed down by a reboot cannot use up the budget while its daemon
+   * is on the way. After that the budget counts as for any failed start.
    */
   private isQueuedWait(err: unknown): boolean {
     if (!(err instanceof LaunchdJobQueuedError)) return false;
     const now = Date.now();
     this.queuedSince ??= now;
-    return now - this.queuedSince < QUEUED_JOB_ADOPT_MS;
+    return now - this.queuedSince < this.cfg.queuedWaitMs;
   }
 
   private clearRespawnTimer(): void {

@@ -206,12 +206,6 @@ export const defaultLaunchdRuntime = (log: (...args: unknown[]) => void): Launch
 const PID_WAIT_MS = 5_000;
 /** Jobs younger than this are never pruned: well past PID_WAIT_MS. */
 export const PRUNE_GRACE_MS = 30_000;
-/**
- * How long a job launchd has not started yet is waited on (adopted) instead
- * of replaced: the 90 s a directly spawned daemon gets to come up
- * (DAEMON_READY_HARD_CEILING_MS). Older, it is pruned like any other.
- */
-export const QUEUED_JOB_ADOPT_MS = 90_000;
 const START_LOCK_NAME = 'start.lock';
 const START_LOCK_WAIT_MS = 45_000;
 const START_LOCK_POLL_MS = 50;
@@ -358,14 +352,22 @@ export async function queryDaemonJob(label: string, rt: LaunchdRuntime): Promise
 }
 
 const PID_POLL_MS = 25;
+/**
+ * Pid poll for an adopted job. It has already outlasted one PID_WAIT_MS, so
+ * launchd is slow, and asking it every 25 ms only adds to its load.
+ */
+const QUEUED_POLL_MS = 250;
 const EXIT_POLL_MS = 250;
 
 /**
  * Boot out (and delete the plist of) every job of this instance that is not
  * running. Never touches a job with a live pid, one younger than
- * PRUNE_GRACE_MS, or one launchd has not started yet that is younger than
- * QUEUED_JOB_ADOPT_MS. Returns the newest such queued job, for the caller to
- * wait on, or null. Best-effort, never throws. Call it under the start lock.
+ * PRUNE_GRACE_MS, or one whose state launchctl cannot report. A job launchd
+ * has loaded but not started yet is a daemon on its way, and booting it out
+ * would only put the next one at the back of launchd's queue: the oldest such
+ * job is kept and returned for the caller to wait on, and newer ones, which
+ * would start a second daemon behind it, are booted out. Returns null when
+ * there is none. Best-effort, never throws. Call it under the start lock.
  */
 export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, rt: LaunchdRuntime): Promise<string | null> {
   const prefix = `${baseLabel}.`;
@@ -378,26 +380,38 @@ export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, 
       if (f.startsWith(prefix) && f.endsWith('.plist')) labels.add(f.slice(0, -'.plist'.length));
     }
   } catch { /* no dir yet */ }
-  let queued: { label: string; createdAt: number } | null = null;
+  const isYoung = (createdAt: number | null) => createdAt !== null && Date.now() - createdAt < PRUNE_GRACE_MS;
+  const bootOut = async (label: string, loaded: boolean) => {
+    if (loaded) {
+      try { await rt.runLaunchctl(['bootout', `gui/${rt.uid}/${label}`]); } catch { /* already gone */ }
+    }
+    try { fs.unlinkSync(path.join(plistDir, `${label}.plist`)); } catch { /* not ours / gone */ }
+  };
+  const queued: Array<{ label: string; createdAt: number | null }> = [];
   for (const label of labels) {
     const job = jobs.get(label);
     if (job && job.pid !== null) continue;
     const createdAt = daemonJobCreatedAt(label);
-    if (job && createdAt !== null && Date.now() - createdAt < QUEUED_JOB_ADOPT_MS) {
-      // `list` cannot tell never-run from ran-and-exited-0; `print` can.
+    if (job) {
+      // `list` cannot tell never-run from ran-and-exited-0; `print` can. It is
+      // also newer: a job launchd started since `list` shows its pid now.
       const state = await queryDaemonJob(label, rt);
-      if (state.kind === 'loaded' && state.pid === null && state.runs === 0) {
-        if (queued === null || createdAt > queued.createdAt) queued = { label, createdAt };
+      if (state.kind === 'unknown' || (state.kind === 'loaded' && state.pid !== null)) continue;
+      if (state.kind === 'loaded' && state.runs === 0) {
+        queued.push({ label, createdAt });
         continue;
       }
     }
-    if (createdAt !== null && Date.now() - createdAt < PRUNE_GRACE_MS) continue;
-    if (job) {
-      try { await rt.runLaunchctl(['bootout', `gui/${rt.uid}/${label}`]); } catch { /* already gone */ }
-    }
-    try { fs.unlinkSync(path.join(plistDir, `${label}.plist`)); } catch { /* not ours / gone */ }
+    if (isYoung(createdAt)) continue;
+    await bootOut(label, job !== undefined);
   }
-  return queued?.label ?? null;
+  // Oldest first: it is nearest the front of launchd's queue. A label without
+  // a creation time sorts last.
+  queued.sort((a, b) => (a.createdAt ?? Infinity) - (b.createdAt ?? Infinity));
+  for (const { label, createdAt } of queued.slice(1)) {
+    if (!isYoung(createdAt)) await bootOut(label, true);
+  }
+  return queued[0]?.label ?? null;
 }
 
 /**
@@ -480,10 +494,12 @@ export async function startDaemonViaLaunchd(
       throw new LaunchdUnavailableError(`launchd job ${label} disappeared before its daemon started`);
     }
     if (Date.now() >= deadline) {
-      if (state.kind === 'loaded') throw new LaunchdJobQueuedError(label);
-      throw new Error(`launchd job ${label}: load state unknown and its daemon pid never appeared`);
+      // The job is loaded (bootstrapped or adopted above), so no pid means
+      // launchd has not started it, even when the last `print` failed under
+      // the same load.
+      throw new LaunchdJobQueuedError(label);
     }
-    await rt.sleep(PID_POLL_MS);
+    await rt.sleep(adopted ? QUEUED_POLL_MS : PID_POLL_MS);
   }
 
   const exitListeners: Array<(code: number | null) => void> = [];

@@ -8,7 +8,8 @@ import {
 } from '../DaemonRespawnController';
 import type { DaemonClient } from '../../DaemonClient';
 import type { DaemonInfo } from '../launcher';
-import { LaunchdJobQueuedError, QUEUED_JOB_ADOPT_MS } from '../../../shared/daemon/launchdDaemonJob';
+import { LaunchdJobQueuedError } from '../../../shared/daemon/launchdDaemonJob';
+import { DaemonStartRefusedError } from '../../../shared/daemon/daemonLauncherCore';
 
 /**
  * Minimal stub mirroring the parts of `DaemonClient` the controller
@@ -220,6 +221,18 @@ describe('DaemonRespawnController.bootstrap', () => {
     expect(h.controller.isHealthy).toBe(true);
     expect(h.deps.onInstall).toHaveBeenCalledTimes(1);
     expect(h.events[h.events.length - 1]).toEqual({ type: 'reconnected' });
+  });
+
+  it('stays local without retrying when the user declined the recovery dialog', async () => {
+    const h = makeHarness({
+      ensureDaemonImpl: async () => { throw new DaemonStartRefusedError('refusing to spawn over a possibly-live daemon'); },
+    });
+
+    expect(await h.controller.bootstrap()).toBeNull();
+    // Another start would only show the same dialog again.
+    expect(h.events).toEqual([]);
+    expect(h.deps.onUninstall).not.toHaveBeenCalled();
+    expect(h.controller.daemonMayReturn).toBe(false);
   });
 
   it('returns null and disconnects when auth-ping fails', async () => {
@@ -1435,14 +1448,14 @@ describe('DaemonRespawnController hands its exit watch over for a full shutdown'
 });
 
 describe('DaemonRespawnController queued launchd job', () => {
-  it('a start that finds the daemon still queued costs no budget until QUEUED_JOB_ADOPT_MS', async () => {
+  it('a start that finds the daemon still queued costs no budget until queuedWaitMs', async () => {
     const h = makeHarness({
-      config: { baseBackoffMs: 100, maxBackoffMs: 100, budget: 2, healthIntervalMs: 0 },
+      config: { baseBackoffMs: 100, maxBackoffMs: 100, budget: 2, healthIntervalMs: 0, queuedWaitMs: 5_000 },
       ensureDaemonImpl: async () => { throw new LaunchdJobQueuedError('com.wmux.daemon.x'); },
     });
 
     await h.controller.bootstrap();
-    await vi.advanceTimersByTimeAsync(QUEUED_JOB_ADOPT_MS - 1_000);
+    await vi.advanceTimersByTimeAsync(4_000);
     expect(h.ensureDaemonCalls).toBeGreaterThan(10);
     expect(h.events.some((e) => e.type === 'respawn-exhausted')).toBe(false);
     expect(h.controller.daemonMayReturn).toBe(true);

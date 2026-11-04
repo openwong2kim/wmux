@@ -17,7 +17,6 @@ import {
   withDaemonStartLock,
   LaunchdUnavailableError,
   LaunchdJobQueuedError,
-  QUEUED_JOB_ADOPT_MS,
   type LaunchdRuntime,
 } from '../launchdDaemonJob';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -393,28 +392,68 @@ describe('startDaemonViaLaunchd / pruneStaleDaemonJobs', () => {
     const { rt, jobs, calls } = fakeLaunchd();
     jobs.set(queued, { pid: null, runs: 0, lastExit: null, status: 0 });
     // launchd starts it while we wait.
-    rt.sleep = async () => { jobs.set(queued, { pid: 1269, runs: 1, lastExit: null, status: 0 }); };
+    const sleeps: number[] = [];
+    rt.sleep = async (ms) => { sleeps.push(ms); jobs.set(queued, { pid: 1269, runs: 1, lastExit: null, status: 0 }); };
     const job = await startDaemonViaLaunchd(startOpts(), rt);
     job.dispose();
     expect(job.label).toBe(queued);
     expect(job.pid).toBe(1269);
     expect(calls.filter((c) => c[0] === 'bootstrap' || c[0] === 'bootout')).toEqual([]);
+    // launchd is already slow: the adopted job is polled at 250 ms, not 25 ms.
+    expect(sleeps).toEqual([250]);
   });
 
-  it('prunes a queued job only once it is older than QUEUED_JOB_ADOPT_MS, and returns the newest one kept', async () => {
+  it('reports a job as queued at the deadline even when the last print failed', async () => {
+    const { rt } = fakeLaunchd({ onBootstrap: () => ({ pid: null, runs: 0, lastExit: null, status: 0 }) });
+    const run = rt.runLaunchctl;
+    let prints = 0;
+    rt.runLaunchctl = async (args) => {
+      if (args[0] === 'print' && ++prints > 1) throw new Error('launchctl print failed: timed out');
+      return run(args);
+    };
+    let t = Date.now();
+    const realNow = Date.now;
+    Date.now = () => t;
+    rt.sleep = async () => { t += 1_000; };
+    try {
+      await expect(startDaemonViaLaunchd(startOpts(), rt)).rejects.toBeInstanceOf(LaunchdJobQueuedError);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+
+  it('keeps the oldest queued job however old, and boots out newer queued duplicates and exited jobs', async () => {
     const now = Date.now();
-    const kept = newDaemonJobLabel(base, now - 60_000);
-    const older = newDaemonJobLabel(base, now - 70_000);
-    const expired = newDaemonJobLabel(base, now - QUEUED_JOB_ADOPT_MS - 1_000);
+    const oldest = newDaemonJobLabel(base, now - 200_000);
+    const newer = newDaemonJobLabel(base, now - 60_000);
+    const young = newDaemonJobLabel(base, now - 5_000);
     const exited = newDaemonJobLabel(base, now - 60_000);
     const { rt, jobs, calls } = fakeLaunchd();
-    jobs.set(kept, { pid: null, runs: 0, lastExit: null, status: 0 });
-    jobs.set(older, { pid: null, runs: 0, lastExit: null, status: 0 });
-    jobs.set(expired, { pid: null, runs: 0, lastExit: null, status: 0 });
+    jobs.set(newer, { pid: null, runs: 0, lastExit: null, status: 0 });
+    jobs.set(oldest, { pid: null, runs: 0, lastExit: null, status: 0 });
+    jobs.set(young, { pid: null, runs: 0, lastExit: null, status: 0 });
     jobs.set(exited, { pid: null, runs: 1, lastExit: 0, status: 0 });
-    expect(await pruneStaleDaemonJobs(base, dir, rt)).toBe(kept);
+    expect(await pruneStaleDaemonJobs(base, dir, rt)).toBe(oldest);
     expect(calls.filter((c) => c[0] === 'bootout').map((c) => c[1]).sort())
-      .toEqual([`gui/501/${expired}`, `gui/501/${exited}`].sort());
+      .toEqual([`gui/501/${newer}`, `gui/501/${exited}`].sort());
+  });
+
+  it('never boots out a job launchd started since list, or one print cannot report', async () => {
+    const started = newDaemonJobLabel(base, old());
+    const unreadable = newDaemonJobLabel(base, old());
+    const { rt, jobs, calls } = fakeLaunchd();
+    jobs.set(started, { pid: null, runs: 0, lastExit: null, status: 0 });
+    jobs.set(unreadable, { pid: null, runs: 1, lastExit: 0, status: 0 });
+    const run = rt.runLaunchctl;
+    rt.runLaunchctl = async (args) => {
+      const out = await run(args);
+      // launchd starts the queued job right after `list` answered.
+      if (args[0] === 'list') jobs.set(started, { pid: 1269, runs: 1, lastExit: null, status: 0 });
+      if (args[0] === 'print' && args[1].endsWith(unreadable)) throw new Error('launchctl print failed: timed out');
+      return out;
+    };
+    expect(await pruneStaleDaemonJobs(base, dir, rt)).toBeNull();
+    expect(calls.filter((c) => c[0] === 'bootout')).toEqual([]);
   });
 
   it('reports an early exit before the pid was observed, including status 0', async () => {
