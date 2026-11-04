@@ -322,6 +322,52 @@ describe('phone preview on dedicated-profile Chrome', () => {
   });
 });
 
+describe('stream input (stream:true) on dedicated-profile Chrome', () => {
+  const cart = { ...scope, expectedURL: 'https://shop.example.com/cart' };
+  const mouse = (sent: ReturnType<typeof fakeChrome>['sent']) => sent.filter((c) => c.method === 'Input.dispatchMouseEvent');
+
+  it('presses a stream key through parseKeyPress, and only on stream input', async () => {
+    const { deps, sent } = fakeChrome();
+    expect(await handlePhoneBrowser('browser.key', { ...cart, key: 'ArrowDown', stream: true }, fixture(deps))).toEqual({ applied: true });
+    expect(sent.filter((c) => c.method === 'Input.dispatchKeyEvent').map((c) => [c.params?.type, c.params?.key])).toEqual([['keyDown', 'ArrowDown'], ['keyUp', 'ArrowDown']]);
+    sent.length = 0;
+    await expect(handlePhoneBrowser('browser.key', { ...cart, key: 'ArrowDown' }, fixture(deps))).rejects.toThrow('Unsupported browser key');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('an input while the last one is still out is browser-input-busy, and sends nothing', async () => {
+    const { deps, answer, sent } = fakeChrome();
+    let ack: (value: unknown) => void = () => undefined;
+    answer.mockImplementation(async (method: string) => {
+      if (method === 'Page.getLayoutMetrics') return METRICS;
+      if (method === 'Input.insertText') return new Promise((resolve) => { ack = resolve; });
+      return {};
+    });
+    const first = handlePhoneBrowser('browser.type', { ...cart, text: 'one', stream: true }, fixture(deps));
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = sent.length;
+    expect(await handlePhoneBrowser('browser.type', { ...cart, text: 'two', stream: true }, fixture(deps))).toEqual({ error: 'browser-input-busy' });
+    expect(await handlePhoneBrowser('browser.tap', { ...cart, geometry, x: 0.5, y: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-input-busy' });
+    // Without the gate, the old failure.
+    await expect(handlePhoneBrowser('browser.type', { ...cart, text: 'two' }, fixture(deps))).rejects.toThrow('Browser input unavailable');
+    expect(sent.slice(before).filter((c) => c.method.startsWith('Input.') || c.method.startsWith('Emulation.'))).toEqual([]);
+    ack({});
+    expect(await first).toEqual({ applied: true });
+  });
+
+  it('a moved viewport is browser-viewport-changed; a scroll checks the size only', async () => {
+    const { deps, sent } = fakeChrome();
+    const stale = { ...geometry, scrollY: 0 };
+    expect(await handlePhoneBrowser('browser.tap', { ...cart, geometry: stale, x: 0.5, y: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-viewport-changed' });
+    expect(await handlePhoneBrowser('browser.scroll', { ...cart, geometry: { ...geometry, height: 699 }, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-viewport-changed' });
+    expect(mouse(sent)).toEqual([]);
+    expect(await handlePhoneBrowser('browser.scroll', { ...cart, geometry: stale, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5, stream: true }, fixture(deps))).toEqual({ applied: true });
+    expect(mouse(sent)[1].params).toMatchObject({ type: 'mouseWheel', x: 500, y: 350, deltaX: 0, deltaY: 350 });
+    // Without the gate, both are as strict as before.
+    await expect(handlePhoneBrowser('browser.scroll', { ...cart, geometry: stale, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5 }, fixture(deps))).rejects.toThrow('viewport changed');
+  });
+});
+
 describe('which Chrome tabs a workspace has (phoneChromeTabs)', () => {
   function client(tabs: ChromeTargetInfo[], extra: Partial<ChromeBackendClient> = {}): ChromeBackendClient {
     return {

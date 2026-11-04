@@ -1,13 +1,24 @@
 import type { WebContents } from 'electron';
+import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
 
 const active = new Set<number>();
 
+/** How one phone input takes a tab's input lock. Stream input only; absent, as before. */
+export interface PhoneBrowserInputOptions {
+  /** An overlapping input is `browser-input-busy` rather than the generic failure. */
+  codeBusy?: boolean;
+  /** Runs with the lock held, before anything focuses or raises the tab. */
+  beforeFocus?: () => Promise<void>;
+}
+
 /** CDP text insertion requires focus even when Tab changed the active DOM node. */
-export async function withPhoneBrowserInputFocus<T>(contents: WebContents, operation: () => Promise<T>): Promise<T> {
-  if (contents.isDestroyed() || active.has(contents.id)) throw new Error('Browser input unavailable');
+export async function withPhoneBrowserInputFocus<T>(contents: WebContents, operation: () => Promise<T>, options: PhoneBrowserInputOptions = {}): Promise<T> {
+  if (contents.isDestroyed()) throw new Error('Browser input unavailable');
+  if (active.has(contents.id)) throw options.codeBusy ? new PhoneBrowserError('browser-input-busy') : new Error('Browser input unavailable');
   active.add(contents.id);
   let emulated = false;
   try {
+    await options.beforeFocus?.();
     contents.focus();
     await contents.debugger.sendCommand('Page.bringToFront');
     const state = await contents.debugger.sendCommand('Runtime.evaluate', {

@@ -42,4 +42,36 @@ describe('phone browser input focus', () => {
     expect(operation).toHaveBeenCalledTimes(2);
   });
 
+  it('stream input: an overlap is browser-input-busy, before anything runs', async () => {
+    const contents = fixture(true);
+    const wc = contents as unknown as WebContents;
+    const rejected = vi.fn(async () => 'unexpected');
+    await withPhoneBrowserInputFocus(wc,async () => {
+      await expect(withPhoneBrowserInputFocus(wc,rejected,{codeBusy:true})).rejects.toMatchObject({code:'browser-input-busy'});
+    });
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it('the pre-focus check runs with the lock held, and a refusal there never focuses or raises the tab', async () => {
+    const contents = fixture();
+    const wc = contents as unknown as WebContents;
+    const order: string[] = [];
+    contents.focus.mockImplementation(() => { order.push('focus'); });
+    await withPhoneBrowserInputFocus(wc,async () => { order.push('operation'); },{beforeFocus:async () => {
+      order.push('check');
+      // The lock is already held: an overlapping input is refused.
+      await expect(withPhoneBrowserInputFocus(wc,async () => undefined)).rejects.toThrow('unavailable');
+    }});
+    expect(order).toEqual(['check','focus','operation']);
+    contents.focus.mockClear();
+    contents.debugger.sendCommand.mockClear();
+    const operation = vi.fn(async () => undefined);
+    await expect(withPhoneBrowserInputFocus(wc,operation,{beforeFocus:async () => { throw new Error('viewport changed'); }})).rejects.toThrow('viewport changed');
+    expect(contents.focus).not.toHaveBeenCalled();
+    expect(contents.debugger.sendCommand).not.toHaveBeenCalled();
+    expect(operation).not.toHaveBeenCalled();
+    // And the lock is released.
+    expect(await withPhoneBrowserInputFocus(wc,async () => 'next')).toBe('next');
+  });
+
 });

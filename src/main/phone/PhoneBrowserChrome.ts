@@ -211,10 +211,11 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       return { data, mimeType: 'image/jpeg' as const };
     },
     capture: run => bounded(run),
-    input: async (operation, focus) => {
-      if (active.has(surfaceId)) throw new Error('Browser input unavailable');
+    input: async (operation, focus, options = {}) => {
+      if (active.has(surfaceId)) throw options.codeBusy ? new PhoneBrowserError('browser-input-busy') : new Error('Browser input unavailable');
       active.add(surfaceId);
       const running = (async () => {
+        await options.beforeFocus?.();
         // A background Chrome window has no focused element to type into:
         // emulate focus instead of raising the tab. Set up (attaching the page
         // with it) before the operation's last ownership and URL checks, so

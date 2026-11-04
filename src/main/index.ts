@@ -2651,10 +2651,10 @@ app.on('ready', async () => {
             focusBuiltin: (surfaceId, workspaceId) =>
               focusBuiltinTab((method, params) => sendToRenderer(() => mainWindow, method, params), surfaceId, workspaceId),
             chrome: phoneChromeDeps,
-            input: (id, operation) => {
+            input: (id, operation, options) => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) return Promise.reject(new Error('Browser unavailable'));
-              return withPhoneBrowserInputFocus(wc,operation);
+              return withPhoneBrowserInputFocus(wc,operation,options);
             },
             page: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? {title:wc.getTitle(),url:wc.getURL()} : null; },
             invoke: (method,params) => rpcRouter.dispatch({id: `phone-browser-${phoneBrowserRequestId()}`,method:method as RpcMethod,params},{operator:true}),

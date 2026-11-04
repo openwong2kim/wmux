@@ -13,6 +13,17 @@
 /** Announced at `daemon.phone.register`: this desktop previews dedicated Chrome tabs. */
 export const BROWSER_CHROME_PREVIEW_CAPABILITY = 'browser.chromePreview';
 
+/**
+ * Announced at `daemon.phone.register`: this desktop streams a preview tab.
+ * The daemon then marks forwarded input `stream:true`, and main answers that
+ * input by the stream's rules (the keys and `history` below, the size-only
+ * scroll check, and the 409 codes).
+ */
+export const BROWSER_STREAM_CAPABILITY = 'browser.stream';
+
+/** Keys a phone may press beyond the base list, only on input marked `stream:true`. */
+export const BROWSER_STREAM_KEYS: readonly string[] = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','Delete'];
+
 /** Which browser a preview row is. */
 export type PhoneBrowserBackend = 'builtin' | 'chrome';
 
@@ -31,6 +42,10 @@ export const PHONE_BROWSER_ERROR_STATUS = {
   'browser-help-not-found': 404,
   /** Help-card typing: that request already ended. */
   'browser-help-closed': 409,
+  /** Stream input: another input on this tab is still running. Nothing was applied. */
+  'browser-input-busy': 409,
+  /** Stream input: the viewport no longer matches the geometry sent. Nothing was applied. */
+  'browser-viewport-changed': 409,
 } as const;
 
 export type PhoneBrowserErrorCode = keyof typeof PHONE_BROWSER_ERROR_STATUS;
