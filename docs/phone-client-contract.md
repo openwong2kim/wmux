@@ -5941,8 +5941,14 @@ The test renders a loopback fixture in an actual Electron webview and exercises
 `handlePhoneBrowser` through the existing browser RPC handlers: page listing,
 JPEG capture, mobile viewport (390 × 844), desktop reset, and URL navigation.
 It asserts the original viewport dimensions and touch capability are restored.
+It then streams the same pane (the live browser stream's builtin source):
+a first frame on a still page whose geometry is the capture probe's own at a
+fractional scroll offset, a tap mapped by that frame, a `url` push on
+`pushState` and the `409 browser-page-changed` after it, no geometry at
+125 % zoom, `hidden` and `live` around a hidden webview, and
+`browser-tab-gone` when the webview is removed.
 The printed artifact directory contains desktop/mobile/restored JPEGs and
-`result.json`; failure or the 30-second timeout exits nonzero.
+`result.json`; failure or the 60-second timeout exits nonzero.
 
 The target registry and automation lease are fixtures. This verifies actual
 Chromium rendering/CDP/capture behavior, not the HTTP pairing transport, the
