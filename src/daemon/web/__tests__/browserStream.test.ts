@@ -397,10 +397,13 @@ describe('BrowserStreamRegistry', () => {
     expect(sink.named('focus')).toHaveLength(2);
     expect(JSON.stringify(sink.chunks)).not.toContain('secret');
     // Away and back before this subscriber took the change: it hears nothing new.
+    focus({ editable: true, kind: 'text' });
+    await flushMicrotasks();
+    expect(sink.named('focus')).toHaveLength(3);
     focus({ editable: true, kind: 'search' });
-    focus({ editable: false });
+    focus({ editable: true, kind: 'text' });
     await vi.advanceTimersByTimeAsync(200);
-    expect(sink.named('focus')).toHaveLength(2);
+    expect(sink.named('focus')).toHaveLength(3);
   });
 
   it('a late subscriber gets the tab\'s focus after the latest frame', async () => {
