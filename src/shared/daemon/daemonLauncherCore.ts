@@ -1695,6 +1695,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
             // A daemon starved of memory misses every ping while it still
             // runs, and killing it ends every PTY it holds. While its CPU time
             // keeps rising it is waited on (bounded) instead of killed.
+            let goneWhileWaited = false;
             if (token) {
               const outcome = await waitOutProgressingDaemon({
                 pid: existingPid,
@@ -1716,7 +1717,13 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
                 (deps.log ?? console.log)(`[launcher] Daemon (PID ${existingPid}) answered while it was waited on — reusing, no kill`);
                 return { pid: existingPid, authToken: answeredToken, pipeName, spawned: false };
               }
+              // It exited while it was waited on, and the pid may already be
+              // another process's (another start time): nothing to kill.
+              goneWhileWaited = outcome === 'gone';
             }
+            if (goneWhileWaited) {
+              (deps.log ?? console.log)(`[launcher] Daemon (PID ${existingPid}) exited while it was waited on — not killing that pid`);
+            } else {
             // (a) Verified wmux daemon → kill before respawning.
             (deps.warn ?? console.warn)(
               `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive${token ? ' after escalated re-ping' : ' (no auth token to ping)'} — terminating before respawn`,
@@ -1749,6 +1756,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
               // side releases before spawnDaemon's first `createServer`
               // listen attempt.
               await new Promise((resolve) => setTimeout(resolve, 200));
+            }
             }
           }
         }

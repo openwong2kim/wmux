@@ -371,6 +371,7 @@ export class DaemonRespawnController {
     }
     const answered = this.answeringDaemon(info, pong);
     this.connectedDaemon = { pid: answered.pid, spawned: answered.spawned };
+    this.bindDaemonIdentity(answered.pid);
 
     // B′ staleness gate. Only a REUSED daemon can be stale (a daemon we just
     // spawned runs this app's own binary), and only once per app run.
@@ -520,6 +521,7 @@ export class DaemonRespawnController {
     );
     const answered = this.answeringDaemon(freshInfo, freshPong);
     this.connectedDaemon = { pid: answered.pid, spawned: answered.spawned };
+    this.bindDaemonIdentity(answered.pid);
     return freshClient;
   }
 
@@ -700,6 +702,15 @@ export class DaemonRespawnController {
         } catch { /* best-effort */ }
       }
     }
+  }
+
+  /** Records the connected daemon's start time, so a later sample of a pid handed on to another process reads as gone. */
+  private bindDaemonIdentity(pid: number | null): void {
+    const sample = this.deps.sampleDaemon;
+    if (pid === null || !sample) return;
+    void sample(pid).then((s) => {
+      if (s.alive && this.connectedDaemon.pid === pid) this.progress.bind(pid, s.startedAt);
+    }, () => undefined);
   }
 
   private async observeProgress(pid: number | null): Promise<DaemonProgress> {

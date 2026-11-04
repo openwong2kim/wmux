@@ -683,7 +683,7 @@ describe('DaemonRespawnController health probe', () => {
       const sampled: number[] = [];
       const h = makeHarness({
         config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
-        sampleDaemon: async (pid) => { sampled.push(pid); cpu += 40; return { alive: true, cpuMs: cpu, underPressure: true }; },
+        sampleDaemon: async (pid) => { sampled.push(pid); cpu += 40; return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: true }; },
       });
       const c1 = new FakeDaemonClient();
       h.clientQueue.push(c1, new FakeDaemonClient());
@@ -702,7 +702,7 @@ describe('DaemonRespawnController health probe', () => {
       let rising = true;
       const h = makeHarness({
         config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
-        sampleDaemon: async () => { if (rising) cpu += 40; return { alive: true, cpuMs: cpu, underPressure: false }; },
+        sampleDaemon: async () => { if (rising) cpu += 40; return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: false }; },
       });
       const c1 = new FakeDaemonClient();
       h.clientQueue.push(c1, new FakeDaemonClient());
@@ -721,10 +721,27 @@ describe('DaemonRespawnController health probe', () => {
       expect(h.logs.some((l) => l.level === 'error' && l.msg.includes('no CPU time for the whole budget'))).toBe(true);
     });
 
+    it('a daemon whose pid was handed on to another busy process is gone, not progressing: respawned at the threshold', async () => {
+      let cpu = 0;
+      let startedAt = 'T0';
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => { cpu += 40; return { alive: true, cpuMs: cpu, startedAt, underPressure: false }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      // The daemon dies and another process gets its pid; its CPU time rises.
+      startedAt = 'T1';
+      for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+    });
+
     it('a daemon whose process is gone, or whose CPU time cannot be read, is respawned at the threshold as before', async () => {
       for (const sample of [
-        { alive: false, cpuMs: null, underPressure: false },
-        { alive: true, cpuMs: null, underPressure: false },
+        { alive: false, cpuMs: null, startedAt: null, underPressure: false },
+        { alive: true, cpuMs: null, startedAt: null, underPressure: false },
       ]) {
         const h = makeHarness({
           config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },

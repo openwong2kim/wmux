@@ -8,7 +8,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
-import { tryProcessCpuMs } from '../../main/pty/winSnapshotNative';
+import { tryProcessCpuMs, tryProcessCreatedAt } from '../../main/pty/winSnapshotNative';
 
 /** One look at the daemon's process. */
 export interface DaemonProcessSample {
@@ -16,6 +16,12 @@ export interface DaemonProcessSample {
   alive: boolean;
   /** Its CPU time so far (user + system), in ms; null when it could not be read. */
   cpuMs: number | null;
+  /**
+   * When the process started, as the OS reports it; null when it could not
+   * be read. A pid that comes back with another start time is another
+   * process: the daemon is gone and its pid was handed on.
+   */
+  startedAt: string | null;
   /** The system is short of memory: the usual reason a live daemon gets this slow. */
   underPressure: boolean;
 }
@@ -51,6 +57,8 @@ export const DAEMON_PROGRESS_DEFAULTS: DaemonProgressConfig = {
 
 /** Follows one daemon process across samples, from its first missed answer. */
 export class DaemonProgressTracker {
+  /** The daemon's identity: its pid and start time, as first seen or bound. */
+  private identity: { pid: number; startedAt: string | null } | null = null;
   private pid: number | null = null;
   private lastCpuMs: number | null = null;
   private lastProgressAt = 0;
@@ -58,7 +66,13 @@ export class DaemonProgressTracker {
 
   constructor(private readonly cfg: DaemonProgressConfig = DAEMON_PROGRESS_DEFAULTS) {}
 
-  /** The daemon answered: forget what was seen. */
+  /** The daemon behind a connection: a later sample of its pid with another start time is another process. */
+  bind(pid: number, startedAt: string | null): void {
+    this.identity = { pid, startedAt };
+    this.reset();
+  }
+
+  /** The daemon answered: forget what was seen (its identity stays). */
   reset(): void {
     this.pid = null;
     this.lastCpuMs = null;
@@ -66,6 +80,9 @@ export class DaemonProgressTracker {
 
   observe(pid: number, sample: DaemonProcessSample, now: number): DaemonProgress {
     if (!sample.alive) return 'gone';
+    if (this.identity?.pid !== pid) this.identity = { pid, startedAt: sample.startedAt };
+    else if (this.identity.startedAt === null) this.identity.startedAt = sample.startedAt;
+    else if (sample.startedAt !== null && sample.startedAt !== this.identity.startedAt) return 'gone';
     const seen = this.pid === pid && this.lastCpuMs !== null;
     if (sample.cpuMs === null && !seen) return 'unknown';
     if (!seen) {
@@ -107,14 +124,32 @@ export function parseProcStatCpuMs(stat: string, ticksPerSecond = 100): number |
   return Number.isFinite(utime) && Number.isFinite(stime) ? ((utime + stime) * 1000) / ticksPerSecond : null;
 }
 
-async function readCpuMs(pid: number): Promise<number | null> {
+/** `/proc/<pid>/stat` field 22: the start time, in clock ticks since boot. */
+export function parseProcStatStartTime(stat: string): string | null {
+  const value = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
+  return value && /^\d+$/.test(value) ? value : null;
+}
+
+/** `ps -o lstart= -o time=`: the start time (a fixed-width date) and the CPU time, last. */
+export function parsePsStartAndCpu(raw: string): { startedAt: string | null; cpuMs: number | null } {
+  const text = raw.trim();
+  const at = text.lastIndexOf(' ');
+  if (at < 0) return { startedAt: null, cpuMs: null };
+  const startedAt = text.slice(0, at).trim().replace(/\s+/g, ' ');
+  return { startedAt: startedAt || null, cpuMs: parsePsCpuTime(text.slice(at + 1)) };
+}
+
+async function readCpuAndStart(pid: number): Promise<{ cpuMs: number | null; startedAt: string | null }> {
   if (process.platform === 'linux') {
-    try { return parseProcStatCpuMs(fs.readFileSync(`/proc/${pid}/stat`, 'utf8')); } catch { return null; }
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+      return { cpuMs: parseProcStatCpuMs(stat), startedAt: parseProcStatStartTime(stat) };
+    } catch { return { cpuMs: null, startedAt: null }; }
   }
   // GetProcessTimes: no process to spawn on a machine short of memory.
-  if (process.platform === 'win32') return tryProcessCpuMs(pid);
-  const out = await run('/bin/ps', ['-o', 'time=', '-p', String(pid)], 5_000);
-  return out === null ? null : parsePsCpuTime(out);
+  if (process.platform === 'win32') return { cpuMs: tryProcessCpuMs(pid), startedAt: tryProcessCreatedAt(pid)?.toString() ?? null };
+  const out = await run('/bin/ps', ['-o', 'lstart=', '-o', 'time=', '-p', String(pid)], 5_000);
+  return out === null ? { cpuMs: null, startedAt: null } : parsePsStartAndCpu(out);
 }
 
 /** Memory pressure as the OS reports it; false when it cannot tell. */
@@ -147,9 +182,9 @@ function isAlive(pid: number): boolean {
 
 /** Samples a daemon process for DaemonProgressTracker. */
 export async function sampleDaemonProcess(pid: number): Promise<DaemonProcessSample> {
-  if (!isAlive(pid)) return { alive: false, cpuMs: null, underPressure: false };
-  const [cpuMs, underPressure] = await Promise.all([readCpuMs(pid), memoryPressure()]);
-  return { alive: true, cpuMs, underPressure };
+  if (!isAlive(pid)) return { alive: false, cpuMs: null, startedAt: null, underPressure: false };
+  const [{ cpuMs, startedAt }, underPressure] = await Promise.all([readCpuAndStart(pid), memoryPressure()]);
+  return { alive: true, cpuMs, startedAt, underPressure };
 }
 
 /**
