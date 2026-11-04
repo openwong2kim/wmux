@@ -7,6 +7,7 @@ import { resolveActivePanePtyId } from '../../hooks/useActivePaneFocus';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import Dialog, { DialogFooter, DialogHeader } from '../ui/Dialog';
 import Button from '../ui/Button';
+import { isEditorDirty } from '../Editor/dirtyEditors';
 
 /**
  * Close a tab the way its × does: end its PTY (and a remote session this
@@ -35,8 +36,9 @@ function refocusActiveTerminal(): void {
   });
 }
 
-/** Read-only file viewers (editor, preview): closing one loses nothing, so it
- *  closes at once instead of asking. Diff, board, git and review still ask. */
+/** File viewers (editor, preview): closing one loses nothing, so it closes at
+ *  once instead of asking. An editor tab with unsaved scratch edits still asks,
+ *  as do diff, board, git and review. */
 const NO_CONFIRM_TYPES: ReadonlySet<string> = new Set(['editor', 'preview']);
 
 /** The one close-tab confirm, raised by the tab × and the close-tab shortcut.
@@ -49,7 +51,8 @@ export default function CloseTabConfirm() {
   // placeholder slot (nothing runs in it), or none of these.
   const closeKind = useStore((s): 'shell' | 'remoteView' | 'placeholder' | 'static' | 'other' => {
     const surface = target ? resolveCloseTabTarget(s, target)?.surface : undefined;
-    if (surface && !surface.ptyId && NO_CONFIRM_TYPES.has(surface.surfaceType ?? '')) return 'static';
+    if (surface && !surface.ptyId && NO_CONFIRM_TYPES.has(surface.surfaceType ?? '')
+      && !(surface.surfaceType === 'editor' && isEditorDirty(surface.id))) return 'static';
     if (surface?.surfaceType === 'placeholder') return 'placeholder';
     if (surface?.surfaceType === 'remote-terminal') {
       // A duplicated workspace's clone has no session id, so it views nothing.

@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useT } from '../../hooks/useT';
 import { renderBrainMarkdownWhole } from '../shared/BrainMarkdown';
+import { setEditorDirty } from './dirtyEditors';
 
 interface EditorPanelProps {
   filePath: string;
@@ -49,6 +50,13 @@ export default function EditorPanel({ filePath, isActive, surfaceId }: EditorPan
       : null),
     [isMarkdown, content],
   );
+  // Scratch edits are never saved, so closing the tab with a changed buffer
+  // loses them: tell the close-tab confirm.
+  const dirty = editing && content !== null && editContent !== content;
+  useEffect(() => {
+    setEditorDirty(surfaceId, dirty);
+    return () => setEditorDirty(surfaceId, false);
+  }, [surfaceId, dirty]);
   const fileName = filePath.split(/[/\\]/).pop() || filePath;
 
   // Load file content

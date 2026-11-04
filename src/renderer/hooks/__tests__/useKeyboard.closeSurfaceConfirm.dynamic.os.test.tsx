@@ -3,6 +3,7 @@
 // The close-tab shortcut asks before it kills the tab: a declined prompt
 // leaves the tab and its PTY alone, an accepted one closes it as before. A
 // held Ctrl+W auto-repeats; the repeats must not raise the confirm again.
+import { setEditorDirty } from '../../components/Editor/dirtyEditors';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -175,6 +176,14 @@ describe('close-tab shortcut confirmation', () => {
     expect(surfaceIds()).toEqual(['s-1', 's-2']);
     expect(useStore.getState().closeTabConfirm).toBeNull();
     expect(dispose).not.toHaveBeenCalled();
+  });
+
+  it('still asks before closing an editor tab with unsaved edits', () => {
+    act(() => setEditorDirty('s-10', true));
+    addSurface({ id: 's-10', ptyId: '', title: 'notes.md', shell: '', cwd: '', surfaceType: 'editor', editorFilePath: '/tmp/notes.md' });
+    expect(confirmOpen()).toBe(true);
+    expect(surfaceIds()).toContain('s-10');
+    act(() => setEditorDirty('s-10', false));
   });
 
   it.each(['diff', 'board', 'review'] as const)('still asks before closing a %s tab', (surfaceType) => {
