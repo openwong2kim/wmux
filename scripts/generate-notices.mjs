@@ -69,6 +69,7 @@ function readLicenseText(pkgDir) {
       lower === 'license.md' ||
       lower === 'license.txt' ||
       lower === 'license-mit' ||
+      lower === 'license-apache' ||
       lower === 'license-mit.txt' ||
       lower === 'copying' ||
       lower === 'copying.txt' ||

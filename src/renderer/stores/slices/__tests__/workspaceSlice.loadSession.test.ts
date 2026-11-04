@@ -1654,3 +1654,22 @@ describe('WorkspaceSlice.loadSession — dismissed pending questions', () => {
     expect((store.getState() as unknown as { surfaceDismissedQuestion: Record<string, string> }).surfaceDismissedQuestion).toEqual({});
   });
 });
+
+// Labs wongtty switch (R15): the requested engine round-trips through
+// session.json, and only an explicit true turns it on.
+describe('loadSession — terminalWongtty', () => {
+  const load = (terminalWongtty: unknown) => {
+    const store = createTestStore();
+    (store.setState as (patch: Record<string, unknown>) => void)({ terminalWongtty: false });
+    const ws: Workspace = { id: 'ws-1', name: 'W', rootPane: makeDiffSurfaceTree('wtask-1'), activePaneId: 'pane-root' };
+    store.getState().loadSession({ workspaces: [ws], activeWorkspaceId: ws.id, sidebarVisible: true, terminalWongtty } as unknown as SessionData);
+    return (store.getState() as unknown as { terminalWongtty: boolean }).terminalWongtty;
+  };
+
+  it('turns the switch on for an explicit true only', () => {
+    expect(load(true)).toBe(true);
+    expect(load(false)).toBe(false);
+    expect(load(undefined)).toBe(false);
+    expect(load('true')).toBe(false);
+  });
+});

@@ -1,13 +1,17 @@
+import * as path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DaemonClient } from '../../../DaemonClient';
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => Promise<unknown>>(),
   read: vi.fn(), write: vi.fn(), inConfig: vi.fn(() => false),
+  app: { isPackaged: false, getAppPath: () => '/repo' },
+  readFile: vi.fn(async (file: string) => Buffer.from(file)),
 }));
-vi.mock('electron', () => ({ ipcMain: {
+vi.mock('electron', () => ({ app: h.app, ipcMain: {
   removeHandler: (key: string) => h.handlers.delete(key),
   handle: (key: string, fn: (...args: unknown[]) => Promise<unknown>) => h.handlers.set(key, fn),
 } }));
+vi.mock('fs/promises', () => ({ readFile: h.readFile }));
 vi.mock('../../../../shared/labsSettings', () => ({
   readLabsSettings: h.read, writeLabsSettings: h.write, ringCompressionInConfig: h.inConfig,
 }));
@@ -64,5 +68,47 @@ describe('labs settings IPC', () => {
     expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: true });
     rpc.mockResolvedValue({ labs: { ringCompression: true }, terminalCore: core('node') });
     expect(await invoke(IPC.LABS_SETTINGS_GET)).toMatchObject({ restartRequired: false });
+  });
+  it('hands over the wongtty engine and front end from node_modules, or from resources once packaged', async () => {
+    registerLabsHandlers();
+    const text = async () => {
+      const wasm = await invoke(IPC.LABS_WONGTTY_WASM) as { engine: Buffer; frontEnd: Buffer };
+      return [wasm.engine.toString(), wasm.frontEnd.toString()];
+    };
+    expect(await text()).toEqual([
+      path.join('/repo', 'node_modules', 'wongtty', 'dist', 'wongtty.wasm'),
+      path.join('/repo', 'node_modules', 'wongtty', 'dist', 'xterm_web_bg.wasm'),
+    ]);
+    h.app.isPackaged = true;
+    const electronProcess = process as { resourcesPath?: string };
+    electronProcess.resourcesPath = '/app/resources';
+    try {
+      expect(await text()).toEqual([path.join('/app/resources', 'wongtty.wasm'), path.join('/app/resources', 'xterm_web_bg.wasm')]);
+    } finally {
+      h.app.isPackaged = false;
+      delete electronProcess.resourcesPath;
+    }
+  });
+  it('serves broken wasm for WMUX_E2E_WONGTTY_WASM=broken in a development build only', async () => {
+    registerLabsHandlers();
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    process.env.WMUX_E2E_WONGTTY_WASM = 'broken';
+    const electronProcess = process as { resourcesPath?: string };
+    try {
+      const dev = await invoke(IPC.LABS_WONGTTY_WASM) as { engine: Buffer };
+      expect(dev.engine.toString()).toBe('not wasm');
+      expect(h.readFile).not.toHaveBeenCalled();
+      h.app.isPackaged = true;
+      electronProcess.resourcesPath = '/app/resources';
+      const packaged = await invoke(IPC.LABS_WONGTTY_WASM) as { engine: Buffer };
+      expect(packaged.engine.toString()).toBe(path.join('/app/resources', 'wongtty.wasm'));
+      // Every call is logged, so an e2e can tell that nothing asked for it.
+      expect(log.mock.calls.filter(([m]) => String(m).startsWith('[wmux:wongtty] wasm served'))).toHaveLength(2);
+    } finally {
+      delete process.env.WMUX_E2E_WONGTTY_WASM;
+      h.app.isPackaged = false;
+      delete electronProcess.resourcesPath;
+      log.mockRestore();
+    }
   });
 });

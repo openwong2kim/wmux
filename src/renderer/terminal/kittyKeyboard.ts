@@ -64,6 +64,9 @@ function kittyState(term: object): XtermKittyState | undefined {
  * locked by kittyKeyboard.os.test.ts against the installed xterm.
  */
 export function xtermKittyFlags(term: object): number | undefined {
+  // wongtty's public getter (xterm.js has none).
+  const wongttyFlags = (term as { kittyKeyboardFlags?: unknown }).kittyKeyboardFlags;
+  if (typeof wongttyFlags === 'number') return wongttyFlags;
   return kittyState(term)?.flags;
 }
 
@@ -88,6 +91,12 @@ interface ResettableTerminal {
  * screen's stack through the parser.
  */
 export function resetXtermKitty(term: ResettableTerminal): void {
+  // wongtty's public reset, both screens at once (xterm.js has none).
+  const wongttyReset = (term as { resetKittyKeyboard?: unknown }).resetKittyKeyboard;
+  if (typeof wongttyReset === 'function') {
+    wongttyReset.call(term);
+    return;
+  }
   const s = kittyState(term);
   if (!s) {
     term.write(KITTY_FLAGS_RESET);

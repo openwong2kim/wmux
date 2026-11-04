@@ -631,6 +631,7 @@ const electronAPI = {
     setTerminalCore: (engine: TerminalEngine) => ipcRenderer.invoke(IPC.TERMINAL_CORE_SETTINGS_SET, engine) as Promise<TerminalCoreSettings>,
     getLabs: () => ipcRenderer.invoke(IPC.LABS_SETTINGS_GET) as Promise<LabsStatus>,
     setLabs: (settings: LabsSettings) => ipcRenderer.invoke(IPC.LABS_SETTINGS_SET, settings) as Promise<LabsStatus>,
+    getWongttyWasm: () => ipcRenderer.invoke(IPC.LABS_WONGTTY_WASM) as Promise<{ engine: Uint8Array; frontEnd: Uint8Array }>,
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
     setMutedNotificationCategories: (categories: NotificationCategory[]) =>
       ipcRenderer.send(IPC.MUTED_NOTIFICATION_CATEGORIES, categories),

@@ -35,7 +35,7 @@ describe('Fix D — daemon session reattach (source-level)', () => {
   // return;` guard to the next `}, [ptyId, containerRef]);` (the `fit`
   // useCallback shares those deps and closes earlier, so anchor past mainStart).
   const mainStart = src.indexOf('if (!container || !ptyId) return;');
-  const mainEffectEnd = src.indexOf('}, [ptyId, containerRef]);', mainStart);
+  const mainEffectEnd = src.indexOf('}, [ptyId, containerRef, paneEngine]);', mainStart);
   const mainEffect = src.slice(mainStart, mainEffectEnd);
   const afterMainEffect = src.slice(mainEffectEnd);
 

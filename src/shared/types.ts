@@ -946,6 +946,8 @@ export interface SessionData {
   terminalCompactScrollback?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.terminalSharedWebgl. */
   terminalSharedWebgl?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.terminalWongtty. */
+  terminalWongtty?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

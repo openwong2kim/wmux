@@ -1896,6 +1896,12 @@ export function registerPTYHandlers(
   // `transient` to decide retry-vs-give-up exactly as pty:reconnect does.
   ipcMain.removeHandler(IPC.PTY_RESYNC);
   ipcMain.handle(IPC.PTY_RESYNC, wrapHandler(IPC.PTY_RESYNC, async (_event: Electron.IpcMainInvokeEvent, id: string, opts?: { scrollback?: number }) => {
+    // The e2e of the Labs wongtty switch's repaint fallback (development
+    // builds only): every repaint fails as for a session that is gone.
+    if (!app.isPackaged && process.env.WMUX_E2E_RESYNC === 'session-gone') {
+      console.log(`[wmux:e2e] pty:resync ${id} answered session-gone (WMUX_E2E_RESYNC)`);
+      return { success: false, code: 'session-gone', transient: false };
+    }
     if (!useDaemon || !daemonClient) {
       // Local mode has no daemon SessionPipe to re-flush — the renderer keeps
       // its live buffer as-is (never wrong). Permanent, do not retry.
