@@ -697,9 +697,9 @@ internal static unsafe class Actions
             }, now => Verify.SameValue(value, now), SetValueSettleMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
             if (readBack.Verified)
             {
-                bool caret = CaretToEnd(el, target);
+                var caret = CaretToEnd(el, target, refuse);
                 return Result("accessibility", true, SemanticDelivery(target, frontBefore),
-                    caret ? null : "the value was set, but wmux could not put the caret at its end, so a type that follows may not land after it");
+                    caret == CaretMove.Failed ? "the value was set, but wmux could not put the caret at its end, so a type that follows may not land after it" : null);
             }
             return WithObserved(Result("accessibility", false, SemanticDelivery(target, frontBefore), "the value read back differs from what was set"),
                     Verify.Observed(value, readBack.Last, Uia.IsSecretElement(el)));
@@ -965,45 +965,28 @@ internal static unsafe class Actions
         }
     }
 
+    /// <summary>What putting the caret at the end of a set value did.</summary>
+    private enum CaretMove { Done, NotATextField, Failed }
+
     /// <summary>
     /// After a verified setValue: the caret goes to the end of the new value,
     /// so a `type` that follows appends to it. ValuePattern.SetValue leaves
     /// the selection wherever the app puts it (Notepad: position 0), and a
     /// later `type` with an index keeps the field's selection across its
     /// focus, so the text used to land at the start. Through UIA TextPattern
-    /// (an empty range at the document's end, selected), or, for a Win32
-    /// edit control without it, EM_SETSEL at the text's length. True only
-    /// when the selection reads back as that caret.
+    /// (an empty range at the document's end, selected), then, if that is
+    /// not confirmed, EM_SETSEL at the text's length for a Win32 edit
+    /// control. Confirmed when the selection reads back as a caret with only
+    /// line breaks after it (a rich edit keeps the caret before its final
+    /// paragraph mark). A field with neither (a combo box, a slider) has no
+    /// caret: NotATextField. Select is a pattern call, so it is made only
+    /// while the helper is not stopping and the element still passes
+    /// Focus.RequireSemantic; otherwise Failed, never an error, because the
+    /// value was already set.
     /// </summary>
-    private static bool CaretToEnd(IUIAutomationElement* el, ControlTarget target)
+    private static CaretMove CaretToEnd(IUIAutomationElement* el, ControlTarget target, bool refuseForeground)
     {
         var text = (IUIAutomationTextPattern*)Pattern(el, Uia.TextPattern, IUIAutomationTextPattern.IID_Guid);
-        if (text != null)
-        {
-            IUIAutomationTextRange* end = null;
-            IUIAutomationTextRange* now = null;
-            try
-            {
-                end = text->DocumentRange;
-                if (end == null) return false;
-                end->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End);
-                end->Select();
-                now = Selection(el);
-                return now != null
-                    && now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start) == 0
-                    && now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_End, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End) == 0;
-            }
-            catch (Exception e) when (e is not HelperError)
-            {
-                return false;
-            }
-            finally
-            {
-                if (now != null) now->Release();
-                if (end != null) end->Release();
-                text->Release();
-            }
-        }
         HWND edit;
         try
         {
@@ -1011,14 +994,71 @@ internal static unsafe class Actions
         }
         catch (HelperError)
         {
+            edit = HWND.Null;
+        }
+        if (text == null && edit == HWND.Null) return CaretMove.NotATextField;
+        try
+        {
+            Input.ThrowIfStopping();
+            Focus.RequireSemantic(target, el, refuseForeground);
+        }
+        catch (HelperError)
+        {
+            if (text != null) text->Release();
+            return CaretMove.Failed;
+        }
+        if (text != null)
+        {
+            bool placed;
+            try
+            {
+                placed = SelectEnd(el, text);
+            }
+            finally
+            {
+                text->Release();
+            }
+            if (placed) return CaretMove.Done;
+        }
+        if (edit == HWND.Null) return CaretMove.Failed;
+        nuint length;
+        if (PInvoke.SendMessageTimeout(edit, WmGetTextLength, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &length) == 0) return CaretMove.Failed;
+        if (length > EditSelection.MaxPackedLength) return CaretMove.Failed;
+        return KeepEditSelection(edit, ((uint)length, (uint)length)) ? CaretMove.Done : CaretMove.Failed;
+    }
+
+    /// <summary>Selects an empty range at the document's end through `text`; true when the selection reads back as a caret with only line breaks after it.</summary>
+    private static bool SelectEnd(IUIAutomationElement* el, IUIAutomationTextPattern* text)
+    {
+        IUIAutomationTextRange* end = null;
+        IUIAutomationTextRange* now = null;
+        IUIAutomationTextRange* tail = null;
+        try
+        {
+            end = text->DocumentRange;
+            if (end == null) return false;
+            end->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, end, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End);
+            Input.CountSemantic();
+            end->Select();
+            now = Selection(el);
+            if (now == null) return false;
+            if (SameRange(end, now)) return true;
+            if (now->CompareEndpoints(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, now, TextPatternRangeEndpoint.TextPatternRangeEndpoint_End) != 0) return false;
+            // A caret short of the end: fine when only line breaks follow it.
+            tail = text->DocumentRange;
+            tail->MoveEndpointByRange(TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start, now, TextPatternRangeEndpoint.TextPatternRangeEndpoint_Start);
+            return Verify.OnlyLineBreaks(Uia.Take(tail->GetText(64)));
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
             return false;
         }
-        if (edit == HWND.Null) return false;
-        nuint length, ignored;
-        if (PInvoke.SendMessageTimeout(edit, WmGetTextLength, 0, 0, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &length) == 0) return false;
-        if (length > EditSelection.MaxPackedLength) return false;
-        if (PInvoke.SendMessageTimeout(edit, EmSetSel, length, (nint)length, SEND_MESSAGE_TIMEOUT_FLAGS.SMTO_ABORTIFHUNG, EditMessageTimeoutMs, &ignored) == 0) return false;
-        return ReadEditSelection(edit) == ((uint)length, (uint)length);
+        finally
+        {
+            if (tail != null) tail->Release();
+            if (now != null) now->Release();
+            if (end != null) end->Release();
+        }
     }
 
     private const uint EmGetSel = 0x00B0;

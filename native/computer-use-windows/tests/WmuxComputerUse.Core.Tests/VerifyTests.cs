@@ -151,6 +151,18 @@ public class VerifyTests
     }
 
     [Fact]
+    public void ACaretBeforeOnlyLineBreaksIsAtTheEnd()
+    {
+        Assert.True(Verify.OnlyLineBreaks(""));
+        Assert.True(Verify.OnlyLineBreaks("\r"));
+        Assert.True(Verify.OnlyLineBreaks("\r\n\r"));
+        Assert.False(Verify.OnlyLineBreaks("x"));
+        Assert.False(Verify.OnlyLineBreaks("\rAgent-A line 1"));
+        Assert.False(Verify.OnlyLineBreaks(" "));
+        Assert.False(Verify.OnlyLineBreaks(null));
+    }
+
+    [Fact]
     public void SettleInsertedNeedsAValueBefore()
     {
         var c = new Clock();
