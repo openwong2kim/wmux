@@ -37,6 +37,7 @@ import { guardBotWorkerSessionText, guardCodexBotWorker } from '../../agents/cod
 import { workerFenceSupportFor } from '../../agents/botWorkerFence';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
+import { getUserShellRecord, promoteRecoveredSession } from '../../pty/userShellRecord';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { forgetPtyShell, getPtyShell, recordPtyShell } from '../../pty/ptyShellRegistry';
 import { cmdLaunchPathRefusal, isCmdShellPath, promptFileArgumentForShell } from '../../../shared/promptFileArgument';
@@ -891,6 +892,16 @@ export function registerPTYHandlers(
         await daemonClient.connectSessionPipe(sessionId);
       });
 
+      // #3049 — a user shell is recorded (ids, never values) so main can start
+      // it with its credentials after a restart; anything else is forgotten,
+      // which covers a recreated id that is no longer a user shell.
+      const created = result as { cmd?: unknown; incarnationId?: unknown } | undefined;
+      if (envPolicy === 'passthrough' && typeof created?.cmd === 'string' && typeof created.incarnationId === 'string') {
+        getUserShellRecord(app.getPath('userData')).set(sessionId, { cmd: created.cmd, incarnationId: created.incarnationId });
+      } else {
+        getUserShellRecord(app.getPath('userData')).remove(sessionId);
+      }
+
       // Workspace profile startup command. Written as shell INPUT (not spawned
       // as the executable) so the allowed-shell check and quoting behavior are
       // preserved. Gated on the session's first output (see
@@ -1487,6 +1498,8 @@ export function registerPTYHandlers(
       // fires for an explicit close — without this, every pane/workspace
       // close leaks its anchor for the OS to recycle into a ghost.
       removePidMapByPtyId(id);
+      // #3049 — a closed pane is no user shell to start again.
+      getUserShellRecord(app.getPath('userData')).remove(id);
       await pruneSessionSchedules(id);
     }));
   } else {
@@ -1661,7 +1674,8 @@ export function registerPTYHandlers(
       // is gone: home instead of the missing directory, the original command
       // instead of a resume. Only ever set by the user pressing that action.
       const fresh = opts?.fresh === true;
-      const res = await daemonClient.rpc('daemon.promoteSession', { id, ...(fresh ? { fresh: true } : {}) }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; error?: { code?: string; message: string } };
+      // #3049 — with a restored user shell's credentials when main grants them.
+      const res = await promoteRecoveredSession(daemonClient, getUserShellRecord(app.getPath('userData')), id, { fresh, timeoutMs: WSL_RPC_TIMEOUT_MS });
       if (res.ok) return { success: true };
       // The renderer branches on this: CWD_MISSING is the one failure Retry
       // cannot clear, so it is the one that offers starting fresh.
@@ -1704,6 +1718,8 @@ export function registerPTYHandlers(
           resumeBinding?: ResumeBinding;
           exec?: unknown;
           supervision?: unknown;
+          incarnationId?: string;
+          startPending?: boolean;
         }>;
         if (!sessions.some(s => s.id === id)) {
           sessions = await daemonClient.rpc('daemon.listSessions', { includeSuspended: true }) as typeof sessions;
@@ -1750,7 +1766,8 @@ export function registerPTYHandlers(
           // reattaches with promote.
           if (action === 'hold') return held('held');
           try {
-            const result = await daemonClient.rpc('daemon.promoteSession', { id, ...(action === 'join-only' ? { joinOnly: true } : {}) }, { timeoutMs: WSL_RPC_TIMEOUT_MS }) as { ok: boolean; alreadyActive?: boolean; joined?: boolean; notInFlight?: boolean; error?: { code?: string; message: string } };
+            // #3049 — with a restored user shell's credentials when main grants them.
+            const result = await promoteRecoveredSession(daemonClient, getUserShellRecord(app.getPath('userData')), session, { joinOnly: action === 'join-only', timeoutMs: WSL_RPC_TIMEOUT_MS });
             const outcome = promoteOutcome(result);
             if (outcome === 'held') return held('join-only, no start in flight');
             // #1305 — carry WHY it stayed pending, not just that it did. The
@@ -1998,6 +2015,8 @@ export function registerPTYHandlers(
       // the process (and a recycled id would inherit the dead pane's shell).
       forgetPtyShell(payload.sessionId);
       forgetFolderTrustPane(payload.sessionId);
+      // #3049 — nor is a dead one; a pane recreated in its place records itself.
+      getUserShellRecord(app.getPath('userData')).remove(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
   }

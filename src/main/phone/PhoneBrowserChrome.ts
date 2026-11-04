@@ -211,10 +211,11 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       return { data, mimeType: 'image/jpeg' as const };
     },
     capture: run => bounded(run),
-    input: async (operation, focus) => {
-      if (active.has(surfaceId)) throw new Error('Browser input unavailable');
+    input: async (operation, focus, options = {}) => {
+      if (active.has(surfaceId)) throw options.codeBusy ? new PhoneBrowserError('browser-input-busy') : new Error('Browser input unavailable');
       active.add(surfaceId);
       const running = (async () => {
+        await options.beforeFocus?.();
         // A background Chrome window has no focused element to type into:
         // emulate focus instead of raising the tab. Set up (attaching the page
         // with it) before the operation's last ownership and URL checks, so
@@ -258,6 +259,31 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
         throw new Error('Browser operation failed');
       }
       if ((result as { errorText?: unknown } | null)?.errorText) throw new Error('Browser operation failed');
+    },
+    historyEntry: async (direction) => {
+      // The entry one step away in the tab's history, as Chrome has it now.
+      const neighbor = async () => {
+        const history = await call('Page.getNavigationHistory') as { currentIndex?: unknown; entries?: unknown } | null;
+        if (typeof history?.currentIndex !== 'number' || !Array.isArray(history.entries)) throw new Error('Browser operation failed');
+        const entry = history.entries[history.currentIndex + (direction === 'back' ? -1 : 1)] as { id?: unknown; url?: unknown } | undefined;
+        if (!entry) return null;
+        if (typeof entry.id !== 'number' || typeof entry.url !== 'string') throw new Error('Browser operation failed');
+        return { entryId: entry.id, url: entry.url };
+      };
+      const found = await neighbor();
+      if (!found) return null;
+      const { entryId, url } = found;
+      return {
+        url,
+        go: async () => {
+          await deps.validateNavigation(url);
+          // The policy check is asynchronous: go only to the entry it checked,
+          // and only while that entry is still one step away.
+          const now = await neighbor();
+          if (now?.entryId !== entryId || now.url !== url) throw new Error('Browser page changed; refresh before input');
+          await write('Page.navigateToHistoryEntry', { entryId });
+        },
+      };
     },
     viewport: async () => { throw new PhoneBrowserError('browser-action-unsupported'); },
     focus: async () => {

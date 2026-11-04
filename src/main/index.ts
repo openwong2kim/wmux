@@ -7,7 +7,7 @@ import { warmLoginShellPath } from './claude/resolveClaudeExecutable';
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
-import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
+import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserHistoryEntry, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
 import { focusBuiltinTab, handlePhoneBrowser } from './phone/PhoneBrowser';
 import { createPhoneChromeDeps, phoneChromeHelpTabs } from './phone/PhoneBrowserChrome';
 import { validateResolvedNavigationUrl } from './security/navigationPolicy';
@@ -69,6 +69,8 @@ import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
+import { getUserShellRecord, HELD_START_CONNECTED_WAIT_MS, startHeldUserShells } from './pty/userShellRecord';
+import { WSL_RPC_TIMEOUT_MS } from '../shared/wslTimeouts';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { clearEphemeralClipboard } from './ipc/handlers/clipboard.handler';
@@ -2648,11 +2650,18 @@ app.on('ready', async () => {
             targets: () => webviewCdpManager.listTargets(),
             focusBuiltin: (surfaceId, workspaceId) =>
               focusBuiltinTab((method, params) => sendToRenderer(() => mainWindow, method, params), surfaceId, workspaceId),
+            historyEntry: (id, offset) => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              return phoneBrowserHistoryEntry(wc, offset);
+            },
+            // The same desktop navigation policy the Chrome tabs are held to.
+            validateNavigation: phoneChromeDeps.validateNavigation,
             chrome: phoneChromeDeps,
-            input: (id, operation) => {
+            input: (id, operation, options) => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) return Promise.reject(new Error('Browser unavailable'));
-              return withPhoneBrowserInputFocus(wc,operation);
+              return withPhoneBrowserInputFocus(wc,operation,options);
             },
             page: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? {title:wc.getTitle(),url:wc.getURL()} : null; },
             invoke: (method,params) => rpcRouter.dispatch({id: `phone-browser-${phoneBrowserRequestId()}`,method:method as RpcMethod,params},{operator:true}),
@@ -2708,6 +2717,18 @@ app.on('ready', async () => {
         }, (err: unknown) => {
           logLine('warn', 'main', `pid-map prune failed: ${err instanceof Error ? err.message : String(err)}`);
         });
+      // #3049 — start the restored user shells the daemon holds for main, with
+      // their credentials (pty/userShellRecord.ts); whatever is still held at
+      // the daemon's fallback starts without them. Never rejects: the
+      // daemon:connected below waits on it.
+      const heldStart = startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
+        timeoutMs: WSL_RPC_TIMEOUT_MS,
+        log: (line) => logLine('info', 'main', line),
+      }).then((held) => {
+        if (held > 0) logLine('info', 'main', `[env] started ${held} restored user shell(s) held for the app`);
+      }, (err: unknown) => {
+        logLine('warn', 'main', `[env] restored user shells not started: ${err instanceof Error ? err.message : String(err)}`);
+      });
       // Mount the notification router now that we have a live daemon
       // client. PTY data flows through daemon → DaemonClient events,
       // and this router translates them into the same renderer-facing
@@ -2823,6 +2844,11 @@ app.on('ready', async () => {
       const daemonPid = daemonRespawnController?.connectedDaemonPid ?? readDaemonPid(getWmuxDir());
       const replaced = lastConnectedDaemonPid !== null && daemonPid !== null && daemonPid !== lastConnectedDaemonPid;
       if (daemonPid !== null) lastConnectedDaemonPid = daemonPid;
+      // #3049 — the renderer reads resume offers on daemon:connected, and a
+      // held shell gets its offer only once started: wait for that start, but
+      // never long. A disconnect meanwhile ends this install (onUninstall ran).
+      await Promise.race([heldStart, new Promise<void>((resolve) => { setTimeout(resolve, HELD_START_CONNECTED_WAIT_MS).unref?.(); })]);
+      if (daemonClient !== client) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:connected', { replaced });
       }

@@ -21,6 +21,12 @@ export type PromoteResult = {
    * session was left as it was.
    */
   notInFlight?: boolean;
+  /**
+   * #3049 — this attempt started a restored user shell with the credential
+   * values its caller passed. A caller that joined it shares the answer; one
+   * that joined an attempt started without them (the fallback) does not.
+   */
+  credentialsApplied?: true;
   error?: { code: string; message: string };
 };
 
@@ -28,13 +34,13 @@ export type PromoteResult = {
 export type PromoteOrigin = 'background' | 'rpc';
 
 export interface PromoteOnce {
-  (id: string, startFresh?: boolean, origin?: PromoteOrigin, joinOnly?: boolean): Promise<PromoteResult>;
+  (id: string, startFresh?: boolean, origin?: PromoteOrigin, joinOnly?: boolean, credentialEnv?: Record<string, string>): Promise<PromoteResult>;
   /** The session left (died, destroyed): drop who started it. */
   forget(id: string): void;
 }
 
 export function createPromoteOnce(
-  promoteSession: (params: { id: string; fresh: boolean }) => Promise<PromoteResult>,
+  promoteSession: (params: { id: string; fresh: boolean; credentialEnv?: Record<string, string> }) => Promise<PromoteResult>,
   /** Whether the session runs now (a live managed session). */
   isRunning: (id: string) => boolean = () => false,
 ): PromoteOnce {
@@ -58,7 +64,9 @@ export function createPromoteOnce(
     if (!isRunning(id)) return Promise.resolve({ ok: false, notInFlight: true });
     return Promise.resolve(startedBy.get(id) === 'rpc' ? { ok: true, alreadyActive: false } : { ok: true, alreadyActive: true });
   };
-  const promoteOnce = ((id: string, startFresh = false, origin: PromoteOrigin = 'rpc', joinOnly = false) => {
+  // #3049 — `credentialEnv` goes with the attempt this call starts; a call
+  // that joins one runs with whatever that attempt was started with.
+  const promoteOnce = ((id: string, startFresh = false, origin: PromoteOrigin = 'rpc', joinOnly = false, credentialEnv?: Record<string, string>) => {
     if (joinOnly) return joinOnlyAnswer(id);
     const existing = promotionInFlight.get(id);
     // Same intent → one attempt, as before. A DIFFERENT intent must not be
@@ -68,7 +76,7 @@ export function createPromoteOnce(
     // and if the one in flight happens to succeed, the idempotent
     // already-active check makes the second a no-op.
     if (existing && existing.startFresh === startFresh) return joinOf(existing);
-    const run = () => promoteSession({ id, fresh: startFresh });
+    const run = () => promoteSession({ id, fresh: startFresh, ...(credentialEnv ? { credentialEnv } : {}) });
     const operation: Promise<PromoteResult> = (existing ? existing.operation.catch(() => undefined).then(run) : run())
       .then((r) => {
         // Recorded before the attempt leaves the in-flight map, so a

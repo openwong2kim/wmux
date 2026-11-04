@@ -1,8 +1,9 @@
-import { PHONE_BROWSER_GEOMETRY, phoneBrowserGeometry, phoneBrowserPoint, type PhoneBrowserGeometry } from './PhoneBrowserGeometry';
+import { PHONE_BROWSER_GEOMETRY, PhoneBrowserViewportChanged, phoneBrowserGeometry, phoneBrowserPoint, phoneBrowserScrollPoint, type PhoneBrowserGeometry } from './PhoneBrowserGeometry';
+import type { PhoneBrowserInputOptions } from './PhoneBrowserInput';
 import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import type { RpcResponse } from '../../shared/rpc';
 import { browserHelpOrigin } from '../../shared/phoneBrowserHelp';
-import { PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
+import { BROWSER_STREAM_KEYS, PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
 import type { PhoneChromeDeps } from './PhoneBrowserChrome';
 import { chromeDriver } from './PhoneBrowserChrome';
 
@@ -26,10 +27,14 @@ interface BrowserDeps {
   scroll: (webContentsId: number, event: {x:number;y:number;deltaX:number;deltaY:number}) => Promise<void>;
   targets: () => CdpTargetInfo[];
   page: (webContentsId: number) => { title: string; url: string } | null;
-  input: (webContentsId: number, operation: () => Promise<RpcResponse>) => Promise<RpcResponse>;
+  input: (webContentsId: number, operation: () => Promise<RpcResponse>, options?: PhoneBrowserInputOptions) => Promise<RpcResponse>;
   invoke: (method: string, params: Record<string, unknown>) => Promise<RpcResponse>;
   /** Make a builtin pane the active tab of its pane (renderer `browser.tabs` select). Absent: focus unsupported. */
   focusBuiltin?: (surfaceId: string, workspaceId: string) => Promise<boolean>;
+  /** A builtin pane's history entry one step back (-1) or forward (+1), null when there is none. Absent: no `history`. */
+  historyEntry?: (webContentsId: number, offset: -1 | 1) => { url: string; go: () => void } | null;
+  /** The desktop's navigation policy for one URL; throws when it refuses. Absent: no `history` on builtin panes. */
+  validateNavigation?: (url: string) => Promise<void>;
   /** Dedicated-profile Chrome tabs. Absent: builtin panes only, as before. */
   chrome?: PhoneChromeDeps;
 }
@@ -46,12 +51,14 @@ export interface PhoneBrowserDriver {
   /** A whole capture, inside the driver's own time budget. */
   capture<T>(run: () => Promise<T>): Promise<T>;
   /** One input operation; `focus` holds the tab's input focus around it (typing and keys). */
-  input(operation: () => Promise<void>, focus: boolean): Promise<void>;
+  input(operation: () => Promise<void>, focus: boolean, options?: PhoneBrowserInputOptions): Promise<void>;
   tap(point: { x: number; y: number }): Promise<void>;
   scroll(event: { x: number; y: number; deltaX: number; deltaY: number }): Promise<void>;
   type(text: string): Promise<void>;
   key(key: string): Promise<void>;
   navigate(url: string): Promise<void>;
+  /** The entry `direction` leads to, or null when there is none. `go` checks the desktop's navigation policy, then moves. */
+  historyEntry(direction: 'back' | 'forward'): Promise<{ url: string; go(): Promise<void> } | null>;
   viewport(mode: 'mobile' | 'desktop'): Promise<void>;
   focus(): Promise<void>;
 }
@@ -59,6 +66,8 @@ export interface PhoneBrowserDriver {
 /** 700 KiB of base64, so the whole `daemon.phone.complete` envelope stays under
  * the daemon control pipe's 1 MiB per-line limit. */
 const CAPTURE_BASE64_LIMIT = 700 * 1024;
+/** The longest page URL a capture or a list row carries; input's `expectedURL` has the same limit. */
+const PAGE_URL_LIMIT = 4096;
 const PREVIEW_COMMANDS = ['browser.capture','browser.viewport','browser.navigate','browser.type','browser.key','browser.tap','browser.scroll','browser.focus'];
 const PREVIEW_KEYS = ['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'];
 
@@ -103,17 +112,23 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
       return shot as {data:string;mimeType:'image/jpeg'};
     },
     capture: run => run(),
-    input: async operation => {
+    input: async (operation, _focus, options) => {
       ok(await deps.input(target.webContentsId, async () => {
         await operation();
         return {id:'phone-input',ok:true,result:{applied:true}};
-      }));
+      }, options));
     },
     tap: async point => ok(await deps.invoke('browser.click.cdp',{...scope,...point})),
     scroll: event => deps.scroll(target.webContentsId,event),
     type: async text => ok(await deps.invoke('browser.type.cdp',{...scope,text})),
     key: async key => ok(await deps.invoke('browser.press.cdp',{...scope,key})),
     navigate: async url => ok(await deps.invoke('browser.navigate',{...scope,url})),
+    historyEntry: async direction => {
+      const validate = deps.validateNavigation;
+      if (!deps.historyEntry || !validate) throw new PhoneBrowserError('browser-action-unsupported');
+      const entry = deps.historyEntry(target.webContentsId, direction === 'back' ? -1 : 1);
+      return entry && { url: entry.url, go: async () => { await validate(entry.url); entry.go(); } };
+    },
     viewport: async mode => {
       let result = await deps.invoke('browser.emulate', {...scope,deviceReset:true});
       if (!result.ok) throw new Error('Browser viewport reset failed');
@@ -190,21 +205,26 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     // `chrome:true` only from a phone that asked (`?chrome=1`): its rows say
     // which browser they are. Without it the reply is what it always was.
     const withChrome = payload.chrome === true;
+    // A page whose URL is past PAGE_URL_LIMIT is left out, like a non-http one.
     const pages: Array<{id:string;title:string;url:string;backend?:PhoneBrowserBackend}> = targets.slice(0, 30).flatMap(target => {
       const page = deps.page(target.webContentsId);
       const url = page && pageURL(page.url);
-      return page && url ? [{ id: target.surfaceId, title: page.title.slice(0, 200), url, ...(withChrome ? { backend: 'builtin' as const } : {}) }] : [];
+      return page && url && url.length <= PAGE_URL_LIMIT ? [{ id: target.surfaceId, title: page.title.slice(0, 200), url, ...(withChrome ? { backend: 'builtin' as const } : {}) }] : [];
     });
     if (withChrome && deps.chrome && deps.backend() === 'chrome') {
       for (const tab of await deps.chrome.tabs(workspaceId)) {
         if (pages.length >= 30) break;
         const url = pageURL(tab.url);
-        if (url) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome' });
+        if (url && url.length <= PAGE_URL_LIMIT) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome' });
       }
     }
     return { pages };
   }
-  if (!PREVIEW_COMMANDS.includes(command)) throw new Error('Unsupported browser operation');
+  // `stream:true` comes only from a daemon whose desktop announced
+  // BROWSER_STREAM_CAPABILITY. It brings `history`, the stream's keys, the
+  // size-only scroll check and the 409 codes; without it every answer is as before.
+  const stream = payload.stream === true;
+  if (!PREVIEW_COMMANDS.includes(command) && !(stream && command === 'browser.history')) throw new Error('Unsupported browser operation');
   const surfaceId = payload.surfaceId;
   if (typeof surfaceId !== 'string') throw new Error('Missing surface');
   const driver = await driverFor(surfaceId, workspaceId, targets, deps);
@@ -233,7 +253,12 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
       }
       const page = await driver.page();
       if (!page || pageURL(page.url) !== pageURL(current.url)) throw new Error('Browser page changed during capture');
-      return { data: capture.data, mimeType: 'image/jpeg', capturedAt: Date.now(), geometry:capturedGeometry, pageURL:pageURL(page.url) };
+      const url = pageURL(page.url);
+      // A longer URL could never come back as `expectedURL`, so it is left
+      // out, and the geometry only input could use goes with it. This also
+      // keeps the whole reply inside the bridge's capture allowance.
+      if (url && url.length > PAGE_URL_LIMIT) return { data: capture.data, mimeType: 'image/jpeg', capturedAt: Date.now() };
+      return { data: capture.data, mimeType: 'image/jpeg', capturedAt: Date.now(), geometry:capturedGeometry, pageURL:url };
     });
   }
   if (command === 'browser.focus') {
@@ -260,18 +285,36 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     if (!page || pageURL(page.url) !== expectedURL) throw new Error('Browser page changed; refresh before input');
     return page;
   };
-  const input = (operation: () => Promise<void>) => driver.input(async () => {
+  /** The phone's point on the live viewport. A mismatch on stream input is a 409 the phone resends on its next frame. */
+  const pointOn = (current: PhoneBrowserGeometry) => {
+    try {
+      return (stream && command === 'browser.scroll' ? phoneBrowserScrollPoint : phoneBrowserPoint)(payload.x,payload.y,payload.geometry,current);
+    } catch (err) {
+      if (stream && err instanceof PhoneBrowserViewportChanged) throw new PhoneBrowserError('browser-viewport-changed');
+      throw err;
+    }
+  };
+  // Stream tap/scroll: the viewport recheck runs with the lock held but before
+  // anything focuses or raises the tab, so a 409 leaves the desktop as it
+  // was. Focus may move the viewport, so the same checks run again after it,
+  // right before the input.
+  const recheck = async () => { await unchanged(); pointOn(await driver.geometry()); };
+  const streamPointer = (operation: () => Promise<void>) => driver.input(async () => { await recheck(); await unchanged(); await operation(); }, false, {
+    codeBusy: true,
+    beforeFocus: recheck,
+  });
+  const input = (operation: () => Promise<void>) => stream && (command === 'browser.tap' || command === 'browser.scroll') ? streamPointer(operation) : driver.input(async () => {
     // The last checks before the input, after any wait for the lock and focus.
     const page = await unchanged();
     if (helpOrigin !== undefined && browserHelpOrigin(page.url) !== helpOrigin) throw new PhoneBrowserError('browser-help-origin-changed');
     if (command === 'browser.tap' || command === 'browser.scroll') {
-      phoneBrowserPoint(payload.x,payload.y,payload.geometry,await driver.geometry());
+      pointOn(await driver.geometry());
       await unchanged();
     }
     await operation();
-  }, command === 'browser.type' || command === 'browser.key');
+  }, command === 'browser.type' || command === 'browser.key', stream ? { codeBusy: true } : undefined);
   if (command === 'browser.tap' || command === 'browser.scroll') {
-    const point = phoneBrowserPoint(payload.x,payload.y,payload.geometry,await driver.geometry());
+    const point = pointOn(await driver.geometry());
     if (command === 'browser.scroll') {
       if (typeof payload.deltaX !== 'number' || !Number.isFinite(payload.deltaX) || Math.abs(payload.deltaX) > 1 ||
           typeof payload.deltaY !== 'number' || !Number.isFinite(payload.deltaY) || Math.abs(payload.deltaY) > 1) throw new Error('Invalid browser scroll');
@@ -284,8 +327,20 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     if (typeof payload.text !== 'string' || !payload.text || payload.text.length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(payload.text)) throw new Error('Invalid browser text');
     const text = payload.text;
     await input(() => driver.type(text));
+  } else if (command === 'browser.history') {
+    if (payload.direction !== 'back' && payload.direction !== 'forward') throw new Error('Invalid browser history');
+    const direction = payload.direction;
+    let applied = true;
+    await input(async () => {
+      const entry = await driver.historyEntry(direction);
+      if (!entry) { applied = false; return; }
+      // The entry it leads to is held to the preview's own rule: http(s) pages only.
+      if (!pageURL(entry.url)) throw new Error('Only HTTP browser previews are supported');
+      await entry.go();
+    });
+    return { applied };
   } else {
-    if (!PREVIEW_KEYS.includes(payload.key as string)) throw new Error('Unsupported browser key');
+    if (!PREVIEW_KEYS.includes(payload.key as string) && !(stream && BROWSER_STREAM_KEYS.includes(payload.key as string))) throw new Error('Unsupported browser key');
     const key = payload.key as string;
     await input(() => driver.key(key));
   }

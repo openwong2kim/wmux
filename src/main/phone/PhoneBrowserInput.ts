@@ -1,13 +1,24 @@
 import type { WebContents } from 'electron';
+import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
 
 const active = new Set<number>();
 
+/** How one phone input takes a tab's input lock. Stream input only; absent, as before. */
+export interface PhoneBrowserInputOptions {
+  /** An overlapping input is `browser-input-busy` rather than the generic failure. */
+  codeBusy?: boolean;
+  /** Runs with the lock held, before anything focuses or raises the tab. */
+  beforeFocus?: () => Promise<void>;
+}
+
 /** CDP text insertion requires focus even when Tab changed the active DOM node. */
-export async function withPhoneBrowserInputFocus<T>(contents: WebContents, operation: () => Promise<T>): Promise<T> {
-  if (contents.isDestroyed() || active.has(contents.id)) throw new Error('Browser input unavailable');
+export async function withPhoneBrowserInputFocus<T>(contents: WebContents, operation: () => Promise<T>, options: PhoneBrowserInputOptions = {}): Promise<T> {
+  if (contents.isDestroyed()) throw new Error('Browser input unavailable');
+  if (active.has(contents.id)) throw options.codeBusy ? new PhoneBrowserError('browser-input-busy') : new Error('Browser input unavailable');
   active.add(contents.id);
   let emulated = false;
   try {
+    await options.beforeFocus?.();
     contents.focus();
     await contents.debugger.sendCommand('Page.bringToFront');
     const state = await contents.debugger.sendCommand('Runtime.evaluate', {
@@ -33,6 +44,30 @@ export async function dispatchPhoneBrowserScroll(contents: WebContents, event: {
     type:'mouseMoved',x:event.x,y:event.y,button:'none',buttons:0,
   });
   await contents.debugger.sendCommand('Input.dispatchMouseEvent', {type:'mouseWheel',...event});
+}
+
+/**
+ * The entry one step back (-1) or forward (+1) in the guest's own history, or
+ * null when there is none. `go` moves to that same entry only: the policy
+ * check before it is asynchronous, so it refuses once the history has moved.
+ */
+export function phoneBrowserHistoryEntry(contents: WebContents, offset: -1 | 1): { url: string; go: () => void } | null {
+  const history = contents.navigationHistory;
+  // Null past either end at runtime, whatever the type says.
+  const urlAt = (index: number) => (history.getEntryAtIndex(index) as { url?: unknown } | null)?.url;
+  if (!history.canGoToOffset(offset)) return null;
+  const index = history.getActiveIndex() + offset;
+  const url = urlAt(index);
+  if (typeof url !== 'string') return null;
+  return {
+    url,
+    go: () => {
+      if (contents.isDestroyed() || history.getActiveIndex() + offset !== index || urlAt(index) !== url) {
+        throw new Error('Browser page changed; refresh before input');
+      }
+      history.goToIndex(index);
+    },
+  };
 }
 
 /** Read the real embedded widget bounds from wmux's renderer, not the web page. */
