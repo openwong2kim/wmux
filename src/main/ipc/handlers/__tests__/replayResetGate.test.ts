@@ -74,6 +74,7 @@ describe('replay reset gate', () => {
     // Not RIS (it drops kitty flags and a DEC 2026 hold), no 1049 switch (xterm
     // swaps kitty flags on every one), no mouse, paste, focus or 2026 mode.
     expect(REPLAY_CLEAR).not.toContain('\x1bc');
+    // eslint-disable-next-line no-control-regex
     expect(REPLAY_CLEAR).not.toMatch(/\x1b\[\?(?:1049|1047|47|1000|1002|1003|1004|1006|2004|2026)[hl]/);
     expect(REPLAY_CLEAR.endsWith('\x1b[H\x1b[2J\x1b[3J')).toBe(true);
   });

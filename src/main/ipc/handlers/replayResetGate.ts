@@ -41,6 +41,7 @@ export const REPLAY_CLEAR = '\x1b[r\x1b[0m\x1b(B\x0f\x1b[4l\x1b[?6l\x1b[?7h\x1b[
 export const LEAVE_ALT_SCREEN = '\x1b[?1049l';
 
 // RIS, or a DECSET/DECRST whose parameters may switch the screen.
+// eslint-disable-next-line no-control-regex
 const SCREEN_SWITCH = /\x1bc|\x1b\[\?([\d;]*)([hl])/g;
 
 /**
