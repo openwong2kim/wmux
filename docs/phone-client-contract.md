@@ -3576,7 +3576,8 @@ workspace-browser picker lists desktop workspaces including those without panes.
 - `{action:"type",surfaceId,expectedURL,text}` inserts up to 4096 UTF-16 units into
   the focused field. Disallowed control characters are rejected.
 - `{action:"key",surfaceId,expectedURL,key}` accepts only `Tab`, `Shift+Tab`,
-  `Enter`, `Backspace`, `Escape`, `PageUp`, and `PageDown`.
+  `Enter`, `Backspace`, `Escape`, `PageUp`, and `PageDown` (more keys arrive
+  with `browserStream`, below).
 
 Captures may additionally carry `pageURL` and `geometry:{width,height,scrollX,scrollY}`
 when a fixed viewport probe is stable across capture. Their presence enables
@@ -3615,7 +3616,11 @@ No arbitrary JavaScript, headers, cookies, CDP commands or RPC names are accepte
 The capture's base64 image data is at most 700 KiB (the whole reply is one line on
 the daemon's control pipe, which closes past 1 MiB); a larger first shot is retaken
 once smaller, then refused. Only capture requests receive the larger bridge
-response allowance. A hidden Mac workspace may not produce frames; clients show
+response allowance. A capture carries `pageURL` only while it is at most 4096
+characters, the `expectedURL` limit. A longer one is omitted together with
+`geometry`; the image is still returned, readable but not tappable. The page
+list leaves out a page whose URL is longer than 4096 characters, as it leaves
+out non-http pages. A hidden Mac workspace may not produce frames; clients show
 this failure and ask the user to bring it forward.
 
 #### Dedicated-profile Chrome tabs (`browserPreviewChrome`)
@@ -3678,6 +3683,40 @@ exactly as above.
 | `409 {error:"browser-help-origin-changed"}` | Help-card typing: the tab is no longer at the request's origin, or the request has none. Nothing was typed. |
 | `404 {error:"browser-help-not-found"}` / `409 {error:"browser-help-closed"}` | Help-card typing: no request with that id for this workspace and tab (open or closed), or this tab's request already ended. |
 | `503 {error:"browser-preview-unavailable"}` | Any other failure, as before. Never retry input automatically. |
+
+#### Stream input (`browserStream`)
+
+`/api/config` will carry `browserStream: true` when the server runs with
+`--allow-transcript` and the attached desktop announced `browser.stream`. The
+flag, and the desktop's announcement, arrive together with the live preview
+stream route. Until then no desktop announces `browser.stream`, the server
+never applies the rules below, and every rule above holds unchanged. Under
+the flag, input on either route and either backend (builtin pane or `chrome`
+row) changes as follows:
+
+- **Keys**: `key` also accepts `ArrowUp`, `ArrowDown`, `ArrowLeft`,
+  `ArrowRight`, `Home`, `End` and `Delete`.
+- **History**: `{action:"history",surfaceId,expectedURL,direction:"back"|"forward"}`
+  moves the tab one entry through its own session history. It runs the same
+  owner and `expectedURL` checks as other input. The entry it leads to must
+  be an http(s) page and pass the desktop's navigation policy, else `503`.
+  The answer is `{applied:true}`, or `{applied:false}` when there is no entry
+  in that direction. Without the flag the action is `400`.
+- **Scroll**: compares only `geometry.width` and `geometry.height` with the
+  live viewport, not the scroll offsets. The anchor and the deltas scale by
+  the width and height sent. `tap` still compares all four values.
+- **Viewport changed**: a `tap` or `scroll` whose geometry no longer matches
+  is `409 browser-viewport-changed`. On a builtin pane this is decided before
+  the pane is focused or brought forward. An `expectedURL` mismatch stays
+  `503 browser-preview-unavailable`.
+- **Busy**: an input that overlaps another input on the same tab is
+  `409 browser-input-busy`, decided before anything is sent. Typing may be
+  sent in pieces of at most 4096 UTF-16 units each, strictly in series.
+
+| Response | Meaning |
+| --- | --- |
+| `409 {error:"browser-viewport-changed"}` | The viewport moved since the frame the phone used. Nothing was applied: wait for the next frame and resend. |
+| `409 {error:"browser-input-busy"}` | Another input on this tab is still running. Nothing was applied: the client may resend that piece once. |
 
 ### New agent pane launch options
 

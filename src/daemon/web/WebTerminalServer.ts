@@ -202,7 +202,7 @@ import { BOTS_ROUTE, botsResponse, botsSupported } from './bots';
 import { GuestRateLimiter, guestRouteResponse, readGuestBody, type GuestBotResolver } from './guestBotRoutes';
 import { isGuestRoute, looksLikeGuestCredential, type GuestBotGates } from '../../shared/guestBots';
 import { BOT_APPROVALS_ROUTE, botApprovalDecisionRefusal, botApprovalsResponse, botApprovalsSupported, type BotApprovalsCaller } from './botApprovals';
-import { BROWSER_CHROME_PREVIEW_CAPABILITY, PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode } from '../../shared/phoneBrowserPreview';
+import { BROWSER_CHROME_PREVIEW_CAPABILITY, BROWSER_STREAM_CAPABILITY, BROWSER_STREAM_KEYS, PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode } from '../../shared/phoneBrowserPreview';
 import { BROWSER_HELP_DECISION_ROUTE, BROWSER_HELP_LIST_ROUTE, browserHelpDecisionRefusal, browserHelpDecisionResponse, browserHelpListResponse, browserHelpSupported, type BrowserHelpTableView } from './browserHelp';
 import { browserHelpFrameJson, isBrowserHelpId, type PhoneBrowserHelpFrame } from '../../shared/phoneBrowserHelp';
 import { WORKER_RESUME_ROUTE, workerResumeRefusal, workerResumeResponse, workerResumeSupported } from './workerResume';
@@ -4325,7 +4325,7 @@ export class WebTerminalServer {
     if (!workspaceId) return this.json(res,409,{error:'workspace-required'});
     const desktop = this.availableDesktop();
     if (!desktop) return this.json(res,503,{error:'desktop-unavailable'});
-    const send = (command: 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll' | 'browser.focus', payload: Record<string,unknown>) => {
+    const send = (command: 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll' | 'browser.focus' | 'browser.history', payload: Record<string,unknown>) => {
       void desktop.request(command,{...payload,workspaceId}).then(result => {
         // Main's words for a failure ride inside a successful reply
         // (shared/phoneBrowserPreview.ts); an unknown code is just a failure.
@@ -4361,8 +4361,12 @@ export class WebTerminalServer {
       if (value.action === 'focus') return send('browser.focus',{surfaceId:value.surfaceId});
       if (value.action === 'viewport' && (value.mode === 'mobile' || value.mode === 'desktop')) return send('browser.viewport',{surfaceId:value.surfaceId,mode:value.mode});
       if (value.action === 'navigate' && typeof value.url === 'string' && value.url.length <= 4096) return send('browser.navigate',{surfaceId:value.surfaceId,url:value.url});
-      if ((value.action === 'type' || value.action === 'key' || value.action === 'tap' || value.action === 'scroll') && typeof value.expectedURL === 'string' && value.expectedURL.length <= 4096) {
-        const scope = {surfaceId:value.surfaceId,expectedURL:value.expectedURL};
+      if ((value.action === 'type' || value.action === 'key' || value.action === 'tap' || value.action === 'scroll' || value.action === 'history') && typeof value.expectedURL === 'string' && value.expectedURL.length <= 4096) {
+        // Input from a phone that may see the stream (the desktop announced
+        // it, transcript consent is on) is marked `stream:true`: main then
+        // answers it by the stream's rules. Unmarked input is answered as before.
+        const stream = this.opts?.allowTranscript === true && desktop.supports(BROWSER_STREAM_CAPABILITY);
+        const scope = {surfaceId:value.surfaceId,expectedURL:value.expectedURL,...(stream ? {stream:true} : {})};
         if ((value.action === 'tap' || value.action === 'scroll') && typeof value.x === 'number' && value.x >= 0 && value.x < 1 && typeof value.y === 'number' && value.y >= 0 && value.y < 1 && value.geometry && typeof value.geometry === 'object') {
           if (value.action === 'tap') return send('browser.tap',{...scope,x:value.x,y:value.y,geometry:value.geometry});
           if (typeof value.deltaX === 'number' && Math.abs(value.deltaX) <= 1 && typeof value.deltaY === 'number' && Math.abs(value.deltaY) <= 1) return send('browser.scroll',{...scope,x:value.x,y:value.y,geometry:value.geometry,deltaX:value.deltaX,deltaY:value.deltaY});
@@ -4380,7 +4384,8 @@ export class WebTerminalServer {
           if (found.row.origin === undefined) return this.json(res,409,{error:'browser-help-origin-changed'});
           return send('browser.type',{...scope,text:value.text,helpOrigin:found.row.origin});
         }
-        if (value.action === 'key' && ['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'].includes(value.key as string)) return send('browser.key',{...scope,key:value.key});
+        if (value.action === 'key' && (['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'].includes(value.key as string) || (stream && BROWSER_STREAM_KEYS.includes(value.key as string)))) return send('browser.key',{...scope,key:value.key});
+        if (stream && value.action === 'history' && (value.direction === 'back' || value.direction === 'forward')) return send('browser.history',{...scope,direction:value.direction});
       }
       return this.json(res,400,{error:'invalid-browser-request'});
     });

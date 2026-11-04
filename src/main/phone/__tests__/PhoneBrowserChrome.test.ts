@@ -63,6 +63,28 @@ describe('phone preview on dedicated-profile Chrome', () => {
     ] });
   });
 
+  it('leaves out a row whose URL is over 4096 characters; the other rows stay', async () => {
+    const at = (length: number) => { const base = 'https://shop.example.com/?q='; return base + 'a'.repeat(length - base.length); };
+    const long = at(300 * 1024);
+    const { deps } = fakeChrome();
+    deps.setURL(long);
+    const panes = {
+      ...fixture(deps),
+      targets: () => [
+        { surfaceId: 'pane', workspaceId: 'ws-1', webContentsId: 1, targetId: 't', wsUrl: 'ws://private' },
+        { surfaceId: 'pane-long', workspaceId: 'ws-1', webContentsId: 2, targetId: 't2', wsUrl: 'ws://private' },
+      ],
+      page: (id: number) => ({ title: 'Pane', url: id === 2 ? long : 'https://pane.example.com/' }),
+    };
+    expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes)).toEqual({ pages: [
+      { id: 'pane', title: 'Pane', url: 'https://pane.example.com/', backend: 'builtin' },
+    ] });
+    // At the limit a row is still listed.
+    deps.setURL(at(4096));
+    expect((await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes) as { pages: Array<{ id: string }> }).pages.map((p) => p.id))
+      .toEqual(['pane', 'chrome-own']);
+  });
+
   it('leaves out a tab that is not an http(s) page, and refuses to drive it', async () => {
     const { deps, sent } = fakeChrome();
     deps.setURL('chrome://settings/');
@@ -319,6 +341,112 @@ describe('phone preview on dedicated-profile Chrome', () => {
     const builtinSetting = { ...fixture(fakeChrome().deps), backend: () => 'builtin' };
     expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/', backend: 'chrome' }, builtinSetting)).toEqual({ error: 'browser-backend-unavailable' });
     await expect(handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/', backend: 'live' }, dedicated)).rejects.toThrow('Invalid browser backend');
+  });
+});
+
+describe('stream input (stream:true) on dedicated-profile Chrome', () => {
+  const cart = { ...scope, expectedURL: 'https://shop.example.com/cart' };
+  const mouse = (sent: ReturnType<typeof fakeChrome>['sent']) => sent.filter((c) => c.method === 'Input.dispatchMouseEvent');
+
+  it('presses a stream key through parseKeyPress, and only on stream input', async () => {
+    const { deps, sent } = fakeChrome();
+    expect(await handlePhoneBrowser('browser.key', { ...cart, key: 'ArrowDown', stream: true }, fixture(deps))).toEqual({ applied: true });
+    expect(sent.filter((c) => c.method === 'Input.dispatchKeyEvent').map((c) => [c.params?.type, c.params?.key])).toEqual([['keyDown', 'ArrowDown'], ['keyUp', 'ArrowDown']]);
+    sent.length = 0;
+    await expect(handlePhoneBrowser('browser.key', { ...cart, key: 'ArrowDown' }, fixture(deps))).rejects.toThrow('Unsupported browser key');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('an input while the last one is still out is browser-input-busy, and sends nothing', async () => {
+    const { deps, answer, sent } = fakeChrome();
+    let ack: (value: unknown) => void = () => undefined;
+    answer.mockImplementation(async (method: string) => {
+      if (method === 'Page.getLayoutMetrics') return METRICS;
+      if (method === 'Input.insertText') return new Promise((resolve) => { ack = resolve; });
+      return {};
+    });
+    const first = handlePhoneBrowser('browser.type', { ...cart, text: 'one', stream: true }, fixture(deps));
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = sent.length;
+    expect(await handlePhoneBrowser('browser.type', { ...cart, text: 'two', stream: true }, fixture(deps))).toEqual({ error: 'browser-input-busy' });
+    expect(await handlePhoneBrowser('browser.tap', { ...cart, geometry, x: 0.5, y: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-input-busy' });
+    // Without the gate, the old failure.
+    await expect(handlePhoneBrowser('browser.type', { ...cart, text: 'two' }, fixture(deps))).rejects.toThrow('Browser input unavailable');
+    expect(sent.slice(before).filter((c) => c.method.startsWith('Input.') || c.method.startsWith('Emulation.'))).toEqual([]);
+    ack({});
+    expect(await first).toEqual({ applied: true });
+  });
+
+  it('a moved viewport is browser-viewport-changed; a scroll checks the size only', async () => {
+    const { deps, sent } = fakeChrome();
+    const stale = { ...geometry, scrollY: 0 };
+    expect(await handlePhoneBrowser('browser.tap', { ...cart, geometry: stale, x: 0.5, y: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-viewport-changed' });
+    expect(await handlePhoneBrowser('browser.scroll', { ...cart, geometry: { ...geometry, height: 699 }, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-viewport-changed' });
+    expect(mouse(sent)).toEqual([]);
+    expect(await handlePhoneBrowser('browser.scroll', { ...cart, geometry: stale, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5, stream: true }, fixture(deps))).toEqual({ applied: true });
+    expect(mouse(sent)[1].params).toMatchObject({ type: 'mouseWheel', x: 500, y: 350, deltaX: 0, deltaY: 350 });
+    // Without the gate, both are as strict as before.
+    await expect(handlePhoneBrowser('browser.scroll', { ...cart, geometry: stale, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5 }, fixture(deps))).rejects.toThrow('viewport changed');
+  });
+
+  describe('history', () => {
+    const plain = { ...cart, direction: 'back' };
+    const back = { ...plain, stream: true };
+    function withHistory(entries: Array<{ id: number; url: string }>, currentIndex: number) {
+      const chrome = fakeChrome();
+      chrome.answer.mockImplementation(async (method: string) => method === 'Page.getNavigationHistory' ? { currentIndex, entries } : {});
+      const navigated = () => chrome.sent.filter((c) => c.method === 'Page.navigateToHistoryEntry').map((c) => c.params);
+      return { ...chrome, navigated };
+    }
+    const entries = [{ id: 11, url: 'https://shop.example.com/' }, { id: 12, url: 'https://shop.example.com/cart' }, { id: 13, url: 'https://shop.example.com/pay' }];
+
+    it('goes to the entry one step back or forward, through the navigation policy', async () => {
+      const { deps, navigated } = withHistory(entries, 1);
+      expect(await handlePhoneBrowser('browser.history', back, fixture(deps))).toEqual({ applied: true });
+      expect(deps.validateNavigation).toHaveBeenCalledWith('https://shop.example.com/');
+      expect(await handlePhoneBrowser('browser.history', { ...back, direction: 'forward' }, fixture(deps))).toEqual({ applied: true });
+      expect(navigated()).toEqual([{ entryId: 11 }, { entryId: 13 }]);
+    });
+
+    it('nothing to go to is applied:false, and nothing moves', async () => {
+      const { deps, navigated } = withHistory(entries.slice(0, 2), 1);
+      expect(await handlePhoneBrowser('browser.history', { ...back, direction: 'forward' }, fixture(deps))).toEqual({ applied: false });
+      const first = withHistory(entries.slice(1), 0);
+      expect(await handlePhoneBrowser('browser.history', back, fixture(first.deps))).toEqual({ applied: false });
+      expect([...navigated(), ...first.navigated()]).toEqual([]);
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+    });
+
+    it('refuses to move once the history changed during the policy check', async () => {
+      for (const after of [
+        { currentIndex: 2, entries },
+        { currentIndex: 1, entries: [{ id: 21, url: entries[0].url }, ...entries.slice(1)] },
+        { currentIndex: 1, entries: [{ id: 11, url: 'https://shop.example.com/other' }, ...entries.slice(1)] },
+        { currentIndex: 0, entries },
+      ]) {
+        const { deps, answer, navigated } = withHistory(entries, 1);
+        let reads = 0;
+        answer.mockImplementation(async (method: string) => method === 'Page.getNavigationHistory'
+          ? (reads++ === 0 ? { currentIndex: 1, entries } : after) : {});
+        await expect(handlePhoneBrowser('browser.history', back, fixture(deps))).rejects.toThrow('page changed');
+        expect(deps.validateNavigation).toHaveBeenCalledWith('https://shop.example.com/');
+        expect(reads).toBe(2);
+        expect(navigated()).toEqual([]);
+      }
+    });
+
+    it('refuses an entry that is not an http(s) page, before the policy and without moving', async () => {
+      const { deps, navigated } = withHistory([{ id: 10, url: 'chrome://newtab/' }, entries[1]], 1);
+      await expect(handlePhoneBrowser('browser.history', back, fixture(deps))).rejects.toThrow('Only HTTP');
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+      expect(navigated()).toEqual([]);
+    });
+
+    it('exists only on stream input', async () => {
+      const { deps, sent } = withHistory(entries, 1);
+      await expect(handlePhoneBrowser('browser.history', plain, fixture(deps))).rejects.toThrow('Unsupported browser operation');
+      expect(sent).toHaveLength(0);
+    });
   });
 });
 

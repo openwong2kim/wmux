@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { WebContents } from 'electron';
 import { handlePhoneBrowser } from '../PhoneBrowser';
+import { withPhoneBrowserInputFocus, type PhoneBrowserInputOptions } from '../PhoneBrowserInput';
 import type { RpcResponse } from '../../../shared/rpc';
 function fixture() {
   return {
@@ -151,4 +153,187 @@ describe('workspace browser preview boundary', () => {
     expect(deps.invoke.mock.calls.some(([method]) => method === 'browser.click.cdp')).toBe(false);
   });
 
+  it('a capture leaves out a pageURL over 4096 characters, and its geometry, and stays inside the bridge allowance', async () => {
+    const deps = fixture();
+    const scope = {workspaceId:'ws-1',surfaceId:'own'};
+    const at = (length: number) => { const base = 'https://a.example.com/?q='; return base + 'a'.repeat(length - base.length); };
+    let url = at(4096);
+    deps.page = () => ({title:'Long',url});
+    expect(await handlePhoneBrowser('browser.capture',scope,deps)).toMatchObject({pageURL:url,geometry:{width:1000,height:728,scrollX:0,scrollY:0}});
+    // A ~300 KiB URL (pushState can make one) beside the largest image a capture may carry.
+    url = at(300 * 1024);
+    deps.invoke.mockImplementation(async method => ({id:'rpc',ok:true,result:method === 'browser.evaluate'
+      ? {value:{width:1000,height:728,scrollX:0,scrollY:0,scale:1}} : {data:'x'.repeat(700 * 1024),mimeType:'image/jpeg'}}));
+    const result = await handlePhoneBrowser('browser.capture',scope,deps) as Record<string,unknown>;
+    expect(result.data).toHaveLength(700 * 1024);
+    expect(result).not.toHaveProperty('pageURL');
+    expect(result).not.toHaveProperty('geometry');
+    // The bridge's capture allowance covers the whole `daemon.phone.complete` envelope.
+    expect(Buffer.byteLength(JSON.stringify({requestId:'00000000-0000-4000-8000-000000000000',ok:true,result}))).toBeLessThanOrEqual(900 * 1024);
+  });
+
+});
+
+/** Main's real input lock over a fake guest, so the focus order is main's own. */
+function guest() {
+  const events: string[] = [];
+  const contents = {
+    id: 1, isDestroyed: () => false, focus: vi.fn(() => { events.push('focus'); }),
+    debugger: { sendCommand: vi.fn(async (method: string) => { events.push(method); return method === 'Runtime.evaluate' ? { result: { value: true } } : {}; }) },
+  };
+  const wc = contents as unknown as WebContents;
+  return {
+    events, contents, wc,
+    input: (_id: number, operation: () => Promise<RpcResponse>, options?: PhoneBrowserInputOptions) => withPhoneBrowserInputFocus(wc, operation, options),
+  };
+}
+
+const STREAM_KEYS = ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Home','End','Delete'];
+const BASE_KEYS = ['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'];
+const live = {width:1000,height:728,scrollX:0,scrollY:0};
+const pointed = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/',x:0.5,y:0.25};
+const clicks = (deps: ReturnType<typeof fixture>) => deps.invoke.mock.calls.filter(([method]) => method === 'browser.click.cdp');
+
+describe('workspace browser preview: stream input (stream:true)', () => {
+  it.each(STREAM_KEYS)('presses %s on stream input only', async key => {
+    const deps = fixture();
+    const scope = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/'};
+    expect(await handlePhoneBrowser('browser.key',{...scope,key,stream:true},deps)).toEqual({applied:true});
+    expect(deps.invoke).toHaveBeenLastCalledWith('browser.press.cdp',{workspaceId:'ws-1',surfaceId:'own',key});
+    deps.invoke.mockClear();
+    await expect(handlePhoneBrowser('browser.key',{...scope,key},deps)).rejects.toThrow('Unsupported browser key');
+    // Anything but the boolean is no gate.
+    await expect(handlePhoneBrowser('browser.key',{...scope,key,stream:'true'},deps)).rejects.toThrow('Unsupported browser key');
+    expect(deps.invoke).not.toHaveBeenCalled();
+  });
+
+  it('without the gate, the key list is exactly the base seven', async () => {
+    const deps = fixture();
+    const scope = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/'};
+    for (const key of BASE_KEYS) expect(await handlePhoneBrowser('browser.key',{...scope,key},deps)).toEqual({applied:true});
+    for (const key of [...STREAM_KEYS,'Control+l']) await expect(handlePhoneBrowser('browser.key',{...scope,key},deps)).rejects.toThrow('Unsupported browser key');
+    expect(deps.invoke).toHaveBeenCalledTimes(BASE_KEYS.length);
+  });
+
+  it('an overlapping input is browser-input-busy, with nothing dispatched; without the gate, the old failure', async () => {
+    const deps = fixture();
+    const pane = guest();
+    deps.input = pane.input;
+    const typed = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/',text:'piece'};
+    await withPhoneBrowserInputFocus(pane.wc, async () => {
+      expect(await handlePhoneBrowser('browser.type',{...typed,stream:true},deps)).toEqual({error:'browser-input-busy'});
+      expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:live,stream:true},deps)).toEqual({error:'browser-input-busy'});
+      await expect(handlePhoneBrowser('browser.type',typed,deps)).rejects.toThrow('Browser input unavailable');
+    });
+    expect(deps.invoke.mock.calls.filter(([method]) => method !== 'browser.evaluate')).toEqual([]);
+  });
+
+  it('a viewport that moved since the frame is browser-viewport-changed; without the gate, the old failure', async () => {
+    const deps = fixture();
+    const moved = {...pointed,geometry:{...live,width:999}};
+    expect(await handlePhoneBrowser('browser.tap',{...moved,stream:true},deps)).toEqual({error:'browser-viewport-changed'});
+    expect(await handlePhoneBrowser('browser.scroll',{...moved,deltaX:0,deltaY:0.5,stream:true},deps)).toEqual({error:'browser-viewport-changed'});
+    await expect(handlePhoneBrowser('browser.tap',moved,deps)).rejects.toThrow('Browser viewport changed; refresh before input');
+    // A bad point is not a moved viewport.
+    await expect(handlePhoneBrowser('browser.tap',{...pointed,x:1,geometry:live,stream:true},deps)).rejects.toThrow('Invalid browser point');
+    expect(clicks(deps)).toEqual([]);
+    expect(deps.scroll).not.toHaveBeenCalled();
+  });
+
+  it('a stream scroll ignores the scroll offset sent; a tap still checks it', async () => {
+    const deps = fixture();
+    const stale = {...live,scrollY:300};
+    expect(await handlePhoneBrowser('browser.scroll',{...pointed,geometry:stale,deltaX:0.1,deltaY:0.5,stream:true},deps)).toEqual({applied:true});
+    expect(deps.scroll).toHaveBeenCalledWith(1,{x:500,y:182,deltaX:100,deltaY:364});
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:stale,stream:true},deps)).toEqual({error:'browser-viewport-changed'});
+    expect(clicks(deps)).toEqual([]);
+    // Without the gate a scroll is as strict as a tap.
+    deps.scroll.mockClear();
+    await expect(handlePhoneBrowser('browser.scroll',{...pointed,geometry:stale,deltaX:0,deltaY:0.5},deps)).rejects.toThrow('viewport changed');
+    expect(deps.scroll).not.toHaveBeenCalled();
+  });
+
+  it('a builtin pane: the 409 is decided before anything focuses or raises the tab', async () => {
+    const deps = fixture();
+    const pane = guest();
+    deps.input = pane.input;
+    // The viewport moves after the first check, before the recheck under the lock.
+    let probes = 0;
+    deps.invoke.mockImplementation(async method => ({id:'rpc',ok:true,result:method === 'browser.evaluate'
+      ? {value:{...live,scrollY:probes++ === 0 ? 0 : 5,scale:1}} : {ok:true}}));
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:live,stream:true},deps)).toEqual({error:'browser-viewport-changed'});
+    expect(probes).toBe(2);
+    expect(pane.contents.focus).not.toHaveBeenCalled();
+    expect(pane.events).toEqual([]);
+    expect(clicks(deps)).toEqual([]);
+    // The viewport moves while the tab is focused: still a 409, and no tap goes out.
+    probes = 0;
+    deps.invoke.mockImplementation(async method => ({id:'rpc',ok:true,result:method === 'browser.evaluate'
+      ? {value:{...live,scrollY:probes++ < 2 ? 0 : 5,scale:1}} : {ok:true}}));
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:live,stream:true},deps)).toEqual({error:'browser-viewport-changed'});
+    expect(probes).toBe(3);
+    expect(pane.events.slice(0,2)).toEqual(['focus','Page.bringToFront']);
+    expect(clicks(deps)).toEqual([]);
+    pane.events.length = 0;
+    // A tap that matches: checked, then focused, then dispatched.
+    deps.invoke.mockImplementation(async method => ({id:'rpc',ok:true,result:method === 'browser.evaluate' ? {value:{...live,scale:1}} : {ok:true}}));
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:live,stream:true},deps)).toEqual({applied:true});
+    expect(pane.events.slice(0,2)).toEqual(['focus','Page.bringToFront']);
+    expect(clicks(deps)).toEqual([['browser.click.cdp',{workspaceId:'ws-1',surfaceId:'own',x:500,y:182}]]);
+  });
+
+  describe('history', () => {
+    const plain = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/',direction:'back'};
+    const asked = {...plain,stream:true};
+    function withHistory(url: string | null) {
+      const go = vi.fn();
+      const deps = {...fixture(),
+        historyEntry: vi.fn<(id: number, offset: -1 | 1) => {url:string;go:() => void} | null>(() => (url === null ? null : {url,go})),
+        validateNavigation: vi.fn<(url: string) => Promise<void>>(async () => undefined)};
+      return {deps,go};
+    }
+
+    it('goes one entry back or forward, through the navigation policy', async () => {
+      const {deps,go} = withHistory('https://prev.example.com/a');
+      expect(await handlePhoneBrowser('browser.history',asked,deps)).toEqual({applied:true});
+      expect(deps.historyEntry).toHaveBeenLastCalledWith(1,-1);
+      expect(deps.validateNavigation).toHaveBeenCalledWith('https://prev.example.com/a');
+      expect(go).toHaveBeenCalledTimes(1);
+      expect(await handlePhoneBrowser('browser.history',{...asked,direction:'forward'},deps)).toEqual({applied:true});
+      expect(deps.historyEntry).toHaveBeenLastCalledWith(1,1);
+    });
+
+    it('nothing to go to is applied:false', async () => {
+      const {deps} = withHistory(null);
+      expect(await handlePhoneBrowser('browser.history',asked,deps)).toEqual({applied:false});
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+    });
+
+    it.each(['file:///private/file','chrome://settings/','about:blank'])('refuses an entry that is not an http(s) page: %s', async url => {
+      const {deps,go} = withHistory(url);
+      await expect(handlePhoneBrowser('browser.history',asked,deps)).rejects.toThrow('Only HTTP');
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+      expect(go).not.toHaveBeenCalled();
+    });
+
+    it('an entry the navigation policy refuses is not gone to', async () => {
+      const {deps,go} = withHistory('http://10.0.0.1/admin');
+      deps.validateNavigation.mockRejectedValue(new Error('Navigation refused'));
+      await expect(handlePhoneBrowser('browser.history',asked,deps)).rejects.toThrow('Navigation refused');
+      expect(go).not.toHaveBeenCalled();
+    });
+
+    it('runs the owner and expectedURL checks first, and exists only on stream input', async () => {
+      const {deps} = withHistory('https://prev.example.com/');
+      await expect(handlePhoneBrowser('browser.history',{...asked,expectedURL:'https://old.invalid/'},deps)).rejects.toThrow('page changed');
+      await expect(handlePhoneBrowser('browser.history',{...asked,surfaceId:'other'},deps)).rejects.toThrow('does not belong');
+      await expect(handlePhoneBrowser('browser.history',{...asked,direction:'up'},deps)).rejects.toThrow('Invalid browser history');
+      await expect(handlePhoneBrowser('browser.history',plain,deps)).rejects.toThrow('Unsupported browser operation');
+      expect(deps.historyEntry).not.toHaveBeenCalled();
+      // A pane that moved while the input waited for focus.
+      deps.input = async (_id,operation) => { deps.page = () => ({title:'Changed',url:'https://changed.invalid/'}); return operation(); };
+      await expect(handlePhoneBrowser('browser.history',asked,deps)).rejects.toThrow('page changed');
+      expect(deps.historyEntry).not.toHaveBeenCalled();
+    });
+  });
 });

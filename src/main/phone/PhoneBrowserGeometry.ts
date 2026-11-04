@@ -25,13 +25,28 @@ function validDimension(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= 32768;
 }
 
-export function phoneBrowserPoint(x: unknown, y: unknown, expected: unknown, current: PhoneBrowserGeometry): {x:number;y:number} {
+/** The viewport no longer matches the geometry the phone sent: nothing was dispatched. */
+export class PhoneBrowserViewportChanged extends Error {
+  constructor() { super('Browser viewport changed; refresh before input'); }
+}
+
+export function phoneBrowserPoint(x: unknown, y: unknown, expected: unknown, current: PhoneBrowserGeometry,
+  fields: ReadonlyArray<keyof PhoneBrowserGeometry> = ['width','height','scrollX','scrollY']): {x:number;y:number} {
   if (typeof x !== 'number' || !Number.isFinite(x) || x < 0 || x >= 1 ||
       typeof y !== 'number' || !Number.isFinite(y) || y < 0 || y >= 1 ||
       !expected || typeof expected !== 'object') throw new Error('Invalid browser point');
   const previous = expected as Record<string,unknown>;
-  for (const field of ['width','height','scrollX','scrollY'] as const) {
-    if (previous[field] !== current[field]) throw new Error('Browser viewport changed; refresh before input');
+  for (const field of fields) {
+    if (previous[field] !== current[field]) throw new PhoneBrowserViewportChanged();
   }
   return {x:x * current.width,y:y * current.height};
+}
+
+/**
+ * Stream scroll: the viewport size only. The page may have scrolled since the
+ * frame the phone saw, and a wheel at the same normalized anchor still means
+ * the same thing; the size must match, so the anchor scales by the size sent.
+ */
+export function phoneBrowserScrollPoint(x: unknown, y: unknown, expected: unknown, current: PhoneBrowserGeometry): {x:number;y:number} {
+  return phoneBrowserPoint(x, y, expected, current, ['width','height']);
 }

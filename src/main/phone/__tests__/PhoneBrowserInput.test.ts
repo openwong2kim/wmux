@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WebContents } from 'electron';
-import { withPhoneBrowserInputFocus } from '../PhoneBrowserInput';
+import { phoneBrowserHistoryEntry, withPhoneBrowserInputFocus } from '../PhoneBrowserInput';
 
 function fixture(focused = false) {
   return {id:1,isDestroyed:()=>false,focus:vi.fn(),debugger:{sendCommand:vi.fn(async (method:string) =>
@@ -42,4 +42,67 @@ describe('phone browser input focus', () => {
     expect(operation).toHaveBeenCalledTimes(2);
   });
 
+  it('stream input: an overlap is browser-input-busy, before anything runs', async () => {
+    const contents = fixture(true);
+    const wc = contents as unknown as WebContents;
+    const rejected = vi.fn(async () => 'unexpected');
+    await withPhoneBrowserInputFocus(wc,async () => {
+      await expect(withPhoneBrowserInputFocus(wc,rejected,{codeBusy:true})).rejects.toMatchObject({code:'browser-input-busy'});
+    });
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  it('the pre-focus check runs with the lock held, and a refusal there never focuses or raises the tab', async () => {
+    const contents = fixture();
+    const wc = contents as unknown as WebContents;
+    const order: string[] = [];
+    contents.focus.mockImplementation(() => { order.push('focus'); });
+    await withPhoneBrowserInputFocus(wc,async () => { order.push('operation'); },{beforeFocus:async () => {
+      order.push('check');
+      // The lock is already held: an overlapping input is refused.
+      await expect(withPhoneBrowserInputFocus(wc,async () => undefined)).rejects.toThrow('unavailable');
+    }});
+    expect(order).toEqual(['check','focus','operation']);
+    contents.focus.mockClear();
+    contents.debugger.sendCommand.mockClear();
+    const operation = vi.fn(async () => undefined);
+    await expect(withPhoneBrowserInputFocus(wc,operation,{beforeFocus:async () => { throw new Error('viewport changed'); }})).rejects.toThrow('viewport changed');
+    expect(contents.focus).not.toHaveBeenCalled();
+    expect(contents.debugger.sendCommand).not.toHaveBeenCalled();
+    expect(operation).not.toHaveBeenCalled();
+    // And the lock is released.
+    expect(await withPhoneBrowserInputFocus(wc,async () => 'next')).toBe('next');
+  });
+
+});
+
+describe('phone browser history entry (builtin)', () => {
+  function guest(urls: string[], active: number) {
+    let current = active;
+    const navigationHistory = {
+      canGoToOffset: (offset: number) => current + offset >= 0 && current + offset < urls.length,
+      getActiveIndex: () => current,
+      getEntryAtIndex: (index: number) => (index >= 0 && index < urls.length ? {url:urls[index],title:''} : null),
+      goToIndex: vi.fn((index: number) => { current = index; }),
+    };
+    return {navigationHistory,wc:{id:1,isDestroyed:() => false,navigationHistory} as unknown as WebContents,move:(index: number) => { current = index; }};
+  }
+
+  it('reads the entry one step away and goes to exactly that one', () => {
+    const pane = guest(['https://a.example.com/','https://b.example.com/','https://c.example.com/'],1);
+    expect(phoneBrowserHistoryEntry(pane.wc,1)?.url).toBe('https://c.example.com/');
+    const back = phoneBrowserHistoryEntry(pane.wc,-1);
+    expect(back?.url).toBe('https://a.example.com/');
+    back?.go();
+    expect(pane.navigationHistory.goToIndex).toHaveBeenCalledWith(0);
+    expect(phoneBrowserHistoryEntry(pane.wc,-1)).toBeNull();
+  });
+
+  it('refuses to go once the history moved after it was read', () => {
+    const pane = guest(['https://a.example.com/','https://b.example.com/','https://c.example.com/'],1);
+    const back = phoneBrowserHistoryEntry(pane.wc,-1);
+    pane.move(2);
+    expect(() => back?.go()).toThrow('page changed');
+    expect(pane.navigationHistory.goToIndex).not.toHaveBeenCalled();
+  });
 });
