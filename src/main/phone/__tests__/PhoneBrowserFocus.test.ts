@@ -167,7 +167,7 @@ describe('watchFocus (the stream event)', () => {
     const state: { focus: unknown; focused: boolean; hold: Promise<void> | null; context: number } = { focus: { editable: false }, focused: true, hold: null, context: 3 };
     const fake = fakeCdp(async (method, params) => {
       if (method === 'Page.getFrameTree') return TREE;
-      if (method === 'Page.createIsolatedWorld') return { executionContextId: state.context };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: params.frameId === 'top' ? state.context : 50 };
       if (method === 'Page.addScriptToEvaluateOnNewDocument') return { identifier: 'script-1' };
       if (method === 'Runtime.evaluate' && params.expression === WATCH_FOCUS_EXPRESSION) {
         if (params.contextId !== state.context) throw new Error('Cannot find context with specified id');
@@ -184,19 +184,22 @@ describe('watchFocus (the stream event)', () => {
   const binding = (calls: Array<{ method: string; params: Record<string, unknown> }>) =>
     calls.find((c) => c.method === 'Runtime.addBinding')!.params.name as string;
 
-  it('installs the binding in its own world only, before the detector, in every current frame', async () => {
+  it('binds its name in the top frame\'s world only, never enables Runtime, and puts the detector in every frame', async () => {
     const { cdp, calls } = session();
     const watch = await watchFocus(cdp, () => undefined);
     const methods = calls.map((c) => c.method);
-    expect(methods.slice(0, 5)).toEqual(['Runtime.enable', 'Runtime.addBinding', 'Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Page.getFrameTree']);
-    const world = calls[1].params.executionContextName as string;
+    expect(methods).not.toContain('Runtime.enable');
+    expect(methods.slice(0, 3)).toEqual(['Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'Page.getFrameTree']);
+    const world = calls[1].params.worldName as string;
     expect(world).toMatch(/^wmux-focus-[0-9a-f]{16}$/);
-    expect(calls[3].params).toEqual({ source: focusDetectorSource(binding(calls)), worldName: world });
+    expect(calls[1].params).toEqual({ source: focusDetectorSource(binding(calls)), worldName: world });
     expect(calls.filter((c) => c.method === 'Page.createIsolatedWorld').slice(0, 2).map((c) => c.params)).toEqual([
       { frameId: 'top', worldName: world }, { frameId: 'child', worldName: world },
     ]);
+    // By context: the top frame's world of this document, and nothing else.
+    expect(calls.filter((c) => c.method === 'Runtime.addBinding').map((c) => c.params)).toEqual([{ name: binding(calls), executionContextId: 3 }]);
     // The detector goes into each of those worlds.
-    expect(calls.filter((c) => c.method === 'Runtime.evaluate' && c.params.expression === focusDetectorSource(binding(calls)))).toHaveLength(2);
+    expect(calls.filter((c) => c.method === 'Runtime.evaluate' && c.params.expression === focusDetectorSource(binding(calls))).map((c) => c.params.contextId)).toEqual([3, 50]);
     // A second watcher gets names of its own.
     const other = session();
     await watchFocus(other.cdp, () => undefined);
@@ -246,6 +249,7 @@ describe('watchFocus (the stream event)', () => {
     await settle();
     emit('Page.frameNavigated', { frame: { id: 'child', parentId: 'top' } });
     expect(seen.at(-1)).toEqual({ editable: true, kind: 'search' });
+    state.context = 7;
     emit('Page.frameNavigated', { frame: { id: 'top' } });
     expect(seen.at(-1)).toEqual({ editable: false });
     state.focus = { editable: false };
@@ -253,6 +257,13 @@ describe('watchFocus (the stream event)', () => {
     release();
     await settle();
     expect(seen).toEqual([{ editable: false }, { editable: true, kind: 'search' }, { editable: false }]);
+    // The new document's world got the binding (only the top frame's commit re-binds).
+    expect(calls.filter((c) => c.method === 'Runtime.addBinding').map((c) => c.params.executionContextId)).toEqual([3, 7]);
+    // And its own focus comes through.
+    state.focus = { editable: true, kind: 'number' };
+    emit('Runtime.bindingCalled', { name: binding(calls) });
+    await settle();
+    expect(seen.at(-1)).toEqual({ editable: true, kind: 'number' });
   });
 
   it('reads in the same world until it is gone, then finds the new one', async () => {
@@ -356,10 +367,35 @@ describe('the detector', () => {
     expect(win.__nudge.mock.calls.every((call) => call.length === 1 && call[0] === '')).toBe(true);
   });
 
-  it('does nothing without its binding', async () => {
-    const dom = new JSDOM('<!doctype html><body><input id="a"></body>', { runScripts: 'outside-only' });
-    const win = dom.window;
-    expect(() => win.eval(focusDetectorSource('__absent'))).not.toThrow();
-    expect(win.eval('globalThis.__wmuxFocusDetector')).toBeUndefined();
+  it('runs before main adds its binding, and nudges once it is there', async () => {
+    const dom = new JSDOM('<!doctype html><body><input id="a"><textarea id="t"></textarea></body>', { runScripts: 'outside-only' });
+    const win = dom.window as JsdomWindow & { __late?: ReturnType<typeof vi.fn> };
+    expect(() => win.eval(focusDetectorSource('__late'))).not.toThrow();
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    (dom.window.document.getElementById('a') as HTMLElement).focus();
+    await tick();
+    win.__late = vi.fn();
+    (dom.window.document.getElementById('t') as HTMLElement).focus();
+    await tick();
+    expect(win.__late.mock.calls).toEqual([['']]);
+  });
+
+  it('a frame nudges through the top frame\'s world, where the binding is', async () => {
+    const dom = new JSDOM('<!doctype html><body><iframe id="f"></iframe></body>', { runScripts: 'outside-only' });
+    const win = dom.window as JsdomWindow & { __nudge: ReturnType<typeof vi.fn> };
+    win.__nudge = vi.fn();
+    win.eval(focusDetectorSource('__nudge'));
+    const frame = dom.window.document.getElementById('f') as HTMLIFrameElement;
+    const child = frame.contentWindow as unknown as JsdomWindow;
+    child.eval(focusDetectorSource('__nudge'));
+    const tick = () => new Promise((r) => setTimeout(r, 5));
+    await tick();
+    win.__nudge.mockClear();
+    (frame.contentDocument as Document).body.innerHTML = '<input id="x" type="tel">';
+    ((frame.contentDocument as Document).getElementById('x') as HTMLElement).focus();
+    await tick();
+    expect(win.__nudge.mock.calls.length).toBeGreaterThanOrEqual(1);
+    // The frame's own world has no binding of its own.
+    expect(child.eval('typeof globalThis.__nudge')).toBe('undefined');
   });
 });

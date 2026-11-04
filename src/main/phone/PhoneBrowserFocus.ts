@@ -9,14 +9,16 @@
 //  - readFocus(send): one read, for the tap reply. Undefined when it could
 //    not be read within READ_FOCUS_MS.
 //  - watchFocus(cdp, onChange): the stream's `focus` event. A small detector
-//    in an isolated world of every frame calls a binding that exists only in
-//    that world when the frame's own focus may have moved; main then reads
-//    the top frame again. The call carries nothing: only main's own read
-//    decides the state, so even a forged call could only cause a re-read.
-//    Chromium sends a page that is not focused (a dedicated Chrome window
-//    behind wmux) no focus events, not even for a script's .focus(); while
-//    the page reads as not focused, main also reads again every
-//    UNFOCUSED_POLL_MS.
+//    in an isolated world of every frame nudges main when the frame's own
+//    focus may have moved, through a binding main adds to the top frame's
+//    world of each document (by executionContextId, so Runtime is never
+//    enabled and the page's own world never has it); a child frame's
+//    detector nudges through the top frame's world. Main then reads the top
+//    frame again. The nudge carries nothing: only main's own read decides
+//    the state, so even a forged one could only cause a re-read. Chromium
+//    sends a page that is not focused (a dedicated Chrome window behind
+//    wmux) no focus events, not even for a script's .focus(); while the page
+//    reads as not focused, main also reads again every UNFOCUSED_POLL_MS.
 //
 // Both run over any CDP session: a dedicated Chrome tab's page or stream
 // session, or a builtin pane's webContents.debugger (electronFocusCdp).
@@ -82,14 +84,29 @@ const DETECTOR_EVENTS = ['focusin', 'focusout', 'pointerdown', 'pointerup', 'cli
 
 /**
  * The detector, for an isolated world of one frame: after any event that may
- * move focus it classifies the frame's own focus, and on a change calls the
- * binding with nothing. `binding` is main's random name, never the phone's.
+ * move focus it classifies the frame's own focus, and on a change nudges main
+ * with nothing. The top frame's world holds the nudge, which calls `binding`
+ * once main has added it there; a child frame reaches it through `top`, in
+ * the same world (a cross-origin top refuses, and is not nudged). `binding`
+ * is main's random name, never the phone's.
  */
 export function focusDetectorSource(binding: string): string {
   return `(() => {
-  const nudge = globalThis[${JSON.stringify(binding)}];
-  if (typeof nudge !== 'function' || globalThis.__wmuxFocusDetector) return;
+  if (globalThis.__wmuxFocusDetector) return;
   globalThis.__wmuxFocusDetector = true;
+  const isTop = window === window.top;
+  if (isTop) {
+    globalThis.__wmuxFocusNudge = () => {
+      const call = globalThis[${JSON.stringify(binding)}];
+      if (typeof call === 'function') { try { call(''); } catch (e) { /* the watcher is gone */ } }
+    };
+  }
+  const nudge = () => {
+    try {
+      const top = isTop ? globalThis : window.top;
+      if (typeof top.__wmuxFocusNudge === 'function') top.__wmuxFocusNudge();
+    } catch (e) { /* a cross-origin top */ }
+  };
   const classify = ${CLASSIFY};
   let last = '';
   let queued = false;
@@ -99,7 +116,7 @@ export function focusDetectorSource(binding: string): string {
     try { now = JSON.stringify(classify(document)); } catch (e) { now = ''; }
     if (now === last) return;
     last = now;
-    try { nudge(''); } catch (e) { /* the watcher is gone */ }
+    nudge();
   };
   const later = () => { if (!queued) { queued = true; setTimeout(check, 0); } };
   for (const type of ${JSON.stringify(DETECTOR_EVENTS)}) addEventListener(type, later, { capture: true, passive: true });
@@ -109,13 +126,24 @@ export function focusDetectorSource(binding: string): string {
 })()`;
 }
 
+/** `frameId`'s `worldName` context: made on first use, then the same one for the document. */
+async function worldIn(send: CdpSend, frameId: string, worldName: string): Promise<number> {
+  const world = await send('Page.createIsolatedWorld', { frameId, worldName }) as { executionContextId?: unknown } | null;
+  if (typeof world?.executionContextId !== 'number') throw new Error('Browser focus unavailable');
+  return world.executionContextId;
+}
+
 /** The top frame's `worldName` context; undefined when there is none. */
 async function topWorld(send: CdpSend, worldName: string): Promise<number | undefined> {
   const tree = await send('Page.getFrameTree') as { frameTree?: { frame?: { id?: unknown } } } | null;
   const frameId = tree?.frameTree?.frame?.id;
-  if (typeof frameId !== 'string') return undefined;
-  const world = await send('Page.createIsolatedWorld', { frameId, worldName }) as { executionContextId?: unknown } | null;
-  return typeof world?.executionContextId === 'number' ? world.executionContextId : undefined;
+  return typeof frameId === 'string' ? worldIn(send, frameId, worldName) : undefined;
+}
+
+/** Runs a fixed script in `contextId`; throws when it threw. */
+async function runIn(send: CdpSend, contextId: number, source: string): Promise<void> {
+  const reply = await send('Runtime.evaluate', { expression: source, contextId }) as { exceptionDetails?: unknown } | null;
+  if (reply?.exceptionDetails) throw new Error('Browser focus unavailable');
 }
 
 /** A fixed expression's value in `contextId`; undefined when it threw. */
@@ -160,13 +188,16 @@ export interface FocusWatch {
  * Reports the page's focus on every change of (editable, kind), the first
  * read included. A cross-document commit of the main frame reports
  * `{editable:false}` at once, then the new page's own focus once it moves.
- * Rejects when the detector cannot be installed in the top frame.
+ * Rejects when the detector cannot be installed in the top frame. Sends
+ * Page.enable (the new-document detector needs it), never Runtime.enable.
  */
 export async function watchFocus(cdp: FocusCdp, onChange: (focus: PhoneBrowserFocus) => void): Promise<FocusWatch> {
   const token = randomBytes(8).toString('hex');
   const binding = `__wmuxFocus_${token}`;
   const worldName = `wmux-focus-${token}`;
   const detector = focusDetectorSource(binding);
+  // Called as the session's own method: a session's send may rely on `this`.
+  const send: CdpSend = (method, params) => cdp.send(method, params);
   const offs: Array<() => void> = [];
   let scriptId: string | null = null;
   let stopped = false;
@@ -187,11 +218,11 @@ export async function watchFocus(cdp: FocusCdp, onChange: (focus: PhoneBrowserFo
   /** The focus, and whether the page is focused; a context that went is found again once. */
   const read = async (): Promise<{ focus: PhoneBrowserFocus; focused: boolean } | undefined> => {
     for (let attempt = 0; attempt < 2; attempt += 1) {
-      context ??= (await topWorld(cdp.send, worldName)) ?? null;
+      context ??= (await topWorld(send, worldName)) ?? null;
       if (context === null) return undefined;
       let value: unknown;
       try {
-        value = await valueIn(cdp.send, context, WATCH_FOCUS_EXPRESSION);
+        value = await valueIn(send, context, WATCH_FOCUS_EXPRESSION);
       } catch {
         context = null;
         continue;
@@ -229,39 +260,51 @@ export async function watchFocus(cdp: FocusCdp, onChange: (focus: PhoneBrowserFo
     const off = cdp.on(method, (params) => { if (!stopped) handler(params); });
     if (typeof off === 'function') offs.push(off);
   };
+  /** The top frame's world of the current document: the binding, then the detector where the new-document one did not run. */
+  const bind = async (frameId: string): Promise<number> => {
+    const contextId = await worldIn(send, frameId, worldName);
+    await send('Runtime.addBinding', { name: binding, executionContextId: contextId });
+    await runIn(send, contextId, detector);
+    return contextId;
+  };
   const stop = async () => {
     if (stopped) return;
     stopped = true;
     if (poll) { clearTimeout(poll); poll = null; }
     for (const off of offs.splice(0)) off();
-    await cdp.send('Runtime.removeBinding', { name: binding }).catch(() => undefined);
-    if (scriptId !== null) await cdp.send('Page.removeScriptToEvaluateOnNewDocument', { identifier: scriptId }).catch(() => undefined);
+    await send('Runtime.removeBinding', { name: binding }).catch(() => undefined);
+    if (scriptId !== null) await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: scriptId }).catch(() => undefined);
   };
 
   listen('Runtime.bindingCalled', (params) => { if (params.name === binding) void refresh(); });
   listen('Page.frameNavigated', (params) => {
-    const frame = params.frame as { parentId?: unknown } | undefined;
-    if (!frame || frame.parentId !== undefined) return;
+    const frame = params.frame as { id?: unknown; parentId?: unknown } | undefined;
+    if (!frame || frame.parentId !== undefined || typeof frame.id !== 'string') return;
     generation += 1;
+    const at = generation;
     context = null;
     set({ editable: false });
-    // A page restored from the back-forward cache keeps its focus: read it.
-    void refresh();
+    // The new document's world gets the binding; then its focus is read (a
+    // page restored from the back-forward cache keeps the focus it had).
+    bind(frame.id).then((contextId) => {
+      if (stopped || at !== generation) return;
+      context = contextId;
+      void refresh();
+    }, () => undefined);
   });
   try {
-    // Runtime first: a named binding reaches only the worlds created after
-    // Runtime.enable. Page.enable is what runs the new-document detector.
-    await cdp.send('Runtime.enable');
-    await cdp.send('Runtime.addBinding', { name: binding, executionContextName: worldName });
-    await cdp.send('Page.enable');
-    const added = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: detector, worldName }) as { identifier?: unknown } | null;
+    // Page.enable runs the new-document detector, in every frame.
+    await send('Page.enable');
+    const added = await send('Page.addScriptToEvaluateOnNewDocument', { source: detector, worldName }) as { identifier?: unknown } | null;
     scriptId = typeof added?.identifier === 'string' ? added.identifier : null;
     // The frames already loaded: the new-document detector does not run in them.
-    const tree = await cdp.send('Page.getFrameTree') as { frameTree?: FrameNode } | null;
+    const tree = await send('Page.getFrameTree') as { frameTree?: FrameNode } | null;
     const [top, ...children] = frameIds(tree?.frameTree);
     if (!top) throw new Error('Browser focus unavailable');
-    await install(cdp.send, top, worldName, detector);
-    for (const frameId of children) await install(cdp.send, frameId, worldName, detector).catch(() => undefined);
+    context = await bind(top);
+    for (const frameId of children) {
+      await worldIn(send, frameId, worldName).then((contextId) => runIn(send, contextId, detector)).catch(() => undefined);
+    }
   } catch (err) {
     await stop();
     throw err;
@@ -278,13 +321,6 @@ function frameIds(node: FrameNode | undefined, out: string[] = []): string[] {
   if (typeof node.frame?.id === 'string') out.push(node.frame.id);
   for (const child of node.childFrames ?? []) frameIds(child, out);
   return out;
-}
-
-async function install(send: CdpSend, frameId: string, worldName: string, detector: string): Promise<void> {
-  const world = await send('Page.createIsolatedWorld', { frameId, worldName }) as { executionContextId?: unknown } | null;
-  if (typeof world?.executionContextId !== 'number') throw new Error('Browser focus unavailable');
-  const reply = await send('Runtime.evaluate', { expression: detector, contextId: world.executionContextId }) as { exceptionDetails?: unknown } | null;
-  if (reply?.exceptionDetails) throw new Error('Browser focus unavailable');
 }
 
 /** A builtin pane's webContents.debugger as a FocusCdp (its own session's events only). */

@@ -218,8 +218,10 @@ function describeMode(mode: Mode): void {
       const session = await launcher!.streamSession(surfaceId);
       // The binding's name, as the watcher asks Chrome for it.
       let name = '';
+      const methods: string[] = [];
       const spied: FocusCdp = {
         send: (method, params) => {
+          methods.push(method);
           if (method === 'Runtime.addBinding') name = String(params?.name);
           return session.send(method, params);
         },
@@ -234,6 +236,8 @@ function describeMode(mode: Mode): void {
         await deliberateSleep(300, 'the detectors\' own first checks settle');
         called.length = 0;
         expect(name).toMatch(/^__wmuxFocus_[0-9a-f]{16}$/);
+        // Runtime is never enabled: the binding is added to one world by its context id.
+        expect(methods).not.toContain('Runtime.enable');
         // The page's own world has no such function, and calling one by that name reaches nothing.
         expect(await evaluate(surfaceId, `typeof window[${JSON.stringify(name)}]`)).toBe('undefined');
         expect(await evaluate(surfaceId, `(() => { try { window[${JSON.stringify(name)}]('{"editable":true,"kind":"password"}'); return 'called'; } catch (e) { return 'threw'; } })()`)).toBe('threw');
