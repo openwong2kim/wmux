@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { focusBuiltinTab, handlePhoneBrowser } from '../PhoneBrowser';
-import { createPhoneChromeDeps, phoneChromeHelpTabs, phoneChromeTabs, type PhoneChromeDeps, type PhoneChromeRegistry } from '../PhoneBrowserChrome';
-import { ChromePageSessionError, type ChromeBackendClient, type ChromeTargetInfo } from '../../browser-session/ChromeLauncher';
+import { chromeDriver, createPhoneChromeDeps, phoneChromeHelpTabs, phoneChromeTabs, type PhoneChromeDeps, type PhoneChromeRegistry } from '../PhoneBrowserChrome';
+import { ChromePageSessionError, type ChromeBackendClient, type ChromeOpenedSurface, type ChromeTargetInfo } from '../../browser-session/ChromeLauncher';
 import type { RpcResponse } from '../../../shared/rpc';
 
 const METRICS = { cssVisualViewport: { clientWidth: 1000, clientHeight: 700, pageX: 0, pageY: 40, scale: 1 } };
@@ -378,6 +378,116 @@ describe('phone preview on dedicated-profile Chrome', () => {
     const live = fixture(fakeChrome({ canOpen: () => false }).deps);
     expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/' }, live)).toEqual({ error: 'browser-backend-unavailable' });
     expect(live.invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('the tab a tap opened (contract v1.7)', () => {
+  /** A tab whose release runs `onRelease`, which can make the page ask for a window and the tab open. */
+  function popupChrome(onRelease: (emit: { windowOpen(): void; opened(surfaceId: string): void }) => void = () => undefined) {
+    const sent: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const handlers = new Map<string, Set<(params: Record<string, unknown>) => void>>();
+    let listener: ((tab: { surfaceId: string; url: string }) => void) | undefined;
+    const unsubscribed = vi.fn();
+    const emit = {
+      windowOpen: () => handlers.get('Page.windowOpen')?.forEach((handler) => handler({ url: 'https://news.example.com/' })),
+      opened: (surfaceId: string) => listener?.({ surfaceId, url: '' }),
+    };
+    const { deps } = fakeChrome({
+      session: vi.fn(async () => ({
+        send: async (method: string, params?: Record<string, unknown>) => {
+          sent.push({ method, ...(params ? { params } : {}) });
+          if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseReleased') onRelease(emit);
+          return method === 'Page.getLayoutMetrics' ? METRICS : {};
+        },
+        on: (method: string, handler: (params: Record<string, unknown>) => void) => {
+          const set = handlers.get(method) ?? new Set();
+          set.add(handler);
+          handlers.set(method, set);
+          return () => { set.delete(handler); };
+        },
+      })),
+      onTabOpened: vi.fn((_surfaceId: string, _workspaceId: string, next: (tab: { surfaceId: string; url: string }) => void) => {
+        listener = next;
+        return unsubscribed;
+      }),
+    });
+    return { deps, sent, handlers, unsubscribed, emit };
+  }
+  const tap = { ...scope, expectedURL: 'https://shop.example.com/cart', geometry, x: 0.5, y: 0.5 };
+  async function watching(deps: PhoneChromeDeps) {
+    const watch = await chromeDriver('chrome-own', 'ws-1', deps).watchOpened?.();
+    if (!watch) throw new Error('a Chrome tab watches for the tabs it opens');
+    return watch;
+  }
+
+  it('names the tab the tap opened, watched from before the press, and lets go of the watch', async () => {
+    const { deps, sent, handlers, unsubscribed } = popupChrome((emit) => { emit.windowOpen(); emit.opened('chrome-popup'); });
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ applied: true, opened: { surfaceId: 'chrome-popup' } });
+    expect(deps.onTabOpened).toHaveBeenCalledWith('chrome-own', 'ws-1', expect.any(Function));
+    const methods = sent.map((c) => c.method === 'Input.dispatchMouseEvent' ? String(c.params?.type) : c.method);
+    expect(methods.indexOf('Page.enable')).toBeLessThan(methods.indexOf('mousePressed'));
+    expect(unsubscribed).toHaveBeenCalledOnce();
+    expect(handlers.get('Page.windowOpen')?.size).toBe(0);
+  });
+
+  it('waits for a tab the page asked for that opens after the release', async () => {
+    const { deps } = popupChrome((emit) => { emit.windowOpen(); setTimeout(() => emit.opened('chrome-late'), 40); });
+    expect(await handlePhoneBrowser('browser.tap', { ...tap, stream: true }, fixture(deps))).toEqual({ applied: true, opened: { surfaceId: 'chrome-late' } });
+  });
+
+  it('adds no wait to a tap that asked for no window', async () => {
+    const { deps } = popupChrome();
+    const started = Date.now();
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ applied: true });
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('waits no longer than it is told when the asked-for tab never opens; stop ends the wait', async () => {
+    const { deps, emit } = popupChrome();
+    const watch = await watching(deps);
+    emit.windowOpen();
+    const started = Date.now();
+    expect(await watch.result(60)).toBeUndefined();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+    const pending = watch.result(60_000);
+    watch.stop();
+    expect(await pending).toBeUndefined();
+  });
+
+  it('a session with no events still reports a tab that opened, and waits for none', async () => {
+    let listener: ((tab: { surfaceId: string; url: string }) => void) | undefined;
+    const { deps } = fakeChrome({ onTabOpened: (_s, _w, next) => { listener = next; return () => undefined; } });
+    const watch = await watching(deps);
+    expect(await watch.result(60_000)).toBeUndefined();
+    listener?.({ surfaceId: 'chrome-popup', url: '' });
+    expect(await watch.result(60_000)).toBe('chrome-popup');
+  });
+
+  it('onTabOpened hears only tabs the named tab opened in this workspace, from its own dedicated profile', () => {
+    let told: ((opened: ChromeOpenedSurface) => void) | undefined;
+    const off = vi.fn();
+    const work = {
+      endpoint: async () => ({}), cdpInfoTargets: async () => [], openTab: async () => { throw new Error('no'); },
+      listTargets: async () => [], closeSurface: async () => false, hasSurface: () => true, dispose: () => undefined,
+      pageSession: async () => ({ send: async () => ({}) }),
+      onSurfaceOpened: vi.fn((next: (opened: ChromeOpenedSurface) => void) => { told = next; return off; }),
+    } satisfies ChromeBackendClient;
+    const deps = createPhoneChromeDeps({
+      registry: { profileFor: (ws) => (ws === 'ws-live' ? 'live' : 'work'), isPaneBound: () => false, peekLauncher: (p) => (p === 'work' ? work : undefined) },
+      validateNavigation: async () => undefined,
+    });
+    const heard: unknown[] = [];
+    const unsubscribe = deps.onTabOpened?.('chrome-a', 'ws-1', (tab) => heard.push(tab));
+    told?.({ openerSurfaceId: 'chrome-a', surfaceId: 'chrome-p', workspaceId: 'ws-1', url: 'https://news.example.com/' });
+    told?.({ openerSurfaceId: 'chrome-b', surfaceId: 'chrome-q', workspaceId: 'ws-1', url: '' });
+    told?.({ openerSurfaceId: 'chrome-a', surfaceId: 'chrome-r', workspaceId: 'ws-2', url: '' });
+    told?.({ openerSurfaceId: 'chrome-a', surfaceId: 'chrome-s', url: '' });
+    expect(heard).toEqual([{ surfaceId: 'chrome-p', url: 'https://news.example.com/' }]);
+    unsubscribe?.();
+    expect(off).toHaveBeenCalledOnce();
+    // Live Chrome is never subscribed to.
+    expect(() => deps.onTabOpened?.('user-tab', 'ws-live', () => undefined)()).not.toThrow();
+    expect(work.onSurfaceOpened).toHaveBeenCalledOnce();
   });
 });
 

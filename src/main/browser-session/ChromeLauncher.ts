@@ -6,6 +6,7 @@ import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurf
 import { CdpSocket } from './CdpSocket';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
+import { surfaceOpeners } from './SurfaceOpeners';
 import type { HostMatcher } from '../../shared/browserHostPolicy';
 import type { BlockedHost } from '../../shared/browserPolicy';
 import type { LiveTabOwner } from '../../shared/liveWriteScope';
@@ -330,6 +331,14 @@ function newSurfaceId(): string {
   return `chrome-${randomUUID()}`;
 }
 
+/** Tabs one tab may open in a minute and still be adopted. */
+export const OPENED_PER_OPENER_PER_MINUTE = 20;
+/** Tabs all of one launcher's tabs may open in a minute and still be adopted. */
+export const OPENED_PER_MINUTE = 60;
+const OPENED_WINDOW_MS = 60_000;
+/** The launcher-wide key of the adoption windows; surface ids start with `chrome-`. */
+const ALL_OPENERS = '*';
+
 function hasExited(child: ChildProcess): boolean {
   return child.exitCode != null || child.signalCode != null;
 }
@@ -436,6 +445,10 @@ export class ChromeLauncher implements ChromeBackendClient {
   /** The watcher socket whose discovery replay is over: only pages created after it are adopted. */
   private adoptingOn: CdpSocket | null = null;
   private readonly openedListeners = new Set<(opened: ChromeOpenedSurface) => void>();
+  /** Adoption times in the last minute, per opener surface and for all of them (ALL_OPENERS). */
+  private readonly adoptedAt = new Map<string, number[]>();
+  /** Keys whose cap has been logged since their last adoption. */
+  private readonly capLogged = new Set<string>();
 
   private readonly profileLabel: string | undefined;
   private readonly profileName: string;
@@ -536,6 +549,8 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (record.targetId) this.byTargetId.delete(record.targetId);
     if (record.tabTargetId) this.byTabTargetId.delete(record.tabTargetId);
     this.surfaces.delete(surfaceId);
+    this.adoptedAt.delete(surfaceId);
+    this.capLogged.delete(surfaceId);
   }
 
   // ── Tab-target watcher ────────────────────────────────────────────────────
@@ -914,6 +929,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     const opener = this.recordForTarget(openerId);
     if (!opener) return;
     const now = Date.now();
+    if (!this.mayAdopt(opener.surfaceId, now)) return;
     const record: ChromeSurfaceRecord = {
       surfaceId: newSurfaceId(),
       targetId,
@@ -924,6 +940,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     };
     this.surfaces.set(record.surfaceId, record);
     this.byTargetId.set(targetId, record.surfaceId);
+    surfaceOpeners.inherit(record.surfaceId, opener.surfaceId);
     // The tab's own attach may have landed first; otherwise noteTabPage anchors it.
     this.linkAnchor(record);
     this.persist(true);
@@ -936,6 +953,32 @@ export class ChromeLauncher implements ChromeBackendClient {
     for (const listener of [...this.openedListeners]) {
       try { listener(opened); } catch (err) { console.warn('[ChromeLauncher] opened-surface listener threw:', err); }
     }
+  }
+
+  /**
+   * A page that loops window.open must not grow the surface list without
+   * bound: past OPENED_PER_OPENER_PER_MINUTE from one tab, or
+   * OPENED_PER_MINUTE from all of them, a new tab stays nobody's, as every
+   * opened tab did before adoption. Logged once per run of refusals.
+   */
+  private mayAdopt(openerSurfaceId: string, now: number): boolean {
+    const windows: Array<[string, number]> = [[openerSurfaceId, OPENED_PER_OPENER_PER_MINUTE], [ALL_OPENERS, OPENED_PER_MINUTE]];
+    const recent = windows.map(([key]) => (this.adoptedAt.get(key) ?? []).filter((at) => now - at < OPENED_WINDOW_MS));
+    const full = windows.findIndex(([, cap], i) => recent[i].length >= cap);
+    windows.forEach(([key], i) => this.adoptedAt.set(key, recent[i]));
+    if (full >= 0) {
+      const [key, cap] = windows[full];
+      if (!this.capLogged.has(key)) {
+        this.capLogged.add(key);
+        console.warn(`[ChromeLauncher] ${key === ALL_OPENERS ? 'this profile\'s tabs' : 'one tab'} opened over ${cap} tabs in a minute; the rest are not adopted`);
+      }
+      return false;
+    }
+    windows.forEach(([key], i) => {
+      recent[i].push(now);
+      this.capLogged.delete(key);
+    });
+    return true;
   }
 
   /** Told each tab a wmux-opened tab opens, once it is a surface; returns the unsubscribe. */

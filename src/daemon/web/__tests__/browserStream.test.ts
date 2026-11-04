@@ -422,6 +422,38 @@ describe('BrowserStreamRegistry', () => {
     expect(later.sink.named('focus').map((e) => e.data)).toEqual([{ editable: false }]);
   });
 
+  it('tabOpened: checks the id and URL, keeps each new tab, paced like url, up to four waiting', async () => {
+    const { sink } = await subscribe();
+    const opened = (extra: Record<string, unknown>) => registry.push('main', { streamId: streamId(), kind: 'tabOpened', ...extra });
+    for (const bad of [{}, { surfaceId: '' }, { surfaceId: 7 }, { surfaceId: 'x'.repeat(129) }, { surfaceId: 'chrome-b', pageURL: 'file:///etc/passwd' }, { surfaceId: 'chrome-b', pageURL: 'https://u:p@a.example.com/' }]) {
+      expect(opened(bad)).toEqual({ ok: false, known: true });
+    }
+    expect(opened({ surfaceId: 'chrome-b', pageURL: 'https://news.example.com/', title: 'not sent' })).toEqual({ ok: true, known: true });
+    opened({ surfaceId: 'chrome-c' });
+    await flushMicrotasks();
+    expect(sink.named('tabOpened').map((e) => e.data)).toEqual([{ surfaceId: 'chrome-b', pageURL: 'https://news.example.com/' }]);
+    await vi.advanceTimersByTimeAsync(100);
+    // Not merged like url: the second tab is written too, a pace later.
+    expect(sink.named('tabOpened').map((e) => e.data)).toEqual([{ surfaceId: 'chrome-b', pageURL: 'https://news.example.com/' }, { surfaceId: 'chrome-c' }]);
+
+    // A client that is not reading keeps the newest four.
+    sink.stalled = true;
+    registry.push('main', frame());
+    for (const id of ['d', 'e', 'f', 'g', 'h', 'i']) opened({ surfaceId: `chrome-${id}` });
+    sink.release();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(sink.named('tabOpened').slice(2).map((e) => e.data?.surfaceId)).toEqual(['chrome-f', 'chrome-g', 'chrome-h', 'chrome-i']);
+  });
+
+  it('tabOpened is an event, not a state: a later subscriber does not get it', async () => {
+    await subscribe(device('d1'));
+    registry.push('main', frame());
+    registry.push('main', { streamId: streamId(), kind: 'tabOpened', surfaceId: 'chrome-b' });
+    const late = await subscribe(device('d2'));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(late.sink.named('tabOpened')).toEqual([]);
+  });
+
   it('a tab main never sent a focus for gives a late subscriber none', async () => {
     await subscribe(device('d1'));
     registry.push('main', frame());

@@ -34,7 +34,8 @@ vi.mock('node:fs', async (orig) => {
   };
 });
 
-import { ChromeLauncher, ChromePageSessionError } from '../ChromeLauncher';
+import { ChromeLauncher, ChromePageSessionError, OPENED_PER_MINUTE, OPENED_PER_OPENER_PER_MINUTE, type ChromeOpenedSurface } from '../ChromeLauncher';
+import { surfaceOpeners } from '../SurfaceOpeners';
 import type { ChromeSurfaceRecord, ChromeSurfaceStore } from '../ChromeSurfaceStore';
 
 const WS_URL = 'ws://127.0.0.1:22001/devtools/browser/watcher-uuid';
@@ -59,6 +60,8 @@ class FakeBrowserWs {
   static OPEN = 1;
   static instances: FakeBrowserWs[] = [];
   static failConnect = false;
+  /** Runs inside setDiscoverTargets, before its reply: Chrome's replay of the targets that exist. */
+  static onDiscover: ((ws: FakeBrowserWs) => void) | null = null;
   readyState = 0;
   sent: Frame[] = [];
   private listeners = new Map<string, Listener[]>();
@@ -137,6 +140,9 @@ class FakeBrowserWs {
         sessions.set(sessionId, tab);
         return { sessionId };
       }
+      case 'Target.setDiscoverTargets':
+        FakeBrowserWs.onDiscover?.(this);
+        return {};
       case 'Target.setAutoAttach': {
         const tab = frame.sessionId ? sessions.get(frame.sessionId) : undefined;
         const page = tab ? tabs.get(tab) : undefined;
@@ -235,6 +241,7 @@ beforeEach(() => {
   opened = 0;
   FakeBrowserWs.instances = [];
   FakeBrowserWs.failConnect = false;
+  FakeBrowserWs.onDiscover = null;
   fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
   vi.stubGlobal('WebSocket', FakeBrowserWs);
@@ -442,6 +449,185 @@ describe('ChromeLauncher tab-target watcher', () => {
   });
 });
 
+describe('ChromeLauncher tabs its own tabs open (target=_blank, window.open)', () => {
+  /** A page Chrome created, announced as discovery announces it. */
+  function created(ws: FakeBrowserWs, targetId: string, openerId?: string): void {
+    ws.event('Target.targetCreated', { targetInfo: { targetId, type: 'page', url: '', title: '', ...(openerId && { openerId }) } });
+  }
+
+  async function running(dir: string, store = makeFakeStore()) {
+    spawnWritesPortFile(makeChild(), 22001);
+    serveChrome();
+    tabs.set('tab-1', 'page-1');
+    listedPages = ['page-1'];
+    const launcher = new ChromeLauncher(dir, { profileName: 'p1', surfaceStore: asStore(store) });
+    const heard: ChromeOpenedSurface[] = [];
+    launcher.onSurfaceOpened((opened) => heard.push(opened));
+    const opener = await launcher.openTab('https://a.test/', 'ws-1');
+    return { launcher, opener, heard, store, ws: FakeBrowserWs.instances[0] };
+  }
+
+  it('adopts a page its tab opened, in the opener\'s workspace, anchors it, and says so', async () => {
+    const { launcher, opener, heard, store, ws } = await running('/tmp/pop-1');
+
+    created(ws, 'page-2', 'page-1');
+    expect(heard).toEqual([{ openerSurfaceId: opener.surfaceId, surfaceId: expect.stringMatching(/^chrome-/), workspaceId: 'ws-1', url: '' }]);
+    const popup = heard[0].surfaceId;
+    expect(launcher.recordFor(popup)).toMatchObject({ targetId: 'page-2', workspaceId: 'ws-1' });
+
+    // Its tab attaches next and becomes its anchor.
+    tabs.set('tab-2', 'page-2');
+    ws.event('Target.targetCreated', { targetInfo: { targetId: 'tab-2', type: 'tab' } });
+    await tick();
+    expect(launcher.recordFor(popup)?.tabTargetId).toBe('tab-2');
+
+    listedPages = ['page-1', 'page-2'];
+    expect((await launcher.listTargets('ws-1')).map((t) => t.surfaceId)).toEqual([opener.surfaceId, popup]);
+    await tick();
+    expect(store.profiles.get('p1')?.map((r) => r.surfaceId)).toContain(popup);
+
+    // Its own popups follow it, into the same workspace.
+    created(ws, 'page-3', 'page-2');
+    expect(heard[1]).toMatchObject({ openerSurfaceId: popup, workspaceId: 'ws-1' });
+  });
+
+  it('leaves a page no tab of its own opened to nobody', async () => {
+    const { launcher, heard, ws } = await running('/tmp/pop-2');
+    created(ws, 'page-7', 'page-of-the-user');
+    created(ws, 'page-8');
+    expect(heard).toEqual([]);
+    listedPages = ['page-1', 'page-7', 'page-8'];
+    expect((await launcher.listTargets()).map((t) => t.targetId)).toEqual(['page-1']);
+  });
+
+  it('a popup stays in its opener\'s workspace, and an opener with none gives a popup with none', async () => {
+    const { launcher, heard, ws } = await running('/tmp/pop-3');
+    nextCreatedPage = 'page-2';
+    tabs.set('tab-2', 'page-2');
+    const other = await launcher.openTab('https://b.test/', 'ws-2');
+    nextCreatedPage = 'page-3';
+    tabs.set('tab-3', 'page-3');
+    const none = await launcher.openTab('https://c.test/');
+
+    created(ws, 'page-4', 'page-2');
+    created(ws, 'page-5', 'page-3');
+    expect(heard).toEqual([
+      { openerSurfaceId: other.surfaceId, surfaceId: expect.any(String), workspaceId: 'ws-2', url: '' },
+      { openerSurfaceId: none.surfaceId, surfaceId: expect.any(String), url: '' },
+    ]);
+    listedPages = ['page-1', 'page-2', 'page-3', 'page-4', 'page-5'];
+    const ws1 = (await launcher.listTargets('ws-1')).map((t) => t.targetId);
+    expect(ws1).not.toContain('page-4');
+    expect((await launcher.listTargets('ws-2')).filter((t) => t.workspaceId === 'ws-2').map((t) => t.targetId)).toEqual(['page-2', 'page-4']);
+  });
+
+  it('never adopts the pages discovery replays when the watcher starts, only pages made after it', async () => {
+    // Chrome outlived wmux with the record's tab and a popup of it open.
+    state.portFiles['/tmp/pop-4'] = '22001\n/devtools/browser/x\n';
+    serveChrome();
+    tabs.set('tab-1', 'page-1');
+    listedPages = ['page-1', 'page-old'];
+    const now = Date.now();
+    const store = makeFakeStore({
+      p1: [{ surfaceId: 'chrome-opener', targetId: 'page-1', tabTargetId: 'tab-1', workspaceId: 'ws-1', url: 'https://a.test/', createdAt: now, lastSeenAt: now }],
+    });
+    FakeBrowserWs.onDiscover = (ws) => created(ws, 'page-old', 'page-1');
+    const launcher = new ChromeLauncher('/tmp/pop-4', { profileName: 'p1', surfaceStore: asStore(store) });
+    const heard: ChromeOpenedSurface[] = [];
+    launcher.onSurfaceOpened((opened) => heard.push(opened));
+    await launcher.ensureRunning();
+    expect(FakeBrowserWs.instances).toHaveLength(1);
+    expect(launcher.recordFor('chrome-opener')?.targetId).toBe('page-1');
+    expect(heard).toEqual([]);
+
+    created(FakeBrowserWs.instances[0], 'page-new', 'page-1');
+    expect(heard.map((o) => o.openerSurfaceId)).toEqual(['chrome-opener']);
+  });
+
+  it('a popup is the connection\'s that owns its opener, and nobody\'s when that one is', async () => {
+    surfaceOpeners.clear();
+    const { heard, opener, ws, launcher } = await running('/tmp/pop-6');
+    surfaceOpeners.note(opener.surfaceId, 'key-a', 'pty-a');
+    created(ws, 'page-2', 'page-1');
+    expect(surfaceOpeners.verdict(heard[0].surfaceId, { openerKey: 'key-a' })).toBe('mine');
+    expect(surfaceOpeners.verdict(heard[0].surfaceId, { openerKey: 'key-b' })).toBe('other');
+
+    nextCreatedPage = 'page-3';
+    tabs.set('tab-3', 'page-3');
+    await launcher.openTab('https://b.test/', 'ws-1');
+    created(ws, 'page-4', 'page-3');
+    expect(surfaceOpeners.verdict(heard[1].surfaceId, { openerKey: 'key-b' })).toBeUndefined();
+    surfaceOpeners.clear();
+  });
+
+  it('closing the opener leaves its popup; the popup goes when its own tab does, or when closed', async () => {
+    const { launcher, heard, opener, ws } = await running('/tmp/pop-7');
+    tabs.set('tab-2', 'page-2');
+    created(ws, 'page-2', 'page-1');
+    ws.event('Target.targetCreated', { targetInfo: { targetId: 'tab-2', type: 'tab' } });
+    tabs.set('tab-3', 'page-3');
+    created(ws, 'page-3', 'page-1');
+    ws.event('Target.targetCreated', { targetInfo: { targetId: 'tab-3', type: 'tab' } });
+    await tick();
+    const [first, second] = heard.map((o) => o.surfaceId);
+
+    ws.event('Target.targetDestroyed', { targetId: 'tab-1' });
+    expect(launcher.hasSurface(opener.surfaceId)).toBe(false);
+    expect(launcher.hasSurface(first)).toBe(true);
+    expect(launcher.hasSurface(second)).toBe(true);
+
+    ws.event('Target.targetDestroyed', { targetId: 'tab-2' });
+    expect(launcher.hasSurface(first)).toBe(false);
+
+    expect(await launcher.closeSurface(second)).toBe(true);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/json/close/page-3'))).toBe(true);
+    expect(launcher.hasSurface(second)).toBe(false);
+  });
+
+  it('adopts at most a minute\'s cap from one tab and from all of them, logging each run of refusals once', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const clock = vi.spyOn(Date, 'now');
+    let now = 1_000_000;
+    clock.mockImplementation(() => now);
+    try {
+      const { launcher, heard, ws } = await running('/tmp/pop-8');
+      let page = 100;
+      const burst = (opener: string, n: number) => { for (let i = 0; i < n; i++) created(ws, `page-${page++}`, opener); };
+
+      burst('page-1', OPENED_PER_OPENER_PER_MINUTE + 2);
+      expect(heard).toHaveLength(OPENED_PER_OPENER_PER_MINUTE);
+      expect(warn.mock.calls.filter(([m]) => String(m).includes('in a minute'))).toHaveLength(1);
+
+      // Other tabs still adopt, up to the launcher's own cap.
+      const openers = Math.ceil(OPENED_PER_MINUTE / OPENED_PER_OPENER_PER_MINUTE);
+      for (let n = 2; n <= openers + 1; n++) {
+        nextCreatedPage = `page-${n}`;
+        tabs.set(`tab-${n}`, `page-${n}`);
+        await launcher.openTab('https://b.test/', 'ws-1');
+        burst(`page-${n}`, OPENED_PER_OPENER_PER_MINUTE);
+      }
+      expect(heard).toHaveLength(OPENED_PER_MINUTE);
+
+      // A minute later the first tab adopts again.
+      now += 60_000;
+      burst('page-1', 1);
+      expect(heard).toHaveLength(OPENED_PER_MINUTE + 1);
+    } finally {
+      clock.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('stops telling a listener once it unsubscribes', async () => {
+    const { launcher, ws } = await running('/tmp/pop-5');
+    const late: ChromeOpenedSurface[] = [];
+    const off = launcher.onSurfaceOpened((opened) => late.push(opened));
+    off();
+    created(ws, 'page-2', 'page-1');
+    expect(late).toEqual([]);
+  });
+});
+
 describe('ChromeLauncher page sessions (the phone preview)', () => {
   async function running(dir: string) {
     spawnWritesPortFile(makeChild(), 22001);
@@ -465,6 +651,18 @@ describe('ChromeLauncher page sessions (the phone preview)', () => {
     // Reused while it lives.
     await launcher.pageSession(surfaceId);
     expect(ws.sent.filter((f) => f.method === 'Target.attachToTarget' && f.params?.targetId === 'page-1')).toHaveLength(1);
+  });
+
+  it('hears events on its own session only, until unsubscribed', async () => {
+    const { launcher, surfaceId, ws } = await running('/tmp/page-6');
+    const session = await launcher.pageSession(surfaceId);
+    const heard: unknown[] = [];
+    const off = session.on?.('Page.windowOpen', (params) => heard.push(params.url));
+    ws.event('Page.windowOpen', { url: 'https://other.test/' }, 'sess-someone-else');
+    ws.event('Page.windowOpen', { url: 'https://mine.test/' }, 'sess-page-1');
+    off?.();
+    ws.event('Page.windowOpen', { url: 'https://late.test/' }, 'sess-page-1');
+    expect(heard).toEqual(['https://mine.test/']);
   });
 
   it('a session Chrome detached is gone, and the next one attaches afresh', async () => {
