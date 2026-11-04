@@ -226,7 +226,7 @@ function pngColours(png) {
 async function recordWebgl2() {
   await run.win.evaluate(() => {
     window.__webgl2 = [];
-    for (const C of [HTMLCanvasElement, globalThis.OffscreenCanvas].filter(Boolean)) {
+    for (const C of [HTMLCanvasElement, window.OffscreenCanvas].filter(Boolean)) {
       const real = C.prototype.getContext;
       C.prototype.getContext = function (type, ...rest) {
         const ctx = real.call(this, type, ...rest);
