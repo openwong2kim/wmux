@@ -89,6 +89,13 @@ public static class Verify
     }
 
     /// <summary>
+    /// The text after a caret is nothing but line breaks (or nothing): the
+    /// caret counts as at the end. A rich edit keeps its final paragraph mark
+    /// after the last position a caret can take. Null (unreadable) is not.
+    /// </summary>
+    public static bool OnlyLineBreaks(string? tail) => tail != null && tail.Trim('\r', '\n').Length == 0;
+
+    /// <summary>
     /// `Settle` for typed text: verified once the value is `before` with
     /// `text` inserted (Inserted). Without a value before, nothing can verify
     /// and nothing is read.
