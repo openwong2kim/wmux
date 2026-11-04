@@ -112,7 +112,7 @@ describe('cold-park reveal — cold frame wiring (source-level)', () => {
     expect(exits).toHaveLength(2);
     // A painted frame still waiting for its replay is dropped before the
     // marker, so that replay's RIS cannot wipe the marker.
-    const drops = mainEffect.match(/deferredColdFrame = null;\s*\n\s*if \(warmSwap\.phase === 'warm'\) \{ warmSwap\.cancel\(\); writeSwapBytes\(FULL_RESET\); \}\s*\n(?:\s*\/\/.*\n)*\s*writeTerminalOutput\(terminal, `\\r\\n\$\{t\('terminal\.exitedBracket'/g) ?? [];
+    const drops = mainEffect.match(/deferredColdFrame = null;\s*\n\s*if \(warmSwap\.phase === 'warm'\) \{ warmSwap\.cancel\(\); writeSwapBytes\(FULL_RESET\); \}\s*\n(?:\s*\/\/.*\n)*\s*writeExitMarker\(exitCode\);/g) ?? [];
     expect(drops).toHaveLength(2);
   });
 

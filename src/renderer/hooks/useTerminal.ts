@@ -3620,6 +3620,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Write what the cold-frame swap owes at a flush marker (or after held
     // payloads), through the scheduler so it stays behind the replay bytes it
     // closes — queued, retained or discarded together with them.
+    // The exit marker. Through the scheduler so it cannot overtake output
+    // still queued for this (possibly hidden) pane; while a local engine swap
+    // holds this terminal's output, behind that output, wherever it lands.
+    const writeExitMarker = (exitCode: number) => {
+      const marker = `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`;
+      const divert = divertLiveRef.current;
+      if (divert) { divert.push({ data: marker, replay: false }); return; }
+      writeTerminalOutput(terminal, marker, {
+        foreground: isVisibleRef.current,
+        retainWhenHidden: hiddenRetentionActive(),
+      });
+    };
     const writeSwapBytes = (bytes: string | null) => {
       if (bytes === null) return;
       writeTerminalOutput(terminal, bytes, {
@@ -3652,12 +3664,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // replay's RIS would wipe the marker (coldFrame.ts).
         deferredColdFrame = null;
         if (warmSwap.phase === 'warm') { warmSwap.cancel(); writeSwapBytes(FULL_RESET); }
-        // Through the scheduler so the exit marker cannot overtake output
-        // still queued for this (possibly hidden) pane.
-        writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
-          foreground: isVisibleRef.current,
-          retainWhenHidden: hiddenRetentionActive(),
-        });
+        writeExitMarker(exitCode);
       });
     };
 
@@ -3767,10 +3774,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // See the connectPty exit listener.
         deferredColdFrame = null;
         if (warmSwap.phase === 'warm') { warmSwap.cancel(); writeSwapBytes(FULL_RESET); }
-        writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
-          foreground: isVisibleRef.current,
-          retainWhenHidden: hiddenRetentionActive(),
-        });
+        writeExitMarker(exitCode);
       });
 
       // Listen for the daemon's flush-complete signal. Two-way race:

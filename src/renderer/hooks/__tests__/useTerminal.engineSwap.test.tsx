@@ -31,7 +31,8 @@ vi.mock('@xterm/addon-webgl', () => ({
 // released: the loader has let go of the module (loadedWongtty() is null).
 // built: the size each FakeWongtty was constructed at.
 // onLoaded: runs when a mount asks for the module, before it is handed out.
-const fake = vi.hoisted(() => ({ openThrows: false, released: false, onLoaded: null as null | (() => void), snapshot: 'refuse' as 'refuse' | 'ok' | 'margins', built: [] as Array<[number | undefined, number | undefined]> }));
+// holds: holdWongtty holds not let go yet.
+const fake = vi.hoisted(() => ({ openThrows: false, released: false, holds: 0, onLoaded: null as null | (() => void), snapshot: 'refuse' as 'refuse' | 'ok' | 'margins', built: [] as Array<[number | undefined, number | undefined]> }));
 vi.mock('../../terminal/wongtty/load', async () => {
   const xterm = await vi.importActual<typeof import('@xterm/xterm')>('@xterm/xterm');
   const { FitAddon: Fit } = await vi.importActual<typeof import('@xterm/addon-fit')>('@xterm/addon-fit');
@@ -65,7 +66,11 @@ vi.mock('../../terminal/wongtty/load', async () => {
     loadedWongtty: () => { fake.onLoaded?.(); return fake.released ? null : mod; },
     wongttyLoadFailure: () => null,
     releaseWongttyWhenIdle: () => undefined,
-    holdWongtty: () => () => undefined,
+    holdWongtty: () => {
+      fake.holds++;
+      let held = true;
+      return () => { if (held) { held = false; fake.holds--; } };
+    },
     isWongttyTerminal: (t: unknown) => !fake.released && t instanceof FakeWongtty,
     FakeWongtty,
   };
@@ -73,6 +78,7 @@ vi.mock('../../terminal/wongtty/load', async () => {
 
 const unsub = () => () => undefined;
 let emitData: ((ptyId: string, data: string, replay?: boolean) => void) | null = null;
+let emitExit: ((ptyId: string, code: number) => void) | null = null;
 let emitFlush: ((ptyId: string, recoveredBytes: number) => void) | null = null;
 const resync = vi.fn(async () => ({ success: true, mode: 'snapshot' }));
 const reconnect = vi.fn(async () => ({ success: true }));
@@ -88,7 +94,7 @@ beforeAll(() => {
       pty: {
         onData: (cb: typeof emitData) => { emitData = cb; return () => undefined; },
         onFlushComplete: (cb: typeof emitFlush) => { emitFlush = cb; return () => undefined; },
-        onExit: unsub, onRestarted: unsub,
+        onExit: (cb: typeof emitExit) => { emitExit = cb; return () => undefined; }, onRestarted: unsub,
         resize, reconnect, resync,
         setViewerVisibility: vi.fn(),
         write: vi.fn(async () => undefined),
@@ -129,6 +135,7 @@ beforeEach(() => {
   useStore.setState({ terminalEngine: 'xterm', terminalEngineFailure: null, terminalWongtty: false, terminalBookmarks: {} });
   fake.openThrows = false;
   fake.released = false;
+  fake.holds = 0;
   fake.onLoaded = null;
   fake.snapshot = 'refuse';
   fake.built = [];
@@ -186,6 +193,23 @@ function lines(t: Terminal): string[] {
 }
 const count = (t: Terminal, text: string) => lines(t).filter((l) => l === text).length;
 const history = (n: number) => Array.from({ length: n }, (_, i) => `L${i}`).join('\r\n');
+
+/** Holds the next parse barrier written to `terminal` (a local capture waits
+ *  on it); the returned function gives what lets it go, once one was held. */
+function holdBarrier(terminal: Terminal): () => (() => void) | null {
+  const write = terminal.write.bind(terminal);
+  let release: (() => void) | null = null;
+  let held = false;
+  vi.spyOn(terminal, 'write').mockImplementation((data, cb) => {
+    if (data === '' && cb && !held) {
+      held = true;
+      release = () => write(data, cb);
+    } else {
+      write(data, cb);
+    }
+  });
+  return () => release;
+}
 
 async function fakeWongttyClass() {
   return ((await import('../../terminal/wongtty/load')) as unknown as { FakeWongtty: typeof Terminal }).FakeWongtty;
@@ -495,6 +519,136 @@ describe('useTerminal engine swap (Labs wongtty switch)', { timeout: 60_000 }, (
       expect(now.buffer.active.getLine(row)!.getCell(3)!.getFgColor()).toBe(1);
       if (!on) expect(xtermKittyFlags(now)).toBe(1);
     }
+  });
+
+  it('a local capture holds the wongtty module until it is done, completed or dropped', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setDaemonModeActive(false);
+    for (const dropped of [false, true]) {
+      useStore.setState({ terminalWongtty: false, terminalEngine: 'xterm' });
+      await render(`p-hold-${dropped}`, true, { remount: true });
+      const old = termRef!.current!;
+      const barrier = holdBarrier(old);
+      await act(async () => { useStore.setState({ terminalWongtty: true }); });
+      await settle();
+      expect(barrier()).not.toBeNull();
+      expect(fake.holds).toBe(1);
+      if (dropped) {
+        await act(async () => { useStore.setState({ terminalWongtty: false }); });
+        await settle();
+      }
+      await act(async () => { barrier()!(); });
+      await settle();
+      expect(fake.holds).toBe(0);
+      expect(termRef!.current === old).toBe(dropped);
+    }
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('an exit while a local capture holds the output lands behind that output, completed or dropped', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setDaemonModeActive(false);
+    for (const dropped of [false, true]) {
+      useStore.setState({ terminalWongtty: false, terminalEngine: 'xterm' });
+      const ptyId = `p-exit-${dropped}`;
+      await render(ptyId, true, { remount: true });
+      const barrier = holdBarrier(termRef!.current!);
+      await act(async () => { emitData!(ptyId, 'L0\r\n', false); });
+      await act(async () => { useStore.setState({ terminalWongtty: true }); });
+      await settle();
+      expect(barrier()).not.toBeNull();
+      await act(async () => {
+        emitData!(ptyId, 'LAST\r\n', false);
+        emitExit!(ptyId, 0);
+        if (dropped) useStore.setState({ terminalWongtty: false });
+      });
+      await settle();
+      await act(async () => { barrier()!(); });
+      await settle();
+      await settle();
+      const shown = lines(termRef!.current!).filter(Boolean);
+      expect(shown).toEqual(['L0', 'LAST', '[Process exited with code 0]']);
+    }
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('a local swap or a dropped capture finishes a sequence the resting-cursor guard held back', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setDaemonModeActive(false);
+    for (const dropped of [false, true]) {
+      useStore.setState({ terminalWongtty: false, terminalEngine: 'xterm' });
+      const ptyId = `p-held-${dropped}`;
+      await render(ptyId, true, { remount: true });
+      const old = termRef!.current!;
+      const barrier = holdBarrier(old);
+      // A synchronized-output frame whose read ends inside a CSI: the guard
+      // holds `ESC [3` back for the next chunk.
+      await act(async () => {
+        useStore.setState({ terminalWongtty: true });
+        emitData!(ptyId, '\x1b[?2026hX\x1b[?2026l\r\nabc\x1b[3', false);
+      });
+      await settle();
+      expect(barrier()).not.toBeNull();
+      await act(async () => {
+        emitData!(ptyId, '1mred\x1b[0m\r\n', false);
+        if (dropped) useStore.setState({ terminalWongtty: false });
+      });
+      await settle();
+      await act(async () => { barrier()!(); });
+      await settle();
+      await settle();
+      const now = termRef!.current!;
+      expect(now === old).toBe(dropped);
+      const row = lines(now).indexOf('abcred');
+      expect(row).toBeGreaterThanOrEqual(0);
+      expect(now.buffer.active.getLine(row)!.getCell(3)!.getFgColor()).toBe(1);
+    }
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('a capture after a dropped one still finishes the sequence the stream stopped inside', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setDaemonModeActive(false);
+    await render('p-again', true, { remount: true });
+    const old = termRef!.current!;
+    const barrier = holdBarrier(old);
+    await act(async () => {
+      useStore.setState({ terminalWongtty: true });
+      emitData!('p-again', 'x\r\nabc\x1b[3', false);
+    });
+    await settle();
+    expect(barrier()).not.toBeNull();
+    await act(async () => { useStore.setState({ terminalWongtty: false }); });
+    await settle();
+    await act(async () => { barrier()!(); });
+    await settle();
+    expect(termRef!.current).toBe(old);
+    // On again with no output between: the second capture takes the same cut.
+    await act(async () => { useStore.setState({ terminalWongtty: true }); });
+    await settle();
+    await settle();
+    const now = termRef!.current!;
+    expect(now).toBeInstanceOf(await fakeWongttyClass());
+    await act(async () => { emitData!('p-again', '1mred\x1b[0m\r\n', false); });
+    await settle();
+    const row = lines(now).indexOf('abcred');
+    expect(row).toBeGreaterThanOrEqual(0);
+    expect(now.buffer.active.getLine(row)!.getCell(3)!.getFgColor()).toBe(1);
+    vi.mocked(console.warn).mockRestore();
+  });
+
+  it('a local pane with the switch never turned on scans none of its output for a swap', async () => {
+    const { IncompleteEscapeSplitter } = await import('../../../shared/incompleteEscape');
+    const push = vi.spyOn(IncompleteEscapeSplitter.prototype, 'push');
+    setDaemonModeActive(false);
+    await render('p-off-scan');
+    await act(async () => { emitData!('p-off-scan', 'abc\x1b[3', false); emitData!('p-off-scan', '1mred\r\n', false); });
+    await settle();
+    expect(count(termRef!.current!, 'abcred')).toBe(1);
+    // The swap's scanner is the one bounded at 64 KiB; other users of the class are not counted.
+    const swapScans = push.mock.contexts.filter((c) => (c as unknown as { maxHeld: number }).maxHeld === 64 * 1024);
+    expect(swapScans).toHaveLength(0);
+    push.mockRestore();
   });
 
   it('a swap that waited for a composition runs after the composed text is sent, not inside compositionend', async () => {

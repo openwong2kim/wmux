@@ -122,8 +122,10 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
   });
 
   it('exit markers ride the retention policy too (no hidden parse via onExit)', () => {
-    const exitWrites = src.match(/terminal\.exitedBracket[\s\S]{0,220}?retainWhenHidden:\s*hiddenRetentionActive\(\)/g) ?? [];
-    expect(exitWrites.length).toBe(2);
+    // Both exit listeners write it through writeExitMarker.
+    const exitWrites = src.match(/terminal\.exitedBracket[\s\S]{0,400}?retainWhenHidden:\s*hiddenRetentionActive\(\)/g) ?? [];
+    expect(exitWrites.length).toBe(1);
+    expect(src.match(/ptyExitDispatcher\.register\(ptyId, \(exitCode\) => \{[\s\S]{0,400}?writeExitMarker\(exitCode\);/g) ?? []).toHaveLength(2);
   });
 });
 
