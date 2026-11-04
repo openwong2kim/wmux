@@ -324,6 +324,34 @@ describe('phone browser stream (main)', () => {
     expect(pushes).toHaveLength(count);
   });
 
+  it('a refused url push goes again, before the frame after it, unless a newer one waits; five tries at most', async () => {
+    await start();
+    const s = sessions[0];
+    let refuse = 1;
+    reply = async (params) => {
+      if (params.kind === 'url' && refuse > 0) { refuse -= 1; throw new Error('rate limited (stream)'); }
+      return { ok: true, known: true };
+    };
+    s.emit('Page.navigatedWithinDocument', { frameId: 'main', url: 'https://a.example.com/start#one' });
+    s.frame(1);
+    await vi.advanceTimersByTimeAsync(300);
+    const sent = () => pushes.filter((p) => p.kind === 'url' || p.kind === 'frame').map((p) => p.kind === 'url' ? `url:${String(p.pageURL)}` : 'frame');
+    expect(sent()).toEqual(['url:https://a.example.com/start#one', 'url:https://a.example.com/start#one', 'frame']);
+    // A newer url waiting: the refused one is not sent again.
+    pushes = [];
+    refuse = 1;
+    s.emit('Page.navigatedWithinDocument', { frameId: 'main', url: 'https://a.example.com/start#two' });
+    s.emit('Page.navigatedWithinDocument', { frameId: 'main', url: 'https://a.example.com/start#three' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(sent()).toEqual(['url:https://a.example.com/start#two', 'url:https://a.example.com/start#three']);
+    // Refused every time: one send and five more, then it is given up.
+    pushes = [];
+    refuse = Infinity;
+    s.emit('Page.navigatedWithinDocument', { frameId: 'main', url: 'https://a.example.com/start#four' });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(sent()).toHaveLength(6);
+  });
+
   it('pings every 15 s; known:false on a ping stops it too', async () => {
     await start();
     await vi.advanceTimersByTimeAsync(15_000);

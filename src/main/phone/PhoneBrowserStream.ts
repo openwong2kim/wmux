@@ -62,6 +62,8 @@ const PING_MS = 15_000;
 const URL_INTERVAL_MS = 100;
 const TICK_MS = 500;
 const PUSH_TIMEOUT_MS = 3_000;
+/** Sends of one url, focus or state push that failed before it is given up. */
+const PUSH_RETRIES = 5;
 /** How long before a waiting frame's slot the browser may paint it a fresher one. */
 const FRESH_LEAD_MS = 100;
 /** How long a page swap is given to bind the tab's new page before re-attaching. */
@@ -195,7 +197,7 @@ class Budget {
  * browser has its two screencast frames unacked and captures no more, so it
  * captures at the pace frames are sent rather than at the page's.
  */
-type Outgoing = { kind: 'frame' | 'url' | 'state' | 'focus'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number };
+type Outgoing = { kind: 'frame' | 'url' | 'state' | 'focus'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number; retries?: number };
 
 interface ScreencastFrame { data?: unknown; metadata?: Record<string, unknown>; sessionId?: unknown }
 
@@ -427,7 +429,7 @@ abstract class TabStream implements PhoneStreamTabView {
     }
     if (item.kind === 'url') this.lastUrlPushAt = now;
     if (item.kind === 'focus') this.lastFocusPushAt = now;
-    this.send(item.params, () => {
+    this.send(item, () => {
       // The daemon answered (or refused): only now may the browser paint the next one.
       this.ack(item.ack);
     });
@@ -452,17 +454,28 @@ abstract class TabStream implements PhoneStreamTabView {
     this.freshTimer.unref?.();
   }
 
-  /** One push in flight; a refused push is a dropped frame, `known:false` stops here. */
-  private send(params: Record<string, unknown>, done: () => void): void {
+  /**
+   * One push in flight; `known:false` stops here. A refused frame is a dropped
+   * one. A refused url, focus or state push goes back to the front, in its
+   * place before the frames after it, unless a newer one of its kind waits:
+   * the last of each must arrive.
+   */
+  private send(item: Outgoing, done: () => void): void {
     this.inFlight = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => reject(new Error('push timed out')), PUSH_TIMEOUT_MS);
       timer.unref?.();
     });
-    Promise.race([this.deps.push(params), timeout]).then((reply) => {
+    Promise.race([this.deps.push(item.params), timeout]).then((reply) => {
       if ((reply as { known?: unknown } | null)?.known === false) this.stop();
-    }, () => { /* rate limited, timed out or disconnected: dropped; the ping decides the rest */ }).finally(() => {
+    }, () => {
+      // Rate limited, timed out or disconnected; the ping decides the rest.
+      const retries = (item.retries ?? 0) + 1;
+      if (item.kind === 'frame' || this.stopped || retries > PUSH_RETRIES) return;
+      if (this.outbox.some((queued) => queued.kind === item.kind)) return;
+      this.outbox.unshift({ ...item, retries });
+    }).finally(() => {
       clearTimeout(timer);
       this.inFlight = false;
       done();
