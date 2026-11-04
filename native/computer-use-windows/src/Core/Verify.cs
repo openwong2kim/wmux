@@ -89,17 +89,28 @@ public static class Verify
     }
 
     /// <summary>
+    /// `Settle` for typed text: verified once the value is `before` with
+    /// `text` inserted (Inserted). Without a value before, nothing can verify
+    /// and nothing is read.
+    /// </summary>
+    public static ReadBack SettleInserted(Func<string?> read, string? before, string text, int baseMs, Func<long> now, Action<int> sleep) =>
+        before == null
+            ? new(false, null)
+            : Settle(read, value => Inserted(before, value, text), baseMs, SettleExtraMs, now, sleep);
+
+    /// <summary>
     /// What an unverified result shows of the value the field holds now:
-    /// `[redacted]` for a secret field, null when it could not be read, and
+    /// null when it could not be read, `[redacted]` for a secret field, and
     /// otherwise an excerpt (Tree.Preview: whitespace collapsed, at most
-    /// Tree.TextPreviewChars) that starts a little before the first place it
-    /// differs from `reference` (the value before typing, or the value set),
-    /// so the text that landed, or the place it went wrong, is in view.
+    /// Tree.TextPreviewChars text elements with its ellipses) that starts a
+    /// little before the first place it differs from `reference` (the value
+    /// before typing, or the value set), so the text that landed, or the
+    /// place it went wrong, is in view.
     /// </summary>
     public static string? Observed(string? reference, string? observed, bool secret)
     {
-        if (secret) return "[redacted]";
         if (observed == null) return null;
+        if (secret) return "[redacted]";
         string o = Lines(observed);
         int diff = 0;
         if (reference != null)
@@ -110,8 +121,13 @@ public static class Verify
         int start = Math.Max(0, diff - ExcerptContext);
         // Never start inside a surrogate pair.
         if (start > 0 && char.IsLowSurrogate(o[start])) start--;
-        if (start == 0) return Tree.Preview(o);
-        var rest = Tree.Preview(o[start..], Tree.TextPreviewChars - 1);
-        return rest.Length == 0 ? "" : "…" + rest;
+        // One place is kept for Tree.Preview's closing ellipsis, one more for the opening one.
+        if (start > 0)
+        {
+            var rest = Tree.Preview(o[start..], Tree.TextPreviewChars - 2);
+            // Only whitespace from there on: show the field from the top instead of "".
+            if (rest.Length > 0) return "…" + rest;
+        }
+        return Tree.Preview(o, Tree.TextPreviewChars - 1);
     }
 }

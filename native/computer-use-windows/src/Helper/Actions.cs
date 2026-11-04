@@ -829,6 +829,8 @@ internal static unsafe class Actions
         Action? preflight = Focus.RequireKeyboard(target);
         Overlay.Show(marker, MarkerVerb.Typing, target, caret: realCaret, realInput: true);
         var before = FocusedValue();
+        // The element the keys go into, for showing its value if they do not verify.
+        var typedInto = Uia.FocusedRuntimeId();
         var chunks = Chunks.Unicode(text);
         int total = chunks.Sum(c => c.GraphemeCount), typed = 0;
         foreach (var chunk in chunks)
@@ -851,27 +853,31 @@ internal static unsafe class Actions
             }
             typed += chunk.GraphemeCount;
         }
-        var effect = WaitForEffect(text, before, total < 64 ? 300 : 1000);
+        var effect = Verify.SettleInserted(FocusedValue, before, text, total < 64 ? 300 : 1000, () => Environment.TickCount64, Sta.Sleep);
         if (effect.Verified)
         {
             Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target), realInput: true);
             return Result("synthetic", true, "foreground");
         }
-        return WithObserved(Result("synthetic", false, "foreground"), ObservedFocused(before));
+        return WithObserved(Result("synthetic", false, "foreground"), ObservedFocused(before, typedInto));
     }
 
     /// <summary>
-    /// What the focused field holds now, for an unverified `type` (Verify.Observed).
-    /// Focus may have moved since the keys: the value is read only after its
-    /// element was checked not to be a password field, and shown only while
-    /// focus is still on that element.
+    /// What the field the keys went into holds now, for an unverified `type`
+    /// (Verify.Observed). Shown only while focus is still on that element
+    /// (`typedInto`, read before the keys), before and after the value is
+    /// read, and only once that element was checked not to be a password
+    /// field: focus that moved to another field shows nothing, never that
+    /// field's value. A secrecy check that cannot be read shows nothing too.
     /// </summary>
-    private static string? ObservedFocused(string? before)
+    private static string? ObservedFocused(string? before, int[] typedInto)
     {
+        if (typedInto.Length == 0) return null;
         var secrecy = Uia.FocusSecrecy(out var focusedId);
-        if (secrecy != Uia.Secrecy.Safe) return Verify.Observed(before, null, secret: true);
+        if (!focusedId.AsSpan().SequenceEqual(typedInto) || secrecy == Uia.Secrecy.Unknown) return null;
+        if (secrecy == Uia.Secrecy.Secret) return "[redacted]";
         var now = FocusedValue();
-        return Uia.FocusedRuntimeId().AsSpan().SequenceEqual(focusedId) ? Verify.Observed(before, now, secret: false) : null;
+        return Uia.FocusedRuntimeId().AsSpan().SequenceEqual(typedInto) ? Verify.Observed(before, now, secret: false) : null;
     }
 
     private static bool Verified(JsonObject result) => result["verification"]?.GetValue<string>() == "verified";
@@ -1035,18 +1041,6 @@ internal static unsafe class Actions
         {
             again->Release();
         }
-    }
-
-    /// <summary>
-    /// Verified only when the focused element's value is the value before
-    /// with exactly the typed text inserted at one position (Core Verify),
-    /// read until it settles: past `timeoutMs` only while the value is still
-    /// changing (Verify.Settle).
-    /// </summary>
-    private static ReadBack WaitForEffect(string text, string? before, int timeoutMs)
-    {
-        if (before == null) return new(false, FocusedValue());
-        return Verify.Settle(FocusedValue, now => Verify.Inserted(before, now, text), timeoutMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
     }
 
     public static JsonObject PressKey(Params p, AgentMarker marker)

@@ -129,10 +129,37 @@ public class VerifyTests
     [Fact]
     public void ObservedIsCappedAndMasked()
     {
-        var observed = Verify.Observed("", new string('y', 500), secret: false)!;
-        Assert.Equal(Tree.TextPreviewChars + 1, observed.Length); // the cap, then Tree.Preview's ellipsis
+        // At most Tree.TextPreviewChars, ellipses included, from the top or from mid-text.
+        var fromTop = Verify.Observed("", new string('y', 500), secret: false)!;
+        Assert.Equal(Tree.TextPreviewChars, fromTop.Length);
+        Assert.EndsWith("…", fromTop);
+        var midText = Verify.Observed(new string('y', 200), new string('y', 200) + new string('z', 300), secret: false)!;
+        Assert.Equal(Tree.TextPreviewChars, midText.Length);
+        Assert.StartsWith("…", midText);
         Assert.Equal("[redacted]", Verify.Observed("", "hunter2", secret: true));
+        // Nothing read: left out, even for a secret field.
         Assert.Null(Verify.Observed("x", null, secret: false));
+        Assert.Null(Verify.Observed("x", null, secret: true));
+    }
+
+    [Fact]
+    public void ObservedNeverReportsAFieldOfWhitespaceAsEmpty()
+    {
+        // Only blank lines from the excerpt's start: the field is shown from the top.
+        var before = "title" + new string('\r', 60);
+        Assert.Equal("title", Verify.Observed(before, before + "\r", secret: false));
+    }
+
+    [Fact]
+    public void SettleInsertedNeedsAValueBefore()
+    {
+        var c = new Clock();
+        int reads = 0;
+        var r = Verify.SettleInserted(() => { reads++; return "ab"; }, null, "b", 300, () => c.Now, c.Sleep);
+        Assert.False(r.Verified);
+        Assert.Null(r.Last);
+        Assert.Equal(0, reads);
+        Assert.True(Verify.SettleInserted(() => "ab", "a", "b", 300, () => c.Now, c.Sleep).Verified);
     }
 
     [Fact]

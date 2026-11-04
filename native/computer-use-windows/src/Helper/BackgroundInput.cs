@@ -142,7 +142,7 @@ internal static unsafe class BackgroundInput
             },
             readBack: () =>
             {
-                var read = WaitInserted(value, before, text, total < 64 ? 300 : 1000);
+                var read = Verify.SettleInserted(value, before, text, total < 64 ? 300 : 1000, () => Environment.TickCount64, Sta.Sleep);
                 last = read.Last;
                 return read.Verified;
             },
@@ -615,16 +615,5 @@ internal static unsafe class BackgroundInput
         {
             if (el != null) el->Release();
         }
-    }
-
-    /// <summary>
-    /// Verified only when the field's value is the value before with exactly
-    /// the typed text inserted (Core Verify), read until it settles: past
-    /// `timeoutMs` only while the value is still changing (Verify.Settle).
-    /// </summary>
-    private static ReadBack WaitInserted(Func<string?> value, string? before, string text, int timeoutMs)
-    {
-        if (before == null) return new(false, value());
-        return Verify.Settle(value, now => Verify.Inserted(before, now, text), timeoutMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
     }
 }
