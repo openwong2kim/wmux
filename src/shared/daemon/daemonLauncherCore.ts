@@ -18,6 +18,7 @@ import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } fro
 import { handleLiveness } from '../processHandleLiveness';
 import { readProcessCommandLine } from '../../main/pty/winSnapshotNative';
 import { createFileExclusive, replaceFileAtomic, unlinkIfContent } from './daemonFiles';
+import { DAEMON_PROGRESS_DEFAULTS, sampleDaemonProcess, waitOutProgressingDaemon } from './daemonProgress';
 
 export interface DaemonInfo {
   /**
@@ -1689,6 +1690,31 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
                       `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s — treating as hung (#546)`,
                   );
                 }
+              }
+            }
+            // A daemon starved of memory misses every ping while it still
+            // runs, and killing it ends every PTY it holds. While its CPU time
+            // keeps rising it is waited on (bounded) instead of killed.
+            if (token) {
+              const outcome = await waitOutProgressingDaemon({
+                pid: existingPid,
+                sample: sampleDaemonProcess,
+                ping: () => pingCurrent(1000),
+                sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+                now: () => Date.now(),
+                intervalMs: 2000,
+                ceilingMs: DAEMON_READY_HARD_CEILING_MS,
+                progress: { ...DAEMON_PROGRESS_DEFAULTS, noProgressMs: 10_000 },
+                onWaiting: () => {
+                  (deps.log ?? console.log)(
+                    `[launcher] Daemon (PID ${existingPid}) does not answer but is still using CPU — waiting up to ` +
+                      `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s instead of killing it`,
+                  );
+                },
+              });
+              if (outcome === 'answered') {
+                (deps.log ?? console.log)(`[launcher] Daemon (PID ${existingPid}) answered while it was waited on — reusing, no kill`);
+                return { pid: existingPid, authToken: answeredToken, pipeName, spawned: false };
               }
             }
             // (a) Verified wmux daemon → kill before respawning.

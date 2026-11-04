@@ -83,6 +83,7 @@ function makeHarness(
     config?: Parameters<typeof buildController>[1];
     replacement?: DaemonReplacementHooks;
     watchDaemonExit?: DaemonRespawnDeps['watchDaemonExit'];
+    sampleDaemon?: DaemonRespawnDeps['sampleDaemon'];
   } = {},
 ): Harness {
   const logs: { level: string; msg: string }[] = [];
@@ -113,6 +114,7 @@ function makeHarness(
     },
     replacement: opts.replacement,
     watchDaemonExit: opts.watchDaemonExit,
+    sampleDaemon: opts.sampleDaemon,
   };
 
   const controller = buildController(deps, opts.config);
@@ -662,6 +664,81 @@ describe('DaemonRespawnController health probe', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(h.deps.onUninstall).toHaveBeenCalled();
     expect(c1.disconnectSyncCalls).toBe(1);
+  });
+
+  describe('a daemon that stops answering is looked at before it is respawned', () => {
+    const progress = { noProgressMs: 3_000, pressureFactor: 4, maxUnansweredMs: 60_000 };
+    /** Bootstrap answers, then every ping times out. */
+    const failingPings = (client: FakeDaemonClient) => {
+      let pings = 0;
+      client.rpcImpl = async (method) => {
+        if (method !== 'daemon.ping') return {};
+        if (++pings === 1) return {};
+        throw new Error('ping timeout');
+      };
+    };
+
+    it('a starved daemon whose CPU time keeps rising is not respawned', async () => {
+      let cpu = 0;
+      const sampled: number[] = [];
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async (pid) => { sampled.push(pid); cpu += 40; return { alive: true, cpuMs: cpu, underPressure: true }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      expect(c1.disconnectSyncCalls).toBe(0);
+      expect(h.ensureDaemonCalls).toBe(1);
+      expect(new Set(sampled)).toEqual(new Set([1234]));
+      expect(h.logs.some((l) => l.msg.includes('slow, not hung'))).toBe(true);
+    });
+
+    it('a wedged daemon (no CPU time for the budget) is respawned, once its CPU time has stopped rising for that long', async () => {
+      let cpu = 0;
+      let rising = true;
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => { if (rising) cpu += 40; return { alive: true, cpuMs: cpu, underPressure: false }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      // Past the failure threshold while it still runs: kept.
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      // It stops: kept until the budget runs out, then respawned.
+      rising = false;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+      expect(c1.disconnectSyncCalls).toBe(1);
+      expect(h.logs.some((l) => l.level === 'error' && l.msg.includes('no CPU time for the whole budget'))).toBe(true);
+    });
+
+    it('a daemon whose process is gone, or whose CPU time cannot be read, is respawned at the threshold as before', async () => {
+      for (const sample of [
+        { alive: false, cpuMs: null, underPressure: false },
+        { alive: true, cpuMs: null, underPressure: false },
+      ]) {
+        const h = makeHarness({
+          config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+          sampleDaemon: async () => sample,
+        });
+        const c1 = new FakeDaemonClient();
+        h.clientQueue.push(c1, new FakeDaemonClient());
+        failingPings(c1);
+        await h.controller.bootstrap();
+        for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+        expect(h.deps.onUninstall).toHaveBeenCalled();
+        h.controller.dispose();
+      }
+    });
   });
 
   it('skips probe ticks when no client is installed', async () => {
