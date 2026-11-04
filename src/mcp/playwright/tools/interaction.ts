@@ -561,7 +561,7 @@ export async function clickWithApproach(
   // element was, so the approach would walk to a point outside the viewport and
   // leave the tracker pointing there.
   if (el.scrollIntoViewIfNeeded) {
-    await el.scrollIntoViewIfNeeded().catch(() => {});
+    await el.scrollIntoViewIfNeeded().catch(() => undefined);
   }
 
   const box = await el.boundingBox().catch(() => null);
@@ -1224,7 +1224,13 @@ async function untilClickLands<T>(click: Promise<T>, watch: PopupWatch | null, l
  * the listener — and the closure holding the popup handle — attached to the
  * page for the rest of its life.
  */
-function watchForPopup(page: { on: Function; off: Function }): PopupWatch {
+/** The slice of a Playwright page the popup watch uses. */
+interface PopupSource {
+  on(event: 'popup', listener: (page: { url?: () => string }) => void): unknown;
+  off(event: 'popup', listener: (page: { url?: () => string }) => void): unknown;
+}
+
+function watchForPopup(page: PopupSource): PopupWatch {
   let popup: { url?: () => string } | undefined;
   let fired = false;
   let armed = false;
@@ -1381,7 +1387,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
           const coordWatch =
             (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) ===
             'chrome'
-              ? watchForPopup(page as unknown as { on: Function; off: Function })
+              ? watchForPopup(page as unknown as PopupSource)
               : null;
           try {
             await settledDispatch(effect, page, () =>
@@ -1427,7 +1433,7 @@ export function registerInteractionTools(server: McpServer, deps: BrowserToolDep
             (await engine.resolveWorkspaceBackend(scope.workspaceId).catch(() => undefined)) ===
             'chrome';
           const popupWatch = watchesPopups
-            ? watchForPopup(page as unknown as { on: Function; off: Function })
+            ? watchForPopup(page as unknown as PopupSource)
             : null;
           const popupNote = async () => (popupWatch ? await popupWatch.note() : '');
 
