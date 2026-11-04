@@ -3720,8 +3720,34 @@ route's workspace; http(s) pages only.
 | `maxFps` | 1..15 | 10 |
 | `viewport=mobile` | needs input consent (else `403 read-only:…`) | unset |
 
-`viewport=mobile` is accepted but not applied yet: the tab streams at its
-desktop size.
+`viewport=mobile` shows the tab as a phone while at least one subscriber
+of that tab asked for it; its other subscribers then get the phone layout
+too. It changes the tab on the desktop itself, as the `viewport` action
+does: the Mac's own view of that tab, and an agent driving it, see the
+phone layout as well.
+
+- **Chrome tab**: a phone's viewport, 390×844 CSS px at 2× (smaller when
+  the tab is), with touch, set on the stream's own connection to Chrome.
+  Frames then carry a `geometry.width` of at most 390, and a `scale` of
+  about 0.4 on a page without a viewport meta tag. Taps and scrolls map as
+  on any frame. `{action:"viewport"}` on a Chrome tab stays `501`:
+  reconnect the stream with or without `viewport=mobile` to switch.
+- **Builtin pane**: the same as `{action:"viewport",mode:"mobile"}`, fitted
+  to the pane; like that action it reloads the page, and going back
+  reloads it again. A device preset already on the pane (from the
+  `viewport` action or an agent) is left as it is, and the stream never
+  reverts it; nor does it revert its own once the `viewport` action or an
+  agent has changed the preset since.
+- **Going back**: about 4 s after the last subscriber that asked for it
+  leaves. A subscriber asking for it within that time keeps the tab as it
+  is (no reload); a stream whose last subscriber left keeps running for
+  that time, so a reconnect gets its latest frame at once. The tab also
+  goes back when the desktop loses its connection to the server.
+- **Next to an agent's emulation** (Chrome): the tab has one device-size
+  override. Whichever of the stream and an agent set theirs last is the one
+  shown, and when the stream goes back (or ends) the tab returns to its
+  real size, removing an agent's override as well. A stream that never
+  showed the tab as a phone leaves an agent's override alone.
 
 **Before the stream** (plain JSON): `400` for a value that is not a whole
 number, a missing `surfaceId` or another `viewport`; `404 browser-tab-gone`;
