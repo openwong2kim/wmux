@@ -162,6 +162,24 @@ describe('phone browser stream (main): a builtin pane', () => {
     expect(g().debugger.acks()).toEqual([1]);
   });
 
+  it('a frame that replaces a waiting one holds its ack until it goes out, as on Chrome', async () => {
+    let answer!: () => void;
+    reply = (p) => p.kind === 'frame' ? new Promise((resolve) => { answer = () => resolve({ ok: true, known: true }); }) : Promise.resolve({ known: true });
+    await start({ maxFps: 15 });
+    g().debugger.frame(1);
+    await flush();
+    g().debugger.frame(2);
+    g().debugger.frame(3);
+    await flush();
+    expect(g().debugger.acks()).toEqual([]);
+    answer();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(g().debugger.acks()).toEqual([1, 2]);
+    answer();
+    await flush();
+    expect(g().debugger.acks()).toEqual([1, 2, 3]);
+  });
+
   it('a frame of a child session is not the page\'s', async () => {
     await start();
     g().debugger.frame(1, {}, 'child-session');

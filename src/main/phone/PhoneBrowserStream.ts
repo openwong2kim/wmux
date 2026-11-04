@@ -184,7 +184,13 @@ class Budget {
   }
 }
 
-type Outgoing = { kind: 'frame' | 'url' | 'state'; params: Record<string, unknown>; ack?: number; bytes: number };
+/**
+ * One waiting push. `held`: the acks of the frames it replaced, sent when it
+ * leaves the outbox (to be pushed, or dropped by a stop). Until then the
+ * browser has its two screencast frames unacked and captures no more, so it
+ * captures at the pace frames are sent rather than at the page's.
+ */
+type Outgoing = { kind: 'frame' | 'url' | 'state'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number };
 
 interface ScreencastFrame { data?: unknown; metadata?: Record<string, unknown>; sessionId?: unknown }
 
@@ -364,13 +370,21 @@ abstract class TabStream implements PhoneStreamTabView {
     this.enqueue({ kind: 'state', params: { streamId: this.streamId, kind: 'state', state: 'hidden' }, bytes: 0 });
   }
 
-  /** One waiting push of each kind; a newer one replaces it at the back (its frame acked). */
+  /** One waiting push of each kind; a newer one replaces it at the back and holds its frame's ack. */
   private enqueue(item: Outgoing): void {
     if (this.stopped) { this.ack(item.ack); return; }
     const at = this.outbox.findIndex((queued) => queued.kind === item.kind);
-    if (at >= 0) this.ack(this.outbox.splice(at, 1)[0].ack);
+    if (at >= 0) {
+      const [replaced] = this.outbox.splice(at, 1);
+      item.held = [...(replaced.held ?? []), ...(replaced.ack === undefined ? [] : [replaced.ack])];
+    }
     this.outbox.push(item);
     this.pump();
+  }
+
+  /** The acks a push that left the outbox held for the frames it replaced. */
+  private ackHeld(item: Outgoing): void {
+    for (const id of item.held ?? []) this.ack(id);
   }
 
   private pump(): void {
@@ -391,6 +405,7 @@ abstract class TabStream implements PhoneStreamTabView {
       return;
     }
     this.outbox.shift();
+    this.ackHeld(item);
     if (item.kind === 'frame') this.lastFramePushAt = now;
     if (item.kind === 'url') this.lastUrlPushAt = now;
     this.send(item.params, () => {
@@ -491,7 +506,7 @@ abstract class TabStream implements PhoneStreamTabView {
     if (this.tick) clearInterval(this.tick);
     if (this.pumpTimer) clearTimeout(this.pumpTimer);
     if (this.firstFrame) clearTimeout(this.firstFrame);
-    for (const item of this.outbox.splice(0)) this.ack(item.ack);
+    for (const item of this.outbox.splice(0)) { this.ackHeld(item); this.ack(item.ack); }
     this.release();
     this.onStopped(this);
   }

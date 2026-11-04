@@ -130,7 +130,7 @@ describe('phone browser stream (main)', () => {
     expect(s.acks()).toEqual([1]);
   });
 
-  it('keeps only the newest frame while a push is in flight; the replaced one is acked at once', async () => {
+  it('keeps only the newest frame while a push is in flight; the replaced one is acked only when the newest goes out', async () => {
     let answer!: () => void;
     reply = (p) => p.kind === 'frame' ? new Promise((resolve) => { answer = () => resolve({ ok: true, known: true }); }) : Promise.resolve({ known: true });
     await start({ maxFps: 15 });
@@ -140,14 +140,37 @@ describe('phone browser stream (main)', () => {
     s.frame(2);
     s.frame(3);
     await flush();
-    expect(s.acks()).toEqual([2]);
+    // Two frames out unacked: Chrome captures no more until one is.
+    expect(s.acks()).toEqual([]);
     answer();
     await vi.advanceTimersByTimeAsync(100);
     expect(frames()).toHaveLength(2);
-    expect(s.acks()).toEqual([2, 1]);
+    expect(frames()[1]).toMatchObject({ kind: 'frame' });
+    expect(s.acks()).toEqual([1, 2]);
     answer();
     await flush();
-    expect(s.acks()).toEqual([2, 1, 3]);
+    expect(s.acks()).toEqual([1, 2, 3]);
+  });
+
+  it('a frame waiting for its slot holds the acks of those it replaced; a stop acks them all', async () => {
+    await start({ maxFps: 1 });
+    const s = sessions[0];
+    s.frame(1);
+    await flush();
+    expect(s.acks()).toEqual([1]);
+    for (const n of [2, 3, 4]) s.frame(n);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(frames()).toHaveLength(1);
+    expect(s.acks()).toEqual([1]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(frames()).toHaveLength(2);
+    expect(s.acks()).toEqual([1, 2, 3, 4]);
+    s.frame(5);
+    s.frame(6);
+    await flush();
+    expect(s.acks()).toEqual([1, 2, 3, 4]);
+    await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a' });
+    expect(s.acks()).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
   it('paces frames to the stream\'s maxFps, and a streamUpdate raises it', async () => {
