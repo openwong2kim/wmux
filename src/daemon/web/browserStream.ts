@@ -132,6 +132,8 @@ interface Subscriber {
   lastFrameAt: number;
   lastUrlAt: number;
   lastFocusAt: number;
+  /** The focus event last written to it: a queued one equal to it is a change it never saw. */
+  lastFocus: string | null;
   queue: Item[];
   flushTimer: ReturnType<typeof setTimeout> | null;
   tick: ReturnType<typeof setInterval> | null;
@@ -238,7 +240,7 @@ export class BrowserStreamRegistry {
       this.byStream.set(tab.streamId, tab);
     }
     const sub: Subscriber = {
-      tab, who, maxFps: params.maxFps, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0, lastFocusAt: 0,
+      tab, who, maxFps: params.maxFps, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0, lastFocusAt: 0, lastFocus: null,
       queue: [], flushTimer: null, tick: null, expiry: null, keepalivePending: false, closed: false,
     };
     tab.subs.add(sub);
@@ -452,6 +454,8 @@ export class BrowserStreamRegistry {
       // Whatever went before has not gone out yet: wait for its completion.
       if (sink.writableLength > 0 || sink.destroyed) return;
       const item = sub.queue[0];
+      // A focus that went and came back before this subscriber took the change: nothing changed for it.
+      if (item.kind === 'focus' && item.body === sub.lastFocus) { sub.queue.shift(); continue; }
       const now = Date.now();
       const due = item.kind === 'frame' ? sub.lastFrameAt + 1000 / sub.maxFps
         : item.kind === 'url' ? sub.lastUrlAt + BROWSER_STREAM_URL_INTERVAL_MS
@@ -468,7 +472,7 @@ export class BrowserStreamRegistry {
         this.write(sub, sse('frame', `{"seq":${sub.seq},${item.body.slice(1)}`));
       } else {
         if (item.kind === 'url') sub.lastUrlAt = now;
-        if (item.kind === 'focus') sub.lastFocusAt = now;
+        if (item.kind === 'focus') { sub.lastFocusAt = now; sub.lastFocus = item.body; }
         this.write(sub, sse(item.kind, item.body));
       }
     }
