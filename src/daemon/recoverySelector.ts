@@ -1,4 +1,6 @@
 import type { DaemonSession } from './types';
+import { isWslShell } from '../shared/wsl';
+import { recoversInBackground } from '../shared/suspendedSession';
 
 export interface RecoverySelection {
   /** IDs of sessions that should be recreated as live PTYs on this launch. */
@@ -43,6 +45,20 @@ export function selectRecoverableSessions(
 
 // #2398 (owner decision §6-4) — shared with main's pty:reconnect.
 export { recoversInBackground } from '../shared/suspendedSession';
+
+/**
+ * #3049 — whether boot recovery holds this session as a placeholder for main
+ * to start with its credentials: main listed it as a user shell (`holds`, the
+ * hold list), and it is a plain shell. An exec unit or a supervised session is
+ * never held, whatever the list says: it starts at once, as before, and never
+ * gets credentials. A WSL shell keeps its own placeholder path.
+ */
+export function heldForCredentials(
+  session: Pick<DaemonSession, 'id' | 'cmd' | 'exec' | 'supervision'>,
+  holds: ReadonlySet<string>,
+): boolean {
+  return holds.has(session.id) && !recoversInBackground(session) && !isWslShell(session.cmd);
+}
 
 /**
  * Stop the shells a previous daemon left running, a few sessions at a time.

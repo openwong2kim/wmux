@@ -32,23 +32,24 @@ export function promoteStartedSession(result: { ok: boolean; alreadyActive?: boo
 /**
  * What pty:reconnect does with a suspended session: 'promote' — the caller
  * asks for that explicitly (a shown pane, a raw write, a resume on start);
- * 'join' — the caller did not ask, but the daemon starts it in the
- * background anyway (an exec unit or supervised session), so the call
+ * 'join' — the caller did not ask, but the session starts anyway: the daemon
+ * starts it in the background (an exec unit or supervised session), or main
+ * does, with its credentials (a held user shell, `startPending`, #3049), so the call
  * promotes too: it joins that start when one is in flight, and spawns the
  * session itself when none is (the start failed, or never covered it),
  * which promoteStartedSession then reports as started; 'join-only' — the
  * same unit, for a caller that must never start anything (a stop key,
  * a repaint): it joins a start already in flight and otherwise is answered
  * like 'hold'; 'hold' — otherwise: attached to nothing, kept in use, and
- * answered `deferred`. A reconnect that does not say never starts a plain
- * shell.
+ * answered `deferred`. A reconnect that does not say never starts any other
+ * plain shell.
  */
 export function suspendedReconnectAction(
-  session: { exec?: unknown; supervision?: unknown },
+  session: { exec?: unknown; supervision?: unknown; startPending?: boolean },
   opts: { promote?: boolean; joinOnly?: boolean } | undefined,
 ): 'promote' | 'join' | 'join-only' | 'hold' {
   if (opts?.promote === true) return 'promote';
-  if (!recoversInBackground(session)) return 'hold';
+  if (!recoversInBackground(session) && session.startPending !== true) return 'hold';
   return opts?.joinOnly === true ? 'join-only' : 'join';
 }
 

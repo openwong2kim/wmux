@@ -5,7 +5,7 @@ import { promoteStartedSession } from '../../shared/suspendedSession';
 /** A promoteSession whose attempts settle when the test says. */
 function controlled() {
   const settles: Array<(r: PromoteResult) => void> = [];
-  const promoteSession = vi.fn((params: { id: string; fresh: boolean }) => new Promise<PromoteResult>((r) => { void params; settles.push(r); }));
+  const promoteSession = vi.fn((params: { id: string; fresh: boolean; credentialEnv?: Record<string, string> }) => new Promise<PromoteResult>((r) => { void params; settles.push(r); }));
   return { promoteSession, settle: (i: number, r: PromoteResult) => settles[i](r) };
 }
 
@@ -168,5 +168,47 @@ describe('promoteOnce', () => {
     settle(1, { ok: true, alreadyActive: false });
     expect(await fresh).toEqual({ ok: true, alreadyActive: false });
     expect(promoteSession.mock.calls[1][0]).toEqual({ id: 's1', fresh: true });
+  });
+
+  // #3049 — main's promote of a held user shell carries its credentials; the
+  // attempt it starts is the one that applies them, and a call that joins an
+  // attempt runs with whatever that attempt was started with.
+  describe('credentialEnv', () => {
+    const CRED = { GH_TOKEN: 'placeholder-3049' };
+
+    it('goes with the attempt the call starts, and only when given', async () => {
+      const { promoteSession, settle } = controlled();
+      const promoteOnce = createPromoteOnce(promoteSession);
+      const main = promoteOnce('s1', false, 'rpc', false, CRED);
+      settle(0, { ok: true, alreadyActive: false, credentialsApplied: true });
+      expect(await main).toEqual({ ok: true, alreadyActive: false, credentialsApplied: true });
+      expect(promoteSession.mock.calls[0][0]).toEqual({ id: 's1', fresh: false, credentialEnv: CRED });
+      const plain = promoteOnce('s2');
+      settle(1, { ok: true, alreadyActive: false });
+      await plain;
+      expect(promoteSession.mock.calls[1][0]).toEqual({ id: 's2', fresh: false });
+    });
+
+    it('the first caller\'s env wins: a second call with other values joins it', async () => {
+      const { promoteSession, settle } = controlled();
+      const promoteOnce = createPromoteOnce(promoteSession);
+      const first = promoteOnce('s1', false, 'rpc', false, CRED);
+      const second = promoteOnce('s1', false, 'rpc', false, { GH_TOKEN: 'other-placeholder' });
+      settle(0, { ok: true, alreadyActive: false, credentialsApplied: true });
+      expect(await second).toEqual(await first);
+      expect(promoteSession).toHaveBeenCalledTimes(1);
+      expect(promoteSession.mock.calls[0][0].credentialEnv).toEqual(CRED);
+    });
+
+    it('main joining the fallback start is told it joined, without credentialsApplied', async () => {
+      const { promoteSession, settle } = controlled();
+      const promoteOnce = createPromoteOnce(promoteSession);
+      const fallback = promoteOnce('s1', false, 'background');
+      const main = promoteOnce('s1', false, 'rpc', false, CRED);
+      settle(0, { ok: true, alreadyActive: false });
+      await fallback;
+      expect(await main).toEqual({ ok: true, alreadyActive: false, joined: true });
+      expect(promoteSession.mock.calls[0][0]).toEqual({ id: 's1', fresh: false });
+    });
   });
 });

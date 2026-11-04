@@ -69,6 +69,8 @@ import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
+import { getUserShellRecord, HELD_START_CONNECTED_WAIT_MS, startHeldUserShells } from './pty/userShellRecord';
+import { WSL_RPC_TIMEOUT_MS } from '../shared/wslTimeouts';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { clearEphemeralClipboard } from './ipc/handlers/clipboard.handler';
@@ -2708,6 +2710,18 @@ app.on('ready', async () => {
         }, (err: unknown) => {
           logLine('warn', 'main', `pid-map prune failed: ${err instanceof Error ? err.message : String(err)}`);
         });
+      // #3049 — start the restored user shells the daemon holds for main, with
+      // their credentials (pty/userShellRecord.ts); whatever is still held at
+      // the daemon's fallback starts without them. Never rejects: the
+      // daemon:connected below waits on it.
+      const heldStart = startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
+        timeoutMs: WSL_RPC_TIMEOUT_MS,
+        log: (line) => logLine('info', 'main', line),
+      }).then((held) => {
+        if (held > 0) logLine('info', 'main', `[env] started ${held} restored user shell(s) held for the app`);
+      }, (err: unknown) => {
+        logLine('warn', 'main', `[env] restored user shells not started: ${err instanceof Error ? err.message : String(err)}`);
+      });
       // Mount the notification router now that we have a live daemon
       // client. PTY data flows through daemon → DaemonClient events,
       // and this router translates them into the same renderer-facing
@@ -2823,6 +2837,11 @@ app.on('ready', async () => {
       const daemonPid = daemonRespawnController?.connectedDaemonPid ?? readDaemonPid(getWmuxDir());
       const replaced = lastConnectedDaemonPid !== null && daemonPid !== null && daemonPid !== lastConnectedDaemonPid;
       if (daemonPid !== null) lastConnectedDaemonPid = daemonPid;
+      // #3049 — the renderer reads resume offers on daemon:connected, and a
+      // held shell gets its offer only once started: wait for that start, but
+      // never long. A disconnect meanwhile ends this install (onUninstall ran).
+      await Promise.race([heldStart, new Promise<void>((resolve) => { setTimeout(resolve, HELD_START_CONNECTED_WAIT_MS).unref?.(); })]);
+      if (daemonClient !== client) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:connected', { replaced });
       }
