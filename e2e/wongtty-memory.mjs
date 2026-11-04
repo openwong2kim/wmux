@@ -39,7 +39,7 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import { ROOT, killRun, launchApp, makeSandbox, rpc, sleep, waitFor } from './lib.mjs';
+import { ROOT, killRun, launchApp, makeSandbox, rpc, runProcesses, sleep, waitFor } from './lib.mjs';
 
 const mode = process.argv[2];
 if (mode !== 'xterm' && mode !== 'wongtty' && mode !== 'cycle') {
@@ -112,14 +112,11 @@ function footprintCategories(pid, top = 8) {
   return Object.fromEntries(rows.slice(0, top));
 }
 
-/** Daemon processes of this run: node processes whose environment carries the run id. */
+/** Daemon processes of this run (lib.mjs runProcesses), outside the app's own. */
 function daemonRssKb(sb, appPids) {
-  const ps = execFileSync('ps', ['-AEww', '-o', 'pid=,command='], { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   let total = 0;
-  for (const line of ps.split('\n')) {
-    if (!line.includes(`WMUX_E2E_RUN=${sb.runId}`) || !line.includes('daemon-bundle')) continue;
-    const pid = Number(line.trim().split(/\s+/)[0]);
-    if (pid && !appPids.has(pid)) total += rssKb(pid);
+  for (const { pid, command } of runProcesses(sb)) {
+    if (command.includes('daemon-bundle') && !appPids.has(pid)) total += rssKb(pid);
   }
   return total;
 }

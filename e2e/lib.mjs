@@ -174,23 +174,19 @@ function windowsRunProcesses(sb) {
   return rows.filter((r) => pids.has(r.ProcessId) && !ours.has(r.ProcessId));
 }
 
-/** Kill every process of this run: the app and its detached daemon and ptys
- *  (they carry WMUX_E2E_RUN in their environment; on Windows, see
- *  windowsRunProcesses). */
-export function killRun(sb) {
+/** Every process of this run as { pid, command, createdAt }: the app and its
+ *  detached daemon and ptys (they carry WMUX_E2E_RUN or the sandbox HOME in
+ *  their environment; on Windows, see windowsRunProcesses). `command` is the
+ *  command line (on macOS followed by the environment). */
+export function runProcesses(sb) {
+  if (WIN) return windowsRunProcesses(sb).map((r) => ({ pid: r.ProcessId, command: r.CommandLine ?? '', createdAt: r.CreationDate }));
   const mine = [];
-  if (WIN) {
-    const targets = windowsRunProcesses(sb);
-    const q = windowsKillQuery(targets.map((r) => ({ pid: r.ProcessId, createdAt: r.CreationDate })));
-    if (!q) return 0;
-    const results = parseKillResults(execFileSync(q.file, q.args, { encoding: 'utf8', windowsHide: true }));
-    return Object.values(results).filter((r) => r === 'killed').length;
-  }
   if (fs.existsSync('/proc')) {
     for (const pid of fs.readdirSync('/proc').filter((p) => /^\d+$/.test(p))) {
       try {
         const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8');
-        if (env.includes(`WMUX_E2E_RUN=${sb.runId}`) || env.includes(`HOME=${sb.home}\0`)) mine.push(Number(pid));
+        if (!env.includes(`WMUX_E2E_RUN=${sb.runId}`) && !env.includes(`HOME=${sb.home}\0`)) continue;
+        mine.push({ pid: Number(pid), command: fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ') });
       } catch {
         /* gone or not ours */
       }
@@ -201,10 +197,22 @@ export function killRun(sb) {
     for (const line of ps.split('\n')) {
       if (!line.includes(`WMUX_E2E_RUN=${sb.runId}`) && !line.includes(`HOME=${sb.home} `)) continue;
       const pid = Number(line.trim().split(/\s+/)[0]);
-      if (pid && pid !== process.pid) mine.push(pid);
+      if (pid && pid !== process.pid) mine.push({ pid, command: line });
     }
   }
-  for (const pid of mine) {
+  return mine;
+}
+
+/** Kill every process of this run (runProcesses). */
+export function killRun(sb) {
+  const mine = runProcesses(sb);
+  if (WIN) {
+    const q = windowsKillQuery(mine.map(({ pid, createdAt }) => ({ pid, createdAt })));
+    if (!q) return 0;
+    const results = parseKillResults(execFileSync(q.file, q.args, { encoding: 'utf8', windowsHide: true }));
+    return Object.values(results).filter((r) => r === 'killed').length;
+  }
+  for (const { pid } of mine) {
     try {
       process.kill(pid, 'SIGKILL');
     } catch {
