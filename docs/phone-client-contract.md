@@ -3688,9 +3688,11 @@ exactly as above.
 
 `/api/config` will carry `browserStream: true` when the server runs with
 `--allow-transcript` and the attached desktop announced `browser.stream`. The
-flag arrives together with the live preview stream; until it does, every rule
-above holds unchanged. Under the flag, input on either route and either
-backend (builtin pane or `chrome` row) changes as follows:
+flag, and the desktop's announcement, arrive together with the live preview
+stream route. Until then no desktop announces `browser.stream`, the server
+never applies the rules below, and every rule above holds unchanged. Under
+the flag, input on either route and either backend (builtin pane or `chrome`
+row) changes as follows:
 
 - **Keys**: `key` also accepts `ArrowUp`, `ArrowDown`, `ArrowLeft`,
   `ArrowRight`, `Home`, `End` and `Delete`.
