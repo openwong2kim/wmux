@@ -417,6 +417,24 @@ describe('stream input (stream:true) on dedicated-profile Chrome', () => {
       expect(deps.validateNavigation).not.toHaveBeenCalled();
     });
 
+    it('refuses to move once the history changed during the policy check', async () => {
+      for (const after of [
+        { currentIndex: 2, entries },
+        { currentIndex: 1, entries: [{ id: 21, url: entries[0].url }, ...entries.slice(1)] },
+        { currentIndex: 1, entries: [{ id: 11, url: 'https://shop.example.com/other' }, ...entries.slice(1)] },
+        { currentIndex: 0, entries },
+      ]) {
+        const { deps, answer, navigated } = withHistory(entries, 1);
+        let reads = 0;
+        answer.mockImplementation(async (method: string) => method === 'Page.getNavigationHistory'
+          ? (reads++ === 0 ? { currentIndex: 1, entries } : after) : {});
+        await expect(handlePhoneBrowser('browser.history', back, fixture(deps))).rejects.toThrow('page changed');
+        expect(deps.validateNavigation).toHaveBeenCalledWith('https://shop.example.com/');
+        expect(reads).toBe(2);
+        expect(navigated()).toEqual([]);
+      }
+    });
+
     it('refuses an entry that is not an http(s) page, before the policy and without moving', async () => {
       const { deps, navigated } = withHistory([{ id: 10, url: 'chrome://newtab/' }, entries[1]], 1);
       await expect(handlePhoneBrowser('browser.history', back, fixture(deps))).rejects.toThrow('Only HTTP');
