@@ -3727,10 +3727,14 @@ streamed tabs per desktop.
 
 - `hello`, first: `{v:1, surfaceId, backend, maxWidth, maxHeight, quality, maxFps}`.
   A later subscriber of the same tab gets the shared screencast's size and
-  quality, and its own `maxFps`.
+  quality, and its own `maxFps`. Frames may be smaller than `hello`'s size
+  and quality: the server shrinks a stream whose frames would not fit, and
+  `hello` keeps the values the stream started with. Read each frame's
+  `imageWidth` and `imageHeight`.
 - `frame`: `{seq, data, mimeType:"image/jpeg", capturedAt, imageWidth, imageHeight, pageURL?, geometry?}`.
-  `seq` starts at 1 for each stream and increases; a gap means frames were
-  dropped. `data` is at most 700 KiB of base64. `geometry` is
+  `seq` starts at 1 and increases by one per frame written to this stream;
+  it orders frames and does not count frames the server skipped. `data` is
+  at most 700 KiB of base64. `geometry` is
   `{width, height, scrollX, scrollY, scale?}` from the frame's own metadata:
   the widget's width and height (classic scrollbars included) and the scroll
   offsets in CSS pixels, with `scale` when the page is pinch-zoomed. It is
