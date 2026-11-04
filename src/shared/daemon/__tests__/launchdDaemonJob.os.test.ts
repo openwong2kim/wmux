@@ -17,6 +17,7 @@ import {
   withDaemonStartLock,
   LaunchdUnavailableError,
   LaunchdJobQueuedError,
+  QUEUED_JOB_STALE_MS,
   type LaunchdRuntime,
 } from '../launchdDaemonJob';
 import { deliberateSleep } from '../../../test-utils/waitFor';
@@ -422,20 +423,29 @@ describe('startDaemonViaLaunchd / pruneStaleDaemonJobs', () => {
     }
   });
 
-  it('keeps the oldest queued job however old, and boots out newer queued duplicates and exited jobs', async () => {
+  it('keeps the oldest queued job, and boots out newer queued duplicates, exited jobs and stale queued ones', async () => {
     const now = Date.now();
+    const stale = newDaemonJobLabel(base, now - QUEUED_JOB_STALE_MS - 1_000);
     const oldest = newDaemonJobLabel(base, now - 200_000);
     const newer = newDaemonJobLabel(base, now - 60_000);
+    const startedMeanwhile = newDaemonJobLabel(base, now - 50_000);
     const young = newDaemonJobLabel(base, now - 5_000);
     const exited = newDaemonJobLabel(base, now - 60_000);
     const { rt, jobs, calls } = fakeLaunchd();
-    jobs.set(newer, { pid: null, runs: 0, lastExit: null, status: 0 });
-    jobs.set(oldest, { pid: null, runs: 0, lastExit: null, status: 0 });
-    jobs.set(young, { pid: null, runs: 0, lastExit: null, status: 0 });
+    for (const q of [stale, newer, oldest, startedMeanwhile, young]) jobs.set(q, { pid: null, runs: 0, lastExit: null, status: 0 });
     jobs.set(exited, { pid: null, runs: 1, lastExit: 0, status: 0 });
+    const run = rt.runLaunchctl;
+    let startedPrints = 0;
+    rt.runLaunchctl = async (args) => {
+      // launchd starts this duplicate between the scan and its bootout.
+      if (args[0] === 'print' && args[1].endsWith(startedMeanwhile) && ++startedPrints === 2) {
+        jobs.set(startedMeanwhile, { pid: 1300, runs: 1, lastExit: null, status: 0 });
+      }
+      return run(args);
+    };
     expect(await pruneStaleDaemonJobs(base, dir, rt)).toBe(oldest);
     expect(calls.filter((c) => c[0] === 'bootout').map((c) => c[1]).sort())
-      .toEqual([`gui/501/${newer}`, `gui/501/${exited}`].sort());
+      .toEqual([`gui/501/${stale}`, `gui/501/${newer}`, `gui/501/${exited}`].sort());
   });
 
   it('never boots out a job launchd started since list, or one print cannot report', async () => {

@@ -206,6 +206,13 @@ export const defaultLaunchdRuntime = (log: (...args: unknown[]) => void): Launch
 const PID_WAIT_MS = 5_000;
 /** Jobs younger than this are never pruned: well past PID_WAIT_MS. */
 export const PRUNE_GRACE_MS = 30_000;
+/**
+ * Backstop: a job launchd still has not started after this long is replaced
+ * like a stale one, so a job launchd never runs cannot hold every later start
+ * for the rest of the login session. Far past a slow start (~45 s after a
+ * reboot) and past the respawn controller's whole retry window.
+ */
+export const QUEUED_JOB_STALE_MS = 10 * 60_000;
 const START_LOCK_NAME = 'start.lock';
 const START_LOCK_WAIT_MS = 45_000;
 const START_LOCK_POLL_MS = 50;
@@ -365,9 +372,10 @@ const EXIT_POLL_MS = 250;
  * PRUNE_GRACE_MS, or one whose state launchctl cannot report. A job launchd
  * has loaded but not started yet is a daemon on its way, and booting it out
  * would only put the next one at the back of launchd's queue: the oldest such
- * job is kept and returned for the caller to wait on, and newer ones, which
- * would start a second daemon behind it, are booted out. Returns null when
- * there is none. Best-effort, never throws. Call it under the start lock.
+ * job younger than QUEUED_JOB_STALE_MS is kept and returned for the caller to
+ * wait on, and newer ones, which would start a second daemon behind it, are
+ * booted out. Returns null when there is none. Best-effort, never throws.
+ * Call it under the start lock.
  */
 export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, rt: LaunchdRuntime): Promise<string | null> {
   const prefix = `${baseLabel}.`;
@@ -397,7 +405,8 @@ export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, 
       // also newer: a job launchd started since `list` shows its pid now.
       const state = await queryDaemonJob(label, rt);
       if (state.kind === 'unknown' || (state.kind === 'loaded' && state.pid !== null)) continue;
-      if (state.kind === 'loaded' && state.runs === 0) {
+      if (state.kind === 'loaded' && state.runs === 0
+        && (createdAt === null || Date.now() - createdAt < QUEUED_JOB_STALE_MS)) {
         queued.push({ label, createdAt });
         continue;
       }
@@ -409,7 +418,10 @@ export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, 
   // a creation time sorts last.
   queued.sort((a, b) => (a.createdAt ?? Infinity) - (b.createdAt ?? Infinity));
   for (const { label, createdAt } of queued.slice(1)) {
-    if (!isYoung(createdAt)) await bootOut(label, true);
+    if (isYoung(createdAt)) continue;
+    // Read it again: launchd may have started it while the loop above ran.
+    const state = await queryDaemonJob(label, rt);
+    if (state.kind === 'loaded' && state.pid === null && state.runs === 0) await bootOut(label, true);
   }
   return queued[0]?.label ?? null;
 }
