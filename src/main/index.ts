@@ -2631,6 +2631,13 @@ app.on('ready', async () => {
             push: (params) => client.rpc('daemon.phone.browserStream', params, { timeoutMs: 3_000 }),
             backend: () => browserBackendStore.get(),
             chrome: phoneChromeDeps,
+            builtin: {
+              targets: () => webviewCdpManager.listTargets(),
+              contents: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? wc : null; },
+              visible: surfaceId => webviewCdpManager.isVisible(surfaceId),
+              onVisibility: listener => webviewCdpManager.onVisibility(listener),
+              nativeBounds: wc => phoneBrowserNativeBounds(wc),
+            },
           }) : null;
           disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === AGENT_ENV_COMMAND
             // A paired PC comparing agent environments: names, versions and hashes.
@@ -2650,6 +2657,11 @@ app.on('ready', async () => {
               if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
               return phoneBrowserNativeBounds(wc);
             },
+            ...(phoneStreams ? { layoutMetrics: async (id: number) => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              return wc.debugger.sendCommand('Page.getLayoutMetrics');
+            } } : {}),
             scroll: async (id,event) => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');

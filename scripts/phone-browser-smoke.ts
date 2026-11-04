@@ -8,12 +8,13 @@ import { RpcRouter } from '../src/main/pipe/RpcRouter';
 import { registerBrowserRpc } from '../src/main/pipe/handlers/browser.rpc';
 import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from '../src/main/phone/PhoneBrowserInput';
 import { handlePhoneBrowser } from '../src/main/phone/PhoneBrowser';
+import { createPhoneBrowserStreams } from '../src/main/phone/PhoneBrowserStream';
 import type { RpcMethod } from '../src/shared/rpc';
 
 const root = process.env.WMUX_PHONE_SMOKE_DIR;
 if (!root) throw new Error('Run through scripts/run-phone-browser-smoke.mjs');
 app.setPath('userData', path.join(root, 'electron-data'));
-const timeout = setTimeout(() => { console.error('Phone browser smoke timed out'); app.exit(1); }, 30000);
+const timeout = setTimeout(() => { console.error('Phone browser smoke timed out'); app.exit(1); }, 60000);
 let window: BrowserWindow | undefined;
 let server: http.Server | undefined;
 
@@ -164,7 +165,75 @@ async function run() {
   const resizedDesktop = await viewport();
   assert.equal(resizedDesktop.width,800);
   assert.equal(resizedDesktop.height,468);
-  const result = {before,mobileViewport,restored,desktop,mobile,navigationVerified:true,keyboardVerified:true,pageScrollVerified:true,pointerVerified:true,mobileTouchVerified:true,desktopAndMobileWheelVerified:true,nestedScrollVerified:true,nativeResizeGuardVerified:true};
+  // The live stream of this pane (PhoneBrowserStream's builtin source) over
+  // the real debugger. The daemon is a recorder and the renderer's
+  // visibility reports are the fixture's.
+  const pushes: Array<Record<string, unknown>> = [];
+  let shown = true;
+  const observers = new Set<(surfaceId: string, visible: boolean) => void>();
+  const report = (value: boolean) => { shown = value; for (const observer of [...observers]) observer(target.surfaceId, value); };
+  const streams = createPhoneBrowserStreams({
+    push: async params => { pushes.push(params); return {ok:true,known:true}; },
+    backend: () => 'builtin',
+    builtin: {
+      targets: () => [target], contents: id => id === guest.id && !guest.isDestroyed() ? guest : null,
+      visible: () => shown, onVisibility: listener => { observers.add(listener); return () => { observers.delete(listener); }; },
+      nativeBounds: contents => phoneBrowserNativeBounds(contents),
+    },
+  });
+  type StreamFrame = {pageURL?:string;geometry?:{width:number;height:number;scrollX:number;scrollY:number}};
+  const frames = () => pushes.filter(push => push.kind === 'frame') as StreamFrame[];
+  const until = async <T>(read: () => T | undefined | null | false, what: string): Promise<T> => {
+    const deadline = Date.now()+5000;
+    for (;;) {
+      const value = read();
+      if (value) return value;
+      if (Date.now() > deadline) throw new Error(`Stream: no ${what}: ${JSON.stringify(pushes.map(push => ({...push,data:undefined})))}`);
+      await new Promise(resolve => setTimeout(resolve,20));
+    }
+  };
+  const streamDeps = {...deps,streams,
+    layoutMetrics: () => guest.debugger.sendCommand('Page.getLayoutMetrics'),
+    input: (_id:number, operation: () => Promise<import('../src/shared/rpc').RpcResponse>, options?: import('../src/main/phone/PhoneBrowserInput').PhoneBrowserInputOptions) => withPhoneBrowserInputFocus(guest,operation,options),
+  };
+  // A fractional offset on a still page.
+  await guest.executeJavaScript('window.scrollTo(0,123.5); 0');
+  await settleScroll();
+  assert.deepEqual(await streams.handle('browser.streamStart',{workspaceId:'ws-fixture',surfaceId:target.surfaceId,streamId:'smoke',maxFps:10}),{backend:'builtin',maxWidth:1280,maxHeight:1280,quality:60});
+  const first = await until(() => frames()[0],'first frame on a still page');
+  // The frame's geometry is the capture probe's own, scroll offset included.
+  const probed = await guest.executeJavaScript('({width:innerWidth,height:innerHeight,scrollX,scrollY})');
+  assert.deepEqual(first.geometry,probed);
+  const clicks = () => guest.executeJavaScript('Number(document.querySelector("#submit").dataset.clicked||0)') as Promise<number>;
+  const clickedBefore = await clicks();
+  const streamPoint = await guest.executeJavaScript('(() => {const r=document.querySelector("#submit").getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()');
+  const tapAt = (frame: StreamFrame) => ({...payload,stream:true,expectedURL:frame.pageURL,geometry:frame.geometry,x:streamPoint.x/frame.geometry!.width,y:streamPoint.y/frame.geometry!.height});
+  assert.deepEqual(await handlePhoneBrowser('browser.tap',tapAt(first),streamDeps),{applied:true});
+  assert.equal(await clicks(),clickedBefore+1);
+  // A same-document move: a url event, and a tap at the earlier URL is a 409.
+  await guest.executeJavaScript('history.pushState(null,"","?route=1"); 0');
+  await until(() => pushes.some(push => push.kind === 'url' && String(push.pageURL).endsWith('?route=1')),'url event on pushState');
+  assert.deepEqual(await handlePhoneBrowser('browser.tap',tapAt(first),streamDeps),{error:'browser-page-changed'});
+  // At 125 % the metadata is not in the page's CSS pixels: no geometry.
+  guest.setZoomFactor(1.25);
+  await guest.executeJavaScript('window.scrollTo(0,300); 0');
+  const zoomedFrom = frames().length;
+  const zoomed = await until(() => frames().length > zoomedFrom && frames().at(-1),'frame at 125 %');
+  assert.equal(zoomed.geometry,undefined);
+  guest.setZoomFactor(1);
+  // Off screen and back, as the renderer reports it.
+  await window.webContents.executeJavaScript('document.querySelector("webview").style.display="none"; 0');
+  report(false);
+  await until(() => pushes.some(push => push.kind === 'state' && push.state === 'hidden'),'state hidden');
+  await window.webContents.executeJavaScript('document.querySelector("webview").style.display=""; 0');
+  report(true);
+  await until(() => { const at = pushes.findIndex(push => push.kind === 'state' && push.state === 'live'); return at >= 0 && pushes.slice(at+1).some(push => push.kind === 'frame'); },'state live and a frame');
+  // The pane closes: its debugger lets go before the guest is destroyed, and the end says gone.
+  await window.webContents.executeJavaScript('document.querySelector("webview").remove(); 0');
+  const ended = await until(() => pushes.find(push => push.kind === 'end'),'end on close');
+  assert.equal(ended.error,'browser-tab-gone');
+  assert.equal(pushes.filter(push => push.kind === 'end').length,1);
+  const result = {before,mobileViewport,restored,desktop,mobile,navigationVerified:true,keyboardVerified:true,pageScrollVerified:true,pointerVerified:true,mobileTouchVerified:true,desktopAndMobileWheelVerified:true,nestedScrollVerified:true,nativeResizeGuardVerified:true,streamVerified:true};
   fs.writeFileSync(path.join(root,'result.json'),JSON.stringify(result,null,2));
   console.log(JSON.stringify({passed:true,artifactDirectory:root,...result}));
 }

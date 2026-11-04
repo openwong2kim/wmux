@@ -131,6 +131,9 @@ export class WebviewCdpManager {
   // Told the surface's lease count whenever it changes: the "agent is driving"
   // marker is driven from it (BrowserAgentControl).
   private leaseObserver?: (surfaceId: string, leases: number) => void;
+  // Told every change of a surface's effective visibility: the phone's live
+  // browser stream reports a pane hidden from it (PhoneBrowserStream).
+  private visibilityObservers = new Set<(surfaceId: string, visible: boolean) => void>();
   // Optional hook so a CDP event-capture layer (BrowserCaptureManager, #106) can
   // tear down its debugger listeners when a surface is unregistered — manual
   // wc.debugger.detach() does not remove EventEmitter listeners, and may not
@@ -506,6 +509,24 @@ export class WebviewCdpManager {
     if (gs.visible === visible) return;
     gs.visible = visible;
     this.recomputeThrottle(surfaceId);
+    for (const observer of [...this.visibilityObservers]) {
+      try {
+        observer(surfaceId, visible);
+      } catch {
+        // an observer is best-effort; throttling must not depend on it
+      }
+    }
+  }
+
+  /** The surface's last reported effective visibility; true until one arrives (fail open, as above). */
+  isVisible(surfaceId: string): boolean {
+    return this.guestState.get(surfaceId)?.visible ?? true;
+  }
+
+  /** Told every change of any surface's effective visibility; returns the unsubscribe. */
+  onVisibility(observer: (surfaceId: string, visible: boolean) => void): () => void {
+    this.visibilityObservers.add(observer);
+    return () => { this.visibilityObservers.delete(observer); };
   }
 
   /**

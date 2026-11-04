@@ -76,8 +76,8 @@ function offset(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-/** The visual viewport from Page.getLayoutMetrics, in CSS pixels; throws when unusable. */
-function viewportOf(metrics: unknown): Viewport {
+/** The visual viewport from Page.getLayoutMetrics, in CSS pixels; throws when unusable. A builtin pane's too (PhoneBrowser.ts). */
+export function viewportOf(metrics: unknown): Viewport {
   const m = metrics as { cssVisualViewport?: Record<string, unknown>; visualViewport?: Record<string, unknown> } | null;
   const vp = m?.cssVisualViewport ?? m?.visualViewport;
   if (!vp || !dimension(vp.clientWidth) || !dimension(vp.clientHeight) || !offset(vp.pageX) || !offset(vp.pageY)) {

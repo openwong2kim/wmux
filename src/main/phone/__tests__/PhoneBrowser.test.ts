@@ -282,6 +282,33 @@ describe('workspace browser preview: stream input (stream:true)', () => {
     expect(clicks(deps)).toEqual([['browser.click.cdp',{workspaceId:'ws-1',surfaceId:'own',x:500,y:182}]]);
   });
 
+  it('a streamed builtin pane maps by the latest frame\'s geometry, within a pixel of the live scroll, and still refuses a viewport past the widget', async () => {
+    const deps = fixture();
+    // The frame's metadata at a fractional offset; the live viewport a quarter pixel on, the probe somewhere else entirely.
+    const frame = {width:1000,height:728,scrollX:0,scrollY:123.5};
+    let viewport = {clientWidth:1000,clientHeight:728,pageX:0,pageY:123.25,scale:1,zoom:1};
+    const view = {url:'http://localhost:3000/',docUrls:new Set(['http://localhost:3000/']),geometry:frame as typeof frame | null};
+    const streamed = {...deps,
+      layoutMetrics: vi.fn(async () => ({cssVisualViewport:viewport})),
+      streams: {tab: (surfaceId: string, workspaceId: string) => surfaceId === 'own' && workspaceId === 'ws-1' ? view : null},
+    };
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:frame,stream:true},streamed)).toEqual({applied:true});
+    expect(clicks(deps)).toEqual([['browser.click.cdp',{workspaceId:'ws-1',surfaceId:'own',x:500,y:182}]]);
+    expect(await handlePhoneBrowser('browser.scroll',{...pointed,geometry:frame,deltaX:0,deltaY:0.5,stream:true},streamed)).toEqual({applied:true});
+    expect(deps.scroll).toHaveBeenCalledWith(1,{x:500,y:182,deltaX:0,deltaY:364});
+    // A frame at another zoom carried no geometry: the sent one is checked live, and moved.
+    view.geometry = null;
+    viewport = {...viewport,zoom:1.25};
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:frame,stream:true},streamed)).toEqual({error:'browser-viewport-changed'});
+    // An emulated viewport wider than the pane: the capture's own refusal, nothing dispatched.
+    view.geometry = frame;
+    viewport = {...viewport,zoom:1,clientWidth:1920};
+    await expect(handlePhoneBrowser('browser.tap',{...pointed,geometry:frame,stream:true},streamed)).rejects.toThrow('exceeds visible input bounds');
+    expect(clicks(deps)).toHaveLength(1);
+    // Without the gate (no stream view) the probe decides, as before.
+    await expect(handlePhoneBrowser('browser.tap',{...pointed,geometry:frame},streamed)).rejects.toThrow('viewport changed');
+  });
+
   describe('history', () => {
     const plain = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/',direction:'back'};
     const asked = {...plain,stream:true};
