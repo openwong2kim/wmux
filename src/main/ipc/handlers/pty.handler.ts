@@ -50,6 +50,7 @@ import { probeBotExecSupport } from '../../factory/botExecSandbox';
 import { resolveClaudeExecutable } from '../../claude/resolveClaudeExecutable';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { reconnectSessionPipe } from './reconnectSessionPipe';
+import { createReplayResetGate } from './replayResetGate';
 import { createSessionResync, type SessionResync } from './sessionResync';
 import { verifyLaunchLine, type LaunchLineRead } from './verifyLaunchLine';
 import { LAUNCH_PROBE_CONFIRM_TIMEOUT_MS } from '../../worktask/fanoutLaunchProbe';
@@ -455,6 +456,11 @@ function logCwdResolution(
   console.log(`[pty:create] ${sessionId} cwd in=${incoming ?? '-'} → ${effective} (${why}, source=${source})`);
 }
 
+// Per main process, across handler registrations (daemon generations): a
+// second ring flush of a session reaches the renderer reset-led, so it
+// repaints the pane instead of repeating it (replayResetGate.ts).
+const replayResetGate = createReplayResetGate();
+
 export function registerPTYHandlers(
   ptyManager: PTYManager,
   ptyBridge: PTYBridge,
@@ -506,6 +512,7 @@ export function registerPTYHandlers(
   function forgetCreateState(sessionId: string): void {
     createAttachedPipes.delete(sessionId);
     firstOutputHooks.delete(sessionId);
+    replayResetGate.forget(sessionId);
   }
 
   // One live-pipe re-flush per session, shared by pty:resync and pty:reconnect
@@ -605,6 +612,7 @@ export function registerPTYHandlers(
           payload.sessionId,
           payload.recoveredBytes,
         );
+        replayResetGate.flushed(payload.sessionId);
       }
     };
     daemonClient.on('session:flushComplete', onDaemonFlushComplete);
@@ -993,7 +1001,7 @@ export function registerPTYHandlers(
         // P1-3: decode (stateful, upstream of batching) then micro-batch —
         // the batcher's send does the window-alive check at flush time.
         const text = decodeSessionData(sessionId, payload.data);
-        if (text) dataBatcher.push(sessionId, text, payload.replay);
+        if (text) dataBatcher.push(sessionId, payload.replay ? replayResetGate.replayText(sessionId, text) : text, payload.replay);
       };
       setSessionDataListener(sessionId, onSessionData);
       createAttachedPipes.add(sessionId);
@@ -1812,7 +1820,7 @@ export function registerPTYHandlers(
           if (!payload.replay) noteFirstOutput(id);
           // P1-3: same decode-then-batch as the create path.
           const text = decodeSessionData(id, payload.data);
-          if (text) dataBatcher.push(id, text, payload.replay);
+          if (text) dataBatcher.push(id, payload.replay ? replayResetGate.replayText(id, text) : text, payload.replay);
         };
         // Consumed here: whatever this reconnect does, the pipe after it is
         // no longer one a later reconnect may keep unasked.
