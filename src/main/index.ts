@@ -7,7 +7,7 @@ import { warmLoginShellPath } from './claude/resolveClaudeExecutable';
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
-import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
+import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserHistoryEntry, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
 import { focusBuiltinTab, handlePhoneBrowser } from './phone/PhoneBrowser';
 import { createPhoneChromeDeps, phoneChromeHelpTabs } from './phone/PhoneBrowserChrome';
 import { validateResolvedNavigationUrl } from './security/navigationPolicy';
@@ -2650,6 +2650,13 @@ app.on('ready', async () => {
             targets: () => webviewCdpManager.listTargets(),
             focusBuiltin: (surfaceId, workspaceId) =>
               focusBuiltinTab((method, params) => sendToRenderer(() => mainWindow, method, params), surfaceId, workspaceId),
+            historyEntry: (id, offset) => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              return phoneBrowserHistoryEntry(wc, offset);
+            },
+            // The same desktop navigation policy the Chrome tabs are held to.
+            validateNavigation: phoneChromeDeps.validateNavigation,
             chrome: phoneChromeDeps,
             input: (id, operation, options) => {
               const wc = phoneWebContents.fromId(id);

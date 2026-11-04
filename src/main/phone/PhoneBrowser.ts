@@ -31,6 +31,10 @@ interface BrowserDeps {
   invoke: (method: string, params: Record<string, unknown>) => Promise<RpcResponse>;
   /** Make a builtin pane the active tab of its pane (renderer `browser.tabs` select). Absent: focus unsupported. */
   focusBuiltin?: (surfaceId: string, workspaceId: string) => Promise<boolean>;
+  /** A builtin pane's history entry one step back (-1) or forward (+1), null when there is none. Absent: no `history`. */
+  historyEntry?: (webContentsId: number, offset: -1 | 1) => { url: string; go: () => void } | null;
+  /** The desktop's navigation policy for one URL; throws when it refuses. Absent: no `history` on builtin panes. */
+  validateNavigation?: (url: string) => Promise<void>;
   /** Dedicated-profile Chrome tabs. Absent: builtin panes only, as before. */
   chrome?: PhoneChromeDeps;
 }
@@ -53,6 +57,8 @@ export interface PhoneBrowserDriver {
   type(text: string): Promise<void>;
   key(key: string): Promise<void>;
   navigate(url: string): Promise<void>;
+  /** The entry `direction` leads to, or null when there is none. `go` checks the desktop's navigation policy, then moves. */
+  historyEntry(direction: 'back' | 'forward'): Promise<{ url: string; go(): Promise<void> } | null>;
   viewport(mode: 'mobile' | 'desktop'): Promise<void>;
   focus(): Promise<void>;
 }
@@ -115,6 +121,12 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
     type: async text => ok(await deps.invoke('browser.type.cdp',{...scope,text})),
     key: async key => ok(await deps.invoke('browser.press.cdp',{...scope,key})),
     navigate: async url => ok(await deps.invoke('browser.navigate',{...scope,url})),
+    historyEntry: async direction => {
+      const validate = deps.validateNavigation;
+      if (!deps.historyEntry || !validate) throw new PhoneBrowserError('browser-action-unsupported');
+      const entry = deps.historyEntry(target.webContentsId, direction === 'back' ? -1 : 1);
+      return entry && { url: entry.url, go: async () => { await validate(entry.url); entry.go(); } };
+    },
     viewport: async mode => {
       let result = await deps.invoke('browser.emulate', {...scope,deviceReset:true});
       if (!result.ok) throw new Error('Browser viewport reset failed');
@@ -205,7 +217,11 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     }
     return { pages };
   }
-  if (!PREVIEW_COMMANDS.includes(command)) throw new Error('Unsupported browser operation');
+  // `stream:true` comes only from a daemon whose desktop announced
+  // BROWSER_STREAM_CAPABILITY. It brings `history`, the stream's keys, the
+  // size-only scroll check and the 409 codes; without it every answer is as before.
+  const stream = payload.stream === true;
+  if (!PREVIEW_COMMANDS.includes(command) && !(stream && command === 'browser.history')) throw new Error('Unsupported browser operation');
   const surfaceId = payload.surfaceId;
   if (typeof surfaceId !== 'string') throw new Error('Missing surface');
   const driver = await driverFor(surfaceId, workspaceId, targets, deps);
@@ -261,10 +277,6 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     if (!page || pageURL(page.url) !== expectedURL) throw new Error('Browser page changed; refresh before input');
     return page;
   };
-  // `stream:true` comes only from a daemon whose desktop announced
-  // BROWSER_STREAM_CAPABILITY. It brings the stream's keys, the size-only
-  // scroll check and the 409 codes; without it every answer is as before.
-  const stream = payload.stream === true;
   /** The phone's point on the live viewport. A mismatch on stream input is a 409 the phone resends on its next frame. */
   const pointOn = (current: PhoneBrowserGeometry) => {
     try {
@@ -305,6 +317,18 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     if (typeof payload.text !== 'string' || !payload.text || payload.text.length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(payload.text)) throw new Error('Invalid browser text');
     const text = payload.text;
     await input(() => driver.type(text));
+  } else if (command === 'browser.history') {
+    if (payload.direction !== 'back' && payload.direction !== 'forward') throw new Error('Invalid browser history');
+    const direction = payload.direction;
+    let applied = true;
+    await input(async () => {
+      const entry = await driver.historyEntry(direction);
+      if (!entry) { applied = false; return; }
+      // The entry it leads to is held to the preview's own rule: http(s) pages only.
+      if (!pageURL(entry.url)) throw new Error('Only HTTP browser previews are supported');
+      await entry.go();
+    });
+    return { applied };
   } else {
     if (!PREVIEW_KEYS.includes(payload.key as string) && !(stream && BROWSER_STREAM_KEYS.includes(payload.key as string))) throw new Error('Unsupported browser key');
     const key = payload.key as string;

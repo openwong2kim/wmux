@@ -260,6 +260,21 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       }
       if ((result as { errorText?: unknown } | null)?.errorText) throw new Error('Browser operation failed');
     },
+    historyEntry: async (direction) => {
+      const history = await call('Page.getNavigationHistory') as { currentIndex?: unknown; entries?: unknown } | null;
+      if (typeof history?.currentIndex !== 'number' || !Array.isArray(history.entries)) throw new Error('Browser operation failed');
+      const entry = history.entries[history.currentIndex + (direction === 'back' ? -1 : 1)] as { id?: unknown; url?: unknown } | undefined;
+      if (!entry) return null;
+      const { id: entryId, url } = entry;
+      if (typeof entryId !== 'number' || typeof url !== 'string') throw new Error('Browser operation failed');
+      return {
+        url,
+        go: async () => {
+          await deps.validateNavigation(url);
+          await write('Page.navigateToHistoryEntry', { entryId });
+        },
+      };
+    },
     viewport: async () => { throw new PhoneBrowserError('browser-action-unsupported'); },
     focus: async () => {
       if (!(await deps.focus(surfaceId, workspaceId))) throw new Error('Browser operation failed');

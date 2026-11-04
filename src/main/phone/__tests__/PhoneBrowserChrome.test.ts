@@ -366,6 +366,48 @@ describe('stream input (stream:true) on dedicated-profile Chrome', () => {
     // Without the gate, both are as strict as before.
     await expect(handlePhoneBrowser('browser.scroll', { ...cart, geometry: stale, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5 }, fixture(deps))).rejects.toThrow('viewport changed');
   });
+
+  describe('history', () => {
+    const plain = { ...cart, direction: 'back' };
+    const back = { ...plain, stream: true };
+    function withHistory(entries: Array<{ id: number; url: string }>, currentIndex: number) {
+      const chrome = fakeChrome();
+      chrome.answer.mockImplementation(async (method: string) => method === 'Page.getNavigationHistory' ? { currentIndex, entries } : {});
+      const navigated = () => chrome.sent.filter((c) => c.method === 'Page.navigateToHistoryEntry').map((c) => c.params);
+      return { ...chrome, navigated };
+    }
+    const entries = [{ id: 11, url: 'https://shop.example.com/' }, { id: 12, url: 'https://shop.example.com/cart' }, { id: 13, url: 'https://shop.example.com/pay' }];
+
+    it('goes to the entry one step back or forward, through the navigation policy', async () => {
+      const { deps, navigated } = withHistory(entries, 1);
+      expect(await handlePhoneBrowser('browser.history', back, fixture(deps))).toEqual({ applied: true });
+      expect(deps.validateNavigation).toHaveBeenCalledWith('https://shop.example.com/');
+      expect(await handlePhoneBrowser('browser.history', { ...back, direction: 'forward' }, fixture(deps))).toEqual({ applied: true });
+      expect(navigated()).toEqual([{ entryId: 11 }, { entryId: 13 }]);
+    });
+
+    it('nothing to go to is applied:false, and nothing moves', async () => {
+      const { deps, navigated } = withHistory(entries.slice(0, 2), 1);
+      expect(await handlePhoneBrowser('browser.history', { ...back, direction: 'forward' }, fixture(deps))).toEqual({ applied: false });
+      const first = withHistory(entries.slice(1), 0);
+      expect(await handlePhoneBrowser('browser.history', back, fixture(first.deps))).toEqual({ applied: false });
+      expect([...navigated(), ...first.navigated()]).toEqual([]);
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+    });
+
+    it('refuses an entry that is not an http(s) page, before the policy and without moving', async () => {
+      const { deps, navigated } = withHistory([{ id: 10, url: 'chrome://newtab/' }, entries[1]], 1);
+      await expect(handlePhoneBrowser('browser.history', back, fixture(deps))).rejects.toThrow('Only HTTP');
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+      expect(navigated()).toEqual([]);
+    });
+
+    it('exists only on stream input', async () => {
+      const { deps, sent } = withHistory(entries, 1);
+      await expect(handlePhoneBrowser('browser.history', plain, fixture(deps))).rejects.toThrow('Unsupported browser operation');
+      expect(sent).toHaveLength(0);
+    });
+  });
 });
 
 describe('which Chrome tabs a workspace has (phoneChromeTabs)', () => {

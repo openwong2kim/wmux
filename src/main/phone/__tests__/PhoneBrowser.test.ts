@@ -253,4 +253,59 @@ describe('workspace browser preview: stream input (stream:true)', () => {
     expect(pane.events.slice(0,2)).toEqual(['focus','Page.bringToFront']);
     expect(clicks(deps)).toEqual([['browser.click.cdp',{workspaceId:'ws-1',surfaceId:'own',x:500,y:182}]]);
   });
+
+  describe('history', () => {
+    const plain = {workspaceId:'ws-1',surfaceId:'own',expectedURL:'http://localhost:3000/',direction:'back'};
+    const asked = {...plain,stream:true};
+    function withHistory(url: string | null) {
+      const go = vi.fn();
+      const deps = {...fixture(),
+        historyEntry: vi.fn<(id: number, offset: -1 | 1) => {url:string;go:() => void} | null>(() => (url === null ? null : {url,go})),
+        validateNavigation: vi.fn<(url: string) => Promise<void>>(async () => undefined)};
+      return {deps,go};
+    }
+
+    it('goes one entry back or forward, through the navigation policy', async () => {
+      const {deps,go} = withHistory('https://prev.example.com/a');
+      expect(await handlePhoneBrowser('browser.history',asked,deps)).toEqual({applied:true});
+      expect(deps.historyEntry).toHaveBeenLastCalledWith(1,-1);
+      expect(deps.validateNavigation).toHaveBeenCalledWith('https://prev.example.com/a');
+      expect(go).toHaveBeenCalledTimes(1);
+      expect(await handlePhoneBrowser('browser.history',{...asked,direction:'forward'},deps)).toEqual({applied:true});
+      expect(deps.historyEntry).toHaveBeenLastCalledWith(1,1);
+    });
+
+    it('nothing to go to is applied:false', async () => {
+      const {deps} = withHistory(null);
+      expect(await handlePhoneBrowser('browser.history',asked,deps)).toEqual({applied:false});
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+    });
+
+    it.each(['file:///private/file','chrome://settings/','about:blank'])('refuses an entry that is not an http(s) page: %s', async url => {
+      const {deps,go} = withHistory(url);
+      await expect(handlePhoneBrowser('browser.history',asked,deps)).rejects.toThrow('Only HTTP');
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+      expect(go).not.toHaveBeenCalled();
+    });
+
+    it('an entry the navigation policy refuses is not gone to', async () => {
+      const {deps,go} = withHistory('http://10.0.0.1/admin');
+      deps.validateNavigation.mockRejectedValue(new Error('Navigation refused'));
+      await expect(handlePhoneBrowser('browser.history',asked,deps)).rejects.toThrow('Navigation refused');
+      expect(go).not.toHaveBeenCalled();
+    });
+
+    it('runs the owner and expectedURL checks first, and exists only on stream input', async () => {
+      const {deps} = withHistory('https://prev.example.com/');
+      await expect(handlePhoneBrowser('browser.history',{...asked,expectedURL:'https://old.invalid/'},deps)).rejects.toThrow('page changed');
+      await expect(handlePhoneBrowser('browser.history',{...asked,surfaceId:'other'},deps)).rejects.toThrow('does not belong');
+      await expect(handlePhoneBrowser('browser.history',{...asked,direction:'up'},deps)).rejects.toThrow('Invalid browser history');
+      await expect(handlePhoneBrowser('browser.history',plain,deps)).rejects.toThrow('Unsupported browser operation');
+      expect(deps.historyEntry).not.toHaveBeenCalled();
+      // A pane that moved while the input waited for focus.
+      deps.input = async (_id,operation) => { deps.page = () => ({title:'Changed',url:'https://changed.invalid/'}); return operation(); };
+      await expect(handlePhoneBrowser('browser.history',asked,deps)).rejects.toThrow('page changed');
+      expect(deps.historyEntry).not.toHaveBeenCalled();
+    });
+  });
 });

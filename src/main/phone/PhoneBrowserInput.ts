@@ -46,6 +46,30 @@ export async function dispatchPhoneBrowserScroll(contents: WebContents, event: {
   await contents.debugger.sendCommand('Input.dispatchMouseEvent', {type:'mouseWheel',...event});
 }
 
+/**
+ * The entry one step back (-1) or forward (+1) in the guest's own history, or
+ * null when there is none. `go` moves to that same entry only: the policy
+ * check before it is asynchronous, so it refuses once the history has moved.
+ */
+export function phoneBrowserHistoryEntry(contents: WebContents, offset: -1 | 1): { url: string; go: () => void } | null {
+  const history = contents.navigationHistory;
+  // Null past either end at runtime, whatever the type says.
+  const urlAt = (index: number) => (history.getEntryAtIndex(index) as { url?: unknown } | null)?.url;
+  if (!history.canGoToOffset(offset)) return null;
+  const index = history.getActiveIndex() + offset;
+  const url = urlAt(index);
+  if (typeof url !== 'string') return null;
+  return {
+    url,
+    go: () => {
+      if (contents.isDestroyed() || history.getActiveIndex() + offset !== index || urlAt(index) !== url) {
+        throw new Error('Browser page changed; refresh before input');
+      }
+      history.goToIndex(index);
+    },
+  };
+}
+
 /** Read the real embedded widget bounds from wmux's renderer, not the web page. */
 export async function phoneBrowserNativeBounds(contents: WebContents): Promise<{width:number;height:number}> {
   const host = contents.hostWebContents;

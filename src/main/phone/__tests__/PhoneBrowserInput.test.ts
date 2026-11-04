@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { WebContents } from 'electron';
-import { withPhoneBrowserInputFocus } from '../PhoneBrowserInput';
+import { phoneBrowserHistoryEntry, withPhoneBrowserInputFocus } from '../PhoneBrowserInput';
 
 function fixture(focused = false) {
   return {id:1,isDestroyed:()=>false,focus:vi.fn(),debugger:{sendCommand:vi.fn(async (method:string) =>
@@ -74,4 +74,35 @@ describe('phone browser input focus', () => {
     expect(await withPhoneBrowserInputFocus(wc,async () => 'next')).toBe('next');
   });
 
+});
+
+describe('phone browser history entry (builtin)', () => {
+  function guest(urls: string[], active: number) {
+    let current = active;
+    const navigationHistory = {
+      canGoToOffset: (offset: number) => current + offset >= 0 && current + offset < urls.length,
+      getActiveIndex: () => current,
+      getEntryAtIndex: (index: number) => (index >= 0 && index < urls.length ? {url:urls[index],title:''} : null),
+      goToIndex: vi.fn((index: number) => { current = index; }),
+    };
+    return {navigationHistory,wc:{id:1,isDestroyed:() => false,navigationHistory} as unknown as WebContents,move:(index: number) => { current = index; }};
+  }
+
+  it('reads the entry one step away and goes to exactly that one', () => {
+    const pane = guest(['https://a.example.com/','https://b.example.com/','https://c.example.com/'],1);
+    expect(phoneBrowserHistoryEntry(pane.wc,1)?.url).toBe('https://c.example.com/');
+    const back = phoneBrowserHistoryEntry(pane.wc,-1);
+    expect(back?.url).toBe('https://a.example.com/');
+    back?.go();
+    expect(pane.navigationHistory.goToIndex).toHaveBeenCalledWith(0);
+    expect(phoneBrowserHistoryEntry(pane.wc,-1)).toBeNull();
+  });
+
+  it('refuses to go once the history moved after it was read', () => {
+    const pane = guest(['https://a.example.com/','https://b.example.com/','https://c.example.com/'],1);
+    const back = phoneBrowserHistoryEntry(pane.wc,-1);
+    pane.move(2);
+    expect(() => back?.go()).toThrow('page changed');
+    expect(pane.navigationHistory.goToIndex).not.toHaveBeenCalled();
+  });
 });
