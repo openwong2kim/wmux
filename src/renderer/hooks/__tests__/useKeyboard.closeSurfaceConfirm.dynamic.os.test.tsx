@@ -182,6 +182,7 @@ describe('close-tab shortcut confirmation', () => {
     act(() => setEditorDirty('s-10', true));
     addSurface({ id: 's-10', ptyId: '', title: 'notes.md', shell: '', cwd: '', surfaceType: 'editor', editorFilePath: '/tmp/notes.md' });
     expect(confirmOpen()).toBe(true);
+    expect(dialog()?.textContent).toContain('unsaved changes');
     expect(surfaceIds()).toContain('s-10');
     act(() => setEditorDirty('s-10', false));
   });

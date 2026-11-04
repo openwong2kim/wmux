@@ -49,10 +49,11 @@ export default function CloseTabConfirm() {
   // What closing ends: a shell (a local PTY, or a remote session this desktop
   // minted), only a view of a remote session someone else owns, a local
   // placeholder slot (nothing runs in it), or none of these.
-  const closeKind = useStore((s): 'shell' | 'remoteView' | 'placeholder' | 'static' | 'other' => {
+  const closeKind = useStore((s): 'shell' | 'remoteView' | 'placeholder' | 'static' | 'unsaved' | 'other' => {
     const surface = target ? resolveCloseTabTarget(s, target)?.surface : undefined;
     if (surface && !surface.ptyId && NO_CONFIRM_TYPES.has(surface.surfaceType ?? '')
       && !(surface.surfaceType === 'editor' && isEditorDirty(surface.id))) return 'static';
+    if (surface && !surface.ptyId && surface.surfaceType === 'editor') return 'unsaved';
     if (surface?.surfaceType === 'placeholder') return 'placeholder';
     if (surface?.surfaceType === 'remote-terminal') {
       // A duplicated workspace's clone has no session id, so it views nothing.
@@ -91,7 +92,7 @@ export default function CloseTabConfirm() {
         title={tabTitle ? t('surface.closeTabNamed', { name: tabTitle }) : t('surface.closeTab')}
         // Closing a shell tab ends the shell and the programs attached to it;
         // programs started apart from the terminal may outlive it (#2555).
-        description={closeKind === 'placeholder' ? undefined : t(closeKind === 'shell' ? 'surface.closeConfirmShell' : closeKind === 'remoteView' ? 'surface.closeConfirmRemoteView' : 'surface.closeConfirm')}
+        description={closeKind === 'placeholder' ? undefined : t(closeKind === 'shell' ? 'surface.closeConfirmShell' : closeKind === 'remoteView' ? 'surface.closeConfirmRemoteView' : closeKind === 'unsaved' ? 'surface.closeConfirmUnsaved' : 'surface.closeConfirm')}
       />
       <DialogFooter>
         <Button variant="secondary" size="sm" onClick={cancel} data-close-tab-cancel>
