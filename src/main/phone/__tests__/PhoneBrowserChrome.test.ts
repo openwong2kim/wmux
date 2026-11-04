@@ -63,6 +63,28 @@ describe('phone preview on dedicated-profile Chrome', () => {
     ] });
   });
 
+  it('leaves out a row whose URL is over 4096 characters; the other rows stay', async () => {
+    const at = (length: number) => { const base = 'https://shop.example.com/?q='; return base + 'a'.repeat(length - base.length); };
+    const long = at(300 * 1024);
+    const { deps } = fakeChrome();
+    deps.setURL(long);
+    const panes = {
+      ...fixture(deps),
+      targets: () => [
+        { surfaceId: 'pane', workspaceId: 'ws-1', webContentsId: 1, targetId: 't', wsUrl: 'ws://private' },
+        { surfaceId: 'pane-long', workspaceId: 'ws-1', webContentsId: 2, targetId: 't2', wsUrl: 'ws://private' },
+      ],
+      page: (id: number) => ({ title: 'Pane', url: id === 2 ? long : 'https://pane.example.com/' }),
+    };
+    expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes)).toEqual({ pages: [
+      { id: 'pane', title: 'Pane', url: 'https://pane.example.com/', backend: 'builtin' },
+    ] });
+    // At the limit a row is still listed.
+    deps.setURL(at(4096));
+    expect((await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes) as { pages: Array<{ id: string }> }).pages.map((p) => p.id))
+      .toEqual(['pane', 'chrome-own']);
+  });
+
   it('leaves out a tab that is not an http(s) page, and refuses to drive it', async () => {
     const { deps, sent } = fakeChrome();
     deps.setURL('chrome://settings/');

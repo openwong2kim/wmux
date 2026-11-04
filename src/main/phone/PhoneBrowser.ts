@@ -66,7 +66,7 @@ export interface PhoneBrowserDriver {
 /** 700 KiB of base64, so the whole `daemon.phone.complete` envelope stays under
  * the daemon control pipe's 1 MiB per-line limit. */
 const CAPTURE_BASE64_LIMIT = 700 * 1024;
-/** The longest `pageURL` a capture carries; input's `expectedURL` has the same limit. */
+/** The longest page URL a capture or a list row carries; input's `expectedURL` has the same limit. */
 const PAGE_URL_LIMIT = 4096;
 const PREVIEW_COMMANDS = ['browser.capture','browser.viewport','browser.navigate','browser.type','browser.key','browser.tap','browser.scroll','browser.focus'];
 const PREVIEW_KEYS = ['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'];
@@ -205,16 +205,17 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     // `chrome:true` only from a phone that asked (`?chrome=1`): its rows say
     // which browser they are. Without it the reply is what it always was.
     const withChrome = payload.chrome === true;
+    // A page whose URL is past PAGE_URL_LIMIT is left out, like a non-http one.
     const pages: Array<{id:string;title:string;url:string;backend?:PhoneBrowserBackend}> = targets.slice(0, 30).flatMap(target => {
       const page = deps.page(target.webContentsId);
       const url = page && pageURL(page.url);
-      return page && url ? [{ id: target.surfaceId, title: page.title.slice(0, 200), url, ...(withChrome ? { backend: 'builtin' as const } : {}) }] : [];
+      return page && url && url.length <= PAGE_URL_LIMIT ? [{ id: target.surfaceId, title: page.title.slice(0, 200), url, ...(withChrome ? { backend: 'builtin' as const } : {}) }] : [];
     });
     if (withChrome && deps.chrome && deps.backend() === 'chrome') {
       for (const tab of await deps.chrome.tabs(workspaceId)) {
         if (pages.length >= 30) break;
         const url = pageURL(tab.url);
-        if (url) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome' });
+        if (url && url.length <= PAGE_URL_LIMIT) pages.push({ id: tab.surfaceId, title: tab.title.slice(0, 200), url, backend: 'chrome' });
       }
     }
     return { pages };

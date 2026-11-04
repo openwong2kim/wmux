@@ -3618,7 +3618,9 @@ the daemon's control pipe, which closes past 1 MiB); a larger first shot is reta
 once smaller, then refused. Only capture requests receive the larger bridge
 response allowance. A capture carries `pageURL` only while it is at most 4096
 characters, the `expectedURL` limit. A longer one is omitted together with
-`geometry`; the image is still returned, readable but not tappable. A hidden Mac workspace may not produce frames; clients show
+`geometry`; the image is still returned, readable but not tappable. The page
+list leaves out a page whose URL is longer than 4096 characters, as it leaves
+out non-http pages. A hidden Mac workspace may not produce frames; clients show
 this failure and ask the user to bring it forward.
 
 #### Dedicated-profile Chrome tabs (`browserPreviewChrome`)
