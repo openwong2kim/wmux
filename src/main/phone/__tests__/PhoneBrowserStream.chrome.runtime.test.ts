@@ -313,7 +313,7 @@ function describeMode(mode: Mode): void {
       }
     });
 
-    it('viewport=mobile: a phone\'s viewport at 2x with touch, frames at its size, a right-edge tap lands; off and detach restore the tab', async (ctx) => {
+    it('viewport=mobile: a phone\'s viewport at 2x with touch, frames at its size, a right-edge tap and a scroll land; off and detach restore the tab', async (ctx) => {
       if (skipUnless(ctx)) return;
       const surfaceId = await open('/phone');
       const desktop = await viewport(surfaceId);
@@ -330,6 +330,9 @@ function describeMode(mode: Mode): void {
       expect(rect.x).toBeGreaterThan(370);
       expect(await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x: rect.x / geometry.width, y: rect.y / geometry.height })).toEqual({ applied: true, focus: { editable: false } });
       await eventually(async () => (await evaluate(surfaceId, 'document.title')) === 'right-edge');
+      // A scroll lands too: half a viewport down.
+      expect(await input('browser.scroll', surfaceId, { expectedURL: frame.pageURL, geometry, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5 })).toEqual({ applied: true });
+      await eventually(async () => (await evaluate(surfaceId, 'scrollY') as number) > 0);
       await mobile(surfaceId, false);
       await eventually(async () => (await viewport(surfaceId)).w === desktop.w);
       await mobile(surfaceId, true);
