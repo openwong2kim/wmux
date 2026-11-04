@@ -119,6 +119,9 @@ export class DaemonPipeServer {
   private globalRate = { count: 0, resetAt: 0 };
   // Aggregate budget for INTERACTIVE_METHODS across every socket.
   private interactiveGlobalRate = { count: 0, resetAt: 0 };
+  // Per-socket and aggregate budgets for STREAM_PUSH_METHODS.
+  private readonly streamPushRateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
+  private streamPushGlobalRate = { count: 0, resetAt: 0 };
   private connectionRate = { count: 0, resetAt: 0 };
 
   private static readonly MAX_CONNECTIONS = 20;
@@ -160,6 +163,15 @@ export class DaemonPipeServer {
   ]);
   private static readonly INTERACTIVE_PER_SOCKET_RATE_LIMIT = 100;
   private static readonly INTERACTIVE_GLOBAL_RATE_LIMIT = 200;
+  // The phone browser stream's pushes from main (frames, state, pings). Main
+  // sends up to 60 frames a second on its one socket, which would use up the
+  // budgets above and refuse pane traffic. Only a first-party client gets
+  // this class; any other caller is counted like every other RPC.
+  private static readonly STREAM_PUSH_METHODS: ReadonlySet<string> = new Set([
+    'daemon.phone.browserStream',
+  ]);
+  private static readonly STREAM_PUSH_PER_SOCKET_RATE_LIMIT = 120;
+  private static readonly STREAM_PUSH_GLOBAL_RATE_LIMIT = 240;
   private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 20;
 
   private activePipeName: string;
@@ -379,6 +391,7 @@ export class DaemonPipeServer {
           this.preSubscribeBacklogs.delete(socket);
           this.rateLimits.delete(socket);
           this.interactiveRateLimits.delete(socket);
+          this.streamPushRateLimits.delete(socket);
           this.clientIds.delete(socket);
           this.socketsByClientId.delete(clientId);
           this.firstPartyClients.delete(clientId);
@@ -495,6 +508,7 @@ export class DaemonPipeServer {
     this.firstPartyClients.clear();
     this.rateLimits.clear();
     this.interactiveRateLimits.clear();
+    this.streamPushRateLimits.clear();
     // Forced drop-to-zero — keep idle-window accounting consistent.
     this.lastDisconnectAt = Date.now();
     return newToken;
@@ -583,34 +597,52 @@ export class DaemonPipeServer {
   }
 
   private handleConnection(socket: net.Socket): void {
-    let buffer = '';
+    // The unterminated tail, kept as chunks: a long line (a stream frame of
+    // up to 900 KiB arrives in many reads) is joined and split once, when the
+    // chunk that ends it arrives, rather than re-scanned on every read.
+    let pending: string[] = [];
+    let pendingLength = 0;
     socket.setEncoding('utf8');
 
     socket.on('data', (chunk: string) => {
-      buffer += chunk;
-
-      // Security: prevent OOM from clients that never send newlines
-      if (buffer.length > MAX_LINE_BUFFER) {
-        socket.destroy();
+      if (!chunk.includes('\n')) {
+        pendingLength += chunk.length;
+        // Security: prevent OOM from clients that never send newlines
+        if (pendingLength > MAX_LINE_BUFFER) {
+          socket.destroy();
+          return;
+        }
+        pending.push(chunk);
         return;
       }
 
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+      pending.push(chunk);
+      const lines = pending.join('').split('\n');
+      const rest = lines.pop() ?? '';
+      pending = rest ? [rest] : [];
+      pendingLength = rest.length;
 
       for (const line of lines) {
+        // The limit is per line: a read that ends one long line and starts
+        // the next is two lines, each held to it.
+        if (line.length > MAX_LINE_BUFFER) {
+          socket.destroy();
+          return;
+        }
         const trimmed = line.trim();
         if (!trimmed) continue;
         this.processLine(socket, trimmed);
       }
+      if (pendingLength > MAX_LINE_BUFFER) socket.destroy();
     });
 
     socket.on('end', () => {
-      const trimmed = buffer.trim();
+      const trimmed = pending.join('').trim();
       if (trimmed) {
         this.processLine(socket, trimmed);
       }
-      buffer = '';
+      pending = [];
+      pendingLength = 0;
     });
 
     socket.on('error', () => {
@@ -668,6 +700,31 @@ export class DaemonPipeServer {
         // installed between those two calls.
         this.preSubscribeBacklogs.delete(socket);
       }
+    }
+
+    if (DaemonPipeServer.STREAM_PUSH_METHODS.has(method) && this.isFirstParty(this.clientIds.get(socket) ?? '')) {
+      let push = this.streamPushRateLimits.get(socket);
+      if (!push || now > push.resetAt) {
+        push = { count: 0, resetAt: now + 1000 };
+        this.streamPushRateLimits.set(socket, push);
+      }
+      if (now > this.streamPushGlobalRate.resetAt) {
+        this.streamPushGlobalRate = { count: 0, resetAt: now + 1000 };
+      }
+      // As for the interactive class: both counters are charged only for a
+      // call that is dispatched.
+      if (
+        push.count >= DaemonPipeServer.STREAM_PUSH_PER_SOCKET_RATE_LIMIT ||
+        this.streamPushGlobalRate.count >= DaemonPipeServer.STREAM_PUSH_GLOBAL_RATE_LIMIT
+      ) {
+        const res = JSON.stringify({ id: request.id, ok: false, error: 'rate limited (stream)' });
+        socket.write(res + '\n');
+        return;
+      }
+      push.count++;
+      this.streamPushGlobalRate.count++;
+      this.dispatchAndReply(socket, request);
+      return;
     }
 
     if (DaemonPipeServer.INTERACTIVE_METHODS.has(method)) {

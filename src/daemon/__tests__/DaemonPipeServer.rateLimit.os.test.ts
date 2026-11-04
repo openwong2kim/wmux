@@ -190,3 +190,104 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     for (let i = 0; i < 100; i++) expect(replies.get(String(i))!.ok).toBe(true);
   });
 });
+
+// The phone browser stream's pushes from main: their own budget, for the
+// first-party app only; frame lines up to 900 KiB arrive in many reads.
+describe('DaemonPipeServer stream push budget', () => {
+  let server: DaemonPipeServer;
+  let pipeName: string;
+
+  beforeEach(async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    pipeName = testPipeName('push');
+    server = new DaemonPipeServer(pipeName);
+    server.setAuthToken(TOKEN);
+    server.onRpc('daemon.ping', async () => ({ pong: true }));
+    server.onRpc('task.mission.list', async () => ({ ok: true, tasks: [] }));
+    server.onRpc('test.firstParty', async (_params, ctx) => { server.markFirstParty(ctx.clientId); return { ok: true }; });
+    server.onRpc('daemon.phone.browserStream', async (params) => ({ ok: true, known: true, size: String(params.data ?? '').length }));
+    await server.start();
+  });
+
+  afterEach(async () => {
+    await server.stop();
+    vi.restoreAllMocks();
+  });
+
+  it('serves a first-party client\'s pushes after a background flood used up the global budget, up to their own cap', async () => {
+    const methods: Call[] = [
+      'test.firstParty',
+      ...Array.from({ length: 250 }, () => 'task.mission.list'),
+      ...Array.from({ length: 130 }, () => ({ method: 'daemon.phone.browserStream', params: { kind: 'ping' } })),
+    ];
+    const replies = await sendBatch(pipeName, methods);
+    const pushes = Array.from({ length: 130 }, (_, k) => replies.get(String(251 + k))!);
+    expect(pushes.slice(0, 120).every((r) => r.ok)).toBe(true);
+    expect(pushes.slice(120).every((r) => r.error === 'rate limited (stream)')).toBe(true);
+    // The pushes did not count against the background budget either.
+    expect(replies.get('250')).toMatchObject({ ok: false, error: 'rate limited (global)' });
+  });
+
+  it('bounds pushes across first-party sockets by the aggregate cap', async () => {
+    const batch: Call[] = ['test.firstParty', ...Array.from({ length: 100 }, () => ({ method: 'daemon.phone.browserStream', params: { kind: 'ping' } }))];
+    const all: Reply[] = [];
+    for (let c = 0; c < 3; c++) {
+      const replies = await sendBatch(pipeName, batch);
+      all.push(...Array.from({ length: 100 }, (_, k) => replies.get(String(1 + k))!));
+    }
+    expect(all.filter((r) => r.ok)).toHaveLength(240);
+    expect(all.filter((r) => !r.ok).every((r) => r.error === 'rate limited (stream)')).toBe(true);
+  });
+
+  it('charges a non-first-party client\'s pushes to the ordinary counters', async () => {
+    const methods: Call[] = [
+      ...Array.from({ length: 150 }, () => ({ method: 'daemon.phone.browserStream', params: { kind: 'ping' } })),
+      ...Array.from({ length: 100 }, () => 'daemon.ping'),
+    ];
+    const all = [...(await sendBatch(pipeName, methods)).values()];
+    expect(all.filter((r) => r.ok)).toHaveLength(200);
+    expect(all.filter((r) => !r.ok).every((r) => r.error === 'rate limited (global)')).toBe(true);
+  });
+
+  it('reads 900 KiB lines that arrive in many reads, two of them back to back', async () => {
+    const data = 'A'.repeat(900 * 1024 - 200);
+    const line = (id: string) => JSON.stringify({ id, method: 'daemon.phone.browserStream', params: { kind: 'frame', data }, token: TOKEN }) + '\n';
+    const replies = await new Promise<Reply[]>((resolve, reject) => {
+      const got: Reply[] = [];
+      const client = net.createConnection(pipeName, async () => {
+        // Both lines in small pieces, the end of the first and the start of
+        // the second in one write: past 1 MiB together, each under it alone.
+        const both = line('a') + line('b');
+        for (let i = 0; i < both.length; i += 48 * 1024) {
+          client.write(both.slice(i, i + 48 * 1024));
+          await new Promise((r) => setImmediate(r));
+        }
+      });
+      let buf = '';
+      client.setEncoding('utf8');
+      client.on('data', (chunk: string) => {
+        buf += chunk;
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const l of lines) if (l.trim()) got.push(JSON.parse(l) as Reply);
+        if (got.length === 2) { client.destroy(); resolve(got); }
+      });
+      client.on('close', () => resolve(got));
+      client.on('error', reject);
+    });
+    expect(replies.map((r) => [r.id, r.ok, (r.result as { size?: number } | undefined)?.size])).toEqual([['a', true, data.length], ['b', true, data.length]]);
+  });
+
+  it('still closes a connection whose line passes 1 MiB', async () => {
+    const closed = await new Promise<boolean>((resolve) => {
+      const client = net.createConnection(pipeName, () => {
+        const big = 'x'.repeat(256 * 1024);
+        for (let i = 0; i < 5; i++) client.write(big);
+      });
+      client.on('close', () => resolve(true));
+      client.on('error', () => undefined);
+      setTimeout(() => { client.destroy(); resolve(false); }, 5_000);
+    });
+    expect(closed).toBe(true);
+  });
+});
