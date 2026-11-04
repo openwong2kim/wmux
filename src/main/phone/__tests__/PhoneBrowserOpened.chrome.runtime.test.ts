@@ -8,6 +8,7 @@ import { ChromeLauncher } from '../../browser-session/ChromeLauncher';
 import { createPhoneChromeDeps } from '../PhoneBrowserChrome';
 import { handlePhoneBrowser } from '../PhoneBrowser';
 import { MODES, requiredOnThisRunner, type Mode } from '../../../test-utils/realBrowserHarness';
+import { deliberateSleep } from '../../../test-utils/waitFor';
 
 // ---------------------------------------------------------------------------
 // Contract v1.7 against a REAL Chrome, launched by the production
@@ -108,14 +109,20 @@ function describeMode(mode: Mode): void {
     chrome,
   });
 
+  /** The launcher, once beforeAll started it (every case skips first otherwise). */
+  const running = (): ChromeLauncher => {
+    if (!launcher) throw new Error('Chrome is not running');
+    return launcher;
+  };
+
   const evaluate = async (surfaceId: string, expression: string): Promise<unknown> => {
-    const reply = await (await launcher!.pageSession(surfaceId)).send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }) as { result?: { value?: unknown } };
+    const reply = await (await running().pageSession(surfaceId)).send('Runtime.evaluate', { expression, returnByValue: true, awaitPromise: true }) as { result?: { value?: unknown } };
     return reply.result?.value;
   };
 
   /** A tab of `workspaceId` on the fixture page, loaded and in front. */
   async function open(workspaceId: string): Promise<string> {
-    const { surfaceId } = await launcher!.openTab(`http://127.0.0.1:${port}/`, workspaceId);
+    const { surfaceId } = await running().openTab(`http://127.0.0.1:${port}/`, workspaceId);
     await eventually(async () => (await evaluate(surfaceId, 'document.readyState').catch(() => null)) === 'complete');
     return surfaceId;
   }
@@ -123,10 +130,10 @@ function describeMode(mode: Mode): void {
   /** The phone's tap on the middle of element `id`, through the production preview input. */
   async function tap(surfaceId: string, workspaceId: string, id: string): Promise<{ applied?: boolean; opened?: { surfaceId: string } }> {
     const scope = { workspaceId, surfaceId };
-    await launcher!.selectSurface(surfaceId);
+    await running().selectSurface(surfaceId);
     const capture = await handlePhoneBrowser('browser.capture', scope, browserDeps()) as { geometry?: { width: number; height: number }; pageURL?: string };
-    expect(capture.geometry).toBeDefined();
-    const g = capture.geometry!;
+    const g = capture.geometry;
+    if (!g) throw new Error('the capture carries no geometry to tap with');
     const at = await evaluate(surfaceId, `(() => { const r = document.getElementById('${id}').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`) as { x: number; y: number };
     return await handlePhoneBrowser('browser.tap', { ...scope, expectedURL: capture.pageURL, geometry: g, x: at.x / g.width, y: at.y / g.height }, browserDeps()) as { applied?: boolean; opened?: { surfaceId: string } };
   }
@@ -140,11 +147,11 @@ function describeMode(mode: Mode): void {
       for (const id of OPENERS) {
         const reply = await tap(opener, 'ws-1', id);
         expect(reply, id).toMatchObject({ applied: true, opened: { surfaceId: expect.stringMatching(/^chrome-/) } });
-        const popup = reply.opened!.surfaceId;
-        expect(launcher!.recordFor(popup)?.workspaceId, id).toBe('ws-1');
+        const popup = reply.opened?.surfaceId ?? '';
+        expect(running().recordFor(popup)?.workspaceId, id).toBe('ws-1');
         // The phone's list has it once its page has committed.
         await eventually(async () => (await listed('ws-1')).some((t) => t.surfaceId === popup && t.path === `/${id}`));
-        expect(await launcher!.closeSurface(popup)).toBe(true);
+        expect(await running().closeSurface(popup)).toBe(true);
       }
     });
 
@@ -154,7 +161,7 @@ function describeMode(mode: Mode): void {
       const before = (await listed('ws-1')).length;
       expect(await tap(opener, 'ws-1', 'nothing')).not.toHaveProperty('opened');
       expect(await tap(opener, 'ws-1', 'same')).not.toHaveProperty('opened');
-      await sleep(500);
+      await deliberateSleep(500, 'a tab the taps opened would have been created by now');
       expect((await listed('ws-1')).length).toBe(before);
     });
 
@@ -166,13 +173,13 @@ function describeMode(mode: Mode): void {
       const stop = chrome.onTabOpened?.(mine, 'ws-1', (tab) => heardByMine.push(tab.surfaceId));
       try {
         const reply = await tap(theirs, 'ws-2', 'noopener');
-        const popup = reply.opened?.surfaceId;
+        const popup = reply.opened?.surfaceId ?? '';
         expect(popup).toMatch(/^chrome-/);
-        expect(launcher!.recordFor(popup!)?.workspaceId).toBe('ws-2');
+        expect(running().recordFor(popup)?.workspaceId).toBe('ws-2');
         await eventually(async () => (await listed('ws-2')).some((t) => t.surfaceId === popup));
         expect((await listed('ws-1')).some((t) => t.surfaceId === popup)).toBe(false);
         expect(heardByMine).toEqual([]);
-        await launcher!.closeSurface(popup!);
+        await running().closeSurface(popup);
       } finally {
         stop?.();
       }
