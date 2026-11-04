@@ -271,7 +271,14 @@ internal static unsafe class Actions
     /// <summary>A posted action's result. Our own side effect (cursor or foreground moved) is said in the note.</summary>
     private static JsonObject Posted(BackgroundOutcome outcome) => outcome.SideEffect
         ? Result("synthetic", false, outcome.Delivery, "the target window came to the front or the pointer moved onto the target while the input was posted; check the app state")
-        : Result("synthetic", outcome.Verified, outcome.Delivery);
+        : WithObserved(Result("synthetic", outcome.Verified, outcome.Delivery), outcome.Verified ? null : outcome.Observed);
+
+    /// <summary>protocol ActionResult.observedValue: on an unverified result, what the field holds now (Verify.Observed).</summary>
+    private static JsonObject WithObserved(JsonObject result, string? observed)
+    {
+        if (observed != null) result["observedValue"] = observed;
+        return result;
+    }
 
 
     /// <summary>
@@ -609,6 +616,9 @@ internal static unsafe class Actions
         }
     }
 
+    /// <summary>How long setValue's read-back waits for the value (longer only while it is still changing).</summary>
+    private const int SetValueSettleMs = 400;
+
     public static JsonObject SetValue(Params p, AgentMarker marker)
     {
         // A UIA ValuePattern call brings a covered target to the front, so
@@ -661,19 +671,23 @@ internal static unsafe class Actions
             {
                 Marshal.FreeBSTR(bstr);
             }
-            string? readBack;
-            try
+            // Read until it settles: an app may apply the value a moment later.
+            var readBack = Verify.Settle(() =>
             {
-                readBack = Uia.Take(pattern->CurrentValue);
-            }
-            catch (Exception e) when (e is not HelperError)
-            {
-                readBack = null;
-            }
+                try
+                {
+                    return Uia.Take(pattern->CurrentValue);
+                }
+                catch (Exception e) when (e is not HelperError)
+                {
+                    return null;
+                }
+            }, now => Verify.SameValue(value, now), SetValueSettleMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
             var delivery = SemanticDelivery(target, frontBefore);
-            return readBack == value
+            return readBack.Verified
                 ? Result("accessibility", true, delivery)
-                : Result("accessibility", false, delivery, "the value read back differs from what was set");
+                : WithObserved(Result("accessibility", false, delivery, "the value read back differs from what was set"),
+                    Verify.Observed(value, readBack.Last, Uia.IsSecretElement(el)));
         }
         finally
         {
@@ -837,9 +851,27 @@ internal static unsafe class Actions
             }
             typed += chunk.GraphemeCount;
         }
-        bool verified = WaitForEffect(text, before, total < 64 ? 300 : 1000);
-        if (verified) Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target), realInput: true);
-        return Result("synthetic", verified, "foreground");
+        var effect = WaitForEffect(text, before, total < 64 ? 300 : 1000);
+        if (effect.Verified)
+        {
+            Overlay.Show(marker, MarkerVerb.Typing, target, caret: Caret.For(target), realInput: true);
+            return Result("synthetic", true, "foreground");
+        }
+        return WithObserved(Result("synthetic", false, "foreground"), ObservedFocused(before));
+    }
+
+    /// <summary>
+    /// What the focused field holds now, for an unverified `type` (Verify.Observed).
+    /// Focus may have moved since the keys: the value is read only after its
+    /// element was checked not to be a password field, and shown only while
+    /// focus is still on that element.
+    /// </summary>
+    private static string? ObservedFocused(string? before)
+    {
+        var secrecy = Uia.FocusSecrecy(out var focusedId);
+        if (secrecy != Uia.Secrecy.Safe) return Verify.Observed(before, null, secret: true);
+        var now = FocusedValue();
+        return Uia.FocusedRuntimeId().AsSpan().SequenceEqual(focusedId) ? Verify.Observed(before, now, secret: false) : null;
     }
 
     private static bool Verified(JsonObject result) => result["verification"]?.GetValue<string>() == "verified";
@@ -1007,18 +1039,14 @@ internal static unsafe class Actions
 
     /// <summary>
     /// Verified only when the focused element's value is the value before
-    /// with exactly the typed text inserted at one position (Core Verify).
+    /// with exactly the typed text inserted at one position (Core Verify),
+    /// read until it settles: past `timeoutMs` only while the value is still
+    /// changing (Verify.Settle).
     /// </summary>
-    private static bool WaitForEffect(string text, string? before, int timeoutMs)
+    private static ReadBack WaitForEffect(string text, string? before, int timeoutMs)
     {
-        if (before == null) return false;
-        long deadline = Environment.TickCount64 + timeoutMs;
-        while (true)
-        {
-            if (Verify.Inserted(before, FocusedValue(), text)) return true;
-            if (Environment.TickCount64 >= deadline) return false;
-            Sta.Sleep(15);
-        }
+        if (before == null) return new(false, FocusedValue());
+        return Verify.Settle(FocusedValue, now => Verify.Inserted(before, now, text), timeoutMs, Verify.SettleExtraMs, () => Environment.TickCount64, Sta.Sleep);
     }
 
     public static JsonObject PressKey(Params p, AgentMarker marker)

@@ -262,6 +262,14 @@ export interface ActionResult {
   delivery?: ActionDelivery;
   disposition?: ActionDisposition;
   note?: string;
+  /**
+   * On an `unverified` type or setValue: what the field holds now, as an
+   * excerpt of at most 120 characters (whitespace collapsed) that starts a
+   * little before the first place it differs from the value before (or the
+   * value set), or `[redacted]` for a password field. Left out when the
+   * value could not be read, and by helpers that do not report it.
+   */
+  observedValue?: string;
 }
 
 /**

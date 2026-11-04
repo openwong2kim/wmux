@@ -46,4 +46,101 @@ public class VerifyTests
         Assert.True(Verify.Inserted("a\r\nb", "a\r\nX\r\nb", "X\n"));
         Assert.True(Verify.Inserted("a\rb", "a\rline\rb", "line\n"));
     }
+
+    [Fact]
+    public void SetValueComparesLineBreaksNormalized()
+    {
+        // Notepad's rich edit reads `a\nb` back as `a\rb`.
+        Assert.True(Verify.SameValue("a\nb", "a\rb"));
+        Assert.True(Verify.SameValue("a\nb\nc", "a\r\nb\rc"));
+        Assert.True(Verify.SameValue("same", "same"));
+        Assert.False(Verify.SameValue("a\n", "a"));
+        Assert.False(Verify.SameValue("a", "a\r"));
+        Assert.False(Verify.SameValue("", "\r"));
+        Assert.False(Verify.SameValue("a\nb", "a\nc"));
+        Assert.False(Verify.SameValue("x", null));
+    }
+
+    /// <summary>A fake clock: each sleep advances it.</summary>
+    private sealed class Clock
+    {
+        public long Now;
+        public void Sleep(int ms) => Now += ms;
+    }
+
+    [Fact]
+    public void SettleStopsAtTheBaseWaitWhenTheValueIsStill()
+    {
+        var c = new Clock();
+        var r = Verify.Settle(() => "old", v => v == "new", 300, 2000, () => c.Now, c.Sleep);
+        Assert.False(r.Verified);
+        Assert.Equal("old", r.Last);
+        Assert.InRange(c.Now, 300, 300 + 15);
+    }
+
+    [Fact]
+    public void SettleKeepsReadingWhileTheValueIsStillChanging()
+    {
+        // Keys still landing: the value grows every 30 ms until 900 ms, then matches.
+        var c = new Clock();
+        string Read() => c.Now >= 900 ? "done" : new string('x', (int)(c.Now / 30));
+        var r = Verify.Settle(Read, v => v == "done", 300, 2000, () => c.Now, c.Sleep);
+        Assert.True(r.Verified);
+        Assert.InRange(c.Now, 900, 900 + 15);
+    }
+
+    [Fact]
+    public void SettleNeverPassesTheHardCap()
+    {
+        var c = new Clock();
+        var r = Verify.Settle(() => c.Now.ToString(System.Globalization.CultureInfo.InvariantCulture), _ => false, 300, 2000, () => c.Now, c.Sleep);
+        Assert.False(r.Verified);
+        Assert.InRange(c.Now, 2300, 2300 + 15);
+    }
+
+    [Fact]
+    public void SettleVerifiesAtOnceWhenTheFirstReadMatches()
+    {
+        var c = new Clock();
+        var r = Verify.Settle(() => "ok", v => v == "ok", 300, 2000, () => c.Now, c.Sleep);
+        Assert.True(r.Verified);
+        Assert.Equal(0, c.Now);
+    }
+
+    [Fact]
+    public void ObservedShowsWhereTheTextWentWrong()
+    {
+        // "Agent-A line 5" typed at the end of Notepad's text, arrived reordered.
+        var before = "Agent-A line 1\rAgent-A line 2\rAgent-A line 3\rAgent-A line 4\r";
+        var observed = Verify.Observed(before, before + "AgentA- line 5", secret: false);
+        Assert.NotNull(observed);
+        Assert.StartsWith("…", observed);
+        Assert.EndsWith("Agent-A line 4 AgentA- line 5", observed);
+        Assert.True(observed!.Length <= Tree.TextPreviewChars);
+    }
+
+    [Fact]
+    public void ObservedStartsAtTheTopWhenTheDifferenceIsNearIt()
+    {
+        Assert.Equal("Xhello world", Verify.Observed("hello world", "Xhello world", secret: false));
+        Assert.Equal("a b", Verify.Observed(null, "a\r\nb", secret: false));
+    }
+
+    [Fact]
+    public void ObservedIsCappedAndMasked()
+    {
+        var observed = Verify.Observed("", new string('y', 500), secret: false)!;
+        Assert.Equal(Tree.TextPreviewChars + 1, observed.Length); // the cap, then Tree.Preview's ellipsis
+        Assert.Equal("[redacted]", Verify.Observed("", "hunter2", secret: true));
+        Assert.Null(Verify.Observed("x", null, secret: false));
+    }
+
+    [Fact]
+    public void ObservedNeverStartsInsideASurrogatePair()
+    {
+        var before = new string('a', 60);
+        var after = new string('a', 39) + "😀" + new string('a', 19) + "Z";
+        var observed = Verify.Observed(before, after, secret: false)!;
+        Assert.False(char.IsLowSurrogate(observed[1]));
+    }
 }
