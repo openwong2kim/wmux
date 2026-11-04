@@ -3874,7 +3874,10 @@ paths alike, for builtin panes and `chrome` rows.
   always arrives.
 - A later subscriber gets the tab's current state after the latest frame
   (and after its `url` event, when one came after that frame), once the
-  desktop has reported one.
+  desktop has reported one. The first subscriber of a tab may get its first
+  `focus` before its first frame; treat it as the tab's state either way.
+- On a cross-document commit, the reset may come just before or just after
+  that commit's `url` event.
 - Detected in an isolated world: page scripts cannot fake the event.
 
 ### New agent pane launch options
