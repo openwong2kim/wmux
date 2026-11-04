@@ -881,20 +881,32 @@ internal static unsafe class Actions
 
     /// <summary>
     /// What the field the keys went into holds now, for an unverified `type`
-    /// (Verify.Observed). Shown only while focus is still on that element
-    /// (`typedInto`, read before the keys), before and after the value is
-    /// read, and only once that element was checked not to be a password
-    /// field: focus that moved to another field shows nothing, never that
-    /// field's value. A secrecy check that cannot be read shows nothing too.
+    /// (Verify.Observed). The focused element is read once and used for
+    /// everything: it must still be the element the keys went into
+    /// (`typedInto`, read before the keys), its password check decides
+    /// `[redacted]`, and its own value is read. Focus that moved to another
+    /// field shows nothing, never that field's value; an element that cannot
+    /// be read shows nothing either.
     /// </summary>
     private static string? ObservedFocused(string? before, int[] typedInto)
     {
         if (typedInto.Length == 0) return null;
-        var secrecy = Uia.FocusSecrecy(out var focusedId);
-        if (!focusedId.AsSpan().SequenceEqual(typedInto) || secrecy == Uia.Secrecy.Unknown) return null;
-        if (secrecy == Uia.Secrecy.Secret) return "[redacted]";
-        var now = FocusedValue();
-        return Uia.FocusedRuntimeId().AsSpan().SequenceEqual(typedInto) ? Verify.Observed(before, now, secret: false) : null;
+        var el = Uia.Focused();
+        if (el == null) return null;
+        try
+        {
+            if (!Uia.CurrentRuntimeId(el).AsSpan().SequenceEqual(typedInto)) return null;
+            if (Uia.IsSecretElement(el)) return "[redacted]";
+            return Verify.Observed(before, Uia.CurrentString(el, Uia.ValueValueProperty), secret: false);
+        }
+        catch (Exception e) when (e is not HelperError)
+        {
+            return null;
+        }
+        finally
+        {
+            el->Release();
+        }
     }
 
     private static bool Verified(JsonObject result) => result["verification"]?.GetValue<string>() == "verified";
