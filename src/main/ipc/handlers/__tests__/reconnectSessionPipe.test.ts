@@ -22,7 +22,7 @@
  * and reconnect paths, the first-output hook included.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { reconnectSessionPipe, type ReconnectPipeClient } from '../reconnectSessionPipe';
+import { __pipeStepsInFlightForTests, reconnectSessionPipe, type ReconnectPipeClient } from '../reconnectSessionPipe';
 import { createSessionResync, type SessionResync } from '../sessionResync';
 import { scheduleInitialCommand } from '../scheduleInitialCommand';
 import { deliberateSleep } from '../../../../test-utils/waitFor';
@@ -404,5 +404,159 @@ describe('a reconnect with no live create-time pipe to keep attaches afresh', ()
     const re = await mountReattach(world);
     expect(re.kind).toBe('attached');
     expect(world.attaches).toBe(2);
+  });
+});
+
+describe('two reconnects of one session run one after the other', () => {
+  let world: World;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    world = new World();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('the second attaches only after the first has connected and checked its pipe', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    // A split remounts the pane while the first mount's reconnect is in
+    // flight: both mounts ask for a full attach of the same session.
+    const steps: string[] = [];
+    const { rpc, connectSessionPipe, isSessionPipeWritable } = world.client;
+    let caller = '';
+    world.client.rpc = (async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'daemon.attachSession') steps.push(`${caller}:attach`);
+      return rpc(method, params);
+    }) as typeof world.client.rpc;
+    world.client.connectSessionPipe = (async (id: string, opts?: { forceFresh?: boolean }) => {
+      steps.push(`${caller}:connect`);
+      return connectSessionPipe(id, opts);
+    }) as typeof world.client.connectSessionPipe;
+    world.client.isSessionPipeWritable = (id: string) => {
+      steps.push(`${caller}:check`);
+      return isSessionPipeWritable(id);
+    };
+    const reattach = (name: string) => reconnectSessionPipe(world.client, ID, {
+      promote: true,
+      ownsCreatePipe: false,
+      resync: world.resync,
+      installListener: () => { caller = name; },
+    });
+    const [first, second] = await Promise.all([reattach('first'), reattach('second')]);
+    expect(steps).toEqual([
+      'first:attach', 'first:connect', 'first:check',
+      'second:attach', 'second:connect', 'second:check',
+    ]);
+    expect([first.kind, second.kind]).toEqual(['attached', 'attached']);
+    expect(__pipeStepsInFlightForTests()).toBe(0);
+  });
+
+  it('a step that throws does not stall the next one, and nothing is left queued', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const { connectSessionPipe } = world.client;
+    let connects = 0;
+    world.client.connectSessionPipe = (async (id: string, opts?: { forceFresh?: boolean }) => {
+      // The first one finds no session socket (connect ENOENT).
+      if (connects++ === 0) throw new Error(`connect ENOENT session-${id}.sock`);
+      return connectSessionPipe(id, opts);
+    }) as typeof world.client.connectSessionPipe;
+    const reattach = () => reconnectSessionPipe(world.client, ID, {
+      promote: true,
+      ownsCreatePipe: false,
+      resync: world.resync,
+      installListener: () => undefined,
+    });
+    const first = reattach();
+    const second = reattach();
+    expect(__pipeStepsInFlightForTests()).toBe(1);
+    await expect(first).rejects.toThrow(/ENOENT/);
+    await expect(second).resolves.toEqual({ kind: 'attached' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(__pipeStepsInFlightForTests()).toBe(0);
+  });
+
+  it('a third reconnect asked while the second runs waits for it as well', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const steps: string[] = [];
+    const { rpc, connectSessionPipe, isSessionPipeWritable } = world.client;
+    // The second attach takes a while: the first has settled, the second is
+    // under way when a further split asks for a third.
+    let attaches = 0;
+    let releaseSecond: () => void = () => undefined;
+    const secondHeld = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    world.client.rpc = (async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'daemon.attachSession') {
+        steps.push('attach');
+        if (++attaches === 2) await secondHeld;
+      }
+      return rpc(method, params);
+    }) as typeof world.client.rpc;
+    world.client.connectSessionPipe = (async (id: string, opts?: { forceFresh?: boolean }) => {
+      steps.push('connect');
+      return connectSessionPipe(id, opts);
+    }) as typeof world.client.connectSessionPipe;
+    world.client.isSessionPipeWritable = (id: string) => {
+      steps.push('check');
+      return isSessionPipeWritable(id);
+    };
+    const reattach = () => reconnectSessionPipe(world.client, ID, {
+      promote: true,
+      ownsCreatePipe: false,
+      resync: world.resync,
+      installListener: () => undefined,
+    });
+    const first = reattach();
+    const second = reattach();
+    await first;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(steps).toEqual(['attach', 'connect', 'check', 'attach']);
+    const third = reattach();
+    await vi.advanceTimersByTimeAsync(0);
+    releaseSecond();
+    await Promise.all([second, third]);
+    expect(steps).toEqual(['attach', 'connect', 'check', 'attach', 'connect', 'check', 'attach', 'connect', 'check']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(__pipeStepsInFlightForTests()).toBe(0);
+  });
+});
+
+describe('reconnects of different sessions do not wait for each other', () => {
+  it('a session whose attach is slow does not hold up another one', async () => {
+    // A daemon:connected reattaches every pane at once: one chain per
+    // session, never one for all of them.
+    let releaseA: () => void = () => undefined;
+    const aHeld = new Promise<void>((resolve) => { releaseA = resolve; });
+    const attached: string[] = [];
+    const writable = new Set<string>();
+    const client: ReconnectPipeClient = {
+      rpc: (async (method: string, params: Record<string, unknown> = {}) => {
+        const id = String(params.id);
+        if (method === 'daemon.attachSession' && id === 'session-a') await aHeld;
+        return { ok: true };
+      }) as ReconnectPipeClient['rpc'],
+      connectSessionPipe: async (id: string) => {
+        writable.add(id);
+        attached.push(id);
+      },
+      isSessionPipeWritable: (id: string) => writable.has(id),
+      sessionPipeFlushPending: () => false,
+    };
+    const resync = { inFlight: () => false } as unknown as SessionResync;
+    const reattach = (id: string) => reconnectSessionPipe(client, id, {
+      promote: true,
+      ownsCreatePipe: false,
+      resync,
+      installListener: () => undefined,
+    });
+    const a = reattach('session-a');
+    const b = await reattach('session-b');
+    expect(b).toEqual({ kind: 'attached' });
+    expect(attached).toEqual(['session-b']);
+    releaseA();
+    await expect(a).resolves.toEqual({ kind: 'attached' });
+    expect(attached).toEqual(['session-b', 'session-a']);
   });
 });
