@@ -710,6 +710,16 @@ export function buildDefaultCustomKeybindings(platform?: string): CustomKeybindi
       command: 'claude --dangerously-skip-permissions',
       sendEnter: true,
     },
+    // F7's resume twin, on the next key for the same reasons (Mac: Ctrl+8).
+    // An existing user gets it on load only if neither its id nor its key is
+    // already taken by a saved binding (workspaceSlice back-fill).
+    {
+      id: 'kb-default-f8',
+      key: isMac ? 'Ctrl+8' : 'F8',
+      label: 'Claude (skip permissions, resume)',
+      command: 'claude --dangerously-skip-permissions --resume',
+      sendEnter: true,
+    },
   ];
 }
 

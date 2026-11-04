@@ -1018,6 +1018,57 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
     expect(DEFAULT_CUSTOM_KEYBINDINGS[0].command).toBe('claude --dangerously-skip-permissions');
   });
 
+  it('back-fills the F8 resume default for a user who never had it', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-default-f7', key: 'F7', label: 'Claude (skip permissions)', command: 'claude --dangerously-skip-permissions', sendEnter: true }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string; key: string; command: string }[];
+    const f8 = kbs.filter((k) => k.id === 'kb-default-f8');
+    expect(f8).toHaveLength(1);
+    expect(f8[0].key).toBe('F8');
+    expect(f8[0].command).toBe('claude --dangerously-skip-permissions --resume');
+  });
+
+  it('leaves a user\'s own F8 binding alone: the resume default is not added on that key', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-user-f8', key: 'F8', label: 'Mine', command: 'htop', sendEnter: true }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string; key: string; command: string }[];
+    const onF8 = kbs.filter((k) => k.key === 'F8');
+    expect(onF8).toHaveLength(1);
+    expect(onF8[0]).toMatchObject({ id: 'kb-user-f8', command: 'htop' });
+    expect(kbs.map((k) => k.id)).not.toContain('kb-default-f8');
+  });
+
+  it('keeps a user\'s edit of the F8 default instead of the built-in', () => {
+    const store = createTestStore();
+    store.getState().loadSession(
+      makeSession({ customKeybindings: [{ id: 'kb-default-f8', key: 'F9', label: 'Edited', command: 'claude --resume', sendEnter: false }] })
+    );
+    const kbs = store.getState().customKeybindings as { id: string; key: string; command: string }[];
+    const f8 = kbs.filter((k) => k.id === 'kb-default-f8');
+    expect(f8).toHaveLength(1);
+    expect(f8[0]).toMatchObject({ key: 'F9', command: 'claude --resume' });
+  });
+
+  it('leaves a macOS user\'s own Ctrl+8 binding alone', () => {
+    const prevPlatform = (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform;
+    (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = 'darwin';
+    try {
+      const store = createTestStore();
+      store.getState().loadSession(
+        makeSession({ customKeybindings: [{ id: 'kb-user-c8', key: 'Ctrl+8', label: 'Mine', command: 'git status', sendEnter: true }] })
+      );
+      const kbs = store.getState().customKeybindings as { id: string; key: string }[];
+      expect(kbs.filter((k) => k.key === 'Ctrl+8').map((k) => k.id)).toEqual(['kb-user-c8']);
+      expect(kbs.map((k) => k.id)).not.toContain('kb-default-f8');
+    } finally {
+      (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = prevPlatform;
+    }
+  });
+
   it('upgrades an existing macOS user\'s untouched F7 default to Ctrl+7 on load', () => {
     // 기존 Mac 사용자(Ctrl+7 기본값 이전 설치)의 저장된 원본 F7을 로드 시 승격한다.
     // platform을 darwin으로 세팅해 시드/백필/승격의 macOS 분기를 실제로 태운다.

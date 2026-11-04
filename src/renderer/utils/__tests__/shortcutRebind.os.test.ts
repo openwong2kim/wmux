@@ -72,7 +72,7 @@ describe('key conflicts with custom keybindings', () => {
   });
 
   it('no warning on a different key, or on the key the action already has', () => {
-    expect(customKeyConflict('toggleSidebar', 'F8')).toBeNull();
+    expect(customKeyConflict('toggleSidebar', 'F10')).toBeNull();
     expect(customKeyConflict('toggleSidebar', 'Ctrl+F7')).toBeNull();
     useStore.setState({ shortcutOverrides: { toggleSidebar: 'F7' } });
     expect(customKeyConflict('toggleSidebar', 'F7')).toBeNull();
