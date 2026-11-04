@@ -138,7 +138,11 @@ function describeMode(mode: Mode): void {
     return await handlePhoneBrowser('browser.tap', { ...scope, expectedURL: capture.pageURL, geometry: g, x: at.x / g.width, y: at.y / g.height }, browserDeps()) as { applied?: boolean; opened?: { surfaceId: string } };
   }
 
-  const listed = async (workspaceId: string) => (await chrome.tabs(workspaceId)).map((t) => ({ surfaceId: t.surfaceId, path: new URL(t.url).pathname }));
+  /** The phone's own list (`GET …/browser?chrome=1`): a tab still blank is not in it yet. */
+  const listed = async (workspaceId: string) => {
+    const list = await handlePhoneBrowser('browser.list', { workspaceId, chrome: true }, browserDeps()) as { pages: Array<{ id: string; url: string }> };
+    return list.pages.map((page) => ({ surfaceId: page.id, path: new URL(page.url).pathname }));
+  };
 
   describe(`tabs a tab opens, on real Chrome (${mode.name})`, { timeout: CASE_TIMEOUT_MS }, () => {
     it('every way a page opens a tab is adopted into the tapping tab\'s workspace and named in the tap reply', async (ctx) => {
