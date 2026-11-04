@@ -66,6 +66,8 @@ export interface PhoneBrowserDriver {
 /** 700 KiB of base64, so the whole `daemon.phone.complete` envelope stays under
  * the daemon control pipe's 1 MiB per-line limit. */
 const CAPTURE_BASE64_LIMIT = 700 * 1024;
+/** The longest `pageURL` a capture carries; input's `expectedURL` has the same limit. */
+const PAGE_URL_LIMIT = 4096;
 const PREVIEW_COMMANDS = ['browser.capture','browser.viewport','browser.navigate','browser.type','browser.key','browser.tap','browser.scroll','browser.focus'];
 const PREVIEW_KEYS = ['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'];
 
@@ -250,7 +252,12 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
       }
       const page = await driver.page();
       if (!page || pageURL(page.url) !== pageURL(current.url)) throw new Error('Browser page changed during capture');
-      return { data: capture.data, mimeType: 'image/jpeg', capturedAt: Date.now(), geometry:capturedGeometry, pageURL:pageURL(page.url) };
+      const url = pageURL(page.url);
+      // A longer URL could never come back as `expectedURL`, so it is left
+      // out, and the geometry only input could use goes with it. This also
+      // keeps the whole reply inside the bridge's capture allowance.
+      if (url && url.length > PAGE_URL_LIMIT) return { data: capture.data, mimeType: 'image/jpeg', capturedAt: Date.now() };
+      return { data: capture.data, mimeType: 'image/jpeg', capturedAt: Date.now(), geometry:capturedGeometry, pageURL:url };
     });
   }
   if (command === 'browser.focus') {

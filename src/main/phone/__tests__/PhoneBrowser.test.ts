@@ -153,6 +153,25 @@ describe('workspace browser preview boundary', () => {
     expect(deps.invoke.mock.calls.some(([method]) => method === 'browser.click.cdp')).toBe(false);
   });
 
+  it('a capture leaves out a pageURL over 4096 characters, and its geometry, and stays inside the bridge allowance', async () => {
+    const deps = fixture();
+    const scope = {workspaceId:'ws-1',surfaceId:'own'};
+    const at = (length: number) => { const base = 'https://a.example.com/?q='; return base + 'a'.repeat(length - base.length); };
+    let url = at(4096);
+    deps.page = () => ({title:'Long',url});
+    expect(await handlePhoneBrowser('browser.capture',scope,deps)).toMatchObject({pageURL:url,geometry:{width:1000,height:728,scrollX:0,scrollY:0}});
+    // A ~300 KiB URL (pushState can make one) beside the largest image a capture may carry.
+    url = at(300 * 1024);
+    deps.invoke.mockImplementation(async method => ({id:'rpc',ok:true,result:method === 'browser.evaluate'
+      ? {value:{width:1000,height:728,scrollX:0,scrollY:0,scale:1}} : {data:'x'.repeat(700 * 1024),mimeType:'image/jpeg'}}));
+    const result = await handlePhoneBrowser('browser.capture',scope,deps) as Record<string,unknown>;
+    expect(result.data).toHaveLength(700 * 1024);
+    expect(result).not.toHaveProperty('pageURL');
+    expect(result).not.toHaveProperty('geometry');
+    // The bridge's capture allowance covers the whole `daemon.phone.complete` envelope.
+    expect(Buffer.byteLength(JSON.stringify({requestId:'00000000-0000-4000-8000-000000000000',ok:true,result}))).toBeLessThanOrEqual(900 * 1024);
+  });
+
 });
 
 /** Main's real input lock over a fake guest, so the focus order is main's own. */
