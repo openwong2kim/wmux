@@ -13,6 +13,9 @@
 //  - `url` events at most ten a second, the last one always written;
 //  - `focus` events (contract v1.6) on each change, paced like `url`; a later
 //    subscriber gets the tab's latest after its latest frame;
+//  - `tabOpened` events (contract v1.7) when the tab opens a new one, paced
+//    like `url` but never merged: each new tab is written, up to four
+//    waiting. An event, not a state: a later subscriber does not get it;
 //  - `: keepalive` every 15 s. A keepalive still unwritten at the next tick
 //    closes the stream, as does an authorization that no longer holds;
 //  - `end browser-stream-expired` after 30 minutes.
@@ -34,6 +37,10 @@ export const BROWSER_STREAM_SILENT_MS = 45_000;
 export const BROWSER_STREAM_URL_INTERVAL_MS = 100;
 /** `focus` events are written at most this often per subscriber. */
 export const BROWSER_STREAM_FOCUS_INTERVAL_MS = 100;
+/** `tabOpened` events are written at most this often per subscriber. */
+export const BROWSER_STREAM_TAB_OPENED_INTERVAL_MS = 100;
+/** `tabOpened` events one subscriber may have waiting; past it the oldest goes. */
+export const BROWSER_STREAM_TAB_OPENED_WAITING = 4;
 /** Base64 image data per frame. */
 export const BROWSER_STREAM_FRAME_DATA_LIMIT = 700 * 1024;
 export const BROWSER_STREAM_URL_LIMIT = 4096;
@@ -120,7 +127,7 @@ interface Tab {
   endCode: BrowserStreamEndCode | null;
 }
 
-type Item = { kind: 'frame' | 'url' | 'state' | 'focus'; body: string };
+type Item = { kind: 'frame' | 'url' | 'state' | 'focus' | 'tabOpened'; body: string };
 
 interface Subscriber {
   tab: Tab;
@@ -132,6 +139,7 @@ interface Subscriber {
   lastFrameAt: number;
   lastUrlAt: number;
   lastFocusAt: number;
+  lastTabOpenedAt: number;
   /** The focus event last written to it: a queued one equal to it is a change it never saw. */
   lastFocus: string | null;
   queue: Item[];
@@ -240,7 +248,7 @@ export class BrowserStreamRegistry {
       this.byStream.set(tab.streamId, tab);
     }
     const sub: Subscriber = {
-      tab, who, maxFps: params.maxFps, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0, lastFocusAt: 0, lastFocus: null,
+      tab, who, maxFps: params.maxFps, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0, lastFocusAt: 0, lastTabOpenedAt: 0, lastFocus: null,
       queue: [], flushTimer: null, tick: null, expiry: null, keepalivePending: false, closed: false,
     };
     tab.subs.add(sub);
@@ -292,6 +300,14 @@ export class BrowserStreamRegistry {
           tab.focus = body;
           this.fanOut(tab, { kind: 'focus', body });
         }
+        return { ok: true, known: true };
+      }
+      case 'tabOpened': {
+        // Main sends `{streamId, kind:'tabOpened', surfaceId, pageURL?}`; the phone gets `{surfaceId, pageURL?}`.
+        const { surfaceId, pageURL } = params;
+        if (typeof surfaceId !== 'string' || !surfaceId || surfaceId.length > 128) return { ok: false, known: true };
+        if (pageURL !== undefined && !streamPageURL(pageURL)) return { ok: false, known: true };
+        this.fanOut(tab, { kind: 'tabOpened', body: JSON.stringify(pageURL !== undefined ? { surfaceId, pageURL } : { surfaceId }) });
         return { ok: true, known: true };
       }
       case 'end': {
@@ -438,9 +454,15 @@ export class BrowserStreamRegistry {
   private fanOut(tab: Tab, item: Item): void {
     for (const sub of tab.subs) {
       if (!sub.sink || sub.closed) continue;
-      // One waiting item of each kind; a newer one replaces it at the back.
-      const at = sub.queue.findIndex((queued) => queued.kind === item.kind);
-      if (at >= 0) sub.queue.splice(at, 1);
+      if (item.kind === 'tabOpened') {
+        // Each new tab is its own event: kept, up to the cap.
+        const waiting = sub.queue.filter((queued) => queued.kind === 'tabOpened');
+        if (waiting.length >= BROWSER_STREAM_TAB_OPENED_WAITING) sub.queue.splice(sub.queue.indexOf(waiting[0]), 1);
+      } else {
+        // One waiting item of each kind; a newer one replaces it at the back.
+        const at = sub.queue.findIndex((queued) => queued.kind === item.kind);
+        if (at >= 0) sub.queue.splice(at, 1);
+      }
       sub.queue.push(item);
       this.flush(sub);
     }
@@ -459,7 +481,8 @@ export class BrowserStreamRegistry {
       const now = Date.now();
       const due = item.kind === 'frame' ? sub.lastFrameAt + 1000 / sub.maxFps
         : item.kind === 'url' ? sub.lastUrlAt + BROWSER_STREAM_URL_INTERVAL_MS
-        : item.kind === 'focus' ? sub.lastFocusAt + BROWSER_STREAM_FOCUS_INTERVAL_MS : now;
+        : item.kind === 'focus' ? sub.lastFocusAt + BROWSER_STREAM_FOCUS_INTERVAL_MS
+        : item.kind === 'tabOpened' ? sub.lastTabOpenedAt + BROWSER_STREAM_TAB_OPENED_INTERVAL_MS : now;
       if (due > now) {
         sub.flushTimer = setTimeout(() => { sub.flushTimer = null; this.flush(sub); }, due - now);
         sub.flushTimer.unref?.();
@@ -473,6 +496,7 @@ export class BrowserStreamRegistry {
       } else {
         if (item.kind === 'url') sub.lastUrlAt = now;
         if (item.kind === 'focus') { sub.lastFocusAt = now; sub.lastFocus = item.body; }
+        if (item.kind === 'tabOpened') sub.lastTabOpenedAt = now;
         this.write(sub, sse(item.kind, item.body));
       }
     }

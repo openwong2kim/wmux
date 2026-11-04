@@ -72,7 +72,19 @@ export interface PhoneBrowserDriver {
   focus(): Promise<void>;
   /** What the focused element takes, right after a tap; undefined when it could not be read in time. */
   readFocus?(): Promise<PhoneBrowserFocus | undefined>;
+  /** Chrome: watch for a tab this one opens, armed right before a tap. */
+  watchOpened?(): Promise<PhoneOpenedWatch>;
 }
+
+/** A tab the tapped tab opens, watched from just before the tap. */
+export interface PhoneOpenedWatch {
+  /** Its surfaceId: at once when it opened already, within `ms` when the page asked to open one, else undefined. */
+  result(ms: number): Promise<string | undefined>;
+  stop(): void;
+}
+
+/** How long a tap reply waits for the tab the tap asked to open (contract v1.7). */
+export const PHONE_TAP_OPENED_MS = 1_000;
 
 /** 700 KiB of base64, so the whole `daemon.phone.complete` envelope stays under
  * the daemon control pipe's 1 MiB per-line limit. */
@@ -383,10 +395,21 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
       const event = {x,y,deltaX:payload.deltaX * spanX,deltaY:payload.deltaY * spanY};
       await input(() => driver.scroll(event));
     } else {
-      // What the tap focused (contract v1.6), read right after it with the input still held.
-      const read: { focus?: PhoneBrowserFocus } = {};
-      await input(async () => { await driver.tap({x,y}); read.focus = await driver.readFocus?.(); });
-      return { applied: true, ...(read.focus ? { focus: read.focus } : {}) };
+      // What the tap focused (contract v1.6), read right after it with the
+      // input still held, and the tab it opened (v1.7), watched from just
+      // before it and waited for after the input is released.
+      const read: { focus?: PhoneBrowserFocus; opened?: PhoneOpenedWatch } = {};
+      try {
+        await input(async () => {
+          read.opened = await driver.watchOpened?.();
+          await driver.tap({x,y});
+          read.focus = await driver.readFocus?.();
+        });
+        const opened = await read.opened?.result(PHONE_TAP_OPENED_MS);
+        return { applied: true, ...(read.focus ? { focus: read.focus } : {}), ...(opened ? { opened: { surfaceId: opened } } : {}) };
+      } finally {
+        read.opened?.stop();
+      }
     }
   } else if (command === 'browser.type') {
     // eslint-disable-next-line no-control-regex

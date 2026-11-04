@@ -1214,11 +1214,10 @@ async function untilClickLands<T>(click: Promise<T>, watch: PopupWatch | null, l
  * (src/main/index.ts new-window handling), so no 'popup' ever fires there, and
  * the RPC lane has no Page to listen on. Both keep their previous behaviour.
  *
- * The popup is NOT a wmux surface: only tabs opened through ChromeLauncher.openTab
- * get a `chrome-<uuid>` surfaceId, and a page-opened target is never registered
- * (verified in ChromeLauncher.noteTabPage — a tab wmux does not own is ignored).
- * So the note names the URL and stops there; it must not imply the popup can be
- * targeted by surfaceId.
+ * A popup of a wmux-opened tab becomes a surface of that tab's workspace
+ * (ChromeLauncher.adoptOpened); a popup of any other page stays nobody's. The
+ * note names the URL and points at browser_tabs, which lists it only in the
+ * first case, rather than naming a surfaceId this side does not know.
  *
  * `dispose()` is separate from `note()` and MUST run in a finally: a click that
  * throws (a ref that vanished, a navigation mid-click) would otherwise leave
@@ -1282,7 +1281,7 @@ function watchForPopup(page: { on: Function; off: Function }): PopupWatch {
       const shown = url
         ? redactPasswordParams(url).slice(0, POPUP_URL_MAX_CHARS)
         : 'unknown url';
-      return ` — opened a popup (page: ${shown}). It is not a wmux surface; use browser_tabs to see what this workspace owns.`;
+      return ` — opened a popup (page: ${shown}). A popup of this workspace's tab is one of its tabs; use browser_tabs to find it.`;
     },
   };
 }

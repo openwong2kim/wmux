@@ -131,6 +131,22 @@ export interface LiveWriteScopeApi {
  */
 export interface ChromePageSession {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** An event on this session only, until the returned function is called. */
+  on?(method: string, handler: (params: Record<string, unknown>) => void): () => void;
+}
+
+/**
+ * A tab one of a launcher's tabs opened (target=_blank, window.open, a popup),
+ * now a surface of its own in its opener's workspace.
+ */
+export interface ChromeOpenedSurface {
+  /** The surface whose page opened it. */
+  openerSurfaceId: string;
+  surfaceId: string;
+  /** The opener's workspace; absent when the opener has none. */
+  workspaceId?: string;
+  /** Its URL when Chrome created it, usually empty until its first page commits. */
+  url: string;
 }
 
 /**
@@ -179,6 +195,8 @@ export interface ChromeBackendClient {
   streamSession?(surfaceId: string): Promise<ChromeStreamSession>;
   /** Dedicated instances: the record behind a wmux-opened surface (its workspace). */
   recordFor?(surfaceId: string): ChromeSurfaceRecord | undefined;
+  /** Dedicated instances only: told each tab a wmux-opened tab opens; returns the unsubscribe. */
+  onSurfaceOpened?(listener: (opened: ChromeOpenedSurface) => void): () => void;
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
   readonly writeScope?: LiveWriteScopeApi;
   dispose(): void | Promise<void>;
@@ -350,6 +368,8 @@ interface WatchedTargetInfo {
   type?: string;
   url?: string;
   title?: string;
+  /** The page that opened this one, noopener included. */
+  openerId?: string;
 }
 
 interface PageSessionEntry {
@@ -413,6 +433,9 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly attachingPages = new Map<string, Promise<PageSessionEntry>>();
   /** streamSession()s alive on the watcher socket. */
   private readonly streamSessions = new Set<StreamSessionEntry>();
+  /** The watcher socket whose discovery replay is over: only pages created after it are adopted. */
+  private adoptingOn: CdpSocket | null = null;
+  private readonly openedListeners = new Set<(opened: ChromeOpenedSurface) => void>();
 
   private readonly profileLabel: string | undefined;
   private readonly profileName: string;
@@ -538,6 +561,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.watcherGeneration++;
     this.watcher?.close();
     this.watcher = null;
+    this.adoptingOn = null;
     this.browserWsEndpoint = null;
     this.tabSessions.clear();
     this.sessionTabs.clear();
@@ -634,6 +658,9 @@ export class ChromeLauncher implements ChromeBackendClient {
           throw err;
         }
       },
+      on: (method, handler) => entry.socket.on(method, (params, from) => {
+        if (from === entry.sessionId && entry.valid) handler(params);
+      }),
     };
   }
 
@@ -792,6 +819,9 @@ export class ChromeLauncher implements ChromeBackendClient {
       await socket.send('Target.setDiscoverTargets', { discover: true });
     }
     if (stale()) return;
+    // Chrome announces every existing target before it answers: from here on
+    // a created page is a new one.
+    this.adoptingOn = socket;
     await this.syncTabAnchors();
   }
 
@@ -799,6 +829,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     socket.on('Target.targetCreated', (params) => {
       const info = watchedTargetInfo(params);
       if (info?.type === 'tab' && info.targetId) void this.attachTab(info.targetId);
+      else if (info?.type === 'page' && this.adoptingOn === socket) this.adoptOpened(info);
     });
 
     // The succession signal. `sessionId` here is the PARENT session the event
@@ -869,6 +900,48 @@ export class ChromeLauncher implements ChromeBackendClient {
   private recordForTarget(targetId: string): ChromeSurfaceRecord | undefined {
     const surfaceId = this.byTargetId.get(targetId);
     return surfaceId ? this.surfaces.get(surfaceId) : undefined;
+  }
+
+  /**
+   * A page one of our tabs opened (target=_blank, window.open, a popup)
+   * becomes a surface of its own, in its opener's workspace, or in none when
+   * the opener has none. A page another tab opened stays nobody's, and the
+   * pages discovery replays when the watcher starts are never adopted.
+   */
+  private adoptOpened(info: WatchedTargetInfo): void {
+    const { targetId, openerId } = info;
+    if (!targetId || !openerId || this.byTargetId.has(targetId)) return;
+    const opener = this.recordForTarget(openerId);
+    if (!opener) return;
+    const now = Date.now();
+    const record: ChromeSurfaceRecord = {
+      surfaceId: newSurfaceId(),
+      targetId,
+      ...(opener.workspaceId !== undefined && { workspaceId: opener.workspaceId }),
+      url: info.url ?? '',
+      createdAt: now,
+      lastSeenAt: now,
+    };
+    this.surfaces.set(record.surfaceId, record);
+    this.byTargetId.set(targetId, record.surfaceId);
+    // The tab's own attach may have landed first; otherwise noteTabPage anchors it.
+    this.linkAnchor(record);
+    this.persist(true);
+    const opened: ChromeOpenedSurface = {
+      openerSurfaceId: opener.surfaceId,
+      surfaceId: record.surfaceId,
+      ...(record.workspaceId !== undefined && { workspaceId: record.workspaceId }),
+      url: record.url,
+    };
+    for (const listener of [...this.openedListeners]) {
+      try { listener(opened); } catch (err) { console.warn('[ChromeLauncher] opened-surface listener threw:', err); }
+    }
+  }
+
+  /** Told each tab a wmux-opened tab opens, once it is a surface; returns the unsubscribe. */
+  onSurfaceOpened(listener: (opened: ChromeOpenedSurface) => void): () => void {
+    this.openedListeners.add(listener);
+    return () => { this.openedListeners.delete(listener); };
   }
 
   private unlinkTab(tabTargetId: string): void {
