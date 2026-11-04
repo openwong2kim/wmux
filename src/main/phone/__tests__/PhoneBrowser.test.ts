@@ -266,6 +266,15 @@ describe('workspace browser preview: stream input (stream:true)', () => {
     expect(pane.contents.focus).not.toHaveBeenCalled();
     expect(pane.events).toEqual([]);
     expect(clicks(deps)).toEqual([]);
+    // The viewport moves while the tab is focused: still a 409, and no tap goes out.
+    probes = 0;
+    deps.invoke.mockImplementation(async method => ({id:'rpc',ok:true,result:method === 'browser.evaluate'
+      ? {value:{...live,scrollY:probes++ < 2 ? 0 : 5,scale:1}} : {ok:true}}));
+    expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:live,stream:true},deps)).toEqual({error:'browser-viewport-changed'});
+    expect(probes).toBe(3);
+    expect(pane.events.slice(0,2)).toEqual(['focus','Page.bringToFront']);
+    expect(clicks(deps)).toEqual([]);
+    pane.events.length = 0;
     // A tap that matches: checked, then focused, then dispatched.
     deps.invoke.mockImplementation(async method => ({id:'rpc',ok:true,result:method === 'browser.evaluate' ? {value:{...live,scale:1}} : {ok:true}}));
     expect(await handlePhoneBrowser('browser.tap',{...pointed,geometry:live,stream:true},deps)).toEqual({applied:true});

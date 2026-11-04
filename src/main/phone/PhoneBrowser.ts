@@ -295,11 +295,13 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
     }
   };
   // Stream tap/scroll: the viewport recheck runs with the lock held but before
-  // anything focuses or raises the tab, so a 409 leaves the desktop as it was.
-  // The page is checked once more right before the input.
-  const streamPointer = (operation: () => Promise<void>) => driver.input(async () => { await unchanged(); await operation(); }, false, {
+  // anything focuses or raises the tab, so a 409 leaves the desktop as it
+  // was. Focus may move the viewport, so the same checks run again after it,
+  // right before the input.
+  const recheck = async () => { await unchanged(); pointOn(await driver.geometry()); };
+  const streamPointer = (operation: () => Promise<void>) => driver.input(async () => { await recheck(); await unchanged(); await operation(); }, false, {
     codeBusy: true,
-    beforeFocus: async () => { await unchanged(); pointOn(await driver.geometry()); },
+    beforeFocus: recheck,
   });
   const input = (operation: () => Promise<void>) => stream && (command === 'browser.tap' || command === 'browser.scroll') ? streamPointer(operation) : driver.input(async () => {
     // The last checks before the input, after any wait for the lock and focus.
