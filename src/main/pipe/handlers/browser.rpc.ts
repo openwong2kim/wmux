@@ -778,6 +778,15 @@ function touchPresetActive(wc: WebContents): boolean {
   return activePreset.get(wc)?.hasTouch === true;
 }
 
+/**
+ * The device preset browser.emulate last set on `wc`, while it holds: a new
+ * object for each preset, and none once one is reset. The phone browser
+ * stream reverts its own mobile preset only while this is still the one it set.
+ */
+export function activeDevicePreset(wc: WebContents): { readonly mobile: boolean } | undefined {
+  return activePreset.get(wc);
+}
+
 /** The debugger, in the shape the shared touch dispatch asks for. */
 function touchSenderFor(wc: WebContents): TouchSender {
   return { send: (method: string, params?: unknown) => wc.debugger.sendCommand(method, params as Record<string, unknown>) };

@@ -97,6 +97,9 @@ describe('phone browser stream (main)', () => {
   let pageFocus: Record<string, unknown> | null;
   /** Gates each new session's commands by method. */
   let gates: Map<string, Promise<void>>;
+  /** Each new session's visual viewport and browser zoom; null: the fake's own. */
+  let pageLayout: FakeSession['layout'] | null;
+  let pageZoom: number;
 
   beforeEach(() => {
     vi.useFakeTimers({ now: 1_800_000_000_000 });
@@ -106,13 +109,23 @@ describe('phone browser stream (main)', () => {
     tabURL = 'https://a.example.com/start';
     pageFocus = null;
     gates = new Map();
+    pageLayout = null;
+    pageZoom = 1;
     reply = async () => ({ ok: true, known: true });
     const deps: PhoneBrowserStreamDeps = {
       push: (params) => { pushes.push(params); return reply(params); },
       backend: () => 'chrome',
       chrome: {
         tabs: async () => ['chrome-a', 'chrome-b', 'chrome-c', 'chrome-d'].map((surfaceId) => ({ surfaceId, url: tabURL })),
-        streamSession: async () => { const s = new FakeSession(); s.focus = pageFocus; s.gates = gates; sessions.push(s); return s; },
+        streamSession: async () => {
+          const s = new FakeSession();
+          s.focus = pageFocus;
+          s.gates = gates;
+          s.zoom = pageZoom;
+          if (pageLayout) s.layout = pageLayout;
+          sessions.push(s);
+          return s;
+        },
         owns: () => owned,
       },
       captureMs: 5_000,
@@ -456,6 +469,68 @@ describe('phone browser stream (main)', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(pushes.at(-1)).toEqual({ streamId: 'st-chrome-b', kind: 'end', error: 'browser-tab-gone' });
     expect(sessions).toHaveLength(5);
+  });
+
+  describe('viewport=mobile', () => {
+    const OVERRIDE = { width: 390, height: 683, deviceScaleFactor: 2, mobile: true };
+    const emulation = (s: FakeSession) => s.sent.filter((x) => x.method.startsWith('Emulation.')).map((x) => [x.method, x.params]);
+    const update = (mobile: boolean) => streams.handle('browser.streamUpdate', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a', mobile });
+
+    it('emulates a phone on the stream\'s own session at the real size or less, with touch, before the screencast starts', async () => {
+      await start({ mobile: true });
+      const s = sessions[0];
+      // The real tab is 1183×683 CSS px at zoom 1: as wide as a phone, as tall as the tab.
+      expect(emulation(s)).toEqual([
+        ['Emulation.setDeviceMetricsOverride', OVERRIDE],
+        ['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+      ]);
+      const methods = s.sent.map((x) => x.method);
+      expect(methods.indexOf('Emulation.setDeviceMetricsOverride')).toBeLessThan(methods.indexOf('Page.startScreencast'));
+    });
+
+    it('turned off and on by the daemon; a stop clears it by detaching, with no command of its own', async () => {
+      await start();
+      const s = sessions[0];
+      expect(emulation(s)).toEqual([]);
+      await update(true);
+      await flush();
+      expect(emulation(s)).toHaveLength(2);
+      await update(false);
+      await flush();
+      expect(emulation(s).slice(2)).toEqual([
+        ['Emulation.clearDeviceMetricsOverride', undefined],
+        ['Emulation.setTouchEmulationEnabled', { enabled: false }],
+      ]);
+      // Asked again while already off: nothing more.
+      await update(false);
+      await update(true);
+      await flush();
+      expect(emulation(s)).toHaveLength(6);
+      streams.stopAll();
+      await flush();
+      expect(s.detached).toBe(true);
+      expect(emulation(s)).toHaveLength(6);
+    });
+
+    it('a page swap applies it again on the new session before its screencast', async () => {
+      await start({ mobile: true });
+      sessions[0].close();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(sessions).toHaveLength(2);
+      expect(emulation(sessions[1])).toEqual([
+        ['Emulation.setDeviceMetricsOverride', OVERRIDE],
+        ['Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 }],
+      ]);
+      const methods = sessions[1].sent.map((x) => x.method);
+      expect(methods.indexOf('Emulation.setDeviceMetricsOverride')).toBeLessThan(methods.indexOf('Page.startScreencast'));
+    });
+
+    it('a narrower tab, or one at a browser zoom, is emulated at its own size in device-independent pixels', async () => {
+      pageLayout = { clientWidth: 300, clientHeight: 500, pageX: 0, pageY: 0, scale: 1 };
+      pageZoom = 1.25;
+      await start({ mobile: true });
+      expect(emulation(sessions[0])[0]).toEqual(['Emulation.setDeviceMetricsOverride', { width: 375, height: 625, deviceScaleFactor: 2, mobile: true }]);
+    });
   });
 
   describe('focus (contract v1.6)', () => {

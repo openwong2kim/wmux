@@ -18,6 +18,12 @@
 //  - `end`: the tab is gone, or its browser is;
 //  - `ping`: every 15 s, so a stream the daemon forgot stops here too.
 //
+// While the daemon says a subscriber asked for `viewport=mobile`
+// (`mobile` on browser.streamStart and browser.streamUpdate), the tab emulates
+// a phone: Chrome on the stream's own session, which Chrome undoes when the
+// session detaches; a builtin pane through the phone's own viewport action,
+// undone by the stream only while that preset is still the one it set.
+//
 // Two sources feed the same stream (TabStream): a dedicated-profile Chrome
 // tab, on a CDP session of its own (ChromeLauncher.streamSession), and a
 // builtin browser pane, on the debugger WebviewCdpManager attached to its
@@ -75,6 +81,10 @@ const REATTACH_LIMIT = 3;
 const REATTACH_WINDOW_MS = 60_000;
 const MIN_SIDE = 320;
 const MIN_QUALITY = 30;
+/** The phone a Chrome tab emulates for `viewport=mobile`, bounded by the real tab. */
+const MOBILE_WIDTH = 390;
+const MOBILE_HEIGHT = 844;
+const MOBILE_SCALE = 2;
 /** Fixed probe; nothing in it comes from the phone. */
 const VISIBILITY_PROBE = 'document.visibilityState';
 
@@ -111,6 +121,10 @@ export interface PhoneStreamBuiltinDeps {
   onVisibility(listener: (surfaceId: string, visible: boolean) => void): () => void;
   /** The guest's real widget, in its own CSS pixels (phoneBrowserNativeBounds). */
   nativeBounds(contents: WebContents): Promise<{ width: number; height: number }>;
+  /** The phone's viewport action on a pane (PhoneBrowser.ts `browser.viewport`); `mobile` fits a phone's viewport to the pane. */
+  viewport(surfaceId: string, workspaceId: string, mode: 'mobile' | 'desktop'): Promise<void>;
+  /** The device preset browser.emulate last set on the guest, while it holds (browser.rpc.ts activeDevicePreset). */
+  preset(contents: WebContents): { readonly mobile: boolean } | undefined;
 }
 
 export interface PhoneBrowserStreamDeps {
@@ -303,6 +317,44 @@ abstract class TabStream implements PhoneStreamTabView {
   protected abstract release(unwatched: Promise<void>): void;
   /** Whether the tab is on screen as far as the source knows; painted while not, a frame is not sent. */
   protected visible(): boolean { return true; }
+  /** Emulates a phone on the tab (`viewport=mobile`). */
+  protected abstract applyMobile(): Promise<void>;
+  /** Undoes applyMobile. */
+  protected abstract clearMobile(): Promise<void>;
+
+  /** Whether the daemon asks for a phone's viewport on the tab; the source follows it once attached. */
+  mobileWanted = false;
+  /** Whether the source emulates a phone on the tab, as the stream asked. */
+  protected mobile = false;
+  /** Mobile changes run one at a time, in order. */
+  private mobileQueue: Promise<void> = Promise.resolve();
+
+  /** The daemon's `mobile` (browser.streamUpdate). */
+  setMobile(want: boolean): Promise<void> {
+    this.mobileWanted = want;
+    return this.syncMobile();
+  }
+
+  /** Runs `change` after the mobile changes before it; never rejects. */
+  protected mobileStep(change: () => Promise<void>): Promise<void> {
+    const run = this.mobileQueue.then(change).catch(() => undefined);
+    this.mobileQueue = run;
+    return run;
+  }
+
+  /** Brings the tab to what the daemon last asked for. A change that fails leaves it as it was; the next one tries again. */
+  protected syncMobile(): Promise<void> {
+    return this.mobileStep(async () => {
+      if (this.stopped) return;
+      if (this.mobileWanted && !this.mobile) {
+        await this.applyMobile();
+        this.mobile = true;
+      } else if (!this.mobileWanted && this.mobile) {
+        this.mobile = false;
+        await this.clearMobile();
+      }
+    });
+  }
 
   async start(): Promise<void> {
     await this.attach();
@@ -697,9 +749,31 @@ class ChromeTabStream extends TabStream {
       this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
     }
     await this.readZoom();
+    // The first frame at the phone's size; a page swap's new session has none of the old one's emulation.
+    await this.syncMobile();
     await this.startScreencast();
     this.armFirstFrame();
     void this.watchFocusOn(session, () => this.session === session);
+  }
+
+  /** A phone's viewport at the real tab's size or less (visual viewport × pinch scale × browser zoom), with touch. */
+  protected async applyMobile(): Promise<void> {
+    const session = this.session;
+    if (!session) throw new ChromePageSessionError('gone', 'stream session ended');
+    const vp = viewportOf(await session.send('Page.getLayoutMetrics'));
+    const size = (Number.isFinite(vp.scale) && vp.scale > 0 ? vp.scale : 1) * (Number.isFinite(vp.zoom) ? vp.zoom : 1);
+    await session.send('Emulation.setDeviceMetricsOverride', {
+      width: Math.min(MOBILE_WIDTH, Math.floor(vp.width * size)), height: Math.min(MOBILE_HEIGHT, Math.floor(vp.height * size)),
+      deviceScaleFactor: MOBILE_SCALE, mobile: true,
+    });
+    await session.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    // Swapped meanwhile: that session took its emulation with it, and the re-attach applies it anew.
+    if (this.session !== session) throw new ChromePageSessionError('gone', 'stream session ended');
+  }
+
+  protected async clearMobile(): Promise<void> {
+    await this.cdp('Emulation.clearDeviceMetricsOverride');
+    await this.cdp('Emulation.setTouchEmulationEnabled', { enabled: false });
   }
 
   protected cdp(method: string, params?: Record<string, unknown>): Promise<unknown> {
@@ -762,6 +836,8 @@ class ChromeTabStream extends TabStream {
   private onClosed(session: ChromeStreamSession): void {
     if (this.stopped || this.session !== session) return;
     this.session = null;
+    // Chrome undid the session's emulation as it detached; the re-attach applies it again.
+    this.mobile = false;
     // The watcher went with the session; the re-attach starts another.
     void this.dropFocusWatch();
     // The re-attach arms its own first frame; the old page's capture has no session to run on.
@@ -807,6 +883,8 @@ class BuiltinTabStream extends TabStream {
   private exceeds = false;
   private lastBoundsAt = 0;
   private readonly unlisten: Array<() => void> = [];
+  /** The device preset the stream put on the pane; it is reverted only while it is still the pane's. */
+  private ownPreset: object | null = null;
 
   constructor(
     streamId: string,
@@ -879,6 +957,9 @@ class BuiltinTabStream extends TabStream {
     await this.readBounds();
     // Stopped meanwhile (release() has run): start nothing it would not stop.
     if (this.stopped) return;
+    // The first frame at the phone's size.
+    await this.syncMobile();
+    if (this.stopped) return;
     await this.startScreencast();
     if (this.stopped) { void this.cdp('Page.stopScreencast').catch(() => undefined); return; }
     // On the debugger WebviewCdpManager attached, shared: the watcher never
@@ -918,7 +999,36 @@ class BuiltinTabStream extends TabStream {
   protected poll(now: number): void {
     // Unregistered with its guest alive (discarded to free memory, or replaced): no event of the guest's says so.
     if (!this.owned()) { void this.end('browser-tab-gone'); return; }
-    if (now - this.lastFrameAt < ZOOM_POLL_MS && now - this.lastBoundsAt >= ZOOM_POLL_MS) void this.readBounds();
+    // While mobile, also on a still page: the pane may shrink under the emulated viewport.
+    if ((now - this.lastFrameAt < ZOOM_POLL_MS || this.mobile) && now - this.lastBoundsAt >= ZOOM_POLL_MS) void this.readBounds();
+  }
+
+  /**
+   * The phone's own viewport action, which fits the phone to the pane (it
+   * reloads the page). A preset already on the pane (the phone's viewport
+   * action, an agent's emulation) is not the stream's: a phone one is kept as
+   * it is, and the stream reverts none of them.
+   */
+  protected async applyMobile(): Promise<void> {
+    const before = this.builtin.preset(this.wc);
+    if (!before?.mobile) {
+      await this.builtin.viewport(this.surfaceId, this.workspaceId, 'mobile');
+      if (before === undefined) this.ownPreset = this.builtin.preset(this.wc) ?? null;
+    }
+    await this.readBounds();
+  }
+
+  protected async clearMobile(): Promise<void> {
+    await this.revertMobile();
+    await this.readBounds();
+  }
+
+  /** Back to the desktop viewport, only while the pane's preset is the one the stream set: a viewport action or an agent's emulation since is theirs. */
+  private async revertMobile(): Promise<void> {
+    const own = this.ownPreset;
+    this.ownPreset = null;
+    if (!own || this.wc.isDestroyed() || this.builtin.preset(this.wc) !== own) return;
+    await this.builtin.viewport(this.surfaceId, this.workspaceId, 'desktop');
   }
 
   private onNavigated(raw: unknown): void {
@@ -966,6 +1076,8 @@ class BuiltinTabStream extends TabStream {
     // The pane's debugger stays attached: the focus watcher's teardown needs no wait.
     for (const off of this.unlisten.splice(0)) off();
     if (!this.wc.isDestroyed()) void this.cdp('Page.stopScreencast').catch(() => undefined);
+    // After a change still running: its preset is the one to revert.
+    void this.mobileStep(() => this.revertMobile());
   }
 }
 
@@ -1009,6 +1121,7 @@ export function createPhoneBrowserStreams(deps: PhoneBrowserStreamDeps): PhoneBr
     streams.get(key(workspaceId, surfaceId))?.stop();
     if (streams.size >= MAX_TABS) throw new Error('Too many browser streams');
     const stream = create();
+    stream.mobileWanted = payload.mobile === true;
     streams.set(key(workspaceId, surfaceId), stream);
     try {
       await stream.start();
@@ -1033,6 +1146,7 @@ export function createPhoneBrowserStreams(deps: PhoneBrowserStreamDeps): PhoneBr
         if (command === 'browser.streamUpdate') {
           const stream = find(payload);
           if (stream) stream.maxFps = Math.max(stream.maxFps, clamp(payload.maxFps, 1, 15, stream.maxFps));
+          if (stream && typeof payload.mobile === 'boolean') void stream.setMobile(payload.mobile);
           return { applied: stream !== undefined };
         }
         if (command === 'browser.streamStop') {
