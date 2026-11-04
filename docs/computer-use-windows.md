@@ -138,7 +138,15 @@ monitors at negative coordinates work.
   children on the first query, the helper waits briefly and queries once
   more.
 - Staleness: an indexed action re-reads that element's RuntimeId and process
-  id; a mismatch is `element_stale`.
+  id; a mismatch is `element_stale`. Before a pattern call the element's
+  top-level window must also be the target window, or a window of the
+  target process that the target window owns (through up to 16 GW_OWNER
+  steps). A menu flyout lives in such a window: Notepad's File menu is a
+  `Microsoft.UI.Content.PopupWindowSiteBridge` owned by the Notepad window,
+  and UIA lists its items under the window's element, so they are indexed
+  and can be clicked. A menu is read only by a `getAppState` taken while it
+  is open; classic `#32768` menus and the menu's pixels (the screenshot
+  captures the target window alone) are not covered.
 - Screenshots: `PrintWindow` with `PW_RENDERFULLCONTENT` only. The helper
   never copies the screen, because a screen copy can include windows that
   cover the target (a blocked app or a password manager). When `PrintWindow`

@@ -150,14 +150,7 @@ internal static unsafe class Focus
         if (hit == HWND.Null || Win.OwnerPid(hit) != target.Pid) return false;
         var root = Win.Root(hit);
         if (root == target.Window || Win.ClassName(root) == "#32768") return true;
-        var owner = root;
-        for (int i = 0; i < 16; i++)
-        {
-            owner = PInvoke.GetWindow(owner, GET_WINDOW_CMD.GW_OWNER);
-            if (owner == HWND.Null) return false;
-            if (owner == target.Window) return true;
-        }
-        return false;
+        return Ownership.Owns((nint)target.Window.Value, (nint)root.Value, Win.OwnerOf);
     }
 
     /// <summary>The fast pointer check, run under the input lock immediately before SendInput.</summary>
@@ -211,8 +204,12 @@ internal static unsafe class Focus
         throw new HelperError("window_not_focused", "another window covers that point; nothing was clicked");
     }
 
-    /// <summary>The target window is the foreground window (its root; an owned popup in front does not count).</summary>
-    public static bool InFront(ControlTarget target) => Win.Root(PInvoke.GetForegroundWindow()) == target.Window;
+    /// <summary>
+    /// The target window is the foreground window, or a window of the target
+    /// process it owns is (an open menu flyout or owned dialog: the app is the
+    /// active one, and nothing has to come forward).
+    /// </summary>
+    public static bool InFront(ControlTarget target) => Win.InTargetWindow(Win.Root(PInvoke.GetForegroundWindow()), target.Window, target.Pid);
 
     /// <summary>
     /// Before every UIA pattern call (Invoke, Toggle, SetValue, SetFocus…).
@@ -246,7 +243,8 @@ internal static unsafe class Focus
         {
             throw new HelperError("element_stale", "the element went away");
         }
-        if (pid != target.Pid || top != target.Window)
+        // A popup the target window owns (a menu flyout) counts as inside it.
+        if (pid != target.Pid || !Win.InTargetWindow(top, target.Window, target.Pid))
         {
             throw new HelperError("element_stale", "the element is no longer in the target window");
         }
@@ -922,7 +920,7 @@ internal static unsafe class Actions
             return HWND.Null;
         }
         if (hwnd == HWND.Null || !PInvoke.IsWindow(hwnd) || Win.RealClassName(hwnd) != "Edit") return HWND.Null;
-        if (Win.OwnerPid(hwnd) != target.Pid || Win.Root(hwnd) != target.Window)
+        if (Win.OwnerPid(hwnd) != target.Pid || !Win.InTargetWindow(Win.Root(hwnd), target.Window, target.Pid))
         {
             throw new HelperError("element_stale", $"element {index}'s edit window is no longer in the target window; nothing was typed");
         }

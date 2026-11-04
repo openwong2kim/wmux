@@ -400,17 +400,7 @@ internal static unsafe class BackgroundInput
         return false;
     }
 
-    private static bool OwnedBy(HWND hwnd, HWND owner)
-    {
-        var current = hwnd;
-        for (int i = 0; i < 16; i++)
-        {
-            current = PInvoke.GetWindow(current, GET_WINDOW_CMD.GW_OWNER);
-            if (current == HWND.Null) return false;
-            if (current == owner) return true;
-        }
-        return false;
-    }
+    private static bool OwnedBy(HWND hwnd, HWND owner) => Ownership.Owns((nint)owner.Value, (nint)hwnd.Value, Win.OwnerOf);
 
     /// <summary>
     /// The target thread's focused window (GetGUIThreadInfo), when it lies
