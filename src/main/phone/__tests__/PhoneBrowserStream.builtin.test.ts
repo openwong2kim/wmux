@@ -82,6 +82,8 @@ describe('phone browser stream (main): a builtin pane', () => {
   let visible: Map<string, boolean>;
   let observers: Set<(surfaceId: string, visible: boolean) => void>;
   let native: { width: number; height: number };
+  /** While set, the bounds read waits for it. */
+  let boundsGate: Promise<void> | null;
   let pushes: Array<Record<string, unknown>>;
   let reply: (params: Record<string, unknown>) => Promise<unknown>;
   let streams: PhoneBrowserStreams;
@@ -96,6 +98,7 @@ describe('phone browser stream (main): a builtin pane', () => {
     visible = new Map();
     observers = new Set();
     native = { width: 900, height: 668 };
+    boundsGate = null;
     pushes = [];
     reply = async () => ({ ok: true, known: true });
     const deps: PhoneBrowserStreamDeps = {
@@ -106,7 +109,7 @@ describe('phone browser stream (main): a builtin pane', () => {
         contents: (id) => (guests.find((g) => g.id === id && !g.destroyed) ?? null) as unknown as WebContents | null,
         visible: (surfaceId) => visible.get(surfaceId) ?? true,
         onVisibility: (listener) => { observers.add(listener); return () => { observers.delete(listener); }; },
-        nativeBounds: async () => native,
+        nativeBounds: async () => { if (boundsGate) await boundsGate; return native; },
       },
       captureMs: 5_000,
     };
@@ -241,11 +244,35 @@ describe('phone browser stream (main): a builtin pane', () => {
     expect(g().debugger.count('Page.stopScreencast')).toBe(0);
     // A load that failed: the guest shows its error page at the URL it was for.
     g().emit('did-start-navigation', { url: 'https://down.example.com/', isMainFrame: true, isSameDocument: false });
+    g().url = 'https://down.example.com/';
     g().emit('did-fail-provisional-load', {}, -105, 'ERR_NAME_NOT_RESOLVED', 'https://down.example.com/', true, 1, 1);
     g().debugger.frame(3);
     await vi.advanceTimersByTimeAsync(200);
     expect(pushes.filter((p) => p.kind === 'url').at(-1)).toEqual({ streamId: 'st-surf-a', kind: 'url', pageURL: 'https://down.example.com/' });
     expect(frames().at(-1)).toMatchObject({ pageURL: 'https://down.example.com/', geometry: { width: 900 } });
+    // An aborted load (a download, a 204, mailto:) commits nothing: the page on screen stays, URL and all.
+    const urls = pushes.filter((p) => p.kind === 'url').length;
+    for (const link of ['https://down.example.com/file.zip', 'mailto:a@example.com']) {
+      g().emit('did-start-navigation', { url: link, isMainFrame: true, isSameDocument: false });
+      g().emit('did-fail-provisional-load', {}, -3, 'ERR_ABORTED', link, true, 1, 1);
+    }
+    g().debugger.frame(4);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(pushes.filter((p) => p.kind === 'url')).toHaveLength(urls);
+    expect(frames().at(-1)).toMatchObject({ pageURL: 'https://down.example.com/', geometry: { width: 900 } });
+  });
+
+  it('a stream stopped while it starts leaves no screencast running on the pane', async () => {
+    let open!: () => void;
+    boundsGate = new Promise<void>((resolve) => { open = resolve; });
+    const started = start();
+    await flush();
+    streams.stopAll();
+    open();
+    expect(await started).toEqual({ error: 'browser-tab-gone' });
+    await flush();
+    const sent = g().debugger.sent.map((x) => x.method);
+    expect(sent.filter((m) => m === 'Page.startScreencast')).toEqual([]);
   });
 
   it('hidden and live follow the renderer\'s visibility reports, never silence', async () => {

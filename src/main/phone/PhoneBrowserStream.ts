@@ -704,6 +704,9 @@ class ChromeTabStream extends TabStream {
  * "agent is driving" marker), so lightweight mode may throttle the pane while
  * it is off screen, and discard it, which ends the stream.
  */
+/** net::ERR_ABORTED: a navigation that ended without committing anything. */
+const NET_ERR_ABORTED = -3;
+
 class BuiltinTabStream extends TabStream {
   readonly backend = 'builtin';
   /** The visible viewport is larger than the real widget (an emulated one): input cannot reach all of it. */
@@ -745,9 +748,16 @@ class BuiltinTabStream extends TabStream {
       if (details.isMainFrame && !details.isSameDocument) this.navigating = true;
     };
     const onNavigate = (_event: Electron.Event, raw: string) => this.onNavigated(raw);
-    // A load that failed commits its error page at the URL it was for, as wc.getURL() and the capture have it.
-    const onFailed = (_event: Electron.Event, _code: number, _description: string, raw: string, isMainFrame: boolean) => {
-      if (isMainFrame) this.onNavigated(raw);
+    // A load that failed commits its error page at the URL it was for, as
+    // wc.getURL() and the capture have it. An aborted one (a download, a 204,
+    // an external app link, a load another one replaced) commits nothing:
+    // the page on screen is still the one before.
+    const onFailed = (_event: Electron.Event, code: number, _description: string, _raw: string, isMainFrame: boolean) => {
+      if (!isMainFrame) return;
+      this.navigating = false;
+      if (code === NET_ERR_ABORTED || wc.isDestroyed()) return;
+      const committed = wc.getURL();
+      if (httpURL(committed) !== this.url) this.onNavigated(committed);
     };
     const onInPage = (_event: Electron.Event, raw: string, isMainFrame: boolean) => { if (isMainFrame) this.commit(raw, false); };
     const onStopLoading = () => { this.navigating = false; };
@@ -773,7 +783,10 @@ class BuiltinTabStream extends TabStream {
       if (surfaceId === this.surfaceId) this.onVisibility(visible);
     }));
     await this.readBounds();
+    // Stopped meanwhile (release() has run): start nothing it would not stop.
+    if (this.stopped) return;
     await this.startScreencast();
+    if (this.stopped) { void this.cdp('Page.stopScreencast').catch(() => undefined); return; }
     if (!this.visible()) { this.goHidden(); return; }
     // Chromium paints a visible guest's first screencast frame itself; the
     // repaint is a nudge, and the fallback capture is what guarantees one.
