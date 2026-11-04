@@ -86,7 +86,7 @@ internal static unsafe class Caret
     {
         try
         {
-            return el->CurrentProcessId == target.Pid && Uia.TopWindowOf(el) == target.Window;
+            return el->CurrentProcessId == target.Pid && Win.InTargetWindow(Uia.TopWindowOf(el), target.Window, target.Pid);
         }
         catch (Exception e) when (e is not HelperError)
         {

@@ -150,6 +150,20 @@ internal static unsafe class Win
     }
 
     /// <summary>The top-level window a child, menu or dialog control belongs to.</summary>
+    /// <summary>A window's GW_OWNER as a handle value (0: none), for Core Ownership.</summary>
+    public static nint OwnerOf(nint hwnd) => (nint)PInvoke.GetWindow(new HWND(hwnd), GET_WINDOW_CMD.GW_OWNER).Value;
+
+    /// <summary>The process that owns a window, by handle value, for Core Ownership.</summary>
+    public static uint PidOf(nint hwnd) => OwnerPid(new HWND(hwnd));
+
+    /// <summary>
+    /// `top` is the target window, or a window of the target process the
+    /// target window owns (a menu flyout, a dropdown, an owned dialog), read
+    /// now: Core Ownership.InTargetWindow.
+    /// </summary>
+    public static bool InTargetWindow(HWND top, HWND target, uint targetPid) =>
+        Ownership.InTargetWindow((nint)top.Value, (nint)target.Value, targetPid, OwnerOf, PidOf);
+
     public static HWND Root(HWND hwnd) => hwnd == HWND.Null ? HWND.Null : PInvoke.GetAncestor(hwnd, GET_ANCESTOR_FLAGS.GA_ROOT);
 
     /// <summary>

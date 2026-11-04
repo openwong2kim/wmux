@@ -65,6 +65,25 @@ public class OwnershipTests
     }
 
     [Fact]
+    public void AChainOfExactlyTheBoundCounts()
+    {
+        var rows = new List<(nint, nint, uint)> { (Target, 0, Pid) };
+        for (int i = 0; i < Ownership.MaxOwnerSteps; i++) rows.Add((1000 + i, i == 0 ? Target : 1000 + i - 1, Pid));
+        var (owner, pid) = Windows(rows.ToArray());
+        Assert.True(Ownership.InTargetWindow(1000 + Ownership.MaxOwnerSteps - 1, Target, Pid, owner, pid));
+    }
+
+    [Fact]
+    public void AChainThroughAnotherProcessIsRefused()
+    {
+        // Our window, owned by another process's window, which the target owns.
+        var (owner, pid) = Windows((Target, 0, Pid), (600, Target, Pid + 1), (601, 600, Pid));
+        Assert.False(Ownership.InTargetWindow(601, Target, Pid, owner, pid));
+        // The pointer checks' walk has no process rule: ownership alone.
+        Assert.True(Ownership.Owns(Target, 601, owner));
+    }
+
+    [Fact]
     public void NoWindowIsRefused()
     {
         var (owner, pid) = Windows((Target, 0, Pid));
