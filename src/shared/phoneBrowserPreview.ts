@@ -46,6 +46,8 @@ export const PHONE_BROWSER_ERROR_STATUS = {
   'browser-input-busy': 409,
   /** Stream input: the viewport no longer matches the geometry sent. Nothing was applied. */
   'browser-viewport-changed': 409,
+  /** Stream tap or history: `expectedURL` is an earlier URL of the page now showing. Nothing was applied. */
+  'browser-page-changed': 409,
 } as const;
 
 export type PhoneBrowserErrorCode = keyof typeof PHONE_BROWSER_ERROR_STATUS;

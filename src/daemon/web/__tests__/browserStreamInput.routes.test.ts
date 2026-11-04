@@ -86,7 +86,7 @@ describe('browser preview routes: stream input', () => {
     expect(r.calls).toHaveLength(count);
   });
 
-  it.each(['browser-input-busy', 'browser-viewport-changed'] as const)('main\'s %s is answered 409', async (code) => {
+  it.each(['browser-input-busy', 'browser-viewport-changed', 'browser-page-changed'] as const)('main\'s %s is answered 409', async (code) => {
     const r = await start({ reply: () => ({ error: code }) });
     expect(await r.post({ action: 'tap', ...page, geometry, x: 0.5, y: 0.5 })).toEqual({ status: 409, body: { error: code } });
   });

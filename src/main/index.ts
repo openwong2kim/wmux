@@ -2666,6 +2666,7 @@ app.on('ready', async () => {
             // The same desktop navigation policy the Chrome tabs are held to.
             validateNavigation: phoneChromeDeps.validateNavigation,
             chrome: phoneChromeDeps,
+            ...(phoneStreams ? { streams: phoneStreams } : {}),
             input: (id, operation, options) => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) return Promise.reject(new Error('Browser unavailable'));

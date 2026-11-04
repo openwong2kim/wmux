@@ -181,6 +181,7 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       const found = await tab();
       return found ? { title: found.title, url: found.url } : null;
     },
+    layout: () => viewport(),
     geometry: async () => {
       const vp = await viewport();
       // Pinch zoom moves the visual viewport off the layout one, and browser
