@@ -1631,10 +1631,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           }
           // The snapshot ends where the stream stopped; an escape sequence it
           // stopped inside goes to the head of the tail, after anything the
-          // new terminal writes between them (kitty flags).
+          // new terminal writes between them (kitty flags). The same array:
+          // output keeps arriving in it until the new terminal is mounted.
           const { complete, pending } = splitIncompleteEscape(serializeForTransplant(term, useStore.getState().scrollbackLines) ?? '');
           const head = (pending || unfinished.parsed) + unfinished.held;
-          transplantRef.current = { ptyId: id, snapshot: complete, tail: head ? [{ data: head, replay: false }, ...tail] : tail };
+          if (head) tail.unshift({ data: head, replay: false });
+          transplantRef.current = { ptyId: id, snapshot: complete, tail };
           setTerminalInstance(null);
           setPaneEngine(engine);
         }).finally(unhold);

@@ -72,12 +72,23 @@ function dropMainServedWasm(): Plugin {
 // back as plain data properties: a bundler's getter-based exports object puts
 // its getters in a hidden class V8 shares with unrelated module objects, which
 // would keep the package alive for good.
-const WONGTTY_FACTORY = normalizePath(path.resolve(__dirname, 'src/renderer/terminal/wongtty/factory.ts'));
-function wongttyFactory(): Plugin {
+//
+// The module id Vite hands to `load` is the file's real path (symlinks
+// resolved), with forward slashes and maybe a query, and on Windows its drive
+// letter's case need not match __dirname's: both sides are compared that way.
+function canonicalId(file: string): string {
+  let real = file;
+  try { real = fs.realpathSync.native(file); } catch { /* not on disk: compared as given */ }
+  const id = normalizePath(real);
+  return process.platform === 'win32' ? id.toLowerCase() : id;
+}
+const WONGTTY_FACTORY = canonicalId(path.resolve(__dirname, 'src/renderer/terminal/wongtty/factory.ts'));
+export function wongttyFactory(): Plugin {
   return {
     name: 'wmux-wongtty-factory',
     async load(id) {
-      if (id !== WONGTTY_FACTORY) return null;
+      const file = normalizePath(id.split('?')[0]);
+      if (!file.endsWith('/wongtty/factory.ts') || canonicalId(file) !== WONGTTY_FACTORY) return null;
       const result = await esbuild({
         entryPoints: [path.resolve(__dirname, 'node_modules/wongtty/dist/xterm.js')],
         bundle: true, write: false, format: 'esm',

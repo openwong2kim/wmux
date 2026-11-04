@@ -606,6 +606,30 @@ describe('useTerminal engine swap (Labs wongtty switch)', { timeout: 60_000 }, (
     vi.mocked(console.warn).mockRestore();
   });
 
+  it('output that arrives after a cut capture resolved, before the new terminal mounts, still reaches it', async () => {
+    setDaemonModeActive(false);
+    await render('p-late', true, { remount: true });
+    const barrier = holdBarrier(termRef!.current!);
+    await act(async () => {
+      useStore.setState({ terminalWongtty: true });
+      emitData!('p-late', 'x\r\nabc\x1b[3', false);
+    });
+    await settle();
+    expect(barrier()).not.toBeNull();
+    // Inside one act the capture resolves, and React mounts the new terminal
+    // only once the act ends: the output in between goes to the held tail.
+    await act(async () => {
+      barrier()!();
+      await deliberateSleep(60, 'lets the capture resolve before the new terminal mounts');
+      emitData!('p-late', '1mred\x1b[0m\r\nLATE\r\n', false);
+    });
+    await settle();
+    const now = termRef!.current!;
+    expect(now).toBeInstanceOf(await fakeWongttyClass());
+    expect(count(now, 'abcred')).toBe(1);
+    expect(count(now, 'LATE')).toBe(1);
+  });
+
   it('a capture after a dropped one still finishes the sequence the stream stopped inside', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     setDaemonModeActive(false);
