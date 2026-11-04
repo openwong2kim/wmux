@@ -3916,14 +3916,16 @@ paths alike.
   asked for a window during the tap. Any other tap answers as fast as before.
 - `opened` is absent when the tap opened no tab, on a builtin pane, and from
   an older desktop. It is also absent when the new tab is over the limit
-  above, and when it opened more than about 1 s after the tap; the stream
-  event below still tells a streamed tab's client.
+  above, and when it opened more than about 1 s after the tap; refresh the
+  list to find such a tab.
 - A builtin pane never opens a tab: a `target=_blank` link or a
   `window.open` there loads the page in the same pane, and the stream's `url`
   event shows the move.
 
-**Stream event.** On a live browser stream of a `chrome` row,
-`event: tabOpened` carries `{surfaceId, pageURL?}`:
+**Stream event (not sent yet).** The desktop does not send this event yet;
+a later version will. Do not wait for it: the tap reply's `opened` and the
+list cover every tab above. When it comes, on a live browser stream of a
+`chrome` row, `event: tabOpened` carries `{surfaceId, pageURL?}`:
 
 - Sent each time the streamed tab opens a tab, for any reason: a tap, a
   script, or the person at the desktop.
@@ -3935,8 +3937,6 @@ paths alike.
   not read keeps at most the four newest waiting.
 - An event, not a state: a later subscriber does not get earlier ones. The
   list is the record.
-- A desktop that does not send it yet still lists the tab and names it in the
-  tap reply.
 
 ### New agent pane launch options
 
