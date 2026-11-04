@@ -122,6 +122,16 @@ export function rowsInView(term: BookmarkTerminal, ids: readonly number[]): { id
   return out;
 }
 
+/** Where each bookmark marker sits: its row in its logical line, and the
+ *  line's fingerprint. */
+function carriedBookmarks(term: BookmarkTerminal, markers: readonly IMarker[]): { rowInLine: number; print: string[] }[] {
+  return markers.flatMap((m) => {
+    const line = logicalLine(term, m.line);
+    if (!line || line.text.trim() === '') return [];
+    return [{ rowInLine: m.line - line.start, print: fingerprint(term, line) }];
+  });
+}
+
 /**
  * Carry a pane's bookmarks across a repaint that resets the Terminal (RIS
  * disposes every marker) and replays the session. Call it right before the
@@ -140,20 +150,18 @@ export function rowsInView(term: BookmarkTerminal, ids: readonly number[]): { id
  * The store changes twice whatever the number of bookmarks: the ids go out
  * here, and the restored ones come back in one set.
  */
-export function keepAcrossRepaint(term: BookmarkTerminal, ptyId: string, store: BookmarkStore): (target?: BookmarkTerminal) => void {
+export function keepAcrossRepaint(term: BookmarkTerminal, ptyId: string, store: BookmarkStore): (target: BookmarkTerminal) => void {
   const markers = term.buffer.active.type === 'alternate'
     ? []
     : bookmarkMarkers(term, store.getState().terminalBookmarks[ptyId]);
-  const carried = markers.flatMap((m) => {
-    const line = logicalLine(term, m.line);
-    if (!line || line.text.trim() === '') return [];
-    return [{ rowInLine: m.line - line.start, print: fingerprint(term, line) }];
-  });
+  const carried = carriedBookmarks(term, markers);
   if (store.getState().terminalBookmarks[ptyId]) store.getState().setBookmarks(ptyId, []);
   for (const marker of markers) marker.dispose();
   // `target` is the terminal the repaint lands in: the same one, or (an engine
-  // swap of the Labs wongtty switch) the one that replaces it.
-  return (target = term) => {
+  // swap of the Labs wongtty switch) the one that replaces it. What is
+  // returned holds no reference to `term`, so a swap's carry does not keep
+  // the replaced terminal alive.
+  return (target) => {
     const after = target.buffer.active;
     if (carried.length === 0 || after.type === 'alternate') return;
     // One pass over the buffer: a line's neighbours are read only when its

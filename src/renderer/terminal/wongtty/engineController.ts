@@ -12,7 +12,7 @@
 // A generation counter keeps a load that finished after a later toggle from
 // writing a stale answer.
 
-import { preloadWongtty, wongttyLoadFailure } from './load';
+import { preloadWongtty, releaseWongttyWhenIdle, wongttyLoadFailure } from './load';
 import { useStore } from '../../stores';
 import { t } from '../../i18n';
 
@@ -40,6 +40,8 @@ export interface EngineControllerDeps {
   load(): Promise<unknown>;
   /** Why the last load failed. */
   loadFailure(): string | null;
+  /** Give wongtty's memory back once no pane uses it (the engine is xterm.js). */
+  release(): void;
   /** Tell the user, once per distinct message (the caller dedupes). */
   report(message: string): void;
   quietMs?: number;
@@ -67,6 +69,7 @@ export function createEngineController(deps: EngineControllerDeps): EngineContro
 
   const write = (engine: TerminalEngine) => {
     if (deps.getEngine() !== engine) deps.setEngine(engine);
+    if (engine === 'xterm') deps.release();
   };
   const failWith = (message: string) => {
     write('xterm');
@@ -153,6 +156,7 @@ export function ensureEngineController(): EngineController {
     setFailure: (failure) => useStore.getState().setTerminalEngineFailure(failure),
     load: preloadWongtty,
     loadFailure: wongttyLoadFailure,
+    release: releaseWongttyWhenIdle,
     report: (message) => useStore.getState().pushToast({ message: t('settings.labsWongttyFailed', { message }), level: 'error' }),
   });
   if (typeof document !== 'undefined' && document.documentElement.dataset.terminalEngine === undefined) {

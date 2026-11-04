@@ -207,7 +207,7 @@ export const ko = {
   'settings.labsSharedWebgl': "공유 WebGL 렌더러",
   'settings.labsSharedWebglDesc': "모든 패널이 WebGL 컨텍스트 하나와 글자 아틀라스 하나를 함께 씁니다. 패널이 많고 글자 종류가 많을 때 GPU 메모리를 줄입니다. 바꾼 뒤 새로 여는 패널부터 적용됩니다.",
   'settings.labsWongtty': "Rust 터미널 프런트엔드 (wongtty)",
-  'settings.labsWongttyDesc': "xterm.js 대신 Rust로 작성해 WebAssembly로 컴파일한 터미널 wongtty로 터미널을 그립니다. 시험용입니다. 열려 있는 터미널에도 바로 적용됩니다. 다른 PC에서 미러링한 창은 xterm.js를 그대로 씁니다. 끈 뒤에도 wongtty의 WebAssembly 메모리는 wmux를 다시 시작할 때까지 예약된 채로 남습니다.",
+  'settings.labsWongttyDesc': "xterm.js 대신 Rust로 작성해 WebAssembly로 컴파일한 터미널 wongtty로 터미널을 그립니다. 시험용입니다. 열려 있는 터미널에도 바로 적용됩니다. 다른 PC에서 미러링한 창은 xterm.js를 그대로 씁니다. 끄면 모든 터미널이 xterm.js로 돌아간 뒤 wongtty가 쓰던 메모리를 돌려줍니다.",
   'settings.labsWongttyFailed': "wongtty를 시작하지 못해 터미널은 xterm.js를 씁니다: {message}",
   'settings.labsRingCompression': "세션 출력 압축",
   'settings.labsRingCompressionDesc': "터미널 서비스가 세션마다 들고 있는 최근 출력을 압축해 메모리를 약 9분의 1로 줄입니다. 터미널 서비스를 재시작하면 적용됩니다.",

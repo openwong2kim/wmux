@@ -6,6 +6,13 @@
 // off nothing of wongtty is fetched. The renderer page cannot fetch file://
 // URLs, so main reads the .wasm bytes and hands them over IPC
 // (settings.getWongttyWasm).
+//
+// Turned off, the switch gives the memory back: once the controller has asked
+// for it (releaseWongttyWhenIdle) and the last wongtty terminal is disposed,
+// the loader drops the module, and with it the WebAssembly instances and
+// everything they hold. The package comes bundled into a function
+// (factory.ts, built by vite.renderer.config.ts) because an ES module, once
+// imported, is never collected; the next load calls it again.
 
 import type * as WongttyModule from 'wongtty/xterm';
 
@@ -14,6 +21,12 @@ export type Wongtty = typeof WongttyModule;
 let loaded: Wongtty | null = null;
 let pending: Promise<Wongtty | null> | null = null;
 let failure: string | null = null;
+// wongtty terminals built from `loaded` and not disposed yet.
+let live = 0;
+let releaseWanted = false;
+let releaseTimer: ReturnType<typeof setTimeout> | null = null;
+// Removes what the loaded module listens to on the page itself (pageListeners).
+let unlistenPage: Array<() => void> = [];
 
 /** Build one terminal, open it into a 1x1 element off screen and dispose it:
  *  what a pane does first, so a wasm fetch or compile error, a failed init or
@@ -25,25 +38,90 @@ function probe(mod: Wongtty): void {
   let terminal: { open(parent: HTMLElement): void; dispose(): void } | null = null;
   try {
     terminal = new mod.Terminal({ cols: 2, rows: 1 });
-    terminal.open(host);
+    const opening = terminal;
+    unlistenPage = pageListeners(() => opening.open(host));
   } finally {
     try { terminal?.dispose(); } catch { /* the probe's own teardown */ }
     host.remove();
   }
 }
 
+/** Run `open`, and return what removes the listeners it added to the page
+ *  itself (window, document, document.fonts). wongtty 0.0.2 adds two there
+ *  with its first terminal, a resize and a font-load listener that it keeps
+ *  for the page's lifetime (render/webgl.rs, listen_page); left in place they
+ *  would keep the whole module alive after it is released. */
+function pageListeners(open: () => void): Array<() => void> {
+  const page = new Set<EventTarget>([window, document, document.fonts]);
+  const removals: Array<() => void> = [];
+  const proto = EventTarget.prototype;
+  const add = proto.addEventListener;
+  proto.addEventListener = function (this: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
+    if (listener && page.has(this)) removals.push(() => proto.removeEventListener.call(this, type, listener, options));
+    add.call(this, type, listener, options);
+  };
+  try {
+    open();
+  } catch (err) {
+    for (const remove of removals) remove();
+    throw err;
+  } finally {
+    proto.addEventListener = add;
+  }
+  return removals;
+}
+
+/** The module, with a Terminal that counts itself from construction to dispose. */
+function counted(mod: Wongtty): Wongtty {
+  class Terminal extends mod.Terminal {
+    #alive = true;
+    constructor(...args: ConstructorParameters<Wongtty['Terminal']>) {
+      super(...args);
+      live++;
+    }
+    dispose(): void {
+      if (this.#alive) {
+        this.#alive = false;
+        live--;
+        scheduleRelease();
+      }
+      super.dispose();
+    }
+  }
+  return { ...mod, Terminal };
+}
+
+function scheduleRelease(): void {
+  if (!releaseWanted || live > 0 || loaded === null || releaseTimer !== null) return;
+  // A task later: the teardown that disposed the last terminal may still ask
+  // isWongttyTerminal about it.
+  releaseTimer = setTimeout(() => {
+    releaseTimer = null;
+    if (!releaseWanted || live > 0 || loaded === null) return;
+    for (const unlisten of unlistenPage) unlisten();
+    unlistenPage = [];
+    loaded = null;
+    pending = null;
+    releaseWanted = false;
+    console.log('[wmux:wongtty] released: no terminal uses wongtty');
+  }, 0);
+}
+
 /** Start loading wongtty, once. Resolves to the module after init() and the
  *  probe, or null when either failed (wongttyLoadFailure says why); a failed
  *  load is retried on the next call. */
 export function preloadWongtty(): Promise<Wongtty | null> {
+  releaseWanted = false;
   pending ??= (async () => {
-    // eslint-disable-next-line import/no-unresolved -- the resolver does not read the package's `exports` subpath
-    const [mod, wasm] = await Promise.all([import('wongtty/xterm'), window.electronAPI.settings.getWongttyWasm()]);
+    const [{ createWongtty }, wasm] = await Promise.all([import('./factory'), window.electronAPI.settings.getWongttyWasm()]);
+    const mod = createWongtty();
     await mod.init(wasm.engine, wasm.frontEnd);
     probe(mod);
-    loaded = mod;
+    loaded = counted(mod);
     failure = null;
-    return mod;
+    // Turned off while it loaded.
+    scheduleRelease();
+    return loaded;
   })().catch((err: unknown) => {
     failure = err instanceof Error ? err.message : String(err);
     console.warn('[wmux:wongtty] could not load the wongtty front end', err);
@@ -51,6 +129,13 @@ export function preloadWongtty(): Promise<Wongtty | null> {
     return null;
   });
   return pending;
+}
+
+/** Let go of the module once no wongtty terminal is left (the switch is off):
+ *  its memory can then be collected. A later preloadWongtty loads it afresh. */
+export function releaseWongttyWhenIdle(): void {
+  releaseWanted = true;
+  scheduleRelease();
 }
 
 /** The module once init() has finished; null before (the caller uses xterm.js). */

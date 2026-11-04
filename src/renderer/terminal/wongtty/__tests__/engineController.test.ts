@@ -7,7 +7,7 @@ const store = vi.hoisted(() => ({
 }));
 vi.mock('../../../stores', () => ({ useStore: { getState: () => store.state, subscribe: () => () => undefined } }));
 vi.mock('../../../i18n', () => ({ t: (key: string) => key }));
-vi.mock('../load', () => ({ preloadWongtty: vi.fn(() => new Promise(() => undefined)), wongttyLoadFailure: vi.fn() }));
+vi.mock('../load', () => ({ preloadWongtty: vi.fn(() => new Promise(() => undefined)), wongttyLoadFailure: vi.fn(), releaseWongttyWhenIdle: vi.fn() }));
 
 /** A controllable world: the switch, the engine it writes, and a load whose
  *  answer each test hands out by hand. */
@@ -19,6 +19,7 @@ function world() {
   const writes: TerminalEngine[] = [];
   const failures: Array<{ message: string } | null> = [];
   const report = vi.fn<(message: string) => void>();
+  const release = vi.fn<() => void>();
   let failureText: string | null = null;
   const deps: EngineControllerDeps = {
     getRequested: () => requested,
@@ -28,11 +29,13 @@ function world() {
     setFailure: (f) => failures.push(f),
     load: () => new Promise((resolve) => loads.push(resolve)),
     loadFailure: () => failureText,
+    release,
     report,
   };
   return {
     deps,
     report,
+    release,
     writes,
     failures,
     loads,
@@ -88,9 +91,12 @@ describe('engine controller', () => {
     w.loads[1]({});
     await flush();
     expect(w.writes).toEqual(['wongtty']);
+    w.release.mockClear();
     w.toggle(false);
     vi.advanceTimersByTime(150);
     expect(w.writes).toEqual(['wongtty', 'xterm']);
+    // Off: wongtty's memory goes back once no pane uses it.
+    expect(w.release).toHaveBeenCalledTimes(1);
     // A third load that finishes after the off changes nothing.
     w.toggle(true);
     vi.advanceTimersByTime(10);

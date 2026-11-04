@@ -1546,6 +1546,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     if (activeEngine === paneEngine) return;
     const target = activeEngine;
     const container = containerRef.current;
+    // The render that swaps must not see the old terminal in terminalInstance:
+    // the new mount's closures keep that render's scope, and with it the old
+    // terminal (and for wongtty, its whole module), as long as the mount lives.
+    const swapTo = () => {
+      setTerminalInstance(null);
+      setPaneEngine(target);
+    };
     const deferral = createEngineDeferral({
       isComposing: () => composingRef.current,
       isDragging: isTerminalDragActive,
@@ -1569,7 +1576,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // A daemon session is replayed into the new terminal (pty.resync);
         // only a local one has to be carried over from the old terminal.
         if (!term || !id || isDaemonModeActive() || transplantRef.current) {
-          setPaneEngine(target);
+          swapTo();
           return;
         }
         // R12: no daemon ring to replay. The old terminal's live data is
@@ -1590,7 +1597,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           if (!mountedRef.current || terminalRef.current !== term) return;
           const snapshot = serializeForTransplant(term, useStore.getState().scrollbackLines) ?? '';
           transplantRef.current = { ptyId: id, snapshot, tail };
-          setPaneEngine(target);
+          swapTo();
         });
       },
     });

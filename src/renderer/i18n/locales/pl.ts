@@ -207,7 +207,7 @@ export const pl = {
   'settings.labsSharedWebgl': "Wspólny renderer WebGL",
   'settings.labsSharedWebglDesc': "Wszystkie panele rysują przez jeden kontekst WebGL i jeden atlas glifów. Oszczędza pamięć GPU, gdy wiele paneli pokazuje wiele różnych glifów. Dotyczy paneli otwartych po zmianie.",
   'settings.labsWongtty': "Front-end terminala w Rust (wongtty)",
-  'settings.labsWongttyDesc': "Rysuje terminale za pomocą wongtty, terminala napisanego w Rust i skompilowanego do WebAssembly, zamiast xterm.js. Tylko do testów. Działa od razu także w otwartych terminalach. Panele odbijane z innego komputera zostają przy xterm.js. Po wyłączeniu pamięć WebAssembly wongtty pozostaje zarezerwowana do ponownego uruchomienia wmux.",
+  'settings.labsWongttyDesc': "Rysuje terminale za pomocą wongtty, terminala napisanego w Rust i skompilowanego do WebAssembly, zamiast xterm.js. Tylko do testów. Działa od razu także w otwartych terminalach. Panele odbijane z innego komputera zostają przy xterm.js. Po wyłączeniu, gdy wszystkie terminale wrócą do xterm.js, pamięć wongtty zostaje zwolniona.",
   'settings.labsWongttyFailed': "Nie udało się uruchomić wongtty, więc terminale używają xterm.js: {message}",
   'settings.labsRingCompression': "Kompresja wyjścia sesji",
   'settings.labsRingCompressionDesc': "Usługa terminala przechowuje ostatnie wyjście każdej sesji skompresowane, w około jednej dziewiątej pamięci. Działa po ponownym uruchomieniu usługi terminala.",

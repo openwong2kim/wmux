@@ -57,6 +57,7 @@ vi.mock('../../terminal/wongtty/load', async () => {
     preloadWongtty: async () => mod,
     loadedWongtty: () => mod,
     wongttyLoadFailure: () => null,
+    releaseWongttyWhenIdle: () => undefined,
     isWongttyTerminal: (t: unknown) => t instanceof FakeWongtty,
     FakeWongtty,
   };

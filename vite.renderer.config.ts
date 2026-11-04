@@ -1,4 +1,5 @@
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, normalizePath, type Plugin } from 'vite';
+import { build as esbuild } from 'esbuild';
 import react from '@vitejs/plugin-react';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -61,11 +62,48 @@ function dropMainServedWasm(): Plugin {
   };
 }
 
+// The Labs wongtty switch (renderer/terminal/wongtty/load.ts) gives wongtty's
+// memory back when it is turned off. An ES module can never be unloaded (the
+// page's module map keeps it), and wongtty's bindings keep their WebAssembly
+// instances, and every JS object handed to them, in module-level variables.
+// So terminal/wongtty/factory.ts is built here as the whole package bundled
+// into one function: each call evaluates it afresh with its own instances, and
+// dropping what a call returned lets all of it be collected. Its exports come
+// back as plain data properties: a bundler's getter-based exports object puts
+// its getters in a hidden class V8 shares with unrelated module objects, which
+// would keep the package alive for good.
+const WONGTTY_FACTORY = normalizePath(path.resolve(__dirname, 'src/renderer/terminal/wongtty/factory.ts'));
+function wongttyFactory(): Plugin {
+  return {
+    name: 'wmux-wongtty-factory',
+    async load(id) {
+      if (id !== WONGTTY_FACTORY) return null;
+      const result = await esbuild({
+        entryPoints: [path.resolve(__dirname, 'node_modules/wongtty/dist/xterm.js')],
+        bundle: true, write: false, format: 'esm',
+        platform: 'browser', target: 'es2022', charset: 'ascii', logLevel: 'warning',
+      });
+      // esbuild ends an ES module bundle with its one export statement.
+      const code = result.outputFiles[0].text;
+      const at = code.lastIndexOf('export {');
+      const end = code.indexOf('};', at);
+      if (at < 0 || end < 0 || code.slice(end + 2).trim() !== '' || /^export /m.test(code.slice(0, at))) {
+        throw new Error('wongtty factory: the bundle does not end with its only export statement');
+      }
+      const exported = code.slice(at + 'export {'.length, end).split(',').map((s) => s.trim()).filter(Boolean).map((spec) => {
+        const [local, name = local] = spec.split(/\s+as\s+/);
+        return `${JSON.stringify(name)}: ${local}`;
+      });
+      return `export function createWongtty() {\n${code.slice(0, at)}\nreturn { ${exported.join(', ')} };\n}\n`;
+    },
+  };
+}
+
 export default defineConfig({
   // ASCII-only output: one character above one byte makes V8 keep the whole
   // script source as UTF-16 (scripts/lib/ascii-only-bundle.mjs).
   esbuild: { charset: 'ascii' },
-  plugins: [react(), pdfjsAssets(), dropMainServedWasm(), asciiOnlyBundle()],
+  plugins: [react(), pdfjsAssets(), dropMainServedWasm(), wongttyFactory(), asciiOnlyBundle()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -111,10 +149,9 @@ export default defineConfig({
           ],
           'vendor-react': ['react', 'react-dom'],
         },
-        // The lazy chunk of the Labs wongtty switch is named after its entry,
-        // wongtty/dist/xterm.js, which reads as xterm.js in a listing of what
-        // loaded. Name it after the package.
-        chunkFileNames: (chunk) => (chunk.moduleIds.some((id) => /[\\/]node_modules[\\/]wongtty[\\/]/.test(id))
+        // The lazy chunk of the Labs wongtty switch (wongttyFactory above) is
+        // named after the package, so a listing of what loaded shows it.
+        chunkFileNames: (chunk) => (chunk.moduleIds.includes(WONGTTY_FACTORY)
           ? 'assets/wongtty-[hash].js'
           : 'assets/[name]-[hash].js'),
       },
