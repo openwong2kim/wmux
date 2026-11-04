@@ -1,11 +1,14 @@
 import { createOsc8LinkHandler } from '../terminal/osc8LinkHandler';
-import { useEffect, useRef, useCallback, useState, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useRef, useCallback, useState, useMemo } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { FixedGeometryFitAddon, type FixedGeometry } from '../terminal/fixedGeometryFit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { preloadSharedWebgl, sharedWebglAddonClassFor } from '../terminal/sharedWebgl/load';
-import { isWongttyTerminal, loadedWongtty, preloadWongtty } from '../terminal/wongtty/load';
+import { isWongttyTerminal, loadedWongtty } from '../terminal/wongtty/load';
+import { ensureEngineController, failEngine, type TerminalEngine } from '../terminal/wongtty/engineController';
+import { createEngineDeferral } from '../terminal/wongtty/engineDeferral';
+import { serializeForTransplant } from '../terminal/wongtty/transplant';
 import { SearchAddon } from '@xterm/addon-search';
 import { applyUnicodeWidthModel } from '../../shared/terminalUnicode';
 import { isSafeGeometry } from '../../shared/terminalGeometry';
@@ -610,6 +613,10 @@ interface ResyncState {
    *  mechanism=dirty-raw-fallback, not dirty-snapshot, or doctor's counters
    *  mask fallback regressions (codex, PR #470). */
   viaRawFallback: boolean;
+  /** What pty.resync answered for the resync in flight ('snapshot' | 'raw'). */
+  mode: string;
+  /** How the last resync settled, for the engine-swap log. */
+  lastMechanism: string;
 }
 
 /** Cooldown between resync retries after a degrade. Long enough to ride out a
@@ -689,21 +696,73 @@ useStore.subscribe((state, prev) => {
   if (state.terminalSharedWebgl === true && prev.terminalSharedWebgl !== true) void preloadSharedWebgl();
 });
 
-// EXPERIMENTAL (uiSlice.terminalWongtty, default off): new terminals are built by
-// the wongtty front end (wongtty/xterm) instead of xterm.js. Loaded like the shared
-// WebGL renderer above: a terminal built before wongtty has loaded is an xterm.js
-// one and stays one. wongtty draws with its own WebGL renderer (one context per
-// page), so its panes skip the WebGL addon and the context pool.
-function wongttyForNewTerminal() {
-  if (useStore.getState().terminalWongtty !== true) return null;
-  const wongtty = loadedWongtty();
-  if (!wongtty) console.warn('[wmux:wongtty] not loaded yet; this terminal uses xterm.js');
-  return wongtty;
+// EXPERIMENTAL Labs wongtty switch (uiSlice.terminalWongtty, default off): the
+// engine controller (terminal/wongtty/engineController) decides which engine
+// every pane runs (uiSlice.terminalEngine), and a pane rebuilds its terminal
+// with that engine when it changes: a live swap that keeps the session's
+// content (the swap carry below). wongtty draws with its own WebGL renderer
+// (one context per page), so its panes skip the WebGL addon and the pool.
+
+/** The engine a terminal instance was built by. */
+function engineOf(terminal: Terminal): TerminalEngine {
+  return isWongttyTerminal(terminal) ? 'wongtty' : 'xterm';
 }
-if (useStore.getState().terminalWongtty === true) void preloadWongtty();
-useStore.subscribe((state, prev) => {
-  if (state.terminalWongtty === true && prev.terminalWongtty !== true) void preloadWongtty();
-});
+
+/** The old terminal's kitty keyboard flags, pushed (`CSI > flags u`) onto the
+ *  new terminal's empty stack. The session snapshot a swap replays does not
+ *  carry them (outputModeTracker records no kitty state), so the swap writes
+ *  them after it. A push rather than a set (`CSI = flags ; 1 u`): wongtty
+ *  reports the top of its stack, which a set leaves empty. */
+function kittySetFlags(flags: number): string {
+  return `\x1b[>${flags}u`;
+}
+
+/** What a pane hands from its old terminal to the one an engine swap builds.
+ *  Saved by the old terminal's cleanup, read by the new mount. */
+interface SwapCarry {
+  ptyId: string;
+  from: TerminalEngine;
+  to: TerminalEngine;
+  at: number;
+  cols: number;
+  rows: number;
+  fromBottom: number;
+  focused: boolean;
+  keyboard: RemoteKeyboardState;
+  kittyFlags: number;
+  bufferType: string;
+  restoreBookmarks: ((target: Terminal) => void) | null;
+  /** Local mode only (no daemon to replay from): the old terminal serialized,
+   *  and the live output that arrived after it (usePaneEngine's capture). */
+  transplant: Transplant | null;
+}
+
+interface Transplant {
+  ptyId: string;
+  snapshot: string;
+  tail: PtyDataPayload[];
+}
+
+/** What the swap still owes once its screen has been repainted (the swap
+ *  resync, or for a hidden pane the reveal resync that follows). */
+interface SwapFinish {
+  terminal: Terminal;
+  fromBottom: number;
+  kittyFlags: number;
+  restoreBookmarks: ((target: Terminal) => void) | null;
+}
+
+// R17 settle signal: the panes whose terminal is not on the active engine yet,
+// or whose swap repaint has not settled, counted on the document element for
+// the e2e (and a curious devtools user).
+const enginePendingPanes = new Set<string>();
+function setEnginePending(token: string, pending: boolean): void {
+  const had = enginePendingPanes.has(token);
+  if (pending === had) return;
+  if (pending) enginePendingPanes.add(token); else enginePendingPanes.delete(token);
+  if (typeof document !== 'undefined') document.documentElement.dataset.terminalEnginePending = String(enginePendingPanes.size);
+}
+
 
 // A hidden terminal KEEPS its WebGL context. It gives the context back only
 // when webglContextPool evicts it (LRU, once more terminals want one than the
@@ -1096,7 +1155,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // the visibility effect (dirty reveal) and the hydrate registry entry.
   const resyncRef = useRef<ResyncState>({
     pending: false, buffer: [], bufferedChars: 0, resolvers: [], timer: null,
-    degradedUntil: 0, viaRawFallback: false,
+    degradedUntil: 0, viaRawFallback: false, mode: 'snapshot', lastMechanism: '',
   });
 
   /**
@@ -1114,6 +1173,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
    */
   const replayMuteRef = useRef<ReplayMute>(createReplayMute());
 
+  // Labs wongtty switch: what an engine swap still owes the new terminal once
+  // its screen is repainted (scroll offset, bookmarks, kitty flags). Taken by
+  // the first repaint of that terminal (completeResyncFromFlush or
+  // paintDeadSnapshot).
+  const swapFinishRef = useRef<SwapFinish | null>(null);
+  const takeSwapFinish = (term: Terminal): SwapFinish | null => {
+    const finish = swapFinishRef.current;
+    if (!finish || finish.terminal !== term) return null;
+    swapFinishRef.current = null;
+    return finish;
+  };
+
   /** Degrade: release whatever was buffered as-is (no reset — no replay came).
    *  P0-2 (app-weight review): the pane STAYS DIRTY — a failed resync must not
    *  bless a stale screen as clean, or reveals/reads silently return
@@ -1127,6 +1198,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     st.pending = false;
     if (st.timer) { clearTimeout(st.timer); st.timer = null; }
     st.degradedUntil = Date.now() + RESYNC_DEGRADED_COOLDOWN_MS;
+    st.lastMechanism = 'degraded';
     console.warn(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=resync-degraded reason=${why} (stays dirty, retry after cooldown)`);
     const term = terminalRef.current;
     if (term) {
@@ -1178,17 +1250,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       try {
         const bytes = Uint8Array.from(atob(payloadBase64), (c) => c.charCodeAt(0));
         console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=dead-snapshot payload=${bytes.length}`);
+        st.lastMechanism = 'dead-snapshot';
+        // An engine swap measured these on the terminal it replaced.
+        const swapFinish = takeSwapFinish(term);
         // #1256: reset() snaps the viewport to the bottom, and this repaint
         // used to ship that snap — a user scrolled up in a hidden pane was
         // yanked down on reveal. Capture the distance from the bottom BEFORE
         // the reset (rows, the same convention terminalPark uses, so the
         // restore stays proportional if the repaint reflows line counts).
-        const fromBottom = Math.max(0, term.buffer.active.baseY - term.buffer.active.viewportY);
+        // An engine swap's new terminal holds no scrollback yet: the offset is
+        // the one the old terminal had.
+        const fromBottom = Math.max(0, term.buffer.active.baseY - term.buffer.active.viewportY, swapFinish?.fromBottom ?? 0);
         // reset() disposes every marker; put the scrollback bookmarks back
         // once the snapshot has been parsed.
-        let restoreBookmarks: (() => void) | null = null;
+        let restoreBookmarks: ((target: Terminal) => void) | null = swapFinish ? swapFinish.restoreBookmarks : null;
         try {
-          if (ptyIdRef.current) restoreBookmarks = keepBookmarksAcrossRepaint(term, ptyIdRef.current, useStore);
+          if (ptyIdRef.current && !swapFinish) restoreBookmarks = keepBookmarksAcrossRepaint(term, ptyIdRef.current, useStore);
         } catch { /* a bookmark carry never stops the repaint */ }
         discardTerminalOutput(term);
         term.reset();
@@ -1205,7 +1282,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (restoreBookmarks) {
           const restore = restoreBookmarks;
           term.write('', () => {
-            try { restore(); } catch { /* disposed mid-restore — teardown owns cleanup */ }
+            try { restore(term); } catch { /* disposed mid-restore — teardown owns cleanup */ }
           });
         }
         markTerminalClean(term);
@@ -1258,6 +1335,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     st.buffer.length = 0;
     st.bufferedChars = 0;
     st.viaRawFallback = false;
+    st.mode = 'snapshot';
     setPaneSyncUi(id, 'syncing');
     console.log(`[useTerminal] hidden-pane resync ptyId=${id} (${reason})`);
     // Timeout with bounded re-arm: the daemon serializes snapshot work behind
@@ -1312,6 +1390,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (res?.success) {
         // snapshot | raw — the replay is in flight on the live pipe; the
         // flush-complete handler settles the resync (timeout still armed).
+        st.mode = res.mode;
         return;
       }
       const code = res && !res.success ? res.code : 'no-response';
@@ -1362,6 +1441,114 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
   }, [ptyId, containerRef]);
 
+  // === Labs wongtty switch: the engine this pane runs ========================
+  // `paneEngine` follows uiSlice.terminalEngine, and the mount effect depends
+  // on it: when it changes the old terminal is torn down and a new one built
+  // with the other engine (the swap). A pane takes the change only when no IME
+  // composition is in progress in it and no drag is active on a terminal
+  // (engineDeferral.ts). It starts on the engine in use, so a restart builds
+  // each pane once.
+  const activeEngine = useStore((s) => s.terminalEngine);
+  const [paneEngine, setPaneEngine] = useState<TerminalEngine>(() => useStore.getState().terminalEngine);
+  // Set by the layout effect below when paneEngine changes, before the old
+  // terminal's (passive) cleanup reads it; cleared by the new mount.
+  const swapPendingRef = useRef<{ from: TerminalEngine; to: TerminalEngine; at: number } | null>(null);
+  const swapCarryRef = useRef<SwapCarry | null>(null);
+  // Local mode: the old terminal serialized ahead of the swap (R12).
+  const transplantRef = useRef<Transplant | null>(null);
+  // Set while a local-mode swap is under way: the mounted terminal's live pty
+  // data goes here (the transplant's tail) instead of into the terminal.
+  const divertLiveRef = useRef<PtyDataPayload[] | null>(null);
+  // The engine the mounted terminal was built by, and whether its swap
+  // repaint is still in flight: together, whether this pane is settled (R17).
+  const instanceEngineRef = useRef<TerminalEngine | null>(null);
+  const swapRepaintPendingRef = useRef(false);
+  // An xterm.js terminal an engine swap built while hidden: its first reveal
+  // loads WebGL before it fits (see the mount effect).
+  const swapWebglOnRevealRef = useRef(false);
+  const composingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const prevPaneEngineRef = useRef(paneEngine);
+  const updateEnginePending = useCallback(() => {
+    const instance = instanceEngineRef.current;
+    const pending = instance !== null && (instance !== useStore.getState().terminalEngine || swapRepaintPendingRef.current);
+    setEnginePending(webglTokenRef.current, pending);
+  }, []);
+  useLayoutEffect(() => {
+    if (prevPaneEngineRef.current === paneEngine) return;
+    swapPendingRef.current = { from: prevPaneEngineRef.current, to: paneEngine, at: performance.now() };
+    prevPaneEngineRef.current = paneEngine;
+  }, [paneEngine]);
+  useEffect(() => {
+    ensureEngineController();
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      setEnginePending(webglTokenRef.current, false);
+      transplantRef.current = null;
+      divertLiveRef.current = null;
+    };
+  }, []);
+  // IME composition in this pane (the textarea's events bubble to the container).
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onStart = () => { composingRef.current = true; };
+    const onEnd = () => { composingRef.current = false; };
+    container.addEventListener('compositionstart', onStart, true);
+    container.addEventListener('compositionend', onEnd, true);
+    return () => {
+      container.removeEventListener('compositionstart', onStart, true);
+      container.removeEventListener('compositionend', onEnd, true);
+    };
+  }, [containerRef]);
+  useEffect(() => {
+    updateEnginePending();
+    if (activeEngine === paneEngine) return;
+    const target = activeEngine;
+    const container = containerRef.current;
+    const deferral = createEngineDeferral({
+      isComposing: () => composingRef.current,
+      isDragging: isTerminalDragActive,
+      subscribeUnblock: (retry) => {
+        // Bubble phase: the drag guard's capture listener has cleared its flag by then.
+        const onUp = () => retry();
+        container?.addEventListener('compositionend', onUp);
+        document.addEventListener('mouseup', onUp);
+        return () => {
+          container?.removeEventListener('compositionend', onUp);
+          document.removeEventListener('mouseup', onUp);
+        };
+      },
+      apply: () => {
+        const term = terminalRef.current;
+        const id = ptyIdRef.current;
+        // A daemon session is replayed into the new terminal (pty.resync);
+        // only a local one has to be carried over from the old terminal.
+        if (!term || !id || isDaemonModeActive() || transplantRef.current) {
+          setPaneEngine(target);
+          return;
+        }
+        // R12: no daemon ring to replay. The old terminal's live data is
+        // diverted, and the terminal serialized once everything handed to it
+        // has parsed; what arrives meanwhile is kept for the new terminal (the
+        // tail), so every byte lands there exactly once. Once started the swap completes, even
+        // if the switch flips back meanwhile (that is another swap).
+        const tail: PtyDataPayload[] = [];
+        divertLiveRef.current = tail;
+        try { flushTerminalOutput(term); } catch { /* disposed: serialize below fails soft */ }
+        void awaitParseBarrier(term).then(() => {
+          if (!mountedRef.current) return;
+          const snapshot = serializeForTransplant(term, useStore.getState().scrollbackLines) ?? '';
+          transplantRef.current = { ptyId: id, snapshot, tail };
+          setPaneEngine(target);
+        });
+      },
+    });
+    deferral.request();
+    return () => deferral.cancel();
+  }, [activeEngine, paneEngine, containerRef, updateEnginePending]);
+
   // #1280 — publish this terminal's identity and chord ownership on the DOM,
   // so the document-level Rich Input listener can tell WHICH terminal a
   // keydown came from. Without it that gate fired for any terminal's keydown
@@ -1404,17 +1591,45 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // mount parked its terminal on the way out, take it back instead of
     // building a fresh one — the buffer, the screen and the scroll position
     // come with it, so there is no ring-buffer replay for the user to watch.
-    const adopted = adoptTerminal(ptyId);
+    // Labs wongtty switch: is this mount an engine swap (paneEngine changed)?
+    // The old terminal's cleanup left what the new one needs (SwapCarry).
+    swapPendingRef.current = null;
+    swapRepaintPendingRef.current = false;
+    let carry = swapCarryRef.current;
+    swapCarryRef.current = null;
+    if (carry && carry.ptyId !== ptyId) carry = null;
+    divertLiveRef.current = null;
+
+    // A parked terminal of the other engine is disposed, not adopted (R6).
+    const adopted = adoptTerminal(ptyId, (parked) => engineOf(parked) === paneEngine);
     adoptedAtMountRef.current = adopted !== null;
     console.log(`[wmux:pane-adopt] ptyId=${ptyId} mount=${adopted ? 'adopted' : 'fresh'}`);
 
-    const wongtty = adopted ? null : wongttyForNewTerminal();
+    // wongtty failed to build or open this pane: every pane goes back to
+    // xterm.js (the controller), and the xterm.js mount that follows takes
+    // this one's carry, or a bare one so it still repaints the session.
+    const failWongttyMount = (err: unknown) => {
+      console.warn(`[wmux:engine-swap] ptyId=${ptyId} wongtty could not build this pane; every pane uses xterm.js`, err);
+      swapCarryRef.current = carry ?? {
+        ptyId, from: 'wongtty', to: 'xterm', at: performance.now(), cols: 0, rows: 0, fromBottom: 0, focused: false,
+        keyboard: INITIAL_REMOTE_KEYBOARD_STATE, kittyFlags: 0, bufferType: 'normal', restoreBookmarks: null, transplant: null,
+      };
+      failEngine(err);
+    };
+    const wongtty = adopted || paneEngine !== 'wongtty' ? null : loadedWongtty();
+    if (!adopted && paneEngine === 'wongtty' && !wongtty) {
+      failWongttyMount(new Error('wongtty is not loaded'));
+      return;
+    }
     const TerminalClass = (wongtty?.Terminal ?? Terminal) as typeof Terminal;
-    const terminal = adopted ? adopted.terminal : new TerminalClass({
+    let terminal: Terminal;
+    try {
+    terminal = adopted ? adopted.terminal : new TerminalClass({
       // A fixed grid is applied at construction, before the first byte of the
       // pane's screen is parsed — a TUI frame parsed at 80x24 and reflowed
-      // later is not repaired by any resize.
-      ...(fixedGeometryRef.current ? { cols: fixedGeometryRef.current.cols, rows: fixedGeometryRef.current.rows } : {}),
+      // later is not repaired by any resize. An engine swap builds at the old
+      // terminal's size, so the pty sees no resize.
+      ...(fixedGeometryRef.current ? { cols: fixedGeometryRef.current.cols, rows: fixedGeometryRef.current.rows } : carry && carry.cols > 0 ? { cols: carry.cols, rows: carry.rows } : {}),
       cursorBlink: true,
       cursorStyle: terminalCursorStyle,
       fontSize: terminalFontSize,
@@ -1481,7 +1696,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         })()
         : {}),
     });
+    } catch (err) {
+      if (!wongtty) throw err;
+      failWongttyMount(err);
+      return;
+    }
     const wongttyModule = isWongttyTerminal(terminal) ? loadedWongtty() : null;
+    instanceEngineRef.current = engineOf(terminal);
+    container.dataset.terminalEngine = instanceEngineRef.current;
 
     // #1014: xterm keeps parsing while the pane is parked and adopted into a
     // new React mount. Share the mute with the terminal instance so an
@@ -1643,7 +1865,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // cell-shifted against the live screen.
       applyUnicodeWidthModel(terminal);
       holdNewXtermReplies(terminal);
-      terminal.open(container);
+      try {
+        terminal.open(container);
+      } catch (err) {
+        if (!wongttyModule) throw err;
+        // A wongtty pane that cannot open (no WebGL2 context left, say) must not
+        // reach React's error boundary: drop it and fall back (R13).
+        disposeTerminalReplayMute(terminal);
+        try { terminal.dispose(); } catch { /* half-built */ }
+        terminal.element?.remove();
+        instanceEngineRef.current = null;
+        delete container.dataset.terminalEngine;
+        failWongttyMount(err);
+        return;
+      }
     }
     // Grok lives on the alt screen, where xterm has no scrollback and turns the
     // wheel into Up/Down — which Grok's prompt-focused view reads as history,
@@ -2036,6 +2271,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // #1002: an adoption whose container has no size yet (a restructure on a
     // hidden workspace — an agent splitting a background pane, say) has no
     // valid fit to restore against. Hold the parked viewport until one runs.
+    // An engine swap to xterm.js takes its WebGL renderer before its first fit.
+    // Fitted with the DOM renderer's cell first, the grid comes out a few
+    // columns off and is corrected once WebGL is in: two resizes, two SIGWINCH
+    // for the program in the pane (R10). A hidden one takes it on its reveal.
+    swapWebglOnRevealRef.current = false;
+    if (carry && !wongttyModule && !adopted) {
+      if (isVisibleRef.current && container.offsetWidth > 0 && container.offsetHeight > 0 && !webglContextPool.acquireWouldEvict(webglTokenRef.current)) {
+        webglContextPool.acquire(webglTokenRef.current, loadWebgl, disposeWebgl);
+      } else {
+        swapWebglOnRevealRef.current = true;
+      }
+    }
+
     let pendingAdoptViewport: ParkedTerminal | null = null;
     // #1255: sub-floor proposals (mid-split/restoring container) are treated
     // exactly like a hidden container — no fit, and an adoption holds its
@@ -2288,6 +2536,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
     const keyboardRef = { current: adopted && !parkedKnownGone
       ? parkedKeyboardByTerminal.get(terminal) ?? INITIAL_REMOTE_KEYBOARD_STATE
+      // An engine swap keeps what the old terminal folded (R7).
+      : carry && !parkedKnownGone ? carry.keyboard
       : INITIAL_REMOTE_KEYBOARD_STATE };
     // On Windows `?9001h` says nothing about the app: ConPTY emits it at the
     // start of every session on its own behalf, so trusting it armed win32 key
@@ -3008,7 +3258,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // `.txt` content and the pendingData buffered behind it, and the adopting
     // mount skips the restore entirely — a pane with no history that the
     // autosave then writes back over the file it lost.
-    let restoreSettled = !(scrollbackFile && !adopted);
+    let restoreSettled = !(scrollbackFile && !adopted && !carry);
     let didRestoreTxt = false;
     let removeDaemonConnectedForRestore: (() => void) | null = null;
     // Flush-marker reset gating (see docs/internal/scrollback-restore-design.md).
@@ -3090,18 +3340,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // delivered it: 'dirty-raw-fallback' when pty.resync fell back to the
       // raw pty.reconnect replay, 'dirty-snapshot' otherwise.
       const mechanism = st.viaRawFallback ? 'dirty-raw-fallback' : 'dirty-snapshot';
+      st.lastMechanism = st.viaRawFallback ? 'raw' : st.mode;
       st.viaRawFallback = false;
       console.log(`[wmux:reveal] ptyId=${ptyId} mechanism=${mechanism} recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
       // #1256: same viewport-preservation contract as paintDeadSnapshot —
       // the reset below snaps to bottom, and a user scrolled up in the pane
       // must stay where they were after the recovered screen lands.
-      const fromBottom = Math.max(0, terminal.buffer.active.baseY - terminal.buffer.active.viewportY);
+      // The first repaint after an engine swap restores what the old terminal
+      // showed: its scroll offset, its bookmarks, its kitty flags (R7).
+      const swapFinish = takeSwapFinish(terminal);
+      const fromBottom = Math.max(0, terminal.buffer.active.baseY - terminal.buffer.active.viewportY, swapFinish?.fromBottom ?? 0);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       warmSwap.cancel(); // this repaint replaces any pending cold frame
       // The RIS disposes every marker. Measure the scrollback bookmarks once
       // the bytes ahead of it have parsed, and put them back after the replay.
-      let restoreBookmarks: (() => void) | null = null;
+      let restoreBookmarks: ((target: Terminal) => void) | null = swapFinish ? swapFinish.restoreBookmarks : null;
       const measureBookmarks = () => {
+        if (swapFinish) return;
         try { restoreBookmarks = keepBookmarksAcrossRepaint(terminal, ptyId, useStore); } catch { /* disposed mid-repaint — teardown owns cleanup */ }
       };
       terminal.write('', measureBookmarks);
@@ -3111,17 +3366,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // END goes before an escape sequence the replay ends inside, which the
       // next live bytes finish (splitTrailingEscape).
       const held = splitTrailingEscape(st.buffer);
-      for (const chunk of held.complete) {
+      // Kitty flags go right after the replayed snapshot, so live output that
+      // came after it still changes them as it did.
+      const kittyFlags = swapFinish?.kittyFlags ?? 0;
+      let kittyAfter = -1;
+      if (kittyFlags > 0) held.complete.forEach((chunk, i) => { if (chunk.replay) kittyAfter = i; });
+      held.complete.forEach((chunk, i) => {
         writePtyDataImmediately(terminal, chunk, replayMuteRef.current);
-      }
+        if (i === kittyAfter) terminal.write(kittySetFlags(kittyFlags));
+      });
       terminal.write(REPAINT_END);
+      if (kittyFlags > 0 && kittyAfter < 0) terminal.write(kittySetFlags(kittyFlags));
       if (held.pending) writePtyDataImmediately(terminal, held.pending, replayMuteRef.current);
       // The scheduler's query splitter was discarded above; give it the
       // unfinished tail xterm now holds, so the live bytes that finish it are
       // still recognised as a query.
       if (held.pending) noteTerminalDirectWrite(terminal, held.pending.data);
       terminal.write('', () => {
-        try { restoreBookmarks?.(); } catch { /* disposed mid-restore — teardown owns cleanup */ }
+        try { restoreBookmarks?.(terminal); } catch { /* disposed mid-restore — teardown owns cleanup */ }
       });
       if (fromBottom > 0) {
         // Trailing empty write = parse barrier (callbacks fire in write
@@ -3188,6 +3450,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     };
     const routePtyData = (payload: PtyDataPayload) => {
       logRevealFirstData(payload);
+      // A local-mode engine swap is serializing this terminal: what arrives
+      // now is the new terminal's (the transplant's tail).
+      const divert = divertLiveRef.current;
+      if (divert) { divert.push(payload); return; }
       deliverPtyData({ ...payload, data: restingCursor.process(payload.data) });
     };
     const deliverPtyData = (payload: PtyDataPayload) => {
@@ -3288,7 +3554,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const paintColdFrame = coldFrame !== null && initialFitRan && coldFrameFits(coldFrame, terminal.cols);
     if (paintColdFrame) {
       terminal.write(coldFrame.frame);
-      warmSwap.painted();
+      // An engine swap's own resync swaps its replay in over the frame
+      // (completeResyncFromFlush), like a reveal resync over a dirty pane.
+      if (!carry) warmSwap.painted();
       // The pane has its screen: drop the "Restoring session..." overlay a
       // scrollbackFile pane raises until first data (same as an adoption).
       fireFirstData();
@@ -3350,7 +3618,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // so the `.txt` restore below would write a second copy of the scrollback
     // over the screen it is meant to reproduce. It takes the fresh-terminal
     // branch instead: listeners and registry, no replay.
-    if (scrollbackFile && !adopted) {
+    // An engine swap (carry) has the session's content coming from its resync
+    // or its transplant, never from the .txt cache.
+    if (scrollbackFile && !adopted && !carry) {
       // Register PTY listeners immediately to avoid data loss during scrollback load.
       // scrollback.load() is async (IPC round-trip). If PTY sends data before it
       // resolves, connectPty() would not yet be called and data would be lost.
@@ -3543,6 +3813,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         registerTerminal(ptyId, terminal);
       });
     } else {
+      // Local-mode engine swap (R12): the old terminal's serialized screen,
+      // then the live output that came after it, then the live pipe.
+      const transplant = carry?.transplant ?? null;
+      if (carry && transplant) {
+        if (transplant.snapshot) writeReplayed(terminal, transplant.snapshot, replayMuteRef.current);
+        if (carry.kittyFlags > 0) terminal.write(kittySetFlags(carry.kittyFlags));
+        const { fromBottom: transplantFromBottom, restoreBookmarks: transplantBookmarks } = carry;
+        terminal.write('', () => {
+          try {
+            transplantBookmarks?.(terminal);
+            if (transplantFromBottom > 0) terminal.scrollToLine(Math.max(0, terminal.buffer.active.baseY - transplantFromBottom));
+          } catch { /* disposed mid-restore — teardown owns cleanup */ }
+        });
+        for (const payload of transplant.tail) routePtyData(payload);
+      }
       connectPty();
       // Nothing to restore (fresh terminal, or one adopted with its buffer
       // intact) — register immediately.
@@ -3621,6 +3906,40 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     setTerminalInstance(terminal);
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
+
+    // Labs wongtty switch: the rest of an engine swap (R7). A visible pane
+    // repaints the session from the daemon now (pty.resync over the live pipe,
+    // no reattach), over the cold frame painted above; a hidden one is marked
+    // dirty, so its reveal or an agent's read repaints it.
+    if (carry) {
+      const swap = carry;
+      const logSwap = (mechanism: string) => console.log(`[wmux:engine-swap] ptyId=${ptyId} from=${swap.from} to=${swap.to} mechanism=${mechanism} ms=${(performance.now() - swap.at).toFixed(0)} buffer=${swap.bufferType}`);
+      fireFirstData();
+      if (swap.focused) terminal.focus();
+      if (swap.transplant) {
+        logSwap('transplant');
+      } else {
+        // In effect at once for the keys typed during the repaint; the
+        // repaint's RIS clears them and swapFinish writes them again.
+        if (swap.kittyFlags > 0) terminal.write(kittySetFlags(swap.kittyFlags));
+        swapFinishRef.current = { terminal, fromBottom: swap.fromBottom, kittyFlags: swap.kittyFlags, restoreBookmarks: swap.restoreBookmarks };
+        if (isVisibleRef.current) {
+          swapRepaintPendingRef.current = true;
+          // A recent degrade must not leave the new terminal without a repaint.
+          resyncRef.current.degradedUntil = 0;
+          void startResync('engine-swap').then(() => {
+            if (terminalRef.current !== terminal) return;
+            swapRepaintPendingRef.current = false;
+            logSwap(resyncRef.current.lastMechanism || 'snapshot');
+            updateEnginePending();
+          });
+        } else {
+          markTerminalDirty(terminal);
+          logSwap('dirty-deferred');
+        }
+      }
+    }
+    updateEnginePending();
 
     // Phase 3 hydrate-before-read: MCP buffer reads (pane.search /
     // input.readScreen) must not scan a stale hidden pane. Dirty → full
@@ -3724,8 +4043,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // the bug, and "the split still replays" is indistinguishable from "a
       // guard refused" without knowing which one fired.
       const parkElement = terminal.element ?? null;
+      // Labs wongtty switch: paneEngine changed (the layout effect said so)
+      // and this pane stays mounted: the terminal is replaced, not parked,
+      // and what the replacement needs is carried over (R7). An unmount in
+      // the same commit is a plain teardown.
+      const swap = mountedRef.current ? swapPendingRef.current : null;
       const parkRefusal =
         parkElement === null ? 'no-element'
+        : swap ? 'engine-swap'
         // Mid-resync or dirty: exactly the pane that NEEDS the replay.
         : resyncRef.current.pending ? 'resync-pending'
         : isTerminalDirty(terminal) ? 'dirty'
@@ -3758,6 +4083,30 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // so a dogfood pass on another machine can read the decision instead of
       // inferring it from what the screen did.
       console.log(`[wmux:pane-adopt] ptyId=${ptyId} teardown=${canPark ? 'parked' : `disposed reason=${parkRefusal}`}`);
+      if (swap) {
+        let fromBottom = 0;
+        let bufferType = 'normal';
+        try {
+          const buffer = terminal.buffer.active;
+          fromBottom = Math.max(0, buffer.baseY - buffer.viewportY);
+          bufferType = buffer.type;
+        } catch { /* half torn down: the defaults */ }
+        let restoreBookmarks: ((target: Terminal) => void) | null = null;
+        try { restoreBookmarks = keepBookmarksAcrossRepaint(terminal, ptyId, useStore); } catch { /* a bookmark carry never stops the swap */ }
+        const active = document.activeElement;
+        const transplant = transplantRef.current?.ptyId === ptyId ? transplantRef.current : null;
+        transplantRef.current = null;
+        swapCarryRef.current = {
+          ptyId, from: swap.from, to: swap.to, at: swap.at,
+          cols: terminal.cols, rows: terminal.rows, fromBottom,
+          focused: !!active && !!parkElement?.contains(active),
+          keyboard: keyboardRef.current,
+          kittyFlags: xtermKittyFlags(terminal) ?? 0,
+          bufferType, restoreBookmarks, transplant,
+        };
+      }
+      instanceEngineRef.current = null;
+      delete container.dataset.terminalEngine;
 
       resizeScheduler.dispose();
       if (pendingFitRaf !== null) cancelAnimationFrame(pendingFitRaf);
@@ -3827,7 +4176,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // the terminal) and drop this mount's hydrate entry — a remount on the
       // same ptyId registers its own. Pass the effect's captured ptyId, not
       // the ref (which may already point at the swapped-in pane).
-      cancelResync(ptyId);
+      // An engine swap keeps a resync in flight: its held bytes are engine-
+      // neutral and the new terminal's flush listener settles it.
+      if (!swap) cancelResync(ptyId);
       if (ptyId && hydrateRegistry.get(ptyId) === hydrateForRead) {
         hydrateRegistry.delete(ptyId);
       }
@@ -3895,7 +4246,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [ptyId, containerRef]);
+  }, [ptyId, containerRef, paneEngine]);
 
   // Fix D (2026-05-30 blank-terminal-on-restore): own the daemon session
   // (re)attach here instead of as a one-shot `if (daemonModeAtMount)` gate
@@ -4269,6 +4620,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // ratio the DOM renderer keeps fractional cell sizes while WebGL floors
       // them to device pixels, so the swap visibly tightened letter and line
       // spacing on screen, and the refit below re-wrapped the grid.
+      if (
+        swapWebglOnRevealRef.current &&
+        loadWebglRef.current &&
+        disposeWebglRef.current &&
+        !webglAddonRef.current &&
+        !webglContextPool.acquireWouldEvict(token)
+      ) {
+        swapWebglOnRevealRef.current = false;
+        webglContextPool.acquire(token, loadWebglRef.current, disposeWebglRef.current);
+      }
       let cancelUpgrade: (() => void) | null = null;
       let upgradeFitRaf: number | null = null;
       let showAfterUpgrade: (() => void) | null = null;

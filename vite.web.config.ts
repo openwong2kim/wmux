@@ -67,6 +67,7 @@ export const WEB_STUBS: Record<string, string> = {
   // The experimental wongtty front end gets its WebAssembly from main.
   [r('src/renderer/terminal/wongtty/load.ts')]: r('src/renderer/web/stubs/wongttyLoad.ts'),
   [r('src/renderer/terminal/wongtty/engineController.ts')]: r('src/renderer/web/stubs/engineController.ts'),
+  [r('src/renderer/terminal/wongtty/transplant.ts')]: r('src/renderer/web/stubs/transplant.ts'),
 };
 
 export function webStubs(): Plugin {
