@@ -472,6 +472,10 @@ export interface UISlice {
    *  viewport compacted in memory. No Settings row yet (dogfood only). */
   terminalCompactScrollback: boolean;
   setTerminalCompactScrollback: (enabled: boolean) => void;
+  /** Where a clicked terminal file path or `file:` link opens: wmux's own
+   *  read-only editor / preview tab (default) or the OS default app. */
+  terminalOpenFileLinksIn: 'wmux' | 'os';
+  setTerminalOpenFileLinksIn: (target: 'wmux' | 'os') => void;
   /** EXPERIMENTAL, default OFF: draw every pane through one shared WebGL
    *  context instead of one context per pane. No Settings row yet. */
   terminalSharedWebgl: boolean;
@@ -1638,6 +1642,11 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setPaneNewTerminalButton: (visible) => set((state) => {
     state.paneNewTerminalButton = visible;
+  }),
+
+  terminalOpenFileLinksIn: 'wmux',
+  setTerminalOpenFileLinksIn: (target) => set((state) => {
+    state.terminalOpenFileLinksIn = target;
   }),
 
   terminalCompactScrollback: false,

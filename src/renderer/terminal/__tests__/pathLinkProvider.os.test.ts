@@ -142,13 +142,9 @@ describe('findPathMatches', () => {
       ]);
     });
 
-    it('does not match the path component of a file:// URI', () => {
-      // POSIX matcher's lookbehind requires whitespace / quote / paren /
-      // angle before the `/`. The `:` in `file:` falls outside that set,
-      // so we expect zero hits — the URI is left for WebLinksAddon to
-      // handle if it recognises file://.
+    it('matches a file:// URI whole, not just its path component', () => {
       const matches = findPathMatches('see file:///etc/hosts please', 'linux');
-      expect(matches).toHaveLength(0);
+      expect(matches.map((m) => m.text)).toEqual(['file:///etc/hosts']);
     });
   });
 
@@ -190,9 +186,61 @@ describe('findPathMatches', () => {
       expect(findPathMatches('C:', 'win32')).toEqual([]);
     });
 
-    it('does not match a relative path', () => {
-      expect(findPathMatches('foo/bar.txt', 'linux')).toEqual([]);
-      expect(findPathMatches('./foo/bar.txt', 'linux')).toEqual([]);
+    it('matches a prefixed or dir/name.ext relative path', () => {
+      expect(findPathMatches('see ./foo/bar.txt now', 'linux').map((m) => m.text)).toEqual(['./foo/bar.txt']);
+      expect(findPathMatches('foo/bar.txt', 'linux').map((m) => m.text)).toEqual(['foo/bar.txt']);
+      expect(findPathMatches('edit ../up.md', 'linux').map((m) => m.text)).toEqual(['../up.md']);
+    });
+
+    it('does not match prose that only looks relative', () => {
+      expect(findPathMatches('and/or', 'linux')).toEqual([]);
+      expect(findPathMatches('visit example.com/index.html today', 'linux')).toEqual([]);
+      expect(findPathMatches('http://example.com/a/b.html', 'linux')).toEqual([]);
+    });
+  });
+
+  describe('file URLs and line locations', () => {
+    it('matches a file URL', () => {
+      const m = findPathMatches('open file:///tmp/x.md please', 'linux');
+      expect(m).toHaveLength(1);
+      expect(m[0].text).toBe('file:///tmp/x.md');
+    });
+
+    it('extends the link range over :line and :line:col but not trailing punctuation', () => {
+      const line = 'x /src/a.ts:42 y';
+      const [a] = findPathMatches(line, 'linux');
+      expect(line.slice(a.start, a.end)).toBe('/src/a.ts:42');
+      const wrapped = '(see /src/a.ts:42:10).';
+      const [b] = findPathMatches(wrapped, 'linux');
+      expect(wrapped.slice(b.start, b.end)).toBe('/src/a.ts:42:10');
+      const win = 'C:\\Temp\\t.txt:42';
+      const [c] = findPathMatches(win, 'win32');
+      expect(win.slice(c.start, c.end)).toBe(win);
+    });
+
+    it('reports :line and :line:col separately from the path text', () => {
+      const [a] = findPathMatches('/src/a.ts:42', 'linux');
+      expect(a).toMatchObject({ text: '/src/a.ts', line: 42 });
+      expect(a.col).toBeUndefined();
+      const [b] = findPathMatches('(see /src/a.ts:42:10)', 'linux');
+      expect(b).toMatchObject({ text: '/src/a.ts', line: 42, col: 10 });
+    });
+
+    it('does not read a semver trailer as a line', () => {
+      const [m] = findPathMatches('/foo.ts:1.2.3', 'linux');
+      expect(m.text).toBe('/foo.ts');
+      expect(m.line).toBeUndefined();
+    });
+
+    it('passes the location to the open callback', () => {
+      const open = vi.fn();
+      const term = {
+        buffer: { active: { getLine: () => ({ isWrapped: false, translateToString: () => '/a/b.ts:7:2' }) } },
+      };
+      let links: any[] = [];
+      createPathLinkProvider(term as any, open, 'linux').provideLinks(1, (l) => { links = l ?? []; });
+      links[0].activate({ button: 0 } as MouseEvent);
+      expect(open).toHaveBeenCalledWith('/a/b.ts', { line: 7, col: 2 });
     });
   });
 });

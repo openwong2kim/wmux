@@ -21,7 +21,7 @@ describe('settings catalog — Browser tab', () => {
     const onTerminal = SETTINGS_CATALOG.filter((e) => e.tab === 'terminal').map((e) => e.id);
     expect(onTerminal).toEqual([
       'fontsize', 'fontfamily', 'cursorshape',
-      'terminal-engine', 'shell', 'startdir', 'splitcwd', 'closeonexit', 'plaindragselect', 'ime', 'retention', 'coldpark', 'inlineimages', 'scrollback', 'restore', 'imagepaste',
+      'terminal-engine', 'shell', 'startdir', 'splitcwd', 'openfilelinksin', 'closeonexit', 'plaindragselect', 'ime', 'retention', 'coldpark', 'inlineimages', 'scrollback', 'restore', 'imagepaste',
     ]);
   });
 

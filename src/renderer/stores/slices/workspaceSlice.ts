@@ -1689,6 +1689,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.paneNewTerminalButton === 'boolean') {
         state.paneNewTerminalButton = data.paneNewTerminalButton;
       }
+      // Where a clicked terminal file link opens; an unknown value keeps the default.
+      if (data.terminalOpenFileLinksIn === 'os' || data.terminalOpenFileLinksIn === 'wmux') {
+        state.terminalOpenFileLinksIn = data.terminalOpenFileLinksIn;
+      }
       // Experimental memory opt-ins: only an explicit true turns them on.
       if (data.terminalCompactScrollback === true) state.terminalCompactScrollback = true;
       if (data.terminalSharedWebgl === true) state.terminalSharedWebgl = true;

@@ -439,6 +439,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     titlebarVitalsAlwaysVisible: state.titlebarVitalsAlwaysVisible,
     paneNewTerminalButton: state.paneNewTerminalButton,
     terminalCompactScrollback: state.terminalCompactScrollback,
+    terminalOpenFileLinksIn: state.terminalOpenFileLinksIn,
     terminalSharedWebgl: state.terminalSharedWebgl,
     splitInheritsCwd: state.splitInheritsCwd,
     closeTabOnShellExit: state.closeTabOnShellExit,

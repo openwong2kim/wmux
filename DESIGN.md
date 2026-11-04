@@ -1834,7 +1834,10 @@ button, so it can be hidden while the agent bar is off. It lists the focused pan
 that folder's git repository root when it is inside one. One seam on its
 pane side, a 40px header on the pane tab strip's line, 24px rows with a chevron
 and a line icon; a selected row is a `--selection` fill. Click opens a file
-in an editor tab of the focused pane; drag drops its path into a terminal;
+in an editor tab of the focused pane (proposed: a file path clicked in a
+terminal opens there too, unless Settings › Terminal › "Open file links in"
+says System app);
+drag drops its path into a terminal;
 the row menu has Open, Insert path into terminal, Copy path, Copy relative
 path, and Open in Finder / File Explorer.
 The header's search button opens a name filter field under it (the field

@@ -40,7 +40,8 @@ import {
   type ReplayMute,
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
-import { createPathLinkProvider } from '../terminal/pathLinkProvider';
+import { createPathLinkProvider, type PathLocation } from '../terminal/pathLinkProvider';
+import { openTerminalFileLink } from '../terminal/openTerminalFileLink';
 import { createHardWrappedLinkProvider } from '../terminal/hardWrappedLinkProvider';
 import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPromptCarry, noteCodexEndedByPrompt, clearCodexEndedOnSlug } from '../terminal/newlineKeys';
 import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
@@ -1515,13 +1516,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
     };
     // Rebind adopted terminals too, so the callback uses the current pane ref.
-    terminal.options.linkHandler = createOsc8LinkHandler(activateTerminalUrl);
+    terminal.options.linkHandler = createOsc8LinkHandler(
+      activateTerminalUrl,
+      undefined,
+      (_event, uri) => openTerminalPath(uri, undefined, true),
+    );
     const webLinksAddon = new WebLinksAddon(activateTerminalUrl);
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     // Main-side validation in shell.handler.openPath is the security
     // boundary; the renderer regexes are only a UX filter.
-    const openTerminalPath = (filePath: string): void => {
+    const openWithOs = (filePath: string): void => {
       void window.electronAPI.shell.openPath(filePath).then((result) => {
         // Main-side outcomes:
         //   • ok=true → opened cleanly, nothing to surface
@@ -1541,6 +1546,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // not absolute, length cap). These are developer-visible bugs
         // rather than user-actionable failures — log only.
         console.warn('[useTerminal] openPath failed:', err);
+      });
+    };
+    // Path and `file:` clicks open in a wmux tab by default (setting
+    // terminalOpenFileLinksIn); the OS opener stays the fallback.
+    const openTerminalPath = (filePath: string, location?: PathLocation, viewerOnly = false): void => {
+      void openTerminalFileLink(filePath, location, ptyIdRef.current || undefined, {
+        openWithOs,
+        onFailure: () => showOpenPathToast('terminal.openPathFailed'),
+        viewerOnly,
+      }).catch((err: unknown) => {
+        console.warn('[useTerminal] open file link failed:', err);
       });
     };
     // Claude Code wraps long lines itself (cursor move + indent), so a URL or

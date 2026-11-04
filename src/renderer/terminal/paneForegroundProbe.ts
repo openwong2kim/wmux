@@ -31,6 +31,7 @@
  * read from the 15 s `pty.list` poll's store maps, which can predate it.
  */
 import type { ForegroundGoneProbe } from '../../shared/terminal/shellPromptModeReset';
+import { validWslTarget } from '../../shared/wslTarget';
 
 /** ProcessMonitor's 15 s death-check cadence plus one poll of margin. */
 export const AGENT_DEATH_LAG_MS = 20_000;
@@ -77,4 +78,21 @@ export function paneForegroundProbe(
     if (!agentAlive) return true;
     return now() - promptAt >= AGENT_DEATH_LAG_MS ? false : undefined;
   };
+}
+
+/**
+ * The WSL distribution a pane's shell runs in, or undefined when the pane has
+ * no WSL target or the session list does not know it. Only daemon sessions
+ * carry `wslTarget`, so a plain PTY pane reads as undefined.
+ */
+export async function paneWslDistro(
+  ptyId: string,
+  api: Pick<PaneForegroundApi, 'list'>,
+): Promise<string | undefined> {
+  try {
+    const target = (await api.list()).find((x) => x.id === ptyId)?.wslTarget;
+    return validWslTarget(target) ? target.distribution : undefined;
+  } catch {
+    return undefined;
+  }
 }

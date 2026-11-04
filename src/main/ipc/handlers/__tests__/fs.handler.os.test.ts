@@ -150,6 +150,33 @@ describe('fs.handler security helpers', () => {
     await expect(resolveAccessiblePath(path.join(home, 'project', 'repo'))).resolves.toBe('\\\\wsl.localhost\\Ubuntu\\home\\me\\repo');
   });
 
+  it.each([
+    '\\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa',
+    '\\\\wsl.localhost\\Ubuntu\\home\\me\\.aws\\credentials',
+    '\\\\wsl.localhost\\Ubuntu\\home\\me\\proj\\.env',
+    '//wsl$/Ubuntu/home/me/.gnupg/pubring.kbx',
+    '\\\\WSL.LOCALHOST\\Ubuntu/home/me/.SSH/id_rsa',
+    '\\\\wsl$\\Ubuntu\\home\\me\\.config\\gcloud\\creds.db',
+    '\\\\wsl$\\Ubuntu\\home\\me\\.wmux\\daemon-auth-token',
+  ])('blocks the sensitive WSL path %s', async (p) => {
+    expect(isSensitivePath(p)).toBe(true);
+    await expect(resolveAccessiblePath(p)).resolves.toBeNull();
+    expect(realpathSpy).not.toHaveBeenCalled();
+  });
+
+  it('blocks a WSL realpath that lands on a sensitive file', async () => {
+    realpathSpy.mockResolvedValue('\\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa');
+    await expect(resolveAccessiblePath(path.join(home, 'link'))).resolves.toBeNull();
+  });
+
+  it.each([
+    '\\\\wsl$\\Ubuntu\\tmp\\x.md',
+    '\\\\wsl.localhost\\Ubuntu\\home\\me\\notes.md',
+    '\\\\wsl$\\Ubuntu\\home\\me\\.environment',
+  ])('allows the ordinary WSL path %s', (p) => {
+    expect(isSensitivePath(p)).toBe(false);
+  });
+
   it('returns null when canonicalization fails', async () => {
     realpathSpy.mockRejectedValue(new Error('ENOENT'));
 
