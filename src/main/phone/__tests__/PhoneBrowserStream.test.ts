@@ -111,7 +111,7 @@ describe('phone browser stream (main)', () => {
       push: (params) => { pushes.push(params); return reply(params); },
       backend: () => 'chrome',
       chrome: {
-        tabs: async () => [{ surfaceId: 'chrome-a', url: tabURL }, { surfaceId: 'chrome-b', url: tabURL }],
+        tabs: async () => ['chrome-a', 'chrome-b', 'chrome-c', 'chrome-d'].map((surfaceId) => ({ surfaceId, url: tabURL })),
         streamSession: async () => { const s = new FakeSession(); s.focus = pageFocus; s.gates = gates; sessions.push(s); return s; },
         owns: () => owned,
       },
@@ -616,5 +616,56 @@ describe('phone browser stream (main)', () => {
       expect(gaps.length).toBeGreaterThanOrEqual(15);
       expect(Math.max(...gaps)).toBeLessThan(300);
     }
+  });
+
+  it('a tab of large frames is not starved by tabs of smaller ones: a refused tab is served before anyone after it', async () => {
+    const sent: Array<{ streamId: unknown; at: number }> = [];
+    reply = async (p) => { if (p.kind === 'frame') sent.push({ streamId: p.streamId, at: Date.now() }); return { ok: true, known: true }; };
+    for (const surfaceId of ['chrome-a', 'chrome-b', 'chrome-c', 'chrome-d']) await start({ maxFps: 15 }, surfaceId);
+    const startedAt = Date.now();
+    // Three tabs of ~300 KiB frames ask for about 13 MiB/s between them, past
+    // the 8 MiB/s budget; the fourth paints ~690 KiB frames.
+    for (let i = 1; i <= 60; i++) {
+      sessions[0].frame(i, {}, jpeg(1280, 720, 690));
+      for (const s of sessions.slice(1)) s.frame(i, {}, jpeg(1280, 720, 300));
+      await vi.advanceTimersByTimeAsync(66);
+    }
+    const large = sent.filter((s) => s.streamId === 'st-chrome-a' && s.at - startedAt >= 1_000).map((s) => s.at);
+    const gaps = large.slice(1).map((t, i) => t - large[i]);
+    // In turn with the others: about one round of all four tabs per ~200 ms.
+    expect(large.length).toBeGreaterThanOrEqual(10);
+    expect(Math.max(...gaps)).toBeLessThan(400);
+    // Each small tab keeps its turn too.
+    for (const streamId of ['st-chrome-b', 'st-chrome-c', 'st-chrome-d']) {
+      expect(sent.filter((s) => s.streamId === streamId && s.at - startedAt >= 1_000).length).toBeGreaterThanOrEqual(10);
+    }
+  });
+
+  it('a tab that stops while it waits in line for the budget leaves the line: the tab behind it goes on', async () => {
+    const sent: Array<{ streamId: unknown; at: number }> = [];
+    reply = async (p) => { if (p.kind === 'frame') sent.push({ streamId: p.streamId, at: Date.now() }); return { ok: true, known: true }; };
+    await start({ maxFps: 15 }, 'chrome-a');
+    await start({ maxFps: 15 }, 'chrome-b');
+    const of = (streamId: string) => sent.filter((s) => s.streamId === streamId).length;
+    // Large frames on A until one is refused: past its own frame interval, it waits for bytes.
+    let refused = false;
+    for (let i = 1; i <= 40 && !refused; i++) {
+      const before = of('st-chrome-a');
+      sessions[0].frame(i, {}, jpeg(1280, 720, 690));
+      await vi.advanceTimersByTimeAsync(1);
+      refused = of('st-chrome-a') === before;
+      sessions[1].frame(i, {}, jpeg(1280, 720, 300));
+      if (!refused) await vi.advanceTimersByTimeAsync(67);
+    }
+    expect(refused).toBe(true);
+    // B is now in line behind A; A stops.
+    await vi.advanceTimersByTimeAsync(1);
+    await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a' });
+    const before = of('st-chrome-b');
+    for (let i = 100; i < 115; i++) {
+      sessions[1].frame(i, {}, jpeg(1280, 720, 300));
+      await vi.advanceTimersByTimeAsync(67);
+    }
+    expect(of('st-chrome-b') - before).toBeGreaterThanOrEqual(10);
   });
 });

@@ -163,31 +163,70 @@ const BUDGET_BURST_SECONDS = 0.25;
  * Main's push budget across tabs, frames and bytes per second, as token
  * buckets that refill continuously: a stream over budget gets evenly spaced
  * frames, not a second's worth in a burst and then nothing for the rest of it.
+ *
+ * A tab refused a frame waits in line, and no tab is served before the ones
+ * refused ahead of it: otherwise tabs of small frames take the bytes as they
+ * refill, and a tab of large frames never sees enough of them at once.
  */
 class Budget {
   private frames = STREAM_FRAMES_PER_SECOND * BUDGET_BURST_SECONDS;
   private bytes = STREAM_BYTES_PER_SECOND * BUDGET_BURST_SECONDS;
   private at = 0;
+  /** The tabs refused a frame, in the order they were refused, with that frame's size. */
+  private line: Array<{ who: object; bytes: number; wake: () => void }> = [];
   private refill(now: number): void {
     const seconds = Math.max(0, now - this.at) / 1000;
     this.at = now;
     this.frames = Math.min(STREAM_FRAMES_PER_SECOND * BUDGET_BURST_SECONDS, this.frames + seconds * STREAM_FRAMES_PER_SECOND);
     this.bytes = Math.min(STREAM_BYTES_PER_SECOND * BUDGET_BURST_SECONDS, this.bytes + seconds * STREAM_BYTES_PER_SECOND);
   }
-  /** Charges one frame of `bytes`; false (nothing charged) past the budget. */
-  take(bytes: number, now: number): boolean {
+  /**
+   * Charges one frame of `bytes` to `who`; false (nothing charged) past the
+   * budget, or while a tab refused earlier still waits. `wake` asks `who` to
+   * try again once it is first in line.
+   */
+  take(who: object, bytes: number, now: number, wake: () => void): boolean {
     this.refill(now);
-    if (this.frames < 1 || this.bytes < bytes) return false;
+    const place = this.line.findIndex((waiting) => waiting.who === who);
+    if (place >= 0) this.line[place].bytes = bytes;
+    const passing = place < 0 ? this.line.length > 0 : place > 0;
+    if (passing || this.frames < 1 || this.bytes < bytes) {
+      if (place < 0) this.line.push({ who, bytes, wake });
+      return false;
+    }
     this.frames -= 1;
     this.bytes -= bytes;
+    if (place === 0) {
+      this.line.shift();
+      this.next();
+    }
     return true;
   }
-  /** Milliseconds until a frame of `bytes` fits. */
-  wait(bytes: number, now: number): number {
+  /** Milliseconds until `who`'s frame fits, after the frames of the tabs ahead of it. */
+  wait(who: object, bytes: number, now: number): number {
     this.refill(now);
-    const frames = Math.max(0, 1 - this.frames) / STREAM_FRAMES_PER_SECOND;
-    const data = Math.max(0, bytes - this.bytes) / STREAM_BYTES_PER_SECOND;
-    return Math.max(1, Math.ceil(Math.max(frames, data) * 1000));
+    let frames = 1;
+    let data = bytes;
+    for (const waiting of this.line) {
+      if (waiting.who === who) break;
+      frames += 1;
+      data += waiting.bytes;
+    }
+    const frameWait = Math.max(0, frames - this.frames) / STREAM_FRAMES_PER_SECOND;
+    const dataWait = Math.max(0, data - this.bytes) / STREAM_BYTES_PER_SECOND;
+    return Math.max(1, Math.ceil(Math.max(frameWait, dataWait) * 1000));
+  }
+  /** `who` stopped: it leaves the line. */
+  leave(who: object): void {
+    const place = this.line.findIndex((waiting) => waiting.who === who);
+    if (place < 0) return;
+    this.line.splice(place, 1);
+    if (place === 0) this.next();
+  }
+  /** The first in line has gone: the next one tries now rather than at its estimate. */
+  private next(): void {
+    const first = this.line[0];
+    if (first) queueMicrotask(first.wake);
   }
 }
 
@@ -232,6 +271,8 @@ abstract class TabStream implements PhoneStreamTabView {
   private tick: ReturnType<typeof setInterval> | null = null;
   protected firstFrame: ReturnType<typeof setTimeout> | null = null;
   private shrinking = false;
+  /** The budget's call once this tab is first in its line (Budget.take). */
+  private readonly wake = () => this.pump();
   readonly size: { maxWidth: number; maxHeight: number; quality: number };
 
   constructor(
@@ -409,7 +450,7 @@ abstract class TabStream implements PhoneStreamTabView {
     let wait = 0;
     if (item.kind === 'frame') {
       wait = this.lastFramePushAt + 1000 / this.maxFps - now;
-      if (wait <= 0 && !this.budget.take(item.bytes, now)) wait = this.budget.wait(item.bytes, now);
+      if (wait <= 0 && !this.budget.take(this, item.bytes, now, this.wake)) wait = this.budget.wait(this, item.bytes, now);
     } else if (item.kind === 'url') {
       wait = this.lastUrlPushAt + URL_INTERVAL_MS - now;
     } else if (item.kind === 'focus') {
@@ -585,6 +626,7 @@ abstract class TabStream implements PhoneStreamTabView {
     if (this.freshTimer) clearTimeout(this.freshTimer);
     if (this.firstFrame) clearTimeout(this.firstFrame);
     for (const item of this.outbox.splice(0)) { this.ackHeld(item); this.ack(item.ack); }
+    this.budget.leave(this);
     this.release(this.dropFocusWatch());
     this.onStopped(this);
   }
