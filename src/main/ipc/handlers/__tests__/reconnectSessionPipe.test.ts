@@ -579,14 +579,70 @@ describe('what main holds of a replaced pipe is dropped, never of a kept one', (
     replacingPipe,
   });
 
-  it('a full attach says the pipe is being replaced, before it attaches', async () => {
+  it('a full attach says the pipe was replaced once the new one is connected, before it delivers', async () => {
     await create(world, '');
     await vi.advanceTimersByTimeAsync(5);
-    const replacing = vi.fn(() => { expect(world.attaches).toBe(1); });
+    const oldSocket = world.socket;
+    const replaysBefore = world.replays.length;
+    const replacing = vi.fn(() => {
+      expect(world.attaches).toBe(2);
+      expect(world.socket).not.toBe(oldSocket);
+      expect(oldSocket?.alive).toBe(false);
+      expect(world.replays.length).toBe(replaysBefore);
+    });
     const re = await reattach(false, replacing);
     expect(re.kind).toBe('attached');
     expect(replacing).toHaveBeenCalledTimes(1);
-    expect(world.attaches).toBe(2);
+  });
+
+  it('a create-time pipe that has closed is replaced like any other', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const socket = world.socket;
+    if (!socket) throw new Error('create left no socket');
+    socket.alive = false;
+    const replacing = vi.fn(() => { expect(world.attaches).toBe(2); });
+    const re = await reattach(true, replacing);
+    expect(re.kind).toBe('attached');
+    expect(replacing).toHaveBeenCalledTimes(1);
+  });
+
+  it('a queued reconnect drops what main holds only when its own step replaces the pipe', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const steps: string[] = [];
+    const { connectSessionPipe } = world.client;
+    let caller = '';
+    world.client.connectSessionPipe = (async (id: string, opts?: { forceFresh?: boolean }) => {
+      steps.push(`${caller}:connect`);
+      return connectSessionPipe(id, opts);
+    }) as typeof world.client.connectSessionPipe;
+    const queued = (name: string) => reconnectSessionPipe(world.client, ID, {
+      promote: true,
+      ownsCreatePipe: false,
+      resync: world.resync,
+      installListener: () => { caller = name; },
+      // The first step's pipe delivers while the second waits: what main
+      // holds of it then belongs to the pipe the second has not replaced yet.
+      replacingPipe: () => steps.push(`${name}:replacing`),
+    });
+    const both = Promise.all([queued('first'), queued('second')]);
+    await vi.advanceTimersByTimeAsync(0);
+    await both;
+    expect(steps).toEqual(['first:connect', 'first:replacing', 'second:connect', 'second:replacing']);
+  });
+
+  it('a pending recovery replaces nothing', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const { rpc } = world.client;
+    world.client.rpc = (async (method: string, params?: Record<string, unknown>) => {
+      const reply = await rpc(method, params);
+      return method === 'daemon.attachSession' ? { pending: true } : reply;
+    }) as typeof world.client.rpc;
+    const replacing = vi.fn();
+    expect((await reattach(false, replacing)).kind).toBe('pending');
+    expect(replacing).not.toHaveBeenCalled();
   });
 
   it('a kept create-time pipe is not replaced', async () => {

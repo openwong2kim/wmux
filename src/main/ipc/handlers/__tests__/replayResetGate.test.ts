@@ -10,64 +10,125 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { describe, expect, it, vi } from 'vitest';
-import { createReplayResetGate, endsOnAltScreen, LEAVE_ALT_SCREEN, REPLAY_CLEAR } from '../replayResetGate';
+import {
+  createReplayResetGate, KITTY_POP_ALL, KITTY_POP_ALL_ALT, LEAVE_ALT_SCREEN, REPLAY_CLEAR, screenAfter,
+} from '../replayResetGate';
+
+// What pty.handler forwards: live and replay chunks through the gate, in order.
+const live = (gate: ReturnType<typeof createReplayResetGate>, text: string) => gate.outgoing('s', text, false);
+const replay = (gate: ReturnType<typeof createReplayResetGate>, text: string) => gate.outgoing('s', text, true);
 
 describe('replay reset gate', () => {
   it("a session's first replay goes out as it is", () => {
     const gate = createReplayResetGate(() => undefined);
-    expect(gate.replayText('s', 'PS> ')).toBe('PS> ');
-    expect(gate.replayText('s', 'more')).toBe('more');
+    expect(replay(gate, 'PS> ')).toBe('PS> ');
+    expect(replay(gate, 'more')).toBe('more');
   });
 
   it('after a flush marker, only the first chunk of the next replay is clear-led', () => {
     const log = vi.fn();
     const gate = createReplayResetGate(log);
-    gate.replayText('s', 'PS> ');
+    replay(gate, 'PS> ');
     gate.flushed('s');
-    expect(gate.replayText('s', 'PS> echo a\r\n')).toBe(`${REPLAY_CLEAR}PS> echo a\r\n`);
-    expect(gate.replayText('s', 'a\r\nPS> ')).toBe('a\r\nPS> ');
+    expect(live(gate, 'echo a\r\n')).toBe('echo a\r\n');
+    expect(replay(gate, 'PS> echo a\r\n')).toBe(`${REPLAY_CLEAR}PS> echo a\r\n`);
+    expect(replay(gate, 'a\r\nPS> ')).toBe('a\r\nPS> ');
     expect(log).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith('[lifecycle] pty.replay id=s reset=1');
   });
 
-  it('leaves the alternate screen first when the replay ends on it', () => {
+  it('leaves the alternate screen first when the pane is on it', () => {
     const log = vi.fn();
     const gate = createReplayResetGate(log);
+    replay(gate, 'shell$ vim\r\n');
     gate.flushed('s');
+    live(gate, '\x1b[?1049h\x1b[Hvim');
     const snapshot = 'shell$ vim\r\n\x1b[?1049h\x1b[Hvim';
-    expect(gate.replayText('s', snapshot)).toBe(`${LEAVE_ALT_SCREEN}${REPLAY_CLEAR}${snapshot}`);
+    expect(replay(gate, snapshot)).toBe(`${LEAVE_ALT_SCREEN}${REPLAY_CLEAR}${snapshot}`);
     expect(log).toHaveBeenCalledWith('[lifecycle] pty.replay id=s reset=1 alt=1');
   });
 
-  it('leaves a live re-flush, which opens with its own RIS, as it is', () => {
+  it('stays on the main screen when the pane is there, wherever the replay ends', () => {
+    // The pane missed the switch to the alternate screen (a pipe gap).
     const gate = createReplayResetGate(() => undefined);
+    replay(gate, 'shell$ claude\r\n\x1b[>1u');
     gate.flushed('s');
-    expect(gate.replayText('s', '\x1bcPS> ')).toBe('\x1bcPS> ');
-    // ...and the next marker arms it again.
+    const snapshot = 'shell$ claude\r\n\x1b[?1049h\x1b[Halt view';
+    expect(replay(gate, snapshot)).toBe(`${REPLAY_CLEAR}${snapshot}`);
+  });
+
+  it('empties the alternate stack when the full-screen app quit while the pane was away', () => {
+    const gate = createReplayResetGate(() => undefined);
+    replay(gate, '\x1b[?1049h\x1b[>1uvim');
     gate.flushed('s');
-    expect(gate.replayText('s', 'PS> ')).toBe(`${REPLAY_CLEAR}PS> `);
+    const snapshot = 'shell$ after\r\nshell$ ';
+    expect(replay(gate, snapshot)).toBe(`${LEAVE_ALT_SCREEN}${KITTY_POP_ALL_ALT}${REPLAY_CLEAR}${snapshot}`);
+  });
+
+  it('counts its own lead: a replay it took back to the main screen leaves the pane there', () => {
+    const gate = createReplayResetGate(() => undefined);
+    replay(gate, '\x1b[?1049hvim');
+    gate.flushed('s');
+    // A ring that wrapped past vim's exit carries no screen switch of its own.
+    expect(replay(gate, 'shell$ ').startsWith(LEAVE_ALT_SCREEN)).toBe(true);
+    gate.flushed('s');
+    // Another 1049l now would swap xterm's kitty flags of the two screens.
+    expect(replay(gate, 'shell$ ')).toBe(`${REPLAY_CLEAR}shell$ `);
+  });
+
+  it('follows a screen switch split across chunks', () => {
+    const gate = createReplayResetGate(() => undefined);
+    replay(gate, 'PS> ');
+    gate.flushed('s');
+    live(gate, 'vim\r\n\x1b[?10');
+    live(gate, '49h\x1b[Hvim');
+    expect(replay(gate, 'x').startsWith(LEAVE_ALT_SCREEN)).toBe(true);
+  });
+
+  it('empties the kitty stacks when the replay pushes again', () => {
+    const log = vi.fn();
+    const gate = createReplayResetGate(log);
+    const ring = 'shell$ claude\r\n\x1b[>1u> prompt';
+    replay(gate, ring);
+    gate.flushed('s');
+    expect(replay(gate, ring)).toBe(`${KITTY_POP_ALL}${KITTY_POP_ALL_ALT}${REPLAY_CLEAR}${ring}`);
+    expect(log).toHaveBeenCalledWith('[lifecycle] pty.replay id=s reset=1 kitty=1');
+  });
+
+  it('leaves a live re-flush, which opens with its own RIS, as it is, and follows its reset', () => {
+    const gate = createReplayResetGate(() => undefined);
+    replay(gate, '\x1b[?1049hvim');
+    gate.flushed('s');
+    expect(replay(gate, '\x1bcPS> ')).toBe('\x1bcPS> ');
+    // ...the RIS took the pane to the main screen, and the next marker arms it again.
+    gate.flushed('s');
+    expect(replay(gate, 'PS> ')).toBe(`${REPLAY_CLEAR}PS> `);
   });
 
   it('every later flush marker arms it again', () => {
     const gate = createReplayResetGate(() => undefined);
     gate.flushed('s');
-    expect(gate.replayText('s', 'one')).toBe(`${REPLAY_CLEAR}one`);
+    expect(replay(gate, 'one')).toBe(`${REPLAY_CLEAR}one`);
     gate.flushed('s');
-    expect(gate.replayText('s', 'two')).toBe(`${REPLAY_CLEAR}two`);
+    expect(replay(gate, 'two')).toBe(`${REPLAY_CLEAR}two`);
   });
 
-  it('a session that ended or restarted starts over: its next flush is appended', () => {
+  it('a session that ended or restarted starts over: its next flush is appended, its screen forgotten', () => {
     const gate = createReplayResetGate(() => undefined);
+    live(gate, '\x1b[?1049h');
     gate.flushed('s');
     gate.forget('s');
-    expect(gate.replayText('s', 'NEW> ')).toBe('NEW> ');
+    expect(replay(gate, 'NEW> ')).toBe('NEW> ');
+    gate.flushed('s');
+    expect(replay(gate, 'NEW> ')).toBe(`${REPLAY_CLEAR}NEW> `);
   });
 
   it('sessions are kept apart', () => {
     const gate = createReplayResetGate(() => undefined);
     gate.flushed('a');
-    expect(gate.replayText('b', 'b-replay')).toBe('b-replay');
-    expect(gate.replayText('a', 'a-replay')).toBe(`${REPLAY_CLEAR}a-replay`);
+    gate.outgoing('b', '\x1b[?1049h', false);
+    expect(gate.outgoing('b', 'b-replay', true)).toBe('b-replay');
+    expect(gate.outgoing('a', 'a-replay', true)).toBe(`${REPLAY_CLEAR}a-replay`);
   });
 
   it('the clear resets no mode the app negotiated, and erases the screen and the scrollback', () => {
@@ -82,7 +143,8 @@ describe('replay reset gate', () => {
 
 describe("a replaced pipe's half code point", () => {
   // pty.handler decodes per session (decodeSessionData) and drops the decoder
-  // when a reconnect replaces the pipe (replacingPipe).
+  // once a reconnect replaced the pipe (replacingPipe, after the old socket's
+  // last chunk and before the new one's first).
   const decode = (decoders: Map<string, StringDecoder>, id: string, bytes: Buffer) => {
     let d = decoders.get(id);
     if (!d) { d = new StringDecoder('utf8'); decoders.set(id, d); }
@@ -98,27 +160,27 @@ describe("a replaced pipe's half code point", () => {
     // went with the forceFresh-destroyed socket.
     expect(decode(decoders, 's', Buffer.concat([Buffer.from('live '), han.subarray(0, 2)]))).toBe('live ');
     decoders.delete('s');
-    const replay = gate.replayText('s', decode(decoders, 's', Buffer.from('hello\r\n')));
-    expect(replay).toBe(`${REPLAY_CLEAR}hello\r\n`);
+    expect(replay(gate, decode(decoders, 's', Buffer.from('hello\r\n')))).toBe(`${REPLAY_CLEAR}hello\r\n`);
   });
 
   it('would, with the decoder kept', () => {
     const decoders = new Map<string, StringDecoder>();
     decode(decoders, 's', han.subarray(0, 2));
-    expect(decode(decoders, 's', Buffer.from('hello')).startsWith('\ufffd')).toBe(true);
+    expect(decode(decoders, 's', Buffer.from('hello')).startsWith('�')).toBe(true);
   });
 });
 
-describe('endsOnAltScreen', () => {
+describe('screenAfter', () => {
   it('follows the last screen switch', () => {
-    expect(endsOnAltScreen('plain text')).toBe(false);
-    expect(endsOnAltScreen('a\x1b[?1049hb')).toBe(true);
-    expect(endsOnAltScreen('a\x1b[?1049hb\x1b[?1049lc')).toBe(false);
-    expect(endsOnAltScreen('\x1b[?47h')).toBe(true);
-    expect(endsOnAltScreen('\x1b[?1047h')).toBe(true);
-    expect(endsOnAltScreen('\x1b[?25;1049h')).toBe(true);
-    expect(endsOnAltScreen('\x1b[?1049h\x1bc')).toBe(false);
-    expect(endsOnAltScreen('\x1b[?2004h\x1b[?1h')).toBe(false);
+    expect(screenAfter('plain text', false)).toBe(false);
+    expect(screenAfter('plain text', true)).toBe(true);
+    expect(screenAfter('a\x1b[?1049hb', false)).toBe(true);
+    expect(screenAfter('a\x1b[?1049hb\x1b[?1049lc', false)).toBe(false);
+    expect(screenAfter('\x1b[?47h', false)).toBe(true);
+    expect(screenAfter('\x1b[?1047h', false)).toBe(true);
+    expect(screenAfter('\x1b[?25;1049h', false)).toBe(true);
+    expect(screenAfter('\x1b[?1049h\x1bc', false)).toBe(false);
+    expect(screenAfter('\x1b[?2004h\x1b[?1h', true)).toBe(true);
   });
 });
 
@@ -138,8 +200,8 @@ describe('pty.handler feeds the gate (source-level lock)', () => {
     expect(src).toMatch(/IPC\.PTY_FLUSH_COMPLETE,\s*\n\s*payload\.sessionId,\s*\n\s*payload\.recoveredBytes,\s*\n\s*\);\s*\n\s*replayResetGate\.flushed\(payload\.sessionId\);/);
   });
 
-  it('passes every replay chunk of the create and reconnect listeners through it', () => {
-    const pushes = src.match(/dataBatcher\.push\((\w+), payload\.replay \? replayResetGate\.replayText\(\1, text\) : text, payload\.replay\);/g) ?? [];
+  it('passes every chunk of the create and reconnect listeners through it', () => {
+    const pushes = src.match(/dataBatcher\.push\((\w+), replayResetGate\.outgoing\(\1, text, payload\.replay\), payload\.replay\);/g) ?? [];
     expect(pushes).toHaveLength(2);
     expect(src).not.toMatch(/dataBatcher\.push\(\w+, text, payload\.replay\)/);
   });

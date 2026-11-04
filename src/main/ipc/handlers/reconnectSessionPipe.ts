@@ -51,9 +51,10 @@ export interface ReconnectPipeOptions {
   /** Install this reconnect's session:data forwarder (replace semantics). */
   installListener: () => void;
   /**
-   * The session's pipe is about to be replaced (a full attach, never a kept
-   * pipe): what main holds of the old pipe's stream, such as the first bytes
-   * of a UTF-8 code point split at a chunk end, will never be completed.
+   * The session's pipe was just replaced (a full attach, never a kept pipe),
+   * before the new one delivered anything: what main holds of the old pipe's
+   * stream, such as the first bytes of a UTF-8 code point split at a chunk
+   * end, will never be completed.
    */
   replacingPipe?: () => void;
 }
@@ -108,7 +109,6 @@ async function attachSessionPipe(
   // closes the window; replace-semantics keep a repeat reconnect from
   // stacking a duplicate.
   opts.installListener();
-  opts.replacingPipe?.();
 
   // Reconnect is an explicit fresh-attach intent — pass forceFresh
   // so a stale sessionPipes entry (left over from a prior daemon
@@ -122,6 +122,9 @@ async function attachSessionPipe(
   const attached = await client.rpc('daemon.attachSession', { id, promote: opts.promote }) as { pending?: boolean } | undefined;
   if (attached?.pending) return { kind: 'pending' };
   await client.connectSessionPipe(id, { forceFresh: true });
+  // The old socket is gone now (connectSessionPipe destroys it synchronously,
+  // and its late data is dropped), and the new one has delivered nothing yet.
+  opts.replacingPipe?.();
 
   // Health probe: confirm the freshly connected pipe is actually
   // writable before reporting success. A truthy reconnect that

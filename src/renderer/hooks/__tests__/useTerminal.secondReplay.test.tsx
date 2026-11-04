@@ -154,8 +154,8 @@ function lines(): string[] {
 // flush markers (the gate is armed once one went out), restarts (forgotten
 // first, as onDaemonSessionRestarted does).
 const gate = createReplayResetGate(() => undefined);
-const replay = (id: string, text: string) => emitData!(id, gate.replayText(id, text), true);
-const live = (id: string, text: string) => emitData!(id, text, false);
+const replay = (id: string, text: string) => emitData!(id, gate.outgoing(id, text, true), true);
+const live = (id: string, text: string) => emitData!(id, gate.outgoing(id, text, false), false);
 const marker = (id: string, recoveredBytes: number) => {
   emitFlush!(id, recoveredBytes);
   gate.flushed(id);

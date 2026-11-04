@@ -10,11 +10,11 @@
  * the scrollback, it repaints the pane instead.
  *
  * main sees both ends of it: every flush marker it forwards to the renderer
- * and every replay chunk it hands to the data batcher. The daemon's stream
- * scanner emits a replay together with its marker, so the first replay chunk
- * after a marker opens a new replay. A session that ended or restarted under
- * the same id starts over: its next flush is appended (after the exit or the
- * restart line), never cleared.
+ * and every chunk it hands to the data batcher. The daemon's stream scanner
+ * emits a replay together with its marker, so the first replay chunk after a
+ * marker opens a new replay. A session that ended or restarted under the same
+ * id starts over: its next flush is appended (after the exit or the restart
+ * line), never cleared.
  *
  * Kept per main process, not per handler registration, so the first flush of
  * a new daemon generation onto a screen the old one filled is a repaint too.
@@ -32,7 +32,7 @@
 export const REPLAY_CLEAR = '\x1b[r\x1b[0m\x1b(B\x0f\x1b[4l\x1b[?6l\x1b[?7h\x1b[?45l\x1b[H\x1b[2J\x1b[3J';
 
 /**
- * Back to the main screen first when the session is on the alternate one: the
+ * Back to the main screen first when the pane is on the alternate one: the
  * clear must reach the main screen's scrollback, and the replay (a snapshot
  * writes the main screen, then `?1049h` and the alternate one) must enter the
  * alternate screen from the main one. Sent only then: xterm swaps the kitty
@@ -40,16 +40,25 @@ export const REPLAY_CLEAR = '\x1b[r\x1b[0m\x1b(B\x0f\x1b[4l\x1b[?6l\x1b[?7h\x1b[
  */
 export const LEAVE_ALT_SCREEN = '\x1b[?1049l';
 
+/** Empties the kitty keyboard flag stack of the screen the terminal is on. */
+export const KITTY_POP_ALL = '\x1b[<99u';
+/** The same for the alternate screen, from the main one. */
+export const KITTY_POP_ALL_ALT = `\x1b[?1049h${KITTY_POP_ALL}\x1b[?1049l`;
+
 // RIS, or a DECSET/DECRST whose parameters may switch the screen.
 // eslint-disable-next-line no-control-regex
 const SCREEN_SWITCH = /\x1bc|\x1b\[\?([\d;]*)([hl])/g;
+// A kitty keyboard flag push (CSI > flags u).
+// eslint-disable-next-line no-control-regex
+const KITTY_PUSH = /\x1b\[>\d*u/;
+// A complete escape at the start of a chunk tail: one main's next chunk cannot extend.
+// eslint-disable-next-line no-control-regex
+const COMPLETE_ESCAPE = /^\x1b(?:[^[]|\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e])/;
+// A tail longer than this is no screen switch.
+const MAX_CARRY = 32;
 
-/**
- * Whether `text` leaves the terminal on the alternate screen. A second replay
- * ends where the session is now, which is where the pane's terminal is.
- */
-export function endsOnAltScreen(text: string): boolean {
-  let alt = false;
+/** The screen `text` leaves a terminal on, starting from `alt`. */
+export function screenAfter(text: string, alt: boolean): boolean {
   for (const m of text.matchAll(SCREEN_SWITCH)) {
     if (m[0] === '\x1bc') alt = false;
     else if (m[1].split(';').some((p) => p === '1049' || p === '1047' || p === '47')) alt = m[2] === 'h';
@@ -60,10 +69,21 @@ export function endsOnAltScreen(text: string): boolean {
 export interface ReplayResetGate {
   /** A flush marker for the session went to the renderer. */
   flushed(sessionId: string): void;
-  /** The text of a replay chunk going to the renderer, clear-led when it opens a second replay. */
-  replayText(sessionId: string, text: string): string;
+  /**
+   * The text of a chunk going to the renderer, in the order it goes: a replay
+   * chunk that opens a second replay is clear-led. Every chunk, live or
+   * replay, is folded into what main knows of the renderer's screen.
+   */
+  outgoing(sessionId: string, text: string, replay: boolean): string;
   /** The session ended or restarted: its next flush is a first one. */
   forget(sessionId: string): void;
+}
+
+interface RendererScreen {
+  /** The renderer's terminal is on the alternate screen. */
+  alt: boolean;
+  /** An escape split at the end of the last chunk, scanned with the next. */
+  carry: string;
 }
 
 export function createReplayResetGate(
@@ -71,20 +91,57 @@ export function createReplayResetGate(
 ): ReplayResetGate {
   // Sessions whose last flush the renderer received, and no replay since.
   const flushedToRenderer = new Set<string>();
+  // Where each session's pane is: on the alternate screen or not, as the
+  // bytes main forwarded leave it. A replay ends where the session is now,
+  // which need not be where the pane is (it missed output in a pipe gap).
+  const screens = new Map<string, RendererScreen>();
+
+  const fold = (sessionId: string, text: string): void => {
+    let screen = screens.get(sessionId);
+    if (!screen) {
+      if (!text.includes('\x1b')) return;
+      screen = { alt: false, carry: '' };
+      screens.set(sessionId, screen);
+    } else if (!screen.carry && !text.includes('\x1b')) {
+      return;
+    }
+    const scanned = screen.carry + text;
+    screen.alt = screenAfter(scanned, screen.alt);
+    const at = scanned.lastIndexOf('\x1b');
+    const tail = at < 0 ? '' : scanned.slice(at);
+    screen.carry = tail && tail.length <= MAX_CARRY && !COMPLETE_ESCAPE.test(tail) ? tail : '';
+  };
+
+  const lead = (sessionId: string, text: string): string => {
+    const onAlt = screens.get(sessionId)?.alt === true;
+    // A raw ring replays the app's own kitty pushes: they rebuild the stacks,
+    // which must then start empty, or the app's later pops leave flags on.
+    const pushes = KITTY_PUSH.test(text);
+    // Left while the pane was away: the app that pushed there is gone.
+    const altGone = onAlt && !screenAfter(text, false);
+    log(`[lifecycle] pty.replay id=${sessionId} reset=1${onAlt ? ' alt=1' : ''}${pushes ? ' kitty=1' : ''}`);
+    return (onAlt ? LEAVE_ALT_SCREEN : '')
+      + (pushes ? KITTY_POP_ALL : '')
+      + (pushes || altGone ? KITTY_POP_ALL_ALT : '')
+      + REPLAY_CLEAR;
+  };
+
   return {
     flushed(sessionId) {
       flushedToRenderer.add(sessionId);
     },
-    replayText(sessionId, text) {
-      if (!flushedToRenderer.delete(sessionId)) return text;
+    outgoing(sessionId, text, replay) {
+      let out = text;
       // A live re-flush opens with its own RIS (SessionPipe.reflushInSlot).
-      if (text.startsWith('\x1bc')) return text;
-      const alt = endsOnAltScreen(text);
-      log(`[lifecycle] pty.replay id=${sessionId} reset=1${alt ? ' alt=1' : ''}`);
-      return (alt ? LEAVE_ALT_SCREEN : '') + REPLAY_CLEAR + text;
+      if (replay && flushedToRenderer.delete(sessionId) && !text.startsWith('\x1bc')) {
+        out = lead(sessionId, text) + text;
+      }
+      fold(sessionId, out);
+      return out;
     },
     forget(sessionId) {
       flushedToRenderer.delete(sessionId);
+      screens.delete(sessionId);
     },
   };
 }
