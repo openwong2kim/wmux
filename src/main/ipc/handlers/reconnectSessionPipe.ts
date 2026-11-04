@@ -50,6 +50,12 @@ export interface ReconnectPipeOptions {
   resync: SessionResync;
   /** Install this reconnect's session:data forwarder (replace semantics). */
   installListener: () => void;
+  /**
+   * The session's pipe is about to be replaced (a full attach, never a kept
+   * pipe): what main holds of the old pipe's stream, such as the first bytes
+   * of a UTF-8 code point split at a chunk end, will never be completed.
+   */
+  replacingPipe?: () => void;
 }
 
 // One pipe step per session at a time. Two Terminals can reattach the same
@@ -102,6 +108,7 @@ async function attachSessionPipe(
   // closes the window; replace-semantics keep a repeat reconnect from
   // stacking a duplicate.
   opts.installListener();
+  opts.replacingPipe?.();
 
   // Reconnect is an explicit fresh-attach intent — pass forceFresh
   // so a stale sessionPipes entry (left over from a prior daemon

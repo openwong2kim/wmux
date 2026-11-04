@@ -560,3 +560,42 @@ describe('reconnects of different sessions do not wait for each other', () => {
     expect(attached).toEqual(['session-b', 'session-a']);
   });
 });
+
+describe('what main holds of a replaced pipe is dropped, never of a kept one', () => {
+  let world: World;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    world = new World();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const reattach = (ownsCreatePipe: boolean, replacingPipe: () => void) => reconnectSessionPipe(world.client, ID, {
+    promote: true,
+    ownsCreatePipe,
+    resync: world.resync,
+    installListener: () => undefined,
+    replacingPipe,
+  });
+
+  it('a full attach says the pipe is being replaced, before it attaches', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const replacing = vi.fn(() => { expect(world.attaches).toBe(1); });
+    const re = await reattach(false, replacing);
+    expect(re.kind).toBe('attached');
+    expect(replacing).toHaveBeenCalledTimes(1);
+    expect(world.attaches).toBe(2);
+  });
+
+  it('a kept create-time pipe is not replaced', async () => {
+    await create(world, '');
+    await vi.advanceTimersByTimeAsync(5);
+    const replacing = vi.fn();
+    const re = reattach(true, replacing);
+    await vi.advanceTimersByTimeAsync(20);
+    expect((await re).kind).toBe('kept');
+    expect(replacing).not.toHaveBeenCalled();
+  });
+});

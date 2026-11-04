@@ -6,8 +6,8 @@
 // the daemon then flushes the whole ring again. Appended to the screen, that
 // replay repeated everything already shown (Labs smoke, 2026-11-04: a pane's
 // 1200-row output twice). main now leads every replay that follows a flush
-// marker of the same session with a terminal reset (replayResetGate.ts), so
-// the renderer, unchanged, repaints the pane instead.
+// marker of the same session with a clear of the screen and the scrollback
+// (replayResetGate.ts), so the renderer, unchanged, repaints the pane instead.
 // Mounts the REAL useTerminal against a real xterm under jsdom, fed through
 // main's real gate.
 

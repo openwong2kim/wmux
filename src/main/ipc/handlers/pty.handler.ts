@@ -1830,6 +1830,9 @@ export function registerPTYHandlers(
           ownsCreatePipe,
           resync: resyncOf(daemonClient),
           installListener: () => setSessionDataListener(id, onSessionData),
+          // The old pipe's half code point would decode to U+FFFD at the start
+          // of the new replay; its end went with the old socket.
+          replacingPipe: () => sessionDecoders.delete(id),
         });
         if (pipe.kind === 'pending') return held('pending again at attach');
         if (pipe.kind === 'not-writable') {
