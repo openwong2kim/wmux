@@ -246,7 +246,10 @@ internal static unsafe class Focus
         {
             throw new HelperError("element_stale", "the element went away");
         }
-        if (pid != target.Pid || top != target.Window)
+        // A popup the target window owns (a menu flyout) counts as inside it.
+        if (pid != target.Pid
+            || !Ownership.InTargetWindow((nint)top.Value, (nint)target.Window.Value, target.Pid,
+                h => (nint)PInvoke.GetWindow(new HWND(h), GET_WINDOW_CMD.GW_OWNER).Value, h => Win.OwnerPid(new HWND(h))))
         {
             throw new HelperError("element_stale", "the element is no longer in the target window");
         }
