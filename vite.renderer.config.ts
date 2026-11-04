@@ -73,9 +73,10 @@ function dropMainServedWasm(): Plugin {
 // its getters in a hidden class V8 shares with unrelated module objects, which
 // would keep the package alive for good.
 //
-// The module id Vite hands to `load` is the file's real path (symlinks
-// resolved), with forward slashes and maybe a query, and on Windows its drive
-// letter's case need not match __dirname's: both sides are compared that way.
+// The module id Vite hands to `load` (and Rollup to `chunkFileNames`) is the
+// file's real path (symlinks resolved), with forward slashes and maybe a query,
+// and on Windows its drive letter's case need not match __dirname's: both
+// sides are compared that way.
 function canonicalId(file: string): string {
   let real = file;
   try { real = fs.realpathSync.native(file); } catch { /* not on disk: compared as given */ }
@@ -83,12 +84,15 @@ function canonicalId(file: string): string {
   return process.platform === 'win32' ? id.toLowerCase() : id;
 }
 const WONGTTY_FACTORY = canonicalId(path.resolve(__dirname, 'src/renderer/terminal/wongtty/factory.ts'));
+export function isWongttyFactory(id: string): boolean {
+  const file = normalizePath(id.split('?')[0]);
+  return file.endsWith('/wongtty/factory.ts') && canonicalId(file) === WONGTTY_FACTORY;
+}
 export function wongttyFactory(): Plugin {
   return {
     name: 'wmux-wongtty-factory',
     async load(id) {
-      const file = normalizePath(id.split('?')[0]);
-      if (!file.endsWith('/wongtty/factory.ts') || canonicalId(file) !== WONGTTY_FACTORY) return null;
+      if (!isWongttyFactory(id)) return null;
       const result = await esbuild({
         entryPoints: [path.resolve(__dirname, 'node_modules/wongtty/dist/xterm.js')],
         bundle: true, write: false, format: 'esm',
@@ -162,7 +166,7 @@ export default defineConfig({
         },
         // The lazy chunk of the Labs wongtty switch (wongttyFactory above) is
         // named after the package, so a listing of what loaded shows it.
-        chunkFileNames: (chunk) => (chunk.moduleIds.includes(WONGTTY_FACTORY)
+        chunkFileNames: (chunk) => (chunk.moduleIds.some(isWongttyFactory)
           ? 'assets/wongtty-[hash].js'
           : 'assets/[name]-[hash].js'),
       },
