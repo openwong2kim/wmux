@@ -373,6 +373,55 @@ describe('BrowserStreamRegistry', () => {
     expect(a.sink.named('state').at(-1)?.data).toEqual({ state: 'live' });
   });
 
+  it('focus: checks the shape and kind, sends only changes, paced like url, the last one always written', async () => {
+    const { sink } = await subscribe();
+    const focus = (value: unknown) => registry.push('main', { streamId: streamId(), kind: 'focus', focus: value });
+    for (const bad of [undefined, null, 'text', { editable: 'yes' }, { editable: true, kind: 'select' }, { editable: false, kind: 'text' }]) {
+      expect(focus(bad)).toEqual({ ok: false, known: true });
+    }
+    // A flat push (no `focus` object) is not one either.
+    expect(registry.push('main', { streamId: streamId(), kind: 'focus', editable: true })).toEqual({ ok: false, known: true });
+    expect(focus({ editable: true, kind: 'text', value: 'secret', id: 'q' })).toEqual({ ok: true, known: true });
+    focus({ editable: true, kind: 'password' });
+    focus({ editable: false });
+    registry.push('main', frame({ capturedAt: 9 }));
+    await flushMicrotasks();
+    expect(sink.events().slice(1).map((e) => e.event)).toEqual(['focus']);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sink.events().slice(1).map((e) => [e.event, e.event === 'focus' ? e.data : e.data?.capturedAt])).toEqual([
+      ['focus', { editable: true, kind: 'text' }], ['focus', { editable: false }], ['frame', 9],
+    ]);
+    // The same state again is not a change.
+    expect(focus({ editable: false })).toEqual({ ok: true, known: true });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sink.named('focus')).toHaveLength(2);
+    expect(JSON.stringify(sink.chunks)).not.toContain('secret');
+  });
+
+  it('a late subscriber gets the tab\'s focus after the latest frame', async () => {
+    await subscribe(device('d1'));
+    registry.push('main', { streamId: streamId(), kind: 'focus', focus: { editable: true, kind: 'search' } });
+    registry.push('main', frame({ pageURL: 'https://a.example.com/' }));
+    registry.push('main', { streamId: streamId(), kind: 'url', pageURL: 'https://a.example.com/#s2' });
+    const late = await subscribe(device('d2'));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(late.sink.events().slice(1).map((e) => e.event)).toEqual(['frame', 'url', 'focus']);
+    expect(late.sink.named('focus')[0].data).toEqual({ editable: true, kind: 'search' });
+    // Not editable is a state too: a later subscriber hears it.
+    registry.push('main', { streamId: streamId(), kind: 'focus', focus: { editable: false } });
+    const later = await subscribe(OPERATOR);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(later.sink.named('focus').map((e) => e.data)).toEqual([{ editable: false }]);
+  });
+
+  it('a tab main never sent a focus for gives a late subscriber none', async () => {
+    await subscribe(device('d1'));
+    registry.push('main', frame());
+    const late = await subscribe(device('d2'));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(late.sink.named('focus')).toEqual([]);
+  });
+
   it('maps main\'s refusal at start to its status, and a failed start to 503', async () => {
     desktop.startReply = () => ({ error: 'browser-tab-gone' });
     expect(await reserve().start()).toEqual({ status: 404, error: 'browser-tab-gone' } satisfies BrowserStreamRefusal);
