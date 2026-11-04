@@ -123,7 +123,7 @@ export class DaemonPipeServer {
   private readonly streamPushRateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
   private streamPushGlobalRate = { count: 0, resetAt: 0 };
   // Stream pushes refused per socket since its last log line (noteStreamPushRefused).
-  private readonly streamPushRefusals = new Map<net.Socket, { refused: number; loggedAt: number }>();
+  private readonly streamPushRefusals = new Map<net.Socket, { refused: number; loggedAt: number; trailing: ReturnType<typeof setTimeout> | null }>();
   private connectionRate = { count: 0, resetAt: 0 };
 
   private static readonly MAX_CONNECTIONS = 20;
@@ -395,6 +395,7 @@ export class DaemonPipeServer {
           this.rateLimits.delete(socket);
           this.interactiveRateLimits.delete(socket);
           this.streamPushRateLimits.delete(socket);
+          this.flushStreamPushRefusals(socket);
           this.streamPushRefusals.delete(socket);
           this.clientIds.delete(socket);
           this.socketsByClientId.delete(clientId);
@@ -448,6 +449,9 @@ export class DaemonPipeServer {
   async stop(): Promise<void> {
     if (!this.server) return;
 
+    // Report what is pending while each socket's client id is still known.
+    for (const socket of [...this.streamPushRefusals.keys()]) this.flushStreamPushRefusals(socket);
+    this.streamPushRefusals.clear();
     for (const socket of this.connectedSockets) {
       socket.destroy();
     }
@@ -513,6 +517,7 @@ export class DaemonPipeServer {
     this.rateLimits.clear();
     this.interactiveRateLimits.clear();
     this.streamPushRateLimits.clear();
+    for (const note of this.streamPushRefusals.values()) if (note.trailing) clearTimeout(note.trailing);
     this.streamPushRefusals.clear();
     // Forced drop-to-zero — keep idle-window accounting consistent.
     this.lastDisconnectAt = Date.now();
@@ -791,15 +796,30 @@ export class DaemonPipeServer {
    * A refused stream push is only a dropped frame to main, so it is not an
    * error anywhere; this line is the one trace of it. At most one per socket
    * every STREAM_PUSH_REFUSAL_LOG_MS, with the refusals counted since the last.
+   * What a burst refused after its first line is reported when the window
+   * ends, or when the socket closes, even if nothing is refused after it.
    */
   private noteStreamPushRefused(socket: net.Socket, now: number): void {
     let note = this.streamPushRefusals.get(socket);
     if (!note) {
-      note = { refused: 0, loggedAt: -Infinity };
+      note = { refused: 0, loggedAt: -Infinity, trailing: null };
       this.streamPushRefusals.set(socket, note);
     }
     note.refused += 1;
-    if (now - note.loggedAt < DaemonPipeServer.STREAM_PUSH_REFUSAL_LOG_MS) return;
+    const wait = note.loggedAt + DaemonPipeServer.STREAM_PUSH_REFUSAL_LOG_MS - now;
+    if (wait <= 0) { this.flushStreamPushRefusals(socket, now); return; }
+    if (!note.trailing) {
+      note.trailing = setTimeout(() => this.flushStreamPushRefusals(socket), wait);
+      note.trailing.unref?.();
+    }
+  }
+
+  /** Logs the refusals counted since the last line, if any. */
+  private flushStreamPushRefusals(socket: net.Socket, now = Date.now()): void {
+    const note = this.streamPushRefusals.get(socket);
+    if (!note) return;
+    if (note.trailing) { clearTimeout(note.trailing); note.trailing = null; }
+    if (note.refused === 0) return;
     console.warn(
       `[DaemonPipeServer] rate limited (stream): ${note.refused} browser stream push(es) refused `
       + `from ${this.clientIds.get(socket) ?? 'unknown'} since the last report`,

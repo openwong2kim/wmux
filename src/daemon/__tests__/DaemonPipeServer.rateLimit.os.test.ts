@@ -266,7 +266,14 @@ describe('DaemonPipeServer stream push budget', () => {
     // 9 + 10 since the first line, and the one that brings this line.
     expect(refusalLines()).toHaveLength(2);
     expect(refusalLines()[1]).toMatch(/: 20 browser stream push\(es\) refused/);
+    // The rest of a burst is not lost when nothing is refused after it: the
+    // socket's close reports it (as the window's end would).
+    // The same second, its budget spent: 4 left over from the batch above and these 3.
+    await batch(Array.from({ length: 3 }, () => push));
+    expect(refusalLines()).toHaveLength(2);
     client.destroy();
+    await vi.waitFor(() => expect(refusalLines()).toHaveLength(3), { timeout: 5_000 });
+    expect(refusalLines()[2]).toMatch(/: 7 browser stream push\(es\) refused/);
   });
 
   it('bounds pushes across first-party sockets by the aggregate cap', async () => {
