@@ -1,30 +1,38 @@
-// ─── The phone's live browser stream, main's side (dedicated-profile Chrome)
+// ─── The phone's live browser stream, main's side
 //
 // The daemon asks for a tab's screencast (`browser.streamStart`) when the
 // first phone subscribes and stops it (`browser.streamStop`) when the last
 // one leaves (src/daemon/web/browserStream.ts). Main runs one screencast per
-// tab on a CDP session of its own (ChromeLauncher.streamSession) and pushes
-// what it sees to the daemon over `daemon.phone.browserStream`:
+// tab and pushes what it sees to the daemon over `daemon.phone.browserStream`:
 //
-//  - `frame`: the JPEG Chrome painted, with the page URL and the geometry the
-//    phone maps its input with, both left out mid-navigation and the geometry
-//    left out under browser zoom or a top offset;
+//  - `frame`: the JPEG the browser painted, with the page URL and the geometry
+//    the phone maps its input with, both left out mid-navigation and the
+//    geometry left out under browser zoom or a top offset;
 //  - `url`: each committed URL change, ten a second at most; a page that is
 //    not http(s) is one without its URL, and none of its frames go out;
 //  - `state`: hidden when Chrome reports the tab not visible, or a probe
-//    reads it hidden, after five quiet seconds; live when frames come back;
-//  - `end`: the tab is gone, or Chrome is;
+//    reads it hidden, after five quiet seconds, and at once when the renderer
+//    reports a builtin pane off screen; live when frames come back;
+//  - `end`: the tab is gone, or its browser is;
 //  - `ping`: every 15 s, so a stream the daemon forgot stops here too.
 //
-// One push per tab is in flight at a time, and Chrome's frame is acked only
-// once the daemon has answered it, so a slow pipe slows Chrome down instead
-// of queueing. Every push stays inside the control pipe's line limit.
+// Two sources feed the same stream (TabStream): a dedicated-profile Chrome
+// tab, on a CDP session of its own (ChromeLauncher.streamSession), and a
+// builtin browser pane, on the debugger WebviewCdpManager attached to its
+// <webview>.
+//
+// One push per tab is in flight at a time, and the browser's frame is acked
+// only once the daemon has answered it, so a slow pipe slows the browser down
+// instead of queueing. Every push stays inside the control pipe's line limit.
 
+import type { WebContents } from 'electron';
 import type { ChromeStreamSession } from '../browser-session/ChromeLauncher';
 import { ChromePageSessionError } from '../browser-session/ChromeLauncher';
+import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import { readImageSize } from '../../mcp/playwright/imageSize';
-import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
-import { PHONE_CHROME_CAPTURE_MS } from './PhoneBrowserChrome';
+import { PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
+import { PHONE_CHROME_CAPTURE_MS, viewportOf } from './PhoneBrowserChrome';
+import { phoneBrowserViewportExceeds } from './PhoneBrowserGeometry';
 
 const STREAM_ENV = 'WMUX_PHONE_BROWSER_STREAM';
 
@@ -53,6 +61,8 @@ const TICK_MS = 500;
 const PUSH_TIMEOUT_MS = 3_000;
 /** How long a page swap is given to bind the tab's new page before re-attaching. */
 const SWAP_SETTLE_MS = 500;
+/** How long a builtin pane whose debugger let go is given to show it is closing. */
+const DETACH_SETTLE_MS = 500;
 /** Page swaps re-attached within a minute; one more ends the stream. */
 const REATTACH_LIMIT = 3;
 const REATTACH_WINDOW_MS = 60_000;
@@ -82,11 +92,27 @@ export interface PhoneStreamChromeDeps {
   owns?(surfaceId: string, workspaceId: string): boolean;
 }
 
+/** Main's builtin browser panes, as the stream needs them (main/index.ts, from WebviewCdpManager). */
+export interface PhoneStreamBuiltinDeps {
+  /** The registered builtin panes (WebviewCdpManager.listTargets). */
+  targets(): CdpTargetInfo[];
+  /** A pane's guest, or null once it is destroyed. */
+  contents(webContentsId: number): WebContents | null;
+  /** The renderer's last visibility report for a pane (WebviewCdpManager.isVisible). */
+  visible(surfaceId: string): boolean;
+  /** Told every visibility change (WebviewCdpManager.onVisibility); returns the unsubscribe. */
+  onVisibility(listener: (surfaceId: string, visible: boolean) => void): () => void;
+  /** The guest's real widget, in its own CSS pixels (phoneBrowserNativeBounds). */
+  nativeBounds(contents: WebContents): Promise<{ width: number; height: number }>;
+}
+
 export interface PhoneBrowserStreamDeps {
   /** `daemon.phone.browserStream`; rejects with the daemon's refusal. */
   push(params: Record<string, unknown>): Promise<unknown>;
   backend(): string;
   chrome?: PhoneStreamChromeDeps;
+  /** Builtin panes. Absent: only Chrome tabs stream. */
+  builtin?: PhoneStreamBuiltinDeps;
   /** Test seam for PHONE_CHROME_CAPTURE_MS. */
   captureMs?: number;
 }
@@ -140,20 +166,22 @@ type Outgoing = { kind: 'frame' | 'url' | 'state'; params: Record<string, unknow
 
 interface ScreencastFrame { data?: unknown; metadata?: Record<string, unknown>; sessionId?: unknown }
 
-class TabStream implements PhoneStreamTabView {
+/**
+ * A streamed tab, whichever browser it is in: its URL, the URLs of its
+ * document and its latest geometry, and every push to the daemon (pacing,
+ * the budget, one push in flight, the ping). A source below attaches to the
+ * browser, feeds it the browser's frames and commits, and says when the tab
+ * is hidden or gone; the screencast itself is the same CDP on either.
+ */
+abstract class TabStream implements PhoneStreamTabView {
   url: string | null = null;
   docUrls = new Set<string>();
   geometry: PhoneStreamGeometry | null = null;
-  private session: ChromeStreamSession | null = null;
-  private stopped = false;
-  private mainFrameId: string | null = null;
-  private navigating = false;
-  private zoom = 1;
-  private hidden = false;
-  private invisibleSince: number | null = null;
-  private lastFrameAt = 0;
-  private lastZoomAt = 0;
-  private lastProbeAt = 0;
+  abstract readonly backend: PhoneBrowserBackend;
+  protected stopped = false;
+  protected navigating = false;
+  protected hidden = false;
+  protected lastFrameAt = 0;
   private lastPingAt = 0;
   private lastFramePushAt = 0;
   private lastUrlPushAt = 0;
@@ -161,8 +189,7 @@ class TabStream implements PhoneStreamTabView {
   private outbox: Outgoing[] = [];
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private tick: ReturnType<typeof setInterval> | null = null;
-  private firstFrame: ReturnType<typeof setTimeout> | null = null;
-  private reattachedAt: number[] = [];
+  protected firstFrame: ReturnType<typeof setTimeout> | null = null;
   private shrinking = false;
   readonly size: { maxWidth: number; maxHeight: number; quality: number };
 
@@ -173,12 +200,26 @@ class TabStream implements PhoneStreamTabView {
     params: { maxWidth: number; maxHeight: number; quality: number },
     public maxFps: number,
     private readonly deps: PhoneBrowserStreamDeps,
-    private readonly chrome: PhoneStreamChromeDeps & Required<Pick<PhoneStreamChromeDeps, 'streamSession'>>,
     private readonly budget: Budget,
     private readonly onStopped: (stream: TabStream) => void,
   ) {
     this.size = { ...params };
   }
+
+  /** Attaches to the tab, reads its committed page and starts the screencast. */
+  protected abstract attach(): Promise<void>;
+  /** One CDP command on the stream's session. */
+  protected abstract cdp(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** Whether the tab is still this workspace's. */
+  protected abstract owned(): boolean;
+  /** Whether a frame's metadata maps input here: browser zoom 1, and what else the source knows. */
+  protected abstract geometryUsable(): boolean;
+  /** The source's own checks, every tick. */
+  protected abstract poll(now: number): void;
+  /** Lets go of the browser: the screencast and whatever the source listens to. */
+  protected abstract release(): void;
+  /** Whether the tab is on screen as far as the source knows; painted while not, a frame is not sent. */
+  protected visible(): boolean { return true; }
 
   async start(): Promise<void> {
     await this.attach();
@@ -190,75 +231,21 @@ class TabStream implements PhoneStreamTabView {
     this.tick.unref?.();
   }
 
-  /** `swap`: Chrome swapped the page behind the tab; the new page is a commit of its own. */
-  private async attach(swap = false): Promise<void> {
-    const session = await this.chrome.streamSession(this.surfaceId, this.workspaceId);
-    if (this.stopped) { void session.detach(); return; }
-    this.session = session;
-    session.on('Page.screencastFrame', (p) => this.onFrame(p as ScreencastFrame));
-    session.on('Page.screencastVisibilityChanged', (p) => {
-      this.invisibleSince = p.visible === false ? (this.invisibleSince ?? Date.now()) : null;
-    });
-    session.on('Page.frameStartedNavigating', (p) => {
-      const type = p.navigationType;
-      if (p.frameId === this.mainFrameId && type !== 'sameDocument' && type !== 'historySameDocument') this.startNavigating();
-    });
-    session.on('Page.frameStartedLoading', (p) => { if (p.frameId === this.mainFrameId) this.startNavigating(); });
-    session.on('Page.frameStoppedLoading', (p) => { if (p.frameId === this.mainFrameId) this.navigating = false; });
-    session.on('Page.frameNavigated', (p) => this.onNavigated(p.frame as Record<string, unknown> | undefined));
-    session.on('Page.navigatedWithinDocument', (p) => {
-      if (p.frameId === this.mainFrameId) this.commit(p.url, false);
-    });
-    session.onClosed(() => this.onClosed(session));
-    await session.send('Page.enable');
-    const tree = await session.send('Page.getFrameTree') as { frameTree?: { frame?: Record<string, unknown> } } | null;
-    const frame = tree?.frameTree?.frame;
-    if (!frame || typeof frame.id !== 'string') throw new Error('Browser operation failed');
-    this.mainFrameId = frame.id;
-    // The tree is the committed page: a navigation the old page started is over.
-    this.navigating = false;
-    const raw = `${String(frame.url ?? '')}${typeof frame.urlFragment === 'string' ? frame.urlFragment : ''}`;
-    if (swap) {
-      this.commit(raw, true);
-    } else {
-      const url = httpURL(raw);
-      if (!url) throw new Error('Only HTTP browser previews are supported');
-      this.url = url;
-      this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
-    }
-    await this.readZoom();
-    await this.startScreencast();
-    this.armFirstFrame();
-  }
-
-  private async startScreencast(): Promise<unknown> {
-    if (!this.session) throw new ChromePageSessionError('gone', 'stream session ended');
-    return this.session.send('Page.startScreencast', {
+  protected startScreencast(): Promise<unknown> {
+    return this.cdp('Page.startScreencast', {
       format: 'jpeg', quality: this.size.quality, maxWidth: this.size.maxWidth, maxHeight: this.size.maxHeight, everyNthFrame: 1,
     });
   }
 
-  private armFirstFrame(): void {
+  protected armFirstFrame(): void {
     if (this.firstFrame) clearTimeout(this.firstFrame);
     const armedAt = Date.now();
     this.firstFrame = setTimeout(() => { this.firstFrame = null; void this.fallbackFrame(armedAt); }, FIRST_FRAME_MS);
     this.firstFrame.unref?.();
   }
 
-  private startNavigating(): void {
-    this.navigating = true;
-  }
-
-  private onNavigated(frame: Record<string, unknown> | undefined): void {
-    if (!frame || frame.parentId !== undefined || typeof frame.id !== 'string') return;
-    this.mainFrameId = frame.id;
-    this.navigating = false;
-    this.commit(`${String(frame.url ?? '')}${typeof frame.urlFragment === 'string' ? frame.urlFragment : ''}`, true);
-    void this.readZoom();
-  }
-
   /** A committed main-frame URL: same-document, or a new document. */
-  private commit(raw: unknown, newDocument: boolean): void {
+  protected commit(raw: unknown, newDocument: boolean): void {
     if (this.stopped) return;
     const url = httpURL(raw);
     if (newDocument || !url) this.docUrls = new Set();
@@ -280,15 +267,16 @@ class TabStream implements PhoneStreamTabView {
     this.enqueue({ kind: 'url', params: { streamId: this.streamId, kind: 'url', ...(url.length <= URL_LIMIT ? { pageURL: url } : {}) }, bytes: 0 });
   }
 
-  private onFrame(frame: ScreencastFrame): void {
+  protected onFrame(frame: ScreencastFrame): void {
     const ack = typeof frame.sessionId === 'number' ? frame.sessionId : undefined;
     if (this.stopped) { this.ack(ack); return; }
+    // Painted while the source says the tab is off screen: not the phone's to see.
+    if (!this.visible()) { this.ack(ack); return; }
     const now = Date.now();
     this.lastFrameAt = now;
-    this.invisibleSince = null;
     if (this.firstFrame) { clearTimeout(this.firstFrame); this.firstFrame = null; }
     this.geometry = this.geometryOf(frame.metadata);
-    if (this.chrome.owns && !this.chrome.owns(this.surfaceId, this.workspaceId)) { this.ack(ack); void this.end('browser-tab-gone'); return; }
+    if (!this.owned()) { this.ack(ack); void this.end('browser-tab-gone'); return; }
     if (typeof frame.data !== 'string' || !frame.data) { this.ack(ack); return; }
     // A page that is not http(s) (commit()), or a swap not read yet: painted, not sent.
     if (this.url === null) { this.ack(ack); return; }
@@ -298,7 +286,7 @@ class TabStream implements PhoneStreamTabView {
 
   /** The frame's own geometry, or null when input could not land where the phone sees it. */
   private geometryOf(meta: Record<string, unknown> | undefined): PhoneStreamGeometry | null {
-    if (!meta || this.navigating || this.zoom !== 1) return null;
+    if (!meta || this.navigating || !this.geometryUsable()) return null;
     const { deviceWidth, deviceHeight, scrollOffsetX, scrollOffsetY, pageScaleFactor, offsetTop } = meta;
     if (!finite(deviceWidth) || !finite(deviceHeight) || deviceWidth <= 0 || deviceHeight <= 0 || !finite(scrollOffsetX) || !finite(scrollOffsetY)) return null;
     if (offsetTop !== undefined && offsetTop !== 0) return null;
@@ -336,19 +324,19 @@ class TabStream implements PhoneStreamTabView {
     Object.assign(this.size, next);
     this.shrinking = true;
     try {
-      await this.session?.send('Page.stopScreencast');
+      await this.cdp('Page.stopScreencast');
       if (!this.stopped) await this.startScreencast();
     } catch { /* the session's own close ends the stream */ } finally {
       this.shrinking = false;
     }
   }
 
-  private goLive(): void {
+  protected goLive(): void {
     this.hidden = false;
     this.enqueue({ kind: 'state', params: { streamId: this.streamId, kind: 'state', state: 'live' }, bytes: 0 });
   }
 
-  private goHidden(): void {
+  protected goHidden(): void {
     if (this.hidden || this.stopped) return;
     this.hidden = true;
     this.enqueue({ kind: 'state', params: { streamId: this.streamId, kind: 'state', state: 'hidden' }, bytes: 0 });
@@ -384,7 +372,7 @@ class TabStream implements PhoneStreamTabView {
     if (item.kind === 'frame') this.lastFramePushAt = now;
     if (item.kind === 'url') this.lastUrlPushAt = now;
     this.send(item.params, () => {
-      // The daemon answered (or refused): only now may Chrome paint the next one.
+      // The daemon answered (or refused): only now may the browser paint the next one.
       this.ack(item.ack);
     });
   }
@@ -407,9 +395,9 @@ class TabStream implements PhoneStreamTabView {
     });
   }
 
-  private ack(id: number | undefined): void {
+  protected ack(id: number | undefined): void {
     if (id === undefined) return;
-    void this.session?.send('Page.screencastFrameAck', { sessionId: id }).catch(() => undefined);
+    void this.cdp('Page.screencastFrameAck', { sessionId: id }).catch(() => undefined);
   }
 
   private onTick(): void {
@@ -422,6 +410,166 @@ class TabStream implements PhoneStreamTabView {
         if ((reply as { known?: unknown } | null)?.known === false) this.stop();
       }, () => undefined);
     }
+    this.poll(now);
+  }
+
+  /**
+   * Nothing painted in the first second (a still page sends no frame until it
+   * repaints): one capture instead, within the capture budget. A tab that does
+   * not produce even that is hidden.
+   */
+  private async fallbackFrame(armedAt: number): Promise<void> {
+    if (this.stopped || this.lastFrameAt > armedAt || !this.visible()) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), this.deps.captureMs ?? PHONE_CHROME_CAPTURE_MS);
+      timer.unref?.();
+    });
+    const capture = (async () => {
+      const metrics = await this.cdp('Page.getLayoutMetrics') as { cssVisualViewport?: Record<string, unknown> } | null;
+      const vp = metrics?.cssVisualViewport;
+      if (!vp || !finite(vp.clientWidth) || !finite(vp.clientHeight) || !finite(vp.pageX) || !finite(vp.pageY)) return null;
+      const zoom = vp.zoom === undefined ? 1 : finite(vp.zoom) && vp.zoom > 0 ? vp.zoom : NaN;
+      const z = Number.isFinite(zoom) ? zoom : 1;
+      const width = vp.clientWidth * z;
+      const height = vp.clientHeight * z;
+      const scale = Math.min(1, this.size.maxWidth / width, this.size.maxHeight / height);
+      const shot = await this.cdp('Page.captureScreenshot', {
+        format: 'jpeg', quality: this.size.quality,
+        clip: { x: vp.pageX * z, y: vp.pageY * z, width, height, scale },
+      }) as { data?: unknown } | null;
+      if (typeof shot?.data !== 'string' || !shot.data) return null;
+      const pageScale = finite(vp.scale) ? vp.scale : NaN;
+      const geometry = zoom === 1 && pageScale === 1 && !this.navigating && this.geometryUsable()
+        ? { width: vp.clientWidth, height: vp.clientHeight, scrollX: vp.pageX, scrollY: vp.pageY } : null;
+      return { data: shot.data, geometry };
+    })();
+    capture.catch(() => undefined);
+    const shot = await Promise.race([capture.catch(() => null), budget]);
+    clearTimeout(timer);
+    if (this.stopped || this.lastFrameAt > armedAt || !this.visible()) return;
+    if (!shot) { this.goHidden(); return; }
+    if (this.url === null) return;
+    this.geometry = shot.geometry;
+    if (this.hidden) this.goLive();
+    this.offerFrame(shot.data, shot.geometry, undefined);
+  }
+
+  /** Tells the daemon the stream is over, then stops. */
+  async end(error: 'browser-tab-gone' | 'browser-preview-unavailable' | 'browser-backend-unavailable'): Promise<void> {
+    if (this.stopped) return;
+    this.stop();
+    await Promise.resolve(this.deps.push({ streamId: this.streamId, kind: 'end', error })).catch(() => undefined);
+  }
+
+  /** Stops the screencast and lets go of the browser; nothing more is pushed. */
+  stop(): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    if (this.tick) clearInterval(this.tick);
+    if (this.pumpTimer) clearTimeout(this.pumpTimer);
+    if (this.firstFrame) clearTimeout(this.firstFrame);
+    for (const item of this.outbox.splice(0)) this.ack(item.ack);
+    this.release();
+    this.onStopped(this);
+  }
+}
+
+/** A dedicated-profile Chrome tab, on a CDP session of its own. */
+class ChromeTabStream extends TabStream {
+  readonly backend = 'chrome';
+  private session: ChromeStreamSession | null = null;
+  private mainFrameId: string | null = null;
+  private zoom = 1;
+  private invisibleSince: number | null = null;
+  private lastZoomAt = 0;
+  private lastProbeAt = 0;
+  private reattachedAt: number[] = [];
+
+  constructor(
+    streamId: string,
+    workspaceId: string,
+    surfaceId: string,
+    params: { maxWidth: number; maxHeight: number; quality: number },
+    maxFps: number,
+    deps: PhoneBrowserStreamDeps,
+    private readonly chrome: PhoneStreamChromeDeps & Required<Pick<PhoneStreamChromeDeps, 'streamSession'>>,
+    budget: Budget,
+    onStopped: (stream: TabStream) => void,
+  ) {
+    super(streamId, workspaceId, surfaceId, params, maxFps, deps, budget, onStopped);
+  }
+
+  /** `swap`: Chrome swapped the page behind the tab; the new page is a commit of its own. */
+  protected async attach(swap = false): Promise<void> {
+    const session = await this.chrome.streamSession(this.surfaceId, this.workspaceId);
+    if (this.stopped) { void session.detach(); return; }
+    this.session = session;
+    session.on('Page.screencastFrame', (p) => {
+      this.invisibleSince = null;
+      this.onFrame(p as ScreencastFrame);
+    });
+    session.on('Page.screencastVisibilityChanged', (p) => {
+      this.invisibleSince = p.visible === false ? (this.invisibleSince ?? Date.now()) : null;
+    });
+    session.on('Page.frameStartedNavigating', (p) => {
+      const type = p.navigationType;
+      if (p.frameId === this.mainFrameId && type !== 'sameDocument' && type !== 'historySameDocument') this.startNavigating();
+    });
+    session.on('Page.frameStartedLoading', (p) => { if (p.frameId === this.mainFrameId) this.startNavigating(); });
+    session.on('Page.frameStoppedLoading', (p) => { if (p.frameId === this.mainFrameId) this.navigating = false; });
+    session.on('Page.frameNavigated', (p) => this.onNavigated(p.frame as Record<string, unknown> | undefined));
+    session.on('Page.navigatedWithinDocument', (p) => {
+      if (p.frameId === this.mainFrameId) this.commit(p.url, false);
+    });
+    session.onClosed(() => this.onClosed(session));
+    await session.send('Page.enable');
+    const tree = await session.send('Page.getFrameTree') as { frameTree?: { frame?: Record<string, unknown> } } | null;
+    const frame = tree?.frameTree?.frame;
+    if (!frame || typeof frame.id !== 'string') throw new Error('Browser operation failed');
+    this.mainFrameId = frame.id;
+    // The tree is the committed page: a navigation the old page started is over.
+    this.navigating = false;
+    const raw = `${String(frame.url ?? '')}${typeof frame.urlFragment === 'string' ? frame.urlFragment : ''}`;
+    if (swap) {
+      this.commit(raw, true);
+    } else {
+      const url = httpURL(raw);
+      if (!url) throw new Error('Only HTTP browser previews are supported');
+      this.url = url;
+      this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
+    }
+    await this.readZoom();
+    await this.startScreencast();
+    this.armFirstFrame();
+  }
+
+  protected cdp(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    if (!this.session) return Promise.reject(new ChromePageSessionError('gone', 'stream session ended'));
+    return this.session.send(method, params);
+  }
+
+  protected owned(): boolean {
+    return !this.chrome.owns || this.chrome.owns(this.surfaceId, this.workspaceId);
+  }
+
+  protected geometryUsable(): boolean {
+    return this.zoom === 1;
+  }
+
+  private startNavigating(): void {
+    this.navigating = true;
+  }
+
+  private onNavigated(frame: Record<string, unknown> | undefined): void {
+    if (!frame || frame.parentId !== undefined || typeof frame.id !== 'string') return;
+    this.mainFrameId = frame.id;
+    this.navigating = false;
+    this.commit(`${String(frame.url ?? '')}${typeof frame.urlFragment === 'string' ? frame.urlFragment : ''}`, true);
+    void this.readZoom();
+  }
+
+  protected poll(now: number): void {
     if (now - this.lastFrameAt < ZOOM_POLL_MS && now - this.lastZoomAt >= ZOOM_POLL_MS) void this.readZoom();
     if (this.hidden) return;
     // Chrome said the tab is not visible, and nothing was painted since.
@@ -452,52 +600,12 @@ class TabStream implements PhoneStreamTabView {
     } catch { /* kept as it was */ }
   }
 
-  /**
-   * Nothing painted in the first second (a still page sends no frame until it
-   * repaints): one capture instead, within the capture budget. A tab that does
-   * not produce even that is hidden.
-   */
-  private async fallbackFrame(armedAt: number): Promise<void> {
-    const session = this.session;
-    if (!session || this.stopped || this.lastFrameAt > armedAt) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const budget = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), this.deps.captureMs ?? PHONE_CHROME_CAPTURE_MS);
-      timer.unref?.();
-    });
-    const capture = (async () => {
-      const metrics = await session.send('Page.getLayoutMetrics') as { cssVisualViewport?: Record<string, unknown> } | null;
-      const vp = metrics?.cssVisualViewport;
-      if (!vp || !finite(vp.clientWidth) || !finite(vp.clientHeight) || !finite(vp.pageX) || !finite(vp.pageY)) return null;
-      const zoom = vp.zoom === undefined ? 1 : finite(vp.zoom) && vp.zoom > 0 ? vp.zoom : NaN;
-      const z = Number.isFinite(zoom) ? zoom : 1;
-      const width = vp.clientWidth * z;
-      const height = vp.clientHeight * z;
-      const scale = Math.min(1, this.size.maxWidth / width, this.size.maxHeight / height);
-      const shot = await session.send('Page.captureScreenshot', {
-        format: 'jpeg', quality: this.size.quality,
-        clip: { x: vp.pageX * z, y: vp.pageY * z, width, height, scale },
-      }) as { data?: unknown } | null;
-      if (typeof shot?.data !== 'string' || !shot.data) return null;
-      const pageScale = finite(vp.scale) ? vp.scale : NaN;
-      const geometry = zoom === 1 && pageScale === 1 && !this.navigating
-        ? { width: vp.clientWidth, height: vp.clientHeight, scrollX: vp.pageX, scrollY: vp.pageY } : null;
-      return { data: shot.data, geometry };
-    })();
-    capture.catch(() => undefined);
-    const shot = await Promise.race([capture.catch(() => null), budget]);
-    clearTimeout(timer);
-    if (this.stopped || this.lastFrameAt > armedAt) return;
-    if (!shot) { this.goHidden(); return; }
-    if (this.url === null) return;
-    this.geometry = shot.geometry;
-    this.offerFrame(shot.data, shot.geometry, undefined);
-  }
-
   /** The session ended: Chrome swapped the page behind the tab (re-attach), or the tab went. */
   private onClosed(session: ChromeStreamSession): void {
     if (this.stopped || this.session !== session) return;
     this.session = null;
+    // The re-attach arms its own first frame; the old page's capture has no session to run on.
+    if (this.firstFrame) { clearTimeout(this.firstFrame); this.firstFrame = null; }
     // Until the new page is read, input checks the live page itself (PhoneBrowser.ts).
     this.url = null;
     const now = Date.now();
@@ -514,27 +622,172 @@ class TabStream implements PhoneStreamTabView {
     retry.unref?.();
   }
 
-  /** Tells the daemon the stream is over, then stops. */
-  async end(error: 'browser-tab-gone' | 'browser-preview-unavailable' | 'browser-backend-unavailable'): Promise<void> {
-    if (this.stopped) return;
-    this.stop();
-    await Promise.resolve(this.deps.push({ streamId: this.streamId, kind: 'end', error })).catch(() => undefined);
-  }
-
-  /** Stops the screencast and detaches; nothing more is pushed. */
-  stop(): void {
-    if (this.stopped) return;
-    this.stopped = true;
-    if (this.tick) clearInterval(this.tick);
-    if (this.pumpTimer) clearTimeout(this.pumpTimer);
-    if (this.firstFrame) clearTimeout(this.firstFrame);
-    for (const item of this.outbox.splice(0)) this.ack(item.ack);
+  protected release(): void {
     const session = this.session;
     this.session = null;
     if (session && !session.closed) {
       void session.send('Page.stopScreencast').catch(() => undefined).finally(() => { void session.detach(); });
     }
-    this.onStopped(this);
+  }
+}
+
+/**
+ * A builtin browser pane: its <webview>'s guest, on the debugger
+ * WebviewCdpManager attached. It takes no automation lease (a lease shows the
+ * "agent is driving" marker), so lightweight mode may throttle the pane while
+ * it is off screen, and discard it, which ends the stream.
+ */
+class BuiltinTabStream extends TabStream {
+  readonly backend = 'builtin';
+  /** The visible viewport is larger than the real widget (an emulated one): input cannot reach all of it. */
+  private exceeds = false;
+  private lastBoundsAt = 0;
+  private readonly unlisten: Array<() => void> = [];
+
+  constructor(
+    streamId: string,
+    workspaceId: string,
+    surfaceId: string,
+    params: { maxWidth: number; maxHeight: number; quality: number },
+    maxFps: number,
+    deps: PhoneBrowserStreamDeps,
+    private readonly builtin: PhoneStreamBuiltinDeps,
+    private readonly wc: WebContents,
+    budget: Budget,
+    onStopped: (stream: TabStream) => void,
+  ) {
+    super(streamId, workspaceId, surfaceId, params, maxFps, deps, budget, onStopped);
+  }
+
+  protected async attach(): Promise<void> {
+    const wc = this.wc;
+    if (wc.isDestroyed()) throw new PhoneBrowserError('browser-tab-gone');
+    // The committed page, and every event after it: nothing commits in between.
+    const url = httpURL(wc.getURL());
+    if (!url) throw new Error('Only HTTP browser previews are supported');
+    this.url = url;
+    this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
+    const dbg = wc.debugger;
+    // The page's own session only (a child target's has its id).
+    const onMessage = (_event: Electron.Event, method: string, params: ScreencastFrame, sessionId: string) => {
+      if (method === 'Page.screencastFrame' && !sessionId) this.onFrame(params);
+    };
+    const onDetach = () => this.onDetached();
+    const onDestroyed = () => { void this.end('browser-tab-gone'); };
+    const onStart = (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => {
+      if (details.isMainFrame && !details.isSameDocument) this.navigating = true;
+    };
+    const onNavigate = (_event: Electron.Event, raw: string) => this.onNavigated(raw);
+    // A load that failed commits its error page at the URL it was for, as wc.getURL() and the capture have it.
+    const onFailed = (_event: Electron.Event, _code: number, _description: string, raw: string, isMainFrame: boolean) => {
+      if (isMainFrame) this.onNavigated(raw);
+    };
+    const onInPage = (_event: Electron.Event, raw: string, isMainFrame: boolean) => { if (isMainFrame) this.commit(raw, false); };
+    const onStopLoading = () => { this.navigating = false; };
+    dbg.on('message', onMessage);
+    dbg.on('detach', onDetach);
+    wc.on('destroyed', onDestroyed);
+    wc.on('did-start-navigation', onStart);
+    wc.on('did-navigate', onNavigate);
+    wc.on('did-fail-provisional-load', onFailed);
+    wc.on('did-navigate-in-page', onInPage);
+    wc.on('did-stop-loading', onStopLoading);
+    this.unlisten.push(() => {
+      dbg.off('message', onMessage);
+      dbg.off('detach', onDetach);
+      wc.off('destroyed', onDestroyed);
+      wc.off('did-start-navigation', onStart);
+      wc.off('did-navigate', onNavigate);
+      wc.off('did-fail-provisional-load', onFailed);
+      wc.off('did-navigate-in-page', onInPage);
+      wc.off('did-stop-loading', onStopLoading);
+    });
+    this.unlisten.push(this.builtin.onVisibility((surfaceId, visible) => {
+      if (surfaceId === this.surfaceId) this.onVisibility(visible);
+    }));
+    await this.readBounds();
+    await this.startScreencast();
+    if (!this.visible()) { this.goHidden(); return; }
+    // Chromium paints a visible guest's first screencast frame itself; the
+    // repaint is a nudge, and the fallback capture is what guarantees one.
+    this.repaint();
+    this.armFirstFrame();
+  }
+
+  protected cdp(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    try {
+      if (this.wc.isDestroyed()) throw new Error('Browser unavailable');
+      return this.wc.debugger.sendCommand(method, params);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  }
+
+  protected owned(): boolean {
+    if (this.wc.isDestroyed()) return false;
+    const id = this.wc.id;
+    return this.builtin.targets().some((t) => t.surfaceId === this.surfaceId && t.webContentsId === id && t.workspaceId === this.workspaceId);
+  }
+
+  /** The metadata is in device-independent pixels: CSS pixels only at zoom 1 (the capture's geometry is CSS). */
+  protected geometryUsable(): boolean {
+    return !this.exceeds && !this.wc.isDestroyed() && this.wc.getZoomFactor() === 1;
+  }
+
+  protected visible(): boolean {
+    return this.builtin.visible(this.surfaceId);
+  }
+
+  protected poll(now: number): void {
+    // Unregistered with its guest alive (discarded to free memory, or replaced): no event of the guest's says so.
+    if (!this.owned()) { void this.end('browser-tab-gone'); return; }
+    if (now - this.lastFrameAt < ZOOM_POLL_MS && now - this.lastBoundsAt >= ZOOM_POLL_MS) void this.readBounds();
+  }
+
+  private onNavigated(raw: unknown): void {
+    this.navigating = false;
+    this.commit(raw, true);
+    void this.readBounds();
+  }
+
+  /** Off screen: hidden at once. Back: `live` comes with the next frame, forced if the page is still. */
+  private onVisibility(visible: boolean): void {
+    if (this.stopped) return;
+    if (!visible) { this.goHidden(); return; }
+    if (!this.hidden) return;
+    this.repaint();
+    this.armFirstFrame();
+  }
+
+  /**
+   * The debugger let go of the guest. A closing pane lets go before its guest
+   * is destroyed, and an unregistered one (discarded, replaced) without being
+   * destroyed at all, so the cause is read a moment later: the pane is gone,
+   * or something else took the debugger (DevTools).
+   */
+  private onDetached(): void {
+    if (this.stopped) return;
+    const settle = setTimeout(() => {
+      void this.end(this.owned() ? 'browser-preview-unavailable' : 'browser-tab-gone');
+    }, DETACH_SETTLE_MS);
+    settle.unref?.();
+  }
+
+  private repaint(): void {
+    try { if (!this.wc.isDestroyed()) this.wc.invalidate(); } catch { /* best effort */ }
+  }
+
+  private async readBounds(): Promise<void> {
+    this.lastBoundsAt = Date.now();
+    try {
+      const viewport = viewportOf(await this.cdp('Page.getLayoutMetrics'));
+      this.exceeds = phoneBrowserViewportExceeds(viewport, await this.builtin.nativeBounds(this.wc));
+    } catch { /* kept as it was */ }
+  }
+
+  protected release(): void {
+    for (const off of this.unlisten.splice(0)) off();
+    if (!this.wc.isDestroyed()) void this.cdp('Page.stopScreencast').catch(() => undefined);
   }
 }
 
@@ -552,21 +805,32 @@ export function createPhoneBrowserStreams(deps: PhoneBrowserStreamDeps): PhoneBr
     const { streamId, workspaceId, surfaceId } = payload;
     if (typeof streamId !== 'string' || !streamId || streamId.length > 128 || typeof workspaceId !== 'string' || !workspaceId ||
         typeof surfaceId !== 'string' || !surfaceId || surfaceId.length > 128) throw new Error('Invalid browser stream');
-    const chrome = deps.chrome;
-    if (!surfaceId.startsWith('chrome-')) throw new PhoneBrowserError('browser-action-unsupported');
-    if (!chrome?.streamSession || deps.backend() !== 'chrome') throw new PhoneBrowserError('browser-backend-unavailable');
-    const tab = (await chrome.tabs(workspaceId)).find((t) => t.surfaceId === surfaceId);
-    if (!tab) throw new PhoneBrowserError('browser-tab-gone');
-    if (!httpURL(tab.url)) throw new Error('Only HTTP browser previews are supported');
+    const size = { maxWidth: clamp(payload.maxWidth, MIN_SIDE, 1920, 1280), maxHeight: clamp(payload.maxHeight, MIN_SIDE, 1920, 1280), quality: clamp(payload.quality, MIN_QUALITY, 85, 60) };
+    const maxFps = clamp(payload.maxFps, 1, 15, 10);
+    let create: () => TabStream;
+    if (surfaceId.startsWith('chrome-')) {
+      const chrome = deps.chrome;
+      if (!chrome?.streamSession || deps.backend() !== 'chrome') throw new PhoneBrowserError('browser-backend-unavailable');
+      const tab = (await chrome.tabs(workspaceId)).find((t) => t.surfaceId === surfaceId);
+      if (!tab) throw new PhoneBrowserError('browser-tab-gone');
+      if (!httpURL(tab.url)) throw new Error('Only HTTP browser previews are supported');
+      const session = { ...chrome, streamSession: chrome.streamSession.bind(chrome) };
+      create = () => new ChromeTabStream(streamId, workspaceId, surfaceId, size, maxFps, deps, session, budget, forget);
+    } else {
+      // A builtin pane of this workspace, whatever the backend setting, as
+      // the preview finds it (PhoneBrowser.ts driverFor).
+      const builtin = deps.builtin;
+      if (!builtin) throw new PhoneBrowserError('browser-action-unsupported');
+      const target = builtin.targets().find((t) => t.surfaceId === surfaceId && t.workspaceId === workspaceId);
+      const wc = target ? builtin.contents(target.webContentsId) : null;
+      if (!wc || wc.isDestroyed()) throw new PhoneBrowserError('browser-tab-gone');
+      if (!httpURL(wc.getURL())) throw new Error('Only HTTP browser previews are supported');
+      create = () => new BuiltinTabStream(streamId, workspaceId, surfaceId, size, maxFps, deps, builtin, wc, budget, forget);
+    }
     // The daemon lost track of an earlier stream on this tab: this one replaces it.
     streams.get(key(workspaceId, surfaceId))?.stop();
     if (streams.size >= MAX_TABS) throw new Error('Too many browser streams');
-    const stream = new TabStream(
-      streamId, workspaceId, surfaceId,
-      { maxWidth: clamp(payload.maxWidth, MIN_SIDE, 1920, 1280), maxHeight: clamp(payload.maxHeight, MIN_SIDE, 1920, 1280), quality: clamp(payload.quality, MIN_QUALITY, 85, 60) },
-      clamp(payload.maxFps, 1, 15, 10),
-      deps, { ...chrome, streamSession: chrome.streamSession.bind(chrome) }, budget, forget,
-    );
+    const stream = create();
     streams.set(key(workspaceId, surfaceId), stream);
     try {
       await stream.start();
@@ -575,7 +839,7 @@ export function createPhoneBrowserStreams(deps: PhoneBrowserStreamDeps): PhoneBr
       if (err instanceof ChromePageSessionError) throw new PhoneBrowserError(err.reason === 'gone' ? 'browser-tab-gone' : 'browser-backend-unavailable');
       throw err;
     }
-    return { backend: 'chrome', ...stream.size };
+    return { backend: stream.backend, ...stream.size };
   };
 
   const find = (payload: Record<string, unknown>): TabStream | undefined => {

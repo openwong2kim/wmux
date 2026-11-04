@@ -1,11 +1,11 @@
-import { PHONE_BROWSER_GEOMETRY, PhoneBrowserViewportChanged, phoneBrowserGeometry, phoneBrowserPoint, phoneBrowserScrollPoint, phoneBrowserStreamPoint, type PhoneBrowserGeometry, type PhoneLiveViewport } from './PhoneBrowserGeometry';
+import { PHONE_BROWSER_GEOMETRY, PhoneBrowserViewportChanged, phoneBrowserGeometry, phoneBrowserPoint, phoneBrowserScrollPoint, phoneBrowserStreamPoint, phoneBrowserViewportExceeds, type PhoneBrowserGeometry, type PhoneLiveViewport } from './PhoneBrowserGeometry';
 import type { PhoneBrowserInputOptions } from './PhoneBrowserInput';
 import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import type { RpcResponse } from '../../shared/rpc';
 import { browserHelpOrigin } from '../../shared/phoneBrowserHelp';
 import { BROWSER_STREAM_KEYS, PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
 import type { PhoneChromeDeps } from './PhoneBrowserChrome';
-import { chromeDriver } from './PhoneBrowserChrome';
+import { chromeDriver, viewportOf } from './PhoneBrowserChrome';
 import type { PhoneStreamTabView } from './PhoneBrowserStream';
 
 // The phone's workspace browser preview: the checks every tab gets, over a
@@ -25,6 +25,8 @@ interface BrowserDeps {
   backend: () => string;
   clearViewport: (webContentsId: number) => Promise<void>;
   nativeBounds: (webContentsId: number) => Promise<{width:number;height:number}>;
+  /** Page.getLayoutMetrics on a builtin pane: a streamed pane's input maps by its frames' geometry. Absent: by the probe, as before. */
+  layoutMetrics?: (webContentsId: number) => Promise<unknown>;
   scroll: (webContentsId: number, event: {x:number;y:number;deltaX:number;deltaY:number}) => Promise<void>;
   targets: () => CdpTargetInfo[];
   page: (webContentsId: number) => { title: string; url: string } | null;
@@ -96,6 +98,7 @@ function phoneURL(raw: unknown): string {
 function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: BrowserDeps): PhoneBrowserDriver {
   const scope = { surfaceId: target.surfaceId, workspaceId };
   const ok = (result: RpcResponse) => { if (!result.ok) throw new Error('Browser operation failed'); };
+  const layoutMetrics = deps.layoutMetrics;
   return {
     backend: 'builtin',
     surfaceId: target.surfaceId,
@@ -103,6 +106,13 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
       const owned = deps.targets().some(item => item.surfaceId === target.surfaceId && item.webContentsId === target.webContentsId && item.workspaceId === workspaceId);
       return owned ? deps.page(target.webContentsId) : null;
     },
+    // A streamed pane only (pointOn): the visual viewport as Chrome's is read,
+    // still refused past the real widget, as geometry() refuses it.
+    ...(layoutMetrics ? { layout: async () => {
+      const viewport = viewportOf(await layoutMetrics(target.webContentsId));
+      if (phoneBrowserViewportExceeds(viewport, await deps.nativeBounds(target.webContentsId))) throw new Error('Browser viewport exceeds visible input bounds; reset viewport');
+      return viewport;
+    } } : {}),
     geometry: async () => {
       const page = phoneBrowserGeometry(await deps.invoke('browser.evaluate',{...scope,expression:PHONE_BROWSER_GEOMETRY}));
       const native = await deps.nativeBounds(target.webContentsId);
@@ -310,7 +320,7 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
   };
   /**
    * The phone's point on the live viewport, and the CSS pixels one normalized
-   * unit spans (scroll deltas). A streamed Chrome tab maps it with the latest
+   * unit spans (scroll deltas). A streamed tab maps it with the latest
    * frame's geometry while the live viewport agrees (phoneBrowserStreamPoint).
    * A mismatch on stream input is a 409 the phone resends on its next frame.
    */

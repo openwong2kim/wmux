@@ -54,6 +54,17 @@ export function phoneBrowserScrollPoint(x: unknown, y: unknown, expected: unknow
 /** A Chrome tab's visual viewport from Page.getLayoutMetrics, in CSS pixels, with its pinch scale and browser zoom. */
 export interface PhoneLiveViewport { width: number; height: number; scrollX: number; scrollY: number; scale: number; zoom: number }
 
+/**
+ * A builtin pane whose visible viewport, as large as it shows, is larger than
+ * its real widget (`native`, phoneBrowserNativeBounds): an emulated viewport
+ * paints pixels outside the guest's input bounds. The same rule as the
+ * capture's geometry, read from Page.getLayoutMetrics.
+ */
+export function phoneBrowserViewportExceeds(viewport: { width: number; height: number; scale: number }, native: { width: number; height: number }): boolean {
+  const scale = Number.isFinite(viewport.scale) && viewport.scale > 0 ? viewport.scale : 1;
+  return viewport.width * scale > native.width + 1 || viewport.height * scale > native.height + 1;
+}
+
 /** The geometry a stream frame carried, from that frame's metadata (`scale` only under pinch zoom). */
 export interface PhoneStreamGeometry { width: number; height: number; scrollX: number; scrollY: number; scale?: number }
 
