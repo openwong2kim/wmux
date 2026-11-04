@@ -46,15 +46,16 @@ function pdfjsAssets(): Plugin {
 }
 
 // onnxruntime-web's .wasm reaches the dictation worker as bytes from main
-// (it ships as an extra resource: main/dictation/dictation.handler.ts), so
-// the copy Vite emits for the runtime's own `new URL(…, import.meta.url)` is
-// never read. Leaving it out keeps 14 MB out of the bundle.
-function dropOrtWasm(): Plugin {
+// (it ships as an extra resource: main/dictation/dictation.handler.ts), and
+// so do wongtty's two (Labs terminal switch: main/ipc/handlers/labs.handler.ts),
+// so the copies Vite emits for the packages' own `new URL(…, import.meta.url)`
+// are never read. Leaving them out keeps 15 MB out of the bundle.
+function dropMainServedWasm(): Plugin {
   return {
-    name: 'wmux-drop-ort-wasm',
+    name: 'wmux-drop-main-served-wasm',
     generateBundle(_options, bundle) {
       for (const file of Object.keys(bundle)) {
-        if (/(^|\/)ort-wasm-simd-threaded[^/]*\.wasm$/.test(file)) delete bundle[file];
+        if (/(^|\/)(ort-wasm-simd-threaded|wongtty|xterm_web_bg)[^/]*\.wasm$/.test(file)) delete bundle[file];
       }
     },
   };
@@ -64,7 +65,7 @@ export default defineConfig({
   // ASCII-only output: one character above one byte makes V8 keep the whole
   // script source as UTF-16 (scripts/lib/ascii-only-bundle.mjs).
   esbuild: { charset: 'ascii' },
-  plugins: [react(), pdfjsAssets(), dropOrtWasm(), asciiOnlyBundle()],
+  plugins: [react(), pdfjsAssets(), dropMainServedWasm(), asciiOnlyBundle()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -72,7 +73,7 @@ export default defineConfig({
   // is an ES module worker: onnxruntime-web is ESM.
   worker: {
     format: 'es',
-    plugins: () => [dropOrtWasm(), asciiOnlyBundle()],
+    plugins: () => [dropMainServedWasm(), asciiOnlyBundle()],
   },
   build: {
     // The renderer only ever runs inside this app's own Chromium (Electron 41 →
