@@ -383,7 +383,11 @@ describe('phone preview on dedicated-profile Chrome', () => {
 
 describe('the tab a tap opened (contract v1.7)', () => {
   /** A tab whose release runs `onRelease`, which can make the page ask for a window and the tab open. */
-  function popupChrome(onRelease: (emit: { windowOpen(): void; opened(surfaceId: string): void }) => void = () => undefined) {
+  function popupChrome(
+    onRelease: (emit: { windowOpen(): void; opened(surfaceId: string): void }) => void = () => undefined,
+    opts: { enable?: () => Promise<unknown>; attachFailsOnce?: boolean } = {},
+  ) {
+    let attachFailed = false;
     const sent: Array<{ method: string; params?: Record<string, unknown> }> = [];
     const handlers = new Map<string, Set<(params: Record<string, unknown>) => void>>();
     let listener: ((tab: { surfaceId: string; url: string }) => void) | undefined;
@@ -393,10 +397,16 @@ describe('the tab a tap opened (contract v1.7)', () => {
       opened: (surfaceId: string) => listener?.({ surfaceId, url: '' }),
     };
     const { deps } = fakeChrome({
-      session: vi.fn(async () => ({
+      session: vi.fn(async () => {
+        if (opts.attachFailsOnce && !attachFailed) {
+          attachFailed = true;
+          throw new ChromePageSessionError('unavailable', 'no socket yet');
+        }
+        return {
         send: async (method: string, params?: Record<string, unknown>) => {
           sent.push({ method, ...(params ? { params } : {}) });
           if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseReleased') onRelease(emit);
+          if (method === 'Page.enable' && opts.enable) return opts.enable();
           return method === 'Page.getLayoutMetrics' ? METRICS : {};
         },
         on: (method: string, handler: (params: Record<string, unknown>) => void) => {
@@ -405,7 +415,8 @@ describe('the tab a tap opened (contract v1.7)', () => {
           handlers.set(method, set);
           return () => { set.delete(handler); };
         },
-      })),
+        };
+      }),
       onTabOpened: vi.fn((_surfaceId: string, _workspaceId: string, next: (tab: { surfaceId: string; url: string }) => void) => {
         listener = next;
         return unsubscribed;
@@ -452,6 +463,33 @@ describe('the tab a tap opened (contract v1.7)', () => {
     const pending = watch.result(60_000);
     watch.stop();
     expect(await pending).toBeUndefined();
+  });
+
+  it('lets go of a watch the input ran out of time setting up', async () => {
+    const { deps, handlers, unsubscribed } = popupChrome(undefined, { enable: () => new Promise((r) => setTimeout(r, 150)) });
+    deps.captureMs = 40;
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ error: 'browser-tab-hidden' });
+    await vi.waitFor(() => expect(unsubscribed).toHaveBeenCalledOnce(), { timeout: 5_000 });
+    expect(handlers.get('Page.windowOpen')?.size ?? 0).toBe(0);
+  });
+
+  it('a page session that will not enable holds the tap no longer than the setup bound', async () => {
+    const { deps } = popupChrome(undefined, { enable: () => new Promise(() => undefined) });
+    deps.watchSetupMs = 50;
+    const started = Date.now();
+    const watch = await watching(deps);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(await watch.result(60_000)).toBeUndefined();
+    watch.stop();
+  });
+
+  it('an attach that failed while setting up the watch is tried again by the next call', async () => {
+    const { deps } = popupChrome(undefined, { attachFailsOnce: true });
+    const driver = chromeDriver('chrome-own', 'ws-1', deps);
+    const watch = await driver.watchOpened?.();
+    await expect(driver.geometry()).resolves.toMatchObject({ width: 1000, height: 700 });
+    expect(deps.session).toHaveBeenCalledTimes(2);
+    watch?.stop();
   });
 
   it('a session with no events still reports a tab that opened, and waits for none', async () => {

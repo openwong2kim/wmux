@@ -398,17 +398,19 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
       // What the tap focused (contract v1.6), read right after it with the
       // input still held, and the tab it opened (v1.7), watched from just
       // before it and waited for after the input is released.
-      const read: { focus?: PhoneBrowserFocus; opened?: PhoneOpenedWatch } = {};
+      const read: { focus?: PhoneBrowserFocus; watching?: Promise<PhoneOpenedWatch> } = {};
       try {
         await input(async () => {
-          read.opened = await driver.watchOpened?.();
+          read.watching = driver.watchOpened?.();
+          await read.watching;
           await driver.tap({x,y});
           read.focus = await driver.readFocus?.();
         });
-        const opened = await read.opened?.result(PHONE_TAP_OPENED_MS);
+        const opened = await (await read.watching)?.result(PHONE_TAP_OPENED_MS);
         return { applied: true, ...(read.focus ? { focus: read.focus } : {}), ...(opened ? { opened: { surfaceId: opened } } : {}) };
       } finally {
-        read.opened?.stop();
+        // Also when the input ran out of time with the watch still being set up.
+        void read.watching?.then((watch) => watch.stop(), () => undefined);
       }
     }
   } else if (command === 'browser.type') {

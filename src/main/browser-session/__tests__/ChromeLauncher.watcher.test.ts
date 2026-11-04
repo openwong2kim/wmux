@@ -34,7 +34,10 @@ vi.mock('node:fs', async (orig) => {
   };
 });
 
-import { ChromeLauncher, ChromePageSessionError, OPENED_PER_MINUTE, OPENED_PER_OPENER_PER_MINUTE, type ChromeOpenedSurface } from '../ChromeLauncher';
+import {
+  ChromeLauncher, ChromePageSessionError, OPENED_OPEN_PER_OPENER, OPENED_OPEN_PER_WORKSPACE, OPENED_PER_MINUTE,
+  OPENED_PER_OPENER_PER_MINUTE, OPENED_PER_WORKSPACE_PER_MINUTE, type ChromeOpenedSurface,
+} from '../ChromeLauncher';
 import { surfaceOpeners } from '../SurfaceOpeners';
 import type { ChromeSurfaceRecord, ChromeSurfaceStore } from '../ChromeSurfaceStore';
 
@@ -584,38 +587,157 @@ describe('ChromeLauncher tabs its own tabs open (target=_blank, window.open)', (
     expect(launcher.hasSurface(second)).toBe(false);
   });
 
-  it('adopts at most a minute\'s cap from one tab and from all of them, logging each run of refusals once', async () => {
+  /** Date.now under the test's control, and console.warn captured, for the limit cases. */
+  type WarnSpy = { mock: { calls: unknown[][] } };
+  async function limited(run: (clock: { advance(ms: number): void }, warn: WarnSpy) => Promise<void>): Promise<void> {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const clock = vi.spyOn(Date, 'now');
     let now = 1_000_000;
-    clock.mockImplementation(() => now);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
     try {
-      const { launcher, heard, ws } = await running('/tmp/pop-8');
-      let page = 100;
-      const burst = (opener: string, n: number) => { for (let i = 0; i < n; i++) created(ws, `page-${page++}`, opener); };
-
-      burst('page-1', OPENED_PER_OPENER_PER_MINUTE + 2);
-      expect(heard).toHaveLength(OPENED_PER_OPENER_PER_MINUTE);
-      expect(warn.mock.calls.filter(([m]) => String(m).includes('in a minute'))).toHaveLength(1);
-
-      // Other tabs still adopt, up to the launcher's own cap.
-      const openers = Math.ceil(OPENED_PER_MINUTE / OPENED_PER_OPENER_PER_MINUTE);
-      for (let n = 2; n <= openers + 1; n++) {
-        nextCreatedPage = `page-${n}`;
-        tabs.set(`tab-${n}`, `page-${n}`);
-        await launcher.openTab('https://b.test/', 'ws-1');
-        burst(`page-${n}`, OPENED_PER_OPENER_PER_MINUTE);
-      }
-      expect(heard).toHaveLength(OPENED_PER_MINUTE);
-
-      // A minute later the first tab adopts again.
-      now += 60_000;
-      burst('page-1', 1);
-      expect(heard).toHaveLength(OPENED_PER_MINUTE + 1);
+      await run({ advance: (ms) => { now += ms; } }, warn);
     } finally {
       clock.mockRestore();
       warn.mockRestore();
     }
+  }
+  let nextPopup = 100;
+  /** `n` pages opened by `opener`, as fast as Chrome can make them. */
+  const burst = (ws: FakeBrowserWs, opener: string, n: number) => { for (let i = 0; i < n; i++) created(ws, `page-${nextPopup++}`, opener); };
+  /** Another tab wmux opens, as page-<n> in tab-<n>. */
+  async function openAnother(launcher: ChromeLauncher, n: number, workspaceId: string): Promise<string> {
+    nextCreatedPage = `page-${n}`;
+    tabs.set(`tab-${n}`, `page-${n}`);
+    return (await launcher.openTab('https://b.test/', workspaceId)).surfaceId;
+  }
+  const limitLogs = (warn: WarnSpy) => warn.mock.calls.filter(([m]) => String(m).includes('are not adopted past'));
+
+  it('adopts at most a minute\'s worth from one tab, one workspace and one profile, logging each run of refusals once', async () => {
+    await limited(async (clock, warn) => {
+      const { launcher, heard, ws } = await running('/tmp/pop-8');
+      burst(ws, 'page-1', OPENED_PER_OPENER_PER_MINUTE + 2);
+      expect(heard).toHaveLength(OPENED_PER_OPENER_PER_MINUTE);
+      expect(limitLogs(warn)).toHaveLength(1);
+
+      // Another tab of the same workspace adopts up to the workspace's limit.
+      await openAnother(launcher, 2, 'ws-1');
+      burst(ws, 'page-2', OPENED_PER_OPENER_PER_MINUTE);
+      await openAnother(launcher, 3, 'ws-1');
+      burst(ws, 'page-3', 1);
+      expect(heard).toHaveLength(OPENED_PER_WORKSPACE_PER_MINUTE);
+
+      // Other workspaces on the profile adopt, up to the profile's limit.
+      let n = 4;
+      for (let w = 2; heard.length < OPENED_PER_MINUTE; w++) {
+        for (let k = 0; k < OPENED_PER_WORKSPACE_PER_MINUTE / OPENED_PER_OPENER_PER_MINUTE; k++, n++) {
+          await openAnother(launcher, n, `ws-${w}`);
+          burst(ws, `page-${n}`, OPENED_PER_OPENER_PER_MINUTE);
+        }
+      }
+      expect(heard).toHaveLength(OPENED_PER_MINUTE);
+      await openAnother(launcher, n, 'ws-new');
+      burst(ws, `page-${n}`, 1);
+      expect(heard).toHaveLength(OPENED_PER_MINUTE);
+
+      // A minute later the first tab adopts again.
+      clock.advance(60_000);
+      burst(ws, 'page-1', 1);
+      expect(heard).toHaveLength(OPENED_PER_MINUTE + 1);
+    });
+  });
+
+  it('adopts no more than a tab, or a workspace, may hold open; closing one makes room', async () => {
+    await limited(async (clock, warn) => {
+      const { launcher, heard, ws } = await running('/tmp/pop-9');
+      // One tab, a minute's worth at a time, up to what it may hold open.
+      while (heard.length < OPENED_OPEN_PER_OPENER) {
+        burst(ws, 'page-1', Math.min(OPENED_PER_OPENER_PER_MINUTE, OPENED_OPEN_PER_OPENER - heard.length));
+        clock.advance(60_000);
+      }
+      burst(ws, 'page-1', 1);
+      expect(heard).toHaveLength(OPENED_OPEN_PER_OPENER);
+      expect(limitLogs(warn).at(-1)?.[0]).toContain('open tabs from one tab');
+      expect(await launcher.closeSurface(heard[0].surfaceId)).toBe(true);
+      burst(ws, 'page-1', 1);
+      expect(heard).toHaveLength(OPENED_OPEN_PER_OPENER + 1);
+
+      // The workspace's other tabs, up to what the workspace may hold open.
+      let n = 2;
+      while (heard.length - 1 < OPENED_OPEN_PER_WORKSPACE) {
+        await openAnother(launcher, n, 'ws-1');
+        burst(ws, `page-${n++}`, Math.min(OPENED_PER_OPENER_PER_MINUTE, OPENED_OPEN_PER_WORKSPACE - (heard.length - 1)));
+        clock.advance(60_000);
+      }
+      await openAnother(launcher, n, 'ws-1');
+      burst(ws, `page-${n}`, 1);
+      expect(heard).toHaveLength(OPENED_OPEN_PER_WORKSPACE + 1);
+      expect(limitLogs(warn).at(-1)?.[0]).toContain('open tabs in one workspace');
+    });
+  });
+
+  it('starts the limits over when Chrome is gone and comes back', async () => {
+    await limited(async () => {
+      const child = makeChild();
+      spawnWritesPortFile(child, 22001);
+      serveChrome();
+      tabs.set('tab-1', 'page-1');
+      listedPages = ['page-1'];
+      const launcher = new ChromeLauncher('/tmp/pop-10', { profileName: 'p1', surfaceStore: asStore(makeFakeStore()) });
+      const heard: ChromeOpenedSurface[] = [];
+      launcher.onSurfaceOpened((opened) => heard.push(opened));
+      await launcher.openTab('https://a.test/', 'ws-1');
+      burst(FakeBrowserWs.instances[0], 'page-1', OPENED_PER_OPENER_PER_MINUTE);
+      await openAnother(launcher, 2, 'ws-1');
+      burst(FakeBrowserWs.instances[0], 'page-2', OPENED_PER_OPENER_PER_MINUTE + 1);
+      expect(heard).toHaveLength(OPENED_PER_WORKSPACE_PER_MINUTE);
+
+      child.emit('exit');
+      spawnWritesPortFile(makeChild(), 22001);
+      await openAnother(launcher, 3, 'ws-1');
+      burst(FakeBrowserWs.instances.at(-1) as FakeBrowserWs, 'page-3', 1);
+      expect(heard).toHaveLength(OPENED_PER_WORKSPACE_PER_MINUTE + 1);
+    });
+  });
+
+  it('never adopts a prerendered page', async () => {
+    const { heard, ws } = await running('/tmp/pop-11');
+    ws.event('Target.targetCreated', { targetInfo: { targetId: 'page-pre', type: 'page', subtype: 'prerender', url: '', openerId: 'page-1' } });
+    expect(heard).toEqual([]);
+  });
+
+  it('forgets the connection a popup belonged to once Chrome closes it', async () => {
+    surfaceOpeners.clear();
+    const { opener, heard, ws } = await running('/tmp/pop-12');
+    surfaceOpeners.note(opener.surfaceId, 'key-a');
+    tabs.set('tab-2', 'page-2');
+    created(ws, 'page-2', 'page-1');
+    ws.event('Target.targetCreated', { targetInfo: { targetId: 'tab-2', type: 'tab' } });
+    await tick();
+    expect(surfaceOpeners.get(heard[0].surfaceId)).toBe('key-a');
+    ws.event('Target.targetDestroyed', { targetId: 'tab-2' });
+    expect(surfaceOpeners.get(heard[0].surfaceId)).toBeUndefined();
+    surfaceOpeners.clear();
+  });
+
+  it('a page Chrome swaps into an adopted tab stays that tab\'s surface, not a second one', async () => {
+    const { launcher, heard, ws } = await running('/tmp/pop-13');
+    tabs.set('tab-2', 'page-2');
+    created(ws, 'page-2', 'page-1');
+    ws.event('Target.targetCreated', { targetInfo: { targetId: 'tab-2', type: 'tab' } });
+    await tick();
+    const popup = heard[0].surfaceId;
+    expect(launcher.recordFor(popup)?.tabTargetId).toBe('tab-2');
+
+    // The replacement page is announced with the same opener before its tab is known.
+    created(ws, 'page-5', 'page-1');
+    expect(heard).toHaveLength(2);
+    tabs.set('tab-2', 'page-5');
+    ws.event('Target.detachedFromTarget', { sessionId: 'page-sess-page-2', targetId: 'page-2' }, 'sess-tab-2');
+    ws.announcePage('tab-2', 'page-5');
+
+    expect(launcher.recordFor(popup)?.targetId).toBe('page-5');
+    expect(launcher.hasSurface(heard[1].surfaceId)).toBe(false);
+    listedPages = ['page-1', 'page-5'];
+    expect((await launcher.listTargets('ws-1')).filter((t) => t.targetId === 'page-5').map((t) => t.surfaceId)).toEqual([popup]);
   });
 
   it('stops telling a listener once it unsubscribes', async () => {

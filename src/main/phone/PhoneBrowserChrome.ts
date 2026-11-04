@@ -26,6 +26,9 @@ import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
 /** How long a whole Chrome capture, or one input, may take before the tab reads as hidden. */
 export const PHONE_CHROME_CAPTURE_MS = 5_000;
 
+/** How long a tap waits to start hearing the page ask for a window before it goes ahead without. */
+export const PHONE_WATCH_SETUP_MS = 500;
+
 export interface PhoneChromeTab { surfaceId: string; url: string; title: string }
 
 /** Main's dedicated Chrome profiles, as the phone preview may see them. */
@@ -56,6 +59,8 @@ export interface PhoneChromeDeps {
   validateNavigation(url: string): Promise<void>;
   /** Test seam for PHONE_CHROME_CAPTURE_MS. */
   captureMs?: number;
+  /** Test seam for PHONE_WATCH_SETUP_MS. */
+  watchSetupMs?: number;
 }
 
 /** Surfaces with a phone input in flight: one at a time per tab. */
@@ -307,18 +312,32 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       // The page asked for a window during the tap (Page.windowOpen): only
       // then is a tab that has not opened yet worth waiting for.
       let asked = false;
+      let stopped = false;
       let wake: (() => void) | undefined;
-      const offs = [deps.onTabOpened?.(surfaceId, workspaceId, (tab) => { opened ??= tab.surfaceId; wake?.(); }) ?? (() => undefined)];
-      try {
-        session ??= deps.session(surfaceId, workspaceId);
-        const open = await session;
-        if (open.on) {
-          offs.push(open.on('Page.windowOpen', () => { asked = true; }));
-          await open.send('Page.enable');
+      const offs: Array<() => void> = [];
+      // A subscription that lands after stop() is undone at once.
+      const keep = (off: () => void) => { if (stopped) off(); else offs.push(off); };
+      keep(deps.onTabOpened?.(surfaceId, workspaceId, (tab) => { opened ??= tab.surfaceId; wake?.(); }) ?? (() => undefined));
+      // Page.windowOpen needs the page session. Past PHONE_WATCH_SETUP_MS the
+      // tap goes ahead without it: a tab that opens is still reported, none
+      // is waited for.
+      const setup = (async () => {
+        const attaching = session ??= deps.session(surfaceId, workspaceId);
+        let open: ChromePageSession;
+        try {
+          open = await attaching;
+        } catch {
+          // Not kept: the tap's own call attaches again.
+          if (session === attaching) session = null;
+          return;
         }
-      } catch {
-        // No page events: a tab that opened is still reported, none is waited for.
-      }
+        if (!open.on || stopped) return;
+        keep(open.on('Page.windowOpen', () => { asked = true; }));
+        await open.send('Page.enable');
+      })().catch(() => undefined);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([setup, new Promise<void>((resolve) => { timer = setTimeout(resolve, deps.watchSetupMs ?? PHONE_WATCH_SETUP_MS); })]);
+      clearTimeout(timer);
       return {
         result: async (ms) => {
           if (opened || !asked) return opened;
@@ -329,6 +348,7 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
           return opened;
         },
         stop: () => {
+          stopped = true;
           for (const off of offs.splice(0)) off();
           wake?.();
         },

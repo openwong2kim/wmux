@@ -388,6 +388,31 @@ describe('chrome backend openers', () => {
   });
 });
 
+describe('chrome browser.close with no surfaceId', () => {
+  async function twoAgents() {
+    const { client, registry } = fakeChromeRegistry();
+    const router = registerChrome(registry);
+    const a = (await dispatch(router, 'browser.open', { workspaceId: 'ws-1', url: 'https://a.test/', openerKey: OPENER_A })) as { surfaceId: string };
+    const b = (await dispatch(router, 'browser.open', { workspaceId: 'ws-1', url: 'https://b.test/', openerKey: OPENER_B })) as { surfaceId: string };
+    return { client, router, a, b };
+  }
+
+  it('closes the caller\'s own newest tab, not another agent\'s newer one', async () => {
+    const { client, router, a, b } = await twoAgents();
+    expect(await dispatch(router, 'browser.close', { workspaceId: 'ws-1', openerKey: OPENER_A })).toMatchObject({ closed: true, surfaceId: a.surfaceId });
+    expect(client.closeSurface).toHaveBeenCalledWith(a.surfaceId);
+    expect(client.hasSurface(b.surfaceId)).toBe(true);
+  });
+
+  it('refuses when every tab is another agent\'s, and keeps the newest for a caller with no key', async () => {
+    const { client, router, b } = await twoAgents();
+    expect(await dispatch(router, 'browser.close', { workspaceId: 'ws-1', openerKey: 'opener-c-unknown' }))
+      .toEqual({ error: expect.stringContaining('belongs to another agent') });
+    expect(client.closeSurface).not.toHaveBeenCalled();
+    expect(await dispatch(router, 'browser.close', { workspaceId: 'ws-1' })).toMatchObject({ closed: true, surfaceId: b.surfaceId });
+  });
+});
+
 describe('reuse guard details', () => {
   it('reuses MY surface even when it is not the first pane', async () => {
     // The renderer's own open always takes the first surface, so a caller

@@ -3648,8 +3648,8 @@ exactly as above.
   starts Chrome: while it is not running there are no `chrome` rows, nor while
   the desktop cannot attach to its pages (its tab watcher is off or failed);
   help rows for those tabs are then `previewable: false`. A tab one of these
-  tabs opens (a `target=_blank` link, `window.open`, a popup) is listed too,
-  in the same workspace (contract v1.7, below).
+  tabs opens (a `target=_blank` link or a script's `window.open`) is listed
+  too, in the same workspace (contract v1.7, below).
 - **The same actions** take a `chrome` row's `id` as `surfaceId`: capture,
   `navigate`, `type`, `key`, `tap`, `scroll`, with the same checks
   (`expectedURL`, `geometry`, http(s) only). A Chrome capture has the builtin
@@ -3884,13 +3884,13 @@ paths alike, for builtin panes and `chrome` rows.
 
 #### Opened tabs: tap reply and stream event (contract v1.7)
 
-No flag: the field and the event describe themselves, and a client that
-ignores them works as before.
+No flag: the field describes itself, and a client that ignores it works as
+before.
 
-**Which tabs.** A tab that a `chrome` row's tab opens is a tab of that row's
-workspace: a `target=_blank` link (with or without `noopener`), a
-`window.open` (with or without `noopener`), or a popup, whoever caused it.
-It is listed with the other `chrome` rows and takes every action.
+**Which tabs.** A tab that a `chrome` row's tab opens with a `target=_blank`
+link or a script's `window.open` (each with or without `noopener`) is a tab
+of that row's workspace. It is listed with the other `chrome` rows and takes
+every action.
 
 - Only tabs opened from now on. A tab opened before the desktop ran this
   version stays nobody's.
@@ -3902,29 +3902,36 @@ It is listed with the other `chrome` rows and takes every action.
 - The new tab starts at `about:blank`. The list leaves it out until its first
   http(s) page commits, and its capture answers `503` until then.
 - Closing the tab that opened it leaves it open and listed.
-- One tab may open 20 tabs a minute, and all the tabs of one Chrome profile
-  60. Past that, a new tab stays nobody's, as before this version.
+- Limits: 20 new tabs a minute from one tab, 40 from one workspace's tabs
+  and 120 from one Chrome profile (workspaces with no profile of their own
+  share one), and at most 30 such tabs open from one tab and 50 in one
+  workspace. A tab past a limit stays nobody's, as before this version: it
+  is reported nowhere, neither listed nor in a tap reply.
 
 **Tap reply.** `POST …/browser {action:"tap"}` on a `chrome` row answers
 `{applied:true, focus?, opened?:{surfaceId}}`, on the polling and the stream
 paths alike.
 
-- `opened` names the tab the tap made this tab open: its `surfaceId` is the
-  new tab's row `id`. Switch to it, or refresh the list first when it is not
-  there yet (it is still blank).
+- `opened` names a tab this tab opened during the tap: the tap's own new
+  tab, unless something else on the page (an agent's click, a script) opened
+  one at the same moment. Its `surfaceId` is the new tab's row `id`.
+- Switch to `opened.surfaceId` directly; do not wait for it in the list. The
+  list holds at most 30 rows with these tabs last, and leaves the new tab out
+  while it is still blank. Its capture answers `503` until its first http(s)
+  page commits; try again shortly.
 - The desktop waits up to about 1 s for the new tab, and only when the page
   asked for a window during the tap. Any other tap answers as fast as before.
 - `opened` is absent when the tap opened no tab, on a builtin pane, and from
-  an older desktop. It is also absent when the new tab is over the limit
-  above, and when it opened more than about 1 s after the tap; refresh the
-  list to find such a tab.
+  an older desktop. It is also absent when the new tab is past a limit above
+  (that tab is reported nowhere), and when it opened more than about 1 s
+  after the tap (that tab is listed; refresh the list).
 - A builtin pane never opens a tab: a `target=_blank` link or a
   `window.open` there loads the page in the same pane, and the stream's `url`
   event shows the move.
 
-**Stream event (not sent yet).** The desktop does not send this event yet;
-a later version will. Do not wait for it: the tap reply's `opened` and the
-list cover every tab above. When it comes, on a live browser stream of a
+**Stream event: reserved, not sent by this desktop yet.** A later version
+will send it. Do not wait for it: the tap reply's `opened` and the list
+cover every adopted tab. When it comes, on a live browser stream of a
 `chrome` row, `event: tabOpened` carries `{surfaceId, pageURL?}`:
 
 - Sent each time the streamed tab opens a tab, for any reason: a tap, a
