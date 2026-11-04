@@ -20,6 +20,7 @@ import type { PhoneBrowserDriver } from './PhoneBrowser';
 import { ChromePageSessionError, chromeTargetWatcherEnabled, type ChromeBackendClient, type ChromePageSession, type ChromeStreamSession, type ChromeTargetInfo } from '../browser-session/ChromeLauncher';
 import { LIVE_CHROME_PROFILE } from '../browser-session/ChromeProfileStore';
 import { parseKeyPress } from '../pipe/handlers/cdpKeys';
+import { readFocus } from './PhoneBrowserFocus';
 import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
 
 /** How long a whole Chrome capture, or one input, may take before the tab reads as hidden. */
@@ -294,6 +295,7 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
     focus: async () => {
       if (!(await deps.focus(surfaceId, workspaceId))) throw new Error('Browser operation failed');
     },
+    readFocus: () => readFocus(call),
   };
 }
 

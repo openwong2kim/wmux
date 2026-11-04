@@ -3833,6 +3833,53 @@ unchanged:
 | `409 {error:"browser-input-busy"}` | Another input on this tab is still running. Nothing was applied: the client may resend that piece once. |
 | `409 {error:"browser-page-changed"}` | Tap or history on a streamed tab: `expectedURL` is an earlier URL of the page now showing. Nothing was applied: resend with the URL of the latest `url` event or frame. |
 
+#### Focus: tap reply and stream event (contract v1.6)
+
+No flag: the field and the event describe themselves, and a client that
+ignores them works as before.
+
+**Tap reply.** `POST …/browser {action:"tap"}` answers
+`{applied:true, focus?:{editable, kind?}}`, on the polling and the stream
+paths alike, for builtin panes and `chrome` rows.
+
+- The desktop reads the focused element right after the tap is dispatched,
+  while the tab's input is still held.
+- `editable` is `true` for a field that takes typed text and is neither
+  disabled nor read-only: an `input` of type `text`, `search`, `email`,
+  `url`, `tel`, `password` or `number` (a missing or unknown type reads as
+  `text`), a `textarea`, or a `contenteditable` element.
+- `kind` comes with `editable:true` only: one of `text`, `password`,
+  `email`, `number`, `tel`, `url`, `search`, `textarea`,
+  `contenteditable`. Anything else (a button, a link, a checkbox, a date
+  picker, nothing focused) is `{editable:false}` with no `kind`.
+- Open shadow roots and same-origin frames are followed. A field in a
+  cross-origin frame reads as `{editable:false}` (known gap).
+- `focus` is absent when it could not be read: an older desktop, the page
+  stayed busy past about 300 ms, or the read failed. Treat absent as
+  unknown, not as `editable:false`.
+- Only the kind is sent. Never a value, name, label, placeholder or id.
+  The read runs in an isolated world, so page scripts cannot see it or
+  change what it reads.
+
+**Stream event.** On a live browser stream, `event: focus` carries
+`{editable, kind?}` with the same meaning:
+
+- Sent on every change of (`editable`, `kind`): a tap or click, Tab or
+  Enter, a script moving focus, or a cross-document commit, which resets
+  it to `{editable:false}`. A page that is not focused on the desktop gets
+  no focus events from the browser; the desktop then also re-reads about
+  once a second, so a change a script makes there may arrive up to a
+  second late.
+- In order with frames. At most ten a second per stream; the last one
+  always arrives.
+- A later subscriber gets the tab's current state after the latest frame
+  (and after its `url` event, when one came after that frame), once the
+  desktop has reported one. The first subscriber of a tab may get its first
+  `focus` before its first frame; treat it as the tab's state either way.
+- On a cross-document commit, the reset may come just before or just after
+  that commit's `url` event.
+- Detected in an isolated world: page scripts cannot fake the event.
+
 ### New agent pane launch options
 
 With `agentLaunch`, an input-authorized phone may read

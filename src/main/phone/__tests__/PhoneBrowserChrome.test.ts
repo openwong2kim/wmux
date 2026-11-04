@@ -264,7 +264,7 @@ describe('phone preview on dedicated-profile Chrome', () => {
     expect(sent.some((c) => c.method.startsWith('Input.'))).toBe(false);
     await handlePhoneBrowser('browser.tap', { ...scope, expectedURL: 'https://shop.example.com/cart', geometry, x: 0.5, y: 0.5 }, fixture(deps));
     expect(sent.filter((c) => c.method === 'Input.dispatchMouseEvent').map((c) => c.params?.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
-    expect(sent.at(-1)?.params).toMatchObject({ x: 500, y: 350 });
+    expect(sent.filter((c) => c.method === 'Input.dispatchMouseEvent').at(-1)?.params).toMatchObject({ x: 500, y: 350 });
     // The tab navigates while the input waits its turn.
     const racing = fakeChrome();
     let reads = 0;
@@ -272,6 +272,25 @@ describe('phone preview on dedicated-profile Chrome', () => {
     await expect(handlePhoneBrowser('browser.type', { ...scope, expectedURL: 'https://shop.example.com/cart', text: 'x' }, fixture(racing.deps))).rejects.toThrow('page changed');
     expect(racing.sent.some((c) => c.method === 'Input.insertText')).toBe(false);
     expect(racing.sent.at(-1)).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: false } });
+  });
+
+  it('a tap reply carries what the tap focused, read in an isolated world after the release', async () => {
+    const { deps, sent, answer } = fakeChrome();
+    answer.mockImplementation(async (method: string) => {
+      if (method === 'Page.getLayoutMetrics') return METRICS;
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 9 };
+      if (method === 'Runtime.evaluate') return { result: { value: { editable: true, kind: 'email' } } };
+      return {};
+    });
+    const tap = { ...scope, expectedURL: 'https://shop.example.com/cart', geometry, x: 0.5, y: 0.5 };
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ applied: true, focus: { editable: true, kind: 'email' } });
+    const methods = sent.map((c) => c.method);
+    expect(methods.slice(methods.lastIndexOf('Input.dispatchMouseEvent') + 1)).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate']);
+    expect(sent.find((c) => c.method === 'Page.createIsolatedWorld')?.params).toEqual({ frameId: 'main', worldName: 'wmux-phone-focus' });
+    // A page that cannot be read in time: the tap still applied, with no focus.
+    answer.mockImplementation(async (method: string) => method === 'Page.getLayoutMetrics' ? METRICS : method === 'Page.getFrameTree' ? new Promise(() => undefined) : {});
+    expect(await handlePhoneBrowser('browser.tap', { ...tap, stream: true }, fixture(deps))).toEqual({ applied: true });
   });
 
   it('keys go through parseKeyPress; scroll moves the pointer first', async () => {

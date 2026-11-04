@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { WebContents } from 'electron';
 import type { CdpTargetInfo } from '../../browser-session/WebviewCdpManager';
 import { createPhoneBrowserStreams, type PhoneBrowserStreamDeps, type PhoneBrowserStreams } from '../PhoneBrowserStream';
+import { WATCH_FOCUS_EXPRESSION } from '../PhoneBrowserFocus';
 
 /**
  * Main's side of the phone browser stream on a builtin pane, over a fake
@@ -27,15 +28,23 @@ class FakeDebugger extends EventEmitter {
   layout = { clientWidth: 900, clientHeight: 668, pageX: 0, pageY: 123.5, scale: 1, zoom: 1 };
   /** captureScreenshot never answers while true. */
   captureHangs = false;
+  /** The page's focus as the focus watcher reads it; null: the page has no frame tree to watch. */
+  focus: Record<string, unknown> | null = null;
   async sendCommand(method: string, params?: Record<string, unknown>): Promise<unknown> {
     if (!this.attached) throw new Error('Debugger is not attached');
     this.sent.push({ method, params });
     switch (method) {
       case 'Page.getLayoutMetrics': return { cssVisualViewport: { ...this.layout } };
       case 'Page.captureScreenshot': return this.captureHangs ? new Promise(() => undefined) : { data: jpeg(900, 668) };
+      case 'Page.getFrameTree': return this.focus ? { frameTree: { frame: { id: 'main' } } } : {};
+      case 'Page.createIsolatedWorld': return { executionContextId: 11 };
+      case 'Page.addScriptToEvaluateOnNewDocument': return { identifier: 'focus-script' };
+      case 'Runtime.evaluate': return params?.expression === WATCH_FOCUS_EXPRESSION ? { result: { value: [this.focus, true] } } : {};
       default: return {};
     }
   }
+  /** The watcher's binding name, once it added it. */
+  binding(): string | undefined { return this.sent.find((s) => s.method === 'Runtime.addBinding')?.params?.name as string | undefined; }
   /** A frame on the page's own session ('') or a child target's. */
   frame(n: number, meta: Record<string, unknown> = {}, session = ''): void {
     this.emit('message', {}, 'Page.screencastFrame', { data: jpeg(900, 668), metadata: { ...META, ...meta }, sessionId: n }, session);
@@ -130,12 +139,14 @@ describe('phone browser stream (main): a builtin pane', () => {
 
   it('starts a screencast on the pane\'s debugger, repaints for the first frame, and answers builtin, whatever the backend setting', async () => {
     expect(await start()).toEqual({ backend: 'builtin', maxWidth: 1280, maxHeight: 1280, quality: 60 });
-    expect(g().debugger.sent.map((s) => s.method)).toEqual(['Page.getLayoutMetrics', 'Page.startScreencast']);
+    const methods = g().debugger.sent.map((s) => s.method);
+    expect(methods.slice(0, 2)).toEqual(['Page.getLayoutMetrics', 'Page.startScreencast']);
     expect(g().debugger.sent[1].params).toEqual({ format: 'jpeg', quality: 60, maxWidth: 1280, maxHeight: 1280, everyNthFrame: 1 });
     expect(g().repaints).toBe(1);
     expect(streams.tab('surf-a', 'ws-1')).toMatchObject({ url: 'https://a.example.com/start', geometry: null });
-    // The debugger stays attached and nothing else is enabled on it.
+    // The debugger stays attached; the focus watcher enables Page only, and nothing is ever disabled.
     expect(g().debugger.attached).toBe(true);
+    expect(methods.filter((m) => /\.(enable|disable)$/.test(m))).toEqual(['Page.enable']);
   });
 
   it('refuses a pane it cannot stream, in the preview\'s codes', async () => {
@@ -391,6 +402,81 @@ describe('phone browser stream (main): a builtin pane', () => {
     expect(observers.size).toBe(0);
     expect(g().debugger.attached).toBe(true);
     expect(streams.tab('surf-a', 'ws-1')).toBeNull();
+  });
+
+  it('focus: watched on the pane\'s debugger without Runtime.enable, each change pushed, paced like url events', async () => {
+    g().debugger.focus = { editable: false };
+    await start();
+    await flush();
+    const focus = () => pushes.filter((p) => p.kind === 'focus');
+    expect(focus()).toEqual([{ streamId: 'st-surf-a', kind: 'focus', focus: { editable: false } }]);
+    const sent = () => g().debugger.sent.map((x) => x.method);
+    expect(sent()).not.toContain('Runtime.enable');
+    expect(g().debugger.sent.find((x) => x.method === 'Runtime.addBinding')?.params).toEqual({ name: g().debugger.binding(), executionContextId: 11 });
+    const nudge = (session = '') => g().debugger.emit('message', {}, 'Runtime.bindingCalled', { name: g().debugger.binding(), payload: '' }, session);
+    g().debugger.focus = { editable: true, kind: 'text' };
+    // A child target's call is not this page's.
+    nudge('child-session');
+    await flush();
+    expect(focus()).toHaveLength(1);
+    nudge();
+    await flush();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(focus().at(-1)?.focus).toEqual({ editable: true, kind: 'text' });
+    // Two changes inside 100 ms: the second waits its turn, and the last one always goes.
+    g().debugger.focus = { editable: true, kind: 'password' };
+    nudge();
+    await flush();
+    g().debugger.focus = { editable: false };
+    nudge();
+    await flush();
+    const before = focus().length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(focus().length).toBeGreaterThan(before);
+    expect(focus().at(-1)?.focus).toEqual({ editable: false });
+    // A commit resets it at once.
+    g().debugger.focus = { editable: true, kind: 'search' };
+    nudge();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(focus().at(-1)?.focus).toEqual({ editable: true, kind: 'search' });
+    g().debugger.focus = { editable: false };
+    g().debugger.emit('message', {}, 'Page.frameNavigated', { frame: { id: 'main', url: 'https://a.example.com/next' } }, '');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(focus().at(-1)?.focus).toEqual({ editable: false });
+  });
+
+  it('focus: stop takes the watcher\'s binding and detector back from the shared debugger and leaves no listener', async () => {
+    g().debugger.focus = { editable: false };
+    await start();
+    await flush();
+    expect(g().debugger.listenerCount('message')).toBe(3);
+    await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'surf-a', streamId: 'st-surf-a' });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(g().debugger.listenerCount('message')).toBe(0);
+    // Each frame's detector is taken down in its world before the binding goes.
+    expect(g().debugger.sent.some((x) => x.method === 'Runtime.evaluate' && String(x.params?.expression).includes('__wmuxFocusTeardown'))).toBe(true);
+    expect(g().debugger.sent.filter((x) => x.method === 'Runtime.removeBinding' || x.method === 'Page.removeScriptToEvaluateOnNewDocument').map((x) => x.params))
+      .toEqual([{ name: g().debugger.binding() }, { identifier: 'focus-script' }]);
+    expect(g().debugger.sent.map((x) => x.method).filter((m) => /\.disable$/.test(m))).toEqual([]);
+    const pushed = pushes.length;
+    g().debugger.focus = { editable: true, kind: 'text' };
+    g().debugger.emit('message', {}, 'Runtime.bindingCalled', { name: g().debugger.binding(), payload: '' }, '');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(pushes.length).toBe(pushed);
+  });
+
+  it('focus: a stream stopped while it starts starts no watcher', async () => {
+    g().debugger.focus = { editable: false };
+    let open!: () => void;
+    boundsGate = new Promise<void>((resolve) => { open = resolve; });
+    const started = start();
+    await flush();
+    streams.stopAll();
+    open();
+    await started;
+    await flush();
+    expect(g().debugger.sent.map((x) => x.method)).not.toContain('Page.addScriptToEvaluateOnNewDocument');
+    expect(pushes.filter((p) => p.kind === 'focus')).toEqual([]);
   });
 
   it('known:false from the daemon stops the screencast; pings run as on Chrome', async () => {

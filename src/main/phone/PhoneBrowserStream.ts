@@ -13,6 +13,8 @@
 //  - `state`: hidden when Chrome reports the tab not visible, or a probe
 //    reads it hidden, after five quiet seconds, and at once when the renderer
 //    reports a builtin pane off screen; live when frames come back;
+//  - `focus`: whether the focused element takes typed text, and its kind, on
+//    each change (PhoneBrowserFocus.watchFocus), ten a second at most;
 //  - `end`: the tab is gone, or its browser is;
 //  - `ping`: every 15 s, so a stream the daemon forgot stops here too.
 //
@@ -32,6 +34,7 @@ import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import { readImageSize } from '../../mcp/playwright/imageSize';
 import { PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
 import { PHONE_CHROME_CAPTURE_MS, viewportOf } from './PhoneBrowserChrome';
+import { electronFocusCdp, watchFocus, type FocusCdp, type FocusWatch } from './PhoneBrowserFocus';
 import { phoneBrowserViewportExceeds } from './PhoneBrowserGeometry';
 
 const STREAM_ENV = 'WMUX_PHONE_BROWSER_STREAM';
@@ -59,6 +62,8 @@ const PING_MS = 15_000;
 const URL_INTERVAL_MS = 100;
 const TICK_MS = 500;
 const PUSH_TIMEOUT_MS = 3_000;
+/** Sends of one url, focus or state push that failed before it is given up. */
+const PUSH_RETRIES = 5;
 /** How long before a waiting frame's slot the browser may paint it a fresher one. */
 const FRESH_LEAD_MS = 100;
 /** How long a page swap is given to bind the tab's new page before re-attaching. */
@@ -192,7 +197,7 @@ class Budget {
  * browser has its two screencast frames unacked and captures no more, so it
  * captures at the pace frames are sent rather than at the page's.
  */
-type Outgoing = { kind: 'frame' | 'url' | 'state'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number };
+type Outgoing = { kind: 'frame' | 'url' | 'state' | 'focus'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number; retries?: number };
 
 interface ScreencastFrame { data?: unknown; metadata?: Record<string, unknown>; sessionId?: unknown }
 
@@ -215,7 +220,10 @@ abstract class TabStream implements PhoneStreamTabView {
   private lastPingAt = 0;
   private lastFramePushAt = 0;
   private lastUrlPushAt = 0;
+  private lastFocusPushAt = 0;
   private inFlight = false;
+  /** The tab's focus watcher on the source's current session (contract v1.6). */
+  private focusWatch: FocusWatch | null = null;
   private outbox: Outgoing[] = [];
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
   private freshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -250,7 +258,8 @@ abstract class TabStream implements PhoneStreamTabView {
   /** The source's own checks, every tick. */
   protected abstract poll(now: number): void;
   /** Lets go of the browser: the screencast and whatever the source listens to. */
-  protected abstract release(): void;
+  /** Lets go of the browser; `unwatched` settles once the focus watcher's teardown, which uses the session, is done. */
+  protected abstract release(unwatched: Promise<void>): void;
   /** Whether the tab is on screen as far as the source knows; painted while not, a frame is not sent. */
   protected visible(): boolean { return true; }
 
@@ -403,6 +412,8 @@ abstract class TabStream implements PhoneStreamTabView {
       if (wait <= 0 && !this.budget.take(item.bytes, now)) wait = this.budget.wait(item.bytes, now);
     } else if (item.kind === 'url') {
       wait = this.lastUrlPushAt + URL_INTERVAL_MS - now;
+    } else if (item.kind === 'focus') {
+      wait = this.lastFocusPushAt + URL_INTERVAL_MS - now;
     }
     if (wait > 0) {
       if (item.kind === 'frame') this.freshen(wait);
@@ -418,7 +429,8 @@ abstract class TabStream implements PhoneStreamTabView {
       if (this.freshTimer) { clearTimeout(this.freshTimer); this.freshTimer = null; }
     }
     if (item.kind === 'url') this.lastUrlPushAt = now;
-    this.send(item.params, () => {
+    if (item.kind === 'focus') this.lastFocusPushAt = now;
+    this.send(item, () => {
       // The daemon answered (or refused): only now may the browser paint the next one.
       this.ack(item.ack);
     });
@@ -443,17 +455,28 @@ abstract class TabStream implements PhoneStreamTabView {
     this.freshTimer.unref?.();
   }
 
-  /** One push in flight; a refused push is a dropped frame, `known:false` stops here. */
-  private send(params: Record<string, unknown>, done: () => void): void {
+  /**
+   * One push in flight; `known:false` stops here. A refused frame is a dropped
+   * one. A refused url, focus or state push goes back to the front, in its
+   * place before the frames after it, unless a newer one of its kind waits:
+   * the last of each must arrive.
+   */
+  private send(item: Outgoing, done: () => void): void {
     this.inFlight = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => reject(new Error('push timed out')), PUSH_TIMEOUT_MS);
       timer.unref?.();
     });
-    Promise.race([this.deps.push(params), timeout]).then((reply) => {
+    Promise.race([this.deps.push(item.params), timeout]).then((reply) => {
       if ((reply as { known?: unknown } | null)?.known === false) this.stop();
-    }, () => { /* rate limited, timed out or disconnected: dropped; the ping decides the rest */ }).finally(() => {
+    }, () => {
+      // Rate limited, timed out or disconnected; the ping decides the rest.
+      const retries = (item.retries ?? 0) + 1;
+      if (item.kind === 'frame' || this.stopped || retries > PUSH_RETRIES) return;
+      if (this.outbox.some((queued) => queued.kind === item.kind)) return;
+      this.outbox.unshift({ ...item, retries });
+    }).finally(() => {
       clearTimeout(timer);
       this.inFlight = false;
       done();
@@ -521,6 +544,31 @@ abstract class TabStream implements PhoneStreamTabView {
     this.offerFrame(shot.data, shot.geometry, undefined);
   }
 
+  /**
+   * Watches the tab's focus on the source's session and pushes each change
+   * (`{kind:'focus', focus:{editable, kind?}}`; the push's own `kind` is
+   * taken). `current`: whether that session is still the source's once the
+   * watcher is installed. A stop or a swap meanwhile keeps none running.
+   * Without a watcher the stream goes on, with no focus events.
+   */
+  protected async watchFocusOn(cdp: FocusCdp, current: () => boolean): Promise<void> {
+    if (this.stopped) return;
+    const watch = await watchFocus(cdp, (focus) => {
+      this.enqueue({ kind: 'focus', params: { streamId: this.streamId, kind: 'focus', focus }, bytes: 0 });
+    }).catch(() => null);
+    if (!watch) return;
+    if (this.stopped || !current()) { void watch.stop(); return; }
+    void this.dropFocusWatch();
+    this.focusWatch = watch;
+  }
+
+  /** The focus watcher stops: its detectors, its binding and its timer go. Settles when they have. */
+  protected dropFocusWatch(): Promise<void> {
+    const watch = this.focusWatch;
+    this.focusWatch = null;
+    return watch ? watch.stop().catch(() => undefined) : Promise.resolve();
+  }
+
   /** Tells the daemon the stream is over, then stops. */
   async end(error: 'browser-tab-gone' | 'browser-preview-unavailable' | 'browser-backend-unavailable'): Promise<void> {
     if (this.stopped) return;
@@ -537,7 +585,7 @@ abstract class TabStream implements PhoneStreamTabView {
     if (this.freshTimer) clearTimeout(this.freshTimer);
     if (this.firstFrame) clearTimeout(this.firstFrame);
     for (const item of this.outbox.splice(0)) { this.ackHeld(item); this.ack(item.ack); }
-    this.release();
+    this.release(this.dropFocusWatch());
     this.onStopped(this);
   }
 }
@@ -609,6 +657,7 @@ class ChromeTabStream extends TabStream {
     await this.readZoom();
     await this.startScreencast();
     this.armFirstFrame();
+    void this.watchFocusOn(session, () => this.session === session);
   }
 
   protected cdp(method: string, params?: Record<string, unknown>): Promise<unknown> {
@@ -671,6 +720,8 @@ class ChromeTabStream extends TabStream {
   private onClosed(session: ChromeStreamSession): void {
     if (this.stopped || this.session !== session) return;
     this.session = null;
+    // The watcher went with the session; the re-attach starts another.
+    void this.dropFocusWatch();
     // The re-attach arms its own first frame; the old page's capture has no session to run on.
     if (this.firstFrame) { clearTimeout(this.firstFrame); this.firstFrame = null; }
     // Until the new page is read, input checks the live page itself (PhoneBrowser.ts).
@@ -689,11 +740,12 @@ class ChromeTabStream extends TabStream {
     retry.unref?.();
   }
 
-  protected release(): void {
+  protected release(unwatched: Promise<void>): void {
     const session = this.session;
     this.session = null;
     if (session && !session.closed) {
-      void session.send('Page.stopScreencast').catch(() => undefined).finally(() => { void session.detach(); });
+      // The focus watcher's teardown runs on this session: it goes first.
+      void unwatched.then(() => session.send('Page.stopScreencast')).catch(() => undefined).finally(() => { void session.detach(); });
     }
   }
 }
@@ -787,6 +839,9 @@ class BuiltinTabStream extends TabStream {
     if (this.stopped) return;
     await this.startScreencast();
     if (this.stopped) { void this.cdp('Page.stopScreencast').catch(() => undefined); return; }
+    // On the debugger WebviewCdpManager attached, shared: the watcher never
+    // disables a domain on it, and takes its binding and detector back on stop.
+    void this.watchFocusOn(electronFocusCdp(wc.debugger), () => !wc.isDestroyed());
     if (!this.visible()) { this.goHidden(); return; }
     // Chromium paints a visible guest's first screencast frame itself; the
     // repaint is a nudge, and the fallback capture is what guarantees one.
@@ -866,6 +921,7 @@ class BuiltinTabStream extends TabStream {
   }
 
   protected release(): void {
+    // The pane's debugger stays attached: the focus watcher's teardown needs no wait.
     for (const off of this.unlisten.splice(0)) off();
     if (!this.wc.isDestroyed()) void this.cdp('Page.stopScreencast').catch(() => undefined);
   }

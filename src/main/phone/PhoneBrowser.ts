@@ -3,7 +3,7 @@ import type { PhoneBrowserInputOptions } from './PhoneBrowserInput';
 import type { CdpTargetInfo } from '../browser-session/WebviewCdpManager';
 import type { RpcResponse } from '../../shared/rpc';
 import { browserHelpOrigin } from '../../shared/phoneBrowserHelp';
-import { BROWSER_STREAM_KEYS, PhoneBrowserError, type PhoneBrowserBackend } from '../../shared/phoneBrowserPreview';
+import { BROWSER_STREAM_KEYS, PhoneBrowserError, type PhoneBrowserBackend, type PhoneBrowserFocus } from '../../shared/phoneBrowserPreview';
 import type { PhoneChromeDeps } from './PhoneBrowserChrome';
 import { chromeDriver, viewportOf } from './PhoneBrowserChrome';
 import type { PhoneStreamTabView } from './PhoneBrowserStream';
@@ -42,6 +42,8 @@ interface BrowserDeps {
   chrome?: PhoneChromeDeps;
   /** The live browser streams: a streamed tab's URLs and latest geometry. Absent: no stream rules. */
   streams?: { tab(surfaceId: string, workspaceId: string): PhoneStreamTabView | null };
+  /** A builtin pane's focused field (PhoneBrowserFocus.readFocus). Absent: a tap reply carries no `focus`. */
+  readFocus?: (webContentsId: number) => Promise<PhoneBrowserFocus | undefined>;
 }
 
 /** One tab, whichever browser it is in. Every method re-reads the browser. */
@@ -68,6 +70,8 @@ export interface PhoneBrowserDriver {
   historyEntry(direction: 'back' | 'forward'): Promise<{ url: string; go(): Promise<void> } | null>;
   viewport(mode: 'mobile' | 'desktop'): Promise<void>;
   focus(): Promise<void>;
+  /** What the focused element takes, right after a tap; undefined when it could not be read in time. */
+  readFocus?(): Promise<PhoneBrowserFocus | undefined>;
 }
 
 /** 700 KiB of base64, so the whole `daemon.phone.complete` envelope stays under
@@ -166,6 +170,7 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
       if (!deps.focusBuiltin) throw new PhoneBrowserError('browser-action-unsupported');
       if (!(await deps.focusBuiltin(target.surfaceId, workspaceId))) throw new Error('Browser operation failed');
     },
+    readFocus: async () => deps.readFocus?.(target.webContentsId),
   };
 }
 
@@ -377,7 +382,12 @@ async function phoneBrowser(command: string, payload: Record<string, unknown>, d
           typeof payload.deltaY !== 'number' || !Number.isFinite(payload.deltaY) || Math.abs(payload.deltaY) > 1) throw new Error('Invalid browser scroll');
       const event = {x,y,deltaX:payload.deltaX * spanX,deltaY:payload.deltaY * spanY};
       await input(() => driver.scroll(event));
-    } else await input(() => driver.tap({x,y}));
+    } else {
+      // What the tap focused (contract v1.6), read right after it with the input still held.
+      const read: { focus?: PhoneBrowserFocus } = {};
+      await input(async () => { await driver.tap({x,y}); read.focus = await driver.readFocus?.(); });
+      return { applied: true, ...(read.focus ? { focus: read.focus } : {}) };
+    }
   } else if (command === 'browser.type') {
     // eslint-disable-next-line no-control-regex
     if (typeof payload.text !== 'string' || !payload.text || payload.text.length > 4096 || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(payload.text)) throw new Error('Invalid browser text');

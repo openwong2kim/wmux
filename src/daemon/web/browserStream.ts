@@ -11,6 +11,8 @@
 //    previous write has gone out and its own `maxFps` interval has passed;
 //    a newer frame replaces one still waiting;
 //  - `url` events at most ten a second, the last one always written;
+//  - `focus` events (contract v1.6) on each change, paced like `url`; a later
+//    subscriber gets the tab's latest after its latest frame;
 //  - `: keepalive` every 15 s. A keepalive still unwritten at the next tick
 //    closes the stream, as does an authorization that no longer holds;
 //  - `end browser-stream-expired` after 30 minutes.
@@ -18,7 +20,7 @@
 // docs/phone-client-contract.md "Live browser stream" is the client contract.
 
 import { randomUUID } from 'node:crypto';
-import { PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode } from '../../shared/phoneBrowserPreview';
+import { PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode, phoneBrowserFocus } from '../../shared/phoneBrowserPreview';
 
 export const BROWSER_STREAM_MAX_SUBSCRIBERS_PER_TAB = 4;
 export const BROWSER_STREAM_MAX_PER_PRINCIPAL_PER_TAB = 2;
@@ -30,6 +32,8 @@ export const BROWSER_STREAM_LIFETIME_MS = 30 * 60_000;
 export const BROWSER_STREAM_SILENT_MS = 45_000;
 /** `url` events are written at most this often per subscriber. */
 export const BROWSER_STREAM_URL_INTERVAL_MS = 100;
+/** `focus` events are written at most this often per subscriber. */
+export const BROWSER_STREAM_FOCUS_INTERVAL_MS = 100;
 /** Base64 image data per frame. */
 export const BROWSER_STREAM_FRAME_DATA_LIMIT = 700 * 1024;
 export const BROWSER_STREAM_URL_LIMIT = 4096;
@@ -106,6 +110,8 @@ interface Tab {
   latest: string | null;
   /** The latest url event's JSON when it came after that frame, for a late subscriber. */
   urlAfterLatest: string | null;
+  /** The latest focus event's JSON, for a late subscriber; null until main sent one. */
+  focus: string | null;
   /** When main last pushed for it, ping included. */
   lastPushAt: number;
   hidden: boolean;
@@ -114,7 +120,7 @@ interface Tab {
   endCode: BrowserStreamEndCode | null;
 }
 
-type Item = { kind: 'frame' | 'url' | 'state'; body: string };
+type Item = { kind: 'frame' | 'url' | 'state' | 'focus'; body: string };
 
 interface Subscriber {
   tab: Tab;
@@ -125,6 +131,9 @@ interface Subscriber {
   seq: number;
   lastFrameAt: number;
   lastUrlAt: number;
+  lastFocusAt: number;
+  /** The focus event last written to it: a queued one equal to it is a change it never saw. */
+  lastFocus: string | null;
   queue: Item[];
   flushTimer: ReturnType<typeof setTimeout> | null;
   tick: ReturnType<typeof setInterval> | null;
@@ -225,13 +234,13 @@ export class BrowserStreamRegistry {
       this.watch(desktop);
       tab = {
         key, workspaceId, surfaceId, streamId: randomUUID(), owner: desktop.ownerId, desktop, subs: new Set(),
-        starting: null, shared: null, sentMaxFps: params.maxFps, latest: null, urlAfterLatest: null, lastPushAt: 0, hidden: false, gone: false, endCode: null,
+        starting: null, shared: null, sentMaxFps: params.maxFps, latest: null, urlAfterLatest: null, focus: null, lastPushAt: 0, hidden: false, gone: false, endCode: null,
       };
       this.tabs.set(key, tab);
       this.byStream.set(tab.streamId, tab);
     }
     const sub: Subscriber = {
-      tab, who, maxFps: params.maxFps, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0,
+      tab, who, maxFps: params.maxFps, sink: null, authorize: () => false, seq: 0, lastFrameAt: 0, lastUrlAt: 0, lastFocusAt: 0, lastFocus: null,
       queue: [], flushTimer: null, tick: null, expiry: null, keepalivePending: false, closed: false,
     };
     tab.subs.add(sub);
@@ -271,6 +280,18 @@ export class BrowserStreamRegistry {
         const body = JSON.stringify(params.pageURL !== undefined ? { pageURL: params.pageURL } : {});
         tab.urlAfterLatest = body;
         this.fanOut(tab, { kind: 'url', body });
+        return { ok: true, known: true };
+      }
+      case 'focus': {
+        // Main sends `{streamId, kind:'focus', focus:{editable, kind?}}`; the phone gets `focus` alone.
+        const focus = phoneBrowserFocus(params.focus);
+        if (!focus) return { ok: false, known: true };
+        const body = JSON.stringify(focus);
+        // Only a change goes out: a re-attached main reports the state it already sent.
+        if (body !== tab.focus) {
+          tab.focus = body;
+          this.fanOut(tab, { kind: 'focus', body });
+        }
         return { ok: true, known: true };
       }
       case 'end': {
@@ -381,6 +402,7 @@ export class BrowserStreamRegistry {
     // A URL change with no repaint since: without it, the frame's URL is stale.
     if (tab.urlAfterLatest) sub.queue.push({ kind: 'url', body: tab.urlAfterLatest });
     if (tab.hidden) sub.queue.push({ kind: 'state', body: JSON.stringify({ state: 'hidden', reason: 'browser-tab-hidden' }) });
+    if (tab.focus) sub.queue.push({ kind: 'focus', body: tab.focus });
     sub.tick = setInterval(() => this.onTick(sub), BROWSER_STREAM_KEEPALIVE_MS);
     sub.tick.unref?.();
     sub.expiry = setTimeout(() => this.end(sub, 'browser-stream-expired'), BROWSER_STREAM_LIFETIME_MS);
@@ -432,9 +454,12 @@ export class BrowserStreamRegistry {
       // Whatever went before has not gone out yet: wait for its completion.
       if (sink.writableLength > 0 || sink.destroyed) return;
       const item = sub.queue[0];
+      // A focus that went and came back before this subscriber took the change: nothing changed for it.
+      if (item.kind === 'focus' && item.body === sub.lastFocus) { sub.queue.shift(); continue; }
       const now = Date.now();
       const due = item.kind === 'frame' ? sub.lastFrameAt + 1000 / sub.maxFps
-        : item.kind === 'url' ? sub.lastUrlAt + BROWSER_STREAM_URL_INTERVAL_MS : now;
+        : item.kind === 'url' ? sub.lastUrlAt + BROWSER_STREAM_URL_INTERVAL_MS
+        : item.kind === 'focus' ? sub.lastFocusAt + BROWSER_STREAM_FOCUS_INTERVAL_MS : now;
       if (due > now) {
         sub.flushTimer = setTimeout(() => { sub.flushTimer = null; this.flush(sub); }, due - now);
         sub.flushTimer.unref?.();
@@ -447,6 +472,7 @@ export class BrowserStreamRegistry {
         this.write(sub, sse('frame', `{"seq":${sub.seq},${item.body.slice(1)}`));
       } else {
         if (item.kind === 'url') sub.lastUrlAt = now;
+        if (item.kind === 'focus') { sub.lastFocusAt = now; sub.lastFocus = item.body; }
         this.write(sub, sse(item.kind, item.body));
       }
     }
