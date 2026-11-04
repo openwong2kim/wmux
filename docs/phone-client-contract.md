@@ -3734,10 +3734,14 @@ phone layout as well.
   reconnect the stream with or without `viewport=mobile` to switch.
 - **Builtin pane**: the same as `{action:"viewport",mode:"mobile"}`, fitted
   to the pane; like that action it reloads the page, and going back
-  reloads it again. A device preset already on the pane (from the
+  reloads it again. A phone preset already on the pane (from the
   `viewport` action or an agent) is left as it is, and the stream never
-  reverts it; nor does it revert its own once the `viewport` action or an
-  agent has changed the preset since.
+  reverts it. Any other preset (an agent's desktop emulation) is replaced by
+  the phone's, and going back leaves the pane with no preset. The stream
+  does not revert its own once the `viewport` action or an agent has
+  changed the preset since. Going back also works on a page that is not
+  http and while the user has paused the agent or taken over the pane; a
+  switch that fails is tried again about every 2 s.
 - **Going back**: about 4 s after the last subscriber that asked for it
   leaves. A subscriber asking for it within that time keeps the tab as it
   is (no reload); a stream whose last subscriber left keeps running for
@@ -3807,7 +3811,8 @@ the URL changed after that frame.
 After that, frames come when the page repaints, at most `maxFps`. Latest
 frame first: while the connection has not taken the last frame, newer ones
 replace the one waiting. One screencast per tab is shared by its
-subscribers and stops when the last one leaves.
+subscribers and stops when the last one leaves, or about 4 s later on a
+tab shown as a phone (`viewport=mobile`, above).
 
 **Closing from the server**, without `end`: at once when the device is
 revoked or its input grant is withdrawn; within 15 s when the consent the
