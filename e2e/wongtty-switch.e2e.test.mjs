@@ -10,6 +10,9 @@
 // bracketed paste, mouse reporting and kitty flags on, and answers what the
 // terminal reports for them (DECRQM, CSI ? u, DSR, stty size) on request.
 // Every pane traps SIGWINCH and prints it, so a swap that changed a grid shows.
+// A further workspace F holds one pane that streams output while the switch
+// flips. The last run fails every repaint (WMUX_E2E_RESYNC), and a second
+// sandbox runs the app with no daemon at all (local mode).
 //
 // WMUX_E2E_SANDBOX_BASE moves the sandbox HOME (e.g. off a small system disk).
 import assert from 'node:assert/strict';
@@ -33,11 +36,15 @@ function packagedWmuxCount() {
   }
 }
 
-const sb = makeSandbox('wts');
+let sb = makeSandbox('wts');
+let appRoot = ROOT;
 const packagedBefore = packagedWmuxCount();
 let run = null;
 const panes = []; // { n, ptyId, ws }
 const ws = {};
+// Panes on the page that are not in `panes` (workspace F's streaming pane).
+let extraPanes = 0;
+const FLOW_LINES = 2_000_000;
 
 // The probe of the alternate-screen pane: on each request file it asks the
 // terminal for its modes, kitty flags, cursor and size, and writes the answers.
@@ -60,10 +67,22 @@ fs.writeFileSync(path.join(sb.home, 'probe.sh'), [
   '',
 ].join('\n'));
 
+// Streams FLOW_LINES numbered rows; the start and end files tell the test
+// whether it is still streaming when the switch flips.
+fs.writeFileSync(path.join(sb.home, 'flow.sh'), [
+  'k=$1; rm -f "$HOME/flow-$k.start" "$HOME/flow-$k.end"',
+  'touch "$HOME/flow-$k.start"',
+  // -f: BSD seq prints numbers above 999,999 in exponent form.
+  `seq -f '%.0f' 1 ${FLOW_LINES} | sed "s/^/FLOW$k-/"`,
+  'touch "$HOME/flow-$k.end"',
+  "printf 'FLOW''DONE-%s\\n' \"$k\"",
+  '',
+].join('\n'));
+
 async function launch(env = {}) {
   Object.assign(process.env, env);
   try {
-    const launched = await launchApp(sb);
+    const launched = await launchApp(sb, { appRoot });
     const consoleLines = [];
     launched.win.on('console', (m) => consoleLines.push(m.text()));
     await launched.app.evaluate(({ BrowserWindow }) => {
@@ -72,6 +91,8 @@ async function launch(env = {}) {
       w.setSize(1600, 1000);
     });
     await launched.win.locator('text=Workspaces').first().waitFor({ timeout: 60_000 });
+    // The pipe RPCs go to can come up after the window does.
+    await waitFor(() => fs.existsSync(path.join(sb.home, '.wmux-e2e.sock')) && fs.existsSync(path.join(sb.home, '.wmux-e2e-auth-token')), { timeout: 60_000, what: "the app's pipe" });
     await launched.win.getByText('Skip for now', { exact: true }).first().click({ timeout: 5_000 }).catch(() => undefined);
     const dontAsk = launched.win.getByText("Don't ask again", { exact: true });
     if (await dontAsk.count()) await dontAsk.first().click();
@@ -140,7 +161,7 @@ async function engineState() {
 async function waitEngine(engine) {
   return waitFor(async () => {
     const s = await engineState();
-    return s.engine === engine && s.pending === 0 && s.panes.length === panes.length && s.panes.every((p) => p === engine) ? s : null;
+    return s.engine === engine && s.pending === 0 && s.panes.length === panes.length + extraPanes && s.panes.every((p) => p === engine) ? s : null;
   }, { timeout: 60_000, what: `every pane on ${engine}` });
 }
 
@@ -205,6 +226,12 @@ async function checkContent(label, { restart = false } = {}) {
     assert.equal(strip(probed), strip(probeBaseline), `${label}: alternate screen, modes, cursor and size kept`);
     if (probed !== probeBaseline) summary.push(`${label}: probe ${probed} (kitty flags reset by the restart, as with xterm.js today)`);
     probeBaseline = probed;
+    // A resize the restart made is the new baseline too.
+    const winchFile = path.join(sb.home, `probe-${ALT_PANE}.winch`);
+    if (fs.existsSync(winchFile)) {
+      summary.push(`${label}: the probe saw ${fs.readFileSync(winchFile, 'utf8').trim().split('\n').length} resize(s) at startup (not a swap)`);
+      fs.rmSync(winchFile);
+    }
     return;
   }
   assert.equal(probed, probeBaseline, `${label}: alternate screen, modes, kitty flags, cursor and size kept`);
@@ -324,6 +351,25 @@ describe('Labs wongtty switch', { timeout: 30 * 60_000 }, () => {
     summary.push('on/off/on: settled on wongtty');
   });
 
+  it('4b. flipped back while its swaps are still repainting, every pane keeps its content', async () => {
+    // The second flip lands while panes of the first are still repainting
+    // (the settle signal counts them); workspace B is not shown in between.
+    await rpc(sb, 'workspace.focus', { id: ws.a });
+    const before = swapLines().length;
+    const labs = await setSwitch(1); // off
+    const caught = await waitFor(async () => {
+      const s = await engineState();
+      return s.engine === 'xterm' && s.pending > 0 ? s : null;
+    }, { timeout: 10_000, interval: 10, what: 'a swap still repainting' });
+    await run.win.getByRole('switch', { name: SWITCH }).click(); // on again
+    await waitEngine('wongtty');
+    await labs.close();
+    await checkContent('flipped back before the first repaint');
+    const offRepaints = swapLines().slice(before).filter((l) => /from=wongtty to=xterm mechanism=snapshot/.test(l)).length;
+    const visible = panes.filter((p) => p.ws === ws.a).length;
+    summary.push(`flipped back mid-repaint: second flip with ${caught.pending} panes pending; ${panes.length - visible} hidden panes swapped twice with no repaint between, and ${visible - offRepaints} of ${visible} visible ones before theirs landed`);
+  });
+
   it('5. input sent during a swap lands exactly once', async () => {
     await rpc(sb, 'workspace.focus', { id: ws.a });
     const typed = panes.find((p) => p.ws === ws.a && p.n !== ALT_PANE);
@@ -343,6 +389,35 @@ describe('Labs wongtty switch', { timeout: 30 * 60_000 }, () => {
     await waitEngine('wongtty');
     await on.close();
     summary.push('typed during a swap: 4 markers, each once');
+  });
+
+  it('5b. a switch flipped while output is streaming loses and doubles nothing', async () => {
+    ws.f = (await rpc(sb, 'workspace.new', { name: 'F' })).id;
+    const [flow] = await splitInto(ws.f, 1);
+    extraPanes = 1;
+    await waitEngine('wongtty');
+    for (const [k, engine] of [[1, 'xterm'], [2, 'wongtty']]) {
+      await rpc(sb, 'workspace.focus', { id: ws.f });
+      await rpc(sb, 'input.send', { ptyId: flow, text: `bash ~/flow.sh ${k}`, submit: true });
+      await waitFor(() => fs.existsSync(path.join(sb.home, `flow-${k}.start`)), { timeout: 30_000, interval: 50, what: `flow ${k} to start` });
+      await sleep(500);
+      const labs = await setSwitch(1);
+      // The flip is in: the stream must still be running for this step to mean anything.
+      assert.equal(fs.existsSync(path.join(sb.home, `flow-${k}.end`)), false, `flow ${k} still streaming when the switch flipped`);
+      await waitEngine(engine);
+      const streamingAfterSwap = !fs.existsSync(path.join(sb.home, `flow-${k}.end`));
+      await labs.close();
+      await waitFor(() => fs.existsSync(path.join(sb.home, `flow-${k}.end`)), { timeout: 300_000, interval: 500, what: `flow ${k} to end` });
+      await waitFor(async () => (await matches(`FLOWDONE-${k}`, ws.f)) === 1, { timeout: 60_000, interval: 500, what: `FLOWDONE-${k} once` });
+      // The last rows, each once (pane.search reaches about 5,000 rows back
+      // here, with or without a swap).
+      for (const row of [FLOW_LINES - 4000, FLOW_LINES - 2000, FLOW_LINES - 1000, FLOW_LINES - 1, FLOW_LINES]) {
+        assert.equal(await matches(`FLOW${k}-${row}`, ws.f), 1, `flow ${k}: row ${row} once`);
+      }
+      assert.match(await screen(flow), new RegExp(`FLOW${k}-${FLOW_LINES}[^0-9][\\s\\S]*FLOWDONE-${k}`), `flow ${k}: the stream's end on screen, in order`);
+      summary.push(`streaming: flow ${k} still streaming when the switch flipped to ${engine}${streamingAfterSwap ? ' and after every pane had swapped' : ''}; its last rows each once`);
+    }
+    await checkContent('after streaming through swaps');
   });
 
   it('6. a restart with the switch on builds every pane with wongtty once', async () => {
@@ -389,5 +464,66 @@ describe('Labs wongtty switch', { timeout: 30 * 60_000 }, () => {
     labs = null;
     await checkContent('broken wasm', { restart: true });
     summary.push('broken wasm: all xterm, 1 toast, error line shown and cleared, switch still toggles');
+  });
+
+  it("9. a repaint that fails paints the old terminal's own content, shown or hidden", async () => {
+    await quit();
+    run = await launch({ WMUX_E2E_RESYNC: 'session-gone' });
+    await waitEngine('wongtty');
+    await checkContent('repaint fails: start', { restart: true });
+    for (const [label, engine] of [['off', 'xterm'], ['on', 'wongtty']]) {
+      const before = run.consoleLines.length;
+      const labs = await setSwitch(1);
+      await waitEngine(engine);
+      await labs.close();
+      // Shows every workspace, so each hidden pane's repaint is tried (and fails) too.
+      await checkContent(`repaint fails: ${label}`);
+      const painted = run.consoleLines.slice(before).filter((l) => /\[wmux:engine-swap\].*repaint failed \(resync-failed:session-gone\); painted the old terminal's content/.test(l)).length;
+      assert.equal(painted, panes.length, `repaint fails: ${label}: every pane shown painted its old terminal's content`);
+      summary.push(`repaint fails, ${label}: ${painted} panes painted their old terminal's content; content and modes kept`);
+    }
+  });
+});
+
+describe('Labs wongtty switch without a daemon (local mode)', { timeout: 15 * 60_000 }, () => {
+  it('10. switching on and off keeps every local pane\'s content', async () => {
+    // Done with the daemon sandbox: none of its processes may serve this one.
+    await quit();
+    killRun(sb);
+    fs.rmSync(sb.home, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+    sb = makeSandbox('wtl');
+    // The app from a copy of this checkout's root without the daemon's
+    // bundles: main finds no daemon to start and runs every pane itself.
+    appRoot = path.join(sb.home, 'app');
+    fs.mkdirSync(path.join(appRoot, 'dist'), { recursive: true });
+    for (const e of fs.readdirSync(ROOT)) if (e !== 'dist') fs.symlinkSync(path.join(ROOT, e), path.join(appRoot, e));
+    for (const e of fs.readdirSync(path.join(ROOT, 'dist'))) if (e !== 'daemon' && e !== 'daemon-bundle') fs.symlinkSync(path.join(ROOT, 'dist', e), path.join(appRoot, 'dist', e));
+    panes.length = 0;
+    extraPanes = 0;
+    run = await launch();
+    ws.zero = (await rpc(sb, 'workspace.current', {})).id;
+    const ptys = await splitInto(ws.zero, 2);
+    ptys.forEach((ptyId) => panes.push({ n: panes.length + 1, ptyId, ws: ws.zero }));
+    for (const p of panes) {
+      await rpc(sb, 'input.send', { ptyId: p.ptyId, text: `printf 'TO''P-%s\\n' ${p.n}; seq 1 1500 | sed 's/^/row-${p.n}-/'; printf 'BOTT''OM-%s\\n' ${p.n}`, submit: true });
+      await waitFor(async () => (await screen(p.ptyId)).includes(`BOTTOM-${p.n}`), { timeout: 60_000, what: `local pane ${p.n} filled` });
+    }
+    const content = async (label) => {
+      for (const p of panes) {
+        await waitFor(async () => (await screen(p.ptyId)).includes(`BOTTOM-${p.n}`) && await matches(`TOP-${p.n}`, ws.zero) === 1 && await matches(`row-${p.n}-750`, ws.zero) === 1,
+          { timeout: 30_000, interval: 500, what: `${label}: local pane ${p.n} content, once` });
+      }
+    };
+    await waitEngine('xterm');
+    for (const [label, clicks, engine] of [['on', 1, 'wongtty'], ['off', 1, 'xterm'], ['on/off/on', 3, 'wongtty']]) {
+      const before = swapLines().length;
+      const labs = await setSwitch(clicks);
+      await waitEngine(engine);
+      await labs.close();
+      await content(`local ${label}`);
+      const mechanisms = [...new Set(swapLines().slice(before).map((l) => /mechanism=(\S+)/.exec(l)?.[1]))];
+      assert.deepEqual(mechanisms, ['transplant'], `local ${label}: every swap carried the old terminal over (no daemon)`);
+    }
+    summary.push(`local mode: ${panes.length} panes on, off, on/off/on, each by transplant, content kept once`);
   });
 });

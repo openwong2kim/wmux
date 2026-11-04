@@ -98,8 +98,9 @@ export function setWorkerScript(sb, body) {
   fs.writeFileSync(path.join(sb.home, '.e2e-worker.sh'), `set -e\n${body}\n`);
 }
 
-/** `extraArgs` go to Electron after the harness's own (e.g. --force-device-scale-factor=2). */
-export async function launchApp(sb, { extraArgs = [] } = {}) {
+/** `extraArgs` go to Electron after the harness's own (e.g. --force-device-scale-factor=2).
+ *  `appRoot` is the app directory Electron starts (default: this checkout). */
+export async function launchApp(sb, { extraArgs = [], appRoot = ROOT } = {}) {
   const env = {
     ...process.env,
     HOME: sb.home,
@@ -116,7 +117,7 @@ export async function launchApp(sb, { extraArgs = [] } = {}) {
     // The sandbox HOME has no login keychain, so the first safeStorage call
     // (the secret store loads at startup) would ask macOS to create one and
     // block the main thread on that dialog; a mock keychain never asks.
-    args: [ROOT, '--no-sandbox', '--use-mock-keychain', `--user-data-dir=${path.join(sb.home, 'electron-user-data')}`, ...extraArgs],
+    args: [appRoot, '--no-sandbox', '--use-mock-keychain', `--user-data-dir=${path.join(sb.home, 'electron-user-data')}`, ...extraArgs],
     env,
     timeout: 90_000,
   });
