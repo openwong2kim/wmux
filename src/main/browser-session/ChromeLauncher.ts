@@ -133,6 +133,22 @@ export interface ChromePageSession {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
 
+/**
+ * A CDP session of its own on the page behind one wmux-opened tab, for a
+ * screencast: attached fresh (never shared or cached), with its own events.
+ * It ends when Chrome detaches it (the tab closed, or Chrome swapped the page
+ * behind the tab), when the browser socket goes away, or on `detach()`; each
+ * `on` handler is removed then, and `onClosed` listeners run once.
+ */
+export interface ChromeStreamSession {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** An event on this session only. */
+  on(method: string, handler: (params: Record<string, unknown>) => void): void;
+  onClosed(listener: () => void): void;
+  readonly closed: boolean;
+  detach(): Promise<void>;
+}
+
 /** Why a page session could not be had: the tab is not there, or no socket is. */
 export class ChromePageSessionError extends Error {
   constructor(public readonly reason: 'gone' | 'unavailable', message: string) {
@@ -159,6 +175,8 @@ export interface ChromeBackendClient {
   pageSession?(surfaceId: string): Promise<ChromePageSession>;
   /** False when pageSession cannot work here: the tab watcher is off or failed. */
   canPageSession?(): boolean;
+  /** Dedicated instances only: an uncached session for a screencast (ChromeStreamSession). */
+  streamSession?(surfaceId: string): Promise<ChromeStreamSession>;
   /** Dedicated instances: the record behind a wmux-opened surface (its workspace). */
   recordFor?(surfaceId: string): ChromeSurfaceRecord | undefined;
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
@@ -341,6 +359,14 @@ interface PageSessionEntry {
   valid: boolean;
 }
 
+interface StreamSessionEntry {
+  socket: CdpSocket;
+  sessionId: string;
+  closed: boolean;
+  unsubscribe: Array<() => void>;
+  closers: Array<() => void>;
+}
+
 function watchedTargetInfo(params: Record<string, unknown>): WatchedTargetInfo | undefined {
   const info = params.targetInfo;
   return info && typeof info === 'object' ? (info as WatchedTargetInfo) : undefined;
@@ -385,6 +411,8 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly pageSessions = new Map<string, PageSessionEntry>();
   /** pageSession() attaches in flight, so concurrent callers share one. */
   private readonly attachingPages = new Map<string, Promise<PageSessionEntry>>();
+  /** streamSession()s alive on the watcher socket. */
+  private readonly streamSessions = new Set<StreamSessionEntry>();
 
   private readonly profileLabel: string | undefined;
   private readonly profileName: string;
@@ -517,6 +545,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.pageToTab.clear();
     for (const entry of this.pageSessions.values()) entry.valid = false;
     this.pageSessions.clear();
+    for (const entry of [...this.streamSessions]) this.endStreamSession(entry);
   }
 
   /** The watcher's connection went away (CdpSocket re-dials in place): every page session on it is dead. */
@@ -526,6 +555,30 @@ export class ChromeLauncher implements ChromeBackendClient {
       entry.valid = false;
       this.pageSessions.delete(surfaceId);
     }
+    for (const entry of [...this.streamSessions]) {
+      if (entry.socket === socket) this.endStreamSession(entry);
+    }
+  }
+
+  /** A stream session ends once: its handlers go, then its listeners hear it. */
+  private endStreamSession(entry: StreamSessionEntry): void {
+    if (entry.closed) return;
+    entry.closed = true;
+    this.streamSessions.delete(entry);
+    for (const off of entry.unsubscribe.splice(0)) off();
+    for (const listener of entry.closers.splice(0)) {
+      try { listener(); } catch (err) { console.warn('[ChromeLauncher] stream session close listener threw:', err); }
+    }
+  }
+
+  /** Chrome detached `sessionId`: a stream session on it is over. True when it was one. */
+  private dropStreamSession(sessionId: string): boolean {
+    for (const entry of this.streamSessions) {
+      if (entry.sessionId !== sessionId) continue;
+      this.endStreamSession(entry);
+      return true;
+    }
+    return false;
   }
 
   /** Chrome detached `sessionId`: a page session on it is dead. True when it was one. */
@@ -580,6 +633,66 @@ export class ChromeLauncher implements ChromeBackendClient {
           if (!entry.valid || this.watcher !== entry.socket) throw new ChromePageSessionError('gone', 'ChromeLauncher: page session ended');
           throw err;
         }
+      },
+    };
+  }
+
+  /**
+   * A session of its own on the page behind a wmux-opened tab, for a
+   * screencast (ChromeStreamSession): attached fresh over the watcher's
+   * browser socket, never cached, so its events and its detach touch nothing
+   * else. Never launches Chrome; the same `unavailable` / `gone` answers as
+   * pageSession. Ownership is the caller's check.
+   */
+  async streamSession(surfaceId: string): Promise<ChromeStreamSession> {
+    const record = this.surfaces.get(surfaceId);
+    if (!this.isRunning()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: Chrome is not running');
+    if (!record?.targetId) throw new ChromePageSessionError('gone', 'ChromeLauncher: no page for this surface');
+    await this.ensureTargetWatcher();
+    const socket = this.watcher;
+    if (!socket?.isOpen()) throw new ChromePageSessionError('unavailable', 'ChromeLauncher: no browser CDP socket');
+    const targetId = record.targetId;
+    let sessionId: string | undefined;
+    try {
+      const res = (await socket.send('Target.attachToTarget', { targetId, flatten: true })) as { sessionId?: unknown };
+      sessionId = typeof res?.sessionId === 'string' ? res.sessionId : undefined;
+    } catch {
+      sessionId = undefined;
+    }
+    if (!sessionId) throw new ChromePageSessionError('gone', 'ChromeLauncher: the page could not be attached');
+    if (this.watcher !== socket || this.surfaces.get(surfaceId)?.targetId !== targetId) {
+      void socket.send('Target.detachFromTarget', { sessionId }).catch(() => undefined);
+      throw new ChromePageSessionError('gone', 'ChromeLauncher: the page changed while attaching');
+    }
+    const id = sessionId;
+    const entry: StreamSessionEntry = { socket, sessionId: id, closed: false, unsubscribe: [], closers: [] };
+    this.streamSessions.add(entry);
+    const ended = () => new ChromePageSessionError('gone', 'ChromeLauncher: stream session ended');
+    return {
+      send: async (method, params = {}) => {
+        if (entry.closed) throw ended();
+        try {
+          return await socket.send(method, params, id);
+        } catch (err) {
+          if (entry.closed) throw ended();
+          throw err;
+        }
+      },
+      on: (method, handler) => {
+        if (entry.closed) return;
+        entry.unsubscribe.push(socket.on(method, (params, from) => {
+          if (from === id && !entry.closed) handler(params);
+        }));
+      },
+      onClosed: (listener) => {
+        if (entry.closed) queueMicrotask(listener);
+        else entry.closers.push(listener);
+      },
+      get closed() { return entry.closed; },
+      detach: async () => {
+        if (entry.closed) return;
+        this.endStreamSession(entry);
+        await socket.send('Target.detachFromTarget', { sessionId: id }).catch(() => undefined);
       },
     };
   }
@@ -703,6 +816,7 @@ export class ChromeLauncher implements ChromeBackendClient {
       const gone = typeof params.sessionId === 'string' ? params.sessionId : undefined;
       if (!gone) return;
       if (this.dropPageSession(gone)) return;
+      if (this.dropStreamSession(gone)) return;
       const detachedTab = this.sessionTabs.get(gone);
       if (detachedTab) {
         // The tab session itself went away; syncTabAnchors re-attaches later.
