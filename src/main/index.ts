@@ -15,6 +15,7 @@ import { navigationPolicyOptions } from '../shared/types';
 import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
 import { handlePhoneQuickCommands } from './quickCommands/QuickCommandStore';
 import { installPhoneBridge } from './phone/installPhoneBridge';
+import { createPhoneBrowserStreams, phoneBrowserStreamEnabled } from './phone/PhoneBrowserStream';
 import { installKeepAwakeLink } from './power/keepAwakeLink';
 import { botApprovalPushTable, createBotApprovalPushFeed, setBotApprovalPushFeed } from './phone/BotApprovalPushFeed';
 import { createBotPromptPushFeed, openBotPromptRows, setBotPromptPushFeed } from './phone/BotPromptPushFeed';
@@ -2624,6 +2625,13 @@ app.on('ready', async () => {
           // After identify: the daemon takes the host window from the app only.
           reportHostWindow(() => client, mainWindow);
           disposePhoneBridge?.();
+          // The phone's live browser stream (phone/PhoneBrowserStream.ts), per
+          // daemon connection; off unless WMUX_PHONE_BROWSER_STREAM=1.
+          const phoneStreams = phoneBrowserStreamEnabled() ? createPhoneBrowserStreams({
+            push: (params) => client.rpc('daemon.phone.browserStream', params, { timeoutMs: 3_000 }),
+            backend: () => browserBackendStore.get(),
+            chrome: phoneChromeDeps,
+          }) : null;
           disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === AGENT_ENV_COMMAND
             // A paired PC comparing agent environments: names, versions and hashes.
             ? cachedAgentEnvSummary({ wmuxVersion: app.getVersion() })
@@ -2667,7 +2675,7 @@ app.on('ready', async () => {
             invoke: (method,params) => rpcRouter.dispatch({id: `phone-browser-${phoneBrowserRequestId()}`,method:method as RpcMethod,params},{operator:true}),
           }) : command.startsWith('workspaces.') ? handlePhoneWorkspaces(command,payload,() => mainWindow) : command.startsWith('prompts.') ? handlePhoneQuickCommands(command,payload) : handlePhoneAccounts(command,payload,{
             store:getAccountStore(),usage:accountUsageService,
-          }));
+          }), phoneStreams);
           // Keep the computer awake while a paired phone is attached. Installed in
           // the same tick as the register above, before the daemon's answer to it.
           disposeKeepAwakeLink?.();
