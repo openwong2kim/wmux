@@ -1653,7 +1653,8 @@ server.tool(
     // workspaces), but requireWorkspaceId is kept unconditional so both
     // shapes share one identity contract.
     const workspaceId = await requireBrowserWorkspaceId();
-    return callRpc('browser.close', { ...(surfaceId && { surfaceId }), workspaceId });
+    // The connection's key, so a close that names no tab closes this agent's own.
+    return callRpc('browser.close', { ...(surfaceId && { surfaceId }), workspaceId, openerKey: getOpenerKey() });
   },
 );
 

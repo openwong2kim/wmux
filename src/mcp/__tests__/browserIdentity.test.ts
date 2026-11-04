@@ -96,7 +96,7 @@ describe('browser tools — workspace identity', () => {
     const res = await callTool(client, 'browser_close');
 
     expect(res.isError).toBeFalsy();
-    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-walk' }]);
+    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-walk', openerKey: expect.any(String) }]);
     expect(getWorkspaceToken()).toBe('claim-from-walk');
   });
 
@@ -111,7 +111,7 @@ describe('browser tools — workspace identity', () => {
     const res = await callTool(client, 'browser_close');
 
     expect(res.isError).toBeFalsy();
-    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-brain' }]);
+    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-brain', openerKey: expect.any(String) }]);
   });
 });
 
@@ -287,7 +287,7 @@ describe('browser tools — a caller outside every pane (scheduled run)', () => 
 
     expect(first.isError).toBeFalsy();
     expect(second.isError).toBeFalsy();
-    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-claimed' }, { workspaceId: 'ws-claimed' }]);
+    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-claimed', openerKey: expect.any(String) }, { workspaceId: 'ws-claimed', openerKey: expect.any(String) }]);
     expect(getWorkspaceToken()).toBe('claim-run');
     expect(claims).toBe(1);
   });
@@ -312,7 +312,7 @@ describe('browser tools — the pane the env names', () => {
     const res = await callTool(client, 'browser_close');
 
     expect(res.isError).toBeFalsy();
-    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-claimed' }]);
+    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-claimed', openerKey: expect.any(String) }]);
     const identity = mockSendRpc.mock.calls.find(([m]) => m === 'a2a.resolve.identity');
     expect(identity?.[1]).toMatchObject({ hintedPtyId: 'auto-run-1' });
   });
@@ -324,7 +324,7 @@ describe('browser tools — the pane the env names', () => {
     const res = await callTool(client, 'browser_close');
 
     expect(res.isError).toBeFalsy();
-    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-wsl' }]);
+    expect(browserCalls('browser.close')).toEqual([{ workspaceId: 'ws-wsl', openerKey: expect.any(String) }]);
     expect(getWorkspaceToken()).toBe('claim-wsl');
     expect(mockSendRpc.mock.calls.some(([m]) => m === 'mcp.claimWorkspace')).toBe(false);
   });

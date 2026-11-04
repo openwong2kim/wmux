@@ -113,6 +113,13 @@ describe('the focus shape', () => {
     expect(phoneBrowserTapReply({ applied: true, focus: { editable: true, kind: 'text', value: 'x' } })).toEqual({ applied: true, focus: { editable: true, kind: 'text' } });
     expect(phoneBrowserTapReply({ applied: true, focus: { editable: true, kind: 'select' } })).toEqual({ applied: true });
     expect(phoneBrowserTapReply({ error: 'browser-input-busy' })).toEqual({ error: 'browser-input-busy' });
+    // Contract v1.7: `opened` only as `{surfaceId}`, 1 to 128 characters.
+    expect(phoneBrowserTapReply({ applied: true, opened: { surfaceId: 'chrome-p', url: 'x' } })).toEqual({ applied: true, opened: { surfaceId: 'chrome-p' } });
+    for (const bad of [null, 'chrome-p', [], { surfaceId: '' }, { surfaceId: 1 }, { surfaceId: 'x'.repeat(129) }]) {
+      expect(phoneBrowserTapReply({ applied: true, opened: bad })).toEqual({ applied: true });
+    }
+    expect(phoneBrowserTapReply({ applied: true, focus: { editable: false }, opened: { surfaceId: 'chrome-p' } }))
+      .toEqual({ applied: true, focus: { editable: false }, opened: { surfaceId: 'chrome-p' } });
   });
 });
 

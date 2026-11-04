@@ -89,10 +89,21 @@ export function phoneBrowserFocus(value: unknown): PhoneBrowserFocus | null {
   return { editable, kind: kind as PhoneBrowserFocusKind };
 }
 
-/** Main's tap reply as the phone gets it: a `focus` that is not one is left out. */
+/**
+ * `value` as the tab a tap opened (contract v1.7), or null when it is not
+ * one: `surfaceId` a string of 1 to 128 characters, and nothing else.
+ */
+export function phoneBrowserOpened(value: unknown): { surfaceId: string } | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const { surfaceId } = value as { surfaceId?: unknown };
+  return typeof surfaceId === 'string' && surfaceId.length > 0 && surfaceId.length <= 128 ? { surfaceId } : null;
+}
+
+/** Main's tap reply as the phone gets it: a `focus` or an `opened` that is not one is left out. */
 export function phoneBrowserTapReply(result: unknown): unknown {
-  if (!result || typeof result !== 'object' || Array.isArray(result) || !('focus' in result)) return result;
-  const { focus, ...rest } = result as Record<string, unknown>;
-  const checked = phoneBrowserFocus(focus);
-  return checked ? { ...rest, focus: checked } : rest;
+  if (!result || typeof result !== 'object' || Array.isArray(result) || (!('focus' in result) && !('opened' in result))) return result;
+  const { focus, opened, ...rest } = result as Record<string, unknown>;
+  const checkedFocus = phoneBrowserFocus(focus);
+  const checkedOpened = phoneBrowserOpened(opened);
+  return { ...rest, ...(checkedFocus ? { focus: checkedFocus } : {}), ...(checkedOpened ? { opened: checkedOpened } : {}) };
 }

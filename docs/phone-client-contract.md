@@ -3647,7 +3647,9 @@ exactly as above.
   say) is not listed: its policy applies to that pane's calls. Listing never
   starts Chrome: while it is not running there are no `chrome` rows, nor while
   the desktop cannot attach to its pages (its tab watcher is off or failed);
-  help rows for those tabs are then `previewable: false`.
+  help rows for those tabs are then `previewable: false`. A tab one of these
+  tabs opens (a `target=_blank` link or a script's `window.open`) is listed
+  too, in the same workspace (contract v1.7, below).
 - **The same actions** take a `chrome` row's `id` as `surfaceId`: capture,
   `navigate`, `type`, `key`, `tap`, `scroll`, with the same checks
   (`expectedURL`, `geometry`, http(s) only). A Chrome capture has the builtin
@@ -3879,6 +3881,69 @@ paths alike, for builtin panes and `chrome` rows.
 - On a cross-document commit, the reset may come just before or just after
   that commit's `url` event.
 - Detected in an isolated world: page scripts cannot fake the event.
+
+#### Opened tabs: tap reply and stream event (contract v1.7)
+
+No flag: the field describes itself, and a client that ignores it works as
+before.
+
+**Which tabs.** A tab that a `chrome` row's tab opens with a `target=_blank`
+link or a script's `window.open` (each with or without `noopener`) is a tab
+of that row's workspace. It is listed with the other `chrome` rows and takes
+every action.
+
+- Only tabs opened from now on. A tab opened before the desktop ran this
+  version stays nobody's.
+- A tab opened by a tab that is not a `chrome` row of any workspace (one the
+  user opened in that Chrome window) stays nobody's. So does a tab opened by
+  a tab with no workspace on record.
+- Never in Live Chrome (the user's own browser).
+- A tab opened by another workspace's tab is that workspace's, never yours.
+- The new tab starts at `about:blank`. The list leaves it out until its first
+  http(s) page commits, and its capture answers `503` until then.
+- Closing the tab that opened it leaves it open and listed.
+- Limits: 20 new tabs a minute from one tab, 40 from one workspace's tabs
+  and 120 from one Chrome profile (workspaces with no profile of their own
+  share one), and at most 30 such tabs open from one tab and 50 in one
+  workspace. A tab past a limit stays nobody's, as before this version: it
+  is reported nowhere, neither listed nor in a tap reply.
+
+**Tap reply.** `POST …/browser {action:"tap"}` on a `chrome` row answers
+`{applied:true, focus?, opened?:{surfaceId}}`, on the polling and the stream
+paths alike.
+
+- `opened` names a tab this tab opened during the tap: the tap's own new
+  tab, unless something else on the page (an agent's click, a script) opened
+  one at the same moment. Its `surfaceId` is the new tab's row `id`.
+- Switch to `opened.surfaceId` directly; do not wait for it in the list. The
+  list holds at most 30 rows with these tabs last, and leaves the new tab out
+  while it is still blank. Its capture answers `503` until its first http(s)
+  page commits; try again shortly.
+- The desktop waits up to about 1 s for the new tab, and only when the page
+  asked for a window during the tap. Any other tap answers as fast as before.
+- `opened` is absent when the tap opened no tab, on a builtin pane, and from
+  an older desktop. It is also absent when the new tab is past a limit above
+  (that tab is reported nowhere), and when it opened more than about 1 s
+  after the tap (that tab is listed; refresh the list).
+- A builtin pane never opens a tab: a `target=_blank` link or a
+  `window.open` there loads the page in the same pane, and the stream's `url`
+  event shows the move.
+
+**Stream event: reserved, not sent by this desktop yet.** A later version
+will send it. Do not wait for it: the tap reply's `opened` and the list
+cover every adopted tab. When it comes, on a live browser stream of a
+`chrome` row, `event: tabOpened` carries `{surfaceId, pageURL?}`:
+
+- Sent each time the streamed tab opens a tab, for any reason: a tap, a
+  script, or the person at the desktop.
+- `pageURL` is the new tab's credential-free http(s) URL when Chrome created
+  it, at most 4096 characters. It is usually absent, because the tab starts
+  blank.
+- In order with frames, at most ten a second per stream. Unlike `url`, each
+  new tab is its own event: none is merged into a later one. A stream that is
+  not read keeps at most the four newest waiting.
+- An event, not a state: a later subscriber does not get earlier ones. The
+  list is the record.
 
 ### New agent pane launch options
 

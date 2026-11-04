@@ -3187,11 +3187,21 @@ export function registerBrowserRpc(
       }
       // No surfaceId: close this workspace's most recently opened tab. There
       // is no "active" chrome tab to fall back on, so closing all of them (or
-      // an arbitrary one) would both be worse than one explicit pick.
+      // an arbitrary one) would both be worse than one explicit pick. A caller
+      // that says who it is closes its own newest, else the newest nobody
+      // claims, and never another connection's (a tab its page opened is
+      // that connection's too). One that does not keeps the newest.
       const own = await launcher.listTargets(scope);
-      const newest = own[own.length - 1];
+      const openerKey = openerKeyOf(params);
+      const who = openerCaller(openerKey, caller);
+      const newestWhere = (verdict: 'mine' | undefined) => [...own].reverse().find((t) => surfaceOpeners.verdict(t.surfaceId, who) === verdict);
+      const newest = openerKey ? newestWhere('mine') ?? newestWhere(undefined) : own[own.length - 1];
       if (!newest) {
-        throw new Error('browser.close: this workspace has no open wmux Chrome tab to close.');
+        throw new Error(
+          own.length > 0
+            ? 'browser.close: every wmux Chrome tab in this workspace belongs to another agent; name one by surfaceId to close it.'
+            : 'browser.close: this workspace has no open wmux Chrome tab to close.',
+        );
       }
       await launcher.closeSurface(newest.surfaceId);
       surfaceOpeners.forget(newest.surfaceId);

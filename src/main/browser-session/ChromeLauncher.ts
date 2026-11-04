@@ -6,6 +6,7 @@ import { ORPHAN_TTL_MS, RECORD_TTL_MS, type ChromeSurfaceRecord, type ChromeSurf
 import { CdpSocket } from './CdpSocket';
 import { ProtectedProxy, protectedChromeArgs } from './ProtectedProxy';
 import { BlockedHostLog } from './BlockedHostLog';
+import { surfaceOpeners } from './SurfaceOpeners';
 import type { HostMatcher } from '../../shared/browserHostPolicy';
 import type { BlockedHost } from '../../shared/browserPolicy';
 import type { LiveTabOwner } from '../../shared/liveWriteScope';
@@ -131,6 +132,22 @@ export interface LiveWriteScopeApi {
  */
 export interface ChromePageSession {
   send(method: string, params?: Record<string, unknown>): Promise<unknown>;
+  /** An event on this session only, until the returned function is called. */
+  on?(method: string, handler: (params: Record<string, unknown>) => void): () => void;
+}
+
+/**
+ * A tab one of a launcher's tabs opened (target=_blank, window.open, a popup),
+ * now a surface of its own in its opener's workspace.
+ */
+export interface ChromeOpenedSurface {
+  /** The surface whose page opened it. */
+  openerSurfaceId: string;
+  surfaceId: string;
+  /** The opener's workspace; absent when the opener has none. */
+  workspaceId?: string;
+  /** Its URL when Chrome created it, usually empty until its first page commits. */
+  url: string;
 }
 
 /**
@@ -179,6 +196,8 @@ export interface ChromeBackendClient {
   streamSession?(surfaceId: string): Promise<ChromeStreamSession>;
   /** Dedicated instances: the record behind a wmux-opened surface (its workspace). */
   recordFor?(surfaceId: string): ChromeSurfaceRecord | undefined;
+  /** Dedicated instances only: told each tab a wmux-opened tab opens; returns the unsubscribe. */
+  onSurfaceOpened?(listener: (opened: ChromeOpenedSurface) => void): () => void;
   /** Live attach only: the agent-window write policy. Absent = dedicated. */
   readonly writeScope?: LiveWriteScopeApi;
   dispose(): void | Promise<void>;
@@ -312,6 +331,25 @@ function newSurfaceId(): string {
   return `chrome-${randomUUID()}`;
 }
 
+/** Tabs one tab may open in a minute and still be adopted. */
+export const OPENED_PER_OPENER_PER_MINUTE = 20;
+/** Tabs one workspace's tabs may open in a minute and still be adopted. */
+export const OPENED_PER_WORKSPACE_PER_MINUTE = 40;
+/** Tabs all of one launcher's tabs may open in a minute and still be adopted: every unbound workspace shares a profile. */
+export const OPENED_PER_MINUTE = 120;
+/** Adopted tabs one tab's opened tabs may hold open at once. */
+export const OPENED_OPEN_PER_OPENER = 30;
+/** Adopted tabs one workspace may hold open at once. */
+export const OPENED_OPEN_PER_WORKSPACE = 50;
+const OPENED_WINDOW_MS = 60_000;
+/** The launcher-wide key of the adoption windows; the others start with `tab:` or `ws:`. */
+const ALL_OPENERS = '*';
+
+/** The adoption limits' key for a workspace (a tab with none shares the key of the others with none). */
+function workspaceKey(workspaceId: string | undefined): string {
+  return `ws:${workspaceId ?? ''}`;
+}
+
 function hasExited(child: ChildProcess): boolean {
   return child.exitCode != null || child.signalCode != null;
 }
@@ -350,6 +388,10 @@ interface WatchedTargetInfo {
   type?: string;
   url?: string;
   title?: string;
+  /** The page that opened this one, noopener included. */
+  openerId?: string;
+  /** Set on a page that is not a tab's, such as `prerender`. */
+  subtype?: string;
 }
 
 interface PageSessionEntry {
@@ -413,6 +455,15 @@ export class ChromeLauncher implements ChromeBackendClient {
   private readonly attachingPages = new Map<string, Promise<PageSessionEntry>>();
   /** streamSession()s alive on the watcher socket. */
   private readonly streamSessions = new Set<StreamSessionEntry>();
+  /** The watcher socket whose discovery replay is over: only pages created after it are adopted. */
+  private adoptingOn: CdpSocket | null = null;
+  private readonly openedListeners = new Set<(opened: ChromeOpenedSurface) => void>();
+  /** Adoption times in the last minute, per opener (`tab:`), per workspace (`ws:`) and for all (ALL_OPENERS). */
+  private readonly adoptedAt = new Map<string, number[]>();
+  /** Adopted surfaces still open, by surfaceId: who opened them, and the workspace key. */
+  private readonly adopted = new Map<string, { opener: string; workspace: string }>();
+  /** Limits whose refusal has been logged since they last let a tab through. */
+  private readonly capLogged = new Set<string>();
 
   private readonly profileLabel: string | undefined;
   private readonly profileName: string;
@@ -513,6 +564,13 @@ export class ChromeLauncher implements ChromeBackendClient {
     if (record.targetId) this.byTargetId.delete(record.targetId);
     if (record.tabTargetId) this.byTabTargetId.delete(record.tabTargetId);
     this.surfaces.delete(surfaceId);
+    this.adopted.delete(surfaceId);
+    this.adoptedAt.delete(`tab:${surfaceId}`);
+    this.capLogged.delete(`tab:${surfaceId}`);
+    this.capLogged.delete(`open:tab:${surfaceId}`);
+    // A surface Chrome closed is nobody's any more: its connection entry would
+    // only take a place in that registry from a live one.
+    surfaceOpeners.forget(surfaceId);
   }
 
   // ── Tab-target watcher ────────────────────────────────────────────────────
@@ -538,6 +596,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.watcherGeneration++;
     this.watcher?.close();
     this.watcher = null;
+    this.adoptingOn = null;
     this.browserWsEndpoint = null;
     this.tabSessions.clear();
     this.sessionTabs.clear();
@@ -634,6 +693,9 @@ export class ChromeLauncher implements ChromeBackendClient {
           throw err;
         }
       },
+      on: (method, handler) => entry.socket.on(method, (params, from) => {
+        if (from === entry.sessionId && entry.valid) handler(params);
+      }),
     };
   }
 
@@ -792,6 +854,9 @@ export class ChromeLauncher implements ChromeBackendClient {
       await socket.send('Target.setDiscoverTargets', { discover: true });
     }
     if (stale()) return;
+    // Chrome announces every existing target before it answers: from here on
+    // a created page is a new one.
+    this.adoptingOn = socket;
     await this.syncTabAnchors();
   }
 
@@ -799,6 +864,7 @@ export class ChromeLauncher implements ChromeBackendClient {
     socket.on('Target.targetCreated', (params) => {
       const info = watchedTargetInfo(params);
       if (info?.type === 'tab' && info.targetId) void this.attachTab(info.targetId);
+      else if (info?.type === 'page' && this.adoptingOn === socket) this.adoptOpened(info);
     });
 
     // The succession signal. `sessionId` here is the PARENT session the event
@@ -869,6 +935,89 @@ export class ChromeLauncher implements ChromeBackendClient {
   private recordForTarget(targetId: string): ChromeSurfaceRecord | undefined {
     const surfaceId = this.byTargetId.get(targetId);
     return surfaceId ? this.surfaces.get(surfaceId) : undefined;
+  }
+
+  /**
+   * A page one of our tabs opened (target=_blank, window.open, a popup)
+   * becomes a surface of its own, in its opener's workspace, or in none when
+   * the opener has none. A page another tab opened stays nobody's, and the
+   * pages discovery replays when the watcher starts are never adopted.
+   */
+  private adoptOpened(info: WatchedTargetInfo): void {
+    const { targetId, openerId } = info;
+    // A prerendered (speculative) page is not a tab: a tab's page has no subtype.
+    if (!targetId || !openerId || info.subtype || this.byTargetId.has(targetId)) return;
+    const opener = this.recordForTarget(openerId);
+    if (!opener) return;
+    const now = Date.now();
+    const workspace = workspaceKey(opener.workspaceId);
+    if (!this.mayAdopt(opener.surfaceId, workspace, now)) return;
+    const record: ChromeSurfaceRecord = {
+      surfaceId: newSurfaceId(),
+      targetId,
+      ...(opener.workspaceId !== undefined && { workspaceId: opener.workspaceId }),
+      url: info.url ?? '',
+      createdAt: now,
+      lastSeenAt: now,
+    };
+    this.surfaces.set(record.surfaceId, record);
+    this.byTargetId.set(targetId, record.surfaceId);
+    this.adopted.set(record.surfaceId, { opener: opener.surfaceId, workspace });
+    surfaceOpeners.inherit(record.surfaceId, opener.surfaceId);
+    // The tab's own attach may have landed first; otherwise noteTabPage anchors it.
+    this.linkAnchor(record);
+    this.persist(true);
+    const opened: ChromeOpenedSurface = {
+      openerSurfaceId: opener.surfaceId,
+      surfaceId: record.surfaceId,
+      ...(record.workspaceId !== undefined && { workspaceId: record.workspaceId }),
+      url: record.url,
+    };
+    for (const listener of [...this.openedListeners]) {
+      try { listener(opened); } catch (err) { console.warn('[ChromeLauncher] opened-surface listener threw:', err); }
+    }
+  }
+
+  /**
+   * A page that loops window.open must not grow the surface list without
+   * bound. Past any limit below a new tab stays nobody's, as every opened
+   * tab did before adoption: tabs adopted in the last minute from one tab,
+   * from one workspace's tabs, and from the whole profile (which every
+   * unbound workspace shares), and adopted tabs still open per opener and
+   * per workspace. Each limit is logged once per run of refusals.
+   */
+  private mayAdopt(openerSurfaceId: string, workspace: string, now: number): boolean {
+    const tab = `tab:${openerSurfaceId}`;
+    const rates: Array<[string, number]> = [
+      [tab, OPENED_PER_OPENER_PER_MINUTE],
+      [workspace, OPENED_PER_WORKSPACE_PER_MINUTE],
+      [ALL_OPENERS, OPENED_PER_MINUTE],
+    ];
+    const recent = rates.map(([key]) => (this.adoptedAt.get(key) ?? []).filter((at) => now - at < OPENED_WINDOW_MS));
+    rates.forEach(([key], i) => this.adoptedAt.set(key, recent[i]));
+    const open = [...this.adopted.values()];
+    const limits: Array<{ key: string; full: boolean; what: string }> = [
+      ...rates.map(([key, cap], i) => ({ key, full: recent[i].length >= cap, what: `${cap} new tabs in a minute` })),
+      { key: `open:${tab}`, full: open.filter((a) => a.opener === openerSurfaceId).length >= OPENED_OPEN_PER_OPENER, what: `${OPENED_OPEN_PER_OPENER} open tabs from one tab` },
+      { key: `open:${workspace}`, full: open.filter((a) => a.workspace === workspace).length >= OPENED_OPEN_PER_WORKSPACE, what: `${OPENED_OPEN_PER_WORKSPACE} open tabs in one workspace` },
+    ];
+    const full = limits.find((limit) => limit.full);
+    if (full) {
+      if (!this.capLogged.has(full.key)) {
+        this.capLogged.add(full.key);
+        console.warn(`[ChromeLauncher] tabs a tab opens are not adopted past ${full.what}`);
+      }
+      return false;
+    }
+    recent.forEach((times) => times.push(now));
+    for (const limit of limits) this.capLogged.delete(limit.key);
+    return true;
+  }
+
+  /** Told each tab a wmux-opened tab opens, once it is a surface; returns the unsubscribe. */
+  onSurfaceOpened(listener: (opened: ChromeOpenedSurface) => void): () => void {
+    this.openedListeners.add(listener);
+    return () => { this.openedListeners.delete(listener); };
   }
 
   private unlinkTab(tabTargetId: string): void {
@@ -964,6 +1113,11 @@ export class ChromeLauncher implements ChromeBackendClient {
       delete record.missingSince;
       return;
     }
+    // Chrome swapped the page inside this tab, and the new page, announced
+    // with an opener, was adopted on its own before its tab was known: one
+    // page is one surface, this tab's.
+    const duplicate = this.recordForTarget(pageTargetId);
+    if (duplicate && duplicate !== record && !duplicate.tabTargetId) this.forget(duplicate.surfaceId);
     this.bind(record, pageTargetId);
     if (url) record.url = url;
     if (title !== undefined) record.title = title;
@@ -1847,6 +2001,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     // a start that never happened. Deliberately NOT inside closeWatcher() —
     // startTargetWatcher() calls that itself and must not self-invalidate.
     this.watcherStarting = null;
+    // The tabs those limits counted died with this Chrome.
+    this.adopted.clear();
+    this.adoptedAt.clear();
+    this.capLogged.clear();
     this.persist(true);
   }
 
