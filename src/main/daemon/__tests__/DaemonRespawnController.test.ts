@@ -235,6 +235,29 @@ describe('DaemonRespawnController.bootstrap', () => {
     expect(h.controller.daemonMayReturn).toBe(false);
   });
 
+  it('stops retrying when a retry is refused, without asking for a second dialog', async () => {
+    let call = 0;
+    const h = makeHarness({
+      config: { baseBackoffMs: 100, healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => {
+        if (++call === 1) throw new Error('Daemon process exited during startup (code 1) before becoming ready');
+        throw new DaemonStartRefusedError('refusing to spawn over a possibly-live daemon');
+      },
+    });
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.events[h.events.length - 1]).toEqual({
+      type: 'respawn-exhausted',
+      lastError: 'refusing to spawn over a possibly-live daemon',
+      refused: true,
+    });
+    expect(h.controller.daemonMayReturn).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.ensureDaemonCalls).toBe(2);
+  });
+
   it('returns null and disconnects when auth-ping fails', async () => {
     const h = makeHarness();
     const c1 = new FakeDaemonClient();

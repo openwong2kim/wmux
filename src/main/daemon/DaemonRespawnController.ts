@@ -123,6 +123,12 @@ export type RespawnEvent =
        * "wmux daemon could not start".
        */
       lastError?: string;
+      /**
+       * The launcher refused to start over an unverifiable pid after the user
+       * declined its recovery dialog. They have seen a dialog already; no
+       * second one.
+       */
+      refused?: boolean;
     };
 
 export interface DaemonRespawnConfig {
@@ -835,6 +841,15 @@ export class DaemonRespawnController {
       this.deps.logger.warn(
         `respawn attempt ${attempt} failed: ${this.lastError}`,
       );
+      if (err instanceof DaemonStartRefusedError) {
+        // The user declined the recovery dialog: another attempt would only
+        // ask the same question again.
+        this.exhausted = true;
+        this.respawning = false;
+        this.deps.logger.warn('respawn stopped: the daemon start was refused — staying in local mode');
+        this.deps.emit({ type: 'respawn-exhausted', lastError: this.lastError, refused: true });
+        return;
+      }
       if (this.isQueuedWait(err)) {
         // launchd has the job and will start it; the next start waits on
         // that same job. Not a failed start, so it costs no budget.

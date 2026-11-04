@@ -374,8 +374,9 @@ const EXIT_POLL_MS = 250;
  * would only put the next one at the back of launchd's queue: the oldest such
  * job younger than QUEUED_JOB_STALE_MS is kept and returned for the caller to
  * wait on, and newer ones, which would start a second daemon behind it, are
- * booted out. Returns null when there is none. Best-effort, never throws.
- * Call it under the start lock.
+ * booted out. A loaded job whose state launchctl cannot report counts as one
+ * not started yet. Returns null when there is none. Best-effort, never
+ * throws. Call it under the start lock.
  */
 export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, rt: LaunchdRuntime): Promise<string | null> {
   const prefix = `${baseLabel}.`;
@@ -404,11 +405,16 @@ export async function pruneStaleDaemonJobs(baseLabel: string, plistDir: string, 
       // `list` cannot tell never-run from ran-and-exited-0; `print` can. It is
       // also newer: a job launchd started since `list` shows its pid now.
       const state = await queryDaemonJob(label, rt);
-      if (state.kind === 'unknown' || (state.kind === 'loaded' && state.pid !== null)) continue;
-      if (state.kind === 'loaded' && state.runs === 0
-        && (createdAt === null || Date.now() - createdAt < QUEUED_JOB_STALE_MS)) {
-        queued.push({ label, createdAt });
-        continue;
+      if (state.kind === 'loaded' && state.pid !== null) continue;
+      // Not started yet, or loaded without a pid and launchctl cannot say more
+      // under load: wait on it rather than bootstrap another behind it.
+      if ((state.kind === 'loaded' && state.runs === 0) || state.kind === 'unknown') {
+        if (createdAt === null || Date.now() - createdAt < QUEUED_JOB_STALE_MS) {
+          queued.push({ label, createdAt });
+          continue;
+        }
+        // Never boot out what cannot be read.
+        if (state.kind === 'unknown') continue;
       }
     }
     if (isYoung(createdAt)) continue;

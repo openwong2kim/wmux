@@ -448,7 +448,7 @@ describe('startDaemonViaLaunchd / pruneStaleDaemonJobs', () => {
       .toEqual([`gui/501/${stale}`, `gui/501/${newer}`, `gui/501/${exited}`].sort());
   });
 
-  it('never boots out a job launchd started since list, or one print cannot report', async () => {
+  it('never boots out a job launchd started since list, and waits on one print cannot report', async () => {
     const started = newDaemonJobLabel(base, old());
     const unreadable = newDaemonJobLabel(base, old());
     const { rt, jobs, calls } = fakeLaunchd();
@@ -462,7 +462,8 @@ describe('startDaemonViaLaunchd / pruneStaleDaemonJobs', () => {
       if (args[0] === 'print' && args[1].endsWith(unreadable)) throw new Error('launchctl print failed: timed out');
       return out;
     };
-    expect(await pruneStaleDaemonJobs(base, dir, rt)).toBeNull();
+    // Loaded without a pid and unreadable: wait on it, never bootstrap another.
+    expect(await pruneStaleDaemonJobs(base, dir, rt)).toBe(unreadable);
     expect(calls.filter((c) => c[0] === 'bootout')).toEqual([]);
   });
 
