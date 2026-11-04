@@ -3691,8 +3691,9 @@ exactly as above.
 OMITTED otherwise; the preview is then the 3 s capture poll above, and the
 stream route answers `404`. The desktop announces it only while it runs with
 `WMUX_PHONE_BROWSER_STREAM=1` (off by default for now). The stream covers
-dedicated-profile Chrome tabs (`chrome` rows); a builtin pane answers
-`501 browser-action-unsupported`.
+builtin panes and dedicated-profile Chrome tabs (`chrome` rows); `hello`
+says which in `backend`. A builtin pane streams whatever the desktop's
+browser setting is, as its capture does.
 
 **Routes** (GET, `text/event-stream`, `Cache-Control: no-store`, Bearer only):
 
@@ -3734,25 +3735,33 @@ streamed tabs per desktop.
   the widget's width and height (classic scrollbars included) and the scroll
   offsets in CSS pixels, with `scale` when the page is pinch-zoomed. It is
   left out at browser zoom other than 100 % and when the page is offset from
-  the top. `pageURL` is the credential-free URL of the page's last commit,
+  the top, and on a builtin pane while its viewport is larger than the pane
+  (an emulated one). `pageURL` is the credential-free URL of the page's last commit,
   same-document moves included; it is left out past 4096 characters, together
   with `geometry`. Both are left out between a navigation's start and its
   commit.
 - `url`: `{pageURL?}` on every committed URL change, same-document or not,
   whether or not a frame follows. `pageURL` is left out past 4096 characters,
-  and for a page that is not http(s), such as an error page: no frames come
-  for that page and input on the tab is refused until an http(s) page
-  commits. Keep the last frame's geometry. At most ten a second; the last one
-  always arrives, in order with frames.
+  and for a page that is not http(s), such as Chrome's error page: no frames
+  come for that page and input on the tab is refused until an http(s) page
+  commits. A builtin pane's error page is at the URL that failed to load,
+  as its capture shows it, so it streams with that URL. Keep the last
+  frame's geometry. At most ten a second; the last one always arrives, in
+  order with frames.
 - `state`: `{state:"hidden", reason:"browser-tab-hidden"}` when the tab stops
   painting (Chrome reports it not visible, or it reads as hidden, for about
-  5 s); the stream stays open. `{state:"live"}` when it paints again,
-  followed by a frame.
+  5 s; a builtin pane as soon as it is off screen on the Mac: another
+  workspace or tab selected, the window minimized, another pane zoomed); the
+  stream stays open. `{state:"live"}` when it paints again, followed by a
+  frame.
 - `end`: `{error}` (`browser-tab-gone`, `browser-backend-unavailable`,
   `browser-preview-unavailable`, `browser-stream-expired`), then the stream
   closes. `browser-backend-unavailable` also comes when the desktop has sent
   nothing for the tab for 45 s. `browser-stream-expired` comes after 30
-  minutes; reconnect.
+  minutes; reconnect. A builtin pane ends with `browser-tab-gone` when it is
+  closed or unloaded to save memory (lightweight mode), and with
+  `browser-preview-unavailable` when the desktop loses its debugging
+  connection to the pane while the pane stays.
 - `: keepalive` comment every 15 s.
 
 **Pacing**: the first frame comes right after `hello`, even on a still page.
@@ -3800,8 +3809,8 @@ unchanged:
   `tap` and `history` must name the live URL; one of those earlier URLs is
   `409 browser-page-changed`. Any other URL stays `503`. A tab with no stream
   is checked exactly.
-- **A streamed Chrome tab's geometry**: `tap` and `scroll` may send a
-  frame's `geometry` as it came. While it is the latest frame's, the server
+- **A streamed tab's geometry** (builtin pane or `chrome` row): `tap` and
+  `scroll` may send a frame's `geometry` as it came. While it is the latest frame's, the server
   maps the point with it: CSS point = normalized point × `width` (or
   `height`) / `scale`, relative to the visible viewport; scroll deltas scale
   the same way. A `tap` compares all of `width`, `height`, `scrollX`,
