@@ -59,6 +59,8 @@ const PING_MS = 15_000;
 const URL_INTERVAL_MS = 100;
 const TICK_MS = 500;
 const PUSH_TIMEOUT_MS = 3_000;
+/** How long before a waiting frame's slot the browser may paint it a fresher one. */
+const FRESH_LEAD_MS = 100;
 /** How long a page swap is given to bind the tab's new page before re-attaching. */
 const SWAP_SETTLE_MS = 500;
 /** How long a builtin pane whose debugger let go is given to show it is closing. */
@@ -216,6 +218,9 @@ abstract class TabStream implements PhoneStreamTabView {
   private inFlight = false;
   private outbox: Outgoing[] = [];
   private pumpTimer: ReturnType<typeof setTimeout> | null = null;
+  private freshTimer: ReturnType<typeof setTimeout> | null = null;
+  /** The waiting frame's held acks went out early, once, for this slot (freshen()). */
+  private freshened = false;
   private tick: ReturnType<typeof setInterval> | null = null;
   protected firstFrame: ReturnType<typeof setTimeout> | null = null;
   private shrinking = false;
@@ -400,18 +405,42 @@ abstract class TabStream implements PhoneStreamTabView {
       wait = this.lastUrlPushAt + URL_INTERVAL_MS - now;
     }
     if (wait > 0) {
+      if (item.kind === 'frame') this.freshen(wait);
       this.pumpTimer = setTimeout(() => { this.pumpTimer = null; this.pump(); }, wait);
       this.pumpTimer.unref?.();
       return;
     }
     this.outbox.shift();
     this.ackHeld(item);
-    if (item.kind === 'frame') this.lastFramePushAt = now;
+    if (item.kind === 'frame') {
+      this.lastFramePushAt = now;
+      this.freshened = false;
+      if (this.freshTimer) { clearTimeout(this.freshTimer); this.freshTimer = null; }
+    }
     if (item.kind === 'url') this.lastUrlPushAt = now;
     this.send(item.params, () => {
       // The daemon answered (or refused): only now may the browser paint the next one.
       this.ack(item.ack);
     });
+  }
+
+  /**
+   * Once per frame sent, FRESH_LEAD_MS before the waiting frame's slot, the
+   * acks it holds go out: the browser paints one more, which replaces it and
+   * holds its ack, so what is sent is at most about that old rather than as
+   * old as the wait. Replacements after that hold until the send, as before.
+   */
+  private freshen(wait: number): void {
+    if (this.freshened || this.freshTimer) return;
+    const release = () => {
+      this.freshTimer = null;
+      this.freshened = true;
+      const waiting = this.outbox.find((queued) => queued.kind === 'frame');
+      if (waiting) { this.ackHeld(waiting); waiting.held = []; }
+    };
+    if (wait <= FRESH_LEAD_MS) { release(); return; }
+    this.freshTimer = setTimeout(release, wait - FRESH_LEAD_MS);
+    this.freshTimer.unref?.();
   }
 
   /** One push in flight; a refused push is a dropped frame, `known:false` stops here. */
@@ -505,6 +534,7 @@ abstract class TabStream implements PhoneStreamTabView {
     this.stopped = true;
     if (this.tick) clearInterval(this.tick);
     if (this.pumpTimer) clearTimeout(this.pumpTimer);
+    if (this.freshTimer) clearTimeout(this.freshTimer);
     if (this.firstFrame) clearTimeout(this.firstFrame);
     for (const item of this.outbox.splice(0)) { this.ackHeld(item); this.ack(item.ack); }
     this.release();

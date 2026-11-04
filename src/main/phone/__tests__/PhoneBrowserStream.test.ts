@@ -152,7 +152,7 @@ describe('phone browser stream (main)', () => {
     expect(s.acks()).toEqual([1, 2, 3]);
   });
 
-  it('a frame waiting for its slot holds the acks of those it replaced; a stop acks them all', async () => {
+  it('a frame waiting for its slot holds the acks of those it replaced, lets them go once just before the slot, and a stop acks them all', async () => {
     await start({ maxFps: 1 });
     const s = sessions[0];
     s.frame(1);
@@ -162,15 +162,23 @@ describe('phone browser stream (main)', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(frames()).toHaveLength(1);
     expect(s.acks()).toEqual([1]);
-    await vi.advanceTimersByTimeAsync(500);
-    expect(frames()).toHaveLength(2);
-    expect(s.acks()).toEqual([1, 2, 3, 4]);
+    // 100 ms before the slot: the held acks go, so the browser may paint a fresher frame.
+    await vi.advanceTimersByTimeAsync(400);
+    expect(frames()).toHaveLength(1);
+    expect(s.acks()).toEqual([1, 2, 3]);
+    // It does, and that one holds 4's ack until it is sent: no second early release.
     s.frame(5);
-    s.frame(6);
     await flush();
-    expect(s.acks()).toEqual([1, 2, 3, 4]);
+    expect(s.acks()).toEqual([1, 2, 3]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(frames()).toHaveLength(2);
+    expect(s.acks()).toEqual([1, 2, 3, 4, 5]);
+    s.frame(6);
+    s.frame(7);
+    await flush();
+    expect(s.acks()).toEqual([1, 2, 3, 4, 5]);
     await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a' });
-    expect(s.acks()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(s.acks()).toEqual([1, 2, 3, 4, 5, 6, 7]);
   });
 
   it('paces frames to the stream\'s maxFps, and a streamUpdate raises it', async () => {
