@@ -145,21 +145,43 @@ function finite(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-/** Main's push budget across tabs: frames and bytes per second. */
+/**
+ * What the budget holds when full: a quarter of a second of either. The
+ * bytes held (2 MiB) must stay above STREAM_LINE_LIMIT, or a frame that
+ * fits the pipe would never fit the budget and its stream would wait forever.
+ */
+const BUDGET_BURST_SECONDS = 0.25;
+
+/**
+ * Main's push budget across tabs, frames and bytes per second, as token
+ * buckets that refill continuously: a stream over budget gets evenly spaced
+ * frames, not a second's worth in a burst and then nothing for the rest of it.
+ */
 class Budget {
-  private start = 0;
-  private frames = 0;
-  private bytes = 0;
+  private frames = STREAM_FRAMES_PER_SECOND * BUDGET_BURST_SECONDS;
+  private bytes = STREAM_BYTES_PER_SECOND * BUDGET_BURST_SECONDS;
+  private at = 0;
+  private refill(now: number): void {
+    const seconds = Math.max(0, now - this.at) / 1000;
+    this.at = now;
+    this.frames = Math.min(STREAM_FRAMES_PER_SECOND * BUDGET_BURST_SECONDS, this.frames + seconds * STREAM_FRAMES_PER_SECOND);
+    this.bytes = Math.min(STREAM_BYTES_PER_SECOND * BUDGET_BURST_SECONDS, this.bytes + seconds * STREAM_BYTES_PER_SECOND);
+  }
   /** Charges one frame of `bytes`; false (nothing charged) past the budget. */
   take(bytes: number, now: number): boolean {
-    if (now - this.start >= 1000) { this.start = now; this.frames = 0; this.bytes = 0; }
-    if (this.frames + 1 > STREAM_FRAMES_PER_SECOND || this.bytes + bytes > STREAM_BYTES_PER_SECOND) return false;
-    this.frames += 1;
-    this.bytes += bytes;
+    this.refill(now);
+    if (this.frames < 1 || this.bytes < bytes) return false;
+    this.frames -= 1;
+    this.bytes -= bytes;
     return true;
   }
-  /** Milliseconds until the budget opens again. */
-  wait(now: number): number { return Math.max(1, this.start + 1000 - now); }
+  /** Milliseconds until a frame of `bytes` fits. */
+  wait(bytes: number, now: number): number {
+    this.refill(now);
+    const frames = Math.max(0, 1 - this.frames) / STREAM_FRAMES_PER_SECOND;
+    const data = Math.max(0, bytes - this.bytes) / STREAM_BYTES_PER_SECOND;
+    return Math.max(1, Math.ceil(Math.max(frames, data) * 1000));
+  }
 }
 
 type Outgoing = { kind: 'frame' | 'url' | 'state'; params: Record<string, unknown>; ack?: number; bytes: number };
@@ -359,7 +381,7 @@ abstract class TabStream implements PhoneStreamTabView {
     let wait = 0;
     if (item.kind === 'frame') {
       wait = this.lastFramePushAt + 1000 / this.maxFps - now;
-      if (wait <= 0 && !this.budget.take(item.bytes, now)) wait = this.budget.wait(now);
+      if (wait <= 0 && !this.budget.take(item.bytes, now)) wait = this.budget.wait(item.bytes, now);
     } else if (item.kind === 'url') {
       wait = this.lastUrlPushAt + URL_INTERVAL_MS - now;
     }

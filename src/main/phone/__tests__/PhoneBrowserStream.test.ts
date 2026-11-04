@@ -387,15 +387,36 @@ describe('phone browser stream (main)', () => {
     expect(streams.tab('chrome-b', 'ws-1')).toBeNull();
   });
 
-  it('holds all tabs together to 8 MiB of frames a second', async () => {
+  it('holds all tabs together to 8 MiB of frames a second, past a quarter-second burst', async () => {
     await start({ maxFps: 15 }, 'chrome-a');
     await start({ maxFps: 15 }, 'chrome-b');
-    for (let i = 1; i <= 15; i++) {
+    for (let i = 1; i <= 45; i++) {
       for (const s of sessions) s.frame(i, {}, jpeg(1280, 720, 600));
       await vi.advanceTimersByTimeAsync(66);
     }
+    // About three seconds: three seconds' worth and the burst at most, and not far below it.
     const bytes = frames().reduce((n, p) => n + String(p.data).length, 0);
-    expect(bytes).toBeLessThanOrEqual(8 * 1024 * 1024);
-    expect(frames().length).toBeGreaterThanOrEqual(12);
+    expect(bytes).toBeLessThanOrEqual(3 * 8 * 1024 * 1024 + 2 * 1024 * 1024);
+    expect(bytes).toBeGreaterThanOrEqual(2.5 * 8 * 1024 * 1024);
+  });
+
+  it('over budget, each tab\'s frames come evenly spaced, not a second\'s worth in a burst and then nothing', async () => {
+    const sent: Array<{ streamId: unknown; at: number }> = [];
+    reply = async (p) => { if (p.kind === 'frame') sent.push({ streamId: p.streamId, at: Date.now() }); return { ok: true, known: true }; };
+    await start({ maxFps: 15 }, 'chrome-a');
+    await start({ maxFps: 15 }, 'chrome-b');
+    const startedAt = Date.now();
+    for (let i = 1; i <= 60; i++) {
+      for (const s of sessions) s.frame(i, {}, jpeg(1280, 720, 600));
+      await vi.advanceTimersByTimeAsync(66);
+    }
+    for (const streamId of ['st-chrome-a', 'st-chrome-b']) {
+      // Past the first second's burst: the steady state.
+      const times = sent.filter((s) => s.streamId === streamId && s.at - startedAt >= 1_000).map((s) => s.at);
+      const gaps = times.slice(1).map((t, i) => t - times[i]);
+      // 8 MiB/s of ~600 KiB frames over two tabs: about 150 ms apart each.
+      expect(gaps.length).toBeGreaterThanOrEqual(15);
+      expect(Math.max(...gaps)).toBeLessThan(300);
+    }
   });
 });
