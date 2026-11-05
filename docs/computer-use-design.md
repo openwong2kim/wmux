@@ -236,10 +236,17 @@ snapshot is the v1.1 token saver.
   right before each keyboard batch, that focus is on the target and the screen
   is not locked, and answers `window_not_focused` when it is not.
 - **Honest results.** Every action returns
-  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, disposition, note? }`.
+  `{ method: "accessibility" | "synthetic" | "clipboard", verification: "verified" | "unverified", delivery?, disposition, note?, observedValue? }`.
   `verified` means state was read back, for example the value after
   `setValue`. The tool description tells the agent never to report an
-  unverified action as done. `delivery` says how the input reached the app:
+  unverified action as done. On an unverified `type` or `setValue`, the
+  Windows helper adds `observedValue`: what the field holds now, as an
+  excerpt of at most 120 characters that starts a little before where it
+  first differs from the value before (or the value set), or `[redacted]`
+  for a password field. Text that landed out of order or in the wrong place
+  then shows without another `getAppState`. Line breaks compare normalized
+  (a rich edit reads `\n` back as `\r`), and the read-back keeps polling
+  while the value is still changing. `delivery` says how the input reached the app:
   `background` when it went to the target app alone (the user's pointer,
   frontmost app and Space stay as they were), `foreground` when it was real
   input to the frontmost app. Both helpers report it; the Windows helper's

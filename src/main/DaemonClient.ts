@@ -1,4 +1,5 @@
 import net from 'node:net';
+import fs from 'node:fs';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import { parseShellPromptChange, parseShellPromptList, type ShellPromptList } from '../shared/shellPrompt';
 import { EventEmitter } from 'node:events';
@@ -16,6 +17,18 @@ import type {
   LanLinkPeersListResult,
 } from '../shared/lanlink';
 import type {
+  A2aDiscoverCloseResult,
+  A2aDiscoverConnectParams,
+  A2aDiscoverConnectResult,
+  A2aDiscoverDecideParams,
+  A2aDiscoverDecideResult,
+  A2aDiscoverOpenParams,
+  A2aDiscoverOpenResult,
+  A2aDiscoverOutgoingCancelResult,
+  A2aDiscoverOutgoingConfirmResult,
+  A2aDiscoverOutgoingStatus,
+  A2aDiscoverScanResult,
+  A2aDiscoverStatus,
   A2aExposureCandidate,
   A2aRemoteExposureGetResult,
   A2aRemoteExposureSetResult,
@@ -47,6 +60,7 @@ import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import { AGENT_STATE_BATCH_MAX } from '../shared/agentStateBatch';
 import { VIEWER_VISIBILITY_BATCH_MAX } from '../shared/viewerVisibilityBatch';
 import { DAEMON_CONTROL_LINE_MAX_CHARS } from '../shared/daemonControlLine';
+import { NOT_FIRST_PARTY } from '../shared/daemonFirstParty';
 import { sanitizeTitle } from './pty/titleDetect';
 import {
   getDaemonAuthTokenPath,
@@ -85,6 +99,11 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** A refusal the daemon gives an A2A call on a connection that is not the app's (shared/daemonFirstParty). */
+function isNotFirstParty(err: unknown): boolean {
+  return err instanceof Error && (err as Error & { code?: string }).code === NOT_FIRST_PARTY;
+}
+
 /**
  * Client for connecting to wmux-daemon from the Electron main process.
  * Communicates over Named Pipe (Windows) / Unix domain socket using JSON-RPC.
@@ -102,12 +121,12 @@ export class DaemonClient extends EventEmitter {
   // Keyed by sessionId, lifecycle-bound to the socket in sessionPipes: created
   // in setupSessionPipe, dropped on socket close/error/disconnect.
   private sessionScanners: Map<string, SessionPipeStreamScanner> = new Map();
-  private connected: boolean = false;
-  private requestId: number = 0;
+  private connected = false;
+  private requestId = 0;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   /** Each pane's last refused tool call, as the daemon reported it (`agent.refusal`). */
   private readonly toolRefusals = new Map<string, ToolRefusal>();
-  private controlBuffer: string = '';
+  private controlBuffer = '';
 
   constructor(
     private pipeName: string,
@@ -419,7 +438,50 @@ export class DaemonClient extends EventEmitter {
     if (method === 'daemon.detachSession' && typeof params['id'] === 'string' && this.viewerVisibilityQueue?.has(params['id'])) {
       void this.flushViewerVisibility();
     }
-    return this.send(method, params, opts);
+    if (!method.startsWith('a2a.')) return this.send(method, params, opts);
+    try {
+      return await this.send(method, params, opts);
+    } catch (err) {
+      // The daemon answers A2A calls only on a connection that identified as
+      // the app, and this one's identify did not land (the connect-time one can
+      // bounce off the rate limit). Identify again and retry once, unless
+      // recovery has already failed FIRST_PARTY_RECOVERY_MAX times on this
+      // connection. The daemon keeps a connection's standing until it closes,
+      // so a connection it keeps refusing will not recover by asking again.
+      if (!isNotFirstParty(err) || this.firstPartyRefusals >= DaemonClient.FIRST_PARTY_RECOVERY_MAX) throw err;
+      await this.identifyAgain();
+      try {
+        return await this.send(method, params, opts);
+      } catch (retryErr) {
+        if (isNotFirstParty(retryErr) && ++this.firstPartyRefusals === DaemonClient.FIRST_PARTY_RECOVERY_MAX) {
+          console.warn(`[lifecycle] DaemonClient lost first-party on the daemon pipe: ${DaemonClient.FIRST_PARTY_RECOVERY_MAX} identifies did not restore it; A2A calls fail until the next connection`);
+        }
+        throw retryErr;
+      }
+    }
+  }
+
+  /**
+   * Recoveries that identified again and were still refused. The app makes a
+   * new DaemonClient for every connection (DaemonRespawnController), so this
+   * counts for one connection.
+   */
+  private firstPartyRefusals = 0;
+  private static readonly FIRST_PARTY_RECOVERY_MAX = 3;
+  /** The identify in flight for this connection, shared by every call refused meanwhile. */
+  private reidentify: { epoch: number; done: Promise<void> } | null = null;
+
+  private identifyAgain(): Promise<void> {
+    const epoch = this.connectionEpoch;
+    if (this.reidentify?.epoch === epoch) return this.reidentify.done;
+    const done = this.send('daemon.client.identify', { role: 'main' }).then(
+      () => undefined,
+      () => undefined,
+    ).finally(() => {
+      if (this.reidentify?.done === done) this.reidentify = null;
+    });
+    this.reidentify = { epoch, done };
+    return done;
   }
 
   /**
@@ -570,6 +632,7 @@ export class DaemonClient extends EventEmitter {
         socket.write(this.authToken + '\n');
         this.sessionPipes.set(sessionId, socket);
         this.setupSessionPipe(sessionId, socket);
+        this.emit('session-pipe:open', sessionId);
         resolve();
       });
 
@@ -599,6 +662,29 @@ export class DaemonClient extends EventEmitter {
     const socket = this.sessionPipes.get(sessionId);
     if (!socket) return false;
     return !socket.destroyed && socket.writable;
+  }
+
+  /**
+   * Whether the session has a writable pipe, waiting up to `timeoutMs` for
+   * one to open. A pane's reattach replaces its pipe (daemon.attachSession,
+   * then a fresh connect, retried by the renderer when the new one is not
+   * writable yet), and a write in that gap has no pipe to go to (#3073).
+   */
+  async waitForSessionPipe(sessionId: string, timeoutMs: number): Promise<boolean> {
+    if (this.isSessionPipeWritable(sessionId)) return true;
+    return new Promise<boolean>((resolve) => {
+      const onOpen = (id: string): void => {
+        if (id !== sessionId || !this.isSessionPipeWritable(sessionId)) return;
+        finish(true);
+      };
+      const timer = setTimeout(() => finish(this.isSessionPipeWritable(sessionId)), timeoutMs);
+      const finish = (ok: boolean): void => {
+        clearTimeout(timer);
+        this.removeListener('session-pipe:open', onOpen);
+        resolve(ok);
+      };
+      this.on('session-pipe:open', onOpen);
+    });
   }
 
   /**
@@ -793,6 +879,47 @@ export class DaemonClient extends EventEmitter {
 
   async a2aRemotePeersRevoke(peerId: string): Promise<{ ok: boolean }> {
     return (await this.rpc('a2a.remote.peers.revoke', { peerId })) as { ok: boolean };
+  }
+
+  // Tailnet discovery. `open` reads Tailscale and may start the listener,
+  // `connect` runs the request and reveal round trips and `confirm` starts
+  // the join, so those get 30s like `join`. `scan` probes up to 64 tailnet
+  // devices 8 at a time (about 24s at worst), so it gets 60s.
+
+  async a2aRemoteDiscoverOpen(params: A2aDiscoverOpenParams): Promise<A2aDiscoverOpenResult> {
+    return (await this.rpc('a2a.remote.discover.open', { ...params }, { timeoutMs: 30_000 })) as A2aDiscoverOpenResult;
+  }
+
+  async a2aRemoteDiscoverClose(): Promise<A2aDiscoverCloseResult> {
+    return (await this.rpc('a2a.remote.discover.close', {})) as A2aDiscoverCloseResult;
+  }
+
+  async a2aRemoteDiscoverStatus(): Promise<A2aDiscoverStatus> {
+    return (await this.rpc('a2a.remote.discover.status', {})) as A2aDiscoverStatus;
+  }
+
+  async a2aRemoteDiscoverDecide(params: A2aDiscoverDecideParams): Promise<A2aDiscoverDecideResult> {
+    return (await this.rpc('a2a.remote.discover.decide', { ...params })) as A2aDiscoverDecideResult;
+  }
+
+  async a2aRemoteDiscoverScan(): Promise<A2aDiscoverScanResult> {
+    return (await this.rpc('a2a.remote.discover.scan', {}, { timeoutMs: 60_000 })) as A2aDiscoverScanResult;
+  }
+
+  async a2aRemoteDiscoverConnect(params: A2aDiscoverConnectParams): Promise<A2aDiscoverConnectResult> {
+    return (await this.rpc('a2a.remote.discover.connect', { ...params }, { timeoutMs: 30_000 })) as A2aDiscoverConnectResult;
+  }
+
+  async a2aRemoteDiscoverOutgoingStatus(): Promise<A2aDiscoverOutgoingStatus> {
+    return (await this.rpc('a2a.remote.discover.outgoing.status', {})) as A2aDiscoverOutgoingStatus;
+  }
+
+  async a2aRemoteDiscoverOutgoingCancel(): Promise<A2aDiscoverOutgoingCancelResult> {
+    return (await this.rpc('a2a.remote.discover.outgoing.cancel', {})) as A2aDiscoverOutgoingCancelResult;
+  }
+
+  async a2aRemoteDiscoverOutgoingConfirm(): Promise<A2aDiscoverOutgoingConfirmResult> {
+    return (await this.rpc('a2a.remote.discover.outgoing.confirm', {}, { timeoutMs: 30_000 })) as A2aDiscoverOutgoingConfirmResult;
   }
 
   /** `reconciled`: every share whose pane closed or moved was ended first (see ExposedPaneCache.isReconciled). */
@@ -1360,7 +1487,9 @@ export class DaemonClient extends EventEmitter {
       if (response.ok) {
         pending.resolve(response.result);
       } else {
-        pending.reject(new Error(response.error ?? 'Unknown RPC error'));
+        const err: Error & { code?: string } = new Error(response.error ?? 'Unknown RPC error');
+        if (response.code) err.code = response.code;
+        pending.reject(err);
       }
       return;
     }
@@ -1726,7 +1855,6 @@ export function getDaemonPipeName(): string {
  * authenticates.
  */
 export function readDaemonAuthToken(): string {
-  const fs = require('fs');
   for (const tokenPath of [getDaemonAuthTokenPath(), getLegacyDaemonAuthTokenPath()]) {
     try {
       const token = fs.readFileSync(tokenPath, 'utf8').trim();

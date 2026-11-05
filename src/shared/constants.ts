@@ -371,6 +371,7 @@ export const IPC = {
   TERMINAL_CORE_SETTINGS_SET: 'settings:terminal-core:set',
   LABS_SETTINGS_GET: 'settings:labs:get',
   LABS_SETTINGS_SET: 'settings:labs:set',
+  LABS_WONGTTY_WASM: 'settings:labs:wongtty-wasm',
   // #1103 — the renderer's default-WSL-distro choice, pushed to main so
   // pty.create can inject `wsl.exe -d <distro>` at the shell-resolution
   // choke point without threading it through every create call.
@@ -496,6 +497,8 @@ export const IPC = {
   COMPANY_SEAT_LAUNCHES: 'company:seatLaunches',
   // "Add a seat on this PC…": one seat's worktree, brief file and launch line.
   COMPANY_HIRE_SEAT: 'company:hireSeat',
+  // Whether a company folder's seats get their own worktrees, or why not (reads only).
+  COMPANY_WORKTREE_CHECK: 'company:worktreeCheck',
   // Moa's track record (src/shared/trackRecord.ts): the weekly retro card and
   // its schedule. The counts themselves are main's and Moa's, not the renderer's.
   TRACK_RECORD_RETRO_GET: 'trackRecord:retro:get',
@@ -703,6 +706,10 @@ export const IPC = {
   COMPUTER_USE_SET: 'computer-use:set',
   // macOS permission buttons: { op: 'request' | 'reset' | 'reveal' }, returns GET's shape.
   COMPUTER_USE_PERMISSIONS: 'computer-use:permissions',
+  // Each pane's computer-use marker colour (shared/computer/agentMarker.ts):
+  // invoke returns AgentMarkerEntry[]; main also sends the full list on this
+  // channel whenever a pane gets a colour.
+  COMPUTER_AGENT_MARKERS: 'computer-use:agent-markers',
   // Global quick launch (Settings › Shortcuts, and the floating composer).
   // SETTINGS_GET/SET return QuickLaunchSettingsPayload; the rest are the
   // composer window's own calls, refused from any other sender. The strings
@@ -811,6 +818,17 @@ export const IPC = {
   A2A_REMOTE_HOSTS_REMOVE: 'a2aRemote:hosts:remove',
   A2A_REMOTE_PEERS_LIST: 'a2aRemote:peers:list',
   A2A_REMOTE_PEERS_REVOKE: 'a2aRemote:peers:revoke',
+  // Tailnet discovery: this PC discoverable for 5 minutes and the card's
+  // decision; finding the tailnet's discoverable PCs and asking one.
+  A2A_REMOTE_DISCOVER_OPEN: 'a2aRemote:discover:open',
+  A2A_REMOTE_DISCOVER_CLOSE: 'a2aRemote:discover:close',
+  A2A_REMOTE_DISCOVER_STATUS: 'a2aRemote:discover:status',
+  A2A_REMOTE_DISCOVER_DECIDE: 'a2aRemote:discover:decide',
+  A2A_REMOTE_DISCOVER_SCAN: 'a2aRemote:discover:scan',
+  A2A_REMOTE_DISCOVER_CONNECT: 'a2aRemote:discover:connect',
+  A2A_REMOTE_DISCOVER_OUTGOING_STATUS: 'a2aRemote:discover:outgoing:status',
+  A2A_REMOTE_DISCOVER_OUTGOING_CANCEL: 'a2aRemote:discover:outgoing:cancel',
+  A2A_REMOTE_DISCOVER_OUTGOING_CONFIRM: 'a2aRemote:discover:outgoing:confirm',
   // Exposure and pane links. SNAPSHOT is the renderer's whole pane tree (main
   // diffs it for gone panes and publishes the exposed part); LINK_EVENT is the
   // main → renderer push of daemon link nudges.

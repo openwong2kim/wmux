@@ -233,12 +233,13 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow, deps: D
 
     const trackedIds = Object.keys(work.a2aTasks);
     if (trackedIds.length > 0) {
+      // main's own read for the commander's workspace, dispatched in process.
       const query = await router.dispatch({
         id: `deck-complete-${work.id}`,
         method: 'a2a.task.query',
         params: { workspaceId: ws },
         ...(typeof token === 'string' ? { commanderToken: token } : {}),
-      });
+      }, { firstParty: true });
       if (!query.ok) return { ok: false, error: 'a2a_query_failed' };
       const result = query.result;
       const tasks =

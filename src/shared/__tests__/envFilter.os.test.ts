@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   buildSafeChildEnv,
   isSensitiveEnvKey,
@@ -8,6 +8,10 @@ import {
   isInternalEnvKey,
   isCredentialEnvKey,
   stripCredentialValues,
+  pickCredentialEnv,
+  mergeCredentialEnv,
+  sanitizeCredentialEnv,
+  CREDENTIAL_ENV_LIMITS,
   isNestingMarker,
 } from '../envFilter';
 
@@ -229,6 +233,96 @@ describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
     expect(isCredentialEnvKey('PGHOST')).toBe(false);
     expect(isCredentialEnvKey('MYSQL_HOST')).toBe(false);
     expect(isCredentialEnvKey('REDIS_HOST')).toBe(false);  // REDIS_URL이 아님
+  });
+});
+
+describe('pickCredentialEnv (what main hands a restored user shell, #3049)', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  // Placeholder values only; no real secret is ever used in a test.
+  const mainEnv = {
+    PATH: '/main/bin',
+    GH_TOKEN: 'main-placeholder',
+    API_KEY: 'key-placeholder',
+    WMUX_PUSH_RELAY_SECRET: 'relay-placeholder',
+    WMUX_AUTH_TOKEN: 'internal-placeholder',
+    wmux_custom_token: 'lower-placeholder',
+    ELECTRON_RUN_AS_NODE: '1',
+  };
+
+  it('takes credential-named vars and nothing else', () => {
+    expect(pickCredentialEnv(mainEnv)).toEqual({ GH_TOKEN: 'main-placeholder', API_KEY: 'key-placeholder' });
+  });
+
+  it('never takes the push relay secret or any other WMUX_* name, whatever its case', () => {
+    const picked = pickCredentialEnv(mainEnv);
+    expect(picked.WMUX_PUSH_RELAY_SECRET).toBeUndefined();
+    expect(picked.WMUX_AUTH_TOKEN).toBeUndefined();
+    expect(picked.wmux_custom_token).toBeUndefined();
+  });
+
+  it('reads only the env it is given, never process.env', () => {
+    vi.stubEnv('GH_TOKEN', 'process-env-placeholder');
+    expect(pickCredentialEnv({ PATH: '/p' })).toEqual({});
+  });
+});
+
+describe('mergeCredentialEnv (spawn env of a restored user shell, #3049)', () => {
+  it('adds the credential values to a stripped persisted env', () => {
+    const merged = mergeCredentialEnv({ PATH: '/persisted/bin', WMUX_PTY_ID: 'p1' }, { GH_TOKEN: 'main-placeholder' });
+    expect(merged).toEqual({ PATH: '/persisted/bin', WMUX_PTY_ID: 'p1', GH_TOKEN: 'main-placeholder' });
+  });
+
+  it('never overrides a key the env already carries, compared case-insensitively', () => {
+    const merged = mergeCredentialEnv({ PATH: '/p', gh_token: 'kept' }, { GH_TOKEN: 'main-placeholder' });
+    expect(merged.gh_token).toBe('kept');
+    expect(merged.GH_TOKEN).toBeUndefined();
+  });
+
+  it('drops anything that is not a passable credential', () => {
+    const merged = mergeCredentialEnv({ PATH: '/p' }, { PATH: '/evil', WMUX_PUSH_RELAY_SECRET: 'relay-placeholder', NODE_OPTIONS: '--x' });
+    expect(merged).toEqual({ PATH: '/p' });
+  });
+
+  it('returns a fresh object and leaves the env untouched', () => {
+    const env = { PATH: '/p' };
+    const merged = mergeCredentialEnv(env, { GH_TOKEN: 'main-placeholder' });
+    expect(merged).not.toBe(env);
+    expect(env).toEqual({ PATH: '/p' });
+  });
+
+  it('round-trips with stripCredentialValues: the persisted form stays credential-free', () => {
+    const merged = mergeCredentialEnv(stripCredentialValues({ PATH: '/p', GITHUB_TOKEN: 'x' }), { GITHUB_TOKEN: 'main-placeholder' });
+    expect(stripCredentialValues(merged)).toEqual({ PATH: '/p' });
+  });
+});
+
+describe('sanitizeCredentialEnv (a credential env off the daemon pipe, #3049)', () => {
+  it('keeps passable credentials only', () => {
+    expect(sanitizeCredentialEnv({
+      GH_TOKEN: 'main-placeholder',
+      WMUX_PUSH_RELAY_SECRET: 'relay-placeholder',
+      WMUX_AUTH_TOKEN: 'internal-placeholder',
+      PATH: '/evil',
+      NODE_OPTIONS: '--x',
+    })).toEqual({ GH_TOKEN: 'main-placeholder' });
+  });
+
+  it('drops a bad value without costing the others', () => {
+    expect(sanitizeCredentialEnv({
+      GH_TOKEN: 'main-placeholder',
+      NPM_TOKEN: 'x'.repeat(CREDENTIAL_ENV_LIMITS.VALUE_MAX + 1),
+      API_KEY: 'a\0b',
+      OTHER_TOKEN: 42,
+    })).toEqual({ GH_TOKEN: 'main-placeholder' });
+  });
+
+  it('refuses what is not a plain object, or too many names', () => {
+    expect(sanitizeCredentialEnv(null)).toBeNull();
+    expect(sanitizeCredentialEnv('GH_TOKEN=x')).toBeNull();
+    expect(sanitizeCredentialEnv(['GH_TOKEN'])).toBeNull();
+    const many = Object.fromEntries(Array.from({ length: CREDENTIAL_ENV_LIMITS.NAMES + 1 }, (_, i) => [`K${i}_TOKEN`, 'v']));
+    expect(sanitizeCredentialEnv(many)).toBeNull();
   });
 });
 

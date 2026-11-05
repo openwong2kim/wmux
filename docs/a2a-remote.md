@@ -386,6 +386,55 @@ office and a laptop at home.
   it). A company network that forbids Tailscale is unaffected: without a
   tailnet address, invites and connections are the same as before.
 
+### Finding PCs on your tailnet
+
+When both PCs are on the same tailnet, the **Tailscale** tab of Remote >
+Connect a PC pairs them without copying an invite. Opening the dialog or the
+tab only reads Tailscale's local status; nothing goes over the network until
+you press a button.
+
+- **Make this PC discoverable (PC B).** For 5 minutes, PC B answers on its
+  A2A port to devices on its tailnet that are signed in to the same
+  Tailscale account. They learn that wmux runs there, PC B's machine name
+  and its wmux version. Any other address, the LAN included, gets the same
+  answer as when Cross-PC A2A is on with no window open. If it was off, the
+  button turns it on, and it is turned off again if the window ends without
+  a pairing. The window closes when the 5 minutes end, when you press Stop
+  or close the dialog, when a PC pairs, or when more than 10 requests from
+  your devices arrive.
+- **Find PCs (PC A).** PC A asks each online computer of the same
+  Tailscale account, on the default A2A port and its own port if that
+  differs, and lists the ones that are discoverable. Phones, offline
+  devices and other accounts' devices are not asked. The list refreshes
+  every 5 seconds for 2 minutes, then offers Search again.
+- **Matching codes.** Connect on PC A shows a 6-digit code. PC B shows a
+  card with the asking device as Tailscale identifies it (device name,
+  Tailscale account, OS and tailnet address) and a code. Each PC computes
+  the code from both certificates and a fresh random value from each side;
+  the code itself is never sent. If the two codes differ, deny on PC B or
+  cancel on PC A.
+- **Allow, then confirm.** After Allow on PC B, PC A asks its own person
+  to confirm the codes match (**Codes match · Connect**) within 60 seconds;
+  only then do the two PCs pair, as an invite would, with PC A pinned to the
+  certificate it saw. Keep PC B's dialog open until pairing finishes:
+  closing it ends the window. Nothing is shared yet: PC A sees no pane of
+  PC B until you tick panes in the checklist that opens next. A request
+  from a PC that is already paired replaces that pairing, and the card says
+  so.
+- **Who can ask.** Only a device Tailscale identifies as one of yours.
+  Requests from another account, a tagged device, a subnet router, or an
+  address Tailscale cannot identify are refused before any card shows. One
+  card shows at a time; Deny blocks that device until the window ends.
+- **Who can make a PC discoverable.** MCP tools and plugins cannot open a
+  window or answer a card. The wmux daemon still accepts these calls from
+  any program running as your user that can read its auth token, as it
+  does for creating an invite.
+- **Limits.** IPv4 only. A PC listening on another port than the default
+  (and than this PC's own) is not found; use an invite. Discovery is
+  unavailable when another network on the PC uses Tailscale's address range
+  (100.64.0.0/10), or when its Tailscale is too old to answer `tailscale
+  whois --json`; the tab says which.
+
 ## Troubleshooting
 
 When **Connect** fails on the joiner, the message tells you which case it is:

@@ -25,7 +25,7 @@ import { labsSettingsAtStartup } from '../shared/labsSettings';
 import { buildExecArgs } from './execWrapper';
 import { dropMissingAccountDirs, pinAccountEnv } from './phone/paneAccountSpawn';
 import { windowsPowerShellPolicyArgs } from '../shared/pwshExecutionPolicy';
-import { buildSafeChildEnv, isNestingMarker } from '../shared/envFilter';
+import { buildSafeChildEnv, isNestingMarker, mergeCredentialEnv, sanitizeCredentialEnv } from '../shared/envFilter';
 import { claudeFileSendEnv } from '../shared/claudeFileSend';
 import { sanitizeSecretEnv } from '../shared/botSecret';
 import { withoutExeSearchGuard } from '../shared/exeSearch';
@@ -125,6 +125,8 @@ interface PreparedSpawn {
   hostCwd: string;
   env: Record<string, string>;
   secretEnv: Record<string, string> | null;
+  /** A restored user shell's credentials (#3049): spawn env only, never meta.env. */
+  credentialEnv: Record<string, string> | null;
   /** The Claude file send setting at prepare time (shared/claudeFileSend.ts). */
   claudeFileSend: boolean;
   cols: number;
@@ -346,6 +348,13 @@ export class DaemonSessionManager extends EventEmitter {
   }
 
   private pendingRecovery = new Map<string, DaemonSession>();
+  /**
+   * #3049 — the pending recoveries held for main to start (a user shell on
+   * main's hold list). In memory only and never on the record: every record
+   * in pendingRecovery is persisted by buildState, and a held start must not
+   * outlive this daemon.
+   */
+  private startPending = new Set<string>();
   private pendingCreates = new Map<string, symbol>();
   /**
    * Creates whose PTY is spawned but whose pid is still pending (#2398), by
@@ -415,6 +424,38 @@ export class DaemonSessionManager extends EventEmitter {
 
   getPendingRecovery(id: string): DaemonSession | undefined {
     return this.pendingRecovery.get(id);
+  }
+
+  /**
+   * #3049 — keep `session` as a pending recovery that main starts (with the
+   * user shell's credentials) instead of anything starting it on its own.
+   */
+  holdForStart(session: DaemonSession): void {
+    this.keepPendingRecovery(session);
+    this.startPending.add(session.id);
+  }
+
+  /** Whether `id` is a pending recovery held for main to start (holdForStart). */
+  isStartPending(id: string): boolean {
+    return this.startPending.has(id);
+  }
+
+  /** The ids held for main to start, oldest hold first. */
+  startPendingIds(): string[] {
+    return [...this.startPending];
+  }
+
+  /**
+   * #3049 — drop a pending recovery and its start hold without a
+   * `session:destroyed` (which reads as the user closing the pane): a held
+   * start that failed is kept again as an ordinary pending recovery
+   * (keepPendingRecovery). Returns the record dropped.
+   */
+  dropPendingRecovery(id: string): DaemonSession | undefined {
+    const pending = this.pendingRecovery.get(id);
+    this.pendingRecovery.delete(id);
+    this.startPending.delete(id);
+    return pending;
   }
 
   /**
@@ -508,7 +549,10 @@ export class DaemonSessionManager extends EventEmitter {
         throw new Error('Session creation cancelled');
       }
       const created = this.registerSpawned(prepared, ptyProcess, conptyBackend, spawnMark);
-      if (wsl) this.pendingRecovery.delete(params.id);
+      // Any placeholder this id had (WSL, or a held user shell) is the live
+      // session now: one entry per id in listSessions.
+      this.pendingRecovery.delete(params.id);
+      this.startPending.delete(params.id);
       return created;
     } finally {
       if (this.pendingCreates.get(params.id) === token) this.pendingCreates.delete(params.id);
@@ -571,6 +615,15 @@ export class DaemonSessionManager extends EventEmitter {
      * the spawn env only.
      */
     secretEnv?: Record<string, string>;
+    /**
+     * #3049 — a restored user shell's credential values, passed by main when
+     * it starts the shell's placeholder. Like `secretEnv`, added to the
+     * spawned process's environment ONLY, never to `meta.env`; unlike it, no
+     * name is added to WSLENV, so a WSL pane gets what a new one does.
+     * Cleaned again here (sanitizeCredentialEnv), never overrides a key `env`
+     * carries, and refused for an exec unit or a supervised session.
+     */
+    credentialEnv?: Record<string, string>;
     cols?: number;
     rows?: number;
     agent?: { role: string; teamId: string; displayName: string };
@@ -690,6 +743,11 @@ export class DaemonSessionManager extends EventEmitter {
     if (params.secretEnv !== undefined) {
       secretEnv = sanitizeSecretEnv(params.secretEnv);
       if (!secretEnv) throw new Error('Invalid session secretEnv');
+    }
+    let credentialEnv: Record<string, string> | null = null;
+    if (params.credentialEnv !== undefined) {
+      credentialEnv = sanitizeCredentialEnv(params.credentialEnv);
+      if (!credentialEnv || params.exec || params.supervision) throw new Error('Invalid session credentialEnv');
     }
 
     // Resolve the child environment. A caller-supplied env is AUTHORITATIVE —
@@ -837,7 +895,7 @@ export class DaemonSessionManager extends EventEmitter {
     // forwards the pane's own value), and then the shell writes no marks.
     if (shellMarks === 'integrated' && env.WMUX_SHELL_INTEGRATION === '0') shellMarks = 'plain';
 
-    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, claudeFileSend: this.claudeFileSend(), cols, rows, wsl, shellMarks };
+    return { params, cfg, cmd, spawnArgs, cwd, hostCwd, env, secretEnv, credentialEnv, claudeFileSend: this.claudeFileSend(), cols, rows, wsl, shellMarks };
   }
 
   /**
@@ -858,11 +916,14 @@ export class DaemonSessionManager extends EventEmitter {
    * silently demote the pane to mouse-less forever.
    */
   private spawnRequest(prepared: PreparedSpawn, onBackend: (backend: ConptyBackend) => void): SpawnPtyRequest {
-    const { params, cmd, spawnArgs, hostCwd, env, secretEnv, claudeFileSend, cols, rows, wsl } = prepared;
+    const { params, cmd, spawnArgs, hostCwd, env, secretEnv, credentialEnv, claudeFileSend, cols, rows, wsl } = prepared;
     // The file send variable goes to the process only, like a worker's
     // secrets: kept out of meta.env, a recovered pane follows the setting as
     // it is then, not as it was when the pane was first created.
     const processOnly = { ...claudeFileSendEnv(claudeFileSend), ...(secretEnv ?? {}) };
+    // #3049 — a restored user shell's credentials reach the process only too,
+    // and name nothing in WSLENV (withSecretEnv would).
+    const spawnEnv = credentialEnv ? mergeCredentialEnv(env, credentialEnv) : env;
     return {
       command: cmd,
       args: spawnArgs,
@@ -873,7 +934,7 @@ export class DaemonSessionManager extends EventEmitter {
         cwd: hostCwd,
         // A worker's secrets reach the process only; meta.env below is
         // `env` itself, without them (and without their WSLENV names).
-        env: Object.keys(processOnly).length > 0 ? withSecretEnv(env, processOnly, !!wsl || isWslShell(cmd)) : env,
+        env: Object.keys(processOnly).length > 0 ? withSecretEnv(spawnEnv, processOnly, !!wsl || isWslShell(cmd)) : spawnEnv,
       },
       useBundledConpty: shouldUseBundledConpty(
         process.platform,
@@ -1313,6 +1374,7 @@ export class DaemonSessionManager extends EventEmitter {
   destroySession(id: string): void {
     this.pendingCreates.delete(id);
     const pending = this.pendingRecovery.delete(id);
+    this.startPending.delete(id);
     if (pending) this.emit('session:destroyed', { id });
     const managed = this.sessions.get(id);
     if (!managed) return;

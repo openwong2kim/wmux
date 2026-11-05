@@ -25,6 +25,9 @@ export function suspendedListEntry(s: DaemonSession, bindingUsable: boolean) {
     cwd: s.cwd,
     createdAt: s.createdAt,
     lastActivity: s.lastActivity,
+    // #3049 — as a live entry has it: main grants a restored user shell its
+    // credentials only when this matches main's own record of the pane.
+    ...(s.incarnationId ? { incarnationId: s.incarnationId } : {}),
     ...(s.exec ? { exec: s.exec } : {}),
     ...(s.supervision ? { supervision: s.supervision } : {}),
     // #2398 §6-4 option B: its agent's resume binding, under the same guard

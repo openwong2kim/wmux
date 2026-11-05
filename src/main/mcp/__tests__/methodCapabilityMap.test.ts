@@ -35,6 +35,14 @@ describe('methodCapabilityMap — cross-PC share offers', () => {
   });
 });
 
+describe('methodCapabilityMap — phone bridge', () => {
+  it('only this PC’s own app reaches the phone bridge RPCs, the browser stream push included', () => {
+    const phoneMethods = ALL_RPC_METHODS.filter((m) => m.startsWith('daemon.phone.'));
+    expect(phoneMethods).toContain('daemon.phone.browserStream');
+    for (const m of phoneMethods) expect(METHOD_CAPABILITY[m].capability).toBe('wmux.internal');
+  });
+});
+
 describe('methodCapabilityMap capability validity', () => {
   it('every non-null, non-internal capability appears in KNOWN_CAPABILITIES', () => {
     const known = new Set(listKnownCapabilities());

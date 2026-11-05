@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { focusBuiltinTab, handlePhoneBrowser } from '../PhoneBrowser';
-import { createPhoneChromeDeps, phoneChromeHelpTabs, phoneChromeTabs, type PhoneChromeDeps, type PhoneChromeRegistry } from '../PhoneBrowserChrome';
-import { ChromePageSessionError, type ChromeBackendClient, type ChromeTargetInfo } from '../../browser-session/ChromeLauncher';
+import { chromeDriver, createPhoneChromeDeps, phoneChromeHelpTabs, phoneChromeTabs, type PhoneChromeDeps, type PhoneChromeRegistry } from '../PhoneBrowserChrome';
+import { ChromePageSessionError, type ChromeBackendClient, type ChromeOpenedSurface, type ChromeTargetInfo } from '../../browser-session/ChromeLauncher';
 import type { RpcResponse } from '../../../shared/rpc';
 
 const METRICS = { cssVisualViewport: { clientWidth: 1000, clientHeight: 700, pageX: 0, pageY: 40, scale: 1 } };
@@ -60,7 +60,38 @@ describe('phone preview on dedicated-profile Chrome', () => {
     expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, fixture(deps))).toEqual({ pages: [
       { id: 'pane', title: 'Pane', url: 'https://pane.example.com/', backend: 'builtin' },
       { id: 'chrome-own', title: 'Cart', url: 'https://shop.example.com/cart', backend: 'chrome' },
-    ] });
+    ], openBackend: 'chrome' });
+  });
+
+  it('openBackend: what an open without backend makes here, for a phone that asked; omitted where none can open', async () => {
+    const list = async (deps: ReturnType<typeof fixture>) => handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, deps) as Promise<{ openBackend?: string }>;
+    expect((await list(fixture(fakeChrome().deps))).openBackend).toBe('chrome');
+    expect((await list({ ...fixture(fakeChrome().deps), backend: () => 'builtin' })).openBackend).toBe('builtin');
+    expect(await list(fixture(fakeChrome({ canOpen: () => false }).deps))).not.toHaveProperty('openBackend');
+    expect(await list({ ...fixture(fakeChrome().deps), backend: () => 'external' })).not.toHaveProperty('openBackend');
+    expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1' }, fixture(fakeChrome().deps))).not.toHaveProperty('openBackend');
+  });
+
+  it('leaves out a row whose URL is over 4096 characters; the other rows stay', async () => {
+    const at = (length: number) => { const base = 'https://shop.example.com/?q='; return base + 'a'.repeat(length - base.length); };
+    const long = at(300 * 1024);
+    const { deps } = fakeChrome();
+    deps.setURL(long);
+    const panes = {
+      ...fixture(deps),
+      targets: () => [
+        { surfaceId: 'pane', workspaceId: 'ws-1', webContentsId: 1, targetId: 't', wsUrl: 'ws://private' },
+        { surfaceId: 'pane-long', workspaceId: 'ws-1', webContentsId: 2, targetId: 't2', wsUrl: 'ws://private' },
+      ],
+      page: (id: number) => ({ title: 'Pane', url: id === 2 ? long : 'https://pane.example.com/' }),
+    };
+    expect(await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes)).toEqual({ pages: [
+      { id: 'pane', title: 'Pane', url: 'https://pane.example.com/', backend: 'builtin' },
+    ], openBackend: 'chrome' });
+    // At the limit a row is still listed.
+    deps.setURL(at(4096));
+    expect((await handlePhoneBrowser('browser.list', { workspaceId: 'ws-1', chrome: true }, panes) as { pages: Array<{ id: string }> }).pages.map((p) => p.id))
+      .toEqual(['pane', 'chrome-own']);
   });
 
   it('leaves out a tab that is not an http(s) page, and refuses to drive it', async () => {
@@ -233,7 +264,7 @@ describe('phone preview on dedicated-profile Chrome', () => {
     expect(sent.some((c) => c.method.startsWith('Input.'))).toBe(false);
     await handlePhoneBrowser('browser.tap', { ...scope, expectedURL: 'https://shop.example.com/cart', geometry, x: 0.5, y: 0.5 }, fixture(deps));
     expect(sent.filter((c) => c.method === 'Input.dispatchMouseEvent').map((c) => c.params?.type)).toEqual(['mouseMoved', 'mousePressed', 'mouseReleased']);
-    expect(sent.at(-1)?.params).toMatchObject({ x: 500, y: 350 });
+    expect(sent.filter((c) => c.method === 'Input.dispatchMouseEvent').at(-1)?.params).toMatchObject({ x: 500, y: 350 });
     // The tab navigates while the input waits its turn.
     const racing = fakeChrome();
     let reads = 0;
@@ -241,6 +272,25 @@ describe('phone preview on dedicated-profile Chrome', () => {
     await expect(handlePhoneBrowser('browser.type', { ...scope, expectedURL: 'https://shop.example.com/cart', text: 'x' }, fixture(racing.deps))).rejects.toThrow('page changed');
     expect(racing.sent.some((c) => c.method === 'Input.insertText')).toBe(false);
     expect(racing.sent.at(-1)).toEqual({ method: 'Emulation.setFocusEmulationEnabled', params: { enabled: false } });
+  });
+
+  it('a tap reply carries what the tap focused, read in an isolated world after the release', async () => {
+    const { deps, sent, answer } = fakeChrome();
+    answer.mockImplementation(async (method: string) => {
+      if (method === 'Page.getLayoutMetrics') return METRICS;
+      if (method === 'Page.getFrameTree') return { frameTree: { frame: { id: 'main' } } };
+      if (method === 'Page.createIsolatedWorld') return { executionContextId: 9 };
+      if (method === 'Runtime.evaluate') return { result: { value: { editable: true, kind: 'email' } } };
+      return {};
+    });
+    const tap = { ...scope, expectedURL: 'https://shop.example.com/cart', geometry, x: 0.5, y: 0.5 };
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ applied: true, focus: { editable: true, kind: 'email' } });
+    const methods = sent.map((c) => c.method);
+    expect(methods.slice(methods.lastIndexOf('Input.dispatchMouseEvent') + 1)).toEqual(['Page.getFrameTree', 'Page.createIsolatedWorld', 'Runtime.evaluate']);
+    expect(sent.find((c) => c.method === 'Page.createIsolatedWorld')?.params).toEqual({ frameId: 'main', worldName: 'wmux-phone-focus' });
+    // A page that cannot be read in time: the tap still applied, with no focus.
+    answer.mockImplementation(async (method: string) => method === 'Page.getLayoutMetrics' ? METRICS : method === 'Page.getFrameTree' ? new Promise(() => undefined) : {});
+    expect(await handlePhoneBrowser('browser.tap', { ...tap, stream: true }, fixture(deps))).toEqual({ applied: true });
   });
 
   it('keys go through parseKeyPress; scroll moves the pointer first', async () => {
@@ -319,6 +369,354 @@ describe('phone preview on dedicated-profile Chrome', () => {
     const builtinSetting = { ...fixture(fakeChrome().deps), backend: () => 'builtin' };
     expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/', backend: 'chrome' }, builtinSetting)).toEqual({ error: 'browser-backend-unavailable' });
     await expect(handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/', backend: 'live' }, dedicated)).rejects.toThrow('Invalid browser backend');
+  });
+
+  it('an open without backend opens on the desktop\'s Chrome, in a dedicated profile only', async () => {
+    const dedicated = fixture(fakeChrome().deps);
+    expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/' }, dedicated)).toEqual({ surfaceId: 'chrome-new' });
+    expect(dedicated.invoke).toHaveBeenCalledWith('browser.tabs', { workspaceId: 'ws-1', action: 'new', url: 'https://a.example.com/' });
+    const live = fixture(fakeChrome({ canOpen: () => false }).deps);
+    expect(await handlePhoneBrowser('browser.open', { workspaceId: 'ws-1', url: 'https://a.example.com/' }, live)).toEqual({ error: 'browser-backend-unavailable' });
+    expect(live.invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('the tab a tap opened (contract v1.7)', () => {
+  /** A tab whose release runs `onRelease`, which can make the page ask for a window and the tab open. */
+  function popupChrome(
+    onRelease: (emit: { windowOpen(): void; opened(surfaceId: string): void }) => void = () => undefined,
+    opts: { enable?: () => Promise<unknown>; attachFailsOnce?: boolean } = {},
+  ) {
+    let attachFailed = false;
+    const sent: Array<{ method: string; params?: Record<string, unknown> }> = [];
+    const handlers = new Map<string, Set<(params: Record<string, unknown>) => void>>();
+    let listener: ((tab: { surfaceId: string; url: string }) => void) | undefined;
+    const unsubscribed = vi.fn();
+    const emit = {
+      windowOpen: () => handlers.get('Page.windowOpen')?.forEach((handler) => handler({ url: 'https://news.example.com/' })),
+      opened: (surfaceId: string) => listener?.({ surfaceId, url: '' }),
+    };
+    const { deps } = fakeChrome({
+      session: vi.fn(async () => {
+        if (opts.attachFailsOnce && !attachFailed) {
+          attachFailed = true;
+          throw new ChromePageSessionError('unavailable', 'no socket yet');
+        }
+        return {
+        send: async (method: string, params?: Record<string, unknown>) => {
+          sent.push({ method, ...(params ? { params } : {}) });
+          if (method === 'Input.dispatchMouseEvent' && params?.type === 'mouseReleased') onRelease(emit);
+          if (method === 'Page.enable' && opts.enable) return opts.enable();
+          return method === 'Page.getLayoutMetrics' ? METRICS : {};
+        },
+        on: (method: string, handler: (params: Record<string, unknown>) => void) => {
+          const set = handlers.get(method) ?? new Set();
+          set.add(handler);
+          handlers.set(method, set);
+          return () => { set.delete(handler); };
+        },
+        };
+      }),
+      onTabOpened: vi.fn((_surfaceId: string, _workspaceId: string, next: (tab: { surfaceId: string; url: string }) => void) => {
+        listener = next;
+        return unsubscribed;
+      }),
+    });
+    return { deps, sent, handlers, unsubscribed, emit };
+  }
+  const tap = { ...scope, expectedURL: 'https://shop.example.com/cart', geometry, x: 0.5, y: 0.5 };
+  async function watching(deps: PhoneChromeDeps) {
+    const watch = await chromeDriver('chrome-own', 'ws-1', deps).watchOpened?.();
+    if (!watch) throw new Error('a Chrome tab watches for the tabs it opens');
+    return watch;
+  }
+
+  it('names the tab the tap opened, watched from before the press, and lets go of the watch', async () => {
+    const { deps, sent, handlers, unsubscribed } = popupChrome((emit) => { emit.windowOpen(); emit.opened('chrome-popup'); });
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ applied: true, opened: { surfaceId: 'chrome-popup' } });
+    expect(deps.onTabOpened).toHaveBeenCalledWith('chrome-own', 'ws-1', expect.any(Function));
+    const methods = sent.map((c) => c.method === 'Input.dispatchMouseEvent' ? String(c.params?.type) : c.method);
+    expect(methods.indexOf('Page.enable')).toBeLessThan(methods.indexOf('mousePressed'));
+    expect(unsubscribed).toHaveBeenCalledOnce();
+    expect(handlers.get('Page.windowOpen')?.size).toBe(0);
+  });
+
+  it('waits for a tab the page asked for that opens after the release', async () => {
+    const { deps } = popupChrome((emit) => { emit.windowOpen(); setTimeout(() => emit.opened('chrome-late'), 40); });
+    expect(await handlePhoneBrowser('browser.tap', { ...tap, stream: true }, fixture(deps))).toEqual({ applied: true, opened: { surfaceId: 'chrome-late' } });
+  });
+
+  it('adds no wait to a tap that asked for no window', async () => {
+    const { deps } = popupChrome();
+    const started = Date.now();
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ applied: true });
+    expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it('waits no longer than it is told when the asked-for tab never opens; stop ends the wait', async () => {
+    const { deps, emit } = popupChrome();
+    const watch = await watching(deps);
+    emit.windowOpen();
+    const started = Date.now();
+    expect(await watch.result(60)).toBeUndefined();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(50);
+    const pending = watch.result(60_000);
+    watch.stop();
+    expect(await pending).toBeUndefined();
+  });
+
+  it('lets go of a watch the input ran out of time setting up', async () => {
+    const { deps, handlers, unsubscribed } = popupChrome(undefined, { enable: () => new Promise((r) => setTimeout(r, 150)) });
+    deps.captureMs = 40;
+    expect(await handlePhoneBrowser('browser.tap', tap, fixture(deps))).toEqual({ error: 'browser-tab-hidden' });
+    await vi.waitFor(() => expect(unsubscribed).toHaveBeenCalledOnce(), { timeout: 5_000 });
+    expect(handlers.get('Page.windowOpen')?.size ?? 0).toBe(0);
+  });
+
+  it('a page session that will not enable holds the tap no longer than the setup bound', async () => {
+    const { deps } = popupChrome(undefined, { enable: () => new Promise(() => undefined) });
+    deps.watchSetupMs = 50;
+    const started = Date.now();
+    const watch = await watching(deps);
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(await watch.result(60_000)).toBeUndefined();
+    watch.stop();
+  });
+
+  it('an attach that failed while setting up the watch is tried again by the next call', async () => {
+    const { deps } = popupChrome(undefined, { attachFailsOnce: true });
+    const driver = chromeDriver('chrome-own', 'ws-1', deps);
+    const watch = await driver.watchOpened?.();
+    await expect(driver.geometry()).resolves.toMatchObject({ width: 1000, height: 700 });
+    expect(deps.session).toHaveBeenCalledTimes(2);
+    watch?.stop();
+  });
+
+  it('a session with no events still reports a tab that opened, and waits for none', async () => {
+    let listener: ((tab: { surfaceId: string; url: string }) => void) | undefined;
+    const { deps } = fakeChrome({ onTabOpened: (_s, _w, next) => { listener = next; return () => undefined; } });
+    const watch = await watching(deps);
+    expect(await watch.result(60_000)).toBeUndefined();
+    listener?.({ surfaceId: 'chrome-popup', url: '' });
+    expect(await watch.result(60_000)).toBe('chrome-popup');
+  });
+
+  it('onTabOpened hears only tabs the named tab opened in this workspace, from its own dedicated profile', () => {
+    let told: ((opened: ChromeOpenedSurface) => void) | undefined;
+    const off = vi.fn();
+    const work = {
+      endpoint: async () => ({}), cdpInfoTargets: async () => [], openTab: async () => { throw new Error('no'); },
+      listTargets: async () => [], closeSurface: async () => false, hasSurface: () => true, dispose: () => undefined,
+      pageSession: async () => ({ send: async () => ({}) }),
+      onSurfaceOpened: vi.fn((next: (opened: ChromeOpenedSurface) => void) => { told = next; return off; }),
+    } satisfies ChromeBackendClient;
+    const deps = createPhoneChromeDeps({
+      registry: { profileFor: (ws) => (ws === 'ws-live' ? 'live' : 'work'), isPaneBound: () => false, peekLauncher: (p) => (p === 'work' ? work : undefined) },
+      validateNavigation: async () => undefined,
+    });
+    const heard: unknown[] = [];
+    const unsubscribe = deps.onTabOpened?.('chrome-a', 'ws-1', (tab) => heard.push(tab));
+    told?.({ openerSurfaceId: 'chrome-a', surfaceId: 'chrome-p', workspaceId: 'ws-1', url: 'https://news.example.com/' });
+    told?.({ openerSurfaceId: 'chrome-b', surfaceId: 'chrome-q', workspaceId: 'ws-1', url: '' });
+    told?.({ openerSurfaceId: 'chrome-a', surfaceId: 'chrome-r', workspaceId: 'ws-2', url: '' });
+    told?.({ openerSurfaceId: 'chrome-a', surfaceId: 'chrome-s', url: '' });
+    expect(heard).toEqual([{ surfaceId: 'chrome-p', url: 'https://news.example.com/' }]);
+    unsubscribe?.();
+    expect(off).toHaveBeenCalledOnce();
+    // Live Chrome is never subscribed to.
+    expect(() => deps.onTabOpened?.('user-tab', 'ws-live', () => undefined)()).not.toThrow();
+    expect(work.onSurfaceOpened).toHaveBeenCalledOnce();
+  });
+});
+
+describe('stream input (stream:true) on dedicated-profile Chrome', () => {
+  const cart = { ...scope, expectedURL: 'https://shop.example.com/cart' };
+  const mouse = (sent: ReturnType<typeof fakeChrome>['sent']) => sent.filter((c) => c.method === 'Input.dispatchMouseEvent');
+
+  it('presses a stream key through parseKeyPress, and only on stream input', async () => {
+    const { deps, sent } = fakeChrome();
+    expect(await handlePhoneBrowser('browser.key', { ...cart, key: 'ArrowDown', stream: true }, fixture(deps))).toEqual({ applied: true });
+    expect(sent.filter((c) => c.method === 'Input.dispatchKeyEvent').map((c) => [c.params?.type, c.params?.key])).toEqual([['keyDown', 'ArrowDown'], ['keyUp', 'ArrowDown']]);
+    sent.length = 0;
+    await expect(handlePhoneBrowser('browser.key', { ...cart, key: 'ArrowDown' }, fixture(deps))).rejects.toThrow('Unsupported browser key');
+    expect(sent).toHaveLength(0);
+  });
+
+  it('an input while the last one is still out is browser-input-busy, and sends nothing', async () => {
+    const { deps, answer, sent } = fakeChrome();
+    let ack: (value: unknown) => void = () => undefined;
+    answer.mockImplementation(async (method: string) => {
+      if (method === 'Page.getLayoutMetrics') return METRICS;
+      if (method === 'Input.insertText') return new Promise((resolve) => { ack = resolve; });
+      return {};
+    });
+    const first = handlePhoneBrowser('browser.type', { ...cart, text: 'one', stream: true }, fixture(deps));
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    const before = sent.length;
+    expect(await handlePhoneBrowser('browser.type', { ...cart, text: 'two', stream: true }, fixture(deps))).toEqual({ error: 'browser-input-busy' });
+    expect(await handlePhoneBrowser('browser.tap', { ...cart, geometry, x: 0.5, y: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-input-busy' });
+    // Without the gate, the old failure.
+    await expect(handlePhoneBrowser('browser.type', { ...cart, text: 'two' }, fixture(deps))).rejects.toThrow('Browser input unavailable');
+    expect(sent.slice(before).filter((c) => c.method.startsWith('Input.') || c.method.startsWith('Emulation.'))).toEqual([]);
+    ack({});
+    expect(await first).toEqual({ applied: true });
+  });
+
+  it('a moved viewport is browser-viewport-changed; a scroll checks the size only', async () => {
+    const { deps, sent } = fakeChrome();
+    const stale = { ...geometry, scrollY: 0 };
+    expect(await handlePhoneBrowser('browser.tap', { ...cart, geometry: stale, x: 0.5, y: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-viewport-changed' });
+    expect(await handlePhoneBrowser('browser.scroll', { ...cart, geometry: { ...geometry, height: 699 }, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5, stream: true }, fixture(deps))).toEqual({ error: 'browser-viewport-changed' });
+    expect(mouse(sent)).toEqual([]);
+    expect(await handlePhoneBrowser('browser.scroll', { ...cart, geometry: stale, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5, stream: true }, fixture(deps))).toEqual({ applied: true });
+    expect(mouse(sent)[1].params).toMatchObject({ type: 'mouseWheel', x: 500, y: 350, deltaX: 0, deltaY: 350 });
+    // Without the gate, both are as strict as before.
+    await expect(handlePhoneBrowser('browser.scroll', { ...cart, geometry: stale, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5 }, fixture(deps))).rejects.toThrow('viewport changed');
+  });
+
+  describe('history', () => {
+    const plain = { ...cart, direction: 'back' };
+    const back = { ...plain, stream: true };
+    function withHistory(entries: Array<{ id: number; url: string }>, currentIndex: number) {
+      const chrome = fakeChrome();
+      chrome.answer.mockImplementation(async (method: string) => method === 'Page.getNavigationHistory' ? { currentIndex, entries } : {});
+      const navigated = () => chrome.sent.filter((c) => c.method === 'Page.navigateToHistoryEntry').map((c) => c.params);
+      return { ...chrome, navigated };
+    }
+    const entries = [{ id: 11, url: 'https://shop.example.com/' }, { id: 12, url: 'https://shop.example.com/cart' }, { id: 13, url: 'https://shop.example.com/pay' }];
+
+    it('goes to the entry one step back or forward, through the navigation policy', async () => {
+      const { deps, navigated } = withHistory(entries, 1);
+      expect(await handlePhoneBrowser('browser.history', back, fixture(deps))).toEqual({ applied: true });
+      expect(deps.validateNavigation).toHaveBeenCalledWith('https://shop.example.com/');
+      expect(await handlePhoneBrowser('browser.history', { ...back, direction: 'forward' }, fixture(deps))).toEqual({ applied: true });
+      expect(navigated()).toEqual([{ entryId: 11 }, { entryId: 13 }]);
+    });
+
+    it('nothing to go to is applied:false, and nothing moves', async () => {
+      const { deps, navigated } = withHistory(entries.slice(0, 2), 1);
+      expect(await handlePhoneBrowser('browser.history', { ...back, direction: 'forward' }, fixture(deps))).toEqual({ applied: false });
+      const first = withHistory(entries.slice(1), 0);
+      expect(await handlePhoneBrowser('browser.history', back, fixture(first.deps))).toEqual({ applied: false });
+      expect([...navigated(), ...first.navigated()]).toEqual([]);
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+    });
+
+    it('refuses to move once the history changed during the policy check', async () => {
+      for (const after of [
+        { currentIndex: 2, entries },
+        { currentIndex: 1, entries: [{ id: 21, url: entries[0].url }, ...entries.slice(1)] },
+        { currentIndex: 1, entries: [{ id: 11, url: 'https://shop.example.com/other' }, ...entries.slice(1)] },
+        { currentIndex: 0, entries },
+      ]) {
+        const { deps, answer, navigated } = withHistory(entries, 1);
+        let reads = 0;
+        answer.mockImplementation(async (method: string) => method === 'Page.getNavigationHistory'
+          ? (reads++ === 0 ? { currentIndex: 1, entries } : after) : {});
+        await expect(handlePhoneBrowser('browser.history', back, fixture(deps))).rejects.toThrow('page changed');
+        expect(deps.validateNavigation).toHaveBeenCalledWith('https://shop.example.com/');
+        expect(reads).toBe(2);
+        expect(navigated()).toEqual([]);
+      }
+    });
+
+    it('refuses an entry that is not an http(s) page, before the policy and without moving', async () => {
+      const { deps, navigated } = withHistory([{ id: 10, url: 'chrome://newtab/' }, entries[1]], 1);
+      await expect(handlePhoneBrowser('browser.history', back, fixture(deps))).rejects.toThrow('Only HTTP');
+      expect(deps.validateNavigation).not.toHaveBeenCalled();
+      expect(navigated()).toEqual([]);
+    });
+
+    it('exists only on stream input', async () => {
+      const { deps, sent } = withHistory(entries, 1);
+      await expect(handlePhoneBrowser('browser.history', plain, fixture(deps))).rejects.toThrow('Unsupported browser operation');
+      expect(sent).toHaveLength(0);
+    });
+  });
+});
+
+describe('stream input on a streamed Chrome tab', () => {
+  const A = 'https://shop.example.com/search?q=a';
+  const B = 'https://shop.example.com/search?q=ab';
+  /** A stream on chrome-own whose document has had A, then B (live); the tab list still says A. */
+  function streamed(geometryOf: Record<string, unknown> | null = { width: 1017, height: 700, scrollX: 0, scrollY: 40 }, metrics: Record<string, unknown> = { ...METRICS.cssVisualViewport, zoom: 1 }) {
+    const chrome = fakeChrome();
+    chrome.deps.setURL(A);
+    chrome.answer.mockImplementation(async (method: string) => method === 'Page.getLayoutMetrics' ? { cssVisualViewport: metrics } : {});
+    const view = { url: B as string | null, docUrls: new Set([A, B]), geometry: geometryOf };
+    const deps = { ...fixture(chrome.deps), streams: { tab: (surfaceId: string, workspaceId: string) => (surfaceId === 'chrome-own' && workspaceId === 'ws-1' ? view : null) } } as Parameters<typeof handlePhoneBrowser>[2];
+    const sentInput = () => chrome.sent.filter((c) => c.method.startsWith('Input.'));
+    return { ...chrome, deps, view, sentInput };
+  }
+  const input = (command: string, expectedURL: string, extra: Record<string, unknown> = {}) =>
+    [command, { ...scope, expectedURL, stream: true, ...extra }] as const;
+
+  it('typing, keys and scroll take an earlier URL of the same document; tap and history need the live one', async () => {
+    const r = streamed();
+    expect(await handlePhoneBrowser(...input('browser.type', A, { text: 'b' }), r.deps)).toEqual({ applied: true });
+    expect(await handlePhoneBrowser(...input('browser.key', A, { key: 'Backspace' }), r.deps)).toEqual({ applied: true });
+    expect(await handlePhoneBrowser(...input('browser.scroll', A, { geometry: r.view.geometry, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.5 }), r.deps)).toEqual({ applied: true });
+    const before = r.sentInput().length;
+    expect(await handlePhoneBrowser(...input('browser.tap', A, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), r.deps)).toEqual({ error: 'browser-page-changed' });
+    expect(await handlePhoneBrowser(...input('browser.history', A, { direction: 'back' }), r.deps)).toEqual({ error: 'browser-page-changed' });
+    expect(r.sentInput()).toHaveLength(before);
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), r.deps)).toEqual({ applied: true });
+    // Another document's URL is the old failure.
+    await expect(handlePhoneBrowser(...input('browser.type', 'https://shop.example.com/cart', { text: 'b' }), r.deps)).rejects.toThrow('page changed');
+  });
+
+  it('a tab whose first page has not committed takes no input, even at the URL it is loading', async () => {
+    const r = streamed();
+    // The tab is listed (and its page read) at A, while its document is still the initial empty one.
+    Object.assign(r.view, { url: null, docUrls: new Set<string>(), firstPagePending: true });
+    for (const [command, extra] of [['browser.type', { text: 'b' }], ['browser.key', { key: 'Enter' }]] as const) {
+      await expect(handlePhoneBrowser(...input(command, A, extra), r.deps)).rejects.toThrow('page changed');
+    }
+    expect(r.sentInput()).toHaveLength(0);
+    // Once it commits, input on it goes through as on any page.
+    Object.assign(r.view, { url: A, docUrls: new Set([A]), firstPagePending: false });
+    expect(await handlePhoneBrowser(...input('browser.type', A, { text: 'b' }), r.deps)).toEqual({ applied: true });
+  });
+
+  it('without stream:true, or on a tab with no stream, the URL check stays exact', async () => {
+    const r = streamed();
+    await expect(handlePhoneBrowser('browser.type', { ...scope, expectedURL: B, text: 'b' }, r.deps)).rejects.toThrow('page changed');
+    expect(await handlePhoneBrowser('browser.type', { ...scope, expectedURL: A, text: 'b' }, r.deps)).toEqual({ applied: true });
+    const plain = fakeChrome();
+    plain.deps.setURL(B);
+    await expect(handlePhoneBrowser(...input('browser.type', A, { text: 'b' }), fixture(plain.deps))).rejects.toThrow('page changed');
+  });
+
+  it('a frame up to 24 px wider than the client area (classic scrollbars) maps with the geometry it sent', async () => {
+    const r = streamed();
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), r.deps)).toEqual({ applied: true });
+    expect(r.sentInput().find((c) => c.params?.type === 'mousePressed')?.params).toMatchObject({ x: 508.5, y: 350 });
+    // The same geometry with no stream behind it is a moved viewport.
+    const plain = fakeChrome();
+    plain.deps.setURL(B);
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: r.view.geometry, x: 0.5, y: 0.5 }), fixture(plain.deps))).toEqual({ error: 'browser-viewport-changed' });
+    // Wider than the tolerance: compared with the live viewport, which it does not match.
+    const wide = streamed({ width: 1030, height: 700, scrollX: 0, scrollY: 40 });
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: wide.view.geometry, x: 0.5, y: 0.5 }), wide.deps)).toEqual({ error: 'browser-viewport-changed' });
+    // A geometry other than the latest frame's (the page scrolled since) is checked live, and moved.
+    const r2 = streamed();
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: { width: 1017, height: 700, scrollX: 0, scrollY: 0 }, x: 0.5, y: 0.5 }), r2.deps)).toEqual({ error: 'browser-viewport-changed' });
+    expect(r2.sentInput()).toEqual([]);
+  });
+
+  it('under pinch zoom maps by the scale, and a tap must name it; browser zoom is refused', async () => {
+    const pinch = { width: 390, height: 844, scrollX: 0, scrollY: 40, scale: 0.4 };
+    const metrics = { clientWidth: 975, clientHeight: 2110, pageX: 0, pageY: 40, scale: 0.4, zoom: 1 };
+    const r = streamed(pinch, metrics);
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: pinch, x: 0.5, y: 0.25 }), r.deps)).toEqual({ applied: true });
+    expect(r.sentInput().find((c) => c.params?.type === 'mousePressed')?.params).toMatchObject({ x: 487.5, y: 527.5 });
+    expect(await handlePhoneBrowser(...input('browser.scroll', B, { geometry: pinch, x: 0.5, y: 0.5, deltaX: 0, deltaY: 0.1 }), r.deps)).toEqual({ applied: true });
+    expect(r.sentInput().filter((c) => c.params?.type === 'mouseWheel').at(-1)?.params).toMatchObject({ x: 487.5, y: 1055, deltaY: 211 });
+    const { scale: _scale, ...unscaled } = pinch;
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: unscaled, x: 0.5, y: 0.5 }), r.deps)).toEqual({ error: 'browser-viewport-changed' });
+    const zoomed = streamed({ width: 1000, height: 700, scrollX: 0, scrollY: 40 }, { ...METRICS.cssVisualViewport, zoom: 1.25 });
+    expect(await handlePhoneBrowser(...input('browser.tap', B, { geometry: { width: 1000, height: 700, scrollX: 0, scrollY: 40 }, x: 0.5, y: 0.5 }), zoomed.deps)).toEqual({ error: 'browser-viewport-changed' });
+    expect(zoomed.sentInput()).toEqual([]);
   });
 });
 

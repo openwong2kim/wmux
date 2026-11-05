@@ -1,0 +1,131 @@
+name: wongtty switch e2e (Windows)
+
+# The Labs wongtty switch end to end in the real app on Windows:
+# e2e/wongtty-core.e2e.test.mjs on a dev build (e2e/build.mjs). It checks that
+# wongtty's .wasm loads from the dev path and draws with WebGL2 on the
+# runner's software GL, that on, off, on/off/on and a restart (also at a
+# device pixel ratio of 1.25) keep every pane's content, and that a broken
+# .wasm leaves every pane on xterm.js. The fuller macOS/Linux suite
+# (e2e/wongtty-switch.e2e.test.mjs) leans on bash probes and is run by hand.
+#
+# It runs on a ready pull request that touches the switch, and on demand
+# (`gh workflow run wongtty-e2e.yml --ref <branch>`), so other pull requests'
+# CI does not grow. package.json is in the path list for the wongtty
+# dependency; the scope job lets a package.json change through only when its
+# diff names wongtty.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths:
+      - 'src/renderer/terminal/wongtty/**'
+      - 'src/renderer/web/stubs/wongtty*'
+      - 'src/renderer/hooks/useTerminal.ts'
+      - 'src/main/ipc/handlers/labs.handler.ts'
+      - 'vite.renderer.config.ts'
+      - 'forge.config.ts'
+      - 'package.json'
+      - 'e2e/wongtty-*'
+      - 'e2e/lib.mjs'
+      - '.github/workflows/wongtty-e2e.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer push to the same pull request supersedes the run in flight. A
+  # draft's run (skipped by the jobs' draft check) gets its own group, as in
+  # ci.yml.
+  group: wongtty-e2e-${{ github.ref }}${{ github.event.pull_request.draft && '-draft' || '' }}
+  cancel-in-progress: true
+
+jobs:
+  scope:
+    name: scope
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Reads the pull request's changed files (and package.json's patch).
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.scope.outputs.run }}
+    steps:
+      - name: Does this change touch the switch?
+        id: scope
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "${{ github.event_name }}" != pull_request ]; then echo run=true >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[].filename')
+          if printf '%s\n' "$files" | grep -v '^package\.json$' | grep -Eq '^(src/renderer/terminal/wongtty/|src/renderer/web/stubs/wongtty|src/renderer/hooks/useTerminal\.ts$|src/main/ipc/handlers/labs\.handler\.ts$|vite\.renderer\.config\.ts$|forge\.config\.ts$|e2e/wongtty-|e2e/lib\.mjs$|\.github/workflows/wongtty-e2e\.yml$)'; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          elif gh api "repos/$REPO/pulls/$PR/files" --paginate --jq '.[] | select(.filename == "package.json") | .patch' | grep -q wongtty; then
+            echo run=true >> "$GITHUB_OUTPUT"
+          else
+            echo run=false >> "$GITHUB_OUTPUT"
+          fi
+
+  windows:
+    name: wongtty switch e2e (windows-latest)
+    needs: scope
+    if: needs.scope.outputs.run == 'true'
+    runs-on: windows-latest
+    # The cap only stops a hang.
+    timeout-minutes: 40
+    steps:
+      # Same pins and toolchain as validate in ci.yml; see the comments there.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        id: node
+        with:
+          node-version: '>=24.21.0 <25'
+          cache: npm
+
+      - name: Use npm 11
+        run: npm install -g npm@11
+
+      # See the checks job in ci.yml for the key. Restore only, as in
+      # first-run-e2e: the save belongs to the jobs that own the tree.
+      - name: Restore node_modules
+        id: node-modules
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: node_modules
+          key: node-modules-${{ runner.os }}-${{ runner.arch }}-node${{ steps.node.outputs.node-version }}-${{ hashFiles('package-lock.json', 'patches/**', 'scripts/fix-node-pty.js', 'scripts/apply-patches.mjs') }}
+
+      - name: Install dependencies
+        if: steps.node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+
+      # A restored node_modules may hold a tree without Electron's binary.
+      - name: Install the Electron binary
+        run: npx install-electron
+
+      # bash: a failing command stops the step (PowerShell would go on).
+      - name: Build the app (dev build, as e2e/run.mjs does)
+        shell: bash
+        run: |
+          set -e
+          npm run -s build:daemon
+          npm run -s build:mcp
+          node e2e/build.mjs
+
+      - name: wongtty switch, core path
+        env:
+          WMUX_E2E_ARTIFACTS: e2e/artifacts/wongtty-core
+        run: node --test --test-concurrency=1 --test-reporter=spec e2e/wongtty-core.e2e.test.mjs
+
+      - name: Upload evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wongtty-e2e-windows
+          path: e2e/artifacts/wongtty-core/
+          if-no-files-found: ignore

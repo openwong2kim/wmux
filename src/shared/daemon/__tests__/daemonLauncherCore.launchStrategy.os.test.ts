@@ -31,7 +31,7 @@ vi.mock('../launchdDaemonJob', async () => {
 });
 
 import { argvIdentifiesDaemonScript, daemonProcessArgs, ensureDaemon, shouldLaunchDaemonViaLaunchd, type DaemonLauncherDeps } from '../daemonLauncherCore';
-import { LaunchdUnavailableError } from '../launchdDaemonJob';
+import { LaunchdJobQueuedError, LaunchdUnavailableError } from '../launchdDaemonJob';
 
 describe('shouldLaunchDaemonViaLaunchd', () => {
   it('only on darwin and only when the host opted in', () => {
@@ -126,8 +126,9 @@ describe('daemonLauncherCore — launch strategy', () => {
   });
 
   it('does not fall back after the job was loaded (would start a second daemon)', async () => {
-    startMock.mockRejectedValue(new Error('launchd job x was loaded but its daemon pid never appeared'));
-    await expect(ensureDaemon(deps(true))).rejects.toThrow(/pid never appeared/);
+    startMock.mockRejectedValue(new LaunchdJobQueuedError('com.wmux.daemon.x'));
+    // The respawn controller tells a queued daemon from a failed one by its type.
+    await expect(ensureDaemon(deps(true))).rejects.toBeInstanceOf(LaunchdJobQueuedError);
     expect(spawnMock).not.toHaveBeenCalled();
   });
 

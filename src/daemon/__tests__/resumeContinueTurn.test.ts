@@ -206,7 +206,8 @@ describe('turnRunningSince wiring', () => {
 
   it('recovery reads the mark off the persisted record, never the recovered meta', () => {
     const src = read('index.ts');
-    const rec = src.slice(src.indexOf('for (const recoveredId of recoveredIds) {'));
+    // The per-pane end of recovery, shared with a held user shell's promote (#3049).
+    const rec = src.slice(src.indexOf('function finishRecoveredPane('));
     expect(rec).toMatch(/if \(m\.resumeContinuePending && recordedTurnStillOpen\(recoveredResumeBindings\.get\(recoveredId\) \?\? m\.resumeBinding, m\.env\)\) \{\s*recoveredWasRunning\.add\(recoveredId\);\s*\} else delete m\.resumeContinuePending;/);
     // The carry-forward reads the OLD record into the owed continue, before
     // the merged recovery save, and never copies the raw mark onto the new meta.

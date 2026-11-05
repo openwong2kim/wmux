@@ -22,7 +22,7 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
   // Main terminal-creation effect: from its unique `if (!container || !ptyId)
   // return;` guard to the next `}, [ptyId, containerRef]);`.
   const mainStart = src.indexOf('if (!container || !ptyId) return;');
-  const mainEffectEnd = src.indexOf('}, [ptyId, containerRef]);', mainStart);
+  const mainEffectEnd = src.indexOf('}, [ptyId, containerRef, paneEngine]);', mainStart);
   const mainEffect = src.slice(mainStart, mainEffectEnd);
   const afterMainEffect = src.slice(mainEffectEnd);
 
@@ -32,14 +32,17 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
   });
 
   it('asks for a parked terminal before it constructs one', () => {
-    const adoptAt = mainEffect.indexOf('adoptTerminal(ptyId)');
-    const constructAt = mainEffect.indexOf('new Terminal({');
+    const adoptAt = mainEffect.indexOf('adoptTerminal(ptyId,');
+    const constructAt = mainEffect.indexOf('new TerminalClass({');
     expect(adoptAt).toBeGreaterThan(-1);
     expect(constructAt).toBeGreaterThan(-1);
     // A construct-then-discard order would create a second xterm per split —
     // the cost the adoption is meant to remove.
     expect(adoptAt).toBeLessThan(constructAt);
-    expect(mainEffect).toMatch(/const terminal = adopted \? adopted\.terminal : new Terminal\(\{/);
+    // The engine is the pane's (paneEngine); a parked terminal of the other one is not adopted.
+    expect(mainEffect).toMatch(/const adopted = adoptTerminal\(ptyId, \(parked\) => engineOf\(parked\) === paneEngine\);/);
+    expect(mainEffect).toMatch(/const wongtty = adopted \|\| paneEngine !== 'wongtty' \? null : loadedWongtty\(\);/);
+    expect(mainEffect).toMatch(/terminal = adopted \? adopted\.terminal : new TerminalClass\(\{/);
   });
 
   it('adopts by moving the element, never by re-opening the terminal', () => {
@@ -52,7 +55,8 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
   it('skips the scrollback restore for an adopted terminal', () => {
     // The adopted instance already holds the scrollback; running the `.txt`
     // restore would write a second copy over the screen it reproduces.
-    expect(mainEffect).toMatch(/if \(scrollbackFile && !adopted\) \{/);
+    // (Nor for an engine swap, whose content comes from its resync or transplant.)
+    expect(mainEffect).toMatch(/if \(scrollbackFile && !adopted && !carry\) \{/);
   });
 
   it('clears the restore overlay on the adopting mount', () => {
@@ -141,7 +145,7 @@ describe('#1002 — pane-restructure terminal adoption (source-level)', () => {
     // A rejected scrollback.load that left restoreSettled false would refuse
     // every later park on that pane — the fix would silently stop applying.
     expect(mainEffect.match(/restoreSettled = true;/g)).toHaveLength(2);
-    expect(mainEffect).toMatch(/let restoreSettled = !\(scrollbackFile && !adopted\);/);
+    expect(mainEffect).toMatch(/let restoreSettled = !\(scrollbackFile && !adopted && !carry\);/);
   });
 
   it('removes the contextmenu listener that outlives a park', () => {

@@ -84,6 +84,10 @@ const activePreset = new WeakMap<
     hasTouch: boolean;
     screenWidth?: number;
     screenHeight?: number;
+    /** The view drawn this many times larger than the layout (CDP `scale`): a phone layout filling a wider pane. */
+    scale?: number;
+    /** Set by the phone stream's own fill (PhoneBrowser.ts `viewport` with `fill`): the stream adopts only a preset carrying it. */
+    fill?: true;
   }
 >();
 
@@ -298,6 +302,29 @@ function navigationRefusal(reason: Exclude<NavigationVerdict, { allowed: true }>
   if (reason === 'scheme') return 'only http(s) pages on the allowed hosts can be opened in a protected pane';
   if (reason === 'invalid-url') return 'the address is not a valid URL';
   return "that host is not on this pane's allowed list";
+}
+
+/**
+ * A tab opened after its caller hung up (#3085). The MCP client drops the
+ * connection when its RPC deadline passes, so that caller never learns the
+ * tab's id, and a retry opens another. It is closed rather than left behind,
+ * and the call fails (to nobody). A tab another caller adopted while it was
+ * opening (browser.surface.adopt, which claims only an unclaimed tab, and
+ * this call notes its own opener only after this) is theirs, and stays.
+ */
+async function keepForCaller<T extends { surfaceId: string }>(
+  opened: T,
+  client: Pick<ChromeBackendClient, 'closeSurface'>,
+  ctx: RpcContext | undefined,
+  method: string,
+): Promise<T> {
+  if (!ctx?.signal?.aborted) return opened;
+  if (surfaceOpeners.get(opened.surfaceId) !== undefined) {
+    throw new Error(`${method}: the caller left before the tab opened; another caller adopted it`);
+  }
+  const closed = await client.closeSurface(opened.surfaceId).catch(() => false);
+  if (!closed) console.warn(`[browser.rpc] ${method}: could not close tab ${opened.surfaceId}, opened after its caller left`);
+  throw new Error(`${method}: the caller left before the tab opened, so it was ${closed ? 'closed' : 'left open'}`);
 }
 
 async function validateUrl(url: string, method: string, policy: NavigationPolicyOptions): Promise<void> {
@@ -778,9 +805,135 @@ function touchPresetActive(wc: WebContents): boolean {
   return activePreset.get(wc)?.hasTouch === true;
 }
 
+// Read the page's own numbers rather than reporting back what was asked
+// for. Best-effort: a page that cannot be evaluated must not fail the
+// emulation this describes.
+async function probeDevice(
+  send: (method: string, p?: Record<string, unknown>) => Promise<unknown>,
+): Promise<
+  { w: number; h: number; dpr: number; touch: number } | undefined
+> {
+  try {
+    const res = (await send('Runtime.evaluate', {
+      expression: DEVICE_PROBE_EXPRESSION,
+      returnByValue: true,
+    })) as { result?: { value?: { w?: number; h?: number; dpr?: number; touch?: number } } };
+    const v = res?.result?.value;
+    return typeof v?.w === 'number' && typeof v.h === 'number'
+      ? { w: v.w, h: v.h, dpr: v.dpr ?? 0, touch: v.touch ?? 0 }
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Takes the device preset off `wc`, as browser.emulate `deviceReset` does,
+ * and says what it did. No page or agent-control check: the phone browser
+ * stream undoes its own preset with it on any page, the caller's checks done.
+ */
+export async function resetDevicePreset(wc: WebContents): Promise<string[]> {
+  const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>
+    wc.debugger.sendCommand(method, p);
+  const applied: string[] = [];
+  // Actually undo the preset over CDP: drop the device metrics override and
+  // restore the real user agent. Without this, a packaged caller who switches
+  // to a phone preset and then resets stays on the mobile UA/metrics for every
+  // subsequent page. CDP has no "clear UA override" command, so re-apply the
+  // WebContents' own UA to shed the mobile one set by the preset above.
+  activePreset.delete(wc);
+  const remembered = prePresetViewport.get(wc);
+  prePresetViewport.delete(wc);
+  await send('Emulation.clearDeviceMetricsOverride');
+  // The touch points the preset installed outlive clearDeviceMetricsOverride,
+  // so a reset that skipped this left a desktop UA reporting a touchscreen.
+  let touchDisabled = true;
+  // No maxTouchPoints — CDP refuses 0 even when disabling, and the catch
+  // below turned that refusal into a silent no-op (#1357).
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false })
+    .catch(() => {
+      // Swallowing this was how a reset could report success while
+      // navigator.maxTouchPoints stayed at the preset's value (#1357).
+      // The metrics are still cleared; say what did not happen.
+      touchDisabled = false;
+    });
+  try {
+    const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
+    // Restore the metadata alongside the string: re-applying the real UA
+    // while the preset's Client Hints stayed in place would leave exactly
+    // the mismatch the preset path now avoids.
+    if (ua) {
+      await send(
+        'Emulation.setUserAgentOverride',
+        buildUserAgentOverride(ua) as unknown as Record<string, unknown>,
+      );
+    }
+  } catch {
+    /* getUserAgent / UA override unavailable on this transport; metrics still cleared */
+  }
+  // Restore the viewport the preset replaced. Clearing the override alone
+  // left the caller to guess the desktop size back, and a page still at the
+  // phone width keeps matching the preset's media queries (#1357).
+  let viewportNote: string;
+  if (remembered) {
+    await send('Emulation.setDeviceMetricsOverride', {
+      width: remembered.width,
+      height: remembered.height,
+      deviceScaleFactor: 0,
+      mobile: false,
+    });
+    viewportNote = `viewport ${remembered.width}x${remembered.height} restored`;
+  } else {
+    viewportNote = 'viewport from surface bounds (no pre-preset viewport recorded)';
+  }
+  // The page's media queries and `ontouchstart` checks already ran under the
+  // preset, so their results cannot be trusted without a fresh evaluation.
+  let reloaded = true;
+  try {
+    wc.reload();
+  } catch {
+    reloaded = false;
+  }
+  applied.push(`device=reset (${viewportNote}, ${reloaded ? 'reloaded' : 'reload failed'})`);
+  if (!touchDisabled) applied.push('touch=could not be disabled');
+  const after = await probeDevice(send);
+  if (after) applied.push(`probe=${after.w}x${after.h} dpr=${after.dpr} maxTouchPoints=${after.touch}`);
+  return applied;
+}
+
+/**
+ * The device preset browser.emulate last set on `wc`, while it holds: a new
+ * object for each preset, and none once one is reset. The phone browser
+ * stream reverts its own mobile preset only while this is still the one it set.
+ */
+export function activeDevicePreset(wc: WebContents): { readonly mobile: boolean; readonly scale?: number; readonly fill?: true } | undefined {
+  return activePreset.get(wc);
+}
+
 /** The debugger, in the shape the shared touch dispatch asks for. */
+/**
+ * CDP Input points are in the drawn view's pixels. Under a preset that draws
+ * the page larger than its layout (`scale`: a phone filling the pane), a CSS
+ * point is that many times further out; every handler here measures in CSS.
+ */
+function viewInput(wc: WebContents, method: string, params?: Record<string, unknown>): Record<string, unknown> | undefined {
+  const scale = activePreset.get(wc)?.scale;
+  if (!scale || !params) return params;
+  const at = (p: Record<string, unknown>) => (typeof p.x === 'number' && typeof p.y === 'number' ? { ...p, x: p.x * scale, y: p.y * scale } : p);
+  if (method === 'Input.dispatchMouseEvent') return at(params);
+  if (method === 'Input.dispatchTouchEvent' && Array.isArray(params.touchPoints)) {
+    return { ...params, touchPoints: (params.touchPoints as Array<Record<string, unknown>>).map(at) };
+  }
+  return params;
+}
+
+/** Sends one CDP Input event, its points in CSS pixels (viewInput). */
+function sendInput(wc: WebContents, method: string, params: Record<string, unknown>): Promise<unknown> {
+  return wc.debugger.sendCommand(method, viewInput(wc, method, params));
+}
+
 function touchSenderFor(wc: WebContents): TouchSender {
-  return { send: (method: string, params?: unknown) => wc.debugger.sendCommand(method, params as Record<string, unknown>) };
+  return { send: (method: string, params?: unknown) => wc.debugger.sendCommand(method, viewInput(wc, method, params as Record<string, unknown>)) };
 }
 
 /**
@@ -823,7 +976,7 @@ async function movePointerTo(
 ): Promise<void> {
   const from = pointerPositions.get(webContentsId) ?? defaultStartPoint();
   for (const point of pointerPath(from, { x, y })) {
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mouseMoved', x: point.x, y: point.y,
     });
   }
@@ -1803,6 +1956,7 @@ export function registerBrowserRpc(
       params: Record<string, unknown>,
       scope: string | undefined,
       chrome: () => Promise<ChromeCaller>,
+      ctx?: RpcContext,
     ) => Promise<unknown>,
   ): void => {
     router.register(method, async (params, ctx) => {
@@ -1833,7 +1987,7 @@ export function registerBrowserRpc(
           throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
         }
         if (backend() === 'chrome') {
-          if (chromeFallback) return chromeFallback(params, scope, chrome);
+          if (chromeFallback) return chromeFallback(params, scope, chrome, ctx);
           throw new Error(CHROME_BACKEND_RPC_UNSUPPORTED_MESSAGE);
         }
         return handler(params, scope, ctx);
@@ -2660,7 +2814,7 @@ export function registerBrowserRpc(
           }
         }
         try {
-          const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+          const opened = await keepForCaller(await launcher.openTab(url ?? 'about:blank', workspaceId), launcher, ctx, 'browser.tabs');
           // Before the descriptor is built, so the reply already reports this
           // caller as the opener of the tab it just asked for.
           if (caller.openerKey) surfaceOpeners.note(opened.surfaceId, caller.openerKey, chrome.callerPtyId);
@@ -2985,7 +3139,7 @@ export function registerBrowserRpc(
       // NEW tab, so there is no reuse question to answer on this backend.
       const { client: launcher, callerPtyId } = await resolveChromeClient('browser.open', ctx, workspaceId);
       if (url) await validateUrl(url, 'browser.open', navigationPolicy());
-      const opened = await launcher.openTab(url ?? 'about:blank', workspaceId);
+      const opened = await keepForCaller(await launcher.openTab(url ?? 'about:blank', workspaceId), launcher, ctx, 'browser.open');
       if (openerKey) surfaceOpeners.note(opened.surfaceId, openerKey, callerPtyId);
       // The launcher's stable surfaceId keeps the engine's auto-open→pin
       // contract AND survives Chrome swapping the target behind the tab.
@@ -3187,11 +3341,21 @@ export function registerBrowserRpc(
       }
       // No surfaceId: close this workspace's most recently opened tab. There
       // is no "active" chrome tab to fall back on, so closing all of them (or
-      // an arbitrary one) would both be worse than one explicit pick.
+      // an arbitrary one) would both be worse than one explicit pick. A caller
+      // that says who it is closes its own newest, else the newest nobody
+      // claims, and never another connection's (a tab its page opened is
+      // that connection's too). One that does not keeps the newest.
       const own = await launcher.listTargets(scope);
-      const newest = own[own.length - 1];
+      const openerKey = openerKeyOf(params);
+      const who = openerCaller(openerKey, caller);
+      const newestWhere = (verdict: 'mine' | undefined) => [...own].reverse().find((t) => surfaceOpeners.verdict(t.surfaceId, who) === verdict);
+      const newest = openerKey ? newestWhere('mine') ?? newestWhere(undefined) : own[own.length - 1];
       if (!newest) {
-        throw new Error('browser.close: this workspace has no open wmux Chrome tab to close.');
+        throw new Error(
+          own.length > 0
+            ? 'browser.close: every wmux Chrome tab in this workspace belongs to another agent; name one by surfaceId to close it.'
+            : 'browser.close: this workspace has no open wmux Chrome tab to close.',
+        );
       }
       await launcher.closeSurface(newest.surfaceId);
       surfaceOpeners.forget(newest.surfaceId);
@@ -3370,7 +3534,7 @@ export function registerBrowserRpc(
   // Chrome backend + no builtin surface: pinned-tab navigation rides the
   // engine's Playwright path and never lands here; a bare navigate opens a
   // tracked tab like browser.open does.
-  async (params, scope, chrome) => {
+  async (params, scope, chrome, ctx) => {
     // A pinned surfaceId reaching this fallback means the caller wanted to
     // navigate an EXISTING chrome tab through the RPC lane — opening a new
     // tab here would report success while the agent keeps reading the old
@@ -3386,7 +3550,8 @@ export function registerBrowserRpc(
     await validateUrl(navUrl, 'browser.navigate', navigationPolicy());
     // Owner = the caller-verified scope, never a body-supplied workspaceId
     // (#810 scope-coverage guard).
-    const opened = await (await chrome()).client.openTab(navUrl, scope);
+    const { client } = await chrome();
+    const opened = await keepForCaller(await client.openTab(navUrl, scope), client, ctx, 'browser.navigate');
     return { ok: true, backend: 'chrome', surfaceId: opened.surfaceId, url: opened.url };
   });
 
@@ -4096,12 +4261,12 @@ export function registerBrowserRpc(
       }
     }
 
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       // `buttons` is the bitmask of what is held DURING the event; a press with
       // buttons:0 says the left button is down and simultaneously not down.
       type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1,
     });
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1,
     });
 
@@ -4185,17 +4350,17 @@ export function registerBrowserRpc(
       }
     }
 
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mousePressed', x: from.x, y: from.y, button: 'left', buttons: 1, clickCount: 1,
     });
     // Held-button moves: the drag itself, not a hover, so the button is named
     // on every intermediate event.
     for (const point of pointerPath(from, to)) {
-      await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+      await sendInput(wc, 'Input.dispatchMouseEvent', {
         type: 'mouseMoved', x: point.x, y: point.y, button: 'left', buttons: 1,
       });
     }
-    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+    await sendInput(wc, 'Input.dispatchMouseEvent', {
       type: 'mouseReleased', x: to.x, y: to.y, button: 'left', buttons: 0, clickCount: 1,
     });
     setPointerPosition(wc, target.webContentsId, to);
@@ -4367,6 +4532,14 @@ export function registerBrowserRpc(
         screenHeight: preset.screenHeight,
       }),
     });
+    // A size of the caller's own replaces a phone drawn larger to fill the
+    // pane: the preset loses its scale, and is no longer the one that drew it.
+    if (preset?.scale !== undefined || preset?.fill) {
+      const rest = { ...preset };
+      delete rest.scale;
+      delete rest.fill;
+      activePreset.set(wc, rest);
+    }
     return { ok: true, width, height };
   });
 
@@ -4389,25 +4562,7 @@ export function registerBrowserRpc(
     const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>
       wc.debugger.sendCommand(method, p);
     const applied: string[] = [];
-    // Read the page's own numbers rather than reporting back what was asked
-    // for. Best-effort: a page that cannot be evaluated must not fail the
-    // emulation this describes.
-    const probe = async (): Promise<
-      { w: number; h: number; dpr: number; touch: number } | undefined
-    > => {
-      try {
-        const res = (await send('Runtime.evaluate', {
-          expression: DEVICE_PROBE_EXPRESSION,
-          returnByValue: true,
-        })) as { result?: { value?: { w?: number; h?: number; dpr?: number; touch?: number } } };
-        const v = res?.result?.value;
-        return typeof v?.w === 'number' && typeof v.h === 'number'
-          ? { w: v.w, h: v.h, dpr: v.dpr ?? 0, touch: v.touch ?? 0 }
-          : undefined;
-      } catch {
-        return undefined;
-      }
-    };
+    const probe = () => probeDevice(send);
 
     if (typeof params['offline'] === 'boolean') {
       await send('Network.enable');
@@ -4490,8 +4645,9 @@ export function registerBrowserRpc(
     if (params['deviceMetrics'] && typeof params['deviceMetrics'] === 'object') {
       const dm = params['deviceMetrics'] as {
         width: number; height: number; deviceScaleFactor?: number; mobile?: boolean;
-        hasTouch?: boolean; screenWidth?: number; screenHeight?: number;
+        hasTouch?: boolean; screenWidth?: number; screenHeight?: number; scale?: number; fill?: boolean;
       };
+      const scale = typeof dm.scale === 'number' && Number.isFinite(dm.scale) && dm.scale > 0 && dm.scale !== 1 ? dm.scale : undefined;
       // Remember what the preset is about to replace so `deviceReset` can put
       // it back (#1357). Only the first preset in a chain records: two presets
       // in a row must still reset to the pre-emulation desktop size.
@@ -4505,6 +4661,7 @@ export function registerBrowserRpc(
         ...(dm.screenWidth !== undefined && dm.screenHeight !== undefined
           ? { screenWidth: dm.screenWidth, screenHeight: dm.screenHeight }
           : {}),
+        ...(scale !== undefined ? { scale } : {}),
       });
       if (dm.hasTouch !== undefined) {
         // navigator.maxTouchPoints stayed 0 under a phone preset, contradicting
@@ -4548,6 +4705,8 @@ export function registerBrowserRpc(
           screenWidth: dm.screenWidth,
           screenHeight: dm.screenHeight,
         }),
+        ...(scale !== undefined && { scale }),
+        ...(dm.fill === true && { fill: true as const }),
       });
       const label = typeof params['deviceLabel'] === 'string' ? params['deviceLabel'] : `${dm.width}x${dm.height}`;
       applied.push(`device=${label}`);
@@ -4555,68 +4714,7 @@ export function registerBrowserRpc(
       const after = await probe();
       if (after) applied.push(`probe=${after.w}x${after.h} dpr=${after.dpr} maxTouchPoints=${after.touch}`);
     } else if (params['deviceReset'] === true) {
-      // Actually undo the preset over CDP: drop the device metrics override and
-      // restore the real user agent. Without this, a packaged caller who switches
-      // to a phone preset and then resets stays on the mobile UA/metrics for every
-      // subsequent page. CDP has no "clear UA override" command, so re-apply the
-      // WebContents' own UA to shed the mobile one set by the preset above.
-      activePreset.delete(wc);
-      const remembered = prePresetViewport.get(wc);
-      prePresetViewport.delete(wc);
-      await send('Emulation.clearDeviceMetricsOverride');
-      // The touch points the preset installed outlive clearDeviceMetricsOverride,
-      // so a reset that skipped this left a desktop UA reporting a touchscreen.
-      let touchDisabled = true;
-      // No maxTouchPoints — CDP refuses 0 even when disabling, and the catch
-      // below turned that refusal into a silent no-op (#1357).
-      await send('Emulation.setTouchEmulationEnabled', { enabled: false })
-        .catch(() => {
-          // Swallowing this was how a reset could report success while
-          // navigator.maxTouchPoints stayed at the preset's value (#1357).
-          // The metrics are still cleared; say what did not happen.
-          touchDisabled = false;
-        });
-      try {
-        const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
-        // Restore the metadata alongside the string: re-applying the real UA
-        // while the preset's Client Hints stayed in place would leave exactly
-        // the mismatch the preset path now avoids.
-        if (ua) {
-          await send(
-            'Emulation.setUserAgentOverride',
-            buildUserAgentOverride(ua) as unknown as Record<string, unknown>,
-          );
-        }
-      } catch {
-        /* getUserAgent / UA override unavailable on this transport; metrics still cleared */
-      }
-      // Restore the viewport the preset replaced. Clearing the override alone
-      // left the caller to guess the desktop size back, and a page still at the
-      // phone width keeps matching the preset's media queries (#1357).
-      let viewportNote: string;
-      if (remembered) {
-        await send('Emulation.setDeviceMetricsOverride', {
-          width: remembered.width,
-          height: remembered.height,
-          deviceScaleFactor: 0,
-          mobile: false,
-        });
-        viewportNote = `viewport ${remembered.width}x${remembered.height} restored`;
-      } else {
-        viewportNote = 'viewport from surface bounds (no pre-preset viewport recorded)';
-      }
-      // The page's media queries and `ontouchstart` checks already ran under the
-      // preset, so their results cannot be trusted without a fresh evaluation.
-      let reloaded = true;
-      try {
-        wc.reload();
-      } catch {
-        reloaded = false;
-      }
-      applied.push(`device=reset (${viewportNote}, ${reloaded ? 'reloaded' : 'reload failed'})`);
-      if (!touchDisabled) applied.push('touch=could not be disabled');
-      const after = await probe();
-      if (after) applied.push(`probe=${after.w}x${after.h} dpr=${after.dpr} maxTouchPoints=${after.touch}`);
+      applied.push(...await resetDevicePreset(wc));
     }
 
     return { applied };

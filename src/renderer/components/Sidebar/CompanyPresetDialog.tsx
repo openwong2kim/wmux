@@ -99,6 +99,23 @@ export default function CompanyPresetDialog({ preset, fromFile, onClose }: Compa
   const seatsError = companySeatsError(trimmed, ceo)
     ?? (trimmed.some((s) => s.agent && !installed(s.agent)) ? 'agent' : null)
     ?? (!folder && ownWorktreeSeats(trimmed, ceo).length > 1 ? 'folder' : null);
+  // A repository that can't have seat worktrees (#3079): the seats would work
+  // in the folder itself, which one agent can do and two cannot (seatLaunches
+  // refuses that). Asked once a folder and an agent seat besides the CEO are there.
+  const ownSeats = ownWorktreeSeats(trimmed, ceo).length;
+  const hasOwnSeat = ownSeats > 0;
+  const [refused, setRefused] = useState<'bare' | 'submodules' | 'lfs' | null>(null);
+  useEffect(() => {
+    setRefused(null);
+    const check = window.electronAPI?.company?.worktreeCheck;
+    if (!folder || !hasOwnSeat || !check) return undefined;
+    let cancelled = false;
+    check(folder).then((r) => {
+      if (cancelled || r.ok || !('reason' in r)) return;
+      if (r.reason === 'bare' || r.reason === 'submodules' || r.reason === 'lfs') setRefused(r.reason);
+    }, () => undefined);
+    return () => { cancelled = true; };
+  }, [folder, hasOwnSeat]);
   const folderName = folder?.split(/[/\\]/).filter(Boolean).pop();
   const companyName = name.trim() || folderName || t('companyPreset.defaultName');
   // The company as the folder's wmux.json would hold it; null while it cannot be saved.
@@ -214,6 +231,11 @@ export default function CompanyPresetDialog({ preset, fromFile, onClose }: Compa
             </Button>
           </Field>
         </div>
+        {refused && hasOwnSeat && (
+          <p className="ui-note" data-preset-folder-note>
+            {t(ownSeats > 1 ? `companyPreset.folderShared.${refused}` : `companyPreset.folderNoWorktree.${refused}`)}
+          </p>
+        )}
 
         <Field label={<>{t('company.mission')} <span className="font-normal text-[var(--text-muted)]">{t('company.optional')}</span></>} layout="stacked">
           <Input className="w-full" placeholder={t('company.missionPlaceholder')} value={mission} onChange={(e) => setMission(e.target.value)} />

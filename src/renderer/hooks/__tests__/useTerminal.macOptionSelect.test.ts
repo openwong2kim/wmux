@@ -26,7 +26,8 @@ describe('#1437 — every interactive terminal opts in', () => {
   for (const rel of SITES) {
     it(`${rel}: sets the flag and installs the alt-click guard`, () => {
       const src = fs.readFileSync(path.join(RENDERER, rel), 'utf-8');
-      const ctorAt = src.indexOf('new Terminal({');
+      // useTerminal picks the class first (xterm.js, or wongtty while terminalWongtty is on).
+      const ctorAt = src.search(/new (Terminal|TerminalClass)\(\{/);
       expect(ctorAt).toBeGreaterThan(-1);
       const ctorEnd = src.indexOf('\n    });', ctorAt);
       expect(ctorEnd).toBeGreaterThan(ctorAt);

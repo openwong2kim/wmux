@@ -27,6 +27,7 @@ const PREFIXES = [
   /^a2aDelivery\./,
   /^remote\.pair/,
   /^remotePage\.needs\./,
+  /^remotePage\.discover\./,
   /^remotePage\.(moaLink|fingerprint|copyFingerprint)$/,
 ];
 

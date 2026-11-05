@@ -190,3 +190,152 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     for (let i = 0; i < 100; i++) expect(replies.get(String(i))!.ok).toBe(true);
   });
 });
+
+// The phone browser stream's pushes from main: their own budget, for the
+// first-party app only; frame lines up to 900 KiB arrive in many reads.
+describe('DaemonPipeServer stream push budget', () => {
+  let server: DaemonPipeServer;
+  let pipeName: string;
+
+  beforeEach(async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(1_800_000_000_000);
+    pipeName = testPipeName('push');
+    server = new DaemonPipeServer(pipeName);
+    server.setAuthToken(TOKEN);
+    server.onRpc('daemon.ping', async () => ({ pong: true }));
+    server.onRpc('task.mission.list', async () => ({ ok: true, tasks: [] }));
+    server.onRpc('test.firstParty', async (_params, ctx) => { server.markFirstParty(ctx.clientId); return { ok: true }; });
+    server.onRpc('daemon.phone.browserStream', async (params) => ({ ok: true, known: true, size: String(params.data ?? '').length }));
+    await server.start();
+  });
+
+  afterEach(async () => {
+    await server.stop();
+    vi.restoreAllMocks();
+  });
+
+  it('serves a first-party client\'s pushes after a background flood used up the global budget, up to their own cap', async () => {
+    const methods: Call[] = [
+      'test.firstParty',
+      ...Array.from({ length: 250 }, () => 'task.mission.list'),
+      ...Array.from({ length: 130 }, () => ({ method: 'daemon.phone.browserStream', params: { kind: 'ping' } })),
+    ];
+    const replies = await sendBatch(pipeName, methods);
+    const pushes = Array.from({ length: 130 }, (_, k) => replies.get(String(251 + k))!);
+    expect(pushes.slice(0, 120).every((r) => r.ok)).toBe(true);
+    expect(pushes.slice(120).every((r) => r.error === 'rate limited (stream)')).toBe(true);
+    // The pushes did not count against the background budget either.
+    expect(replies.get('250')).toMatchObject({ ok: false, error: 'rate limited (global)' });
+  });
+
+  it('logs refused pushes at most once per 10 s per socket, with the count since the last line', async () => {
+    let now = 1_800_000_000_000;
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const push = { method: 'daemon.phone.browserStream', params: { kind: 'ping' } };
+    // One socket for every batch: the throttle is per socket.
+    const client = net.createConnection(pipeName);
+    await new Promise<void>((resolve) => client.once('connect', () => resolve()));
+    client.setEncoding('utf8');
+    let next = 0;
+    let buf = '';
+    let waiting: { left: number; done: () => void } | null = null;
+    client.on('data', (chunk: string) => {
+      buf += chunk;
+      const lines = buf.split('\n');
+      buf = lines.pop() ?? '';
+      for (const line of lines) if (line.trim() && waiting && --waiting.left === 0) waiting.done();
+    });
+    const batch = (calls: Call[]) => new Promise<void>((resolve) => {
+      waiting = { left: calls.length, done: resolve };
+      client.write(calls.map((call) => {
+        const { method, params } = typeof call === 'string' ? { method: call, params: {} } : call;
+        return JSON.stringify({ id: String(next++), method, params, token: TOKEN });
+      }).join('\n') + '\n');
+    });
+    const refusalLines = () => warn.mock.calls.map((c) => String(c[0])).filter((m) => m.includes('rate limited (stream)'));
+    await batch(['test.firstParty', ...Array.from({ length: 130 }, () => push)]);
+    // The first refusal is reported at once; the next nine wait for the next line.
+    expect(refusalLines()).toHaveLength(1);
+    expect(refusalLines()[0]).toMatch(/: 1 browser stream push\(es\) refused from c\d+/);
+    now += 5_000;
+    await batch(Array.from({ length: 130 }, () => push));
+    expect(refusalLines()).toHaveLength(1);
+    now += 5_000;
+    await batch(Array.from({ length: 125 }, () => push));
+    // 9 + 10 since the first line, and the one that brings this line.
+    expect(refusalLines()).toHaveLength(2);
+    expect(refusalLines()[1]).toMatch(/: 20 browser stream push\(es\) refused/);
+    // The rest of a burst is not lost when nothing is refused after it: the
+    // socket's close reports it (as the window's end would).
+    // The same second, its budget spent: 4 left over from the batch above and these 3.
+    await batch(Array.from({ length: 3 }, () => push));
+    expect(refusalLines()).toHaveLength(2);
+    client.destroy();
+    await vi.waitFor(() => expect(refusalLines()).toHaveLength(3), { timeout: 5_000 });
+    expect(refusalLines()[2]).toMatch(/: 7 browser stream push\(es\) refused/);
+  });
+
+  it('bounds pushes across first-party sockets by the aggregate cap', async () => {
+    const batch: Call[] = ['test.firstParty', ...Array.from({ length: 100 }, () => ({ method: 'daemon.phone.browserStream', params: { kind: 'ping' } }))];
+    const all: Reply[] = [];
+    for (let c = 0; c < 3; c++) {
+      const replies = await sendBatch(pipeName, batch);
+      all.push(...Array.from({ length: 100 }, (_, k) => replies.get(String(1 + k))!));
+    }
+    expect(all.filter((r) => r.ok)).toHaveLength(240);
+    expect(all.filter((r) => !r.ok).every((r) => r.error === 'rate limited (stream)')).toBe(true);
+  });
+
+  it('charges a non-first-party client\'s pushes to the ordinary counters', async () => {
+    const methods: Call[] = [
+      ...Array.from({ length: 150 }, () => ({ method: 'daemon.phone.browserStream', params: { kind: 'ping' } })),
+      ...Array.from({ length: 100 }, () => 'daemon.ping'),
+    ];
+    const all = [...(await sendBatch(pipeName, methods)).values()];
+    expect(all.filter((r) => r.ok)).toHaveLength(200);
+    expect(all.filter((r) => !r.ok).every((r) => r.error === 'rate limited (global)')).toBe(true);
+  });
+
+  it('reads 900 KiB lines that arrive in many reads, two of them back to back', async () => {
+    const data = 'A'.repeat(900 * 1024 - 200);
+    const line = (id: string) => JSON.stringify({ id, method: 'daemon.phone.browserStream', params: { kind: 'frame', data }, token: TOKEN }) + '\n';
+    const replies = await new Promise<Reply[]>((resolve, reject) => {
+      const got: Reply[] = [];
+      const client = net.createConnection(pipeName, async () => {
+        // Both lines in small pieces, the end of the first and the start of
+        // the second in one write: past 1 MiB together, each under it alone.
+        const both = line('a') + line('b');
+        for (let i = 0; i < both.length; i += 48 * 1024) {
+          client.write(both.slice(i, i + 48 * 1024));
+          await new Promise((r) => setImmediate(r));
+        }
+      });
+      let buf = '';
+      client.setEncoding('utf8');
+      client.on('data', (chunk: string) => {
+        buf += chunk;
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const l of lines) if (l.trim()) got.push(JSON.parse(l) as Reply);
+        if (got.length === 2) { client.destroy(); resolve(got); }
+      });
+      client.on('close', () => resolve(got));
+      client.on('error', reject);
+    });
+    expect(replies.map((r) => [r.id, r.ok, (r.result as { size?: number } | undefined)?.size])).toEqual([['a', true, data.length], ['b', true, data.length]]);
+  });
+
+  it('still closes a connection whose line passes 1 MiB', async () => {
+    const closed = await new Promise<boolean>((resolve) => {
+      const client = net.createConnection(pipeName, () => {
+        const big = 'x'.repeat(256 * 1024);
+        for (let i = 0; i < 5; i++) client.write(big);
+      });
+      client.on('close', () => resolve(true));
+      client.on('error', () => undefined);
+      setTimeout(() => { client.destroy(); resolve(false); }, 5_000);
+    });
+    expect(closed).toBe(true);
+  });
+});

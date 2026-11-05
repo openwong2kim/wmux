@@ -10,6 +10,12 @@ import { WorkLinkStore } from '../workLinkStore';
 import { workLinkFromSentTask } from '../a2aProducer';
 import { registerA2aRpc } from '../../pipe/handlers/a2a.rpc';
 import { ClaudeWorker, type DaemonRpcLike } from '../../a2a/ClaudeWorker';
+// The caller's workspace is checked in a2a.rpc.callerWorkspace.test.ts; these tests
+// are about the handlers once the caller is known, so they name it freely.
+vi.mock('../../pipe/handlers/a2aCaller', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../pipe/handlers/a2aCaller')>()),
+  a2aCallerWorkspace: async () => ({ ok: true, trusted: true }),
+}));
 
 const h = vi.hoisted(() => ({
   sendToRenderer: vi.fn(),

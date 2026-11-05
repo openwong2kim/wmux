@@ -58,8 +58,9 @@
 
 /* Inter — the UI/prose typeface DESIGN.md specifies (Copyright (c) 2016 The
  * Inter Project Authors). Latin + Latin Extended subsets; anything outside them
- * (Hangul, CJK, and the ▾ ▴ ● ✓ ✕ glyphs the chrome draws) falls through to the
- * system UI face via the --font-ui stack, which is the intended behaviour.
+ * (CJK and the ▾ ▴ ● ✓ ✕ glyphs the chrome draws) falls through to the system
+ * UI face via the --font-ui stack, which is the intended behaviour. Hangul goes
+ * to the bundled 'wmux Hangul' face first.
  *
  * The declared axis is the file's FULL 100..900, not the 400..600 DESIGN.md
  * names. A variable font is clamped to the range its @font-face advertises and
@@ -137,6 +138,22 @@
   font-display: swap;
 }
 
+/* Hangul face (SIL Open Font License 1.1), bundled. A Hangul-only subset of
+ * Pretendard Variable 1.3.9 (Copyright (c) 2021 Kil Hyung-jin), instanced to
+ * the 400..700 weights the UI uses and renamed, since Pretendard is a Reserved
+ * Font Name. Every --font-ui stack names it right after its Latin face, so
+ * Korean keeps the look's size and weight instead of falling back to Malgun
+ * Gothic on Windows (taller, and no 500). The unicode-range is Hangul only, so
+ * it can never take a Latin glyph from the face ahead of it. */
+@font-face {
+  font-family: 'wmux Hangul';
+  src: url('../assets/fonts/wmuxHangul.woff2') format('woff2');
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+1100-11FF, U+3130-318F, U+A960-A97F, U+AC00-D7A3, U+D7B0-D7FF;
+}
+
 /* ─── UI Type Stack (theme-independent) ──────────────────────────────────────
  * DESIGN.md Typography: UI/prose is Inter 400/500/600. Inter is bundled above,
  * so the stack leads with it and keeps the system faces as the fallback for
@@ -146,8 +163,8 @@
  * MIT License, Copyright (c) 2026 Nick — the platform UI face (SF on macOS,
  * Segoe UI on Windows). Inter stays bundled above for anything that names it. */
 :root {
-  --font-ui: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+  --font-ui: system-ui, 'wmux Hangul', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    Roboto, Oxygen, Ubuntu, Cantarell, 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
 }
 
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
@@ -1334,7 +1351,7 @@ html[data-glass] .wmux-sidebar {
   --accent-blue-rgb: 155, 140, 255;
   --bg-surface-rgb: 37, 34, 42;
   --bg-base-rgb: 26, 23, 29;
-  --font-ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: 'Geist', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --chip-radius: 7px;
   --selection: color-mix(in srgb, var(--text-main) 9%, transparent);
   --select-ring: none;
@@ -1375,7 +1392,7 @@ html[data-glass] .wmux-sidebar {
   --accent-blue-rgb: 250, 250, 250;
   --bg-surface-rgb: 24, 24, 27;
   --bg-base-rgb: 9, 9, 11;
-  --font-ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: 'Geist', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --chip-radius: 6px;
   --selection: #18181B;
   --select-ring: inset 0 0 0 1px #27272A;
@@ -1416,7 +1433,7 @@ html[data-glass] .wmux-sidebar {
   --accent-blue-rgb: 76, 141, 255;
   --bg-surface-rgb: 26, 28, 33;
   --bg-base-rgb: 11, 12, 14;
-  --font-ui: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: 'IBM Plex Sans', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --chip-radius: 999px;
   --selection: #1B2433;
   --select-ring: none;
@@ -1457,7 +1474,7 @@ html[data-glass] .wmux-sidebar {
   --accent-blue-rgb: 91, 91, 214;
   --bg-surface-rgb: 236, 236, 240;
   --bg-base-rgb: 255, 255, 255;
-  --font-ui: 'Figtree', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: 'Figtree', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --chip-radius: 7px;
   --selection: #E4E4EA;
   --select-ring: none;
@@ -1498,7 +1515,7 @@ html[data-glass] .wmux-sidebar {
   --accent-blue-rgb: 232, 163, 61;
   --bg-surface-rgb: 33, 32, 32;
   --bg-base-rgb: 18, 18, 18;
-  --font-ui: 'Geist', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-ui: 'Geist', 'wmux Hangul', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --chip-radius: 6px;
   --selection: #24221F;
   --select-ring: inset 2px 0 0 #E8A33D;

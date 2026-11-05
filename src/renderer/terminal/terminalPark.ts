@@ -104,10 +104,16 @@ export function parkTerminal(
  * Claim the terminal parked for this ptyId, if any. Claiming cancels the
  * pending dispose — from here on the adopting mount owns the instance.
  */
-export function adoptTerminal(ptyId: string): ParkedTerminal | null {
+export function adoptTerminal(ptyId: string, accept?: (terminal: Terminal) => boolean): ParkedTerminal | null {
   if (!ptyId) return null;
   const entry = parked.get(ptyId);
   if (!entry) return null;
+  // A terminal the adopting mount cannot use (built by the other engine of
+  // the Labs wongtty switch) is disposed now, as if nobody had adopted it.
+  if (accept && !accept(entry.terminal)) {
+    evict(ptyId);
+    return null;
+  }
   parked.delete(ptyId);
   clearTimeout(entry.timer);
   const { terminal, element, fromBottom, atBottom } = entry;

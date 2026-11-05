@@ -69,6 +69,7 @@ function readLicenseText(pkgDir) {
       lower === 'license.md' ||
       lower === 'license.txt' ||
       lower === 'license-mit' ||
+      lower === 'license-apache' ||
       lower === 'license-mit.txt' ||
       lower === 'copying' ||
       lower === 'copying.txt' ||
@@ -298,6 +299,7 @@ const BUNDLED_FONTS = [
   { name: 'Geist', file: 'LICENSE-Geist.txt', repo: 'https://github.com/vercel/geist-font' },
   { name: 'Figtree', file: 'LICENSE-Figtree.txt', repo: 'https://github.com/erikdkennedy/figtree' },
   { name: 'IBM Plex Sans', file: 'LICENSE-IBMPlexSans.txt', repo: 'https://github.com/IBM/plex' },
+  { name: 'Pretendard (Hangul subset, renamed "wmux Hangul")', file: 'LICENSE-Pretendard.txt', repo: 'https://github.com/orioncactus/pretendard' },
 ];
 lines.push('BUNDLED FONTS');
 lines.push('');

@@ -1,6 +1,7 @@
 import type { Terminal, ITerminalOptions } from '@xterm/xterm';
 import type { ImageAddon, IImageAddonOptions } from '@xterm/addon-image';
 import { capSixelImageSize, type SixelCapAddon } from '../../shared/terminal/sixelCap';
+import { isWongttyTerminal, loadedWongtty } from './wongtty/load';
 
 /**
  * Inline terminal images (#1641): sixel (DCS … q) and the iTerm2 inline-image
@@ -126,6 +127,13 @@ export function attachInlineImages(terminal: Terminal): void {
   if (attachments.has(terminal) || !canCompileWasm()) return;
   const attachment: Attachment = { addon: null, detached: false, windowOptions: undefined };
   attachments.set(terminal, attachment);
+  // A wongtty terminal (uiSlice.terminalWongtty) takes wongtty's built-in image
+  // addon, with the same options; the @xterm/addon-image chunk is not loaded.
+  const wongtty = isWongttyTerminal(terminal) ? loadedWongtty() : null;
+  if (wongtty) {
+    activate(terminal, attachment, { ImageAddon: wongtty.ImageAddon } as unknown as ImageAddonModule);
+    return;
+  }
   if (loadedModule) {
     activate(terminal, attachment, loadedModule);
     return;

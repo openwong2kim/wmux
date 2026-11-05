@@ -17,13 +17,17 @@
 // Typed text is sent once, to Chrome, and is never echoed or put in an error.
 
 import type { PhoneBrowserDriver } from './PhoneBrowser';
-import { ChromePageSessionError, chromeTargetWatcherEnabled, type ChromeBackendClient, type ChromePageSession, type ChromeTargetInfo } from '../browser-session/ChromeLauncher';
+import { ChromePageSessionError, chromeTargetWatcherEnabled, type ChromeBackendClient, type ChromePageSession, type ChromeStreamSession, type ChromeTargetInfo } from '../browser-session/ChromeLauncher';
 import { LIVE_CHROME_PROFILE } from '../browser-session/ChromeProfileStore';
 import { parseKeyPress } from '../pipe/handlers/cdpKeys';
+import { readFocus } from './PhoneBrowserFocus';
 import { PhoneBrowserError } from '../../shared/phoneBrowserPreview';
 
 /** How long a whole Chrome capture, or one input, may take before the tab reads as hidden. */
 export const PHONE_CHROME_CAPTURE_MS = 5_000;
+
+/** How long a tap waits to start hearing the page ask for a window before it goes ahead without. */
+export const PHONE_WATCH_SETUP_MS = 500;
 
 export interface PhoneChromeTab { surfaceId: string; url: string; title: string }
 
@@ -37,6 +41,16 @@ export interface PhoneChromeDeps {
   tabs(workspaceId: string): Promise<PhoneChromeTab[]>;
   /** A page session on one of those tabs; throws ChromePageSessionError. */
   session(surfaceId: string, workspaceId: string): Promise<ChromePageSession>;
+  /** A session of its own on one of those tabs, for the stream's screencast; throws ChromePageSessionError. */
+  streamSession?(surfaceId: string, workspaceId: string): Promise<ChromeStreamSession>;
+  /** Whether the tab's record still names exactly this workspace. */
+  owns?(surfaceId: string, workspaceId: string): boolean;
+  /**
+   * Told each tab one of those tabs opens (target=_blank, window.open), once
+   * it is a tab of this workspace: its surfaceId, and its URL as Chrome
+   * created it (usually empty). Returns the unsubscribe.
+   */
+  onTabOpened?(surfaceId: string, workspaceId: string, listener: (opened: { surfaceId: string; url: string }) => void): () => void;
   /** Bring one of those tabs, and its window, to the front. */
   focus(surfaceId: string, workspaceId: string): Promise<boolean>;
   /** Whether `open` would land in a dedicated profile (never Live Chrome). */
@@ -45,6 +59,8 @@ export interface PhoneChromeDeps {
   validateNavigation(url: string): Promise<void>;
   /** Test seam for PHONE_CHROME_CAPTURE_MS. */
   captureMs?: number;
+  /** Test seam for PHONE_WATCH_SETUP_MS. */
+  watchSetupMs?: number;
 }
 
 /** Surfaces with a phone input in flight: one at a time per tab. */
@@ -72,8 +88,8 @@ function offset(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
-/** The visual viewport from Page.getLayoutMetrics, in CSS pixels; throws when unusable. */
-function viewportOf(metrics: unknown): Viewport {
+/** The visual viewport from Page.getLayoutMetrics, in CSS pixels; throws when unusable. A builtin pane's too (PhoneBrowser.ts). */
+export function viewportOf(metrics: unknown): Viewport {
   const m = metrics as { cssVisualViewport?: Record<string, unknown>; visualViewport?: Record<string, unknown> } | null;
   const vp = m?.cssVisualViewport ?? m?.visualViewport;
   if (!vp || !dimension(vp.clientWidth) || !dimension(vp.clientHeight) || !offset(vp.pageX) || !offset(vp.pageY)) {
@@ -177,6 +193,7 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       const found = await tab();
       return found ? { title: found.title, url: found.url } : null;
     },
+    layout: () => viewport(),
     geometry: async () => {
       const vp = await viewport();
       // Pinch zoom moves the visual viewport off the layout one, and browser
@@ -211,10 +228,11 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       return { data, mimeType: 'image/jpeg' as const };
     },
     capture: run => bounded(run),
-    input: async (operation, focus) => {
-      if (active.has(surfaceId)) throw new Error('Browser input unavailable');
+    input: async (operation, focus, options = {}) => {
+      if (active.has(surfaceId)) throw options.codeBusy ? new PhoneBrowserError('browser-input-busy') : new Error('Browser input unavailable');
       active.add(surfaceId);
       const running = (async () => {
+        await options.beforeFocus?.();
         // A background Chrome window has no focused element to type into:
         // emulate focus instead of raising the tab. Set up (attaching the page
         // with it) before the operation's last ownership and URL checks, so
@@ -259,9 +277,82 @@ export function chromeDriver(surfaceId: string, workspaceId: string, deps: Phone
       }
       if ((result as { errorText?: unknown } | null)?.errorText) throw new Error('Browser operation failed');
     },
+    historyEntry: async (direction) => {
+      // The entry one step away in the tab's history, as Chrome has it now.
+      const neighbor = async () => {
+        const history = await call('Page.getNavigationHistory') as { currentIndex?: unknown; entries?: unknown } | null;
+        if (typeof history?.currentIndex !== 'number' || !Array.isArray(history.entries)) throw new Error('Browser operation failed');
+        const entry = history.entries[history.currentIndex + (direction === 'back' ? -1 : 1)] as { id?: unknown; url?: unknown } | undefined;
+        if (!entry) return null;
+        if (typeof entry.id !== 'number' || typeof entry.url !== 'string') throw new Error('Browser operation failed');
+        return { entryId: entry.id, url: entry.url };
+      };
+      const found = await neighbor();
+      if (!found) return null;
+      const { entryId, url } = found;
+      return {
+        url,
+        go: async () => {
+          await deps.validateNavigation(url);
+          // The policy check is asynchronous: go only to the entry it checked,
+          // and only while that entry is still one step away.
+          const now = await neighbor();
+          if (now?.entryId !== entryId || now.url !== url) throw new Error('Browser page changed; refresh before input');
+          await write('Page.navigateToHistoryEntry', { entryId });
+        },
+      };
+    },
     viewport: async () => { throw new PhoneBrowserError('browser-action-unsupported'); },
     focus: async () => {
       if (!(await deps.focus(surfaceId, workspaceId))) throw new Error('Browser operation failed');
+    },
+    readFocus: () => readFocus(call),
+    watchOpened: async () => {
+      let opened: string | undefined;
+      // The page asked for a window during the tap (Page.windowOpen): only
+      // then is a tab that has not opened yet worth waiting for.
+      let asked = false;
+      let stopped = false;
+      let wake: (() => void) | undefined;
+      const offs: Array<() => void> = [];
+      // A subscription that lands after stop() is undone at once.
+      const keep = (off: () => void) => { if (stopped) off(); else offs.push(off); };
+      keep(deps.onTabOpened?.(surfaceId, workspaceId, (tab) => { opened ??= tab.surfaceId; wake?.(); }) ?? (() => undefined));
+      // Page.windowOpen needs the page session. Past PHONE_WATCH_SETUP_MS the
+      // tap goes ahead without it: a tab that opens is still reported, none
+      // is waited for.
+      const setup = (async () => {
+        const attaching = session ??= deps.session(surfaceId, workspaceId);
+        let open: ChromePageSession;
+        try {
+          open = await attaching;
+        } catch {
+          // Not kept: the tap's own call attaches again.
+          if (session === attaching) session = null;
+          return;
+        }
+        if (!open.on || stopped) return;
+        keep(open.on('Page.windowOpen', () => { asked = true; }));
+        await open.send('Page.enable');
+      })().catch(() => undefined);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([setup, new Promise<void>((resolve) => { timer = setTimeout(resolve, deps.watchSetupMs ?? PHONE_WATCH_SETUP_MS); })]);
+      clearTimeout(timer);
+      return {
+        result: async (ms) => {
+          if (opened || !asked) return opened;
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, ms);
+            wake = () => { clearTimeout(timer); resolve(); };
+          });
+          return opened;
+        },
+        stop: () => {
+          stopped = true;
+          for (const off of offs.splice(0)) off();
+          wake?.();
+        },
+      };
     },
   };
 }
@@ -355,6 +446,21 @@ export function createPhoneChromeDeps(opts: {
         throw new ChromePageSessionError('gone', 'not a tab of this workspace');
       }
       return client.pageSession(surfaceId);
+    },
+    // The same checks for the stream's own session.
+    streamSession: async (surfaceId, workspaceId) => {
+      const client = clientFor(workspaceId, opts.registry);
+      if (!client?.streamSession || client.recordFor?.(surfaceId)?.workspaceId !== workspaceId) {
+        throw new ChromePageSessionError('gone', 'not a tab of this workspace');
+      }
+      return client.streamSession(surfaceId);
+    },
+    owns: (surfaceId, workspaceId) => clientFor(workspaceId, opts.registry)?.recordFor?.(surfaceId)?.workspaceId === workspaceId,
+    onTabOpened: (surfaceId, workspaceId, listener) => {
+      const off = clientFor(workspaceId, opts.registry)?.onSurfaceOpened?.((opened) => {
+        if (opened.openerSurfaceId === surfaceId && opened.workspaceId === workspaceId) listener({ surfaceId: opened.surfaceId, url: opened.url });
+      });
+      return off ?? (() => undefined);
     },
     focus: async (surfaceId, workspaceId) => {
       const found = await holder(surfaceId, workspaceId);

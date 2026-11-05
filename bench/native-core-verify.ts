@@ -242,12 +242,14 @@ async function main() {
     blocked = true;
     const before = performance.now();
     pty.write(Buffer.alloc(8 * 1024 * 1024, 'x'));
-    assert.throws(() => pty.write(Buffer.alloc(8 * 1024 * 1024)), /PTY_BACKPRESSURE/);
+    // Past the native queue the adapter holds input, as node-pty's write never throws.
+    assert.doesNotThrow(() => pty.write(Buffer.alloc(8 * 1024 * 1024)));
+    assert.ok((pty.pendingInputBytes ?? 0) > 8 * 1024 * 1024, 'held input counts as pending');
     assert.ok(performance.now() - before < 1000, 'input must enqueue instead of blocking on OS write');
     pty.kill(process.platform === 'win32' ? undefined : 'SIGKILL');
   }).done;
   if (process.platform !== 'win32') { assert.equal(killed.signal, 9); assert.equal(killed.exitCode, 0); }
-  checks.push('PTY: bounded input queue, explicit backpressure and blocked-writer termination');
+  checks.push('PTY: bounded input queue, held backpressure and blocked-writer termination');
   assert.throws(() => spawnTerminalPty(path.join(os.tmpdir(), 'wmux-no-such-command'), [], {}, () => { throw new Error('Must not retry spawn'); }));
   if (process.platform !== 'win32') {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-exec-error-'));

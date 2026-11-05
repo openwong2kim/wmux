@@ -4,6 +4,8 @@ import https from 'node:https';
 import type net from 'node:net';
 import os from 'node:os';
 import {
+  A2A_DISCOVER_BODY_MAX,
+  A2A_DISCOVER_TOKEN_HEADER,
   A2A_REMOTE_BODY_MAX,
   A2A_REMOTE_IMAGE_LIMITS,
   A2A_REMOTE_PROTOCOL,
@@ -24,10 +26,12 @@ import { CONTINUE_BYTES_MAX } from '../../shared/a2aContinue';
 import type { A2aRemotePairBeginResult, A2aRemotePairStatus, A2aRemoteStatus } from '../../shared/rpc';
 import type { WebA2aPeer, WebA2aRoutes } from '../web/WebTerminalServer';
 import { A2A_REMOTE_CONFIG_CHANGED, type A2aRemoteConfig, type A2aRemoteController } from './controller';
+import { DISCOVER_BODY_TIMEOUT_MS, DiscoveryWindow, isDiscoverRoute, plainIpv4, revertDiscoveryTurnOn, type DiscoveryDeps } from './discovery';
 import { loadOrCreateHostIdentity, type HostIdentity, type HostIdentityOptions } from './hostIdentity';
 import { PairingSlot, inviteHost } from './pairing';
 import type { PeerAuthResult } from './peerStore';
 import { InboundCounter } from '../net/inboundSeen';
+import { tailnetCliFromEnv, type TailnetCli } from './tailnet';
 
 /**
  * The dedicated cross-host A2A listener: a small HTTPS server serving the
@@ -102,7 +106,7 @@ export interface A2aPeerSource {
   resolve(peerId: string, secret: string): Promise<PeerAuthResult>;
   touch(peerId: string): void;
   mint(params: { hostId: string; name: string }): Promise<{ peerId: string; secret: string }>;
-  listByHost(hostId: string): Array<{ peerId: string; revokedAt?: string }>;
+  listByHost(hostId: string): Array<{ peerId: string; name?: string; revokedAt?: string }>;
   revoke(peerId: string): boolean;
 }
 
@@ -138,6 +142,21 @@ export interface A2aServerDeps {
   /** Test seam: how long a request's body may take; default REQUEST_TIMEOUT_MS. */
   bodyTimeoutMs?: number;
   log?: A2aServerLog;
+  /** Tailscale reads for tailnet discovery. Default `tailnetCliFromEnv()`. */
+  tailnet?: TailnetCli;
+  /** This build's wmux version, which the discovery probe reports. Default 'unknown'. */
+  discoverVersion?: () => string;
+  /** Test seams for the discovery source gate. */
+  tailnetGate?: Partial<TailnetGate>;
+}
+
+/** How the discovery gate sees a connection; tests map loopback onto tailnet addresses. */
+export interface TailnetGate {
+  /** The connection's local and remote addresses. Default: the socket's own. */
+  addressesOf: (req: http.IncomingMessage) => { local: string; remote: string };
+  interfaces: DiscoveryDeps['interfaces'];
+  platform: NodeJS.Platform;
+  routeInterface: DiscoveryDeps['routeInterface'];
 }
 
 /** Interface names of virtual adapters, whose addresses another PC usually cannot reach. */
@@ -240,6 +259,11 @@ export class A2aServer {
   private inbound = new InboundCounter();
   private chain: Promise<void> = Promise.resolve();
   private disposed = false;
+  /** Tailnet discovery's window (in memory only, like the invite slot). */
+  readonly discovery: DiscoveryWindow;
+  /** The Tailscale reads the window uses; the requesting side shares them. */
+  readonly tailnet: TailnetCli;
+  private readonly addressesOf: TailnetGate['addressesOf'];
 
   constructor(deps: A2aServerDeps) {
     this.deps = deps;
@@ -252,9 +276,33 @@ export class A2aServer {
     this.loadIdentity = deps.loadIdentity ?? loadOrCreateHostIdentity;
     this.pairing = new PairingSlot({ now: this.now });
     this.log = deps.log ?? ((level, msg): void => void console[level === 'info' ? 'log' : level](msg));
+    const gate = deps.tailnetGate ?? {};
+    this.addressesOf = gate.addressesOf ?? ((req) => ({ local: req.socket.localAddress ?? '', remote: req.socket.remoteAddress ?? '' }));
+    // Before the first reconcile: a window that turned A2A on and never finished turns it off again.
+    // When that cannot be written, the listener does not start on this boot either.
+    const mayStart = revertDiscoveryTurnOn(deps.controller, deps.identityDir, this.log);
+    this.tailnet = deps.tailnet ?? tailnetCliFromEnv();
+    this.discovery = new DiscoveryWindow({
+      tailnet: this.tailnet,
+      controller: deps.controller,
+      dataDir: deps.identityDir,
+      listener: {
+        whenIdle: () => this.whenIdle(),
+        status: () => this.status(),
+        identity: () => (this.server ? this.identity : null),
+        name: () => this.name(),
+      },
+      livePeerName: (hostId) => this.deps.peers.listByHost(hostId).find((r) => r.revokedAt === undefined)?.name ?? null,
+      version: deps.discoverVersion ?? ((): string => 'unknown'),
+      now: this.now,
+      log: this.log,
+      ...(gate.interfaces ? { interfaces: gate.interfaces } : {}),
+      ...(gate.platform ? { platform: gate.platform } : {}),
+      ...(gate.routeInterface ? { routeInterface: gate.routeInterface } : {}),
+    });
     deps.controller.on(A2A_REMOTE_CONFIG_CHANGED, this.onChanged);
     // `changed` does not fire at boot: an enabled listener starts here.
-    if (deps.controller.current().enabled) this.scheduleReconcile();
+    if (mayStart && deps.controller.current().enabled) this.scheduleReconcile();
   }
 
   /** Resolves once every queued start/stop/rebind has run. */
@@ -316,6 +364,8 @@ export class A2aServer {
     const tailnet = new Set(this.tailnetIpv4s());
     const alt = inviteAlt(ips, host, tailnet);
     const opened = this.pairing.begin({ host, port: this.port, fingerprint256: this.identity.fingerprint256, alt });
+    // An invite needs the listener past any discovery window that turned it on.
+    this.discovery.keepA2aOn();
     const addresses = [host, ...alt];
     return { ...opened, addresses, tailnet: addresses.filter((a) => tailnet.has(a)) };
   }
@@ -343,6 +393,7 @@ export class A2aServer {
     // Nothing may restart the listener after this.
     this.deps.controller.off(A2A_REMOTE_CONFIG_CHANGED, this.onChanged);
     this.pairing.cancel();
+    this.discovery.dispose();
     this.scheduleReconcile();
   }
 
@@ -361,8 +412,9 @@ export class A2aServer {
   private async reconcile(): Promise<void> {
     const cfg = this.deps.controller.current();
     if (this.disposed || !cfg.enabled) {
-      // An invite names the listener it was minted for.
+      // An invite (and a discovery window) names the listener it was opened for.
       this.pairing.cancel();
+      this.discovery.listenerStopped();
       await this.closeCurrent();
       this.setError(null);
       return;
@@ -398,6 +450,7 @@ export class A2aServer {
     }
     const old = this.server;
     this.pairing.cancel();
+    this.discovery.listenerStopped();
     this.identity = identity;
     this.server = bound.server;
     this.port = (bound.server.address() as net.AddressInfo).port;
@@ -499,6 +552,28 @@ export class A2aServer {
 
     const length = Number(req.headers['content-length'] ?? 0);
     if (Number.isFinite(length) && length > requestBodyMax(req.method, p)) return refuseTooLarge(req, res);
+
+    // Tailnet discovery answers only inside an open window and only to a
+    // same-user tailnet node; everything else falls through to the answer
+    // below, as if the window did not exist.
+    if (isDiscoverRoute(p)) {
+      const { local, remote } = this.addressesOf(req);
+      if (this.discovery.accepts(local, remote, req.method, p)) {
+        const token = req.headers[A2A_DISCOVER_TOKEN_HEADER];
+        const answer = await this.discovery.route({
+          method: req.method ?? '',
+          path: p,
+          source: plainIpv4(remote),
+          token: typeof token === 'string' ? token : undefined,
+          readBody: () => readDiscoverBody(req, Math.min(DISCOVER_BODY_TIMEOUT_MS, this.deps.bodyTimeoutMs ?? DISCOVER_BODY_TIMEOUT_MS)),
+        });
+        if (answer === 'too-large') return refuseTooLarge(req, res);
+        if (answer) {
+          if (answer.retryAfterMs !== undefined) res.setHeader('Retry-After', String(Math.ceil(answer.retryAfterMs / 1000)));
+          return sendJson(res, answer.status, answer.body);
+        }
+      }
+    }
 
     // The one route that takes no credential: it is how a joiner gets one.
     if (p === A2A_ROUTES.pair) {
@@ -624,14 +699,23 @@ export class A2aServer {
 
     const identity = this.identity;
     if (!identity) return refusePair(503, 'unavailable');
-    const check = this.pairing.check(code);
-    if (!check.ok) {
+    // A discovery window's pairing code first: `none` costs nothing (this
+    // route is open to the whole LAN), so the invite is judged as before.
+    const redeemed = this.discovery.redeem(code, plainIpv4(this.addressesOf(req).remote), hostId);
+    if (redeemed === 'mismatch') {
       this.notePairFailure(source);
-      return refusePair(403, 'forbidden', check.reason);
+      return refusePair(403, 'forbidden', 'invalid-code');
     }
-    if (hostId === identity.hostId) return refusePair(400, 'bad-request', 'self');
-    // Consume BEFORE any await: a second request with the same code must not mint again.
-    this.pairing.consume();
+    if (redeemed === 'none') {
+      const check = this.pairing.check(code);
+      if (!check.ok) {
+        this.notePairFailure(source);
+        return refusePair(403, 'forbidden', check.reason);
+      }
+      if (hostId === identity.hostId) return refusePair(400, 'bad-request', 'self');
+      // Consume BEFORE any await: a second request with the same code must not mint again.
+      this.pairing.consume();
+    }
     this.pairFailures.delete(source);
 
     for (const stale of this.deps.peers.listByHost(hostId).filter((r) => r.revokedAt === undefined)) {
@@ -650,11 +734,14 @@ export class A2aServer {
       minted = await this.deps.peers.mint({ hostId, name });
     } catch (err) {
       this.log('warn', `[a2a-remote] pairing could not mint a peer credential: ${errMsg(err)}`);
+      if (redeemed === 'ok') this.discovery.noteMintFailed();
       // Only a concurrent pairing for the same host winning the race lands here as a conflict.
       if (this.deps.peers.listByHost(hostId).some((r) => r.revokedAt === undefined)) return refusePair(409, 'conflict');
       return refusePair(500, 'unavailable');
     }
     this.log('info', `[a2a-remote] paired with host ${hostId}`);
+    if (redeemed === 'ok') this.discovery.notePaired({ hostId, name });
+    else this.discovery.keepA2aOn();
     const response: A2aPairResponse = {
       credential: formatPeerCredential(minted),
       hostId: identity.hostId,
@@ -799,6 +886,21 @@ export function readJsonBody(req: http.IncomingMessage, max: number): Promise<un
       if (size <= max) reject(err);
     });
   });
+}
+
+/**
+ * A discovery request's body: at most `A2A_DISCOVER_BODY_MAX` bytes within
+ * `ms`, past which the connection is cut. A cut or failed read is undefined
+ * (no body), so the request's slot is never held by a slow sender.
+ */
+function readDiscoverBody(req: http.IncomingMessage, ms: number): Promise<unknown> {
+  extendBodyDeadline(req, ms);
+  const cut = new Promise<undefined>((resolve) => {
+    req.once('close', () => {
+      if (!req.complete) resolve(undefined);
+    });
+  });
+  return Promise.race([readJsonBody(req, A2A_DISCOVER_BODY_MAX).catch(() => undefined), cut]);
 }
 
 /** 413, then cut the connection once the answer is written — never drain an oversized body. */

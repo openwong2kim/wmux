@@ -69,12 +69,166 @@ describe('terminal backend selection and transport contract', () => {
     expect(transport.read).toHaveBeenNthCalledWith(1, true);
     expect(transport.read).toHaveBeenNthCalledWith(2, false);
   });
-  it('does not swallow input backpressure or change dimensions on failed resize', () => {
+  it('does not change dimensions on failed resize', () => {
     const pty = spawnTerminalPty('sh', [], { cols: 80, rows: 24 }, nodeSpawn);
-    transport.write.mockImplementation(() => { throw new Error('PTY_BACKPRESSURE'); });
-    expect(() => pty.write('input')).toThrow('PTY_BACKPRESSURE');
     transport.resize.mockImplementation(() => { throw new Error('resize failed'); });
     expect(() => pty.resize(100, 40)).toThrow(); expect(pty.cols).toBe(80);
+  });
+});
+
+// node-pty's write never throws: it queues behind the PTY and reports trouble
+// asynchronously. Every daemon writer was written against that contract.
+describe('RustPty input keeps the node-pty write contract', () => {
+  const MiB = 1024 * 1024;
+  /** The native input queue (native_transport.rs write): all-or-nothing against its limit. */
+  function nativeInput(limit = 8 * MiB) {
+    const state = { pending: 0, closed: false, received: [] as Buffer[] };
+    transport.write.mockImplementation((data: Uint8Array) => {
+      if (state.closed) throw new Error('PTY_CLOSED');
+      if (state.pending + data.length > limit) throw new Error('PTY_BACKPRESSURE: input queue is full');
+      state.pending += data.length; state.received.push(Buffer.from(data));
+    });
+    Object.defineProperty(transport, 'pendingInputBytes', { configurable: true, get: () => state.pending });
+    transport.read.mockImplementation(() => ({ ...idle, pendingInputBytes: state.pending }));
+    return { state, bytes: () => Buffer.concat(state.received), text: () => Buffer.concat(state.received).toString() };
+  }
+  afterEach(() => { Object.defineProperty(transport, 'pendingInputBytes', { configurable: true, enumerable: true, writable: true, value: 0 }); });
+
+  it('drops a write after exit instead of throwing', async () => {
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn);
+    transport.read.mockReturnValue({ ...idle, eof: true, childExited: true, exitCode: 0 });
+    wake(); await tick();
+    expect(() => pty.write('late\r')).not.toThrow();
+    expect(transport.write).not.toHaveBeenCalled();
+  });
+
+  it('drops input once the native writer has closed, before the exit is observed', () => {
+    const input = nativeInput(); input.state.closed = true;
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn);
+    expect(() => pty.write('a')).not.toThrow();
+    expect(() => pty.write('b')).not.toThrow();
+    // The closed side is final: nothing is retried or held.
+    expect(transport.write).toHaveBeenCalledOnce();
+    expect((pty as TerminalPty).pendingInputBytes).toBe(0);
+  });
+
+  it('queues input under backpressure and delivers it in order once the native queue drains', async () => {
+    const input = nativeInput(4);
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    pty.write('abc');
+    expect(() => pty.write('def')).not.toThrow();
+    // The native queue has room for this byte, but it must not overtake 'def'.
+    pty.write(Buffer.from('g'));
+    expect(input.text()).toBe('abc');
+    expect(pty.pendingInputBytes).toBe(3 + 4);
+    input.state.pending = 0; wake(); await tick();
+    expect(input.text()).toBe('abcdefg');
+    expect(pty.pendingInputBytes).toBe(4);
+  });
+
+  it('splits a write larger than the native queue and keeps SessionPipe paused until the bytes drain', async () => {
+    const input = nativeInput();
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    const drained = vi.fn(); pty.onInputDrain?.(drained);
+    const payload = Buffer.alloc(12 * MiB, 'p');
+    expect(() => pty.write(payload)).not.toThrow();
+    expect(input.state.pending).toBe(8 * MiB);
+    // The SessionPipe resume threshold counts what the adapter still holds.
+    expect(pty.pendingInputBytes).toBe(12 * MiB);
+    wake(); await tick();
+    expect(drained).not.toHaveBeenCalled();
+    input.state.pending = 0; wake(); await tick();
+    expect(input.bytes().equals(payload)).toBe(true);
+    // The held 4 MiB just moved to the native queue and is still unread.
+    expect(drained).not.toHaveBeenCalled();
+    input.state.pending = 0; wake(); await tick();
+    expect(drained).toHaveBeenCalled();
+  });
+
+  it('holds at most one queue bound of input and drops whole writes past it, logged once per stall', async () => {
+    const input = nativeInput();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+      pty.write(Buffer.alloc(8 * MiB, 'a'));
+      pty.write(Buffer.alloc(8 * MiB, 'b'));
+      expect(pty.pendingInputBytes).toBe(16 * MiB);
+      expect(() => pty.write('x')).not.toThrow();
+      expect(() => pty.write('y')).not.toThrow();
+      expect(pty.pendingInputBytes).toBe(16 * MiB);
+      expect(log).toHaveBeenCalledOnce();
+      input.state.pending = 0; wake(); await tick();
+      // Drained: a later stall queues again instead of dropping.
+      pty.write('z');
+      input.state.pending = 0; wake(); await tick();
+      const delivered = input.bytes();
+      expect(delivered.length).toBe(16 * MiB + 1);
+      expect(delivered.includes('x')).toBe(false); expect(delivered.includes('y')).toBe(false);
+      expect(delivered.subarray(-1).toString()).toBe('z');
+    } finally { log.mockRestore(); }
+  });
+
+  it('keeps dropping after a dropped write until the held queue empties, so no later write lands without it', async () => {
+    const input = nativeInput();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+      pty.write(Buffer.alloc(8 * MiB, 'a'));
+      pty.write(Buffer.alloc(8 * MiB, 'b'));
+      pty.write('X');
+      // The program reads one piece, and one held piece moves to the native queue.
+      input.state.pending -= 256 * 1024; wake(); await tick();
+      expect(pty.pendingInputBytes).toBe(16 * MiB - 256 * 1024);
+      pty.write('\r');
+      expect(pty.pendingInputBytes).toBe(16 * MiB - 256 * 1024);
+      input.state.pending = 0; wake(); await tick();
+      pty.write('Z');
+      const delivered = input.bytes();
+      expect(delivered.includes('X')).toBe(false); expect(delivered.includes('\r')).toBe(false);
+      expect(delivered.subarray(-1).toString()).toBe('Z');
+      expect(log).toHaveBeenCalledOnce();
+    } finally { log.mockRestore(); }
+  });
+
+  /** 'abc' reaches the native queue (limit 4), 'def' is held. */
+  async function holdInput() {
+    const input = nativeInput(4);
+    const pty = spawnTerminalPty('sh', [], {}, nodeSpawn) as TerminalPty;
+    pty.write('abc'); pty.write('def');
+    expect(pty.pendingInputBytes).toBe(6);
+    return { input, pty };
+  }
+  /** Nothing is held and nothing more reaches the transport. */
+  async function expectReleased({ input, pty }: Awaited<ReturnType<typeof holdInput>>) {
+    input.state.pending = 0;
+    expect(pty.pendingInputBytes).toBe(0);
+    const calls = transport.write.mock.calls.length;
+    wake(); await tick(); pty.write('late');
+    expect(transport.write).toHaveBeenCalledTimes(calls);
+    expect(input.text()).toBe('abc');
+  }
+
+  it('releases held input on dispose', async () => {
+    const held = await holdInput();
+    held.pty.dispose?.();
+    await expectReleased(held);
+  });
+
+  it('releases held input on exit', async () => {
+    const held = await holdInput();
+    transport.read.mockReturnValueOnce({ ...idle, pendingInputBytes: 3, eof: true, childExited: true, exitCode: 0 });
+    wake(); await tick();
+    await expectReleased(held);
+  });
+
+  it('releases held input when the transport fails', async () => {
+    const held = await holdInput();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      transport.read.mockImplementationOnce(() => { throw new Error('native read failed'); });
+      wake(); await tick();
+      await expectReleased(held);
+    } finally { log.mockRestore(); }
   });
 });
 

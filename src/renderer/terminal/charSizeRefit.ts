@@ -1,4 +1,5 @@
 import type { IDisposable, Terminal } from '@xterm/xterm';
+import { isWongttyTerminal } from './wongtty/load';
 
 /**
  * Char-size re-measure hooks for the bundled webfont race (#1497).
@@ -37,6 +38,8 @@ function charSizeService(terminal: Terminal) {
  *  event only when the measurement actually differs, so calling it with an
  *  up-to-date cell is a no-op. Safe before `open()` and on a hidden pane. */
 export function forceCharSizeMeasure(terminal: Terminal): void {
+  // wongtty re-measures by itself when fonts finish loading.
+  if (isWongttyTerminal(terminal)) return;
   try {
     charSizeService(terminal)?.measure?.();
   } catch {
@@ -47,5 +50,7 @@ export function forceCharSizeMeasure(terminal: Terminal): void {
 /** Subscribe to xterm's char-size change. Returns undefined when the terminal
  *  is not open yet or the internals changed shape. */
 export function onCharSizeChange(terminal: Terminal, listener: () => void): IDisposable | undefined {
+  // wongtty: the public event, which fires when the cell size changes.
+  if (isWongttyTerminal(terminal)) return terminal.onDimensionsChange(listener);
   return charSizeService(terminal)?.onCharSizeChange?.(listener);
 }

@@ -72,6 +72,8 @@ function scriptedPane(opts: PaneOptions = {}) {
       keyInputQuiet: true,
       ...(opts.handoff ? { hasDraft: composer !== '', keyInputIdleMs: clock - lastKeyAt } : {}),
     })),
+    // A closed pipe stays closed: no reattach opens a new one (#3073).
+    waitForSessionPipe: async () => !pipeClosed,
     writeToSession: (_id: string, data: string) => {
       if (pipeClosed) return false;
       writes.push(data);
