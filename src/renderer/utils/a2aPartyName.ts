@@ -1,22 +1,12 @@
 import type { AgentSlug } from '../../shared/events';
 import type { PaneLeaf, Surface } from '../../shared/types';
 import { AGENT_SLUG_SET } from '../../shared/agentIdentity';
-import { stripBidi } from '../../shared/a2aSpawnPrompt';
+import { flattenName } from '../../shared/a2aNameSanitize';
 import { getWorkspaceLeafPanes, type WorkspacePaneOwner } from '../../shared/paneUtils';
 import { isBareShellTitle } from '../stores/selectors/workspaceAgentRoster';
 import { sanitizeA2aName } from './a2aFormat';
 import { computePaneAutoName, isAutoNameShape } from './paneNaming';
 
-// Control (Cc) characters and the line/paragraph separators U+2028/U+2029
-// become spaces, so a name can never forge a prompt line. Zero-width format
-// (Cf) characters are dropped outright, so `re<zwsp>lease` reads exactly like
-// `release`. Bidi marks are removed separately by stripBidi (which also covers
-// U+061C, U+200E, U+200F, U+202A–U+202E and U+2066–U+2069), so these classes
-// need no literal bidi characters.
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\p{Cc}\u2028\u2029]/gu;
-// eslint-disable-next-line no-misleading-character-class
-const FORMAT_CHARS = /\p{Cf}/gu;
 // Paths, prompts (`user@host:~`, `MINGW64:/c/x`) and executables are where a
 // shell or ConPTY titles a terminal, never a name a person typed.
 const NOT_A_NAME = /[\\/:@]|\.(exe|cmd|bat|ps1|sh)$/i;
@@ -25,13 +15,6 @@ const NOT_A_NAME = /[\\/:@]|\.(exe|cmd|bat|ps1|sh)$/i;
 const TERMINAL_PART_MAX = 60;
 
 type TitledSurface = Pick<Surface, 'title' | 'cwd' | 'userName'>;
-
-/** Flatten a name the same way before any comparison or embedding: bidi and
- *  zero-width format characters are dropped, controls/separators become
- *  spaces, then collapse. */
-function flattenName(text: string): string {
-  return stripBidi(text).replace(CONTROL_CHARS, ' ').replace(FORMAT_CHARS, '').replace(/\s+/g, ' ').trim();
-}
 
 /**
  * The name a terminal may contribute to an A2A party name, or undefined.
@@ -73,10 +56,19 @@ export function terminalManualName(
 function joinA2aName(wsName: string, party: string): string {
   const clean = sanitizeA2aName(flattenName(party));
   if (!clean) return sanitizeA2aName(wsName);
-  const terminal = clean.slice(0, TERMINAL_PART_MAX);
+  const terminal = truncateTerminal(clean, TERMINAL_PART_MAX);
   const ws = sanitizeA2aName(wsName);
   const room = Math.max(1, 100 - terminal.length - 1);
   return `${ws.slice(0, room)}.${terminal}`;
+}
+
+/** Cut a party to `max` characters but keep a trailing `.N` tab number, so
+ *  `label.1` and `label.2` never read the same after the cut. */
+function truncateTerminal(party: string, max: number): string {
+  if (party.length <= max) return party;
+  const m = /^(.*)(\.\d+)$/.exec(party);
+  if (m) return m[1].slice(0, max - m[2].length) + m[2];
+  return party.slice(0, max);
 }
 
 /**

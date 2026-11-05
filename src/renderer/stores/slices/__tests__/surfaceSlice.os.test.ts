@@ -404,6 +404,14 @@ describe('surfaceSlice.renameSurface', () => {
     expect(surface.userName).toBeUndefined();
   });
 
+  it('refuses a coordinate-shaped name even with a hidden format character', () => {
+    const { slice, surfaceId, surface } = harness();
+    slice.renameSurface(surfaceId, 'w\u200b1-2');
+
+    expect(surface.title).toBe('pwsh');
+    expect(surface.userName).toBeUndefined();
+  });
+
   it('is cleared by resetSurfaceTitle', () => {
     const { slice, surfaceId, surface } = harness();
     slice.renameSurface(surfaceId, 'api-server');

@@ -173,4 +173,24 @@ describe('resolvePaneName', () => {
     expect(res.ok ? '' : res.error).toContain('#w1-1.1(claude)');
     expect(res.ok ? '' : res.error).toContain('#w1-1.2(claude)');
   });
+
+  it('does not let a coordinate silently win over a label in the other interpretation', () => {
+    const wss = [
+      ws('ws-api', 1, [leaf('api-pane', 2, [term('api-srf', 'api-daemon')])], [], 'api'),
+      ws('ws-a2', 2, [leaf('a2-pane', 1, [term('a2-srf', 'a2-daemon')])]),
+    ];
+    // `#api.w1-2`: full token → label `api.w1-2` (a2-pane); prefix → ws `api` + coordinate `w1-2` (api-pane).
+    const res = resolvePaneName(wss, { 'a2-pane': 'api.w1-2' }, {}, '#api.w1-2');
+    expect(res).toMatchObject({ ok: false, reason: 'ambiguous' });
+  });
+
+  it('does not silently choose when the prefix splits a coordinate+tab name', () => {
+    const wss = [
+      ws('ws-a', 1, [leaf('pane-a1', 2, [term('srf-1', 'daemon-1'), term('srf-2', 'daemon-2')])]),
+      ws('ws-w', 2, [leaf('w-pane', 1, [term('w-srf', 'w-daemon', '1')])], [], 'w1-2'),
+    ];
+    // `#w1-2.1`: full token → coordinate w1-2 tab 1 (pane-a1); prefix → ws `w1-2` + userName `1` (w-pane).
+    const res = resolvePaneName(wss, {}, {}, '#w1-2.1');
+    expect(res).toMatchObject({ ok: false, reason: 'ambiguous' });
+  });
 });

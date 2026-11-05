@@ -134,6 +134,14 @@ describe('a2aPartyName', () => {
     expect(a2aPartyName(long, {}, claude('pty-a'), 'pty-a')).toBe('Acme.' + 'x'.repeat(60));
   });
 
+  it('keeps the tab number when a long label is truncated', () => {
+    const label = 'x'.repeat(70);
+    const w = wsOf(leaf('a', 1, { ptyId: 'pty-1' }, { ptyId: 'pty-2' }));
+    const agents = { 'pty-1': { slug: 'claude' as const }, 'pty-2': { slug: 'codex' as const } };
+    expect(a2aPartyName(w, { a: label }, agents, 'pty-1')).toBe('Acme.' + 'x'.repeat(58) + '.1');
+    expect(a2aPartyName(w, { a: label }, agents, 'pty-2')).toBe('Acme.' + 'x'.repeat(58) + '.2');
+  });
+
   it('flattens control, bidi and format characters out of a name', () => {
     const bidi = wsOf(leaf('a', 1, { ptyId: 'pty-a', userName: 'build\u202e' }));
     expect(a2aPartyName(bidi, {}, claude('pty-a'), 'pty-a')).toBe('Acme.build');

@@ -188,23 +188,22 @@ export function resolvePaneName(
     if (wsToken && partyToken) prefixed = collectMatches(workspaces, paneLabel, wsToken, partyToken);
   }
 
-  // A coordinate match wins outright (globally unique), across interpretations.
-  const coordMatches = dedup([...full.coord, ...prefixed.coord]);
-  if (coordMatches.length > 0) {
-    if (coordMatches.length > 1) return ambiguous(coordMatches, shown, surfaceAgent);
-    return ok(coordMatches[0], paneLabel, surfaceAgent);
-  }
+  // Within ONE interpretation a coordinate match wins outright (it is globally
+  // unique); ACROSS interpretations a hit in both is ambiguous — the resolver
+  // must never silently choose one target over the other.
+  const winnersOf = (r: { coord: Match[]; label: Match[]; name: Match[] }): Match[] =>
+    r.coord.length > 0 ? r.coord : [...r.label, ...r.name];
+  const matches = dedup([...winnersOf(full), ...winnersOf(prefixed)]);
 
-  const others = dedup([...full.label, ...full.name, ...prefixed.label, ...prefixed.name]);
-  if (others.length === 0) {
+  if (matches.length === 0) {
     return {
       ok: false,
       reason: 'not_found',
       error: `no pane named "${shown}" (pane_list and a2a_discover list each pane's paneTag and paneName)`,
     };
   }
-  if (others.length > 1) return ambiguous(others, shown, surfaceAgent);
-  return ok(others[0], paneLabel, surfaceAgent);
+  if (matches.length > 1) return ambiguous(matches, shown, surfaceAgent);
+  return ok(matches[0], paneLabel, surfaceAgent);
 }
 
 function ok(

@@ -11,6 +11,7 @@ import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { publishPaneClosed } from '../../events/publisher';
 import { panePrincipalId } from '../../../shared/principals';
+import { flattenName } from '../../../shared/a2aNameSanitize';
 import { computePaneAutoName, isAutoNameShape } from '../../utils/paneNaming';
 import { recomputeWorkspacePorts } from './workspacePorts';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
@@ -567,7 +568,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
   renameSurface: (surfaceId, name) => set((state: StoreState) => {
     // A coordinate-shaped name would shadow (or read as) a real pane's tag in
     // the resolver, so the rename is refused outright — no title, no userName.
-    if (isAutoNameShape(name)) return;
+    // Flatten first so a hidden format/bidi character (`w<zwsp>1-2`) cannot
+    // smuggle the shape past the check.
+    if (isAutoNameShape(flattenName(name))) return;
     for (const ws of state.workspaces) {
       for (const pane of getWorkspaceLeafPanes(ws)) {
         const surface = pane.surfaces.find((s) => s.id === surfaceId);
