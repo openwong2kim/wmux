@@ -55,7 +55,11 @@ describe('SessionPipe.releaseClient', () => {
     const { pipe, socket } = await connected({ allowHalfOpen: true });
     const startedAt = Date.now();
     await pipe.releaseClient(150);
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(140);
+    // A Windows named pipe has no half-close: ending the daemon's side closes
+    // it, so there is nothing to wait for. Elsewhere the client really holds
+    // its side open, and the release waits out its bound.
+    if (process.platform !== 'win32') expect(Date.now() - startedAt).toBeGreaterThanOrEqual(140);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
     await pipe.stop();
     await waitFor(() => socket.destroyed || socket.readableEnded, 5_000);
   });

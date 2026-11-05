@@ -461,7 +461,8 @@ export class SessionPipe {
    * discards bytes this end has not read yet, so the daemon ends its side
    * instead and keeps forwarding input until the client closes. main's
    * socket does not allow half-open (Node's default), so it ends its own side
-   * right after what it already wrote. Output from here on stays in the ring,
+   * right after what it already wrote (a Windows named pipe has no half-close
+   * and closes at once). Output from here on stays in the ring,
    * for the next pipe's flush. A client that has not closed by `timeoutMs` is
    * destroyed by stop() as before.
    */
