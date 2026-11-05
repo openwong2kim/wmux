@@ -123,6 +123,14 @@ describe('a2aPartyName', () => {
     expect(a2aPartyName(w, { a: 'api', b: 'foo' }, agents, 'pty-c')).toBe('Acme.w2-3(claude)');
   });
 
+  it('a name spelling a labeled pane falls back even when that pane holds several terminals', () => {
+    const w = wsOf(
+      leaf('a', 1, { ptyId: 'pty-a1' }, { ptyId: 'pty-a2' }),
+      leaf('b', 2, { ptyId: 'pty-b', userName: 'backend' }));
+    // Pane a's terminals read `backend.1` / `backend.2`; the bare label still names pane a.
+    expect(a2aPartyName(w, { a: 'backend' }, undefined, 'pty-b')).toBe('Acme.w2-2');
+  });
+
   it('reserves the terminal part when the workspace name is very long', () => {
     const long = wsOf(leaf('a', 1, { ptyId: 'pty-a' }));
     long.name = 'A'.repeat(100);

@@ -126,8 +126,10 @@ export function a2aPartyName(
     // never pass for it.
     const matches = (party: string | undefined): boolean =>
       party !== undefined && joinA2aName(ws.name, party).toLowerCase() === ownFull;
-    const taken = leaves.some((l) =>
-      l.surfaces.some((s) => isTerm(s) && s.ptyId !== ptyId
+    // A pane label is reserved bare too: a labeled pane with several terminal
+    // tabs falls back to `label.N`, but the bare label still names that pane.
+    const taken = leaves.some((l) => matches(labelOf(l))
+      || l.surfaces.some((s) => isTerm(s) && s.ptyId !== ptyId
         && (matches(ownName(s)) || matches(fallbackOf(l, s)))));
     if (!taken) return joinA2aName(ws.name, own);
   }

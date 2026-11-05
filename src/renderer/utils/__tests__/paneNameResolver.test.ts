@@ -98,6 +98,12 @@ describe('resolvePaneName', () => {
     });
   });
 
+  it('resolves a userName by the flattened name an agent reads', () => {
+    const wss = [ws('ws-a', 1, [leaf('pane-a1', 1, [term('srf-a1', 'daemon-a1', 'My  Agent\u200b')])])];
+    const res = resolvePaneName(wss, {}, {}, '#My Agent');
+    expect(res.ok && res.target).toMatchObject({ surfaceId: 'srf-a1', ptyId: 'daemon-a1' });
+  });
+
   it('resolves the Workspace.name form, scoped to one workspace', () => {
     const wss = [
       ws('ws-a', 1, [leaf('a', 1, [term('srf-a', 'daemon-a', 'copywriter')])], [], 'Marketing'),

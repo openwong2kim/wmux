@@ -10,6 +10,7 @@ import type { AgentSlug } from '../../shared/events';
 import type { Pane, PaneLeaf, Surface } from '../../shared/types';
 import { getWorkspaceLeafPanes } from '../../shared/paneUtils';
 import { normalizePaneLabel } from '../../shared/paneLabelRules';
+import { flattenName } from '../../shared/a2aNameSanitize';
 import { sanitizePaneTitle } from '../hooks/a2aAddressing';
 import { activeAgentSlug, computePaneAutoName, paneNameFields } from './paneNaming';
 
@@ -113,8 +114,9 @@ function collectMatches(
       }
       for (const surface of leaf.surfaces) {
         if (!isTerm(surface)) continue;
-        const userName = surface.userName?.trim();
-        if (userName && userName.toLowerCase() === party.toLowerCase()) {
+        // Flattened like the name a receiving agent reads (terminalManualName).
+        const userName = flattenName(surface.userName ?? '');
+        if (userName && userName.toLowerCase() === flattenName(party).toLowerCase()) {
           nameMatches.push({ ws, leaf, surface });
         }
       }

@@ -1678,9 +1678,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     saveSessionNow();
   },
   a2aTerminalNames: false,
-  setA2aTerminalNames: (enabled) => set((state) => {
-    state.a2aTerminalNames = enabled;
-  }),
+  setA2aTerminalNames: (enabled) => {
+    set((state) => {
+      state.a2aTerminalNames = enabled;
+    });
+    // A quit right after the toggle keeps the new value.
+    saveSessionNow();
+  },
   terminalEngine: 'xterm',
   setTerminalEngine: (engine) => set((state) => {
     state.terminalEngine = engine;
