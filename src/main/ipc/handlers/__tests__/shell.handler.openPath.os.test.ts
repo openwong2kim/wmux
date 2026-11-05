@@ -216,10 +216,30 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       }
     });
 
-    it.each(['explorer', 'vscode'])('refuses to open a credential folder with %s', async (appId) => {
-      const result = await getHandler(IPC.SHELL_OPEN_WITH)(fakeEvent, { appId, folderPath: path.join(os.homedir(), '.ssh') });
+    it('refuses to open a credential folder with Open with', async () => {
+      const result = await getHandler(IPC.SHELL_OPEN_WITH)(fakeEvent, { appId: 'explorer', folderPath: path.join(os.homedir(), '.ssh') });
       expect(openPath).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
+    it('refuses a missing path inside a linked credential folder, without revealing it', async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-home-'));
+      try {
+        vi.spyOn(os, 'homedir').mockReturnValue(home);
+        fs.mkdirSync(path.join(home, '.ssh'));
+        const link = path.join(home, 'keys');
+        fs.symlinkSync(path.join(home, '.ssh'), link);
+        const missing = path.join(link, 'gone', 'id_rsa');
+        const opened = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, missing);
+        const openedWith = await getHandler(IPC.SHELL_OPEN_WITH)(fakeEvent, { appId: 'explorer', folderPath: link });
+        expect(openPath).not.toHaveBeenCalled();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+        expect(opened).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+        expect(openedWith).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+      } finally {
+        vi.restoreAllMocks();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
     });
 
     // A share path is absolute only on Windows.

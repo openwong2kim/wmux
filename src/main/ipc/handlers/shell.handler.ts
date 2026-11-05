@@ -39,6 +39,27 @@ const BLOCKED_EXTENSIONS = new Set<string>([
   '.command', '.app', '.tool', '.terminal', '.workflow', '.sh',
 ]);
 
+/**
+ * Whether opening `target` would hand the OS a credential location: as given,
+ * resolved (a root-relative Windows path takes the drive), and by its real
+ * path, so a link or an 8.3 short name into ~/.ssh is refused too. A path
+ * that does not exist takes the real path of its nearest existing parent, or
+ * a failed open would reveal that parent folder.
+ */
+async function isSensitiveTarget(target: string, p: Pick<typeof path, 'resolve' | 'dirname' | 'basename' | 'join'>): Promise<boolean> {
+  if (isSensitivePath(target) || isSensitivePath(p.resolve(target))) return true;
+  let dir = target;
+  const missing: string[] = [];
+  for (;;) {
+    const real = await fs.realpath(dir).catch(() => null);
+    if (real !== null) return isSensitivePath(missing.length ? p.join(real, ...missing.reverse()) : real);
+    const parent = p.dirname(dir);
+    if (parent === dir) return false;
+    missing.push(p.basename(dir));
+    dir = parent;
+  }
+}
+
 export function registerShellHandlers(): () => void {
   const detector = new ShellDetector();
 
@@ -95,10 +116,8 @@ export function registerShellHandlers(): () => void {
       throw new Error('path must be absolute');
     }
     // A credential location the in-app viewer refuses is refused here too,
-    // without revealing its folder: a click must not hand it to the OS. Its
-    // real path is checked as well, so a link into ~/.ssh is refused too.
-    const real = await fs.realpath(normalized).catch(() => normalized);
-    if (isSensitivePath(normalized) || isSensitivePath(real)) {
+    // without revealing its folder: a click must not hand it to the OS.
+    if (await isSensitiveTarget(normalized, path)) {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
     // Block executable extensions — refuse the open and reveal the folder
@@ -200,15 +219,12 @@ export function registerShellHandlers(): () => void {
     if (!plat().isAbsolute(normalized)) {
       throw new Error('folderPath must be absolute');
     }
-    // The folder is a workspace's cwd, which the shell in it reports, so it
-    // gets the same credential-location check as SHELL_OPEN_PATH, for every
-    // app: its real path too, so a link or a short name into ~/.ssh is refused.
-    const real = await fs.realpath(normalized).catch(() => normalized);
-    if (isSensitivePath(normalized) || isSensitivePath(real)) {
-      return { ok: false, error: 'BLOCKED_SENSITIVE' };
-    }
+    // The folder is a workspace's cwd, which the shell in it reports, so every
+    // app gets the same credential-location check as SHELL_OPEN_PATH.
+    const blocked = { ok: false, error: 'BLOCKED_SENSITIVE' } as const;
 
     if (appId === 'explorer') {
+      if (await isSensitiveTarget(normalized, plat())) return blocked;
       const err = await shell.openPath(normalized);
       if (err) shell.showItemInFolder(normalized);
       return { ok: !err, error: err || undefined };
@@ -216,6 +232,7 @@ export function registerShellHandlers(): () => void {
 
     const appEntry = (await getAvailableFolderApps()).find(a => a.id === appId);
     if (!appEntry) throw new Error(`Unknown app: ${appId}`);
+    if (await isSensitiveTarget(normalized, plat())) return blocked;
 
     return launchFolderApp(appEntry, normalized);
   }));

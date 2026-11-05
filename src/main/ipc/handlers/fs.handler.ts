@@ -55,15 +55,17 @@ export function homeRoots(): string[] {
   return roots[0] === roots[1] ? [roots[0]] : roots;
 }
 
-const WSL_SHARE_PREFIX = /^\/\/(?:wsl\.localhost|wsl\$)\/[^/]+(?=\/|$)/;
+const SHARE_PREFIX = /^\/\/[^/]+\/[^/]+(?=\/|$)/;
 
 /**
- * A WSL share (`\\wsl$\<distro>\...`) lives in the Linux filesystem, so the
- * Windows home comparison never sees it. The same blocked names are matched as
- * whole path segments anywhere after the distro segment.
+ * A share path (`\\host\share\...`): a WSL distro (`\\wsl$\<distro>`), or any
+ * other host, this machine's own included (`\\localhost\C$\Users\...`), whose
+ * real path stays a share path. The home comparison never sees it, so the
+ * same blocked names are matched as whole path segments anywhere after the
+ * share segment.
  */
-function isSensitiveWslPath(normalized: string): boolean {
-  const m = WSL_SHARE_PREFIX.exec(normalized);
+function isSensitiveSharePath(normalized: string): boolean {
+  const m = SHARE_PREFIX.exec(normalized);
   if (!m) return false;
   const rest = '/' + normalized.slice(m[0].length).split('/').filter(Boolean).join('/');
   for (const dir of BLOCKED_DIRS) {
@@ -85,26 +87,33 @@ function isSensitiveWslPath(normalized: string): boolean {
  */
 function foldWindowsSpelling(normalized: string): string {
   let p = normalized;
-  if (p.startsWith('//?/unc/')) p = '//' + p.slice('//?/unc/'.length);
+  if (/^\/\/[?.]\/unc\//.test(p)) p = '//' + p.slice('//?/unc/'.length);
   else if (/^\/\/[?.]\/[a-z]:\//.test(p)) p = p.slice(4);
   const drive = /^[a-z]:\//.test(p);
-  if (!drive && !p.startsWith('//')) return p;
-  return p.split('/').map((seg, i) => {
+  if (!drive && !/^\/\/[^/?.]/.test(p)) return p;
+  const folded = p.split('/').map((seg, i) => {
     if ((drive && i === 0) || seg === '' || /^\.+$/.test(seg)) return seg;
     const stream = seg.indexOf(':');
     return (stream >= 0 ? seg.slice(0, stream) : seg).replace(/[. ]+$/, '');
   }).join('/');
+  // A segment that folded to nothing leaves `//`; keep a share's leading pair.
+  return folded.slice(0, 2) + folded.slice(2).replace(/\/{2,}/g, '/');
 }
+
+/** A device or namespace spelling still left after folding (`\\?\Volume{…}`,
+ *  `\\.\GLOBALROOT`, `\??\`): no link or folder a user opens takes one. */
+const DEVICE_SPELLING = /^(?:\/\/[?.]\/|\/\?\?\/)/;
 
 export function isSensitivePath(resolvedPath: string): boolean {
   const normalized = foldWindowsSpelling(resolvedPath.replace(/\\/g, '/').toLowerCase());
-  if (isSensitiveWslPath(normalized)) return true;
+  if (DEVICE_SPELLING.test(normalized)) return true;
+  if (isSensitiveSharePath(normalized)) return true;
 
   for (const homeNorm of homeRoots()) {
     // Block directories under home
     for (const dir of BLOCKED_DIRS) {
       const blocked = (homeNorm + '/' + dir).toLowerCase();
-      if (normalized.startsWith(blocked)) return true;
+      if (normalized === blocked || normalized.startsWith(blocked + '/')) return true;
     }
 
     // Block specific files in home

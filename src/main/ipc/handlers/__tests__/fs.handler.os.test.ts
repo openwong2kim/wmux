@@ -203,6 +203,15 @@ describe('isSensitivePath — Windows path spellings', () => {
     'C:\\Users\\tester\\.npmrc . .',
     'C:\\Users\\tester\\.netrc::$DATA',
     'C:\\Users\\tester.\\.wmux-auth-token',
+    '//?/c:/users/tester/.ssh/id_rsa',
+    'C:\\Users\\tester\\.ssh::$INDEX_ALLOCATION\\id_rsa',
+    'C:\\Users\\tester\\.ssh.\\id_rsa',
+    'C:\\Users\\tester\\ \\.ssh\\id_rsa',
+    '\\\\.\\UNC\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa',
+    '\\\\localhost\\C$\\Users\\tester\\.ssh\\id_rsa',
+    '\\\\127.0.0.1\\c$\\Users\\tester\\.aws\\credentials',
+    '\\\\?\\Volume{0f1e2d3c}\\Users\\tester\\notes.md',
+    '\\\\.\\GLOBALROOT\\Device\\HarddiskVolume3\\Users\\tester\\notes.md',
   ])('blocks %s', (p) => {
     expect(isSensitivePath(p)).toBe(true);
   });
@@ -213,5 +222,30 @@ describe('isSensitivePath — Windows path spellings', () => {
     '\\\\?\\C:\\Users\\tester\\proj\\readme.md',
   ])('allows %s', (p) => {
     expect(isSensitivePath(p)).toBe(false);
+  });
+});
+
+// POSIX names are taken as written: a trailing dot or a colon is part of the
+// name there, and a blocked directory matches only as a whole segment.
+describe('isSensitivePath — POSIX names', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(os, 'homedir').mockReturnValue('/home/tester');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    '/home/tester/.npmrc.',
+    '/home/tester/a:b',
+    '/home/tester/.sshfs-mounts/x',
+  ])('allows %s', (p) => {
+    expect(isSensitivePath(p)).toBe(false);
+  });
+
+  it('still blocks the directory itself and what is under it', () => {
+    expect(isSensitivePath('/home/tester/.ssh')).toBe(true);
+    expect(isSensitivePath('/home/tester/.ssh/id_rsa')).toBe(true);
   });
 });
