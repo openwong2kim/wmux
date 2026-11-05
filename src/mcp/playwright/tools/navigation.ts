@@ -30,6 +30,7 @@ import { refererFor } from '../../../shared/referer';
 import { NavigationNotCommittedError, navigateFromPage } from '../link-navigation';
 import { getOpenerKey, noteOpenedSurface } from '../surfaceRouting';
 import { BORROW_RPC_TIMEOUT_MS } from '../../../shared/liveWriteScope';
+import { CHROME_START_RPC_TIMEOUT_MS } from '../../../shared/chromeStart';
 import {
   browserTabsError,
   isBrowserTabsResult,
@@ -173,7 +174,7 @@ async function recordNavigationFailure(
   }
   // The race leaves `write` unhandled when the timeout won, and an unhandled
   // rejection would be reported against a navigation that already returned.
-  write.catch(() => {});
+  write.catch(() => undefined);
 }
 
 function tabsToolError(result: BrowserTabsErrorResult) {
@@ -724,15 +725,18 @@ export function registerNavigationTools(server: McpServer, deps: BrowserToolDeps
         });
         // `borrow` blocks on a human, so it cannot share the 10 s default: that
         // capped the user's 60 s answer window at ten seconds and reported a
-        // prompt still on screen as "temporarily unavailable". Every other action
-        // keeps the default.
-        // Spread rather than a ternary over two calls: only borrow carries a
-        // timeout argument at all, and every other action reaches sendRpc with
+        // prompt still on screen as "temporarily unavailable". `new` may start
+        // wmux's own Chrome, which can take up to 30 s on a cold disk: on the
+        // default the call failed here while main went on to open the tab, and
+        // a retry opened a second one. Every other action keeps the default.
+        // Spread rather than a ternary over two calls: only borrow and new carry
+        // a timeout argument at all, and every other action reaches sendRpc with
         // exactly the arguments it had before.
         const call = async (withUrl: string | undefined) => {
           const params = tabsParams(withUrl);
           const tabsArgs: [typeof params, number?] =
-            resolvedAction === 'borrow' ? [params, BORROW_RPC_TIMEOUT_MS] : [params];
+            resolvedAction === 'borrow' ? [params, BORROW_RPC_TIMEOUT_MS]
+              : resolvedAction === 'new' ? [params, CHROME_START_RPC_TIMEOUT_MS] : [params];
           const result = await sendRpc('browser.tabs', ...tabsArgs);
           if (!isBrowserTabsResult(result)) {
             throw new Error('Invalid browser.tabs response from wmux main.');

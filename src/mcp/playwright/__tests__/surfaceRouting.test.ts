@@ -17,6 +17,7 @@ vi.mock('../../wmux-client', () => ({
 }));
 
 import { createConnectionScope, runInConnectionScope } from '../../connectionScope';
+import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
 import {
   __resetSurfaceRoutingForTesting,
   clearPinnedSurface,
@@ -283,6 +284,41 @@ describe('resolveDefaultSurface over the transport', () => {
       surfaceId: 'surf-restored',
       openerKey: expect.any(String),
     });
+  });
+
+  it('the calls that may start wmux\'s own Chrome wait out its cold start, not the 10 s default', async () => {
+    let created = false;
+    mockSendRpc.mockImplementation((method: string, params?: { action?: string }) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({ targetsScoped: true, workspaceBackend: 'chrome', targets: created ? [{ surfaceId: 'surf-new' }] : [] });
+      }
+      if (method === 'browser.tabs' && params?.action === 'list') return Promise.resolve({ ok: true, action: 'list', tabs: [] });
+      if (method === 'browser.tabs' && params?.action === 'new') {
+        created = true;
+        return Promise.resolve({ ok: true, action: 'new', tab: { surfaceId: 'surf-new' } });
+      }
+      return Promise.resolve({ ok: true });
+    });
+
+    // The first contact (a default target) and the open of a new one.
+    await resolveDefaultSurface(WS);
+    const first = mockSendRpc.mock.calls[0] as unknown[];
+    expect(first[0]).toBe('browser.cdp.info');
+    expect(first[2]).toBeGreaterThan(CHROME_START_CEILING_MS);
+    await expect(openSurfaceForConnection(WS)).resolves.toBe('surf-new');
+    const opened = mockSendRpc.mock.calls.find((c) => c[0] === 'browser.tabs' && (c[1] as { action?: string }).action === 'new') as unknown[] | undefined;
+    expect(opened?.[2]).toBeGreaterThan(CHROME_START_CEILING_MS);
+
+    // A main without `browser.tabs new`: the browser.open fallback waits as long.
+    mockSendRpc.mockReset();
+    mockSendRpc.mockImplementation((method: string, params?: { action?: string }) => {
+      if (method === 'browser.tabs' && params?.action === 'new') return Promise.reject(new Error('Unknown method: browser.tabs'));
+      if (method === 'browser.open') return Promise.resolve({ surfaceId: 'surf-open' });
+      return Promise.resolve({ ok: true });
+    });
+    await expect(openSurfaceForConnection(WS)).resolves.toBe('surf-open');
+    const fallback = mockSendRpc.mock.calls.find((c) => c[0] === 'browser.open') as unknown[] | undefined;
+    expect(fallback?.[2]).toBeGreaterThan(CHROME_START_CEILING_MS);
   });
 
   it('adopts a pane whose guest has not registered a target yet', async () => {

@@ -12,6 +12,7 @@ import {
 } from '../tools/navigation';
 import type { BrowserToolDeps } from '../browserScope';
 import { BORROW_APPROVAL_DEADLINE_MS } from '../../../shared/liveWriteScope';
+import { CHROME_START_CEILING_MS } from '../../../shared/chromeStart';
 
 type ToolResult = {
   content: { type: 'text'; text: string }[];
@@ -540,6 +541,15 @@ describe('browser navigation MCP workspace contract', () => {
 
     const [, , timeoutMs] = mockSendRpc.mock.calls[0] as [string, unknown, number];
     expect(timeoutMs).toBeGreaterThan(BORROW_APPROVAL_DEADLINE_MS);
+  });
+
+  it('new may start wmux\'s own Chrome: its deadline outlasts a cold start', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, action: 'new', tab: { surfaceId: 'surface-n', paneId: 'pane-n', url: 'about:blank', title: '', selected: true } });
+
+    await browserTabs({ action: 'new' });
+
+    const [, , timeoutMs] = mockSendRpc.mock.calls[0] as [string, unknown, number];
+    expect(timeoutMs).toBeGreaterThan(CHROME_START_CEILING_MS);
   });
 
   it('every other action keeps the default deadline, argument for argument', async () => {

@@ -1,5 +1,6 @@
 import * as crypto from 'crypto';
 import { sendRpc } from '../wmux-client';
+import { CHROME_START_RPC_TIMEOUT_MS } from '../../shared/chromeStart';
 import { getConnectionScope } from '../connectionScope';
 import { browserCallRefusal, WorkspaceScopeUnresolvedError } from './browserScope';
 
@@ -494,11 +495,12 @@ async function workspaceOwnsSurface(
 
 async function openSurface(workspaceId: string): Promise<string | null> {
   try {
+    // May start wmux's own Chrome: a cold start outlasts the 10 s default.
     const created = (await sendRpc('browser.tabs', {
       action: 'new',
       workspaceId,
       openerKey: getOpenerKey(),
-    })) as { ok?: unknown; action?: unknown; tab?: { surfaceId?: unknown } } | undefined;
+    }, CHROME_START_RPC_TIMEOUT_MS)) as { ok?: unknown; action?: unknown; tab?: { surfaceId?: unknown } } | undefined;
     if (created?.ok === true) {
       return typeof created.tab?.surfaceId === 'string' && created.tab.surfaceId
         ? created.tab.surfaceId
@@ -518,7 +520,7 @@ async function openSurface(workspaceId: string): Promise<string | null> {
   const reply = (await sendRpc('browser.open', {
     workspaceId,
     openerKey: getOpenerKey(),
-  })) as { surfaceId?: unknown } | undefined;
+  }, CHROME_START_RPC_TIMEOUT_MS)) as { surfaceId?: unknown } | undefined;
   return typeof reply?.surfaceId === 'string' && reply.surfaceId ? reply.surfaceId : null;
 }
 
@@ -551,12 +553,14 @@ export async function resolveDefaultSurface(
   try {
     // Pass the resolved workspace so main filters `targets` server-side; the
     // response then carries only our own targets (#580, Option 1).
+    // The first browser call may start wmux's own Chrome (endpoint()): a cold
+    // start outlasts the 10 s default.
     info = (await sendRpc('browser.cdp.info', {
       workspaceId,
       // So main can answer "is this one yours?" per target without ever
       // returning anyone's key.
       openerKey: getOpenerKey(),
-    })) as RoutableCdpInfo;
+    }, CHROME_START_RPC_TIMEOUT_MS)) as RoutableCdpInfo;
   } catch (err) {
     // main answered, and the answer is a refusal — not "unavailable".
     const refusal = browserCallRefusal(err);

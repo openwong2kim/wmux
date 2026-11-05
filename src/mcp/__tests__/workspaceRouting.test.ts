@@ -100,6 +100,11 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
+  it('browser_open may start wmux\'s own Chrome: its RPC outlasts a cold start, not the 10 s default', () => {
+    const block = toolBlock('browser_open');
+    expect(block).toMatch(/'browser\.open',[\s\S]*?CHROME_START_RPC_TIMEOUT_MS,/);
+  });
+
   it('browser_close routes through the browser resolver, never the weak one', () => {
     // The close mirror of invariant 2: a surfaceId-less browser_close used to
     // fall back to the UI-active workspace and tore down whatever browser the
