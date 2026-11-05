@@ -10,6 +10,12 @@ import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
 import type { DaemonClient } from '../../../DaemonClient';
 import { COMPANY_BLOCKED_BY_REFUSAL, COMPANY_BLOCKERS_MAX, COMPANY_HOLD_KEY, companyBriefOfHistory, companyHeldMessageRefusal, companyHoldAtCreate } from '../../../../shared/companyHold';
 import type { Message, TaskState } from '../../../../shared/types';
+// The caller's workspace is checked in a2a.rpc.callerWorkspace.test.ts; these tests
+// are about the handlers once the caller is known, so they name it freely.
+vi.mock('../a2aCaller', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../a2aCaller')>()),
+  a2aCallerWorkspace: async () => ({ ok: true, trusted: true }),
+}));
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
