@@ -308,7 +308,9 @@ function navigationRefusal(reason: Exclude<NavigationVerdict, { allowed: true }>
  * A tab opened after its caller hung up (#3085). The MCP client drops the
  * connection when its RPC deadline passes, so that caller never learns the
  * tab's id, and a retry opens another. It is closed rather than left behind,
- * and the call fails (to nobody).
+ * and the call fails (to nobody). A tab another caller adopted while it was
+ * opening (browser.surface.adopt, which claims only an unclaimed tab, and
+ * this call notes its own opener only after this) is theirs, and stays.
  */
 async function keepForCaller<T extends { surfaceId: string }>(
   opened: T,
@@ -317,8 +319,12 @@ async function keepForCaller<T extends { surfaceId: string }>(
   method: string,
 ): Promise<T> {
   if (!ctx?.signal?.aborted) return opened;
-  await client.closeSurface(opened.surfaceId).catch(() => false);
-  throw new Error(`${method}: the caller left before the tab opened, so it was closed`);
+  if (surfaceOpeners.get(opened.surfaceId) !== undefined) {
+    throw new Error(`${method}: the caller left before the tab opened; another caller adopted it`);
+  }
+  const closed = await client.closeSurface(opened.surfaceId).catch(() => false);
+  if (!closed) console.warn(`[browser.rpc] ${method}: could not close tab ${opened.surfaceId}, opened after its caller left`);
+  throw new Error(`${method}: the caller left before the tab opened, so it was ${closed ? 'closed' : 'left open'}`);
 }
 
 async function validateUrl(url: string, method: string, policy: NavigationPolicyOptions): Promise<void> {

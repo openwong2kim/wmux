@@ -421,6 +421,25 @@ describe('a chrome tab opened after its caller left', () => {
     expect(await client.listTargets()).toEqual([]);
   });
 
+  it.each(calls)('%s leaves a tab another caller adopted while it opened', async (method, params) => {
+    const { client, registry } = fakeChromeRegistry();
+    const router = registerChrome(registry);
+    const caller = new AbortController();
+    const open = client.openTab.getMockImplementation();
+    if (!open) throw new Error('the fake has an openTab');
+    client.openTab.mockImplementationOnce(async (url: string, workspaceId?: string) => {
+      const tab = await open(url, workspaceId);
+      // Listed while it opened, and claimed by another agent (browser.surface.adopt).
+      surfaceOpeners.note(tab.surfaceId, OPENER_B);
+      caller.abort();
+      return tab;
+    });
+    await router.dispatch({ id: '1', method, params, ...claimOn('ws-1') } as never, { externalWire: true, signal: caller.signal });
+    expect(client.closeSurface).not.toHaveBeenCalled();
+    expect(surfaceOpeners.get('chrome-1')).toBe(OPENER_B);
+    expect((await client.listTargets()).map((t) => t.surfaceId)).toEqual(['chrome-1']);
+  });
+
   it.each(calls)('%s keeps the tab while the caller still waits', async (method, params) => {
     const { client, registry } = fakeChromeRegistry();
     const router = registerChrome(registry);
