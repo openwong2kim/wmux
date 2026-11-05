@@ -216,6 +216,12 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       }
     });
 
+    it.each(['explorer', 'vscode'])('refuses to open a credential folder with %s', async (appId) => {
+      const result = await getHandler(IPC.SHELL_OPEN_WITH)(fakeEvent, { appId, folderPath: path.join(os.homedir(), '.ssh') });
+      expect(openPath).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
     // A share path is absolute only on Windows.
     it.runIf(process.platform === 'win32')('refuses a WSL share path into ~/.ssh', async () => {
       const handler = getHandler(IPC.SHELL_OPEN_PATH);

@@ -200,6 +200,13 @@ export function registerShellHandlers(): () => void {
     if (!plat().isAbsolute(normalized)) {
       throw new Error('folderPath must be absolute');
     }
+    // The folder is a workspace's cwd, which the shell in it reports, so it
+    // gets the same credential-location check as SHELL_OPEN_PATH, for every
+    // app: its real path too, so a link or a short name into ~/.ssh is refused.
+    const real = await fs.realpath(normalized).catch(() => normalized);
+    if (isSensitivePath(normalized) || isSensitivePath(real)) {
+      return { ok: false, error: 'BLOCKED_SENSITIVE' };
+    }
 
     if (appId === 'explorer') {
       const err = await shell.openPath(normalized);

@@ -76,8 +76,28 @@ function isSensitiveWslPath(normalized: string): boolean {
   return false;
 }
 
+/**
+ * Windows reaches one file through spellings the plain comparison misses: the
+ * `\\?\` and `\\.\` prefixes, a dot or space at the end of a segment (Win32
+ * drops them), and a `:stream` suffix (`file::$DATA` is the file). Fold them
+ * to the plain spelling. An 8.3 short name needs the filesystem, so callers
+ * check the real path as well. `normalized` uses `/` and is lower-cased.
+ */
+function foldWindowsSpelling(normalized: string): string {
+  let p = normalized;
+  if (p.startsWith('//?/unc/')) p = '//' + p.slice('//?/unc/'.length);
+  else if (/^\/\/[?.]\/[a-z]:\//.test(p)) p = p.slice(4);
+  const drive = /^[a-z]:\//.test(p);
+  if (!drive && !p.startsWith('//')) return p;
+  return p.split('/').map((seg, i) => {
+    if ((drive && i === 0) || seg === '' || /^\.+$/.test(seg)) return seg;
+    const stream = seg.indexOf(':');
+    return (stream >= 0 ? seg.slice(0, stream) : seg).replace(/[. ]+$/, '');
+  }).join('/');
+}
+
 export function isSensitivePath(resolvedPath: string): boolean {
-  const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
+  const normalized = foldWindowsSpelling(resolvedPath.replace(/\\/g, '/').toLowerCase());
   if (isSensitiveWslPath(normalized)) return true;
 
   for (const homeNorm of homeRoots()) {

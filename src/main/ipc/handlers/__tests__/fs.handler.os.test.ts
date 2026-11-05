@@ -183,3 +183,35 @@ describe('fs.handler security helpers', () => {
     await expect(resolveAccessiblePath(path.join(home, 'project', 'missing.txt'))).resolves.toBeNull();
   });
 });
+
+// Windows reaches one file through several spellings; each must hit the same
+// rule. String-only, so it runs on every OS with a Windows-style home.
+describe('isSensitivePath — Windows path spellings', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.spyOn(os, 'homedir').mockReturnValue('C:\\Users\\tester');
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    '\\\\?\\C:\\Users\\tester\\.ssh\\id_rsa',
+    '\\\\.\\C:\\Users\\tester\\.ssh\\id_rsa',
+    '\\\\?\\UNC\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa',
+    'C:\\Users\\tester\\.npmrc.',
+    'C:\\Users\\tester\\.npmrc . .',
+    'C:\\Users\\tester\\.netrc::$DATA',
+    'C:\\Users\\tester.\\.wmux-auth-token',
+  ])('blocks %s', (p) => {
+    expect(isSensitivePath(p)).toBe(true);
+  });
+
+  it.each([
+    'C:\\Users\\tester\\notes.npmrc.txt',
+    'C:\\Users\\tester\\proj\\.npmrc-backup',
+    '\\\\?\\C:\\Users\\tester\\proj\\readme.md',
+  ])('allows %s', (p) => {
+    expect(isSensitivePath(p)).toBe(false);
+  });
+});
