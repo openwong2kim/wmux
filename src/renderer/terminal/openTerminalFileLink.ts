@@ -12,7 +12,7 @@ import { getLeafPanes } from '../../shared/paneUtils';
 import { isPreviewablePath } from '../../shared/filePreview';
 import { isWslShell } from '../../shared/wslTarget';
 import { resolveTerminalFileLink } from '../../shared/terminalFileLink';
-import { paneWslDistro } from './paneForegroundProbe';
+import { paneWslSession } from './paneForegroundProbe';
 import type { PathLocation } from './pathLinkProvider';
 
 export interface OpenTerminalFileLinkDeps {
@@ -60,8 +60,13 @@ export async function openTerminalFileLink(
   // Every OS-opener fallback below goes through here.
   const openWithOs = deps.viewerOnly ? () => deps.onFailure() : deps.openWithOs;
   const owner = locatePty(ptyId);
-  const inWsl = owner !== null && isWslShell(owner.shell, platform);
-  const distro = inWsl && ptyId ? await paneWslDistro(ptyId, window.electronAPI.pty) : undefined;
+  // The session decides; the tab label ('WSL' on a leaf's first tab) is only
+  // a fallback for when the session list cannot answer.
+  const session: { wsl: boolean; distro?: string } = owner !== null && ptyId && platform === 'win32'
+    ? await paneWslSession(ptyId, window.electronAPI.pty)
+    : { wsl: false };
+  const inWsl = owner !== null && (session.wsl || isWslShell(owner.shell, platform));
+  const distro = session.distro;
   const link = resolveTerminalFileLink({
     raw,
     hostPlatform: platform,
@@ -72,9 +77,14 @@ export async function openTerminalFileLink(
 
   if (!link) {
     // Nothing translated. An absolute path keeps the old behaviour (main
-    // validates it); a relative one has no meaning to the OS opener.
-    if (ABSOLUTE.test(raw)) openWithOs(raw.replace(/:\d+(?::\d+)?$/, ''));
-    else deps.onFailure();
+    // validates it); a relative one has no meaning to the OS opener. Neither
+    // has a POSIX path on Windows: the OS would read `/tmp/x` on the current
+    // drive, a different file from the one the pane printed.
+    if (ABSOLUTE.test(raw) && !(platform === 'win32' && raw.startsWith('/'))) {
+      openWithOs(raw.replace(/:\d+(?::\d+)?$/, ''));
+    } else {
+      deps.onFailure();
+    }
     return;
   }
 

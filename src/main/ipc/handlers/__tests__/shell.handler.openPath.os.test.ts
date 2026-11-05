@@ -8,6 +8,8 @@
  *   • openPath returning an error string triggers showItemInFolder fallback
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import * as os from 'os';
+import * as path from 'path';
 
 // ── Module mocks (hoisted; cannot reference outer test variables) ──────────
 
@@ -185,6 +187,23 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       const result = await handler(fakeEvent, input);
       expect(openPath).toHaveBeenCalledWith(input);
       expect(result).toEqual({ ok: true, error: undefined });
+    });
+
+    it('refuses a sensitive path without opening or revealing it', async () => {
+      const handler = getHandler(IPC.SHELL_OPEN_PATH);
+      const input = path.join(os.homedir(), '.ssh', 'id_rsa');
+      const result = await handler(fakeEvent, input);
+      expect(openPath).not.toHaveBeenCalled();
+      expect(showItemInFolder).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
+    // A share path is absolute only on Windows.
+    it.runIf(process.platform === 'win32')('refuses a WSL share path into ~/.ssh', async () => {
+      const handler = getHandler(IPC.SHELL_OPEN_PATH);
+      const result = await handler(fakeEvent, '\\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa');
+      expect(openPath).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
     });
 
     it('allows extension-less paths (folders)', async () => {
