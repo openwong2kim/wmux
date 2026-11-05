@@ -53,7 +53,7 @@ import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFr
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
-import { notePeerPidClaim } from './peerPidShadow';
+import { effectivePeerPid, notePeerPidClaim, notePeerPidVerdict } from './peerPidShadow';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -348,6 +348,8 @@ function resolveCodexThreadClaim(
   threadId: unknown,
   entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
   callerIsSharedServerChild: boolean,
+  /** Whether the caller may claim this pane (a2a.resolve.identity's peer check). */
+  allowPty: (ptyId: string) => boolean = () => true,
 ): { workspaceId: string; ptyId: string; workspaceToken: string } | null {
   if (!callerIsSharedServerChild) return null;
   if (typeof threadId !== 'string' || !CODEX_THREAD_ID_RE.test(threadId)) return null;
@@ -357,7 +359,7 @@ function resolveCodexThreadClaim(
     if (owner) break;
   }
   const match = matchOwnerToLiveAnchor(threadId, owner, entries, process.env.WMUX_DATA_SUFFIX || '');
-  if (match.status !== 'hit') return null;
+  if (match.status !== 'hit' || !allowPty(match.ptyId)) return null;
   const workspaceToken = claimTokenForPane(match.wsId, match.ptyId);
   return workspaceToken ? { workspaceId: match.wsId, ptyId: match.ptyId, workspaceToken } : null;
 }
@@ -754,6 +756,8 @@ export function registerA2aRpc(
     entries: ReadonlyArray<{ ptyId: string; workspaceId: string }>,
     /** The connection `entries` are confirmed against, or null (see confirmEntriesConnection). */
     confirmEntries: () => Promise<EntriesConfirmation | null> = async () => ({ client: currentDaemonClient() }),
+    /** Whether the caller may claim this pane (a2a.resolve.identity's peer check). */
+    allowPty: (ptyId: string) => Promise<boolean> = async () => true,
   ): Promise<{ live: boolean; workspaceId?: string; workspaceToken?: string } | null> {
     if (typeof hintedPtyId !== 'string' || hintedPtyId.length === 0 || hintedPtyId.length > 128) return null;
     const pane = entries.find((e) => e.ptyId === hintedPtyId);
@@ -765,7 +769,7 @@ export function registerA2aRpc(
     } catch {
       wslLive = false; // daemon unreachable or older: unattested
     }
-    if (!wslLive) return { live: true };
+    if (!wslLive || !(await allowPty(pane.ptyId))) return { live: true };
     // The pane was found in `entries` before the await above; re-find it in
     // case a reconnect re-judged them, and mint only over the current client,
     // checked synchronously right before the mint.
@@ -883,8 +887,11 @@ export function registerA2aRpc(
     // ceiling — a caller holding the pipe token can already claim a recognised
     // client name (before #1111 it did not even need that) — so this is a
     // reliability mechanism, not a new security boundary.
+    // Where the OS reports the connection's peer (macOS, Linux), a claim naming
+    // another pid may not claim a pane other than the peer's (peerPaneFor).
     const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
     notePeerPidClaim('callerPid', callerPid, ctx);
+    const peerPid = effectivePeerPid(ctx);
     // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
     // RPC budget: it feeds only the final walk, so it must never delay — or, past
     // the client's ~10s RPC deadline, SINK — the legacy mappings/entries fallback
@@ -1032,6 +1039,49 @@ export function registerA2aRpc(
       return { client };
     };
 
+    /** The live pane anchors in `entries`, keyed by shell pid. */
+    const paneAnchors = (): Map<number, OwningAnchor> => {
+      const anchorByPid = new Map<number, OwningAnchor>();
+      for (const e of entries) {
+        const pid = Number(e.pid);
+        if (Number.isInteger(pid) && pid > 0) {
+          anchorByPid.set(pid, { ptyId: e.ptyId, workspaceId: e.workspaceId });
+        }
+      }
+      return anchorByPid;
+    };
+
+    // The pane whose process tree holds the connection's peer, walked once and
+    // only when a claim names another pid than the peer's. undefined: nothing
+    // to check (no peer, or the claim names the peer itself); null: the peer
+    // is in no pane, or its tree could not be read in time.
+    let peerPaneWalk: Promise<OwningAnchor | null> | null = null;
+    const peerPaneFor = (claimedPid: number | null): Promise<OwningAnchor | null | undefined> => {
+      if (peerPid === null || claimedPid === peerPid) return Promise.resolve(undefined);
+      peerPaneWalk ??= (async () => {
+        const snapshot = await withDeadline(
+          snapshotForCaller(peerPid),
+          RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt),
+          null,
+        );
+        const ppidByPid =
+          snapshot && snapshot.ppidByPid.has(peerPid)
+            ? snapshot.ppidByPid
+            : await readAncestry(peerPid, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt));
+        const parentPid = ppidByPid?.get(peerPid);
+        if (!ppidByPid || parentPid === undefined) return null;
+        return walkToOwningAnchor(parentPid, ppidByPid, paneAnchors(), { createdAt, child: peerPid })?.anchor ?? null;
+      })();
+      return peerPaneWalk;
+    };
+    // A claim on `ptyId` stands unless the peer is in another pane. A peer in
+    // no pane (a detached or multiplexed process) keeps today's answer.
+    const peerAllows = (kind: string, peerPane: OwningAnchor | null | undefined, ptyId: string): boolean => {
+      if (peerPane === undefined || peerPane?.ptyId === ptyId) return true;
+      notePeerPidVerdict(kind, peerPane === null ? 'outside' : 'refused', ctx);
+      return peerPane === null;
+    };
+
     // Server-side walk: from callerPid's PARENT up the live tree to the first
     // ancestor that is a known live anchor. `entries` is already the set of LIVE
     // PID→ptyId→workspace anchors resolved above, so the walk reuses it — no
@@ -1065,13 +1115,7 @@ export function registerA2aRpc(
           ? snapshot.ppidByPid
           : await readAncestry(callerPid, RPC_SNAPSHOT_DEADLINE_MS - (Date.now() - startedAt));
       if (ppidByPid) {
-        const anchorByPid = new Map<number, OwningAnchor>();
-        for (const e of entries) {
-          const pid = Number(e.pid);
-          if (Number.isInteger(pid) && pid > 0) {
-            anchorByPid.set(pid, { ptyId: e.ptyId, workspaceId: e.workspaceId });
-          }
-        }
+        const anchorByPid = paneAnchors();
         const parentPid = ppidByPid.get(callerPid);
         // Creation times reject a reused parent pid: a Codex app-server that
         // updated itself is orphaned, and its dead parent's pid may now be a
@@ -1081,6 +1125,11 @@ export function registerA2aRpc(
           : null;
         if (hit) resolved = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
       }
+    }
+    let peerRefused = false;
+    if (resolved && !peerAllows('callerPid', await peerPaneFor(callerPid), resolved.ptyId)) {
+      resolved = null;
+      peerRefused = true;
     }
 
     // A pane claim from main's own walk: the token binds the walked workspace
@@ -1098,7 +1147,7 @@ export function registerA2aRpc(
     // operator opened the run's terminal, which anchors it in whatever
     // workspace it opened in. The run still acts under its granted identity,
     // so its own claim wins over the pane one.
-    if (callerPid != null && (!resolved || isIdentityRunPty(resolved.ptyId))) {
+    if (callerPid != null && !peerRefused && (!resolved || isIdentityRunPty(resolved.ptyId))) {
       const runs = await liveIdentityRunAnchors();
       const own = resolved ? runs.find((r) => r.ptyId === resolved?.ptyId) : undefined;
       if (own) {
@@ -1120,7 +1169,7 @@ export function registerA2aRpc(
             runs.map((r) => [r.pid, { ptyId: r.ptyId, workspaceId: r.workspaceId }]),
           );
           const hit = walkToOwningAnchor(parentPid, ppidByPid, runAnchors, { createdAt, child: callerPid });
-          if (hit) {
+          if (hit && peerAllows('callerPid', await peerPaneFor(callerPid), hit.anchor.ptyId)) {
             runClaim = claimTokenForRun(hit.anchor.workspaceId, hit.anchor.ptyId);
             if (runClaim) resolved = { workspaceId: hit.anchor.workspaceId, ptyId: hit.anchor.ptyId };
           }
@@ -1148,8 +1197,16 @@ export function registerA2aRpc(
       const codexCallerPid = normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid);
       notePeerPidClaim('codexCallerPid', codexCallerPid, ctx);
       const sharedServerChild = await isSharedServerChild(codexCallerPid);
+      const peerPane = await peerPaneFor(codexCallerPid);
       const confirmed = await confirmEntriesConnection();
-      if (stillConfirmed(confirmed)) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
+      if (stillConfirmed(confirmed)) {
+        threadClaim = resolveCodexThreadClaim(
+          codexThreadId,
+          entries,
+          sharedServerChild,
+          (ptyId) => peerAllows('codexCallerPid', peerPane, ptyId),
+        );
+      }
     }
     // The walk missed but the caller's env names a pane. Main says whether
     // that pane is live, and attests it only when the daemon follows a live
@@ -1158,7 +1215,12 @@ export function registerA2aRpc(
     // which belongs to no workspace) is reported as such, never as a pane.
     const hintedPane = resolved
       ? null
-      : await resolveHintedPane((params as { hintedPtyId?: unknown }).hintedPtyId, entries, confirmEntriesConnection);
+      : await resolveHintedPane(
+        (params as { hintedPtyId?: unknown }).hintedPtyId,
+        entries,
+        confirmEntriesConnection,
+        async (ptyId) => peerAllows('hintedPtyId', await peerPaneFor(callerPid), ptyId),
+      );
     return {
       mappings,
       entries,
