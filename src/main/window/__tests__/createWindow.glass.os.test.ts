@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>();
-  const mocked = { ...actual, release: () => h.release };
+  const mocked = { ...actual, release: () => h.release, hostname: () => 'devbox' };
   return { ...mocked, default: mocked };
 });
 
@@ -243,6 +243,6 @@ describe('createWindow first frames (#2512)', () => {
   ] as const)('on %s (%s, glass %s) passes the saved polarity %s to the preload', async (platform, release, level, appearance) => {
     const { opts } = await optionsFor(platform, release, level, appearance);
     const prefs = opts.webPreferences as { additionalArguments?: string[] };
-    expect(prefs.additionalArguments).toEqual([`--wmux-start-polarity=${appearance ?? 'dark'}`]);
+    expect(prefs.additionalArguments).toEqual([`--wmux-start-polarity=${appearance ?? 'dark'}`, '--wmux-host-name=devbox']);
   });
 });
