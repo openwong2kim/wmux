@@ -8,6 +8,9 @@
  *   • openPath returning an error string triggers showItemInFolder fallback
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // ── Module mocks (hoisted; cannot reference outer test variables) ──────────
 
@@ -185,6 +188,109 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       const result = await handler(fakeEvent, input);
       expect(openPath).toHaveBeenCalledWith(input);
       expect(result).toEqual({ ok: true, error: undefined });
+    });
+
+    it('refuses a sensitive path without opening or revealing it', async () => {
+      const handler = getHandler(IPC.SHELL_OPEN_PATH);
+      const input = path.join(os.homedir(), '.ssh', 'id_rsa');
+      const result = await handler(fakeEvent, input);
+      expect(openPath).not.toHaveBeenCalled();
+      expect(showItemInFolder).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
+    it('refuses a symlink whose real path is sensitive', async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-home-'));
+      try {
+        vi.spyOn(os, 'homedir').mockReturnValue(home);
+        fs.mkdirSync(path.join(home, '.ssh'));
+        fs.writeFileSync(path.join(home, '.ssh', 'id_rsa'), 'secret');
+        const link = path.join(home, 'innocent.txt');
+        fs.symlinkSync(path.join(home, '.ssh', 'id_rsa'), link);
+        const result = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, link);
+        expect(openPath).not.toHaveBeenCalled();
+        expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+      } finally {
+        vi.restoreAllMocks();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses to open a credential folder with Open with', async () => {
+      const result = await getHandler(IPC.SHELL_OPEN_WITH)(fakeEvent, { appId: 'explorer', folderPath: path.join(os.homedir(), '.ssh') });
+      expect(openPath).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
+    // A folder the user cannot search: realpath fails with EACCES, not ENOENT.
+    it.skipIf(process.platform === 'win32')('refuses when the real path cannot be resolved for a reason other than a missing file', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-locked-'));
+      const locked = path.join(dir, 'locked');
+      try {
+        fs.mkdirSync(locked);
+        fs.writeFileSync(path.join(locked, 'notes.md'), 'x');
+        fs.chmodSync(locked, 0o000);
+        const result = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(locked, 'notes.md'));
+        expect(openPath).not.toHaveBeenCalled();
+        expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+      } finally {
+        fs.chmodSync(locked, 0o755);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it.skipIf(process.platform === 'win32')('refuses a link whose target has a blocked extension', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-ext-'));
+      try {
+        fs.writeFileSync(path.join(dir, 'tool.exe'), 'x');
+        fs.symlinkSync(path.join(dir, 'tool.exe'), path.join(dir, 'readme.txt'));
+        const result = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(dir, 'readme.txt'));
+        expect(openPath).not.toHaveBeenCalled();
+        expect(result).toEqual({ ok: false, error: 'BLOCKED_EXTENSION' });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('opens the spelling it was given, once its real path is checked', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-real-'));
+      try {
+        fs.writeFileSync(path.join(dir, 'notes.md'), 'x');
+        fs.symlinkSync(path.join(dir, 'notes.md'), path.join(dir, 'link.md'));
+        await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(dir, 'link.md'));
+        // A mapped drive must stay a drive letter for the app it opens in.
+        expect(openPath).toHaveBeenCalledWith(path.join(dir, 'link.md'));
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('refuses a missing path inside a linked credential folder, without revealing it', async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-home-'));
+      try {
+        vi.spyOn(os, 'homedir').mockReturnValue(home);
+        fs.mkdirSync(path.join(home, '.ssh'));
+        const link = path.join(home, 'keys');
+        fs.symlinkSync(path.join(home, '.ssh'), link);
+        const missing = path.join(link, 'gone', 'id_rsa');
+        const opened = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, missing);
+        const openedWith = await getHandler(IPC.SHELL_OPEN_WITH)(fakeEvent, { appId: 'explorer', folderPath: link });
+        expect(openPath).not.toHaveBeenCalled();
+        expect(showItemInFolder).not.toHaveBeenCalled();
+        expect(opened).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+        expect(openedWith).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+      } finally {
+        vi.restoreAllMocks();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // A share path is absolute only on Windows.
+    it.runIf(process.platform === 'win32')('refuses a WSL share path into ~/.ssh', async () => {
+      const handler = getHandler(IPC.SHELL_OPEN_PATH);
+      const result = await handler(fakeEvent, '\\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa');
+      expect(openPath).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
     });
 
     it('allows extension-less paths (folders)', async () => {

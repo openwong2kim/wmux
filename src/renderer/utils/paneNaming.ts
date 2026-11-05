@@ -25,6 +25,15 @@ import { getWorkspaceLeafPanes, type WorkspacePaneOwner } from '../../shared/pan
 // state) and slug (surfaceAgent mirror) and pass them in.
 
 /**
+ * `w<ws>-<pane>`, optionally with the `(agent)` suffix — the auto coordinate
+ * every pane already has. A deliberate terminal name that starts with it would
+ * read as (or shadow) a real pane's tag, so the rename refuses it.
+ */
+export function isAutoNameShape(name: string): boolean {
+  return /^w\d+-\d+/i.test(name);
+}
+
+/**
  * Build a pane's auto display name from its workspace + pane coordinates.
  *
  * Examples: `(1, 2, 'claude')` → `"w1-2(claude)"`; `(3, 1)` → `"w3-1"`.
@@ -127,22 +136,4 @@ export function paneLabelRejectionKey(code: string | undefined): TranslationKey 
   return code && Object.prototype.hasOwnProperty.call(LABEL_REJECTION_KEYS, code)
     ? LABEL_REJECTION_KEYS[code as PaneLabelRejection]
     : 'pane.renameError.failed';
-}
-
-/**
- * How an A2A party is named in the message a receiving agent reads:
- * `<workspace>.<pane>` (e.g. `Simply.release`), so a pane can tell which pane
- * of a workspace is talking. Falls back to the bare workspace name when the
- * pane is unknown (an unverified sender, a pty that no open pane holds).
- * Display only: task metadata keeps the workspace name.
- */
-export function a2aPartyName(
-  ws: WorkspacePaneOwner & { name: string; wsOrdinal?: number },
-  paneLabel: Record<string, string> | undefined,
-  surfaceAgent: Record<string, { slug?: AgentSlug }> | undefined,
-  ptyId?: string,
-): string {
-  if (!ptyId) return ws.name;
-  const leaf = getWorkspaceLeafPanes(ws).find((l) => l.surfaces.some((s) => s.ptyId === ptyId));
-  return leaf ? `${ws.name}.${leafDisplayName(paneLabel, ws, leaf, activeAgentSlug(surfaceAgent, leaf))}` : ws.name;
 }

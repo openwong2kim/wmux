@@ -11,9 +11,11 @@ import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
 import { saveSessionNow } from '../../utils/sessionSaveBridge';
 import { publishPaneClosed } from '../../events/publisher';
 import { panePrincipalId } from '../../../shared/principals';
-import { computePaneAutoName } from '../../utils/paneNaming';
+import { flattenName } from '../../../shared/a2aNameSanitize';
+import { computePaneAutoName, isAutoNameShape } from '../../utils/paneNaming';
 import { recomputeWorkspacePorts } from './workspacePorts';
 import { isShadowWorkspaceId } from '../../../shared/pcRail';
+import { normalizeHostPath } from '../../../shared/terminalFileLink';
 import { findRemoteSurface } from '../shadowWorkspace';
 
 export interface SurfaceSlice {
@@ -35,10 +37,15 @@ export interface SurfaceSlice {
    *  `remoteWorkspaceId` (#1329) is the workspace on the REMOTE host that
    *  `sessionId` belongs to, which is what the liveness poll asks about. */
   addRemoteSurface: (paneId: string, hostId: string, sessionId: string, shell?: string, cwd?: string, workspaceId?: string, owned?: boolean, remoteWorkspaceId?: string) => void;
-  addEditorSurface: (paneId: string, filePath: string) => void;
+  /** `opts.workspaceId` names the workspace owning `paneId` (a terminal click in a
+   *  non-active multiview tile); default is the active one. `opts.line` (1-based)
+   *  scrolls the viewer to that line. The path is normalised first, so the same
+   *  file spelled two ways (`\\wsl.localhost` vs `\\wsl$`, `/` vs `\`, drive
+   *  case) reuses one tab. */
+  addEditorSurface: (paneId: string, filePath: string, opts?: { workspaceId?: string; line?: number }) => void;
   /** #2150 — read-only image/PDF tab in the pane's work area. Same rules as
    *  addEditorSurface: one tab per file per pane, never in a shadow workspace. */
-  addPreviewSurface: (paneId: string, filePath: string) => void;
+  addPreviewSurface: (paneId: string, filePath: string, opts?: { workspaceId?: string }) => void;
   /** Company mode: show the workspace's board and focus it. One board per
    *  workspace; a new one opens beside the CEO when the CEO's pane is in the
    *  layout, else in the active pane. A workspace that is not a company has none. */
@@ -61,8 +68,14 @@ export interface SurfaceSlice {
   prevSurface: (paneId: string) => void;
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
+  /** The user's own tab rename: like updateSurfaceTitle, but also records the
+   *  name as the surface's `userName` (the A2A party name's highest source).
+   *  A name shaped like an auto coordinate (`w1-2`, `w1-2(claude)`) is
+   *  refused outright — it would shadow a real pane's tag in the resolver. */
+  renameSurface: (surfaceId: string, name: string) => void;
   /** Undo a manual rename: unlock the title and put back `autoTitle` (the
-   *  title the rename replaced), falling back to the shell name. */
+   *  title the rename replaced), falling back to the shell name. Also clears
+   *  the `userName` the rename recorded. */
   resetSurfaceTitle: (surfaceId: string) => void;
   updateSurfaceTitleByPty: (ptyId: string, title: string) => void;
   /** Tie a usage-limit-held tab to the tab its work went on in, each naming the other. */
@@ -215,17 +228,27 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  addEditorSurface: (paneId, filePath) => set((state: StoreState) => {
+  addEditorSurface: (paneId, rawFilePath, opts) => set((state: StoreState) => {
+    const targetWsId = opts?.workspaceId || state.activeWorkspaceId;
     // A local file never opens inside another computer's workspace.
-    if (isShadowWorkspaceId(state.activeWorkspaceId)) return;
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+    if (isShadowWorkspaceId(targetWsId)) return;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
+    const filePath = normalizeHostPath(rawFilePath);
+    const line = opts?.line !== undefined && opts.line > 0 ? Math.floor(opts.line) : undefined;
     // If the same file is already open, switch to that tab
-    const existing = pane.surfaces.find((s) => s.surfaceType === 'editor' && s.editorFilePath === filePath);
+    const existing = pane.surfaces.find((s) => s.surfaceType === 'editor'
+      && s.editorFilePath !== undefined && normalizeHostPath(s.editorFilePath) === filePath);
     if (existing) {
       pane.activeSurfaceId = existing.id;
+      if (line !== undefined) {
+        existing.editorLine = line;
+        // Bumped on every request so a repeat click on the same line still
+        // re-scrolls and re-marks it after the user scrolled away or cleared it.
+        existing.editorLineSeq = (existing.editorLineSeq ?? 0) + 1;
+      }
       return;
     }
     const fileName = filePath.split(/[/\\]/).pop() || filePath;
@@ -237,18 +260,22 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'editor',
       editorFilePath: filePath,
+      ...(line !== undefined && { editorLine: line }),
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
   }),
 
-  addPreviewSurface: (paneId, filePath) => set((state: StoreState) => {
-    if (isShadowWorkspaceId(state.activeWorkspaceId)) return;
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  addPreviewSurface: (paneId, rawFilePath, opts) => set((state: StoreState) => {
+    const targetWsId = opts?.workspaceId || state.activeWorkspaceId;
+    if (isShadowWorkspaceId(targetWsId)) return;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
-    const existing = pane.surfaces.find((s) => s.surfaceType === 'preview' && s.previewFilePath === filePath);
+    const filePath = normalizeHostPath(rawFilePath);
+    const existing = pane.surfaces.find((s) => s.surfaceType === 'preview'
+      && s.previewFilePath !== undefined && normalizeHostPath(s.previewFilePath) === filePath);
     if (existing) {
       pane.activeSurfaceId = existing.id;
       return;
@@ -558,6 +585,28 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     }
   }),
 
+  renameSurface: (surfaceId, name) => set((state: StoreState) => {
+    // A coordinate-shaped name would shadow (or read as) a real pane's tag in
+    // the resolver, so it never becomes a userName; the tab title still takes
+    // it, so the rename is not silently dropped. Flatten first so a hidden
+    // format/bidi character (`w<zwsp>1-2`) cannot smuggle the shape past.
+    const addressable = !isAutoNameShape(flattenName(name));
+    for (const ws of state.workspaces) {
+      for (const pane of getWorkspaceLeafPanes(ws)) {
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (surface) {
+          // The first rename keeps the title it replaces, for resetSurfaceTitle.
+          if (!surface.titleLocked) surface.autoTitle = surface.title;
+          surface.title = name;
+          surface.titleLocked = true;
+          if (addressable) surface.userName = name;
+          else delete surface.userName;
+          return;
+        }
+      }
+    }
+  }),
+
   linkContinuedSurfaces: (fromPtyId, toPtyId, handoff) => set((state: StoreState) => {
     if (!fromPtyId || !toPtyId) return;
     const surfaces = state.workspaces.flatMap((ws) => getWorkspaceLeafPanes(ws).flatMap((pane) => pane.surfaces));
@@ -589,6 +638,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           surface.title = surface.autoTitle || surface.shell || surface.title;
           delete surface.titleLocked;
           delete surface.autoTitle;
+          delete surface.userName;
         }
         return;
       }

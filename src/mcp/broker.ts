@@ -37,6 +37,7 @@ import {
 import type { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { disposeReplRegistry, setReplBrokerMode } from './repl/replRegistry';
 import { disposeBrowserRepl, setBrowserReplBrokerMode } from './browser-repl/tool';
+import { selfCheckPeerPid } from '../shared/peerPid';
 
 interface ShimHandshake {
   wmuxShim: number;
@@ -294,6 +295,7 @@ function main(): void {
   server.listen(pipeName, () => {
     console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid}`);
   });
+  void selfCheckPeerPid().then((verdict) => { if (verdict) console.error(`[wmux-mcp-broker] peer-pid: ${verdict}`); });
 
   const shutdown = () => {
     server.close();

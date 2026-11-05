@@ -329,6 +329,7 @@ import { CHATV2_DISPOSE_TIMEOUT_MS } from '../shared/chatv2/limits';
 import { chatProviders } from './chat/providers';
 import { record as chatRecord } from './chat/adapter';
 import type { ChatInteractionAnswer } from '../shared/transcript/chatSession';
+import { selfCheckPeerPid } from '../shared/peerPid';
 
 // wmux web — read-only-by-default browser terminal. Instantiated lazily in
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives
@@ -11469,6 +11470,7 @@ async function main(): Promise<void> {
 
   markDaemonBoot('ready');
   log('info', `Daemon ready — pipe: ${activePipeName}`);
+  void selfCheckPeerPid().then((verdict) => { if (verdict) log('info', `[peer-pid] daemon: ${verdict}`); });
   // Boot summary for postmortems. nodeTiming gives the Node/V8 startup split
   // for free (all values are ms relative to nodeTiming's own timeOrigin).
   try {

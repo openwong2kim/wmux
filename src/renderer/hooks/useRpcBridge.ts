@@ -5,7 +5,8 @@ import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { resolveStartupCwd, shellDisplayName, withDefaultShell, withRoleBinding, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
-import { a2aPartyName, computePaneAutoName, paneDisplayName, paneNameFields } from '../utils/paneNaming';
+import { computePaneAutoName, paneDisplayName, paneNameFields } from '../utils/paneNaming';
+import { a2aPartyName } from '../utils/a2aPartyName';
 import { resolvePaneName } from '../utils/paneNameResolver';
 import { paneForegroundProgram, surfaceForegroundProgram } from '../utils/surfaceProgram';
 import { originFromCaller } from '../utils/fanoutProvenance';
@@ -720,7 +721,7 @@ export async function deliverPtyNotification(
   if (ptyId) {
     return deliverA2aText(
       ptyId,
-      formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
+      formatA2aMessage(senderName, a2aPartyName(targetWs, useStore.getState().paneLabel, useStore.getState().surfaceAgent, ptyId, useStore.getState().a2aTerminalNames), typeof message === 'function' ? message(ptyId) : message, undefined, a2aFormatOptionsFor(ptyId)),
       operator,
       newTask,
     );
@@ -3354,6 +3355,8 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       ...base,
       ...self,
       ...(selfLeaf ? paneNameFields(store.paneLabel, store.surfaceAgent, ws, selfLeaf) : {}),
+      // The name other agents see on this terminal's A2A messages.
+      a2aName: a2aPartyName(ws, store.paneLabel, store.surfaceAgent, rawSenderPtyId, store.a2aTerminalNames),
     };
   }
 
@@ -3621,7 +3624,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
           };
         } else {
           const senderWs = store.workspaces.find((w) => w.id === workspaceId);
-          const senderName = senderWs ? a2aPartyName(senderWs, store.paneLabel, store.surfaceAgent, callerPtyId) : 'unknown';
+          const senderName = senderWs ? a2aPartyName(senderWs, store.paneLabel, store.surfaceAgent, callerPtyId, store.a2aTerminalNames) : 'unknown';
           const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
           const pinAnchor = replyingToReceiver ? task.metadata.to : task.metadata.from;
           const hasAnchor = !!(pinAnchor.paneId || pinAnchor.surfaceId);
@@ -3859,7 +3862,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
     // senderPtyId is already validated against the sender's own tree above, so an
     // absent/forged value resolves to null → `from` stays ws-only (no regression).
     const senderAddr = resolveSenderPaneAddress(senderLeaves, senderPtyId);
-    const fromParty = sender ? a2aPartyName(sender, store.paneLabel, store.surfaceAgent, senderPtyId) : fromName;
+    const fromParty = sender ? a2aPartyName(sender, store.paneLabel, store.surfaceAgent, senderPtyId, store.a2aTerminalNames) : fromName;
 
     // Explicit address first, then the agent pane resolved from an unaddressed
     // send — both are pinned on the task identically (see `to` below).
@@ -3947,11 +3950,12 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       from: {
         workspaceId,
         name: fromName,
-        ...(senderAddr && { paneId: senderAddr.paneId, surfaceId: senderAddr.surfaceId }),
+        ...(senderAddr && { paneId: senderAddr.paneId, surfaceId: senderAddr.surfaceId, displayName: fromParty }),
       },
       to: {
         workspaceId: target.id,
         name: target.name,
+        ...(toAnchor?.ptyId && { displayName: a2aPartyName(target, store.paneLabel, store.surfaceAgent, toAnchor.ptyId, store.a2aTerminalNames) }),
         // The agent pane resolved from an unaddressed send is pinned exactly
         // like an explicitly addressed one: every later message on this task
         // (reply, status update) follows the anchor, instead of falling back to
@@ -4300,7 +4304,7 @@ export async function handleRpcMethod(method: string, params: RpcParams): Promis
       const targetWs = store.workspaces.find((w) => w.id === targetWsId);
       if (targetWs) {
         const callerWs = store.workspaces.find((w) => w.id === workspaceId);
-        const callerName = callerWs ? a2aPartyName(callerWs, store.paneLabel, store.surfaceAgent, callerPtyIdUpdate) : 'unknown';
+        const callerName = callerWs ? a2aPartyName(callerWs, store.paneLabel, store.surfaceAgent, callerPtyIdUpdate, store.a2aTerminalNames) : 'unknown';
         const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
         const pinAnchor = replyingToReceiver ? task.metadata.to : task.metadata.from;
         const hasAnchor = !!(pinAnchor.paneId || pinAnchor.surfaceId);

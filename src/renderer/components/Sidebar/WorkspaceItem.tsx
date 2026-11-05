@@ -401,7 +401,9 @@ function folderAppLabel(
 function notifyOpenFailed(t: (key: TranslationKey, params?: Record<string, string | number>) => string, detail?: string): void {
   const label = t('workspace.openFailed');
   let message = detail ? `${label}: ${detail}` : label;
-  if (detail === 'PATH_NOT_QUOTABLE') {
+  if (detail === 'BLOCKED_SENSITIVE') {
+    message = t('terminal.openPathProtected');
+  } else if (detail === 'PATH_NOT_QUOTABLE') {
     message = `${label}: ${t('workspace.openFailedQuoting')}`;
   } else if (detail?.startsWith('PATH_HAS_ENV_SYNTAX:')) {
     message = `${label}: ${t('workspace.openFailedEnvSyntax', { name: detail.slice('PATH_HAS_ENV_SYNTAX:'.length) })}`;

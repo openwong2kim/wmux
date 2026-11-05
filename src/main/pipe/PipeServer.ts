@@ -5,6 +5,7 @@ import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../../shared/cons
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/security';
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
+import { peerPidOf } from '../../shared/peerPid';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -27,6 +28,10 @@ export class PipeServer {
   private tcpServer: net.Server | null = null;
   private readonly router: RpcRouter;
   private readonly connectedSockets = new Set<net.Socket>();
+  /** The pid the OS reports for each socket's peer, where it reports one (shared/peerPid.ts). */
+  private readonly peerPids = new Map<net.Socket, number>();
+  /** Why peer pids were unavailable, each logged once. */
+  private readonly peerPidMisses = new Set<string>();
   /**
    * Per-connection cancellation, handed to handlers that WAIT.
    *
@@ -124,9 +129,11 @@ export class PipeServer {
     this.server = net.createServer((socket) => {
       if (!this.admitConnection(socket)) return;
       this.connectedSockets.add(socket);
+      this.notePeerPid(socket);
       socket.on('close', () => {
         this.connectedSockets.delete(socket);
         this.rateLimits.delete(socket);
+        this.peerPids.delete(socket);
       });
       this.handleConnection(socket);
     });
@@ -268,6 +275,31 @@ export class PipeServer {
     return true;
   }
 
+  /**
+   * Read the peer's pid now, in the connection callback, before the fd can be
+   * closed and reused. Measurement only: handlers see it as ctx.peerPid and
+   * nothing decides on it yet.
+   */
+  private notePeerPid(socket: net.Socket): void {
+    // Named pipes have no peer pid to read here.
+    if (process.platform === 'win32') return;
+    const peer = peerPidOf(socket);
+    if (peer.pid === null) {
+      if (!this.peerPidMisses.has(peer.reason)) {
+        this.peerPidMisses.add(peer.reason);
+        console.warn(`[PipeServer] peer pid unavailable: ${peer.reason}`);
+      }
+      return;
+    }
+    this.peerPids.set(socket, peer.pid);
+    // Linux only: SO_PEERCRED carries the uid, macOS's LOCAL_PEERPID does not.
+    const ownUid = process.getuid?.();
+    if (peer.uid !== undefined && ownUid !== undefined && peer.uid !== ownUid && !this.peerPidMisses.has('uid')) {
+      this.peerPidMisses.add('uid');
+      console.warn(`[PipeServer] a peer runs as uid ${peer.uid}, not ${ownUid} (pid ${peer.pid})`);
+    }
+  }
+
   private handleConnection(socket: net.Socket): void {
     console.log('[PipeServer] Client connected.');
 
@@ -397,7 +429,11 @@ export class PipeServer {
     const signal = this.socketAborts.get(socket)?.signal;
 
     this.router
-      .dispatch(request, { externalWire: true, ...(signal ? { signal } : {}) })
+      .dispatch(request, {
+        externalWire: true,
+        ...(signal ? { signal } : {}),
+        ...(this.peerPids.has(socket) ? { peerPid: this.peerPids.get(socket) } : {}),
+      })
       .then((response) => {
         if (!socket.destroyed) {
           socket.write(JSON.stringify(response) + '\n');

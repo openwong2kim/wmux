@@ -380,7 +380,9 @@ export default function WorktaskCleanupView() {
       if (!res.ok) {
         pushToast({
           level: 'error',
-          message: t('worktask.cleanup.openWorktreeFailed', { error: res.error ?? '' }),
+          message: res.error === 'BLOCKED_SENSITIVE'
+            ? t('terminal.openPathProtected')
+            : t('worktask.cleanup.openWorktreeFailed', { error: res.error ?? '' }),
         });
       }
     },

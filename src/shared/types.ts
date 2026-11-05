@@ -53,6 +53,10 @@ export interface Surface {
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;
+  /** `editor` surfaces only: 1-based line to scroll to when the tab was opened from `path:line`. */
+  editorLine?: number;
+  /** `editor` surfaces only: bumped each time a link re-targets the open tab, so the same line can be re-shown. */
+  editorLineSeq?: number;
   /** `preview` surfaces only (#2150): the image or PDF the tab shows. */
   previewFilePath?: string;
   /**
@@ -121,6 +125,15 @@ export interface Surface {
    *  Not refreshed from OSC titles while locked — an agent retitles its tab
    *  many times a second, and each refresh would be a store write. */
   autoTitle?: string;
+  /**
+   * The name the user deliberately gave this terminal through wmux's own
+   * rename (the tab rename UI). Written only by that rename path — never by
+   * an OSC title, and never by the code paths that lock a title for their own
+   * reason (account login, GitHub connect). This is the A2A party name's
+   * highest-precedence source; a title (`title`) set by a program is the
+   * separate, setting-gated source.
+   */
+  userName?: string;
   /** "Continue in another agent": the tab this one's work went on in, and on
    *  that tab, the held one it came from. Each tab's tooltip names the other. */
   continuedIn?: string;
@@ -961,10 +974,14 @@ export interface SessionData {
   paneNewTerminalButton?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.terminalCompactScrollback. */
   terminalCompactScrollback?: boolean;
+  /** Where a clicked terminal file path opens; absent means `wmux`. See uiSlice.terminalOpenFileLinksIn. */
+  terminalOpenFileLinksIn?: 'wmux' | 'os';
   /** Experimental opt-in; absent means off. See uiSlice.terminalSharedWebgl. */
   terminalSharedWebgl?: boolean;
   /** Experimental opt-in; absent means off. See uiSlice.terminalWongtty. */
   terminalWongtty?: boolean;
+  /** Experimental opt-in; absent means off. See uiSlice.a2aTerminalNames. */
+  a2aTerminalNames?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting
@@ -1347,11 +1364,15 @@ export interface WmuxTaskMetadata {
   // `from.ptyId` (optional): cross-host A2A only — the sender pane's pty when a
   // remote task was sent, so a reply from the other host is held instead of
   // landing on a different agent that took the pane since.
-  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
+  // `displayName` (optional, both sides): display only — the A2A party name
+  // (`<workspace>.<terminal>`, a2aPartyName) at send time, so a reader of the
+  // task sees the same name the delivered message showed. Never an address;
+  // `name` stays the workspace name.
+  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string; displayName?: string };
   // `to.ptyId` (optional) is a delivery-time pty SNAPSHOT — channel-mention
   // autoresponse stores it so a deferred flush can fail closed if the pane
   // restarted (successor agent now holds the paneId) before delivery.
-  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string };
+  to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string; ptyId?: string; displayName?: string };
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601
   [key: string]: unknown;

@@ -123,6 +123,7 @@ export const ja = {
   'terminal.copyFailed': 'コピーに失敗しました — 選択を維持',
   'terminal.openPathBlocked': '実行ファイルをブロック — 親フォルダを開きました',
   'terminal.openPathFailed': '開けません — フォルダを表示',
+  'terminal.openPathProtected': 'これは保護された認証情報の場所のため、wmux では開きません。',
   'terminal.bookmarkAdded': 'ブックマークを追加',
 
   // Context menu

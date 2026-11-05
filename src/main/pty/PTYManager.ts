@@ -18,6 +18,7 @@ import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 import { withoutExeSearchGuard } from '../../shared/exeSearch';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
+import { withholdCredentialsFromAgents } from './credentialEnvPrefs';
 import { getAccountStore } from '../account/accountStore';
 import { withheldCredentialNames } from '../../shared/envFilter';
 import { getShellUtf8Locale } from './shellLocale';
@@ -308,6 +309,8 @@ export class PTYManager {
      * 'user-shell'만 env 투과, 나머지·미지정은 fail-closed로 gated.
      */
     spawnKind?: SpawnKind;
+    /** A bot worker or fan-out task pane: stays gated whatever the setting says. */
+    automation?: boolean;
   }, wsl?: ResolvedWslCwd, reservedId?: string): PreparedSpawn {
     if (this.instances.size + this.spawningIds.size >= MAX_PTY_INSTANCES) {
       throw new Error('Maximum PTY instances reached');
@@ -346,7 +349,11 @@ export class PTYManager {
     identity[ENV_KEYS.MEMBER_ID] = id;
     // 실행 컨텍스트 정책. 로컬 모드는 exec/supervision이 없으므로 spawnKind만으로
     // 결정 — 'user-shell'이면 자격증명 투과, 아니면 fail-closed gated.
-    const policy = resolveEnvPolicy({ spawnKind: options?.spawnKind });
+    const policy = resolveEnvPolicy({
+      spawnKind: options?.spawnKind,
+      isAutomation: options?.automation === true,
+      withholdFromAgents: withholdCredentialsFromAgents(),
+    });
     // Multi-account (M0): overlay the workspace's bound-account env (main-owned
     // store) between baseline and profile; a manual profile CLAUDE_CONFIG_DIR
     // wins. Missing bound dir → default-credential fallback + warn.

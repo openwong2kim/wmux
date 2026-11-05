@@ -70,7 +70,7 @@ export default function WorkTabs({
   paneId: string;
 }) {
   const t = useT();
-  const updateSurfaceTitle = useStore((s) => s.updateSurfaceTitle);
+  const renameSurface = useStore((s) => s.renameSurface);
   const resetSurfaceTitle = useStore((s) => s.resetSurfaceTitle);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
@@ -88,7 +88,7 @@ export default function WorkTabs({
       return;
     }
     const trimmed = editName.trim();
-    if (trimmed) updateSurfaceTitle(surfaceId, trimmed);
+    if (trimmed) renameSurface(surfaceId, trimmed);
     else resetSurfaceTitle(surfaceId);
     setEditingId(null);
   };

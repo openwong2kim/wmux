@@ -321,21 +321,28 @@ const config: ForgeConfig = {
         console.warn('[postPackage] packageResult platform/arch unavailable — skipping node-pty prebuild pruning.');
       }
 
-      // koffi (in-process Win32 FFI for the port watcher — issue #1051):
-      // a JS package plus a prebuilt Node-API binary in a sibling
-      // @koromix/koffi-<platform>-<arch> package. Its loader resolves the
-      // binary relative to the koffi package location, so both packages must
-      // land in the SAME node_modules root wherever koffi is required from
-      // (app.asar for main, daemon-bundle for the daemon, cli-bundle for the CLI). Windows-only:
-      // winSnapshotNative guards on process.platform, so other targets never
-      // require koffi at runtime.
+      // koffi (in-process FFI): a JS package plus a prebuilt Node-API binary
+      // in a sibling @koromix/koffi-<platform>-<arch> package. Its loader
+      // resolves the binary relative to the koffi package location, so both
+      // packages must land in the SAME node_modules root wherever koffi is
+      // required from (app.asar for main, daemon-bundle for the daemon,
+      // cli-bundle for the CLI, mcp-bundle for the MCP broker).
+      // Windows: the port watcher (issue #1051) and the CLI console.
+      // macOS and Linux: the peer pid of a local socket (src/shared/peerPid.ts),
+      // read in main; the daemon and the MCP broker run its startup self-check.
       const koffiPlatform = targetPlatform ?? process.platform;
       const koffiArch = targetArch ?? process.arch;
-      const wantKoffi = koffiPlatform === 'win32';
+      const wantKoffi = koffiPlatform === 'win32' || koffiPlatform === 'darwin' || koffiPlatform === 'linux';
       const koffiSrc = path.join(__dirname, 'node_modules', 'koffi');
-      const koromixName = `koffi-win32-${koffiArch}`;
+      const koromixName = `koffi-${koffiPlatform}-${koffiArch}`;
       const koromixSrc = path.join(__dirname, 'node_modules', '@koromix', koromixName);
-      if (wantKoffi && (!fs.existsSync(koffiSrc) || !fs.existsSync(koromixSrc))) {
+      const koffiPresent = fs.existsSync(koffiSrc) && fs.existsSync(koromixSrc);
+      if (wantKoffi && !koffiPresent && koffiPlatform !== 'win32') {
+        // Peer pids are measured only so far; without koffi each process logs
+        // "peer-pid: unavailable" at startup instead of failing the package.
+        console.warn(`[postPackage] koffi prebuilt missing (${koffiSrc} / ${koromixSrc}) — peer pids will be unavailable in this ${koffiPlatform}-${koffiArch} package.`);
+      }
+      if (wantKoffi && !koffiPresent && koffiPlatform === 'win32') {
         // Without the native snapshot the port watcher has no Windows source
         // at all (the PowerShell path was removed on purpose — issue #1051),
         // so a package silently missing koffi would ship a dead feature.
@@ -346,7 +353,7 @@ const config: ForgeConfig = {
         );
       }
       const copyKoffiInto = (nodeModulesDir: string): void => {
-        if (!wantKoffi) return;
+        if (!wantKoffi || !koffiPresent) return;
         copyDirSync(koffiSrc, path.join(nodeModulesDir, 'koffi'));
         copyDirSync(koromixSrc, path.join(nodeModulesDir, '@koromix', koromixName));
         console.log(`[postPackage] Copied koffi + @koromix/${koromixName} → ${nodeModulesDir}`);
@@ -449,12 +456,19 @@ const config: ForgeConfig = {
 
       // 5a. The CLI requires koffi to put its output on the console (src/cli/consoleStdio.ts).
       // Without it the CLI quietly keeps garbled or lost output, so its absence fails the package.
-      if (wantKoffi) {
+      if (koffiPlatform === 'win32') {
         const cliBundleDir = path.join(resourcesDir, 'cli-bundle');
         if (!fs.existsSync(cliBundleDir)) {
           throw new Error(`[postPackage] ${cliBundleDir} missing — run \`npm run build:cli\` before packaging.`);
         }
         copyKoffiInto(path.join(cliBundleDir, 'node_modules'));
+      }
+
+      // 5b. The MCP broker runs the peer pid self-check (src/shared/peerPid.ts).
+      if (koffiPlatform !== 'win32') {
+        const mcpBundleDir = path.join(resourcesDir, 'mcp-bundle');
+        if (fs.existsSync(mcpBundleDir)) copyKoffiInto(path.join(mcpBundleDir, 'node_modules'));
+        else console.warn(`[postPackage] no mcp-bundle at ${mcpBundleDir}: the MCP broker's peer pid self-check will report unavailable`);
       }
 
       // 6. Remove .ps1 files from resources — NuGet 2.8 treats PowerShell files
