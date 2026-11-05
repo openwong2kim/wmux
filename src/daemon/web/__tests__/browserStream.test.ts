@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
-  BROWSER_STREAM_MOBILE_GRACE_MS, BrowserStreamRegistry, parseBrowserStreamQuery, type BrowserStreamDesktop, type BrowserStreamParams,
+  BROWSER_STREAM_MOBILE_GRACE_MS, BROWSER_STREAM_MOBILE_RETRY_MS, BrowserStreamRegistry, parseBrowserStreamQuery, type BrowserStreamDesktop, type BrowserStreamParams,
   type BrowserStreamRefusal, type BrowserStreamReservation, type BrowserStreamSink, type BrowserStreamWho,
 } from '../browserStream';
 
@@ -57,10 +57,22 @@ class FakeDesktop implements BrowserStreamDesktop {
   private lost: Array<() => void> = [];
   /** Starts answered only when the test says so. */
   defer = false;
+  /** `mobile` updates that fail (a timeout, a lost reply), counted down. */
+  failMobileUpdates = 0;
+  /** While set, `mobile` updates wait here until the test settles them. */
+  holdMobileUpdates = false;
+  heldMobile: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
   private parked: Array<{ resolve: (v: unknown) => void; reject: (e: Error) => void }> = [];
   startReply: (payload: Record<string, unknown>) => unknown = (p) => ({ backend: 'chrome', maxWidth: p.maxWidth, maxHeight: p.maxHeight, quality: p.quality });
   request(command: string, payload: Record<string, unknown>): Promise<unknown> {
     this.requests.push({ command, payload });
+    if (command === 'browser.streamUpdate' && 'mobile' in payload && this.failMobileUpdates > 0) {
+      this.failMobileUpdates -= 1;
+      return Promise.reject(new Error('desktop request timed out'));
+    }
+    if (command === 'browser.streamUpdate' && 'mobile' in payload && this.holdMobileUpdates) {
+      return new Promise((resolve, reject) => this.heldMobile.push({ resolve, reject }));
+    }
     if (command !== 'browser.streamStart') return Promise.resolve({ ok: true });
     if (!this.defer) return Promise.resolve(this.startReply(payload));
     return new Promise((resolve, reject) => this.parked.push({ resolve: (v) => resolve(v ?? this.startReply(payload)), reject }));
@@ -492,6 +504,39 @@ describe('BrowserStreamRegistry', () => {
       await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
       expect(updates()).toEqual([false]);
       expect(desktop.commands()).not.toContain('browser.streamStop');
+    });
+
+    it('a mobile change main did not take is sent again, on and off', async () => {
+      await subscribe(device('d1'));
+      desktop.failMobileUpdates = 1;
+      const phone = await subscribe(device('d2'), MOBILE);
+      expect(updates()).toEqual([true]);
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_RETRY_MS);
+      expect(updates()).toEqual([true, true]);
+      desktop.failMobileUpdates = 1;
+      phone.reservation.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
+      expect(updates()).toEqual([true, true, false]);
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_RETRY_MS + BROWSER_STREAM_MOBILE_GRACE_MS);
+      expect(updates()).toEqual([true, true, false, false]);
+      // Taken: nothing more.
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS * 3);
+      expect(updates()).toEqual([true, true, false, false]);
+    });
+
+    it('a failed change answered after a newer one went out does not undo the newer one', async () => {
+      await subscribe(device('d1'));
+      desktop.holdMobileUpdates = true;
+      const phone = await subscribe(device('d2'), MOBILE);
+      desktop.holdMobileUpdates = false;
+      phone.reservation.cancel();
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_GRACE_MS);
+      await subscribe(device('d3'), MOBILE);
+      expect(updates()).toEqual([true, false, true]);
+      // The first `true` fails only now: the last one sent stands.
+      desktop.heldMobile.splice(0).forEach((p) => p.reject(new Error('desktop request timed out')));
+      await vi.advanceTimersByTimeAsync(BROWSER_STREAM_MOBILE_RETRY_MS * 3);
+      expect(updates()).toEqual([true, false, true]);
     });
 
     it('a mobile subscriber joining while the start is in flight is counted; one leaving before it opens turns it off after the grace', async () => {

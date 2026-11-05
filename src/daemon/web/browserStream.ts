@@ -55,6 +55,8 @@ export const BROWSER_STREAM_URL_LIMIT = 4096;
 export const BROWSER_STREAM_QUEUE_BYTES = 2 * 1024 * 1024;
 /** How long a tab stays mobile after the last subscriber that asked for it left. */
 export const BROWSER_STREAM_MOBILE_GRACE_MS = 4_000;
+/** A `mobile` change main did not take is sent again after this. */
+export const BROWSER_STREAM_MOBILE_RETRY_MS = 1_000;
 
 const RANGES = {
   maxWidth: { min: 320, max: 1920, fallback: 1280 },
@@ -136,6 +138,8 @@ interface Tab {
   endCode: BrowserStreamEndCode | null;
   /** Whether main was last told to emulate a phone on the tab. */
   sentMobile: boolean;
+  /** Counts the `mobile` updates sent: a failed one is rolled back only while it is still the last. */
+  mobileSeq: number;
   /** Running while no subscriber asks for mobile and main still emulates it: then main is told, or the tab stops. */
   grace: ReturnType<typeof setTimeout> | null;
 }
@@ -263,7 +267,7 @@ export class BrowserStreamRegistry {
       tab = {
         key, workspaceId, surfaceId, streamId: randomUUID(), owner: desktop.ownerId, desktop, subs: new Set(),
         starting: null, shared: null, sentMaxFps: params.maxFps, latest: null, urlAfterLatest: null, focus: null, lastPushAt: 0, hidden: false, gone: false, endCode: null,
-        sentMobile: false, grace: null,
+        sentMobile: false, mobileSeq: 0, grace: null,
       };
       this.tabs.set(key, tab);
       this.byStream.set(tab.streamId, tab);
@@ -437,8 +441,15 @@ export class BrowserStreamRegistry {
     if (!tab.shared || tab.starting || tab.gone) return;
     const update = (mobile: boolean) => {
       tab.sentMobile = mobile;
+      const seq = ++tab.mobileSeq;
       tab.desktop.request('browser.streamUpdate', { workspaceId: tab.workspaceId, surfaceId: tab.surfaceId, streamId: tab.streamId, mobile })
-        .catch(() => undefined);
+        .catch(() => {
+          // Main never took the change, and asks again only for its own: send it again shortly.
+          if (tab.gone || seq !== tab.mobileSeq) return;
+          tab.sentMobile = !mobile;
+          const retry = setTimeout(() => this.syncMobile(tab), BROWSER_STREAM_MOBILE_RETRY_MS);
+          retry.unref?.();
+        });
     };
     if ([...tab.subs].some((s) => s.mobile)) {
       if (tab.grace) { clearTimeout(tab.grace); tab.grace = null; }
