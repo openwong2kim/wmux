@@ -122,6 +122,16 @@ export function rowsInView(term: BookmarkTerminal, ids: readonly number[]): { id
   return out;
 }
 
+/** Where each bookmark marker sits: its row in its logical line, and the
+ *  line's fingerprint. */
+function carriedBookmarks(term: BookmarkTerminal, markers: readonly IMarker[]): { rowInLine: number; print: string[] }[] {
+  return markers.flatMap((m) => {
+    const line = logicalLine(term, m.line);
+    if (!line || line.text.trim() === '') return [];
+    return [{ rowInLine: m.line - line.start, print: fingerprint(term, line) }];
+  });
+}
+
 /**
  * Carry a pane's bookmarks across a repaint that resets the Terminal (RIS
  * disposes every marker) and replays the session. Call it right before the
@@ -140,29 +150,29 @@ export function rowsInView(term: BookmarkTerminal, ids: readonly number[]): { id
  * The store changes twice whatever the number of bookmarks: the ids go out
  * here, and the restored ones come back in one set.
  */
-export function keepAcrossRepaint(term: BookmarkTerminal, ptyId: string, store: BookmarkStore): () => void {
+export function keepAcrossRepaint(term: BookmarkTerminal, ptyId: string, store: BookmarkStore): (target: BookmarkTerminal) => void {
   const markers = term.buffer.active.type === 'alternate'
     ? []
     : bookmarkMarkers(term, store.getState().terminalBookmarks[ptyId]);
-  const carried = markers.flatMap((m) => {
-    const line = logicalLine(term, m.line);
-    if (!line || line.text.trim() === '') return [];
-    return [{ rowInLine: m.line - line.start, print: fingerprint(term, line) }];
-  });
+  const carried = carriedBookmarks(term, markers);
   if (store.getState().terminalBookmarks[ptyId]) store.getState().setBookmarks(ptyId, []);
   for (const marker of markers) marker.dispose();
-  return () => {
-    const after = term.buffer.active;
+  // `target` is the terminal the repaint lands in: the same one, or (an engine
+  // swap of the Labs wongtty switch) the one that replaces it. What is
+  // returned holds no reference to `term`, so a swap's carry does not keep
+  // the replaced terminal alive.
+  return (target) => {
+    const after = target.buffer.active;
     if (carried.length === 0 || after.type === 'alternate') return;
     // One pass over the buffer: a line's neighbours are read only when its
     // own text is one a bookmark had.
     const wanted = new Set(carried.map((c) => c.print[1]));
     const found: { start: number; end: number }[][] = carried.map(() => []);
     for (let y = after.length - 1; y >= 0;) {
-      const line = logicalLine(term, y);
+      const line = logicalLine(target, y);
       if (!line) break;
       if (wanted.has(line.text)) {
-        const print = fingerprint(term, line);
+        const print = fingerprint(target, line);
         carried.forEach((c, i) => {
           if (print.every((text, k) => text === c.print[k])) found[i].push(line);
         });
@@ -171,14 +181,14 @@ export function keepAcrossRepaint(term: BookmarkTerminal, ptyId: string, store: 
     }
     const cursorLine = after.baseY + after.cursorY;
     const ids = store.getState().terminalBookmarks[ptyId] ?? [];
-    const taken = new Set(bookmarkMarkers(term, ids).map((m) => m.line));
+    const taken = new Set(bookmarkMarkers(target, ids).map((m) => m.line));
     const restored: number[] = [];
     carried.forEach(({ rowInLine }, i) => {
       if (found[i].length !== 1) return;
-      const target = Math.min(found[i][0].start + rowInLine, found[i][0].end);
-      if (taken.has(target)) return;
-      taken.add(target);
-      restored.push(register(term, ptyId, store, target - cursorLine).id);
+      const row = Math.min(found[i][0].start + rowInLine, found[i][0].end);
+      if (taken.has(row)) return;
+      taken.add(row);
+      restored.push(register(target, ptyId, store, row - cursorLine).id);
     });
     if (restored.length > 0) store.getState().setBookmarks(ptyId, [...ids, ...restored]);
   };

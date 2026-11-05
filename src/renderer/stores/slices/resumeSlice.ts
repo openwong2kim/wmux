@@ -69,6 +69,9 @@ export interface ResumeSlice {
   /** Mark a pty interactive (first PTY data received). */
   markPtyReady: (ptyId: string) => void;
 
+  /** The daemon went away: every pane is ready again only once its reattached pipe sends data (#3028). */
+  forgetPtyReady: () => void;
+
   /** Offer a resume for a recovered agent pane. */
   setResumeHint: (ptyId: string, agent: AgentSlug) => void;
 
@@ -204,6 +207,13 @@ export const createResumeSlice: StateCreator<
     if (get().ptyReadyByPtyId[ptyId]) return;
     set((draft: StoreState) => {
       draft.ptyReadyByPtyId[ptyId] = true;
+    });
+  },
+
+  forgetPtyReady: () => {
+    if (Object.keys(get().ptyReadyByPtyId).length === 0) return;
+    set((draft: StoreState) => {
+      draft.ptyReadyByPtyId = {};
     });
   },
 

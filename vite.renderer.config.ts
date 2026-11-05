@@ -1,4 +1,5 @@
-import { defineConfig, type Plugin } from 'vite';
+import { defineConfig, normalizePath, type Plugin } from 'vite';
+import { build as esbuild } from 'esbuild';
 import react from '@vitejs/plugin-react';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -46,16 +47,69 @@ function pdfjsAssets(): Plugin {
 }
 
 // onnxruntime-web's .wasm reaches the dictation worker as bytes from main
-// (it ships as an extra resource: main/dictation/dictation.handler.ts), so
-// the copy Vite emits for the runtime's own `new URL(…, import.meta.url)` is
-// never read. Leaving it out keeps 14 MB out of the bundle.
-function dropOrtWasm(): Plugin {
+// (it ships as an extra resource: main/dictation/dictation.handler.ts), and
+// so do wongtty's two (Labs terminal switch: main/ipc/handlers/labs.handler.ts),
+// so the copies Vite emits for the packages' own `new URL(…, import.meta.url)`
+// are never read. Leaving them out keeps 15 MB out of the bundle.
+function dropMainServedWasm(): Plugin {
   return {
-    name: 'wmux-drop-ort-wasm',
+    name: 'wmux-drop-main-served-wasm',
     generateBundle(_options, bundle) {
       for (const file of Object.keys(bundle)) {
-        if (/(^|\/)ort-wasm-simd-threaded[^/]*\.wasm$/.test(file)) delete bundle[file];
+        if (/(^|\/)(ort-wasm-simd-threaded|wongtty|xterm_web_bg)[^/]*\.wasm$/.test(file)) delete bundle[file];
       }
+    },
+  };
+}
+
+// The Labs wongtty switch (renderer/terminal/wongtty/load.ts) gives wongtty's
+// memory back when it is turned off. An ES module can never be unloaded (the
+// page's module map keeps it), and wongtty's bindings keep their WebAssembly
+// instances, and every JS object handed to them, in module-level variables.
+// So terminal/wongtty/factory.ts is built here as the whole package bundled
+// into one function: each call evaluates it afresh with its own instances, and
+// dropping what a call returned lets all of it be collected. Its exports come
+// back as plain data properties: a bundler's getter-based exports object puts
+// its getters in a hidden class V8 shares with unrelated module objects, which
+// would keep the package alive for good.
+//
+// The module id Vite hands to `load` (and Rollup to `chunkFileNames`) is the
+// file's real path (symlinks resolved), with forward slashes and maybe a query,
+// and on Windows its drive letter's case need not match __dirname's: both
+// sides are compared that way.
+function canonicalId(file: string): string {
+  let real = file;
+  try { real = fs.realpathSync.native(file); } catch { /* not on disk: compared as given */ }
+  const id = normalizePath(real);
+  return process.platform === 'win32' ? id.toLowerCase() : id;
+}
+const WONGTTY_FACTORY = canonicalId(path.resolve(__dirname, 'src/renderer/terminal/wongtty/factory.ts'));
+export function isWongttyFactory(id: string): boolean {
+  const file = normalizePath(id.split('?')[0]);
+  return file.endsWith('/wongtty/factory.ts') && canonicalId(file) === WONGTTY_FACTORY;
+}
+export function wongttyFactory(): Plugin {
+  return {
+    name: 'wmux-wongtty-factory',
+    async load(id) {
+      if (!isWongttyFactory(id)) return null;
+      const result = await esbuild({
+        entryPoints: [path.resolve(__dirname, 'node_modules/wongtty/dist/xterm.js')],
+        bundle: true, write: false, format: 'esm',
+        platform: 'browser', target: 'es2022', charset: 'ascii', logLevel: 'warning',
+      });
+      // esbuild ends an ES module bundle with its one export statement.
+      const code = result.outputFiles[0].text;
+      const at = code.lastIndexOf('export {');
+      const end = code.indexOf('};', at);
+      if (at < 0 || end < 0 || code.slice(end + 2).trim() !== '' || /^export /m.test(code.slice(0, at))) {
+        throw new Error('wongtty factory: the bundle does not end with its only export statement');
+      }
+      const exported = code.slice(at + 'export {'.length, end).split(',').map((s) => s.trim()).filter(Boolean).map((spec) => {
+        const [local, name = local] = spec.split(/\s+as\s+/);
+        return `${JSON.stringify(name)}: ${local}`;
+      });
+      return `export function createWongtty() {\n${code.slice(0, at)}\nreturn { ${exported.join(', ')} };\n}\n`;
     },
   };
 }
@@ -64,7 +118,7 @@ export default defineConfig({
   // ASCII-only output: one character above one byte makes V8 keep the whole
   // script source as UTF-16 (scripts/lib/ascii-only-bundle.mjs).
   esbuild: { charset: 'ascii' },
-  plugins: [react(), pdfjsAssets(), dropOrtWasm(), asciiOnlyBundle()],
+  plugins: [react(), pdfjsAssets(), dropMainServedWasm(), wongttyFactory(), asciiOnlyBundle()],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },
@@ -72,7 +126,7 @@ export default defineConfig({
   // is an ES module worker: onnxruntime-web is ESM.
   worker: {
     format: 'es',
-    plugins: () => [dropOrtWasm(), asciiOnlyBundle()],
+    plugins: () => [dropMainServedWasm(), asciiOnlyBundle()],
   },
   build: {
     // The renderer only ever runs inside this app's own Chromium (Electron 41 →
@@ -110,6 +164,11 @@ export default defineConfig({
           ],
           'vendor-react': ['react', 'react-dom'],
         },
+        // The lazy chunk of the Labs wongtty switch (wongttyFactory above) is
+        // named after the package, so a listing of what loaded shows it.
+        chunkFileNames: (chunk) => (chunk.moduleIds.some(isWongttyFactory)
+          ? 'assets/wongtty-[hash].js'
+          : 'assets/[name]-[hash].js'),
       },
     },
   },

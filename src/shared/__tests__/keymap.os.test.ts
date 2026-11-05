@@ -368,7 +368,7 @@ describe('override validation', () => {
     expect(customKeybindingsOn('Ctrl+7', mac).map((kb) => kb.id)).toEqual(['kb-default-f7']);
     expect(customKeybindingsOn('Meta+7', mac)).toEqual([]);
     // Different keys: no false positive.
-    expect(customKeybindingsOn('F8', win)).toEqual([]);
+    expect(customKeybindingsOn('F10', win)).toEqual([]);
     expect(customKeybindingsOn('Ctrl+F7', win)).toEqual([]);
     expect(customKeybindingsOn('Shift+F7', win)).toEqual([]);
     // Same modifier order on both sides (Ctrl, Shift, Alt).

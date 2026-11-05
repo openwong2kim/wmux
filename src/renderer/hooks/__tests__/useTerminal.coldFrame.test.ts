@@ -11,7 +11,7 @@ describe('cold-park reveal — cold frame wiring (source-level)', () => {
   // and a `.` in the patterns below does not match the `\r`.
   const src = fs.readFileSync(path.join(__dirname, '..', 'useTerminal.ts'), 'utf-8').replace(/\r\n/g, '\n');
   const mainStart = src.indexOf('if (!container || !ptyId) return;');
-  const mainEnd = src.indexOf('}, [ptyId, containerRef]);', mainStart);
+  const mainEnd = src.indexOf('}, [ptyId, containerRef, paneEngine]);', mainStart);
   const mainEffect = src.slice(mainStart, mainEnd);
   const afterMainEffect = src.slice(mainEnd);
 
@@ -33,13 +33,14 @@ describe('cold-park reveal — cold frame wiring (source-level)', () => {
     // Taken only by a fitted mount: a hidden one leaves it for its first reveal.
     expect(mainEffect).toMatch(/const coldFrame = coldFrameEligible && initialFitRan\s*\n\s*\? takeColdFrame\(ptyId\)/);
     expect(mainEffect).toMatch(/const paintColdFrame = coldFrame !== null && initialFitRan && coldFrameFits\(coldFrame, terminal\.cols\);/);
-    expect(mainEffect).toMatch(/if \(paintColdFrame\) \{\s*\n\s*terminal\.write\(coldFrame\.frame\);\s*\n\s*warmSwap\.painted\(\);/);
+    // An engine swap's own resync swaps its replay in over the frame instead.
+    expect(mainEffect).toMatch(/if \(paintColdFrame\) \{\s*\n\s*terminal\.write\(coldFrame\.frame\);[\s\S]{0,200}?if \(!carry\) warmSwap\.painted\(\);/);
   });
 
   it('paints before any PTY listener is wired, so the replay always lands on top', () => {
     const paintAt = mainEffect.indexOf('terminal.write(coldFrame.frame)');
     expect(paintAt).toBeGreaterThan(-1);
-    expect(paintAt).toBeLessThan(mainEffect.indexOf('if (scrollbackFile && !adopted) {'));
+    expect(paintAt).toBeLessThan(mainEffect.indexOf('if (scrollbackFile && !adopted && !carry) {'));
     // The daemon reattach lives in a later effect.
     expect(afterMainEffect).toMatch(/reattach\('active-at-mount'\)/);
   });
@@ -102,7 +103,8 @@ describe('cold-park reveal — cold frame wiring (source-level)', () => {
 
   it('a resync settlement writes END before the escape sequence its replay ends inside', () => {
     const flush = mainEffect.slice(mainEffect.indexOf('const completeResyncFromFlush'));
-    expect(flush).toMatch(/const held = splitTrailingEscape\(st\.buffer\);\s*\n\s*for \(const chunk of held\.complete\) \{\s*\n\s*writePtyDataImmediately\(terminal, chunk, replayMuteRef\.current\);\s*\n\s*\}\s*\n\s*terminal\.write\(REPAINT_END\);\s*\n\s*if \(held\.pending\) writePtyDataImmediately\(terminal, held\.pending, replayMuteRef\.current\);/);
+    // (An engine swap's kitty flags go in right after the last replayed chunk.)
+    expect(flush).toMatch(/const held = splitTrailingEscape\(st\.buffer\);[\s\S]*?held\.complete\.forEach\(\(chunk, i\) => \{\s*\n\s*writePtyDataImmediately\(terminal, chunk, replayMuteRef\.current\);[^\n]*\n[^\n]*\n\s*\}\);\s*\n\s*terminal\.write\(REPAINT_END\);[^\n]*\n\s*if \(kittyFlags > 0 && kittyAfter < 0\)[^\n]*\n\s*if \(held\.pending\) writePtyDataImmediately\(terminal, held\.pending, replayMuteRef\.current\);/);
   });
 
   it('forgets a deferred cold frame when the PTY exits, at both exit listeners', () => {
@@ -110,7 +112,7 @@ describe('cold-park reveal — cold frame wiring (source-level)', () => {
     expect(exits).toHaveLength(2);
     // A painted frame still waiting for its replay is dropped before the
     // marker, so that replay's RIS cannot wipe the marker.
-    const drops = mainEffect.match(/deferredColdFrame = null;\s*\n\s*if \(warmSwap\.phase === 'warm'\) \{ warmSwap\.cancel\(\); writeSwapBytes\(FULL_RESET\); \}\s*\n(?:\s*\/\/.*\n)*\s*writeTerminalOutput\(terminal, `\\r\\n\$\{t\('terminal\.exitedBracket'/g) ?? [];
+    const drops = mainEffect.match(/deferredColdFrame = null;\s*\n\s*if \(warmSwap\.phase === 'warm'\) \{ warmSwap\.cancel\(\); writeSwapBytes\(FULL_RESET\); \}\s*\n(?:\s*\/\/.*\n)*\s*writeExitMarker\(exitCode\);/g) ?? [];
     expect(drops).toHaveLength(2);
   });
 

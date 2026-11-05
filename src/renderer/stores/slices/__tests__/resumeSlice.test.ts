@@ -129,6 +129,17 @@ describe('resumeSlice', () => {
       expect(fired).toHaveLength(0);
       expect(useStore.getState().ptyReadyByPtyId['pty-hot']).toBe(true);
     });
+
+    // #3028 — readiness was the old daemon's pipes: once the daemon goes,
+    // a pane is ready again only when its reattached pipe sends data.
+    it('forgetPtyReady drops every pane\'s readiness; the next data marks it again', () => {
+      useStore.getState().markPtyReady('pty-a');
+      useStore.getState().markPtyReady('pty-b');
+      useStore.getState().forgetPtyReady();
+      expect(useStore.getState().ptyReadyByPtyId).toEqual({});
+      useStore.getState().markPtyReady('pty-a');
+      expect(useStore.getState().ptyReadyByPtyId).toEqual({ 'pty-a': true });
+    });
   });
 
   describe('dead-pane replacement hand-off (#650)', () => {

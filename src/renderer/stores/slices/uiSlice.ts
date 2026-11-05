@@ -476,6 +476,19 @@ export interface UISlice {
    *  context instead of one context per pane. No Settings row yet. */
   terminalSharedWebgl: boolean;
   setTerminalSharedWebgl: (enabled: boolean) => void;
+  /** EXPERIMENTAL, default OFF: build terminals with the wongtty front end
+   *  (wongtty/xterm, Rust/WebAssembly) instead of xterm.js. The REQUESTED
+   *  engine, saved in session.json; terminalEngine is the one in use. */
+  terminalWongtty: boolean;
+  setTerminalWongtty: (enabled: boolean) => void;
+  /** The engine every useTerminal pane runs now. Not saved: it starts as
+   *  'xterm' and only the engine controller (terminal/wongtty/engineController)
+   *  writes it, once wongtty has loaded for an on request. */
+  terminalEngine: 'xterm' | 'wongtty';
+  setTerminalEngine: (engine: 'xterm' | 'wongtty') => void;
+  /** Why wongtty could not load or build a pane, while the switch is on. */
+  terminalEngineFailure: { message: string } | null;
+  setTerminalEngineFailure: (failure: { message: string } | null) => void;
 
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
@@ -1648,6 +1661,23 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   terminalSharedWebgl: false,
   setTerminalSharedWebgl: (enabled) => set((state) => {
     state.terminalSharedWebgl = enabled;
+  }),
+
+  terminalWongtty: false,
+  setTerminalWongtty: (enabled) => {
+    set((state) => {
+      state.terminalWongtty = enabled;
+    });
+    // A quit right after the toggle keeps the new value.
+    saveSessionNow();
+  },
+  terminalEngine: 'xterm',
+  setTerminalEngine: (engine) => set((state) => {
+    state.terminalEngine = engine;
+  }),
+  terminalEngineFailure: null,
+  setTerminalEngineFailure: (failure) => set((state) => {
+    state.terminalEngineFailure = failure;
   }),
 
   splitInheritsCwd: true,

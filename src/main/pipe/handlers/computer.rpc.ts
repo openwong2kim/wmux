@@ -212,15 +212,23 @@ async function callerAgent(
   // What the person (consent prompt) and other agents (input_busy) see: the
   // client name and the workspace by its name. The key carries pane and
   // workspace ids and stays internal.
-  const inWorkspace = (workspaceId: string, role = 'in') => {
+  const nameOf = (workspaceId: string): string => {
     let shown: string | undefined;
     try {
       shown = workspaceName(workspaceId);
     } catch {
       shown = undefined;
     }
-    const clean = shown ? quotable(shown) : '';
+    return shown ? quotable(shown) : '';
+  };
+  const inWorkspace = (workspaceId: string, role = 'in') => {
+    const clean = nameOf(workspaceId);
     return clean ? `${name} ${role} workspace "${clean}"` : `${name} ${role} a wmux workspace`;
+  };
+  // What the agent's on-screen marker is named by (agentMarkers.ts).
+  const markerName = (workspaceId?: string) => {
+    const clean = workspaceId ? nameOf(workspaceId) : '';
+    return { client: quotable(name), ...(clean && { workspaceName: clean }) };
   };
   const claim = ctx?.workspaceClaim;
   if (claim?.kind === 'stale') {
@@ -240,12 +248,13 @@ async function callerAgent(
     if (claim?.kind === 'bound' && claim.workspaceId !== ws) {
       throw new ComputerError('invalid_argument', 'this agent\'s pane and workspace claim disagree');
     }
-    return { key: `${name} @ ${ws}/${ptyId}`, label: inWorkspace(ws) };
+    return { key: `${name} @ ${ws}/${ptyId}`, label: inWorkspace(ws), ptyId, ...markerName(ws) };
   }
   if (ctx?.commanderWorkspace) {
     return {
       key: `${name} @ ${ctx.commanderWorkspace}/commander`,
       label: inWorkspace(ctx.commanderWorkspace, 'orchestrating'),
+      ...markerName(ctx.commanderWorkspace),
     };
   }
   const instance = typeof params.callerInstance === 'string' ? params.callerInstance : '';
@@ -258,5 +267,6 @@ async function callerAgent(
   return {
     key: `${name} ${where} #${createHash('sha256').update(instance).digest('hex').slice(0, 12)}`,
     label: claim?.kind === 'bound' ? inWorkspace(claim.workspaceId) : `${name} (outside wmux panes)`,
+    ...markerName(claim?.kind === 'bound' ? claim.workspaceId : undefined),
   };
 }

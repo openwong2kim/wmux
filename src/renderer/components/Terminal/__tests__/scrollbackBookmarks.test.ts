@@ -144,7 +144,7 @@ describe('scrollback bookmarks', () => {
       term.reset();
       expect(store.getState().terminalBookmarks['pty-f']).toBeUndefined();
       await write(term, longLines(0, 100));
-      restore();
+      restore(term);
 
       unsubscribe();
       expect(sets).toBe(2);
@@ -164,7 +164,7 @@ describe('scrollback bookmarks', () => {
       const restore = keepAcrossRepaint(term, 'pty-g', store);
       term.reset();
       await write(term, longLines(0, 105));
-      restore();
+      restore(term);
 
       const ids = store.getState().terminalBookmarks['pty-g'];
       expect(ids).toHaveLength(1);
@@ -180,7 +180,7 @@ describe('scrollback bookmarks', () => {
       const restore = keepAcrossRepaint(term, 'pty-j', store);
       term.reset();
       await write(term, longLines(0, n - 1) + 'changed\r\n' + longLines(n, 100 - n));
-      restore();
+      restore(term);
 
       expect(store.getState().terminalBookmarks['pty-j']).toBeUndefined();
       expect(term.markers).toHaveLength(0);
@@ -199,7 +199,7 @@ describe('scrollback bookmarks', () => {
       const restore = keepAcrossRepaint(term, 'pty-k', store);
       term.reset();
       await write(term, content);
-      restore();
+      restore(term);
 
       expect(store.getState().terminalBookmarks['pty-k']).toBeUndefined();
       term.dispose();
@@ -217,7 +217,7 @@ describe('scrollback bookmarks', () => {
       const restore = keepAcrossRepaint(term, 'pty-l', store);
       term.reset();
       await write(term, content);
-      restore();
+      restore(term);
 
       expect(store.getState().terminalBookmarks['pty-l']).toBeUndefined();
       term.dispose();
@@ -236,7 +236,7 @@ describe('scrollback bookmarks', () => {
       const restore = keepAcrossRepaint(term, 'pty-m', store);
       term.reset();
       await write(term, longLines(0, 120));
-      restore();
+      restore(term);
 
       const ids = store.getState().terminalBookmarks['pty-m'];
       expect(ids).toHaveLength(1);
@@ -252,7 +252,7 @@ describe('scrollback bookmarks', () => {
       term.reset();
       term.resize(20, 10);
       await write(term, longLines(0, 100));
-      restore();
+      restore(term);
 
       const ids = store.getState().terminalBookmarks['pty-h'];
       expect(ids).toHaveLength(1);
@@ -271,7 +271,7 @@ describe('scrollback bookmarks', () => {
       expect(store.getState().terminalBookmarks['pty-i']).toBeUndefined();
       term.reset();
       await write(term, longLines(0, 100));
-      restore();
+      restore(term);
       expect(store.getState().terminalBookmarks['pty-i']).toBeUndefined();
       term.dispose();
     });

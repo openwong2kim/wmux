@@ -55,7 +55,9 @@ defaults; the frame, sheet, type, dialog and icon rules below apply to every
 theme.
 Geist, IBM Plex Sans and Figtree are bundled (`src/renderer/assets/fonts`,
 SIL OFL 1.1, listed in `THIRD_PARTY_NOTICES`) so a look never falls back to
-another face.
+another face. Pretendard is bundled too, Hangul only (a subset renamed
+`wmux Hangul`, as its Reserved Font Name requires), after each look's Latin
+face so Korean text keeps the look's size and weight.
 
 **Colour tokens** (one set per theme, `UI_THEME_TOKENS`):
 
@@ -1268,11 +1270,17 @@ Settings › LAN keeps only the listener switches. Top to bottom:
     of explanation and Connect a PC… as the primary.
 - **Recent activity:** its own short list (paired, revoked, host added,
   connects seen while the page is open).
-- **Connect a PC dialog:** three tabs, and neither opening it nor showing a
-  tab has a side effect: both only read state. It opens on **Invite this PC**
-  only while the A2A listener is already up; otherwise on **Paste an
-  invite**. Focus starts on the tab's first field or primary (the paste
-  field, or Create invite), never on the close ×. Invite shows **Create
+- **Connect a PC dialog:** four tabs, and neither opening it nor showing a
+  tab has a side effect: both only read state (the A2A status and the local,
+  read-only Tailscale check; nothing goes over the network until Find PCs or
+  Make this PC discoverable is pressed). It opens on **Tailscale**, its first
+  tab, when that check (waited for at most 1.5 s) finds this PC on the
+  tailnet; otherwise Tailscale is the last tab and the dialog opens on
+  **Invite this PC** only while the A2A listener is already up, else on
+  **Paste an invite**. The tab order is fixed once the dialog paints, so a
+  check that lands late never moves a tab. Focus starts on the tab's first
+  field or primary (Find PCs, the paste field, or Create invite), never on
+  the close ×. Invite shows **Create
   invite** as the primary; with the listener off it reads **Turn on and
   create invite**, with one muted line above it naming what it turns on and
   the port it listens on, and pressing it is what turns the listener on (a
@@ -1298,6 +1306,32 @@ Settings › LAN keeps only the listener switches. Top to bottom:
   address, port and PIN. While LAN messages are off or no network interface
   is picked it says so and opens Settings › LAN. A PIN window the tab opened
   survives switching tabs and is closed when the dialog closes.
+  **Tailscale** finds this user's wmux PCs on the tailnet and pairs by
+  matching codes. "PCs found on your tailnet" starts with **Find PCs**
+  (primary); the list (one hairline container: device as Tailscale names
+  it, then OS, wmux version and login) re-scans every 5 s for 2 minutes,
+  then offers Search again. The first connectable row's **Connect** is the
+  primary; a PC already joined reads "Connected", and one on another
+  protocol or no longer discoverable is greyed with why. Under a hairline,
+  "This PC" offers **Make this PC discoverable** (secondary; **Turn on and
+  make discoverable** with a muted line when A2A is off). While discoverable
+  the tab shows only a hairline band (neutral live dot, "This PC can be
+  found · m:ss left", the name tailnet devices see, Stop) and, when a
+  device asks, ONE card: a 1px `--attention-hairline` over
+  `--selection-subtle`, no wash, with the device as Tailscale identifies it
+  (name, account, OS, tailnet address), "Is it the same code as on the
+  requesting PC?" with the 6-digit code in two groups, and Deny, **Allow**
+  (the one primary). While another tab shows, a waiting card marks the
+  Tailscale tab with the attention dot; the dialog never switches tabs by
+  itself. After Allow, once the other PC confirms and pairing finishes, the
+  dialog turns into the exposure checklist, nothing ticked. While this PC's
+  own request is out, the dialog is retitled "Connect to <PC>", hides its
+  tabs and footer, and shows only the code, its countdown and Cancel; once
+  the other PC allows, the requester confirms the code too: the line says
+  so and **Codes match · Connect** joins Cancel as the one primary (Cancel
+  is off once the join starts). Joined, it offers Link a pane now.
+  Closing the dialog closes a window the tab opened and withdraws a
+  request it sent.
 - **Link dialog from this page:** picks the PC when there is one, picks the
   other PC's pane when there is one choice or one on the same repo, and
   offers this PC's pane with the focused one preselected.
@@ -1661,6 +1695,9 @@ leaves the page.
   side; Owns (optional); then a read-only **Works in** line, a muted label
   over `--text-sub`: the seat's own worktree of the company folder on a new
   branch when that folder is a git repository, else the company folder. A
+  repository that can't have a seat worktree (a bare one, one with
+  submodules, or one that uses Git LFS) names the folder itself, with the
+  reason (`…/repo itself: a bare repository can't have a seat worktree`). A
   seat that would share a folder that is not a repository with another
   staff agent gets a note saying so and cannot be added. A refusal keeps the
   form and says why, as the other-PC dialog does; at the pane cap the
@@ -1682,6 +1719,11 @@ leaves the page.
   each agent its seat** checkbox, on by default, and **Make company** the
   one primary. A bad or repeated seat name, or two agent seats besides the
   CEO with no folder, says why under the table and disables the primary.
+  A folder whose repository can't have seat worktrees (bare, with
+  submodules, or using Git LFS) gets one muted note under Name and Folder,
+  once an agent seat besides the CEO is there: the seats work in the folder
+  itself, and why; with two such seats it adds that two agents can't share
+  it and to choose another folder.
   Making it opens a new workspace with the CEO's pane on the left at half
   the width and the other seats stacked top to bottom on the right, each
   pane named after its seat (a name another pane answers to gets `-2`,
@@ -1991,7 +2033,7 @@ A pane is a terminal column plus, when it needs one, a work area.
 Colour carries **state only**. Surfaces, controls, selection and hover are
 always neutral (the fill ladder).
 
-- **The one exception: bot identity colours** (owner decision 2026-10-14).
+- **Exception: bot identity colours** (owner decision 2026-10-14).
   On the Bots page a bot's Mochi character, its name above its run and its
   `@name` mentions wear the bot's own colour, so bots are told apart at a
   glance as in the reference messenger. The identity palette
@@ -2003,6 +2045,21 @@ always neutral (the fill ladder).
   hue unmixed (2026-10-16). Identity colour never fills a surface, a row or a control, and never
   marks a state. A removed bot keeps its colour, picture and name on the
   messages it wrote, its name followed by "(removed)".
+- **Agent identity colours** (owner approval 2026-11-03, agent marker
+  mockup). The second exception: the one place colour identifies an agent
+  rather than a state. While agents drive other apps, each one's halo, name
+  pill and pointer on screen wear its own colour, and its pane wears the same
+  colour, so a marker on screen ties to a pane. The palette
+  (`AGENT_MARKER_COLORS`, `shared/computer/agentMarker.ts`) is ten fixed
+  fills on every look; slot 0 is the attention orange, so a lone agent looks
+  as the single overlay did. Red is left out (error), and every fill carries
+  dark ink (`AGENT_MARKER_INK`, ≥ 4.5:1). In wmux the colour is only an 8px
+  filled dot, no border, named "Computer use color": before the title of the
+  pane's tab, and before the name on its workspace's sidebar row (one per
+  marked pane, at most three, then a muted "+N"), drawn once the pane has
+  used computer use. Needs you stays a ring, so a slot-0 dot does not read as
+  a question. The palette is used for nothing else: never a state, a surface,
+  a row or a control.
 - **Sidebar and pane marks** — shape first, colour second, one shared helper
   (`AGENT_STATUS_ICON.mark`): running = filled muted dot · needs input =
   `--attention` ring · error = red ✕ (SVG) · complete = muted check ·
@@ -2511,6 +2568,8 @@ primitives plus `Settings/SettingsLayout.tsx` (`SettingsSection`,
 | 2026-11-02 | A folder's company (owner decision 2026-11-02, insight 170): a company is kept in the folder's wmux.json under `company`, holding only its name, mission, standing orders, the CEO seat, and each seat's name, what it owns and its agent's registry slug; never a launch line, flag, environment, token, path or a seat on another PC. A refused company drops alone and is reported. It starts only from a trust grant that showed it (the review, or a save from the New company dialog, which trusts the bytes it writes); a grant that did not show it, from the wmux.json dialog or an older wmux, does not start it, and nothing starts it on its own | A company tuned in the New company dialog was lost once the dialog closed. The repository is where a team already shares its wmux setup, and the existing per-file trust keeps a checked-in company from starting before its seats and their first prompts are reviewed on this PC |
 | 2026-11-02 | This folder's company in the app (owner decision 2026-11-02, insight 170, mockup option A): the + menu lists the active workspace's folder company first under Company; a pick opens its review while it waits for one, else the New company dialog filled from it, and the menu never makes it. The New company dialog saves its company to the folder's wmux.json from a quiet footer text button through an inline confirm, and stays open. The review shows each seat with its agent, what wmux starts and where it works, the mission and standing orders verbatim and, for a file not trusted here, the rest of it; **Approve and make company** is its one primary and makes the company only from the bytes it showed | A folder's company is made where the other companies are made, beside the presets. Reviewing it on its first start, from the copy of the file the approval covers, means every agent's first message is read on this PC before that agent runs. Option B, the company inside the wmux.json dialog, kept it away from the + menu where a company is made |
 | 2026-11-03 | The whole file in the company review (insight 170 follow-up): a quiet **Show the whole file** below the review's groups reads wmux.json again and shows it whole, only while it holds the bytes the review opened on; each character a reader would not see is shown as its code point where it sits | Approve trusts every byte of the file, and the groups list only what wmux reads from it: a key it does not know or an entry it dropped was approved unseen. Showing the file itself covers whatever wmux does not parse; marking the invisible characters keeps the view the bytes the grant binds, and a list of dropped entries would need the parser to report each one |
+| 2026-11-03 | Owner-approved (agent marker mockup): agent identity colours, the second exception to "colour carries state only". While agents drive other apps, each one's halo, name pill and pointer on screen wear its own colour from a ten-fill palette (slot 0 the attention orange, red left out, dark ink ≥ 4.5:1 on every fill), and that pane carries the same colour as an 8px filled dot before its tab title and before its workspace's name on the sidebar row (at most three, then "+N"), once it has used computer use. The palette is used for nothing else | With several agents on one desktop, a marker on screen has to say which pane it belongs to at a glance; a name pill alone needs reading. One colour per agent, kept until wmux quits, makes the marker and the pane one thing. Red stays the error colour, and confining the palette to markers and their dots keeps every other colour a state |
+| 2026-11-04 | Owner-approved: Hangul renders in a bundled Pretendard subset after each look's Latin face | Windows' Malgun Gothic fallback was taller and had no 500 weight |
 
 ### Desktop conversation view
 

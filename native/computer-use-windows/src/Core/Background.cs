@@ -117,6 +117,9 @@ public readonly record struct BackgroundOutcome(Disposition Disposition, bool Fa
 {
     public static BackgroundOutcome Refused(BackgroundRefusal reason) => new(Disposition.NotDelivered, true, false, false, reason);
 
+    /// <summary>For posted text that did not verify: Verify.Observed of the field's value at the end of the read-back.</summary>
+    public string? Observed { get; init; }
+
     /// <summary>protocol ActionDelivery for a posted action: our side effect means the user's pointer or foreground did not stay as it was.</summary>
     public string Delivery => SideEffect ? "foreground" : "background";
 }

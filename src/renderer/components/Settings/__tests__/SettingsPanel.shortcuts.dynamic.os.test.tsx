@@ -266,9 +266,9 @@ describe('Settings → Shortcuts: keys custom keybindings use (#1885)', () => {
 
   it('a key no custom keybinding uses saves with no question', () => {
     click(badge(PREV));
-    press({ key: 'F8', code: 'F8' });
+    press({ key: 'F10', code: 'F10' });
     expect(dialog()).toBeNull();
-    expect(overrides()).toEqual({ prevWorkspace: 'F8' });
+    expect(overrides()).toEqual({ prevWorkspace: 'F10' });
   });
 
   it('warns that a custom keybinding on a built-in key will not fire', () => {
@@ -277,18 +277,18 @@ describe('Settings → Shortcuts: keys custom keybindings use (#1885)', () => {
     expect(dialog()?.textContent).toContain('Ctrl+T is already used by “New terminal in this pane”');
     expect(dialog()?.textContent).toContain('will not fire');
     click(cancel());
-    expect(customKeys()).toEqual(['F7']);
+    expect(customKeys()).toEqual(['F7', 'F8']);
 
     click(customBadge('F7'));
     press({ key: 't', code: 'KeyT', ctrlKey: true });
     click(useAnyway());
-    expect(customKeys()).toEqual(['Ctrl+T']);
+    expect(customKeys()).toEqual(['Ctrl+T', 'F8']);
   });
 
   it('a custom keybinding on a free key saves with no question', () => {
     click(customBadge('F7'));
     press({ key: 'F9', code: 'F9' });
     expect(dialog()).toBeNull();
-    expect(customKeys()).toEqual(['F9']);
+    expect(customKeys()).toEqual(['F9', 'F8']);
   });
 });

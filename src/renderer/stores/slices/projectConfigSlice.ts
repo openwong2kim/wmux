@@ -49,9 +49,9 @@ export interface ProjectPaneSeed {
   /** The pane's name (#tag), set through the same MetadataStore IPC as a
    *  rename. A company preset's seat names its pane this way. */
   label?: string;
-  /** Extra env for the pane's pty (a seat added to a company: its agent's
-   *  first-run env, from main). */
-  env?: Record<string, string>;
+  /** Env for `command` only, set on its typed launch line and never in the
+   *  pane's env (a company seat: its agent's first-run env, from main). */
+  launchEnv?: Record<string, string>;
   /**
    * U-PERM: the EFFECTIVE unattended permission-restore decision — the leaf's
    * `restorePermissionMode` intent AND the project's explicit unattended consent

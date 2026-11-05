@@ -3576,7 +3576,8 @@ workspace-browser picker lists desktop workspaces including those without panes.
 - `{action:"type",surfaceId,expectedURL,text}` inserts up to 4096 UTF-16 units into
   the focused field. Disallowed control characters are rejected.
 - `{action:"key",surfaceId,expectedURL,key}` accepts only `Tab`, `Shift+Tab`,
-  `Enter`, `Backspace`, `Escape`, `PageUp`, and `PageDown`.
+  `Enter`, `Backspace`, `Escape`, `PageUp`, and `PageDown` (more keys arrive
+  with `browserStream`, below).
 
 Captures may additionally carry `pageURL` and `geometry:{width,height,scrollX,scrollY}`
 when a fixed viewport probe is stable across capture. Their presence enables
@@ -3615,7 +3616,11 @@ No arbitrary JavaScript, headers, cookies, CDP commands or RPC names are accepte
 The capture's base64 image data is at most 700 KiB (the whole reply is one line on
 the daemon's control pipe, which closes past 1 MiB); a larger first shot is retaken
 once smaller, then refused. Only capture requests receive the larger bridge
-response allowance. A hidden Mac workspace may not produce frames; clients show
+response allowance. A capture carries `pageURL` only while it is at most 4096
+characters, the `expectedURL` limit. A longer one is omitted together with
+`geometry`; the image is still returned, readable but not tappable. The page
+list leaves out a page whose URL is longer than 4096 characters, as it leaves
+out non-http pages. A hidden Mac workspace may not produce frames; clients show
 this failure and ask the user to bring it forward.
 
 #### Dedicated-profile Chrome tabs (`browserPreviewChrome`)
@@ -3631,14 +3636,20 @@ exactly as above.
   Without `?chrome=1`, or from a desktop without the flag, the list is the
   same as before, with no `backend` field. Live Chrome (the user's own
   browser) is never listed and never driven, and no phone action opens a
-  connection to it.
+  connection to it. The reply also carries `openBackend: "builtin" |
+  "chrome"`: what an `open` without `backend` makes in this workspace. It is
+  OMITTED when the phone can open no page there (an external browser
+  setting, or a workspace bound to Live Chrome or to one pane); hide the
+  new-page action then.
 - **Which tabs**: tabs of the workspace's own wmux Chrome profile that the
   desktop recorded under exactly this workspace; a tab with no workspace on
   record is nobody's. A profile bound to one pane only (a protected pane's,
   say) is not listed: its policy applies to that pane's calls. Listing never
   starts Chrome: while it is not running there are no `chrome` rows, nor while
   the desktop cannot attach to its pages (its tab watcher is off or failed);
-  help rows for those tabs are then `previewable: false`.
+  help rows for those tabs are then `previewable: false`. A tab one of these
+  tabs opens (a `target=_blank` link or a script's `window.open`) is listed
+  too, in the same workspace (contract v1.7, below).
 - **The same actions** take a `chrome` row's `id` as `surfaceId`: capture,
   `navigate`, `type`, `key`, `tap`, `scroll`, with the same checks
   (`expectedURL`, `geometry`, http(s) only). A Chrome capture has the builtin
@@ -3650,11 +3661,12 @@ exactly as above.
   that does not finish within about 5 s is `409 browser-tab-hidden`. Offer
   `focus`. Typing uses focus emulation rather than raising the tab. At browser
   zoom other than 100 % a capture is readable but carries no `geometry`.
-- **`open`** takes an optional `backend: "builtin" | "chrome"` (default
-  `builtin`, the rule above). `chrome` needs the desktop's browser setting to
-  be Chrome and the workspace's profile to be a wmux profile, not Live
-  Chrome (`503 browser-backend-unavailable` otherwise); it may start that
-  profile's Chrome. Any other value is `400`.
+- **`open`** takes an optional `backend: "builtin" | "chrome"`. Without it,
+  the desktop's own setting decides: `chrome` when the browser setting is
+  Chrome, else `builtin` (the rule above). `chrome` needs the desktop's
+  browser setting to be Chrome and the workspace's profile to be a wmux
+  profile, not Live Chrome (`503 browser-backend-unavailable` otherwise); it
+  may start that profile's Chrome. Any other value is `400`.
 - **`{action:"focus",surfaceId}`** (input permission): brings a builtin pane
   or a Chrome tab of this workspace forward on the desktop (a Chrome tab's
   window too). Send it only on the user's tap.
@@ -3678,6 +3690,310 @@ exactly as above.
 | `409 {error:"browser-help-origin-changed"}` | Help-card typing: the tab is no longer at the request's origin, or the request has none. Nothing was typed. |
 | `404 {error:"browser-help-not-found"}` / `409 {error:"browser-help-closed"}` | Help-card typing: no request with that id for this workspace and tab (open or closed), or this tab's request already ended. |
 | `503 {error:"browser-preview-unavailable"}` | Any other failure, as before. Never retry input automatically. |
+
+#### Live browser stream (`browserStream`)
+
+`/api/config` carries `browserStream: true` when the server runs with
+`--allow-transcript` and the attached desktop announced `browser.stream`.
+OMITTED otherwise; the preview is then the 3 s capture poll above, and the
+stream route answers `404`. The desktop announces it by default;
+`WMUX_PHONE_BROWSER_STREAM=0` on the desktop turns it off. The stream covers
+builtin panes and dedicated-profile Chrome tabs (`chrome` rows); `hello`
+says which in `backend`. A builtin pane streams whatever the desktop's
+browser setting is, as its capture does.
+
+**Routes** (GET, `text/event-stream`, `Cache-Control: no-store`, Bearer only):
+
+- `/api/sessions/:id/browser/stream?surfaceId=…`
+- `/api/desktop-workspaces/:workspaceId/browser/stream?surfaceId=…`
+
+Each has the checks of the capture GET on the same route: transcript
+consent; input consent too on the desktop-workspaces route; the tab in the
+route's workspace; http(s) pages only. A `chrome` tab whose first http(s)
+page is still loading (it was just opened) streams too: no frames come until
+that page commits, and then a `url` event names it.
+
+**Query** (all optional, clamped; the effective values come back in `hello`):
+
+| Parameter | Range | Default |
+| --- | --- | --- |
+| `maxWidth`, `maxHeight` | 320..1920 image pixels | 1280 |
+| `quality` | 30..85 (JPEG) | 60 |
+| `maxFps` | 1..15 | 10 |
+| `viewport=mobile` | needs input consent (else `403 read-only:…`) | unset |
+
+`viewport=mobile` shows the tab as a phone while at least one subscriber
+of that tab asked for it; its other subscribers then get the phone layout
+too. It changes the tab on the desktop itself, as the `viewport` action
+does: the Mac's own view of that tab, and an agent driving it, see the
+phone layout as well.
+
+- **Chrome tab**: a phone's viewport, 390×844 CSS px at 2× (smaller when
+  the tab is), with touch, set on the stream's own connection to Chrome.
+  Frames then carry a `geometry.width` of at most 390, and a `scale` of
+  about 0.4 on a page without a viewport meta tag. Taps and scrolls map as
+  on any frame. `{action:"viewport"}` on a Chrome tab stays `501`:
+  reconnect the stream with or without `viewport=mobile` to switch.
+- **Builtin pane**: the same as `{action:"viewport",mode:"mobile"}`, fitted
+  to the pane; like that action it reloads the page, and going back
+  reloads it again. A phone preset already on the pane (from the
+  `viewport` action or an agent) is left as it is, and the stream never
+  reverts it. Any other preset (an agent's desktop emulation) is replaced by
+  the phone's, and going back leaves the pane with no preset. The stream
+  does not revert its own once the `viewport` action or an agent has
+  changed the preset since. Going back also works on a page that is not
+  http and while the user has paused the agent or taken over the pane; a
+  switch that fails is tried again about every 2 s. The page lays out at
+  the phone's 390 CSS px and is drawn larger to fill the pane, so frames
+  stay the size of the pane with the page across their whole width, and
+  the Mac's pane shows the page enlarged the same way while a phone
+  watches. `geometry` is in the page's CSS pixels (`width` 390, or the
+  pane's width when it is narrower; `height` the pane's height over the
+  same factor), not the frame's pixels, so taps
+  and scrolls map as on any frame; `scale` stays the pinch zoom only. A
+  pane resized meanwhile is fitted again, without a reload, within about
+  2 s; frames in between may leave `geometry` out. A pane too short to show
+  the phone at least 320 CSS px tall once drawn larger shows it at 1x, in
+  the left part of the frame. A phone preset already on the pane is not
+  drawn larger, and an agent's `browser_resize` replaces the drawn-larger
+  phone with its own size.
+- **Going back**: about 4 s after the last subscriber that asked for it
+  leaves. A subscriber asking for it within that time keeps the tab as it
+  is (no reload); a stream whose last subscriber left keeps running for
+  that time, so a reconnect gets its latest frame at once. The tab also
+  goes back when the desktop loses its connection to the server.
+- **Next to an agent's emulation** (Chrome): the tab has one device-size
+  override. Whichever of the stream and an agent set theirs last is the one
+  shown, and when the stream goes back (or ends) the tab returns to its
+  real size, removing an agent's override as well. A stream that never
+  showed the tab as a phone leaves an agent's override alone.
+
+**Before the stream** (plain JSON): `400` for a value that is not a whole
+number, a missing `surfaceId` or another `viewport`; `404 browser-tab-gone`;
+`503 browser-backend-unavailable` or `browser-preview-unavailable`;
+`429 too-many-streams` with `Retry-After: 1` past the server's shared stream
+budget, four subscribers per tab, two per paired device per tab, or four
+streamed tabs per desktop.
+
+**Events** (each `data:` is JSON):
+
+- `hello`, first: `{v:1, surfaceId, backend, maxWidth, maxHeight, quality, maxFps}`.
+  A later subscriber of the same tab gets the shared screencast's size and
+  quality, and its own `maxFps`. Frames may be smaller than `hello`'s size
+  and quality: the server shrinks a stream whose frames would not fit, and
+  `hello` keeps the values the stream started with. Read each frame's
+  `imageWidth` and `imageHeight`.
+- `frame`: `{seq, data, mimeType:"image/jpeg", capturedAt, imageWidth, imageHeight, pageURL?, geometry?}`.
+  `seq` starts at 1 and increases by one per frame written to this stream;
+  it orders frames and does not count frames the server skipped. `data` is
+  at most 700 KiB of base64. `geometry` is
+  `{width, height, scrollX, scrollY, scale?}` from the frame's own metadata:
+  the widget's width and height (classic scrollbars included) and the scroll
+  offsets in CSS pixels, with `scale` when the page is pinch-zoomed. It is
+  left out at browser zoom other than 100 % and when the page is offset from
+  the top, and on a builtin pane while its viewport is larger than the pane
+  (an emulated one). `pageURL` is the credential-free URL of the page's last commit,
+  same-document moves included; it is left out past 4096 characters, together
+  with `geometry`. Both are left out between a navigation's start and its
+  commit.
+- `url`: `{pageURL?}` on every committed URL change, same-document or not,
+  whether or not a frame follows. `pageURL` is left out past 4096 characters,
+  and for a page that is not http(s), such as Chrome's error page: no frames
+  come for that page and input on the tab is refused until an http(s) page
+  commits. A builtin pane's error page is at the URL that failed to load,
+  as its capture shows it, so it streams with that URL. Keep the last
+  frame's geometry. At most ten a second; the last one always arrives, in
+  order with frames.
+- `state`: `{state:"hidden", reason:"browser-tab-hidden"}` when the tab stops
+  painting (Chrome reports it not visible, or it reads as hidden, for about
+  5 s; a builtin pane as soon as it is off screen on the Mac: another
+  workspace or tab selected, the window minimized, another pane zoomed); the
+  stream stays open. `{state:"live"}` when it paints again, followed by a
+  frame.
+- `end`: `{error}` (`browser-tab-gone`, `browser-backend-unavailable`,
+  `browser-preview-unavailable`, `browser-stream-expired`), then the stream
+  closes. `browser-backend-unavailable` also comes when the desktop has sent
+  nothing for the tab for 45 s. `browser-stream-expired` comes after 30
+  minutes; reconnect. A builtin pane ends with `browser-tab-gone` when it is
+  closed or unloaded to save memory (lightweight mode), and with
+  `browser-preview-unavailable` when the desktop loses its debugging
+  connection to the pane while the pane stays.
+- `: keepalive` comment every 15 s.
+
+**Pacing**: the first frame comes right after `hello`, even on a still page.
+A later subscriber gets the tab's latest frame, then its latest `url` when
+the URL changed after that frame.
+After that, frames come when the page repaints, at most `maxFps`. Latest
+frame first: while the connection has not taken the last frame, newer ones
+replace the one waiting. One screencast per tab is shared by its
+subscribers and stops when the last one leaves, or about 4 s later on a
+tab shown as a phone (`viewport=mobile`, above).
+
+**Closing from the server**, without `end`: at once when the device is
+revoked or its input grant is withdrawn; within 15 s when the consent the
+route needs is gone otherwise, or the pane is no longer attachable. A client
+that stops reading is closed when its keepalive is still unsent at the next
+one.
+
+#### Stream input (`browserStream`)
+
+Under the flag, input on either route and either backend (builtin pane or
+`chrome` row) changes as follows; without it every rule above holds
+unchanged:
+
+- **Keys**: `key` also accepts `ArrowUp`, `ArrowDown`, `ArrowLeft`,
+  `ArrowRight`, `Home`, `End` and `Delete`.
+- **History**: `{action:"history",surfaceId,expectedURL,direction:"back"|"forward"}`
+  moves the tab one entry through its own session history. It runs the same
+  owner and `expectedURL` checks as other input. The entry it leads to must
+  be an http(s) page and pass the desktop's navigation policy, else `503`.
+  The answer is `{applied:true}`, or `{applied:false}` when there is no entry
+  in that direction. Without the flag the action is `400`.
+- **Scroll**: compares only `geometry.width` and `geometry.height` with the
+  live viewport, not the scroll offsets. The anchor and the deltas scale by
+  the width and height sent. `tap` still compares all four values.
+- **Viewport changed**: a `tap` or `scroll` whose geometry no longer matches
+  is `409 browser-viewport-changed`. On a builtin pane this is decided before
+  the pane is focused or brought forward. An `expectedURL` mismatch stays
+  `503 browser-preview-unavailable`.
+- **Busy**: an input that overlaps another input on the same tab is
+  `409 browser-input-busy`, decided before anything is sent. Typing may be
+  sent in pieces of at most 4096 UTF-16 units each, strictly in series.
+- **A streamed tab's URL**: while the tab is streamed, the URL of its
+  stream's last commit is the live one, and the stream keeps the URLs the
+  current document has had (reset on each new document). `type`, `key` and
+  `scroll` take an `expectedURL` that is the live URL or one of those.
+  `tap` and `history` must name the live URL; one of those earlier URLs is
+  `409 browser-page-changed`. Any other URL stays `503`. A tab with no stream
+  is checked exactly.
+- **A streamed tab's geometry** (builtin pane or `chrome` row): `tap` and
+  `scroll` may send a frame's `geometry` as it came. While it is the latest frame's, the server
+  maps the point with it: CSS point = normalized point × `width` (or
+  `height`) / `scale`, relative to the visible viewport; scroll deltas scale
+  the same way. A `tap` compares all of `width`, `height`, `scrollX`,
+  `scrollY` and `scale`; a `scroll` compares `width`, `height` and `scale`.
+  A frame's `width` and `height` may exceed the page's client area by up to
+  24 px (classic scrollbars).
+
+| Response | Meaning |
+| --- | --- |
+| `409 {error:"browser-viewport-changed"}` | The viewport moved since the frame the phone used. Nothing was applied: wait for the next frame and resend. |
+| `409 {error:"browser-input-busy"}` | Another input on this tab is still running. Nothing was applied: the client may resend that piece once. |
+| `409 {error:"browser-page-changed"}` | Tap or history on a streamed tab: `expectedURL` is an earlier URL of the page now showing. Nothing was applied: resend with the URL of the latest `url` event or frame. |
+
+#### Focus: tap reply and stream event (contract v1.6)
+
+No flag: the field and the event describe themselves, and a client that
+ignores them works as before.
+
+**Tap reply.** `POST …/browser {action:"tap"}` answers
+`{applied:true, focus?:{editable, kind?}}`, on the polling and the stream
+paths alike, for builtin panes and `chrome` rows.
+
+- The desktop reads the focused element right after the tap is dispatched,
+  while the tab's input is still held.
+- `editable` is `true` for a field that takes typed text and is neither
+  disabled nor read-only: an `input` of type `text`, `search`, `email`,
+  `url`, `tel`, `password` or `number` (a missing or unknown type reads as
+  `text`), a `textarea`, or a `contenteditable` element.
+- `kind` comes with `editable:true` only: one of `text`, `password`,
+  `email`, `number`, `tel`, `url`, `search`, `textarea`,
+  `contenteditable`. Anything else (a button, a link, a checkbox, a date
+  picker, nothing focused) is `{editable:false}` with no `kind`.
+- Open shadow roots and same-origin frames are followed. A field in a
+  cross-origin frame reads as `{editable:false}` (known gap).
+- `focus` is absent when it could not be read: an older desktop, the page
+  stayed busy past about 300 ms, or the read failed. Treat absent as
+  unknown, not as `editable:false`.
+- Only the kind is sent. Never a value, name, label, placeholder or id.
+  The read runs in an isolated world, so page scripts cannot see it or
+  change what it reads.
+
+**Stream event.** On a live browser stream, `event: focus` carries
+`{editable, kind?}` with the same meaning:
+
+- Sent on every change of (`editable`, `kind`): a tap or click, Tab or
+  Enter, a script moving focus, or a cross-document commit, which resets
+  it to `{editable:false}`. A page that is not focused on the desktop gets
+  no focus events from the browser; the desktop then also re-reads about
+  once a second, so a change a script makes there may arrive up to a
+  second late.
+- In order with frames. At most ten a second per stream; the last one
+  always arrives.
+- A later subscriber gets the tab's current state after the latest frame
+  (and after its `url` event, when one came after that frame), once the
+  desktop has reported one. The first subscriber of a tab may get its first
+  `focus` before its first frame; treat it as the tab's state either way.
+- On a cross-document commit, the reset may come just before or just after
+  that commit's `url` event.
+- Detected in an isolated world: page scripts cannot fake the event.
+
+#### Opened tabs: tap reply and stream event (contract v1.7)
+
+No flag: the field describes itself, and a client that ignores it works as
+before.
+
+**Which tabs.** A tab that a `chrome` row's tab opens with a `target=_blank`
+link or a script's `window.open` (each with or without `noopener`) is a tab
+of that row's workspace. It is listed with the other `chrome` rows and takes
+every action.
+
+- Only tabs opened from now on. A tab opened before the desktop ran this
+  version stays nobody's.
+- A tab opened by a tab that is not a `chrome` row of any workspace (one the
+  user opened in that Chrome window) stays nobody's. So does a tab opened by
+  a tab with no workspace on record.
+- Never in Live Chrome (the user's own browser).
+- A tab opened by another workspace's tab is that workspace's, never yours.
+- The new tab starts at `about:blank`. The list leaves it out until its first
+  http(s) page commits, and its capture answers `503` until then.
+- Closing the tab that opened it leaves it open and listed.
+- Limits: 20 new tabs a minute from one tab, 40 from one workspace's tabs
+  and 120 from one Chrome profile (workspaces with no profile of their own
+  share one), and at most 30 such tabs open from one tab and 50 in one
+  workspace. A tab past a limit stays nobody's, as before this version: it
+  is reported nowhere, neither listed nor in a tap reply nor in a stream
+  event.
+
+**Tap reply.** `POST …/browser {action:"tap"}` on a `chrome` row answers
+`{applied:true, focus?, opened?:{surfaceId}}`, on the polling and the stream
+paths alike.
+
+- `opened` names a tab this tab opened during the tap: the tap's own new
+  tab, unless something else on the page (an agent's click, a script) opened
+  one at the same moment. Its `surfaceId` is the new tab's row `id`.
+- Switch to `opened.surfaceId` directly; do not wait for it in the list. The
+  list holds at most 30 rows with these tabs last, and leaves the new tab out
+  while it is still blank. Its capture answers `503` until its first http(s)
+  page commits; try again shortly.
+- The desktop waits up to about 1 s for the new tab, and only when the page
+  asked for a window during the tap. Any other tap answers as fast as before.
+- `opened` is absent when the tap opened no tab, on a builtin pane, and from
+  an older desktop. It is also absent when the new tab is past a limit above
+  (that tab is reported nowhere), and when it opened more than about 1 s
+  after the tap (that tab is listed; refresh the list).
+- A builtin pane never opens a tab: a `target=_blank` link or a
+  `window.open` there loads the page in the same pane, and the stream's `url`
+  event shows the move.
+
+**Stream event.** On a live browser stream of a `chrome` row,
+`event: tabOpened` carries `{surfaceId, pageURL?}`:
+
+- Sent each time the streamed tab opens a tab, for any reason: a tap, a
+  script, or the person at the desktop.
+- `pageURL` is the new tab's credential-free http(s) URL when Chrome created
+  it, at most 4096 characters. It is usually absent, because the tab starts
+  blank.
+- In order with frames, at most ten a second per stream. Unlike `url`, each
+  new tab is its own event: none is merged into a later one. A stream that is
+  not read keeps at most the four newest waiting.
+- An event, not a state: a later subscriber does not get earlier ones.
+- Neither the tap reply nor the list stands in for it. Only this event names
+  a tab opened outside a tap (by a script, or at the desktop). The list holds
+  at most 30 rows, while a workspace can have up to 50 adopted tabs open. So
+  a tab whose event was lost (dropped past the four waiting, or sent before
+  you subscribed) may never show in the list.
+- An older desktop never sends it, and a builtin pane's stream never does.
 
 ### New agent pane launch options
 
@@ -5796,8 +6112,14 @@ The test renders a loopback fixture in an actual Electron webview and exercises
 `handlePhoneBrowser` through the existing browser RPC handlers: page listing,
 JPEG capture, mobile viewport (390 × 844), desktop reset, and URL navigation.
 It asserts the original viewport dimensions and touch capability are restored.
+It then streams the same pane (the live browser stream's builtin source):
+a first frame on a still page whose geometry is the capture probe's own at a
+fractional scroll offset, a tap mapped by that frame, a `url` push on
+`pushState` and the `409 browser-page-changed` after it, no geometry at
+125 % zoom, `hidden` and `live` around a hidden webview, and
+`browser-tab-gone` when the webview is removed.
 The printed artifact directory contains desktop/mobile/restored JPEGs and
-`result.json`; failure or the 30-second timeout exits nonzero.
+`result.json`; failure or the 60-second timeout exits nonzero.
 
 The target registry and automation lease are fixtures. This verifies actual
 Chromium rendering/CDP/capture behavior, not the HTTP pairing transport, the

@@ -102,6 +102,16 @@ export class SurfaceOpeners {
     return openerVerdict(this.touch(surfaceId), caller);
   }
 
+  /**
+   * A surface another one opened (a popup) is the same connection's, or
+   * nobody's when that one is. Unclaimed, it would be the default of the next
+   * connection that has no surface of its own.
+   */
+  inherit(surfaceId: string, fromSurfaceId: string): void {
+    const record = this.touch(fromSurfaceId);
+    if (record) this.note(surfaceId, record.openerKey, record.ptyId);
+  }
+
   private touch(surfaceId: string): OpenerRecord | undefined {
     const record = this.bySurface.get(surfaceId);
     if (record === undefined) return undefined;

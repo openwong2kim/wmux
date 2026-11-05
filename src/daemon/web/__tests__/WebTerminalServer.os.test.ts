@@ -28,12 +28,19 @@ import { Terminal } from '@xterm/headless';
 import { applyUnicodeWidthModel } from '../../../shared/terminalUnicode';
 import type { TurnFailure } from '../../../shared/phoneTurnFailure';
 import { deliberateSleep } from '../../../test-utils/waitFor';
+import { spawnTerminalPty } from '../../../shared/terminalPty';
+import { loadNativeTerminalCore, type NativeTerminalCore } from '../../../shared/nativeTerminalCore';
 
 // Passes through to the real parse; the stream tests below hold it (handoff)
 // or fail it (the raw-window fallback) on purpose.
 vi.mock('../../HeadlessSnapshot', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../HeadlessSnapshot')>();
   return { ...actual, generateSnapshotUnqueued: vi.fn(actual.generateSnapshotUnqueued) };
+});
+// Passes through to the real loader; the Rust-engine input test hands one pane a scripted transport.
+vi.mock('../../../shared/nativeTerminalCore', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../shared/nativeTerminalCore')>();
+  return { ...actual, loadNativeTerminalCore: vi.fn(actual.loadNativeTerminalCore) };
 });
 
 /** A directory that exists on every CI platform: `POST /api/sessions` refuses a cwd that doesn't. */
@@ -1009,6 +1016,36 @@ describe('WebTerminalServer', () => {
     });
     expect(rwRes.status).toBe(204);
     expect(write).toHaveBeenCalledWith('echo hi\r');
+  });
+
+  it('accepts phone input while the Rust engine input queue is full, then delivers it in order', async () => {
+    const info = await startRW();
+    // The native transport's contract: all-or-nothing against its 8 MiB queue.
+    const limit = 8 * 1024 * 1024;
+    let pending = limit; let wake!: () => void; const received: string[] = [];
+    const transport = {
+      pid: 1, get pendingInputBytes() { return pending; },
+      read: () => ({ data: Buffer.alloc(0), eof: false, childExited: false, pendingInputBytes: pending }),
+      write: (data: Uint8Array) => {
+        if (pending + data.length > limit) throw new Error('PTY_BACKPRESSURE: input queue is full');
+        pending += data.length; received.push(Buffer.from(data).toString());
+      },
+      resize: () => undefined, clear: () => undefined, kill: () => undefined, close: () => undefined,
+    };
+    vi.stubEnv('WMUX_TERMINAL_CORE', 'rust');
+    vi.mocked(loadNativeTerminalCore).mockReturnValueOnce({ NativeTransport: class {
+      constructor(...args: unknown[]) { wake = args[6] as () => void; return transport; }
+    } } as unknown as NativeTerminalCore);
+    const pty = spawnTerminalPty('sh', [], {}, () => { throw new Error('node-pty must not spawn'); });
+    Object.assign(managed, { ptyProcess: pty });
+    try {
+      const post = (body: string) => fetch(`${base()}/api/input?session=s1`, { method: 'POST', headers: bearer(info.token as string), body });
+      expect((await post('echo hi')).status).toBe(204);
+      expect((await post('\r')).status).toBe(204);
+      expect(received).toEqual([]);
+      pending = 0; wake(); await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(received.join('')).toBe('echo hi\r');
+    } finally { (pty as { dispose?: () => void }).dispose?.(); vi.unstubAllEnvs(); }
   });
 
   it('mints a fresh token on each start and invalidates the previous one', async () => {

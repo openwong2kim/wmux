@@ -32,6 +32,8 @@ interface Disposable {
 
 /** The slice of an xterm `Terminal` the gate reads. */
 export interface UserInputTerminal {
+  /** wongtty's public form of the same signal (xterm.js has none). */
+  onUserInput?: (listener: () => void) => Disposable;
   _core?: {
     coreService?: {
       onUserInput?: (listener: () => void) => Disposable;
@@ -66,10 +68,10 @@ export interface UserInputMarker {
  * what the terminal answered on its own, for a listener that forwards both.
  */
 export function markUserInput(term: UserInputTerminal): UserInputMarker {
-  const onUserInput = term._core?.coreService?.onUserInput;
+  const onUserInput = term.onUserInput ?? term._core?.coreService?.onUserInput;
   let pending = false;
   const subscription = typeof onUserInput === 'function'
-    ? onUserInput.call(term._core?.coreService, () => { pending = true; })
+    ? onUserInput.call(term.onUserInput ? term : term._core?.coreService, () => { pending = true; })
     : null;
   return {
     consume: () => {

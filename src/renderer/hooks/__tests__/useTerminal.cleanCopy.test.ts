@@ -11,7 +11,7 @@ describe('clean copy — copy entry point wiring (source-level)', () => {
   const read = (rel: string) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf-8').replace(/\r\n/g, '\n');
   const src = read('useTerminal.ts');
   const mainStart = src.indexOf('if (!container || !ptyId) return;');
-  const mainEffect = src.slice(mainStart, src.indexOf('}, [ptyId, containerRef]);', mainStart));
+  const mainEffect = src.slice(mainStart, src.indexOf('}, [ptyId, containerRef, paneEngine]);', mainStart));
   const helper = src.slice(src.indexOf('export function copySelectionWithFeedback('), src.indexOf('const RIGHT_CLICK_PASTE_SUPPRESS_MS'));
 
   it('copySelectionWithFeedback resolves through the pane only when given a ptyId, newest copy winning', () => {

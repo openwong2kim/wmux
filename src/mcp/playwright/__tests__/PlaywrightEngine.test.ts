@@ -54,6 +54,7 @@ import { __resetSurfaceRoutingForTesting } from '../surfaceRouting';
 import { claimNextDownload } from '../downloadGuard';
 import { createConnectionScope, runInConnectionScope } from '../../connectionScope';
 import { rememberProtection, resetProtectionMemoryForTests } from '../browserScope';
+import { CHROME_START_RPC_TIMEOUT_MS } from '../../../shared/chromeStart';
 
 /*
  * Regression tests for app-shell URL detection.
@@ -760,7 +761,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       action: 'new',
       workspaceId: 'ws-caller-1',
       openerKey: expect.any(String),
-    });
+    }, CHROME_START_RPC_TIMEOUT_MS);
     // Never the reuse-shaped open: that is what handed one agent another's tab.
     expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
@@ -783,7 +784,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', {
       workspaceId: 'ws-caller-1',
       openerKey: expect.any(String),
-    });
+    }, CHROME_START_RPC_TIMEOUT_MS);
   });
 
   it('does not fall back when the method answered with a refusal', async () => {
@@ -931,7 +932,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       action: 'new',
       workspaceId: 'ws-caller-1',
       openerKey: expect.any(String),
-    });
+    }, CHROME_START_RPC_TIMEOUT_MS);
   }, 15_000);
 
   it('auto-open still returns a page against a main too old to tag targets', async () => {
@@ -1009,7 +1010,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
       action: 'new',
       workspaceId: 'ws-caller-1',
       openerKey: expect.any(String),
-    });
+    }, CHROME_START_RPC_TIMEOUT_MS);
   }, 15_000);
 
   it('auto-open refuses a target that is explicitly tagged to another workspace', async () => {
@@ -1382,7 +1383,7 @@ describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580
       // So main can answer "is this target yours?" per row — as a verdict; the
       // key itself never comes back.
       openerKey: expect.any(String),
-    });
+    }, CHROME_START_RPC_TIMEOUT_MS);
   });
 
   it('reports its own surface from a scoped response', async () => {
@@ -1464,7 +1465,7 @@ describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580
       action: 'new',
       workspaceId: 'ws-B',
       openerKey: expect.any(String),
-    });
+    }, CHROME_START_RPC_TIMEOUT_MS);
     // And it asked main to scope the target list to the caller.
     expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B' });
     expect(opened).toBe(true);
@@ -1617,7 +1618,7 @@ describe('PlaywrightEngine external backend contract (#517)', () => {
       action: 'new',
       workspaceId: 'ws-builtin',
       openerKey: expect.any(String),
-    });
+    }, CHROME_START_RPC_TIMEOUT_MS);
   }, 15_000);
 
   it('resolves normally in external mixed mode when the caller owns a live builtin target', async () => {

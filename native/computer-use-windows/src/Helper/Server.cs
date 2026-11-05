@@ -19,6 +19,8 @@ internal static class Server
     [
         "capabilities", "listApps", "listWindows", "getAppState",
         "click", "setValue", "type", "pressKey", "hotkey", "scroll",
+        // Optional methods (protocol OPTIONAL_HELPER_METHODS).
+        "configure", "markerWait", "markerClear",
     ];
 
     public static string HelperVersion
@@ -125,6 +127,24 @@ internal static class Server
     private static string? Disposition(string method, long sentBefore) =>
         !ControlMethods.Contains(method) ? null : Input.Sent == sentBefore ? "not_delivered" : "delivered_unverified";
 
+    /// <summary>
+    /// markerWait `{marker, pid, windowId, waitingFor}`: the marker waits on
+    /// that window (dimmed) until its next action, markerClear, or 15 s. A
+    /// window that is gone, hidden, or not `pid`'s draws nothing.
+    /// </summary>
+    private static void MarkerWait(Params p)
+    {
+        var window = Win.ParseWindowId(p.String("windowId") ?? throw new HelperError("invalid_argument", "windowId must be a window id"));
+        // Required, so the marker goes only on a window of the app main named.
+        if (p.Double("pid") is not { } pid || pid != Math.Floor(pid) || pid <= 0 || pid > uint.MaxValue)
+        {
+            throw new HelperError("invalid_argument", "pid must be a positive integer");
+        }
+        if (!Windows.Win32.PInvoke.IsWindow(window) || Win.EffectivePid(window) != (uint)pid || !Win.IsShown(window)) return;
+        var holder = AgentMarker.Text(p.String("waitingFor")) ?? "another agent";
+        Overlay.Wait(AgentMarker.FromWire(p.Raw["marker"]), new ControlTarget((uint)pid, window), holder);
+    }
+
     private static JsonObject Error(int id, string code, string message, string? disposition = null)
     {
         var error = new JsonObject { ["code"] = code, ["message"] = message };
@@ -143,12 +163,36 @@ internal static class Server
     {
         // Never act on the lock screen or a UAC / Ctrl+Alt+Del secure
         // desktop, and say why windows "vanished".
-        if (method is not ("capabilities" or "listApps" or "releaseInput")) InputDesktop.Require();
+        // The overlay-only methods too: they send no input.
+        if (method is not ("capabilities" or "listApps" or "releaseInput" or "configure" or "markerWait" or "markerClear")) InputDesktop.Require();
         // A dead helper's held keys go up before this one sends anything.
         if (method is "click" or "setValue" or "type" or "pressKey" or "hotkey" or "scroll")
         {
             Input.EnsureOrphansReleased();
             sentBefore = Input.Sent;
+        }
+        if (ControlMethods.Contains(method))
+        {
+            // The agent this request is drawn for (protocol `marker`); without
+            // one, the default marker. It fades 1.5 s after this action unless
+            // it acts again first.
+            var marker = AgentMarker.FromWire(p.Raw["marker"]);
+            try
+            {
+                return method switch
+                {
+                    "click" => Actions.Click(p, marker),
+                    "setValue" => Actions.SetValue(p, marker),
+                    "type" => Actions.Type(p, marker),
+                    "pressKey" => Actions.PressKey(p, marker),
+                    "hotkey" => Actions.Hotkey(p, marker),
+                    _ => Actions.Scroll(p, marker),
+                };
+            }
+            finally
+            {
+                Overlay.ScheduleFade(marker.Id);
+            }
         }
         switch (method)
         {
@@ -161,13 +205,29 @@ internal static class Server
                 return new JsonObject { ["app"] = app.Json(), ["window"] = Apps.WindowJson(app, window) };
             }
             case "getAppState": return Observe.GetAppState(p);
-            case "click": return Actions.Click(p);
-            case "setValue": return Actions.SetValue(p);
-            case "type": return Actions.Type(p);
-            case "pressKey": return Actions.PressKey(p);
-            case "hotkey": return Actions.Hotkey(p);
-            case "scroll": return Actions.Scroll(p);
-            case "releaseInput": return new JsonObject { ["released"] = Input.ReleaseInput(p) };
+            case "configure":
+            {
+                if (p.Raw["overlay"] is not JsonValue v || v.GetValueKind() is not (JsonValueKind.True or JsonValueKind.False))
+                {
+                    throw new HelperError("invalid_argument", "overlay must be a boolean");
+                }
+                Overlay.SetEnabled(v.GetValue<bool>());
+                return new JsonObject { ["ok"] = true };
+            }
+            case "markerWait":
+                MarkerWait(p);
+                return new JsonObject { ["ok"] = true };
+            case "markerClear":
+            {
+                var markerId = p.String("id");
+                if (string.IsNullOrEmpty(markerId)) throw new HelperError("invalid_argument", "id must be a non-empty string");
+                Overlay.Clear(markerId);
+                return new JsonObject { ["ok"] = true };
+            }
+            case "releaseInput":
+                // What main sends on the stop key: the overlay goes at once too.
+                Overlay.Hide();
+                return new JsonObject { ["released"] = Input.ReleaseInput(p) };
             default:
                 throw new HelperError("action_not_supported", $"unknown method \"{(method.Length > 40 ? method[..40] : method)}\"");
         }

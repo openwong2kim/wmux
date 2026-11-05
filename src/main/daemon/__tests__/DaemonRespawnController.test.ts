@@ -8,6 +8,8 @@ import {
 } from '../DaemonRespawnController';
 import type { DaemonClient } from '../../DaemonClient';
 import type { DaemonInfo } from '../launcher';
+import { LaunchdJobQueuedError } from '../../../shared/daemon/launchdDaemonJob';
+import { DaemonStartRefusedError } from '../../../shared/daemon/daemonLauncherCore';
 
 /**
  * Minimal stub mirroring the parts of `DaemonClient` the controller
@@ -83,6 +85,7 @@ function makeHarness(
     config?: Parameters<typeof buildController>[1];
     replacement?: DaemonReplacementHooks;
     watchDaemonExit?: DaemonRespawnDeps['watchDaemonExit'];
+    sampleDaemon?: DaemonRespawnDeps['sampleDaemon'];
   } = {},
 ): Harness {
   const logs: { level: string; msg: string }[] = [];
@@ -113,6 +116,7 @@ function makeHarness(
     },
     replacement: opts.replacement,
     watchDaemonExit: opts.watchDaemonExit,
+    sampleDaemon: opts.sampleDaemon,
   };
 
   const controller = buildController(deps, opts.config);
@@ -193,6 +197,65 @@ describe('DaemonRespawnController.bootstrap', () => {
     expect(h.controller.isHealthy).toBe(false);
     expect(h.deps.onInstall).not.toHaveBeenCalled();
     expect(h.logs.some((l) => l.level === 'warn' && l.msg.includes('connect failed'))).toBe(true);
+  });
+
+  it('enters the respawn loop when the first launch fails, and installs the daemon that comes up later', async () => {
+    // After a reboot launchd started the daemon job ~45 s after its bootstrap;
+    // the launch had given up after 5 s and nothing ever connected.
+    let call = 0;
+    const h = makeHarness({
+      config: { baseBackoffMs: 100, healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => {
+        if (++call === 1) throw new LaunchdJobQueuedError('com.wmux.daemon.x');
+        return { pid: 1269, authToken: 't', pipeName: 'p', spawned: true };
+      },
+    });
+    const c1 = new FakeDaemonClient();
+    h.clientQueue.push(c1);
+
+    expect(await h.controller.bootstrap()).toBeNull();
+    expect(h.deps.onUninstall).toHaveBeenCalledTimes(1);
+    expect(h.events).toEqual([{ type: 'reconnecting', attempt: 1, backoffMs: 100 }]);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.controller.isHealthy).toBe(true);
+    expect(h.deps.onInstall).toHaveBeenCalledTimes(1);
+    expect(h.events[h.events.length - 1]).toEqual({ type: 'reconnected' });
+  });
+
+  it('stays local without retrying when the user declined the recovery dialog', async () => {
+    const h = makeHarness({
+      ensureDaemonImpl: async () => { throw new DaemonStartRefusedError('refusing to spawn over a possibly-live daemon'); },
+    });
+
+    expect(await h.controller.bootstrap()).toBeNull();
+    // Another start would only show the same dialog again.
+    expect(h.events).toEqual([]);
+    expect(h.deps.onUninstall).not.toHaveBeenCalled();
+    expect(h.controller.daemonMayReturn).toBe(false);
+  });
+
+  it('stops retrying when a retry is refused, without asking for a second dialog', async () => {
+    let call = 0;
+    const h = makeHarness({
+      config: { baseBackoffMs: 100, healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => {
+        if (++call === 1) throw new Error('Daemon process exited during startup (code 1) before becoming ready');
+        throw new DaemonStartRefusedError('refusing to spawn over a possibly-live daemon');
+      },
+    });
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.events[h.events.length - 1]).toEqual({
+      type: 'respawn-exhausted',
+      lastError: 'refusing to spawn over a possibly-live daemon',
+      refused: true,
+    });
+    expect(h.controller.daemonMayReturn).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.ensureDaemonCalls).toBe(2);
   });
 
   it('returns null and disconnects when auth-ping fails', async () => {
@@ -664,6 +727,143 @@ describe('DaemonRespawnController health probe', () => {
     expect(c1.disconnectSyncCalls).toBe(1);
   });
 
+  describe('a daemon that stops answering is looked at before it is respawned', () => {
+    const progress = { noProgressMs: 3_000, pressureFactor: 4, maxUnansweredMs: 60_000 };
+    /** Bootstrap answers, then every ping times out. */
+    const failingPings = (client: FakeDaemonClient) => {
+      let pings = 0;
+      client.rpcImpl = async (method) => {
+        if (method !== 'daemon.ping') return {};
+        if (++pings === 1) return {};
+        throw new Error('ping timeout');
+      };
+    };
+
+    it('a starved daemon whose CPU time keeps rising is not respawned', async () => {
+      let cpu = 0;
+      const sampled: number[] = [];
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async (pid) => { sampled.push(pid); cpu += 40; return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: true }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      expect(c1.disconnectSyncCalls).toBe(0);
+      expect(h.ensureDaemonCalls).toBe(1);
+      expect(new Set(sampled)).toEqual(new Set([1234]));
+      expect(h.logs.some((l) => l.msg.includes('slow, not hung'))).toBe(true);
+    });
+
+    it('a wedged daemon (no CPU time for the budget) is respawned, once its CPU time has stopped rising for that long', async () => {
+      let cpu = 0;
+      let rising = true;
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => { if (rising) cpu += 40; return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: false }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      // Past the failure threshold while it still runs: kept.
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      // It stops: kept until the budget runs out, then respawned.
+      rising = false;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+      expect(c1.disconnectSyncCalls).toBe(1);
+      expect(h.logs.some((l) => l.level === 'error' && l.msg.includes('no CPU time for the whole budget'))).toBe(true);
+    });
+
+    it('a daemon whose pid was handed on to another busy process is gone, not progressing: respawned at the threshold', async () => {
+      let cpu = 0;
+      let startedAt = 'T0';
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => { cpu += 40; return { alive: true, cpuMs: cpu, startedAt, underPressure: false }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      // The daemon dies and another process gets its pid; its CPU time rises.
+      startedAt = 'T1';
+      for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+    });
+
+    it('a daemon whose process is gone is respawned at the threshold', async () => {
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => ({ alive: false, cpuMs: null, startedAt: null, underPressure: false }),
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+    });
+
+    it('a daemon whose CPU time cannot be read (the read failed, or threw) is held through the budget, then respawned', async () => {
+      for (const sampleDaemon of [
+        async () => ({ alive: true, cpuMs: null, startedAt: null, underPressure: false }),
+        async (): Promise<never> => { throw new Error('spawn ps ENOMEM'); },
+      ]) {
+        const h = makeHarness({
+          config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+          sampleDaemon,
+        });
+        const c1 = new FakeDaemonClient();
+        h.clientQueue.push(c1, new FakeDaemonClient());
+        failingPings(c1);
+        await h.controller.bootstrap();
+        // At the threshold (the third failure, 2 s after the first): can't tell is not a hang.
+        for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+        expect(h.deps.onUninstall).not.toHaveBeenCalled();
+        expect(h.logs.some((l) => l.msg.includes('cannot be read right now'))).toBe(true);
+        // The budget (3 s from the first failure) runs out.
+        for (let i = 0; i < 2; i++) await vi.advanceTimersByTimeAsync(1000);
+        expect(h.deps.onUninstall).toHaveBeenCalled();
+        h.controller.dispose();
+      }
+    });
+
+    it('the identity read at connect, when it lands after the failures began, does not start their budget over', async () => {
+      let cpu = 0;
+      let rising = true;
+      let releaseBind!: () => void;
+      const bindHeld = new Promise<void>((resolve) => { releaseBind = resolve; });
+      let first = true;
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => {
+          if (first) { first = false; await bindHeld; }
+          if (rising) cpu += 40;
+          return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: false };
+        },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+      rising = false;
+      await vi.advanceTimersByTimeAsync(2000);
+      // The connect's read lands now, two seconds into the stall.
+      releaseBind();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+    });
+  });
+
   it('skips probe ticks when no client is installed', async () => {
     const h = makeHarness({
       config: { healthIntervalMs: 100, healthTimeoutMs: 50 },
@@ -673,10 +873,12 @@ describe('DaemonRespawnController health probe', () => {
     h.clientQueue.push(c1);
 
     await h.controller.bootstrap();
-    // No timers should be firing — advance generously and verify no
-    // spurious RPCs / events.
+    // No probe timers should be firing — advance generously (still short of
+    // the respawn backoff) and verify no probe activity: the only event is
+    // the respawn loop's schedule after the failed launch.
     await vi.advanceTimersByTimeAsync(500);
-    expect(h.events).toEqual([]);
+    expect(h.events).toEqual([{ type: 'reconnecting', attempt: 1, backoffMs: 1000 }]);
+    expect(h.logs.some((l) => l.msg.includes('health ping'))).toBe(false);
   });
 });
 
@@ -1268,13 +1470,32 @@ describe('DaemonRespawnController hands its exit watch over for a full shutdown'
   });
 });
 
+describe('DaemonRespawnController queued launchd job', () => {
+  it('a start that finds the daemon still queued costs no budget until queuedWaitMs', async () => {
+    const h = makeHarness({
+      config: { baseBackoffMs: 100, maxBackoffMs: 100, budget: 2, healthIntervalMs: 0, queuedWaitMs: 5_000 },
+      ensureDaemonImpl: async () => { throw new LaunchdJobQueuedError('com.wmux.daemon.x'); },
+    });
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(h.ensureDaemonCalls).toBeGreaterThan(10);
+    expect(h.events.some((e) => e.type === 'respawn-exhausted')).toBe(false);
+    expect(h.controller.daemonMayReturn).toBe(true);
+
+    // Past the adoption window the budget counts again.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.events.some((e) => e.type === 'respawn-exhausted')).toBe(true);
+  });
+});
+
 /**
  * #2398 — the local pty:reconnect handler answers "session gone" for an id it
  * does not own only once no daemon is coming back. While a respawn is pending
  * the id may be the daemon's, so the answer stays transient.
  */
 describe('DaemonRespawnController.daemonMayReturn (#2398)', () => {
-  it('is true while the first launch is in flight, false once it failed', async () => {
+  it('stays true after the first launch failed: the respawn loop takes over', async () => {
     const h = makeHarness();
     let release!: () => void;
     (h.deps as { ensureDaemon: () => Promise<DaemonInfo> }).ensureDaemon = () =>
@@ -1287,8 +1508,8 @@ describe('DaemonRespawnController.daemonMayReturn (#2398)', () => {
     expect(h.controller.daemonMayReturn).toBe(true);
     release();
     await booting;
-    // bootstrap has no retry of its own: the local fallback is final.
-    expect(h.controller.daemonMayReturn).toBe(false);
+    expect(h.controller.daemonMayReturn).toBe(true);
+    expect(h.events).toContainEqual({ type: 'reconnecting', attempt: 1, backoffMs: 1000 });
   });
 
   it('is true while a respawn is pending, false once the budget is exhausted', async () => {

@@ -100,6 +100,18 @@ describe('computer.rpc', () => {
       'claude-code (outside wmux panes)',
       'claude-code in workspace "claimed"',
     ]);
+    // The marker's names: only a pane-keyed agent carries its pane.
+    expect(agents.map((a) => [a.ptyId, a.workspaceName])).toEqual([
+      ['pty-a1', 'api'],
+      ['pty-a2', 'api'],
+      ['pty-b1', "web 'prod' X"],
+      ['pty-a1', 'api'],
+      [undefined, 'api'],
+      [undefined, undefined],
+      [undefined, undefined],
+      [undefined, 'claimed'],
+    ]);
+    expect(new Set(agents.map((a) => a.client))).toEqual(new Set(['claude-code']));
   });
 
   it('refuses a caller it cannot pin to a pane or process instead of sharing an identity', async () => {
@@ -155,7 +167,7 @@ describe('computer.rpc', () => {
     expect((await errorOf(call('computer.act', { action: 'getAppState', senderPtyId: 'pty-a1' }, { clientName: 'c' })))?.code).toBe('invalid_argument');
     await call('computer.act', { action: 'click', snapshotId: 's1', index: 2, senderPtyId: 'pty-a1' }, { clientName: 'c' });
     expect(control).toHaveBeenCalledWith(
-      { key: 'c @ ws-a/pty-a1', label: 'c in workspace "api"' },
+      { key: 'c @ ws-a/pty-a1', label: 'c in workspace "api"', ptyId: 'pty-a1', client: 'c', workspaceName: 'api' },
       { action: 'click', snapshotId: 's1', index: 2 },
     );
   });
@@ -191,7 +203,10 @@ describe('computer.rpc', () => {
     const openApp = vi.fn(async () => ({ app: { id: 'com.apple.TextEdit' }, window: null }));
     const { call } = setup({ control, openApp } as never);
     await call('computer.act', { action: 'openApp', app: 'TextEdit', senderPtyId: 'pty-a1' }, { clientName: 'c' });
-    expect(openApp).toHaveBeenCalledWith({ key: 'c @ ws-a/pty-a1', label: 'c in workspace "api"' }, { app: 'TextEdit' });
+    expect(openApp).toHaveBeenCalledWith(
+      { key: 'c @ ws-a/pty-a1', label: 'c in workspace "api"', ptyId: 'pty-a1', client: 'c', workspaceName: 'api' },
+      { app: 'TextEdit' },
+    );
     expect(control).not.toHaveBeenCalled();
     expect((await errorOf(call('computer.act', { action: 'openApp', senderPtyId: 'pty-a1' }, { clientName: 'c' })))?.code).toBe('invalid_argument');
     expect(openApp).toHaveBeenCalledTimes(1);

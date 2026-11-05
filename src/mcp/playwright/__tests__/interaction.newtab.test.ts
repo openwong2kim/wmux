@@ -139,7 +139,7 @@ beforeEach(() => {
 });
 
 describe('browser_click new-tab detection', () => {
-  it('names the popup URL on the chrome backend, without claiming a surface', async () => {
+  it('names the popup URL on the chrome backend and points at browser_tabs, without naming a surface', async () => {
     const { page, el } = makePage({ popupUrl: 'https://popup.example/checkout' });
     getPage.mockResolvedValue(page);
     resolveWorkspaceBackend.mockResolvedValue('chrome');
@@ -150,7 +150,8 @@ describe('browser_click new-tab detection', () => {
 
     expect(text).toContain('Clicked element ref=3');
     expect(text).toContain('opened a popup (page: https://popup.example/checkout)');
-    expect(text).toContain('not a wmux surface');
+    expect(text).toContain('use browser_tabs to find it');
+    expect(text).not.toContain('not a wmux surface');
     expect(text).not.toContain('surfaceId=');
   });
 

@@ -139,6 +139,7 @@ import {
 } from './protocolVersion';
 import { onSseClose, startSseHeartbeat } from './sseHeartbeat';
 import { StreamResponseLimits } from './StreamResponseLimits';
+import { BROWSER_STREAM_QUEUE_BYTES, BrowserStreamRegistry, parseBrowserStreamQuery, type BrowserStreamWho } from './browserStream';
 import {
   CHAT_LAUNCH_RETENTION_MS,
   CHAT_MESSAGE_RETENTION_MS,
@@ -202,7 +203,7 @@ import { BOTS_ROUTE, botsResponse, botsSupported } from './bots';
 import { GuestRateLimiter, guestRouteResponse, readGuestBody, type GuestBotResolver } from './guestBotRoutes';
 import { isGuestRoute, looksLikeGuestCredential, type GuestBotGates } from '../../shared/guestBots';
 import { BOT_APPROVALS_ROUTE, botApprovalDecisionRefusal, botApprovalsResponse, botApprovalsSupported, type BotApprovalsCaller } from './botApprovals';
-import { BROWSER_CHROME_PREVIEW_CAPABILITY, PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode } from '../../shared/phoneBrowserPreview';
+import { BROWSER_CHROME_PREVIEW_CAPABILITY, BROWSER_STREAM_CAPABILITY, BROWSER_STREAM_KEYS, PHONE_BROWSER_ERROR_STATUS, isPhoneBrowserErrorCode, phoneBrowserTapReply } from '../../shared/phoneBrowserPreview';
 import { BROWSER_HELP_DECISION_ROUTE, BROWSER_HELP_LIST_ROUTE, browserHelpDecisionRefusal, browserHelpDecisionResponse, browserHelpListResponse, browserHelpSupported, type BrowserHelpTableView } from './browserHelp';
 import { browserHelpFrameJson, isBrowserHelpId, type PhoneBrowserHelpFrame } from '../../shared/phoneBrowserHelp';
 import { WORKER_RESUME_ROUTE, workerResumeRefusal, workerResumeResponse, workerResumeSupported } from './workerResume';
@@ -1023,6 +1024,9 @@ interface WebTerminalServerDeps {
   sessionText?: (sessionId: string) => Promise<ReadonlyArray<{ text: string; wrapped: boolean }> | null>;
 }
 
+/** `GET …/browser/stream` on either preview route (browserStream.ts). */
+const BROWSER_STREAM_ROUTE = /^\/api\/(sessions|desktop-workspaces)\/[^/]+\/browser\/stream$/;
+
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
 const MAX_INPUT_BYTES = 64 * 1024;
 /**
@@ -1733,6 +1737,8 @@ export class WebTerminalServer {
    * restart — the client asks for another one, which costs it one request.
    */
   private readonly streamResponses = new StreamResponseLimits();
+  /** The phone's live browser streams (browserStream.ts). */
+  private readonly browserStreams = new BrowserStreamRegistry((message) => this.deps.log('info', `[web] ${message}`));
 
   private readonly streamTickets = new Map<string, StreamTicket>();
   /** Bot-file downloads open per caller (`operator` or a device id). */
@@ -2097,6 +2103,7 @@ export class WebTerminalServer {
       }
     }
     this.eventClients.clear();
+    this.browserStreams.stopAll();
     this.presence.stop();
     // #782 — clear pending non-recording nudge timers and the watcher set; the
     // SSE clients they would reach are gone, and a fresh start() re-arms nothing
@@ -2314,6 +2321,7 @@ export class WebTerminalServer {
         /* ignore */
       }
     }
+    closed += this.browserStreams.closeDevice(deviceId);
     if (closed > 0) {
       this.deps.log('info', `[web] revoked device ${deviceId}: closed ${closed} live stream(s)`);
     }
@@ -2757,11 +2765,14 @@ export class WebTerminalServer {
     }
     const principal = auth.principal;
     // Admit before opening a file or registering any long-lived listeners.
-    const streamsResponse = isStream || (req.method === 'GET'
+    const browserStream = req.method === 'GET' && BROWSER_STREAM_ROUTE.test(p);
+    const streamsResponse = isStream || browserStream || (req.method === 'GET'
       && /^\/api\/sessions\/[^/]+\/turns\/(file|image)$/.test(p));
     if (streamsResponse && !this.streamResponses.acquire(this.watcherKey(principal), res, {
       exemptCeiling: principal.kind === 'operator',
-      maxQueuedBytes: p === '/api/stream' ? 16 * 1024 * 1024 : undefined,
+      // A stream frame is up to 700 KiB of base64, written only once the one
+      // before it went out.
+      maxQueuedBytes: p === '/api/stream' ? 16 * 1024 * 1024 : browserStream ? BROWSER_STREAM_QUEUE_BYTES : undefined,
       log: (reason) => this.deps.log('warn', `[web] stream closed: ${reason}`),
     })) {
       res.setHeader('Retry-After', '1');
@@ -2869,6 +2880,9 @@ export class WebTerminalServer {
         // Chrome tabs: the transcript consent and a desktop that announced it.
         // OMITTED otherwise (an older desktop announces nothing).
         ...(this.opts?.allowTranscript === true && this.availableDesktop()?.supports(BROWSER_CHROME_PREVIEW_CAPABILITY) === true ? { browserPreviewChrome: true } : {}),
+        // `GET …/browser/stream` (live frames) and the stream's input rules:
+        // the transcript consent and a desktop that announced it. OMITTED otherwise.
+        ...(this.opts?.allowTranscript === true && this.availableDesktop()?.supports(BROWSER_STREAM_CAPABILITY) === true ? { browserStream: true } : {}),
         workspaceCreation: this.mayInput(principal) && desktopAvailable,
         quickCommands: this.opts?.allowTranscript === true && desktopAvailable,
         desktopAccounts: this.opts?.allowTranscript === true && desktopAvailable,
@@ -3084,6 +3098,10 @@ export class WebTerminalServer {
         }
       }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/agent-settings')) return this.handleAgentSettings(req,res,rest.slice(0,-'/agent-settings'.length),url,principal);
+      if (req.method === 'GET' && rest.endsWith('/browser/stream')) {
+        void this.handleBrowserStream(req,res,rest.slice(0,-'/browser/stream'.length),url,principal,'session');
+        return;
+      }
       if ((req.method === 'GET' || req.method === 'POST') && rest.endsWith('/browser')) return this.handlePhoneBrowser(req,res,rest.slice(0,-'/browser'.length),url,principal);
       if (req.method === 'GET' && rest.endsWith('/codex/account-status')) {
         return this.handleCodexAccountStatus(res, rest.slice(0, -'/codex/account-status'.length));
@@ -3180,6 +3198,10 @@ export class WebTerminalServer {
         .catch(error => error instanceof FolderBrowseError
           ? this.json(res,error.status,{error:error.tag})
           : this.json(res,500,{error:'folder-list-failed'}));
+      return;
+    }
+    if (req.method === 'GET' && p.startsWith('/api/desktop-workspaces/') && p.endsWith('/browser/stream')) {
+      void this.handleBrowserStream(req,res,p.slice('/api/desktop-workspaces/'.length,-'/browser/stream'.length),url,principal,'workspace');
       return;
     }
     if ((req.method === 'GET' || req.method === 'POST') && p.startsWith('/api/desktop-workspaces/') && p.endsWith('/browser')) {
@@ -4325,7 +4347,7 @@ export class WebTerminalServer {
     if (!workspaceId) return this.json(res,409,{error:'workspace-required'});
     const desktop = this.availableDesktop();
     if (!desktop) return this.json(res,503,{error:'desktop-unavailable'});
-    const send = (command: 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll' | 'browser.focus', payload: Record<string,unknown>) => {
+    const send = (command: 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll' | 'browser.focus' | 'browser.history', payload: Record<string,unknown>) => {
       void desktop.request(command,{...payload,workspaceId}).then(result => {
         // Main's words for a failure ride inside a successful reply
         // (shared/phoneBrowserPreview.ts); an unknown code is just a failure.
@@ -4334,7 +4356,8 @@ export class WebTerminalServer {
           return isPhoneBrowserErrorCode(code) ? this.json(res,PHONE_BROWSER_ERROR_STATUS[code],{error:code},{'Cache-Control':'no-store'})
             : this.json(res,503,{error:'browser-preview-unavailable'});
         }
-        return this.json(res,200,result,{'Cache-Control':'no-store'});
+        // A tap's `focus` reaches the phone only in the contract's shape (v1.6).
+        return this.json(res,200,command === 'browser.tap' ? phoneBrowserTapReply(result) : result,{'Cache-Control':'no-store'});
       }).catch(() => this.json(res,503,{error:'browser-preview-unavailable'}));
     };
     if (req.method === 'GET') {
@@ -4361,8 +4384,12 @@ export class WebTerminalServer {
       if (value.action === 'focus') return send('browser.focus',{surfaceId:value.surfaceId});
       if (value.action === 'viewport' && (value.mode === 'mobile' || value.mode === 'desktop')) return send('browser.viewport',{surfaceId:value.surfaceId,mode:value.mode});
       if (value.action === 'navigate' && typeof value.url === 'string' && value.url.length <= 4096) return send('browser.navigate',{surfaceId:value.surfaceId,url:value.url});
-      if ((value.action === 'type' || value.action === 'key' || value.action === 'tap' || value.action === 'scroll') && typeof value.expectedURL === 'string' && value.expectedURL.length <= 4096) {
-        const scope = {surfaceId:value.surfaceId,expectedURL:value.expectedURL};
+      if ((value.action === 'type' || value.action === 'key' || value.action === 'tap' || value.action === 'scroll' || value.action === 'history') && typeof value.expectedURL === 'string' && value.expectedURL.length <= 4096) {
+        // Input from a phone that may see the stream (the desktop announced
+        // it, transcript consent is on) is marked `stream:true`: main then
+        // answers it by the stream's rules. Unmarked input is answered as before.
+        const stream = this.opts?.allowTranscript === true && desktop.supports(BROWSER_STREAM_CAPABILITY);
+        const scope = {surfaceId:value.surfaceId,expectedURL:value.expectedURL,...(stream ? {stream:true} : {})};
         if ((value.action === 'tap' || value.action === 'scroll') && typeof value.x === 'number' && value.x >= 0 && value.x < 1 && typeof value.y === 'number' && value.y >= 0 && value.y < 1 && value.geometry && typeof value.geometry === 'object') {
           if (value.action === 'tap') return send('browser.tap',{...scope,x:value.x,y:value.y,geometry:value.geometry});
           if (typeof value.deltaX === 'number' && Math.abs(value.deltaX) <= 1 && typeof value.deltaY === 'number' && Math.abs(value.deltaY) <= 1) return send('browser.scroll',{...scope,x:value.x,y:value.y,geometry:value.geometry,deltaX:value.deltaX,deltaY:value.deltaY});
@@ -4380,10 +4407,120 @@ export class WebTerminalServer {
           if (found.row.origin === undefined) return this.json(res,409,{error:'browser-help-origin-changed'});
           return send('browser.type',{...scope,text:value.text,helpOrigin:found.row.origin});
         }
-        if (value.action === 'key' && ['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'].includes(value.key as string)) return send('browser.key',{...scope,key:value.key});
+        if (value.action === 'key' && (['Tab','Shift+Tab','Enter','Backspace','Escape','PageUp','PageDown'].includes(value.key as string) || (stream && BROWSER_STREAM_KEYS.includes(value.key as string)))) return send('browser.key',{...scope,key:value.key});
+        if (stream && value.action === 'history' && (value.direction === 'back' || value.direction === 'forward')) return send('browser.history',{...scope,direction:value.direction});
       }
       return this.json(res,400,{error:'invalid-browser-request'});
     });
+  }
+
+  /**
+   * `GET …/browser/stream`: the live preview of one tab, as SSE
+   * (browserStream.ts). The same consent and workspace checks as the
+   * capture GET on that route; a desktop that did not announce the stream
+   * gets today's 404.
+   */
+  private async handleBrowserStream(req: http.IncomingMessage, res: http.ServerResponse, rawId: string, url: URL, principal: WebPrincipal, route: 'session' | 'workspace'): Promise<void> {
+    const noStore = { 'Cache-Control': 'no-store' };
+    const desktop = this.availableDesktop();
+    if (!desktop?.supports(BROWSER_STREAM_CAPABILITY)) return this.json(res, 404, { error: 'not found' });
+    if (route === 'workspace' && (!this.mayInput(principal) || this.opts?.allowTranscript !== true)) return this.json(res, 403, { error: 'workspace-browser-disabled' });
+    if (this.opts?.allowTranscript !== true) return this.json(res, 403, { error: 'browser-preview-disabled' });
+    const id = decodePathSegment(rawId);
+    let workspaceId: string | undefined;
+    let session: ReturnType<WebTerminalServer['attachableSession']> | null = null;
+    if (route === 'workspace') {
+      if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || ['__proto__', 'constructor', 'prototype'].includes(id)) return this.json(res, 400, { error: 'invalid-workspace' });
+      workspaceId = id;
+    } else {
+      session = id === null ? null : this.attachableSession(principal, id) ?? null;
+      if (!session) return this.json(res, 404, { error: 'session not found' });
+      workspaceId = session.meta.env?.[ENV_KEYS.WORKSPACE_ID];
+      if (!workspaceId) return this.json(res, 409, { error: 'workspace-required' });
+    }
+    const surfaceId = url.searchParams.get('surfaceId');
+    if (!surfaceId || surfaceId.length > 128) return this.json(res, 400, { error: 'invalid-browser-surface' });
+    const params = parseBrowserStreamQuery(url.searchParams);
+    if (!params) return this.json(res, 400, { error: 'invalid-browser-stream' });
+    // The mobile viewport changes the Mac's tab: it needs input consent.
+    if (params.mobile && !this.mayInput(principal)) return this.refuseInput(res, principal, 'A mobile viewport requires input permission');
+    let current = principal;
+    if (route === 'workspace') {
+      try {
+        const registry = await desktop.request('workspaces.list', {}) as { workspaces?: unknown };
+        if (!Array.isArray(registry?.workspaces) || !registry.workspaces.some(row => row && typeof row === 'object' && row.id === workspaceId)) return this.json(res, 404, { error: 'workspace-not-found' });
+      } catch { return this.json(res, 503, { error: 'workspace-browser-unavailable' }); }
+      const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+      if (!fresh.ok) return this.json(res, 401, { error: 'authorization-expired' });
+      if (!this.mayInput(fresh.principal)) return this.refuseInput(res, fresh.principal, 'Input permission changed');
+      current = fresh.principal;
+    }
+    if (res.destroyed) return;
+    const who: BrowserStreamWho = { principalKey: this.watcherKey(current), operator: current.kind === 'operator', ...(current.kind === 'device' ? { deviceId: current.deviceId } : {}) };
+    const reservation = this.browserStreams.reserve(desktop, workspaceId, surfaceId, who, params);
+    if ('status' in reservation) {
+      return this.json(res, reservation.status, { error: reservation.error }, { ...noStore, ...(reservation.retryAfter ? { 'Retry-After': String(reservation.retryAfter) } : {}) });
+    }
+    // The client may leave while the screencast starts.
+    res.once('close', () => reservation.cancel());
+    const started = await reservation.start();
+    if ('status' in started) {
+      reservation.cancel();
+      return this.json(res, started.status, { error: started.error }, noStore);
+    }
+    const openedOpts = this.opts;
+    const workspace = workspaceId;
+    /** Whether the stream may go on: re-read on every keepalive tick. */
+    const authorize = (): boolean => {
+      if (!this.server || !openedOpts || this.opts !== openedOpts || openedOpts.allowTranscript !== true) return false;
+      if (this.availableDesktop()?.supports(BROWSER_STREAM_CAPABILITY) !== true) return false;
+      const opened = current;
+      let who: WebPrincipal = opened;
+      if (opened.kind === 'device') {
+        let row: WebDeviceSummary | undefined;
+        try { row = this.deps.devices?.list?.().find((d) => d.deviceId === opened.deviceId); } catch { return false; }
+        if (!row || row.revokedAt !== undefined) return false;
+        who = { ...opened, allowInput: row.allowInput };
+      }
+      if ((route === 'workspace' || params.mobile) && !this.mayInput(who)) return false;
+      if (session && (this.attachableSession(who, id!) !== session || session.meta.env?.[ENV_KEYS.WORKSPACE_ID] !== workspace)) return false;
+      return true;
+    };
+    // The same checks after the start's await, as the capture GET does.
+    const fresh = await this.authenticate(req, url, false).catch(() => ({ ok: false as const }));
+    if (!fresh.ok) { reservation.cancel(); return this.json(res, 401, { error: 'authorization-expired' }); }
+    if (fresh.principal.kind !== current.kind || (fresh.principal.kind === 'device' && current.kind === 'device' && fresh.principal.deviceId !== current.deviceId)) {
+      reservation.cancel();
+      return this.json(res, 401, { error: 'authorization-expired' });
+    }
+    current = fresh.principal;
+    if (!authorize()) {
+      reservation.cancel();
+      if (route === 'workspace' || params.mobile) {
+        if (!this.mayInput(current)) return this.refuseInput(res, current, 'Input permission changed');
+      }
+      return this.json(res, 404, { error: route === 'session' ? 'session not found' : 'workspace-not-found' });
+    }
+    if (res.destroyed) { reservation.cancel(); return; }
+    const refused = reservation.open(res, authorize, () => {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream; charset=utf-8',
+        'Cache-Control': 'no-store',
+        Connection: 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        ...this.securityHeaders(),
+      });
+      res.flushHeaders();
+    });
+    if (refused) return this.json(res, refused.status, { error: refused.error }, noStore);
+  }
+
+  /**
+   * One of main's pushes for a phone browser stream (`daemon.phone.browserStream`).
+   * The caller has checked that `clientId` is the registered desktop.
+   */
+  browserStreamPush(clientId: string, params: Record<string, unknown>): { ok: boolean; known: boolean } {
+    return this.browserStreams.push(clientId, params);
   }
 
   private handlePhoneWorkspaces(req: http.IncomingMessage, res: http.ServerResponse, url: URL, principal: WebPrincipal): void {

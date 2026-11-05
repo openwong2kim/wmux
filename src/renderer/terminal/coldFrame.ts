@@ -1,6 +1,7 @@
 import type { Terminal } from '@xterm/xterm';
 import { SerializeAddon } from '@xterm/addon-serialize';
 import { IncompleteEscapeSplitter } from '../../shared/incompleteEscape';
+import { isWongttyTerminal } from './wongtty/load';
 
 // Cold-park reveal: paint the last-seen screen at once, then swap in the
 // daemon's screen without an empty frame in between.
@@ -129,8 +130,19 @@ export function captureColdFrame(ptyId: string, terminal: Terminal): void {
   if (entry) rememberColdFrame(ptyId, entry);
 }
 
+interface WongttySnapshotTerminal {
+  ansiSnapshot(options: { scrollback: number; excludeModes: boolean }): { ok: true; payload: Uint8Array } | { ok: false };
+}
+
 function serializeViewport(terminal: Terminal): ColdFrame | null {
   try {
+    // wongtty (uiSlice.terminalWongtty) has no serialize addon; its ansiSnapshot
+    // takes the same options.
+    if (isWongttyTerminal(terminal)) {
+      const snapshot = (terminal as unknown as WongttySnapshotTerminal).ansiSnapshot({ scrollback: 0, excludeModes: true });
+      if (!snapshot.ok) return null;
+      return { frame: new TextDecoder().decode(snapshot.payload), cols: terminal.cols, rows: terminal.rows };
+    }
     const addon = new SerializeAddon();
     terminal.loadAddon(addon);
     try {

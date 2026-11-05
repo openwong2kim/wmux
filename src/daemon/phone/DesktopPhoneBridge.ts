@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { isKeepAwakeState, type KeepAwakeState } from '../../shared/sleepPrevention';
 import { PHONE_BROWSER_HELP_DECIDE_COMMAND } from '../../shared/phoneBrowserHelp';
 
-export type DesktopPhoneCommand = 'accounts.list' | 'accounts.bind' | 'accounts.usage' | 'accounts.env' | 'accounts.envForAccount' | 'prompts.list' | 'prompts.replace' | 'workspaces.list' | 'workspaces.create' | 'workspaces.fleetTicket' | 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll' | 'browser.focus' | 'moa.wake' | 'workspaces.roomThreads' | 'workspaces.roomCards' | 'workspaces.roomAttachment' | 'workspaces.roomFile' | 'workspaces.botApproval' | 'workspaces.botApprovalDecide' | 'workspaces.workerResume' | 'workspaces.guestPost' | 'workspaces.browserHelpDecide' | 'agentEnv.summary';
+export type DesktopPhoneCommand = 'accounts.list' | 'accounts.bind' | 'accounts.usage' | 'accounts.env' | 'accounts.envForAccount' | 'prompts.list' | 'prompts.replace' | 'workspaces.list' | 'workspaces.create' | 'workspaces.fleetTicket' | 'browser.list' | 'browser.capture' | 'browser.viewport' | 'browser.navigate' | 'browser.type' | 'browser.key' | 'browser.tap' | 'browser.open' | 'browser.scroll' | 'browser.focus' | 'browser.history' | 'browser.streamStart' | 'browser.streamUpdate' | 'browser.streamStop' | 'moa.wake' | 'workspaces.roomThreads' | 'workspaces.roomCards' | 'workspaces.roomAttachment' | 'workspaces.roomFile' | 'workspaces.botApproval' | 'workspaces.botApprovalDecide' | 'workspaces.workerResume' | 'workspaces.guestPost' | 'workspaces.browserHelpDecide' | 'agentEnv.summary';
 export class DesktopPhoneError extends Error {
   constructor(public readonly tag: string) { super(tag); }
 }
@@ -35,6 +35,7 @@ export class DesktopPhoneBridge {
   /** The owner's last "Keep the computer awake" report; reset with the owner. */
   private awake: KeepAwakeState | null = null;
   private pending = new Map<string, Pending>();
+  private readonly ownerLost = new Set<() => void>();
   constructor(private readonly send: (clientId: string, event: unknown) => boolean, private readonly timeoutMs = DESKTOP_PHONE_TIMEOUT_MS) {}
   get available() { return this.owner !== null; }
   /**
@@ -53,6 +54,13 @@ export class DesktopPhoneBridge {
   }
   /** Whether `clientId` is the registered desktop. */
   isOwner(clientId: string) { return this.owner !== null && this.owner === clientId; }
+  /** The registered desktop's client id, null while none is attached. */
+  get ownerId(): string | null { return this.owner; }
+  /** Called each time the registered desktop goes away. Returns the unsubscribe. */
+  onOwnerLost(listener: () => void): () => void {
+    this.ownerLost.add(listener);
+    return () => { this.ownerLost.delete(listener); };
+  }
   /** Whether the attached desktop announced `command` on this connection. */
   supports(command: string) { return this.owner !== null && this.commands.has(command); }
   disconnect(clientId: string) {
@@ -64,6 +72,9 @@ export class DesktopPhoneBridge {
       clearTimeout(pending.timer);
       pending.reject(new DesktopPhoneError('desktop-disconnected'));
       this.pending.delete(id);
+    }
+    for (const listener of [...this.ownerLost]) {
+      try { listener(); } catch { /* one listener must not keep the others from hearing it */ }
     }
   }
   /**

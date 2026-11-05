@@ -7,14 +7,17 @@ import { warmLoginShellPath } from './claude/resolveClaudeExecutable';
 import { terminalCoreSelection } from '../shared/terminalCoreSettings';
 import { randomUUID as phoneBrowserRequestId } from 'node:crypto';
 import { webContents as phoneWebContents } from 'electron';
-import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
+import { withPhoneBrowserInputFocus, dispatchPhoneBrowserScroll, phoneBrowserHistoryEntry, phoneBrowserNativeBounds } from './phone/PhoneBrowserInput';
 import { focusBuiltinTab, handlePhoneBrowser } from './phone/PhoneBrowser';
+import { readFocus } from './phone/PhoneBrowserFocus';
+import { presetViewScale } from './phone/PhoneBrowserGeometry';
 import { createPhoneChromeDeps, phoneChromeHelpTabs } from './phone/PhoneBrowserChrome';
 import { validateResolvedNavigationUrl } from './security/navigationPolicy';
 import { navigationPolicyOptions } from '../shared/types';
 import { handlePhoneWorkspaces } from './phone/PhoneWorkspaces';
 import { handlePhoneQuickCommands } from './quickCommands/QuickCommandStore';
 import { installPhoneBridge } from './phone/installPhoneBridge';
+import { createPhoneBrowserStreams, phoneBrowserStreamEnabled } from './phone/PhoneBrowserStream';
 import { installKeepAwakeLink } from './power/keepAwakeLink';
 import { botApprovalPushTable, createBotApprovalPushFeed, setBotApprovalPushFeed } from './phone/BotApprovalPushFeed';
 import { createBotPromptPushFeed, openBotPromptRows, setBotPromptPushFeed } from './phone/BotPromptPushFeed';
@@ -69,6 +72,8 @@ import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { createLocalApprovalScreenReader } from './pty/localApprovalScreen';
 import { pruneDaemonPidMapAtConnect } from './pty/pidMap';
+import { getUserShellRecord, HELD_START_CONNECTED_WAIT_MS, startHeldUserShells } from './pty/userShellRecord';
+import { WSL_RPC_TIMEOUT_MS } from '../shared/wslTimeouts';
 import { resyncShellPromptsAtConnect } from './shellPrompt/shellPromptMirror';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { clearEphemeralClipboard } from './ipc/handlers/clipboard.handler';
@@ -129,8 +134,9 @@ import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
 import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
+import { sampleDaemonProcess } from '../shared/daemon/daemonProgress';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
-import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
+import { activeDevicePreset, registerBrowserRpc, resetDevicePreset, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerA2aChannelRpc } from './pipe/handlers/a2a.channel.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
@@ -2592,6 +2598,9 @@ app.on('ready', async () => {
   // `daemon:respawn-exhausted` so UX can show a toast/badge.
   daemonRespawnController = new DaemonRespawnController({
     ensureDaemon,
+    // A daemon that stops answering but still uses CPU is slow (a system short
+    // of memory), not hung: it is not respawned, which would end every PTY it holds.
+    sampleDaemon: sampleDaemonProcess,
     createClient: (pipeName, token) => new DaemonClient(pipeName, token),
     onInstall: async (client) => {
       daemonClient = client;
@@ -2622,13 +2631,32 @@ app.on('ready', async () => {
           // After identify: the daemon takes the host window from the app only.
           reportHostWindow(() => client, mainWindow);
           disposePhoneBridge?.();
-          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === AGENT_ENV_COMMAND
-            // A paired PC comparing agent environments: names, versions and hashes.
-            ? cachedAgentEnvSummary({ wmuxVersion: app.getVersion() })
-            : command === MOA_WAKE_COMMAND
-            // A failure main learns after the accept goes back on the receipt.
-            ? Promise.resolve(handlePhoneMoaWake(payload))
-            : command.startsWith('browser.') ? handlePhoneBrowser(command,payload,{
+          // The phone's live browser stream (phone/PhoneBrowserStream.ts), per
+          // daemon connection; on unless WMUX_PHONE_BROWSER_STREAM=0.
+          const phoneStreams = phoneBrowserStreamEnabled() ? createPhoneBrowserStreams({
+            push: (params) => client.rpc('daemon.phone.browserStream', params, { timeoutMs: 3_000 }),
+            backend: () => browserBackendStore.get(),
+            chrome: phoneChromeDeps,
+            builtin: {
+              targets: () => webviewCdpManager.listTargets(),
+              contents: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? wc : null; },
+              visible: surfaceId => webviewCdpManager.isVisible(surfaceId),
+              onVisibility: listener => webviewCdpManager.onVisibility(listener),
+              nativeBounds: wc => phoneBrowserNativeBounds(wc),
+              // viewport=mobile on a pane: the phone's own viewport action.
+              viewport: async (surfaceId, workspaceId, mode, refit) => {
+                const reply = await handlePhoneBrowser('browser.viewport', { workspaceId, surfaceId, mode, fill: true, refit: refit === true }, phoneBrowserDeps) as { applied?: unknown } | null;
+                if (reply?.applied !== true) throw new Error('Browser viewport unavailable');
+              },
+              preset: wc => activeDevicePreset(wc),
+              // As the `desktop` viewport action resets, without its page and agent-control checks.
+              reset: async wc => {
+                await resetDevicePreset(wc);
+                await wc.debugger.sendCommand('Emulation.clearDeviceMetricsOverride');
+              },
+            },
+          }) : null;
+          const phoneBrowserDeps: Parameters<typeof handlePhoneBrowser>[2] = {
             backend: () => browserBackendStore.get(),
             clearViewport: async id => {
               const wc = phoneWebContents.fromId(id);
@@ -2640,25 +2668,53 @@ app.on('ready', async () => {
               if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
               return phoneBrowserNativeBounds(wc);
             },
+            ...(phoneStreams ? { layoutMetrics: async (id: number) => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              return wc.debugger.sendCommand('Page.getLayoutMetrics');
+            } } : {}),
             scroll: async (id,event) => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
               await dispatchPhoneBrowserScroll(wc,event);
             },
+            viewScale: id => {
+              const wc = phoneWebContents.fromId(id);
+              return presetViewScale(wc && !wc.isDestroyed() ? activeDevicePreset(wc) : undefined);
+            },
             targets: () => webviewCdpManager.listTargets(),
             focusBuiltin: (surfaceId, workspaceId) =>
               focusBuiltinTab((method, params) => sendToRenderer(() => mainWindow, method, params), surfaceId, workspaceId),
+            historyEntry: (id, offset) => {
+              const wc = phoneWebContents.fromId(id);
+              if (!wc || wc.isDestroyed()) throw new Error('Browser unavailable');
+              return phoneBrowserHistoryEntry(wc, offset);
+            },
+            // The same desktop navigation policy the Chrome tabs are held to.
+            validateNavigation: phoneChromeDeps.validateNavigation,
             chrome: phoneChromeDeps,
-            input: (id, operation) => {
+            ...(phoneStreams ? { streams: phoneStreams } : {}),
+            input: (id, operation, options) => {
               const wc = phoneWebContents.fromId(id);
               if (!wc || wc.isDestroyed()) return Promise.reject(new Error('Browser unavailable'));
-              return withPhoneBrowserInputFocus(wc,operation);
+              return withPhoneBrowserInputFocus(wc,operation,options);
+            },
+            readFocus: async id => {
+              const wc = phoneWebContents.fromId(id);
+              return wc && !wc.isDestroyed() ? readFocus((method, params) => wc.debugger.sendCommand(method, params)) : undefined;
             },
             page: id => { const wc = phoneWebContents.fromId(id); return wc && !wc.isDestroyed() ? {title:wc.getTitle(),url:wc.getURL()} : null; },
             invoke: (method,params) => rpcRouter.dispatch({id: `phone-browser-${phoneBrowserRequestId()}`,method:method as RpcMethod,params},{operator:true}),
-          }) : command.startsWith('workspaces.') ? handlePhoneWorkspaces(command,payload,() => mainWindow) : command.startsWith('prompts.') ? handlePhoneQuickCommands(command,payload) : handlePhoneAccounts(command,payload,{
+          };
+          disposePhoneBridge = installPhoneBridge(client,(command,payload) => command === AGENT_ENV_COMMAND
+            // A paired PC comparing agent environments: names, versions and hashes.
+            ? cachedAgentEnvSummary({ wmuxVersion: app.getVersion() })
+            : command === MOA_WAKE_COMMAND
+            // A failure main learns after the accept goes back on the receipt.
+            ? Promise.resolve(handlePhoneMoaWake(payload))
+            : command.startsWith('browser.') ? handlePhoneBrowser(command,payload,phoneBrowserDeps) : command.startsWith('workspaces.') ? handlePhoneWorkspaces(command,payload,() => mainWindow) : command.startsWith('prompts.') ? handlePhoneQuickCommands(command,payload) : handlePhoneAccounts(command,payload,{
             store:getAccountStore(),usage:accountUsageService,
-          }));
+          }), phoneStreams);
           // Keep the computer awake while a paired phone is attached. Installed in
           // the same tick as the register above, before the daemon's answer to it.
           disposeKeepAwakeLink?.();
@@ -2708,6 +2764,18 @@ app.on('ready', async () => {
         }, (err: unknown) => {
           logLine('warn', 'main', `pid-map prune failed: ${err instanceof Error ? err.message : String(err)}`);
         });
+      // #3049 — start the restored user shells the daemon holds for main, with
+      // their credentials (pty/userShellRecord.ts); whatever is still held at
+      // the daemon's fallback starts without them. Never rejects: the
+      // daemon:connected below waits on it.
+      const heldStart = startHeldUserShells(client, getUserShellRecord(app.getPath('userData')), {
+        timeoutMs: WSL_RPC_TIMEOUT_MS,
+        log: (line) => logLine('info', 'main', line),
+      }).then((held) => {
+        if (held > 0) logLine('info', 'main', `[env] started ${held} restored user shell(s) held for the app`);
+      }, (err: unknown) => {
+        logLine('warn', 'main', `[env] restored user shells not started: ${err instanceof Error ? err.message : String(err)}`);
+      });
       // Mount the notification router now that we have a live daemon
       // client. PTY data flows through daemon → DaemonClient events,
       // and this router translates them into the same renderer-facing
@@ -2823,6 +2891,11 @@ app.on('ready', async () => {
       const daemonPid = daemonRespawnController?.connectedDaemonPid ?? readDaemonPid(getWmuxDir());
       const replaced = lastConnectedDaemonPid !== null && daemonPid !== null && daemonPid !== lastConnectedDaemonPid;
       if (daemonPid !== null) lastConnectedDaemonPid = daemonPid;
+      // #3049 — the renderer reads resume offers on daemon:connected, and a
+      // held shell gets its offer only once started: wait for that start, but
+      // never long. A disconnect meanwhile ends this install (onUninstall ran).
+      await Promise.race([heldStart, new Promise<void>((resolve) => { setTimeout(resolve, HELD_START_CONNECTED_WAIT_MS).unref?.(); })]);
+      if (daemonClient !== client) return;
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:connected', { replaced });
       }
@@ -2868,11 +2941,14 @@ app.on('ready', async () => {
       // pre-existing scrollback path). Without this, the renderer
       // would still treat itself as daemon-connected and skip the
       // .txt autosave even though no daemon is replaying PTY data.
+      logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
+      cleanupHandlers();
+      // After the cleanup, which flushes the old pipes' buffered output: that
+      // output reaching the renderer after this would mark the panes ready
+      // again, and an automatic resume would type before the new pipe (#3028).
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:disconnected');
       }
-      logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
-      cleanupHandlers();
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
       cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {
         ...mcpHandlerOptions,
@@ -2904,7 +2980,8 @@ app.on('ready', async () => {
         // main thread until dismissed; that's harmless here because the
         // daemon-respawn budget exhausted means there is no daemon for the
         // main thread to talk to anyway. Suppress for automated runs.
-        if (process.env.WMUX_NO_DIALOG !== '1') {
+        // A refused start followed a recovery dialog the user declined.
+        if (process.env.WMUX_NO_DIALOG !== '1' && !event.refused) {
           const hint = event.lastError && event.lastError.length > 0
             ? event.lastError
             : 'wmux could not bring the daemon back up after 5 retries.';

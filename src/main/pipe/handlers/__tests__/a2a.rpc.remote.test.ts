@@ -9,6 +9,12 @@ import type { A2aRemoteTarget } from '../../../../shared/a2aRemoteDelivery';
 import { A2A_REMOTE_BODY_MAX } from '../../../../shared/a2aRemote';
 import { COMPANY_BRIEF_KIND, companyBriefOf, renderRemoteBrief } from '../../../../shared/company';
 import { getWorkLinkStore } from '../../../workLink/workLinkStore';
+// The caller's workspace is checked in a2a.rpc.callerWorkspace.test.ts; these tests
+// are about the handlers once the caller is known, so they name it freely.
+vi.mock('../a2aCaller', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../a2aCaller')>()),
+  a2aCallerWorkspace: async () => ({ ok: true, trusted: true }),
+}));
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));

@@ -191,8 +191,8 @@ describe('CommandPalette shortcut recording onto a custom keybinding key', () =>
   it('no question for a key no custom keybinding uses', () => {
     selectRow(t('palette.cmd.movePane.right'));
     startRecording();
-    press({ key: 'F8', code: 'F8' });
+    press({ key: 'F10', code: 'F10' });
     expect(dialog()).toBeNull();
-    expect(useStore.getState().shortcutOverrides.movePaneRight).toBe('F8');
+    expect(useStore.getState().shortcutOverrides.movePaneRight).toBe('F10');
   });
 });

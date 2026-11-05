@@ -49,7 +49,7 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     // contract this test exists for — reset BEFORE held bytes parse — remains.
     // The reset is in-stream (RIS + DEC 2026 BEGIN, then END after the held
     // bytes) so no render can paint the empty screen between reset and replay.
-    const body = src.slice(idx, idx + 2400);
+    const body = src.slice(idx, idx + 3600);
     expect(body).not.toMatch(/terminal\.reset\(\)/);
     const resetIdx = body.indexOf('terminal.write(REPAINT_BEGIN');
     const writeIdx = body.indexOf('writePtyDataImmediately(terminal, chunk');
@@ -122,8 +122,10 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
   });
 
   it('exit markers ride the retention policy too (no hidden parse via onExit)', () => {
-    const exitWrites = src.match(/terminal\.exitedBracket[\s\S]{0,220}?retainWhenHidden:\s*hiddenRetentionActive\(\)/g) ?? [];
-    expect(exitWrites.length).toBe(2);
+    // Both exit listeners write it through writeExitMarker.
+    const exitWrites = src.match(/terminal\.exitedBracket[\s\S]{0,400}?retainWhenHidden:\s*hiddenRetentionActive\(\)/g) ?? [];
+    expect(exitWrites.length).toBe(1);
+    expect(src.match(/ptyExitDispatcher\.register\(ptyId, \(exitCode\) => \{[\s\S]{0,400}?writeExitMarker\(exitCode\);/g) ?? []).toHaveLength(2);
   });
 });
 
@@ -199,7 +201,7 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
       const measure = body.indexOf('keepBookmarksAcrossRepaint(');
       const reset = body.indexOf(name === 'dead-snapshot' ? 'term.reset()' : 'write(REPAINT_BEGIN');
       const replay = body.indexOf(name === 'dead-snapshot' ? 'writeReplayed(term, bytes' : 'write(REPAINT_END');
-      const restore = body.search(name === 'dead-snapshot' ? /try \{ restore\(\); \}/ : /try \{ restoreBookmarks\?\.\(\); \}/);
+      const restore = body.search(name === 'dead-snapshot' ? /try \{ restore\(term\); \}/ : /try \{ restoreBookmarks\?\.\(terminal\); \}/);
       expect(measure).toBeGreaterThan(0);
       expect(reset).toBeGreaterThan(measure);
       expect(replay).toBeGreaterThan(reset);

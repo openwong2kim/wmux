@@ -39,7 +39,8 @@ const other = { id: 'ws-other', name: 'Other', wsOrdinal: 2, activePaneId: 'o1',
 let el: HTMLDivElement;
 let root: Root;
 let hireSeat: ReturnType<typeof vi.fn<(req: HireSeatRequest) => Promise<HireSeatResult>>>;
-let isRepo: boolean;
+/** What main's worktree check answers for the company folder (#3079). */
+let repoCheck: { ok: true } | { ok: false; reason: string };
 const onClose = vi.fn();
 
 const q = <E extends Element = HTMLElement>(id: string) => document.body.querySelector<E>(`[data-testid="${id}"]`);
@@ -74,12 +75,11 @@ function pick(id: string, value: string): void {
 
 beforeEach(() => {
   hireSeat = vi.fn<(req: HireSeatRequest) => Promise<HireSeatResult>>();
-  isRepo = true;
+  repoCheck = { ok: true };
   onClose.mockReset();
   watchHireNotice.mockClear();
   (window as unknown as { electronAPI: unknown }).electronAPI = {
-    company: { hireSeat },
-    diff: { resolveRepo: () => Promise.resolve(isRepo ? { ok: true, repoPath: '/repo' } : { ok: false }) },
+    company: { hireSeat, worktreeCheck: () => Promise.resolve(repoCheck) },
     factory: {
       workerAgents: () => Promise.resolve([
         { agent: 'claude', label: 'Claude Code', installed: true },
@@ -172,7 +172,7 @@ describe('HireSeatDialog', () => {
   });
 
   it('splits beside the CEO when the company has no staff pane yet', async () => {
-    hireSeat.mockResolvedValue({ ok: true, label: 'dev-2', command: 'claude', cwd: null });
+    hireSeat.mockResolvedValue({ ok: true, label: 'dev-2', command: 'claude', cwd: null, launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
     act(() => useStore.setState({ workspaces: [other, { ...company('p1'), rootPane: leaf('p1', 1, surface('s1', 'pty-1')) }] }));
     await render();
     await act(async () => { add()!.click(); });
@@ -182,8 +182,9 @@ describe('HireSeatDialog', () => {
     const top = ws.rootPane as { type: string; direction: string; children: Pane[] };
     expect(top.direction).toBe('horizontal');
     expect(top.children[0].id).toBe('p1');
-    // No folder of its own: the seed keeps the split's.
-    expect(useStore.getState().projectPaneSeed[top.children[1].id]).toEqual({ label: 'dev-2', command: 'claude' });
+    // No folder of its own: the seed keeps the split's. The first-run env is
+    // for the launch line only, never the pane's env.
+    expect(useStore.getState().projectPaneSeed[top.children[1].id]).toEqual({ label: 'dev-2', command: 'claude', launchEnv: { CLAUDE_CODE_SANDBOXED: '1' } });
   });
 
   it('keeps the form and says why when main refuses', async () => {
@@ -197,11 +198,36 @@ describe('HireSeatDialog', () => {
   });
 
   it('adds nothing outside a repository while another staff agent works in the folder', async () => {
-    isRepo = false;
+    repoCheck = { ok: false, reason: 'not-repo' };
     await render();
     expect(q('hire-seat-works-in')?.textContent).toContain('/repo, the company folder');
     expect(q('hire-seat-shared')).not.toBeNull();
     expect(add()?.disabled).toBe(true);
+  });
+
+  it('names the folder itself, with the reason, for a repository that cannot have a seat worktree', async () => {
+    const said: Record<string, string> = {
+      bare: "/repo itself: a bare repository can't have a seat worktree",
+      submodules: "/repo itself: a repository with submodules can't have a seat worktree",
+      lfs: "/repo itself: a repository that uses Git LFS can't have a seat worktree",
+    };
+    for (const [reason, text] of Object.entries(said)) {
+      repoCheck = { ok: false, reason };
+      await render();
+      expect(q('hire-seat-works-in')?.textContent).toContain(text);
+      // The seat would share the folder with the staff agent already there, said with the reason.
+      expect(q('hire-seat-shared')?.textContent).toContain(text.slice('/repo itself: '.length).replace(" a seat worktree", ' a seat worktree, so the new seat would share its folder'));
+      expect(add()?.disabled).toBe(true);
+      act(() => root.unmount());
+      root = createRoot(el);
+    }
+    // main could not tell (it decides again when it makes the seat): the
+    // company folder, and nothing blocks Add on a check that may pass next time.
+    repoCheck = { ok: false, reason: 'git-error' };
+    await render();
+    expect(q('hire-seat-works-in')?.textContent).toContain('/repo, the company folder');
+    expect(q('hire-seat-shared')).toBeNull();
+    expect(add()?.disabled).toBe(false);
   });
 
   it('adds nothing at the pane cap, and says so as a split would', async () => {

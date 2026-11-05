@@ -8,6 +8,7 @@ import {
   buildRoleBindings,
   buildPanePtys,
   buildPaneIds,
+  buildPaneTags,
 } from '../workspaceMirrorSnapshot';
 import type { Workspace, Pane, Surface, AgentStatus } from '../../../shared/types';
 import type { FleetSelectorState } from '../../stores/selectors/fleet';
@@ -493,6 +494,18 @@ describe('buildPanePtys — per-pane Chrome profiles', () => {
     const ptyLess = workspace('ws-e', 'e', leaf('p-e', [surface('s-e', '')]), 'p-e');
     expect(buildPaneIds([w2, stashedWorkspace(), ptyLess])).toEqual(['p2a', 'p2b', 'p-vis', 'p-st', 'p-e']);
     expect(buildWorkspaceMirrorPayload(state(), () => 1).paneIds).toEqual(['p1', 'p2a', 'p2b']);
+  });
+
+  it('paneTags gives every pane, stashed ones included, its auto tag from the ordinals', () => {
+    const st = stashedWorkspace();
+    const numbered: Workspace = {
+      ...st,
+      wsOrdinal: 3,
+      rootPane: { ...(st.rootPane as Extract<Pane, { type: 'leaf' }>), ordinal: 1 },
+      stashedPanes: st.stashedPanes?.map((e) => ({ ...e, pane: { ...e.pane, ordinal: 2 } })),
+    };
+    expect(buildPaneTags([numbered])).toEqual({ 'p-vis': '#w3-1', 'p-st': '#w3-2' });
+    expect(Object.keys(buildWorkspaceMirrorPayload(state(), () => 1).paneTags ?? {})).toEqual(['p1', 'p2a', 'p2b']);
   });
 });
 

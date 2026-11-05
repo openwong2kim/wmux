@@ -112,6 +112,7 @@ internal static unsafe class BackgroundInput
         // it only while the window is in front.
         bool plainEdit = Background.IsPlainEdit(to.Info.ClassName);
         Func<bool?> fieldFocus = () => Background.FieldFocused(FieldHasFocus(field, runtimeId), to.Info.ClassName, (nint)ThreadFocus(to.Tid).Value, (nint)to.Hwnd.Value);
+        string? last = null;
         var outcome = Run(plan, target, plan.ClickFirst ? fieldPoint : null,
             click: () => Post(to, Background.Click(to.ClientX, to.ClientY)),
             keys: () =>
@@ -139,7 +140,12 @@ internal static unsafe class BackgroundInput
                 }
                 return posted;
             },
-            readBack: () => WaitInserted(value, before, text, total < 64 ? 300 : 1000),
+            readBack: () =>
+            {
+                var read = Verify.SettleInserted(value, before, text, total < 64 ? 300 : 1000, () => Environment.TickCount64, Sta.Sleep);
+                last = read.Last;
+                return read.Verified;
+            },
             focusBefore: field != null ? () => fieldFocus() == true : null,
             fieldAfterClick: field != null && fieldPoint is { } clicked ? focusBefore => FieldAfterClick(field, fieldFocus, clicked, focusBefore) : null,
             receiverStill: field == null ? () => FocusWindow(target) == to.Hwnd : null,
@@ -152,6 +158,10 @@ internal static unsafe class BackgroundInput
                 $"the click on element {index} was posted, but the field moved away from the clicked point, so nothing was typed. Call getAppState before retrying"),
             BackgroundStop.KeysNotPosted => throw new HelperError("internal",
                 $"the click on element {index} was posted, but Windows did not take the keys, so nothing was typed. Call getAppState before retrying"),
+            // Typed text that did not verify: what the field holds now, so a
+            // reordered or misplaced insert can be seen without a new read.
+            _ when outcome.Disposition == Disposition.DeliveredUnverified && !outcome.SideEffect =>
+                outcome with { Observed = Verify.Observed(before, last, field != null ? Uia.IsSecretElement(field) : to.Info.Secret || WindowIsSecret(to.Hwnd)) },
             _ => outcome,
         };
     }
@@ -400,17 +410,7 @@ internal static unsafe class BackgroundInput
         return false;
     }
 
-    private static bool OwnedBy(HWND hwnd, HWND owner)
-    {
-        var current = hwnd;
-        for (int i = 0; i < 16; i++)
-        {
-            current = PInvoke.GetWindow(current, GET_WINDOW_CMD.GW_OWNER);
-            if (current == HWND.Null) return false;
-            if (current == owner) return true;
-        }
-        return false;
-    }
+    private static bool OwnedBy(HWND hwnd, HWND owner) => Ownership.Owns((nint)owner.Value, (nint)hwnd.Value, Win.OwnerOf);
 
     /// <summary>
     /// The target thread's focused window (GetGUIThreadInfo), when it lies
@@ -604,19 +604,6 @@ internal static unsafe class BackgroundInput
         finally
         {
             if (el != null) el->Release();
-        }
-    }
-
-    /// <summary>Verified only when the field's value is the value before with exactly the typed text inserted (Core Verify).</summary>
-    private static bool WaitInserted(Func<string?> value, string? before, string text, int timeoutMs)
-    {
-        if (before == null) return false;
-        long deadline = Environment.TickCount64 + timeoutMs;
-        while (true)
-        {
-            if (Verify.Inserted(before, value(), text)) return true;
-            if (Environment.TickCount64 >= deadline) return false;
-            Sta.Sleep(15);
         }
     }
 }
