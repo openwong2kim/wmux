@@ -1,3 +1,4 @@
+// @wmux-lane integration — real session sockets: the daemon's SessionPipe listens and main's DaemonClient connects.
 // A pane's reattach replaces its session pipe: daemon.attachSession lets the
 // old client go and stops that pipe, then main connects a new one (#3073).
 // Over real sockets, main's DaemonClient against the daemon's SessionPipe:
