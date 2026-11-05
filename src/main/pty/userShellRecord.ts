@@ -178,7 +178,7 @@ export function credentialEnvFor(
     spawnKind: entry.viaSetting ? 'agent' : 'user-shell',
     hasExec: !!listed.exec,
     hasSupervision: !!listed.supervision,
-    withholdFromAgents: withholdCredentialsFromAgents(),
+    ...(entry.viaSetting ? { withholdFromAgents: withholdCredentialsFromAgents() } : {}),
   });
   return policy === 'passthrough' ? pickCredentialEnv(liveEnv) : undefined;
 }

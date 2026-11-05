@@ -10,7 +10,7 @@ import { resolveEnvPolicy } from '../../../shared/spawnKind';
 
 vi.mock('../projectConfigProbe', () => ({ probeProjectConfig: vi.fn(async () => null) }));
 
-const create = vi.fn(async () => ({ id: 'pty-1', cwd: '/dev/shop' }));
+const create = vi.fn(async (_opts: unknown) => ({ id: 'pty-1', cwd: '/dev/shop' }));
 let saved: Partial<ReturnType<typeof useStore.getState>>;
 
 beforeEach(() => {

@@ -4,6 +4,8 @@
  *  'user-shell' : 사용자가 UI로 직접 연 인터랙티브 셸 (env 투과 — 타 터미널 동형).
  *  'agent'      : wmux가 자율 스폰한 에이전트 pane (자격 게이트).
  *  'exec'       : 감독 exec 리프 — 명령을 pane root 프로세스로 실행 (자격 게이트).
+ *                 Also a pane that types a command (a wmux.json project command
+ *                 or a layout seed), so it stays gated whatever the setting says.
  *
  * 렌더러(PtyCreateOptions)·main(pty.handler / PTYManager)에서 공통으로 쓰이므로
  * env 빌더가 있는 envFilter와 분리된 순수 타입 모듈에 둔다.
