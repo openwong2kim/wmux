@@ -16,7 +16,7 @@ const sockets: net.Socket[] = [];
 const pipes: SessionPipe[] = [];
 afterEach(async () => {
   for (const s of sockets.splice(0)) s.destroy();
-  for (const p of pipes.splice(0)) await p.stop().catch(() => {});
+  for (const p of pipes.splice(0)) await p.stop().catch(() => undefined);
 });
 
 /** A started pipe, a flushed client on it, and what the PTY was given. */

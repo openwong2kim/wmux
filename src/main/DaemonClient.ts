@@ -1,4 +1,5 @@
 import net from 'node:net';
+import fs from 'node:fs';
 import type { PaneUsageLimit, PaneUsageLimitPatch } from '../shared/usageLimit';
 import { parseShellPromptChange, parseShellPromptList, type ShellPromptList } from '../shared/shellPrompt';
 import { EventEmitter } from 'node:events';
@@ -114,12 +115,12 @@ export class DaemonClient extends EventEmitter {
   // Keyed by sessionId, lifecycle-bound to the socket in sessionPipes: created
   // in setupSessionPipe, dropped on socket close/error/disconnect.
   private sessionScanners: Map<string, SessionPipeStreamScanner> = new Map();
-  private connected: boolean = false;
-  private requestId: number = 0;
+  private connected = false;
+  private requestId = 0;
   private pendingRequests: Map<string, PendingRequest> = new Map();
   /** Each pane's last refused tool call, as the daemon reported it (`agent.refusal`). */
   private readonly toolRefusals = new Map<string, ToolRefusal>();
-  private controlBuffer: string = '';
+  private controlBuffer = '';
 
   constructor(
     private pipeName: string,
@@ -1803,7 +1804,6 @@ export function getDaemonPipeName(): string {
  * authenticates.
  */
 export function readDaemonAuthToken(): string {
-  const fs = require('fs');
   for (const tokenPath of [getDaemonAuthTokenPath(), getLegacyDaemonAuthTokenPath()]) {
     try {
       const token = fs.readFileSync(tokenPath, 'utf8').trim();

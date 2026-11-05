@@ -15,8 +15,8 @@ const TOKEN = 'gap-test-token';
 const pipes: SessionPipe[] = [];
 const clients: DaemonClient[] = [];
 afterEach(async () => {
-  for (const c of clients.splice(0)) await c.disconnect().catch(() => {});
-  for (const p of pipes.splice(0)) await p.stop().catch(() => {});
+  for (const c of clients.splice(0)) await c.disconnect().catch(() => undefined);
+  for (const p of pipes.splice(0)) await p.stop().catch(() => undefined);
 });
 
 /** The daemon's pipe for `id`, and what its PTY was given. */
