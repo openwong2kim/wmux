@@ -5,11 +5,13 @@ import { randomUUID } from 'node:crypto';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { shell } from 'electron';
-import { holdsRefusedRoot, insideRefusedByIdentity, isPluginRefusedPath, resolvePluginPath } from './fsRefusals';
+import { holdsRefusedRoot, insideRefusedByIdentity, isPluginRefusedPath, resolvePluginPath, type LinkFate } from './fsRefusals';
 import { validatePathParam } from './fs.rpc';
 import type { RpcRouter } from '../RpcRouter';
 
 type Kind = 'copy' | 'move' | 'trash';
+/** What each job does to a link in its sources (see holdsRefusedRoot). */
+const LINK_FATE: Record<Kind, LinkFate> = { copy: 'keep', move: 'carry', trash: 'remove' };
 type Conflict = 'skip' | 'overwrite' | 'fail';
 export interface FsJob {
   id: string;
@@ -107,21 +109,21 @@ export class FsJobQueue {
       const dest = await accessible(path.join(path.dirname(src), params.newName as string), true);
       this.checkLocks([src, dest]);
       if (await exists(dest)) fail('exists');
-      await this.scan(src); // Refuse credential descendants before moving a tree.
+      await this.scan(src, 'carry'); // Refuse credential descendants before moving a tree.
       this.checkLocks([src, dest]);
       await fs.promises.rename(src, dest);
       return { ok: true, path: dest };
     } catch (e) { return { ok: false, reason: reasonOf(e) }; }
   }
   /** Preflight every descendant; links are validated but never traversed. */
-  private async scan(p: string, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
+  private async scan(p: string, fate: LinkFate, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
     signal?.throwIfAborted();
     await accessible(p);
-    if (await holdsRefusedRoot(p)) fail('unavailable');
+    if (await holdsRefusedRoot(p, fate)) fail('unavailable');
     const s = await fs.promises.lstat(p);
     const total = { bytes: s.isFile() ? s.size : 0, items: 1 };
     if (s.isDirectory()) for (const name of await fs.promises.readdir(p)) {
-      const sub = await this.scan(path.join(p, name), signal);
+      const sub = await this.scan(path.join(p, name), fate, signal);
       total.bytes += sub.bytes; total.items += sub.items;
     }
     return total;
@@ -162,7 +164,7 @@ export class FsJobQueue {
     try {
       // Complete security preflight before performing any mutation.
       const totals = [];
-      for (const src of sources) totals.push(await this.scan(src, controller.signal));
+      for (const src of sources) totals.push(await this.scan(src, LINK_FATE[job.kind], controller.signal));
       job.totalBytes = totals.reduce((n, t) => n + t.bytes, 0);
       job.totalItems = totals.reduce((n, t) => n + t.items, 0);
       for (const [i, src] of sources.entries()) {
@@ -205,7 +207,7 @@ export class FsJobQueue {
     if (target) {
       if (conflict === 'fail') fail('exists');
       if (conflict === 'skip') {
-        const t = await this.scan(src, signal); job.doneBytes += t.bytes; job.doneItems += t.items;
+        const t = await this.scan(src, LINK_FATE[job.kind], signal); job.doneBytes += t.bytes; job.doneItems += t.items;
         return false;
       }
       // Rename replaces the entry itself; never stream through a destination link.

@@ -184,6 +184,41 @@ describe('filesystem write jobs', () => {
     expect(fs.lstatSync(path.join(dest, 'a')).isFile()).toBe(true);
     expect(fs.readFileSync(other, 'utf8')).toBe('keep');
   });
+  // #3030: a copy recreates a link and a trash removes only the link, so where it points is not checked for those.
+  it.runIf(process.platform !== 'win32')('copies and trashes a folder or link that points at the home folder, and still refuses moving it', async () => {
+    fs.symlinkSync(home, path.join(src, 'home-link'));
+    const copied = await finish(await queue.start('copy', { sources: [src], destDir: dest, conflict: 'fail' }));
+    expect(copied.errors).toEqual([]);
+    expect(fs.readlinkSync(path.join(dest, 'src', 'home-link'))).toBe(home);
+    expect((await finish(await queue.start('trash', { paths: [src] }))).state).toBe('done');
+    expect((await finish(await queue.start('trash', { paths: [path.join(src, 'home-link')] }))).state).toBe('done');
+    expect(trash.mock.calls).toEqual([[src], [path.join(src, 'home-link')]]);
+    expect((await finish(await queue.start('move', { sources: [path.join(src, 'home-link')], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
+    expect(await queue.rename({ path: path.join(src, 'home-link'), newName: 'moved' })).toMatchObject({ reason: 'unavailable' });
+  });
+  it('trashes and renames a config folder whose refused files do not exist', async () => {
+    for (const dir of ['.config', '.claude']) fs.mkdirSync(path.join(home, dir, 'notes'), { recursive: true });
+    expect((await finish(await queue.start('trash', { paths: [path.join(home, '.config')] }))).state).toBe('done');
+    expect(await queue.rename({ path: path.join(home, '.claude'), newName: 'claude-old' })).toMatchObject({ ok: true });
+    fs.mkdirSync(path.join(home, '.config', 'gh'));
+    fs.writeFileSync(path.join(home, 'claude-old', '.credentials.json'), '{}');
+    fs.renameSync(path.join(home, 'claude-old'), path.join(home, '.claude'));
+    expect((await finish(await queue.start('trash', { paths: [path.join(home, '.config')] }))).state).toBe('failed');
+    expect(await queue.rename({ path: path.join(home, '.claude'), newName: 'claude-old' })).toMatchObject({ reason: 'unavailable' });
+    expect(trash.mock.calls).toEqual([[path.join(home, '.config')]]);
+  });
+  it.runIf(process.platform !== 'win32')('refuses trashing a link a refused folder is reached through', async () => {
+    // ~/.config -> src/cfg-link -> ~/dotfiles/config, which holds gh: trashing the
+    // middle link would leave ~/.config/gh unresolved and its folder unrefused.
+    fs.mkdirSync(path.join(home, 'dotfiles', 'config', 'gh'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'dotfiles', 'config'), path.join(src, 'cfg-link'));
+    fs.symlinkSync(path.join(src, 'cfg-link'), path.join(home, '.config'));
+    expect((await finish(await queue.start('trash', { paths: [path.join(src, 'cfg-link')] }))).state).toBe('failed');
+    expect((await finish(await queue.start('trash', { paths: [src] }))).state).toBe('failed');
+    expect(trash).not.toHaveBeenCalled();
+    // A copy leaves the link in place.
+    expect((await finish(await queue.start('copy', { sources: [src], destDir: dest, conflict: 'fail' }))).errors).toEqual([]);
+  });
   it('expires completed jobs after ten minutes', async () => {
     let now = 0; queue = new FsJobQueue(trash, () => now);
     const job = await finish(await copy()); now = 600_000; expect(queue.status(job.id)).toMatchObject({ reason: 'unavailable' });
