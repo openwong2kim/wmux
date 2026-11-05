@@ -20,6 +20,7 @@ import path from 'node:path';
 import { writeJsonAtomic } from '../../shared/settingsFile';
 import { pickCredentialEnv } from '../../shared/envFilter';
 import { resolveEnvPolicy } from '../../shared/spawnKind';
+import { withholdCredentialsFromAgents } from './credentialEnvPrefs';
 import { HELD_START_CONCURRENCY, USER_SHELL_HOLDS_FILE, userShellHoldsContent } from '../../shared/userShellHolds';
 import { runLimited } from '../../shared/runLimited';
 import { getWmuxDir } from '../../daemon/config';
@@ -33,6 +34,11 @@ export const HELD_START_CONNECTED_WAIT_MS = 5_000;
 export interface UserShellEntry {
   cmd: string;
   incarnationId: string;
+  /**
+   * Passthrough only because "Withhold credentials from agent panes" was off
+   * (#3050), not a user-opened shell. The grant asks that setting again.
+   */
+  viaSetting?: true;
 }
 
 /** A daemon.listSessions row, as far as the grant reads it. */
@@ -70,8 +76,8 @@ export class UserShellRecord {
   set(id: string, entry: UserShellEntry): void {
     const entries = this.load();
     const prev = entries.get(id);
-    if (prev && prev.cmd === entry.cmd && prev.incarnationId === entry.incarnationId) return;
-    entries.set(id, { cmd: entry.cmd, incarnationId: entry.incarnationId });
+    if (prev && prev.cmd === entry.cmd && prev.incarnationId === entry.incarnationId && prev.viaSetting === entry.viaSetting) return;
+    entries.set(id, { cmd: entry.cmd, incarnationId: entry.incarnationId, ...(entry.viaSetting ? { viaSetting: true } : {}) });
     this.save();
   }
 
@@ -125,7 +131,7 @@ export class UserShellRecord {
         for (const [id, raw] of Object.entries(panes as Record<string, unknown>)) {
           const entry = raw as Partial<UserShellEntry> | null;
           if (typeof entry?.cmd === 'string' && typeof entry.incarnationId === 'string') {
-            entries.set(id, { cmd: entry.cmd, incarnationId: entry.incarnationId });
+            entries.set(id, { cmd: entry.cmd, incarnationId: entry.incarnationId, ...(entry.viaSetting === true ? { viaSetting: true } : {}) });
           }
         }
       }
@@ -159,6 +165,8 @@ export function getUserShellRecord(userDataDir: string): UserShellRecord {
  * The credential env main passes when it starts `listed`, or undefined to
  * start it without: only for a session the record names with the same cmd and
  * incarnation, that is still a passthrough pane given what the daemon lists.
+ * An entry marked `viaSetting` is an agent pane, so it gets them only while
+ * the setting is still off; an entry without the mark stays a user shell.
  */
 export function credentialEnvFor(
   listed: ListedSession,
@@ -166,7 +174,12 @@ export function credentialEnvFor(
   liveEnv: NodeJS.ProcessEnv,
 ): Record<string, string> | undefined {
   if (!entry || entry.cmd !== listed.cmd || entry.incarnationId !== listed.incarnationId) return undefined;
-  const policy = resolveEnvPolicy({ spawnKind: 'user-shell', hasExec: !!listed.exec, hasSupervision: !!listed.supervision });
+  const policy = resolveEnvPolicy({
+    spawnKind: entry.viaSetting ? 'agent' : 'user-shell',
+    hasExec: !!listed.exec,
+    hasSupervision: !!listed.supervision,
+    withholdFromAgents: withholdCredentialsFromAgents(),
+  });
   return policy === 'passthrough' ? pickCredentialEnv(liveEnv) : undefined;
 }
 

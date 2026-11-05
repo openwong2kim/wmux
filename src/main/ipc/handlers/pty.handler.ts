@@ -911,7 +911,14 @@ export function registerPTYHandlers(
       // which covers a recreated id that is no longer a user shell.
       const created = result as { cmd?: unknown; incarnationId?: unknown } | undefined;
       if (envPolicy === 'passthrough' && typeof created?.cmd === 'string' && typeof created.incarnationId === 'string') {
-        getUserShellRecord(app.getPath('userData')).set(sessionId, { cmd: created.cmd, incarnationId: created.incarnationId });
+        // #3050 — a pane that is passthrough only because the user turned off
+        // "Withhold credentials from agent panes" is marked, so a restart asks
+        // that setting again instead of restoring it as a user shell.
+        getUserShellRecord(app.getPath('userData')).set(sessionId, {
+          cmd: created.cmd,
+          incarnationId: created.incarnationId,
+          ...(options?.spawnKind !== 'user-shell' ? { viaSetting: true } : {}),
+        });
       } else {
         getUserShellRecord(app.getPath('userData')).remove(sessionId);
       }
