@@ -275,6 +275,38 @@ describe('filesystem write jobs', () => {
     expect(job.state).toBe('failed');
     expect(fs.existsSync(path.join(dest, 'a')) ? fs.readFileSync(path.join(dest, 'a'), 'utf8') : '').not.toContain('SECRET');
   });
+  it('copies the file it checked, not another file renamed over it', async () => {
+    const file = path.join(src, 'a'); const other = path.join(root, 'other'); fs.writeFileSync(other, 'OTHER');
+    const open = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      if (String(p) === file) fs.renameSync(other, file);
+      return (open as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.open);
+    expect((await finish(await queue.start('copy', { sources: [file], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
+    expect(fs.existsSync(path.join(dest, 'a'))).toBe(false);
+  });
+  it.runIf(process.platform !== 'win32')('reads the file it opened, not a link put at its path after', async () => {
+    const secret = path.join(home, '.ssh', 'id_test'); fs.writeFileSync(secret, 'SECRET');
+    const file = path.join(src, 'a');
+    const open = fs.promises.open.bind(fs.promises);
+    vi.spyOn(fs.promises, 'open').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      const handle = await (open as (...a: unknown[]) => Promise<fs.promises.FileHandle>)(p, ...rest);
+      if (String(p) === file) { fs.unlinkSync(file); fs.symlinkSync(secret, file); }
+      return handle;
+    }) as typeof fs.promises.open);
+    await finish(await queue.start('copy', { sources: [file], destDir: dest, conflict: 'fail' }));
+    expect(fs.readFileSync(path.join(dest, 'a'), 'utf8')).not.toContain('SECRET');
+  });
+  it.runIf(process.platform !== 'win32')('refuses trashing a folder that holds a link a refused folder is reached through, with fresh links', async () => {
+    fs.mkdirSync(path.join(home, 'dotfiles', 'config'), { recursive: true }); fs.mkdirSync(path.join(home, 'links'));
+    fs.symlinkSync(path.join(home, 'dotfiles', 'config'), path.join(home, 'links', 'cfg'));
+    fs.symlinkSync(path.join(home, 'links', 'cfg'), path.join(home, '.config'));
+    const warm = path.join(root, 'warm'); fs.mkdirSync(warm);
+    expect((await finish(await queue.start('trash', { paths: [warm] }))).state).toBe('done');
+    fs.mkdirSync(path.join(home, 'dotfiles', 'config', 'gh'));
+    expect((await finish(await queue.start('trash', { paths: [path.join(home, 'links')] }))).state).toBe('failed');
+    expect(trash.mock.calls).toEqual([[warm]]);
+  });
   it.runIf(process.platform === 'darwin')('matches a link spelled decomposed (NFD) against its composed name', async () => {
     const composed = 'cf\u00e9'; const decomposed = composed.normalize('NFD');
     fs.mkdirSync(path.join(home, 'dotfiles', 'config', 'gh'), { recursive: true });
