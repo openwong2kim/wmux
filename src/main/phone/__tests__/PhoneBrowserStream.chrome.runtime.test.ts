@@ -40,6 +40,8 @@ const PAGES: Record<string, string> = {
     + '<div id="t" style="position:fixed;right:0;top:100px;width:24px;height:40px;background:#c00" onmousedown="document.title=\'right-edge\'"></div>',
   // A text field, then a password field next in Tab order, then a button.
   '/form': '<input id="t" style="width:200px;height:40px"><input id="p" type="password" style="width:200px;height:40px"><button id="b">go</button>',
+  // A link that opens its page in a new tab.
+  '/opener': '<a id="t" href="/still" target="_blank" style="display:block;width:200px;height:80px">open</a>',
 };
 
 function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
@@ -430,6 +432,23 @@ function describeMode(mode: Mode): void {
       const all = focus();
       for (let i = 1; i < all.length; i++) expect(all[i]).not.toEqual(all[i - 1]);
       for (const p of of(surfaceId, 'focus')) expect(Object.keys(p).sort()).toEqual(['focus', 'kind', 'streamId']);
+    });
+
+    it('a tab the streamed tab opens is a tabOpened push naming it, the tab the tap reply names', async (ctx) => {
+      if (skipUnless(ctx)) return;
+      const surfaceId = await open('/opener');
+      await start(surfaceId);
+      const frame = await until(() => lastFrame(surfaceId)?.geometry ? lastFrame(surfaceId) : undefined);
+      const geometry = frame.geometry as { width: number; height: number };
+      const rect = await evaluate(surfaceId, '(() => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()') as { x: number; y: number };
+      const reply = await input('browser.tap', surfaceId, { expectedURL: frame.pageURL, geometry, x: rect.x / geometry.width, y: rect.y / geometry.height }) as { opened?: { surfaceId: string } };
+      const popup = reply.opened?.surfaceId ?? '';
+      expect(popup).toMatch(/^chrome-/);
+      const pushed = await until(() => of(surfaceId, 'tabOpened').at(-1), 5_000);
+      expect(pushed).toMatchObject({ streamId: surfaceId, kind: 'tabOpened', surfaceId: popup });
+      if (pushed.pageURL !== undefined) expect(pushed.pageURL).toBe(`http://127.0.0.1:${port}/still`);
+      expect(of(surfaceId, 'tabOpened')).toHaveLength(1);
+      await launcher?.closeSurface(popup);
     });
 
     it('closing the tab ends the stream with browser-tab-gone', async (ctx) => {

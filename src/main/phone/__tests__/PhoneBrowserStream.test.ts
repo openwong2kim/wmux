@@ -100,6 +100,8 @@ describe('phone browser stream (main)', () => {
   /** Each new session's visual viewport and browser zoom; null: the fake's own. */
   let pageLayout: FakeSession['layout'] | null;
   let pageZoom: number;
+  /** Each live onTabOpened subscription: the tab it listens on, and its listener. */
+  let openers: Array<{ surfaceId: string; listener: (opened: { surfaceId: string; url: string }) => void }>;
 
   beforeEach(() => {
     vi.useFakeTimers({ now: 1_800_000_000_000 });
@@ -111,6 +113,7 @@ describe('phone browser stream (main)', () => {
     gates = new Map();
     pageLayout = null;
     pageZoom = 1;
+    openers = [];
     reply = async () => ({ ok: true, known: true });
     const deps: PhoneBrowserStreamDeps = {
       push: (params) => { pushes.push(params); return reply(params); },
@@ -127,6 +130,11 @@ describe('phone browser stream (main)', () => {
           return s;
         },
         owns: () => owned,
+        onTabOpened: (surfaceId, _workspaceId, listener) => {
+          const entry = { surfaceId, listener };
+          openers.push(entry);
+          return () => { openers = openers.filter((e) => e !== entry); };
+        },
       },
       captureMs: 5_000,
     };
@@ -638,6 +646,67 @@ describe('phone browser stream (main)', () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(frames()).toHaveLength(1);
       expect(pushes.filter((p) => p.kind === 'focus')).toEqual([]);
+    });
+  });
+
+  describe('tabOpened (contract v1.7)', () => {
+    /** Main adopted `surfaceId`, a tab `from` opened. */
+    const open = (from: string, surfaceId: string, url = 'about:blank') => {
+      for (const e of openers.filter((o) => o.surfaceId === from)) e.listener({ surfaceId, url });
+    };
+    const opened = () => pushes.filter((p) => p.kind === 'tabOpened');
+
+    it('each tab the streamed tab opens is a push of its own, paced to ten a second, with its http(s) URL only', async () => {
+      await start();
+      await flush();
+      open('chrome-a', 'chrome-n1');
+      open('chrome-a', 'chrome-n2', 'https://b.example.com/x');
+      open('chrome-b', 'chrome-n3');
+      await flush();
+      expect(opened()).toEqual([{ streamId: 'st-chrome-a', kind: 'tabOpened', surfaceId: 'chrome-n1' }]);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(opened()).toEqual([
+        { streamId: 'st-chrome-a', kind: 'tabOpened', surfaceId: 'chrome-n1' },
+        { streamId: 'st-chrome-a', kind: 'tabOpened', surfaceId: 'chrome-n2', pageURL: 'https://b.example.com/x' },
+      ]);
+    });
+
+    it('while a push is in flight the four newest wait; none is merged into another', async () => {
+      let answer!: () => void;
+      const answered = new Promise<void>((resolve) => { answer = resolve; });
+      reply = async () => { await answered; return { ok: true, known: true }; };
+      await start();
+      await flush();
+      for (const n of [1, 2, 3, 4, 5, 6]) open('chrome-a', `chrome-n${n}`);
+      answer();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(opened().map((p) => p.surfaceId)).toEqual(['chrome-n1', 'chrome-n3', 'chrome-n4', 'chrome-n5', 'chrome-n6']);
+    });
+
+    it('listens once per stream, through a page swap, and stops with it', async () => {
+      await start();
+      await flush();
+      expect(openers.map((o) => o.surfaceId)).toEqual(['chrome-a']);
+      sessions[0].close();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(openers).toHaveLength(1);
+      await streams.handle('browser.streamStop', { workspaceId: 'ws-1', surfaceId: 'chrome-a', streamId: 'st-chrome-a' });
+      expect(openers).toEqual([]);
+      open('chrome-a', 'chrome-n1');
+      await vi.advanceTimersByTimeAsync(200);
+      expect(opened()).toEqual([]);
+    });
+
+    it('a stop while attaching never listens', async () => {
+      let go!: () => void;
+      gates.set('Page.startScreencast', new Promise<void>((resolve) => { go = resolve; }));
+      const started = start();
+      await flush();
+      streams.stopAll();
+      go();
+      await started.catch(() => undefined);
+      await flush();
+      expect(openers).toEqual([]);
     });
   });
 
