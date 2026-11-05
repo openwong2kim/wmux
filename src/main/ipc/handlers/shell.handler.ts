@@ -149,7 +149,7 @@ export function registerShellHandlers(): () => void {
     // so the user still gets useful feedback without launching code from
     // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale. A
     // link's own name and its target's both count.
-    if ([normalized, opened].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
+    if ([normalized, target.real ?? normalized].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
       shell.showItemInFolder(opened);
       return { ok: false, error: 'BLOCKED_EXTENSION' };
     }

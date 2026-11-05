@@ -239,6 +239,19 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       }
     });
 
+    it.skipIf(process.platform === 'win32')('refuses a link whose target has a blocked extension', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-ext-'));
+      try {
+        fs.writeFileSync(path.join(dir, 'tool.exe'), 'x');
+        fs.symlinkSync(path.join(dir, 'tool.exe'), path.join(dir, 'readme.txt'));
+        const result = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(dir, 'readme.txt'));
+        expect(openPath).not.toHaveBeenCalled();
+        expect(result).toEqual({ ok: false, error: 'BLOCKED_EXTENSION' });
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
     it('opens the spelling it was given, once its real path is checked', async () => {
       const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-real-'));
       try {
