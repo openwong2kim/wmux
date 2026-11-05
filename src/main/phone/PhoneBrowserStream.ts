@@ -70,6 +70,8 @@ const RELEASE_WAIT_MS = 3_000;
 const QUIET_MS = 5_000;
 const PING_MS = 15_000;
 const URL_INTERVAL_MS = 100;
+/** `tabOpened` pushes one stream may have waiting; past it the oldest goes, as on the daemon. */
+const TAB_OPENED_WAITING = 4;
 const TICK_MS = 500;
 const PUSH_TIMEOUT_MS = 3_000;
 /** Sends of one url, focus or state push that failed before it is given up. */
@@ -111,6 +113,8 @@ export interface PhoneStreamChromeDeps {
   streamSession?(surfaceId: string, workspaceId: string): Promise<ChromeStreamSession>;
   /** Whether the tab's record still names this workspace. */
   owns?(surfaceId: string, workspaceId: string): boolean;
+  /** Told each tab the tab opens and main adopts; returns the unsubscribe. */
+  onTabOpened?(surfaceId: string, workspaceId: string, listener: (opened: { surfaceId: string; url: string }) => void): () => void;
 }
 
 /** Main's builtin browser panes, as the stream needs them (main/index.ts, from WebviewCdpManager). */
@@ -256,7 +260,7 @@ class Budget {
  * browser has its two screencast frames unacked and captures no more, so it
  * captures at the pace frames are sent rather than at the page's.
  */
-type Outgoing = { kind: 'frame' | 'url' | 'state' | 'focus'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number; retries?: number };
+type Outgoing = { kind: 'frame' | 'url' | 'state' | 'focus' | 'tabOpened'; params: Record<string, unknown>; ack?: number; held?: number[]; bytes: number; retries?: number };
 
 interface ScreencastFrame { data?: unknown; metadata?: Record<string, unknown>; sessionId?: unknown }
 
@@ -280,6 +284,7 @@ abstract class TabStream implements PhoneStreamTabView {
   private lastFramePushAt = 0;
   private lastUrlPushAt = 0;
   private lastFocusPushAt = 0;
+  private lastTabOpenedPushAt = 0;
   private inFlight = false;
   /** The tab's focus watcher on the source's current session (contract v1.6). */
   private focusWatch: FocusWatch | null = null;
@@ -486,9 +491,20 @@ abstract class TabStream implements PhoneStreamTabView {
     this.enqueue({ kind: 'state', params: { streamId: this.streamId, kind: 'state', state: 'hidden' }, bytes: 0 });
   }
 
-  /** One waiting push of each kind; a newer one replaces it at the back and holds its frame's ack. */
+  /**
+   * One waiting push of each kind; a newer one replaces it at the back and
+   * holds its frame's ack. A `tabOpened` is never replaced: each new tab is
+   * its own event, and past TAB_OPENED_WAITING the oldest waiting one goes.
+   */
   private enqueue(item: Outgoing): void {
     if (this.stopped) { this.ack(item.ack); return; }
+    if (item.kind === 'tabOpened') {
+      const waiting = this.outbox.filter((queued) => queued.kind === 'tabOpened');
+      if (waiting.length >= TAB_OPENED_WAITING) this.outbox.splice(this.outbox.indexOf(waiting[0]), 1);
+      this.outbox.push(item);
+      this.pump();
+      return;
+    }
     const at = this.outbox.findIndex((queued) => queued.kind === item.kind);
     if (at >= 0) {
       const [replaced] = this.outbox.splice(at, 1);
@@ -516,6 +532,8 @@ abstract class TabStream implements PhoneStreamTabView {
       wait = this.lastUrlPushAt + URL_INTERVAL_MS - now;
     } else if (item.kind === 'focus') {
       wait = this.lastFocusPushAt + URL_INTERVAL_MS - now;
+    } else if (item.kind === 'tabOpened') {
+      wait = this.lastTabOpenedPushAt + URL_INTERVAL_MS - now;
     }
     if (wait > 0) {
       if (item.kind === 'frame') this.freshen(wait);
@@ -532,6 +550,7 @@ abstract class TabStream implements PhoneStreamTabView {
     }
     if (item.kind === 'url') this.lastUrlPushAt = now;
     if (item.kind === 'focus') this.lastFocusPushAt = now;
+    if (item.kind === 'tabOpened') this.lastTabOpenedPushAt = now;
     this.send(item, () => {
       // The daemon answered (or refused): only now may the browser paint the next one.
       this.ack(item.ack);
@@ -561,7 +580,8 @@ abstract class TabStream implements PhoneStreamTabView {
    * One push in flight; `known:false` stops here. A refused frame is a dropped
    * one. A refused url, focus or state push goes back to the front, in its
    * place before the frames after it, unless a newer one of its kind waits:
-   * the last of each must arrive.
+   * the last of each must arrive. A refused `tabOpened` goes back unless the
+   * same tab's waits.
    */
   private send(item: Outgoing, done: () => void): void {
     this.inFlight = true;
@@ -576,7 +596,7 @@ abstract class TabStream implements PhoneStreamTabView {
       // Rate limited, timed out or disconnected; the ping decides the rest.
       const retries = (item.retries ?? 0) + 1;
       if (item.kind === 'frame' || this.stopped || retries > PUSH_RETRIES) return;
-      if (this.outbox.some((queued) => queued.kind === item.kind)) return;
+      if (this.outbox.some((queued) => queued.kind === item.kind && (item.kind !== 'tabOpened' || queued.params.surfaceId === item.params.surfaceId))) return;
       this.outbox.unshift({ ...item, retries });
     }).finally(() => {
       clearTimeout(timer);
@@ -676,6 +696,16 @@ abstract class TabStream implements PhoneStreamTabView {
     return watch ? watch.stop().catch(() => undefined) : Promise.resolve();
   }
 
+  /** A tab this tab opened (contract v1.7): `{kind:'tabOpened', surfaceId, pageURL?}`. */
+  protected tabOpened(opened: { surfaceId: string; url: string }): void {
+    const pageURL = httpURL(opened.url);
+    this.enqueue({
+      kind: 'tabOpened',
+      params: { streamId: this.streamId, kind: 'tabOpened', surfaceId: opened.surfaceId, ...(pageURL && pageURL.length <= URL_LIMIT ? { pageURL } : {}) },
+      bytes: 0,
+    });
+  }
+
   /** Tells the daemon the stream is over, then stops. */
   async end(error: 'browser-tab-gone' | 'browser-preview-unavailable' | 'browser-backend-unavailable'): Promise<void> {
     if (this.stopped) return;
@@ -708,6 +738,7 @@ class ChromeTabStream extends TabStream {
   private lastZoomAt = 0;
   private lastProbeAt = 0;
   private reattachedAt: number[] = [];
+  private offOpened: (() => void) | null = null;
 
   constructor(
     streamId: string,
@@ -768,6 +799,8 @@ class ChromeTabStream extends TabStream {
     await this.startScreencast();
     this.armFirstFrame();
     void this.watchFocusOn(session, () => this.session === session);
+    // Keyed on the tab, not the page: a swap's re-attach keeps it.
+    if (!this.stopped && !this.offOpened) this.offOpened = this.chrome.onTabOpened?.(this.surfaceId, this.workspaceId, (opened) => this.tabOpened(opened)) ?? null;
   }
 
   /** A phone's viewport at the real tab's size or less (visual viewport × pinch scale × browser zoom), with touch. */
@@ -873,6 +906,8 @@ class ChromeTabStream extends TabStream {
   }
 
   protected release(unwatched: Promise<void>): Promise<void> {
+    this.offOpened?.();
+    this.offOpened = null;
     const session = this.session;
     this.session = null;
     if (!session || session.closed) return Promise.resolve();

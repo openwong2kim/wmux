@@ -3941,7 +3941,8 @@ every action.
   and 120 from one Chrome profile (workspaces with no profile of their own
   share one), and at most 30 such tabs open from one tab and 50 in one
   workspace. A tab past a limit stays nobody's, as before this version: it
-  is reported nowhere, neither listed nor in a tap reply.
+  is reported nowhere, neither listed nor in a tap reply nor in a stream
+  event.
 
 **Tap reply.** `POST …/browser {action:"tap"}` on a `chrome` row answers
 `{applied:true, focus?, opened?:{surfaceId}}`, on the polling and the stream
@@ -3964,10 +3965,8 @@ paths alike.
   `window.open` there loads the page in the same pane, and the stream's `url`
   event shows the move.
 
-**Stream event: reserved, not sent by this desktop yet.** A later version
-will send it. Do not wait for it: the tap reply's `opened` and the list
-cover every adopted tab. When it comes, on a live browser stream of a
-`chrome` row, `event: tabOpened` carries `{surfaceId, pageURL?}`:
+**Stream event.** On a live browser stream of a `chrome` row,
+`event: tabOpened` carries `{surfaceId, pageURL?}`:
 
 - Sent each time the streamed tab opens a tab, for any reason: a tap, a
   script, or the person at the desktop.
@@ -3979,6 +3978,9 @@ cover every adopted tab. When it comes, on a live browser stream of a
   not read keeps at most the four newest waiting.
 - An event, not a state: a later subscriber does not get earlier ones. The
   list is the record.
+- An older desktop never sends it, and a builtin pane's stream never does.
+  The tap reply's `opened` and the list cover every adopted tab, so a client
+  needs neither the event nor a wait for it.
 
 ### New agent pane launch options
 
