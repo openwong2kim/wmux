@@ -287,6 +287,10 @@ export class PipeClient {
         this.sock = sock;
         this.connecting = null;
         this.attach(sock);
+        // The rig plays main (G6), and the daemon answers its A2A methods only
+        // on a connection that identified as the app. Written first, so the
+        // daemon handles it before any call this socket carries.
+        sock.write(JSON.stringify({ id: 'rig-identify', method: 'daemon.client.identify', params: { role: 'main' }, token: this.readToken() }) + '\n');
         resolve(sock);
       });
     });

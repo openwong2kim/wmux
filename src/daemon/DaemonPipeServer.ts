@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/security';
 import { getDaemonAuthTokenPath } from '../shared/constants';
+import { NOT_FIRST_PARTY } from '../shared/daemonFirstParty';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -125,6 +126,22 @@ export class DaemonPipeServer {
   // Stream pushes refused per socket since its last log line (noteStreamPushRefused).
   private readonly streamPushRefusals = new Map<net.Socket, { refused: number; loggedAt: number; trailing: ReturnType<typeof setTimeout> | null }>();
   private connectionRate = { count: 0, resetAt: 0 };
+  // The channel calls a pane's own tools may make without the app (see
+  // `dispatch`): each stamps its caller from the daemon's session record.
+  // Every other `a2a.*` method answers only the app's own connection.
+  private static readonly HEADLESS_CHANNEL_METHODS: ReadonlySet<string> = new Set([
+    'a2a.channel.list',
+    'a2a.channel.get',
+    'a2a.channel.getMessages',
+    'a2a.channel.getMembers',
+    'a2a.channel.ack',
+    'a2a.channel.unread',
+    'a2a.channel.create',
+    'a2a.channel.join',
+    'a2a.channel.leave',
+    'a2a.channel.post',
+    'a2a.channel.invite',
+  ]);
 
   private static readonly MAX_CONNECTIONS = 20;
   private static readonly GLOBAL_RATE_LIMIT = 200;
@@ -1001,9 +1018,29 @@ export class DaemonPipeServer {
     if (!handler) {
       return { id: request.id, ok: false, error: `Unknown method: ${request.method}` };
     }
+    let params = request.params ?? {};
+    // A2A methods act for whichever workspace or pane the call names, and only
+    // main checks that name against the caller (src/main/pipe/handlers/
+    // a2aCaller.ts). So they answer only the app's own connection, except the
+    // channel calls a pane's own tools make headless (`wmux channel`): those
+    // take the caller's workspace from the daemon's session record for its
+    // senderPtyId (channels/channelCallerIdentity.ts), and a workspace stamp
+    // the call brings with it counts only from the app. As with
+    // markFirstParty, this is a classification over the shared token: it keeps
+    // a CLI or an agent tool that holds the token from going around main's
+    // check, not a local attacker.
+    if (request.method.startsWith('a2a.') && !this.isFirstParty(clientId)) {
+      if (!DaemonPipeServer.HEADLESS_CHANNEL_METHODS.has(request.method)) {
+        return { id: request.id, ok: false, error: `${NOT_FIRST_PARTY}: ${request.method} is accepted only from the app's own connection` };
+      }
+      if ('verifiedWorkspaceId' in params) {
+        params = { ...params };
+        delete params['verifiedWorkspaceId'];
+      }
+    }
 
     try {
-      const result = await handler(request.params ?? {}, { clientId });
+      const result = await handler(params, { clientId });
       return { id: request.id, ok: true, result };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

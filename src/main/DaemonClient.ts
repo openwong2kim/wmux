@@ -60,6 +60,7 @@ import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import { AGENT_STATE_BATCH_MAX } from '../shared/agentStateBatch';
 import { VIEWER_VISIBILITY_BATCH_MAX } from '../shared/viewerVisibilityBatch';
 import { DAEMON_CONTROL_LINE_MAX_CHARS } from '../shared/daemonControlLine';
+import { NOT_FIRST_PARTY } from '../shared/daemonFirstParty';
 import { sanitizeTitle } from './pty/titleDetect';
 import {
   getDaemonAuthTokenPath,
@@ -432,7 +433,17 @@ export class DaemonClient extends EventEmitter {
     if (method === 'daemon.detachSession' && typeof params['id'] === 'string' && this.viewerVisibilityQueue?.has(params['id'])) {
       void this.flushViewerVisibility();
     }
-    return this.send(method, params, opts);
+    if (!method.startsWith('a2a.')) return this.send(method, params, opts);
+    try {
+      return await this.send(method, params, opts);
+    } catch (err) {
+      if (!(err instanceof Error) || !err.message.startsWith(NOT_FIRST_PARTY)) throw err;
+      // The daemon answers A2A calls only on a connection that identified as
+      // the app, and this one's identify did not land (the connect-time one can
+      // bounce off the rate limit). Identify again and retry once.
+      await this.send('daemon.client.identify', { role: 'main' });
+      return this.send(method, params, opts);
+    }
   }
 
   /**
