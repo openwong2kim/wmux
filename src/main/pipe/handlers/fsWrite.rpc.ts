@@ -117,18 +117,20 @@ export class FsJobQueue {
     } catch (e) { return { ok: false, reason: reasonOf(e) }; }
   }
   /** Refuse `p` when a refused root is there under it (see holdsRefusedRoot). A
-   *  move, rename or trash checks again just before it changes anything: a
-   *  refused file can appear after the preflight read its folder. */
-  private async clear(p: string, fate: LinkFate | undefined): Promise<fs.Stats> {
+   *  move, rename or trash checks again just before it changes anything, with
+   *  `fresh` (`true` unless given): a refused file can appear after the
+   *  preflight read its folder. */
+  private async clear(p: string, fate: LinkFate | undefined, fresh = true): Promise<fs.Stats> {
     const s = await fs.promises.lstat(p);
-    if (await holdsRefusedRoot(p, s.isSymbolicLink() ? fate : undefined)) fail('unavailable');
+    // A copy takes nothing away, link or folder; a trash or move takes a folder with all it holds.
+    if (await holdsRefusedRoot(p, fate === 'kept' || s.isSymbolicLink() ? fate : undefined, fresh)) fail('unavailable');
     return s;
   }
   /** Preflight every descendant; links are validated but never traversed. */
   private async scan(p: string, fate: LinkFate | undefined, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
     signal?.throwIfAborted();
     await accessible(p);
-    const s = await this.clear(p, fate);
+    const s = await this.clear(p, fate, false);
     const total = { bytes: s.isFile() ? s.size : 0, items: 1 };
     if (s.isDirectory()) for (const name of await fs.promises.readdir(p)) {
       const sub = await this.scan(path.join(p, name), fate, signal);
@@ -230,6 +232,8 @@ export class FsJobQueue {
       if (s.isDirectory() !== target.isDirectory()) fail('exists');
     }
     if (s.isDirectory()) {
+      // Again for each folder as it is read: a refused one can appear during a long copy.
+      if (await holdsRefusedRoot(src, 'kept', true)) fail('unavailable');
       if (!target) await fs.promises.mkdir(dest);
       let complete = true;
       for (const name of await fs.promises.readdir(src)) {
@@ -243,7 +247,14 @@ export class FsJobQueue {
     try {
       if (s.isSymbolicLink()) await fs.promises.symlink(await fs.promises.readlink(src), temp);
       else if (s.isFile()) {
-        await pipeline(fs.createReadStream(src), new Transform({ transform(chunk: Buffer, _encoding, callback) {
+        // Read the file the checks saw: not a link put in its place since (O_NOFOLLOW, where there is one), nor another file.
+        const handle = await fs.promises.open(src, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+        const opened = await handle.stat().catch(() => null);
+        if (!opened || opened.dev !== s.dev || opened.ino !== s.ino) {
+          await handle.close();
+          fail('unavailable');
+        }
+        await pipeline(fs.createReadStream(src, { fd: handle }), new Transform({ transform(chunk: Buffer, _encoding, callback) {
           job.doneBytes += chunk.length; callback(null, chunk);
         } }), fs.createWriteStream(temp, { flags: 'wx', mode: s.mode & 0o777 }), { signal });
         await fs.promises.utimes(temp, s.atime, s.mtime);

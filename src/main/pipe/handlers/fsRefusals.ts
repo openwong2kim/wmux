@@ -269,40 +269,48 @@ function identityCache(): IdentityCache {
     }));
     return set;
   });
-  const reals = roots.then(async (list) => {
-    const out = new Map<string, RootPath>();
-    await Promise.all(list.map(async (root) => {
-      out.set(normalizedPath(root), { key: normalizedPath(root), path: root });
-      const real = await fs.promises.realpath(root).catch(() => null);
-      if (real) out.set(normalizedPath(real), { key: normalizedPath(real), path: real });
-    }));
-    return [...out.values()];
-  });
-  identities = { at: now, key, ids, reals, roots };
+  identities = { at: now, key, ids, reals: roots.then(rootPathsOf), roots };
   return identities;
+}
+
+/** The roots as given and once symlinks resolve. */
+async function rootPathsOf(list: string[]): Promise<RootPath[]> {
+  const out = new Map<string, RootPath>();
+  await Promise.all(list.map(async (root) => {
+    out.set(normalizedPath(root), { key: normalizedPath(root), path: root });
+    const real = await fs.promises.realpath(root).catch(() => null);
+    if (real) out.set(normalizedPath(real), { key: normalizedPath(real), path: real });
+  }));
+  return [...out.values()];
+}
+
+/** Every link the roots that are there go through, or null when one could not be followed. */
+async function linksOf(list: string[]): Promise<Set<string> | null> {
+  const out = new Set<string>();
+  const resolved = await Promise.all(list.map(async (root) =>
+    !await present(root) || await resolveThroughLinks(root, out) !== null));
+  return resolved.every(Boolean) ? out : null;
 }
 
 /** Every link the refused roots' spellings go through, or null when that
  *  cannot be told: one could not be followed, or on Windows, where a junction
  *  is reported as a link and the Recycle Bin's handling of one is not pinned
  *  down. */
-function linksThroughRoots(): Promise<Set<string> | null> {
-  if (process.platform === 'win32') return Promise.resolve(null);
+async function linksThroughRoots(fresh: boolean): Promise<Set<string> | null> {
+  if (process.platform === 'win32') return null;
+  if (fresh) return linksOf(await refusedRoots());
   const cache = identityCache();
-  cache.links ??= cache.roots.then(async (list) => {
-    const out = new Set<string>();
-    const resolved = await Promise.all(list.map(async (root) =>
-      !await present(root) || await resolveThroughLinks(root, out) !== null));
-    return resolved.every(Boolean) ? out : null;
-  });
+  cache.links ??= cache.roots.then(linksOf);
   return cache.links;
 }
 
-const normalizedPath = (p: string) => path.resolve(plainSpelling(p)).replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
+// NFC: APFS and NTFS take the composed and decomposed spellings of a name as one entry.
+const normalizedPath = (p: string) => path.resolve(plainSpelling(p)).normalize('NFC').replace(/\\/g, '/').toLowerCase().replace(/\/+$/, '');
 
 /**
  * What an operation does to a link: `kept` (a copy recreates it and leaves it
  * in place) or `removed` (a trash takes only the link, not where it points).
+ * A copy also checks each folder it reads as `kept`: nothing is taken from it.
  */
 export type LinkFate = 'kept' | 'removed';
 
@@ -311,28 +319,34 @@ export type LinkFate = 'kept' | 'removed';
  *  link or junction above a refused folder is never traversed by the
  *  preflight, so this is what keeps it from being renamed out of the way.
  *  A refused path that is not there has nothing to carry (#3030); it is looked
- *  up on each call, so one that appears is seen at once.
+ *  up on each call, so one that appears is seen at once. Nor may it take away
+ *  a link a refused root's own spelling goes through: without it the root
+ *  would no longer resolve, and the folder it reached would no longer be
+ *  refused by identity.
  *
  *  `link` says `p` is a link and what the operation does to it. Then where it
  *  points does not count (#3030): a link to the home folder or a config
- *  folder can be copied or trashed. A trash is still refused for a link that a
- *  refused root's own spelling goes through: without it the root would no
- *  longer resolve, and the folder it reached would no longer be refused by
- *  identity. A move or rename passes no `link`, so where a link points counts. */
-export async function holdsRefusedRoot(p: string, link?: LinkFate): Promise<boolean> {
-  const spellings = [normalizedPath(p)];
+ *  folder can be copied or trashed. A move or rename passes no `link`, so
+ *  where a link points counts.
+ *
+ *  `fresh` reads the refused roots and their links again instead of the copy
+ *  kept for IDENTITY_TTL_MS: for the check just before a change. */
+export async function holdsRefusedRoot(p: string, link?: LinkFate, fresh = false): Promise<boolean> {
+  const spelled = normalizedPath(p);
+  const atOrUnder = (key: string) => key === spelled || key.startsWith(`${spelled}/`);
+  const spellings = [spelled];
   let followLink = link === undefined;
-  if (link === 'removed') {
-    const through = await linksThroughRoots();
-    if (through?.has(spellings[0])) return true;
-    // When the roots' links cannot be told, check where it points as before.
-    followLink = through === null;
+  if (link !== 'kept') {
+    const through = await linksThroughRoots(fresh);
+    if (through === null) followLink = true; // The roots' links cannot be told: check where it points.
+    else if ([...through].some(atOrUnder)) return true;
   }
   if (followLink) {
     const real = await fs.promises.realpath(p).catch(() => null);
     if (real) spellings.push(normalizedPath(real));
   }
-  const under = (await refusedRootPaths()).filter((r) => spellings.some((s) => r.key === s || r.key.startsWith(`${s}/`)));
+  const roots = fresh ? await rootPathsOf(await refusedRoots()) : await refusedRootPaths();
+  const under = roots.filter((r) => spellings.some((s) => r.key === s || r.key.startsWith(`${s}/`)));
   for (const r of under) if (await present(r.path)) return true;
   return false;
 }
