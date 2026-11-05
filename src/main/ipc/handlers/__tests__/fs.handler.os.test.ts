@@ -210,7 +210,13 @@ describe('isSensitivePath — Windows path spellings', () => {
     '\\\\.\\UNC\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa',
     '\\\\localhost\\C$\\Users\\tester\\.ssh\\id_rsa',
     '\\\\127.0.0.1\\c$\\Users\\tester\\.aws\\credentials',
-    '\\\\?\\Volume{0f1e2d3c}\\Users\\tester\\notes.md',
+    '\\\\?\\Volume{0f1e2d3c}\\Users\\tester\\.ssh\\id_rsa',
+    'C:\\Users\\tester\\x\\..\\.ssh\\id_rsa',
+    '\\\\wsl$\\Ubuntu\\home\\me\\.git-credentials',
+    '\\\\localhost\\c$\\Users\\me\\.netrc',
+    '\\\\?\\UNC\\localhost\\c$\\users\\me\\.npmrc',
+    '\\\\localhost\\Users\\me\\.ssh\\id_rsa',
+    '\\\\.\\PhysicalDrive0',
     '\\\\.\\GLOBALROOT\\Device\\HarddiskVolume3\\Users\\tester\\notes.md',
   ])('blocks %s', (p) => {
     expect(isSensitivePath(p)).toBe(true);
@@ -220,6 +226,10 @@ describe('isSensitivePath — Windows path spellings', () => {
     'C:\\Users\\tester\\notes.npmrc.txt',
     'C:\\Users\\tester\\proj\\.npmrc-backup',
     '\\\\?\\C:\\Users\\tester\\proj\\readme.md',
+    '\\\\?\\Volume{0f1e2d3c}\\Users\\tester\\notes.md',
+    '\\\\nas\\repos\\proj\\.aws\\fixture.json',
+    '\\\\nas\\repos\\proj\\.env',
+    'C:\\Users\\tester\\.ssh\\..\\notes.md',
   ])('allows %s', (p) => {
     expect(isSensitivePath(p)).toBe(false);
   });
@@ -248,4 +258,13 @@ describe('isSensitivePath — POSIX names', () => {
     expect(isSensitivePath('/home/tester/.ssh')).toBe(true);
     expect(isSensitivePath('/home/tester/.ssh/id_rsa')).toBe(true);
   });
+});
+
+it('matches the home in either Unicode normal form', () => {
+  vi.spyOn(os, 'homedir').mockReturnValue('/Users/Jos\u00e9');
+  try {
+    expect(isSensitivePath('/Users/Jose\u0301/.ssh/id_rsa')).toBe(true);
+  } finally {
+    vi.restoreAllMocks();
+  }
 });

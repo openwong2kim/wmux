@@ -85,7 +85,8 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
     if (process.platform === 'win32') return; // path.isAbsolute is OS-aware
     const handler = getHandler(IPC.SHELL_OPEN_PATH);
     const result = await handler(fakeEvent, '/etc/hosts');
-    expect(openPath).toHaveBeenCalledWith('/etc/hosts');
+    // What was checked is what opens: the real path (/private/etc on macOS).
+    expect(openPath).toHaveBeenCalledWith(fs.realpathSync('/etc/hosts'));
     expect(result).toEqual({ ok: true, error: undefined });
     expect(showItemInFolder).not.toHaveBeenCalled();
   });
@@ -220,6 +221,35 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       const result = await getHandler(IPC.SHELL_OPEN_WITH)(fakeEvent, { appId: 'explorer', folderPath: path.join(os.homedir(), '.ssh') });
       expect(openPath).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
+    // A folder the user cannot search: realpath fails with EACCES, not ENOENT.
+    it.skipIf(process.platform === 'win32')('refuses when the real path cannot be resolved for a reason other than a missing file', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-locked-'));
+      const locked = path.join(dir, 'locked');
+      try {
+        fs.mkdirSync(locked);
+        fs.writeFileSync(path.join(locked, 'notes.md'), 'x');
+        fs.chmodSync(locked, 0o000);
+        const result = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(locked, 'notes.md'));
+        expect(openPath).not.toHaveBeenCalled();
+        expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+      } finally {
+        fs.chmodSync(locked, 0o755);
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
+    });
+
+    it('opens the real path it checked, not the link it was given', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-real-'));
+      try {
+        fs.writeFileSync(path.join(dir, 'notes.md'), 'x');
+        fs.symlinkSync(path.join(dir, 'notes.md'), path.join(dir, 'link.md'));
+        await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, path.join(dir, 'link.md'));
+        expect(openPath).toHaveBeenCalledWith(fs.realpathSync(path.join(dir, 'notes.md')));
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
 
     it('refuses a missing path inside a linked credential folder, without revealing it', async () => {

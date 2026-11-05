@@ -44,19 +44,32 @@ const BLOCKED_EXTENSIONS = new Set<string>([
  * resolved (a root-relative Windows path takes the drive), and by its real
  * path, so a link or an 8.3 short name into ~/.ssh is refused too. A path
  * that does not exist takes the real path of its nearest existing parent, or
- * a failed open would reveal that parent folder.
+ * a failed open would reveal that parent folder. Any other error resolving
+ * it refuses (fails closed). `real` is the path to open, so what is opened is
+ * what was checked; null when the target does not exist.
  */
-async function isSensitiveTarget(target: string, p: Pick<typeof path, 'resolve' | 'dirname' | 'basename' | 'join'>): Promise<boolean> {
-  if (isSensitivePath(target) || isSensitivePath(p.resolve(target))) return true;
+async function checkOpenTarget(
+  target: string,
+  p: Pick<typeof path, 'resolve' | 'dirname' | 'basename' | 'join'>,
+): Promise<{ sensitive: boolean; real: string | null }> {
+  if (isSensitivePath(target) || isSensitivePath(p.resolve(target))) return { sensitive: true, real: null };
   let dir = target;
   const missing: string[] = [];
   for (;;) {
-    const real = await fs.realpath(dir).catch(() => null);
-    if (real !== null) return isSensitivePath(missing.length ? p.join(real, ...missing.reverse()) : real);
-    const parent = p.dirname(dir);
-    if (parent === dir) return false;
-    missing.push(p.basename(dir));
-    dir = parent;
+    let real: string;
+    try {
+      real = await fs.realpath(dir);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return { sensitive: true, real: null };
+      const parent = p.dirname(dir);
+      if (parent === dir) return { sensitive: false, real: null };
+      missing.push(p.basename(dir));
+      dir = parent;
+      continue;
+    }
+    if (missing.length === 0) return { sensitive: isSensitivePath(real), real };
+    return { sensitive: isSensitivePath(p.join(real, ...missing.reverse())), real: null };
   }
 }
 
@@ -117,24 +130,28 @@ export function registerShellHandlers(): () => void {
     }
     // A credential location the in-app viewer refuses is refused here too,
     // without revealing its folder: a click must not hand it to the OS.
-    if (await isSensitiveTarget(normalized, path)) {
+    const target = await checkOpenTarget(normalized, path);
+    if (target.sensitive) {
       return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
+    // Open what was checked: the real path, so a link swapped after the
+    // check cannot redirect the open.
+    const opened = target.real ?? normalized;
     // Block executable extensions — refuse the open and reveal the folder
     // so the user still gets useful feedback without launching code from
-    // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale.
-    const ext = path.extname(normalized).toLowerCase();
-    if (BLOCKED_EXTENSIONS.has(ext)) {
-      shell.showItemInFolder(normalized);
+    // untrusted PTY content. See BLOCKED_EXTENSIONS for the rationale. A
+    // link's own name and its target's both count.
+    if ([normalized, opened].some((p) => BLOCKED_EXTENSIONS.has(path.extname(p).toLowerCase()))) {
+      shell.showItemInFolder(opened);
       return { ok: false, error: 'BLOCKED_EXTENSION' };
     }
-    const err = await shell.openPath(normalized);
+    const err = await shell.openPath(opened);
     if (err) {
       // openPath returns an error string when the file is missing, has no
       // associated handler, or the OS refused the open. Reveal the parent
       // folder so the user still gets useful feedback instead of a silent
       // no-op.
-      shell.showItemInFolder(normalized);
+      shell.showItemInFolder(opened);
     }
     return { ok: !err, error: err || undefined };
   }));
@@ -224,17 +241,20 @@ export function registerShellHandlers(): () => void {
     const blocked = { ok: false, error: 'BLOCKED_SENSITIVE' } as const;
 
     if (appId === 'explorer') {
-      if (await isSensitiveTarget(normalized, plat())) return blocked;
-      const err = await shell.openPath(normalized);
-      if (err) shell.showItemInFolder(normalized);
+      const target = await checkOpenTarget(normalized, plat());
+      if (target.sensitive) return blocked;
+      const opened = target.real ?? normalized;
+      const err = await shell.openPath(opened);
+      if (err) shell.showItemInFolder(opened);
       return { ok: !err, error: err || undefined };
     }
 
     const appEntry = (await getAvailableFolderApps()).find(a => a.id === appId);
     if (!appEntry) throw new Error(`Unknown app: ${appId}`);
-    if (await isSensitiveTarget(normalized, plat())) return blocked;
+    const target = await checkOpenTarget(normalized, plat());
+    if (target.sensitive) return blocked;
 
-    return launchFolderApp(appEntry, normalized);
+    return launchFolderApp(appEntry, target.real ?? normalized);
   }));
 
   return () => {
