@@ -1708,6 +1708,9 @@ const electronAPI = {
     // One seat added to a company that already runs.
     hireSeat: (req: import('../main/company/seatLaunch').HireSeatRequest) =>
       ipcRenderer.invoke(IPC.COMPANY_HIRE_SEAT, req) as Promise<import('../main/company/seatLaunch').HireSeatResult>,
+    // Whether seats in this folder get their own worktrees, or why not; makes nothing.
+    worktreeCheck: (folder: string) =>
+      ipcRenderer.invoke(IPC.COMPANY_WORKTREE_CHECK, folder) as Promise<import('../main/company/seatLaunch').SeatWorktreeCheck>,
   },
   // Fleet's Plan card: Claude's plan dialogs and the answer to one (main window only).
   planApprovals: {

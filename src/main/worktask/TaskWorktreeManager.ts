@@ -154,9 +154,21 @@ export interface TaskWorktreePlan {
   createdBranchOid?: string;
 }
 
+/**
+ * Why a folder cannot have a task worktree: not a repository, a bare one,
+ * one with submodules, one that uses Git LFS, or anything else that failed
+ * (git-error), which the caller may simply try again.
+ */
+export type PreflightRefusal = 'not-repo' | 'bare' | 'submodules' | 'lfs' | 'git-error';
+
 export type PreflightResult =
   | { ok: true; plan: TaskWorktreePlan }
-  | { ok: false; error: string };
+  | { ok: false; error: string; reason: PreflightRefusal };
+
+/** checkRepo's answer: the repository root, or why the folder cannot have a worktree. */
+export type RepoCheck =
+  | { ok: true; repoRoot: string }
+  | { ok: false; error: string; reason: PreflightRefusal };
 
 export type CreateResult =
   | {
@@ -390,17 +402,18 @@ export class TaskWorktreeManager {
     }
   }
 
-  async preflight(
-    repoPathRaw: string,
-    title: string,
-    taskId: string,
-    opts?: { checkBranchConflict?: boolean; branch?: string },
-  ): Promise<PreflightResult> {
+  /**
+   * Whether a folder can have a task worktree, and its repository root: the
+   * checks preflight starts with, and nothing else. It reads only (git
+   * rev-parse, .gitmodules, .gitattributes), so a dialog can ask before
+   * anything is made (#3079).
+   */
+  async checkRepo(repoPathRaw: string): Promise<RepoCheck> {
     let repoInput: string;
     try {
       repoInput = validatePath(repoPathRaw, 'repoPath');
     } catch (err) {
-      return { ok: false, error: `preflight: ${(err as Error).message}` };
+      return { ok: false, error: `preflight: ${(err as Error).message}`, reason: 'git-error' };
     }
 
     // repo 루트 확인(비 repo·git 부재 fail-closed). --show-toplevel은 bare에서 실패한다.
@@ -409,25 +422,29 @@ export class TaskWorktreeManager {
       const { stdout } = await this.runGit(['rev-parse', '--show-toplevel'], repoInput);
       repoRoot = stdout.trim();
       if (repoRoot.length === 0) {
-        return { ok: false, error: 'preflight: not a git repository (empty toplevel)' };
+        return { ok: false, error: 'preflight: not a git repository (empty toplevel)', reason: 'not-repo' };
       }
     } catch {
-      return { ok: false, error: `preflight: not a git repository or git unavailable: ${repoInput}` };
+      // A bare repository has no work tree, so --show-toplevel fails there too:
+      // ask, so it is named as one rather than as no repository at all.
+      const bare = await this.runGit(['rev-parse', '--is-bare-repository'], repoInput).then((r) => r.stdout.trim() === 'true', () => false);
+      if (bare) return { ok: false, error: 'preflight: bare repositories are not supported (J1)', reason: 'bare' };
+      return { ok: false, error: `preflight: not a git repository or git unavailable: ${repoInput}`, reason: 'not-repo' };
     }
 
     // bare repo 거부(§3 에지 fail-closed).
     try {
       const { stdout } = await this.runGit(['rev-parse', '--is-bare-repository'], repoRoot);
       if (stdout.trim() === 'true') {
-        return { ok: false, error: 'preflight: bare repositories are not supported (J1)' };
+        return { ok: false, error: 'preflight: bare repositories are not supported (J1)', reason: 'bare' };
       }
     } catch {
-      return { ok: false, error: 'preflight: failed to determine repository kind' };
+      return { ok: false, error: 'preflight: failed to determine repository kind', reason: 'git-error' };
     }
 
     // 서브모듈 포함 repo 거부(§3). .gitmodules 존재로 판정(보수적 fail-closed).
     if (fs.existsSync(path.join(repoRoot, '.gitmodules'))) {
-      return { ok: false, error: 'preflight: repositories with submodules are not supported (J1)' };
+      return { ok: false, error: 'preflight: repositories with submodules are not supported (J1)', reason: 'submodules' };
     }
 
     // LFS 거부(§3). .gitattributes에 filter=lfs가 있으면 fail-closed.
@@ -436,13 +453,26 @@ export class TaskWorktreeManager {
       try {
         const content = fs.readFileSync(gitattr, 'utf8');
         if (/filter=lfs/.test(content)) {
-          return { ok: false, error: 'preflight: git-LFS repositories are not supported (J1)' };
+          return { ok: false, error: 'preflight: git-LFS repositories are not supported (J1)', reason: 'lfs' };
         }
       } catch {
         // 읽기 실패는 LFS 판정 불가 — 보수적으로 통과시키지 않고 거부.
-        return { ok: false, error: 'preflight: failed to inspect .gitattributes' };
+        return { ok: false, error: 'preflight: failed to inspect .gitattributes', reason: 'git-error' };
       }
     }
+
+    return { ok: true, repoRoot };
+  }
+
+  async preflight(
+    repoPathRaw: string,
+    title: string,
+    taskId: string,
+    opts?: { checkBranchConflict?: boolean; branch?: string },
+  ): Promise<PreflightResult> {
+    const repo = await this.checkRepo(repoPathRaw);
+    if (!repo.ok) return repo;
+    const repoRoot = repo.repoRoot;
 
     // repo 루트 realpath 해시 12자.
     let realRoot: string;
@@ -470,7 +500,7 @@ export class TaskWorktreeManager {
       validateGitRef(branch, 'branch');
       validatePath(worktreePath, 'worktreePath');
     } catch (err) {
-      return { ok: false, error: `preflight: ${(err as Error).message}` };
+      return { ok: false, error: `preflight: ${(err as Error).message}`, reason: 'git-error' };
     }
 
     // Windows MAX_PATH 방어(§3 리뷰 G2).
@@ -478,6 +508,7 @@ export class TaskWorktreeManager {
       return {
         ok: false,
         error: `preflight: worktree path exceeds ${MAX_WORKTREE_PATH_LEN} characters (${worktreePath.length}); shorten the title or enable core.longpaths`,
+        reason: 'git-error',
       };
     }
 
@@ -485,7 +516,7 @@ export class TaskWorktreeManager {
     try {
       fs.mkdirSync(root, { recursive: true });
     } catch (err) {
-      return { ok: false, error: `preflight: dedicated worktree root not writable: ${(err as Error).message}` };
+      return { ok: false, error: `preflight: dedicated worktree root not writable: ${(err as Error).message}`, reason: 'git-error' };
     }
 
     // branch 충돌 선검증(F3 — titles 전체 선검증 시 사용). createWorktree가 락 안에서
@@ -495,7 +526,7 @@ export class TaskWorktreeManager {
       try {
         await this.runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], realRoot);
         // 성공 = 브랜치 존재 → 충돌.
-        return { ok: false, error: await this.branchExistsError('preflight', realRoot, branch) };
+        return { ok: false, error: await this.branchExistsError('preflight', realRoot, branch), reason: 'git-error' };
       } catch {
         // 실패 = 브랜치 부재 → 정상.
       }

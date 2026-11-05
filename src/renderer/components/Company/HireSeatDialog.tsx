@@ -59,18 +59,22 @@ export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: 
     agent: l.surfaces.some((sf) => !!sf.ptyId && !!surfaceAgent[sf.ptyId]?.name),
   })) : []), [workspace, ceoLeaf, leaves, paneLabel, paneRole, surfaceAgent]);
 
-  // Whether the folder is a repository, so the seat gets a worktree of it;
+  // Whether the seat gets its own worktree of the folder, or why not (#3079);
   // null while it is read. Main decides again when it makes the seat.
-  const [repo, setRepo] = useState<boolean | null>(null);
+  const [repo, setRepo] = useState<Awaited<ReturnType<typeof window.electronAPI.company.worktreeCheck>> | null>(null);
   useEffect(() => {
     if (!folder) return undefined;
     let cancelled = false;
     setRepo(null);
-    const resolve = window.electronAPI?.diff?.resolveRepo;
-    if (!resolve) return undefined;
-    resolve(folder).then((r) => { if (!cancelled) setRepo(r?.ok === true); }, () => undefined);
+    const check = window.electronAPI?.company?.worktreeCheck;
+    if (!check) return undefined;
+    check(folder).then((r) => { if (!cancelled) setRepo(r); }, () => undefined);
     return () => { cancelled = true; };
   }, [folder]);
+  // A repository that can't have a seat worktree: the seat works in the folder itself.
+  const refused = repo && !repo.ok && 'reason' in repo && (repo.reason === 'bare' || repo.reason === 'submodules' || repo.reason === 'lfs')
+    ? repo.reason
+    : null;
 
   const taken = useMemo(() => new Set(Object.values(paneLabel).map(normalizePaneLabel)), [paneLabel]);
   const [typedName, setTypedName] = useState<string | null>(null);
@@ -97,7 +101,7 @@ export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: 
   const atCap = leaves.length >= MAX_PANES_PER_WORKSPACE;
   // Outside a repository the seat shares the folder, and two agents in one
   // checkout overwrite each other's changes (main refuses it too).
-  const shared = (!folder || repo === false) && staff.some((s) => s.agent);
+  const shared = (!folder || (repo !== null && !repo.ok)) && staff.some((s) => s.agent);
   const canAdd = !!ceoLeaf && !!name && !nameError && !!agent && owns.length <= OWNS_MAX && !atCap && !shared && !busy;
   const edited = (): void => setError(null);
   const close = (): void => { if (!busy) onClose(); };
@@ -141,9 +145,13 @@ export default function HireSeatDialog({ workspaceId, onClose }: { workspaceId: 
 
   const worksIn = !folder
     ? t('company.hireSeat.worksInDefault')
-    : repo === true
-      ? t('company.hireSeat.worksInWorktree', { folder: displayPath(folder) })
-      : repo === false ? t('company.hireSeat.worksInFolder', { folder: displayPath(folder) }) : displayPath(folder);
+    : repo === null
+      ? displayPath(folder)
+      : repo.ok
+        ? t('company.hireSeat.worksInWorktree', { folder: displayPath(folder) })
+        : refused
+          ? t(`company.hireSeat.worksInRefused.${refused}`, { folder: displayPath(folder) })
+          : t('company.hireSeat.worksInFolder', { folder: displayPath(folder) });
 
   return (
     <Dialog onClose={close} width={560} data-testid="hire-seat">
