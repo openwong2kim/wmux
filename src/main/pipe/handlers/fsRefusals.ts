@@ -236,9 +236,8 @@ const MAX_LINK_HOPS = 40;
 async function resolveThroughLinks(p: string, out: Set<string>, hops = { left: MAX_LINK_HOPS }): Promise<string | null> {
   const { root } = path.parse(p);
   let cur = root;
-  for (const name of p.slice(root.length).split(/[\\/]+/)) {
-    if (name === '' || name === '.') continue;
-    if (name === '..') { cur = path.dirname(cur); continue; }
+  for (const name of p.slice(root.length).split(/[\\/]+/).filter(Boolean)) {
+    // `cur` is resolved, so joining a `..` onto it steps up from where the links led.
     const next = path.join(cur, name);
     const st = await fs.promises.lstat(next).catch(() => null);
     if (!st) return null;
