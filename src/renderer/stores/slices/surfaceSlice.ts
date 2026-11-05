@@ -567,10 +567,10 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   renameSurface: (surfaceId, name) => set((state: StoreState) => {
     // A coordinate-shaped name would shadow (or read as) a real pane's tag in
-    // the resolver, so the rename is refused outright — no title, no userName.
-    // Flatten first so a hidden format/bidi character (`w<zwsp>1-2`) cannot
-    // smuggle the shape past the check.
-    if (isAutoNameShape(flattenName(name))) return;
+    // the resolver, so it never becomes a userName; the tab title still takes
+    // it, so the rename is not silently dropped. Flatten first so a hidden
+    // format/bidi character (`w<zwsp>1-2`) cannot smuggle the shape past.
+    const addressable = !isAutoNameShape(flattenName(name));
     for (const ws of state.workspaces) {
       for (const pane of getWorkspaceLeafPanes(ws)) {
         const surface = pane.surfaces.find((s) => s.id === surfaceId);
@@ -579,7 +579,8 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           if (!surface.titleLocked) surface.autoTitle = surface.title;
           surface.title = name;
           surface.titleLocked = true;
-          surface.userName = name;
+          if (addressable) surface.userName = name;
+          else delete surface.userName;
           return;
         }
       }

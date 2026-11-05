@@ -98,6 +98,12 @@ describe('resolvePaneName', () => {
     });
   });
 
+  it('resolves the Workspace.name form when the workspace name holds a dot', () => {
+    const wss = [ws('ws-a', 1, [leaf('a', 1, [term('srf-a', 'daemon-a', 'copywriter')])], [], 'app.v2')];
+    const res = resolvePaneName(wss, {}, {}, '#app.v2.copywriter');
+    expect(res.ok && res.target).toMatchObject({ workspaceId: 'ws-a', ptyId: 'daemon-a' });
+  });
+
   it('resolves a userName by the flattened name an agent reads', () => {
     const wss = [ws('ws-a', 1, [leaf('pane-a1', 1, [term('srf-a1', 'daemon-a1', 'My  Agent\u200b')])])];
     const res = resolvePaneName(wss, {}, {}, '#My Agent');

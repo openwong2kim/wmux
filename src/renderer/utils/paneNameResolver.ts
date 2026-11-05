@@ -181,13 +181,15 @@ export function resolvePaneName(
   // Interpretation 1: the whole token is the party name (no workspace prefix).
   const full = collectMatches(workspaces, paneLabel, undefined, token);
 
-  // Interpretation 2: `Workspace.name` — split on the FIRST dot.
-  let prefixed: { coord: Match[]; label: Match[]; name: Match[] } = { coord: [], label: [], name: [] };
-  const dot = token.indexOf('.');
-  if (dot > 0) {
+  // Interpretation 2: `Workspace.name` — split at every dot, since a
+  // workspace name may itself hold dots (`app.v2.copywriter`).
+  const prefixed: { coord: Match[]; label: Match[]; name: Match[] } = { coord: [], label: [], name: [] };
+  for (let dot = token.indexOf('.'); dot > 0; dot = token.indexOf('.', dot + 1)) {
     const wsToken = token.slice(0, dot).trim();
     const partyToken = token.slice(dot + 1).trim();
-    if (wsToken && partyToken) prefixed = collectMatches(workspaces, paneLabel, wsToken, partyToken);
+    if (!wsToken || !partyToken) continue;
+    const r = collectMatches(workspaces, paneLabel, wsToken, partyToken);
+    prefixed.coord.push(...r.coord); prefixed.label.push(...r.label); prefixed.name.push(...r.name);
   }
 
   // Within ONE interpretation a coordinate match wins outright (it is globally

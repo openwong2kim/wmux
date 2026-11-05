@@ -395,20 +395,20 @@ describe('surfaceSlice.renameSurface', () => {
     expect(surface.userName).toBe('api-server');
   });
 
-  it('refuses a coordinate-shaped name — no title or userName change', () => {
+  it('keeps a coordinate-shaped name as the title only, never as a userName', () => {
     const { slice, surfaceId, surface } = harness();
-    slice.renameSurface(surfaceId, 'w1-2');
+    slice.renameSurface(surfaceId, 'api-server');
+    slice.renameSurface(surfaceId, 'w10-2024 report');
 
-    expect(surface.title).toBe('pwsh');
-    expect(surface.titleLocked).toBeUndefined();
+    expect(surface.title).toBe('w10-2024 report');
+    expect(surface.titleLocked).toBe(true);
     expect(surface.userName).toBeUndefined();
   });
 
-  it('refuses a coordinate-shaped name even with a hidden format character', () => {
+  it('never takes a coordinate-shaped userName, even with a hidden format character', () => {
     const { slice, surfaceId, surface } = harness();
     slice.renameSurface(surfaceId, 'w\u200b1-2');
 
-    expect(surface.title).toBe('pwsh');
     expect(surface.userName).toBeUndefined();
   });
 
