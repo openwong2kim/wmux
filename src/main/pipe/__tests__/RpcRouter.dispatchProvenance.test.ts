@@ -287,6 +287,26 @@ describe('RpcRouter dispatch provenance', () => {
     expect(seen[1]?.hostedWorkspace).toBeUndefined();
   });
 
+  it('takes the peer pid from the transport only, never from the request', async () => {
+    const seen: (RpcContext | undefined)[] = [];
+    router.register('system.identify', async (_params, ctx) => {
+      seen.push(ctx);
+      return { name: 'wmux' };
+    });
+    const forged = {
+      id: 'peer',
+      method: 'system.identify',
+      params: { peerPid: 1 },
+      clientName: 'claude-code',
+      ...({ peerPid: 1 } as Record<string, unknown>),
+    } as RpcRequest;
+
+    await router.dispatch(forged, { externalWire: true, peerPid: 4242 });
+    expect(seen[0]?.peerPid).toBe(4242);
+    await router.dispatch(forged, { externalWire: true });
+    expect(seen[1]?.peerPid).toBeUndefined();
+  });
+
   it('keeps an unbound plugin-host dispatch distinguishable from a non-hosted one (#922)', async () => {
     const seen: (RpcContext | undefined)[] = [];
     router.register('system.identify', async (_params, ctx) => {

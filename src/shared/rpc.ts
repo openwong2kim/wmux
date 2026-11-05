@@ -252,6 +252,13 @@ export interface RpcContext {
    * Mutually exclusive with `firstParty`.
    */
   externalWire?: true;
+  /**
+   * The pid the OS reports for the connection's peer (shared/peerPid.ts), on
+   * macOS and Linux unix sockets. Set ONLY by PipeServer through the dispatch
+   * options, never from the request. Measurement for now: handlers log it
+   * beside the pids a call names, and nothing decides on it yet.
+   */
+  peerPid?: number;
   clientName?: string;
   clientVersion?: string;
   /**

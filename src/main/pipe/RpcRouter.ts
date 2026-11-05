@@ -147,6 +147,8 @@ type RpcDispatchOptions = (
   signal?: AbortSignal;
   /** Internal lifetime fence, checked after asynchronous authorization reads. */
   isCurrent?: () => boolean;
+  /** The pid the OS reports for the connection's peer (PipeServer, shared/peerPid.ts). */
+  peerPid?: number;
 };
 
 export class RpcRouter {
@@ -385,6 +387,8 @@ export class RpcRouter {
       // means "hosted, but nothing to bind to"; the key is absent for every
       // other dispatch source, and never readable from the envelope.
       ...(hostedWorkspace !== undefined && { hostedWorkspace }),
+      // The connection's peer as the OS reports it, from PipeServer only.
+      ...(opts?.peerPid !== undefined && { peerPid: opts.peerPid }),
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

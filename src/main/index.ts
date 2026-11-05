@@ -307,6 +307,7 @@ import { eventBus } from './events/EventBus';
 import { broadcastMetadataUpdate, currentPrOfPty, getCwd, resetPollCacheOnRendererLoad } from './ipc/handlers/metadata.handler';
 import { broadcastSettledIdle } from './notification/turnSettle';
 import { readOrchRole } from '../shared/orchestratorRole';
+import { selfCheckPeerPid } from '../shared/peerPid';
 import { initLogSink, isBrokenPipeError, logLine, stdioErrorsConsumed } from './util/logSink';
 import { isFencedBotWorkerSession } from './agents/botWorkerMergeGuard';
 import { startScreenReaderMonitor } from './screenReaderService';
@@ -3312,6 +3313,7 @@ app.on('ready', async () => {
     await mcpRegistrar.register(authToken);
   }
   pipeServer.start();
+  void selfCheckPeerPid().then((verdict) => console.log(`[peer-pid] main: ${verdict}`));
   void factoryHost.start();
   autoUpdater.start();
   markBoot('ready-end');

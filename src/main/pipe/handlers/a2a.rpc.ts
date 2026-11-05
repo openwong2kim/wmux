@@ -53,6 +53,7 @@ import { recordSentTask, recordTaskState, reopenedState, stateOfTask, workLinkFr
 import { getHandOutStore, type HandOutStore } from '../../handOut/handOutStore';
 import { isHandOutId } from '../../../shared/handOut';
 import { noteTrackReply } from '../../deck/trackRecordFeed';
+import { notePeerPidClaim } from './peerPidShadow';
 import { A2A_BRAIN_ALIAS, A2A_REMOTE_BODY_MAX, A2A_REMOTE_IMAGE_LIMITS, isRemoteTaskId } from '../../../shared/a2aRemote';
 import {
   isRemoteWorkspaceId,
@@ -867,7 +868,7 @@ export function registerA2aRpc(
   // restore while the shell process (and its frozen WMUX_WORKSPACE_ID env)
   // lives on. Storing the workspace id at create time and trusting it forever
   // is exactly what produced stale identities ("no workspace found for ws-…").
-  router.register('a2a.resolve.identity', async (params) => {
+  router.register('a2a.resolve.identity', async (params, ctx) => {
     // PROPER multi-agent fix: a caller that can't walk its own process tree —
     // Codex sandboxes the per-hop PowerShell spawn and strips the env hints —
     // sends its OWN pid as `callerPid`. We then walk the tree HERE (main, where
@@ -883,6 +884,7 @@ export function registerA2aRpc(
     // client name (before #1111 it did not even need that) — so this is a
     // reliability mechanism, not a new security boundary.
     const callerPid = normalizeCallerPid((params as { callerPid?: unknown }).callerPid);
+    notePeerPidClaim('callerPid', callerPid, ctx);
     // Start the snapshot CONCURRENTLY and bound the wait (at the walk below) to the
     // RPC budget: it feeds only the final walk, so it must never delay — or, past
     // the client's ~10s RPC deadline, SINK — the legacy mappings/entries fallback
@@ -1143,7 +1145,9 @@ export function registerA2aRpc(
     const codexThreadId = (params as { codexThreadId?: unknown }).codexThreadId;
     let threadClaim: ReturnType<typeof resolveCodexThreadClaim> = null;
     if (codexThreadId !== undefined) {
-      const sharedServerChild = await isSharedServerChild(normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid));
+      const codexCallerPid = normalizeCallerPid((params as { codexCallerPid?: unknown }).codexCallerPid);
+      notePeerPidClaim('codexCallerPid', codexCallerPid, ctx);
+      const sharedServerChild = await isSharedServerChild(codexCallerPid);
       const confirmed = await confirmEntriesConnection();
       if (stillConfirmed(confirmed)) threadClaim = resolveCodexThreadClaim(codexThreadId, entries, sharedServerChild);
     }
