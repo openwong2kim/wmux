@@ -6,8 +6,8 @@ function term(id: string, ptyId: string, userName?: string): Surface {
   return { id, ptyId, title: 'Terminal', shell: 'zsh', cwd: '', ...(userName ? { userName } : {}) };
 }
 
-function browser(id: string): Surface {
-  return { id, ptyId: '', title: 'Browser', shell: '', cwd: '', surfaceType: 'browser' };
+function browser(id: string, userName?: string): Surface {
+  return { id, ptyId: '', title: 'Browser', shell: '', cwd: '', surfaceType: 'browser', ...(userName ? { userName } : {}) };
 }
 
 function leaf(id: string, ordinal: number, surfaces: Surface[], activeSurfaceId?: string): PaneLeaf {
@@ -114,5 +114,63 @@ describe('resolvePaneName', () => {
     ];
     const res = resolvePaneName(wss, {}, {}, '#copywriter');
     expect(res).toMatchObject({ ok: false, reason: 'ambiguous' });
+  });
+
+  it('resolves a label that contains a dot', () => {
+    const wss = [ws('ws-a', 1, [leaf('pane-a1', 1, [term('srf-a1', 'daemon-a1')])])];
+    const res = resolvePaneName(wss, { 'pane-a1': 'api.v2' }, {}, '#api.v2');
+    expect(res.ok && res.target).toMatchObject({ paneId: 'pane-a1', ptyId: 'daemon-a1' });
+  });
+
+  it('refuses when a dot also splits into a workspace that resolves elsewhere', () => {
+    const wss = [
+      ws('ws-api', 1, [leaf('api-pane', 1, [term('api-srf', 'api-daemon', 'v2')])], [], 'api'),
+      ws('ws-a2', 2, [leaf('a2-pane', 1, [term('a2-srf', 'a2-daemon')])]),
+    ];
+    // full token → label `api.v2` (a2-pane); prefix → ws `api` + userName `v2` (api-pane).
+    const res = resolvePaneName(wss, { 'a2-pane': 'api.v2' }, {}, '#api.v2');
+    expect(res).toMatchObject({ ok: false, reason: 'ambiguous' });
+  });
+
+  it('resolves a coordinate with its terminal-tab number', () => {
+    const wss = [ws('ws-a', 1, [
+      leaf('pane-a1', 1, [term('srf-1', 'daemon-1'), term('srf-2', 'daemon-2')]),
+    ])];
+    const res = resolvePaneName(wss, {}, {}, '#w1-1.2');
+    expect(res.ok && res.target).toMatchObject({ paneId: 'pane-a1', surfaceId: 'srf-2', ptyId: 'daemon-2' });
+  });
+
+  it('resolves a Workspace-prefixed coordinate with its tab', () => {
+    const wss = [ws('ws-a', 1, [
+      leaf('pane-a1', 1, [term('srf-1', 'daemon-1'), term('srf-2', 'daemon-2')]),
+    ], [], 'Acme')];
+    const res = resolvePaneName(wss, {}, {}, '#Acme.w1-1.2');
+    expect(res.ok && res.target).toMatchObject({ surfaceId: 'srf-2', ptyId: 'daemon-2' });
+  });
+
+  it('resolves a Workspace-prefixed label with its tab', () => {
+    const wss = [ws('ws-a', 1, [
+      leaf('pane-a1', 1, [term('srf-1', 'daemon-1'), term('srf-2', 'daemon-2')]),
+    ], [], 'Acme')];
+    const res = resolvePaneName(wss, { 'pane-a1': 'api' }, {}, '#Acme.api.2');
+    expect(res.ok && res.target).toMatchObject({ surfaceId: 'srf-2', ptyId: 'daemon-2' });
+  });
+
+  it('never matches a userName on a browser tab', () => {
+    const wss = [ws('ws-a', 1, [
+      leaf('pane-a1', 1, [browser('browser-srf', 'ghost'), term('term-srf', 'daemon-a1')], 'browser-srf'),
+    ])];
+    expect(resolvePaneName(wss, {}, {}, '#ghost')).toMatchObject({ ok: false, reason: 'not_found' });
+  });
+
+  it('lists two terminals of one pane apart when a name is ambiguous', () => {
+    const wss = [ws('ws-a', 1, [
+      leaf('pane-a1', 1, [term('srf-1', 'daemon-1', 'dup'), term('srf-2', 'daemon-2', 'dup')]),
+    ])];
+    const agents = { 'daemon-1': { slug: 'claude' as const }, 'daemon-2': { slug: 'claude' as const } };
+    const res = resolvePaneName(wss, {}, agents, '#dup');
+    expect(res).toMatchObject({ ok: false, reason: 'ambiguous' });
+    expect(res.ok ? '' : res.error).toContain('#w1-1.1(claude)');
+    expect(res.ok ? '' : res.error).toContain('#w1-1.2(claude)');
   });
 });

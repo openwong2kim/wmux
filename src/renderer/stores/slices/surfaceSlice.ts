@@ -63,8 +63,8 @@ export interface SurfaceSlice {
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
   /** The user's own tab rename: like updateSurfaceTitle, but also records the
    *  name as the surface's `userName` (the A2A party name's highest source).
-   *  A name shaped like an auto coordinate (`w1-2`, `w1-2(claude)`) stays a
-   *  title only, never a `userName`, so a rename cannot shadow a real pane. */
+   *  A name shaped like an auto coordinate (`w1-2`, `w1-2(claude)`) is
+   *  refused outright — it would shadow a real pane's tag in the resolver. */
   renameSurface: (surfaceId: string, name: string) => void;
   /** Undo a manual rename: unlock the title and put back `autoTitle` (the
    *  title the rename replaced), falling back to the shell name. Also clears
@@ -565,6 +565,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
   }),
 
   renameSurface: (surfaceId, name) => set((state: StoreState) => {
+    // A coordinate-shaped name would shadow (or read as) a real pane's tag in
+    // the resolver, so the rename is refused outright — no title, no userName.
+    if (isAutoNameShape(name)) return;
     for (const ws of state.workspaces) {
       for (const pane of getWorkspaceLeafPanes(ws)) {
         const surface = pane.surfaces.find((s) => s.id === surfaceId);
@@ -573,10 +576,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           if (!surface.titleLocked) surface.autoTitle = surface.title;
           surface.title = name;
           surface.titleLocked = true;
-          // A coordinate-shaped name stays a title only: as a userName it would
-          // shadow (or read as) a real pane's tag in the resolver.
-          if (isAutoNameShape(name)) delete surface.userName;
-          else surface.userName = name;
+          surface.userName = name;
           return;
         }
       }
