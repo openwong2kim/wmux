@@ -3976,11 +3976,13 @@ paths alike.
 - In order with frames, at most ten a second per stream. Unlike `url`, each
   new tab is its own event: none is merged into a later one. A stream that is
   not read keeps at most the four newest waiting.
-- An event, not a state: a later subscriber does not get earlier ones. The
-  list is the record.
+- An event, not a state: a later subscriber does not get earlier ones.
+- Neither the tap reply nor the list stands in for it. Only this event names
+  a tab opened outside a tap (by a script, or at the desktop). The list holds
+  at most 30 rows, while a workspace can have up to 50 adopted tabs open. So
+  a tab whose event was lost (dropped past the four waiting, or sent before
+  you subscribed) may never show in the list.
 - An older desktop never sends it, and a builtin pane's stream never does.
-  The tap reply's `opened` and the list cover every adopted tab, so a client
-  needs neither the event nor a wait for it.
 
 ### New agent pane launch options
 
