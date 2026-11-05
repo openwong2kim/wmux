@@ -2941,11 +2941,14 @@ app.on('ready', async () => {
       // pre-existing scrollback path). Without this, the renderer
       // would still treat itself as daemon-connected and skip the
       // .txt autosave even though no daemon is replaying PTY data.
+      logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
+      cleanupHandlers();
+      // After the cleanup, which flushes the old pipes' buffered output: that
+      // output reaching the renderer after this would mark the panes ready
+      // again, and an automatic resume would type before the new pipe (#3028).
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('daemon:disconnected');
       }
-      logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
-      cleanupHandlers();
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
       cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {
         ...mcpHandlerOptions,

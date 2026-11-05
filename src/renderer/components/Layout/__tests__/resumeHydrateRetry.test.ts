@@ -50,4 +50,19 @@ describe('hydrateWithRetry', () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(again).toHaveBeenCalledTimes(1);
   });
+
+  it('tells a pending hydrate when its connection is gone or it was cancelled', () => {
+    let connection = 1;
+    const seen: Array<() => boolean> = [];
+    const hydrate = (current: () => boolean) => { seen.push(current); return new Promise<void>(() => undefined); };
+    hydrateWithRetry(hydrate, () => connection === 1);
+    expect(seen[0]()).toBe(true);
+    connection = 2;
+    expect(seen[0]()).toBe(false);
+
+    const cancel = hydrateWithRetry(hydrate, () => true);
+    expect(seen[1]()).toBe(true);
+    cancel();
+    expect(seen[1]()).toBe(false);
+  });
 });

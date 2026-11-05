@@ -1995,9 +1995,11 @@ export default function AppLayout() {
   //     whole map from the authoritative session list so a reload / daemon
   //     respawn re-derives badges without waiting for the next event.
   useEffect(() => {
-    const hydrate = (): Promise<void> => {
+    const hydrate = (current: () => boolean): Promise<void> => {
       const requestedAt = livenessSnapshotRequested();
       return window.electronAPI.pty.list().then((sessions) => {
+        // A list from a connection that has since gone is not this one's.
+        if (!current()) return;
         const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
         // X6 ②: resume hints for recovered interactive agent panes.
         const resumeSnapshot: Record<string, AgentSlug> = {};
