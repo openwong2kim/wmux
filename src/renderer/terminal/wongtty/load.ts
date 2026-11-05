@@ -27,8 +27,6 @@ let releaseWanted = false;
 // Callers that will build a wongtty terminal soon (holdWongtty).
 let holds = 0;
 let releaseTimer: ReturnType<typeof setTimeout> | null = null;
-// Removes what the loaded module listens to on the page itself (pageListeners).
-let unlistenPage: Array<() => void> = [];
 
 /** Build one terminal, open it into a 1x1 element off screen and dispose it:
  *  what a pane does first, so a wasm fetch or compile error, a failed init or
@@ -40,37 +38,11 @@ function probe(mod: Wongtty): void {
   let terminal: { open(parent: HTMLElement): void; dispose(): void } | null = null;
   try {
     terminal = new mod.Terminal({ cols: 2, rows: 1 });
-    const opening = terminal;
-    unlistenPage = pageListeners(() => opening.open(host));
+    terminal.open(host);
   } finally {
     try { terminal?.dispose(); } catch { /* the probe's own teardown */ }
     host.remove();
   }
-}
-
-/** Run `open`, and return what removes the listeners it added to the page
- *  itself (window, document, document.fonts). wongtty 0.0.2 adds two there
- *  with its first terminal, a resize and a font-load listener that it keeps
- *  for the page's lifetime (render/webgl.rs, listen_page); left in place they
- *  would keep the whole module alive after it is released. */
-function pageListeners(open: () => void): Array<() => void> {
-  const page = new Set<EventTarget>([window, document, document.fonts]);
-  const removals: Array<() => void> = [];
-  const proto = EventTarget.prototype;
-  const add = proto.addEventListener;
-  proto.addEventListener = function (this: EventTarget, type: string, listener: EventListenerOrEventListenerObject | null, options?: boolean | AddEventListenerOptions) {
-    if (listener && page.has(this)) removals.push(() => proto.removeEventListener.call(this, type, listener, options));
-    add.call(this, type, listener, options);
-  };
-  try {
-    open();
-  } catch (err) {
-    for (const remove of removals) remove();
-    throw err;
-  } finally {
-    proto.addEventListener = add;
-  }
-  return removals;
 }
 
 /** The module, with a Terminal that counts itself from construction to dispose. */
@@ -100,8 +72,6 @@ function scheduleRelease(): void {
   releaseTimer = setTimeout(() => {
     releaseTimer = null;
     if (!releaseWanted || live > 0 || holds > 0 || loaded === null) return;
-    for (const unlisten of unlistenPage) unlisten();
-    unlistenPage = [];
     loaded = null;
     pending = null;
     releaseWanted = false;

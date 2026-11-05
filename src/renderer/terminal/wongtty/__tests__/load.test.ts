@@ -1,9 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// pageListener: added to the page when a terminal opens, as wongtty's first
-// terminal does (listen_page).
-const opened = vi.hoisted(() => ({ throwOnOpen: true, disposed: 0, created: 0, pageListener: null as null | (() => void) }));
+const opened = vi.hoisted(() => ({ throwOnOpen: true, disposed: 0, created: 0 }));
 
 // Each call is a fresh evaluation of the package, as the real factory's is.
 vi.mock('../factory', () => ({
@@ -13,7 +11,6 @@ vi.mock('../factory', () => ({
       init: vi.fn(async () => undefined),
       Terminal: class {
         open() {
-          if (opened.pageListener) document.addEventListener('wmux-page', opened.pageListener);
           if (opened.throwOnOpen) throw new Error('WebGL2 is not available');
         }
         dispose() { opened.disposed++; }
@@ -29,9 +26,7 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => { vi.resetModules(); vi.useRealTimers(); opened.disposed = 0; opened.created = 0; opened.pageListener = null; });
-
-const pageEvent = () => document.dispatchEvent(new Event('wmux-page'));
+afterEach(() => { vi.resetModules(); vi.useRealTimers(); opened.disposed = 0; opened.created = 0; });
 
 describe('wongtty load probe', () => {
   it('returns null and records why when a probe terminal cannot open', async () => {
@@ -52,18 +47,6 @@ describe('wongtty load probe', () => {
     expect(load.loadedWongtty()).not.toBeNull();
   });
 
-  it('removes what a failing probe added to the page, and puts addEventListener back', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    const add = EventTarget.prototype.addEventListener;
-    const heard = vi.fn();
-    opened.pageListener = heard;
-    opened.throwOnOpen = true;
-    const load = await import('../load');
-    expect(await load.preloadWongtty()).toBeNull();
-    expect(EventTarget.prototype.addEventListener).toBe(add);
-    pageEvent();
-    expect(heard).not.toHaveBeenCalled();
-  });
 });
 
 describe('wongtty release', () => {
@@ -123,24 +106,6 @@ describe('wongtty release', () => {
     expect(load.loadedWongtty()).toBeNull();
   });
 
-  it('removes the listeners the module added to the page once it is let go', async () => {
-    vi.useFakeTimers();
-    vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    const add = EventTarget.prototype.addEventListener;
-    const heard = vi.fn();
-    opened.pageListener = heard;
-    opened.throwOnOpen = false;
-    const load = await import('../load');
-    expect(await load.preloadWongtty()).not.toBeNull();
-    expect(EventTarget.prototype.addEventListener).toBe(add);
-    pageEvent();
-    expect(heard).toHaveBeenCalledTimes(1);
-    load.releaseWongttyWhenIdle();
-    vi.runAllTimers();
-    expect(load.loadedWongtty()).toBeNull();
-    pageEvent();
-    expect(heard).toHaveBeenCalledTimes(1);
-  });
 
   it('keeps the module while a swap holds it, and lets go once the hold ends', async () => {
     vi.useFakeTimers();
