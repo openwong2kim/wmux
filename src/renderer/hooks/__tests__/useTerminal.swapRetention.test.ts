@@ -15,8 +15,10 @@ const gc = vm.runInNewContext('gc') as () => void;
 // disposed (an engine swap left a whole xterm buffer behind this way).
 describe('createPtyDispatcher — retention', () => {
   it('does not keep an unsubscribed handler alive through the shared listener', async () => {
-    let listener: ((id: string, payload: string) => void) | null = null;
-    const d = createPtyDispatcher<string>((cb) => { listener = cb; return () => { listener = null; }; });
+    // An object slot: a `let` assigned only inside the callback stays `null`
+    // to the type checker at the call below.
+    const attached: { listener: ((id: string, payload: string) => void) | null } = { listener: null };
+    const d = createPtyDispatcher<string>((cb) => { attached.listener = cb; return () => { attached.listener = null; }; });
     let ref!: WeakRef<object>;
     (() => {
       const terminal = { buffer: new Array(10_000).fill(0) };
@@ -32,7 +34,7 @@ describe('createPtyDispatcher — retention', () => {
       gc();
     }
     expect(ref.deref()).toBeUndefined();
-    listener!('pty-2', 'still dispatched');
+    attached.listener?.('pty-2', 'still dispatched');
     expect(seen).toEqual(['still dispatched']);
   });
 });
