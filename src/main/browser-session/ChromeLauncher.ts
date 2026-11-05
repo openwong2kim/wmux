@@ -43,6 +43,15 @@ import type { LentLiveTab } from '../../shared/browserAgentControl';
 // adoptExisting() reads is now actually written by the instance it recovers.
 // DevToolsActivePort appearance + /json/version readiness poll.
 const READY_TIMEOUT_MS = 10_000;
+/**
+ * How long a launch waits on a Chrome that is still running but not yet
+ * listening. Its first start after the install was replaced (an update, a
+ * fresh machine) reads ~450 MB from a cold disk before it says anything: on
+ * the GitHub Ubuntu image 20261101 that took 8-14 s, past READY_TIMEOUT_MS,
+ * where the same start with its files cached took under 2 s. A Chrome that
+ * exited fails at once, as before.
+ */
+const READY_STARTING_MS = 30_000;
 const READY_POLL_MS = 250;
 /** How long a Chrome asked to quit through Browser.close gets before a signal. */
 export const QUIT_GRACE_MS = 3_000;
@@ -1914,8 +1923,10 @@ export class ChromeLauncher implements ChromeBackendClient {
     this.child = child;
 
     // Resolve the port (pinned, or the fresh DevToolsActivePort write), then
-    // poll /json/version until the endpoint answers.
-    const deadline = Date.now() + READY_TIMEOUT_MS;
+    // poll /json/version until the endpoint answers. Past READY_TIMEOUT_MS a
+    // Chrome that is still running is still starting: waited on, to a ceiling.
+    const startedAt = Date.now();
+    let toldStarting = false;
     for (;;) {
       if (gone) throw new Error('ChromeLauncher: Chrome exited during startup');
       let candidate = pinned;
@@ -1964,7 +1975,12 @@ export class ChromeLauncher implements ChromeBackendClient {
           this.cdpPort = 0;
         }
       }
-      if (Date.now() > deadline) {
+      const waited = Date.now() - startedAt;
+      if (waited > READY_TIMEOUT_MS && waited <= READY_STARTING_MS && !toldStarting) {
+        toldStarting = true;
+        console.warn(`[ChromeLauncher] Chrome is still starting after ${Math.round(waited / 1000)} s (a first start reads its install from disk); waiting up to ${READY_STARTING_MS / 1000} s`);
+      }
+      if (waited > READY_STARTING_MS) {
         // Kill the half-started child; a later demand may retry cleanly.
         try {
           child.kill();
