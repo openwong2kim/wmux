@@ -35,6 +35,9 @@ export const ATTACH_TAIL_SNAPSHOT_BYTES = 1024 * 1024;
  *  parses in about 0.25 s at the measured ~4 MB/s. */
 export const ATTACH_TAIL_SNAPSHOT_BUDGET_MS = 1500;
 
+/** How long releaseClient waits for the client to close its side (#3073). */
+export const CLIENT_RELEASE_MS = 500;
+
 /**
  * Per-session data pipe for raw byte streaming.
  * Created on attach, destroyed on detach.
@@ -450,6 +453,27 @@ export class SessionPipe {
 
   setInputDrainSubscription(dispose: () => void): void {
     this.inputDrainDispose?.(); this.inputDrainDispose = dispose;
+  }
+
+  /**
+   * Let the client go before this pipe is replaced (daemon.attachSession)
+   * without dropping input it already sent (#3073). Destroying the socket
+   * discards bytes this end has not read yet, so the daemon ends its side
+   * instead and keeps forwarding input until the client closes. main's
+   * socket does not allow half-open (Node's default), so it ends its own side
+   * right after what it already wrote. Output from here on stays in the ring,
+   * for the next pipe's flush. A client that has not closed by `timeoutMs` is
+   * destroyed by stop() as before.
+   */
+  async releaseClient(timeoutMs = CLIENT_RELEASE_MS): Promise<void> {
+    const client = this.client;
+    if (!client || client.destroyed) return;
+    this.flushed = false;
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, timeoutMs);
+      client.once('close', () => { clearTimeout(timer); resolve(); });
+      client.end();
+    });
   }
 
   /** Stop the session pipe and clean up. */

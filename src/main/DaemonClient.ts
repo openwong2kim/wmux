@@ -582,6 +582,7 @@ export class DaemonClient extends EventEmitter {
         socket.write(this.authToken + '\n');
         this.sessionPipes.set(sessionId, socket);
         this.setupSessionPipe(sessionId, socket);
+        this.emit('session-pipe:open', sessionId);
         resolve();
       });
 
@@ -611,6 +612,29 @@ export class DaemonClient extends EventEmitter {
     const socket = this.sessionPipes.get(sessionId);
     if (!socket) return false;
     return !socket.destroyed && socket.writable;
+  }
+
+  /**
+   * Whether the session has a writable pipe, waiting up to `timeoutMs` for
+   * one to open. A pane's reattach replaces its pipe (daemon.attachSession,
+   * then a fresh connect, retried by the renderer when the new one is not
+   * writable yet), and a write in that gap has no pipe to go to (#3073).
+   */
+  async waitForSessionPipe(sessionId: string, timeoutMs: number): Promise<boolean> {
+    if (this.isSessionPipeWritable(sessionId)) return true;
+    return new Promise<boolean>((resolve) => {
+      const onOpen = (id: string): void => {
+        if (id !== sessionId || !this.isSessionPipeWritable(sessionId)) return;
+        finish(true);
+      };
+      const timer = setTimeout(() => finish(this.isSessionPipeWritable(sessionId)), timeoutMs);
+      const finish = (ok: boolean): void => {
+        clearTimeout(timer);
+        this.removeListener('session-pipe:open', onOpen);
+        resolve(ok);
+      };
+      this.on('session-pipe:open', onOpen);
+    });
   }
 
   /**

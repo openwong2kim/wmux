@@ -3153,6 +3153,8 @@ function registerRpcHandlers(
       // Stop existing SessionPipe if still listening (prevents EADDRINUSE on reconnect)
       const existingPipe = sessionPipes.get(p.id);
       if (existingPipe) {
+        // Input the old client already sent still reaches the PTY (#3073).
+        await existingPipe.releaseClient().catch(() => undefined);
         await existingPipe.stop().catch(() => undefined);
         sessionPipes.delete(p.id);
       }

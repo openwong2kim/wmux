@@ -133,7 +133,9 @@ describe('a raw write by ptyId to a session with no pipe (#2398)', () => {
     const writeToSession = vi.fn(() => opts.writeReturns ?? pipeOpen);
     // The renderer reads a blank screen, so the guard asks the daemon: no dialog.
     const folderTrustState = vi.fn(async () => ({ state: 'clear' as const }));
-    const dc = { isConnected: true, isSessionPipeWritable: vi.fn(() => pipeOpen), writeToSession, folderTrustState };
+    // No reattach opens a pipe while a write waits for one (#3073).
+    const waitForSessionPipe = vi.fn(async () => pipeOpen);
+    const dc = { isConnected: true, isSessionPipeWritable: vi.fn(() => pipeOpen), writeToSession, folderTrustState, waitForSessionPipe };
     const pty = { get: vi.fn(() => undefined), write: vi.fn() } as unknown as PTYManager;
     const router = new RpcRouter();
     registerInputRpc(router, pty, () => fakeWindow, () => dc as never);
@@ -437,5 +439,60 @@ describe("the start window honors the caller's deadline (#2398)", () => {
     expect(key.ok).toBe(false);
     expect(JSON.stringify(key)).toContain('nothing was written');
     expect(writeMock).not.toHaveBeenCalled();
+  });
+});
+
+// #3073 — a pane being reattached has no pipe for a moment (the daemon
+// replaced it; main's new one is not connected yet). A send landing there
+// waited for nothing: it failed with "no open pipe", or a retry typed it twice.
+describe('a send in a reattach gap waits for the new pipe (#3073)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  /** Writes find no pipe until the reattach connects one, `reconnects` true. */
+  function setupGap(reconnects: boolean) {
+    let pipeOpen = false;
+    const written: string[] = [];
+    const writeToSession = vi.fn((_id: string, data: string) => {
+      if (!pipeOpen) return false;
+      written.push(data);
+      return true;
+    });
+    const waitForSessionPipe = vi.fn(async () => {
+      if (reconnects) pipeOpen = true;
+      return pipeOpen;
+    });
+    const folderTrustState = vi.fn(async () => ({ state: 'clear' as const }));
+    // The session is live (attached): the send does not start it.
+    const dc = { isConnected: true, isSessionPipeWritable: vi.fn(() => true), writeToSession, waitForSessionPipe, folderTrustState };
+    const pty = { get: vi.fn(() => undefined), write: vi.fn() } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, pty, () => fakeWindow, () => dc as never);
+    return { router, written, waitForSessionPipe };
+  }
+
+  it('input.send writes the text and its Enter once the new pipe is up', async () => {
+    const { router, written, waitForSessionPipe } = setupGap(true);
+    renderer();
+    const res = await router.dispatch({ id: 'g1', method: 'input.send', params: { text: 'echo hi', ptyId: 'pty-gap', workspaceId: 'ws-ext', submit: true } });
+    expect(res.ok).toBe(true);
+    expect(written).toEqual(['echo hi', '\r']);
+    expect(waitForSessionPipe).toHaveBeenCalledTimes(1);
+  });
+
+  it('input.sendKey sends the key once the new pipe is up', async () => {
+    const { router, written } = setupGap(true);
+    renderer();
+    const res = await router.dispatch({ id: 'g2', method: 'input.sendKey', params: { key: 'ctrl+l', ptyId: 'pty-gap', workspaceId: 'ws-ext' } });
+    expect(res.ok).toBe(true);
+    expect(written).toEqual(['\x0c']);
+  });
+
+  it('with no pipe by the bound, the send fails and nothing was written', async () => {
+    const { router, written } = setupGap(false);
+    renderer();
+    const res = await router.dispatch({ id: 'g3', method: 'input.send', params: { text: 'echo hi', ptyId: 'pty-gap', workspaceId: 'ws-ext', submit: true } });
+    expect(res.ok).toBe(false);
+    expect(JSON.stringify(res)).toContain('has no open pipe');
+    expect(written).toEqual([]);
   });
 });
