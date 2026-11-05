@@ -185,7 +185,7 @@ describe('filesystem write jobs', () => {
     expect(fs.readFileSync(other, 'utf8')).toBe('keep');
   });
   // #3030: a copy recreates a link and a trash removes only the link, so where it points is not checked for those.
-  it.runIf(process.platform !== 'win32')('copies and trashes a folder or link that points at the home folder, and still refuses moving it', async () => {
+  it.runIf(process.platform !== 'win32')('copies and trashes a folder or link that points at the home folder', async () => {
     fs.symlinkSync(home, path.join(src, 'home-link'));
     const copied = await finish(await queue.start('copy', { sources: [src], destDir: dest, conflict: 'fail' }));
     expect(copied.errors).toEqual([]);
@@ -193,8 +193,26 @@ describe('filesystem write jobs', () => {
     expect((await finish(await queue.start('trash', { paths: [src] }))).state).toBe('done');
     expect((await finish(await queue.start('trash', { paths: [path.join(src, 'home-link')] }))).state).toBe('done');
     expect(trash.mock.calls).toEqual([[src], [path.join(src, 'home-link')]]);
-    expect((await finish(await queue.start('move', { sources: [path.join(src, 'home-link')], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
-    expect(await queue.rename({ path: path.join(src, 'home-link'), newName: 'moved' })).toMatchObject({ reason: 'unavailable' });
+  });
+  // #3095: a move or rename takes only the link too.
+  it.runIf(process.platform !== 'win32')('moves and renames a folder or link that points at the home folder', async () => {
+    fs.symlinkSync(home, path.join(src, 'home-link'));
+    expect(await queue.rename({ path: path.join(src, 'home-link'), newName: 'renamed-link' })).toMatchObject({ ok: true });
+    expect((await finish(await queue.start('move', { sources: [path.join(src, 'renamed-link')], destDir: dest, conflict: 'fail' }))).state).toBe('done');
+    expect(fs.readlinkSync(path.join(dest, 'renamed-link'))).toBe(home);
+    fs.symlinkSync(home, path.join(src, 'home-link'));
+    expect(await queue.rename({ path: src, newName: 'src2' })).toMatchObject({ ok: true });
+    expect(fs.readlinkSync(path.join(root, 'src2', 'home-link'))).toBe(home);
+    expect(fs.existsSync(path.join(home, '.ssh'))).toBe(true);
+  });
+  it.runIf(process.platform !== 'win32')('refuses moving or renaming a link a refused folder is reached through', async () => {
+    fs.mkdirSync(path.join(home, 'dotfiles', 'config', 'gh'), { recursive: true });
+    fs.symlinkSync(path.join(home, 'dotfiles', 'config'), path.join(src, 'cfg-link'));
+    fs.symlinkSync(path.join(src, 'cfg-link'), path.join(home, '.config'));
+    expect(await queue.rename({ path: path.join(src, 'cfg-link'), newName: 'other' })).toMatchObject({ reason: 'unavailable' });
+    expect((await finish(await queue.start('move', { sources: [path.join(src, 'cfg-link')], destDir: dest, conflict: 'fail' }))).state).toBe('failed');
+    expect(await queue.rename({ path: src, newName: 'src2' })).toMatchObject({ reason: 'unavailable' });
+    expect(fs.readlinkSync(path.join(src, 'cfg-link'))).toBe(path.join(home, 'dotfiles', 'config'));
   });
   it('trashes and renames a config folder whose refused files do not exist', async () => {
     for (const dir of ['.config', '.claude']) fs.mkdirSync(path.join(home, dir, 'notes'), { recursive: true });

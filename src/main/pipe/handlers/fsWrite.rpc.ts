@@ -10,8 +10,8 @@ import { validatePathParam } from './fs.rpc';
 import type { RpcRouter } from '../RpcRouter';
 
 type Kind = 'copy' | 'move' | 'trash';
-/** What each job does to a link in its sources; a move carries it (see holdsRefusedRoot). */
-const LINK_FATE: Record<Kind, LinkFate | undefined> = { copy: 'kept', move: undefined, trash: 'removed' };
+/** What each job does to a link in its sources (see holdsRefusedRoot). */
+const LINK_FATE: Record<Kind, LinkFate> = { copy: 'kept', move: 'removed', trash: 'removed' };
 type Conflict = 'skip' | 'overwrite' | 'fail';
 export interface FsJob {
   id: string;
@@ -109,9 +109,9 @@ export class FsJobQueue {
       const dest = await accessible(path.join(path.dirname(src), params.newName as string), true);
       this.checkLocks([src, dest]);
       if (await exists(dest)) fail('exists');
-      await this.scan(src, undefined); // Refuse credential descendants before moving a tree.
+      await this.scan(src, 'removed'); // Refuse credential descendants before moving a tree.
       this.checkLocks([src, dest]);
-      await this.clear(src, undefined);
+      await this.clear(src, 'removed');
       await fs.promises.rename(src, dest);
       return { ok: true, path: dest };
     } catch (e) { return { ok: false, reason: reasonOf(e) }; }
@@ -190,7 +190,7 @@ export class FsJobQueue {
             if (job.kind === 'move' && !(await exists(dest))) {
               try {
                 const from = await accessible(src);
-                await this.clear(from, undefined);
+                await this.clear(from, 'removed');
                 await fs.promises.rename(from, await accessible(dest, true));
                 job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
                 continue;
@@ -200,7 +200,7 @@ export class FsJobQueue {
             controller.signal.throwIfAborted();
             if (job.kind === 'move' && complete) {
               const from = await accessible(src);
-              await this.clear(from, undefined);
+              await this.clear(from, 'removed');
               await fs.promises.rm(from, { recursive: true });
             }
           }
