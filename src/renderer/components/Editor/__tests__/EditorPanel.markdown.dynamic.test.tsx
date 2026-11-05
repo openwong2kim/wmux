@@ -60,3 +60,75 @@ describe('EditorPanel View mode', () => {
     expect(container.querySelector('pre')?.textContent).toContain('line 2001');
   });
 });
+
+describe('EditorPanel line target', () => {
+  const text = Array.from({ length: 50 }, (_, i) => `row ${i + 1}`).join('\n');
+
+  async function openAt(filePath: string, line: number, lineSeq?: number, isActive = true): Promise<void> {
+    (window as any).electronAPI = { fs: { readFile: vi.fn().mockResolvedValue(text) } };
+    await act(async () => {
+      root.render(createElement(EditorPanel, { filePath, isActive, surfaceId: 's1', line, lineSeq }));
+    });
+  }
+  const marked = () => container.querySelector('[data-editor-line-marked]');
+
+  it('marks the requested line and keeps the file text intact', async () => {
+    await openAt('/p/notes.txt', 42);
+    expect(marked()?.getAttribute('data-editor-line')).toBe('42');
+    expect(marked()?.textContent).toContain('row 42');
+    expect(container.querySelector('pre')?.textContent).toBe(text);
+  });
+
+  it('shows a markdown file as source when a line is requested', async () => {
+    await openAt('/p/notes.md', 3);
+    expect(container.querySelector('[data-testid="editor-markdown"]')).toBeNull();
+    expect(marked()?.getAttribute('data-editor-line')).toBe('3');
+  });
+
+  it('re-targets the open tab to another line, and to the same line again after a click', async () => {
+    await openAt('/p/notes.txt', 10, 0);
+    expect(marked()?.getAttribute('data-editor-line')).toBe('10');
+    await openAt('/p/notes.txt', 30, 1);
+    expect(marked()?.getAttribute('data-editor-line')).toBe('30');
+    await act(async () => { container.querySelector<HTMLElement>('pre')!.click(); });
+    expect(marked()).toBeNull();
+    await openAt('/p/notes.txt', 30, 2);
+    expect(marked()?.getAttribute('data-editor-line')).toBe('30');
+  });
+
+  it('keeps the mark, and the selection, when a click ends a drag-select', async () => {
+    await openAt('/p/notes.txt', 5);
+    const row = marked()!.firstChild!;
+    const range = document.createRange();
+    range.setStart(row, 0);
+    range.setEnd(row, 3);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    await act(async () => { container.querySelector<HTMLElement>('pre')!.click(); });
+    expect(marked()?.getAttribute('data-editor-line')).toBe('5');
+    expect(window.getSelection()!.toString()).toBe('row');
+    window.getSelection()!.removeAllRanges();
+  });
+
+  it('drops the mark on a click while text outside the editor is selected', async () => {
+    await openAt('/p/notes.txt', 5);
+    const outside = document.createElement('p');
+    outside.textContent = 'elsewhere';
+    document.body.appendChild(outside);
+    const range = document.createRange();
+    range.selectNodeContents(outside);
+    window.getSelection()!.removeAllRanges();
+    window.getSelection()!.addRange(range);
+    await act(async () => { container.querySelector<HTMLElement>('pre')!.click(); });
+    expect(marked()).toBeNull();
+    window.getSelection()!.removeAllRanges();
+    outside.remove();
+  });
+
+  it('drops the mark when the user leaves the tab', async () => {
+    await openAt('/p/notes.txt', 7);
+    expect(marked()).not.toBeNull();
+    await openAt('/p/notes.txt', 7, undefined, false);
+    expect(marked()).toBeNull();
+  });
+});

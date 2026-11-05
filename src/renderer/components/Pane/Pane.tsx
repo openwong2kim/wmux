@@ -1780,6 +1780,8 @@ function SplitSurfaceView({
         <EditorPanel
           key={surface.id}
           filePath={surface.editorFilePath || ''}
+          line={surface.editorLine}
+          lineSeq={surface.editorLineSeq}
           isActive={drawn}
           surfaceId={surface.id}
         />

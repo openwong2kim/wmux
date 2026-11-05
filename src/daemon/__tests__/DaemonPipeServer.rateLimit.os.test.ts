@@ -71,6 +71,12 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     server.onRpc('daemon.attachSession', async () => ({ attached: true }));
     server.onRpc('daemon.destroySession', async () => ({ destroyed: true }));
     server.onRpc('task.mission.start', async () => ({ ok: true, taskId: 't1' }));
+    server.onRpc('daemon.client.identify', async () => ({ ok: true }));
+    // The task-mission calls here are main's, which the daemon answers only
+    // on the app's identified connection. An identify call would count
+    // against the budgets these tests measure, so the socket is taken as the
+    // app's directly.
+    vi.spyOn(server, 'isFirstParty').mockReturnValue(true);
     await server.start();
   });
 
@@ -124,6 +130,16 @@ describe('DaemonPipeServer interactive RPC budget (#2349)', () => {
     const replies = await sendBatch(pipeName, methods);
     expect(replies.get('249')).toMatchObject({ ok: false, error: 'rate limited (global)' });
     expect(replies.get('250')).toMatchObject({ ok: true, result: { ok: true, taskId: 't1' } });
+  });
+
+  it('dispatches the app\'s identify after a background flood used up the global budget', async () => {
+    const methods: Call[] = [
+      ...Array.from({ length: 250 }, () => 'task.mission.list'),
+      { method: 'daemon.client.identify', params: { role: 'main' } },
+    ];
+    const replies = await sendBatch(pipeName, methods);
+    expect(replies.get('249')).toMatchObject({ ok: false, error: 'rate limited (global)' });
+    expect(replies.get('250')).toMatchObject({ ok: true, result: { ok: true } });
   });
 
   it('charges the aggregate cap only for dispatched calls: the refused excess of one socket leaves the others their share', async () => {

@@ -180,3 +180,39 @@ describe('isLoopbackHref', () => {
     expect(isLoopbackHref(href)).toBe(false);
   });
 });
+
+describe('OSC 8 file: links', () => {
+  it('opens file: links without a prompt when a file opener is supplied', () => {
+    const openFile = vi.fn();
+    const handler = createOsc8LinkHandler(vi.fn(), undefined, openFile);
+    expect(handler.allowNonHttpProtocols).toBe(true);
+    handler.activate(new MouseEvent('mouseup', { button: 0 }), 'file:///tmp/x.md', {} as never);
+    expect(openFile).toHaveBeenCalledWith(expect.anything(), 'file:///tmp/x.md');
+    expect(window.confirm).not.toHaveBeenCalled();
+  });
+
+  it('ignores non-left clicks and keeps http(s) on the prompt path', () => {
+    const openFile = vi.fn();
+    const activate = vi.fn();
+    const handler = createOsc8LinkHandler(activate, undefined, openFile);
+    handler.activate(new MouseEvent('mouseup', { button: 2 }), 'file:///tmp/x.md', {} as never);
+    expect(openFile).not.toHaveBeenCalled();
+    handler.activate(new MouseEvent('mouseup', { button: 0 }), 'https://example.com/', {} as never);
+    expect(window.confirm).toHaveBeenCalledTimes(1);
+    expect(activate).toHaveBeenCalledTimes(1);
+  });
+
+  it('never opens other schemes even when file links are enabled', () => {
+    const openFile = vi.fn();
+    const activate = vi.fn();
+    const handler = createOsc8LinkHandler(activate, undefined, openFile);
+    handler.activate(new MouseEvent('mouseup', { button: 0 }), 'javascript:alert(1)', {} as never);
+    expect(openFile).not.toHaveBeenCalled();
+    expect(activate).not.toHaveBeenCalled();
+  });
+
+  it('without a file opener, file: stays refused', () => {
+    expect(createOsc8LinkHandler(vi.fn()).allowNonHttpProtocols).toBe(false);
+  });
+});
+

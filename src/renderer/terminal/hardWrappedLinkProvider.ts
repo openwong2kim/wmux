@@ -34,7 +34,7 @@
 
 import type { ILink, ILinkProvider, IBufferRange } from '@xterm/xterm';
 import type { AgentSlug } from '../../shared/agentIdentity';
-import { findPathMatches } from './pathLinkProvider';
+import { findPathMatches, locationOf, type PathLocation } from './pathLinkProvider';
 
 /** Agents whose renderer hard-wraps its own text at the right margin. */
 const AGENTS_THAT_HARD_WRAP: ReadonlySet<AgentSlug> = new Set<AgentSlug>(['claude']);
@@ -76,6 +76,8 @@ export interface LinkBuffer {
 export interface HardWrappedLink {
   kind: 'url' | 'path';
   text: string;
+  /** `:line:col` carried by a path link. */
+  location?: PathLocation;
   /** Buffer range, 1-based, end inclusive (xterm's ILink range). */
   range: IBufferRange;
 }
@@ -213,7 +215,7 @@ export function findHardWrappedLinks(
   const bottomEnd = seam(bottom) ? text.length : -1;
 
   const links: HardWrappedLink[] = [];
-  const accept = (kind: HardWrappedLink['kind'], matchText: string, start: number, end: number): void => {
+  const accept = (kind: HardWrappedLink['kind'], matchText: string, start: number, end: number, location?: PathLocation): void => {
     if (start === topFragment || end === bottomEnd) return;
     if (!seamAt.some((s) => start < s && end > s)) return;
     const first = pos[start];
@@ -222,6 +224,7 @@ export function findHardWrappedLinks(
     if (y < first.y || y > last.y) return;
     links.push({
       kind,
+      ...(location && { location }),
       text: matchText,
       range: {
         start: { x: first.x + 1, y: first.y + 1 },
@@ -240,7 +243,7 @@ export function findHardWrappedLinks(
   }
   for (const match of findPathMatches(text, platform)) {
     if (urlSpans.some(([s, e]) => match.start < e && s < match.end)) continue;
-    accept('path', match.text, match.start, match.end);
+    accept('path', match.text, match.start, match.end, locationOf(match));
   }
   return links;
 }
@@ -249,7 +252,7 @@ export interface HardWrappedLinkProviderOptions {
   /** Read per call: the pane's agent can change while the terminal lives. */
   getAgentSlug: () => AgentSlug | undefined;
   activateUrl: (event: MouseEvent, uri: string) => void;
-  openPath: (filePath: string) => void;
+  openPath: (filePath: string, location?: PathLocation) => void;
   platform?: NodeJS.Platform;
 }
 
@@ -287,6 +290,7 @@ export function createHardWrappedLinkProvider(
           // reaches activateUrl's own check. Only a left click opens.
           if (event.button !== 0) return;
           if (link.kind === 'url') options.activateUrl(event, link.text);
+          else if (link.location) options.openPath(link.text, link.location);
           else options.openPath(link.text);
         },
       }));

@@ -44,7 +44,8 @@ import {
   type ReplayMute,
 } from '../terminal/replayMute';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
-import { createPathLinkProvider } from '../terminal/pathLinkProvider';
+import { createPathLinkProvider, type PathLocation } from '../terminal/pathLinkProvider';
+import { openTerminalFileLink } from '../terminal/openTerminalFileLink';
 import { createHardWrappedLinkProvider } from '../terminal/hardWrappedLinkProvider';
 import { resolveNewlineKeyByte, wantsAltEnterNewline, foldAtPromptCarry, noteCodexEndedByPrompt, clearCodexEndedOnSlug } from '../terminal/newlineKeys';
 import { resolveMacLineDeleteByte } from '../terminal/macLineDeleteKey';
@@ -851,7 +852,7 @@ export function showCopyToastText(text: string) {
 // associated app). Shares no DOM with the copy toasts so they can briefly
 // overlap if a user copies-then-clicks in quick succession.
 let openPathToastTimer: ReturnType<typeof setTimeout> | null = null;
-function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed') {
+function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed' | 'preview.error.denied') {
   let el = document.getElementById('wmux-openpath-toast');
   if (!el) {
     el = document.createElement('div');
@@ -859,7 +860,7 @@ function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.op
     el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);color:var(--bg-base);font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
     document.body.appendChild(el);
   }
-  el.style.background = messageKey === 'terminal.openPathBlocked'
+  el.style.background = messageKey !== 'terminal.openPathFailed'
     ? 'var(--accent-yellow)'
     : 'var(--accent-red)';
   el.textContent = t(messageKey);
@@ -1867,18 +1868,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
     };
     // Rebind adopted terminals too, so the callback uses the current pane ref.
-    terminal.options.linkHandler = createOsc8LinkHandler(activateTerminalUrl);
+    terminal.options.linkHandler = createOsc8LinkHandler(
+      activateTerminalUrl,
+      undefined,
+      (_event, uri) => openTerminalPath(uri, undefined, true),
+    );
     // wongtty takes only its built-in WebLinksAddon (the same addon, ported).
     const webLinksAddon = wongttyModule ? (new wongttyModule.WebLinksAddon(activateTerminalUrl) as unknown as WebLinksAddon) : new WebLinksAddon(activateTerminalUrl);
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     // Main-side validation in shell.handler.openPath is the security
     // boundary; the renderer regexes are only a UX filter.
-    const openTerminalPath = (filePath: string): void => {
+    const openWithOs = (filePath: string): void => {
       void window.electronAPI.shell.openPath(filePath).then((result) => {
         // Main-side outcomes:
         //   • ok=true → opened cleanly, nothing to surface
         //   • error='BLOCKED_EXTENSION' → security gate refused (.exe etc.)
+        //   • error='BLOCKED_SENSITIVE' → a credential location the viewer
+        //     refuses too; nothing was opened or revealed
         //   • error=<message> → openPath failed (file gone, no handler);
         //     main already revealed the parent folder via showItemInFolder
         // The toast tells the user *why* their click landed on a folder
@@ -1887,13 +1894,26 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         showOpenPathToast(
           result.error === 'BLOCKED_EXTENSION'
             ? 'terminal.openPathBlocked'
-            : 'terminal.openPathFailed',
+            : result.error === 'BLOCKED_SENSITIVE'
+              ? 'preview.error.denied'
+              : 'terminal.openPathFailed',
         );
       }).catch((err: unknown) => {
         // IPC-level rejection (validation throw: non-string, NUL byte,
         // not absolute, length cap). These are developer-visible bugs
         // rather than user-actionable failures — log only.
         console.warn('[useTerminal] openPath failed:', err);
+      });
+    };
+    // Path and `file:` clicks open in a wmux tab by default (setting
+    // terminalOpenFileLinksIn); the OS opener stays the fallback.
+    const openTerminalPath = (filePath: string, location?: PathLocation, viewerOnly = false): void => {
+      void openTerminalFileLink(filePath, location, ptyIdRef.current || undefined, {
+        openWithOs,
+        onFailure: () => showOpenPathToast('terminal.openPathFailed'),
+        viewerOnly,
+      }).catch((err: unknown) => {
+        console.warn('[useTerminal] open file link failed:', err);
       });
     };
     // Claude Code wraps long lines itself (cursor move + indent), so a URL or

@@ -581,6 +581,8 @@ export const IPC = {
   // Settings: install the pre-commit secret check automatically (default on)
   GIT_SECRET_HOOK_GET: 'gitShip:secretHookGet',
   GIT_SECRET_HOOK_SET: 'gitShip:secretHookSet',
+  CREDENTIAL_ENV_GET: 'gitShip:credentialEnvGet',
+  CREDENTIAL_ENV_SET: 'gitShip:credentialEnvSet',
   // Git page hand-off: an issue / PR to an agent pane, or to a new worktree
   GIT_HANDOFF_SEND: 'gitHandoff:send',
   GIT_HANDOFF_START_WORKTREE: 'gitHandoff:startWorktree',

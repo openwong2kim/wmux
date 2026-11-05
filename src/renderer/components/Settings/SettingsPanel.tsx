@@ -1,6 +1,7 @@
 import { TerminalEngineSetting } from './TerminalEngineSetting';
 import { QuickCommandsSection } from './QuickCommandsSection';
 import { SecretHookSetting } from './SecretHookSetting';
+import { CredentialEnvSetting } from './CredentialEnvSetting';
 import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import type { LabsStatus } from '../../../shared/labsSettings';
 import { BROWSER_BACKENDS, isBrowserBackend } from '../../../shared/browserBackend';
@@ -1708,6 +1709,7 @@ function TabGeneral() {
           <Toggle checked={secretGuardEnabled} onChange={setSecretGuardEnabled} label={t('settings.secretGuard')} />
         </SettingRow>
         <SecretHookSetting />
+        <CredentialEnvSetting />
       </SettingsSection>
 
       <SettingsSection title={t('settings.sectionSetupReset')}>
@@ -1764,6 +1766,8 @@ function TabTerminal() {
   const setTerminalFontSize = useStore((s) => s.setTerminalFontSize);
   const terminalCursorStyle = useStore((s) => s.terminalCursorStyle);
   const setTerminalCursorStyle = useStore((s) => s.setTerminalCursorStyle);
+  const terminalOpenFileLinksIn = useStore((s) => s.terminalOpenFileLinksIn);
+  const setTerminalOpenFileLinksIn = useStore((s) => s.setTerminalOpenFileLinksIn);
   const defaultShell = useStore((s) => s.defaultShell);
   const setDefaultShell = useStore((s) => s.setDefaultShell);
   const scrollbackLines = useStore((s) => s.scrollbackLines);
@@ -1908,6 +1912,17 @@ function TabTerminal() {
             checked={splitInheritsCwd}
             onChange={setSplitInheritsCwd}
             label={t('settings.splitInheritsCwd')}
+          />
+        </SettingRow>
+        <SettingRow id="openfilelinksin" label={t('settings.openFileLinksIn')} description={t('settings.openFileLinksInDesc')}>
+          <SettingSelect
+            label={t('settings.openFileLinksIn')}
+            value={terminalOpenFileLinksIn}
+            onChange={(v) => setTerminalOpenFileLinksIn(v === 'os' ? 'os' : 'wmux')}
+            options={[
+              { value: 'wmux', label: t('settings.openFileLinksInWmux') },
+              { value: 'os', label: t('settings.openFileLinksInOs') },
+            ]}
           />
         </SettingRow>
         <SettingRow id="closeonexit" label={t('settings.closeTabOnShellExit')} description={t('settings.closeTabOnShellExitDesc')}>

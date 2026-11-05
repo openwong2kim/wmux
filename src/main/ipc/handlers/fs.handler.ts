@@ -55,8 +55,30 @@ export function homeRoots(): string[] {
   return roots[0] === roots[1] ? [roots[0]] : roots;
 }
 
+const WSL_SHARE_PREFIX = /^\/\/(?:wsl\.localhost|wsl\$)\/[^/]+(?=\/|$)/;
+
+/**
+ * A WSL share (`\\wsl$\<distro>\...`) lives in the Linux filesystem, so the
+ * Windows home comparison never sees it. The same blocked names are matched as
+ * whole path segments anywhere after the distro segment.
+ */
+function isSensitiveWslPath(normalized: string): boolean {
+  const m = WSL_SHARE_PREFIX.exec(normalized);
+  if (!m) return false;
+  const rest = '/' + normalized.slice(m[0].length).split('/').filter(Boolean).join('/');
+  for (const dir of BLOCKED_DIRS) {
+    const d = '/' + dir.toLowerCase();
+    if (rest.endsWith(d) || rest.includes(d + '/')) return true;
+  }
+  for (const file of BLOCKED_FILES) {
+    if (rest.endsWith('/' + file.toLowerCase())) return true;
+  }
+  return false;
+}
+
 export function isSensitivePath(resolvedPath: string): boolean {
   const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
+  if (isSensitiveWslPath(normalized)) return true;
 
   for (const homeNorm of homeRoots()) {
     // Block directories under home
@@ -95,6 +117,8 @@ export async function resolveAccessiblePath(inputPath: string): Promise<string |
 
   // Local folders only, refused before realpath or any other filesystem call.
   if (isNonLocalPath(inputPath)) return null;
+  // path.resolve mangles a WSL share spelling on POSIX hosts; check it as given.
+  if (isSensitivePath(inputPath)) return null;
   const resolved = path.resolve(inputPath);
   if (isSensitivePath(resolved)) return null;
 

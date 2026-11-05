@@ -8,6 +8,9 @@
  *   • openPath returning an error string triggers showItemInFolder fallback
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // ── Module mocks (hoisted; cannot reference outer test variables) ──────────
 
@@ -185,6 +188,40 @@ describe('shell.handler — SHELL_OPEN_PATH', () => {
       const result = await handler(fakeEvent, input);
       expect(openPath).toHaveBeenCalledWith(input);
       expect(result).toEqual({ ok: true, error: undefined });
+    });
+
+    it('refuses a sensitive path without opening or revealing it', async () => {
+      const handler = getHandler(IPC.SHELL_OPEN_PATH);
+      const input = path.join(os.homedir(), '.ssh', 'id_rsa');
+      const result = await handler(fakeEvent, input);
+      expect(openPath).not.toHaveBeenCalled();
+      expect(showItemInFolder).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+    });
+
+    it('refuses a symlink whose real path is sensitive', async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openpath-home-'));
+      try {
+        vi.spyOn(os, 'homedir').mockReturnValue(home);
+        fs.mkdirSync(path.join(home, '.ssh'));
+        fs.writeFileSync(path.join(home, '.ssh', 'id_rsa'), 'secret');
+        const link = path.join(home, 'innocent.txt');
+        fs.symlinkSync(path.join(home, '.ssh', 'id_rsa'), link);
+        const result = await getHandler(IPC.SHELL_OPEN_PATH)(fakeEvent, link);
+        expect(openPath).not.toHaveBeenCalled();
+        expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
+      } finally {
+        vi.restoreAllMocks();
+        fs.rmSync(home, { recursive: true, force: true });
+      }
+    });
+
+    // A share path is absolute only on Windows.
+    it.runIf(process.platform === 'win32')('refuses a WSL share path into ~/.ssh', async () => {
+      const handler = getHandler(IPC.SHELL_OPEN_PATH);
+      const result = await handler(fakeEvent, '\\\\wsl$\\Ubuntu\\home\\me\\.ssh\\id_rsa');
+      expect(openPath).not.toHaveBeenCalled();
+      expect(result).toEqual({ ok: false, error: 'BLOCKED_SENSITIVE' });
     });
 
     it('allows extension-less paths (folders)', async () => {

@@ -14,6 +14,7 @@ import { isScreenReaderOn } from '../../screenReaderService';
 import { SCREEN_READER_IPC } from '../../../shared/screenReader';
 import { readDaemonPid } from '../../updater/installTeardown';
 import { getWmuxDir } from '../../../daemon/config';
+import { isSensitivePath } from './fs.handler';
 
 // Hard cap on the path string the renderer can send. Long enough for
 // Windows long-path (\\?\ prefix + ~32k) callers but small enough that a
@@ -92,6 +93,13 @@ export function registerShellHandlers(): () => void {
     const normalized = path.normalize(rawPath);
     if (!path.isAbsolute(normalized)) {
       throw new Error('path must be absolute');
+    }
+    // A credential location the in-app viewer refuses is refused here too,
+    // without revealing its folder: a click must not hand it to the OS. Its
+    // real path is checked as well, so a link into ~/.ssh is refused too.
+    const real = await fs.realpath(normalized).catch(() => normalized);
+    if (isSensitivePath(normalized) || isSensitivePath(real)) {
+      return { ok: false, error: 'BLOCKED_SENSITIVE' };
     }
     // Block executable extensions — refuse the open and reveal the folder
     // so the user still gets useful feedback without launching code from

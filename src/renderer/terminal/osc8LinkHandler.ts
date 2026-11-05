@@ -53,17 +53,27 @@ export function isLoopbackHref(href: string): boolean {
  * confirmation. Its default window.open() starts with about:blank, which
  * Electron correctly denies before the destination can be assigned. Dispatch
  * the confirmed URL through the same route as plain-text terminal links.
+ *
+ * `openFile` opts in to `file:` links: they open a read-only tab in wmux, so
+ * there is no confirmation. Without it only http(s) links exist at all.
  */
 export function createOsc8LinkHandler(
   activate: (event: MouseEvent, uri: string) => void,
   isAllowed: (href: string) => boolean = () => true,
+  openFile?: (event: MouseEvent, uri: string) => void,
 ): ILinkHandler {
   return {
-    allowNonHttpProtocols: false,
+    allowNonHttpProtocols: openFile !== undefined,
     activate(event, uri) {
       // #2901: xterm activates on mouseup of any button. Check before the
       // dialog, so a right or middle click does not raise it either.
       if (event.button !== 0) return;
+      if (openFile && /^file:/i.test(uri)) {
+        // With non-http protocols allowed, xterm lists every scheme: the
+        // file branch is the only non-web one that does anything.
+        openFile(event, uri);
+        return;
+      }
       // The dialog and the activation use the same normalized string, so what
       // the user approves is exactly what opens.
       const href = normalizeOsc8Uri(uri);

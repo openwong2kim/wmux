@@ -31,12 +31,16 @@
  * read from the 15 s `pty.list` poll's store maps, which can predate it.
  */
 import type { ForegroundGoneProbe } from '../../shared/terminal/shellPromptModeReset';
+import { validWslTarget } from '../../shared/wslTarget';
+import { isWslDistroSpawnArgs, isWslShellPath } from '../../shared/wslDistro';
 
 /** ProcessMonitor's 15 s death-check cadence plus one poll of margin. */
 export const AGENT_DEATH_LAG_MS = 20_000;
 
 type ListedSession = {
   id: string;
+  shell?: string;
+  args?: string[];
   commandRunning?: boolean;
   agentProcessAlive?: boolean;
   liveAgent?: string;
@@ -77,4 +81,26 @@ export function paneForegroundProbe(
     if (!agentAlive) return true;
     return now() - promptAt >= AGENT_DEATH_LAG_MS ? false : undefined;
   };
+}
+
+/**
+ * Whether a pane's shell runs inside WSL, read from its session: a WSL target
+ * or a `wsl.exe` shell path. The tab's `shell` field is a display label
+ * ("Terminal" for Ctrl+T and palette tabs), so it cannot answer this. `distro`
+ * is set only when the session names one (a `wslTarget`, or `wsl.exe -d <name>`).
+ * A failed or empty session list reads as not WSL.
+ */
+export async function paneWslSession(
+  ptyId: string,
+  api: Pick<PaneForegroundApi, 'list'>,
+): Promise<{ wsl: boolean; distro?: string }> {
+  try {
+    const session = (await api.list()).find((x) => x.id === ptyId);
+    const target = session?.wslTarget;
+    if (validWslTarget(target)) return { wsl: true, distro: target.distribution };
+    if (isWslDistroSpawnArgs(session?.shell, session?.args)) return { wsl: true, distro: session.args[1] };
+    return { wsl: isWslShellPath(session?.shell) };
+  } catch {
+    return { wsl: false };
+  }
 }
