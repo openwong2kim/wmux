@@ -201,6 +201,8 @@ function webviewDriver(target: CdpTargetInfo, workspaceId: string, deps: Browser
         result = await deps.invoke('browser.emulate', {...scope,deviceMetrics:{
           width,height,deviceScaleFactor:1,mobile:true,hasTouch:true,screenWidth:width,screenHeight:height,
           ...(scale !== 1 ? {scale} : {}),
+          // Marks the preset as the stream's: it adopts no other.
+          ...(fill ? {fill:true} : {}),
         }});
         ok(result);
       }

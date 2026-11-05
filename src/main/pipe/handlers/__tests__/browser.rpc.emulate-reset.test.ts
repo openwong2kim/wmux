@@ -155,14 +155,16 @@ describe('browser.emulate device reset (packaged CDP lane)', () => {
   const SCALE = 641 / 390;
   const drawnLarger = async (router: RpcRouter, hasTouch: boolean) => {
     probeValues = [{ w: 641, h: 700, dpr: 1, touch: 0 }];
-    await call(router, { deviceMetrics: { width: 390, height: 426, deviceScaleFactor: 1, mobile: true, hasTouch, scale: SCALE } });
+    await call(router, { deviceMetrics: { width: 390, height: 426, deviceScaleFactor: 1, mobile: true, hasTouch, scale: SCALE, fill: true } });
   };
 
   it('a phone drawn larger (scale): sent and recorded; the reset takes it off', async () => {
     const router = register();
     await drawnLarger(router, true);
     expect(sent.find((x) => x.method === 'Emulation.setDeviceMetricsOverride')?.params).toMatchObject({ width: 390, height: 426, scale: SCALE });
-    expect(activeDevicePreset(wc)).toMatchObject({ mobile: true, scale: SCALE });
+    expect(activeDevicePreset(wc)).toMatchObject({ mobile: true, scale: SCALE, fill: true });
+    // The marker is not sent to the page.
+    expect(sent.find((x) => x.method === 'Emulation.setDeviceMetricsOverride')?.params).not.toHaveProperty('fill');
     sent.length = 0;
     await call(router, { deviceReset: true });
     expect(commands()).toContain('Emulation.clearDeviceMetricsOverride');
@@ -182,6 +184,7 @@ describe('browser.emulate device reset (packaged CDP lane)', () => {
     expect(override).not.toHaveProperty('scale');
     expect(activeDevicePreset(wc)).not.toBe(before);
     expect(activeDevicePreset(wc)).not.toHaveProperty('scale');
+    expect(activeDevicePreset(wc)).not.toHaveProperty('fill');
     await call(router, { deviceReset: true });
   });
 

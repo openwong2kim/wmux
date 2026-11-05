@@ -3745,8 +3745,9 @@ phone layout as well.
   the phone's 390 CSS px and is drawn larger to fill the pane, so frames
   stay the size of the pane with the page across their whole width, and
   the Mac's pane shows the page enlarged the same way while a phone
-  watches. `geometry` is in the page's CSS pixels (`width` 390, `height`
-  the pane's height over the same factor), not the frame's pixels, so taps
+  watches. `geometry` is in the page's CSS pixels (`width` 390, or the
+  pane's width when it is narrower; `height` the pane's height over the
+  same factor), not the frame's pixels, so taps
   and scrolls map as on any frame; `scale` stays the pinch zoom only. A
   pane resized meanwhile is fitted again, without a reload, within about
   2 s; frames in between may leave `geometry` out. A pane too short to show

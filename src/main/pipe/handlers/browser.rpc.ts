@@ -86,6 +86,8 @@ const activePreset = new WeakMap<
     screenHeight?: number;
     /** The view drawn this many times larger than the layout (CDP `scale`): a phone layout filling a wider pane. */
     scale?: number;
+    /** Set by the phone stream's own fill (PhoneBrowser.ts `viewport` with `fill`): the stream adopts only a preset carrying it. */
+    fill?: true;
   }
 >();
 
@@ -881,7 +883,7 @@ export async function resetDevicePreset(wc: WebContents): Promise<string[]> {
  * object for each preset, and none once one is reset. The phone browser
  * stream reverts its own mobile preset only while this is still the one it set.
  */
-export function activeDevicePreset(wc: WebContents): { readonly mobile: boolean; readonly scale?: number } | undefined {
+export function activeDevicePreset(wc: WebContents): { readonly mobile: boolean; readonly scale?: number; readonly fill?: true } | undefined {
   return activePreset.get(wc);
 }
 
@@ -4507,9 +4509,10 @@ export function registerBrowserRpc(
     });
     // A size of the caller's own replaces a phone drawn larger to fill the
     // pane: the preset loses its scale, and is no longer the one that drew it.
-    if (preset?.scale !== undefined) {
+    if (preset?.scale !== undefined || preset?.fill) {
       const rest = { ...preset };
       delete rest.scale;
+      delete rest.fill;
       activePreset.set(wc, rest);
     }
     return { ok: true, width, height };
@@ -4617,7 +4620,7 @@ export function registerBrowserRpc(
     if (params['deviceMetrics'] && typeof params['deviceMetrics'] === 'object') {
       const dm = params['deviceMetrics'] as {
         width: number; height: number; deviceScaleFactor?: number; mobile?: boolean;
-        hasTouch?: boolean; screenWidth?: number; screenHeight?: number; scale?: number;
+        hasTouch?: boolean; screenWidth?: number; screenHeight?: number; scale?: number; fill?: boolean;
       };
       const scale = typeof dm.scale === 'number' && Number.isFinite(dm.scale) && dm.scale > 0 && dm.scale !== 1 ? dm.scale : undefined;
       // Remember what the preset is about to replace so `deviceReset` can put
@@ -4678,6 +4681,7 @@ export function registerBrowserRpc(
           screenHeight: dm.screenHeight,
         }),
         ...(scale !== undefined && { scale }),
+        ...(dm.fill === true && { fill: true as const }),
       });
       const label = typeof params['deviceLabel'] === 'string' ? params['deviceLabel'] : `${dm.width}x${dm.height}`;
       applied.push(`device=${label}`);

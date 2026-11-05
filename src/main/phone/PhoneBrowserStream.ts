@@ -132,7 +132,7 @@ export interface PhoneStreamBuiltinDeps {
    */
   viewport(surfaceId: string, workspaceId: string, mode: 'mobile' | 'desktop', refit?: boolean): Promise<void>;
   /** The device preset browser.emulate last set on the guest, while it holds (browser.rpc.ts activeDevicePreset); `scale`: drawn that much larger. */
-  preset(contents: WebContents): { readonly mobile: boolean; readonly scale?: number } | undefined;
+  preset(contents: WebContents): { readonly mobile: boolean; readonly scale?: number; readonly fill?: true } | undefined;
   /** Takes the guest's device preset off, as the `desktop` viewport action does, on any page and while the user holds the pane (browser.rpc.ts resetDevicePreset). */
   reset(contents: WebContents): Promise<void>;
 }
@@ -1017,6 +1017,16 @@ class BuiltinTabStream extends TabStream {
     return this.builtin.targets().some((t) => t.surfaceId === this.surfaceId && t.webContentsId === id && t.workspaceId === this.workspaceId);
   }
 
+  /**
+   * The pane's preset right after the stream's viewport action, when it is
+   * that action's: an agent's emulation landing while the action awaits its
+   * probe is the agent's, never adopted (and never reverted) by the stream.
+   */
+  private fillPreset(): object | null {
+    const preset = this.builtin.preset(this.wc);
+    return preset?.fill ? preset : null;
+  }
+
   /** The stream's phone fills the pane: drawn this much larger than its 390 CSS px. */
   protected viewScale(): number {
     return presetViewScale(this.builtin.preset(this.wc));
@@ -1048,7 +1058,7 @@ class BuiltinTabStream extends TabStream {
   protected async applyMobile(): Promise<void> {
     if (!this.builtin.preset(this.wc)?.mobile) {
       await this.builtin.viewport(this.surfaceId, this.workspaceId, 'mobile');
-      this.ownPreset = this.builtin.preset(this.wc) ?? null;
+      this.ownPreset = this.fillPreset();
     }
     await this.readBounds();
   }
@@ -1132,7 +1142,7 @@ class BuiltinTabStream extends TabStream {
     const own = this.ownPreset;
     if (this.stopped || !own || this.wc.isDestroyed() || this.builtin.preset(this.wc) !== own) return;
     await this.builtin.viewport(this.surfaceId, this.workspaceId, 'mobile', true);
-    this.ownPreset = this.builtin.preset(this.wc) ?? null;
+    this.ownPreset = this.fillPreset();
     await this.readBounds();
   }
 

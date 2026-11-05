@@ -42,7 +42,7 @@ describe('workspace browser preview boundary', () => {
     await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'mobile', fill: true }, deps);
     const scale = 1000 / 390;
     expect(deps.invoke.mock.calls.map(([method]) => method)).toEqual(['browser.emulate', 'browser.emulate']);
-    expect(deps.invoke).toHaveBeenLastCalledWith('browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceMetrics: { width: 390, height: Math.floor(1000 / scale), deviceScaleFactor: 1, mobile: true, hasTouch: true, screenWidth: 390, screenHeight: Math.floor(1000 / scale), scale } });
+    expect(deps.invoke).toHaveBeenLastCalledWith('browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceMetrics: { width: 390, height: Math.floor(1000 / scale), deviceScaleFactor: 1, mobile: true, hasTouch: true, screenWidth: 390, screenHeight: Math.floor(1000 / scale), scale, fill: true } });
     deps.invoke.mockClear();
     deps.clearViewport.mockClear();
     await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'mobile', fill: true, refit: true }, deps);
@@ -59,7 +59,7 @@ describe('workspace browser preview boundary', () => {
     for (const [pane, width] of [[{width:1000,height:728}, 390], [{width:380,height:1000}, 380]] as const) {
       const deps = {...fixture(), nativeBounds: async () => pane};
       await handlePhoneBrowser('browser.viewport', { workspaceId: 'ws-1', surfaceId: 'own', mode: 'mobile', fill: true }, deps);
-      expect(deps.invoke).toHaveBeenLastCalledWith('browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceMetrics: { width, height: pane.height, deviceScaleFactor: 1, mobile: true, hasTouch: true, screenWidth: width, screenHeight: pane.height } });
+      expect(deps.invoke).toHaveBeenLastCalledWith('browser.emulate', { workspaceId: 'ws-1', surfaceId: 'own', deviceMetrics: { width, height: pane.height, deviceScaleFactor: 1, mobile: true, hasTouch: true, screenWidth: width, screenHeight: pane.height, fill: true } });
     }
   });
   it.each(['javascript:alert(1)', 'file:///private/file', 'https://user:password@example.com'])('refuses non-web or credential-bearing navigation %s', async url => {
