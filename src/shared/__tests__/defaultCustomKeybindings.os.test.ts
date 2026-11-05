@@ -12,10 +12,23 @@ const pristineF7 = (): CustomKeybinding => ({ ...buildDefaultCustomKeybindings(u
 describe('buildDefaultCustomKeybindings', () => {
   it('seeds Ctrl+7 on macOS (bare F7 = media keys, Ctrl+F7 = OS ^F7 shortcut)', () => {
     const kbs = buildDefaultCustomKeybindings('darwin');
-    expect(kbs).toHaveLength(1);
+    expect(kbs).toHaveLength(2);
     expect(kbs[0].id).toBe('kb-default-f7');
     expect(kbs[0].key).toBe('Ctrl+7');
     expect(kbs[0].command).toBe('claude --dangerously-skip-permissions');
+  });
+
+  it('seeds the resume twin on the next key: Ctrl+8 on macOS, F8 elsewhere', () => {
+    const mac = buildDefaultCustomKeybindings('darwin')[1];
+    expect(mac.id).toBe('kb-default-f8');
+    expect(mac.key).toBe('Ctrl+8');
+    expect(mac.command).toBe('claude --dangerously-skip-permissions --resume');
+    expect(mac.sendEnter).toBe(true);
+    for (const platform of ['win32', 'linux', undefined]) {
+      const kb = buildDefaultCustomKeybindings(platform)[1];
+      expect(kb.id).toBe('kb-default-f8');
+      expect(kb.key).toBe('F8');
+    }
   });
 
   it('keeps bare F7 on Windows/Linux', () => {

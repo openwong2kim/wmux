@@ -5,7 +5,7 @@ import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type ArchivedWorkspace, type Pane, type PaneLeaf, type SessionData, type StashedPane, type SurfaceHandoff, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeStarPromptState } from '../../../shared/starPrompt';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
-import { overridesFromDisabledCombos, sanitizeShortcutOverrides } from '../../../shared/keymap';
+import { builtinOwning, effectiveBindings, overridesFromDisabledCombos, sanitizeShortcutOverrides } from '../../../shared/keymap';
 import { normalizeWorkspaceColor, type WorkspaceColorId } from '../../../shared/workspaceColors';
 import type { A2aRemoteSpawnedBy } from '../../../shared/a2aSpawn';
 import { parseRemoteSpawnedBy, type RemoteSpawnedWorkspace } from '../../utils/remoteSpawnedBy';
@@ -1888,6 +1888,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.fleetLayout === 'list' || data.fleetLayout === 'board') {
         state.fleetLayout = data.fleetLayout;
       }
+      // Whitelisted like everything else a hand-editable, cross-version
+      // session file carries: only configurable actions (they have a Settings
+      // row to undo the change from) and combos the matcher can press.
+      if (data.shortcutOverrides !== undefined) {
+        state.shortcutOverrides = sanitizeShortcutOverrides(data.shortcutOverrides);
+      } else if (Array.isArray(data.disabledShortcuts)) {
+        // #1152 sessions stored switched-off built-ins as a combo list.
+        state.shortcutOverrides = overridesFromDisabledCombos(data.disabledShortcuts);
+      }
       if (data.customKeybindings) {
         // Merge saved keybindings with current built-in defaults (mirrors the
         // layoutTemplates merge below). Built-in defaults (id 'kb-default-*')
@@ -1912,19 +1921,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         const savedKeys = new Set(migrated.map((k) => k.key));
         // 플랫폼별 기본값으로 백필 — Mac은 Ctrl+7, 그 외 F7. 저장된 기본값은
         // id/key 매칭에 걸려 아래 filter에서 제외되므로 중복 추가되지 않는다.
+        // A key the user moved a built-in onto is theirs too: built-ins are
+        // dispatched first, so a default there would never fire (the
+        // overrides are loaded above).
+        const builtins = effectiveBindings(platform === 'darwin' || platform === 'linux' ? platform : 'win32', state.shortcutOverrides ?? {});
+        const prefixKey = data.prefixConfig?.key ?? DEFAULT_PREFIX_CONFIG.key;
         const missingDefaults = buildDefaultCustomKeybindings(platform).filter(
-          (k) => !savedIds.has(k.id) && !savedKeys.has(k.key),
+          (k) => !savedIds.has(k.id) && !savedKeys.has(k.key) && builtinOwning(k.key, builtins, prefixKey) === null,
         );
         state.customKeybindings = [...migrated, ...missingDefaults.map((k) => ({ ...k }))];
-      }
-      // Whitelisted like everything else a hand-editable, cross-version
-      // session file carries: only configurable actions (they have a Settings
-      // row to undo the change from) and combos the matcher can press.
-      if (data.shortcutOverrides !== undefined) {
-        state.shortcutOverrides = sanitizeShortcutOverrides(data.shortcutOverrides);
-      } else if (Array.isArray(data.disabledShortcuts)) {
-        // #1152 sessions stored switched-off built-ins as a combo list.
-        state.shortcutOverrides = overridesFromDisabledCombos(data.disabledShortcuts);
       }
       if (data.autoUpdateEnabled != null) {
         state.autoUpdateEnabled = data.autoUpdateEnabled;
