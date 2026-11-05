@@ -1695,6 +1695,9 @@ leaves the page.
   side; Owns (optional); then a read-only **Works in** line, a muted label
   over `--text-sub`: the seat's own worktree of the company folder on a new
   branch when that folder is a git repository, else the company folder. A
+  repository that can't have a seat worktree (a bare one, one with
+  submodules, or one that uses Git LFS) names the folder itself, with the
+  reason (`…/repo itself: a bare repository can't have a seat worktree`). A
   seat that would share a folder that is not a repository with another
   staff agent gets a note saying so and cannot be added. A refusal keeps the
   form and says why, as the other-PC dialog does; at the pane cap the
@@ -1716,6 +1719,11 @@ leaves the page.
   each agent its seat** checkbox, on by default, and **Make company** the
   one primary. A bad or repeated seat name, or two agent seats besides the
   CEO with no folder, says why under the table and disables the primary.
+  A folder whose repository can't have seat worktrees (bare, with
+  submodules, or using Git LFS) gets one muted note under Name and Folder,
+  once an agent seat besides the CEO is there: the seats work in the folder
+  itself, and why; with two such seats it adds that two agents can't share
+  it and to choose another folder.
   Making it opens a new workspace with the CEO's pane on the left at half
   the width and the other seats stacked top to bottom on the right, each
   pane named after its seat (a name another pane answers to gets `-2`,

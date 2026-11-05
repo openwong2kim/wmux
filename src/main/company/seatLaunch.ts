@@ -19,7 +19,7 @@ import { PANE_METADATA_LABEL_MAX } from '../../shared/types';
 import { ensureSecretHook } from '../git/secretHookHost';
 import { metadataStore } from '../metadata/MetadataStore';
 import { buildInitialCommand } from '../worktask/FanOutService';
-import { buildTaskSlug, TaskWorktreeManager } from '../worktask/TaskWorktreeManager';
+import { buildTaskSlug, TaskWorktreeManager, type PreflightRefusal } from '../worktask/TaskWorktreeManager';
 
 // Not dots alone: `.` or `..` would name the briefs root or the data folder.
 const WORKSPACE_ID_RE = /^(?!\.+$)[A-Za-z0-9._-]{1,80}$/;
@@ -108,6 +108,23 @@ export function seatWorktrees(): TaskWorktreeManager {
 }
 
 const isText = (v: unknown, max: number): v is string => typeof v === 'string' && v.length <= max;
+
+/** Whether seats in a folder get their own worktrees, or why not (#3079). */
+export type SeatWorktreeCheck =
+  | { ok: true }
+  | { ok: false; reason: PreflightRefusal }
+  | { ok: false; error: string };
+
+/**
+ * What "Add a seat on this PC…" and the New company dialog tell before a
+ * seat is made: the same repository checks the seat's preflight runs, read
+ * only (TaskWorktreeManager.checkRepo), so asking makes nothing.
+ */
+export async function seatWorktreeCheck(folder: unknown, deps: Pick<SeatLaunchDeps, 'worktrees'> = {}): Promise<SeatWorktreeCheck> {
+  if (!(isText(folder, FOLDER_MAX) && path.isAbsolute(folder))) return { ok: false, error: 'bad folder' };
+  const repo = await (deps.worktrees ?? seatWorktrees()).checkRepo(folder);
+  return repo.ok ? { ok: true } : { ok: false, reason: repo.reason };
+}
 
 function labelsInUse(): string[] {
   return metadataStore.snapshot().entries.flatMap((e) => (e.metadata.label ? [e.metadata.label] : []));

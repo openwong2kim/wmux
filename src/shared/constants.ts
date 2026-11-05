@@ -497,6 +497,8 @@ export const IPC = {
   COMPANY_SEAT_LAUNCHES: 'company:seatLaunches',
   // "Add a seat on this PC…": one seat's worktree, brief file and launch line.
   COMPANY_HIRE_SEAT: 'company:hireSeat',
+  // Whether a company folder's seats get their own worktrees, or why not (reads only).
+  COMPANY_WORKTREE_CHECK: 'company:worktreeCheck',
   // Moa's track record (src/shared/trackRecord.ts): the weekly retro card and
   // its schedule. The counts themselves are main's and Moa's, not the renderer's.
   TRACK_RECORD_RETRO_GET: 'trackRecord:retro:get',

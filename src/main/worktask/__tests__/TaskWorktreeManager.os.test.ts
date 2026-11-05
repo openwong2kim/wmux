@@ -174,6 +174,7 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toMatch(/not a git repository/);
+    expect(res.reason).toBe('not-repo');
   });
 
   it('bare repo 거부', async () => {
@@ -190,6 +191,7 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toMatch(/bare/);
+    expect(res.reason).toBe('bare');
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
@@ -202,6 +204,7 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toMatch(/submodule/);
+    expect(res.reason).toBe('submodules');
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
@@ -214,6 +217,25 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toMatch(/LFS/);
+    expect(res.reason).toBe('lfs');
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  // #3079 — what a dialog asks before a seat is made: the same checks, and nothing made.
+  it('checkRepo answers the same reasons and makes nothing', async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
+    const worktreesRoot = path.join(home, 'check-only-root');
+    const { TaskWorktreeManager } = await loadModule();
+    const mgr = new TaskWorktreeManager({ runGit: healthyRepoGit(repoRoot), worktreesRoot });
+    expect(await mgr.checkRepo(repoRoot)).toEqual({ ok: true, repoRoot });
+    fs.writeFileSync(path.join(repoRoot, '.gitmodules'), '[submodule "x"]\n');
+    expect(await mgr.checkRepo(repoRoot)).toMatchObject({ ok: false, reason: 'submodules' });
+    expect(fs.existsSync(worktreesRoot)).toBe(false);
+    // preflight runs the same check first, then makes the root.
+    expect(await mgr.preflight(repoRoot, 'T', 'wtask-x-1')).toMatchObject({ ok: false, reason: 'submodules' });
+    fs.rmSync(path.join(repoRoot, '.gitmodules'));
+    expect((await mgr.preflight(repoRoot, 'T', 'wtask-x-1')).ok).toBe(true);
+    expect(fs.existsSync(worktreesRoot)).toBe(true);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
@@ -232,6 +254,7 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.error).toMatch(/exceeds 260/);
+    expect(res.reason).toBe('git-error');
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 });
