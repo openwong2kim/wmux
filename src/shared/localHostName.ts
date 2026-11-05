@@ -5,8 +5,9 @@
 
 const ARG_PREFIX = '--wmux-host-name=';
 
-// A DNS host name: dot-separated labels of letters, digits and hyphens.
-const HOST_NAME = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,62})(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,62}))*$/;
+// A machine host name: dot-separated labels of letters, digits, hyphens and
+// underscores (Linux allows `dev_box`, and a URL keeps it as is).
+const HOST_NAME = /^[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62})(?:\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,62}))*$/;
 
 /** The renderer arguments (`webPreferences.additionalArguments`) carrying the host name; none when it is not a plain host name. */
 export function localHostNameArgs(hostName: string): string[] {

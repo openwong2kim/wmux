@@ -5,6 +5,7 @@ describe('localHostName', () => {
   it('round-trips a host name through the renderer arguments', () => {
     const argv = ['electron', '--other=1', ...localHostNameArgs('miniwongui-Macmini.local')];
     expect(localHostNameFromArgv(argv)).toBe('miniwongui-Macmini.local');
+    expect(localHostNameFromArgv(localHostNameArgs('dev_box'))).toBe('dev_box');
   });
 
   it('passes nothing that is not a plain host name', () => {
