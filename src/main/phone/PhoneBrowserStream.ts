@@ -105,6 +105,12 @@ export interface PhoneStreamTabView {
   readonly docUrls: ReadonlySet<string>;
   /** The latest frame's geometry, forwarded or not; null while frames carry none. */
   readonly geometry: PhoneStreamGeometry | null;
+  /**
+   * The stream started before the tab's first page committed (`url` is null
+   * meanwhile): no input until it does, since the tab is listed by the URL it
+   * is loading while its document is still the initial empty one.
+   */
+  readonly firstPagePending?: boolean;
 }
 
 /** Main's dedicated Chrome tabs, as the stream needs them (PhoneBrowserChrome deps). */
@@ -282,6 +288,7 @@ abstract class TabStream implements PhoneStreamTabView {
   url: string | null = null;
   docUrls = new Set<string>();
   geometry: PhoneStreamGeometry | null = null;
+  firstPagePending = false;
   abstract readonly backend: PhoneBrowserBackend;
   protected stopped = false;
   protected navigating = false;
@@ -403,6 +410,7 @@ abstract class TabStream implements PhoneStreamTabView {
   /** A committed main-frame URL: same-document, or a new document. */
   protected commit(raw: unknown, newDocument: boolean): void {
     if (this.stopped) return;
+    this.firstPagePending = false;
     const url = httpURL(raw);
     if (newDocument || !url) this.docUrls = new Set();
     if (!url) {
@@ -814,6 +822,7 @@ class ChromeTabStream extends TabStream {
         // page commits (frameNavigated), as after a commit that is not http(s).
         this.url = null;
         this.docUrls = new Set();
+        this.firstPagePending = true;
       } else {
         throw new Error('Only HTTP browser previews are supported');
       }

@@ -173,7 +173,7 @@ describe('phone browser stream (main)', () => {
     pageURL = ':';
     expect(await start()).toMatchObject({ backend: 'chrome' });
     const s = sessions[0];
-    expect(streams.tab('chrome-a', 'ws-1')?.url).toBeNull();
+    expect(streams.tab('chrome-a', 'ws-1')).toMatchObject({ url: null, firstPagePending: true });
     s.frame(1);
     await vi.advanceTimersByTimeAsync(200);
     expect(frames()).toHaveLength(0);
@@ -184,6 +184,7 @@ describe('phone browser stream (main)', () => {
     expect(pushes.filter((p) => p.kind === 'url')).toEqual([{ streamId: 'st-chrome-a', kind: 'url', pageURL: 'https://a.example.com/start' }]);
     expect(frames()).toHaveLength(1);
     expect(frames()[0].pageURL).toBe('https://a.example.com/start');
+    expect(streams.tab('chrome-a', 'ws-1')?.firstPagePending).toBe(false);
   });
 
   it('still refuses a tab whose committed page is not http(s) and not the initial blank one', async () => {

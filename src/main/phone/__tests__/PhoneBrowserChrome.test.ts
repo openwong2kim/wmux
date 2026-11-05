@@ -665,6 +665,19 @@ describe('stream input on a streamed Chrome tab', () => {
     await expect(handlePhoneBrowser(...input('browser.type', 'https://shop.example.com/cart', { text: 'b' }), r.deps)).rejects.toThrow('page changed');
   });
 
+  it('a tab whose first page has not committed takes no input, even at the URL it is loading', async () => {
+    const r = streamed();
+    // The tab is listed (and its page read) at A, while its document is still the initial empty one.
+    Object.assign(r.view, { url: null, docUrls: new Set<string>(), firstPagePending: true });
+    for (const [command, extra] of [['browser.type', { text: 'b' }], ['browser.key', { key: 'Enter' }]] as const) {
+      await expect(handlePhoneBrowser(...input(command, A, extra), r.deps)).rejects.toThrow('page changed');
+    }
+    expect(r.sentInput()).toHaveLength(0);
+    // Once it commits, input on it goes through as on any page.
+    Object.assign(r.view, { url: A, docUrls: new Set([A]), firstPagePending: false });
+    expect(await handlePhoneBrowser(...input('browser.type', A, { text: 'b' }), r.deps)).toEqual({ applied: true });
+  });
+
   it('without stream:true, or on a tab with no stream, the URL check stays exact', async () => {
     const r = streamed();
     await expect(handlePhoneBrowser('browser.type', { ...scope, expectedURL: B, text: 'b' }, r.deps)).rejects.toThrow('page changed');
