@@ -11,6 +11,7 @@ import type { HostMatcher } from '../../shared/browserHostPolicy';
 import type { BlockedHost } from '../../shared/browserPolicy';
 import type { LiveTabOwner } from '../../shared/liveWriteScope';
 import type { LentLiveTab } from '../../shared/browserAgentControl';
+import { CHROME_START_CEILING_MS } from '../../shared/chromeStart';
 
 // ---------------------------------------------------------------------------
 // 'chrome' backend (Phase 2): launch the user's installed Chrome with a
@@ -49,9 +50,10 @@ const READY_TIMEOUT_MS = 10_000;
  * fresh machine) reads ~450 MB from a cold disk before it says anything: on
  * the GitHub Ubuntu image 20261101 that took 8-14 s, past READY_TIMEOUT_MS,
  * where the same start with its files cached took under 2 s. A Chrome that
- * exited fails at once, as before.
+ * exited fails at once, as before. RPCs that may start it wait longer
+ * (CHROME_START_RPC_TIMEOUT_MS).
  */
-const READY_STARTING_MS = 30_000;
+const READY_STARTING_MS = CHROME_START_CEILING_MS;
 const READY_POLL_MS = 250;
 /** How long a Chrome asked to quit through Browser.close gets before a signal. */
 export const QUIT_GRACE_MS = 3_000;
