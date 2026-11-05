@@ -218,6 +218,34 @@ describe('DaemonClient', () => {
       await client.disconnect();
       await mockServer.stop();
     });
+
+    it('keeps a reconnection when the old socket\'s close arrives after it', async () => {
+      const pipeName = testPipeName('reconn');
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.ping': () => ({ status: 'ok' }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      const disconnected = vi.fn();
+      client.on('disconnected', disconnected);
+      expect(await client.connect()).toBe(true);
+
+      // Reconnect at once. Where the old socket's close lands after the new
+      // connection is up (it did on a Linux runner), it must not tear that down;
+      // replaying the event makes the order the same on every platform.
+      const old = (client as unknown as { controlPipe: net.Socket | null }).controlPipe;
+      await client.disconnect();
+      expect(await client.connect()).toBe(true);
+      old?.emit('close', false);
+
+      expect(client.isConnected).toBe(true);
+      expect(disconnected).not.toHaveBeenCalled();
+      expect(await client.rpc('daemon.ping')).toEqual({ status: 'ok' });
+
+      await client.disconnect();
+      await mockServer.stop();
+    });
   });
 
   describe('RPC', () => {
