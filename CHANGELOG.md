@@ -1,5 +1,385 @@
 ## [Unreleased]
 
+## [4.15.0-beta.1] — 2026-11-06
+
+### Added
+
+- **Claude Code panes show the exact running / needs-you / done state
+  Claude reports itself.** Claude Code asks the terminal whether it supports
+  the Program Status Protocol (OSC 7501), and wmux now answers. From then on
+  Claude reports its own state: working, waiting on your approval, done, or
+  stopped. The pane follows those reports, so it stays Running through a long
+  silent think, shows Needs you as soon as a permission prompt opens, and
+  settles when Claude says the turn is over. Stop, rewind and stall detection
+  read the same reports. Before, all of this was guessed from the spinner in
+  Claude's window title. That guess remains the fallback when the question
+  cannot be answered, for example before wmux has recognised the agent or
+  when Claude runs over ssh. (#2838)
+
+- **Agents that drive other apps each get their own colour.** On macOS, each
+  agent now has its own coloured ring, name pill (`#w1-2 · Claude Code`),
+  pointer and typing caret, so several agents working at once can be told
+  apart. Before, every agent shared one orange halo and one cursor. An agent
+  waiting for another one's turn at the real mouse shows as waiting, and a bar
+  at the top of the screen counts the agents and shows the stop keys. The
+  same colour marks the agent's pane as a dot on its tab and sidebar row.
+
+- **Each agent's own marker on Windows too.** On Windows, an agent that
+  drives another app now shows the same coloured ring, name pill, pointer and
+  typing caret as on macOS, so several agents working at once can be told
+  apart. A waiting agent shows as waiting, and a bar at the top of the primary
+  monitor counts the agents and shows the stop keys.
+
+- **Pair two of your PCs over Tailscale without copying an invite.** Remote
+  › Connect a PC has a Tailscale tab, first when this PC is on a tailnet. On
+  one PC, Make this PC discoverable lets your own Tailscale account's devices
+  see its name and wmux version for 5 minutes. On the other, Find PCs lists
+  it and Connect asks it. Both screens show the same 6-digit code, and the
+  discoverable PC's card names the asking device as Tailscale identifies it
+  (device, account, OS and tailnet address) next to Deny and Allow. After
+  Allow, the asking PC confirms the codes match too, and only then do the
+  two PCs pair as an invite would; the other PC sees no pane until you tick
+  one. Before, pairing over a tailnet meant creating an invite on one PC and
+  pasting it on the other. Opening the dialog only reads Tailscale's local
+  status; nothing goes over the network until a button is pressed.
+  (#3046, #3047)
+
+- **A setting to let agent panes inherit your credentials.** Settings > Git
+  safety has a new switch, "Withhold credentials from agent panes", on by
+  default. Turn it off and a pane that an agent opens gets environment
+  variables named like a secret (`*_TOKEN`, `*_KEY`, ...) the way a terminal
+  you open yourself does. Commands, supervised panes, bots and fan-out tasks
+  never get them, and their values are never saved to disk. (#3050)
+
+- **Terminal file links open in a wmux editor tab.** Clicking a file path in a terminal (plain paths, wrapped paths and OSC 8 `file:` links) now opens it in a read-only editor or preview tab of that pane, at the line when the path carries one (`src/a.ts:42:7`), instead of handing it to the system app. The target line is scrolled into view and marked. A new Settings › Terminal option, "Open file links in", switches back to the system app. (#3057)
+
+- **WSL paths in terminal links.** Paths printed inside a WSL shell, including `/home/...` paths, `file://` links and relative paths, resolve to the matching `\\wsl.localhost\<distro>` location and open in the viewer. (#3057)
+
+- **Labs: draw terminals with wongtty, a Rust/WebAssembly terminal, and switch
+  back at any time.** Settings › Labs › "Rust terminal front end (wongtty)"
+  rebuilds every open terminal with the other engine as soon as you flip it,
+  and keeps what each one showed: scrollback, screen, modes and size. In our
+  measurement of 17 panes with a full scrollback, wmux used 590 MB instead of
+  790 MB after a forced garbage collection (672 MB instead of 986 MB without
+  one), and each extra pane 8 MB instead of 17 MB. Busy panes were not
+  measured. While the switch is off, nothing of wongtty is loaded, and turning
+  it off gives its memory back. If wongtty cannot start, terminals stay on
+  xterm.js and Labs shows why. Mirrored panes and wmux web stay on xterm.js.
+  (#3059)
+
+- **A live browser stream for the phone.** A phone that sees the
+  browser preview can open `GET …/browser/stream` on a tab of a dedicated
+  wmux Chrome profile and receive its frames as the page repaints (up to
+  15 a second, newest first), its URL as it changes, and whether the tab is
+  hidden, instead of polling a capture every 3 s. `/api/config` then carries
+  `browserStream: true`. Input on a streamed tab accepts an earlier URL of
+  the same page for typing, keys and scroll, so a search box that rewrites
+  the address while it is typed into no longer refuses the next piece; a
+  tap at an earlier URL is the new `409 browser-page-changed`. Taps map
+  correctly on pinch-zoomed pages and next to classic scrollbars. (#3062)
+
+- **The phone's live browser stream covers builtin browser panes too.** A
+  phone that sees the browser preview can open `GET …/browser/stream` on a builtin
+  pane as well as on a dedicated wmux Chrome tab. It receives the pane's
+  frames as the page repaints, its URL as it changes, and `hidden` as soon as
+  the pane is off screen on the Mac (another workspace or tab selected, the
+  window minimized), then `live` with a frame when it is back. The stream
+  ends when the pane is closed or unloaded to save memory. Taps and scrolls
+  on a streamed pane map by the frame the phone saw, as on Chrome. (#3064)
+
+- **The phone knows when a tap focused a text field.** A tap on the phone's
+  browser preview now answers with `focus: {editable, kind}` — whether the
+  element the tap focused takes typed text, and what kind of field it is
+  (`text`, `password`, `email`, `number`, `tel`, `url`, `search`,
+  `textarea` or `contenteditable`) — so the phone can raise its keyboard.
+  The live browser stream also sends a `focus` event whenever the focused
+  field changes, including when a page's script moves focus or a new page
+  loads. Only the kind is sent, never what a field holds, its name, label
+  or placeholder; it is read where page scripts cannot see or change it. A
+  field inside a frame from another origin reads as not editable.
+  (#3065)
+
+- Phone contract v1.7: a tap that opens a new tab answers with `opened: {surfaceId}`.
+
+- **The phone's live browser stream can show a tab as a phone.** A stream
+  opened with `viewport=mobile` lays the tab out as a phone while any phone
+  watching it asks for it: a dedicated wmux Chrome tab at 390 pixels wide
+  and 2x with touch, a builtin pane through the phone's existing mobile
+  viewport. Taps and scrolls land as they do on any streamed frame. The
+  Mac's own view of the tab changes with it. The tab goes back about 4 s
+  after the last phone that asked leaves, so a quick reconnect neither
+  reloads nor flips it, and at once when the desktop loses its connection
+  to the server. (#3076)
+
+- The phone's live browser stream of a Chrome tab now sends a `tabOpened` event for each tab that tab opens, whether a tap, a script or the person at the desktop opened it. The event names the new tab, so the phone can switch to it.
+
+- **F8 (Ctrl+8 on macOS) resumes a Claude session.** It types `claude --dangerously-skip-permissions --resume`, next to F7's `claude --dangerously-skip-permissions`. An existing setup gets it only when that key is still free: your own F8 or Ctrl+8 binding, and any change you made to the default, are kept.
+
+- **Named, collapsible workspace groups in the sidebar.** Right-click a
+  workspace and choose Move to group to file it under a group of your own,
+  such as "Client A" or "Infra", or to start a new one. Each group is a header
+  with its name and count that folds its workspaces away; right-click it to
+  rename, collapse or delete it. Deleting a group puts its workspaces back in
+  the list, still open. Groups only change where a workspace is listed:
+  sessions and agents keep running, Settled and Snoozed work as before, and a
+  pinned workspace stays at the top. Groups and their folded state are kept
+  across restarts. Before, the only ways to sort a long list were color tags,
+  name prefixes, or Settle and Snooze, which are meant for something else.
+  (#3111)
+
+### Changed
+
+- **A2A names the terminal by the name you gave it.** Rename the tab in wmux,
+  and its A2A messages read `Workspace.<name>`; that same name answers
+  `a2a_whoami` (`a2aName`) and is carried in the task's metadata. A title an
+  agent sets inside its own terminal (Claude Code `/rename`, Codex, Qwen Code)
+  also reads as the name, but only after you opt in with the
+  "Use agent terminal names as A2A names" setting — any program writing to the
+  terminal can set that title, so it stays off by default. Without a name, the
+  messages read the pane label or the coordinate, as before, and in a pane
+  with several tabs the coordinate carries the tab's number. A terminal's own
+  name is used only while no other terminal or label in the workspace reads
+  the same, and a name that looks like a coordinate (`w1-2`) only renames the
+  tab, never the terminal's A2A name. The pane-name resolver also accepts the same name
+  (`#name` or `#Workspace.name`) as an address. (#3042)
+
+- **An unverified `type` or `setValue` on Windows says what the field holds.**
+  The result carries `observedValue`, a short excerpt of the field's value
+  from where it first differs (`[redacted]` for a password field), so text
+  that arrived out of order shows without another `getAppState`. Adapted
+  from vercel-labs/agent-desktop (Apache-2.0).
+
+- **A `:line:col` suffix on a terminal path is now underlined with the rest of the link.** It used to sit outside the underline. (#3057)
+
+- **Markdown files opened from a link with a line show their source.** That way the line can be marked. (#3057)
+
+- **Editor and preview tabs close without a confirm.** Closing one used to ask
+  "Close this tab? Anything running in it will be stopped." even though a file
+  viewer runs nothing. It now closes at once, unless an editor tab has unsaved edits (those still ask). Terminal, browser, diff, board,
+  git, review, remote and placeholder tabs still ask as before. (#3058)
+
+- **The daemon reads long control-pipe lines once.** A line that arrives in
+  many reads is joined when it ends, and the 1 MiB limit applies to each line
+  rather than to whatever one read happened to hold. (#3062)
+
+- **The phone's live browser stream is on by default.** A phone that sees
+  the browser preview gets `browserStream: true` without any setting on the
+  desktop; `WMUX_PHONE_BROWSER_STREAM=0` on the desktop turns the stream
+  off. (#3076)
+
+- **A2A task calls take the caller's workspace from the server side.** Sending, reading, updating and cancelling an A2A task now acts as the workspace wmux resolves for the calling pane, agent or plugin, and a call naming a different workspace is refused. Agents in wmux panes are not affected.
+
+- **The experimental wongtty terminal (Labs) uses less GPU memory with many panes.** wongtty 0.0.3 no longer gives each unfocused pane its own compositor layer, so a window of many panes draws with fewer layers and less GPU memory.
+
+- **The experimental wongtty terminal (Labs) frees GPU memory when idle.**
+  wongtty 0.0.4 trims its shared drawing surface once every pane has been idle
+  for 5 seconds. With one full pane this uses about 34 MB less GPU memory. The
+  first key after an idle spell takes a few milliseconds longer to appear,
+  still within one frame. Closing the last wongtty terminal now also releases
+  the window listeners it registered. (#3116)
+
+### Fixed
+
+- Collapsing the sidebar no longer drops the workspace filter: the collapsed rail shows only the workspaces the filter keeps, and Ctrl+1–9 reach the same workspaces whether the sidebar is open or collapsed. (#3034)
+
+- **The Windows installer's third-party notices now cover the computer-use
+  helper's built-in code.** The helper is compiled with the .NET runtime and
+  Win32 interop code generated by CsWin32, and their licenses were missing from
+  the notices that ship with wmux. (#3035)
+
+- **A supervised pane whose restart fails keeps its last screen.** When a
+  crashed agent pane's automatic restart could not start a new process (the
+  session limit was reached, or a spawn error), the dead pane came back with
+  an empty buffer: revealing it painted a blank screen, and search and
+  read-screen found nothing in it. The old output now stays until a new
+  process has actually replaced it. (#3038)
+
+- **Input sent to a busy pane on the Rust terminal engine waits its turn again instead of failing.** When a program was slow to read its input, or had just exited, writing to its pane could throw: phone input answered with an error, an agent launch reported an uncertain result, and a channel nudge or a scripted key counted as failed. Input that the pane cannot take yet is now held and delivered in order once the program reads it, as it was with the previous engine, and input to a pane whose program has exited is dropped quietly. (#3039)
+
+- **On macOS and Linux, closing a pane gives Claude Code and the other
+  programs in it time to shut down, and jobs you started with `nohup` or
+  `disown` keep running after the shell exits.** With the Rust terminal
+  engine, the default on macOS and Linux since 4.14, wmux killed every process
+  left in a pane at once, both when its shell exited and when the pane
+  closed. An agent got no chance to act on the hangup, for example to save
+  its transcript or release its locks. Now, when you close a pane whose shell
+  is still running, its processes get the hangup and 5 seconds to finish, and
+  only what is still running after that is killed. When the shell exits on its
+  own, nothing is killed, then or when you close the pane afterwards, as with
+  the Node engine. When wmux stops its sessions, as on Quit and Stop Sessions
+  or an update, programs get the hangup, and those that ignore it, `nohup`
+  jobs included, now keep running, as with the Node engine. (#3040)
+
+- **A terminal you opened keeps its credentials after a restart.** A terminal
+  you open gets your environment variables named like a secret (`GH_TOKEN`,
+  `*_KEY`, ...), but wmux never saves those values to disk, so after an
+  upgrade, a reboot or a restart of wmux's background service it came back
+  without them, and tools in it reported missing auth. Now the app hands
+  them back when it reconnects: from its own environment, the set a new tab
+  gets, never from the background service or from disk, and they are still
+  never written anywhere. A pane gets them back only if it had them when it
+  was created, so agent and automation panes stay without them. A restored
+  terminal may start a few seconds after the app opens; if the app does not
+  open within about 20 seconds, it starts without them, as before. Terminals
+  already open before this update are not covered; a terminal you open after
+  it is. (#3049)
+
+- **Korean text matches the look's size and weight.** Hangul in the UI now
+  renders in a bundled Hangul-only subset of Pretendard (SIL OFL 1.1, renamed
+  "wmux Hangul"), placed right after each look's Latin face. Before, Korean
+  fell back to the system font. On Windows that was Malgun Gothic, which is
+  taller and heavier than Geist, IBM Plex Sans or Figtree and has no 500
+  weight, so medium labels rendered as regular. (#3051)
+
+- **Windows computer use no longer calls a correct multi-line value wrong.**
+  `setValue` compares line breaks the way the field stores them, so Notepad
+  reading `\n` back as `\r` now verifies instead of answering that the value
+  differs from what was set. The read-back also waits while the field is
+  still changing.
+
+- **Typing into a Windows app behind another one no longer fails on focus.**
+  When computer use had to bring a covered window forward to type into one
+  of its fields, it checked the field's focus before the app had moved it,
+  and answered that the field "did not take keyboard focus". It now waits
+  for the focus to land, and to stay, before typing.
+
+- **Phone browser previews hold page URLs to 4096 characters.** A capture
+  leaves out the page's URL when it is longer than that, together with the
+  tap geometry that goes with it, and returns the image as before. The page
+  list leaves out a page whose URL is longer than that, as it already leaves
+  out pages that are not http(s). Before, a page whose URL had grown that
+  long (a single-page app keeping its state in the address, say) could make
+  both the capture and the page list fail. (#3054)
+
+- **Windows computer use can click items in an app's open menu.** A menu
+  that an app opens as a window of its own (Notepad's File menu) showed its
+  items in `getAppState`, but clicking one answered that the element was no
+  longer in the target window. Windows the target window owns in its own
+  process now count as part of it.
+
+- **Windows computer use: a `type` after `setValue` appends to the value.**
+  `setValue` left the caret where the app put it (Notepad: the start), so
+  text typed next landed before the value. The caret now goes to the end of
+  the value; when it cannot, the result says so.
+
+- **A pane no longer shows its output twice after splitting quickly.**
+  Splitting panes in quick succession could reattach the same pane twice at
+  once. One of the two attaches then failed and retried about a second later,
+  and its replay of the session's history was added below what the pane
+  already showed, so the pane's whole output appeared a second time (search
+  found every line twice). Reattaches of one pane now run one after the
+  other, and any later replay of a pane's history redraws the pane instead
+  of appending to it. A supervised restart still shows the new session below
+  the old output and the restart line. (#3061)
+
+- **A new browser page from the phone opens on a Chrome desktop.** When the
+  desktop's browser setting is Chrome, the phone's "new page" no longer fails
+  with "Embedded browser backend required": an `open` without a backend now
+  opens a tab of the workspace's wmux Chrome profile. The page list
+  (`GET …/browser?chrome=1`) also says which browser a new page would open in
+  (`openBackend`), and leaves it out where the phone cannot open one. (#3063)
+
+- **A phone watching an animated page no longer makes the desktop capture
+  it at full speed.** The browser kept capturing and encoding every frame
+  the page painted, even when the phone asked for one frame a second, and
+  main discarded the rest: one tab at 1 fps cost about as much CPU as at
+  15 fps. The browser now captures two or three frames for each frame the
+  stream sends, and the frame sent is still at most about 100 ms old.
+  (#3064)
+
+- **Streams over the desktop's shared budget arrive evenly.** With several
+  busy tabs streaming at once, each phone got a burst of frames and then
+  nearly a second of nothing; frames are now spaced evenly within the
+  budget. (#3064)
+
+- **A refused stream push is logged.** The daemon writes one line at most
+  every 10 s per connection with the number of browser stream pushes it
+  refused, where before nothing recorded them. (#3064)
+
+- A link that opens a new tab in a workspace's wmux Chrome (a `target=_blank` link or a script's `window.open`) now opens a tab of that workspace. The phone's browser list and `browser_tabs` show it, and it can be driven and streamed like any other. Before, the new tab belonged to no workspace, so the phone kept showing the old tab.
+
+- **Panes no longer stay blank after a reboot on macOS.** When the Mac was
+  busy right after login, launchd could take most of a minute to start the
+  daemon. wmux gave up after 5 seconds and ran every terminal itself for the
+  rest of the session. Panes from before the reboot stayed blank until you
+  quit and reopened the app. Now wmux keeps trying, waits for a daemon that
+  launchd is still starting instead of launching a second one, and attaches
+  your panes as soon as the daemon is up. (#3072)
+
+- **A streamed tab with large frames no longer stalls behind lighter tabs.**
+  When several streamed tabs shared the desktop's frame budget, a tab whose
+  frames were large could get none at all while tabs with smaller frames
+  kept going. Tabs that have to wait now take turns. (#3076)
+
+- **A system short of memory no longer ends every terminal session.** When
+  memory ran out, the background process that holds the terminals could
+  answer too slowly, and wmux restarted it as if it had hung, closing every
+  session. wmux now checks whether that process is still working before it
+  restarts it, waits longer while memory is short, and restarts it only
+  once it has stopped working. (#3077)
+
+- A company's Claude seats now start past Claude's first-run screens, as a seat added later with "Add a seat on this PC…" already does. Before, a seat in its own worktree could stop on the folder-trust screen, and its brief waited behind it.
+
+- The setting that lets a seat's agent skip those screens now goes with the agent wmux starts in the seat, not with the pane's shell. A `claude` you start later in that pane asks about the folder, as in any other pane. This applies to the seats a company starts with and to a seat added with "Add a seat on this PC…".
+
+- **A wmux browser pane shown on a phone as a phone now fills the phone's
+  screen.** When the phone's live browser view asked for the phone layout on
+  a browser pane inside wmux, the page showed in the left part of each
+  frame with the rest empty. The page now lays out at a phone's width and
+  is drawn across the whole pane, and the Mac's pane shows it enlarged the
+  same way while the phone watches. Taps and scrolls land where they are
+  aimed, and a resized pane is fitted again without reloading the page.
+  (#3082)
+
+- **wmux's own Chrome no longer fails to start the first time after a
+  Chrome update or on a slow disk.** Chrome's first start after its
+  install changes reads several hundred megabytes before it answers, and
+  wmux gave up after 10 seconds, reporting that Chrome could not be
+  launched. wmux now keeps waiting, up to 30 seconds, while that Chrome is
+  still starting. (#3084)
+
+- **A phone stream of a just-opened Chrome tab starts.** It used to fail with "Only HTTP browser previews are supported" while the tab's first page was still loading. Frames now start once that page loads.
+
+- **Text sent to a pane while it reattaches arrives once.** A `terminal_send` (or `wmux send`) that landed while a pane's terminal was being reattached could fail with "has no open pipe", or report success while the text never reached the shell. The send now waits briefly for the pane's new connection, and text already sent on the old one still reaches the shell.
+
+- **A company seat says when it can't have its own worktree.** For a bare repository, one with submodules, or one that uses Git LFS, "Add a seat on this PC…" now says the seat works in the folder itself, and why, instead of promising a worktree. The New company dialog says so under the folder too, and with two agent seats besides the CEO that they can't share it.
+
+- **A browser tab is no longer left behind when an agent's call times out.** When an agent's request to open a tab in wmux's Chrome timed out on its side while the tab was still opening, the tab stayed open and the agent's retry opened another. A tab that finishes opening after its caller has gone is now closed.
+
+- **Panes resume on their own after the background service restarts, more reliably.** After wmux's background service restarted, a pane could miss its automatic resume: when the first check for resumable panes failed, or when the resume was typed before the pane had reconnected. The check is now tried again, and the resume waits until the pane is connected.
+
+- **The macOS Ctrl+7 and Ctrl+8 shortcuts now work on keyboard layouts like French AZERTY.** On a layout where the digit row types a symbol unless you hold Shift, Control and the 7 or 8 key did nothing. A custom shortcut on a digit now also runs from the physical digit key, and a shortcut you recorded on your layout still comes first.
+
+- **Plugins can copy and trash folders that hold a link to your home or config folder.** A plugin's file operations refused a folder holding such a link, and the link itself, though a copy only recreates the link and a trash only removes it. `~/.config`, `~/.claude` and `~/.codex` can also be copied, moved or trashed when they hold no credential files.
+
+- **Plugins can move and rename folders that hold a link to your home folder.** A move or rename takes only the link, as a trash does, so a plugin's file operations no longer refuse it for where the link points.
+
+- **Daemon A2A calls are accepted only from the app's own connection.** The
+  channel calls a pane's own tools make (`wmux channel`) keep working without
+  the app, and take the caller's workspace from the daemon's own record of the
+  pane. (#3103)
+
+- **Fan-out task missions are accepted only from the app's own connection to the
+  daemon,** as A2A calls already are. (#3105)
+
+- **Switching the experimental wongtty terminal (Labs) gives the old terminals' memory back.** Turning the engine on, or off and on again, no longer keeps the replaced terminals and a copy of each pane's screen in memory.
+
+- **Opening a file or folder from wmux keeps credential locations closed in more cases.** The check now covers more Windows path forms, "Open with" on a workspace folder, and paths that do not exist yet, and a refused open says it is a protected location.
+
+- **Terminal `file://` links that name this computer open.** `ls --hyperlink`
+  (GNU coreutils, including inside WSL) writes links as
+  `file://<hostname>/path`. wmux refused them as links to another machine. It
+  now treats this computer's own host name like `localhost`. Links that name
+  any other host are still refused.
+
+### Security
+
+- **OSC 8 `file:` links never reach the system opener.** A link whose host is not this machine is refused, and a file the in-app viewer cannot show is reported as a failure rather than handed to the OS. (#3057)
+
+- **The file reader's sensitive-path blocklist now covers `\\wsl$` and `\\wsl.localhost` shares.** Credential directories inside a WSL distro are refused the same as on the host. (#3057)
+
+- **A clicked path inside a credential directory no longer opens in the system app.** The system opener now refuses the same locations the file reader does (`~/.ssh`, `~/.aws` and the rest), on the host and in WSL shares, without revealing the folder. (#3057)
+
 ## [4.14.0] — 2026-11-03
 
 ### Added
