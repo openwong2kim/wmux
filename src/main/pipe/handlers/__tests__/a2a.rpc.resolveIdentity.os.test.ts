@@ -1107,7 +1107,7 @@ describe('a2a.resolve.identity — claims checked against the connection\'s peer
   async function resolveAs(router: RpcRouter, params: Record<string, unknown>, peerPid?: number): Promise<PeerResult> {
     const res = await router.dispatch(
       { id: 'pp', method: 'a2a.resolve.identity', params },
-      peerPid === undefined ? undefined : { peerPid },
+      { firstParty: true, ...(peerPid !== undefined && { peerPid }) },
     );
     expect(res.ok).toBe(true);
     return (res as { result: PeerResult }).result;
