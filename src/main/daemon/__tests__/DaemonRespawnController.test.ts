@@ -8,6 +8,8 @@ import {
 } from '../DaemonRespawnController';
 import type { DaemonClient } from '../../DaemonClient';
 import type { DaemonInfo } from '../launcher';
+import { LaunchdJobQueuedError } from '../../../shared/daemon/launchdDaemonJob';
+import { DaemonStartRefusedError } from '../../../shared/daemon/daemonLauncherCore';
 
 /**
  * Minimal stub mirroring the parts of `DaemonClient` the controller
@@ -195,6 +197,65 @@ describe('DaemonRespawnController.bootstrap', () => {
     expect(h.controller.isHealthy).toBe(false);
     expect(h.deps.onInstall).not.toHaveBeenCalled();
     expect(h.logs.some((l) => l.level === 'warn' && l.msg.includes('connect failed'))).toBe(true);
+  });
+
+  it('enters the respawn loop when the first launch fails, and installs the daemon that comes up later', async () => {
+    // After a reboot launchd started the daemon job ~45 s after its bootstrap;
+    // the launch had given up after 5 s and nothing ever connected.
+    let call = 0;
+    const h = makeHarness({
+      config: { baseBackoffMs: 100, healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => {
+        if (++call === 1) throw new LaunchdJobQueuedError('com.wmux.daemon.x');
+        return { pid: 1269, authToken: 't', pipeName: 'p', spawned: true };
+      },
+    });
+    const c1 = new FakeDaemonClient();
+    h.clientQueue.push(c1);
+
+    expect(await h.controller.bootstrap()).toBeNull();
+    expect(h.deps.onUninstall).toHaveBeenCalledTimes(1);
+    expect(h.events).toEqual([{ type: 'reconnecting', attempt: 1, backoffMs: 100 }]);
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.controller.isHealthy).toBe(true);
+    expect(h.deps.onInstall).toHaveBeenCalledTimes(1);
+    expect(h.events[h.events.length - 1]).toEqual({ type: 'reconnected' });
+  });
+
+  it('stays local without retrying when the user declined the recovery dialog', async () => {
+    const h = makeHarness({
+      ensureDaemonImpl: async () => { throw new DaemonStartRefusedError('refusing to spawn over a possibly-live daemon'); },
+    });
+
+    expect(await h.controller.bootstrap()).toBeNull();
+    // Another start would only show the same dialog again.
+    expect(h.events).toEqual([]);
+    expect(h.deps.onUninstall).not.toHaveBeenCalled();
+    expect(h.controller.daemonMayReturn).toBe(false);
+  });
+
+  it('stops retrying when a retry is refused, without asking for a second dialog', async () => {
+    let call = 0;
+    const h = makeHarness({
+      config: { baseBackoffMs: 100, healthIntervalMs: 0 },
+      ensureDaemonImpl: async () => {
+        if (++call === 1) throw new Error('Daemon process exited during startup (code 1) before becoming ready');
+        throw new DaemonStartRefusedError('refusing to spawn over a possibly-live daemon');
+      },
+    });
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.events[h.events.length - 1]).toEqual({
+      type: 'respawn-exhausted',
+      lastError: 'refusing to spawn over a possibly-live daemon',
+      refused: true,
+    });
+    expect(h.controller.daemonMayReturn).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.ensureDaemonCalls).toBe(2);
   });
 
   it('returns null and disconnects when auth-ping fails', async () => {
@@ -812,10 +873,12 @@ describe('DaemonRespawnController health probe', () => {
     h.clientQueue.push(c1);
 
     await h.controller.bootstrap();
-    // No timers should be firing — advance generously and verify no
-    // spurious RPCs / events.
+    // No probe timers should be firing — advance generously (still short of
+    // the respawn backoff) and verify no probe activity: the only event is
+    // the respawn loop's schedule after the failed launch.
     await vi.advanceTimersByTimeAsync(500);
-    expect(h.events).toEqual([]);
+    expect(h.events).toEqual([{ type: 'reconnecting', attempt: 1, backoffMs: 1000 }]);
+    expect(h.logs.some((l) => l.msg.includes('health ping'))).toBe(false);
   });
 });
 
@@ -1407,13 +1470,32 @@ describe('DaemonRespawnController hands its exit watch over for a full shutdown'
   });
 });
 
+describe('DaemonRespawnController queued launchd job', () => {
+  it('a start that finds the daemon still queued costs no budget until queuedWaitMs', async () => {
+    const h = makeHarness({
+      config: { baseBackoffMs: 100, maxBackoffMs: 100, budget: 2, healthIntervalMs: 0, queuedWaitMs: 5_000 },
+      ensureDaemonImpl: async () => { throw new LaunchdJobQueuedError('com.wmux.daemon.x'); },
+    });
+
+    await h.controller.bootstrap();
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(h.ensureDaemonCalls).toBeGreaterThan(10);
+    expect(h.events.some((e) => e.type === 'respawn-exhausted')).toBe(false);
+    expect(h.controller.daemonMayReturn).toBe(true);
+
+    // Past the adoption window the budget counts again.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(h.events.some((e) => e.type === 'respawn-exhausted')).toBe(true);
+  });
+});
+
 /**
  * #2398 — the local pty:reconnect handler answers "session gone" for an id it
  * does not own only once no daemon is coming back. While a respawn is pending
  * the id may be the daemon's, so the answer stays transient.
  */
 describe('DaemonRespawnController.daemonMayReturn (#2398)', () => {
-  it('is true while the first launch is in flight, false once it failed', async () => {
+  it('stays true after the first launch failed: the respawn loop takes over', async () => {
     const h = makeHarness();
     let release!: () => void;
     (h.deps as { ensureDaemon: () => Promise<DaemonInfo> }).ensureDaemon = () =>
@@ -1426,8 +1508,8 @@ describe('DaemonRespawnController.daemonMayReturn (#2398)', () => {
     expect(h.controller.daemonMayReturn).toBe(true);
     release();
     await booting;
-    // bootstrap has no retry of its own: the local fallback is final.
-    expect(h.controller.daemonMayReturn).toBe(false);
+    expect(h.controller.daemonMayReturn).toBe(true);
+    expect(h.events).toContainEqual({ type: 'reconnecting', attempt: 1, backoffMs: 1000 });
   });
 
   it('is true while a respawn is pending, false once the budget is exhausted', async () => {

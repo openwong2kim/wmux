@@ -7,6 +7,8 @@ import {
   DAEMON_PROGRESS_DEFAULTS, DaemonProgressTracker, UNREADABLE_SAMPLE,
   type DaemonProcessSample, type DaemonProgress, type DaemonProgressConfig,
 } from '../../shared/daemon/daemonProgress';
+import { LaunchdJobQueuedError } from '../../shared/daemon/launchdDaemonJob';
+import { DAEMON_READY_HARD_CEILING_MS, DaemonStartRefusedError } from '../../shared/daemon/daemonLauncherCore';
 
 export interface DaemonRespawnState {
   attempt: number;
@@ -121,6 +123,12 @@ export type RespawnEvent =
        * "wmux daemon could not start".
        */
       lastError?: string;
+      /**
+       * The launcher refused to start over an unverifiable pid after the user
+       * declined its recovery dialog. They have seen a dialog already; no
+       * second one.
+       */
+      refused?: boolean;
     };
 
 export interface DaemonRespawnConfig {
@@ -139,6 +147,12 @@ export interface DaemonRespawnConfig {
   hangFailureThreshold?: number;
   /** How long a daemon that does not answer may go without CPU time before it is respawned (daemonProgress.ts). */
   progress?: DaemonProgressConfig;
+  /**
+   * How long an outage may wait on a daemon launchd has not started yet
+   * without using up the budget. Default DAEMON_READY_HARD_CEILING_MS (90 s),
+   * the time a spawned daemon gets to come up.
+   */
+  queuedWaitMs?: number;
 }
 
 const DEFAULTS: Required<DaemonRespawnConfig> = {
@@ -153,6 +167,7 @@ const DEFAULTS: Required<DaemonRespawnConfig> = {
   healthTimeoutMs: 5_000,
   hangFailureThreshold: 5,
   progress: DAEMON_PROGRESS_DEFAULTS,
+  queuedWaitMs: DAEMON_READY_HARD_CEILING_MS,
 };
 
 // RCA A4 — a successful ping reporting event-loop lag at/above this is logged
@@ -174,8 +189,9 @@ const BIND_RETRY_MS = 1_000;
  * `DaemonNotificationRouter` / `mainWindow`.
  *
  * Lifecycle:
- *   - `bootstrap()` performs the initial daemon launch + install. Throws
- *     on a hard failure so the caller can fall back to local-only mode.
+ *   - `bootstrap()` performs the initial daemon launch + install. When it
+ *     gets no client it enters the respawn budget loop, and the caller runs
+ *     local ptys until a respawn installs one.
  *   - `dispose()` tears down timers + listeners. Safe to call from
  *     `before-quit`; it does NOT call `onUninstall()` because the caller
  *     usually wants a different (shutdown-race) teardown path.
@@ -219,13 +235,10 @@ export class DaemonRespawnController {
    */
   private replacedOnceThisRun = false;
   /**
-   * B′: set when a replacement passed the point of no return (old daemon
-   * dead / dying) but produced no new client. bootstrap() consumes this to
-   * route into the respawn budget loop — without it, bootstrap's
-   * single-shot failure path would strand the app in local mode with every
-   * session suspended on disk (Codex #4 + Claude #2).
+   * When this outage first found the daemon still queued in launchd
+   * (LaunchdJobQueuedError). Cleared by a successful install.
    */
-  private replacementDeadEnd = false;
+  private queuedSince: number | null = null;
   /** The daemon behind the client spawnAndConnect last returned: its pid, and whether this process spawned it. */
   private connectedDaemon: { pid: number | null; spawned: boolean } = { pid: null, spawned: false };
   /** Watches the installed daemon's process for its exit code. */
@@ -246,8 +259,8 @@ export class DaemonRespawnController {
 
   /**
    * #2398 — whether a daemon may still come (back) without an app restart:
-   * the first launch is in flight, or a respawn is scheduled or running.
-   * False once the launch failed (bootstrap has no retry of its own) or the
+   * the first launch is in flight, or a respawn is scheduled or running (a
+   * failed first launch enters the respawn loop too). False once the
    * respawn budget ran out: the local-PTY fallback is then final, and a
    * session only the daemon held is gone for this run. Read while no client
    * is installed (the local handlers).
@@ -275,8 +288,12 @@ export class DaemonRespawnController {
 
   /**
    * Perform the initial daemon launch + install. Should be called once
-   * from `app.on('ready')`. On failure the caller stays in local mode;
-   * subsequent recovery is the user's responsibility (manual restart).
+   * from `app.on('ready')`. On failure the respawn budget loop takes over
+   * while the caller runs local ptys: a daemon can still come up after the
+   * first launch gave up on it. After a reboot, launchd started a queued
+   * daemon job ~45 s after its bootstrap, the launch had given up after 5 s,
+   * and with no retry every daemon pane stayed blank until the app was
+   * restarted.
    */
   async bootstrap(): Promise<DaemonClient | null> {
     if (this.disposed) throw new Error('DaemonRespawnController already disposed');
@@ -285,27 +302,27 @@ export class DaemonRespawnController {
     try {
       const client = await this.spawnAndConnect();
       if (!client) {
-        // B′: a replacement that killed the old daemon but failed to bring
-        // up a new one must NOT strand the app in local mode — bootstrap
-        // has no retry of its own, so hand off to the budgeted respawn
-        // loop explicitly. Sessions are already durably suspended on disk.
-        if (this.replacementDeadEnd && !this.disposed) {
-          this.replacementDeadEnd = false;
-          this.deps.logger.warn('replacement dead-end during bootstrap — entering respawn budget loop');
-          this.handleDisconnect('replacement dead-end');
-          return null;
-        }
         // spawnAndConnect already logged the specific reason. Capture
         // a generic anchor here so respawn-exhausted has something to
         // surface if the loop never makes it past the first attempt.
         this.lastError = this.lastError ?? 'daemon spawn/connect returned no client';
+        this.deps.logger.warn(`bootstrap got no daemon client (${this.lastError}) — entering respawn budget loop`);
+        this.handleDisconnect('bootstrap returned no client');
         return null;
       }
       await this.install(client, { isReconnect: false });
       return client;
     } catch (err) {
       this.lastError = this.stringifyError(err);
-      this.deps.logger.warn(`bootstrap failed: ${this.lastError}`);
+      if (err instanceof DaemonStartRefusedError) {
+        // The user declined the recovery dialog: another start would only ask
+        // again. Local mode stays final, as it always was here.
+        this.deps.logger.warn(`bootstrap failed: ${this.lastError} — staying local`);
+        return null;
+      }
+      this.deps.logger.warn(`bootstrap failed: ${this.lastError} — entering respawn budget loop`);
+      if (err instanceof LaunchdJobQueuedError) this.queuedSince = Date.now();
+      this.handleDisconnect('bootstrap failed');
       return null;
     } finally {
       this.bootstrapping = false;
@@ -453,7 +470,6 @@ export class DaemonRespawnController {
       return null;
     }
     if (outcome === 'dead-end') {
-      this.replacementDeadEnd = true;
       this.lastError = `stale-daemon replacement dead-end (old pid=${oldInfo.pid})`;
       return null;
     }
@@ -464,7 +480,6 @@ export class DaemonRespawnController {
     try {
       freshInfo = await this.deps.ensureDaemon();
     } catch (err) {
-      this.replacementDeadEnd = true;
       this.lastError = `replacement spawn failed: ${this.stringifyError(err)}`;
       return null;
     }
@@ -490,7 +505,6 @@ export class DaemonRespawnController {
     const freshClient = this.deps.createClient(freshInfo.pipeName, freshInfo.authToken);
     const freshConnected = await freshClient.connect();
     if (!freshConnected) {
-      this.replacementDeadEnd = true;
       this.lastError = 'replacement daemon spawned but control pipe connect failed';
       return null;
     }
@@ -498,7 +512,6 @@ export class DaemonRespawnController {
     try {
       freshPong = (await freshClient.rpc('daemon.ping', {})) as DaemonPingResult;
     } catch (err) {
-      this.replacementDeadEnd = true;
       this.lastError = `replacement daemon auth/ping failed: ${this.stringifyError(err)}`;
       await freshClient.disconnect().catch(() => { /* best-effort */ });
       return null;
@@ -566,6 +579,7 @@ export class DaemonRespawnController {
     // installed, no onUninstall fired, and no respawn scheduled.
     // Codex review P2 (round 3) on issue #54.
     this.respawning = false;
+    this.queuedSince = null;
     // Watch this daemon's process from now on: its exit code can only be read
     // through a handle opened while it is alive.
     this.exitWatch?.dispose();
@@ -827,6 +841,21 @@ export class DaemonRespawnController {
       this.deps.logger.warn(
         `respawn attempt ${attempt} failed: ${this.lastError}`,
       );
+      if (err instanceof DaemonStartRefusedError) {
+        // The user declined the recovery dialog: another attempt would only
+        // ask the same question again.
+        this.exhausted = true;
+        this.respawning = false;
+        this.deps.logger.warn('respawn stopped: the daemon start was refused — staying in local mode');
+        this.deps.emit({ type: 'respawn-exhausted', lastError: this.lastError, refused: true });
+        return;
+      }
+      if (this.isQueuedWait(err)) {
+        // launchd has the job and will start it; the next start waits on
+        // that same job. Not a failed start, so it costs no budget.
+        this.attemptCount--;
+        this.deps.logger.info('daemon still queued in launchd — attempt not counted against the respawn budget');
+      }
       // Loop back through the scheduler so backoff + budget tracking
       // applies uniformly. `respawning` is already true at this point
       // (set in handleDisconnect) so an in-flight listener event
@@ -834,6 +863,19 @@ export class DaemonRespawnController {
       // would have cleared it only on a successful path.
       this.scheduleRespawn();
     }
+  }
+
+  /**
+   * Whether a failed start only found the daemon still queued in launchd.
+   * True until this outage has waited `queuedWaitMs` on a queued job, so a
+   * launchd slowed down by a reboot cannot use up the budget while its daemon
+   * is on the way. After that the budget counts as for any failed start.
+   */
+  private isQueuedWait(err: unknown): boolean {
+    if (!(err instanceof LaunchdJobQueuedError)) return false;
+    const now = Date.now();
+    this.queuedSince ??= now;
+    return now - this.queuedSince < this.cfg.queuedWaitMs;
   }
 
   private clearRespawnTimer(): void {

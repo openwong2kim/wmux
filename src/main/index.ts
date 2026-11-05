@@ -2977,7 +2977,8 @@ app.on('ready', async () => {
         // main thread until dismissed; that's harmless here because the
         // daemon-respawn budget exhausted means there is no daemon for the
         // main thread to talk to anyway. Suppress for automated runs.
-        if (process.env.WMUX_NO_DIALOG !== '1') {
+        // A refused start followed a recovery dialog the user declined.
+        if (process.env.WMUX_NO_DIALOG !== '1' && !event.refused) {
           const hint = event.lastError && event.lastError.length > 0
             ? event.lastError
             : 'wmux could not bring the daemon back up after 5 retries.';
