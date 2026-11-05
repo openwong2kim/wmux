@@ -3709,7 +3709,9 @@ browser setting is, as its capture does.
 
 Each has the checks of the capture GET on the same route: transcript
 consent; input consent too on the desktop-workspaces route; the tab in the
-route's workspace; http(s) pages only.
+route's workspace; http(s) pages only. A `chrome` tab whose first http(s)
+page is still loading (it was just opened) streams too: no frames come until
+that page commits, and then a `url` event names it.
 
 **Query** (all optional, clamped; the effective values come back in `hello`):
 

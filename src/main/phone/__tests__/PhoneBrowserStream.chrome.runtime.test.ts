@@ -44,10 +44,17 @@ const PAGES: Record<string, string> = {
   '/opener': '<a id="t" href="/still" target="_blank" style="display:block;width:200px;height:80px">open</a>',
 };
 
+/** Answered this late, so a tab opened on it is still on its initial blank page for that long. */
+const SLOW_MS = 1_500;
+
 function serve(req: http.IncomingMessage, res: http.ServerResponse): void {
   const path = String(req.url ?? '/').split('?')[0].replace(/\/next$/, '');
-  res.writeHead(200, { 'content-type': 'text/html' });
-  res.end(`<!doctype html><html><body>${PAGES[path] ?? 'page'}</body></html>`);
+  const answer = () => {
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end(`<!doctype html><html><body>${PAGES[path] ?? 'page'}</body></html>`);
+  };
+  if (path === '/slow') setTimeout(answer, SLOW_MS);
+  else answer();
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -146,10 +153,17 @@ function describeMode(mode: Mode): void {
     streams,
   });
 
-  /** Opens a tab of `ws-1` and waits for its page to load. */
+  /**
+   * Opens a tab of `ws-1` and waits for its page to load. The tab's initial
+   * about:blank is `complete` too, so the page is the one at this URL.
+   */
   async function open(path: string, host = '127.0.0.1'): Promise<string> {
-    const { surfaceId } = await launcher!.openTab(`http://${host}:${port}${path}`, 'ws-1');
-    await eventually(async () => (await evaluate(surfaceId, 'document.readyState').catch(() => null)) === 'complete', 10_000);
+    const url = `http://${host}:${port}${path}`;
+    const { surfaceId } = await launcher!.openTab(url, 'ws-1');
+    await eventually(async () => {
+      const page = await evaluate(surfaceId, '[location.href, document.readyState]').catch(() => null) as [string, string] | null;
+      return page?.[0] === url && page[1] === 'complete';
+    }, 10_000);
     return surfaceId;
   }
   const evaluate = async (surfaceId: string, expression: string): Promise<unknown> => {
@@ -180,6 +194,16 @@ function describeMode(mode: Mode): void {
       expect(frame).toMatchObject({ pageURL: `http://127.0.0.1:${port}/still` });
       expect(frame.geometry).toMatchObject({ scrollX: 0, scrollY: 0 });
       expect(frame.imageWidth).toBeGreaterThan(0);
+    });
+
+    it('a stream started before the tab\'s first page commits gets that page\'s frames once it does', async (ctx) => {
+      if (skipUnless(ctx)) return;
+      const url = `http://127.0.0.1:${port}/slow`;
+      const { surfaceId } = await launcher!.openTab(url, 'ws-1');
+      expect(await start(surfaceId)).toMatchObject({ backend: 'chrome' });
+      const frame = await until(() => lastFrame(surfaceId), SLOW_MS + 8_000);
+      expect(frame.pageURL).toBe(url);
+      expect(await evaluate(surfaceId, 'location.href')).toBe(url);
     });
 
     it('classic scrollbars: the frame is wider than the client area, and a tap at the right edge lands', async (ctx) => {

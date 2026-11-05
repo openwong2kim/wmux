@@ -162,6 +162,9 @@ export interface PhoneBrowserStreams {
 }
 
 /** The credential-stripped http(s) URL, or null. */
+/** How a tab's frame tree names its initial empty document (an empty URL reads ":"). */
+const INITIAL_DOCUMENT_URLS = new Set(['', ':', 'about:blank']);
+
 function httpURL(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   try {
@@ -801,9 +804,19 @@ class ChromeTabStream extends TabStream {
       this.commit(raw, true);
     } else {
       const url = httpURL(raw);
-      if (!url) throw new Error('Only HTTP browser previews are supported');
-      this.url = url;
-      this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
+      if (url) {
+        this.url = url;
+        this.docUrls = new Set(url.length <= URL_LIMIT ? [url] : []);
+      } else if (INITIAL_DOCUMENT_URLS.has(raw)) {
+        // A new tab's first page has not committed yet: Chrome lists the tab
+        // by the URL it is loading (start() checked that one), while its
+        // document is still the initial empty one. Nothing is sent until the
+        // page commits (frameNavigated), as after a commit that is not http(s).
+        this.url = null;
+        this.docUrls = new Set();
+      } else {
+        throw new Error('Only HTTP browser previews are supported');
+      }
     }
     await this.readZoom();
     // The first frame at the phone's size; a page swap's new session has none of the old one's emulation.
