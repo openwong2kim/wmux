@@ -45,6 +45,9 @@ describe('resolveEnvPolicy — fail-closed execution-context classification', ()
       expect(resolveEnvPolicy({ spawnKind: 'agent', hasExec: true, withholdFromAgents: false })).toBe('gated');
       expect(resolveEnvPolicy({ hasSupervision: true, withholdFromAgents: false })).toBe('gated');
       expect(resolveEnvPolicy({ spawnKind: 'agent', isAutomation: true, withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'exec', withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'exec', hasExec: true, withholdFromAgents: false })).toBe('gated');
+      expect(resolveEnvPolicy({ spawnKind: 'nonsense' as never, withholdFromAgents: false })).toBe('gated');
     });
   });
 });

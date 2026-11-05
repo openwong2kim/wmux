@@ -19,7 +19,10 @@ export type EnvPolicy = 'passthrough' | 'gated';
  *   1. exec/supervision이 있으면 무조건 gated (스탬프보다 우선). 감독 exec 리프는
  *      정의상 wmux가 돌리는 자동화이므로 user-shell 스탬프가 잘못 붙어도 게이트.
  *   2. 명시적 'user-shell'만 passthrough.
- *   3. 그 외(미스탬프 · 'agent' · 알 수 없는 값)는 전부 gated.
+ *   3. A bot worker or fan-out task pane (isAutomation) is gated.
+ *   4. With the setting off (withholdFromAgents === false), only an unstamped
+ *      or exact 'agent' pane is passthrough; 'exec' and unknown values are not.
+ *   5. 그 외(미스탬프 · 'agent' · 알 수 없는 값)는 전부 gated.
  *
  * 새 스폰 경로가 스탬프를 빠뜨리면 자격이 새는 방향이 아니라 막히는 방향으로
  * 실패한다 — 즉 오분류의 기본값이 "사람 셸"이 아니라 "게이트"다.
@@ -44,6 +47,6 @@ export function resolveEnvPolicy(opts: {
   if (opts.hasExec || opts.hasSupervision) return 'gated';
   if (opts.spawnKind === 'user-shell') return 'passthrough';
   if (opts.isAutomation) return 'gated';
-  if (opts.withholdFromAgents === false) return 'passthrough';
+  if (opts.withholdFromAgents === false && (opts.spawnKind === undefined || opts.spawnKind === 'agent')) return 'passthrough';
   return 'gated';
 }
