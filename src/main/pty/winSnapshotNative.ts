@@ -446,6 +446,36 @@ export function collectTreeCpuTimes(
 }
 
 /**
+ * CPU time one live process has used (kernel + user), in ms, or null when it
+ * cannot be read: not Windows, the native path is unavailable, the process is
+ * gone, or it is protected. The daemon watchdog's liveness signal
+ * (shared/daemon/daemonProgress.ts).
+ */
+export function tryProcessCpuMs(pid: number): number | null {
+  if (!Number.isInteger(pid) || pid <= 0 || loadFailed) return null;
+  const b = loadBindings();
+  if (!b) {
+    loadFailed = true;
+    return null;
+  }
+  try {
+    const raw = b.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+    const handle = typeof raw === 'bigint' ? raw : BigInt(raw);
+    if (handle === 0n) return null;
+    try {
+      const kernel = Buffer.alloc(8);
+      const user = Buffer.alloc(8);
+      if (!b.GetProcessTimes(raw, Buffer.alloc(8), Buffer.alloc(8), kernel, user)) return null;
+      return Number((kernel.readBigUInt64LE(0) + user.readBigUInt64LE(0)) / 10_000n);
+    } finally {
+      b.CloseHandle(raw);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Creation time of one live process (FILETIME, 100 ns units), or null when it
  * cannot be read: not Windows, the native path is unavailable, the process is
  * gone, or it is protected. Used to reject a parent pid that Windows handed to

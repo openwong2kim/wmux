@@ -133,6 +133,7 @@ import { getAccountRotationService } from './account/AccountRotationService';
 import { getAccountStore } from './account/accountStore';
 import { IPC, getWmuxHomeDir, dataSuffix } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
+import { sampleDaemonProcess } from '../shared/daemon/daemonProgress';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc, type CallerBrowserProtection } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
@@ -2596,6 +2597,9 @@ app.on('ready', async () => {
   // `daemon:respawn-exhausted` so UX can show a toast/badge.
   daemonRespawnController = new DaemonRespawnController({
     ensureDaemon,
+    // A daemon that stops answering but still uses CPU is slow (a system short
+    // of memory), not hung: it is not respawned, which would end every PTY it holds.
+    sampleDaemon: sampleDaemonProcess,
     createClient: (pipeName, token) => new DaemonClient(pipeName, token),
     onInstall: async (client) => {
       daemonClient = client;

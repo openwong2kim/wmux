@@ -3,6 +3,10 @@ import type { DaemonInfo, DaemonPingResult } from './launcher';
 import type { ProcessLiveness } from '../../shared/processLiveness';
 import { isDaemonOlder, runDaemonReplacement, type ShutdownRpcResult } from './daemonReplacement';
 import type { DaemonExitWatch } from './daemonExitWatch';
+import {
+  DAEMON_PROGRESS_DEFAULTS, DaemonProgressTracker, UNREADABLE_SAMPLE,
+  type DaemonProcessSample, type DaemonProgress, type DaemonProgressConfig,
+} from '../../shared/daemon/daemonProgress';
 
 export interface DaemonRespawnState {
   attempt: number;
@@ -64,6 +68,12 @@ export interface DaemonRespawnDeps {
    * no exit line, as before.
    */
   watchDaemonExit?: (pid: number | null, spawned: boolean) => DaemonExitWatch;
+  /**
+   * Looks at the daemon's process when pings fail (daemonProgress.ts): a
+   * daemon still using CPU is slow, not hung, and is not respawned. Optional:
+   * absent means every hang is respawned, as before.
+   */
+  sampleDaemon?: (pid: number) => Promise<DaemonProcessSample>;
 }
 
 export interface DaemonReplacementHooks {
@@ -127,6 +137,8 @@ export interface DaemonRespawnConfig {
   healthTimeoutMs?: number;
   /** Consecutive ping failures that force a respawn. Default 5 (RCA A4). */
   hangFailureThreshold?: number;
+  /** How long a daemon that does not answer may go without CPU time before it is respawned (daemonProgress.ts). */
+  progress?: DaemonProgressConfig;
 }
 
 const DEFAULTS: Required<DaemonRespawnConfig> = {
@@ -140,11 +152,15 @@ const DEFAULTS: Required<DaemonRespawnConfig> = {
   // which would re-emit daemon:connected and re-trigger the reconcile path.
   healthTimeoutMs: 5_000,
   hangFailureThreshold: 5,
+  progress: DAEMON_PROGRESS_DEFAULTS,
 };
 
 // RCA A4 — a successful ping reporting event-loop lag at/above this is logged
 // as "busy but responsive" (never escalated; a daemon that answers is alive).
 const BUSY_LAG_WARN_MS = 1_000;
+/** Tries at reading the connected daemon's start time, and the wait between them. */
+const BIND_ATTEMPTS = 3;
+const BIND_RETRY_MS = 1_000;
 
 /**
  * Owns the daemon-respawn lifecycle: detects disconnects, schedules
@@ -172,6 +188,9 @@ export class DaemonRespawnController {
   private attemptCount = 0;
   private healthInterval: ReturnType<typeof setInterval> | null = null;
   private healthFailureCount = 0;
+  /** A health ping (and the look at the process after a failed one) is in flight. */
+  private probing = false;
+  private progress: DaemonProgressTracker;
   private uptimeResetTimer: ReturnType<typeof setTimeout> | null = null;
   private disposed = false;
   private exhausted = false;
@@ -217,6 +236,7 @@ export class DaemonRespawnController {
     config: DaemonRespawnConfig = {},
   ) {
     this.cfg = { ...DEFAULTS, ...config };
+    this.progress = new DaemonProgressTracker(this.cfg.progress);
   }
 
   /** True if a daemon client is currently installed and connected. */
@@ -354,6 +374,7 @@ export class DaemonRespawnController {
     }
     const answered = this.answeringDaemon(info, pong);
     this.connectedDaemon = { pid: answered.pid, spawned: answered.spawned };
+    this.bindDaemonIdentity(answered.pid);
 
     // B′ staleness gate. Only a REUSED daemon can be stale (a daemon we just
     // spawned runs this app's own binary), and only once per app run.
@@ -503,6 +524,7 @@ export class DaemonRespawnController {
     );
     const answered = this.answeringDaemon(freshInfo, freshPong);
     this.connectedDaemon = { pid: answered.pid, spawned: answered.spawned };
+    this.bindDaemonIdentity(answered.pid);
     return freshClient;
   }
 
@@ -600,7 +622,9 @@ export class DaemonRespawnController {
     if (this.cfg.healthIntervalMs <= 0) return;
     this.healthFailureCount = 0;
     this.healthInterval = setInterval(() => {
-      void this.runHealthPing();
+      if (this.probing) return;
+      this.probing = true;
+      void this.runHealthPing().finally(() => { this.probing = false; });
     }, this.cfg.healthIntervalMs);
   }
 
@@ -613,16 +637,20 @@ export class DaemonRespawnController {
       this.healthInterval = null;
     }
     this.healthFailureCount = 0;
+    this.progress.reset();
   }
 
   private async runHealthPing(): Promise<void> {
     const client = this.client;
     if (!client || !client.isConnected) return;
+    // The daemon this ping goes to, whatever is connected once it fails.
+    const pid = this.connectedDaemon.pid;
     try {
       const pong = (await client.rpc('daemon.ping', {}, { timeoutMs: this.cfg.healthTimeoutMs })) as
         | { eventLoopLagMs?: number; eventsSubscribed?: boolean }
         | undefined;
       this.healthFailureCount = 0;
+      this.progress.reset();
       // The daemon dropped this connection's event subscription (it fell
       // behind past the backpressure cap) but kept the socket. Without this the
       // app stays deaf to agent status, titles and notifications until it is
@@ -655,9 +683,21 @@ export class DaemonRespawnController {
       this.deps.logger.warn(
         `daemon health ping failed (${this.healthFailureCount}/${this.cfg.hangFailureThreshold}): ${this.stringifyError(err)}`,
       );
+      // Looked at from the first failure on, so the verdict at the threshold has history behind it.
+      const progress = await this.observeProgress(pid);
+      if (this.client !== client) return;
       if (this.healthFailureCount >= this.cfg.hangFailureThreshold) {
+        if (progress === 'progressing') {
+          this.deps.logger.warn('daemon not answering but its CPU time is still rising — slow, not hung; not respawning it');
+          return;
+        }
+        // A read that failed (likeliest when the system is short of memory) is no verdict: held within the same budget.
+        if (progress === 'unknown') {
+          this.deps.logger.warn('daemon not answering and its CPU time cannot be read right now — not respawning it until the budget runs out');
+          return;
+        }
         this.deps.logger.error(
-          'daemon hang detected — forcing respawn',
+          `daemon hang detected — forcing respawn${progress === 'stalled' ? ' (no CPU time for the whole budget)' : ''}`,
         );
         // Says whether the daemon was still alive when main let go of it.
         void this.exitWatch?.report('health probe hang');
@@ -670,6 +710,34 @@ export class DaemonRespawnController {
         } catch { /* best-effort */ }
       }
     }
+  }
+
+  /**
+   * Records the connected daemon's start time, so a later sample of a pid
+   * handed on to another process reads as gone. A read that fails is tried
+   * twice more: an identity taken from a sample after the daemon stopped
+   * answering could already be another process's.
+   */
+  private bindDaemonIdentity(pid: number | null): void {
+    const sample = this.deps.sampleDaemon;
+    if (pid === null || !sample) return;
+    void (async () => {
+      for (let attempt = 0; attempt < BIND_ATTEMPTS; attempt++) {
+        if (attempt > 0) await new Promise<void>((resolve) => { const t = setTimeout(resolve, BIND_RETRY_MS); t.unref?.(); });
+        if (this.disposed || this.connectedDaemon.pid !== pid) return;
+        const s = await sample(pid).catch(() => null);
+        if (this.connectedDaemon.pid !== pid) return;
+        if (s && !s.alive) return;
+        if (s?.startedAt) { this.progress.bind(pid, s.startedAt); return; }
+      }
+    })();
+  }
+
+  /** The tracker's verdict, or null when this host cannot sample a daemon at all (the respawn goes ahead as before). */
+  private async observeProgress(pid: number | null): Promise<DaemonProgress | null> {
+    const sample = this.deps.sampleDaemon;
+    if (pid === null || !sample) return null;
+    return this.progress.observe(pid, await sample(pid).catch(() => UNREADABLE_SAMPLE), Date.now());
   }
 
   private handleDisconnect(reason: string): void {

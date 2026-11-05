@@ -18,6 +18,7 @@ import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } fro
 import { handleLiveness } from '../processHandleLiveness';
 import { readProcessCommandLine } from '../../main/pty/winSnapshotNative';
 import { createFileExclusive, replaceFileAtomic, unlinkIfContent } from './daemonFiles';
+import { DAEMON_PROGRESS_DEFAULTS, sampleDaemonProcess, waitOutProgressingDaemon } from './daemonProgress';
 
 export interface DaemonInfo {
   /**
@@ -209,6 +210,23 @@ function getProcessImageName(pid: number): string | null {
     // matches the expected wmux image more reliably across builds.
     return path.basename(trimmed);
   } catch { return null; }
+}
+
+/**
+ * After the launcher's wait on an unanswering daemon, right before its kill:
+ * the pid is still the daemon (`daemon`), has exited (`exited`), is another
+ * process's now (`other`), or its command line cannot be read (`unverified`:
+ * neither kill it nor spawn next to it).
+ */
+export function recheckDaemonBeforeKill(probe: {
+  exited: () => boolean;
+  argv: () => string[] | null;
+  candidates: string[];
+}): 'daemon' | 'exited' | 'other' | 'unverified' {
+  if (probe.exited()) return 'exited';
+  const argv = probe.argv();
+  if (argv === null) return probe.exited() ? 'exited' : 'unverified';
+  return argvIdentifiesDaemonScript(argv, probe.candidates) ? 'daemon' : 'other';
 }
 
 /**
@@ -1691,6 +1709,59 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
                 }
               }
             }
+            // A daemon starved of memory misses every ping while it still
+            // runs, and killing it ends every PTY it holds. While its CPU time
+            // keeps rising it is waited on (bounded) instead of killed.
+            let goneWhileWaited = false;
+            if (token) {
+              const outcome = await waitOutProgressingDaemon({
+                pid: existingPid,
+                sample: sampleDaemonProcess,
+                ping: () => pingCurrent(1000),
+                sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+                now: () => Date.now(),
+                // Each look forks ps on macOS: a few, not one every 2 s.
+                intervalMs: 5000,
+                ceilingMs: DAEMON_READY_HARD_CEILING_MS,
+                progress: { ...DAEMON_PROGRESS_DEFAULTS, noProgressMs: 10_000 },
+                onWaiting: () => {
+                  (deps.log ?? console.log)(
+                    `[launcher] Daemon (PID ${existingPid}) does not answer but is still using CPU — waiting up to ` +
+                      `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s instead of killing it`,
+                  );
+                },
+              });
+              if (outcome === 'answered') {
+                (deps.log ?? console.log)(`[launcher] Daemon (PID ${existingPid}) answered while it was waited on — reusing, no kill`);
+                return { pid: existingPid, authToken: answeredToken, pipeName, spawned: false };
+              }
+              // It exited while it was waited on, and the pid may already be
+              // another process's (another start time): nothing to kill.
+              goneWhileWaited = outcome === 'gone';
+              if (!goneWhileWaited) {
+                // Up to a minute and a half since the image and command line
+                // were read: read them again right before the kill.
+                let candidates: string[] = [];
+                try { candidates = deps.resolveDaemonScriptCandidates(); } catch { /* shape-only */ }
+                const recheck = recheckDaemonBeforeKill({
+                  exited: () => checkProcessLiveness(existingPid) === 'dead',
+                  argv: () => getProcessArgv(existingPid),
+                  candidates,
+                });
+                if (recheck === 'unverified') {
+                  throw new Error(
+                    `[launcher] daemon.pid=${existingPid} was waited on and is still alive, but its command line can no longer be read; refusing to kill or to spawn a second daemon. Manually delete ${pidFile} if you have verified the daemon is gone.`,
+                  );
+                }
+                if (recheck !== 'daemon') {
+                  (deps.log ?? console.log)(`[launcher] PID ${existingPid} is no longer the wmux daemon (${recheck}) after the wait — not killing that pid`);
+                  goneWhileWaited = true;
+                }
+              }
+            }
+            if (goneWhileWaited) {
+              (deps.log ?? console.log)(`[launcher] Daemon (PID ${existingPid}) exited while it was waited on — not killing that pid`);
+            } else {
             // (a) Verified wmux daemon → kill before respawning.
             (deps.warn ?? console.warn)(
               `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive${token ? ' after escalated re-ping' : ' (no auth token to ping)'} — terminating before respawn`,
@@ -1723,6 +1794,7 @@ async function ensureDaemonUnlocked(deps: DaemonLauncherDeps): Promise<DaemonInf
               // side releases before spawnDaemon's first `createServer`
               // listen attempt.
               await new Promise((resolve) => setTimeout(resolve, 200));
+            }
             }
           }
         }

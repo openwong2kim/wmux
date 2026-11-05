@@ -83,6 +83,7 @@ function makeHarness(
     config?: Parameters<typeof buildController>[1];
     replacement?: DaemonReplacementHooks;
     watchDaemonExit?: DaemonRespawnDeps['watchDaemonExit'];
+    sampleDaemon?: DaemonRespawnDeps['sampleDaemon'];
   } = {},
 ): Harness {
   const logs: { level: string; msg: string }[] = [];
@@ -113,6 +114,7 @@ function makeHarness(
     },
     replacement: opts.replacement,
     watchDaemonExit: opts.watchDaemonExit,
+    sampleDaemon: opts.sampleDaemon,
   };
 
   const controller = buildController(deps, opts.config);
@@ -662,6 +664,143 @@ describe('DaemonRespawnController health probe', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(h.deps.onUninstall).toHaveBeenCalled();
     expect(c1.disconnectSyncCalls).toBe(1);
+  });
+
+  describe('a daemon that stops answering is looked at before it is respawned', () => {
+    const progress = { noProgressMs: 3_000, pressureFactor: 4, maxUnansweredMs: 60_000 };
+    /** Bootstrap answers, then every ping times out. */
+    const failingPings = (client: FakeDaemonClient) => {
+      let pings = 0;
+      client.rpcImpl = async (method) => {
+        if (method !== 'daemon.ping') return {};
+        if (++pings === 1) return {};
+        throw new Error('ping timeout');
+      };
+    };
+
+    it('a starved daemon whose CPU time keeps rising is not respawned', async () => {
+      let cpu = 0;
+      const sampled: number[] = [];
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async (pid) => { sampled.push(pid); cpu += 40; return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: true }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      expect(c1.disconnectSyncCalls).toBe(0);
+      expect(h.ensureDaemonCalls).toBe(1);
+      expect(new Set(sampled)).toEqual(new Set([1234]));
+      expect(h.logs.some((l) => l.msg.includes('slow, not hung'))).toBe(true);
+    });
+
+    it('a wedged daemon (no CPU time for the budget) is respawned, once its CPU time has stopped rising for that long', async () => {
+      let cpu = 0;
+      let rising = true;
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => { if (rising) cpu += 40; return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: false }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      // Past the failure threshold while it still runs: kept.
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      // It stops: kept until the budget runs out, then respawned.
+      rising = false;
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+      expect(c1.disconnectSyncCalls).toBe(1);
+      expect(h.logs.some((l) => l.level === 'error' && l.msg.includes('no CPU time for the whole budget'))).toBe(true);
+    });
+
+    it('a daemon whose pid was handed on to another busy process is gone, not progressing: respawned at the threshold', async () => {
+      let cpu = 0;
+      let startedAt = 'T0';
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => { cpu += 40; return { alive: true, cpuMs: cpu, startedAt, underPressure: false }; },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      // The daemon dies and another process gets its pid; its CPU time rises.
+      startedAt = 'T1';
+      for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+    });
+
+    it('a daemon whose process is gone is respawned at the threshold', async () => {
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => ({ alive: false, cpuMs: null, startedAt: null, underPressure: false }),
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+    });
+
+    it('a daemon whose CPU time cannot be read (the read failed, or threw) is held through the budget, then respawned', async () => {
+      for (const sampleDaemon of [
+        async () => ({ alive: true, cpuMs: null, startedAt: null, underPressure: false }),
+        async (): Promise<never> => { throw new Error('spawn ps ENOMEM'); },
+      ]) {
+        const h = makeHarness({
+          config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+          sampleDaemon,
+        });
+        const c1 = new FakeDaemonClient();
+        h.clientQueue.push(c1, new FakeDaemonClient());
+        failingPings(c1);
+        await h.controller.bootstrap();
+        // At the threshold (the third failure, 2 s after the first): can't tell is not a hang.
+        for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+        expect(h.deps.onUninstall).not.toHaveBeenCalled();
+        expect(h.logs.some((l) => l.msg.includes('cannot be read right now'))).toBe(true);
+        // The budget (3 s from the first failure) runs out.
+        for (let i = 0; i < 2; i++) await vi.advanceTimersByTimeAsync(1000);
+        expect(h.deps.onUninstall).toHaveBeenCalled();
+        h.controller.dispose();
+      }
+    });
+
+    it('the identity read at connect, when it lands after the failures began, does not start their budget over', async () => {
+      let cpu = 0;
+      let rising = true;
+      let releaseBind!: () => void;
+      const bindHeld = new Promise<void>((resolve) => { releaseBind = resolve; });
+      let first = true;
+      const h = makeHarness({
+        config: { healthIntervalMs: 1000, healthTimeoutMs: 100, hangFailureThreshold: 3, baseBackoffMs: 50, budget: 5, progress },
+        sampleDaemon: async () => {
+          if (first) { first = false; await bindHeld; }
+          if (rising) cpu += 40;
+          return { alive: true, cpuMs: cpu, startedAt: 'T0', underPressure: false };
+        },
+      });
+      const c1 = new FakeDaemonClient();
+      h.clientQueue.push(c1, new FakeDaemonClient());
+      failingPings(c1);
+      await h.controller.bootstrap();
+      for (let i = 0; i < 3; i++) await vi.advanceTimersByTimeAsync(1000);
+      rising = false;
+      await vi.advanceTimersByTimeAsync(2000);
+      // The connect's read lands now, two seconds into the stall.
+      releaseBind();
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(h.deps.onUninstall).toHaveBeenCalled();
+    });
   });
 
   it('skips probe ticks when no client is installed', async () => {
