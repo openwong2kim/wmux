@@ -88,11 +88,16 @@ vi.mock('fs/promises', () => ({
   access: vi.fn((p: string) => (presentPaths.has(p)
     ? Promise.resolve()
     : Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })))),
+  // Open with checks a folder's real path for credential locations; these
+  // folders do not exist, so the check falls back to the path as given.
+  realpath: vi.fn(() => Promise.reject(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }))),
 }));
 
-vi.mock('os', () => ({
-  homedir: () => '/Users/me',
-}));
+vi.mock('os', () => {
+  // fs.handler's credential-location check reads the home as the default export.
+  const os = { homedir: () => '/Users/me' };
+  return { ...os, default: os };
+});
 
 import * as electron from 'electron';
 import { registerShellHandlers } from '../shell.handler';

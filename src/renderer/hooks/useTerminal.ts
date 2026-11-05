@@ -857,7 +857,7 @@ export function showCopyToastText(text: string) {
 // associated app). Shares no DOM with the copy toasts so they can briefly
 // overlap if a user copies-then-clicks in quick succession.
 let openPathToastTimer: ReturnType<typeof setTimeout> | null = null;
-function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed' | 'preview.error.denied') {
+function showOpenPathToast(messageKey: 'terminal.openPathBlocked' | 'terminal.openPathFailed' | 'terminal.openPathProtected') {
   let el = document.getElementById('wmux-openpath-toast');
   if (!el) {
     el = document.createElement('div');
@@ -1900,7 +1900,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           result.error === 'BLOCKED_EXTENSION'
             ? 'terminal.openPathBlocked'
             : result.error === 'BLOCKED_SENSITIVE'
-              ? 'preview.error.denied'
+              ? 'terminal.openPathProtected'
               : 'terminal.openPathFailed',
         );
       }).catch((err: unknown) => {

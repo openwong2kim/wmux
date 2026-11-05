@@ -33,6 +33,8 @@ const BLOCKED_FILES = [
   '.wmux-auth-token',
   '.npmrc',
   '.netrc',
+  '.pgpass',
+  '.git-credentials',
   '.env',
   '.wmux/daemon-auth-token',
 ];
@@ -51,40 +53,84 @@ export function homeRoots(): string[] {
   } catch {
     // An unreadable home keeps the given spelling only.
   }
-  const roots = [home, real].map((h) => h.replace(/\\/g, '/').toLowerCase());
+  const roots = [home, real].map((h) => h.replace(/\\/g, '/').toLowerCase().normalize('NFC'));
   return roots[0] === roots[1] ? [roots[0]] : roots;
 }
 
-const WSL_SHARE_PREFIX = /^\/\/(?:wsl\.localhost|wsl\$)\/[^/]+(?=\/|$)/;
+/** Where a Windows-shaped path starts: a drive (`c:`), a volume
+ *  (`//?/volume{…}`) or a share (`//host/share`). */
+const WINDOWS_ROOT = /^(?:[a-z]:|\/\/[?.]\/volume\{[^/]*\}|\/\/[^/?.][^/]*\/[^/]+)(?=\/|$)/;
 
 /**
- * A WSL share (`\\wsl$\<distro>\...`) lives in the Linux filesystem, so the
- * Windows home comparison never sees it. The same blocked names are matched as
- * whole path segments anywhere after the distro segment.
+ * Windows reaches one file through spellings the plain comparison misses: the
+ * `\\?\` and `\\.\` prefixes, a dot or space at the end of a segment (Win32
+ * drops them), a `:stream` suffix (`file::$DATA` is the file), and `.`/`..`
+ * segments. Fold them to the plain spelling, never above the path's root. An
+ * 8.3 short name needs the filesystem, so callers check the real path as
+ * well. `normalized` uses `/` and is lower-cased.
  */
-function isSensitiveWslPath(normalized: string): boolean {
-  const m = WSL_SHARE_PREFIX.exec(normalized);
-  if (!m) return false;
-  const rest = '/' + normalized.slice(m[0].length).split('/').filter(Boolean).join('/');
+function foldWindowsSpelling(normalized: string): string {
+  let p = normalized;
+  if (/^\/\/[?.]\/unc\//.test(p)) p = '//' + p.slice('//?/unc/'.length);
+  else if (/^\/\/[?.]\/[a-z]:\//.test(p)) p = p.slice(4);
+  const root = WINDOWS_ROOT.exec(p)?.[0];
+  if (root === undefined) return p;
+  const segs = p.slice(root.length).split('/').map((seg) => {
+    if (seg === '' || /^\.+$/.test(seg)) return seg;
+    const stream = seg.indexOf(':');
+    return (stream >= 0 ? seg.slice(0, stream) : seg).replace(/[. ]+$/, '');
+  });
+  const rest = path.posix.normalize('/' + segs.filter(Boolean).join('/'));
+  return root + (rest === '/' ? '' : rest);
+}
+
+/** A device or namespace spelling left after folding (`\\.\GLOBALROOT`,
+ *  `\\.\PhysicalDrive0`, `\??\`): no link or folder a user opens takes one. */
+const DEVICE_SPELLING = /^(?:\/\/[?.]\/(?!volume\{)|\/\?\?\/)/;
+
+/** A user's home inside a share or a volume: `/users/<name>` (an admin share
+ *  such as `c$`, a share of the Users folder, or a volume root), and in a WSL
+ *  distro `/home/<name>`, `/root`, or a Windows home through its drive mount
+ *  (`/mnt/c/users/<name>`). */
+const HOME_IN_SHARE = /^(?:\/users\/[^/]+|\/home\/[^/]+|\/root|\/mnt\/[a-z]\/users\/[^/]+)(?=\/|$)/;
+
+/**
+ * A share or volume path (`\\host\share\...`, `\\?\Volume{…}\...`): a WSL
+ * distro, this machine through a loopback or admin share, or another host.
+ * The home comparison never sees it and its real path stays in that form, so
+ * the blocked names are matched below a user's home inside it, as whole path
+ * segments. Elsewhere on a share (a repo's fixtures on a NAS) nothing is
+ * refused.
+ */
+function isSensitiveSharePath(normalized: string): boolean {
+  const root = WINDOWS_ROOT.exec(normalized)?.[0];
+  if (root === undefined || /^[a-z]:$/.test(root)) return false;
+  let rest = normalized.slice(root.length) || '/';
+  if (root.endsWith('/users')) rest = '/users' + rest;
+  const home = HOME_IN_SHARE.exec(rest);
+  if (!home) return false;
+  const under = rest.slice(home[0].length);
   for (const dir of BLOCKED_DIRS) {
     const d = '/' + dir.toLowerCase();
-    if (rest.endsWith(d) || rest.includes(d + '/')) return true;
+    if (under.endsWith(d) || under.includes(d + '/')) return true;
   }
   for (const file of BLOCKED_FILES) {
-    if (rest.endsWith('/' + file.toLowerCase())) return true;
+    if (under.endsWith('/' + file.toLowerCase())) return true;
   }
   return false;
 }
 
 export function isSensitivePath(resolvedPath: string): boolean {
-  const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
-  if (isSensitiveWslPath(normalized)) return true;
+  // NFC on both sides: macOS can hand back a decomposed spelling of the home.
+  const normalized = foldWindowsSpelling(resolvedPath.replace(/\\/g, '/').toLowerCase().normalize('NFC'));
+  if (DEVICE_SPELLING.test(normalized)) return true;
+  if (isSensitiveSharePath(normalized)) return true;
 
   for (const homeNorm of homeRoots()) {
     // Block directories under home
     for (const dir of BLOCKED_DIRS) {
       const blocked = (homeNorm + '/' + dir).toLowerCase();
-      if (normalized.startsWith(blocked)) return true;
+      if (normalized === blocked || normalized.startsWith(blocked + '/')) return true;
     }
 
     // Block specific files in home

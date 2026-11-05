@@ -694,6 +694,7 @@ export const zh = {
   'terminal.altWheelSelectionHintMac': '此应用自行滚动其对话记录，因此滚动清除了选区 — 按住 Option 拖动可选择屏幕上的内容',
   'terminal.openPathBlocked': '已阻止可执行文件 — 仅打开父文件夹',
   'terminal.openPathFailed': '无法打开 — 显示文件夹位置',
+  'terminal.openPathProtected': '这是受保护的凭据位置，wmux 不会打开它。',
   'terminal.bookmarkAdded': '已添加书签',
 
   // Context menu

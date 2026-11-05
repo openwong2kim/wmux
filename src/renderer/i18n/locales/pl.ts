@@ -1451,6 +1451,7 @@ export const pl = {
   'terminal.altWheelSelectionHintMac': 'Ta aplikacja sama przewija swoją historię, więc przewinięcie usunęło zaznaczenie — Option+przeciągnięcie zaznacza to, co jest na ekranie',
   'terminal.openPathBlocked': 'Plik wykonywalny zablokowany — otwarto folder nadrzędny',
   'terminal.openPathFailed': 'Nie udało się otworzyć — pokazuję folder',
+  'terminal.openPathProtected': 'To chronione miejsce z danymi logowania, więc wmux go nie otworzy.',
   'terminal.bookmarkAdded': 'Dodano zakładkę',
   'terminal.scrollToBottom': 'Przewiń na dół',
   'terminal.imeInputRecovered': 'Wejście klawiatury utknęło w IME i zostało automatycznie odzyskane',
