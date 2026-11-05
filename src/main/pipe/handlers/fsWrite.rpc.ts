@@ -10,8 +10,8 @@ import { validatePathParam } from './fs.rpc';
 import type { RpcRouter } from '../RpcRouter';
 
 type Kind = 'copy' | 'move' | 'trash';
-/** What each job does to a link in its sources (see holdsRefusedRoot). */
-const LINK_FATE: Record<Kind, LinkFate> = { copy: 'keep', move: 'carry', trash: 'remove' };
+/** What each job does to a link in its sources; a move carries it (see holdsRefusedRoot). */
+const LINK_FATE: Record<Kind, LinkFate | undefined> = { copy: 'kept', move: undefined, trash: 'removed' };
 type Conflict = 'skip' | 'overwrite' | 'fail';
 export interface FsJob {
   id: string;
@@ -109,18 +109,26 @@ export class FsJobQueue {
       const dest = await accessible(path.join(path.dirname(src), params.newName as string), true);
       this.checkLocks([src, dest]);
       if (await exists(dest)) fail('exists');
-      await this.scan(src, 'carry'); // Refuse credential descendants before moving a tree.
+      await this.scan(src, undefined); // Refuse credential descendants before moving a tree.
       this.checkLocks([src, dest]);
+      await this.clear(src, undefined);
       await fs.promises.rename(src, dest);
       return { ok: true, path: dest };
     } catch (e) { return { ok: false, reason: reasonOf(e) }; }
   }
+  /** Refuse `p` when a refused root is there under it (see holdsRefusedRoot). A
+   *  move, rename or trash checks again just before it changes anything: a
+   *  refused file can appear after the preflight read its folder. */
+  private async clear(p: string, fate: LinkFate | undefined): Promise<fs.Stats> {
+    const s = await fs.promises.lstat(p);
+    if (await holdsRefusedRoot(p, s.isSymbolicLink() ? fate : undefined)) fail('unavailable');
+    return s;
+  }
   /** Preflight every descendant; links are validated but never traversed. */
-  private async scan(p: string, fate: LinkFate, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
+  private async scan(p: string, fate: LinkFate | undefined, signal?: AbortSignal): Promise<{ bytes: number; items: number }> {
     signal?.throwIfAborted();
     await accessible(p);
-    if (await holdsRefusedRoot(p, fate)) fail('unavailable');
-    const s = await fs.promises.lstat(p);
+    const s = await this.clear(p, fate);
     const total = { bytes: s.isFile() ? s.size : 0, items: 1 };
     if (s.isDirectory()) for (const name of await fs.promises.readdir(p)) {
       const sub = await this.scan(path.join(p, name), fate, signal);
@@ -171,20 +179,28 @@ export class FsJobQueue {
         controller.signal.throwIfAborted(); job.current = src;
         try {
           if (job.kind === 'trash') {
-            await this.trashItem(await accessible(src));
+            const target = await accessible(src);
+            await this.clear(target, 'removed');
+            await this.trashItem(target);
             job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
           } else {
             const dest = path.join(destDir ?? fail('invalid'), path.basename(src));
             if (job.kind === 'move' && !(await exists(dest))) {
               try {
-                await fs.promises.rename(await accessible(src), await accessible(dest, true));
+                const from = await accessible(src);
+                await this.clear(from, undefined);
+                await fs.promises.rename(from, await accessible(dest, true));
                 job.doneBytes += totals[i].bytes; job.doneItems += totals[i].items;
                 continue;
               } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'EXDEV') throw e; }
             }
             const complete = await this.copy(src, dest, conflict, r);
             controller.signal.throwIfAborted();
-            if (job.kind === 'move' && complete) await fs.promises.rm(await accessible(src), { recursive: true });
+            if (job.kind === 'move' && complete) {
+              const from = await accessible(src);
+              await this.clear(from, undefined);
+              await fs.promises.rm(from, { recursive: true });
+            }
           }
         } catch (e) {
           if (controller.signal.aborted) throw e;

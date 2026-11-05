@@ -219,6 +219,37 @@ describe('filesystem write jobs', () => {
     // A copy leaves the link in place.
     expect((await finish(await queue.start('copy', { sources: [src], destDir: dest, conflict: 'fail' }))).errors).toEqual([]);
   });
+  it.runIf(process.platform !== 'win32')('follows a link before the .. after it, as the kernel does', async () => {
+    // ~/.config -> dotfiles/lnk/../config, and lnk -> elsewhere/sub: ~/.config is
+    // elsewhere/config, not dotfiles/config (which exists, as a decoy).
+    for (const dir of ['elsewhere/sub', 'elsewhere/config/gh', 'dotfiles/config/gh']) fs.mkdirSync(path.join(home, dir), { recursive: true });
+    fs.symlinkSync(path.join(home, 'elsewhere', 'sub'), path.join(home, 'dotfiles', 'lnk'));
+    fs.symlinkSync('dotfiles/lnk/../config', path.join(home, '.config')); // path.join would fold the ..
+    expect(fs.realpathSync.native(path.join(home, '.config'))).toBe(path.join(home, 'elsewhere', 'config'));
+    expect((await finish(await queue.start('trash', { paths: [path.join(home, 'dotfiles', 'lnk')] }))).state).toBe('failed');
+    expect(trash).not.toHaveBeenCalled();
+  });
+  it('checks again just before a trash: a refused folder can appear after the preflight', async () => {
+    const config = path.join(home, '.config'); const later = path.join(root, 'later');
+    fs.mkdirSync(config); fs.mkdirSync(later);
+    const readdir = fs.promises.readdir.bind(fs.promises);
+    vi.spyOn(fs.promises, 'readdir').mockImplementation((async (dir: fs.PathLike) => {
+      if (dir === later) fs.mkdirSync(path.join(config, 'gh'), { recursive: true });
+      return readdir(dir);
+    }) as typeof fs.promises.readdir);
+    const job = await finish(await queue.start('trash', { paths: [config, later] }));
+    expect(job.errors).toEqual([{ path: config, reason: 'unavailable' }]);
+    expect(trash.mock.calls).toEqual([[later]]);
+  });
+  it('counts a refused folder it cannot look up as there', async () => {
+    fs.mkdirSync(path.join(home, '.config'));
+    const lstat = fs.promises.lstat.bind(fs.promises);
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (p: fs.PathLike, ...rest: unknown[]) => {
+      if (String(p) === path.join(home, '.config', 'gh')) throw Object.assign(new Error('denied'), { code: 'EPERM' });
+      return (lstat as (...a: unknown[]) => unknown)(p, ...rest);
+    }) as typeof fs.promises.lstat);
+    expect(await queue.rename({ path: path.join(home, '.config'), newName: 'config-old' })).toMatchObject({ reason: 'unavailable' });
+  });
   it('expires completed jobs after ten minutes', async () => {
     let now = 0; queue = new FsJobQueue(trash, () => now);
     const job = await finish(await copy()); now = 600_000; expect(queue.status(job.id)).toMatchObject({ reason: 'unavailable' });
