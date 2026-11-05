@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import v8 from 'node:v8';
 import vm from 'node:vm';
 import { createPtyDispatcher } from '../useTerminal';
@@ -32,5 +34,22 @@ describe('createPtyDispatcher — retention', () => {
     expect(ref.deref()).toBeUndefined();
     listener!('pty-2', 'still dispatched');
     expect(seen).toEqual(['still dispatched']);
+  });
+});
+
+// An engine swap carries the old terminal's screen to the new mount (the
+// serialized fallback, or a local transplant). The mount's long-lived
+// closures (hydrateRegistry, the pty handlers) share the effect scope that
+// holds `carry`, so the carry must drop those copies once the swap is set up,
+// or every swapped pane keeps its old screen for as long as it lives. The hook
+// needs a full renderer bootstrap to swap for real, so the heap itself is
+// measured on a packaged build (10 panes, swap, GC, Runtime.getHeapUsage).
+describe('useTerminal engine swap — retention', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'useTerminal.ts'), 'utf-8');
+  it('drops the carried screen copies once the swap is set up', () => {
+    const handOff = src.indexOf('swapFinishRef.current = { terminal, fromBottom: swap.fromBottom');
+    const release = src.indexOf('if (carry) { carry.fallback = null; carry.transplant = null; }');
+    expect(handOff).toBeGreaterThan(0);
+    expect(release).toBeGreaterThan(handOff);
   });
 });
